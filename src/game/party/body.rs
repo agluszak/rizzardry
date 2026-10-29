@@ -50,6 +50,7 @@ pub enum PartyMotion {}
 /// The party's spatial body. Exactly one exists while a level is active.
 /// Its own rotation is locked; facing lives here and on the camera.
 #[derive(Component, Debug, Default)]
+#[require(Transform)]
 pub struct PartyBody {
     pub yaw: f32,
     pub pitch: f32,
@@ -106,6 +107,21 @@ impl PartyBody {
     /// The party's eye over feet at `feet`: [`Self::feet_below`]'s inverse.
     pub fn eye_above(feet: Vec3) -> Vec3 {
         feet + Vec3::Y * EYE_HEIGHT
+    }
+
+    /// Put the party's eye at `eye`, facing `yaw`: its physics position, its
+    /// transform and its heading together. Pitch, velocity, path flights and
+    /// what arriving means stay each caller's.
+    pub fn stand(
+        &mut self,
+        position: &mut Position,
+        transform: &mut Transform,
+        eye: Vec3,
+        yaw: f32,
+    ) {
+        position.0 = Self::centre(eye);
+        transform.translation = position.0;
+        self.yaw = yaw;
     }
 }
 
@@ -166,17 +182,15 @@ impl PartyPlacement<'_, '_> {
             0.0,
         ));
         let yaw = start.yaw.or(entrance.map(|e| e.yaw)).unwrap_or_default();
-        let position = PartyBody::centre(eye);
         if let Ok((mut body, mut at, mut transform, mut velocity)) = self.party.get_mut(party) {
-            body.yaw = yaw;
+            body.stand(&mut at, &mut transform, eye, yaw);
             body.pitch = start.pitch.clamp(-MAX_PITCH, MAX_PITCH);
-            at.0 = position;
-            transform.translation = position;
             velocity.0 = Vec3::ZERO;
             commands.entity(party).remove_with_requires::<super::walk_in::PathFlight>();
             return;
         }
         // Entering its first level, the party gets its body.
+        let position = PartyBody::centre(eye);
         commands.entity(party).insert((
             PartyBody { yaw, pitch: start.pitch.clamp(-MAX_PITCH, MAX_PITCH) },
             Transform::from_translation(position),

@@ -45,9 +45,7 @@ pub fn move_party(
     match party_move {
         PartyMove::Teleport(Arrival::Here { eye, yaw }) => {
             // Same-level destinations place the eye at the trigger, unprobed.
-            position.0 = PartyBody::centre(eye);
-            transform.translation = position.0;
-            body.yaw = yaw;
+            body.stand(&mut position, &mut transform, eye, yaw);
             info!("teleport to {eye:.2}");
             state.arrive(eye);
         }

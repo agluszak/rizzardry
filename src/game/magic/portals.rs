@@ -77,15 +77,17 @@ pub(crate) fn cast(world: &mut World, caster: Entity, source: Source) -> Result<
                 if let Some(destination) = destination {
                     world.spawn(destination);
                 } else {
-                    let mut actor = world.entity_mut(party);
-                    actor.get_mut::<Position>().unwrap().0 = PartyBody::centre(portal.eye);
-                    if let Some(mut transform) = actor.get_mut::<Transform>() {
-                        transform.translation = PartyBody::centre(portal.eye);
-                    }
-                    let mut body = actor.get_mut::<PartyBody>().unwrap();
-                    body.yaw = portal.yaw;
+                    let mut parts = world.query::<(
+                        &mut PartyBody,
+                        &mut Position,
+                        &mut Transform,
+                        Option<&mut LinearVelocity>,
+                    )>();
+                    let (mut body, mut at, mut transform, velocity) =
+                        parts.get_mut(world, party).unwrap();
+                    body.stand(&mut at, &mut transform, portal.eye, portal.yaw);
                     body.pitch = portal.pitch;
-                    if let Some(mut velocity) = actor.get_mut::<LinearVelocity>() {
+                    if let Some(mut velocity) = velocity {
                         velocity.0 = Vec3::ZERO;
                     }
                     if let Some(mut state) =
