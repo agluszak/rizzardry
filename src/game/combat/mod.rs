@@ -555,6 +555,19 @@ impl Sight<'_, '_, '_> {
         self.sees_point((monster, at, walker, kind), self.eye, distance, self.lowest_level)
     }
 
+    /// Whether the party has a clear line to a monster (retail
+    /// `GetPlayerToMonsterSightFlags`): within the far clip, nothing solid
+    /// between the party's eye and the monster's. This is the party's line
+    /// of sight, whichever way the monster faces and however keen it is.
+    fn in_view(&self, monster: &Monster, at: &ActorPoseItem, walker: Option<&Walker>) -> bool {
+        let feet = feet(at.translation(), walker);
+        let eye = feet + Vec3::Y * monster.body.eye_height;
+        distance_to_party(self.eye, monster, feet) <= self.far
+            && Dir3::new(eye - self.eye).map_or(true, |direction| {
+                self.obstacles.first_hit(self.eye, direction, self.eye.distance(eye)).is_none()
+            })
+    }
+
     /// Whether a monster sees another (retail `CanMonsterSeeMonster`):
     /// the same rule, weakened from behind by the other's level.
     fn sees_monster(
@@ -605,26 +618,29 @@ const ENGAGEMENT_FLOOR: f32 = 15.0;
 /// `g_reinforcement_distance_slack`).
 const REINFORCEMENT_SLACK: f32 = 1.15;
 
-/// A monster as the reinforcement rule reads it: where its feet are, how
-/// far it is from the party, and whether it sees the party.
+/// A monster as the reinforcement and leaving rules read it: where its
+/// feet are, how far it is from the party, whether it sees the party
+/// ([`Sight::sees`]) and whether the party has a line to it
+/// ([`Sight::in_view`]).
 #[derive(Clone, Copy, Debug)]
 struct Seen {
     entity: Entity,
     at: Vec3,
     from_party: f32,
     sees: bool,
+    in_view: bool,
 }
 
 /// Whether a neutral group stands with a fight (retail
-/// `MonsterGroupHasReinforcement`): one of its members in the party's
-/// sight, within the engagement range, stands roughly between the party
-/// and a hostile fighter that also sees the party. A camouflaged member
-/// does not count.
+/// `MonsterGroupHasReinforcement`): one of its members in the party's view,
+/// within the engagement range, stands roughly between the party and a
+/// hostile fighter also in the party's view ([`Seen::in_view`], retail
+/// `party_threat.los_flags[1]`). A camouflaged member does not count.
 fn reinforces(members: &[(Seen, bool)], hostiles: &[Seen]) -> bool {
     members
         .iter()
         .filter(|(member, camouflaged)| {
-            !camouflaged && member.sees && member.from_party <= ENGAGEMENT_RANGE
+            !camouflaged && member.in_view && member.from_party <= ENGAGEMENT_RANGE
         })
         .any(|(member, _)| {
             hostiles.iter().filter(|other| other.entity != member.entity).any(|other| {
@@ -784,6 +800,7 @@ pub fn start_battle(
             at: at_feet,
             from_party: distance_to_party(sight.eye, monster, at_feet),
             sees: sight.sees(monster, &at, walker, kind),
+            in_view: sight.in_view(monster, &at, walker),
         })
     };
     let now = clock.ms;
@@ -826,7 +843,7 @@ pub fn start_battle(
                 && !monster.is_dead()
                 && stands(entity, membership.map(|(_, g, ..)| g))
                     == Some(hostility::Stance::Hostile)
-                && let Some(seen) = seen(entity).filter(|s| s.sees)
+                && let Some(seen) = seen(entity).filter(|s| s.in_view)
             {
                 hostiles.push(seen);
             }
@@ -1068,6 +1085,7 @@ fn leave_fight(
             at: at_feet,
             from_party: distance_to_party(sight.eye, body, at_feet),
             sees: sight.sees(body, &at, walker, kind),
+            in_view: sight.in_view(body, &at, walker),
         };
         Some((seen, kind.temper.camouflaged))
     };
@@ -1075,7 +1093,7 @@ fn leave_fight(
         .iter()
         .filter(|&&c| stance_of(c) == Some(Stance::Hostile))
         .filter_map(|&c| seen(c).map(|(s, _)| s))
-        .filter(|s| s.sees)
+        .filter(|s| s.in_view)
         .collect();
     let (mut checked, mut leaving, mut engaged) = (Vec::new(), Vec::new(), false);
     for &combatant in combatants {
@@ -3707,11 +3725,12 @@ mod tests {
     /// fighter that sees it, and not camouflaged.
     #[test]
     fn a_neutral_group_reinforces_only_between_the_party_and_a_hostile() {
-        let at = |entity: u64, z: f32, sees: bool| Seen {
+        let at = |entity: u64, z: f32, in_view: bool| Seen {
             entity: Entity::from_bits(entity),
             at: Vec3::NEG_Z * z,
             from_party: z,
-            sees,
+            sees: false,
+            in_view,
         };
         let hostile = [at(1, 10.0, true)];
         assert!(reinforces(&[(at(2, 5.0, true), false)], &hostile));
@@ -3785,9 +3804,10 @@ mod tests {
         assert!(app.world().get::<Combatant>(templar).is_none());
     }
 
-    /// A neutral group standing between the party and a hostile fighter
-    /// joins the running fight, without turning hostile (retail
-    /// `MonsterGroupHasReinforcement`).
+    /// A neutral group standing in the party's view between it and a
+    /// hostile fighter joins the running fight, without turning hostile,
+    /// whether or not it sees the party itself (retail
+    /// `MonsterGroupHasReinforcement`'s party line of sight).
     #[test]
     fn a_neutral_group_between_the_party_and_a_foe_joins_the_fight() {
         use crate::content::species::{Disposition, Species};
@@ -3814,7 +3834,14 @@ mod tests {
         bystander.location = 1;
         let bystander = app
             .world_mut()
-            .spawn((bystander, facing(5.0), GroupMember(group), LevelOwned(level)))
+            // Facing away and without Senses, it does not see the party;
+            // the party's line to it is what counts.
+            .spawn((
+                bystander,
+                Transform::from_translation(Vec3::NEG_Z * 5.0),
+                GroupMember(group),
+                LevelOwned(level),
+            ))
             .id();
         for _ in 0..4 {
             app.update();
