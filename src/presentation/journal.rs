@@ -13,8 +13,8 @@ use bevy_enhanced_input::prelude::*;
 
 #[derive(Component, Clone, Default)]
 struct Journal {
-    page: usize,
-    count: usize,
+    /// Pages back from the newest page; zero follows the newest entries.
+    pages_back: usize,
     mode: JournalMode,
     previous_focus: Option<Entity>,
 }
@@ -201,10 +201,10 @@ fn enter(mut commands: Commands, assets: Res<AssetServer>, mut focus: ResMut<Inp
             },
         )
         .observe(|_: On<Start<Previous>>, mut view: Single<&mut Journal>| {
-            view.page = view.page.saturating_sub(1);
+            view.pages_back = view.pages_back.saturating_add(1);
         })
         .observe(|_: On<Start<Next>>, mut view: Single<&mut Journal>| {
-            view.page = (view.page + 1).min(view.count.saturating_sub(1) / 12);
+            view.pages_back = view.pages_back.saturating_sub(1);
         });
 }
 fn close(view: &Journal, next: &mut NextState<Screen>, focus: &mut InputFocus) {
@@ -224,11 +224,11 @@ fn activate(
 ) {
     let (Ok(choice), Some(view)) = (choices.get(event.entity), view.as_mut()) else { return };
     match choice {
-        Choice::Previous => view.page = view.page.saturating_sub(1),
-        Choice::Next => view.page = (view.page + 1).min(view.count.saturating_sub(1) / 12),
+        Choice::Previous => view.pages_back = view.pages_back.saturating_add(1),
+        Choice::Next => view.pages_back = view.pages_back.saturating_sub(1),
         Choice::Topics => {
             view.mode = view.mode.next();
-            view.count = usize::MAX;
+            view.pages_back = 0;
         }
         Choice::Close => close(view, &mut next, &mut focus),
     }
@@ -341,13 +341,13 @@ fn refresh(
         }
     }
     let count = entries.len();
-    // A new count moves to the newest page.
-    if count != view.count {
-        view.count = count;
-        view.page = count.saturating_sub(1) / 12;
+    let last_page = count.saturating_sub(1) / 12;
+    if view.pages_back > last_page {
+        view.pages_back = last_page;
     }
+    let selected_page = last_page - view.pages_back;
     for (row, mut text) in &mut rows {
-        let index = view.page * 12 + row.0;
+        let index = selected_page * 12 + row.0;
         let entry = entries.get(index);
         let value = entry
             .map(|(left, right, _)| {
@@ -387,7 +387,7 @@ fn refresh(
             text.value = value.into();
         }
     }
-    let page = format!("{} / {}", view.page + 1, count.saturating_sub(1) / 12 + 1);
+    let page = format!("{} / {}", selected_page + 1, last_page + 1);
     for mut title in &mut title {
         if title.value != page {
             title.value = page.clone();
@@ -395,8 +395,8 @@ fn refresh(
     }
     for (entity, choice, disabled) in &buttons {
         let enabled = match choice {
-            Choice::Previous => view.page > 0,
-            Choice::Next => view.page < count.saturating_sub(1) / 12,
+            Choice::Previous => selected_page > 0,
+            Choice::Next => selected_page < last_page,
             _ => true,
         };
         super::retail_controls::set_enabled(&mut commands, entity, enabled, disabled);
@@ -416,6 +416,9 @@ mod tests {
             .init_asset::<FactCatalog>()
             .init_resource::<crate::game::factions::Factions>()
             .insert_resource(Difficulty::Expert)
+            .init_resource::<InputFocus>()
+            .init_resource::<NextState<Screen>>()
+            .add_observer(activate)
             .add_systems(Update, refresh);
         let catalog = app.world_mut().resource_mut::<Assets<FactCatalog>>().add(FactCatalog(vec![
             FactDefinition {
@@ -449,21 +452,54 @@ mod tests {
         app.insert_resource(facts);
         let view = app.world_mut().spawn(Journal::default()).id();
         let row = app.world_mut().spawn((Row(0, false), BitmapText::default())).id();
+        let title = app.world_mut().spawn((PageLabel, BitmapText::default())).id();
         app.update();
         let journal = app.world().get::<Journal>(view).unwrap();
-        assert_eq!((journal.page, journal.count), (1, 13));
+        assert_eq!(journal.pages_back, 0);
+        assert_eq!(app.world().get::<BitmapText>(title).unwrap().value, "2 / 2");
         assert_eq!(app.world().get::<BitmapText>(row).unwrap().value, "After");
         *app.world_mut().resource_mut::<Difficulty>() = Difficulty::Novice;
         app.update();
-        assert_eq!(
-            app.world().get::<Journal>(view).unwrap().count,
-            14,
-            "empty alternate text is excluded"
-        );
+        assert_eq!(app.world().get::<BitmapText>(title).unwrap().value, "2 / 2");
+        let previous = app.world_mut().spawn(Choice::Previous).id();
+        let next = app.world_mut().spawn(Choice::Next).id();
+        let mode = app.world_mut().spawn(Choice::Topics).id();
+        app.world_mut().trigger(Activate { entity: previous });
+        app.update();
+        assert_eq!(app.world().get::<BitmapText>(title).unwrap().value, "1 / 2");
+        app.world_mut().trigger(Activate { entity: next });
+        app.update();
+        assert_eq!(app.world().get::<BitmapText>(title).unwrap().value, "2 / 2");
+        app.world_mut().trigger(Activate { entity: previous });
+        // Switching to equally long history still selects its newest page.
+        for i in 0..14 {
+            app.world_mut()
+                .resource_mut::<StoryFacts>()
+                .topics
+                .push((crate::content::npcs::TopicCategory::Misc, format!("Topic {i:02}")));
+        }
+        app.world_mut().trigger(Activate { entity: mode });
+        app.update();
+        assert_eq!(app.world().get::<BitmapText>(title).unwrap().value, "2 / 2");
+        assert_eq!(app.world().get::<BitmapText>(row).unwrap().value, "Topic 12");
+        app.world_mut().trigger(Activate { entity: previous });
+        // Exact-page shrink clamps the selected offset, without a fake count.
+        app.world_mut()
+            .resource_mut::<StoryFacts>()
+            .topics
+            .retain(|(_, t)| t.as_str() < "Topic 12");
+        app.update();
+        assert_eq!(app.world().get::<BitmapText>(title).unwrap().value, "1 / 1");
+        assert!(app.world().get::<bevy::ui::InteractionDisabled>(previous).is_some());
+        assert!(app.world().get::<bevy::ui::InteractionDisabled>(next).is_some());
+        // Return through Factions to Events, then empty it.
+        app.world_mut().trigger(Activate { entity: mode });
+        app.world_mut().trigger(Activate { entity: mode });
         app.world_mut().resource_mut::<StoryFacts>().journal.clear();
         app.update();
         let journal = app.world().get::<Journal>(view).unwrap();
-        assert_eq!((journal.page, journal.count), (0, 0));
+        assert_eq!(journal.pages_back, 0);
+        assert_eq!(app.world().get::<BitmapText>(title).unwrap().value, "1 / 1");
         assert!(app.world().get::<BitmapText>(row).unwrap().value.is_empty());
         // With nothing it shows changing, the page is left alone.
         app.update();
