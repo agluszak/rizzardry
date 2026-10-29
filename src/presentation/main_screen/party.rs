@@ -570,7 +570,6 @@ pub struct SlotButton {
 fn press(
     click: On<PointerClick>,
     mut buttons: Query<&mut SlotButton>,
-    mut selected: ResMut<SelectedMember>,
     roster: Single<Ref<PartyRoster>>,
     mut inventory: crate::game::inventory::operations::InventoryOperations,
     mut review: crate::presentation::inventory::OpenReview,
@@ -592,7 +591,7 @@ fn press(
         return;
     }
     if !conversations.is_empty() {
-        selected.set_if_neq(SelectedMember(Some(member)));
+        review.selected.set_if_neq(SelectedMember(Some(member)));
         button.review_armed = false;
         return;
     }
@@ -616,8 +615,8 @@ fn press(
         }
         Ok(false) => {}
     }
-    let already_selected = selected.0 == Some(member);
-    selected.0 = Some(member);
+    let already_selected = review.selected.0 == Some(member);
+    review.selected.set_if_neq(SelectedMember(Some(member)));
     if already_selected && button.review_armed && click.count > 1 {
         review.open(member);
     }
@@ -655,7 +654,6 @@ fn release_right(
     keys: Option<Res<ButtonInput<KeyCode>>>,
     mut inventory: crate::game::inventory::operations::InventoryOperations,
     mut review: crate::presentation::inventory::OpenReview,
-    mut selected: ResMut<SelectedMember>,
     mut commands: Commands,
     conversations: Query<
         (),
@@ -685,9 +683,7 @@ fn release_right(
             Ok(false) => {}
         }
     }
-    if review.open(member) {
-        selected.set_if_neq(SelectedMember(Some(member)));
-    }
+    review.open(member);
 }
 
 fn leave(out: On<PointerOut>, mut commands: Commands, holds: Query<(), With<RightHold>>) {
@@ -703,7 +699,6 @@ pub fn open_held_reviews(
     mouse: Option<Res<ButtonInput<MouseButton>>>,
     holds: Query<(Entity, &SlotButton, &RightHold)>,
     mut review: crate::presentation::inventory::OpenReview,
-    mut selected: ResMut<SelectedMember>,
     mut commands: Commands,
 ) {
     for (entity, button, hold) in &holds {
@@ -711,9 +706,7 @@ pub fn open_held_reviews(
             commands.entity(entity).remove::<RightHold>();
         } else if time.elapsed() - hold.since >= REVIEW_HOLD {
             commands.entity(entity).remove::<RightHold>();
-            if review.open(button.member) {
-                selected.set_if_neq(SelectedMember(Some(button.member)));
-            }
+            review.open(button.member);
         }
     }
 }
