@@ -98,7 +98,7 @@ fn expired(lifetime: &ParticleLifetime, age: Duration) -> bool {
 }
 fn emitter_pose(config: &ParticleConfig, eye: Option<Vec3>) -> Transform {
     let mut transform = config.transform;
-    if config.name.starts_with("CLOUD") {
+    if config.follows_eye {
         transform.translation += eye.unwrap_or_default();
     }
     transform
@@ -326,6 +326,7 @@ pub(crate) mod tests {
             size: 0.5,
             lifetime: ParticleLifetime::Timed(Duration::from_millis(300)),
             stops_at_scenery: false,
+            follows_eye: false,
             flutter: None,
             initially_active: false,
             emission_limit: 2,

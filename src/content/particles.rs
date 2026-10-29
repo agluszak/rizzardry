@@ -49,6 +49,9 @@ pub struct ParticleConfig {
     pub size: f32,
     pub lifetime: ParticleLifetime,
     pub stops_at_scenery: bool,
+    /// Placed about the party's eye rather than the level (retail's `CLOUD`
+    /// systems, which are always on).
+    pub follows_eye: bool,
     pub flutter: Option<(f32, Duration)>,
     pub initially_active: bool,
     pub emission_limit: u32,

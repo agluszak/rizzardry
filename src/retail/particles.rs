@@ -52,7 +52,8 @@ pub fn read_particle(bytes: &mut Bytes) -> Result<Particle, DecodeError> {
     let direction_mode = bytes.i32()?;
     let yaw = bytes.f32()?.to_radians();
     let pitch = bytes.f32()?.to_radians();
-    let initially_active = bytes.i32()? != 0 || name.starts_with("CLOUD");
+    let follows_eye = name.starts_with("CLOUD");
+    let initially_active = bytes.i32()? != 0 || follows_eye;
     let material = material(bytes, true)?;
     let attachment = if version > 1 { bytes.i16()? } else { -1 };
     let emission_limit = if version > 2 { bytes.u32()? } else { 0 };
@@ -105,6 +106,7 @@ pub fn read_particle(bytes: &mut Bytes) -> Result<Particle, DecodeError> {
             size,
             lifetime: ParticleLifetime::Timed(lifetime),
             stops_at_scenery,
+            follows_eye,
             flutter: (flutter_mode != 0).then_some((
                 flutter_amplitude,
                 Duration::from_millis(flutter_period.max(0.0) as u64),
