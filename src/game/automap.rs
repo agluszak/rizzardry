@@ -7,7 +7,7 @@
 use bevy::prelude::*;
 
 pub const MAX_NOTES: usize = 200;
-/// Characters, not counting the terminator retail stores.
+/// UTF-16 code units, not counting the terminator retail stores.
 pub const MAX_NOTE_LENGTH: usize = 39;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,16 +41,6 @@ pub enum NoteRefusal {
     MissingNote,
     Full,
     InvalidText,
-}
-
-impl MapNote {
-    pub fn type_char(&mut self, c: char) {
-        if self.text.encode_utf16().count() + c.len_utf16() <= MAX_NOTE_LENGTH
-            && crate::content::ui::glyph_index(c).is_some()
-        {
-            self.text.push(c);
-        }
-    }
 }
 
 /// The player accepts a note draft.
@@ -87,7 +77,7 @@ pub fn commit_note(world: &mut World, draft: NoteDraft) -> Result<(), NoteRefusa
 impl MapNotes {
     pub fn commit(&mut self, original: Option<usize>, note: MapNote) -> Result<(), NoteRefusal> {
         if note.text.encode_utf16().count() > MAX_NOTE_LENGTH
-            || note.text.chars().any(|c| crate::content::ui::glyph_index(c).is_none())
+            || note.text.contains('\0')
             || !note.position.is_finite()
         {
             return Err(NoteRefusal::InvalidText);
@@ -142,14 +132,32 @@ mod tests {
     }
 
     #[test]
+    fn headless_notes_use_utf16_storage_limits_not_font_glyphs() {
+        let mut app = App::new();
+        app.add_message::<CommitNote>().add_systems(Update, commit_notes);
+        let level = app
+            .world_mut()
+            .spawn((crate::game::world::level::Level::test(default()), MapNotes::default()))
+            .id();
+        let text = format!("{}ł", "😀".repeat(19));
+        assert_eq!(text.encode_utf16().count(), MAX_NOTE_LENGTH);
+        for candidate in [text.clone(), format!("{text}a"), "before\0after".into()] {
+            app.world_mut().write_message(CommitNote(NoteDraft {
+                level,
+                original: None,
+                note: MapNote { position: Vec2::ZERO, layer: 0, text: candidate },
+            }));
+            app.update();
+        }
+        let notes = &app.world().get::<MapNotes>(level).unwrap().notes;
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].text, text);
+    }
+
+    #[test]
     fn notes_keep_retail_limits() {
         let mut notes = MapNotes::default();
-        let mut draft = MapNote { position: Vec2::ZERO, layer: 0, text: String::new() };
-        for _ in 0..50 {
-            draft.type_char('a');
-        }
-        draft.type_char('\u{1f600}');
-        assert_eq!(draft.text.len(), MAX_NOTE_LENGTH);
+        let draft = MapNote { position: Vec2::ZERO, layer: 0, text: "a".repeat(MAX_NOTE_LENGTH) };
         assert!(notes.notes.is_empty(), "editing is not a committed note");
         notes.commit(None, draft).unwrap();
         for i in 1..MAX_NOTES {
