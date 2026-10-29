@@ -141,7 +141,7 @@ pub(crate) fn pass_time(
     if battle.is_some() {
         return;
     }
-    let racing = camp.as_ref().is_some_and(|c| c.racing());
+    let racing = camp.is_some();
     let ticks =
         clock.advance_real(time.delta(), if racing { CAMPING_RATE } else { EXPLORATION_RATE });
     // Retail tells running (fast movement) from walking; here the speed
@@ -201,7 +201,7 @@ pub(crate) fn pass_time(
 #[cfg(test)]
 mod pass_time_tests {
     use super::*;
-    use crate::game::camp::{CampNews, RestGoal, advance_camp};
+    use crate::game::camp::{CampNews, advance_camp};
     use crate::game::characters::{Condition, Gender, Lasting, Profession, Race};
     use bevy::time::TimeUpdateStrategy;
     use std::time::Duration;
@@ -256,14 +256,11 @@ mod pass_time_tests {
         let profile = Character::new("Rester", Race::Human, Gender::Male, Profession::Fighter);
         let member = app.world_mut().spawn((Vitals::new(&profile), profile)).id();
         crate::game::party::roster::test_party(app.world_mut(), &[member]);
-        app.insert_resource(Camp::Resting(RestGoal::Until(180_000)));
+        app.insert_resource(Camp::Until(180_000));
         app.update();
-        // Four accelerated steps, then twelve exploration-rate fade steps.
+        // Four accelerated steps end the rest; the other twelve run at the
+        // exploration rate, with no fade holding the camp.
         assert_eq!(app.world().resource::<GameClock>().ms, 180_000 + 2250);
-        assert!(!app.world().resource::<Camp>().racing());
-        for _ in 0..4 {
-            app.update();
-        }
         assert!(!app.world().contains_resource::<Camp>());
     }
 
@@ -275,15 +272,12 @@ mod pass_time_tests {
         vitals.inflict(Condition::Asleep, Lasting::Rounds(1));
         let member = app.world_mut().spawn((profile, vitals)).id();
         crate::game::party::roster::test_party(app.world_mut(), &[member]);
-        app.insert_resource(Camp::Resting(RestGoal::UntilAble));
+        app.insert_resource(Camp::UntilAble);
         app.update();
         // The third accelerated step crosses the aging tick and clears sleep;
         // the other thirteen steps already use the ordinary rate.
         assert_eq!(app.world().resource::<GameClock>().ms, 135_000 + 2437);
         assert!(!app.world().get::<Vitals>(member).unwrap().has(Condition::Asleep));
-        assert!(matches!(
-            app.world().resource::<Camp>(),
-            Camp::FadingOut { outcome: CampNews::Recovered, .. }
-        ));
+        assert!(!app.world().contains_resource::<Camp>());
     }
 }
