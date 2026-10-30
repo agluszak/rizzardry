@@ -520,6 +520,22 @@ impl Sight<'_, '_, '_> {
         )
     }
 
+    /// A monster as the reinforcement and leaving rules read it.
+    fn seen(
+        &self,
+        entity: Entity,
+        (monster, at, walker, kind): (&Monster, &ActorPoseItem, Option<&Walker>, &Species),
+    ) -> Seen {
+        let at_feet = feet(at.translation(), walker);
+        Seen {
+            entity,
+            at: at_feet,
+            from_party: party_distance(self.eye, monster, at_feet),
+            sees: self.sees(monster, at, walker, kind),
+            in_view: self.in_view(monster, at, walker),
+        }
+    }
+
     /// Whether the party has a clear line to a monster
     /// ([`crate::game::world::perception::in_view`]), whichever way the
     /// monster faces and however keen it is.
@@ -748,15 +764,7 @@ fn leave_fight(
         if body.is_dead() {
             return None;
         }
-        let at_feet = feet(at.translation(), walker);
-        let seen = Seen {
-            entity: monster,
-            at: at_feet,
-            from_party: party_distance(sight.eye, body, at_feet),
-            sees: sight.sees(body, &at, walker, kind),
-            in_view: sight.in_view(body, &at, walker),
-        };
-        Some((seen, kind.temper.camouflaged))
+        Some((sight.seen(monster, (body, &at, walker, kind)), kind.temper.camouflaged))
     };
     let hostiles: Vec<Seen> = combatants
         .iter()

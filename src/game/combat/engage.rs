@@ -219,15 +219,7 @@ pub(super) fn engage(
     };
     let seen = |member: Entity| -> Option<Seen> {
         let (_, monster, at, walker, ..) = monsters.get(member).ok()?;
-        let kind = &catalog[monster.species];
-        let at_feet = feet(at.translation(), walker);
-        Some(Seen {
-            entity: member,
-            at: at_feet,
-            from_party: party_distance(sight.eye, monster, at_feet),
-            sees: sight.sees(monster, &at, walker, kind),
-            in_view: sight.in_view(monster, &at, walker),
-        })
+        Some(sight.seen(member, (monster, &at, walker, &catalog[monster.species])))
     };
     // How far a monster is from the party.
     let nearest_of = |member: Entity| {
