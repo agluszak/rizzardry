@@ -544,29 +544,7 @@ impl MagicContext<'_, '_> {
         members: &mut Members,
         monsters: &mut MonsterDamage,
         cast: impl FnOnce(&mut Field, &SpellCatalog) -> R,
-    ) -> Result<R, casting::Refusal> {
-        self.field(now, members, monsters, cast)
-    }
-
-    /// The field of members, monsters and party belongings that blows
-    /// change.
-    pub fn with_field<R>(
-        &mut self,
-        now: u64,
-        members: &mut Members,
-        monsters: &mut MonsterDamage,
-        act: impl FnOnce(&mut Field) -> R,
-    ) -> Result<R, casting::Refusal> {
-        self.field(now, members, monsters, |field, _| act(field))
-    }
-
-    fn field<R>(
-        &mut self,
-        now: u64,
-        members: &mut Members,
-        monsters: &mut MonsterDamage,
-        act: impl FnOnce(&mut Field, &SpellCatalog) -> R,
-    ) -> Result<R, casting::Refusal> {
+    ) -> R {
         let party: Vec<Entity> = self.roster.iter().collect();
         let party_level = crate::game::party::average_level(
             members.iter_many(self.roster.iter()).matched().map(|(c, ..)| c.level()),
@@ -592,7 +570,19 @@ impl MagicContext<'_, '_> {
             provocations: &mut self.provocations,
             fight: self.fight.single().ok(),
         };
-        Ok(act(&mut field, &self.content.spells))
+        cast(&mut field, &self.content.spells)
+    }
+
+    /// The field of members, monsters and party belongings that blows
+    /// change.
+    pub fn with_field<R>(
+        &mut self,
+        now: u64,
+        members: &mut Members,
+        monsters: &mut MonsterDamage,
+        act: impl FnOnce(&mut Field) -> R,
+    ) -> R {
+        self.resolve(now, members, monsters, |field, _| act(field))
     }
 }
 
@@ -692,11 +682,9 @@ pub fn accept_magic(
             group_of: &|m| vec![m],
         };
         let level = context.level();
-        let performed = context
-            .resolve(clock.ms, &mut members, &mut monsters, |field, spells| {
-                casting::perform(caster, choice, &situation, spells, &mut points, &mut rng, field)
-            })
-            .and_then(|performed| performed);
+        let performed = context.resolve(clock.ms, &mut members, &mut monsters, |field, spells| {
+            casting::perform(caster, choice, &situation, spells, &mut points, &mut rng, field)
+        });
         context.news.write(match performed {
             Ok((report, flights)) => {
                 context.flight_order.launch(&mut commands, flights, level);
@@ -776,7 +764,7 @@ pub fn deliver_spells(
             );
             Some((effects, std::mem::take(&mut field.improved)))
         });
-        let Ok(Some((effects, improved))) = landed else { continue };
+        let Some((effects, improved)) = landed else { continue };
         if let Some(battle) = battle.as_mut() {
             battle.credit_kills(&effects, &mut combat_news);
         }

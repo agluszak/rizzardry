@@ -1784,13 +1784,10 @@ fn party_turn(
         attacks: &|_| false,
         waits: false,
     };
-    let attacked = context.with_field(party.now, members, damage, |field| {
+    context.with_field(party.now, members, damage, |field| {
         blows::member_attacks(battle, index, rng, field, &mut fight, news);
     });
-    if attacked.is_err() {
-        battle.this_round.party[index].end();
-    }
-    attacked.is_ok()
+    true
 }
 
 /// Count the ground the party covers while it moves in a fight, and end the
@@ -1984,7 +1981,6 @@ fn member_acts<R>(
     };
     context
         .resolve(party.now, members, damage, |field, spells| act(&situation, spells, field, points))
-        .and_then(|acted| acted)
 }
 
 /// What a monster settled on doing with its action besides striking.
@@ -2368,15 +2364,13 @@ fn monster_turn(
         Some(Plan::Spell { spell, power, aim, scene, caster }) => {
             battle.this_round.monsters[index].1 = Turn::default();
             battle.this_round.attacked = true;
-            let report = context.with_field(party.now, members, damage, |field| {
+            let (report, flights) = context.with_field(party.now, members, damage, |field| {
                 monster_spells::cast((&spell, power, aim), caster, &scene, rng, field, points)
             });
-            if let Ok((report, flights)) = report {
-                battle.credit_kills(&report.effects, news);
-                let level = context.level();
-                context.flight_order.launch(commands, flights, level);
-                context.news.write(crate::game::magic::casting::MagicNews::Done(report));
-            }
+            battle.credit_kills(&report.effects, news);
+            let level = context.level();
+            context.flight_order.launch(commands, flights, level);
+            context.news.write(crate::game::magic::casting::MagicNews::Done(report));
             return true;
         }
         // Retail `ExecuteMonsterSpecialAttack`: the attack lands, the
@@ -2400,9 +2394,7 @@ fn monster_turn(
                     points,
                 )
             });
-            if let Ok(effects) = effects
-                && !effects.is_empty()
-            {
+            if !effects.is_empty() {
                 news.write(CombatNews::Effects(effects));
             }
             battle.cooldowns.retain(|&(m, _)| m != monster);
@@ -2428,11 +2420,9 @@ fn monster_turn(
         attacks: &may_attack,
         waits,
     };
-    let idle = context
-        .with_field(party.now, members, damage, |field| {
-            blows::monster_attacks(battle, index, rng, field, &mut fight, news)
-        })
-        .unwrap_or(false);
+    let idle = context.with_field(party.now, members, damage, |field| {
+        blows::monster_attacks(battle, index, rng, field, &mut fight, news)
+    });
     if idle && !battle.this_round.moved.contains(&monster) {
         let destination = if mine.stance == Stance::Friendly {
             damage.monsters().get(monster).ok().and_then(|(_, here, ..)| {
@@ -2666,7 +2656,7 @@ fn end_round(
     }
     // AdvanceTimedEffects applies offensive slots after personal aging and
     // before expiring the slots. Their final remaining turn still pulses.
-    if let Ok(reports) = magic.context.resolve(clock.ms, members, damage, |field, spells| {
+    let reports = magic.context.resolve(clock.ms, members, damage, |field, spells| {
         crate::game::magic::effects::pulse_clouds(
             combatants,
             party_eye,
@@ -2675,16 +2665,15 @@ fn end_round(
             field,
             &mut magic.points,
         )
-    }) {
-        for (spell, effects) in reports {
-            battle.credit_kills(&effects, news);
-            battle.this_round.attacked |= crate::game::magic::effects::affected(&effects);
-            magic.context.news.write(casting::MagicNews::Triggered {
-                spell,
-                effects,
-                improved: vec![],
-            });
-        }
+    });
+    for (spell, effects) in reports {
+        battle.credit_kills(&effects, news);
+        battle.this_round.attacked |= crate::game::magic::effects::affected(&effects);
+        magic.context.news.write(casting::MagicNews::Triggered {
+            spell,
+            effects,
+            improved: vec![],
+        });
     }
     magic.context.enchantments.0.age(ticks.aging);
     for &entity in combatants {
@@ -4173,7 +4162,7 @@ mod tests {
                             &SpellDefinition { id, realm: Some(crate::content::characters::Realm::Divine), dice: Some(Dice { count: 1, sides: 1, base: 50 }), ..default() },
                             Strength { power: 1, boost: 0, against: 1 },
                             &[effects::Victim::Monster(target)], &mut rng, field, &mut points)
-                    }).unwrap()
+                    })
                 }).unwrap()
         };
         {
@@ -4299,18 +4288,16 @@ mod tests {
                       mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
                       content: If<Res<crate::game::data::Catalogs>>| {
                     let kind = &&content.species.0[0];
-                    context
-                        .with_field(0, &mut members, &mut damage, |field| {
-                            monster_spells::cast(
-                                (&spell, 1, monster_spells::SpellAim::Party),
-                                (kind, 100),
-                                &scene,
-                                &mut rng,
-                                field,
-                                &mut points,
-                            )
-                        })
-                        .unwrap()
+                    context.with_field(0, &mut members, &mut damage, |field| {
+                        monster_spells::cast(
+                            (&spell, 1, monster_spells::SpellAim::Party),
+                            (kind, 100),
+                            &scene,
+                            &mut rng,
+                            field,
+                            &mut points,
+                        )
+                    })
                 },
             )
             .unwrap();
@@ -4579,7 +4566,7 @@ mod tests {
                     absorption: 0,
                 });
                 app.world_mut().run_system_once(|mut context: MagicContext, mut members: Members, mut damage: MonsterDamage, mut rng: ResMut<GameRng>, mut points: Query<(&LearnedSpells, &mut SpellPoints)>| {
-                    context.resolve(0, &mut members, &mut damage, |field, spells| crate::game::magic::effects::pulse_clouds(&[], Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE, spells, &mut rng, field, &mut points)).unwrap()
+                    context.resolve(0, &mut members, &mut damage, |field, spells| crate::game::magic::effects::pulse_clouds(&[], Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE, spells, &mut rng, field, &mut points))
                 }).unwrap();
             } else {
                 land(
@@ -6000,7 +5987,7 @@ mod tests {
         });
         for (centre, expected_hp) in [(Vec3::ZERO, 10000), (Vec3::X * 100.0, 9995)] {
             app.world_mut().run_system_once(move |mut context: MagicContext, mut members: Members, mut damage: MonsterDamage, mut rng: ResMut<GameRng>, mut points: Query<(&LearnedSpells, &mut SpellPoints)>| {
-                context.resolve(0, &mut members, &mut damage, |field, spells| crate::game::magic::effects::pulse_clouds(&[monster], centre + Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE, spells, &mut rng, field, &mut points)).unwrap()
+                context.resolve(0, &mut members, &mut damage, |field, spells| crate::game::magic::effects::pulse_clouds(&[monster], centre + Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE, spells, &mut rng, field, &mut points))
             }).unwrap();
             assert_eq!(app.world().get::<Monster>(monster).unwrap().hp, expected_hp);
         }
@@ -6060,7 +6047,6 @@ mod tests {
                                     &mut points,
                                 )
                             })
-                            .unwrap()
                     },
                 )
                 .unwrap();

@@ -141,8 +141,6 @@ pub(crate) fn discharge(
                         );
                         Some((spell.id, effects, std::mem::take(&mut field.improved), destroyed))
                     })
-                    .ok()
-                    .flatten()
                     .ok_or(Unable::MissingContent)?;
                 context.news.write(MagicNews::Triggered { spell, effects, improved });
                 Ok(destroyed)
