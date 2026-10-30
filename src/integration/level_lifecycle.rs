@@ -569,7 +569,7 @@ fn group_knowledge_survives_revisit() {
 }
 
 #[test]
-fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() {
+fn direct_damage_settles_death_once() {
     use crate::content::items::{Dice, ItemDefinition, ItemId};
     use crate::content::species::{Drop, Treasure};
     use crate::game::inventory::PartyInventory;
@@ -590,7 +590,7 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
             dice: Dice { base: 2, ..default() },
         }];
     }
-    let level = spawn_level(&mut app, floor());
+    spawn_level(&mut app, floor());
     app.update();
     let world = app.world_mut();
     let target = world.query_filtered::<Entity, With<Monster>>().single(world).unwrap();
@@ -623,13 +623,7 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
         controller,
     ));
     world.get_mut::<TnuaMotor>(target).unwrap().lin.boost = Vec3::X;
-    let before = world.resource::<GameRng>().clone();
-    let source = world.entity_mut(level).take::<Level>().unwrap();
-    assert!(hit(world).is_err());
-    assert_eq!(world.get::<Monster>(target).unwrap().hp, 10);
-    assert_eq!(*world.resource::<GameRng>(), before);
-    world.entity_mut(level).insert(source);
-    assert!(hit(world).unwrap().died);
+    assert!(hit(world).died);
     assert!(world.get::<Crossing>(target).is_none());
     assert!(world.get::<UsingAnimationLink>(target).is_none());
     assert!(matches!(world.get::<AgentTarget3d>(target), Some(AgentTarget3d::None)));
@@ -647,7 +641,7 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
             .all(|at| { at.translation == physical - Vec3::Y + Vec3::Y * 0.25 })
     );
     let after = world.resource::<GameRng>().clone();
-    hit(world).unwrap();
+    hit(world);
     assert_eq!(*world.resource::<GameRng>(), after);
     assert_eq!(world.query::<&PartyInventory>().single(world).unwrap().gold, 7);
     let units = world
@@ -1062,7 +1056,7 @@ fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
                        mut purses: Query<&mut PartyInventory>,
                        mut rng: ResMut<GameRng>| {
         let mut damage = damage;
-        damage.apply(body, 1000, (1, 0), &mut purses.get_mut(party).unwrap(), &mut rng).unwrap()
+        damage.apply(body, 1000, (1, 0), &mut purses.get_mut(party).unwrap(), &mut rng)
     };
     let killed = app.world_mut().run_system_once(strike).unwrap();
     assert!(killed.died);

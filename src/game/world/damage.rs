@@ -32,12 +32,6 @@ pub struct DamageOutcome {
     pub experience: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DamageRefusal {
-    MissingTarget,
-    InactiveLevel,
-}
-
 /// Monsters in play, changed only through its operations. [`apply`] is
 /// synchronous over the actual target and its owning level: it creates loot
 /// and transfers gold before returning a death outcome. Calling it again on
@@ -235,24 +229,20 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         (party_level, now): (u32, u64),
         purse: &mut PartyInventory,
         rng: &mut GameRng,
-    ) -> Result<DamageOutcome, DamageRefusal> {
-        let (mut monster, at, walker, owner, _) =
-            self.monsters.get_mut(target).map_err(|_| DamageRefusal::MissingTarget)?;
+    ) -> DamageOutcome {
+        let (mut monster, at, walker, owner, _) = self.monsters.get_mut(target).unwrap();
         let level = owner.0;
-        if !self.levels.contains(level) {
-            return Err(DamageRefusal::InactiveLevel);
-        }
         let catalogs = &self.content;
         let (catalog, tables) = (&catalogs.items, &catalogs.loot);
         let kind = &catalogs.species[monster.species];
         let (ids, factions, faction_news) =
             (&mut *self.ids, &mut *self.factions, &mut self.faction_news);
         if monster.is_dead() || amount == 0 {
-            return Ok(DamageOutcome::default());
+            return DamageOutcome::default();
         }
         let amount = monster.enchantments.absorb(amount);
         if amount == 0 {
-            return Ok(DamageOutcome::default());
+            return DamageOutcome::default();
         }
         let position = feet(at.translation(), walker);
         let lost = amount.min(monster.hp);
@@ -273,7 +263,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         }
         if !monster.is_dead() {
             monster.conditions.wake_on_hit(u32::from(kind.attributes.senses), rng);
-            return Ok(DamageOutcome { damage: lost, ..default() });
+            return DamageOutcome { damage: lost, ..default() };
         }
         monster.enchantments.0.clear();
         // Stop autonomous work, not the body's geometry or vertical physics.
@@ -298,7 +288,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         }
         self.commands.entity(target).remove_with_requires::<Crossing>();
         if self.summoned.contains(target) {
-            return Ok(DamageOutcome { damage: lost, died: true, experience: 0 });
+            return DamageOutcome { damage: lost, died: true, experience: 0 };
         }
         // The kill counts against its faction (retail `RecordFactionOffense`).
         if let Some(news) = factions.record_offence(kind.faction, kind.npc.is_some(), now) {
@@ -315,12 +305,9 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         if gold > 0 {
             purse.gold += gold;
         }
-        let items = found
-            .into_iter()
-            .filter_map(|id| catalog.get(id))
-            .map(|definition| make_item(definition, ids, rng, false, false))
-            .collect();
+        let items =
+            found.into_iter().map(|id| make_item(&catalog[id], ids, rng, false, false)).collect();
         drop_loot(&mut self.commands, level, position, items, catalog);
-        Ok(DamageOutcome { damage: lost, died: true, experience: kind.experience })
+        DamageOutcome { damage: lost, died: true, experience: kind.experience }
     }
 }

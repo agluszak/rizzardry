@@ -479,7 +479,6 @@ mod tests {
                     damage.apply(summon, 999, (1, 0), &mut inventory, &mut rng)
                 },
             )
-            .unwrap()
             .unwrap();
         assert_eq!(result.experience, 0);
         assert_eq!(world.get::<PartyInventory>(party).unwrap().gold, before);
@@ -544,7 +543,6 @@ mod tests {
                     damage.apply(target, 1, (1, 0), &mut inventory, &mut rng)
                 },
             )
-            .unwrap()
             .unwrap();
         assert_eq!(world.get::<LureInfluence>(target).unwrap().response, LureResponse::Resisted);
         assert_eq!(world.get::<AgentTarget3d>(target), Some(&AgentTarget3d::None));

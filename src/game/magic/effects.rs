@@ -821,10 +821,13 @@ fn tire(world: &mut Field, victim: Victim, amount: u32) -> Effect {
 pub fn hurt(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -> Option<Effect> {
     match victim {
         Victim::Monster(monster) => {
-            let outcome = world
-                .monsters
-                .apply(monster, amount, (world.party_level, world.now), world.inventory, rng)
-                .ok()?;
+            let outcome = world.monsters.apply(
+                monster,
+                amount,
+                (world.party_level, world.now),
+                world.inventory,
+                rng,
+            );
             Some(Effect::Damaged { victim, outcome })
         }
         Victim::Member(member) => {
