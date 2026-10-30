@@ -15,12 +15,12 @@ pub struct PutAwayHeld {
     pub member: Entity,
 }
 
-/// Return the hand to the reviewed member, falling back to the pool.
-/// A departed member cannot receive it; overflow remains owned by the hand.
+/// Return the hand to the reviewed member, falling back to the pool;
+/// overflow remains owned by the hand.
 pub(crate) fn put_away_held(request: On<PutAwayHeld>, mut inventory: InventoryOperations) {
-    let InventoryOperations { party, roster, members, content, .. } = &mut inventory;
-    let mut carried = member(roster, members, request.member).ok();
-    party.give_held(carried.as_mut().map(|(_, _, c)| &mut **c), false, &content.items);
+    let InventoryOperations { party, members, content, .. } = &mut inventory;
+    let (_, _, mut carried) = members.get_mut(request.member).unwrap();
+    party.give_held(Some(&mut carried), false, &content.items);
 }
 
 #[derive(SystemParam)]
@@ -82,8 +82,7 @@ impl InventoryOperations<'_, '_> {
     }
     pub fn interact_slot(&mut self, destination: MemberSlot) -> Result<(), Refusal> {
         let catalog = &self.content.items;
-        let (character, vitals, mut carried) =
-            member(&self.roster, &mut self.members, destination.member)?;
+        let (character, vitals, mut carried) = self.members.get_mut(destination.member).unwrap();
         self.party.interact_slot(&character, vitals, &mut carried, destination.slot, catalog)
     }
 
@@ -106,8 +105,7 @@ impl InventoryOperations<'_, '_> {
         (ids, rng): (&mut ItemIds, &mut GameRng),
     ) -> Result<merge::Merged, Refusal> {
         let catalog = &self.content.items;
-        let (mut character, _, mut carried) =
-            self::member(&self.roster, &mut self.members, member)?;
+        let (mut character, _, mut carried) = self.members.get_mut(member).unwrap();
         let merged = self.party.merge(&mut character, &mut carried, target, catalog, (ids, rng))?;
         match merged {
             merge::Merged::Unidentified => {
@@ -137,12 +135,7 @@ impl InventoryOperations<'_, '_> {
         let stack = match item {
             ItemAt::Hand => self.party.hand.held.as_ref(),
             ItemAt::Pool(id) => self.party.pool.stacks.iter().find(|s| s.id == id),
-            ItemAt::Slot(slot) => {
-                if !self.roster.contains(&member) {
-                    return Err(Refusal::NotMember);
-                }
-                self.members.get(member).ok().and_then(|(_, _, carried)| carried.slot(slot))
-            }
+            ItemAt::Slot(slot) => self.members.get(member).unwrap().2.slot(slot),
         };
         let stack = stack.ok_or(Refusal::Nothing)?;
         if stack.identified {
@@ -178,7 +171,7 @@ impl InventoryOperations<'_, '_> {
                 self.party.pool.stacks.iter_mut().find(|s| s.id == id).ok_or(Refusal::Nothing)
             }
             ItemAt::Slot(slot) => {
-                let (_, _, carried) = self::member(&self.roster, &mut self.members, member)?;
+                let (_, _, carried) = self.members.get_mut(member).unwrap();
                 carried.into_inner().stack_mut(slot).ok_or(Refusal::Nothing)
             }
         }
@@ -188,18 +181,6 @@ impl InventoryOperations<'_, '_> {
 type Members<'w, 's> =
     Query<'w, 's, (&'static mut Character, &'static Vitals, &'static mut Carried)>;
 
-/// A party member's inventory; anyone else is refused.
-fn member<'a>(
-    roster: &PartyRoster,
-    members: &'a mut Members,
-    member: Entity,
-) -> Result<(Mut<'a, Character>, &'a Vitals, Mut<'a, Carried>), Refusal> {
-    if !roster.contains(&member) {
-        return Err(Refusal::NotMember);
-    }
-    Ok(members.get_mut(member).unwrap())
-}
-
 #[cfg(test)]
 mod settlement_tests {
     use super::*;
@@ -207,9 +188,7 @@ mod settlement_tests {
 
     #[test]
     fn put_away_needs_no_view_and_preserves_fallbacks_and_refusals() {
-        for (departed, full, loaded) in
-            [(false, false, true), (true, false, true), (false, true, true), (false, false, false)]
-        {
+        for (full, loaded) in [(false, true), (true, true), (false, false)] {
             let mut app = App::new();
             app.add_message::<ItemNews>().add_observer(put_away_held);
             let definition =
@@ -241,11 +220,6 @@ mod settlement_tests {
                 }
                 inventory.hand.held = Some(held.clone());
             }
-            if departed {
-                app.world_mut()
-                    .entity_mut(member)
-                    .remove::<crate::game::party::roster::PartyMember>();
-            }
             // The request retains the member identity without any screen or
             // selection resource. Duplicate closes never duplicate the stack.
             app.world_mut().trigger(PutAwayHeld { member });
@@ -256,13 +230,8 @@ mod settlement_tests {
                 assert_eq!(inventory.hand.held, Some(held));
             } else {
                 assert!(inventory.hand.held.is_none());
-                if departed {
-                    assert_eq!(inventory.pool.stacks, vec![held]);
-                    assert!(carried.backpack.iter().all(Option::is_none));
-                } else {
-                    assert_eq!(carried.backpack[0], Some(held));
-                    assert!(inventory.pool.stacks.is_empty());
-                }
+                assert_eq!(carried.backpack[0], Some(held));
+                assert!(inventory.pool.stacks.is_empty());
             }
         }
     }

@@ -29,7 +29,6 @@ use crate::game::characters::{Character, Vitals};
 use crate::game::combat::Battle;
 use crate::game::difficulty::Difficulty;
 use crate::game::inventory::StackId;
-use crate::game::party::roster::PartyMember;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
 
@@ -269,7 +268,6 @@ pub enum LockNews {
 pub enum Unable {
     /// No such interaction, or not this kind of work.
     NotNow,
-    NotMember,
     CannotAct,
     /// The member lacks Locks & Traps, or cannot act.
     Unskilled,
@@ -370,9 +368,6 @@ fn roll_trap(difficulty: u8, rng: &mut GameRng) -> u8 {
 fn member(world: &mut World, actor: Entity) -> Result<(&Character, &Vitals), Unable> {
     if crate::game::world::party_occupied(world) {
         return Err(Unable::NotNow);
-    }
-    if world.get::<PartyMember>(actor).is_none() {
-        return Err(Unable::NotMember);
     }
     let vitals = world.get::<Vitals>(actor).unwrap();
     if !vitals.can_act() {

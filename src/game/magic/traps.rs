@@ -58,9 +58,6 @@ pub(crate) fn discharge(
                   mut rng: ResMut<crate::game::rng::GameRng>,
                   clock: Res<crate::game::time::GameClock>|
                   -> Result<bool, Unable> {
-                if selected.is_some_and(|actor| !context.roster.contains(&actor)) {
-                    return Err(Unable::NotMember);
-                }
                 let mut targets: Vec<Entity> = context
                     .roster
                     .iter()

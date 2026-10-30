@@ -14,7 +14,7 @@ use crate::game::inventory::{
     Carried, ItemIds, ItemNews, ItemStack, PartyInventory, Refusal, StackId, make_item,
 };
 use crate::game::loot::roll_loot;
-use crate::game::party::roster::{PartyMember, PartyRoster, the_party};
+use crate::game::party::roster::{PartyRoster, the_party};
 use crate::game::rng::GameRng;
 
 /// A container's contents, drawn from its loot table the first time it is
@@ -146,13 +146,10 @@ pub fn take_from_container(
     }
     let device = looting(world, on).ok_or(Refusal::Nothing)?;
     let party = the_party(world);
-    if let Recipient::Member(member) = to {
-        if !world.get::<PartyMember>(member).is_some_and(|m| m.0 == party) {
-            return Err(Refusal::NotMember);
-        }
-        if !world.get::<crate::game::characters::Vitals>(member).unwrap().can_act() {
-            return Err(Refusal::DoesNotFit);
-        }
+    if let Recipient::Member(member) = to
+        && !world.get::<crate::game::characters::Vitals>(member).unwrap().can_act()
+    {
+        return Err(Refusal::DoesNotFit);
     }
 
     let mut container = world.entity_mut(device).take::<Container>().unwrap();
