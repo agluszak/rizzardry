@@ -905,15 +905,18 @@ fn notices(
         && vitals.stamina > 0
         && vitals.conditions.worst().is_none_or(|c| c < Condition::Webbed)
         && !vitals.conditions.has(Condition::Blind);
-    let defending = battle
-        .this_round
-        .party
-        .iter()
-        .any(|p| p.actor == member && matches!(p.action, RoundAction::Defend));
-    if !alert || !defending {
+    if !alert {
         return false;
     }
-    let attempts = battle.this_round.spotted.entry(member).or_insert(0);
+    let Some(work) = battle
+        .this_round
+        .party
+        .iter_mut()
+        .find(|p| p.actor == member && matches!(p.action, RoundAction::Defend))
+    else {
+        return false;
+    };
+    let attempts = &mut work.spot_attempts;
     if *attempts == 0 {
         *attempts = 1;
         return true;
@@ -939,7 +942,7 @@ pub(super) fn monster_attacks(
     fight: &mut Fight,
     news: &mut MessageWriter<CombatNews>,
 ) -> bool {
-    let (entity, turn) = battle.this_round.monsters[index];
+    let super::MonsterTurn { actor: entity, turn, .. } = battle.this_round.monsters[index];
     let species = field.species.expect("physical blows preflight monster content");
     let difficulty = field.difficulty;
     let Ok((monster, at, walker, ..)) = field.monsters.monsters().get(entity) else {
@@ -1015,7 +1018,7 @@ pub(super) fn monster_attacks(
         }
     }
     let turn_left = turn.attacks_left.saturating_sub(1);
-    battle.this_round.monsters[index].1 = Turn { phase: 0, attacks_left: 0 };
+    battle.this_round.monsters[index].turn = Turn { phase: 0, attacks_left: 0 };
     // A wary monster's wait comes first among its choices.
     let waits = usize::from(fight.waits);
     if candidates.len() + waits == 0 {
@@ -1023,7 +1026,7 @@ pub(super) fn monster_attacks(
     }
     let chosen = rng.below((candidates.len() + waits) as u32) as usize;
     if chosen < waits {
-        battle.this_round.waited.push(entity);
+        battle.this_round.monsters[index].waited = true;
         return false;
     }
     battle.this_round.attacked = true;
@@ -1188,7 +1191,42 @@ pub(super) fn monster_attacks(
         }
     }
     tally.report(battle, (entity, target.entity()), news);
-    battle.this_round.monsters[index].1 =
+    battle.this_round.monsters[index].turn =
         Turn { phase: super::next_phase(turn.phase, turn_left), attacks_left: turn_left };
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spotting_history_survives_finished_work_but_not_a_replacement_actor() {
+        use crate::game::characters::{Gender, Profession, Race};
+        let mut world = World::new();
+        let member = world.spawn_empty().id();
+        let replacement = world.spawn_empty().id();
+        let character = Character::new("Guard", Race::Human, Gender::Male, Profession::Fighter);
+        let vitals = Vitals::new(&character);
+        let mut battle = Battle::default();
+        battle.this_round.party.push(super::super::PartyTurn {
+            actor: member,
+            action: RoundAction::Defend,
+            phase: 1,
+            hands: default(),
+            spot_attempts: 0,
+        });
+        let mut rng = GameRng::seeded(1);
+        let initial_rng = rng.clone();
+        assert!(notices(&mut battle, member, &character, &vitals, &mut rng));
+        assert_eq!(rng, initial_rng, "the first attempt needs no roll");
+        battle.this_round.party[0].end();
+        notices(&mut battle, member, &character, &vitals, &mut rng);
+        assert_eq!(battle.this_round.party[0].spot_attempts, 2);
+        let mut expected = initial_rng;
+        expected.below(100);
+        assert_eq!(rng, expected, "finishing work must not grant another first attempt");
+        assert!(!notices(&mut battle, replacement, &character, &vitals, &mut rng));
+        assert_eq!(rng, expected, "a replacement has no accepted defense");
+    }
 }

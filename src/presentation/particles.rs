@@ -11,7 +11,7 @@ use crate::{
     game::{
         party::body::PartyBody,
         world::{
-            level::{LevelOwned, OwnedDefinitions},
+            level::{LevelOwned, PlayedLevel},
             obstacles::WorldObstacles,
             particles::{EmissionSpent, Emitter},
         },
@@ -91,16 +91,16 @@ fn inside(bounds: &ParticleBounds, point: Vec3, transform: Transform) -> bool {
 
 /// An emitter's authored definition, through its level.
 fn config<'a>(
-    definitions: &'a OwnedDefinitions,
+    definitions: &'a PlayedLevel,
     owner: &LevelOwned,
     emitter: &Emitter,
 ) -> Option<&'a ParticleConfig> {
-    definitions.of(owner)?.particles.get(emitter.definition())
+    definitions.of(owner.0)?.particles.get(emitter.definition())
 }
 
 fn move_particles(
     time: Res<Time<Virtual>>,
-    definitions: OwnedDefinitions,
+    definitions: PlayedLevel,
     emitters: Query<(&LevelOwned, &Emitter)>,
     party: Query<&avian3d::prelude::Position, With<PartyBody>>,
     mut particles: Query<(Entity, &ChildOf, &mut Particle, &mut Transform)>,
@@ -134,7 +134,7 @@ fn move_particles(
 
 fn emit_particles(
     time: Res<Time<Virtual>>,
-    definitions: OwnedDefinitions,
+    definitions: PlayedLevel,
     mut emitters: Query<(Entity, &LevelOwned, &Emitter, &mut Emission, Option<&Children>)>,
     particles: Query<&Particle>,
     party: Query<&avian3d::prelude::Position, With<PartyBody>>,
@@ -309,7 +309,7 @@ fn animate_particles(
     time: Res<Time<Virtual>>,
     geometry: Res<Assets<LevelGeometry>>,
     levels: Query<&LevelAppearance>,
-    definitions: OwnedDefinitions,
+    definitions: PlayedLevel,
     emitters: Query<(&LevelOwned, &Emitter)>,
     particles: Query<(&ChildOf, &Particle)>,
     mut sprites: Query<

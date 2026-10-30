@@ -46,8 +46,6 @@ const GROUND_BELOW: f32 = 5.0;
 #[derive(Component, Clone, Debug, Default)]
 pub struct EncounterState {
     pub budget: i32,
-    /// How many may be about at once now.
-    pub limit: i32,
     pub generators: Vec<GeneratorState>,
     /// The game second the party left, kept while the level is away; or
     /// the arrival still to settle (`None` there means a first visit).
@@ -87,21 +85,21 @@ impl EncounterState {
                 }
             })
             .collect();
-        let mut state = EncounterState {
-            budget: encounters.budget,
-            limit: 0,
-            generators,
-            arrival: Some(Arrival::First),
-        };
+        let mut state =
+            EncounterState { budget: encounters.budget, generators, arrival: Some(Arrival::First) };
         state.clamp(&encounters.limits);
         state
     }
 
-    /// Keep the budget, and the limit it sets, within the level's bounds
-    /// (retail `ClampInteger` twice).
+    /// The current admission limit is derived, not encounter history.
+    fn limit(&self, limits: &EncounterLimits) -> i32 {
+        clamp(self.budget, limits.fewest, limits.most)
+    }
+
+    /// Keep the historical budget within the level's bounds
+    /// (retail `ClampInteger`).
     fn clamp(&mut self, limits: &EncounterLimits) {
         self.budget = clamp(self.budget, limits.smallest_budget, limits.largest_budget);
-        self.limit = clamp(self.budget, limits.fewest, limits.most);
     }
 }
 
@@ -616,7 +614,7 @@ pub fn run_encounters(
                     (generator, &state.generators[index]),
                     encounters,
                     &onlooker,
-                    (&mut working, state.limit, now_s),
+                    (&mut working, state.limit(&encounters.limits), now_s),
                     (&mut commands, &groups),
                     &obstacles,
                     (true, blocked, &mut rng),
@@ -653,7 +651,7 @@ pub fn run_encounters(
             (generator, &state.generators[index]),
             encounters,
             &onlooker,
-            (&mut working, state.limit, now_s),
+            (&mut working, state.limit(&encounters.limits), now_s),
             (&mut commands, &groups),
             &obstacles,
             (false, blocked, &mut rng),
@@ -833,7 +831,7 @@ mod tests {
         arrive(&mut app, root, Arrival::First);
         app.world_mut().run_system_once(run_encounters).unwrap();
         let state = app.world().get::<EncounterState>(root).unwrap();
-        assert_eq!((state.budget, state.limit), (8, 5), "the budget fills, the limit follows");
+        assert_eq!(state.budget, 8, "the budget fills");
         assert!(state.arrival.is_none());
         let about = encounters(&mut app);
         assert_eq!(about.len(), 1);
@@ -911,7 +909,7 @@ mod tests {
         world.spawn(crate::game::combat::Battle::default());
         app.world_mut().run_system_once(run_encounters).unwrap();
         let state = app.world().get::<EncounterState>(root).unwrap();
-        assert_eq!((state.budget, state.limit), (7, 5));
+        assert_eq!(state.budget, 7);
         assert!(encounters(&mut app).is_empty());
     }
 

@@ -30,9 +30,9 @@ impl Prop {
     pub fn model<'a>(
         &self,
         owner: &LevelOwned,
-        definitions: &'a super::level::OwnedDefinitions,
+        definitions: &'a super::level::PlayedLevel,
     ) -> Option<&'a PropModel> {
-        definitions.of(owner)?.props.get(self.definition)
+        definitions.of(owner.0)?.props.get(self.definition)
     }
 }
 
@@ -144,7 +144,7 @@ pub fn pose(keys: &[Transform], frame: f32) -> Transform {
 /// their parts (and the parts' colliders) along the authored paths.
 pub fn animate_props(
     time: Res<Time>,
-    definitions: super::level::OwnedDefinitions,
+    definitions: super::level::PlayedLevel,
     mut props: Query<(&Prop, &LevelOwned, &mut PropMotion, &Children)>,
     mut parts: Query<(&PropPart, &mut Transform)>,
 ) {
