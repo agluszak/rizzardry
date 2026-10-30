@@ -22,7 +22,6 @@ pub(super) struct SpellInfo {
     effects: Handle<SpellText>,
     descriptions: Handle<SpellText>,
     font: Handle<SpriteSheet>,
-    populated: bool,
 }
 #[derive(Component)]
 pub(super) struct Scroll(Entity);
@@ -54,7 +53,6 @@ pub(super) fn open(
                 effects: assets.load(crate::content::paths::SPELL_EFFECTS),
                 descriptions: assets.load(crate::content::paths::SPELL_DESCRIPTIONS),
                 font: assets.load("retail://data/fonts/wiz_text_font.sti"),
-                populated: false,
             },
             crate::presentation::retail_controls::RestoreFocus(focus.get()),
             absolute(Vec2::ZERO, Vec2::new(640., 480.)),
@@ -142,7 +140,8 @@ fn label(
 }
 
 pub(super) fn populate(
-    mut dialogs: Query<(Entity, &mut SpellInfo)>,
+    // Built once its contents have loaded, which gives it its scrollbar.
+    dialogs: Query<(Entity, &SpellInfo), Without<Scroll>>,
     assets: Res<AssetServer>,
     content: crate::game::data::Content,
     game_strings: crate::presentation::screen_art::GameStrings,
@@ -150,10 +149,7 @@ pub(super) fn populate(
     sheets: Res<Assets<SpriteSheet>>,
     mut commands: Commands,
 ) {
-    for (root, mut info) in &mut dialogs {
-        if info.populated {
-            continue;
-        }
+    for (root, info) in &dialogs {
         let (Some(spell), Some(strings), Some(effects), Some(descriptions), Some(font)) = (
             content.spells().and_then(|c| c.get(info.id)),
             game_strings.table(),
@@ -387,7 +383,6 @@ pub(super) fn populate(
             max as f32,
         );
         commands.entity(root).insert(Scroll(track)).insert(ScrollWheel(track));
-        info.populated = true;
     }
 }
 pub(super) fn scroll(
