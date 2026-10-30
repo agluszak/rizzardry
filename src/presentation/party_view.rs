@@ -137,7 +137,7 @@ pub fn track_fights(
 mod tests {
     use super::*;
     use crate::game::combat::CombatNews;
-    use crate::game::party::body::{PartyTurning, turn_party};
+    use crate::game::party::body::turn_party;
     use crate::game::world::population::{Monster, ScaledBody};
     use crate::presentation::monsters::MonsterVisual;
     use crate::presentation::screen::Screen;
@@ -162,7 +162,6 @@ mod tests {
             .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(frame))
             .insert_resource(State::new(Screen::World))
             .init_resource::<NextState<Screen>>()
-            .init_resource::<PartyTurning>()
             .insert_resource(Preferences {
                 view_tracking: tracking,
                 view_turning: turning,
