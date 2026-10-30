@@ -1627,6 +1627,7 @@ pub fn quote_trade(
     let communication = party_communication(world);
     let def = definition(world, actor);
     let catalog = &world.resource::<crate::game::data::Catalogs>().items;
+    let trade = world.get::<Npc>(actor).ok_or(TradeError::Unavailable)?.stock.trades;
     let gold = match source {
         TradeSource::Stock(lot) => {
             let stock = &world.get::<Npc>(actor).ok_or(TradeError::Unavailable)?.stock;
@@ -1637,7 +1638,7 @@ pub fn quote_trade(
             trade::validate_sale(def, item, quantity, catalog, communication)
         }
     }?;
-    Ok(TradeQuote { conversation, source, quantity, gold })
+    Ok(TradeQuote { conversation, trade, source, quantity, gold })
 }
 fn sale_item(
     world: &World,
@@ -1672,6 +1673,9 @@ fn execute_trade(world: &mut World, quote: TradeQuote) -> Result<(), TradeError>
         return Err(TradeError::Unavailable);
     }
     let actor = c.actor;
+    if world.get::<Npc>(actor).is_none_or(|npc| npc.stock.trades != quote.trade) {
+        return Err(TradeError::StaleSelection);
+    }
     let party = the_party(world).ok_or(TradeError::Unavailable)?;
     let communication = party_communication(world);
     with_definition(world, actor, |world, def, catalog| match quote.source {
@@ -1729,6 +1733,7 @@ fn execute_trade(world: &mut World, quote: TradeQuote) -> Result<(), TradeError>
             Ok(())
         }
     })?;
+    world.get_mut::<Npc>(actor).unwrap().stock.trades += 1;
     Ok(())
 }
 pub fn update_conversation(world: &mut World) {
@@ -3691,7 +3696,8 @@ mod tests {
         ] {
             assert!(!trade_allowed(world, actor));
             assert_eq!(quote_trade(world, session, source, 1), Err(TradeError::Unavailable));
-            let quote = TradeQuote { conversation: session, source, quantity: 1, gold: 1 };
+            let quote =
+                TradeQuote { conversation: session, trade: 0, source, quantity: 1, gold: 1 };
             assert_eq!(execute_trade(world, quote), Err(TradeError::Unavailable));
         }
         assert_eq!(world.get::<PartyInventory>(party).unwrap().gold, 0);

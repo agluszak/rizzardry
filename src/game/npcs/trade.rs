@@ -29,6 +29,8 @@ pub struct MerchantStock {
     pub restock_at: Option<u64>,
     pub maintenance_at: u64,
     next: u64,
+    /// Trades made with the merchant: a quote confirms only the next one.
+    pub trades: u64,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TradeError {
@@ -51,6 +53,8 @@ pub enum TradeSource {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TradeQuote {
     pub conversation: Entity,
+    /// The merchant's [`MerchantStock::trades`] when quoted.
+    pub trade: u64,
     pub source: TradeSource,
     pub quantity: u32,
     pub gold: u32,

@@ -1113,7 +1113,7 @@ fn select(world: &mut World, view: Entity, session: Entity, source: TradeSource,
     let result = if giving {
         world
             .get::<Conversation>(session)
-            .map(|_| TradeQuote { conversation: session, source, quantity: 1, gold: 0 })
+            .map(|_| TradeQuote { conversation: session, trade: 0, source, quantity: 1, gold: 0 })
             .ok_or(trade::TradeError::StaleSelection)
     } else {
         quote_trade(world, session, source, quantity)

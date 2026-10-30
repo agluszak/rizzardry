@@ -416,6 +416,7 @@ mod tests {
             let session = world.spawn_empty().id();
             let q = TradeQuote {
                 conversation: session,
+                trade: 0,
                 source: TradeSource::Stock(crate::game::npcs::trade::StockLotId(1)),
                 quantity: 1,
                 gold: 10,
