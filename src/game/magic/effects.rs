@@ -867,7 +867,7 @@ fn inflict_on(
     }
     match victim {
         Victim::Monster(monster) => {
-            let monster = &mut *world.monsters.monster_mut(monster)?;
+            let monster = &mut *world.monsters.monster_mut(monster);
             if condition == Condition::Slowed {
                 super::enchantments::slow(
                     &mut monster.conditions,
@@ -1132,7 +1132,7 @@ fn kill(rng: &mut GameRng, world: &mut Field, victim: Victim) -> Option<Effect> 
     let hp = world.monsters.monsters().get(monster).ok()?.0.hp;
     world
         .monsters
-        .enchantments_mut(monster)?
+        .enchantments_mut(monster)
         .0
         .retain(|e| e.spell != crate::content::spells::SpellId::GUARDIAN_ANGEL);
     hurt(rng, world, victim, hp)
@@ -1413,7 +1413,7 @@ pub fn resolve(
                     vitals.lift_drain(&mut character)
                 }
                 Victim::Monster(m) => {
-                    let conditions = &mut *world.monsters.conditions_mut(m)?;
+                    let conditions = &mut *world.monsters.conditions_mut(m);
                     !cure(rng, conditions, &[Condition::Drained], strength, true).is_empty()
                 }
             };
@@ -1434,7 +1434,7 @@ pub fn resolve(
                     cure(rng, &mut vitals.conditions, conditions, strength, false)
                 }
                 Victim::Monster(m) => {
-                    cure(rng, &mut *world.monsters.conditions_mut(m)?, conditions, strength, false)
+                    cure(rng, &mut world.monsters.conditions_mut(m), conditions, strength, false)
                 }
             };
             Some(match lifted.first() {
@@ -1546,10 +1546,7 @@ fn purify(
             }
             Victim::Member(_) => continue,
             Victim::Monster(actor) => {
-                let Some(mut slots) = world.monsters.enchantments_mut(actor) else {
-                    continue;
-                };
-                purify(&mut slots);
+                purify(&mut world.monsters.enchantments_mut(actor));
             }
         }
         effects.push(Effect::Purified { victim });
@@ -1659,7 +1656,7 @@ fn restore_victim(
                 cure(rng, &mut vitals.conditions, &all, strength, true)
             }
             Victim::Monster(entity) => {
-                let mut conditions = world.monsters.conditions_mut(entity)?;
+                let mut conditions = world.monsters.conditions_mut(entity);
                 cure(rng, &mut conditions, &all, strength, true)
             }
         };
@@ -1739,17 +1736,15 @@ fn enchant(
             }
             Victim::Monster(entity) => {
                 if spell.id == SpellId::HASTE {
-                    world.monsters.monster_mut(entity).is_some_and(|mut monster| {
-                        let monster = &mut *monster;
-                        super::enchantments::haste(
-                            &mut monster.conditions,
-                            &mut monster.enchantments,
-                            effect,
-                            true,
-                        )
-                    })
+                    let monster = &mut *world.monsters.monster_mut(entity);
+                    super::enchantments::haste(
+                        &mut monster.conditions,
+                        &mut monster.enchantments,
+                        effect,
+                        true,
+                    )
                 } else {
-                    world.monsters.enchantments_mut(entity).is_some_and(|mut e| apply(&mut e, true))
+                    apply(&mut world.monsters.enchantments_mut(entity), true)
                 }
             }
         };

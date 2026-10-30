@@ -180,11 +180,7 @@ pub(crate) fn resolve(
                         .spend_charge(SpellId::EYE_FOR_AN_EYE);
                 }
                 Victim::Monster(entity) => {
-                    world
-                        .monsters
-                        .enchantments_mut(entity)
-                        .unwrap()
-                        .spend_charge(SpellId::EYE_FOR_AN_EYE);
+                    world.monsters.enchantments_mut(entity).spend_charge(SpellId::EYE_FOR_AN_EYE);
                 }
             }
             landed.push(Effect::Reflected { victim: charged });

@@ -99,8 +99,8 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     /// How a monster's group stands now ([`super::hostility::stance`]); one
     /// outside any group by its species' default.
     pub fn group_stance(&self, entity: Entity, now: u64) -> super::hostility::Stance {
-        use super::hostility::{self, Stance};
-        let Ok((monster, ..)) = self.monsters.get(entity) else { return Stance::Neutral };
+        use super::hostility;
+        let (monster, ..) = self.monsters.get(entity).unwrap();
         let kind = &self.content.species[monster.species];
         let set = self
             .membership
@@ -115,7 +115,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     /// The later notification can start a fight even when this hit kills it.
     pub fn provoke(&mut self, entity: Entity, now: u64) -> bool {
         use super::hostility::{self, SetStance, Stance};
-        let Ok((body, ..)) = self.monsters.get(entity) else { return false };
+        let (body, ..) = self.monsters.get(entity).unwrap();
         if body.is_dead() || body.conditions.has(Condition::Turncoat) {
             return false;
         }
@@ -130,7 +130,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     }
 
     pub fn restore_health(&mut self, entity: Entity, amount: u32) -> u32 {
-        let Ok((mut body, ..)) = self.monsters.get_mut(entity) else { return 0 };
+        let (mut body, ..) = self.monsters.get_mut(entity).unwrap();
         if body.is_dead() {
             return 0;
         }
@@ -140,7 +140,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     }
     /// Restoring stamina wakes exhaustion, but leaves a timed knockout alone.
     pub fn restore_stamina(&mut self, entity: Entity, amount: u32) -> u32 {
-        let Ok((mut body, ..)) = self.monsters.get_mut(entity) else { return 0 };
+        let (mut body, ..) = self.monsters.get_mut(entity).unwrap();
         if body.is_dead() {
             return 0;
         }
@@ -153,10 +153,8 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         )
     }
     pub fn restore_magic(&mut self, entity: Entity, amount: u32) {
-        if let Ok((mut body, ..)) = self.monsters.get_mut(entity) {
-            body.spell_points =
-                body.spell_points.saturating_add(amount.min(i32::MAX as u32) as i32);
-        }
+        let (mut body, ..) = self.monsters.get_mut(entity).unwrap();
+        body.spell_points = body.spell_points.saturating_add(amount.min(i32::MAX as u32) as i32);
     }
     /// The monsters, to look at.
     pub fn monsters(&self) -> &MonsterQuery<'w, 's> {
@@ -167,20 +165,20 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     pub fn conditions_mut(
         &mut self,
         monster: Entity,
-    ) -> Option<Mut<'_, crate::game::characters::Conditions>> {
-        Some(self.monster_mut(monster)?.map_unchanged(|monster| &mut monster.conditions))
+    ) -> Mut<'_, crate::game::characters::Conditions> {
+        self.monster_mut(monster).map_unchanged(|monster| &mut monster.conditions)
     }
 
     /// A monster's body, for what changes its conditions and enchantments
     /// together.
-    pub fn monster_mut(&mut self, monster: Entity) -> Option<Mut<'_, Monster>> {
-        Some(self.monsters.get_mut(monster).ok()?.0)
+    pub fn monster_mut(&mut self, monster: Entity) -> Mut<'_, Monster> {
+        self.monsters.get_mut(monster).unwrap().0
     }
 
     /// Tire a monster (retail `FatigueMonster`); spent, it drops
     /// unconscious. Returns the stamina taken.
     pub fn fatigue(&mut self, monster: Entity, amount: u32) -> u32 {
-        let Ok((mut monster, ..)) = self.monsters.get_mut(monster) else { return 0 };
+        let (mut monster, ..) = self.monsters.get_mut(monster).unwrap();
         if monster.is_dead() {
             return 0;
         }
@@ -191,7 +189,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     /// Drain the current effective spell budget; only the change belongs to
     /// the actor. Casting and draining read the same species-plus-history rule.
     pub fn drain_magic(&mut self, entity: Entity, amount: u32) -> u32 {
-        let Ok((mut monster, ..)) = self.monsters.get_mut(entity) else { return 0 };
+        let (mut monster, ..) = self.monsters.get_mut(entity).unwrap();
         let kind = &self.content.species[monster.species];
         let lost = monster.spell_budget(kind).min(amount);
         monster.spell_points = monster.spell_points.saturating_sub(lost as i32);
@@ -201,8 +199,8 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     pub fn enchantments_mut(
         &mut self,
         entity: Entity,
-    ) -> Option<Mut<'_, crate::game::magic::enchantments::Enchantments>> {
-        Some(self.monster_mut(entity)?.map_unchanged(|m| &mut m.enchantments))
+    ) -> Mut<'_, crate::game::magic::enchantments::Enchantments> {
+        self.monster_mut(entity).map_unchanged(|m| &mut m.enchantments)
     }
 
     pub fn active(&self, target: Entity) -> bool {

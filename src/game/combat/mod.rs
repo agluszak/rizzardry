@@ -1572,9 +1572,7 @@ pub fn run_battle(
             }
             if over {
                 for &actor in combatants {
-                    if let Some(mut e) = damage.enchantments_mut(actor) {
-                        e.end_combat();
-                    }
+                    damage.enchantments_mut(actor).end_combat();
                 }
             }
             // Recognition is a required part of this round, before the next
@@ -2305,10 +2303,8 @@ fn monster_turn(
             decision = Decision::Move { conduct: conduct::Conduct::Flee, quiet: true };
         }
         Some(interrupt) => {
-            if interrupt == Interrupt::Freed
-                && let Some(mut conditions) = damage.conditions_mut(monster)
-            {
-                conditions.lift(Condition::Webbed);
+            if interrupt == Interrupt::Freed {
+                damage.conditions_mut(monster).lift(Condition::Webbed);
             }
             news.write(CombatNews::Interrupted { monster, interrupt });
             battle.this_round.monsters[index].1 = Turn::default();
@@ -2631,9 +2627,8 @@ fn end_round(
         }
     }
     for &entity in combatants {
-        if let Some(mut conditions) = damage.conditions_mut(entity)
-            && conditions.any_timed()
-        {
+        let mut conditions = damage.conditions_mut(entity);
+        if conditions.any_timed() {
             conditions.age(ticks.aging);
         }
     }
@@ -2673,9 +2668,7 @@ fn end_round(
     }
     magic.context.enchantments.0.age(ticks.aging);
     for &entity in combatants {
-        if let Some(mut effects) = damage.enchantments_mut(entity) {
-            effects.age(ticks.aging);
-        }
+        damage.enchantments_mut(entity).age(ticks.aging);
     }
     battle.phase = RoundPhase::Waiting;
     // Poison may have killed the last of the party as the time passed: that

@@ -188,10 +188,9 @@ fn razor_backlash(
             .get_mut(member)
             .ok()
             .and_then(|(_, mut v, ..)| v.enchantments.spend_charge(SpellId::RAZOR_CLOAK)),
-        Victim::Monster(monster) => field
-            .monsters
-            .enchantments_mut(monster)
-            .and_then(|mut effects| effects.spend_charge(SpellId::RAZOR_CLOAK)),
+        Victim::Monster(monster) => {
+            field.monsters.enchantments_mut(monster).spend_charge(SpellId::RAZOR_CLOAK)
+        }
     };
     let Some(charge) = charge else { return };
     let rolled = effects::magnitude(
