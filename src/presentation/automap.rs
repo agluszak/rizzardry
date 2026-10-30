@@ -575,13 +575,7 @@ pub fn paint_buttons(
             action_enabled(button.action, &automap, layers),
             disabled,
         );
-        if on != selected {
-            if on {
-                commands.entity(entity).insert(Selected);
-            } else {
-                commands.entity(entity).remove::<Selected>();
-            }
-        }
+        crate::presentation::retail_controls::set_selected(&mut commands, entity, on, selected);
     }
 }
 

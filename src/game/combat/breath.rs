@@ -1,10 +1,7 @@
 //! The racial or spell-granted breath action shares aim capture and damage
 //! with casting; it spends stamina, never spell points or casting practice.
 use crate::{
-    content::{
-        characters::Trait,
-        spells::{SpellCatalog, SpellId},
-    },
+    content::{characters::Trait, spells::SpellId},
     game::{
         characters::{Character, Vitals},
         magic::{
@@ -27,11 +24,11 @@ pub(super) fn execute(
     actor: Entity,
     target: Entity,
     situation: &Situation,
-    spells: &SpellCatalog,
     rng: &mut GameRng,
     world: &mut Field,
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
 ) -> Result<Vec<Effect>, Refusal> {
+    let spells = world.spells;
     let (profile, vitals, ..) = world.members.get(actor).map_err(|_| Refusal::CannotAct)?;
     if !available(profile, vitals) {
         return Err(Refusal::CannotAct);

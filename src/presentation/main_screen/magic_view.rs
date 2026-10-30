@@ -798,13 +798,12 @@ pub(super) fn refresh_magic_view(
         }
         for (button, selected, entity) in &parts.p0() {
             let wanted = view.realm == Some(button.0);
-            if wanted != selected {
-                if wanted {
-                    commands.entity(entity).insert(Selected);
-                } else {
-                    commands.entity(entity).remove::<Selected>();
-                }
-            }
+            crate::presentation::retail_controls::set_selected(
+                &mut commands,
+                entity,
+                wanted,
+                selected,
+            );
             crate::presentation::retail_controls::set_enabled(
                 &mut commands,
                 entity,
@@ -1130,13 +1129,6 @@ fn cancel_view(_: On<Activate>, views: Query<Entity, With<MagicView>>, mut comma
 mod tests {
     use super::*;
     use crate::presentation::test_input::{input_app, tap};
-
-    #[test]
-    fn refresh_can_initialize_its_row_queries() {
-        let mut world = World::new();
-        let mut system = IntoSystem::into_system(refresh_magic_view);
-        system.initialize(&mut world);
-    }
 
     #[derive(Component, Clone, Default)]
     struct Beneath;

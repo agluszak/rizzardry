@@ -116,7 +116,7 @@ impl Plugin for WorldPlugin {
                 (
                     level::activate_level.in_set(GameplaySet::LevelActivation),
                     (handle_world_requests, crate::game::automap::commit_notes)
-                        .after(GameplaySet::Stats)
+                        .after(GameplaySet::Burden)
                         .before(GameplaySet::Combat),
                     particles::switch_off_spent.before(GameplaySet::LevelActivation),
                     population::give_birth.run_if(level::level_active).before(GameplaySet::Combat),

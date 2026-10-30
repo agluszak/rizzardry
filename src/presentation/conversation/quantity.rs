@@ -61,7 +61,7 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
     if world.query::<&Draft>().iter(world).any(|d| d.view == view) {
         return;
     }
-    let Some(q) = world.get::<DialogueState>(view).and_then(|s| s.selected) else { return };
+    let Some(q) = world.get::<DialogueState>(view).and_then(|s| s.quote()) else { return };
     if world.get::<ConversationView>(view).is_none_or(|v| v.0 != q.conversation)
         || quote_trade(world, q.conversation, q.source, q.quantity).is_err()
     {
@@ -424,7 +424,7 @@ mod tests {
             let view = world
                 .spawn((
                     ConversationView(session),
-                    DialogueState { selected: Some(q), ..default() },
+                    DialogueState { offer: Some(Ok(q)), ..default() },
                 ))
                 .id();
             let overlay = world.spawn(ChildOf(view)).id();
@@ -436,7 +436,7 @@ mod tests {
                 .id();
             let input = world.spawn((EditableText::new("3"), ChildOf(panel))).id();
             finish(&mut world, panel, accept);
-            assert_eq!(world.get::<DialogueState>(view).unwrap().selected, Some(q));
+            assert_eq!(world.get::<DialogueState>(view).unwrap().quote(), Some(q));
             assert!(world.get_entity(overlay).is_err());
             assert!(world.get_entity(input).is_err());
         }

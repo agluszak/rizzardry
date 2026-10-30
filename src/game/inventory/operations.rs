@@ -15,10 +15,12 @@ pub struct PutAwayHeld {
     pub member: Entity,
 }
 
+/// Return the hand to the reviewed member, falling back to the pool.
+/// A departed member cannot receive it; overflow remains owned by the hand.
 pub(crate) fn put_away_held(request: On<PutAwayHeld>, mut inventory: InventoryOperations) {
-    if let Err(reason) = inventory.put_away(request.member) {
-        warn!("held item could not be put away: {reason:?}");
-    }
+    let InventoryOperations { party, roster, members, content, .. } = &mut inventory;
+    let mut carried = member(roster, members, request.member).ok();
+    party.give_held(carried.as_mut().map(|(_, _, c)| &mut **c), false, &content.items);
 }
 
 #[derive(SystemParam)]
@@ -55,18 +57,6 @@ impl InventoryOperations<'_, '_> {
             Given::NoRoom => ItemNews::NoRoom,
         });
         Ok(true)
-    }
-
-    /// Return the hand to the reviewed member, falling back to the pool. A
-    /// departed member cannot receive it; overflow remains owned by the hand.
-    pub fn put_away(&mut self, member: Entity) -> Result<(), Refusal> {
-        if self.party.hand.held.is_none() {
-            return Ok(());
-        }
-        let catalog = &self.content.items;
-        let mut carried = self::member(&self.roster, &mut self.members, member).ok();
-        self.party.give_held(carried.as_mut().map(|(_, _, c)| &mut **c), false, catalog);
-        Ok(())
     }
 
     /// Resolve a pool row immediately at the UI boundary. Delayed requests use

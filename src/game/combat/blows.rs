@@ -10,9 +10,9 @@ use crate::game::world::perception::party_distance;
 use bevy::prelude::*;
 
 use super::attack::{self, Aim, Defence, Hand, Surprise};
+use super::round::HandTurns;
 use super::{
-    Announcement, Armour, Battle, CombatNews, HandTurns, PartyPace, PartyView, RoundAction,
-    RoundPhase, Turn,
+    Announcement, Armour, Battle, CombatNews, PartyPace, PartyView, RoundAction, RoundPhase,
 };
 use crate::content::characters::{Skill, Trait};
 use crate::content::items::{AttackEffect, AttackMode};
@@ -938,7 +938,8 @@ pub(super) fn monster_attacks(
     fight: &mut Fight,
     news: &mut MessageWriter<CombatNews>,
 ) -> bool {
-    let (entity, turn) = battle.this_round.monsters[index];
+    let turn = battle.this_round.monsters[index];
+    let entity = turn.actor;
     let species = field.species;
     let difficulty = field.difficulty;
     let Ok((monster, at, walker, ..)) = field.monsters.monsters().get(entity) else {
@@ -1013,7 +1014,7 @@ pub(super) fn monster_attacks(
         }
     }
     let turn_left = turn.attacks_left.saturating_sub(1);
-    battle.this_round.monsters[index].1 = Turn { phase: 0, attacks_left: 0 };
+    battle.this_round.monsters[index].end();
     // A wary monster's wait comes first among its choices.
     let waits = usize::from(fight.waits);
     if candidates.len() + waits == 0 {
@@ -1021,7 +1022,7 @@ pub(super) fn monster_attacks(
     }
     let chosen = rng.below((candidates.len() + waits) as u32) as usize;
     if chosen < waits {
-        battle.this_round.waited.push(entity);
+        battle.this_round.monsters[index].waited = true;
         return false;
     }
     battle.this_round.attacked = true;
@@ -1186,7 +1187,8 @@ pub(super) fn monster_attacks(
         }
     }
     tally.report(battle, (entity, target.entity()), news);
-    battle.this_round.monsters[index].1 =
-        Turn { phase: super::next_phase(turn.phase, turn_left), attacks_left: turn_left };
+    let work = &mut battle.this_round.monsters[index];
+    work.phase = super::next_phase(turn.phase, turn_left);
+    work.attacks_left = turn_left;
     false
 }

@@ -234,13 +234,12 @@ pub fn draw_buttons(
             }
         };
         skin.set_if_neq(ControlSkin::new(frame, frame, frame, frame, frame));
-        if inactive != disabled {
-            if inactive {
-                commands.entity(entity).insert(bevy::ui::InteractionDisabled);
-            } else {
-                commands.entity(entity).remove::<bevy::ui::InteractionDisabled>();
-            }
-        }
+        crate::presentation::retail_controls::set_enabled(
+            &mut commands,
+            entity,
+            !inactive,
+            disabled,
+        );
     }
 }
 

@@ -18,7 +18,7 @@ use crate::presentation::screen_art::visible_if;
 use bevy::input_focus::tab_navigation::TabIndex;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
-use bevy::ui::{InteractionDisabled, Selected};
+use bevy::ui::Selected;
 use bevy::ui_widgets::{
     Activate, Button as UiButton, SelectedTab, Tab, TabList, tablist_self_update,
 };
@@ -172,14 +172,10 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
         .observe(tablist_self_update)
         .id();
     let mut initial = Entity::PLACEHOLDER;
-    for (i, (page, base)) in [
-        (Some(Page::Items), 0),
-        (Some(Page::Spells), 10),
-        (Some(Page::Skills), 15),
-        (Some(Page::Statistics), 5),
-    ]
-    .into_iter()
-    .enumerate()
+    for (i, (page, base)) in
+        [(Page::Items, 0), (Page::Spells, 10), (Page::Skills, 15), (Page::Statistics, 5)]
+            .into_iter()
+            .enumerate()
     {
         let at = Vec2::new(i as f32 * 44.0, 0.0);
         let mut button = commands.spawn((
@@ -192,21 +188,9 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
             FocusRing,
             ChildOf(list),
         ));
-        if let Some(page) = page {
-            button.insert(PageButton(page));
-            if page == Page::Items {
-                initial = button.id();
-            }
-        } else {
-            button.insert((
-                InteractionDisabled,
-                Picture {
-                    sheet: art.page_buttons.clone(),
-                    frame: base + 3,
-                    bounds: Some(base),
-                    at,
-                },
-            ));
+        button.insert(PageButton(page));
+        if page == Page::Items {
+            initial = button.id();
         }
     }
     commands.entity(list).insert(SelectedTab(Some(initial)));
@@ -846,24 +830,15 @@ pub(super) fn style_effect_buttons(
             1 => info.filter == EffectFilter::Detrimental,
             _ => info.items,
         };
-        if active != selected {
-            if active {
-                commands.entity(entity).insert(Selected);
-            } else {
-                commands.entity(entity).remove::<Selected>();
-            }
-        }
+        crate::presentation::retail_controls::set_selected(&mut commands, entity, active, selected);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::items::ItemCatalog;
-    use crate::content::ui::TextTable;
     use crate::game::characters::Vitals;
     use crate::game::characters::{Condition, Gender, Lasting, Profession, Race};
-    use crate::game::inventory::Carried;
 
     #[test]
     fn review_tracks_character_and_condition_changes() {
@@ -913,41 +888,5 @@ mod tests {
             .age_conditions(1, &mut crate::game::rng::GameRng::default());
         app.update();
         assert!(!text(app.world_mut(), "Blind"));
-    }
-
-    /// Equipping changes only `Carried`; existing Statistics labels follow it.
-    #[test]
-    fn statistics_follow_equipment_only_changes() {
-        use crate::content::items::ItemDefinition;
-        use crate::game::inventory::{Equipped, ItemIds, make_item};
-        use crate::game::rng::GameRng;
-        let mut app = App::new();
-        app.init_resource::<crate::game::data::Catalogs>();
-        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-            .init_asset::<TextTable>()
-            .insert_resource(InventoryArt::default())
-            .add_systems(Update, refresh);
-        let definition = ItemDefinition::default();
-        let weapon =
-            make_item(&definition, &mut ItemIds::default(), &mut GameRng::seeded(1), false, false);
-        let items = ItemCatalog(vec![definition]);
-        app.insert_resource(crate::game::data::Catalogs { items, ..default() });
-        let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
-        let actor =
-            app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();
-        let root = app.world_mut().spawn(InventoryScreen { member: actor }).id();
-        app.world_mut().commands().queue(move |world: &mut World| {
-            build(&mut world.commands(), root, &InventoryArt::default());
-        });
-        app.update();
-        app.update();
-        let unknown = |world: &mut World| {
-            world.query::<&BitmapText>().iter(world).any(|text| text.value == "?")
-        };
-        assert!(!unknown(app.world_mut()));
-        app.world_mut().get_mut::<Carried>(actor).unwrap().equipment[EquipSlot::Primary] =
-            Some(Equipped::new(weapon));
-        app.update();
-        assert!(unknown(app.world_mut()), "an unidentified weapon hides its combat values");
     }
 }

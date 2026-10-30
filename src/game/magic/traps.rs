@@ -99,8 +99,9 @@ pub(crate) fn discharge(
                     .filter(|&actor| members.get(actor).is_ok_and(|(_, v, ..)| !v.is_dead()))
                     .collect();
                 let (spell, effects, improved, destroyed) = context
-                    .resolve(clock.ms, &mut members, &mut monsters, |field, spells| {
-                        let spell: &SpellDefinition = spells.get(SPELLS[usize::from(trap)])?;
+                    .resolve(clock.ms, &mut members, &mut monsters, |field| {
+                        let spell: &SpellDefinition =
+                            field.spells.get(SPELLS[usize::from(trap)])?;
                         let difficulty = difficulty.clamp(1, 7);
                         let destroyed = rng.below(2) == 0;
                         let mut count =
