@@ -28,11 +28,6 @@ impl SpriteSheet {
         text_width(&self.frames, text)
     }
 
-    /// Draw text using a retail replacement palette.
-    pub fn text_image_with_palette(&self, text: &str, palette: &SpriteSheet) -> Image {
-        self.text_image_spaced(text, 0, Some(palette), None)
-    }
-
     pub fn text_image_spaced(
         &self,
         text: &str,

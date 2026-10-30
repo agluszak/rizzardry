@@ -49,6 +49,11 @@ debug = "line-tables-only"
 [profile.dev]
 opt-level = 1
 
+# Tests spend their time in the optimised dependencies; compiling the crate
+# itself unoptimised for them builds the suite faster.
+[profile.test]
+opt-level = 0
+
 [lints.clippy]
 # Bevy systems receive their data as parameters; many is normal.
 too_many_arguments = "allow"
