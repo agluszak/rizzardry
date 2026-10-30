@@ -1,6 +1,7 @@
 //! A settings draft; Apply persists before changing the live owners.
 use super::screen_art::{BitmapText, absolute};
 use crate::game::{combat::CombatSettings, difficulty::Difficulty};
+use crate::presentation::retail_controls::RestoreFocus;
 use crate::presentation::screen::Screen;
 use crate::settings::{Preferences, SavedSettings, SettingsFile};
 use bevy::input_focus::{
@@ -13,7 +14,6 @@ use bevy_enhanced_input::prelude::*;
 #[derive(Component, Clone)]
 struct OptionsView {
     draft: SavedSettings,
-    previous_focus: Option<Entity>,
     error: String,
 }
 #[derive(Component, Clone, Copy)]
@@ -104,15 +104,15 @@ fn enter(
             difficulty: *difficulty,
             continuous: combat.continuous,
         },
-        previous_focus: focus.get(),
         error: String::new(),
     };
+    let view = (view, RestoreFocus(focus.get()));
     let root=commands.spawn_scene(bsn! {
         ContextPriority::<OptionsView>::new(10)
         Node {width:percent(100),height:percent(100),justify_content:JustifyContent::Center,align_items:AlignItems::Center}
         GlobalZIndex(60) TabGroup::modal() DespawnOnExit::<Screen>(Screen::Options)
         Actions<OptionsView> [Action::<Close>::new() ActionSettings {consume_input:true,require_reset:true} Bindings [Binding(KeyCode::Escape)]]
-        on(|_:On<Start<Close>>,view:Single<&OptionsView>,mut next:ResMut<NextState<Screen>>,mut menu:Option<ResMut<NextState<super::frontend::MenuPage>>>,mut focus:ResMut<InputFocus>|{close(&view,&mut next,menu.as_deref_mut(),&mut focus);})
+        on(|_:On<Start<Close>>,mut next:ResMut<NextState<Screen>>,mut menu:Option<ResMut<NextState<super::frontend::MenuPage>>>|{close(&mut next,menu.as_deref_mut());})
     }).insert(view).id();
     let panel = commands
         .spawn((
@@ -158,20 +158,10 @@ fn enter(
         }
     }
 }
-fn close(
-    view: &OptionsView,
-    next: &mut NextState<Screen>,
-    menu: Option<&mut NextState<super::frontend::MenuPage>>,
-    focus: &mut InputFocus,
-) {
+fn close(next: &mut NextState<Screen>, menu: Option<&mut NextState<super::frontend::MenuPage>>) {
     next.set(Screen::World);
     if let Some(menu) = menu {
         menu.set(super::frontend::MenuPage::Main);
-    }
-    if let Some(e) = view.previous_focus {
-        focus.set(e, FocusCause::Navigated);
-    } else {
-        focus.clear();
     }
 }
 fn activate(
@@ -184,7 +174,6 @@ fn activate(
     mut combat: ResMut<CombatSettings>,
     mut next: ResMut<NextState<Screen>>,
     mut menu: Option<ResMut<NextState<super::frontend::MenuPage>>>,
-    mut focus: ResMut<InputFocus>,
 ) {
     let (Ok(choice), Some(view)) = (choices.get(event.entity), view.as_mut()) else { return };
     match choice {
@@ -208,13 +197,13 @@ fn activate(
         Choice::Fullscreen => {
             view.draft.preferences.fullscreen = !view.draft.preferences.fullscreen
         }
-        Choice::Cancel => close(view, &mut next, menu.as_deref_mut(), &mut focus),
+        Choice::Cancel => close(&mut next, menu.as_deref_mut()),
         Choice::Apply => match view.draft.save(&file.0) {
             Ok(()) => {
                 *preferences = view.draft.preferences.clone();
                 *difficulty = view.draft.difficulty;
                 combat.continuous = view.draft.continuous;
-                close(view, &mut next, menu.as_deref_mut(), &mut focus);
+                close(&mut next, menu.as_deref_mut());
             }
             Err(error) => {
                 warn!("Cannot save settings: {error}");

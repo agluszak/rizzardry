@@ -294,6 +294,28 @@ pub fn image_button(sheet: Handle<SpriteSheet>, at: Vec2, skin: ControlSkin) -> 
     }
 }
 
+/// On a view that takes focus: what had it, given back when the view goes,
+/// despawned or (for one that only hides) this removed. Focus goes back if
+/// that is still there, and is cleared otherwise.
+#[derive(Component, Debug)]
+pub struct RestoreFocus(pub Option<Entity>);
+
+pub fn give_focus_back(
+    remove: On<Remove<RestoreFocus>>,
+    views: Query<&RestoreFocus>,
+    exists: Query<()>,
+    mut focus: Option<ResMut<InputFocus>>,
+) {
+    let (Ok(RestoreFocus(previous)), Some(focus)) = (views.get(remove.entity), focus.as_mut())
+    else {
+        return;
+    };
+    match previous.filter(|&entity| exists.contains(entity)) {
+        Some(entity) => focus.set(entity, bevy::input_focus::FocusCause::Navigated),
+        None => focus.clear(),
+    }
+}
+
 /// Bevy 0.20's native button presses, and so activates, with any pointer
 /// button, and stops every click it sees; retail buttons answer the primary
 /// button only, and other clicks reach their ancestors as if the button were

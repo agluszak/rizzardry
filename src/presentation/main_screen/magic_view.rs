@@ -11,6 +11,7 @@
 //! view is not ported. Lists use native stepped scrollbars; pool items keep
 //! their shared ownership through selection and payment.
 
+use crate::presentation::retail_controls::RestoreFocus;
 use bevy::input_focus::InputFocus;
 use bevy::input_focus::tab_navigation::{TabGroup, TabIndex};
 use bevy::picking::hover::Hovered;
@@ -86,34 +87,12 @@ pub struct MagicKeys;
 #[action_output(bool)]
 struct CloseMagic;
 
-/// What had focus when the view opened, to have it back when it closes.
-#[derive(Component, Debug)]
-struct RestoreFocus(Option<Entity>);
-
 pub(super) fn plugin(app: &mut App) {
-    app.add_input_context::<MagicKeys>().add_observer(give_focus_back);
+    app.add_input_context::<MagicKeys>();
 }
 
 fn close_by_key(event: On<Start<CloseMagic>>, mut commands: Commands) {
     commands.entity(event.context).despawn();
-}
-
-/// However the view closes, focus goes back where it was, if that is
-/// still there.
-fn give_focus_back(
-    remove: On<Remove<MagicView>>,
-    views: Query<&RestoreFocus>,
-    exists: Query<()>,
-    mut focus: Option<ResMut<InputFocus>>,
-) {
-    let (Ok(RestoreFocus(previous)), Some(focus)) = (views.get(remove.entity), focus.as_mut())
-    else {
-        return;
-    };
-    match previous.filter(|&entity| exists.contains(entity)) {
-        Some(entity) => focus.set(entity, bevy::input_focus::FocusCause::Navigated),
-        None => focus.clear(),
-    }
 }
 
 /// The open view and its unconfirmed choice.
@@ -325,7 +304,6 @@ pub fn open(
             None => world.get_resource::<InputFocus>().and_then(InputFocus::get),
         };
         for (view, _) in previous {
-            world.entity_mut(view).remove::<RestoreFocus>();
             world.despawn(view);
         }
         let mut state = bevy::ecs::system::SystemState::<Commands>::new(world);

@@ -162,9 +162,7 @@ struct Choices {
     font: Handle<SpriteSheet>,
 }
 #[derive(Component, Default)]
-struct ChoiceOverlay {
-    previous_focus: Option<Entity>,
-}
+struct ChoiceOverlay;
 #[derive(Component)]
 struct ChoiceCaption(bool);
 #[derive(Clone, PartialEq)]
@@ -761,7 +759,7 @@ fn build(world: &mut World, session: Entity) -> Entity {
             scroll_arrows(world, centre, list, Vec2::new(298., 4.), 71.);
             let overlay = world
                 .spawn((
-                    ChoiceOverlay::default(),
+                    ChoiceOverlay,
                     Node { display: Display::None, ..absolute(Vec2::ZERO, Vec2::new(640., 480.)) },
                     GlobalZIndex(100),
                     Pickable::default(),
@@ -1677,8 +1675,8 @@ fn sync_choices(
     strings: super::screen_art::GameStrings,
     sessions: Query<&Conversation>,
     parties: Query<&PartyInventory, With<crate::game::party::roster::Party>>,
-    mut focus: ResMut<InputFocus>,
-    mut overlays: Query<(Entity, &mut Node, &mut ChoiceOverlay), Without<Choices>>,
+    focus: Res<InputFocus>,
+    mut overlays: Query<(Entity, &mut Node), (With<ChoiceOverlay>, Without<Choices>)>,
     mut lists: Query<
         (Entity, &Choices, &ChildOf, &mut Node, Option<&Children>),
         (With<Choices>, Without<ChoiceOverlay>, Without<Choice>),
@@ -1711,7 +1709,7 @@ fn sync_choices(
             }
             _ => vec![],
         };
-        let Ok((overlay, mut overlay_node, mut state)) = overlays.get_mut(parent.parent()) else {
+        let Ok((overlay, mut overlay_node)) = overlays.get_mut(parent.parent()) else {
             continue;
         };
         let visible = !answers.is_empty();
@@ -1719,13 +1717,17 @@ fn sync_choices(
         if visible != was_visible {
             overlay_node.display = if visible { Display::Flex } else { Display::None };
             if visible {
-                state.previous_focus = focus.get();
-                commands.entity(overlay).insert((TabGroup::modal(), bevy::ui_widgets::ModalDialog));
+                commands.entity(overlay).insert((
+                    TabGroup::modal(),
+                    bevy::ui_widgets::ModalDialog,
+                    crate::presentation::retail_controls::RestoreFocus(focus.get()),
+                ));
             } else {
-                commands.entity(overlay).remove::<(TabGroup, bevy::ui_widgets::ModalDialog)>();
-                if let Some(previous) = state.previous_focus.take() {
-                    focus.set(previous, FocusCause::Navigated);
-                }
+                commands.entity(overlay).remove::<(
+                    TabGroup,
+                    bevy::ui_widgets::ModalDialog,
+                    crate::presentation::retail_controls::RestoreFocus,
+                )>();
             }
         }
         let price = matches!(c.wait, ConversationWait::Price { .. });

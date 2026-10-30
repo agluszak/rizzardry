@@ -5,6 +5,7 @@ use crate::game::{
     difficulty::Difficulty,
     npcs::{NpcAssets, conversation::StoryFacts},
 };
+use crate::presentation::retail_controls::RestoreFocus;
 use crate::presentation::screen::Screen;
 use bevy::input_focus::{FocusCause, InputFocus, tab_navigation::TabGroup};
 use bevy::prelude::*;
@@ -16,7 +17,6 @@ struct Journal {
     /// Pages back from the newest page; zero follows the newest entries.
     pages_back: usize,
     mode: JournalMode,
-    previous_focus: Option<Entity>,
 }
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum JournalMode {
@@ -76,7 +76,7 @@ fn request(
     }
 }
 fn enter(mut commands: Commands, assets: Res<AssetServer>, mut focus: ResMut<InputFocus>) {
-    let view = Journal { previous_focus: focus.get(), ..default() };
+    let view = (Journal::default(), RestoreFocus(focus.get()));
     let outer = commands.spawn_scene(bsn! {
         Node { width: percent(100), height: percent(100), align_items: AlignItems::Center,
             justify_content: JustifyContent::Center }
@@ -192,14 +192,7 @@ fn enter(mut commands: Commands, assets: Res<AssetServer>, mut focus: ResMut<Inp
     commands
         .entity(outer)
         .insert(ContextPriority::<Journal>::new(10))
-        .observe(
-            |_: On<Start<Close>>,
-             view: Single<&Journal>,
-             mut next: ResMut<NextState<Screen>>,
-             mut focus: ResMut<InputFocus>| {
-                close(&view, &mut next, &mut focus);
-            },
-        )
+        .observe(|_: On<Start<Close>>, mut next: ResMut<NextState<Screen>>| next.set(Screen::World))
         .observe(|_: On<Start<Previous>>, mut view: Single<&mut Journal>| {
             view.pages_back = view.pages_back.saturating_add(1);
         })
@@ -207,20 +200,11 @@ fn enter(mut commands: Commands, assets: Res<AssetServer>, mut focus: ResMut<Inp
             view.pages_back = view.pages_back.saturating_sub(1);
         });
 }
-fn close(view: &Journal, next: &mut NextState<Screen>, focus: &mut InputFocus) {
-    next.set(Screen::World);
-    if let Some(e) = view.previous_focus {
-        focus.set(e, FocusCause::Navigated);
-    } else {
-        focus.clear();
-    }
-}
 fn activate(
     event: On<Activate>,
     choices: Query<&Choice>,
     mut view: Option<Single<&mut Journal>>,
     mut next: ResMut<NextState<Screen>>,
-    mut focus: ResMut<InputFocus>,
 ) {
     let (Ok(choice), Some(view)) = (choices.get(event.entity), view.as_mut()) else { return };
     match choice {
@@ -230,7 +214,7 @@ fn activate(
             view.mode = view.mode.next();
             view.pages_back = 0;
         }
-        Choice::Close => close(view, &mut next, &mut focus),
+        Choice::Close => next.set(Screen::World),
     }
 }
 /// Show the journal's page. It is redrawn only when what it shows changes:

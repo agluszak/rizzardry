@@ -97,6 +97,7 @@ impl Plugin for PresentationPlugin {
         .init_state::<screen::Screen>()
         .add_input_context::<Exploration>()
         .add_observer(retail_controls::primary_buttons_only)
+        .add_observer(retail_controls::give_focus_back)
         .add_observer(party_view::attach_camera)
         .add_observer(monsters::remove_monster_visuals)
         .add_observer(environment::request_level_visuals)
