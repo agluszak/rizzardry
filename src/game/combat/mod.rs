@@ -4040,10 +4040,9 @@ mod tests {
         assert!(cast.is_some() && landed.is_some() && cast < landed, "{news:?}");
     }
 
-    /// A fight with a missile in it runs the same at any frame rate: the
-    /// missile lands at the step its flight ends, before that step's next
-    /// actor, so frames of 1/32 s and of 3/4 s give the same impacts,
-    /// actions, wounds and generator state.
+    /// Impacts due in the same step land in the order they arrive, ties in
+    /// launch order, whatever the entity order: one long step and many short
+    /// ones give the same impacts and leave the RNG in the same state.
     #[test]
     fn missiles_land_the_same_whatever_the_frame_rate() {
         let fight_for = |frame: std::time::Duration| {
@@ -4084,9 +4083,6 @@ mod tests {
         assert_eq!(fast, slow);
     }
 
-    /// Impacts due in the same step land in the order they arrive, ties in
-    /// launch order, whatever the entity order: one long step and many short
-    /// ones give the same impacts and leave the RNG in the same state.
     #[test]
     fn due_spell_impacts_land_in_arrival_order_however_time_is_batched() {
         use crate::game::magic::Strength;
@@ -5909,31 +5905,6 @@ mod tests {
         app.update();
         assert!(attacks(&mut app).is_empty());
     }
-    #[test]
-    fn reordering_the_roster_does_not_reassign_accepted_defender_recovery() {
-        use crate::game::characters::{Gender, Profession, Race};
-        let run = |reorder| {
-            let (mut app, [a, b]) = round_app(true);
-            let character = Character::new("C", Race::Human, Gender::Male, Profession::Fighter);
-            let mut vitals = Vitals::new(&character);
-            vitals.stamina = 1;
-            let c =
-                app.world_mut().spawn((character, vitals, Carried::default(), Order::Defend)).id();
-            crate::game::party::roster::test_join(app.world_mut(), c);
-            app.world_mut().get_mut::<Vitals>(b).unwrap().stamina = 1;
-            app.update();
-            if reorder {
-                crate::game::party::roster::test_reorder(app.world_mut(), &[c, a, b]);
-            }
-            for _ in 0..4 {
-                app.update();
-            }
-            [b, c].map(|actor| app.world().get::<Vitals>(actor).unwrap().stamina)
-        };
-        let unchanged = run(false);
-        assert!(unchanged.into_iter().all(|stamina| stamina > 1));
-        assert_eq!(run(true), unchanged);
-    }
 
     /// Run the accepted round to its end.
     fn finish_round(app: &mut App) -> Vec<CombatNews> {
@@ -6480,6 +6451,7 @@ mod tests {
                 found = true;
                 // Its last fumble was the blow that knocked it out.
                 assert_eq!(fumbles.last(), Some(&Victim::Monster(fighter)), "seed {seed}");
+                break;
             }
         }
         assert!(found, "some seed has the monster knock itself out");

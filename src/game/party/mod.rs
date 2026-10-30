@@ -41,7 +41,6 @@ impl Plugin for PartyPlugin {
         .insert_resource(Gravity(Vec3::NEG_Y * body::GRAVITY))
         .add_message::<body::PartyLook>()
         .add_message::<body::TurnParty>()
-        .init_resource::<body::PartyTurning>()
         .add_message::<DamageApplied>()
         .add_systems(
             Update,

@@ -28,7 +28,6 @@ pub struct StoryFacts {
     values: BTreeMap<FactId, u8>,
     pub topics: Vec<(TopicCategory, String)>,
     pub journal: Vec<JournalEntry>,
-    initialized: bool,
 }
 /// A fact transition, retaining the level it happened on and whether the
 /// fact became true, which picks its description (retail `W8JournalEntry`'s
@@ -66,22 +65,13 @@ impl StoryFacts {
         self.topics.len() != before
     }
 
-    pub fn initialize(&mut self, catalog: &FactCatalog) {
-        if self.initialized {
-            return;
-        }
-        for fact in &catalog.0 {
-            if matches!(
-                fact.symbol.as_str(),
-                "FACT_VIRGIN"
-                    | "FACT_QUEST_VIRGIN_1"
-                    | "FACT_QUEST_VIRGIN_2"
-                    | "FACT_QUEST_VIRGIN_3"
-            ) {
-                self.values.insert(fact.id, 1);
-            }
-        }
-        self.initialized = true;
+    /// A fact's value before anything sets it: a new game starts its
+    /// virgin facts true.
+    fn initial(fact: &crate::content::npcs::FactDefinition) -> u8 {
+        u8::from(matches!(
+            fact.symbol.as_str(),
+            "FACT_VIRGIN" | "FACT_QUEST_VIRGIN_1" | "FACT_QUEST_VIRGIN_2" | "FACT_QUEST_VIRGIN_3"
+        ))
     }
     pub fn get(&self, id: FactId, catalog: &FactCatalog) -> Result<u8, String> {
         let fact = catalog.get(id).ok_or_else(|| format!("missing fact definition {id:?}"))?;
@@ -94,7 +84,9 @@ impl StoryFacts {
             | "FACT_UMISSION_SCUBA_DONE"
             | "FACT_SEXUS_PAID"
             | "FACT_TRYNNIE_MADRAS_WILL_JOIN"
-            | "FACT_PEACE_ACHIEVED" => Ok(*self.values.get(&id).unwrap_or(&0)),
+            | "FACT_PEACE_ACHIEVED" => {
+                Ok(self.values.get(&id).copied().unwrap_or(Self::initial(fact)))
+            }
             name => Err(format!("unported fact predicate {name}")),
         }
     }
@@ -113,20 +105,12 @@ impl StoryFacts {
         if !Self::can_set(id, catalog) {
             return Err(format!("unported fact assignment {id:?}"));
         }
-        let previous = self.values.insert(id, value).unwrap_or(0);
+        let initial = catalog.get(id).map_or(0, Self::initial);
+        let previous = self.values.insert(id, value).unwrap_or(initial);
         if previous != value {
             self.journal.push(JournalEntry { fact: id, was_true: value != 0, level });
         }
         Ok(())
-    }
-}
-pub fn initialize_facts(
-    assets: Res<NpcAssets>,
-    catalogs: Res<Assets<FactCatalog>>,
-    mut facts: ResMut<StoryFacts>,
-) {
-    if let Some(catalog) = catalogs.get(&assets.facts) {
-        facts.initialize(catalog);
     }
 }
 fn fact_catalog(world: &World) -> Option<&FactCatalog> {
@@ -643,12 +627,7 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
             })
         })?;
     }
-    let facts_handle = world.resource::<NpcAssets>().facts.clone();
-    world.resource_scope(|world, catalogs: Mut<Assets<FactCatalog>>| {
-        let catalog = catalogs.get(&facts_handle).ok_or(TradeError::MissingContent)?;
-        world.resource_mut::<StoryFacts>().initialize(catalog);
-        Ok::<_, TradeError>(())
-    })?;
+    fact_catalog(world).ok_or(TradeError::MissingContent)?;
     // OpenNpcDialoguePanel / MonsterForwardReferencePosition: the accepted
     // speaker faces the party. Physics rotation owns a moving body's facing.
     crate::game::world::face(world, body, party_at);

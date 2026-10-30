@@ -362,7 +362,6 @@ pub(super) fn refresh_quote(
 
 #[derive(Component)]
 pub(super) struct Summary {
-    previous_focus: Option<Entity>,
     voice_path: String,
     timer: Timer,
     started: bool,
@@ -383,11 +382,10 @@ fn open_summary(
     let Some(draft) = session.mode.draft() else { return };
     let stem =
         crate::presentation::voice::pc_voice_stem(draft.gender(), draft.personality, draft.voice);
-    let previous_focus = focus.get();
     let dialog = commands
         .spawn((
+            crate::presentation::retail_controls::RestoreFocus(focus.get()),
             Summary {
-                previous_focus,
                 voice_path: crate::presentation::voice::pc_voice_path(&stem, 0),
                 timer: Timer::from_seconds(0.75, TimerMode::Once),
                 started: false,
@@ -446,37 +444,25 @@ fn open_summary(
 
 fn close_summary_on_pointer(
     event: On<PointerPress>,
-    dialogs: Query<&Summary>,
+    dialogs: Query<(), With<Summary>>,
     mut commands: Commands,
-    mut focus: ResMut<InputFocus>,
 ) {
-    if let Ok(dialog) = dialogs.get(event.entity) {
-        if let Some(previous) = dialog.previous_focus {
-            focus.set(previous, FocusCause::Navigated);
-        } else {
-            focus.clear();
-        }
+    if dialogs.contains(event.entity) {
         commands.entity(event.entity).despawn();
     }
 }
 fn close_summary_on_key(
     event: On<FocusedInput<KeyboardInput>>,
-    dialogs: Query<&Summary>,
+    dialogs: Query<(), With<Summary>>,
     mut commands: Commands,
-    mut focus: ResMut<InputFocus>,
 ) {
     if event.input.state.is_pressed()
         && matches!(
             event.input.key_code,
             KeyCode::Escape | KeyCode::Enter | KeyCode::Space | KeyCode::Backspace
         )
-        && let Ok(dialog) = dialogs.get(event.focused_entity)
+        && dialogs.contains(event.focused_entity)
     {
-        if let Some(previous) = dialog.previous_focus {
-            focus.set(previous, FocusCause::Navigated);
-        } else {
-            focus.clear();
-        }
         commands.entity(event.focused_entity).despawn();
     }
 }

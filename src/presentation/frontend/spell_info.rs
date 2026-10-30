@@ -22,8 +22,6 @@ pub(super) struct SpellInfo {
     effects: Handle<SpellText>,
     descriptions: Handle<SpellText>,
     font: Handle<SpriteSheet>,
-    previous_focus: Option<Entity>,
-    populated: bool,
 }
 #[derive(Component)]
 pub(super) struct Scroll(Entity);
@@ -55,9 +53,8 @@ pub(super) fn open(
                 effects: assets.load(crate::content::paths::SPELL_EFFECTS),
                 descriptions: assets.load(crate::content::paths::SPELL_DESCRIPTIONS),
                 font: assets.load("retail://data/fonts/wiz_text_font.sti"),
-                previous_focus: focus.get(),
-                populated: false,
             },
+            crate::presentation::retail_controls::RestoreFocus(focus.get()),
             absolute(Vec2::ZERO, Vec2::new(640., 480.)),
             GlobalZIndex(100),
             ModalDialog,
@@ -86,41 +83,19 @@ pub(super) fn open(
             Pickable::default(),
             ChildOf(root),
         ))
-        .observe(
-            move |_: On<Activate>,
-                  infos: Query<&SpellInfo>,
-                  mut commands: Commands,
-                  mut focus: ResMut<InputFocus>| {
-                dismiss(root, &infos, &mut commands, &mut focus);
-            },
-        )
+        .observe(move |_: On<Activate>, mut commands: Commands| {
+            commands.entity(root).try_despawn();
+        })
         .id();
     focus.set(close, FocusCause::Navigated);
-}
-fn dismiss(
-    entity: Entity,
-    infos: &Query<&SpellInfo>,
-    commands: &mut Commands,
-    focus: &mut InputFocus,
-) {
-    if let Ok(info) = infos.get(entity) {
-        if let Some(previous) = info.previous_focus {
-            focus.set(previous, FocusCause::Navigated);
-        } else {
-            focus.clear();
-        }
-        commands.entity(entity).despawn();
-    }
 }
 fn close_right(
     event: On<PointerRelease>,
     dialog: Single<Entity, With<SpellInfo>>,
-    infos: Query<&SpellInfo>,
     mut commands: Commands,
-    mut focus: ResMut<InputFocus>,
 ) {
     if event.button == PointerButton::Secondary {
-        dismiss(*dialog, &infos, &mut commands, &mut focus);
+        commands.entity(*dialog).despawn();
     }
 }
 fn close_key(
@@ -128,7 +103,6 @@ fn close_key(
     infos: Query<&SpellInfo>,
     parents: Query<&ChildOf>,
     mut commands: Commands,
-    mut focus: ResMut<InputFocus>,
 ) {
     if !event.input.state.is_pressed() || event.input.key_code != KeyCode::Escape {
         return;
@@ -136,7 +110,7 @@ fn close_key(
     let mut entity = event.focused_entity;
     loop {
         if infos.contains(entity) {
-            dismiss(entity, &infos, &mut commands, &mut focus);
+            commands.entity(entity).despawn();
             break;
         }
         let Ok(parent) = parents.get(entity) else { break };
@@ -166,7 +140,8 @@ fn label(
 }
 
 pub(super) fn populate(
-    mut dialogs: Query<(Entity, &mut SpellInfo)>,
+    // Built once its contents have loaded, which gives it its scrollbar.
+    dialogs: Query<(Entity, &SpellInfo), Without<Scroll>>,
     assets: Res<AssetServer>,
     content: crate::game::data::Content,
     game_strings: crate::presentation::screen_art::GameStrings,
@@ -174,10 +149,7 @@ pub(super) fn populate(
     sheets: Res<Assets<SpriteSheet>>,
     mut commands: Commands,
 ) {
-    for (root, mut info) in &mut dialogs {
-        if info.populated {
-            continue;
-        }
+    for (root, info) in &dialogs {
         let (Some(spell), Some(strings), Some(effects), Some(descriptions), Some(font)) = (
             content.spells().and_then(|c| c.get(info.id)),
             game_strings.table(),
@@ -411,7 +383,6 @@ pub(super) fn populate(
             max as f32,
         );
         commands.entity(root).insert(Scroll(track)).insert(ScrollWheel(track));
-        info.populated = true;
     }
 }
 pub(super) fn scroll(

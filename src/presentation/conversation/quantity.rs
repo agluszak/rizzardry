@@ -13,7 +13,6 @@ pub(super) struct Draft {
     maximum: u32,
     unit_weight: u16,
     remaining_price: u32,
-    previous_focus: Option<Entity>,
 }
 #[derive(Component)]
 pub(super) struct Count;
@@ -95,12 +94,13 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
             Pickable::default(),
             TabGroup::modal(),
             ModalDialog,
+            crate::presentation::retail_controls::RestoreFocus(previous_focus),
             ChildOf(canvas),
         ))
         .id();
     let panel = world
         .spawn((
-            Draft { view, quote: q, maximum, unit_weight, remaining_price, previous_focus },
+            Draft { view, quote: q, maximum, unit_weight, remaining_price },
             absolute(Vec2::new(161., 148.), Vec2::new(322., 189.)),
             ChildOf(overlay),
         ))
@@ -307,7 +307,7 @@ fn change(world: &mut World, panel: Entity, n: u32, rewrite: bool) {
 }
 fn finish(world: &mut World, panel: Entity, accept: bool) {
     let Some(d) = world.get::<Draft>(panel) else { return };
-    let (view, mut q, previous, maximum) = (d.view, d.quote, d.previous_focus, d.maximum);
+    let (view, mut q, maximum) = (d.view, d.quote, d.maximum);
     if accept {
         let Some(count) = world
             .get::<Children>(panel)
@@ -341,9 +341,6 @@ fn finish(world: &mut World, panel: Entity, accept: bool) {
         select(world, view, q.conversation, q.source, q.quantity);
     }
     world.despawn(overlay);
-    if let Some(entity) = previous.filter(|e| world.get_entity(*e).is_ok()) {
-        world.resource_mut::<InputFocus>().set(entity, FocusCause::Navigated);
-    }
 }
 pub(super) fn sync(
     mut commands: Commands,
@@ -437,14 +434,7 @@ mod tests {
             let overlay = world.spawn(ChildOf(view)).id();
             let panel = world
                 .spawn((
-                    Draft {
-                        view,
-                        quote: q,
-                        maximum: 5,
-                        unit_weight: 1,
-                        remaining_price: 40,
-                        previous_focus: None,
-                    },
+                    Draft { view, quote: q, maximum: 5, unit_weight: 1, remaining_price: 40 },
                     ChildOf(overlay),
                 ))
                 .id();

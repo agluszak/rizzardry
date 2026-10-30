@@ -252,12 +252,10 @@ pub struct TurnParty {
     pub smooth: bool,
 }
 
-/// A turn under way, as yaw and pitch. Turning the view by hand ends it.
-#[derive(Resource, Debug, Default)]
-pub struct PartyTurning(Option<Turning>);
-
-#[derive(Debug)]
-struct Turning {
+/// On the party: a turn under way, as yaw and pitch. Turning the view by
+/// hand ends it.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Turning {
     from: Vec2,
     to: Vec2,
     duration: f32,
@@ -278,43 +276,56 @@ fn wrapped(angle: f32) -> f32 {
 /// done or the view was turned another way. It waits while the party is
 /// held.
 pub fn turn_party(
+    mut commands: Commands,
     time: Res<Time>,
     mut requests: MessageReader<TurnParty>,
-    mut turning: ResMut<PartyTurning>,
     freedom: crate::game::freedom::Freedom,
-    mut party: Query<&mut PartyBody>,
+    mut party: Query<(Entity, &mut PartyBody, Option<&mut Turning>)>,
 ) {
-    let Ok(mut body) = party.single_mut() else {
+    let Ok((entity, mut body, turning)) = party.single_mut() else {
         requests.clear();
-        turning.0 = None;
         return;
     };
     let now = Vec2::new(body.yaw, body.pitch);
-    for request in requests.read() {
-        let to = Vec2::new(
-            body.yaw + wrapped(request.to.x - body.yaw),
-            request.to.y.clamp(-MAX_PITCH, MAX_PITCH),
-        );
-        let duration =
-            if request.smooth { (to - now).abs().max_element() * SECONDS_PER_RADIAN } else { 0.0 };
-        turning.0 = Some(Turning { from: now, to, duration, elapsed: 0.0, last: now });
-    }
-    let Some(turn) = turning.0.as_mut() else { return };
+    let mut turn = match requests.read().last() {
+        Some(request) => {
+            let to = Vec2::new(
+                body.yaw + wrapped(request.to.x - body.yaw),
+                request.to.y.clamp(-MAX_PITCH, MAX_PITCH),
+            );
+            let duration = if request.smooth {
+                (to - now).abs().max_element() * SECONDS_PER_RADIAN
+            } else {
+                0.0
+            };
+            Turning { from: now, to, duration, elapsed: 0.0, last: now }
+        }
+        None => match turning.as_deref() {
+            Some(&turn) => turn,
+            None => return,
+        },
+    };
     if (now - turn.last).abs().max_element() > 1e-4 {
-        turning.0 = None;
+        commands.entity(entity).remove::<Turning>();
         return;
     }
-    if !freedom.free() {
-        return;
+    if freedom.free() {
+        turn.elapsed += time.delta_secs();
+        let share = (turn.elapsed / turn.duration.max(f32::EPSILON)).min(1.0);
+        let eased = (1.0 - (share * std::f32::consts::PI).cos()) / 2.0;
+        let wanted = turn.from + (turn.to - turn.from) * eased;
+        (body.yaw, body.pitch) = (wanted.x, wanted.y);
+        turn.last = wanted;
+        if share >= 1.0 {
+            commands.entity(entity).remove::<Turning>();
+            return;
+        }
     }
-    turn.elapsed += time.delta_secs();
-    let share = (turn.elapsed / turn.duration.max(f32::EPSILON)).min(1.0);
-    let eased = (1.0 - (share * std::f32::consts::PI).cos()) / 2.0;
-    let wanted = turn.from + (turn.to - turn.from) * eased;
-    (body.yaw, body.pitch) = (wanted.x, wanted.y);
-    turn.last = wanted;
-    if share >= 1.0 {
-        turning.0 = None;
+    match turning {
+        Some(mut existing) => *existing = turn,
+        None => {
+            commands.entity(entity).insert(turn);
+        }
     }
 }
 

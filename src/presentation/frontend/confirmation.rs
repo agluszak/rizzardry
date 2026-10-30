@@ -20,7 +20,6 @@ enum Purpose {
 #[derive(Component, Clone)]
 pub(super) struct ConfirmDialog {
     purpose: Purpose,
-    previous_focus: Option<Entity>,
 }
 #[derive(Component)]
 pub(super) struct QuestionText {
@@ -69,7 +68,7 @@ fn open_dialog(
     purpose: Purpose,
     focus: &mut InputFocus,
 ) {
-    let previous_focus = focus.get();
+    let restore = crate::presentation::retail_controls::RestoreFocus(focus.get());
     let dialog = commands.spawn_scene(bsn! {
         Node { width: percent(100), height: percent(100), justify_content: JustifyContent::Center, align_items: AlignItems::Center }
         GlobalZIndex(100)
@@ -84,7 +83,7 @@ fn open_dialog(
         ]
         on(|event: On<Start<Accept>>, mut commands: Commands| { commands.trigger(Answer { dialog: event.context, accepted: true }); })
         on(|event: On<Start<Cancel>>, mut commands: Commands| { commands.trigger(Answer { dialog: event.context, accepted: false }); })
-    }).insert((ConfirmDialog { purpose: purpose.clone(), previous_focus }, DespawnOnExit(Session::Creation))).id();
+    }).insert((ConfirmDialog { purpose: purpose.clone() }, restore, DespawnOnExit(Session::Creation))).id();
     let panel = commands
         .spawn((
             Panel,
@@ -134,7 +133,6 @@ pub(super) fn resolve(
     dialogs: Query<(&ConfirmDialog, &ContextActivity<ConfirmDialog>)>,
     mut sessions: Query<&mut Creation>,
     mut commands: Commands,
-    mut focus: ResMut<InputFocus>,
 ) {
     let Ok((dialog, active)) = dialogs.get(answer.dialog) else { return };
     if !**active {
@@ -168,11 +166,6 @@ pub(super) fn resolve(
         }
     }
     commands.entity(answer.dialog).despawn();
-    if let Some(previous) = dialog.previous_focus {
-        focus.set(previous, FocusCause::Navigated);
-    } else {
-        focus.clear();
-    }
 }
 
 pub(super) fn show_text(

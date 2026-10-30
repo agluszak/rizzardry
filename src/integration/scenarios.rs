@@ -6,14 +6,14 @@
 //! RIZZARDRY_RETAIL=/path/to/wizardry8 cargo nextest run --run-ignored only -E 'test(/^scenarios::/)'
 //! ```
 
+use crate::app::{Options, build};
+use crate::game::combat::Battle;
+use crate::game::inventory::PartyInventory;
+use crate::game::world::items::WorldItem;
+use crate::game::world::level::{Level, Travel};
+use crate::game::world::population::Monster;
 use bevy::prelude::*;
 use clap::Parser;
-use rizzardry::app::{Options, build};
-use rizzardry::game::combat::Battle;
-use rizzardry::game::inventory::PartyInventory;
-use rizzardry::game::world::items::WorldItem;
-use rizzardry::game::world::level::{Level, Travel};
-use rizzardry::game::world::population::Monster;
 
 /// Ten simulated minutes includes full movement budgets in multi-round fights.
 const STEPS: usize = 64 * 600;
@@ -99,11 +99,11 @@ fn a_green_slime_leaves_treasure() {
     let (loot, _) = loot.expect("the treasure lies in the world");
     let at = world.get::<Transform>(loot).unwrap().translation;
     let mut body = world
-        .query_filtered::<&mut avian3d::prelude::Position, With<rizzardry::game::party::body::PartyBody>>()
+        .query_filtered::<&mut avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>()
         .single_mut(world)
         .unwrap();
     body.0 = at + Vec3::X;
-    rizzardry::game::world::items::take_item(world, loot).unwrap();
+    crate::game::world::items::take_item(world, loot).unwrap();
     step_until(&mut app, "taking the treasure", |w| {
         w.try_query::<&PartyInventory>().unwrap().single(w).is_ok_and(|p| p.hand.held.is_some())
     });
@@ -129,10 +129,10 @@ fn the_dead_stay_dead_across_travel() {
 #[test]
 #[ignore = "requires a retail installation"]
 fn the_party_rests_eight_hours_and_wakes() {
+    use crate::game::camp::{Camp, CampNews, CampRequest};
+    use crate::game::party::body::PartyBody;
+    use crate::game::time::GameClock;
     use avian3d::prelude::LinearVelocity;
-    use rizzardry::game::camp::{Camp, CampNews, CampRequest};
-    use rizzardry::game::party::body::PartyBody;
-    use rizzardry::game::time::GameClock;
     // After beating the beach crabs, with the beach quiet.
     let mut app = game(&["--continuous", "--start=108,2.5,-96"]);
     crab_fight(&mut app);
@@ -154,23 +154,23 @@ fn the_party_rests_eight_hours_and_wakes() {
 #[test]
 #[ignore = "requires a retail installation"]
 fn burz_conversation_trade_and_revisit_keep_one_actor() {
-    use rizzardry::content::npcs::{DialogueScript, NpcCatalog};
-    use rizzardry::game::inventory::{ItemOwner, ItemRef};
-    use rizzardry::game::npcs::conversation::{
+    use crate::content::npcs::{DialogueScript, NpcCatalog};
+    use crate::game::inventory::{ItemOwner, ItemRef};
+    use crate::game::npcs::conversation::{
         self, Conversation, ConversationRequest, ConversationWait,
     };
-    use rizzardry::game::npcs::trade::TradeSource;
-    use rizzardry::game::npcs::{Npc, NpcAssets, NpcBodies};
+    use crate::game::npcs::trade::TradeSource;
+    use crate::game::npcs::{Npc, NpcAssets, NpcBodies};
     let mut app = game(&["--seed", "8", "--start=225,36.7,-68.6"]);
     step_until(&mut app, "the Monastery becoming active", |w| playing(w).is_some());
     let assets = app.world().resource::<NpcAssets>();
     let catalog = app.world().resource::<Assets<NpcCatalog>>().get(&assets.catalog).unwrap();
-    let burz_id = rizzardry::content::npcs::NpcId(
+    let burz_id = crate::content::npcs::NpcId(
         catalog.0.iter().position(|d| d.source_name == "Burz").unwrap() as u16,
     );
     let actor = app
         .world_mut()
-        .query::<(Entity, &rizzardry::game::npcs::ActorId)>()
+        .query::<(Entity, &crate::game::npcs::ActorId)>()
         .iter(app.world())
         .find(|(_, identity)| identity.npc() == burz_id)
         .unwrap()
@@ -181,8 +181,8 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     );
     let body = app.world().get::<NpcBodies>(actor).unwrap()[0];
     let position = app.world().get::<avian3d::prelude::Position>(body).unwrap().0;
-    for mut p in app.world_mut().query_filtered::<&mut avian3d::prelude::Position,With<rizzardry::game::party::body::PartyBody>>().iter_mut(app.world_mut()){p.0=position+Vec3::X*2.0;}
-    let party = rizzardry::game::party::roster::the_party(app.world_mut()).unwrap();
+    for mut p in app.world_mut().query_filtered::<&mut avian3d::prelude::Position,With<crate::game::party::body::PartyBody>>().iter_mut(app.world_mut()){p.0=position+Vec3::X*2.0;}
+    let party = crate::game::party::roster::the_party(app.world_mut()).unwrap();
     app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 10000;
     let session = conversation::begin(app.world_mut(), actor).unwrap();
     fn finish(app: &mut App, session: Entity) {
@@ -274,21 +274,21 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
         .operations
         .iter()
         .find_map(|op| match op {
-            rizzardry::content::npcs::DialogueOp::SetFact(id, _) => Some(*id),
+            crate::content::npcs::DialogueOp::SetFact(id, _) => Some(*id),
             _ => None,
         })
         .unwrap();
     let stock = app.world().get::<Npc>(actor).unwrap().stock.clone();
     let invalid = {
         let server = app.world().resource::<AssetServer>();
-        rizzardry::game::world::level::Level::load("levels/missing/missing.pvl", server)
+        crate::game::world::level::Level::load("levels/missing/missing.pvl", server)
     };
     let invalid = app
         .world_mut()
-        .spawn(rizzardry::game::world::level::Destination::new(
+        .spawn(crate::game::world::level::Destination::new(
             invalid,
             default(),
-            rizzardry::game::world::level::Entry::Travel,
+            crate::game::world::level::Entry::Travel,
         ))
         .id();
     step_until(&mut app, "failed preparation", |w| w.get_entity(invalid).is_err());
@@ -323,20 +323,20 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     assert!(!npc.greeting_pending);
     let facts = app
         .world()
-        .resource::<Assets<rizzardry::content::npcs::FactCatalog>>()
+        .resource::<Assets<crate::content::npcs::FactCatalog>>()
         .get(&app.world().resource::<NpcAssets>().facts)
         .unwrap();
     assert_eq!(app.world().resource::<conversation::StoryFacts>().get(fact, facts), Ok(1));
     assert_eq!(
         app.world_mut()
-            .query::<(&rizzardry::game::npcs::ActorId, &Npc)>()
+            .query::<(&crate::game::npcs::ActorId, &Npc)>()
             .iter(app.world())
             .filter(|(identity, _)| identity.npc() == burz_id)
             .count(),
         1
     );
     let position = app.world().get::<avian3d::prelude::Position>(returned_body).unwrap().0;
-    for mut p in app.world_mut().query_filtered::<&mut avian3d::prelude::Position, With<rizzardry::game::party::body::PartyBody>>().iter_mut(app.world_mut()) {
+    for mut p in app.world_mut().query_filtered::<&mut avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>().iter_mut(app.world_mut()) {
         p.0 = position + Vec3::X * 2.0;
     }
     let reopened = conversation::begin(app.world_mut(), actor).unwrap();
