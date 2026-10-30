@@ -96,13 +96,11 @@ fn open_dialog(
     for line in 0..3 {
         commands.spawn((
             QuestionText { purpose: purpose.clone(), line },
-            BitmapText {
-                font: assets.load("retail://data/fonts/wiz_text_font.sti"),
-                at: Vec2::new(4., 20. + line as f32 * 11.),
-                width: 202.,
-                justify: bevy::text::Justify::Center,
-                ..default()
-            },
+            BitmapText::centred(
+                assets.load("retail://data/fonts/wiz_text_font.sti"),
+                Vec2::new(4., 20. + line as f32 * 11.),
+                202.,
+            ),
             ChildOf(panel),
         ));
     }

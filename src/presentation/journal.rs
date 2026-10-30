@@ -123,13 +123,11 @@ fn enter(mut commands: Commands, assets: Res<AssetServer>, mut focus: ResMut<Inp
     for left in [true, false] {
         commands.spawn((
             Heading(left),
-            BitmapText {
-                font: assets.load("retail://data/journal/journal_font.sti"),
-                at: Vec2::new(if left { 11. } else { 193. }, 25.),
-                width: if left { 175. } else { 435. },
-                justify: bevy::text::Justify::Center,
-                ..default()
-            },
+            BitmapText::centred(
+                assets.load("retail://data/journal/journal_font.sti"),
+                Vec2::new(if left { 11. } else { 193. }, 25.),
+                if left { 175. } else { 435. },
+            ),
             ChildOf(root),
         ));
     }
@@ -142,13 +140,11 @@ fn enter(mut commands: Commands, assets: Res<AssetServer>, mut focus: ResMut<Inp
     );
     commands.spawn((
         PageLabel,
-        BitmapText {
-            font: assets.load("retail://data/fonts/opt_detail_font.sti"),
-            at: Vec2::new(135., 450.),
-            width: 245.,
-            justify: bevy::text::Justify::Center,
-            ..default()
-        },
+        BitmapText::centred(
+            assets.load("retail://data/fonts/opt_detail_font.sti"),
+            Vec2::new(135., 450.),
+            245.,
+        ),
         ChildOf(root),
     ));
     use super::retail_controls::{ControlSkin, image_button};

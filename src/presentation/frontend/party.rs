@@ -58,14 +58,7 @@ fn label(
 ) -> Entity {
     commands
         .spawn((
-            BitmapText {
-                font,
-                value: value.into(),
-                at,
-                width,
-                justify: bevy::text::Justify::Center,
-                ..default()
-            },
+            BitmapText { value: value.into(), ..BitmapText::centred(font, at, width) },
             ChildOf(parent),
         ))
         .id()

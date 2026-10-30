@@ -26,13 +26,7 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
     picture(commands, page, art.magic_page.clone(), 0, Vec2::new(310.0, 0.0));
     picture(commands, page, art.magic_page.clone(), 2, Vec2::new(0.0, 165.0));
     commands.spawn((
-        BitmapText {
-            font: art.font.clone(),
-            at: Vec2::new(324.0, 30.0),
-            width: 308.0,
-            justify: bevy::text::Justify::Center,
-            ..default()
-        },
+        BitmapText::centred(art.font.clone(), Vec2::new(324.0, 30.0), 308.0),
         RetailLabel(0x8ca),
         ChildOf(page),
     ));

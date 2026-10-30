@@ -129,6 +129,13 @@ pub struct BitmapText {
     pub justify: bevy::text::Justify,
 }
 
+impl BitmapText {
+    /// Text centred in the `width` running right from `at`.
+    pub fn centred(font: Handle<SpriteSheet>, at: Vec2, width: f32) -> Self {
+        Self { font, at, width, justify: bevy::text::Justify::Center, ..default() }
+    }
+}
+
 /// Opt a label into wrapping, separately from its horizontal alignment box.
 #[derive(Component, Clone, Copy, PartialEq)]
 pub struct BitmapWrap {
@@ -168,7 +175,7 @@ pub fn picture(sheet: Handle<SpriteSheet>, frame: usize, at: Vec2) -> impl Scene
 
 pub fn label(font: Handle<SpriteSheet>, at: Vec2, width: f32) -> impl Scene {
     bsn! {
-        template(move |_| Ok(BitmapText { font: font.clone(), value: String::new(), at, width, justify: bevy::text::Justify::Center, ..default() }))
+        template(move |_| Ok(BitmapText { value: String::new(), ..BitmapText::centred(font.clone(), at, width) }))
     }
 }
 
