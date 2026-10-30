@@ -44,7 +44,7 @@ pub fn play_music(
     mut commands: Commands,
     time: Res<Time>,
     assets: Res<AssetServer>,
-    levels: Query<&Level>,
+    level: Single<&Level>,
     camp: Option<Res<Camp>>,
     playlists: Res<Assets<Playlist>>,
     master: Option<Res<bevy::audio::GlobalVolume>>,
@@ -52,7 +52,6 @@ pub fn play_music(
     mut rng: ResMut<PresentationRng>,
     mut songs: Query<(Entity, &mut Song, Option<&mut AudioSink>)>,
 ) {
-    let Ok(level) = levels.single() else { return };
     let wanted = if camp.is_some() {
         CAMPING.to_owned()
     } else {

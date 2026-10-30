@@ -373,7 +373,7 @@ fn scroll_to_focus(
 /// for all of its rows.
 fn refresh(
     mut commands: Commands,
-    editors: Query<Ref<Editor>>,
+    editor: Single<Ref<Editor>>,
     content: If<Res<Catalogs>>,
     strings: crate::presentation::screen_art::GameStrings,
     mut captions: Query<(&Caption, &mut BitmapText)>,
@@ -381,7 +381,6 @@ fn refresh(
     mut actions: Query<(Entity, &Action, Has<InteractionDisabled>, &mut BackgroundColor)>,
     added: Query<(), Or<(Added<Caption>, Added<Action>, Added<PagePanel>)>>,
 ) {
-    let Ok(editor) = editors.single() else { return };
     let changed =
         editor.is_changed() || content.is_changed() || strings.is_changed() || !added.is_empty();
     if !changed {

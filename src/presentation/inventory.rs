@@ -872,7 +872,7 @@ fn member_position(slot: usize) -> Vec2 {
 /// Occupied controls retain actor identity; slots only determine placement.
 fn sync_member_portraits(
     mut commands: Commands,
-    roots: Query<Entity, With<MemberSelector>>,
+    root: Single<Entity, With<MemberSelector>>,
     roster: Single<&PartyRoster>,
     members: Query<(&Character, &Vitals)>,
     mut buttons: Query<(Entity, &InventoryMemberButton, &mut Picture)>,
@@ -880,7 +880,6 @@ fn sync_member_portraits(
     art: Res<InventoryArt>,
     assets: Res<AssetServer>,
 ) {
-    let Ok(root) = roots.single() else { return };
     for (slot, mut visible) in &mut empty {
         let occupied = roster.get_index(slot.0).is_some();
         visible.set_if_neq(visible_if(!occupied));
@@ -919,7 +918,7 @@ fn sync_member_portraits(
                         PortraitHighlight Visibility::Hidden
                     ]
                 })
-                .insert(ChildOf(root));
+                .insert(ChildOf(*root));
         }
     }
 }
