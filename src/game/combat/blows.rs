@@ -615,7 +615,7 @@ pub(super) fn member_attacks(
     let mut left = swings;
     while left > 0 {
         left -= 1;
-        let Ok((_, vitals, ..)) = field.members.get(member) else { break };
+        let (_, vitals, ..) = field.members.get(member).unwrap();
         let vitals: Vitals = vitals.clone();
         if !vitals.can_fight() {
             break;
@@ -680,7 +680,7 @@ pub(super) fn member_attacks(
             }
         }
         // Every swing tires, twice as much in a berserk fury.
-        let Ok((_, mut vitals, mut carried, _)) = field.members.get_mut(member) else { break };
+        let (_, mut vitals, mut carried, _) = field.members.get_mut(member).unwrap();
         let weight = hand.weight;
         let cost = attack::swing_stamina(
             rng,
@@ -1058,7 +1058,7 @@ pub(super) fn monster_attacks(
     let backstab = crate::game::characters::scale_by_level(kind.level, 100.0) as i32;
     let mut tally = Tally::default();
     for _ in 0..swings {
-        let Ok((monster, ..)) = field.monsters.monsters().get(entity) else { break };
+        let (monster, ..) = field.monsters.monsters().get(entity).unwrap();
         let monster = monster.clone();
         // A fumble may incapacitate the attacker between its swings.
         if !monster.can_fight() {
