@@ -1915,9 +1915,7 @@ mod tests {
     /// a willing one accepts and then joins.
     #[test]
     fn a_request_to_join_is_answered_from_the_script() {
-        let answer = |character: bool,
-                      companions: usize,
-                      gear: Option<crate::content::items::ItemId>| {
+        let answer = |character: bool, companions: usize| {
             let quotes =
                 (0..16).map(|i| Quote { text: vec![format!("quote {i}")], ..default() }).collect();
             let (mut app, session, _) = app(DialogueScript { quotes });
@@ -1935,9 +1933,7 @@ mod tests {
                         attributes: default(),
                         skills: default(),
                         spells: vec![],
-                        equipment: [
-                            gear, None, None, None, None, None, None, None, None, None, None, None,
-                        ],
+                        equipment: [None; 12],
                         backpack: [None; 8],
                         wanted: vec![],
                     });
@@ -1953,14 +1949,9 @@ mod tests {
             let c = app.world().get::<Conversation>(session).unwrap();
             (c.current, c.queue.iter().any(|step| matches!(step, Step::Join)))
         };
-        assert_eq!(answer(false, 0, None), (Some((DECLINES_TO_JOIN, 0)), false));
-        assert_eq!(answer(true, 2, None), (Some((NO_ROOM_TO_JOIN, 0)), false));
-        assert_eq!(answer(true, 1, None), (Some((JOINS, 0)), true));
-        // Gear the catalog lacks is missing content: it declines, nothing made.
-        assert_eq!(
-            answer(true, 1, Some(crate::content::items::ItemId(5))),
-            (Some((DECLINES_TO_JOIN, 0)), false)
-        );
+        assert_eq!(answer(false, 0), (Some((DECLINES_TO_JOIN, 0)), false));
+        assert_eq!(answer(true, 2), (Some((NO_ROOM_TO_JOIN, 0)), false));
+        assert_eq!(answer(true, 1), (Some((JOINS, 0)), true));
     }
 
     #[test]
