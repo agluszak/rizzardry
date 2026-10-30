@@ -146,6 +146,8 @@ mod tests {
         );
         let world = &mut scene.world;
         world.init_resource::<crate::game::factions::Factions>();
+        world.init_resource::<Messages<crate::game::factions::FactionNews>>();
+        world.init_resource::<ItemIds>();
         world.init_resource::<Messages<MagicRequest>>();
         world.init_resource::<Messages<MagicNews>>();
         let species = MonsterCatalog::default();

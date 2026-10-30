@@ -865,6 +865,7 @@ mod tests {
     #[test]
     fn review_tracks_character_and_condition_changes() {
         let mut app = App::new();
+        app.init_resource::<crate::game::data::Catalogs>();
         // As InventoryPlugin registers them: unordered.
         app.add_plugins(MinimalPlugins).insert_resource(InventoryArt::default()).add_systems(
             Update,
@@ -918,6 +919,7 @@ mod tests {
         use crate::game::inventory::{Equipped, ItemIds, make_item};
         use crate::game::rng::GameRng;
         let mut app = App::new();
+        app.init_resource::<crate::game::data::Catalogs>();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<TextTable>()
             .insert_resource(InventoryArt::default())

@@ -839,6 +839,7 @@ mod tests {
     fn rpc_slots_are_reserved_without_reordering_the_roster() {
         use bevy::ecs::system::RunSystemOnce;
         let mut world = World::new();
+        world.init_resource::<crate::game::data::Catalogs>();
         let pcs: Vec<_> = (0..6).map(|_| world.spawn_empty().id()).collect();
         let party = crate::game::party::roster::test_party(&mut world, &pcs);
         let project = |slots: PortraitSlots| (0..8).map(|i| slots.member(i)).collect::<Vec<_>>();
@@ -860,6 +861,7 @@ mod tests {
         use crate::game::inventory::{ItemIds, PartyInventory, make_item};
         use crate::game::rng::GameRng;
         let mut app = App::new();
+        app.init_resource::<crate::game::data::Catalogs>();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_resource::<SelectedMember>()
             .init_resource::<ButtonInput<MouseButton>>()
@@ -947,6 +949,7 @@ mod tests {
     #[test]
     fn new_damage_refreshes_the_existing_splat_before_playback_expires_it() {
         let mut app = App::new();
+        app.init_resource::<crate::game::data::Catalogs>();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<SpriteSheet>()
             .init_resource::<PresentationRng>()
@@ -993,6 +996,7 @@ mod tests {
         use crate::presentation::main_screen::magic_view::MagicView;
         let click_with = |targeting: Targeting| {
             let mut world = World::new();
+            world.init_resource::<crate::game::data::Catalogs>();
             world.init_resource::<ScreenLayout>();
             world.init_resource::<SelectedMember>();
             world.init_resource::<Messages<crate::game::inventory::ItemNews>>();
@@ -1045,6 +1049,7 @@ mod tests {
     #[test]
     fn native_click_counts_review_only_the_current_selection_gesture() {
         let mut world = World::new();
+        world.init_resource::<crate::game::data::Catalogs>();
         world.init_resource::<ScreenLayout>();
         world.init_resource::<SelectedMember>();
         world.init_resource::<Messages<crate::game::inventory::ItemNews>>();

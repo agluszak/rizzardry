@@ -737,6 +737,7 @@ mod tests {
     #[test]
     fn combat_outcomes_are_visible_after_returning_to_general() {
         let mut app = App::new();
+        app.init_resource::<crate::game::data::Catalogs>();
         app.add_plugins(MinimalPlugins)
             .init_resource::<Assets<SpriteSheet>>()
             .init_resource::<Assets<TextTable>>()

@@ -219,6 +219,7 @@ mod tests {
     fn search_intent_survives_a_fight_which_holds_it_off() {
         use crate::game::world::level::{Destination, Level};
         let mut app = App::new();
+        app.init_resource::<crate::game::data::Catalogs>();
         app.init_resource::<Search>()
             .add_message::<ToggleSearch>()
             .add_message::<SearchNews>()
@@ -280,6 +281,7 @@ mod tests {
         use std::time::Duration;
         let run = |frame: Duration| {
             let mut app = App::new();
+            app.init_resource::<crate::game::data::Catalogs>();
             app.add_plugins(MinimalPlugins)
                 .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(frame))
                 .insert_resource(Time::<Fixed>::from_duration(Duration::from_millis(125)))

@@ -2064,6 +2064,7 @@ mod tests {
     use crate::game::world::population::ScaledBody;
     fn app(script: DialogueScript) -> (App, Entity, Entity) {
         let mut app = App::new();
+        app.init_resource::<crate::game::data::Catalogs>();
         app.add_plugins(MinimalPlugins)
             .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
                 std::time::Duration::from_millis(16),

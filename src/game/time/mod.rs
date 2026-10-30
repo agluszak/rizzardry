@@ -224,6 +224,7 @@ mod pass_time_tests {
     /// Each update advances `step` of real time in 1/64 s fixed steps.
     fn fixed_app(step: Duration) -> App {
         let mut app = App::new();
+        app.init_resource::<crate::game::data::Catalogs>();
         app.add_plugins(MinimalPlugins)
             .insert_resource(TimeUpdateStrategy::ManualDuration(step))
             .insert_resource(Time::<Fixed>::from_hz(64.0))
