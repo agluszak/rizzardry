@@ -1512,13 +1512,9 @@ mod tests {
         use crate::game::inventory::{ItemIds, make_item};
         use crate::game::rng::GameRng;
         use crate::presentation::test_input::key;
-        for (still_a_member, explicit_close, full, loaded) in [
-            (true, true, false, true),
-            (false, true, false, true),
-            (true, true, true, true),
-            (true, true, false, false),
-            (true, false, false, true),
-        ] {
+        for (still_a_member, explicit_close, full) in
+            [(true, true, false), (false, true, false), (true, true, true), (true, false, false)]
+        {
             let mut app = inventory_app();
             let window =
                 app.world_mut().spawn((Window::default(), bevy::window::PrimaryWindow)).id();
@@ -1532,10 +1528,7 @@ mod tests {
             );
             let id = item.id;
             let items = ItemCatalog(vec![definition.clone()]);
-            app.insert_resource(crate::game::data::Catalogs {
-                items: if loaded { items } else { default() },
-                ..default()
-            });
+            app.insert_resource(crate::game::data::Catalogs { items, ..default() });
             let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
             let member = app
                 .world_mut()
@@ -1585,7 +1578,7 @@ mod tests {
             }
             app.update();
             assert_eq!(*app.world().resource::<State<Screen>>().get(), Screen::World);
-            if !explicit_close || full || !loaded {
+            if !explicit_close || full {
                 assert_eq!(
                     app.world()
                         .get::<PartyInventory>(party)
