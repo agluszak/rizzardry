@@ -55,7 +55,10 @@ pub fn read_particle(bytes: &mut Bytes) -> Result<Particle, DecodeError> {
     let follows_eye = name.starts_with("CLOUD");
     let initially_active = bytes.i32()? != 0 || follows_eye;
     let material = material(bytes, true)?;
-    let attachment = if version > 1 { bytes.i16()? } else { -1 };
+    // The bone a system follows on a model, which no system here uses.
+    if version > 1 {
+        bytes.i16()?;
+    }
     let emission_limit = if version > 2 { bytes.u32()? } else { 0 };
     if version > 2 {
         bytes.u8()?;
@@ -113,7 +116,6 @@ pub fn read_particle(bytes: &mut Bytes) -> Result<Particle, DecodeError> {
             )),
             initially_active,
             emission_limit,
-            attachment: u16::try_from(attachment).ok(),
             frames: frames.and_then(|(start, end)| {
                 Some((usize::try_from(start).ok()?, usize::try_from(end).ok()?))
             }),

@@ -29,12 +29,6 @@ pub struct PropPart {
 
 const FRAME_METHOD_WRAP: u8 = 1;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AnimationSlot {
-    pub frame: u16,
-    pub tag: u16,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct Prop {
     pub name: String,
@@ -45,8 +39,8 @@ pub struct Prop {
     /// Each use plays from the first frame instead of reversing the last.
     pub wraps: bool,
     /// Animation slots: key frames that split the animation into segments
-    /// (a dial's positions), each with a tag.
-    pub slots: Vec<AnimationSlot>,
+    /// (a dial's positions).
+    pub slots: Vec<u16>,
     /// Retail units; the origin of props without positioned parts.
     pub location: [f32; 3],
     pub frames_per_second: f32,
@@ -216,7 +210,8 @@ pub fn read_prop(bytes: &mut Bytes) -> Result<Prop, DecodeError> {
         }
         if version > 7 {
             for _ in 0..bytes.i8()?.max(0) {
-                prop.slots.push(AnimationSlot { frame: bytes.u16()?, tag: bytes.u16()? });
+                prop.slots.push(bytes.u16()?);
+                bytes.u16()?; // tag
             }
         }
         let animation = read_animation(bytes, false)?;
