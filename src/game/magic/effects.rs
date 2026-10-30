@@ -568,8 +568,8 @@ pub struct Field<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
     /// dated by.
     pub now: u64,
     pub difficulty: Difficulty,
-    /// The living party, for spells that pick among it.
-    pub party: &'a [Entity],
+    /// Authoritative roster order; effects select living recipients as needed.
+    pub party: &'a crate::game::party::roster::PartyRoster,
     /// Skills that improved while resolving, for the notices.
     pub improved: Vec<(Entity, Skill)>,
     /// Monsters the party acted against, eligible to provoke their groups
@@ -1424,7 +1424,7 @@ pub fn resolve(
                 let base = u32::from(strength.power) * 50;
                 let amount = base + base * strength.boost / 100;
                 // Anti-Magic drains the whole living party, not only captured victims.
-                for &member in world.party {
+                for member in world.party.iter() {
                     if world.members.get(member).is_ok_and(|(_, v, ..)| !v.is_dead())
                         && let Ok((learned, mut pool)) = points.get_mut(member)
                         && let Some(maximum) = world.mana_maximum(member, learned)
@@ -1707,7 +1707,6 @@ pub fn resolve(
             let recipient = world
                 .party
                 .iter()
-                .copied()
                 .filter_map(|m| {
                     let (c, v, ..) = world.members.get(m).ok()?;
                     if v.is_dead() {
@@ -1858,7 +1857,7 @@ pub(crate) fn pulse_clouds(
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
 ) -> Vec<(SpellId, Vec<Effect>)> {
     let mut reports = Vec::new();
-    let party: Vec<_> = world.party.iter().copied().map(Victim::Member).collect();
+    let party: Vec<_> = world.party.iter().map(Victim::Member).collect();
     let targets = std::iter::once(None).chain(combatants.iter().copied().map(Some));
     for actor in targets {
         for id in super::enchantments::OFFENSIVE {

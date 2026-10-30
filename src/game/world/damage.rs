@@ -79,17 +79,16 @@ pub struct MonsterDamage<'w, 's> {
 }
 
 impl<'w, 's> MonsterDamage<'w, 's> {
-    pub fn group(&self, entity: Entity) -> Vec<Entity> {
+    pub fn group_id(&self, entity: Entity) -> Option<Entity> {
+        self.membership.get(entity).ok().map(|member| member.0)
+    }
+    pub fn group(&self, entity: Entity) -> impl Iterator<Item = Entity> + '_ {
         use bevy::ecs::relationship::RelationshipTarget;
-        self.membership
-            .get(entity)
-            .ok()
-            .and_then(|member| self.group_members.get(member.0).ok())
-            .map_or_else(|| vec![entity], |members| members.iter().collect())
+        let members = self.group_id(entity).and_then(|group| self.group_members.get(group).ok());
+        members.into_iter().flat_map(|m| m.iter()).chain(members.is_none().then_some(entity))
     }
     pub fn leader(&self, entity: Entity) -> Entity {
         self.group(entity)
-            .into_iter()
             .min_by_key(|&member| {
                 self.monsters.get(member).map_or(i32::MAX, |(body, ..)| body.location)
             })
@@ -110,10 +109,8 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         let Ok((monster, ..)) = self.monsters.get(entity) else { return Stance::Neutral };
         let kind = &self.content.species[monster.species];
         let set = self
-            .membership
-            .get(entity)
-            .ok()
-            .and_then(|member| self.groups.get(member.0).ok())
+            .group_id(entity)
+            .and_then(|group| self.groups.get(group).ok())
             .and_then(|group| group.set);
         hostility::stance(set, kind, &self.factions, now, self.combatants.contains(entity))
     }

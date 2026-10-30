@@ -39,7 +39,6 @@ pub(crate) fn radius(
             world
                 .party
                 .iter()
-                .copied()
                 .filter(|&member| {
                     world.members.get(member).is_ok_and(|(_, v, ..)| {
                         !v.is_dead()
