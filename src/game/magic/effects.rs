@@ -1319,64 +1319,9 @@ pub fn resolve(
             let rolled = magnitude(rng, spell.dice, strength);
             damage(rng, world, v, realm, rolled, strength.against)
         }),
-        Kind::Heal | Kind::Stamina | Kind::Restoration => each(&mut |v, rng, world| {
-            let dead = match v {
-                Victim::Member(member) => world.members.get(member).ok()?.1.is_dead(),
-                Victim::Monster(entity) => world.monsters.monsters().get(entity).ok()?.0.is_dead(),
-            };
-            if dead {
-                return None;
-            }
-            let dice = if kind == Kind::Restoration { Some(RESTORATION_DICE) } else { spell.dice };
-            let mut effect = Effect::Nothing { victim: v };
-            if kind != Kind::Stamina
-                && let Some(amount) = restore(rng, world, v, Pool::Health, dice, strength)
-            {
-                effect = Effect::Healed { victim: v, amount };
-            }
-            if kind != Kind::Heal
-                && let Some(amount) = restore(rng, world, v, Pool::Stamina, dice, strength)
-                && kind == Kind::Stamina
-            {
-                effect = Effect::Refreshed { victim: v, amount };
-            }
-            if kind == Kind::Restoration {
-                use Condition::*;
-                let all = [
-                    Diseased,
-                    Irritated,
-                    Nauseated,
-                    Slowed,
-                    Afraid,
-                    Poisoned,
-                    Silenced,
-                    Hexed,
-                    Insane,
-                    Blind,
-                    Turncoat,
-                    Webbed,
-                    Asleep,
-                    Paralyzed,
-                    Unconscious,
-                ];
-                let lifted = match v {
-                    Victim::Member(member) => {
-                        let (_, mut vitals, ..) = world.members.get_mut(member).ok()?;
-                        cure(rng, &mut vitals.conditions, &all, strength, true)
-                    }
-                    Victim::Monster(entity) => {
-                        let mut conditions = world.monsters.conditions_mut(entity)?;
-                        cure(rng, &mut conditions, &all, strength, true)
-                    }
-                };
-                if matches!(effect, Effect::Nothing { .. })
-                    && let Some(&condition) = lifted.first()
-                {
-                    effect = Effect::Cured { victim: v, condition };
-                }
-            }
-            Some(effect)
-        }),
+        Kind::Heal | Kind::Stamina | Kind::Restoration => {
+            each(&mut |v, rng, world| restore_victim(kind, spell, strength, v, rng, world))
+        }
         Kind::Inflict(condition, chance) => each(&mut |v, rng, world| {
             attack(rng, world, spell, v, realm, condition, chance, strength)
         }),
@@ -1658,6 +1603,74 @@ fn destroy_consumables(
         }
     }
     effects
+}
+
+/// Heal a living victim, restore its stamina, or both and lift its
+/// conditions (Restoration). What it reports is the first thing it did.
+fn restore_victim(
+    kind: Kind,
+    spell: &SpellDefinition,
+    strength: Strength,
+    v: Victim,
+    rng: &mut GameRng,
+    world: &mut Field,
+) -> Option<Effect> {
+    let dead = match v {
+        Victim::Member(member) => world.members.get(member).ok()?.1.is_dead(),
+        Victim::Monster(entity) => world.monsters.monsters().get(entity).ok()?.0.is_dead(),
+    };
+    if dead {
+        return None;
+    }
+    let dice = if kind == Kind::Restoration { Some(RESTORATION_DICE) } else { spell.dice };
+    let mut effect = Effect::Nothing { victim: v };
+    if kind != Kind::Stamina
+        && let Some(amount) = restore(rng, world, v, Pool::Health, dice, strength)
+    {
+        effect = Effect::Healed { victim: v, amount };
+    }
+    if kind != Kind::Heal
+        && let Some(amount) = restore(rng, world, v, Pool::Stamina, dice, strength)
+        && kind == Kind::Stamina
+    {
+        effect = Effect::Refreshed { victim: v, amount };
+    }
+    if kind == Kind::Restoration {
+        use Condition::*;
+        let all = [
+            Diseased,
+            Irritated,
+            Nauseated,
+            Slowed,
+            Afraid,
+            Poisoned,
+            Silenced,
+            Hexed,
+            Insane,
+            Blind,
+            Turncoat,
+            Webbed,
+            Asleep,
+            Paralyzed,
+            Unconscious,
+        ];
+        let lifted = match v {
+            Victim::Member(member) => {
+                let (_, mut vitals, ..) = world.members.get_mut(member).ok()?;
+                cure(rng, &mut vitals.conditions, &all, strength, true)
+            }
+            Victim::Monster(entity) => {
+                let mut conditions = world.monsters.conditions_mut(entity)?;
+                cure(rng, &mut conditions, &all, strength, true)
+            }
+        };
+        if matches!(effect, Effect::Nothing { .. })
+            && let Some(&condition) = lifted.first()
+        {
+            effect = Effect::Cured { victim: v, condition };
+        }
+    }
+    Some(effect)
 }
 
 /// Enchant the victims: a personal enchantment on each member and monster
