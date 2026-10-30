@@ -1136,88 +1136,133 @@ fn party_turn(
                             },
                         )
                     }
-                    RoundAction::Magic(_) => true,
-                    RoundAction::Breathe(_) => true,
-                    RoundAction::Defend => false,
+                    RoundAction::Magic(_) | RoundAction::Breathe(_) | RoundAction::Defend => true,
                 }
         });
     if !able_now {
         battle.this_round.party[index].end();
         return false;
     }
-    if let RoundAction::Breathe(target) = work.action {
-        battle.this_round.party[index].end();
-        let result =
-            member_acts(combatants, (members, damage), party, magic, |situation, field, points| {
-                breath::execute(member, target, situation, rng, field, points)
+    match work.action {
+        RoundAction::Breathe(target) => {
+            battle.this_round.party[index].end();
+            breathe(battle, index, target, combatants, rng, (members, damage), party, magic, news);
+        }
+        RoundAction::Magic(choice) => {
+            battle.this_round.party[index].end();
+            cast(
+                commands,
+                battle,
+                index,
+                choice,
+                combatants,
+                rng,
+                (members, damage),
+                party,
+                magic,
+                news,
+            );
+        }
+        RoundAction::Attack { .. } => {
+            let BattleMagic { context, points, moving, .. } = magic;
+            let mut fight = blows::Fight {
+                combatants,
+                party,
+                armours: party_armours(battle, members, context),
+                moving,
+                points,
+                attacks: &|_| false,
+                waits: false,
+            };
+            context.resolve(party.now, members, damage, |field| {
+                blows::member_attacks(battle, index, rng, field, &mut fight, news);
             });
-        match result {
-            Ok(effects) => {
-                battle.this_round.attacked = true;
-                news.write(CombatNews::Breathed { actor: member });
-                battle.credit_kills(&effects, news);
-                news.write(CombatNews::Effects(effects));
-            }
-            Err(_) => battle.this_round.party[index].action = RoundAction::Defend,
         }
-        return true;
+        // Defending takes no turn.
+        RoundAction::Defend => {
+            battle.this_round.party[index].end();
+            return false;
+        }
     }
-    if let RoundAction::Magic(choice) = work.action {
-        battle.this_round.party[index].end();
-        let point_cast = choice
-            .source
-            .spell_id(
-                members.get(member).unwrap().2,
-                &magic.context.inventory,
-                &magic.context.content.items,
-            )
-            .is_some_and(crate::game::magic::pointcasts::spell);
-        if point_cast {
-            // A refusal falls back to defending, as below.
-            commands.queue(move |world: &mut World| {
-                if crate::game::magic::execute_in_world(world, member, choice).is_err()
-                    && let Ok(mut query) = world.try_query::<&mut Battle>().ok_or(())
-                    && let Ok(mut battle) = query.single_mut(world)
-                    && let Some(work) =
-                        battle.this_round.party.iter_mut().find(|work| work.actor == member)
-                {
-                    work.action = RoundAction::Defend;
-                }
-            });
-            return true;
-        }
-        match member_casts(combatants, member, choice, rng, members, damage, party, magic) {
-            Ok((report, flights)) => {
-                battle.this_round.attacked = true;
-                battle.credit_kills(&report.effects, news);
-                let level = magic.context.level();
-                magic.context.flight_order.launch(commands, flights, level);
-                magic.context.news.write(MagicNews::Done(report));
-            }
-            // A refused action falls back to defending (retail
-            // `ExecuteCharacterAction`), its turn spent.
-            Err(refusal) => {
-                info!("magic refused: {refusal:?}");
-                battle.this_round.party[index].action = RoundAction::Defend;
-                magic.context.news.write(MagicNews::Refused { caster: member, refusal });
-            }
-        }
-        return true;
-    }
-    let BattleMagic { context, points, moving, .. } = magic;
-    let mut fight = blows::Fight {
-        combatants,
-        party,
-        armours: party_armours(battle, members, context),
-        moving,
-        points,
-        attacks: &|_| false,
-        waits: false,
-    };
-    context.resolve(party.now, members, damage, |field| {
-        blows::member_attacks(battle, index, rng, field, &mut fight, news);
-    });
     true
+}
+
+/// A member breathes at their chosen target; a breath that cannot be made
+/// falls back to defending.
+fn breathe(
+    battle: &mut Battle,
+    index: usize,
+    target: Entity,
+    combatants: &[Entity],
+    rng: &mut GameRng,
+    (members, damage): (&mut Members, &mut MonsterDamage),
+    party: &PartyView,
+    magic: &mut BattleMagic,
+    news: &mut MessageWriter<CombatNews>,
+) {
+    let member = battle.this_round.party[index].actor;
+    let result =
+        member_acts(combatants, (members, damage), party, magic, |situation, field, points| {
+            breath::execute(member, target, situation, rng, field, points)
+        });
+    match result {
+        Ok(effects) => {
+            battle.this_round.attacked = true;
+            news.write(CombatNews::Breathed { actor: member });
+            battle.credit_kills(&effects, news);
+            news.write(CombatNews::Effects(effects));
+        }
+        Err(_) => battle.this_round.party[index].action = RoundAction::Defend,
+    }
+}
+
+/// A member casts or uses an item. A refused action falls back to
+/// defending (retail `ExecuteCharacterAction`), its turn spent; a point
+/// cast needs the whole world and settles once this step is done.
+fn cast(
+    commands: &mut Commands,
+    battle: &mut Battle,
+    index: usize,
+    choice: MagicChoice,
+    combatants: &[Entity],
+    rng: &mut GameRng,
+    (members, damage): (&mut Members, &mut MonsterDamage),
+    party: &PartyView,
+    magic: &mut BattleMagic,
+    news: &mut MessageWriter<CombatNews>,
+) {
+    let member = battle.this_round.party[index].actor;
+    let point_cast = choice
+        .source
+        .spell_id(
+            members.get(member).unwrap().2,
+            &magic.context.inventory,
+            &magic.context.content.items,
+        )
+        .is_some_and(crate::game::magic::pointcasts::spell);
+    if point_cast {
+        commands.queue(move |world: &mut World| {
+            if crate::game::magic::execute_in_world(world, member, choice).is_err() {
+                let mut battle = world.query::<&mut Battle>().single_mut(world).unwrap();
+                let work = battle.this_round.party.iter_mut().find(|w| w.actor == member).unwrap();
+                work.action = RoundAction::Defend;
+            }
+        });
+        return;
+    }
+    match member_casts(combatants, member, choice, rng, members, damage, party, magic) {
+        Ok((report, flights)) => {
+            battle.this_round.attacked = true;
+            battle.credit_kills(&report.effects, news);
+            let level = magic.context.level();
+            magic.context.flight_order.launch(commands, flights, level);
+            magic.context.news.write(MagicNews::Done(report));
+        }
+        Err(refusal) => {
+            battle.this_round.party[index].action = RoundAction::Defend;
+            magic.context.news.write(MagicNews::Refused { caster: member, refusal });
+        }
+    }
 }
 
 /// Count the ground the party covers while it moves in a fight, and end the
