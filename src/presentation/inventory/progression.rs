@@ -495,12 +495,7 @@ mod tests {
             );
         let spells = SpellCatalog::default();
         let items = ItemCatalog::default();
-        app.insert_resource(crate::game::data::Catalogs {
-            items,
-            spells,
-            species: default(),
-            loot: default(),
-        });
+        app.insert_resource(crate::game::data::Catalogs { items, spells, ..default() });
         let members = party
             .iter()
             .map(|c| {

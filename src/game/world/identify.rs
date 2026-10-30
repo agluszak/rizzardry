@@ -309,12 +309,7 @@ mod tests {
             faction: 4,
             ..default()
         }]);
-        app.insert_resource(crate::game::data::Catalogs {
-            items: default(),
-            loot: default(),
-            species,
-            spells: default(),
-        });
+        app.insert_resource(crate::game::data::Catalogs { species, ..default() });
         let root = app.world_mut().spawn(Level::test(geometry.clone())).id();
         let group = app
             .world_mut()

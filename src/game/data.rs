@@ -4,6 +4,7 @@ use bevy::asset::LoadState;
 use bevy::prelude::*;
 
 use crate::content::items::{ItemCatalog, LootTables};
+use crate::content::npcs::{FactCatalog, NpcCatalog};
 use crate::content::species::MonsterCatalog;
 use crate::content::spells::SpellCatalog;
 
@@ -15,6 +16,8 @@ pub struct Catalogs {
     pub loot: LootTables,
     pub species: MonsterCatalog,
     pub spells: SpellCatalog,
+    pub npcs: NpcCatalog,
+    pub facts: FactCatalog,
 }
 
 /// The databases while they load.
@@ -24,6 +27,8 @@ pub struct Loading {
     loot: Handle<LootTables>,
     species: Handle<MonsterCatalog>,
     spells: Handle<SpellCatalog>,
+    npcs: Handle<NpcCatalog>,
+    facts: Handle<FactCatalog>,
 }
 
 pub fn load_catalogs(mut commands: Commands, assets: Res<AssetServer>) {
@@ -32,6 +37,8 @@ pub fn load_catalogs(mut commands: Commands, assets: Res<AssetServer>) {
         loot: assets.load(crate::content::paths::LOOT_TABLES),
         species: assets.load(crate::content::paths::SPECIES),
         spells: assets.load(crate::content::paths::SPELLS),
+        npcs: assets.load(crate::content::paths::NPCS),
+        facts: assets.load(crate::content::paths::FACTS),
     });
 }
 
@@ -47,6 +54,7 @@ pub fn publish_catalogs(
         ResMut<Assets<MonsterCatalog>>,
         ResMut<Assets<SpellCatalog>>,
     ),
+    (mut npcs, mut facts): (ResMut<Assets<NpcCatalog>>, ResMut<Assets<FactCatalog>>),
     mut exit: MessageWriter<AppExit>,
 ) {
     let handles = [
@@ -54,6 +62,8 @@ pub fn publish_catalogs(
         loading.loot.id().untyped(),
         loading.species.id().untyped(),
         loading.spells.id().untyped(),
+        loading.npcs.id().untyped(),
+        loading.facts.id().untyped(),
     ];
     if handles.iter().any(|&id| matches!(assets.get_load_state(id), Some(LoadState::Failed(_)))) {
         error!("a retail database failed to load");
@@ -69,6 +79,8 @@ pub fn publish_catalogs(
         loot: loot.remove(&loading.loot).unwrap(),
         species: species.remove(&loading.species).unwrap(),
         spells: spells.remove(&loading.spells).unwrap(),
+        npcs: npcs.remove(&loading.npcs).unwrap(),
+        facts: facts.remove(&loading.facts).unwrap(),
     });
     commands.remove_resource::<Loading>();
 }

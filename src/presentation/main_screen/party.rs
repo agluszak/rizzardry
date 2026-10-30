@@ -876,12 +876,7 @@ mod tests {
         let item =
             make_item(&definition, &mut ItemIds::default(), &mut GameRng::seeded(1), false, true);
         let items = ItemCatalog(vec![definition]);
-        app.insert_resource(crate::game::data::Catalogs {
-            items,
-            loot: default(),
-            species: default(),
-            spells: default(),
-        });
+        app.insert_resource(crate::game::data::Catalogs { items, ..default() });
         let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
         let actor =
             app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();
@@ -1007,12 +1002,7 @@ mod tests {
             catalog[usize::from(spell.0)] = SpellDefinition { id: spell, targeting, ..default() };
             let spells = SpellCatalog(catalog);
             let items = ItemCatalog::default();
-            world.insert_resource(crate::game::data::Catalogs {
-                items,
-                loot: default(),
-                species: default(),
-                spells,
-            });
+            world.insert_resource(crate::game::data::Catalogs { items, spells, ..default() });
             let profile = Character::new("A", Race::Human, Gender::Male, Profession::Priest);
             let caster = world.spawn((Vitals::new(&profile), profile, Carried::default())).id();
             let profile = Character::new("B", Race::Human, Gender::Male, Profession::Fighter);

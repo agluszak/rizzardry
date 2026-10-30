@@ -710,12 +710,7 @@ mod tests {
         let world = app.world_mut();
         let crab = Species { group_size: Dice { base: 2, count: 0, sides: 0 }, ..default() };
         let species = MonsterCatalog(vec![default(), crab]);
-        world.insert_resource(crate::game::data::Catalogs {
-            items: default(),
-            loot: default(),
-            species,
-            spells: default(),
-        });
+        world.insert_resource(crate::game::data::Catalogs { species, ..default() });
         let body = world.resource_mut::<Assets<MonsterBody>>().add(MonsterBody {
             scale: 1.0,
             fight_radius: 0.5,

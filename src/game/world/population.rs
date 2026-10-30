@@ -414,13 +414,14 @@ pub fn populate(
     root: Entity,
     geometry: &LevelDefinition,
     remembered: Option<LevelRecord>,
-    (species, items, tables): (&MonsterCatalog, &ItemCatalog, &crate::content::items::LootTables),
+    catalogs: &crate::game::data::Catalogs,
     (map, npcs): (&str, &mut crate::game::npcs::NpcPopulation),
     (handles, bodies): (&MonsterBodies, &Assets<MonsterBody>),
     (navigation, configs): (&LevelNavigation, &mut Assets<WalkerMotionConfig>),
     ids: &mut ItemIds,
     rng: &mut GameRng,
 ) {
+    let (species, items, tables) = (&catalogs.species, &catalogs.items, &catalogs.loot);
     let (remembered_monsters, remembered_items, groups, encounters) = match remembered {
         Some(record) => (
             Some((record.monsters, record.unborn)),
@@ -477,7 +478,7 @@ pub fn populate(
         let Some(id) = kind.npc else { continue };
         let body = handles.get(placed.species, bodies).unwrap();
         let place = crate::game::npcs::Placing { placed, tables, id, map, average };
-        let Some(actor) = npcs.place(commands, place, items, &mut placed_actors, rng, |rng| {
+        let Some(actor) = npcs.place(commands, place, catalogs, &mut placed_actors, rng, |rng| {
             KeptMonster::placed(placed, kind, body, rng)
         }) else {
             continue;

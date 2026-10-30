@@ -211,12 +211,7 @@ mod tests {
             .insert_resource(InventoryArt::default())
             .add_systems(Update, refresh);
         let items = ItemCatalog(vec![]);
-        app.insert_resource(crate::game::data::Catalogs {
-            items,
-            loot: default(),
-            species: default(),
-            spells: default(),
-        });
+        app.insert_resource(crate::game::data::Catalogs { items, ..default() });
         let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
         let actor =
             app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();

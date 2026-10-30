@@ -625,7 +625,7 @@ pub fn activate_level(
         }
         let geometry = geometry.get(&level.definition).expect("prepared");
         let catalogs = shared.catalogs.as_deref().expect("prepared");
-        let (items, loot, species) = (&catalogs.items, &catalogs.loot, &catalogs.species);
+        let (items, loot) = (&catalogs.items, &catalogs.loot);
         let traveller = parties.single().ok();
         if matches!(destination.entry, Entry::Travel) && traveller.is_none() {
             fail("there is no party to travel");
@@ -673,7 +673,7 @@ pub fn activate_level(
             root,
             geometry,
             remembered,
-            (species, items, loot),
+            catalogs,
             (&level.path, &mut npcs),
             (&destination.bodies, &shared.bodies),
             (&navigation, &mut shared.motion_configs),
@@ -722,7 +722,7 @@ fn prepare(
     let (items, species) = (&catalogs.items, &catalogs.species);
     population::check(geometry, species, items)?;
     super::triggers::check(geometry)?;
-    if !npcs.prepare(species, &geometry.monsters, items, assets)? {
+    if !npcs.prepare(catalogs, &geometry.monsters, assets)? {
         return Ok(false);
     }
     let bodies = bodies.for_level(geometry, species, assets);

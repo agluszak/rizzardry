@@ -112,12 +112,7 @@ impl Scenario {
         world.insert_resource(GameRng::seeded(5));
         let items = ItemCatalog::default();
         let loot = LootTables::default();
-        world.insert_resource(crate::game::data::Catalogs {
-            items,
-            loot,
-            species: default(),
-            spells: default(),
-        });
+        world.insert_resource(crate::game::data::Catalogs { items, loot, ..default() });
         let root = world.spawn_empty().id();
         let mut scenario = Self { world, geometry, script, root, devices: vec![], members: vec![] };
         scenario.visit(None);

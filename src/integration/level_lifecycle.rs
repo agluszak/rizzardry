@@ -849,21 +849,25 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
         catalogs.items.0.push(ItemDefinition { id: ItemId(0), ..default() });
         catalogs.species.0[0].npc = Some(NpcId(0));
     }
-    let catalog =
-        app.world_mut().resource_mut::<Assets<NpcCatalog>>().add(NpcCatalog(vec![NpcDefinition {
-            source_name: "Fixture".into(),
-            merchant: true,
-            disposition: 80,
-            owns_stock: true,
-            stock: vec![StockRule { item: ItemId(0), quantity: 3, persistent: true }],
-            ..default()
-        }]));
-    let facts = app.world_mut().resource_mut::<Assets<FactCatalog>>().add(FactCatalog::default());
+    let catalog = NpcCatalog(vec![NpcDefinition {
+        source_name: "Fixture".into(),
+        merchant: true,
+        disposition: 80,
+        owns_stock: true,
+        stock: vec![StockRule { item: ItemId(0), quantity: 3, persistent: true }],
+        ..default()
+    }]);
+    let facts = FactCatalog::default();
     let script = app
         .world_mut()
         .resource_mut::<Assets<DialogueScript>>()
         .add(DialogueScript { quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }] });
-    app.insert_resource(NpcAssets { catalog, facts, scripts: [(NpcId(0), script)].into() });
+    {
+        let mut catalogs = app.world_mut().resource_mut::<Catalogs>();
+        catalogs.npcs = catalog;
+        catalogs.facts = facts;
+    }
+    app.insert_resource(NpcAssets { scripts: [(NpcId(0), script)].into() });
     let source = spawn_level(&mut app, floor());
     app.update();
     assert!(is_played(&app, source));
@@ -1000,20 +1004,24 @@ fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
         item_count: Dice { count: 0, sides: 0, base: 1 },
         gold: default(),
     }];
-    let catalog =
-        app.world_mut().resource_mut::<Assets<NpcCatalog>>().add(NpcCatalog(vec![NpcDefinition {
-            source_name: "Fixture".into(),
-            disposition: 80,
-            item_table: Some(0),
-            gold: 25,
-            ..default()
-        }]));
-    let facts = app.world_mut().resource_mut::<Assets<FactCatalog>>().add(FactCatalog::default());
+    let catalog = NpcCatalog(vec![NpcDefinition {
+        source_name: "Fixture".into(),
+        disposition: 80,
+        item_table: Some(0),
+        gold: 25,
+        ..default()
+    }]);
+    let facts = FactCatalog::default();
     let script = app
         .world_mut()
         .resource_mut::<Assets<DialogueScript>>()
         .add(DialogueScript { quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }] });
-    app.insert_resource(NpcAssets { catalog, facts, scripts: [(NpcId(0), script)].into() });
+    {
+        let mut catalogs = app.world_mut().resource_mut::<Catalogs>();
+        catalogs.npcs = catalog;
+        catalogs.facts = facts;
+    }
+    app.insert_resource(NpcAssets { scripts: [(NpcId(0), script)].into() });
     let source = spawn_level(&mut app, floor());
     app.update();
     assert!(is_played(&app, source));
@@ -1100,19 +1108,23 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
         backpack,
         wanted: vec![ItemId(5)],
     };
-    let catalog =
-        app.world_mut().resource_mut::<Assets<NpcCatalog>>().add(NpcCatalog(vec![NpcDefinition {
-            source_name: "Fixture".into(),
-            disposition: 80,
-            character: Some(template),
-            ..default()
-        }]));
-    let facts = app.world_mut().resource_mut::<Assets<FactCatalog>>().add(FactCatalog::default());
+    let catalog = NpcCatalog(vec![NpcDefinition {
+        source_name: "Fixture".into(),
+        disposition: 80,
+        character: Some(template),
+        ..default()
+    }]);
+    let facts = FactCatalog::default();
     let script = app
         .world_mut()
         .resource_mut::<Assets<DialogueScript>>()
         .add(DialogueScript { quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }] });
-    app.insert_resource(NpcAssets { catalog, facts, scripts: [(NpcId(0), script)].into() });
+    {
+        let mut catalogs = app.world_mut().resource_mut::<Catalogs>();
+        catalogs.npcs = catalog;
+        catalogs.facts = facts;
+    }
+    app.insert_resource(NpcAssets { scripts: [(NpcId(0), script)].into() });
     let source = spawn_level(&mut app, floor());
     app.update();
     assert!(is_played(&app, source));

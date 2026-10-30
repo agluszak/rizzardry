@@ -112,14 +112,12 @@ impl StoryFacts {
         Ok(())
     }
 }
-fn fact_catalog(world: &World) -> Option<&FactCatalog> {
-    let assets = world.resource::<NpcAssets>();
-    world.resource::<Assets<FactCatalog>>().get(&assets.facts)
+fn fact_catalog(world: &World) -> &FactCatalog {
+    &world.resource::<crate::game::data::Catalogs>().facts
 }
 /// A fact by its symbol, for rules that name one.
 pub fn fact_named(world: &World, symbol: &str) -> Result<u8, String> {
     let id = fact_catalog(world)
-        .ok_or_else(|| "fact database unavailable".to_string())?
         .0
         .iter()
         .find(|fact| fact.symbol == symbol)
@@ -128,9 +126,7 @@ pub fn fact_named(world: &World, symbol: &str) -> Result<u8, String> {
     fact(world, id)
 }
 fn fact(world: &World, id: FactId) -> Result<u8, String> {
-    world
-        .resource::<StoryFacts>()
-        .get(id, fact_catalog(world).ok_or_else(|| "fact database unavailable".to_string())?)
+    world.resource::<StoryFacts>().get(id, fact_catalog(world))
 }
 #[derive(Debug)]
 enum Step {
@@ -368,11 +364,8 @@ fn with_definition<T>(
     f: impl FnOnce(&mut World, &NpcDefinition) -> Result<T, TradeError>,
 ) -> Result<T, TradeError> {
     let id = world.get::<super::ActorId>(actor).ok_or(TradeError::Unavailable)?.npc();
-    let handle = world.resource::<NpcAssets>().catalog.clone();
-    world.resource_scope(|world, catalogs: Mut<Assets<NpcCatalog>>| {
-        let def =
-            catalogs.get(&handle).and_then(|c| c.get(id)).ok_or(TradeError::MissingContent)?;
-        f(world, def)
+    crate::game::data::Catalogs::scope(world, |world, catalogs| {
+        f(world, catalogs.npcs.get(id).ok_or(TradeError::MissingContent)?)
     })
 }
 fn with_items<T>(
@@ -601,7 +594,7 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
             && now.saturating_sub(stock.maintenance_at) >= crate::game::time::DAY_MS
             && def.stock.iter().any(|r| !r.persistent && r.item == super::trade::TEMPLAR_GATED);
         let templar = if gated {
-            let catalog = fact_catalog(world).ok_or(TradeError::MissingContent)?;
+            let catalog = fact_catalog(world);
             let id = catalog
                 .0
                 .iter()
@@ -624,7 +617,6 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
             })
         })?;
     }
-    fact_catalog(world).ok_or(TradeError::MissingContent)?;
     // OpenNpcDialoguePanel / MonsterForwardReferencePosition: the accepted
     // speaker faces the party. Physics rotation owns a moving body's facing.
     crate::game::world::face(world, body, party_at);
@@ -721,9 +713,11 @@ const RFS81: NpcId = NpcId(0x20);
 const RFS81_FIXED_NAME: &str = "RFS81B";
 /// The NPC a script names by its display name (retail `FindNpcStateByName`).
 fn npc_named(world: &World, name: &str) -> Option<Entity> {
-    let catalog = super::catalog(world)?;
+    let catalog = super::catalog(world);
     let fixed = fact_catalog(world)
-        .and_then(|facts| facts.0.iter().find(|f| f.symbol == "FACT_RFS81_HAS_BEEN_FIXED"))
+        .0
+        .iter()
+        .find(|f| f.symbol == "FACT_RFS81_HAS_BEEN_FIXED")
         .is_some_and(|f| fact(world, f.id).is_ok_and(|value| value != 0));
     world.iter_entities().find_map(|e| {
         let id = e.get::<super::ActorId>()?.npc();
@@ -800,7 +794,7 @@ fn plan_quote(
                 return Err((i, format!("unported mandatory opcode {opcode}")));
             }
             DialogueOp::SetFact(id, value) => {
-                if !catalog.is_some_and(|catalog| StoryFacts::can_set(*id, catalog)) {
+                if !StoryFacts::can_set(*id, catalog) {
                     return Err((i, format!("unported fact assignment {id:?}")));
                 }
                 writes.insert(*id, *value);
@@ -857,13 +851,7 @@ fn plan_quote(
                 for (id, expected) in facts {
                     let actual = match writes.get(id) {
                         Some(value) => *value,
-                        None => story
-                            .get(
-                                *id,
-                                catalog
-                                    .ok_or_else(|| (i, "fact database unavailable".to_string()))?,
-                            )
-                            .map_err(|e| (i, e))?,
+                        None => story.get(*id, catalog).map_err(|e| (i, e))?,
                     };
                     if actual != *expected {
                         matched = false;
@@ -926,9 +914,7 @@ fn executable(world: &World, plan: &QuotePlan) -> bool {
         QuoteEffect::Experience { members, .. } => {
             members.iter().all(|&member| world.get::<Character>(member).is_some())
         }
-        QuoteEffect::SetFact(id, _) => {
-            fact_catalog(world).is_some_and(|catalog| StoryFacts::can_set(*id, catalog))
-        }
+        QuoteEffect::SetFact(id, _) => StoryFacts::can_set(*id, fact_catalog(world)),
         QuoteEffect::Mention(..) => true,
         QuoteEffect::GiveItem { party, item } => {
             world.get::<PartyInventory>(*party).is_some()
@@ -1051,11 +1037,10 @@ fn commit_effects(world: &mut World, entity: Entity, effects: Vec<QuoteEffect>) 
                     .query::<&Level>()
                     .single(world)
                     .map_or_else(|_| String::new(), |level| level.path.clone());
-                let facts = world.resource::<NpcAssets>().facts.clone();
-                world.resource_scope(|world, catalogs: Mut<Assets<FactCatalog>>| {
+                crate::game::data::Catalogs::scope(world, |world, catalogs| {
                     world
                         .resource_mut::<StoryFacts>()
-                        .set(id, value, catalogs.get(&facts).unwrap(), level)
+                        .set(id, value, &catalogs.facts, level)
                         .expect("planned fact assignment");
                 });
             }
@@ -2077,27 +2062,24 @@ mod tests {
             .init_resource::<Factions>()
             .init_resource::<GameRng>()
             .init_resource::<crate::game::time::GameClock>()
-            .init_resource::<Assets<NpcCatalog>>()
             .init_resource::<Assets<DialogueScript>>()
-            .init_resource::<Assets<FactCatalog>>()
             .add_observer(end_conversations)
             .add_systems(Update, update_conversation);
         let w = app.world_mut();
         crate::game::party::roster::test_party(w, &[]);
-        let catalog = w
-            .resource_mut::<Assets<NpcCatalog>>()
-            .add(NpcCatalog(vec![NpcDefinition { source_name: "Speaker".into(), ..default() }]));
-        let facts =
-            w.resource_mut::<Assets<FactCatalog>>().add(FactCatalog(vec![FactDefinition {
-                id: FactId(91),
-                highlight_when_true: false,
-                visibility: crate::content::npcs::JournalVisibility::AllDifficulties,
-                symbol: "FACT_BURZ_SAID130".into(),
-                description: String::new(),
-                alternate_description: String::new(),
-            }]));
+        let mut catalogs = w.resource_mut::<crate::game::data::Catalogs>();
+        catalogs.npcs =
+            NpcCatalog(vec![NpcDefinition { source_name: "Speaker".into(), ..default() }]);
+        catalogs.facts = FactCatalog(vec![FactDefinition {
+            id: FactId(91),
+            highlight_when_true: false,
+            visibility: crate::content::npcs::JournalVisibility::AllDifficulties,
+            symbol: "FACT_BURZ_SAID130".into(),
+            description: String::new(),
+            alternate_description: String::new(),
+        }]);
         let script = w.resource_mut::<Assets<DialogueScript>>().add(script);
-        w.insert_resource(NpcAssets { catalog, facts, scripts: default() });
+        w.insert_resource(NpcAssets { scripts: default() });
         let level = w.spawn(Level::test(default())).id();
         let actor = w
             .spawn((
@@ -2158,8 +2140,7 @@ mod tests {
             let w = app.world_mut();
             w.init_resource::<crate::game::data::Catalogs>();
             if character {
-                let handle = w.resource::<NpcAssets>().catalog.clone();
-                w.resource_mut::<Assets<NpcCatalog>>().get_mut(&handle).unwrap().0[0].character =
+                w.resource_mut::<crate::game::data::Catalogs>().npcs.0[0].character =
                     Some(crate::content::npcs::NpcCharacter {
                         name: "Speaker".into(),
                         profession: crate::game::characters::Profession::Fighter,
@@ -2580,10 +2561,9 @@ mod tests {
     /// A second NPC, `name`, in the same level, speaking `script`.
     fn second_speaker(app: &mut App, name: &str, script: DialogueScript) -> Entity {
         let world = app.world_mut();
-        let handle = world.resource::<NpcAssets>().catalog.clone();
         let id = {
-            let mut catalogs = world.resource_mut::<Assets<NpcCatalog>>();
-            let mut catalog = catalogs.get_mut(&handle).unwrap();
+            let mut catalogs = world.resource_mut::<crate::game::data::Catalogs>();
+            let catalog = &mut catalogs.npcs;
             catalog.0.push(NpcDefinition {
                 source_name: name.into(),
                 display_name: name.into(),
@@ -2696,10 +2676,9 @@ mod tests {
     fn wary(scales: (i8, i8), trade_pool: u16) -> (App, Entity, Entity) {
         let quotes = (0..0x19).map(|i| lines(&[format!("Line {i}").as_str()], vec![])).collect();
         let (mut app, session, actor) = app(DialogueScript { quotes });
-        let catalog = app.world().resource::<NpcAssets>().catalog.clone();
         {
-            let mut catalogs = app.world_mut().resource_mut::<Assets<NpcCatalog>>();
-            let def = &mut catalogs.get_mut(&catalog).unwrap().0[0];
+            let mut catalogs = app.world_mut().resource_mut::<crate::game::data::Catalogs>();
+            let def = &mut catalogs.npcs.0[0];
             (def.charm_scale, def.talk_scale, def.trade_pool) = (scales.0, scales.1, trade_pool);
         }
         let mut npc = app.world_mut().get_mut::<Npc>(actor).unwrap();
@@ -2850,9 +2829,8 @@ mod tests {
     #[test]
     fn a_hostile_faction_decides_its_members_disposition() {
         let (mut app, _, actor) = app(DialogueScript::default());
-        let catalog = app.world().resource::<NpcAssets>().catalog.clone();
-        app.world_mut().resource_mut::<Assets<NpcCatalog>>().get_mut(&catalog).unwrap().0[0]
-            .faction = Faction::Mook as u8;
+        app.world_mut().resource_mut::<crate::game::data::Catalogs>().npcs.0[0].faction =
+            Faction::Mook as u8;
         assert_eq!(band(app.world(), actor), Band::Friendly);
         app.world_mut().resource_mut::<Factions>().adjust(Faction::Mook, -60, 0);
         assert_eq!(disposition(app.world(), actor), 20);
@@ -3645,8 +3623,7 @@ mod tests {
         const ARNIKA_ADVICE: u16 = 130;
         let expected = script.quotes[usize::from(ARNIKA_ADVICE)].text[0].clone();
         let (mut app, session, _) = app(script);
-        let handle = app.world_mut().resource_mut::<Assets<FactCatalog>>().add(facts);
-        app.world_mut().resource_mut::<NpcAssets>().facts = handle;
+        app.world_mut().resource_mut::<crate::game::data::Catalogs>().facts = facts;
         {
             let mut c = app.world_mut().get_mut::<Conversation>(session).unwrap();
             c.queue.clear();

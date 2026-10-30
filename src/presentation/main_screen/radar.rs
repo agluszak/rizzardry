@@ -353,12 +353,7 @@ mod tests {
         app.init_resource::<crate::game::factions::Factions>()
             .init_resource::<crate::game::time::GameClock>();
         let species = crate::content::species::MonsterCatalog(vec![default()]);
-        app.insert_resource(crate::game::data::Catalogs {
-            species,
-            items: default(),
-            loot: default(),
-            spells: default(),
-        });
+        app.insert_resource(crate::game::data::Catalogs { species, ..default() });
         let root = app.world_mut().spawn(Level::test(default())).id();
         let monster = app
             .world_mut()
@@ -481,12 +476,7 @@ mod tests {
         let mut species = Species { faction: 7, ..default() };
         species.attributes.intelligence = 10;
         let species = MonsterCatalog(vec![species]);
-        app.insert_resource(crate::game::data::Catalogs {
-            items: default(),
-            loot: default(),
-            species,
-            spells: default(),
-        });
+        app.insert_resource(crate::game::data::Catalogs { species, ..default() });
         use crate::game::characters::{Character, Gender, Profession, Race, Vitals};
         let profile = Character::new("Watcher", Race::Human, Gender::Male, Profession::Fighter);
         let watcher = app.world_mut().spawn((Vitals::new(&profile), profile)).id();

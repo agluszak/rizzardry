@@ -154,17 +154,16 @@ fn the_party_rests_eight_hours_and_wakes() {
 #[test]
 #[ignore = "requires a retail installation"]
 fn burz_conversation_trade_and_revisit_keep_one_actor() {
-    use crate::content::npcs::{DialogueScript, NpcCatalog};
+    use crate::content::npcs::DialogueScript;
     use crate::game::inventory::{ItemOwner, ItemRef};
     use crate::game::npcs::conversation::{
         self, Conversation, ConversationRequest, ConversationWait,
     };
     use crate::game::npcs::trade::TradeSource;
-    use crate::game::npcs::{Npc, NpcAssets, NpcBodies};
+    use crate::game::npcs::{Npc, NpcBodies};
     let mut app = game(&["--seed", "8", "--start=225,36.7,-68.6"]);
     step_until(&mut app, "the Monastery becoming active", |w| playing(w).is_some());
-    let assets = app.world().resource::<NpcAssets>();
-    let catalog = app.world().resource::<Assets<NpcCatalog>>().get(&assets.catalog).unwrap();
+    let catalog = &app.world().resource::<crate::game::data::Catalogs>().npcs;
     let burz_id = crate::content::npcs::NpcId(
         catalog.0.iter().position(|d| d.source_name == "Burz").unwrap() as u16,
     );
@@ -321,11 +320,7 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     assert_eq!(npc.stock, stock);
     assert!(npc.paid_topics.contains(&topic));
     assert!(!npc.greeting_pending);
-    let facts = app
-        .world()
-        .resource::<Assets<crate::content::npcs::FactCatalog>>()
-        .get(&app.world().resource::<NpcAssets>().facts)
-        .unwrap();
+    let facts = &app.world().resource::<crate::game::data::Catalogs>().facts;
     assert_eq!(app.world().resource::<conversation::StoryFacts>().get(fact, facts), Ok(1));
     assert_eq!(
         app.world_mut()

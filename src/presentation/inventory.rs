@@ -1426,12 +1426,7 @@ mod tests {
         let definition =
             ItemDefinition { quantity: QuantityKind::Stack, stack_limit: 99, ..default() };
         let items = ItemCatalog(vec![definition.clone()]);
-        app.insert_resource(crate::game::data::Catalogs {
-            items,
-            loot: default(),
-            species: default(),
-            spells: default(),
-        });
+        app.insert_resource(crate::game::data::Catalogs { items, ..default() });
         let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
         let member =
             app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();
@@ -1538,9 +1533,7 @@ mod tests {
             let items = ItemCatalog(vec![definition.clone()]);
             app.insert_resource(crate::game::data::Catalogs {
                 items: if loaded { items } else { default() },
-                loot: default(),
-                species: default(),
-                spells: default(),
+                ..default()
             });
             let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
             let member = app

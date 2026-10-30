@@ -224,12 +224,7 @@ mod tests {
                 },
             );
         let species = MonsterCatalog(vec![Species::default()]);
-        app.insert_resource(crate::game::data::Catalogs {
-            items: default(),
-            loot: default(),
-            species,
-            spells: default(),
-        });
+        app.insert_resource(crate::game::data::Catalogs { species, ..default() });
         app.world_mut().spawn((PartyBody::default(), Position::default()));
         let monster = app
             .world_mut()

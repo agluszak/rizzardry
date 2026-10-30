@@ -192,15 +192,13 @@ pub fn log_news(
 pub struct TalkTo(pub String);
 
 pub fn talk_to_npc(world: &mut World) {
-    use crate::content::npcs::NpcCatalog;
-    use crate::game::npcs::{NpcAssets, NpcBodies, conversation};
+    use crate::game::npcs::{NpcBodies, conversation};
     let Some(request) = world.get_resource::<TalkTo>() else { return };
     let name = request.0.clone();
     if world.query::<&Level>().iter(world).next().is_none() {
         return;
     }
-    let assets = world.resource::<NpcAssets>();
-    let Some(catalog) = world.resource::<Assets<NpcCatalog>>().get(&assets.catalog) else { return };
+    let catalog = crate::game::npcs::catalog(world);
     let definition = catalog.0.iter().position(|npc| npc.source_name.eq_ignore_ascii_case(&name));
     let Some(definition) = definition else {
         error!("unknown NPC for --talk-to: {name}");

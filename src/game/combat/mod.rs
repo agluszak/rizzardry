@@ -3338,12 +3338,7 @@ mod tests {
             ..default()
         }]);
         let loot = LootTables::default();
-        app.insert_resource(crate::game::data::Catalogs {
-            items,
-            species,
-            loot,
-            spells: default(),
-        });
+        app.insert_resource(crate::game::data::Catalogs { items, species, loot, ..default() });
         let party = crate::game::party::roster::test_party(app.world_mut(), &members);
         app.world_mut().entity_mut(party).insert((PartyBody::default(), Position::default()));
         let root = app.world_mut().spawn(crate::game::world::level::Level::test(default())).id();

@@ -220,12 +220,7 @@ mod tests {
         let mut catalog = vec![Species::default(); 13];
         catalog[12] = Species { group_size: Dice { base: 3, count: 0, sides: 0 }, ..default() };
         let species = MonsterCatalog(catalog);
-        world.insert_resource(crate::game::data::Catalogs {
-            items: default(),
-            loot: default(),
-            species,
-            spells: default(),
-        });
+        world.insert_resource(crate::game::data::Catalogs { species, ..default() });
         let body = world.resource_mut::<Assets<MonsterBody>>().add(MonsterBody {
             scale: 1.0,
             fight_radius: 0.5,

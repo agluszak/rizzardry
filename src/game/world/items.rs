@@ -249,12 +249,7 @@ mod tests {
         app.finish();
         app.cleanup();
         let catalog = catalog();
-        app.insert_resource(crate::game::data::Catalogs {
-            items: catalog,
-            loot: default(),
-            species: default(),
-            spells: default(),
-        });
+        app.insert_resource(crate::game::data::Catalogs { items: catalog, ..default() });
         let party = crate::game::party::roster::test_party(app.world_mut(), &[]);
         app.world_mut().entity_mut(party).insert((PartyBody::default(), Position::default()));
         let eye = PartyBody::eye(&Position::default());
@@ -314,12 +309,7 @@ mod tests {
             .add_message::<super::super::WorldRequest>()
             .add_systems(Update, super::super::handle_world_requests);
         let catalog = catalog();
-        app.insert_resource(crate::game::data::Catalogs {
-            items: catalog,
-            loot: default(),
-            species: default(),
-            spells: default(),
-        });
+        app.insert_resource(crate::game::data::Catalogs { items: catalog, ..default() });
         let party = crate::game::party::roster::test_party(app.world_mut(), &[]);
         app.world_mut().entity_mut(party).insert((PartyBody::default(), Position::default()));
         let level = app.world_mut().spawn(super::super::level::Level::test(default())).id();

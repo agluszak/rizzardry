@@ -246,12 +246,7 @@ mod settlement_tests {
             let held = ItemStack::new(&definition, &mut ids, 7, true);
             let items = ItemCatalog(vec![definition.clone()]);
             if loaded {
-                app.insert_resource(crate::game::data::Catalogs {
-                    items,
-                    loot: default(),
-                    species: default(),
-                    spells: default(),
-                });
+                app.insert_resource(crate::game::data::Catalogs { items, ..default() });
             }
             let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
             let mut carried = Carried::default();

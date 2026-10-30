@@ -909,7 +909,13 @@ mod tests {
         let loot = LootTables::default();
         let spells =
             SpellCatalog((0..=6).map(|i| if i == 6 { heal_wounds() } else { default() }).collect());
-        world.insert_resource(crate::game::data::Catalogs { items, loot, species, spells });
+        world.insert_resource(crate::game::data::Catalogs {
+            items,
+            loot,
+            species,
+            spells,
+            ..default()
+        });
         let profile = Character::new("Drinker", Race::Human, Gender::Male, Profession::Fighter);
         let mut vitals = Vitals::new(&profile);
         vitals.hp = 1;
@@ -1076,7 +1082,13 @@ mod tests {
                 ..default()
             };
             let spells = SpellCatalog(definitions);
-            world.insert_resource(crate::game::data::Catalogs { items, loot, species, spells });
+            world.insert_resource(crate::game::data::Catalogs {
+                items,
+                loot,
+                species,
+                spells,
+                ..default()
+            });
             let mut user = Character::new("User", Race::Human, Gender::Male, Profession::Priest);
             user.skill_points[Skill::ThrowingAndSling] = 100;
             let mut carried = Carried::default();

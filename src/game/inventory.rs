@@ -1130,12 +1130,7 @@ mod tests {
         };
         let mut ids = ItemIds::default();
         let items = ItemCatalog(vec![rock.clone()]);
-        world.insert_resource(crate::game::data::Catalogs {
-            items,
-            loot: default(),
-            species: default(),
-            spells: default(),
-        });
+        world.insert_resource(crate::game::data::Catalogs { items, ..default() });
         let strong = Character::new("Strong", Race::Dwarf, Gender::Male, Profession::Fighter);
         let weak = Character::new("Weak", Race::Faerie, Gender::Female, Profession::Mage);
         let members =
@@ -1372,12 +1367,7 @@ mod tests {
         let item = stack(&c, &mut ids, 0, 7);
         let id = item.id;
         let items = c;
-        world.insert_resource(crate::game::data::Catalogs {
-            items,
-            loot: default(),
-            species: default(),
-            spells: default(),
-        });
+        world.insert_resource(crate::game::data::Catalogs { items, ..default() });
         // Someone else is in the party; the actor is not, at first.
         let other = world.spawn((Vitals::new(&wearer()), wearer(), Carried::default())).id();
         let party = test_party(&mut world, &[other]);
@@ -1517,12 +1507,7 @@ mod tests {
         let mut item = stack(&c, &mut ids, 1, 1);
         item.identified = false;
         let items = c;
-        world.insert_resource(crate::game::data::Catalogs {
-            items,
-            loot: default(),
-            species: default(),
-            spells: default(),
-        });
+        world.insert_resource(crate::game::data::Catalogs { items, ..default() });
         let member = |world: &mut World, artifacts: u8| {
             let mut character = wearer();
             character.skill_points[Skill::Artifacts] = artifacts;
@@ -1577,12 +1562,7 @@ mod tests {
         let (gun_stack, cell_stack) =
             (ItemStack::new(&gun, &mut ids, 4, true), ItemStack::new(&cell, &mut ids, 8, true));
         let items = ItemCatalog(vec![gun, cell]);
-        world.insert_resource(crate::game::data::Catalogs {
-            items,
-            loot: default(),
-            species: default(),
-            spells: default(),
-        });
+        world.insert_resource(crate::game::data::Catalogs { items, ..default() });
         let member = world.spawn((Vitals::new(&wearer()), wearer(), Carried::default())).id();
         let party = crate::game::party::roster::test_party(&mut world, &[member]);
         {
