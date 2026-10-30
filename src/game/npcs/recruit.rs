@@ -107,7 +107,7 @@ fn willing(world: &mut World, id: NpcId, definition: &NpcDefinition) -> bool {
 /// `RequestNpcJoinParty`'s order: an NPC without a character declines
 /// before the party's room is counted).
 pub fn joinable(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
-    let id = world.get::<super::ActorId>(actor).ok_or(JoinRefusal::Declines)?.npc();
+    let id = world.get::<super::ActorId>(actor).unwrap().npc();
     let definition = super::definition(world, actor).clone();
     let gone = world.get::<Npc>(actor).is_some_and(|npc| npc.dead);
     if definition.character.is_none() || gone || world.get::<PartyMember>(actor).is_some() {
@@ -245,7 +245,7 @@ fn hand_over(world: &mut World, actor: Entity, level: Entity, keep: impl Fn(&Ite
     Catalogs::scope(world, |world, catalogs| {
         let items = &catalogs.items;
         let given: Vec<ItemStack> = {
-            let Some(mut carried) = world.get_mut::<Carried>(actor) else { return };
+            let mut carried = world.get_mut::<Carried>(actor).unwrap();
             let carried = &mut *carried;
             let worn = carried
                 .equipment
@@ -337,7 +337,7 @@ fn stand_beside_party(world: &mut World, actor: Entity, body: Entity, party: Ent
     };
     let stamina_max =
         world.get::<Character>(actor).map_or(stamina, |c| c.base_stats().max_stamina());
-    let Some(species) = world.get::<Monster>(body).map(|m| m.species) else { return };
+    let species = world.get::<Monster>(body).unwrap().species;
     let (max_hp, max_stamina) = world.resource_scope(|world, mut rng: Mut<GameRng>| {
         let kind = &world.resource::<crate::game::data::Catalogs>().species[species];
         (rng.roll(kind.hit_points).max(1), rng.roll(kind.stamina))

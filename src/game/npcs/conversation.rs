@@ -410,7 +410,7 @@ pub fn approach_ready(at: Option<u64>, now: u64) -> bool {
 /// speaker in the open conversation; it never overwrites retained opinion.
 /// Allied party NPCs are not yet represented.
 pub fn disposition(world: &World, actor: Entity) -> i32 {
-    let Some(npc) = world.get::<Npc>(actor) else { return 0 };
+    let npc = world.get::<Npc>(actor).unwrap();
     standing(world, actor, npc.disposition)
 }
 /// [`disposition`] were the NPC's own `disposition` this.
