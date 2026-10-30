@@ -358,21 +358,17 @@ fn definition(world: &World, actor: Entity) -> Result<&NpcDefinition, TradeError
     world.get::<super::ActorId>(actor).ok_or(TradeError::Unavailable)?;
     super::definition(world, actor).ok_or(TradeError::MissingContent)
 }
+/// Run `f` with the NPC's definition and the item catalog while the world
+/// stays writable; the catalogs are out of the world meanwhile.
 fn with_definition<T>(
     world: &mut World,
     actor: Entity,
-    f: impl FnOnce(&mut World, &NpcDefinition) -> Result<T, TradeError>,
+    f: impl FnOnce(&mut World, &NpcDefinition, &ItemCatalog) -> Result<T, TradeError>,
 ) -> Result<T, TradeError> {
     let id = world.get::<super::ActorId>(actor).ok_or(TradeError::Unavailable)?.npc();
     crate::game::data::Catalogs::scope(world, |world, catalogs| {
-        f(world, catalogs.npcs.get(id).ok_or(TradeError::MissingContent)?)
+        f(world, catalogs.npcs.get(id).ok_or(TradeError::MissingContent)?, &catalogs.items)
     })
-}
-fn with_items<T>(
-    world: &mut World,
-    f: impl FnOnce(&mut World, &ItemCatalog) -> Result<T, TradeError>,
-) -> Result<T, TradeError> {
-    crate::game::data::Catalogs::scope(world, |world, catalogs| f(world, &catalogs.items))
 }
 pub fn party_communication(world: &mut World) -> u32 {
     best_communicator(world).map_or(0, |(_, level)| level)
@@ -605,15 +601,13 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
         } else {
             false
         };
-        with_definition(world, actor, |world, def| {
-            with_items(world, |world, items| {
-                world.resource_scope(|world, mut rng: Mut<GameRng>| {
-                    world
-                        .get_mut::<Npc>(actor)
-                        .unwrap()
-                        .stock
-                        .maintain(def, items, average, now, templar, &mut rng)
-                })
+        with_definition(world, actor, |world, def, items| {
+            world.resource_scope(|world, mut rng: Mut<GameRng>| {
+                world
+                    .get_mut::<Npc>(actor)
+                    .unwrap()
+                    .stock
+                    .maintain(def, items, average, now, templar, &mut rng)
             })
         })?;
     }
@@ -1068,20 +1062,21 @@ fn commit_effects(world: &mut World, entity: Entity, effects: Vec<QuoteEffect>) 
             }
             // `executable` checked the content just before.
             QuoteEffect::GiveItem { party, item } => {
-                let (name, crucial, rest) = with_items(world, |world, catalog| {
-                    let definition = catalog.get(item).ok_or(TradeError::MissingContent)?;
-                    let stack = world.resource_scope(|world, mut ids: Mut<ItemIds>| {
-                        let mut rng = world.resource_mut::<GameRng>();
-                        make_item(definition, &mut ids, &mut rng, true, true)
+                let (name, crucial, rest) =
+                    crate::game::data::Catalogs::scope(world, |world, c| {
+                        let catalog = &c.items;
+                        let definition = catalog.get(item).expect("a validated gift has its item");
+                        let stack = world.resource_scope(|world, mut ids: Mut<ItemIds>| {
+                            let mut rng = world.resource_mut::<GameRng>();
+                            make_item(definition, &mut ids, &mut rng, true, true)
+                        });
+                        let rest = world
+                            .get_mut::<PartyInventory>(party)
+                            .unwrap()
+                            .pool
+                            .receive(stack, catalog);
+                        (definition.name.clone(), definition.crucial, rest)
                     });
-                    let rest = world
-                        .get_mut::<PartyInventory>(party)
-                        .unwrap()
-                        .pool
-                        .receive(stack, catalog);
-                    Ok((definition.name.clone(), definition.crucial, rest))
-                })
-                .expect("a validated gift has its item");
                 if let Some(rest) = rest {
                     drop_gift(world, party, rest, crucial);
                 }
@@ -1832,63 +1827,60 @@ fn execute_trade(world: &mut World, quote: TradeQuote) -> Result<(), TradeError>
     let actor = c.actor;
     let party = the_party(world).ok_or(TradeError::Unavailable)?;
     let communication = party_communication(world);
-    with_definition(world, actor, |world, def| {
-        with_items(world, |world, catalog| match quote.source {
-            TradeSource::Stock(lot) => world.resource_scope(|world, mut ids: Mut<ItemIds>| {
-                let [mut party_entity, mut actor] =
-                    world.get_entity_mut([party, actor]).map_err(|_| TradeError::Unavailable)?;
-                let mut inventory =
-                    party_entity.get_mut::<PartyInventory>().ok_or(TradeError::Unavailable)?;
-                let mut npc = actor.get_mut::<Npc>().ok_or(TradeError::Unavailable)?;
-                trade::buy(
-                    &mut npc.stock,
-                    &mut inventory,
-                    &mut ids,
-                    def,
-                    catalog,
-                    lot,
-                    quote.quantity,
-                    quote.gold,
-                    communication,
-                )
-            }),
-            TradeSource::Party(source) => {
-                let item = sale_item(world, TradeSource::Party(source), party)?;
-                let units =
-                    u16::try_from(quote.quantity).map_err(|_| TradeError::InvalidQuantity)?;
-                let gold = world
-                    .get::<PartyInventory>(party)
-                    .ok_or(TradeError::Unavailable)?
-                    .gold
-                    .checked_add(quote.gold)
-                    .ok_or(TradeError::Overflow)?;
-                let merchant = &world.get::<Npc>(actor).ok_or(TradeError::Unavailable)?.stock;
-                let stock = trade::sell(
-                    merchant,
-                    def,
-                    item,
-                    quote.quantity,
-                    quote.gold,
-                    catalog,
-                    communication,
-                )?;
-                match source.owner {
-                    ItemOwner::Pool => world
-                        .get_mut::<PartyInventory>(party)
-                        .unwrap()
-                        .pool
-                        .consume_units(source.id, units),
-                    ItemOwner::Member(member) => world
-                        .get_mut::<Carried>(member)
-                        .unwrap()
-                        .consume_backpack_units(source.id, units),
-                }
-                .map_err(|_| TradeError::StaleSelection)?;
-                world.get_mut::<Npc>(actor).unwrap().stock = stock;
-                world.get_mut::<PartyInventory>(party).unwrap().gold = gold;
-                Ok(())
+    with_definition(world, actor, |world, def, catalog| match quote.source {
+        TradeSource::Stock(lot) => world.resource_scope(|world, mut ids: Mut<ItemIds>| {
+            let [mut party_entity, mut actor] =
+                world.get_entity_mut([party, actor]).map_err(|_| TradeError::Unavailable)?;
+            let mut inventory =
+                party_entity.get_mut::<PartyInventory>().ok_or(TradeError::Unavailable)?;
+            let mut npc = actor.get_mut::<Npc>().ok_or(TradeError::Unavailable)?;
+            trade::buy(
+                &mut npc.stock,
+                &mut inventory,
+                &mut ids,
+                def,
+                catalog,
+                lot,
+                quote.quantity,
+                quote.gold,
+                communication,
+            )
+        }),
+        TradeSource::Party(source) => {
+            let item = sale_item(world, TradeSource::Party(source), party)?;
+            let units = u16::try_from(quote.quantity).map_err(|_| TradeError::InvalidQuantity)?;
+            let gold = world
+                .get::<PartyInventory>(party)
+                .ok_or(TradeError::Unavailable)?
+                .gold
+                .checked_add(quote.gold)
+                .ok_or(TradeError::Overflow)?;
+            let merchant = &world.get::<Npc>(actor).ok_or(TradeError::Unavailable)?.stock;
+            let stock = trade::sell(
+                merchant,
+                def,
+                item,
+                quote.quantity,
+                quote.gold,
+                catalog,
+                communication,
+            )?;
+            match source.owner {
+                ItemOwner::Pool => world
+                    .get_mut::<PartyInventory>(party)
+                    .unwrap()
+                    .pool
+                    .consume_units(source.id, units),
+                ItemOwner::Member(member) => world
+                    .get_mut::<Carried>(member)
+                    .unwrap()
+                    .consume_backpack_units(source.id, units),
             }
-        })
+            .map_err(|_| TradeError::StaleSelection)?;
+            world.get_mut::<Npc>(actor).unwrap().stock = stock;
+            world.get_mut::<PartyInventory>(party).unwrap().gold = gold;
+            Ok(())
+        }
     })?;
     world.get_mut::<Conversation>(quote.conversation).unwrap().revision += 1;
     Ok(())
