@@ -292,7 +292,7 @@ pub fn buy(
     if cost > party.gold {
         return Err(TradeError::Funds);
     }
-    let mut draft = party.clone();
+    let mut pool = party.pool.clone();
     let mut next_ids = ids.clone();
     let mut remaining = quantity;
     while remaining > 0 {
@@ -309,13 +309,13 @@ pub fn buy(
             item.initial_quantity.maximum().min(255) as u16
         };
         let delivered = ItemStack::new(item, &mut next_ids, amount, true);
-        if draft.pool.receive(delivered, catalog).is_some() {
+        if pool.receive(delivered, catalog).is_some() {
             return Err(TradeError::Capacity);
         }
         remaining -= units;
     }
-    draft.gold -= cost;
-    *party = draft;
+    party.pool = pool;
+    party.gold -= cost;
     *ids = next_ids;
     stock.lots[row].units -= quantity;
     stock.lots.retain(|l| l.units != 0);
@@ -458,6 +458,8 @@ mod tests {
         let lot = stock.lots[0].id;
         let mut party = PartyInventory { gold: 1000, ..default() };
         let mut ids = ItemIds::default();
+        party.hand.held = Some(ItemStack::new(&catalog.0[0], &mut ids, 1, true));
+        let held = party.hand.clone();
         let cost = price(&def, &catalog.0[0], 30, true, true, 0).unwrap();
         let before = stock.clone();
         assert_eq!(
@@ -476,6 +478,7 @@ mod tests {
         party.gold = 1000;
         buy(&mut stock, &mut party, &mut ids, &def, &catalog, lot, 30, cost, 0).unwrap();
         assert_eq!(party.gold, 1000 - cost);
+        assert_eq!(party.hand, held, "buying changes only the pool and payment");
         assert_eq!(party.pool.stacks.iter().map(|i| i.units()).sum::<u32>(), 30);
         assert!(stock.lots.is_empty());
         assert_eq!(

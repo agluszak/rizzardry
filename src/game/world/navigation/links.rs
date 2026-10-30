@@ -90,7 +90,7 @@ pub fn sync_door_links(
         (Entity, &Prop, &LevelOwned, &PropMotion, &DoorLink, Option<&Children>),
         Or<(Changed<PropMotion>, Added<DoorLink>)>,
     >,
-    definitions: crate::game::world::level::OwnedDefinitions,
+    definitions: crate::game::world::level::PlayedLevel,
     links: Query<(), With<AnimationLink3d>>,
     navigation: Query<&LevelNavigation>,
 ) {
