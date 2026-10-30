@@ -419,16 +419,12 @@ fn open_trade(world: &mut World, button: Entity, root: Entity) {
               sessions: Query<&Conversation>,
               npcs: Query<&crate::game::npcs::ActorId>,
               catalogs: Res<Catalogs>| {
-            let merchant = roots
-                .get(root)
-                .ok()
-                .and_then(|view| sessions.get(view.0).ok())
-                .and_then(|c| npcs.get(c.actor).ok())
-                .and_then(|n| catalogs.npcs.get(n.npc()))
-                .is_some_and(|d| d.owns_stock);
-            if let Ok(mut state) = states.get_mut(root) {
-                set_mode(&mut state, if merchant { Mode::Buy } else { Mode::Give });
-            }
+            let c = sessions.get(roots.get(root).unwrap().0).unwrap();
+            let merchant = catalogs.npcs[npcs.get(c.actor).unwrap().npc()].owns_stock;
+            set_mode(
+                &mut states.get_mut(root).unwrap(),
+                if merchant { Mode::Buy } else { Mode::Give },
+            );
         },
     );
 }
@@ -1150,12 +1146,7 @@ fn project_text(
         let (Ok(state), Ok(c)) = (views.states.get(root), sessions.get(session)) else { continue };
         let value = match caption {
             Caption::Name => match state.mode {
-                Mode::Talk => npcs
-                    .get(c.actor)
-                    .ok()
-                    .and_then(|n| catalogs.npcs.get(n.npc()))
-                    .map_or("NPC", |d| d.source_name.as_str())
-                    .to_owned(),
+                Mode::Talk => catalogs.npcs[npcs.get(c.actor).unwrap().npc()].source_name.clone(),
                 Mode::Buy => "Buy".into(),
                 Mode::Sell => "Sell".into(),
                 Mode::Give => "Give".into(),
@@ -1419,11 +1410,7 @@ fn project_modes(
         let Some((root, session)) = views.owner(entity) else { continue };
         let (Ok(state), Ok(c)) = (views.states.get(root), sessions.get(session)) else { continue };
         if trade {
-            let can_trade = npcs
-                .get(c.actor)
-                .ok()
-                .and_then(|(id, _)| catalogs.npcs.get(id.npc()))
-                .is_some_and(|d| d.owns_stock);
+            let can_trade = catalogs.npcs[npcs.get(c.actor).unwrap().0.npc()].owns_stock;
             set_enabled(&mut commands, entity, can_trade, disabled);
         } else if pool.is_some() {
             set_enabled(
@@ -1874,10 +1861,8 @@ fn sync_trade_rows(
         let mut rows = Vec::new();
         if state.mode == Mode::Buy {
             for lot in &npc.stock.lots {
-                if let Some(d) = items.get(lot.item)
-                    && trade::on_sale(lot, d)
-                    && allows(d)
-                {
+                let d = &items[lot.item];
+                if trade::on_sale(lot, d) && allows(d) {
                     rows.push((
                         TradeSource::Stock(lot.id),
                         format!("{} ({})", d.name, lot.units),
@@ -1926,7 +1911,7 @@ fn sync_trade_rows(
                     }
                 },
             })
-            .and_then(|id| items.get(id));
+            .map(|id| &items[id]);
         let offer = if let Some(error) = &state.error {
             error.clone()
         } else if let Some(item) = item {

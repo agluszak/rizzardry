@@ -619,9 +619,7 @@ pub(super) fn refresh(
             .iter()
             .chain(enchantments.as_ref().into_iter().flat_map(|p| p.0.0.iter()))
         {
-            let name =
-                spell_catalog.get(effect.spell).map(|s| s.name.as_str()).unwrap_or("Enchantment");
-            effects.push((name.to_owned(), true));
+            effects.push((spell_catalog[effect.spell].name.clone(), true));
             effects.push((format!("Power {} · {} turns", effect.power, effect.turns), false));
             effects.push((String::new(), false));
         }

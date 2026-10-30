@@ -40,9 +40,9 @@ pub struct JournalEntry {
     pub level: String,
 }
 impl JournalEntry {
-    pub fn description<'a>(&self, catalog: &'a FactCatalog) -> Option<&'a str> {
-        let fact = catalog.get(self.fact)?;
-        Some(if self.was_true { &fact.alternate_description } else { &fact.description })
+    pub fn description<'a>(&self, catalog: &'a FactCatalog) -> &'a str {
+        let fact = &catalog[self.fact];
+        if self.was_true { &fact.alternate_description } else { &fact.description }
     }
 }
 impl StoryFacts {
@@ -3350,9 +3350,9 @@ mod tests {
         facts.set(FactId(91), 1, &catalog, "second".into()).unwrap();
         facts.set(FactId(91), 0, &catalog, "second".into()).unwrap();
         assert_eq!(facts.journal.len(), 2);
-        assert_eq!(facts.journal[0].description(&catalog), Some("Finished"));
+        assert_eq!(facts.journal[0].description(&catalog), "Finished");
         assert_eq!(facts.journal[0].level, "first");
-        assert_eq!(facts.journal[1].description(&catalog), Some("Unfinished"));
+        assert_eq!(facts.journal[1].description(&catalog), "Unfinished");
         assert_eq!(facts.journal[1].level, "second");
         assert_eq!(facts.get(FactId(91), &catalog), Ok(0));
         assert!(facts.set(FactId(999), 1, &catalog, "third".into()).is_err());

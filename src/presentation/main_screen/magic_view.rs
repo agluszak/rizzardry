@@ -160,7 +160,7 @@ impl SourceTargeting<'_, '_> {
     pub fn of(&self, caster: Entity, source: Source) -> Option<Targeting> {
         let (spells, items) = (&self.content.spells, &self.content.items);
         let id = source.spell_id(self.carried.get(caster).ok(), self.pool.single().ok()?, items)?;
-        Some(spells.get(id)?.targeting)
+        Some(spells[id].targeting)
     }
 }
 
@@ -625,7 +625,7 @@ fn offers<'a>(
         return sources
             .into_iter()
             .filter_map(|(source, stack, id)| {
-                let spell = spells.get(id)?;
+                let spell = &spells[id];
                 let definition = &items[stack.item];
                 let silenced =
                     silenced && definition.use_type == crate::content::items::UseType::Instrument;
@@ -655,7 +655,7 @@ fn offers<'a>(
     let mut offers: Vec<_> = learned
         .0
         .iter()
-        .filter_map(|&id| spells.get(id))
+        .map(|&id| &spells[id])
         .filter(|s| s.realm == Some(realm))
         .map(|s| {
             let affordable = points.map_or(0, |p| p.affordable_power(s, maximum));

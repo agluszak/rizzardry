@@ -262,14 +262,12 @@ fn breathe(
     content: If<Res<crate::game::data::Catalogs>>,
     mut orders: MessageWriter<crate::game::combat::GiveOrder>,
 ) {
-    let (Some(member), Ok((position, body)), Ok(combatants), Some(spell)) = (
-        selected.member(&roster),
-        party.single(),
-        battle.single(),
-        content.spells.get(crate::content::spells::SpellId::SPECIAL_ATTACK_CONE),
-    ) else {
+    let (Some(member), Ok((position, body)), Ok(combatants)) =
+        (selected.member(&roster), party.single(), battle.single())
+    else {
         return;
     };
+    let spell = &content.spells[crate::content::spells::SpellId::SPECIAL_ATTACK_CONE];
     let eye = PartyBody::eye(position);
     if let Some(target) = crate::game::magic::target_ahead(
         eye,

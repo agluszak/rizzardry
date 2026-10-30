@@ -246,3 +246,10 @@ impl FactCatalog {
         self.0.iter().find(|f| f.id == id)
     }
 }
+/// The definition of a fact the game has recorded.
+impl std::ops::Index<FactId> for FactCatalog {
+    type Output = FactDefinition;
+    fn index(&self, id: FactId) -> &FactDefinition {
+        self.get(id).expect("a fact the catalog defines")
+    }
+}

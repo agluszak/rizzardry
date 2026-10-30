@@ -310,8 +310,7 @@ pub fn draw_caption(
                     }
                     Order::Magic(choice) => match choice.source {
                         crate::game::magic::casting::Source::Spell { spell, power } => {
-                            let name = spells.get(spell).map_or("", |s| &s.name);
-                            format!("Cast {name} ({power})")
+                            format!("Cast {} ({power})", spells[spell].name)
                         }
                         crate::game::magic::casting::Source::PoolItem(id) => {
                             let name = pool

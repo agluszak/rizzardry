@@ -69,9 +69,7 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
         return;
     }
     let Some((item, maximum)) = stack(world, q) else { return };
-    let Some(item) = world.resource::<crate::game::data::Catalogs>().items.get(item) else {
-        return;
-    };
+    let item = &world.resource::<crate::game::data::Catalogs>().items[item];
     if maximum < 2 || item.class == EquipClass::Ammunition {
         return;
     }

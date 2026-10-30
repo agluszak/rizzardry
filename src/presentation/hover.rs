@@ -102,8 +102,7 @@ pub fn show_tooltip(
         let text = if let Ok(item) = items.get(entity) {
             // "Bullets (Unidentified) (16)".
             let catalog = &content.items;
-            let definition = catalog.get(item.appearance())?;
-            item.display_name(definition, true)
+            item.display_name(&catalog[item.appearance()], true)
         } else if let Ok(monster) = monsters.get(entity) {
             // "Crustacean (?/12)" (retail `SetCombatSelection`).
             let catalog = &content.species;

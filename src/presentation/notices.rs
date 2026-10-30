@@ -378,7 +378,7 @@ fn magic_lines(
             lines
         }
         MagicNews::Done(report) => {
-            let spell = spells.get(report.spell).map_or("", |s| s.name.as_str());
+            let spell = &spells[report.spell].name;
             let mut lines = vec![match &report.item {
                 Some(item) => format!("{} uses {item}.", name(report.caster)),
                 None => format!("{} casts {spell} ({}).", name(report.caster), report.power),

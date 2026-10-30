@@ -225,10 +225,11 @@ pub(super) fn refresh(
         let Ok((_, _, mut node, mut visibility, children, disabled)) = rows.get_mut(entity) else {
             continue;
         };
-        let Some(spell) = catalog.get(id).filter(|_| draft.can_learn_spell(catalog, id)) else {
+        if !draft.can_learn_spell(catalog, id) {
             visibility.set_if_neq(Visibility::Hidden);
             continue;
-        };
+        }
+        let spell = &catalog[id];
         let realm = spell.realm.unwrap() as usize;
         let index = counts[realm];
         counts[realm] += 1;

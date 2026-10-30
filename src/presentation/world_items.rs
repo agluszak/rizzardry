@@ -40,7 +40,7 @@ pub fn show_world_items(
     for (entity, item, shown) in &items {
         let model = match shown {
             _ if item.hidden => continue,
-            None => catalog.get(item.appearance()).map(|d| d.model.as_str()),
+            None => Some(catalog[item.appearance()].model.as_str()),
             Some(shown) if assets.get_load_state(&shown.model).is_some_and(|s| s.is_failed()) => {
                 Some("data/items3d/questionmark.itm")
             }
