@@ -13,7 +13,7 @@ use crate::game::factions::{Band, Factions};
 use crate::game::time::GameClock;
 use crate::game::{
     characters::{Character, Condition, Vitals},
-    inventory::{Carried, ItemIds, ItemOwner, ItemPool, ItemRef, PartyInventory, make_item},
+    inventory::{Carried, ItemIds, ItemOwner, ItemRef, PartyInventory, make_item},
     party::roster::{PartyMember, PartyRoster, the_party},
     rng::GameRng,
     world::{ActorPose, level::Level, population::Monster},
@@ -853,61 +853,34 @@ fn drop_gift(
         }
     }
 }
-/// What scripted gifts and removals change: each member's pack, in party
-/// order, and the party's items. An answer previews its exchange on a copy
-/// and commits it through the same rules.
-struct PartyItems {
-    packs: Vec<(Entity, Carried)>,
-    pool: ItemPool,
+/// One of the offered stack leaves its member's pack or the party's items.
+fn hand_in(world: &mut World, party: Entity, offered: ItemRef) -> bool {
+    match offered.owner {
+        ItemOwner::Pool => world
+            .get_mut::<PartyInventory>(party)
+            .is_some_and(|mut inventory| inventory.pool.consume_units(offered.id, 1).is_ok()),
+        ItemOwner::Member(member) => world
+            .get_mut::<Carried>(member)
+            .is_some_and(|mut pack| pack.consume_backpack_units(offered.id, 1).is_ok()),
+    }
 }
-impl PartyItems {
-    fn of(world: &World, party: Entity) -> Option<Self> {
-        // A party without members has no roster, only its own items.
-        let packs = world
-            .get::<PartyRoster>(party)
-            .into_iter()
-            .flat_map(|roster| roster.iter())
-            .filter_map(|member| Some((member, world.get::<Carried>(member)?.clone())))
-            .collect();
-        Some(Self { packs, pool: world.get::<PartyInventory>(party)?.pool.clone() })
-    }
-    fn store(self, world: &mut World, party: Entity) {
-        for (member, carried) in self.packs {
-            if let Some(mut current) = world.get_mut::<Carried>(member) {
-                current.set_if_neq(carried);
-            }
-        }
-        let mut inventory = world.get_mut::<PartyInventory>(party).unwrap();
-        if inventory.pool != self.pool {
-            inventory.pool = self.pool;
+/// One of the item leaves the first member's pack that holds it, else the
+/// party's items (retail `RemoveNpcScriptItem`). Says whose it was: a
+/// member, or `None` for the party's; nothing when the party has none.
+fn take_item(world: &mut World, party: Entity, item: ItemId) -> Option<Option<Entity>> {
+    let held =
+        |pack: &Carried| pack.backpack.iter().flatten().find(|s| s.item == item).map(|s| s.id);
+    let members = world.get::<PartyRoster>(party).map(|r| r.iter().collect::<Vec<_>>());
+    for member in members.unwrap_or_default() {
+        if let Some(id) = world.get::<Carried>(member).and_then(held) {
+            world.get_mut::<Carried>(member)?.consume_backpack_units(id, 1).ok()?;
+            return Some(Some(member));
         }
     }
-    /// One of the offered stack leaves its member's pack or the party's items.
-    fn hand_in(&mut self, offered: ItemRef) -> bool {
-        match offered.owner {
-            ItemOwner::Pool => self.pool.consume_units(offered.id, 1).is_ok(),
-            ItemOwner::Member(member) => self
-                .packs
-                .iter_mut()
-                .find(|(owner, _)| *owner == member)
-                .is_some_and(|(_, pack)| pack.consume_backpack_units(offered.id, 1).is_ok()),
-        }
-    }
-    /// One of the item leaves the first member's pack that holds it, else the
-    /// party's items (retail `RemoveNpcScriptItem`). Says whose it was: a
-    /// member, or `None` for the party's; nothing when the party has none.
-    fn take(&mut self, item: ItemId) -> Option<Option<Entity>> {
-        for (member, pack) in &mut self.packs {
-            if let Some(id) = pack.backpack.iter().flatten().find(|s| s.item == item).map(|s| s.id)
-            {
-                pack.consume_backpack_units(id, 1).ok()?;
-                return Some(Some(*member));
-            }
-        }
-        let id = self.pool.stacks.iter().find(|s| s.item == item)?.id;
-        self.pool.consume_units(id, 1).ok()?;
-        Some(None)
-    }
+    let mut inventory = world.get_mut::<PartyInventory>(party)?;
+    let id = inventory.pool.stacks.iter().find(|s| s.item == item)?.id;
+    inventory.pool.consume_units(id, 1).ok()?;
+    Some(None)
 }
 fn commit_quote(world: &mut World, entity: Entity, quote: u16, plan: QuotePlan) {
     commit_effects(world, entity, plan.effects);
@@ -994,10 +967,7 @@ fn commit_effects(world: &mut World, entity: Entity, effects: Vec<QuoteEffect>) 
                     .push(TranscriptLine::Reward(QuestReward::Item { name }));
             }
             QuoteEffect::TakeItem { party, item } => {
-                let Some(mut items) = PartyItems::of(world, party) else { continue };
-                let taken = items.take(item);
-                items.store(world, party);
-                if let Some(from) = taken {
+                if let Some(from) = take_item(world, party, item) {
                     let member = from.map(|member| {
                         world.get::<Character>(member).map(|c| c.name.clone()).unwrap_or_default()
                     });
@@ -1435,11 +1405,9 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
     // line, which plays out even if the party leaves the dialogue. A content
     // gap keeps the item and queues the answer to show it.
     if keeps && plan.is_some() {
-        let mut items = PartyItems::of(world, party).ok_or(TradeError::Unavailable)?;
-        if !items.hand_in(item) {
+        if !hand_in(world, party, item) {
             return Err(TradeError::StaleSelection);
         }
-        items.store(world, party);
         if let Some((pool, disposition)) = debit {
             let mut npc = world.get_mut::<Npc>(actor).unwrap();
             (npc.trade_pool, npc.disposition) = (pool, disposition);
