@@ -169,7 +169,7 @@ struct WellChrome {
 #[derive(Component)]
 struct Summary;
 #[derive(Component)]
-struct TranscriptRow(usize);
+struct TranscriptRow;
 #[derive(Component)]
 struct ScrollToNewest;
 #[derive(Component)]
@@ -214,10 +214,10 @@ impl Plugin for ConversationViewPlugin {
             .add_observer(activate_trade)
             .add_observer(activate_topic)
             .add_observer(create_view)
+            .add_observer(close_views)
             .add_systems(
                 Update,
                 (
-                    close_views,
                     (
                         project_text,
                         project_modes,
@@ -273,26 +273,16 @@ struct ViewScope<'w, 's> {
 }
 impl ViewScope<'_, '_> {
     fn owner(&self, entity: Entity) -> Option<(Entity, Entity)> {
-        scope(entity, &self.parents, &self.roots)
+        self.roots.get(entity).ok().map(|v| (entity, v.0)).or_else(|| {
+            self.parents
+                .iter_ancestors(entity)
+                .find_map(|root| self.roots.get(root).ok().map(|v| (root, v.0)))
+        })
     }
 }
-
-/// Existing hierarchy owns controls; the relationship owns the complete view.
-fn scope(
-    entity: Entity,
-    parents: &Query<&ChildOf>,
-    roots: &Query<&ConversationView>,
-) -> Option<(Entity, Entity)> {
-    roots.get(entity).ok().map(|v| (entity, v.0)).or_else(|| {
-        parents.iter_ancestors(entity).find_map(|root| roots.get(root).ok().map(|v| (root, v.0)))
-    })
-}
 /// A dialogue the party has left plays out without its view.
-fn close_views(
-    mut commands: Commands,
-    left: Query<&ConversationViews, Added<crate::game::npcs::conversation::Closing>>,
-) {
-    for views in &left {
+fn close_views(event: On<Add<Closing>>, mut commands: Commands, views: Query<&ConversationViews>) {
+    if let Ok(views) = views.get(event.entity) {
         for &view in &views.0 {
             commands.entity(view).despawn();
         }
@@ -451,13 +441,12 @@ fn project_modes(
                 ItemFilter::Group(g) => state.item_group == Some(*g),
                 ItemFilter::Usable(p) => state.usability == Some(*p),
             });
-        if selected != was_selected {
-            if selected {
-                commands.entity(entity).insert(bevy::ui::Selected);
-            } else {
-                commands.entity(entity).remove::<bevy::ui::Selected>();
-            }
-        }
+        crate::presentation::retail_controls::set_selected(
+            &mut commands,
+            entity,
+            selected,
+            was_selected,
+        );
     }
 }
 /// Paint labels from the native selection state; sprite controls use ControlSkin.
@@ -994,6 +983,7 @@ pub(crate) mod tests {
             .init_asset::<Font>()
             .init_resource::<super::super::main_screen::ScreenLayout>()
             .add_observer(create_view)
+            .add_observer(close_views)
             .add_message::<ConversationRequest>()
             .add_systems(Update, sync_transcript);
         let actor = app.world_mut().spawn_empty().id();
@@ -1043,6 +1033,14 @@ pub(crate) mod tests {
         app.world_mut().despawn(session);
         assert!(app.world().get_entity(view).is_err());
         assert!(rows.into_iter().all(|e| app.world().get_entity(e).is_err()));
+        let closing = app.world_mut().spawn(make(actor)).id();
+        app.update();
+        let closing_view = app.world().get::<ConversationViews>(closing).unwrap().0[0];
+        app.world_mut().entity_mut(closing).insert(Closing);
+        app.world_mut().flush();
+        assert!(app.world().get_entity(closing_view).is_err());
+        assert!(app.world().get::<Conversation>(closing).is_some());
+        app.world_mut().despawn(closing);
         // Both operations precede the queued view build.
         app.world_mut().commands().spawn(make(actor)).despawn();
         app.update();

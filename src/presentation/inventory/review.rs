@@ -846,13 +846,7 @@ pub(super) fn style_effect_buttons(
             1 => info.filter == EffectFilter::Detrimental,
             _ => info.items,
         };
-        if active != selected {
-            if active {
-                commands.entity(entity).insert(Selected);
-            } else {
-                commands.entity(entity).remove::<Selected>();
-            }
-        }
+        crate::presentation::retail_controls::set_selected(&mut commands, entity, active, selected);
     }
 }
 

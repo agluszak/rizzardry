@@ -798,13 +798,12 @@ pub(super) fn refresh_magic_view(
         }
         for (button, selected, entity) in &parts.p0() {
             let wanted = view.realm == Some(button.0);
-            if wanted != selected {
-                if wanted {
-                    commands.entity(entity).insert(Selected);
-                } else {
-                    commands.entity(entity).remove::<Selected>();
-                }
-            }
+            crate::presentation::retail_controls::set_selected(
+                &mut commands,
+                entity,
+                wanted,
+                selected,
+            );
             crate::presentation::retail_controls::set_enabled(
                 &mut commands,
                 entity,

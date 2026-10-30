@@ -499,7 +499,7 @@ impl Plugin for MagicPlugin {
                 Update,
                 (accept_magic, pointcasts::update_lure)
                     .chain()
-                    .after(GameplaySet::Stats)
+                    .after(GameplaySet::Burden)
                     .before(GameplaySet::Combat)
                     .run_if(crate::game::world::level::level_active),
             );

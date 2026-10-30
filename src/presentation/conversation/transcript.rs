@@ -19,7 +19,7 @@ pub(super) fn sync_transcript(
     strings: crate::presentation::screen_art::GameStrings,
     sessions: Query<Ref<Conversation>>,
     lists: Query<(Entity, Ref<Summary>, Option<&Children>)>,
-    mut rows: Query<(&TranscriptRow, &mut BitmapText)>,
+    mut rows: Query<&mut BitmapText, With<TranscriptRow>>,
 ) {
     for (list, summary, children) in &lists {
         let Some((_, session)) = views.owner(list) else { continue };
@@ -98,17 +98,11 @@ pub(super) fn sync_transcript(
             };
             trailing.push((text, Some("retail://data/fonts/palettebronze.sti")));
         }
-        let old: Vec<_> = children
-            .into_iter()
-            .flatten()
-            .filter_map(|e| rows.get(*e).ok().map(|(row, _)| (*e, row.0)))
-            .collect();
+        let old = children.map_or(&[][..], |children| &children[..]);
         let length = lines.len() + trailing.len();
         let mut changed = old.len() != length;
-        for (entity, index) in &old {
-            if *index >= length {
-                commands.entity(*entity).despawn();
-            }
+        for &entity in old.iter().skip(length) {
+            commands.entity(entity).despawn();
         }
         for (index, (value, palette)) in lines
             .iter()
@@ -116,8 +110,8 @@ pub(super) fn sync_transcript(
             .chain(trailing.iter().map(|(text, palette)| (text.as_str(), *palette)))
             .enumerate()
         {
-            if let Some((entity, _)) = old.iter().find(|(_, i)| *i == index) {
-                if let Ok((_, mut current)) = rows.get_mut(*entity) {
+            if let Some(entity) = old.get(index) {
+                if let Ok(mut current) = rows.get_mut(*entity) {
                     let palette_changed = current
                         .palette
                         .as_ref()
@@ -135,7 +129,7 @@ pub(super) fn sync_transcript(
                 }
             } else {
                 commands.spawn((
-                    TranscriptRow(index),
+                    TranscriptRow,
                     BitmapText {
                         font: assets.load("retail://data/fonts/wiz_text_font.sti"),
                         palette: palette.map(|path| assets.load(path)),

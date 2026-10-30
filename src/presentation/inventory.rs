@@ -146,13 +146,7 @@ fn style_item_actions(
     let armed = action.map_or(ItemAction::None, |action| **action);
     for (entity, button, selected) in &buttons {
         let active = button.0 == armed;
-        if active != selected {
-            if active {
-                commands.entity(entity).insert(bevy::ui::Selected);
-            } else {
-                commands.entity(entity).remove::<bevy::ui::Selected>();
-            }
-        }
+        crate::presentation::retail_controls::set_selected(&mut commands, entity, active, selected);
     }
 }
 
@@ -1347,7 +1341,7 @@ impl Plugin for InventoryPlugin {
                         draw_cells,
                     )
                         .after(spawn_inventory_screen)
-                        .after(GameplaySet::Stats)
+                        .after(GameplaySet::Burden)
                         .run_if(any_with_component::<InventoryScreen>),
                     follow_held,
                 ),
@@ -1368,7 +1362,7 @@ impl Plugin for InventoryPlugin {
                     pool_scroll::sync.before(draw_cells),
                 )
                     .after(spawn_inventory_screen)
-                    .after(GameplaySet::Stats),
+                    .after(GameplaySet::Burden),
             );
     }
 }

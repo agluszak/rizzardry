@@ -5,10 +5,8 @@ use crate::game::npcs::conversation::{
 use bevy::prelude::*;
 
 pub(super) fn plugin(app: &mut App) {
-    app.add_systems(
-        Update,
-        (play_lines, watch_playback, advance_lines).chain().after(update_conversation),
-    );
+    app.add_observer(play_line)
+        .add_systems(Update, (watch_playback, advance_lines).chain().after(update_conversation));
 }
 
 /// How long a said line shows before the conversation is advanced past
@@ -28,31 +26,32 @@ fn text_seconds(text: &str) -> f32 {
     text.encode_utf16().count() as f32 * 0.06 + 2.0
 }
 
-fn play_lines(
+fn play_line(
+    event: On<Add<ConversationSpeech>>,
     mut commands: Commands,
-    lines: Query<(Entity, &ConversationSpeech), Added<ConversationSpeech>>,
+    lines: Query<&ConversationSpeech>,
     assets: Res<AssetServer>,
 ) {
-    for (e, line) in &lines {
-        commands.entity(e).insert(LinePace::Text { remaining: text_seconds(&line.text) });
-        if let Some(voice) = &line.voice {
-            commands.entity(e).insert((
-                bevy::audio::AudioPlayer::new(
-                    assets.load(crate::presentation::voice::voice_path(voice)),
-                ),
-                bevy::audio::PlaybackSettings::ONCE,
-            ));
-        }
-        // Retail `SpeakNpcSubquote`: the alert chime, while the line waits
-        // out its text, not the sound.
-        if line.alert {
-            commands.spawn((
-                bevy::audio::AudioPlayer::new(
-                    assets.load("retail://data/sound/npcs/dialogue alert.wav"),
-                ),
-                bevy::audio::PlaybackSettings::DESPAWN,
-            ));
-        }
+    let e = event.entity;
+    let Ok(line) = lines.get(e) else { return };
+    commands.entity(e).insert(LinePace::Text { remaining: text_seconds(&line.text) });
+    if let Some(voice) = &line.voice {
+        commands.entity(e).insert((
+            bevy::audio::AudioPlayer::new(
+                assets.load(crate::presentation::voice::voice_path(voice)),
+            ),
+            bevy::audio::PlaybackSettings::ONCE,
+        ));
+    }
+    // Retail `SpeakNpcSubquote`: the alert chime, while the line waits
+    // out its text, not the sound.
+    if line.alert {
+        commands.spawn((
+            bevy::audio::AudioPlayer::new(
+                assets.load("retail://data/sound/npcs/dialogue alert.wav"),
+            ),
+            bevy::audio::PlaybackSettings::DESPAWN,
+        ));
     }
 }
 /// A line whose speech plays shows while it does, then holds briefly; one
@@ -102,7 +101,7 @@ mod tests {
                 std::time::Duration::from_millis(100),
             ))
             .add_message::<ConversationRequest>()
-            .add_systems(Update, (play_lines, watch_playback, advance_lines).chain());
+            .add_plugins(plugin);
         let conversation = app.world_mut().spawn_empty().id();
         let speech = app
             .world_mut()

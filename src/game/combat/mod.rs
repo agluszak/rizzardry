@@ -3282,9 +3282,9 @@ mod tests {
             .add_message::<crate::game::world::identify::Identified>()
             .configure_sets(
                 Update,
-                (crate::game::GameplaySet::Stats, crate::game::GameplaySet::Combat).chain(),
+                (crate::game::GameplaySet::Burden, crate::game::GameplaySet::Combat).chain(),
             )
-            .add_plugins((CombatPlugin, crate::game::stats::plugin));
+            .add_plugins((CombatPlugin, crate::game::inventory::plugin));
         app.world_mut()
             .resource_mut::<Time<Virtual>>()
             .set_max_delta(std::time::Duration::from_secs(2));

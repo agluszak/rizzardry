@@ -147,13 +147,12 @@ pub fn draw_bank(
             Some(Bank::PartyMove) => battle.as_ref().is_some_and(|b| b.party_pace.is_some()),
             _ => false,
         };
-        if selected_state != selected {
-            if selected_state {
-                commands.entity(entity).insert(Selected);
-            } else {
-                commands.entity(entity).remove::<Selected>();
-            }
-        }
+        crate::presentation::retail_controls::set_selected(
+            &mut commands,
+            entity,
+            selected_state,
+            selected,
+        );
         let sheet = match face.kind {
             Some(Bank::Round) => {
                 match (settings.continuous, battle.as_ref().is_some_and(|b| b.executing())) {
