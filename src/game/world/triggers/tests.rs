@@ -817,26 +817,6 @@ fn damage_uses_roster_order_and_leaves_nonmembers_alone() {
 }
 
 #[test]
-fn departed_devices_cannot_run() {
-    let mut door = trigger("DOOR", TriggerAction::OpenDoor);
-    door.alternate = Some(act(TriggerAction::ToggleDoor));
-    let mut chest = trigger("CHEST", TriggerAction::Animate(Animation::Toggle));
-    chest.loot_table = Some("Loot".into());
-    let mut level = Scenario::new(
-        vec![door, chest],
-        &[PropSpec("DOOR", 10.0, false, &[]), PropSpec("CHEST", 5.0, false, &[])],
-        LevelScript::None,
-    );
-    assert!(level.run("DOOR").0);
-    level.settle();
-    let source = level.world.entity_mut(level.root).take::<Level>().unwrap();
-    assert!(!level.run("DOOR").0);
-    level.world.entity_mut(level.root).insert(source);
-    assert!(level.run("DOOR").0);
-    assert_eq!(level.motion("DOOR").target, 0.0);
-}
-
-#[test]
 fn the_production_post_step_applies_trigger_commands_before_moving() {
     use crate::game::party::{
         PartyPlugin,

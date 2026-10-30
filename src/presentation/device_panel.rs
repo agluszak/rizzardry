@@ -699,11 +699,26 @@ mod tests {
         app.world().get::<DeviceInteraction>(on).map(|i| &i.work)
     }
 
+    /// A locked device on a level of one trigger.
     fn device(app: &mut App, lock: Lock) -> Entity {
-        app.world_mut()
+        use crate::content::level::LevelDefinition;
+        use crate::game::world::level::{Level, LevelOwned};
+        app.init_asset::<LevelDefinition>();
+        let world = app.world_mut();
+        let lock_trigger = crate::game::world::triggers::tests::trigger(
+            "LOCK",
+            crate::content::level::TriggerAction::Nothing,
+        );
+        let geometry = LevelDefinition { triggers: vec![lock_trigger], ..default() };
+        let handle = world.resource_mut::<Assets<LevelDefinition>>().add(geometry);
+        let level = world
+            .spawn((Level::test(handle), crate::game::world::triggers::LevelState::default()))
+            .id();
+        world
             .spawn((
                 crate::game::world::triggers::Device { definition: 0, recipients: vec![] },
                 interaction::Guarded::new(lock),
+                LevelOwned(level),
             ))
             .id()
     }

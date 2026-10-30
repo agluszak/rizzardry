@@ -722,7 +722,7 @@ pub fn cast_device(
 fn complete(world: &mut World, on: Entity) {
     let device = world.get::<AttemptOn>(on).unwrap().0;
     world.despawn(on);
-    let Ok(mut entity) = world.get_entity_mut(device) else { return };
+    let mut entity = world.entity_mut(device);
     entity.remove::<Guarded>();
     if let Some(mut door) = entity.get_mut::<DoorState>() {
         door.locked = false;
