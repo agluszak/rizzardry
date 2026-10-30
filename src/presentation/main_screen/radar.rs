@@ -149,31 +149,24 @@ const ITEM_GLOW_SECONDS: f32 = 10.0;
 /// Presentation memory belongs to the item and survives rebuilding the HUD,
 /// but disappears with the item or level. It is never part of a save record.
 pub fn track_radar_items(
-    mut commands: Commands,
     time: Res<Time>,
-    mut items: Query<(Entity, Option<&mut RadarItem>), With<crate::game::world::items::WorldItem>>,
+    mut items: Query<&mut RadarItem, With<crate::game::world::items::WorldItem>>,
     mut news: MessageReader<crate::game::world::search::SearchNews>,
 ) {
-    for (entity, known) in &mut items {
-        if let Some(mut known) = known {
-            if known.glow.as_mut().is_some_and(|glow| glow.tick(time.delta()).is_finished()) {
-                known.glow = None;
-            }
-        } else {
-            commands.entity(entity).insert(RadarItem::default());
+    for mut known in &mut items {
+        if known.glow.is_none() {
+            continue;
+        }
+        if known.glow.as_mut().is_some_and(|glow| glow.tick(time.delta()).is_finished()) {
+            known.glow = None;
         }
     }
     for notice in news.read() {
         let crate::game::world::search::SearchNews::Spotted { target, .. } = notice else {
             continue;
         };
-        let Ok((entity, known)) = items.get_mut(*target) else { continue };
-        let glow = Some(Timer::from_seconds(ITEM_GLOW_SECONDS, TimerMode::Once));
-        if let Some(mut known) = known {
-            known.glow = glow;
-        } else {
-            commands.entity(entity).insert(RadarItem { glow, ..default() });
-        }
+        let Ok(mut known) = items.get_mut(*target) else { continue };
+        known.glow = Some(Timer::from_seconds(ITEM_GLOW_SECONDS, TimerMode::Once));
     }
 }
 
@@ -444,11 +437,18 @@ mod tests {
         use crate::game::world::{items::WorldItem, search::SearchNews};
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
+            .register_required_components::<WorldItem, RadarItem>()
             .add_message::<SearchNews>()
             .add_systems(Update, track_radar_items);
         let item =
             make_item(&default(), &mut ItemIds::default(), &mut GameRng::default(), true, true);
         let target = app.world_mut().spawn(WorldItem::loose(item, false)).id();
+        assert!(app.world().get::<RadarItem>(target).is_some(), "attached at insertion");
+        app.world_mut().get_mut::<RadarItem>(target).unwrap().seen = true;
+        // Replacing the item must not overwrite its presentation history.
+        let replacement = app.world().get::<WorldItem>(target).unwrap().clone();
+        app.world_mut().entity_mut(target).insert(replacement);
+        assert!(app.world().get::<RadarItem>(target).unwrap().seen);
         app.world_mut().write_message(SearchNews::Spotted {
             target,
             member: "Finder".into(),

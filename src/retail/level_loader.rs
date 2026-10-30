@@ -49,6 +49,7 @@ fn level_environment(environment: &Environment) -> LevelEnvironment {
             .collect(),
     };
     LevelEnvironment {
+        fog_enabled: environment.fog_enabled,
         fog_range: (environment.fog_range[0], environment.fog_range[1]),
         view_distance: environment.view_distance / UNITS_PER_METRE,
         intensity: environment.intensity,
@@ -400,11 +401,17 @@ fn decode_action(
         action::TOGGLE => TriggerAction::Animate(Animation::Toggle),
         action::START_ANIMATION => TriggerAction::Animate(Animation::Start),
         action::STOP_ANIMATION => TriggerAction::Animate(Animation::Stop),
-        action::CAMERA_PATH => first_recipient
-            .and_then(|name| {
-                sections.cameras.iter().position(|camera| camera.name.eq_ignore_ascii_case(name))
-            })
-            .map_or(TriggerAction::Unsupported(code), TriggerAction::CameraPath),
+        action::CAMERA_PATH => {
+            let name = first_recipient.unwrap_or_default();
+            sections
+                .cameras
+                .iter()
+                .position(|camera| camera.name.eq_ignore_ascii_case(name))
+                .map_or_else(
+                    || TriggerAction::MissingCameraPath(name.into()),
+                    TriggerAction::CameraPath,
+                )
+        }
         action::START_AMBIENT_SOUND | action::STOP_AMBIENT_SOUND | action::TOGGLE_AMBIENT_SOUND => {
             TriggerAction::AmbientSounds {
                 names: item.recipients().map(str::to_uppercase).collect(),
@@ -871,6 +878,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn environment_preserves_authored_fog_switch_and_ranges() {
+        for fog_enabled in [false, true] {
+            let source = Environment {
+                fog_enabled,
+                fog_range: [0.2, 0.9],
+                intensity: 0.5,
+                view_distance: 80.0 * UNITS_PER_METRE,
+                fog_colours: Some(Box::new([[255, 128, 0]; 256])),
+                ambient_colours: None,
+            };
+            let loaded = level_environment(&source);
+            assert_eq!(loaded.fog_enabled, fog_enabled);
+            assert_eq!(loaded.fog_range, (0.2, 0.9));
+            assert_eq!(loaded.view_distance, 80.0);
+            assert_eq!(loaded.fog_colours[128], Vec3::new(1.0, 128.0 / 255.0, 0.0));
+            assert_eq!(loaded.sky_light(127), Vec3::splat(0.5));
+        }
+    }
+
+    #[test]
     fn prop_bindings_use_records_while_named_links_use_registration_order() {
         use crate::retail::trigger::Trigger;
         let item = ItemTrigger {
@@ -958,6 +985,13 @@ mod tests {
         assert!(
             matches!(&sections.trigger("same").unwrap().kind, TriggerKind::Item(item) if item.initial_action == 2)
         );
+        // A flight naming no camera the level has is kept as such, for
+        // preparation to refuse, not taken for an unported action.
+        if let TriggerKind::Item(item) = &mut sections.triggers[0].kind {
+            item.initial_action = action::CAMERA_PATH;
+        }
+        let (definitions, _) = level_triggers(&sections);
+        assert_eq!(definitions[3].initial.action, TriggerAction::MissingCameraPath("SAME".into()));
     }
 
     #[test]

@@ -5,9 +5,9 @@ use bevy::prelude::*;
 
 use crate::content::level::LevelGeometry;
 use crate::game::time::GameClock;
-use bevy::asset::{LoadState, RecursiveDependencyLoadState};
+use bevy::asset::LoadState;
 
-use crate::game::world::level::{Destination, Level, LevelEntities, PresentationReadiness};
+use crate::game::world::level::{Destination, Level, LevelEntities};
 use crate::game::world::props::Prop;
 use crate::game::world::props::PropPart;
 use crate::presentation::billboards::FaceCamera;
@@ -79,47 +79,22 @@ pub(super) fn actor_light(
 #[derive(Component, Debug)]
 pub struct LevelAppearance(pub Handle<LevelGeometry>);
 
-/// On an entry being prepared: its appearance, loading before it commits.
+/// On an entry being prepared: its appearance, loading alongside it.
 #[derive(Component, Debug)]
 pub struct PreparedAppearance(Handle<LevelGeometry>);
 
-/// Load an entry's appearance as part of its preparation, holding its
-/// commit until the appearance and what it uses have loaded. If the level
-/// itself cannot be shown the entry fails; a missing texture or model only
-/// shows as missing, as before.
+/// Start loading an entry's appearance while gameplay prepares it, so it
+/// is likely ready when the level commits. It never holds or fails the
+/// entry: a level whose looks are late shows them when they arrive, and
+/// one whose looks fail plays on unseen ([`attach_level_visuals`]).
 pub fn prepare_appearance(
     mut commands: Commands,
-    entries: Query<(Entity, &Destination, Option<&PreparedAppearance>)>,
+    entries: Query<(Entity, &Destination), Without<PreparedAppearance>>,
     assets: Res<AssetServer>,
 ) {
-    for (entity, destination, prepared) in &entries {
-        let Some(PreparedAppearance(handle)) = prepared else {
-            let handle = assets.load(crate::content::paths::retail(&destination.level.path));
-            commands
-                .entity(entity)
-                .insert((PreparedAppearance(handle), PresentationReadiness::Waiting));
-            continue;
-        };
-        let readiness = match assets.get_load_states(handle) {
-            Some((LoadState::Failed(error), ..)) => {
-                Some(PresentationReadiness::Failed(format!("its appearance failed: {error}")))
-            }
-            Some((
-                LoadState::Loaded,
-                _,
-                RecursiveDependencyLoadState::Loaded | RecursiveDependencyLoadState::Failed(_),
-            )) => None,
-            _ => Some(PresentationReadiness::Waiting),
-        };
-        match readiness {
-            Some(PresentationReadiness::Waiting) => {}
-            Some(failed) => {
-                commands.entity(entity).insert(failed);
-            }
-            None => {
-                commands.entity(entity).remove::<PresentationReadiness>();
-            }
-        }
+    for (entity, destination) in &entries {
+        let handle = assets.load(crate::content::paths::retail(&destination.level.path));
+        commands.entity(entity).insert(PreparedAppearance(handle));
     }
 }
 
@@ -172,7 +147,11 @@ pub fn apply_environment(
     {
         return;
     }
-    let Some(environment) = &level_geometry.environment else { return };
+    commands.entity(camera).insert(AppliedEnvironment(level.0.id(), phase));
+    let Some(environment) = &level_geometry.environment else {
+        commands.entity(camera).remove::<DistanceFog>();
+        return;
+    };
 
     let fog = environment.fog_colours[phase as usize];
     clear.0 = Color::srgb(fog.x, fog.y, fog.z);
@@ -180,17 +159,18 @@ pub fn apply_environment(
     if let Some(perspective) = super::water_view::perspective_mut(&mut projection) {
         perspective.far = far;
     }
-    commands.entity(camera).insert((
-        AppliedEnvironment(level.0.id(), phase),
-        DistanceFog {
+    if environment.fog_enabled {
+        commands.entity(camera).insert(DistanceFog {
             color: Color::srgb(fog.x, fog.y, fog.z),
             falloff: FogFalloff::Linear {
                 start: far * environment.fog_range.0,
                 end: far * environment.fog_range.1,
             },
             ..default()
-        },
-    ));
+        });
+    } else {
+        commands.entity(camera).remove::<DistanceFog>();
+    }
 
     let sky = environment.sky_light(phase);
     for part in level_geometry.parts.iter().chain(
@@ -202,7 +182,8 @@ pub fn apply_environment(
     }
 }
 
-/// The level's meshes have been attached.
+/// The level's meshes have been attached, or its appearance failed and
+/// none will be.
 #[derive(Component, Debug)]
 pub struct LevelVisuals;
 
@@ -215,11 +196,18 @@ pub fn attach_level_visuals(
     source_materials: Res<Assets<StandardMaterial>>,
     mut materials: ResMut<Assets<super::lighting::SceneMaterial>>,
     lights: Res<super::lighting::SceneLights>,
+    assets: Res<AssetServer>,
     props: Query<(&Prop, &Children)>,
     parts: Query<&PropPart>,
 ) {
     for (root, level, children) in &levels {
-        let Some(geometry) = geometry.get(&level.0) else { continue };
+        let Some(geometry) = geometry.get(&level.0) else {
+            if let Some(LoadState::Failed(error)) = assets.get_load_state(&level.0) {
+                error!("the level's appearance failed to load; it plays unseen: {error}");
+                commands.entity(root).insert(LevelVisuals);
+            }
+            continue;
+        };
         // Do not mark a partially attached scene complete while material
         // definitions are still arriving; retry attachment as one operation.
         if geometry
@@ -300,6 +288,7 @@ mod tests {
             .add_systems(Update, apply_environment);
         let geometry = app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry {
             environment: Some(LevelEnvironment {
+                fog_enabled: true,
                 fog_range: (0.2, 1.0),
                 view_distance: 80.0,
                 intensity: 1.0,
@@ -331,13 +320,76 @@ mod tests {
             .view_distance = 120.0;
         app.update();
         assert_eq!(far(&app), 120.0);
+
+        // Changing levels must remove fog even while daylight stays unchanged.
+        let mut disabled = app
+            .world()
+            .resource::<Assets<LevelGeometry>>()
+            .get(&geometry)
+            .unwrap()
+            .environment
+            .clone()
+            .unwrap();
+        disabled.fog_enabled = false;
+        let off = app
+            .world_mut()
+            .resource_mut::<Assets<LevelGeometry>>()
+            .add(LevelGeometry { environment: Some(disabled), ..default() });
+        let level = app
+            .world_mut()
+            .query_filtered::<Entity, With<LevelAppearance>>()
+            .single(app.world())
+            .unwrap();
+        for (handle, enabled) in [(&off, false), (&geometry, true), (&off, false)] {
+            app.world_mut().entity_mut(level).insert(LevelAppearance(handle.clone()));
+            app.update();
+            assert_eq!(app.world().get::<DistanceFog>(camera).is_some(), enabled);
+            assert_eq!(far(&app), 120.0);
+        }
+        app.world_mut().despawn(camera);
+        let camera = app.world_mut().spawn((PartyCamera, Projection::default())).id();
+        app.update();
+        assert!(app.world().get::<DistanceFog>(camera).is_none());
+
+        app.world_mut().entity_mut(level).insert(LevelAppearance(geometry));
+        app.update();
+        assert!(app.world().get::<DistanceFog>(camera).is_some());
+        let absent =
+            app.world_mut().resource_mut::<Assets<LevelGeometry>>().add(LevelGeometry::default());
+        app.world_mut().entity_mut(level).insert(LevelAppearance(absent));
+        app.update();
+        assert!(app.world().get::<DistanceFog>(camera).is_none());
+    }
+
+    /// A level whose looks cannot load plays on unseen; presentation gives
+    /// up on them without touching the level.
+    #[test]
+    fn a_level_whose_appearance_fails_plays_on_unseen() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<LevelGeometry>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<Assets<super::super::lighting::SceneMaterial>>()
+            .insert_resource(super::super::lighting::SceneLights(default()))
+            .add_systems(Update, attach_level_visuals);
+        // No loader takes this file, so its load fails.
+        let handle = app.world().resource::<AssetServer>().load("missing.appearance");
+        let root = app.world_mut().spawn(LevelAppearance(handle)).id();
+        for _ in 0..100 {
+            app.update();
+            if app.world().get::<LevelVisuals>(root).is_some() {
+                break;
+            }
+        }
+        assert!(app.world().get::<LevelVisuals>(root).is_some());
+        assert!(app.world().get::<LevelAppearance>(root).is_some());
     }
 
     #[test]
     fn billboards_follow_the_camera_without_changing_gameplay_poses() {
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, TransformPlugin))
-            .init_resource::<Assets<LevelGeometry>>()
+        app.add_plugins((MinimalPlugins, TransformPlugin, AssetPlugin::default()))
+            .init_asset::<LevelGeometry>()
             .init_resource::<Assets<StandardMaterial>>()
             .init_resource::<Assets<super::super::lighting::SceneMaterial>>()
             .insert_resource(super::super::lighting::SceneLights(default()))
@@ -356,23 +408,13 @@ mod tests {
         let prop = app
             .world_mut()
             .spawn((
-                Prop {
-                    definition: 0,
-                    centre: authored.translation,
-                    frames_per_second: 1.0,
-                    last_frame: 0,
-                    wraps: false,
-                    slots: vec![],
-                },
+                Prop { definition: 0 },
                 PropMotion::default(),
                 Transform::default(),
                 crate::game::world::level::LevelOwned(root),
             ))
             .id();
-        let part = app
-            .world_mut()
-            .spawn((PropPart { part: 0, keys: vec![] }, authored, ChildOf(prop)))
-            .id();
+        let part = app.world_mut().spawn((PropPart { part: 0 }, authored, ChildOf(prop))).id();
         let camera_rotation = Quat::from_euler(EulerRot::YXZ, -0.4, 0.2, 0.0);
         app.world_mut().spawn((PartyCamera, Transform::from_rotation(camera_rotation)));
         // Attachment and presentation can run independently on the first frame.

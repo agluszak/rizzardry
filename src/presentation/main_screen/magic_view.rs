@@ -132,13 +132,53 @@ pub struct MagicView {
 
 impl MagicView {
     /// Whether a portrait click now aims the spell rather than selects, for
-    /// a view not casting at a device.
-    pub fn wants_member(&self) -> bool {
-        self.source.is_some() && self.member.is_none()
+    /// a view not casting at a device: a source is chosen whose spell is
+    /// cast at one party member, and none is chosen yet.
+    pub fn wants_member(&self, targeting: &SourceTargeting) -> bool {
+        self.member.is_none()
+            && self
+                .source
+                .is_some_and(|source| targeting.of(self.caster, source) == Some(Targeting::Ally))
     }
 
     pub fn aim_at(&mut self, member: Entity) {
         self.member = Some(member);
+    }
+
+    /// A view with a source already chosen.
+    #[cfg(test)]
+    pub(super) fn choosing(caster: Entity, source: Source) -> Self {
+        MagicView {
+            caster,
+            items: false,
+            pool: false,
+            realm: None,
+            source: Some(source),
+            power: None,
+            member: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn member(&self) -> Option<Entity> {
+        self.member
+    }
+}
+
+/// What a chosen source's spell is cast at, read from the caster's items,
+/// the party pool and the catalogs as they are now.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct SourceTargeting<'w, 's> {
+    carried: Query<'w, 's, &'static Carried>,
+    pool: Query<'w, 's, &'static PartyInventory>,
+    content: crate::game::data::Content<'w>,
+}
+
+impl SourceTargeting<'_, '_> {
+    pub fn of(&self, caster: Entity, source: Source) -> Option<Targeting> {
+        let (spells, items) = (self.content.spells()?, self.content.items()?);
+        let id = source.spell_id(self.carried.get(caster).ok(), self.pool.single().ok()?, items)?;
+        Some(spells.get(id)?.targeting)
     }
 }
 

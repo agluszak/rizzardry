@@ -570,9 +570,11 @@ pub struct SlotButton {
 fn press(
     click: On<PointerClick>,
     mut buttons: Query<&mut SlotButton>,
-    mut selected: ResMut<SelectedMember>,
     roster: Single<Ref<PartyRoster>>,
-    mut inventory: crate::game::inventory::operations::InventoryOperations,
+    mut operations: ParamSet<(
+        crate::game::inventory::operations::InventoryOperations,
+        super::magic_view::SourceTargeting,
+    )>,
     mut review: crate::presentation::inventory::OpenReview,
     mut views: Query<(&mut super::magic_view::MagicView, Has<super::magic_view::CastsAt>)>,
     conversations: Query<
@@ -592,19 +594,19 @@ fn press(
         return;
     }
     if !conversations.is_empty() {
-        selected.set_if_neq(SelectedMember(Some(member)));
+        review.selected.set_if_neq(SelectedMember(Some(member)));
         button.review_armed = false;
         return;
     }
     // A spell for one party member is aimed by clicking their portrait
     // (retail `AimAtCharacter`).
     if let Ok((mut view, false)) = views.single_mut()
-        && view.wants_member()
+        && view.wants_member(&operations.p1())
     {
         view.aim_at(member);
         return;
     }
-    match inventory.give_to(member) {
+    match operations.p0().give_to(member) {
         Ok(true) => {
             button.review_armed = false;
             return;
@@ -616,8 +618,8 @@ fn press(
         }
         Ok(false) => {}
     }
-    let already_selected = selected.0 == Some(member);
-    selected.0 = Some(member);
+    let already_selected = review.selected.0 == Some(member);
+    review.selected.set_if_neq(SelectedMember(Some(member)));
     if already_selected && button.review_armed && click.count > 1 {
         review.open(member);
     }
@@ -655,7 +657,6 @@ fn release_right(
     keys: Option<Res<ButtonInput<KeyCode>>>,
     mut inventory: crate::game::inventory::operations::InventoryOperations,
     mut review: crate::presentation::inventory::OpenReview,
-    mut selected: ResMut<SelectedMember>,
     mut commands: Commands,
     conversations: Query<
         (),
@@ -685,9 +686,7 @@ fn release_right(
             Ok(false) => {}
         }
     }
-    if review.open(member) {
-        selected.set_if_neq(SelectedMember(Some(member)));
-    }
+    review.open(member);
 }
 
 fn leave(out: On<PointerOut>, mut commands: Commands, holds: Query<(), With<RightHold>>) {
@@ -703,7 +702,6 @@ pub fn open_held_reviews(
     mouse: Option<Res<ButtonInput<MouseButton>>>,
     holds: Query<(Entity, &SlotButton, &RightHold)>,
     mut review: crate::presentation::inventory::OpenReview,
-    mut selected: ResMut<SelectedMember>,
     mut commands: Commands,
 ) {
     for (entity, button, hold) in &holds {
@@ -711,9 +709,7 @@ pub fn open_held_reviews(
             commands.entity(entity).remove::<RightHold>();
         } else if time.elapsed() - hold.since >= REVIEW_HOLD {
             commands.entity(entity).remove::<RightHold>();
-            if review.open(button.member) {
-                selected.set_if_neq(SelectedMember(Some(button.member)));
-            }
+            review.open(button.member);
         }
     }
 }
@@ -990,6 +986,67 @@ mod tests {
         assert!(retained.timer.elapsed_secs() < 0.2);
         assert_eq!(retained.timer.duration(), Duration::from_secs(3));
         assert_eq!(app.world_mut().query::<&Splat>().iter(app.world()).count(), 1);
+    }
+
+    /// A portrait click aims the chosen spell only when that spell is cast
+    /// at one party member; with any other spell chosen it selects the
+    /// member as usual and stores no target.
+    #[test]
+    fn a_portrait_click_aims_only_a_spell_for_one_member() {
+        use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId, Targeting};
+        use crate::game::magic::casting::Source;
+        use crate::presentation::main_screen::magic_view::MagicView;
+        let click_with = |targeting: Targeting| {
+            let mut world = World::new();
+            world.init_resource::<ScreenLayout>();
+            world.init_resource::<Assets<ItemCatalog>>();
+            world.init_resource::<Assets<SpellCatalog>>();
+            world.init_resource::<SelectedMember>();
+            world.init_resource::<Messages<crate::game::inventory::ItemNews>>();
+            world.insert_resource(State::new(Screen::World));
+            world.init_resource::<NextState<Screen>>();
+            let spell = SpellId::HEAL_WOUNDS;
+            let mut catalog: Vec<SpellDefinition> = (0..=spell.0).map(|_| default()).collect();
+            catalog[usize::from(spell.0)] = SpellDefinition { id: spell, targeting, ..default() };
+            let spells = world.resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(catalog));
+            let items = world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog::default());
+            world.insert_resource(crate::game::data::GameData {
+                items,
+                loot: default(),
+                species: default(),
+                spells,
+            });
+            let profile = Character::new("A", Race::Human, Gender::Male, Profession::Priest);
+            let caster = world.spawn((Vitals::new(&profile), profile, Carried::default())).id();
+            let profile = Character::new("B", Race::Human, Gender::Male, Profession::Fighter);
+            let other = world.spawn((Vitals::new(&profile), profile, Carried::default())).id();
+            crate::game::party::roster::test_party(&mut world, &[caster, other]);
+            let view =
+                world.spawn(MagicView::choosing(caster, Source::Spell { spell, power: 1 })).id();
+            let button = world
+                .spawn((SlotButton { member: other, review_armed: false }, Node::default()))
+                .observe(press)
+                .id();
+            world.trigger(PointerClick {
+                entity: button,
+                pointer: crate::presentation::test_input::mouse(),
+                button: PointerButton::Primary,
+                hit: HitData::new(Entity::PLACEHOLDER, 0.0, None, None),
+                duration: std::time::Duration::ZERO,
+                count: 1,
+            });
+            (
+                world.get::<MagicView>(view).unwrap().member(),
+                world.resource::<SelectedMember>().0,
+                other,
+            )
+        };
+        let (aimed, selected, other) = click_with(Targeting::Ally);
+        assert_eq!((aimed, selected), (Some(other), None), "a heal is aimed at the portrait");
+        for targeting in [Targeting::Caster, Targeting::Party, Targeting::Enemy, Targeting::Cone] {
+            let (aimed, selected, other) = click_with(targeting);
+            assert_eq!((aimed, selected), (None, Some(other)), "{targeting:?} only selects");
+        }
     }
 
     #[test]

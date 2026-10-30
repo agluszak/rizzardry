@@ -127,10 +127,7 @@ pub(super) fn refresh(
     for (row, mut node, mut visibility) in &mut rows {
         let shown = draft.skill_available(row.0) || profile.skill_points[row.0] > 0;
         visibility.set_if_neq(visible_if(shown));
-        let display = if shown { Display::Flex } else { Display::None };
-        if node.display != display {
-            node.display = display;
-        }
+        crate::presentation::screen_art::display_if(&mut node, shown);
         if shown {
             let group = category(row.0);
             let index = EnumSet::<Skill>::all()

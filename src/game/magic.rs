@@ -237,8 +237,12 @@ fn caster_offset(profession: Profession) -> Option<i32> {
 
 /// Retail `GetProfessionCasterLevel`; -1 for a profession that cannot cast.
 pub fn caster_level(character: &Character, profession: Profession) -> i32 {
-    caster_offset(profession)
-        .map_or(-1, |offset| i32::from(character.profession_levels[profession]) + offset)
+    profession_caster_level(profession, character.profession_levels[profession])
+}
+
+/// A profession's caster level after `levels` of it; -1 if it cannot cast.
+fn profession_caster_level(profession: Profession, levels: u8) -> i32 {
+    caster_offset(profession).map_or(-1, |offset| i32::from(levels) + offset)
 }
 
 /// Retail `GetTotalCasterLevel` over `books`: the current profession's caster
@@ -318,8 +322,8 @@ pub fn can_learn(character: &Character, spell: &SpellDefinition) -> bool {
 
 /// How many first spells a new character picks: two for the pure casters,
 /// none for the others (retail `CharGeneration.cpp`).
-pub fn starting_picks(character: &Character) -> usize {
-    if caster_level(character, character.profession) > 0 { 2 } else { 0 }
+pub fn starting_picks(profession: Profession) -> usize {
+    if profession_caster_level(profession, 1) > 0 { 2 } else { 0 }
 }
 
 impl crate::game::characters::CharacterStats<'_> {
@@ -1012,7 +1016,7 @@ mod tests {
         let priest = Character::new("Cleric", Race::Human, Gender::Male, Profession::Priest);
         let fighter = Character::new("Brute", Race::Human, Gender::Male, Profession::Fighter);
         let heal = heal_wounds();
-        assert_eq!((starting_picks(&priest), starting_picks(&fighter)), (2, 0));
+        assert_eq!((starting_picks(priest.profession), starting_picks(fighter.profession)), (2, 0));
         assert!(can_learn(&priest, &heal) && !can_learn(&fighter, &heal));
         let higher = SpellDefinition { level: 2, ..heal_wounds() };
         assert!(!can_learn(&priest, &higher), "level 1 casters learn level 1 spells only");

@@ -125,7 +125,7 @@ pub fn read_controls(
     free_look: Single<&Action<FreeLook>>,
     rest: Single<&ActionEvents, With<Action<Rest>>>,
     search: Single<&ActionEvents, With<Action<SearchKey>>>,
-    preferences: Option<Res<super::settings::Preferences>>,
+    preferences: Option<Res<crate::settings::Preferences>>,
     mut movement: Single<&mut PartyMovement>,
     mut looks: MessageWriter<PartyLook>,
     mut camps: MessageWriter<CampRequest>,

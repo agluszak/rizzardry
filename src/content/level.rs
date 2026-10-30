@@ -50,6 +50,8 @@ pub const DEFAULT_VIEW_DISTANCE: f32 = 150.0;
 /// A level's fog and sky light (retail "fog options").
 #[derive(Clone, Debug)]
 pub struct LevelEnvironment {
+    /// Whether the authored level enables distance fog.
+    pub fog_enabled: bool,
     /// Fog start and end as fractions of the view distance.
     pub fog_range: (f32, f32),
     /// The far clip, in metres.
@@ -372,6 +374,19 @@ pub struct PropModel {
     pub trigger: Option<usize>,
 }
 
+impl PropModel {
+    /// The highest path key of any part.
+    pub fn last_frame(&self) -> usize {
+        self.parts.iter().map(|p| p.keys.len().saturating_sub(1)).max().unwrap_or(0)
+    }
+
+    /// The middle of its parts at rest, where its sounds play.
+    pub fn centre(&self) -> Vec3 {
+        self.parts.iter().map(|part| part.transform.translation).sum::<Vec3>()
+            / self.parts.len().max(1) as f32
+    }
+}
+
 /// A case-insensitive location-variable name, canonicalized at the content boundary.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct VariableName(String);
@@ -456,6 +471,10 @@ pub enum TriggerAction {
     Animate(Animation),
     /// Fly the party along the named camera path (9).
     CameraPath(usize),
+    /// A camera path flight naming a path the level does not have (its
+    /// name, empty when it names none): broken content, which refuses the
+    /// level.
+    MissingCameraPath(String),
     /// Run the recipients (0xf).
     Relay(i32),
     /// Distort or restore the camera according to the signed call argument (0x10).

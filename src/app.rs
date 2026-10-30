@@ -243,18 +243,15 @@ pub fn build(options: &Options) -> Result<App, String> {
             PresentationPlugin,
         ));
     }
-    if options.continuous {
-        app.insert_resource(crate::game::combat::CombatSettings { continuous: true });
-    }
+    crate::settings::initialize(
+        &mut app,
+        crate::settings::SettingsFile::default(),
+        options.continuous,
+    );
     if let Some(seconds) = options.run_for {
         app.insert_resource(crate::dev::RunFor(Timer::from_seconds(seconds, TimerMode::Once)))
             .add_systems(Update, crate::dev::exit_after_run);
     }
-    app.insert_state(if quick_start {
-        crate::game::session::Session::Playing
-    } else {
-        crate::game::session::Session::MainMenu
-    });
     app.insert_resource(crate::game::session::NewGameDestination {
         path: level.clone(),
         start: start.clone(),

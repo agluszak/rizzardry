@@ -5,3 +5,4 @@ pub mod dev;
 pub mod game;
 pub mod presentation;
 pub mod retail;
+pub mod settings;

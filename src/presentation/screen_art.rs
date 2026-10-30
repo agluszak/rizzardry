@@ -344,6 +344,14 @@ pub fn visible_if(visible: bool) -> Visibility {
     if visible { Visibility::Inherited } else { Visibility::Hidden }
 }
 
+/// Lay a node out only while it is shown, writing only a change.
+pub fn display_if(node: &mut Mut<Node>, shown: bool) {
+    let display = if shown { Display::Flex } else { Display::None };
+    if node.display != display {
+        node.display = display;
+    }
+}
+
 /// Point a picture at the sheet on `path`, loading it only when the path
 /// changes rather than every frame.
 pub fn show_sheet(picture: &mut Mut<Picture>, assets: &AssetServer, path: String) {

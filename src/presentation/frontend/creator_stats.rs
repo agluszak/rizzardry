@@ -806,10 +806,7 @@ pub(super) fn refresh(
     }
     for (menu, mut node, mut visibility) in &mut menus {
         let show = session.choices.open == Some(menu.0);
-        let display = if show { Display::Flex } else { Display::None };
-        if node.display != display {
-            node.display = display;
-        }
+        crate::presentation::screen_art::display_if(&mut node, show);
         visibility.set_if_neq(visible_if(show));
     }
 }

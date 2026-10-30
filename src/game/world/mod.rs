@@ -121,10 +121,7 @@ impl Plugin for WorldPlugin {
                     population::give_birth
                         .run_if(level::level_active)
                         .before(crate::game::GameplaySet::Combat),
-                    (search::toggle_search, search::search_pulse)
-                        .chain()
-                        .run_if(level::level_active)
-                        .after(level::activate_level),
+                    search::toggle_search.run_if(level::level_active).after(level::activate_level),
                 ),
             )
             // Encounters come over ground physics has placed.
@@ -139,7 +136,9 @@ impl Plugin for WorldPlugin {
                 props::animate_props
                     .before(navigation::links::sync_door_links)
                     .run_if(level::level_active),
-            );
+            )
+            // Sweeps follow gameplay time, however many steps a frame runs.
+            .add_systems(FixedUpdate, search::search_pulse.run_if(level::level_active));
     }
 }
 
@@ -153,9 +152,10 @@ pub enum WorldRequest {
     TakeItem {
         item: Entity,
     },
+    /// Throw the held item from the party's eye along `aim`.
     DropHeld {
         level: Entity,
-        at: Vec3,
+        aim: Dir3,
     },
 }
 
@@ -170,7 +170,7 @@ pub fn handle_world_requests(world: &mut World) {
                 None
             }
             WorldRequest::TakeItem { item } => items::take_item(world, item).err(),
-            WorldRequest::DropHeld { level, at } => items::drop_held(world, level, at).err(),
+            WorldRequest::DropHeld { level, aim } => items::drop_held(world, level, aim).err(),
         };
         if let Some(why) = refused {
             debug!("{request:?} refused: {why:?}");
