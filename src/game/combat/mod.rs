@@ -96,6 +96,7 @@ impl Plugin for CombatPlugin {
                     settle_defeat,
                     begin_round,
                     run_battle,
+                    finish_round,
                     summon::summon,
                     // and again after the round's damage.
                     settle_defeat,
@@ -632,6 +633,15 @@ struct PartyView {
 }
 
 impl PartyView {
+    fn new((position, body): (&Position, &PartyBody), level: &PlayedLevel, now: u64) -> Self {
+        Self {
+            eye: PartyBody::eye(position),
+            yaw: body.yaw,
+            far: level.view_distance().unwrap_or(0.0),
+            now,
+        }
+    }
+
     /// How monsters see the party now.
     fn sight<'a, 'w, 's>(
         &self,
@@ -890,38 +900,30 @@ pub fn run_battle(
     mut commands: Commands,
     battle: Option<Single<(Entity, &mut Battle, Option<&Combatants>)>>,
     mut rng: ResMut<GameRng>,
-    mut clock: ResMut<GameClock>,
-    mut actors: ParamSet<((Members, MonsterDamage), GroupRecognition)>,
+    clock: Res<GameClock>,
+    (mut members, mut damage): (Members, MonsterDamage),
     party_body: Query<(&Position, &PartyBody)>,
     (roster, content, level): (Single<&PartyRoster>, If<Res<Catalogs>>, PlayedLevel),
     mut magic: BattleMagic,
     (mut news, mut summons): (MessageWriter<CombatNews>, MessageWriter<summon::Summon>),
 ) {
-    let Some((entity, mut battle, combatants)) = battle.map(Single::into_inner) else { return };
+    let Some((_, mut battle, combatants)) = battle.map(Single::into_inner) else { return };
     let combatants = combatants.map_or(&[][..], Combatants::entities);
-    // Content and the party's body exist whenever a level is played.
     let species = &content.species;
-    let (mut members, mut damage) = actors.p0();
     let Ok((position, body)) = party_body.single() else { return };
-    if !battle.executing() || !battle.wait.is_finished() {
-        return;
-    }
-    if !magic.in_flight.is_empty() || !magic.moving.is_empty() {
+    if !battle.executing() || !battle.wait.is_finished() || magic.busy() {
         return;
     }
     let roster = &**roster;
-    let party = PartyView {
-        eye: PartyBody::eye(position),
-        yaw: body.yaw,
-        far: level.view_distance().unwrap_or(0.0),
-        now: clock.ms,
-    };
+    let party = PartyView::new((position, body), &level, clock.ms);
     if battle.phase == RoundPhase::Accepted {
         battle.phase = RoundPhase::Executing(1);
     }
 
     // The next actor due: accepted party order first, then monsters in order.
-    while let RoundPhase::Executing(step) = battle.phase {
+    while let RoundPhase::Executing(step) = battle.phase
+        && step <= 100
+    {
         if matches!(battle.party_move, PartyMove::Moving { .. }) {
             return;
         }
@@ -943,64 +945,6 @@ pub fn run_battle(
                 last: Some(position.0),
             };
             news.write(CombatNews::PartyMoves);
-            return;
-        }
-        if step > 100 {
-            let sight = party.sight(
-                &members,
-                roster,
-                &magic.context.visibility,
-                magic.context.enchantments.0.concealment(),
-            );
-            let staying = leave_fight(
-                &mut commands,
-                combatants,
-                (&damage, party.now),
-                &magic.groups,
-                &sight,
-                species,
-            );
-            let over = end_round(
-                (entity, &mut battle),
-                combatants,
-                &mut clock,
-                &mut rng,
-                roster,
-                &mut members,
-                &mut damage,
-                party.eye,
-                species,
-                &mut news,
-                &mut magic,
-                &staying,
-            );
-            if party_fallen(roster, &members) {
-                return;
-            }
-            if over {
-                for &actor in combatants {
-                    damage.enchantments_mut(actor).end_combat();
-                }
-            }
-            // Recognition is a required part of this round, before the next
-            // accepted action or the battle's end can change its meaning.
-            actors.p1().detect(
-                party.eye,
-                body.forward(),
-                Some(combatants),
-                magic
-                    .context
-                    .enchantments
-                    .0
-                    .get(crate::content::spells::SpellId::SHADOW_HOUND)
-                    .is_some(),
-                false,
-                &mut rng,
-            );
-            if over {
-                magic.context.enchantments.0.end_combat();
-                commands.entity(entity).despawn();
-            }
             return;
         }
         // Nobody in the party acts while its move is still to come.
@@ -1045,6 +989,88 @@ pub fn run_battle(
             continue;
         }
         battle.phase = RoundPhase::Executing(step + 1);
+    }
+}
+
+/// Once everyone has acted, the round ends (retail `EndCombatRound`): groups
+/// with nothing left to fight leave ([`leave_fight`]), the round's recovery
+/// and its count of who could strike settle ([`end_round`]), the party looks
+/// again at who it fights, and a fight with nobody left is over.
+pub fn finish_round(
+    mut commands: Commands,
+    battle: Option<Single<(Entity, &mut Battle, Option<&Combatants>)>>,
+    mut rng: ResMut<GameRng>,
+    mut clock: ResMut<GameClock>,
+    mut actors: ParamSet<((Members, MonsterDamage), GroupRecognition)>,
+    party_body: Query<(&Position, &PartyBody)>,
+    (roster, content, level): (Single<&PartyRoster>, If<Res<Catalogs>>, PlayedLevel),
+    mut magic: BattleMagic,
+    mut news: MessageWriter<CombatNews>,
+) {
+    let Some((entity, mut battle, combatants)) = battle.map(Single::into_inner) else { return };
+    let RoundPhase::Executing(step) = battle.phase else { return };
+    if step <= 100
+        || matches!(battle.party_move, PartyMove::Moving { .. })
+        || !battle.wait.is_finished()
+        || magic.busy()
+    {
+        return;
+    }
+    let combatants = combatants.map_or(&[][..], Combatants::entities);
+    let species = &content.species;
+    let Ok((position, body)) = party_body.single() else { return };
+    let roster = &**roster;
+    let party = PartyView::new((position, body), &level, clock.ms);
+    let (mut members, mut damage) = actors.p0();
+    let sight = party.sight(
+        &members,
+        roster,
+        &magic.context.visibility,
+        magic.context.enchantments.0.concealment(),
+    );
+    let staying = leave_fight(
+        &mut commands,
+        combatants,
+        (&damage, party.now),
+        &magic.groups,
+        &sight,
+        species,
+    );
+    let over = end_round(
+        (entity, &mut battle),
+        combatants,
+        &mut clock,
+        &mut rng,
+        roster,
+        &mut members,
+        &mut damage,
+        party.eye,
+        species,
+        &mut news,
+        &mut magic,
+        &staying,
+    );
+    if party_fallen(roster, &members) {
+        return;
+    }
+    if over {
+        for &actor in combatants {
+            damage.enchantments_mut(actor).end_combat();
+        }
+    }
+    // Recognition is a required part of this round, before the next
+    // accepted action or the battle's end can change its meaning.
+    actors.p1().detect(
+        party.eye,
+        body.forward(),
+        Some(combatants),
+        magic.context.enchantments.0.get(crate::content::spells::SpellId::SHADOW_HOUND).is_some(),
+        false,
+        &mut rng,
+    );
+    if over {
+        magic.context.enchantments.0.end_combat();
+        commands.entity(entity).despawn();
     }
 }
 
@@ -1293,6 +1319,14 @@ pub struct BattleMagic<'w, 's> {
     /// monsters still advancing.
     in_flight: Query<'w, 's, (), With<casting::SpellInFlight>>,
     moving: Query<'w, 's, (), With<approach::CombatMove>>,
+}
+
+impl BattleMagic<'_, '_> {
+    /// Whether the fight waits on missiles still flying or monsters still
+    /// walking.
+    fn busy(&self) -> bool {
+        !self.in_flight.is_empty() || !self.moving.is_empty()
+    }
 }
 
 /// Live, active combatants with unobstructed scenery sight, shared by casts
