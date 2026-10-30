@@ -148,7 +148,11 @@ impl Plugin for PresentationPlugin {
             PostUpdate,
             (
                 (selection::select_world_target, selection::activate_selection).chain(),
-                (effects::play_trigger_effects, effects::play_lock_sounds, notices::queue_notices)
+                (
+                    effects::play_trigger_effects,
+                    effects::play_lock_sounds,
+                    notices::queue_notices(),
+                )
                     .after(selection::activate_selection),
                 (hover::hover, hover::show_tooltip).chain().after(selection::activate_selection),
             )
@@ -167,7 +171,7 @@ impl Plugin for PresentationPlugin {
             )
                 .chain()
                 .after(selection::activate_selection)
-                .before(notices::queue_notices),
+                .before(notices::QueueNotices),
         )
         .add_systems(
             Startup,

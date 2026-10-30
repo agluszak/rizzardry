@@ -73,7 +73,7 @@ impl Plugin for MainScreenPlugin {
                 )
                     .chain()
                     .after(super::screen_art::scale_ui)
-                    .after(super::notices::queue_notices),
+                    .after(super::notices::QueueNotices),
             );
     }
 }
