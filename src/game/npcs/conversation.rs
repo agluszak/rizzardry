@@ -2203,11 +2203,9 @@ mod tests {
                 ..default()
             };
         }
-        world.insert_resource(crate::game::data::Catalogs {
-            species: MonsterCatalog(vec![Species::default()]),
-            spells: SpellCatalog(spells),
-            ..default()
-        });
+        let mut catalogs = world.resource_mut::<crate::game::data::Catalogs>();
+        catalogs.species = MonsterCatalog(vec![Species::default()]);
+        catalogs.spells = SpellCatalog(spells);
         let mut profile = Character::new("Reader", Race::Human, Gender::Male, Profession::Mage);
 
         profile.profession_levels[Profession::Mage] = 30;
@@ -2403,10 +2401,7 @@ mod tests {
                 ..default()
             })
             .collect();
-        world.insert_resource(crate::game::data::Catalogs {
-            items: ItemCatalog(items),
-            ..default()
-        });
+        world.resource_mut::<crate::game::data::Catalogs>().items = ItemCatalog(items);
     }
 
     fn stack(app: &mut App, item: u16, count: u16) -> crate::game::inventory::ItemStack {
@@ -3533,10 +3528,8 @@ mod tests {
             hostility::{SetStance, Stance},
             identify::{GroupMember, MonsterGroup},
         };
-        app.insert_resource(crate::game::data::Catalogs {
-            species: crate::content::species::MonsterCatalog(vec![default()]),
-            ..default()
-        });
+        app.world_mut().resource_mut::<crate::game::data::Catalogs>().species =
+            crate::content::species::MonsterCatalog(vec![default()]);
         let group = app
             .world_mut()
             .spawn(MonsterGroup {
