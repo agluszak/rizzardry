@@ -20,7 +20,7 @@
 
 use bevy::prelude::*;
 
-use super::triggers::{Device, DoorState};
+use super::triggers::DoorState;
 use crate::content::characters::{Attribute, Skill};
 use crate::content::level::{Lock, TRAP_TYPES};
 use crate::content::spells::SpellId;
@@ -134,16 +134,10 @@ pub(crate) fn begin(world: &mut World, device: Entity, work: Work) -> Entity {
 /// The named attempt's work and device, if it is still the one under way and
 /// its device still stands.
 fn attempt(world: &World, attempt: Entity) -> Result<(&Work, Entity), Unable> {
+    // A request may name an attempt that has since ended.
     let entity = world.get_entity(attempt).map_err(|_| Unable::NotNow)?;
-    let (Some(interaction), Some(on)) =
-        (entity.get::<DeviceInteraction>(), entity.get::<AttemptOn>())
-    else {
-        return Err(Unable::NotNow);
-    };
-    if world.get::<Device>(on.0).is_none() {
-        return Err(Unable::NotNow);
-    }
-    Ok((&interaction.work, on.0))
+    let interaction = entity.get::<DeviceInteraction>().ok_or(Unable::NotNow)?;
+    Ok((&interaction.work, entity.get::<AttemptOn>().unwrap().0))
 }
 
 fn work_mut(world: &mut World, attempt: Entity) -> Mut<'_, Work> {
