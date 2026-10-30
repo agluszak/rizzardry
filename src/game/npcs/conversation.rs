@@ -2060,9 +2060,10 @@ mod tests {
         let w = app.world_mut();
         crate::game::party::roster::test_party(w, &[]);
         let mut catalogs = w.resource_mut::<crate::game::data::Catalogs>();
+        // The NPC's body is of a species bound to it, as placed NPCs are.
         catalogs.species =
             crate::content::species::MonsterCatalog(vec![crate::content::species::Species {
-                disposition: crate::content::species::Disposition::Neutral,
+                npc: Some(NpcId(0)),
                 ..default()
             }]);
         catalogs.npcs =
@@ -2181,7 +2182,6 @@ mod tests {
     fn dialogue_magic_validates_before_payment_charm_is_scoped_and_mindread_advances_responses() {
         use crate::content::{
             characters::{Realm, Skill},
-            species::{MonsterCatalog, Species},
             spells::{SpellCatalog, SpellDefinition, SpellId, Spellbook, Usable},
         };
         use crate::game::{
@@ -2208,9 +2208,7 @@ mod tests {
                 ..default()
             };
         }
-        let mut catalogs = world.resource_mut::<crate::game::data::Catalogs>();
-        catalogs.species = MonsterCatalog(vec![Species::default()]);
-        catalogs.spells = SpellCatalog(spells);
+        world.resource_mut::<crate::game::data::Catalogs>().spells = SpellCatalog(spells);
         let mut profile = Character::new("Reader", Race::Human, Gender::Male, Profession::Mage);
 
         profile.profession_levels[Profession::Mage] = 30;
@@ -3533,8 +3531,6 @@ mod tests {
             hostility::{SetStance, Stance},
             identify::{GroupMember, MonsterGroup},
         };
-        app.world_mut().resource_mut::<crate::game::data::Catalogs>().species =
-            crate::content::species::MonsterCatalog(vec![default()]);
         let group = app
             .world_mut()
             .spawn(MonsterGroup {
