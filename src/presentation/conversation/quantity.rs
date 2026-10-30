@@ -51,9 +51,11 @@ fn stack(world: &mut World, q: TradeQuote) -> Option<(crate::content::items::Ite
                     .find(|stack| stack.id == item.id)
                     .map(|s| (s.item, s.units()))
             }
-            ItemOwner::Member(member) => {
-                world.get::<Carried>(member)?.find_stack(item.id).map(|s| (s.item, s.units()))
-            }
+            ItemOwner::Member(member) => world
+                .get::<Carried>(member)
+                .unwrap()
+                .find_stack(item.id)
+                .map(|s| (s.item, s.units())),
         },
     }
 }

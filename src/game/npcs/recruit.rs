@@ -286,13 +286,13 @@ pub fn dismiss(world: &mut World, actor: Entity) -> bool {
     {
         return false;
     }
-    let alive = world.get::<Vitals>(actor).is_some_and(|vitals| !vitals.is_dead());
+    let alive = !world.get::<Vitals>(actor).unwrap().is_dead();
     let body = world.get::<NpcBodies>(actor).and_then(|bodies| bodies.first().copied());
     let level = played_level(world);
     world.entity_mut(actor).remove::<PartyMember>();
     world.get_mut::<Formation>(party).unwrap().unseat(actor);
     if alive && let Some(body) = body {
-        stand_beside_party(world, actor, body, party);
+        stand_beside_party(world, actor, body, (party, level));
     }
     let wanted = super::definition(world, actor)
         .character
@@ -318,12 +318,13 @@ pub fn dismiss(world: &mut World, actor: Entity) -> bool {
 }
 
 /// The NPC's dormant body stands again beside the party, on its level.
-fn stand_beside_party(world: &mut World, actor: Entity, body: Entity, party: Entity) {
-    let Some((root, map)) =
-        world.query::<(Entity, &Level)>().iter(world).next().map(|(e, l)| (e, l.path.clone()))
-    else {
-        return;
-    };
+fn stand_beside_party(
+    world: &mut World,
+    actor: Entity,
+    body: Entity,
+    (party, root): (Entity, Entity),
+) {
+    let map = world.get::<Level>(root).unwrap().path.clone();
     let at = *world.get::<avian3d::prelude::Position>(party).unwrap();
     let yaw = world.get::<PartyBody>(party).unwrap().yaw;
     // Retail asks the navigator for a place out from the party along its
@@ -335,8 +336,7 @@ fn stand_beside_party(world: &mut World, actor: Entity, body: Entity, party: Ent
         let vitals = world.get::<Vitals>(actor).unwrap();
         (vitals.conditions.clone(), vitals.stamina)
     };
-    let stamina_max =
-        world.get::<Character>(actor).map_or(stamina, |c| c.base_stats().max_stamina());
+    let stamina_max = world.get::<Character>(actor).unwrap().base_stats().max_stamina();
     let species = world.get::<Monster>(body).unwrap().species;
     let (max_hp, max_stamina) = world.resource_scope(|world, mut rng: Mut<GameRng>| {
         let kind = &world.resource::<crate::game::data::Catalogs>().species[species];
@@ -399,16 +399,12 @@ pub fn settle_npc_members(world: &mut World) {
     let Ok(party) = world.query_filtered::<Entity, With<Party>>().single(world) else { return };
     let fallen: Vec<Entity> = world
         .get::<PartyRoster>(party)
-        .map(|roster| {
-            roster
-                .iter()
-                .filter(|&member| {
-                    world.get::<Npc>(member).is_some()
-                        && world.get::<Vitals>(member).is_some_and(Vitals::is_dead)
-                })
-                .collect()
+        .unwrap()
+        .iter()
+        .filter(|&member| {
+            world.get::<Npc>(member).is_some() && world.get::<Vitals>(member).unwrap().is_dead()
         })
-        .unwrap_or_default();
+        .collect();
     if fallen.is_empty() {
         return;
     }

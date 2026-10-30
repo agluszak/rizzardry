@@ -103,7 +103,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
                 .unwrap()
                 .iter()
                 .find(|&member| {
-                    world.get::<Carried>(member).is_some_and(|c| c.find_stack(target_id).is_some())
+                    world.get::<Carried>(member).unwrap().find_stack(target_id).is_some()
                 })
                 .unwrap();
             reveal(world.get_mut::<Carried>(owner).unwrap().find_stack_mut(target_id).unwrap());

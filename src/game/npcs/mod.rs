@@ -45,12 +45,11 @@ pub(crate) fn script(world: &World, actor: Entity) -> AssetId<DialogueScript> {
 /// dialogue practice).
 pub(crate) fn able_members(world: &mut World) -> Vec<Entity> {
     let party = crate::game::party::roster::the_party(world);
-    let Some(roster) = world.get::<crate::game::party::roster::PartyRoster>(party) else {
-        return Vec::new();
-    };
-    roster
+    world
+        .get::<crate::game::party::roster::PartyRoster>(party)
+        .unwrap()
         .iter()
-        .filter(|&m| world.get::<crate::game::characters::Vitals>(m).is_some_and(|v| v.can_fight()))
+        .filter(|&m| world.get::<crate::game::characters::Vitals>(m).unwrap().can_fight())
         .collect()
 }
 

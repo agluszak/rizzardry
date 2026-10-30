@@ -464,10 +464,9 @@ fn resume(world: &mut World, actor: Entity) {
 /// level (retail `GetBestPartySkillLevel`).
 fn best_communicator(world: &mut World) -> Option<(Entity, u32)> {
     let party = the_party(world);
-    let roster = world.get::<PartyRoster>(party)?;
     crate::game::party::best_skill(
-        roster.iter().filter_map(|member| {
-            Some((member, world.get::<Character>(member)?, world.get::<Vitals>(member)?))
+        world.get::<PartyRoster>(party).unwrap().iter().map(|member| {
+            (member, world.get::<Character>(member).unwrap(), world.get::<Vitals>(member).unwrap())
         }),
         crate::content::characters::Skill::Communication,
     )
@@ -743,9 +742,9 @@ fn plan_quote(world: &World, party: Entity, q: &Quote) -> Result<QuotePlan, (usi
                 // XP is the authored amount for EACH eligible member.
                 let members = world
                     .get::<PartyRoster>(party)
-                    .into_iter()
-                    .flat_map(|roster| roster.iter())
-                    .filter(|&member| world.get::<Vitals>(member).is_some_and(|v| !v.is_dead()))
+                    .unwrap()
+                    .iter()
+                    .filter(|&member| !world.get::<Vitals>(member).unwrap().is_dead())
                     .collect();
                 plan.effects.push(QuoteEffect::Experience { members, amount: *amount });
             }
@@ -967,9 +966,8 @@ fn commit_effects(world: &mut World, entity: Entity, effects: Vec<QuoteEffect>) 
             }
             QuoteEffect::TakeItem { party, item } => {
                 if let Some(from) = take_item(world, party, item) {
-                    let member = from.map(|member| {
-                        world.get::<Character>(member).map(|c| c.name.clone()).unwrap_or_default()
-                    });
+                    let member =
+                        from.map(|member| world.get::<Character>(member).unwrap().name.clone());
                     world
                         .get_mut::<Conversation>(entity)
                         .unwrap()
