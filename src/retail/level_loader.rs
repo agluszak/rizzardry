@@ -802,7 +802,7 @@ impl AssetLoader for PvlDefinitionLoader {
                     })
                     .collect(),
                 wraps: prop.wraps,
-                slots: prop.slots.iter().map(|slot| slot.frame).collect(),
+                slots: prop.slots.clone(),
                 trigger,
             })
             .collect();

@@ -1,6 +1,7 @@
 //! Utility targets are validated before the shared cast/payment operation.
 use super::casting::{Aim, MagicChoice, MagicNews, Refusal, Source, UseContext};
 use crate::content::spells::SpellId;
+use crate::game::data::Catalogs;
 use crate::game::inventory::{Carried, ItemStack, PartyInventory, StackId};
 use crate::game::party::roster::{PartyRoster, the_party};
 use bevy::prelude::*;
@@ -19,7 +20,7 @@ pub(crate) fn source_spell(
 ) -> Result<SpellId, Refusal> {
     let party = the_party(world).ok_or(Refusal::CannotAct)?;
     let inventory = world.get::<PartyInventory>(party).ok_or(Refusal::MissingContent)?;
-    let items = &world.resource::<crate::game::data::Catalogs>().items;
+    let items = &world.resource::<Catalogs>().items;
     source.spell_id(world.get::<Carried>(caster), inventory, items).ok_or(Refusal::NoItem)
 }
 
@@ -63,7 +64,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
     let Aim::Item(target_id) = choice.aim else { return Err(Refusal::NoTarget) };
     let party = the_party(world).ok_or(Refusal::CannotAct)?;
     let stack = target(world, party, target_id).ok_or(Refusal::NoTarget)?;
-    let definition = &world.resource::<crate::game::data::Catalogs>().items[stack.item];
+    let definition = &world.resource::<Catalogs>().items[stack.item];
     let difficulty = definition.identify_difficulty;
     // The source cannot consume its own target and then silently identify a
     // replacement. A fully known stack likewise needs no paid attempt.
@@ -73,7 +74,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
         return Err(Refusal::NoTarget);
     }
     let source = if let Source::Spell { spell, power: super::casting::AUTO_POWER } = choice.source {
-        let spells = &world.resource::<crate::game::data::Catalogs>().spells;
+        let spells = &world.resource::<Catalogs>().spells;
         let definition = spells.get(spell).ok_or(Refusal::MissingContent)?;
         let profile =
             world.get::<crate::game::characters::Character>(caster).ok_or(Refusal::CannotAct)?;

@@ -159,13 +159,7 @@ pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer)
     for line in 0..4 {
         commands.spawn((
             QuoteLine(line),
-            BitmapText {
-                font: font.clone(),
-                at: Vec2::new(307., 361. + line as f32 * 11.),
-                width: 224.,
-                justify: bevy::text::Justify::Center,
-                ..default()
-            },
+            BitmapText::centred(font.clone(), Vec2::new(307., 361. + line as f32 * 11.), 224.),
             ChildOf(root),
         ));
     }
@@ -419,13 +413,7 @@ fn open_summary(
     for line in 0..4 {
         commands.spawn((
             QuoteLine(line),
-            BitmapText {
-                font: font.clone(),
-                at: Vec2::new(121., 25. + line as f32 * 11.),
-                width: 224.,
-                justify: bevy::text::Justify::Center,
-                ..default()
-            },
+            BitmapText::centred(font.clone(), Vec2::new(121., 25. + line as f32 * 11.), 224.),
             ChildOf(panel),
         ));
     }

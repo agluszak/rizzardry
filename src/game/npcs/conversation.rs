@@ -8,7 +8,9 @@ use crate::content::{
     items::{ItemCatalog, ItemId},
     npcs::*,
 };
+use crate::game::data::Catalogs;
 use crate::game::factions::{Band, Factions};
+use crate::game::time::GameClock;
 use crate::game::{
     characters::{Character, Condition, Vitals},
     inventory::{Carried, ItemIds, ItemOwner, ItemPool, ItemRef, PartyInventory, make_item},
@@ -113,7 +115,7 @@ impl StoryFacts {
     }
 }
 fn fact_catalog(world: &World) -> &FactCatalog {
-    &world.resource::<crate::game::data::Catalogs>().facts
+    &world.resource::<Catalogs>().facts
 }
 /// A fact by its symbol, for rules that name one.
 pub fn fact_named(world: &World, symbol: &str) -> Result<u8, String> {
@@ -357,9 +359,7 @@ fn with_definition<T>(
     f: impl FnOnce(&mut World, &NpcDefinition, &ItemCatalog) -> Result<T, TradeError>,
 ) -> Result<T, TradeError> {
     let id = world.get::<super::ActorId>(actor).expect("an NPC actor").npc();
-    crate::game::data::Catalogs::scope(world, |world, catalogs| {
-        f(world, &catalogs.npcs[id], &catalogs.items)
-    })
+    Catalogs::scope(world, |world, catalogs| f(world, &catalogs.npcs[id], &catalogs.items))
 }
 pub fn party_communication(world: &mut World) -> u32 {
     best_communicator(world).map_or(0, |(_, level)| level)
@@ -566,7 +566,7 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     }
     let menu = !scripted && !def.merchant && band == Band::Neutral;
     let greeting = if menu { NEUTRAL_GREETING } else { greet(world, actor) };
-    let now = world.resource::<crate::game::time::GameClock>().ms;
+    let now = world.resource::<GameClock>().ms;
     let average = average_level(world);
     let def = definition(world, actor);
     if def.owns_stock {
@@ -756,7 +756,7 @@ fn plan_quote(world: &World, party: Entity, q: &Quote) -> Result<QuotePlan, (usi
             // Retail ignores a faction name it does not know.
             DialogueOp::AdjustFaction { faction: None, .. } => {}
             DialogueOp::GiveItem(item) => {
-                if world.resource::<crate::game::data::Catalogs>().items.get(*item).is_none() {
+                if world.resource::<Catalogs>().items.get(*item).is_none() {
                     return Err((i, format!("unknown item {}", item.0)));
                 }
                 plan.effects.push(QuoteEffect::GiveItem { party, item: *item });
@@ -939,7 +939,7 @@ fn commit_effects(world: &mut World, entity: Entity, effects: Vec<QuoteEffect>) 
                     .query::<&Level>()
                     .single(world)
                     .map_or_else(|_| String::new(), |level| level.path.clone());
-                crate::game::data::Catalogs::scope(world, |world, catalogs| {
+                Catalogs::scope(world, |world, catalogs| {
                     world
                         .resource_mut::<StoryFacts>()
                         .set(id, value, &catalogs.facts, level)
@@ -970,21 +970,20 @@ fn commit_effects(world: &mut World, entity: Entity, effects: Vec<QuoteEffect>) 
             }
             // `executable` checked the content just before.
             QuoteEffect::GiveItem { party, item } => {
-                let (name, crucial, rest) =
-                    crate::game::data::Catalogs::scope(world, |world, c| {
-                        let catalog = &c.items;
-                        let definition = catalog.get(item).expect("a validated gift has its item");
-                        let stack = world.resource_scope(|world, mut ids: Mut<ItemIds>| {
-                            let mut rng = world.resource_mut::<GameRng>();
-                            make_item(definition, &mut ids, &mut rng, true, true)
-                        });
-                        let rest = world
-                            .get_mut::<PartyInventory>(party)
-                            .unwrap()
-                            .pool
-                            .receive(stack, catalog);
-                        (definition.name.clone(), definition.crucial, rest)
+                let (name, crucial, rest) = Catalogs::scope(world, |world, c| {
+                    let catalog = &c.items;
+                    let definition = catalog.get(item).expect("a validated gift has its item");
+                    let stack = world.resource_scope(|world, mut ids: Mut<ItemIds>| {
+                        let mut rng = world.resource_mut::<GameRng>();
+                        make_item(definition, &mut ids, &mut rng, true, true)
                     });
+                    let rest = world
+                        .get_mut::<PartyInventory>(party)
+                        .unwrap()
+                        .pool
+                        .receive(stack, catalog);
+                    (definition.name.clone(), definition.crucial, rest)
+                });
                 if let Some(rest) = rest {
                     drop_gift(world, party, rest, crucial);
                 }
@@ -1021,7 +1020,7 @@ fn commit_effects(world: &mut World, entity: Entity, effects: Vec<QuoteEffect>) 
             }
             QuoteEffect::Faction { faction, delta } => {
                 // Retail announces it in the text box, not the dialogue.
-                let now = world.resource::<crate::game::time::GameClock>().ms;
+                let now = world.resource::<GameClock>().ms;
                 if let Some(news) = world.resource_mut::<Factions>().adjust(faction, delta, now) {
                     world.write_message(news);
                 }
@@ -1268,7 +1267,7 @@ fn topic(world: &mut World, entity: Entity, text: &str) {
 fn approach_npc(world: &mut World, entity: Entity, approach: Approach) {
     let c = world.get::<Conversation>(entity).unwrap();
     let actor = c.actor;
-    let now = world.resource::<crate::game::time::GameClock>().ms;
+    let now = world.resource::<GameClock>().ms;
     let npc = world.get::<Npc>(actor).unwrap();
     let at = match approach {
         Approach::Charm => npc.charmed_at,
@@ -1288,7 +1287,7 @@ fn approach_npc(world: &mut World, entity: Entity, approach: Approach) {
         let average = crate::game::party::average_level(super::able_levels(world));
         let own = active_body(world, actor)
             .and_then(|body| world.get::<Monster>(body))
-            .map(|m| &world.resource::<crate::game::data::Catalogs>().species[m.species])
+            .map(|m| &world.resource::<Catalogs>().species[m.species])
             .map_or(1, |kind| u32::from(kind.level).max(1));
         delta = (average * delta as u32 / own) as i32;
     }
@@ -1398,7 +1397,7 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
     let actor = c.actor;
     let stack = sale_item(world, TradeSource::Party(item), party)?;
     let (offered, count) = (stack.item, stack.count());
-    let definition_of = &world.resource::<crate::game::data::Catalogs>().items[offered];
+    let definition_of = &world.resource::<Catalogs>().items[offered];
     let (crucial, value) = (definition_of.crucial, stack_value(definition_of, count));
     let def = definition(world, actor);
     let (voiced, kind) = (def.voice_script, def.kind);
@@ -1626,7 +1625,7 @@ pub fn quote_trade(
     let party = the_party(world).ok_or(TradeError::Unavailable)?;
     let communication = party_communication(world);
     let def = definition(world, actor);
-    let catalog = &world.resource::<crate::game::data::Catalogs>().items;
+    let catalog = &world.resource::<Catalogs>().items;
     let trade = world.get::<Npc>(actor).ok_or(TradeError::Unavailable)?.stock.trades;
     let gold = match source {
         TradeSource::Stock(lot) => {

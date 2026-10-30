@@ -20,6 +20,7 @@ use crate::content::ui::SpriteSheet;
 use crate::game::characters::Race;
 use crate::game::characters::{Character, Vitals};
 use crate::game::inventory::EquipSlot;
+use crate::game::npcs::conversation::Conversation;
 use crate::game::party::DamageApplied;
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::PresentationRng;
@@ -577,10 +578,7 @@ fn press(
     mut views: Query<(&mut super::magic_view::MagicView, Has<super::magic_view::CastsAt>)>,
     conversations: Query<
         (),
-        (
-            With<crate::game::npcs::conversation::Conversation>,
-            Without<crate::game::npcs::conversation::Closing>,
-        ),
+        (With<Conversation>, Without<crate::game::npcs::conversation::Closing>),
     >,
 ) {
     if click.button != PointerButton::Primary {
@@ -658,10 +656,7 @@ fn release_right(
     mut commands: Commands,
     conversations: Query<
         (),
-        (
-            With<crate::game::npcs::conversation::Conversation>,
-            Without<crate::game::npcs::conversation::Closing>,
-        ),
+        (With<Conversation>, Without<crate::game::npcs::conversation::Closing>),
     >,
 ) {
     if release.button != PointerButton::Secondary || !conversations.is_empty() {

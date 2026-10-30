@@ -58,14 +58,7 @@ fn label(
 ) -> Entity {
     commands
         .spawn((
-            BitmapText {
-                font,
-                value: value.into(),
-                at,
-                width,
-                justify: bevy::text::Justify::Center,
-                ..default()
-            },
+            BitmapText { value: value.into(), ..BitmapText::centred(font, at, width) },
             ChildOf(parent),
         ))
         .id()
@@ -320,7 +313,7 @@ pub(super) fn sync_views(
 }
 
 pub(super) fn refresh(
-    session: Option<Single<&Creation>>,
+    session: Option<Single<Ref<Creation>>>,
     assets: Res<AssetServer>,
     mut commands: Commands,
     controls: Query<(Entity, &Action, Has<InteractionDisabled>), With<Control>>,
@@ -339,8 +332,12 @@ pub(super) fn refresh(
     mut toggles: Query<&Children, With<ToggleLabel>>,
     mut toggle_text: Query<&mut BitmapText, (Without<Label>, Without<PartyMessage>)>,
     strings: crate::presentation::screen_art::GameStrings,
+    added: Query<(), Or<(Added<Control>, Added<Label>, Added<RowBackground>, Added<SlotFrame>)>>,
 ) {
     let Some(session) = session else { return };
+    if !session.is_changed() && !strings.is_changed() && added.is_empty() {
+        return;
+    }
     for (entity, action, disabled) in &controls {
         let enabled = match *action {
             Action::Add => session.candidates.len() < 6,

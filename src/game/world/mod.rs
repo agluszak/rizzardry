@@ -18,6 +18,7 @@ pub mod scripts;
 pub mod search;
 pub mod triggers;
 
+use crate::game::GameplaySet;
 use bevy::prelude::*;
 
 /// A borrowed gameplay pose, never a second position cache. Physics owns an
@@ -113,14 +114,12 @@ impl Plugin for WorldPlugin {
             .add_systems(
                 Update,
                 (
-                    level::activate_level.in_set(crate::game::GameplaySet::LevelActivation),
+                    level::activate_level.in_set(GameplaySet::LevelActivation),
                     (handle_world_requests, crate::game::automap::commit_notes)
-                        .after(crate::game::GameplaySet::Stats)
-                        .before(crate::game::GameplaySet::Combat),
-                    particles::switch_off_spent.before(crate::game::GameplaySet::LevelActivation),
-                    population::give_birth
-                        .run_if(level::level_active)
-                        .before(crate::game::GameplaySet::Combat),
+                        .after(GameplaySet::Stats)
+                        .before(GameplaySet::Combat),
+                    particles::switch_off_spent.before(GameplaySet::LevelActivation),
+                    population::give_birth.run_if(level::level_active).before(GameplaySet::Combat),
                     search::toggle_search.run_if(level::level_active).after(level::activate_level),
                 ),
             )

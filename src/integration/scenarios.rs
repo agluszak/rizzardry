@@ -8,6 +8,7 @@
 
 use crate::app::{Options, build};
 use crate::game::combat::Battle;
+use crate::game::data::Catalogs;
 use crate::game::inventory::PartyInventory;
 use crate::game::world::items::WorldItem;
 use crate::game::world::level::{Level, Travel};
@@ -162,7 +163,7 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     use crate::game::npcs::{Npc, NpcBodies};
     let mut app = game(&["--seed", "8", "--start=225,36.7,-68.6"]);
     step_until(&mut app, "the Monastery becoming active", |w| playing(w).is_some());
-    let catalog = &app.world().resource::<crate::game::data::Catalogs>().npcs;
+    let catalog = &app.world().resource::<Catalogs>().npcs;
     let burz_id = crate::content::npcs::NpcId(
         catalog.0.iter().position(|d| d.source_name == "Burz").unwrap() as u16,
     );
@@ -303,7 +304,7 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     assert_eq!(npc.stock, stock);
     assert!(npc.paid_topics.contains(&topic));
     assert!(!npc.greeting_pending);
-    let facts = &app.world().resource::<crate::game::data::Catalogs>().facts;
+    let facts = &app.world().resource::<Catalogs>().facts;
     assert_eq!(app.world().resource::<conversation::StoryFacts>().get(fact, facts), Ok(1));
     assert_eq!(
         app.world_mut()

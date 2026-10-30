@@ -3,6 +3,7 @@ use super::{InventoryArt, InventoryScreen};
 use crate::content::characters::{Attribute, Profession, Skill};
 use crate::content::spells::SpellId;
 use crate::game::characters::progression::{Advancement, Progression};
+use crate::game::data::Catalogs;
 use crate::presentation::retail_controls::{ControlSkin, FocusRing, set_enabled};
 use crate::presentation::screen_art::{BitmapText, Picture, absolute};
 use bevy::input_focus::{
@@ -151,7 +152,7 @@ fn open(
     screens: Query<(Entity, &InventoryScreen)>,
     editors: Query<(), With<Editor>>,
     progression: Progression,
-    content: If<Res<crate::game::data::Catalogs>>,
+    content: If<Res<Catalogs>>,
     art: Res<InventoryArt>,
     mut focus: ResMut<InputFocus>,
 ) {
@@ -301,7 +302,7 @@ fn press(
     mut commands: Commands,
     actions: Query<&Action>,
     mut editors: Query<(Entity, &mut Editor)>,
-    content: If<Res<crate::game::data::Catalogs>>,
+    content: If<Res<Catalogs>>,
     mut progression: Progression,
     mut focus: ResMut<InputFocus>,
     offers: Query<Entity, With<Open>>,
@@ -373,7 +374,7 @@ fn scroll_to_focus(
 fn refresh(
     mut commands: Commands,
     editors: Query<Ref<Editor>>,
-    content: If<Res<crate::game::data::Catalogs>>,
+    content: If<Res<Catalogs>>,
     strings: crate::presentation::screen_art::GameStrings,
     mut captions: Query<(&Caption, &mut BitmapText)>,
     mut pages: Query<(&PagePanel, &mut Node, &mut Visibility)>,

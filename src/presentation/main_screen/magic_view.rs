@@ -25,14 +25,17 @@ use crate::content::characters::Realm;
 use crate::content::items::ItemCatalog;
 use crate::content::spells::{MAX_POWER, PowerChoice, SpellCatalog, SpellDefinition, Targeting};
 use crate::content::ui::SpriteSheet;
+use crate::game::characters::Condition;
 use crate::game::characters::{Character, Vitals};
 use crate::game::combat::Battle;
+use crate::game::data::Catalogs;
 use crate::game::inventory::{Carried, PartyInventory};
 use crate::game::magic::casting::{
     AUTO_POWER, Aim, MagicChoice, Source, UseContext, castable, usable_items, usable_now,
     usable_stack,
 };
 use crate::game::magic::{LearnedSpells, MagicRequest, SpellPoints};
+use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::retail_controls::{
     ControlSkin, FocusRing, ScrollWheel, scroll_wheel, set_scroll_maximum, step_scrollbar,
@@ -150,7 +153,7 @@ impl MagicView {
 pub struct SourceTargeting<'w, 's> {
     carried: Query<'w, 's, &'static Carried>,
     pool: Query<'w, 's, &'static PartyInventory>,
-    content: If<Res<'w, crate::game::data::Catalogs>>,
+    content: If<Res<'w, Catalogs>>,
 }
 
 impl SourceTargeting<'_, '_> {
@@ -706,12 +709,12 @@ pub(super) fn refresh_magic_view(
         Query<&crate::game::world::interaction::DeviceInteraction>,
         Single<&PartyInventory>,
     ),
-    content: If<Res<crate::game::data::Catalogs>>,
+    content: If<Res<Catalogs>>,
     (conversations, speakers, monsters, party): (
         Query<&crate::game::npcs::conversation::Conversation>,
         Query<&crate::game::npcs::NpcBody>,
         Query<(Entity, &crate::game::world::population::Monster, crate::game::world::ActorPose)>,
-        Query<(&avian3d::prelude::Position, &crate::game::party::body::PartyBody)>,
+        Query<(&avian3d::prelude::Position, &PartyBody)>,
     ),
     (art, assets, strings): (
         Res<MagicViewArt>,
@@ -829,7 +832,7 @@ pub(super) fn refresh_magic_view(
             }
         }
     }
-    let silenced = vitals.conditions.has(crate::game::characters::Condition::Silenced);
+    let silenced = vitals.conditions.has(Condition::Silenced);
     let offers = offers(
         &view,
         character,
@@ -996,7 +999,7 @@ pub(super) fn refresh_magic_view(
                 // On the ground ahead of the party, as far as the spell
                 // reaches (ten metres at most).
                 let Ok((position, body)) = party.single() else { return };
-                let feet = crate::game::party::body::PartyBody::feet(position);
+                let feet = PartyBody::feet(position);
                 Aim::Point(feet + body.forward() * spell.reach.metres().min(10.0))
             }
             Targeting::Item => match pool.hand.held.as_ref() {
@@ -1057,7 +1060,7 @@ fn choose_row(
         Query<&crate::game::world::interaction::DeviceInteraction>,
         Single<&PartyInventory>,
     ),
-    content: If<Res<crate::game::data::Catalogs>>,
+    content: If<Res<Catalogs>>,
     conversations: Query<&crate::game::npcs::conversation::Conversation>,
 ) {
     let (Ok(row), Ok((mut view, casts_at, conversation_target))) =
@@ -1068,7 +1071,7 @@ fn choose_row(
     let (spells, items) = (&content.spells, &content.items);
     let Ok((character, vitals, carried)) = members.get(view.caster) else { return };
     let (learned, points) = casters.get(view.caster).map_or((None, None), |(l, p)| (Some(l), p));
-    let silenced = vitals.conditions.has(crate::game::characters::Condition::Silenced);
+    let silenced = vitals.conditions.has(Condition::Silenced);
     let mana_maximum = learned
         .map(|l| character.stats(&vitals.enchantments).max_points(l, spells))
         .unwrap_or_default();

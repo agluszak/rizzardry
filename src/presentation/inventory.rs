@@ -28,13 +28,17 @@ use super::screen_art::{
 };
 use crate::content::items::QuantityKind;
 use crate::content::ui::SpriteSheet;
+use crate::game::GameplaySet;
 use crate::game::characters::{Character, Gender, Race, Vitals};
 use crate::game::combat::attack::Armour;
+use crate::game::data::Catalogs;
 use crate::game::inventory::{
     BACKPACK_SLOTS, Carried, EquipSlot, ItemAt, ItemStack, MemberSlot, PartyInventory, Slot,
 };
 use crate::game::party::roster::PartyRoster;
+use crate::presentation::retail_controls::FocusRing;
 use crate::presentation::screen::Screen;
+use crate::presentation::screen_art::GameStrings;
 use crate::presentation::screen_art::{show_sheet, visible_if};
 
 const CELL: Vec2 = Vec2::new(46.0, 54.0);
@@ -598,7 +602,7 @@ fn cell_controls(cell: Cell, art: &InventoryArt) -> impl Scene {
     bsn! {
         node template(move |_|Ok(ItemCell{cell}))
         UiButton TabIndex(0) Pickable::default()
-        crate::presentation::retail_controls::FocusRing
+        FocusRing
         on(click_cell)
         Children [
             template(move |_| Ok(ImageNode { image: fill.clone(), rect: Some(Rect::new(0.0, 0.0, 46.0, 54.0)), ..default() }))
@@ -629,7 +633,7 @@ pub fn spawn_inventory_screen(
     focus: Option<ResMut<bevy::input_focus::InputFocus>>,
     sheets: Res<Assets<SpriteSheet>>,
     roots: Query<Entity, (With<InventoryRoot>, Without<InventoryBuilt>)>,
-    strings: crate::presentation::screen_art::GameStrings,
+    strings: GameStrings,
 ) {
     let Ok(root) = roots.single() else { return };
     if [
@@ -737,7 +741,7 @@ pub fn spawn_inventory_screen(
     commands.spawn_scene(bsn! {
         @{exit} ChildOf(content)
             UiButton TabIndex(0) Pickable::default()
-            crate::presentation::retail_controls::FocusRing
+            FocusRing
             on(|_: On<Activate>, mut close: CloseReview| { close.finish(); })
     });
     let initial_tab = review::build(&mut commands, content, &art);
@@ -848,7 +852,7 @@ fn draw_header_condition(
 fn draw_header_hands(
     screen: Option<Single<&InventoryScreen>>,
     assets: Res<AssetServer>,
-    content: If<Res<crate::game::data::Catalogs>>,
+    content: If<Res<Catalogs>>,
     members: Query<crate::presentation::character_view::CharacterView>,
     battle: Option<Single<&crate::game::combat::Battle>>,
     party_effects: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
@@ -994,7 +998,7 @@ fn sync_member_portraits(
                 .spawn_scene(bsn! {
                     template(move |_| Ok(source.clone()))
                     UiButton TabIndex(0) Hovered::default() Pickable::default()
-                    crate::presentation::retail_controls::FocusRing
+                    FocusRing
                     InventoryMemberButton({member})
                         on(select_inventory_member)
                     Children [
@@ -1012,7 +1016,7 @@ fn draw_header(
     screen: Option<Single<&InventoryScreen>>,
     assets: Res<AssetServer>,
     members: Query<(&Character, Option<&Vitals>)>,
-    strings: crate::presentation::screen_art::GameStrings,
+    strings: GameStrings,
     mut displays: Query<(&HeaderDisplay, Option<&mut Picture>, Option<&mut BitmapText>)>,
 ) {
     let Some(screen) = screen else { return };
@@ -1073,7 +1077,7 @@ fn draw_header(
 }
 
 fn draw_retail_labels(
-    strings: crate::presentation::screen_art::GameStrings,
+    strings: GameStrings,
     mut labels: Query<(Ref<RetailLabel>, &mut BitmapText)>,
 ) {
     for (label, mut text) in &mut labels {
@@ -1102,7 +1106,7 @@ fn draw_gold(
 fn draw_cells(
     screen: Option<Single<&InventoryScreen>>,
     assets: Res<AssetServer>,
-    content: If<Res<crate::game::data::Catalogs>>,
+    content: If<Res<Catalogs>>,
     members: Query<(&Character, Option<&Carried>)>,
     party: Single<&PartyInventory>,
     pool_scroll: Option<Single<&bevy::ui_widgets::SliderValue, With<pool_scroll::PoolScroll>>>,
@@ -1276,7 +1280,7 @@ pub fn follow_held(
     scale: Res<UiScale>,
     assets: Res<AssetServer>,
     sheets: Res<Assets<SpriteSheet>>,
-    content: If<Res<crate::game::data::Catalogs>>,
+    content: If<Res<Catalogs>>,
     mut picture: Single<(&mut ImageNode, &mut Node, &mut Visibility), With<HeldPicture>>,
     mut loading: Local<Option<(String, Handle<SpriteSheet>)>>,
 ) {
@@ -1343,7 +1347,7 @@ impl Plugin for InventoryPlugin {
                         draw_cells,
                     )
                         .after(spawn_inventory_screen)
-                        .after(crate::game::GameplaySet::Stats)
+                        .after(GameplaySet::Stats)
                         .run_if(any_with_component::<InventoryScreen>),
                     follow_held,
                 ),
@@ -1364,7 +1368,7 @@ impl Plugin for InventoryPlugin {
                     pool_scroll::sync.before(draw_cells),
                 )
                     .after(spawn_inventory_screen)
-                    .after(crate::game::GameplaySet::Stats),
+                    .after(GameplaySet::Stats),
             );
     }
 }

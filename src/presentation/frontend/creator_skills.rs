@@ -120,8 +120,12 @@ pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer)
 pub(super) fn refresh(
     session: Option<Single<Ref<Creation>>>,
     mut rows: Query<(&SkillRow, &mut Node, &mut Visibility)>,
+    added: Query<(), Added<SkillRow>>,
 ) {
     let Some(session) = session else { return };
+    if !session.is_changed() && added.is_empty() {
+        return;
+    }
     let Some(draft) = session.mode.draft() else { return };
     let profile = draft.preview();
     for (row, mut node, mut visibility) in &mut rows {

@@ -7,11 +7,14 @@
 
 use bevy::prelude::*;
 
+use crate::presentation::screen_art::GameStrings;
+
 use crate::content::items::AttackMode;
 use crate::content::species::AttackWord;
 use crate::content::ui::{SpriteSheet, TextTable};
 use crate::game::camp::CampNews;
 use crate::game::combat::{Announcement, CombatNews};
+use crate::game::factions::FactionNews;
 use crate::game::inventory::ItemNews;
 use crate::game::world::identify::Identified;
 use crate::game::world::interaction::LockNews;
@@ -399,10 +402,7 @@ fn magic_lines(
 /// Retail `AdjustFactionDisposition`'s notice: "%s standing %s." with the
 /// faction's name (`g_faction_name_ids`, whose two spare factions reuse the
 /// first name) and whether it worsened or improved.
-fn faction_line(
-    news: &crate::game::factions::FactionNews,
-    string: &impl Fn(usize) -> String,
-) -> String {
+fn faction_line(news: &FactionNews, string: &impl Fn(usize) -> String) -> String {
     const NAMES: usize = 0x5a1;
     const WORSENED: usize = 0x245;
     const IMPROVED: usize = 0x246;
@@ -418,50 +418,105 @@ fn faction_line(
     )
 }
 
-pub fn queue_notices(
-    mut effects: MessageReader<TriggerEffect>,
-    mut camp: MessageReader<CampNews>,
-    mut combat: MessageReader<CombatNews>,
-    mut items: MessageReader<ItemNews>,
-    mut search: MessageReader<SearchNews>,
-    mut identified: MessageReader<Identified>,
-    mut locks: MessageReader<LockNews>,
+/// Where a notice goes: the text log's general channel, or its combat
+/// channel during a fight.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct Notices<'w, 's> {
+    log: ResMut<'w, TextLog>,
+    art: Res<'w, NoticeArt>,
+    sheets: Res<'w, Assets<SpriteSheet>>,
+    battles: Query<'w, 's, (), With<crate::game::combat::Battle>>,
+}
+
+impl Notices<'_, '_> {
+    fn post(&mut self, text: &str) {
+        self.post_to(usize::from(!self.battles.is_empty()), text);
+    }
+
+    fn post_to(&mut self, channel: usize, text: &str) {
+        self.log.push(channel, text, self.sheets.get(&self.art.font));
+    }
+}
+
+/// Every kind of news posts its notices, in this order within a frame.
+pub fn queue_notices() -> bevy::ecs::schedule::ScheduleConfigs<bevy::ecs::system::ScheduleSystem> {
+    (
+        post_remarks,
+        post_magic,
+        post_speech,
+        post_factions,
+        post_trigger_effects,
+        post_identified,
+        post_search,
+        post_items,
+        post_locks,
+        post_camp,
+        post_combat,
+    )
+        .chain()
+        .in_set(QueueNotices)
+}
+
+/// The systems [`queue_notices`] schedules.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct QueueNotices;
+
+fn post_remarks(
     mut remarks: MessageReader<super::party_voice::SpokenRemark>,
-    members: Query<&crate::game::characters::Character>,
     names: super::names::ActorNames,
-    art: Res<NoticeArt>,
-    (tables, strings): (Res<Assets<TextTable>>, crate::presentation::screen_art::GameStrings),
-    battle: Option<Single<&crate::game::combat::Battle>>,
-    sheets: Res<Assets<SpriteSheet>>,
-    mut log: ResMut<TextLog>,
-    (mut magic, content, mut factions, mut speech): (
-        MessageReader<crate::game::magic::casting::MagicNews>,
-        If<Res<crate::game::data::Catalogs>>,
-        MessageReader<crate::game::factions::FactionNews>,
-        MessageReader<crate::game::npcs::conversation::NpcSpeech>,
-    ),
+    mut notices: Notices,
 ) {
-    let font = sheets.get(&art.font);
-    let channel = usize::from(battle.is_some());
-    let spells = &content.spells;
-    let string = |index| strings.get(index).to_owned();
     for remark in remarks.read() {
         if let Some(name) = names.name(remark.actor) {
-            log.push(channel, &format!("{name}: {}", remark.text), font);
+            notices.post(&format!("{name}: {}", remark.text));
         }
     }
+}
+
+fn post_magic(
+    mut magic: MessageReader<crate::game::magic::casting::MagicNews>,
+    names: super::names::ActorNames,
+    content: If<Res<crate::game::data::Catalogs>>,
+    strings: GameStrings,
+    mut notices: Notices,
+) {
+    let spells = &content.spells;
+    let string = |index| strings.get(index).to_owned();
     for news in magic.read() {
         for line in magic_lines(news, &names, spells, &string) {
-            log.push(channel, &line, font);
+            notices.post(&line);
         }
     }
+}
+
+fn post_speech(
+    mut speech: MessageReader<crate::game::npcs::conversation::NpcSpeech>,
+    mut notices: Notices,
+) {
     // Retail `SpeakNpcSubquote` outside dialogue mode.
     for line in speech.read() {
-        log.push(channel, &format!("{}: \"{}\"", line.speaker, line.text), font);
+        notices.post(&format!("{}: \"{}\"", line.speaker, line.text));
     }
+}
+
+fn post_factions(
+    mut factions: MessageReader<FactionNews>,
+    strings: GameStrings,
+    mut notices: Notices,
+) {
+    let string = |index| strings.get(index).to_owned();
     for news in factions.read() {
-        log.push(channel, &faction_line(news, &string), font);
+        notices.post(&faction_line(news, &string));
     }
+}
+
+fn post_trigger_effects(
+    mut effects: MessageReader<TriggerEffect>,
+    tables: Res<Assets<TextTable>>,
+    strings: GameStrings,
+    mut notices: Notices,
+) {
+    let string = |index| strings.get(index).to_owned();
     for effect in effects.read() {
         let text = match effect {
             TriggerEffect::Message { source, id } => source
@@ -484,15 +539,23 @@ pub fn queue_notices(
             | TriggerEffect::Shake { .. } => None,
         };
         if let Some(text) = text.filter(|t| !t.trim().is_empty()) {
-            log.push(channel, text.trim(), font);
+            notices.post(text.trim());
         }
     }
+}
+
+fn post_identified(
+    mut identified: MessageReader<Identified>,
+    strings: GameStrings,
+    mut notices: Notices,
+) {
+    let string = |index| strings.get(index).to_owned();
     // Retail `DetectMonsterGroups`: "Ragnar identifies the Crocodiles:",
     // then "They're Ironskin Crocodiles!" ("It's a" / "It's an" for one).
     for news in identified.read() {
         let line =
             format!("{} {}", news.member, string(IDENTIFIES).replace("%s", &news.looks_like));
-        log.push(channel, &line, font);
+        notices.post(&line);
         let vowel =
             news.is.chars().next().is_some_and(|c| "AEIOU".contains(c.to_ascii_uppercase()));
         let article = match (news.count, vowel) {
@@ -500,8 +563,12 @@ pub fn queue_notices(
             (1, true) => string(ITS_AN),
             _ => string(THEYRE),
         };
-        log.push(channel, &format!("{article} {}!", news.is), font);
+        notices.post(&format!("{article} {}!", news.is));
     }
+}
+
+fn post_search(mut search: MessageReader<SearchNews>, strings: GameStrings, mut notices: Notices) {
+    let string = |index| strings.get(index).to_owned();
     for news in search.read() {
         let text = match news {
             SearchNews::On => string(SEARCH_ON),
@@ -511,8 +578,12 @@ pub fn queue_notices(
                 format!("{member} {}", string(SPOTS_HIDDEN).replace("%s", item))
             }
         };
-        log.push(channel, &text, font);
+        notices.post(&text);
     }
+}
+
+fn post_items(mut items: MessageReader<ItemNews>, strings: GameStrings, mut notices: Notices) {
+    let string = |index| strings.get(index).to_owned();
     for news in items.read() {
         let text = match news {
             ItemNews::Takes { member: Some(member), item } => {
@@ -534,8 +605,17 @@ pub fn queue_notices(
                 format!("{member}{separator}{text}")
             }
         };
-        log.push(channel, &text, font);
+        notices.post(&text);
     }
+}
+
+fn post_locks(
+    mut locks: MessageReader<LockNews>,
+    members: Query<&crate::game::characters::Character>,
+    strings: GameStrings,
+    mut notices: Notices,
+) {
+    let string = |index| strings.get(index).to_owned();
     // Retail's lock and trap notices (`AttemptForce`, `ResolvePick`,
     // `CompleteTrapDisarm`, `ResolveSprungTrap`); the rest are voices.
     let member = |entity: &Entity| members.get(*entity).map(|c| c.name.clone()).unwrap_or_default();
@@ -566,8 +646,12 @@ pub fn queue_notices(
             | LockNews::Inspected { .. }
             | LockNews::ComponentDisarmed { .. } => continue,
         };
-        log.push(channel, &text, font);
+        notices.post(&text);
     }
+}
+
+fn post_camp(mut camp: MessageReader<CampNews>, strings: GameStrings, mut notices: Notices) {
+    let string = |index| strings.get(index).to_owned();
     for news in camp.read() {
         let text = match news {
             CampNews::Started { forced: false } => string(CAMPING_FOR).replace("%d", "8"),
@@ -578,14 +662,23 @@ pub fn queue_notices(
             CampNews::Interrupted => string(CAMP_INTERRUPTED),
             CampNews::Recovered => string(RECOVERED),
         };
-        log.push(channel, &text, font);
+        notices.post(&text);
     }
+}
+
+fn post_combat(
+    mut combat: MessageReader<CombatNews>,
+    names: super::names::ActorNames,
+    strings: GameStrings,
+    mut notices: Notices,
+) {
+    let string = |index| strings.get(index).to_owned();
     // Blow by blow goes to the log; the text box carries the fight's
     // course (retail's own blow lines are not ported yet).
     for news in combat.read() {
         let texts = match news {
             CombatNews::Began { .. } => {
-                log.selected = 1;
+                notices.log.selected = 1;
                 vec![string(COMBAT)]
             }
             CombatNews::Breathed { actor } => {
@@ -703,12 +796,11 @@ pub fn queue_notices(
         let ended = matches!(news, CombatNews::Won { .. } | CombatNews::Lost | CombatNews::Over);
         // Retail CheckCombatEnd explicitly sends outcomes to General before
         // EndCombat selects it; only the preceding blows belong to Combat.
-        let channel = usize::from(!ended);
         for text in texts {
-            log.push(channel, &text, font);
+            notices.post_to(usize::from(!ended), &text);
         }
         if ended {
-            log.selected = 0;
+            notices.log.selected = 0;
         }
     }
 }
@@ -754,7 +846,7 @@ mod tests {
             .add_message::<crate::game::magic::casting::MagicNews>()
             .add_message::<crate::game::factions::FactionNews>()
             .add_message::<crate::game::npcs::conversation::NpcSpeech>()
-            .add_systems(Update, queue_notices);
+            .add_systems(Update, queue_notices());
         let mut strings = vec![None; SURVIVORS_EARNED + 1];
         for (id, text) in [
             (COMBAT, "Combat"),

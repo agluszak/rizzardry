@@ -19,6 +19,7 @@ use bevy::prelude::*;
 
 use super::screen_art::{SCREEN, absolute, centred, screen, sprite};
 use crate::content::ui::SpriteSheet;
+use crate::game::GameplaySet;
 pub use layout::{LayoutMode, Panel, ScreenLayout};
 
 pub struct MainScreenPlugin;
@@ -56,13 +57,13 @@ impl Plugin for MainScreenPlugin {
                             party::draw_party,
                         )
                             .chain()
-                            .after(crate::game::GameplaySet::Stats),
+                            .after(GameplaySet::Stats),
                         (party::record_splats, party::play_splats).chain(),
                         (text_box::draw_text_box, text_box::sync_channels, text_box::repeat_arrows)
                             .chain(),
                         (radar::track_radar_items, radar::update_radar)
                             .chain()
-                            .after(crate::game::GameplaySet::LevelActivation)
+                            .after(GameplaySet::LevelActivation)
                             .after(crate::game::world::search::search_pulse),
                         formation::draw_formation,
                         bank::draw_bank,
@@ -73,7 +74,7 @@ impl Plugin for MainScreenPlugin {
                 )
                     .chain()
                     .after(super::screen_art::scale_ui)
-                    .after(super::notices::queue_notices),
+                    .after(super::notices::QueueNotices),
             );
     }
 }

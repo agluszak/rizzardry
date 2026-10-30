@@ -341,7 +341,6 @@ mod tests {
         );
         let dial_prop =
             sections.props.iter().chain(&sections.bitmaps).find(|p| p.name == "dial1").unwrap();
-        let frames: Vec<u16> = dial_prop.slots.iter().map(|s| s.frame).collect();
-        assert_eq!(frames, [0, 1, 10, 20]);
+        assert_eq!(dial_prop.slots, [0, 1, 10, 20]);
     }
 }

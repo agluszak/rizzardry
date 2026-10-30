@@ -364,7 +364,7 @@ mod tests {
         .add_message::<crate::game::factions::FactionNews>()
         .add_message::<crate::game::npcs::conversation::NpcSpeech>()
         .add_systems(Startup, (super::super::load_main_screen_art, load_notice_art))
-        .add_systems(Update, (queue_notices, draw_text_box, repeat_arrows).chain());
+        .add_systems(Update, (queue_notices(), draw_text_box, repeat_arrows).chain());
         app.world_mut().register_component::<Window>();
         app.world_mut().spawn(TextBox);
         app.update();

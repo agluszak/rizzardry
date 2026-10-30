@@ -29,17 +29,11 @@ pub const CROSSING: u32 = 0x80;
 /// Surface flag: an environment-swap plane (unused by retail levels).
 pub const ENVIRONMENT: u32 = 0x1000;
 
-/// Footstep material of walkable surfaces under shallow water.
-pub const SHALLOW_WATER: u8 = 4;
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Surface {
     pub flags: u32,
-    /// The `.pvl` trigger (in section order) a crossing surface fires.
-    pub trigger_index: i32,
     /// Retail winding; the stored plane's normal faces the open side.
     pub vertices: [u32; 3],
-    pub footstep_material: u8,
 }
 
 impl Surface {
@@ -182,14 +176,13 @@ pub fn read_collision(data: &[u8]) -> Result<Collision, DecodeError> {
     let surfaces = bytes.records(surface_count, 0x4C, |b| {
         let flags = b.u32()?;
         b.u32()?; // index
-        let trigger_index = b.i32()?;
+        b.i32()?; // trigger index
         b.take(12)?; // edge links
         let vertices = b.i32s::<3>()?.map(|v| v as u32);
         b.take(16 + 4 + 4)?; // plane, scratch distance, scratch pointer
-        b.u8()?; // footstep surface (acoustics)
-        let footstep_material = b.u8()?;
+        b.take(2)?; // footstep surface and material
         b.take(2 + 4 + 4 + 4)?; // positional, contact margin, chance, slope
-        Ok(Surface { flags, trigger_index, vertices, footstep_material })
+        Ok(Surface { flags, vertices })
     })?;
     if surfaces.iter().any(|s| s.vertices.iter().any(|&v| v as usize >= vertices.len())) {
         return Err(bytes.invalid("collision vertex out of range"));

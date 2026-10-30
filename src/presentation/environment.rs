@@ -7,6 +7,8 @@ use crate::content::level::LevelGeometry;
 use crate::game::time::GameClock;
 use bevy::asset::LoadState;
 
+use crate::game::magic::enchantments::PartyEffects;
+use crate::game::party::body::PartyBody;
 use crate::game::world::level::{Destination, Level, LevelEntities};
 use crate::game::world::props::Prop;
 use crate::game::world::props::PropPart;
@@ -20,18 +22,15 @@ pub struct PartyTorch<'w, 's> {
     party: Query<
         'w,
         's,
-        (
-            &'static avian3d::prelude::Position,
-            &'static crate::game::magic::enchantments::PartyEffects,
-        ),
-        With<crate::game::party::body::PartyBody>,
+        (&'static avian3d::prelude::Position, &'static PartyEffects),
+        With<PartyBody>,
     >,
 }
 
 impl PartyTorch<'_, '_> {
     pub fn light(&self) -> Option<crate::content::level::PointLightSource> {
         let (at, effects) = self.party.single().ok()?;
-        spell_light(crate::game::party::body::PartyBody::eye(at), effects)
+        spell_light(PartyBody::eye(at), effects)
     }
 }
 
@@ -43,7 +42,7 @@ pub(super) fn sky_now(level: &LevelGeometry, clock: &GameClock) -> Vec3 {
 /// Retail camera light: warm, 4000 retail units, twice adjusted power plus two.
 fn spell_light(
     eye: Vec3,
-    effects: &crate::game::magic::enchantments::PartyEffects,
+    effects: &PartyEffects,
 ) -> Option<crate::content::level::PointLightSource> {
     let effect = effects.0.get(crate::content::spells::SpellId::LIGHT)?;
     let amount = (effect.adjusted(u32::from(effect.power)) as u8).wrapping_mul(2);

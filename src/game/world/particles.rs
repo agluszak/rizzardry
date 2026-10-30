@@ -113,7 +113,6 @@ pub(crate) mod tests {
             flutter: None,
             initially_active: false,
             emission_limit: 2,
-            attachment: None,
             frames: None,
         });
         scene.visit(None);

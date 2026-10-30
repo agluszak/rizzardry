@@ -35,8 +35,6 @@ pub struct PartyMember(pub Entity);
 #[relationship_target(relationship = PartyMember)]
 pub struct PartyRoster(EntityIndexSet);
 
-impl PartyRoster {}
-
 impl std::ops::Deref for PartyRoster {
     type Target = EntityIndexSet;
 

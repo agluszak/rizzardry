@@ -43,6 +43,7 @@ pub mod world_items;
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 
+use crate::game::GameplaySet;
 use controls::Exploration;
 
 pub struct PresentationPlugin;
@@ -148,7 +149,11 @@ impl Plugin for PresentationPlugin {
             PostUpdate,
             (
                 (selection::select_world_target, selection::activate_selection).chain(),
-                (effects::play_trigger_effects, effects::play_lock_sounds, notices::queue_notices)
+                (
+                    effects::play_trigger_effects,
+                    effects::play_lock_sounds,
+                    notices::queue_notices(),
+                )
                     .after(selection::activate_selection),
                 (hover::hover, hover::show_tooltip).chain().after(selection::activate_selection),
             )
@@ -167,7 +172,7 @@ impl Plugin for PresentationPlugin {
             )
                 .chain()
                 .after(selection::activate_selection)
-                .before(notices::queue_notices),
+                .before(notices::QueueNotices),
         )
         .add_systems(
             Startup,
@@ -184,9 +189,9 @@ impl Plugin for PresentationPlugin {
             Update,
             (
                 screen_art::scale_ui,
-                party_view::aim_camera.after(crate::game::GameplaySet::Combat),
+                party_view::aim_camera.after(GameplaySet::Combat),
                 water_view::sway,
-                party_view::track_fights.after(crate::game::GameplaySet::Combat),
+                party_view::track_fights.after(GameplaySet::Combat),
                 camp::show_camp,
                 (
                     automap::request_automap,
@@ -225,14 +230,14 @@ impl Plugin for PresentationPlugin {
                 environment::apply_environment,
                 sky::shade_clouds,
                 sky::build_sky,
-                environment::prepare_appearance.before(crate::game::GameplaySet::LevelActivation),
+                environment::prepare_appearance.before(GameplaySet::LevelActivation),
                 environment::attach_level_visuals,
                 billboards::face_camera.after(party_view::aim_camera),
                 music::play_music,
                 (ambience::place_ambient_sounds, ambience::play_ambient_sounds).chain(),
                 (dialog::show_travel_question, dialog::focus_ready_question)
                     .chain()
-                    .after(crate::game::GameplaySet::LevelActivation),
+                    .after(GameplaySet::LevelActivation),
                 effects::shake_camera.after(party_view::aim_camera),
                 sky::orbit_sun_and_moon,
                 voice::finish_speech,
@@ -246,7 +251,7 @@ impl Plugin for PresentationPlugin {
                 )
                     .chain()
                     // A monster killed this frame starts dying this frame.
-                    .after(crate::game::GameplaySet::Combat),
+                    .after(GameplaySet::Combat),
                 (
                     world_items::show_world_items,
                     world_items::build_world_items,

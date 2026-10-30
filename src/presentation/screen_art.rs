@@ -5,6 +5,7 @@
 use bevy::prelude::*;
 
 use crate::content::ui::SpriteSheet;
+use crate::content::ui::TextTable;
 use crate::game::characters::{Race, Vitals};
 
 /// The two empty hand sprites used by the HUD and character review.
@@ -128,6 +129,13 @@ pub struct BitmapText {
     pub justify: bevy::text::Justify,
 }
 
+impl BitmapText {
+    /// Text centred in the `width` running right from `at`.
+    pub fn centred(font: Handle<SpriteSheet>, at: Vec2, width: f32) -> Self {
+        Self { font, at, width, justify: bevy::text::Justify::Center, ..default() }
+    }
+}
+
 /// Opt a label into wrapping, separately from its horizontal alignment box.
 #[derive(Component, Clone, Copy, PartialEq)]
 pub struct BitmapWrap {
@@ -167,7 +175,7 @@ pub fn picture(sheet: Handle<SpriteSheet>, frame: usize, at: Vec2) -> impl Scene
 
 pub fn label(font: Handle<SpriteSheet>, at: Vec2, width: f32) -> impl Scene {
     bsn! {
-        template(move |_| Ok(BitmapText { font: font.clone(), value: String::new(), at, width, justify: bevy::text::Justify::Center, ..default() }))
+        template(move |_| Ok(BitmapText { value: String::new(), ..BitmapText::centred(font.clone(), at, width) }))
     }
 }
 
@@ -350,7 +358,7 @@ pub fn show_sheet(picture: &mut Mut<Picture>, assets: &AssetServer, path: String
 
 /// The game's string table, loaded at startup.
 #[derive(Resource)]
-pub struct StringTable(pub(super) Handle<crate::content::ui::TextTable>);
+pub struct StringTable(pub(super) Handle<TextTable>);
 
 pub fn load_string_table(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(StringTable(assets.load(crate::content::paths::STRINGS)));
@@ -360,11 +368,11 @@ pub fn load_string_table(mut commands: Commands, assets: Res<AssetServer>) {
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct GameStrings<'w> {
     table: Option<Res<'w, StringTable>>,
-    tables: Option<Res<'w, Assets<crate::content::ui::TextTable>>>,
+    tables: Option<Res<'w, Assets<TextTable>>>,
 }
 
 impl GameStrings<'_> {
-    pub fn table(&self) -> Option<&crate::content::ui::TextTable> {
+    pub fn table(&self) -> Option<&TextTable> {
         self.tables.as_ref()?.get(&self.table.as_ref()?.0)
     }
 

@@ -23,6 +23,7 @@ use crate::game::magic::{LearnedSpells, SpellPoints};
 use crate::game::party::body;
 use crate::game::party::formation::{self, Row};
 use crate::game::rng::GameRng;
+use crate::game::world::hostility::Stance;
 use crate::game::world::navigation::feet;
 
 /// What a blow needs of the fight besides the field it changes.
@@ -472,13 +473,8 @@ pub(super) fn melee_target<'a>(
                 .get(member)
                 .is_ok_and(|(_, vitals, ..)| vitals.conditions.has(Condition::Turncoat));
             let side = field.monsters.stance(entity, field.now);
-            let wanted = if turned {
-                crate::game::world::hostility::Stance::Friendly
-            } else {
-                crate::game::world::hostility::Stance::Hostile
-            };
-            if (turned && side != wanted
-                || !turned && side == crate::game::world::hostility::Stance::Friendly)
+            let wanted = if turned { Stance::Friendly } else { Stance::Hostile };
+            if (turned && side != wanted || !turned && side == Stance::Friendly)
                 || !field.monsters.active(entity)
                 || monster.is_dead()
                 || !fight.party.reaches(formation, member, at.translation(), hand.reach, distance)

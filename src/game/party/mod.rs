@@ -11,6 +11,8 @@ use bevy::prelude::*;
 use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
+use crate::game::GameplaySet;
+use crate::game::characters::Character;
 use crate::game::world::level::level_active;
 
 /// A member's standing choice for the next round. Recruitment starts on
@@ -45,8 +47,8 @@ impl Plugin for PartyPlugin {
         .add_systems(
             Update,
             (body::look_around
-                .after(crate::game::GameplaySet::LevelActivation)
-                .before(crate::game::GameplaySet::Combat)
+                .after(GameplaySet::LevelActivation)
+                .before(GameplaySet::Combat)
                 .run_if(level_active),),
         )
         // Tnua and Avian step on the fixed timestep; movement input feeds
@@ -80,7 +82,7 @@ pub type Members<'w, 's> = Query<
     'w,
     's,
     (
-        &'static mut crate::game::characters::Character,
+        &'static mut Character,
         &'static mut crate::game::characters::Vitals,
         &'static mut crate::game::inventory::Carried,
         &'static crate::game::inventory::Burden,
@@ -91,9 +93,7 @@ pub type Members<'w, 's> = Query<
 /// tie, with whose it is (retail `GetBestPartySkillLevel`: `hp_current !=
 /// 0 && highest_condition < TURNCOAT`).
 pub fn best_skill<'a, T>(
-    members: impl IntoIterator<
-        Item = (T, &'a crate::game::characters::Character, &'a crate::game::characters::Vitals),
-    >,
+    members: impl IntoIterator<Item = (T, &'a Character, &'a crate::game::characters::Vitals)>,
     skill: crate::content::characters::Skill,
 ) -> Option<(T, u32)> {
     let mut best: Option<(T, u32)> = None;
@@ -157,7 +157,7 @@ pub struct DamageApplied {
 /// actually changes a seat.
 pub fn damage_member(
     member: Entity,
-    (profile, vitals): (&crate::game::characters::Character, &mut crate::game::characters::Vitals),
+    (profile, vitals): (&Character, &mut crate::game::characters::Vitals),
     formation: &mut Mut<formation::Formation>,
     (amount, fate): (u32, &mut crate::game::characters::Fate),
     damage: &mut MessageWriter<DamageApplied>,
@@ -176,7 +176,7 @@ pub fn damage_member(
 /// ([`crate::game::characters::Vitals::perish`]). Returns the health lost.
 pub fn kill_member(
     member: Entity,
-    (profile, vitals): (&crate::game::characters::Character, &mut crate::game::characters::Vitals),
+    (profile, vitals): (&Character, &mut crate::game::characters::Vitals),
     formation: &mut Mut<formation::Formation>,
     fate: &mut crate::game::characters::Fate,
     damage: &mut MessageWriter<DamageApplied>,
@@ -197,10 +197,7 @@ pub fn kill_member(
 /// ([`crate::game::characters::Vitals::drain_health`]).
 pub fn drain_member(
     member: Entity,
-    (profile, vitals): (
-        &mut crate::game::characters::Character,
-        &mut crate::game::characters::Vitals,
-    ),
+    (profile, vitals): (&mut Character, &mut crate::game::characters::Vitals),
     formation: &mut Mut<formation::Formation>,
     (amount, fate): (u32, &mut crate::game::characters::Fate),
     damage: &mut MessageWriter<DamageApplied>,

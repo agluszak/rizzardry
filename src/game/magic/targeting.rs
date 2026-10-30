@@ -1,15 +1,16 @@
 //! Radius eligibility and visibility are one operation shared by casts,
 //! secondary explosions and moving auras, separate from damage application.
 use super::{Field, Victim};
+use crate::game::world::hostility::Stance;
 use bevy::prelude::*;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Recipients {
-    Opponents(crate::game::world::hostility::Stance),
+    Opponents(Stance),
     Everyone,
 }
 impl Recipients {
-    fn admits(self, side: crate::game::world::hostility::Stance) -> bool {
+    fn admits(self, side: Stance) -> bool {
         match self {
             Self::Opponents(source) => source.opposes(side),
             Self::Everyone => true,
@@ -44,7 +45,7 @@ pub(crate) fn radius(
                     world.members.get(member).is_ok_and(|(_, v, ..)| {
                         !v.is_dead()
                             && recipients.admits(crate::game::world::hostility::own_stance(
-                                crate::game::world::hostility::Stance::Friendly,
+                                Stance::Friendly,
                                 v.conditions.has(crate::game::characters::Condition::Turncoat),
                             ))
                     })

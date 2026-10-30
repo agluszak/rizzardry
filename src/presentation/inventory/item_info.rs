@@ -34,13 +34,7 @@ fn label(
     let label = crate::presentation::screen_art::spawn_label(
         commands,
         parent,
-        BitmapText {
-            font: art.font.clone(),
-            at,
-            width,
-            justify: bevy::text::Justify::Center,
-            ..default()
-        },
+        BitmapText::centred(art.font.clone(), at, width),
     );
     commands.entity(label).insert(value);
 }

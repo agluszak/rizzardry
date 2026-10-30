@@ -79,12 +79,12 @@ fn button(
         .id();
     commands.spawn((
         BitmapText {
-            font: assets.load("retail://data/fonts/opt_detail_font.sti"),
             value: text.into(),
-            at: Vec2::new(4., 8.),
-            width: width - 8.,
-            justify: bevy::text::Justify::Center,
-            ..default()
+            ..BitmapText::centred(
+                assets.load("retail://data/fonts/opt_detail_font.sti"),
+                Vec2::new(4., 8.),
+                width - 8.,
+            )
         },
         ChildOf(button),
     ));

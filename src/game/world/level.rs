@@ -27,10 +27,14 @@ use crate::content::level::LevelDefinition;
 use crate::content::levels::LevelInfo;
 use crate::content::monster::MonsterBody;
 use crate::content::navmesh::navmesh_path;
+use crate::content::species::Species;
 use crate::content::ui::TextTable;
 use crate::game::automap::MapNotes;
+use crate::game::characters::Character;
+use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
 use crate::game::inventory::ItemIds;
+use crate::game::magic::LearnedSpells;
 use crate::game::party::body::{PartyPlacement, PartyStart};
 use crate::game::party::roster::Party;
 use crate::game::rng::GameRng;
@@ -143,7 +147,7 @@ pub fn answer_travel_questions(
     mut commands: Commands,
     mut answers: MessageReader<TravelAnswer>,
     questions: Query<(Entity, &TravelQuestion)>,
-    battle: Option<Single<&crate::game::combat::Battle>>,
+    battle: Option<Single<&Battle>>,
     mut travel: MessageWriter<Travel>,
 ) {
     let answers: Vec<_> = answers.read().copied().collect();
@@ -174,7 +178,7 @@ pub fn travel(
     entering: Query<(), With<Destination>>,
     questions: Query<Entity, With<TravelQuestion>>,
     assets: Res<AssetServer>,
-    battle: Option<Single<&crate::game::combat::Battle>>,
+    battle: Option<Single<&Battle>>,
     camp: Option<Res<crate::game::camp::Camp>>,
     mut movement: Query<&mut crate::game::party::body::PartyMovement>,
 ) {
@@ -245,7 +249,7 @@ impl KeptMonster {
     /// A placed monster met for the first time (retail `LoadMonsterInfo`).
     pub fn placed(
         placed: &crate::content::level::MonsterPlacement,
-        kind: &crate::content::species::Species,
+        kind: &Species,
         body: &crate::content::monster::MonsterBody,
         rng: &mut crate::game::rng::GameRng,
     ) -> Self {
@@ -264,7 +268,7 @@ impl KeptMonster {
     pub fn rolled(
         (location, species, group): (i32, u32, Option<i32>),
         (feet, yaw): (Vec3, f32),
-        (kind, body): (&crate::content::species::Species, &crate::content::monster::MonsterBody),
+        (kind, body): (&Species, &crate::content::monster::MonsterBody),
         rng: &mut crate::game::rng::GameRng,
     ) -> Self {
         let max_hp = rng.roll(kind.hit_points).max(1);
@@ -397,7 +401,7 @@ impl Destination {
 pub enum Entry {
     /// A new campaign: the accepted party, which joins only when the level
     /// commits, so a failed first load leaves no campaign behind.
-    NewGame(Vec<(crate::game::characters::Character, crate::game::magic::LearnedSpells)>),
+    NewGame(Vec<(Character, LearnedSpells)>),
     /// The party travels on from the level it is in.
     Travel,
 }
@@ -736,7 +740,7 @@ fn prepare(
 /// A new campaign's party, its members joining complete and in order.
 fn found_party(
     commands: &mut Commands,
-    characters: Vec<(crate::game::characters::Character, crate::game::magic::LearnedSpells)>,
+    characters: Vec<(Character, LearnedSpells)>,
     items: &crate::content::items::ItemCatalog,
     (ids, rng): (&mut ItemIds, &mut GameRng),
 ) -> Entity {

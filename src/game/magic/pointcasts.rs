@@ -3,6 +3,7 @@ use super::{
     Outcome,
     casting::{Aim, MagicChoice, MagicNews, Refusal, UseContext},
 };
+use crate::game::data::Catalogs;
 use crate::{
     content::{characters::Skill, monster::MonsterBody, species::MonsterKind, spells::SpellId},
     game::{
@@ -93,12 +94,8 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
         .map_err(|_| Refusal::WrongTime)?;
     let battle = world.query_filtered::<Entity, With<Battle>>().single(world).ok();
     let (spell, far) = {
-        let spell = world
-            .resource::<crate::game::data::Catalogs>()
-            .spells
-            .get(id)
-            .cloned()
-            .ok_or(Refusal::MissingContent)?;
+        let spell =
+            world.resource::<Catalogs>().spells.get(id).cloned().ok_or(Refusal::MissingContent)?;
         let level = world.get::<Level>(root).unwrap();
         let far = world
             .resource::<Assets<crate::content::level::LevelDefinition>>()
@@ -131,7 +128,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
             .get::<Character>(caster)
             .is_some_and(|profile| super::Strength::of(profile, &spell, 1).boost != 0)
         {
-            let spells = &world.resource::<crate::game::data::Catalogs>().spells;
+            let spells = &world.resource::<Catalogs>().spells;
             if [
                 SpellId::HASTE,
                 SpellId::BODY_OF_STONE,
@@ -217,7 +214,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
                 if (here - at).abs().max_element() > far {
                     continue;
                 }
-                let kind = &world.resource::<crate::game::data::Catalogs>().species[body.species];
+                let kind = &world.resource::<Catalogs>().species[body.species];
                 if kind.kind == MonsterKind::Undead {
                     continue;
                 }
@@ -260,12 +257,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
             let roll = world.resource_mut::<GameRng>().below(weights.iter().sum());
             let realm = crate::game::rng::weighted(roll, weights).unwrap_or(3);
             let species_id = tier(strength.power, realm);
-            let kind = &world
-                .resource::<crate::game::data::Catalogs>()
-                .species
-                .kind(species_id)
-                .unwrap()
-                .clone();
+            let kind = &world.resource::<Catalogs>().species.kind(species_id).unwrap().clone();
             let body = &definitions.iter().find(|(id, _)| *id == species_id).unwrap().1;
             let locations: Vec<i32> = world
                 .query::<(&Monster, &LevelOwned)>()
@@ -303,7 +295,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
                     .get::<LevelNavigation>(root)
                     .map_or_else(Vec::new, |nav| nav.archipelagos.clone()),
             };
-            let (group, spawned) = crate::game::data::Catalogs::scope(world, |world, catalogs| {
+            let (group, spawned) = Catalogs::scope(world, |world, catalogs| {
                 world.resource_scope(|world, mut configs: Mut<Assets<WalkerMotionConfig>>| {
                     population::spawn_group(
                         &mut world.commands(),
@@ -332,8 +324,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
                     SpellId::MISSILE_SHIELD,
                     SpellId::ARMORPLATE,
                 ][realm];
-                let definition =
-                    world.resource::<crate::game::data::Catalogs>().spells.get(buff).cloned();
+                let definition = world.resource::<Catalogs>().spells.get(buff).cloned();
                 if let Some(definition) = definition {
                     let turns = super::effects::duration(
                         &mut world.resource_mut::<GameRng>(),

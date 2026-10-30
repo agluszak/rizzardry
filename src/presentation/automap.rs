@@ -450,7 +450,7 @@ pub fn build_automap(
             -- PartyMarker ImageNode { image: {marker_image} } marker Pickable::IGNORE
             -- NotesLayer notes_layer Pickable::IGNORE
         ]
-        -- LayerLabel template(move |_| Ok(BitmapText { font: label_font.clone(), at: Vec2::new(498.0, 199.0), width: 120.0, justify: bevy::text::Justify::Center, ..default() }))
+        -- LayerLabel template(move |_| Ok(BitmapText::centred(label_font.clone(), Vec2::new(498.0, 199.0), 120.0)))
         -- {buttons}
     ]
     }]);

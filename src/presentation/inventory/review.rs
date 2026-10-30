@@ -6,10 +6,13 @@ use crate::content::items::EquipClass;
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::Character;
 use crate::game::combat::attack::character_initiative;
+use crate::game::data::Catalogs;
 use crate::game::inventory::EquipSlot;
+use crate::game::magic::LearnedSpells;
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::character_view::{CharacterView, CharacterViewItem};
 use crate::presentation::retail_controls::ControlSkin;
+use crate::presentation::retail_controls::FocusRing;
 use crate::presentation::screen_art::spawn_picture as picture;
 use crate::presentation::screen_art::visible_if;
 use bevy::input_focus::tab_navigation::TabIndex;
@@ -153,7 +156,7 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
                 Picture { sheet: art.item_buttons.clone(), frame: base, bounds: Some(base), at },
                 absolute(at, Vec2::new(44.0, 30.0)),
                 Pickable::default(),
-                crate::presentation::retail_controls::FocusRing,
+                FocusRing,
                 ChildOf(root),
             ))
             .observe(super::press_item_action);
@@ -186,7 +189,7 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
             Picture { sheet: art.page_buttons.clone(), frame: base, bounds: Some(base), at },
             absolute(at, Vec2::new(44.0, 30.0)),
             Pickable::default(),
-            crate::presentation::retail_controls::FocusRing,
+            FocusRing,
             ChildOf(list),
         ));
         if let Some(page) = page {
@@ -224,7 +227,7 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
             Picture { sheet: art.combat_buttons.clone(), frame: 15, bounds: Some(15), at },
             absolute(at, Vec2::splat(20.0)),
             Pickable::default(),
-            crate::presentation::retail_controls::FocusRing,
+            FocusRing,
             ChildOf(stats),
         ))
         .observe(toggle_info);
@@ -339,7 +342,7 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
                 },
                 absolute(at, Vec2::splat(24.0)),
                 Pickable::default(),
-                crate::presentation::retail_controls::FocusRing,
+                FocusRing,
                 ChildOf(stats),
             ))
             .observe(select_filter);
@@ -493,7 +496,7 @@ pub(super) fn show_pages(
 
 pub(super) fn refresh(
     enchantments: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
-    learned_spells: Query<&crate::game::magic::LearnedSpells>,
+    learned_spells: Query<&LearnedSpells>,
     screen: Option<Single<&InventoryScreen>>,
     characters: Query<CharacterView>,
     roster: Option<Single<&PartyRoster>>,
@@ -501,7 +504,7 @@ pub(super) fn refresh(
     info: Option<Single<&StatsInfo>>,
     slider: Option<Single<(Entity, &SliderValue, &SliderRange), With<StatsScroll>>>,
     mut commands: Commands,
-    content: If<Res<crate::game::data::Catalogs>>,
+    content: If<Res<Catalogs>>,
     art: Option<Res<InventoryArt>>,
     strings: crate::presentation::screen_art::GameStrings,
     mut fields: Query<(&Field, &mut BitmapText)>,
@@ -748,7 +751,7 @@ pub(super) fn refresh(
 }
 
 pub(super) fn layout_skills(
-    spell_state: (Query<&crate::game::magic::LearnedSpells>, If<Res<crate::game::data::Catalogs>>),
+    spell_state: (Query<&LearnedSpells>, If<Res<Catalogs>>),
     screen: Option<Single<&InventoryScreen>>,
     characters: Query<&Character>,
     mut rows: Query<

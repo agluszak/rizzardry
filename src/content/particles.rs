@@ -55,6 +55,5 @@ pub struct ParticleConfig {
     pub flutter: Option<(f32, Duration)>,
     pub initially_active: bool,
     pub emission_limit: u32,
-    pub attachment: Option<u16>,
     pub frames: Option<(usize, usize)>,
 }

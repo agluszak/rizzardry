@@ -1,7 +1,9 @@
 //! Retail profession and attributes page of character creation.
 use super::{Action, Creation, CreatorChoice, Page};
 use crate::content::characters::{Attribute, Gender, Profession, Realm, Skill};
+use crate::content::items::ItemCatalog;
 use crate::content::ui::SpriteSheet;
+use crate::game::inventory::Carried;
 use crate::presentation::retail_controls::{ControlSkin, FocusHighlight, set_enabled};
 use crate::presentation::screen_art::visible_if;
 use crate::presentation::screen_art::{BitmapText, Picture, spawn_picture};
@@ -455,7 +457,7 @@ pub(super) fn build(commands: &mut Commands, parent: Entity, assets: &AssetServe
 
 pub(super) fn refresh(
     session: Option<Single<Ref<Creation>>>,
-    art: Option<Single<&StatsAssets>>,
+    art: Option<Single<Ref<StatsAssets>>>,
     strings: crate::presentation::screen_art::GameStrings,
     content: If<Res<crate::game::data::Catalogs>>,
     sheets: Res<Assets<SpriteSheet>>,
@@ -463,9 +465,21 @@ pub(super) fn refresh(
     mut icons: Query<(&Icon, &mut Picture)>,
     controls: Query<(Entity, &Action, Has<InteractionDisabled>), With<StatsControl>>,
     mut menus: Query<(&ChoiceMenu, &mut Node, &mut Visibility)>,
+    added: Query<(), Or<(Added<Value>, Added<Icon>, Added<StatsControl>, Added<ChoiceMenu>)>>,
     mut commands: Commands,
 ) {
     let (Some(session), Some(art)) = (session, art) else { return };
+    // The page shows the draft: redraw it only when the draft, the words
+    // or the art change, or when the page gains parts.
+    if !session.is_changed()
+        && !art.is_changed()
+        && !strings.is_changed()
+        && !sheets.is_changed()
+        && !content.is_changed()
+        && added.is_empty()
+    {
+        return;
+    }
     let Some(draft) = session.mode.draft() else { return };
     let profile = draft.preview();
     let string = |id| strings.get(id);
@@ -479,8 +493,8 @@ pub(super) fn refresh(
     };
     let resistances = crate::game::characters::resistance::resistances(
         &profile.base_stats(),
-        &crate::game::inventory::Carried::default(),
-        &crate::content::items::ItemCatalog::default(),
+        &Carried::default(),
+        &ItemCatalog::default(),
     );
     let help = [0xe5, 0xe8, 0xe9, 0xea].map(|id| {
         sheets
@@ -631,8 +645,8 @@ pub(super) fn refresh(
                 if session.choices.race {
                     crate::game::combat::attack::armour(
                         &profile.base_stats(),
-                        &crate::game::inventory::Carried::default(),
-                        &crate::content::items::ItemCatalog::default(),
+                        &Carried::default(),
+                        &ItemCatalog::default(),
                         crate::game::characters::Load::None,
                         false,
                     )
