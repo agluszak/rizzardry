@@ -69,38 +69,28 @@ const GLUMPH: NpcId = NpcId(0x2b);
 const MADRAS: NpcId = NpcId(0x4a);
 const SEXUS: NpcId = NpcId(0x4f);
 
-/// Whether the NPC would join now (retail `CanNpcJoinParty`): it has a
-/// character to bring; it does not offer the service of the region the party
-/// is in; its authored terms hold (a term whose fact is not ported refuses);
-/// and the party's living, able members average at least its minimum level.
+/// Whether the NPC would join now (retail `CanNpcJoinParty`): it does not
+/// offer the service of the region the party is in; its authored terms
+/// hold; and the party's living, able members average at least its minimum
+/// level.
 fn willing(world: &mut World, id: NpcId, definition: &NpcDefinition) -> bool {
-    if definition.character.is_none() {
-        return false;
-    }
-    let band = world
-        .query::<&Level>()
-        .iter(world)
-        .next()
-        .and_then(|level| crate::content::levels::LevelInfo::for_path(&level.path))
-        .map_or(0, |info| info.band);
+    let level = world.query::<&Level>().single(world).unwrap();
+    let band = crate::content::levels::LevelInfo::for_path(&level.path).map_or(0, |info| info.band);
     if offers_service(definition, band) {
         return false;
     }
-    let fact = |world: &mut World, symbol: &str| super::conversation::fact_named(world, symbol);
-    let terms = match id {
-        GLUMPH => fact(world, "FACT_UMISSION_SCUBA_DONE").map(|done| done == 0),
-        SEXUS => fact(world, "FACT_SEXUS_PAID").map(|paid| paid != 0),
-        MADRAS => fact(world, "FACT_TRYNNIE_MADRAS_WILL_JOIN").map(|will| will != 0),
-        DRAZIC | RODAN => fact(world, "FACT_PEACE_ACHIEVED").map(|peace| peace == 0),
-        _ => Ok(true),
+    let fact = |world: &mut World, symbol: &str| {
+        super::conversation::fact_named(world, symbol).expect("a ported fact")
     };
-    match terms {
-        Ok(true) => {}
-        Ok(false) => return false,
-        Err(error) => {
-            warn!("NPC {id:?} cannot weigh joining: {error}");
-            return false;
-        }
+    let terms = match id {
+        GLUMPH => fact(world, "FACT_UMISSION_SCUBA_DONE") == 0,
+        SEXUS => fact(world, "FACT_SEXUS_PAID") != 0,
+        MADRAS => fact(world, "FACT_TRYNNIE_MADRAS_WILL_JOIN") != 0,
+        DRAZIC | RODAN => fact(world, "FACT_PEACE_ACHIEVED") == 0,
+        _ => true,
+    };
+    if !terms {
+        return false;
     }
     if definition.min_party_level > 0 {
         // Retail counts no able member as an average of nothing.
