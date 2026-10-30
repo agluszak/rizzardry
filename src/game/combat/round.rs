@@ -199,7 +199,7 @@ pub(super) fn accept_round(
         round.party.push(PartyTurn { actor: member, action, phase, hands: turns });
     }
     for &entity in combatants {
-        let Ok((monster, ..)) = monsters.get(entity) else { continue };
+        let (monster, ..) = monsters.get(entity).unwrap();
         let kind = &species[monster.species];
         let (phase, attacks) = if monster.is_dead() {
             (0, 0)

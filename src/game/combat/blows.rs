@@ -409,7 +409,7 @@ fn monster_bystanders(
     target: Entity,
 ) -> Vec<Victim> {
     let monsters = field.monsters.monsters();
-    let Ok((monster, at, walker, ..)) = monsters.get(attacker) else { return Vec::new() };
+    let (monster, at, walker, ..) = monsters.get(attacker).unwrap();
     let here = feet(at.translation(), walker);
     let distance = party_distance(fight.party.eye, monster, here);
     let formation = &**field.formation;
@@ -422,7 +422,7 @@ fn monster_bystanders(
         .map(|&m| Victim::Member(m))
         .collect();
     for &entity in fight.combatants {
-        let Ok((other, other_at, other_walker, ..)) = monsters.get(entity) else { continue };
+        let (other, other_at, other_walker, ..) = monsters.get(entity).unwrap();
         if entity == target || other.is_dead() || !field.monsters.active(entity) {
             continue;
         }

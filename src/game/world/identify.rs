@@ -156,7 +156,7 @@ impl GroupRecognition<'_, '_> {
             }
             let (mut species_id, mut count, mut in_view) = (None, 0usize, false);
             for member in membership.iter() {
-                let Ok((monster, at, walker)) = monsters.get(member) else { continue };
+                let (monster, at, walker) = monsters.get(member).unwrap();
                 if monster.is_dead() || combatants.is_some_and(|c| !c.contains(&member)) {
                     continue;
                 }
@@ -180,7 +180,7 @@ impl GroupRecognition<'_, '_> {
                 continue;
             }
             let Some(species_id) = species_id else { continue };
-            let Some(species) = catalog.0.get(species_id as usize) else { continue };
+            let species = &catalog[species_id];
             if members.iter_many(roster.iter()).matched().any(|(_, vitals, _)| vitals.lucid()) {
                 self.factions.encounter(species.faction);
             }

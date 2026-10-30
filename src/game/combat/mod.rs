@@ -996,7 +996,7 @@ pub fn start_battle(
         searching,
     };
     let seen = joined.iter().any(|&entity| {
-        let Ok((_, monster, at, walker, ..)) = monsters.get(entity) else { return false };
+        let (_, monster, at, walker, ..) = monsters.get(entity).unwrap();
         let kind = &catalog[monster.species];
         view.sees(
             members.iter_many(roster.iter()).matched(),
@@ -1159,7 +1159,7 @@ fn leave_fight(
                 let Some(mine) = allegiance(fellow.entity, damage, now, species) else {
                     return false;
                 };
-                let Ok((body, at, walker, ..)) = monsters.get(fellow.entity) else { return false };
+                let (body, at, walker, ..) = monsters.get(fellow.entity).unwrap();
                 let kind = &species[body.species];
                 combatants.iter().any(|&enemy| {
                     let Some(theirs) = allegiance(enemy, damage, now, species) else {
@@ -2097,7 +2097,7 @@ fn monster_turn(
     let plan = match decision {
         Decision::Move { conduct, quiet } => {
             battle.this_round.monsters[index].end();
-            let Ok((body, at, walker, ..)) = damage.monsters().get(monster) else { return false };
+            let (body, at, walker, ..) = damage.monsters().get(monster).unwrap();
             let kind = &species[body.species];
             if conduct == conduct::Conduct::Hold {
                 return false;

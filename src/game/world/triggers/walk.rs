@@ -46,10 +46,9 @@ impl ActiveDamageZone {
 /// in this same step, including newly started or reset hazards.
 pub(crate) fn walk(In(sample): In<Option<(Entity, Vec3, Duration)>>, world: &mut World) {
     let Some((level, eye, elapsed)) = sample else { return };
-    let Some(owner) = world.get::<Level>(level) else { return };
-    let handle = owner.definition.clone();
+    let handle = world.get::<Level>(level).unwrap().definition.clone();
     world.resource_scope(|world, geometry: Mut<Assets<LevelDefinition>>| {
-        let Some(geometry) = geometry.get(&handle) else { return };
+        let geometry = geometry.get(&handle).unwrap();
         let count = world.get::<PositionedDevices>(level).unwrap().0.len();
         let Some(mut state) = world.get_mut::<LevelState>(level) else { return };
         let previous_eye = state.previous_eye;

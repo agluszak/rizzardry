@@ -144,7 +144,7 @@ fn damage_party(
 ) {
     let fight = fight.map(|fight| *fight);
     for entity in roster.iter() {
-        let Ok((profile, mut member)) = members.get_mut(entity) else { continue };
+        let (profile, mut member) = members.get_mut(entity).unwrap();
         if member.is_dead() {
             continue;
         }
