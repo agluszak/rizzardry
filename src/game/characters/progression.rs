@@ -425,9 +425,7 @@ impl Progression<'_, '_> {
         let mut pool = inventory.pool.clone();
         for slot in EnumSet::<crate::game::inventory::EquipSlot>::all() {
             if let Some(worn) = &equipment.equipment[slot] {
-                let definition = items
-                    .get(worn.stack.item)
-                    .ok_or("An equipped item's definition is missing.")?;
+                let definition = &items[worn.stack.item];
                 if !next.can_use(definition) {
                     let stack = equipment.equipment[slot].take().unwrap().stack;
                     if equipment

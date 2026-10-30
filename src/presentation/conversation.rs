@@ -1956,9 +1956,8 @@ fn sync_trade_rows(
                 .flat_map(|c| c.backpack.iter().flatten())
                 .filter(|_| !state.pool);
             for item in pool.chain(backpack) {
-                if let Some(d) = items.get(item.item)
-                    && allows(d)
-                {
+                let d = &items[item.item];
+                if allows(d) {
                     let owner = if state.pool {
                         ItemOwner::Pool
                     } else {

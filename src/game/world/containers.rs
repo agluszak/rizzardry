@@ -161,7 +161,6 @@ pub fn take_from_container(
             return Err(Refusal::DoesNotFit);
         }
     }
-    let catalog = &world.resource::<Catalogs>().items;
     let container = world.get::<Container>(device).ok_or(Refusal::Nothing)?;
     for (index, &(id, amount)) in picks.iter().enumerate() {
         // One pick per stack: two would be checked against the same count.
@@ -169,7 +168,6 @@ pub fn take_from_container(
             return Err(Refusal::Nothing);
         }
         let stack = container.contents.items.iter().find(|s| s.id == id).ok_or(Refusal::Nothing)?;
-        catalog.get(stack.item).ok_or(Refusal::MissingContent)?;
         if amount == 0 || amount > stack.count() {
             return Err(Refusal::Nothing);
         }

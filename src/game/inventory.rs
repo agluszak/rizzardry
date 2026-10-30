@@ -203,7 +203,7 @@ fn fill<'a>(
     mut incoming: ItemStack,
     catalog: &ItemCatalog,
 ) -> Option<ItemStack> {
-    let Some(definition) = catalog.get(incoming.item) else { return Some(incoming) };
+    let definition = &catalog[incoming.item];
     for target in targets {
         incoming = target.absorb(incoming, definition)?;
     }
@@ -442,7 +442,7 @@ impl Carried {
     ) -> Result<(), Refusal> {
         if let Slot::Equipment(s) = slot {
             let Some(e) = self.equipment[s].as_mut() else { return Ok(()) };
-            let d = catalog.get(e.stack.item).ok_or(Refusal::MissingContent)?;
+            let d = &catalog[e.stack.item];
             if d.cursed && !e.curse_released && !dead && s.is_active() {
                 e.stack.curse_known = true;
                 return Err(Refusal::Cursed);
@@ -504,8 +504,7 @@ impl ItemPool {
         let mut remaining = Vec::new();
         for item in contents.drain(..) {
             let before = item.units();
-            let name =
-                catalog.get(item.item).map(|d| item.display_name(d, false)).unwrap_or_default();
+            let name = item.display_name(&catalog[item.item], false);
             let after = match self.receive(item, catalog) {
                 None => 0,
                 Some(item) => {
@@ -628,9 +627,7 @@ pub fn allowed_slots(
     let empty = |slot: EquipSlot| worn(slot).is_none();
     // A main hand also counts as free for the off hand when its weapon is
     // one-handed.
-    let main_free = |slot: EquipSlot| {
-        worn(slot).is_none_or(|i| catalog.get(i.item).is_none_or(|d| !d.two_handed))
-    };
+    let main_free = |slot: EquipSlot| worn(slot).is_none_or(|i| !catalog[i.item].two_handed);
     match definition.class {
         ShortWeapon | ExtendedWeapon | ThrownWeapon | RangedWeapon
             if definition.weapon_skill.is_none() =>
@@ -803,7 +800,8 @@ pub fn place_at_creation(
     member: &Character,
 ) -> Option<ItemStack> {
     let mut item = item;
-    if let Some(d) = catalog.get(item.item).filter(|d| member.can_use(d))
+    let d = &catalog[item.item];
+    if member.can_use(d)
         && let Some(slot) = creation_slot(d, carried, catalog, member)
         && allowed_slots(d, carried, catalog, None).contains(&slot)
     {
@@ -820,7 +818,7 @@ pub fn place_at_creation(
     carried.receive(item, catalog)
 }
 pub fn item_weight(item: &ItemStack, catalog: &ItemCatalog) -> u32 {
-    catalog.get(item.item).map_or(0, |d| u32::from(d.weight) * item.units())
+    u32::from(catalog[item.item].weight) * item.units()
 }
 pub fn carried_weight(carried: &Carried, catalog: &ItemCatalog) -> u32 {
     carried.stacks().map(|i| item_weight(i, catalog)).sum()
@@ -839,7 +837,7 @@ fn creation_slot(
     let ranged_in = |slot| {
         carried
             .worn(slot)
-            .and_then(|i| catalog.get(i.item))
+            .map(|i| &catalog[i.item])
             .filter(|d| d.class == RangedWeapon && can_hold_together(d, definition))
             .is_some()
     };
@@ -992,7 +990,7 @@ impl PartyInventory {
     pub fn load_row(&mut self, id: StackId, catalog: &ItemCatalog) -> Option<u16> {
         let held = self.hand.held.as_ref()?;
         let gun = self.pool.stacks.iter_mut().find(|s| s.id == id)?;
-        let (source, definition) = (catalog.get(held.item)?, catalog.get(gun.item)?);
+        let (source, definition) = (&catalog[held.item], &catalog[gun.item]);
         if loaded_by(definition.kind) != Some(source.kind) {
             return None;
         }
@@ -1038,7 +1036,7 @@ impl PartyInventory {
             return Err(Refusal::Nothing);
         }
         if let Some((held, target)) = self.hand.held.as_ref().zip(current) {
-            let d = catalog.get(held.item).ok_or(Refusal::MissingContent)?;
+            let d = &catalog[held.item];
             if held.item == target.item && d.quantity == QuantityKind::Stack {
                 if matches!(slot, Slot::Equipment(_)) && !character.can_use(d) {
                     return Err(Refusal::DoesNotFit);
@@ -1054,8 +1052,8 @@ impl PartyInventory {
         carried.check_removal(slot, catalog, vitals.is_dead())?;
         // Ammunition held over its gun loads it.
         if let Some((held, target)) = self.hand.held.as_ref().zip(carried.slot(slot)) {
-            let source = catalog.get(held.item).ok_or(Refusal::MissingContent)?;
-            let definition = catalog.get(target.item).ok_or(Refusal::MissingContent)?;
+            let source = &catalog[held.item];
+            let definition = &catalog[target.item];
             if loaded_by(definition.kind) == Some(source.kind) {
                 if matches!(slot, Slot::Equipment(_)) && !character.can_use(source) {
                     return Err(Refusal::DoesNotFit);
@@ -1067,14 +1065,14 @@ impl PartyInventory {
             }
         }
         if let (Slot::Equipment(equip), Some(held)) = (slot, self.hand.held.as_ref()) {
-            let definition = catalog.get(held.item).ok_or(Refusal::MissingContent)?;
+            let definition = &catalog[held.item];
             if !character.can_use(definition) {
                 return Err(Refusal::DoesNotFit);
             }
             let displaced = equip.partner().filter(|p| {
-                carried.worn(*p).is_some_and(|partner| {
-                    catalog.get(partner.item).is_none_or(|d| !can_hold_together(definition, d))
-                })
+                carried
+                    .worn(*p)
+                    .is_some_and(|partner| !can_hold_together(definition, &catalog[partner.item]))
             });
             if let Some(partner) = displaced {
                 carried.check_removal(Slot::Equipment(partner), catalog, vitals.is_dead())?;

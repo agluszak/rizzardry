@@ -75,7 +75,7 @@ pub fn resistances(
         let equipment: i32 = carried
             .active_equipment()
             .map(|(_, equipped)| &equipped.stack)
-            .filter_map(|item| items.get(item.item))
+            .map(|item| &items[item.item])
             .map(|item| i32::from(item.resistance_bonus[realm]))
             .sum::<i32>()
             .clamp(-125, 125);

@@ -337,14 +337,14 @@ pub fn dismiss(world: &mut World, actor: Entity) -> bool {
         .and_then(|definition| definition.character)
         .map_or_else(Vec::new, |character| character.wanted);
     let cursed = |stack: &ItemStack| {
-        world.resource::<crate::game::data::Catalogs>().items.get(stack.item).map(|d| d.cursed)
+        world.resource::<crate::game::data::Catalogs>().items[stack.item].cursed
     };
     let held: Vec<_> = world
         .get::<Carried>(actor)
         .map(|carried| {
             carried
                 .active_equipment()
-                .filter(|(_, e)| !e.curse_released && cursed(&e.stack).unwrap_or(false))
+                .filter(|(_, e)| !e.curse_released && cursed(&e.stack))
                 .map(|(_, e)| e.stack.id)
                 .collect()
         })

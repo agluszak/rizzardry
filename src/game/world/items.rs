@@ -178,11 +178,7 @@ pub fn drop_held(world: &mut World, level: Entity, aim: Dir3) -> Result<Entity, 
     let party = the_party(world).ok_or(Refusal::Nothing)?;
     let held =
         world.get::<PartyInventory>(party).unwrap().hand.held.as_ref().ok_or(Refusal::Nothing)?;
-    let definition = world
-        .resource::<crate::game::data::Catalogs>()
-        .items
-        .get(held.item)
-        .ok_or(Refusal::MissingContent)?;
+    let definition = &world.resource::<crate::game::data::Catalogs>().items[held.item];
     if definition.crucial {
         return Err(Refusal::Crucial);
     }

@@ -870,7 +870,7 @@ fn draw_header_hands(
     let carried = carried.unwrap_or(&empty);
     let two_handed = carried
         .worn(EquipSlot::Primary)
-        .and_then(|item| catalog.get(item.item))
+        .map(|item| &catalog[item.item])
         .is_some_and(|item| item.two_handed);
     for (part, mut visibility, picture, text) in &mut parts {
         let mut source = None;
@@ -889,7 +889,7 @@ fn draw_header_hands(
             HeaderHand::Hand(off) => {
                 shown = !(off && two_handed);
                 let slot = if off { EquipSlot::Secondary } else { EquipSlot::Primary };
-                let item = carried.worn(slot).and_then(|item| catalog.get(item.item));
+                let item = carried.worn(slot).map(|item| &catalog[item.item]);
                 let (hand_path, frame, x) = if let Some(item) = item {
                     (item.image.clone(), 2, 132.0)
                 } else {
@@ -916,11 +916,7 @@ fn draw_header_hands(
                 value = Some(
                     match carried
                         .worn(slot)
-                        .filter(|item| {
-                            catalog
-                                .get(item.item)
-                                .is_some_and(|d| d.quantity == QuantityKind::Stack)
-                        })
+                        .filter(|item| catalog[item.item].quantity == QuantityKind::Stack)
                         .map(ItemStack::count)
                     {
                         Some(count) => count.to_string(),
@@ -1129,7 +1125,7 @@ fn draw_cells(
             CellLocation::Member(slot) => carried.slot(slot.slot),
             CellLocation::Pool(index) => party.pool.stacks.get(index),
         };
-        let definition = item.and_then(|i| Some((i, catalog.get(i.item)?)));
+        let definition = item.map(|i| (i, &catalog[i.item]));
         let grid = !matches!(cell.cell, Cell::Member(Slot::Equipment(_)));
         let count = definition.and_then(|(i, d)| count_label(i, d.quantity));
         for child in children.iter() {
@@ -1286,7 +1282,7 @@ pub fn follow_held(
 ) {
     let (image, node, visibility) = &mut *picture;
     let catalog = &content.items;
-    let definition = party.hand.held.as_ref().and_then(|h| catalog.get(h.item));
+    let definition = party.hand.held.as_ref().map(|h| &catalog[h.item]);
     let cursor = pointers
         .iter()
         .find(|(id, _)| **id == PointerId::Mouse)

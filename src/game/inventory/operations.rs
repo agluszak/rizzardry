@@ -39,7 +39,7 @@ impl InventoryOperations<'_, '_> {
         let Some(held) = self.party.hand.held.as_ref() else { return Ok(false) };
         let catalog = &self.content.items;
         let (profile, vitals, mut carried) = self::member(&self.roster, &mut self.members, member)?;
-        let definition = catalog.get(held.item).ok_or(Refusal::MissingContent)?;
+        let definition = &catalog[held.item];
         let item = held.display_name(definition, false);
         let name = profile.name.clone();
         let eligible = vitals.can_act();
@@ -161,8 +161,7 @@ impl InventoryOperations<'_, '_> {
         if stack.identified {
             return Ok(false);
         }
-        let difficulty =
-            catalog.get(stack.item).ok_or(Refusal::MissingContent)?.identify_difficulty;
+        let difficulty = catalog[stack.item].identify_difficulty;
         let (mut identified, mut binding) = (false, false);
         let attempts = self.members.iter_many_unique_mut(self.roster.iter()).matched();
         for (mut character, vitals, _) in attempts {

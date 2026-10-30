@@ -52,8 +52,7 @@ pub fn advance(
     if character.profession != Profession::Gadgeteer {
         return Vec::new();
     }
-    let omnigun =
-        |stack: &ItemStack| catalog.get(stack.item).is_some_and(|d| d.kind == ItemKind::OMNIGUN);
+    let omnigun = |stack: &ItemStack| catalog[stack.item].kind == ItemKind::OMNIGUN;
     let carries = |carried: &Query<&mut Carried>, owner: Entity| {
         carried.get(owner).is_ok_and(|c| c.stacks().any(omnigun))
     };

@@ -454,9 +454,7 @@ fn draw_device_panel(
                     let Some(stack) = stacks.iter().find(|s| s.id == id) else {
                         return String::new();
                     };
-                    let item = catalog
-                        .get(stack.item)
-                        .map_or(String::new(), |d| stack.display_name(d, false));
+                    let item = stack.display_name(&catalog[stack.item], false);
                     match panel.chosen.iter().find(|(c, _)| *c == id) {
                         Some((_, amount)) if stack.count() > 1 => {
                             format!("[{amount}/{}] {item}", stack.count())

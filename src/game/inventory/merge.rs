@@ -67,8 +67,8 @@ impl PartyInventory {
         if !held.identified || !stack.identified {
             return Ok(Merged::Unidentified);
         }
-        let held_definition = catalog.get(held.item).ok_or(Refusal::MissingContent)?;
-        let definition = catalog.get(stack.item).ok_or(Refusal::MissingContent)?;
+        let held_definition = &catalog[held.item];
+        let definition = &catalog[stack.item];
         let made = made_from(catalog, held.item, stack.item);
         let skilled = made.is_some_and(|(_, recipe)| {
             recipe.skill.is_none_or(|(skill, level)| character.skill(skill) >= u32::from(level))

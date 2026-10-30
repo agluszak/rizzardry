@@ -570,7 +570,7 @@ fn prepare_source<'a>(
                 ItemOwner::Member(_) => carried.find_stack(id),
             }
             .ok_or(Refusal::NoItem)?;
-            let definition = items.get(stack.item).ok_or(Refusal::MissingContent)?;
+            let definition = &items[stack.item];
             let cast = definition.spell.ok_or(Refusal::CannotUse)?;
             if cast.power == 0
                 && !matches!(definition.use_type, UseType::Instrument | UseType::Gadget)
@@ -1108,7 +1108,7 @@ pub fn usable_stack(
     items: &crate::content::items::ItemCatalog,
     worn: bool,
 ) -> Option<SpellId> {
-    let definition = items.get(stack.item)?;
+    let definition = &items[stack.item];
     let cast = definition.spell?;
     (can_activate(character, definition, worn)
         && stack.remaining_uses() != Some(0)

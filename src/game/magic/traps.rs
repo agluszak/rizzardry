@@ -56,21 +56,14 @@ fn ready(
 ) -> Result<(), Unable> {
     let id = trap_spell(trap)?;
     let spell = context.content.spells.get(id).ok_or(Unable::MissingContent)?;
-    let items = &context.content.items;
     if spell.id != id || spell.realm.is_none() {
         return Err(Unable::MissingContent);
     }
     for actor in context.roster.iter() {
-        let (_, vitals, carried, ..) = members.get(actor).map_err(|_| Unable::MissingContent)?;
+        let (_, vitals, ..) = members.get(actor).map_err(|_| Unable::MissingContent)?;
         if id == SpellId::ANTI_MAGIC && !vitals.is_dead() && points.get(actor).is_err() {
             return Err(Unable::MissingContent);
         }
-        if carried.stacks().any(|stack| items.get(stack.item).is_none()) {
-            return Err(Unable::MissingContent);
-        }
-    }
-    if context.inventory.pool.stacks.iter().any(|stack| items.get(stack.item).is_none()) {
-        return Err(Unable::MissingContent);
     }
     Ok(())
 }

@@ -529,7 +529,7 @@ pub(super) fn refresh(
         if let Some(carried) = carried.as_ref() {
             for (slot, equipped) in carried.active_equipment().filter(|(_, e)| e.stack.identified) {
                 let item = &equipped.stack;
-                let Some(definition) = catalog.get(item.item) else { continue };
+                let definition = &catalog[item.item];
                 let armour = if definition.armor_class_bonus < 0
                     || (!matches!(
                         slot,

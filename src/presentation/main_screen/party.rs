@@ -335,9 +335,7 @@ pub fn draw_party(
             );
             let CharacterViewItem { profile, vitals, carried, .. } = view;
             let dead = vitals.is_dead();
-            let worn = |slot| {
-                carried.as_ref().and_then(|c| c.worn(slot)).and_then(|i| catalog.get(i.item))
-            };
+            let worn = |slot| carried.as_ref().and_then(|c| c.worn(slot)).map(|i| &catalog[i.item]);
             let two_handed = worn(EquipSlot::Primary).is_some_and(|d| d.two_handed);
             let condition = condition_icon(vitals);
             match part.kind {

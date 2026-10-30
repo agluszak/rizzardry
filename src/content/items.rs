@@ -361,6 +361,14 @@ impl ItemCatalog {
     }
 }
 
+/// The definition of an item that exists: every stack is made from one.
+impl std::ops::Index<ItemId> for ItemCatalog {
+    type Output = ItemDefinition;
+    fn index(&self, id: ItemId) -> &ItemDefinition {
+        &self.0[usize::from(id.0)]
+    }
+}
+
 /// A loot table: weighted items and how many to draw.
 #[derive(Clone, Debug)]
 pub struct LootTable {

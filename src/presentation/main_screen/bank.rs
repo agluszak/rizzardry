@@ -303,7 +303,7 @@ pub fn draw_caption(
                     order @ (Order::Attack | Order::Berserk) => {
                         let weapon = carried
                             .and_then(|c| c.worn(EquipSlot::Primary))
-                            .and_then(|i| catalog.get(i.item))
+                            .map(|i| &catalog[i.item])
                             .map_or("Unarmed", |d| d.name.as_str());
                         let verb = if order == Order::Berserk { "Berserk" } else { "Attack" };
                         format!("{verb} - {weapon}")
@@ -319,14 +319,14 @@ pub fn draw_caption(
                                 .stacks
                                 .iter()
                                 .find(|s| s.id == id)
-                                .and_then(|s| catalog.get(s.item))
+                                .map(|s| &catalog[s.item])
                                 .map_or("", |d| d.name.as_str());
                             format!("Use {name} from party pool")
                         }
                         crate::game::magic::casting::Source::Item(id) => {
                             let name = carried
                                 .and_then(|c| c.find_stack(id))
-                                .and_then(|i| catalog.get(i.item))
+                                .map(|i| &catalog[i.item])
                                 .map_or("", |d| d.name.as_str());
                             format!("Use {name}")
                         }

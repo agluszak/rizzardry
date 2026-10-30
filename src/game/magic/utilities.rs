@@ -63,11 +63,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
     let Aim::Item(target_id) = choice.aim else { return Err(Refusal::NoTarget) };
     let party = the_party(world).ok_or(Refusal::CannotAct)?;
     let stack = target(world, party, target_id).ok_or(Refusal::NoTarget)?;
-    let definition = world
-        .resource::<crate::game::data::Catalogs>()
-        .items
-        .get(stack.item)
-        .ok_or(Refusal::MissingContent)?;
+    let definition = &world.resource::<crate::game::data::Catalogs>().items[stack.item];
     let difficulty = definition.identify_difficulty;
     // The source cannot consume its own target and then silently identify a
     // replacement. A fully known stack likewise needs no paid attempt.

@@ -536,7 +536,7 @@ fn burn_stack(
     rng: &mut GameRng,
     totals: &mut [u32; 3],
 ) -> Option<crate::game::inventory::ItemStack> {
-    let Some(definition) = items.get(stack.item) else { return Some(stack) };
+    let definition = &items[stack.item];
     let category = match definition.class {
         EquipClass::Potion => 0,
         EquipClass::Scroll => 1,

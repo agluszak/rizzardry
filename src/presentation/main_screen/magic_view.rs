@@ -623,7 +623,7 @@ fn offers<'a>(
             .into_iter()
             .filter_map(|(source, stack, id)| {
                 let spell = spells.get(id)?;
-                let definition = items.get(stack.item)?;
+                let definition = &items[stack.item];
                 let silenced =
                     silenced && definition.use_type == crate::content::items::UseType::Instrument;
                 let available = usable_now(spell, context) && !silenced;
@@ -957,7 +957,7 @@ pub(super) fn refresh_magic_view(
                 Source::PoolItem(id) => pool.pool.stacks.iter().find(|s| s.id == id),
                 Source::Spell { .. } => None,
             })
-            .and_then(|stack| items.get(stack.item));
+            .map(|stack| &items[stack.item]);
         for (mut picture, mut visibility) in &mut parts.p7() {
             visibility.set_if_neq(visible_if(icon.is_some()));
             if let Some(definition) = icon {

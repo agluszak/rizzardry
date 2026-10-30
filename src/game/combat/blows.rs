@@ -722,7 +722,7 @@ fn spend_shot(
     let slots = [EquipSlot::Primary, EquipSlot::Secondary];
     let spent = if hand.paired { slots[1 - current] } else { slots[current] };
     let Some(stack) = carried.worn(spent) else { return false };
-    let Some(definition) = items.get(stack.item) else { return false };
+    let definition = &items[stack.item];
     if !hand.paired && definition.spell.is_some() {
         return true;
     }
