@@ -308,10 +308,8 @@ pub fn activate(world: &mut World, entity: Entity, player: bool) -> bool {
         let definition = &geometry.triggers[world.get::<Device>(entity).unwrap().definition];
         if player
             && (!usable(world, entity, definition)
-                || player_distance(world, geometry, entity).is_none_or(|distance| {
-                    !distance.is_finite()
-                        || !(definition.range.0..=definition.range.1).contains(&distance)
-                }))
+                || !(definition.range.0..=definition.range.1)
+                    .contains(&player_distance(world, geometry, entity)))
         {
             return false;
         }
@@ -324,11 +322,12 @@ pub fn activate(world: &mut World, entity: Entity, player: bool) -> bool {
 }
 
 /// Reach uses the current gameplay geometry, independent of the last pointer hit.
-/// Colliderless props fall back to their authored centre.
-fn player_distance(world: &mut World, geometry: &LevelDefinition, entity: Entity) -> Option<f32> {
+/// Colliderless props fall back to their authored centre. The player uses
+/// only props.
+fn player_distance(world: &mut World, geometry: &LevelDefinition, entity: Entity) -> f32 {
     use avian3d::prelude::Collider;
     let eye = crate::game::party::body::PartyBody::eye_in(world);
-    let centre = geometry.props.get(world.get::<Prop>(entity)?.definition)?.centre();
+    let centre = geometry.props[world.get::<Prop>(entity).unwrap().definition].centre();
     let distance = world
         .get::<Children>(entity)
         .into_iter()
@@ -340,7 +339,7 @@ fn player_distance(world: &mut World, geometry: &LevelDefinition, entity: Entity
             Some(collider.distance_to_point(at.translation, at.rotation, eye, true))
         })
         .min_by(f32::total_cmp);
-    Some(distance.unwrap_or_else(|| eye.distance(centre)))
+    distance.unwrap_or_else(|| eye.distance(centre))
 }
 
 /// How running a device went.

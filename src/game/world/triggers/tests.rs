@@ -1114,9 +1114,9 @@ fn player_reach_uses_only_prop_colliders_then_one_centre_fallback() {
     // Neither a colliderless part nor a helper collider is gameplay reach geometry.
     world.spawn((PropPart { part: 1 }, Transform::from_translation(eye), ChildOf(prop)));
     world.spawn((Collider::sphere(1.0), Transform::from_translation(eye), ChildOf(prop)));
-    assert!((player_distance(&mut world, &geometry, prop).unwrap() - 9.0).abs() < 0.001);
+    assert!((player_distance(&mut world, &geometry, prop) - 9.0).abs() < 0.001);
     world.entity_mut(surface).remove::<Collider>();
-    assert!((player_distance(&mut world, &geometry, prop).unwrap() - 20.0).abs() < 0.001);
+    assert!((player_distance(&mut world, &geometry, prop) - 20.0).abs() < 0.001);
 }
 
 #[test]
