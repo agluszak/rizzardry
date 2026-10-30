@@ -1684,7 +1684,7 @@ fn visible_monsters(
     combatants
         .iter()
         .filter_map(|&entity| {
-            let (monster, at, walker, ..) = damage.monsters().get(entity).ok()?;
+            let (monster, at, walker, ..) = damage.monsters().get(entity).unwrap();
             if !damage.targetable(entity) {
                 return None;
             }
