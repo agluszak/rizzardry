@@ -152,15 +152,14 @@ impl MagicView {
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct SourceTargeting<'w, 's> {
     carried: Query<'w, 's, &'static Carried>,
-    pool: Query<'w, 's, &'static PartyInventory>,
+    pool: Single<'w, 's, &'static PartyInventory>,
     content: If<Res<'w, Catalogs>>,
 }
 
 impl SourceTargeting<'_, '_> {
     pub fn of(&self, caster: Entity, source: Source) -> Option<Targeting> {
         let (spells, items) = (&self.content.spells, &self.content.items);
-        let id =
-            source.spell_id(self.carried.get(caster).unwrap(), self.pool.single().ok()?, items)?;
+        let id = source.spell_id(self.carried.get(caster).unwrap(), &self.pool, items)?;
         Some(spells[id].targeting)
     }
 }
