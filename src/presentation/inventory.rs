@@ -556,12 +556,11 @@ fn select_inventory_member(
 }
 
 fn draw_portrait_highlights(
-    screen: Option<Single<&InventoryScreen>>,
+    screen: Single<&InventoryScreen>,
     roster: Single<Ref<PartyRoster>>,
     buttons: Query<(&InventoryMemberButton, &Hovered, &Children)>,
     mut highlights: Query<(&mut Picture, &mut Visibility), With<PortraitHighlight>>,
 ) {
-    let Some(screen) = screen else { return };
     for (button, hovered, children) in &buttons {
         for child in children.iter() {
             let Ok((mut picture, mut visibility)) = highlights.get_mut(child) else { continue };
@@ -795,12 +794,11 @@ fn profession_title(profile: &Character) -> usize {
 }
 
 fn draw_vitals(
-    screen: Option<Single<&InventoryScreen>>,
+    screen: Single<&InventoryScreen>,
     members: Query<(&Character, &Vitals)>,
     mut art: Query<(&VitalArt, Option<&VitalShade>, Option<&mut Node>, &mut Visibility)>,
 ) {
-    let Some(screen) = screen else { return };
-    let Ok((profile, vitals)) = members.get(screen.member) else { return };
+    let (profile, vitals) = members.get(screen.member).unwrap();
     for (_, shade, node, mut visibility) in &mut art {
         visibility.set_if_neq(visible_if(!vitals.is_dead()));
         if let (Some(shade), Some(mut node)) = (shade, node) {
@@ -820,14 +818,13 @@ fn draw_vitals(
 }
 
 fn draw_header_condition(
-    screen: Option<Single<&InventoryScreen>>,
+    screen: Single<&InventoryScreen>,
     members: Query<&Vitals>,
     assets: Res<AssetServer>,
     art: Res<InventoryArt>,
     mut displays: Query<(&HeaderCondition, &mut Picture, &mut Visibility)>,
 ) {
-    let Some(screen) = screen else { return };
-    let Ok(vitals) = members.get(screen.member) else { return };
+    let vitals = members.get(screen.member).unwrap();
     let condition = super::screen_art::condition_icon(vitals);
     for (display, mut picture, mut visibility) in &mut displays {
         match *display {
@@ -850,7 +847,7 @@ fn draw_header_condition(
 }
 
 fn draw_header_hands(
-    screen: Option<Single<&InventoryScreen>>,
+    screen: Single<&InventoryScreen>,
     assets: Res<AssetServer>,
     content: If<Res<Catalogs>>,
     members: Query<crate::presentation::character_view::CharacterView>,
@@ -859,9 +856,8 @@ fn draw_header_hands(
     art: Res<InventoryArt>,
     mut parts: Query<(&HeaderHand, &mut Visibility, Option<&mut Picture>, Option<&mut BitmapText>)>,
 ) {
-    let Some(screen) = screen else { return };
     let catalog = &content.items;
-    let Ok(view) = members.get(screen.member) else { return };
+    let view = members.get(screen.member).unwrap();
     let armour = view.armour(
         screen.member,
         catalog,
@@ -1013,20 +1009,19 @@ fn sync_member_portraits(
 
 /// Update the existing header controls from their actual dependencies.
 fn draw_header(
-    screen: Option<Single<&InventoryScreen>>,
+    screen: Single<&InventoryScreen>,
     assets: Res<AssetServer>,
-    members: Query<(&Character, Option<&Vitals>)>,
+    members: Query<(&Character, &Vitals)>,
     strings: GameStrings,
     mut displays: Query<(&HeaderDisplay, Option<&mut Picture>, Option<&mut BitmapText>)>,
 ) {
-    let Some(screen) = screen else { return };
-    let Ok((profile, vitals)) = members.get(screen.member) else { return };
+    let (profile, vitals) = members.get(screen.member).unwrap();
     for (display, picture, label) in &mut displays {
         let mut source = None;
         let mut value = None;
         match display.0 {
             HeaderPart::Portrait => {
-                let name = if vitals.as_ref().is_some_and(|v| v.is_dead()) {
+                let name = if vitals.is_dead() {
                     &super::screen_art::skull(profile.race)[1..]
                 } else {
                     &profile.portrait
@@ -1104,10 +1099,10 @@ fn draw_gold(
 }
 
 fn draw_cells(
-    screen: Option<Single<&InventoryScreen>>,
+    screen: Single<&InventoryScreen>,
     assets: Res<AssetServer>,
     content: If<Res<Catalogs>>,
-    members: Query<(&Character, Option<&Carried>)>,
+    members: Query<(&Character, &Carried)>,
     party: Single<&PartyInventory>,
     pool_scroll: Option<Single<&bevy::ui_widgets::SliderValue, With<pool_scroll::PoolScroll>>>,
     cells: Query<(&ItemCell, &Children)>,
@@ -1118,11 +1113,8 @@ fn draw_cells(
         Option<&mut BitmapText>,
     )>,
 ) {
-    let Some(screen) = screen else { return };
     let catalog = &content.items;
-    let Ok((profile, carried)) = members.get(screen.member) else { return };
-    let empty = Carried::default();
-    let carried = carried.unwrap_or(&empty);
+    let (profile, carried) = members.get(screen.member).unwrap();
     let pool_start = pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2);
     for (cell, children) in &cells {
         let item = match cell.cell.location(screen.member, pool_start) {
