@@ -168,7 +168,7 @@ impl MonsterBodies {
         spawnable.extend(crate::game::magic::pointcasts::ELEMENTALS);
         let mut next = 0;
         while let Some(&id) = spawnable.get(next) {
-            if let Some(called) = species[id].special.kind.and_then(|kind| kind.summons())
+            if let Some(called) = species.kind(id).and_then(|kind| kind.special.kind?.summons())
                 && !spawnable.contains(&called)
             {
                 spawnable.push(called);
@@ -177,13 +177,14 @@ impl MonsterBodies {
         }
         spawnable
             .into_iter()
-            .map(|id| {
-                self.0
+            // Tests stand in a few species for retail's full catalog.
+            .filter_map(|id| {
+                let kind = species.kind(id)?;
+                let body = self
+                    .0
                     .entry(id)
-                    .or_insert_with(|| {
-                        assets.load(crate::content::paths::monster(&species[id].model))
-                    })
-                    .clone()
+                    .or_insert_with(|| assets.load(crate::content::paths::monster(&kind.model)));
+                Some(body.clone())
             })
             .collect()
     }

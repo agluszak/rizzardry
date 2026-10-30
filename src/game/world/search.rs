@@ -304,6 +304,8 @@ mod tests {
             let member = world.spawn((Vitals::new(&profile), profile)).id();
             crate::game::party::roster::test_join(world, member);
             let definition = ItemDefinition { id: ItemId(1), ..default() };
+            world.resource_mut::<crate::game::data::Catalogs>().items =
+                crate::content::items::ItemCatalog(vec![default(), definition.clone()]);
             let stack = ItemStack::new(&definition, &mut ItemIds::default(), 1, true);
             let ahead =
                 PartyBody::eye(&Position(Vec3::ZERO)) + PartyBody::default().forward() * 5.0;

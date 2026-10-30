@@ -17,7 +17,7 @@ use crate::game::inventory::{Carried, EquipSlot, Equipped, ItemIds, ItemStack, P
 use crate::game::magic::{LearnedSpells, SpellPoints};
 use crate::game::party::body::PartyBody;
 use crate::game::party::formation::Formation;
-use crate::game::party::roster::{PartyMember, PartyRoster, the_party};
+use crate::game::party::roster::{Party, PartyMember, PartyRoster, the_party};
 use crate::game::rng::GameRng;
 use crate::game::world::level::{Level, LevelOwned};
 use crate::game::world::population::Monster;
@@ -400,7 +400,8 @@ fn stand_beside_party(world: &mut World, actor: Entity, body: Entity, party: Ent
 /// `UpdateNpcPartyMember`): its items go to the party, it is dead for good
 /// (retail `spawned`), and it never stands in the world again.
 pub fn settle_npc_members(world: &mut World) {
-    let party = the_party(world);
+    // Before a campaign begins there is no party to settle.
+    let Ok(party) = world.query_filtered::<Entity, With<Party>>().single(world) else { return };
     let fallen: Vec<Entity> = world
         .get::<PartyRoster>(party)
         .map(|roster| {

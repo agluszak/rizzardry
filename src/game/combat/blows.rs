@@ -182,7 +182,6 @@ fn razor_backlash(
     news: &mut MessageWriter<CombatNews>,
 ) {
     use crate::content::spells::SpellId;
-    let spell = &field.spells[SpellId::RAZOR_CLOAK];
     let charge = match defender {
         Victim::Member(member) => field
             .members
@@ -197,7 +196,7 @@ fn razor_backlash(
     let Some(charge) = charge else { return };
     let rolled = effects::magnitude(
         rng,
-        spell.dice,
+        field.spells[SpellId::RAZOR_CLOAK].dice,
         crate::game::magic::Strength { power: charge.power, boost: 0, against: 0 },
     );
     let amount = match attacker {

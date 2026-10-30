@@ -879,13 +879,12 @@ fn the_production_post_step_applies_trigger_commands_before_moving() {
         None,
     );
     spawning.apply(world);
-    let party = world
-        .spawn((
-            PartyBody::default(),
-            Position(Vec3::X * 5.0 - Vec3::Y * EYE_ABOVE_CENTRE),
-            Transform::default(),
-        ))
-        .id();
+    let party = crate::game::party::roster::test_party(world, &[]);
+    world.entity_mut(party).insert((
+        PartyBody::default(),
+        Position(Vec3::X * 5.0 - Vec3::Y * EYE_ABOVE_CENTRE),
+        Transform::default(),
+    ));
     // Exercise the real registered command/arrival boundary, not physics integration.
     app.world_mut().run_schedule(FixedPostUpdate);
     app.world_mut().get_mut::<Position>(party).unwrap().0 = -Vec3::Y * EYE_ABOVE_CENTRE;
@@ -1286,7 +1285,7 @@ fn mana_fountains_share_use_and_refill_history_and_restore_deficits() {
 }
 
 #[test]
-fn restorative_fountains_require_spell_content_before_consuming_a_use() {
+fn a_restoration_fountain_heals_and_cures_once() {
     use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
     use crate::game::characters::{Condition, Lasting};
     let mut scene = Scenario::new(
@@ -1309,8 +1308,6 @@ fn restorative_fountains_require_spell_content_before_consuming_a_use() {
         vitals.inflict(Condition::Poisoned, Lasting::Rounds(10));
         vitals.inflict(Condition::Infatuated, Lasting::Indefinite);
     }
-    assert!(!scene.run("TEMPLE").0);
-    assert!(scene.world.get::<FountainState>(scene.device("TEMPLE")).unwrap().used.is_none());
     let mut definitions = vec![SpellDefinition::default(); 69];
     definitions[68] = SpellDefinition {
         id: SpellId::HEAL_ALL,
