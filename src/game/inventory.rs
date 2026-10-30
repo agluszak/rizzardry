@@ -1353,42 +1353,18 @@ mod tests {
         assert_eq!(party.give_held(Some(&mut carried), false, &c), Some(Given::NoRoom));
     }
 
+    /// Clicking a full pool reports a refusal, not a transfer.
     #[test]
-    fn gameplay_operations_revalidate_membership_and_stack_identity() {
+    fn a_full_pool_refuses_the_held_item() {
         use super::operations::InventoryOperations;
-        use crate::game::party::roster::{test_join, test_party};
+        use crate::game::party::roster::test_party;
         use bevy::ecs::system::RunSystemOnce;
         let mut world = World::new();
         world.init_resource::<Messages<ItemNews>>();
         let (c, mut ids) = (catalog(), ItemIds::default());
-        let item = stack(&c, &mut ids, 0, 7);
-        let id = item.id;
-        let items = c;
-        world.insert_resource(crate::game::data::Catalogs { items, ..default() });
-        // Someone else is in the party; the actor is not, at first.
-        let other = world.spawn((Vitals::new(&wearer()), wearer(), Carried::default())).id();
-        let party = test_party(&mut world, &[other]);
-        let character = wearer();
-        let mut carried = Carried::default();
-        carried.backpack[0] = Some(item);
-        let actor = world.spawn((Vitals::new(&character), character, carried)).id();
-        let source = ItemRef { owner: ItemOwner::Member(actor), id };
-        let take = |world: &mut World| {
-            world.run_system_once(move |mut op: InventoryOperations| op.take(source)).unwrap()
-        };
-        assert_eq!(take(&mut world), Err(Refusal::NotMember));
-        test_join(&mut world, actor);
-        take(&mut world).unwrap();
-        assert!(world.get::<Carried>(actor).unwrap().backpack[0].is_none());
-        assert_eq!(world.get::<PartyInventory>(party).unwrap().hand.held.as_ref().unwrap().id, id);
-        world
-            .run_system_once(|mut op: InventoryOperations| op.deposit(PoolPosition::Front))
-            .unwrap()
-            .unwrap();
-        assert_eq!(take(&mut world), Err(Refusal::Nothing));
-        assert_eq!(world.get::<PartyInventory>(party).unwrap().pool.stacks[0].id, id);
-        // Clicking a full pool must report a refusal, not pretend a transfer happened.
-        let c = catalog();
+        world.insert_resource(crate::game::data::Catalogs { items: catalog(), ..default() });
+        let member = world.spawn((Vitals::new(&wearer()), wearer())).id();
+        let party = test_party(&mut world, &[member]);
         {
             let mut inventory = world.get_mut::<PartyInventory>(party).unwrap();
             inventory.pool.stacks = (0..POOL_LIMIT).map(|_| stack(&c, &mut ids, 1, 1)).collect();

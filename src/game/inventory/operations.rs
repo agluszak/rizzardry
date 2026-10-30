@@ -81,17 +81,14 @@ impl InventoryOperations<'_, '_> {
             {
                 return Ok(());
             }
-            match self.deposit(anchor.map_or(PoolPosition::End, PoolPosition::Before))? {
+            let position = anchor.map_or(PoolPosition::End, PoolPosition::Before);
+            match self.party.deposit_hand(position, &self.content.items)? {
                 0 => Err(Refusal::NoRoom),
                 _ => Ok(()),
             }
         } else {
-            self.take(ItemRef { owner: ItemOwner::Pool, id: anchor.ok_or(Refusal::Nothing)? })
+            self.party.take_from_pool(anchor.ok_or(Refusal::Nothing)?)
         }
-    }
-    pub fn deposit(&mut self, position: PoolPosition) -> Result<u32, Refusal> {
-        let catalog = &self.content.items;
-        self.party.deposit_hand(position, catalog)
     }
     pub fn interact_slot(&mut self, destination: MemberSlot) -> Result<(), Refusal> {
         let catalog = &self.content.items;
@@ -193,20 +190,6 @@ impl InventoryOperations<'_, '_> {
             ItemAt::Slot(slot) => {
                 let (_, _, carried) = self::member(&self.roster, &mut self.members, member)?;
                 carried.into_inner().stack_mut(slot).ok_or(Refusal::Nothing)
-            }
-        }
-    }
-
-    pub fn take(&mut self, source: ItemRef) -> Result<(), Refusal> {
-        if self.party.hand.held.is_some() {
-            return Err(Refusal::HandFull);
-        }
-        match source.owner {
-            ItemOwner::Pool => self.party.take_from_pool(source.id),
-            ItemOwner::Member(member) => {
-                let (_, _, carried) = self::member(&self.roster, &mut self.members, member)?;
-                let slot = carried.find(source.id).ok_or(Refusal::Nothing)?;
-                self.interact_slot(MemberSlot { member, slot })
             }
         }
     }
