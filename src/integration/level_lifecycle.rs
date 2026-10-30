@@ -921,6 +921,10 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
             let quote =
                 conversation::quote_trade(app.world_mut(), session, TradeSource::Stock(lot), 1)
                     .unwrap();
+            // A confirmation buys once, however often it arrives.
+            app.world_mut().write_message(ConversationRequest::Trade(quote));
+            app.world_mut().write_message(ConversationRequest::Trade(quote));
+            app.update();
             app.world_mut().write_message(ConversationRequest::Trade(quote));
             app.update();
             assert_eq!(purse(&app), 10_000 - quote.gold);
@@ -928,6 +932,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
             let bought = app.world().get::<PartyInventory>(party).unwrap().pool.stacks[0].id;
             let source = TradeSource::Party(ItemRef { owner: ItemOwner::Pool, id: bought });
             let sale = conversation::quote_trade(app.world_mut(), session, source, 1).unwrap();
+            app.world_mut().write_message(ConversationRequest::Trade(sale));
             app.world_mut().write_message(ConversationRequest::Trade(sale));
             app.update();
             assert_eq!(purse(&app), 10_000 - quote.gold + sale.gold);

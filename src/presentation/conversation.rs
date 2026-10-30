@@ -173,7 +173,6 @@ enum Answer {
 #[derive(Component, PartialEq)]
 struct Choice {
     index: usize,
-    revision: u64,
     answer: Answer,
 }
 #[derive(Component)]
@@ -471,14 +470,10 @@ fn build_menu(world: &mut World, canvas: Entity, root: Entity) {
                 world.entity_mut(e).insert(ApproachButton(approach)).observe(
                     move |_: On<Activate>,
                           roots: Query<&ConversationView>,
-                          sessions: Query<&Conversation>,
                           mut requests: MessageWriter<ConversationRequest>| {
-                        if let Ok(view) = roots.get(root)
-                            && let Ok(c) = sessions.get(view.0)
-                        {
+                        if let Ok(view) = roots.get(root) {
                             requests.write(ConversationRequest::Approach {
                                 conversation: view.0,
-                                revision: c.revision,
                                 approach,
                             });
                         }
@@ -622,14 +617,9 @@ fn build(world: &mut World, session: Entity) -> Entity {
                     world.entity_mut(e).observe(
                         move |_: On<Activate>,
                               roots: Query<&ConversationView>,
-                              conversations: Query<&Conversation>,
                               mut requests: MessageWriter<ConversationRequest>| {
                             let Ok(view) = roots.get(root) else { return };
-                            let Ok(conversation) = conversations.get(view.0) else { return };
-                            requests.write(ConversationRequest::Recruit {
-                                conversation: view.0,
-                                revision: conversation.revision,
-                            });
+                            requests.write(ConversationRequest::Recruit { conversation: view.0 });
                         },
                     );
                 }
@@ -861,7 +851,6 @@ fn build(world: &mut World, session: Entity) -> Entity {
                 move |_: On<Activate>,
                       mut states: Query<&mut DialogueState>,
                       roots: Query<&ConversationView>,
-                      sessions: Query<&Conversation>,
                       gold: Query<&EditableText, With<GiftGold>>,
                       mut requests: MessageWriter<ConversationRequest>| {
                     let Ok(mut state) = states.get_mut(root) else { return };
@@ -870,23 +859,20 @@ fn build(world: &mut World, session: Entity) -> Entity {
                         && state.selected.is_none()
                         && amount > 0
                         && let Ok(view) = roots.get(root)
-                        && let Ok(c) = sessions.get(view.0)
                     {
-                        requests.write(ConversationRequest::GiveGold {
-                            conversation: view.0,
-                            revision: c.revision,
-                            amount,
-                        });
+                        requests
+                            .write(ConversationRequest::GiveGold { conversation: view.0, amount });
                         set_mode(&mut state, Mode::Talk);
                     } else if let Some(q) = state.selected
                         && roots.get(root).is_ok_and(|v| v.0 == q.conversation)
                     {
                         if state.mode != Mode::Give {
                             requests.write(ConversationRequest::Trade(q));
+                            // The trade settles the selection.
+                            state.selected = None;
                         } else if let TradeSource::Party(item) = q.source {
                             requests.write(ConversationRequest::Give {
                                 conversation: q.conversation,
-                                revision: q.revision,
                                 item,
                             });
                             // Retail returns to the transcript for the answer.
@@ -1127,13 +1113,7 @@ fn select(world: &mut World, view: Entity, session: Entity, source: TradeSource,
     let result = if giving {
         world
             .get::<Conversation>(session)
-            .map(|c| TradeQuote {
-                conversation: session,
-                revision: c.revision,
-                source,
-                quantity: 1,
-                gold: 0,
-            })
+            .map(|_| TradeQuote { conversation: session, trade: 0, source, quantity: 1, gold: 0 })
             .ok_or(trade::TradeError::StaleSelection)
     } else {
         quote_trade(world, session, source, quantity)
@@ -1627,16 +1607,12 @@ fn activate_choice(
     let Ok(choice) = choices.get(event.entity) else { return };
     let Some((_, session)) = views.owner(event.entity) else { return };
     requests.write(match &choice.answer {
-        Answer::Reply(text) => ConversationRequest::Reply {
-            conversation: session,
-            revision: choice.revision,
-            text: text.clone(),
-        },
-        Answer::Price(accept) => ConversationRequest::PriceAnswer {
-            conversation: session,
-            revision: choice.revision,
-            accept: *accept,
-        },
+        Answer::Reply(text) => {
+            ConversationRequest::Reply { conversation: session, text: text.clone() }
+        }
+        Answer::Price(accept) => {
+            ConversationRequest::PriceAnswer { conversation: session, accept: *accept }
+        }
     });
 }
 fn activate_trade(
@@ -1783,7 +1759,7 @@ fn sync_choices(
         }
         let left = (width - ((button_width + 10.) * answers.len() as f32 - 10.)) / 2.;
         for (index, (label, answer)) in answers.into_iter().enumerate() {
-            let value = Choice { index, revision: c.revision, answer };
+            let value = Choice { index, answer };
             let mut layout = absolute(
                 Vec2::new(
                     left + index as f32 * (button_width + 10.),
@@ -1972,11 +1948,9 @@ fn sync_trade_rows(
                 }
             }
         }
-        let quote = state.selected.filter(|q| {
-            q.conversation == session
-                && q.revision == c.revision
-                && rows.iter().any(|r| r.0 == q.source)
-        });
+        let quote = state
+            .selected
+            .filter(|q| q.conversation == session && rows.iter().any(|r| r.0 == q.source));
         let item = quote
             .and_then(|q| match q.source {
                 TradeSource::Stock(id) => {
@@ -2247,21 +2221,14 @@ fn sync_topic_geometry(
 impl SubmitTopic {
     /// Only committed editor text becomes a gameplay request. Normalization
     /// and notebook matching belong to the game.
-    fn request(
-        &self,
-        text: &EditableText,
-        conversation: Entity,
-        revision: u64,
-    ) -> Option<ConversationRequest> {
+    fn request(&self, text: &EditableText, conversation: Entity) -> Option<ConversationRequest> {
         if text.is_composing() {
             return None;
         }
         let text = text.value().to_string();
         Some(match *self {
-            Self::Ask => ConversationRequest::Topic { conversation, revision, text },
-            Self::Edit(edit) => {
-                ConversationRequest::EditNotebook { conversation, revision, edit, text }
-            }
+            Self::Ask => ConversationRequest::Topic { conversation, text },
+            Self::Edit(edit) => ConversationRequest::EditNotebook { conversation, edit, text },
         })
     }
 }
@@ -2279,13 +2246,13 @@ fn submit_topic(
         }
         if let Some((_, session)) = views.owner(entity)
             && let Ok(c) = sessions.get(session)
-            && let Some(request) = submit.request(text, session, c.revision)
+            && let Some(request) = submit.request(text, session)
         {
             let request = match request {
-                ConversationRequest::Topic { conversation, revision, text }
+                ConversationRequest::Topic { conversation, text }
                     if matches!(c.wait, ConversationWait::Options { typed: true, .. }) =>
                 {
-                    ConversationRequest::Reply { conversation, revision, text }
+                    ConversationRequest::Reply { conversation, text }
                 }
                 request => request,
             };
@@ -2356,9 +2323,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::content::ui::TextTable;
 
-    pub(crate) fn check_session_views(
-        make: impl Fn(Entity, Handle<crate::content::npcs::DialogueScript>) -> Conversation,
-    ) {
+    pub(crate) fn check_session_views(make: impl Fn(Entity) -> Conversation) {
         let mut app = crate::presentation::test_input::input_app();
         app.init_asset::<SpriteSheet>()
             .init_asset::<Image>()
@@ -2366,13 +2331,8 @@ pub(crate) mod tests {
             .init_resource::<super::super::main_screen::ScreenLayout>()
             .add_observer(create_view)
             .add_systems(Update, sync_transcript);
-        app.init_asset::<crate::content::npcs::DialogueScript>();
         let actor = app.world_mut().spawn_empty().id();
-        let script = app
-            .world_mut()
-            .resource_mut::<Assets<crate::content::npcs::DialogueScript>>()
-            .add(crate::content::npcs::DialogueScript::default());
-        let mut conversation = make(actor, script.clone());
+        let mut conversation = make(actor);
         conversation.transcript =
             vec![TranscriptLine::Question("Arnika".into()), TranscriptLine::Npc("A town.".into())];
         let session = app.world_mut().spawn(conversation).id();
@@ -2411,7 +2371,7 @@ pub(crate) mod tests {
         assert!(app.world().get_entity(view).is_err());
         assert!(rows.into_iter().all(|e| app.world().get_entity(e).is_err()));
         // Both operations precede the queued view build.
-        app.world_mut().commands().spawn(make(actor, script)).despawn();
+        app.world_mut().commands().spawn(make(actor)).despawn();
         app.update();
         assert_eq!(app.world_mut().query::<&ConversationView>().iter(app.world()).count(), 0);
     }
@@ -2422,9 +2382,9 @@ pub(crate) mod tests {
         let mut text = EditableText::default();
         text.editor.set_text(" Ship ");
         for edit in [NotebookEdit::Remember, NotebookEdit::Forget] {
-            let request = SubmitTopic::Edit(edit).request(&text, session, 7).unwrap();
+            let request = SubmitTopic::Edit(edit).request(&text, session).unwrap();
             assert!(matches!(request,
-                ConversationRequest::EditNotebook { conversation, revision: 7, edit: action, text }
+                ConversationRequest::EditNotebook { conversation, edit: action, text }
                 if conversation == session && action == edit && text == " Ship "
             ));
         }
@@ -2433,7 +2393,7 @@ pub(crate) mod tests {
         text.editor.driver(&mut fonts, &mut layout).set_compose("new", None);
         assert!(text.is_composing());
         for edit in [NotebookEdit::Remember, NotebookEdit::Forget] {
-            assert!(SubmitTopic::Edit(edit).request(&text, session, 7).is_none());
+            assert!(SubmitTopic::Edit(edit).request(&text, session).is_none());
         }
     }
 
@@ -2491,30 +2451,22 @@ pub(crate) mod tests {
         let view = world.spawn((ConversationView(first), DialogueState::default())).id();
         let other = world.spawn((ConversationView(second), DialogueState::default())).id();
         let row = world
-            .spawn((
-                Button,
-                Choice { index: 0, revision: 7, answer: Answer::Price(true) },
-                ChildOf(view),
-            ))
+            .spawn((Button, Choice { index: 0, answer: Answer::Price(true) }, ChildOf(view)))
             .id();
         world.trigger(Activate { entity: row });
         let requests: Vec<_> =
             world.resource_mut::<Messages<ConversationRequest>>().drain().collect();
         assert!(
-            matches!(&requests[..],[ConversationRequest::PriceAnswer{conversation,revision:7,accept:true}] if *conversation==first)
+            matches!(&requests[..],[ConversationRequest::PriceAnswer{conversation,accept:true}] if *conversation==first)
         );
         let other_row = world
-            .spawn((
-                Button,
-                Choice { index: 0, revision: 9, answer: Answer::Price(false) },
-                ChildOf(other),
-            ))
+            .spawn((Button, Choice { index: 0, answer: Answer::Price(false) }, ChildOf(other)))
             .id();
         world.trigger(Activate { entity: other_row });
         let requests: Vec<_> =
             world.resource_mut::<Messages<ConversationRequest>>().drain().collect();
         assert!(matches!(&requests[..], [ConversationRequest::PriceAnswer {
-            conversation, revision: 9, accept: false
+            conversation, accept: false
         }] if *conversation == second));
         let trade = world
             .spawn((

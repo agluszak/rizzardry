@@ -63,7 +63,6 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
     }
     let Some(q) = world.get::<DialogueState>(view).and_then(|s| s.selected) else { return };
     if world.get::<ConversationView>(view).is_none_or(|v| v.0 != q.conversation)
-        || world.get::<Conversation>(q.conversation).is_none_or(|c| c.revision != q.revision)
         || quote_trade(world, q.conversation, q.source, q.quantity).is_err()
     {
         return;
@@ -276,10 +275,7 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
 fn change(world: &mut World, panel: Entity, n: u32, rewrite: bool) {
     let Some(d) = world.get::<Draft>(panel) else { return };
     let (q, max) = (d.quote, d.maximum);
-    if n == 0
-        || n > max
-        || world.get::<Conversation>(q.conversation).is_none_or(|c| c.revision != q.revision)
-    {
+    if n == 0 || n > max {
         return;
     }
     if let Ok(quote) = quote_trade(world, q.conversation, q.source, n) {
@@ -328,8 +324,7 @@ fn finish(world: &mut World, panel: Entity, accept: bool) {
         q.quantity = n;
     }
     let Some(overlay) = world.get::<ChildOf>(panel).map(ChildOf::parent) else { return };
-    if accept && world.get::<Conversation>(q.conversation).is_some_and(|c| c.revision == q.revision)
-    {
+    if accept && world.get::<Conversation>(q.conversation).is_some_and(Conversation::ready) {
         let Ok(verified) = quote_trade(world, q.conversation, q.source, q.quantity) else { return };
         if matches!(q.source, TradeSource::Stock(_)) {
             let gold = crate::game::party::roster::the_party(world)
@@ -356,7 +351,7 @@ pub(super) fn sync(
     >,
 ) {
     for (panel, d, parent) in &drafts {
-        if !sessions.get(d.quote.conversation).is_ok_and(|c| c.revision == d.quote.revision) {
+        if !sessions.get(d.quote.conversation).is_ok_and(Conversation::ready) {
             commands.entity(parent.parent()).despawn();
             continue;
         }
@@ -421,7 +416,7 @@ mod tests {
             let session = world.spawn_empty().id();
             let q = TradeQuote {
                 conversation: session,
-                revision: 7,
+                trade: 0,
                 source: TradeSource::Stock(crate::game::npcs::trade::StockLotId(1)),
                 quantity: 1,
                 gold: 10,
