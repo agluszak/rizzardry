@@ -1081,15 +1081,14 @@ fn allegiance(
     damage: &MonsterDamage,
     now: u64,
     species: &MonsterCatalog,
-) -> Option<hostility::Allegiance> {
-    let (body, ..) = damage.monsters().get(entity).ok()?;
-    let kind = &species[body.species];
-    Some(hostility::Allegiance {
+) -> hostility::Allegiance {
+    let (body, ..) = damage.monsters().get(entity).unwrap();
+    hostility::Allegiance {
         species: body.species,
         stance: damage.stance(entity, now),
-        faction: kind.faction,
+        faction: species[body.species].faction,
         turncoat: body.conditions.has(Condition::Turncoat),
-    })
+    }
 }
 
 /// Groups with nothing left to fight leave it as the round ends (retail
@@ -1156,18 +1155,12 @@ fn leave_fight(
                 sees
             }
             Some(Stance::Friendly) => fellows.iter().any(|(fellow, _)| {
-                let Some(mine) = allegiance(fellow.entity, damage, now, species) else {
-                    return false;
-                };
+                let mine = allegiance(fellow.entity, damage, now, species);
                 let (body, at, walker, ..) = monsters.get(fellow.entity).unwrap();
                 let kind = &species[body.species];
                 combatants.iter().any(|&enemy| {
-                    let Some(theirs) = allegiance(enemy, damage, now, species) else {
-                        return false;
-                    };
-                    let Ok((target, target_at, target_walker, ..)) = monsters.get(enemy) else {
-                        return false;
-                    };
+                    let theirs = allegiance(enemy, damage, now, species);
+                    let (target, target_at, target_walker, ..) = monsters.get(enemy).unwrap();
                     let target_kind = &species[target.species];
                     !target.is_dead()
                         && hostility::between(mine, theirs) == Stance::Hostile
@@ -1855,14 +1848,11 @@ fn monster_turn(
     // How everyone in the fight stands, each monster by its own stance.
     let allegiances: Vec<(Entity, hostility::Allegiance)> = combatants
         .iter()
-        .filter_map(|&entity| Some((entity, allegiance(entity, damage, party.now, species)?)))
+        .map(|&entity| (entity, allegiance(entity, damage, party.now, species)))
         .collect();
     let allegiance_of =
         |entity: Entity| allegiances.iter().find(|&&(e, _)| e == entity).map(|&(_, a)| a);
-    let Some(mine) = allegiance_of(monster) else {
-        battle.this_round.monsters[index].end();
-        return false;
-    };
+    let mine = allegiance_of(monster).unwrap();
     let turncoats: Vec<Entity> = magic
         .context
         .roster
