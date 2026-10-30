@@ -72,7 +72,7 @@ fn bank_button(
     }
 }
 
-pub fn row(art: &MainScreenArt, _sheets: &Assets<SpriteSheet>) -> impl SceneList {
+pub fn row(art: &MainScreenArt) -> impl SceneList {
     let progress = picture(art.progress.clone(), 0, Vec2::new(177.0, 2.0));
     let steps:Vec<_>=[(0,300.0,-1_i32),(4,323.0,1)].into_iter().map(|(frame,x,step)|bsn!{
         @crate::presentation::retail_controls::image_button(art.scroll_arrows.clone(),Vec2::new(x,456.0),ControlSkin::new(frame,frame+1,frame+2,frame+2,frame+3))

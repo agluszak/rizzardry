@@ -226,7 +226,7 @@ fn build_menu(world: &mut World, canvas: Entity, root: Entity) {
     let left = panel(world, group, Vec2::new(23., 358.), Vec2::new(141., 92.), 0);
     name_caption(world, left);
     let strings = world
-        .get_resource::<super::screen_art::StringTable>()
+        .get_resource::<crate::presentation::screen_art::StringTable>()
         .and_then(|t| world.resource::<Assets<crate::content::ui::TextTable>>().get(&t.0));
     let labels = [
         (0x727, "Charm"),
@@ -633,14 +633,13 @@ fn build_topics(world: &mut World, group: Entity, root: Entity) {
 }
 pub(super) fn build(world: &mut World, session: Entity) -> Entity {
     // OpenNpcDialoguePanel selects portrait mode before building its controls.
-    world.resource_mut::<super::main_screen::ScreenLayout>().mode =
-        super::main_screen::LayoutMode::Closed;
+    world.resource_mut::<crate::presentation::main_screen::ScreenLayout>().mode =
+        crate::presentation::main_screen::LayoutMode::Closed;
     let root = world
         .spawn((
             ConversationView(session),
             DialogueState {
-                selected: None,
-                error: None,
+                offer: None,
                 mode: Mode::Talk,
                 pool: true,
                 category: None,
@@ -739,7 +738,12 @@ pub(super) fn build(world: &mut World, session: Entity) -> Entity {
                 ))
                 .id();
             let assets = world.resource::<AssetServer>().clone();
-            super::screen_art::spawn_dialog_frame(&mut world.commands(), &assets, choices, false);
+            crate::presentation::screen_art::spawn_dialog_frame(
+                &mut world.commands(),
+                &assets,
+                choices,
+                false,
+            );
             for purse in [false, true] {
                 let text =
                     label(world, choices, "", Vec2::new(10., if purse { 55. } else { 10. }), 180.);

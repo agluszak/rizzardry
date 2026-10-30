@@ -9,7 +9,7 @@ use crate::game::{
     party::{Members, roster::PartyRoster},
     rng::GameRng,
 };
-use bevy::{ecs::system::RunSystemOnce, prelude::*};
+use bevy::prelude::*;
 
 pub(crate) fn cast_source(
     world: &mut World,
@@ -18,18 +18,19 @@ pub(crate) fn cast_source(
     use_context: UseContext,
 ) -> Result<(Report, Strength), Refusal> {
     world
-        .run_system_once(
-            move |mut members: Members,
-                  mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
-                  mut inventory: Single<&mut PartyInventory>,
-                  roster: Single<&PartyRoster>,
-                  levels: Query<
+        .run_system_cached_with(
+            |In((caster, source, use_context)): In<(Entity, Source, UseContext)>,
+             mut members: Members,
+             mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
+             mut inventory: Single<&mut PartyInventory>,
+             roster: Single<&PartyRoster>,
+             levels: Query<
                 &crate::game::world::triggers::LevelState,
                 With<crate::game::world::level::Level>,
             >,
-                  content: If<Res<crate::game::data::Catalogs>>,
-                  difficulty: Res<Difficulty>,
-                  mut rng: ResMut<GameRng>| {
+             content: If<Res<crate::game::data::Catalogs>>,
+             difficulty: Res<Difficulty>,
+             mut rng: ResMut<GameRng>| {
                 if !roster.contains(&caster) {
                     return Err(Refusal::CannotAct);
                 }
@@ -48,6 +49,7 @@ pub(crate) fn cast_source(
                     levels.single().is_ok_and(|state| state.camera_sway),
                 )
             },
+            (caster, source, use_context),
         )
         .map_err(|_| Refusal::MissingContent)?
 }

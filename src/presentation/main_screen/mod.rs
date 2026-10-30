@@ -17,7 +17,7 @@ mod text_box;
 use bevy::input_focus::{InputFocus, InputFocusSystems, tab_navigation::TabGroup};
 use bevy::prelude::*;
 
-use super::screen_art::{SCREEN, absolute, centred, screen, sprite};
+use super::screen_art::{SCREEN, absolute, centred, picture, screen};
 use crate::content::ui::SpriteSheet;
 use crate::game::GameplaySet;
 pub use layout::{LayoutMode, Panel, ScreenLayout};
@@ -125,18 +125,11 @@ pub struct MainScreenArt {
     damage_splat: Handle<SpriteSheet>,
     damage_splat2: Handle<SpriteSheet>,
     death_splat: Handle<SpriteSheet>,
-    /// All of the above, to know when they have loaded.
-    all: Vec<Handle<SpriteSheet>>,
 }
 
 pub fn load_main_screen_art(mut commands: Commands, assets: Res<AssetServer>) {
-    let mut all = vec![];
-    let mut load = |path: &str| {
-        let handle: Handle<SpriteSheet> = assets.load(crate::content::paths::sheet(path));
-        all.push(handle.clone());
-        handle
-    };
-    let mut art = MainScreenArt {
+    let load = |path: &str| assets.load(crate::content::paths::sheet(path));
+    let art = MainScreenArt {
         roof: load("main interface/main_roof"),
         columns: load("main interface/main_columns_normal"),
         bottom_bar: load("main interface/main_bottom_bar"),
@@ -168,16 +161,8 @@ pub fn load_main_screen_art(mut commands: Commands, assets: Res<AssetServer>) {
         damage_splat: load("main interface/damage_splat_anim"),
         damage_splat2: load("main interface/damage_splat_anim2"),
         death_splat: load("main interface/death_splat_anim"),
-        all: vec![],
     };
-    art.all = all;
     commands.insert_resource(art);
-}
-
-/// One of the screen's sheets. The frame is built only once all of them
-/// have loaded, and its parts draw only inside it.
-fn loaded<'a>(sheets: &'a Assets<SpriteSheet>, handle: &Handle<SpriteSheet>) -> &'a SpriteSheet {
-    sheets.get(handle).expect("the main screen's art loads before its frame is built")
 }
 
 /// An empty node whose children are placed in screen pixels: a part's
@@ -293,13 +278,11 @@ fn build_frame(
     mut commands: Commands,
     layout: Res<ScreenLayout>,
     art: Res<MainScreenArt>,
-    sheets: Res<Assets<SpriteSheet>>,
     screens: Query<(), With<MainScreen>>,
 ) {
-    if !screens.is_empty() || !art.all.iter().all(|h| sheets.contains(h)) {
+    if !screens.is_empty() {
         return;
     }
-    let sheet = |handle| loaded(&sheets, handle);
     let masks: Vec<_> = masks(&layout)
         .into_iter()
         .enumerate()
@@ -312,29 +295,27 @@ fn build_frame(
         let mut parts = vec![];
         for row in 0..4 {
             let y = 18.0 + 85.0 * row as f32;
-            let columns = sheet(&art.columns);
             if closed {
-                parts.push(sprite(columns, 1 + 4 * row, Vec2::new(0.0, y)));
-                parts.push(sprite(columns, 2 + 4 * row, Vec2::new(512.0, y)));
-                parts.push(sprite(columns, 16, Vec2::new(23.0, y)));
-                parts.push(sprite(columns, 16, Vec2::new(535.0, y)));
+                parts.push(picture(art.columns.clone(), 1 + 4 * row, Vec2::new(0.0, y)));
+                parts.push(picture(art.columns.clone(), 2 + 4 * row, Vec2::new(512.0, y)));
+                parts.push(picture(art.columns.clone(), 16, Vec2::new(23.0, y)));
+                parts.push(picture(art.columns.clone(), 16, Vec2::new(535.0, y)));
             } else {
-                parts.push(sprite(columns, 4 * row, Vec2::new(0.0, y)));
-                parts.push(sprite(columns, 3 + 4 * row, Vec2::new(617.0, y)));
+                parts.push(picture(art.columns.clone(), 4 * row, Vec2::new(0.0, y)));
+                parts.push(picture(art.columns.clone(), 3 + 4 * row, Vec2::new(617.0, y)));
             }
         }
         bsn! { @layer() template(move |_| Ok(FrameVisibility::Closed(closed))) Children [{parts}] }
     }).collect();
-    let bar = sheet(&art.bottom_bar);
     let mut parts = vec![
-        sprite(sheet(&art.roof), 0, Vec2::ZERO),
-        sprite(bar, 0, Vec2::new(0.0, 358.0)),
-        sprite(bar, 1, Vec2::new(617.0, 358.0)),
+        picture(art.roof.clone(), 0, Vec2::ZERO),
+        picture(art.bottom_bar.clone(), 0, Vec2::new(0.0, 358.0)),
+        picture(art.bottom_bar.clone(), 1, Vec2::new(617.0, 358.0)),
     ];
     for (frame, x) in
         [(2, 0.0), (4, 30.0), (8, 196.0), (5, 292.0), (6, 343.0), (7, 528.0), (3, 610.0)]
     {
-        parts.push(sprite(bar, frame, Vec2::new(x, 450.0)));
+        parts.push(picture(art.bottom_bar.clone(), frame, Vec2::new(x, 450.0)));
     }
     commands.spawn_scene(bsn! {
         @centred() MainScreen TabGroup::modal() on(leave_hud_focus) GlobalZIndex(-5) Pickable::IGNORE
@@ -348,18 +329,18 @@ fn build_frame(
                 -- @layer() template(|_| Ok(FrameVisibility::Closed(true))) Children [@layer() party::Splats]
                 -- {layout::buttons(&art)}
                 -- @layer() template(|_| Ok(FrameVisibility::Panel(Panel::TextBox))) Children [
-                    {vec![sprite(sheet(&art.textbox_back), 0, Vec2::new(128.0,358.0))]}
+                    {vec![picture(art.textbox_back.clone(), 0, Vec2::new(128.0,358.0))]}
                     -- {text_box::panel()}
                 ]
                 -- @layer() template(|_| Ok(FrameVisibility::Panel(Panel::Radar))) Children [
-                    {vec![sprite(sheet(&art.radar_back), 0, Vec2::new(23.0,358.0))]}
-                    -- {radar::panel(&art,&sheets)}
+                    {vec![picture(art.radar_back.clone(), 0, Vec2::new(23.0,358.0))]}
+                    -- {radar::panel(&art)}
                 ]
                 -- @layer() template(|_| Ok(FrameVisibility::Panel(Panel::Formation))) Children [
-                    {vec![sprite(sheet(&art.formation_back), 0, Vec2::new(512.0,358.0))]}
-                    -- {formation::panel(&art,&sheets)}
+                    {vec![picture(art.formation_back.clone(), 0, Vec2::new(512.0,358.0))]}
+                    -- {formation::panel(&art)}
                 ]
-                -- {bank::row(&art,&sheets)}
+                -- {bank::row(&art)}
             ]
         ]
     });
@@ -388,13 +369,6 @@ mod keyboard_tests {
                 (build_frame, update_frame, party::build_party_parts, party::place_party_buttons)
                     .chain(),
             );
-        app.world_mut()
-            .resource_mut::<Assets<SpriteSheet>>()
-            .insert(
-                Handle::<SpriteSheet>::default().id(),
-                SpriteSheet { frames: vec![], images: vec![], palette: None },
-            )
-            .unwrap();
         let character = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
         let member = app.world_mut().spawn((Vitals::new(&character), character)).id();
         crate::game::party::roster::test_party(app.world_mut(), &[member]);

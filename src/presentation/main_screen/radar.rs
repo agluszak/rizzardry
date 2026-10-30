@@ -7,17 +7,16 @@ use crate::game::world::obstacles::WorldObstacles;
 use bevy::prelude::*;
 use bevy::ui_widgets::Activate;
 
-use super::{MainScreenArt, layer, loaded};
-use crate::content::ui::SpriteSheet;
+use super::{MainScreenArt, layer};
 use crate::presentation::automap::OpenAutomap;
 use crate::presentation::party_view::PartyCamera;
-use crate::presentation::screen_art::{absolute, sprite};
+use crate::presentation::screen_art::{absolute, picture};
 
-pub fn panel(art: &MainScreenArt, sheets: &Assets<SpriteSheet>) -> impl SceneList {
+pub fn panel(art: &MainScreenArt) -> impl SceneList {
     let at = Vec2::new(30.0, 359.0);
-    let disc = sprite(loaded(sheets, &art.radar_disc), 0, at);
-    let cone = sprite(loaded(sheets, &art.view_cone), 0, at);
-    let rim = sprite(loaded(sheets, &art.radar_rim), 0, at);
+    let disc = picture(art.radar_disc.clone(), 0, at);
+    let cone = picture(art.view_cone.clone(), 0, at);
+    let rim = picture(art.radar_rim.clone(), 0, at);
     // Left-clicking the radar opens the automap (retail region 0x62, a
     // circle of radius 46 about (75, 402)).
     let disc_area = Node {

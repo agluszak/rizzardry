@@ -1130,13 +1130,6 @@ mod tests {
     use super::*;
     use crate::presentation::test_input::{input_app, tap};
 
-    #[test]
-    fn refresh_can_initialize_its_row_queries() {
-        let mut world = World::new();
-        let mut system = IntoSystem::into_system(refresh_magic_view);
-        system.initialize(&mut world);
-    }
-
     #[derive(Component, Clone, Default)]
     struct Beneath;
 

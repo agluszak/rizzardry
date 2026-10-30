@@ -24,7 +24,7 @@ use bevy_enhanced_input::prelude::*;
 use enumset::EnumSet;
 
 use super::screen_art::{
-    BitmapText, Picture, absolute, centred, empty_hands, label, picture, rect, screen, sprite,
+    BitmapText, Picture, absolute, centred, empty_hands, label, picture, rect, screen,
 };
 use crate::content::items::QuantityKind;
 use crate::content::ui::SpriteSheet;
@@ -374,9 +374,6 @@ impl CloseReview<'_, '_> {
     }
 }
 
-#[derive(Component)]
-pub struct InventoryBuilt;
-
 /// The race's statue on the item page (`statue_<race>_<m|f>.sti`).
 fn statue(race: Race, gender: Gender) -> String {
     let race = match race {
@@ -617,99 +614,30 @@ fn cell_controls(cell: Cell, art: &InventoryArt) -> impl Scene {
     }
 }
 
-/// Build the screen when it opens, once its fixed art has loaded; remove
-/// it when it closes.
-pub fn spawn_inventory_screen(
+/// The root owns its controls immediately; the renderer resolves artwork as it arrives.
+fn spawn_inventory_screen(
+    added: On<Add<InventoryRoot>>,
     mut commands: Commands,
     art: Res<InventoryArt>,
-    assets: Res<AssetServer>,
-    mut next: ResMut<NextState<Screen>>,
     focus: Option<ResMut<bevy::input_focus::InputFocus>>,
-    sheets: Res<Assets<SpriteSheet>>,
-    roots: Query<Entity, (With<InventoryRoot>, Without<InventoryBuilt>)>,
-    strings: GameStrings,
 ) {
-    let Ok(root) = roots.single() else { return };
-    if [
-        &art.corner,
-        &art.portrait_highlight,
-        &art.page,
-        &art.bottom_bar,
-        &art.page_buttons,
-        &art.item_buttons,
-        &art.stats_page,
-        &art.magic_page,
-        &art.skills_page,
-        &art.skills_icons,
-        &art.slider,
-        &art.combat_panel,
-        &art.combat_buttons,
-        &art.effect_filters,
-        &art.scroll,
-        &art.column,
-        &art.health,
-        &art.stamina,
-        &art.left_plug,
-        &art.right_plug,
-        &art.condition_rim,
-        &art.gold_icon,
-        &art.exit,
-        &art.bold,
-        &art.small_font,
-        &art.green,
-        &art.yellow,
-        &art.gray,
-        &art.beige,
-        &art.blue,
-        &art.bronze,
-        &art.red,
-        &art.leveling_bar,
-        &art.info_dialog,
-        &art.info_buttons,
-        &art.highlights,
-        &art.unusable,
-        &art.unidentified,
-        &art.font,
-    ]
-    .into_iter()
-    .chain(art.realms.iter())
-    .any(|handle| matches!(assets.get_load_state(handle), Some(bevy::asset::LoadState::Failed(_))))
-        || strings.failed(&assets)
-        || matches!(assets.get_load_state(&art.fill), Some(bevy::asset::LoadState::Failed(_)))
-    {
-        // Presentation failure hides the view, but does not accept a put-away.
-        // The hand still owns its item and world controls can handle it.
-        warn!("inventory artwork failed to load; returning to the world");
-        next.set(Screen::World);
-        return;
-    }
-    let get = |handle: &Handle<SpriteSheet>| sheets.get(handle);
-    let (Some(corner), Some(page), Some(bar), Some(gold), Some(exit)) = (
-        get(&art.corner),
-        get(&art.page),
-        get(&art.bottom_bar),
-        get(&art.gold_icon),
-        get(&art.exit),
-    ) else {
-        return;
-    };
+    let root = added.entity;
     let fixed = vec![
-        sprite(page, 0, Vec2::new(310.0, 0.0)),
-        sprite(page, 1, Vec2::new(0.0, 165.0)),
-        sprite(page, 2, Vec2::new(113.0, 165.0)),
-        sprite(page, 3, Vec2::new(478.0, 165.0)),
-        sprite(gold, 0, Vec2::new(514.0, 422.0)),
+        picture(art.page.clone(), 0, Vec2::new(310.0, 0.0)),
+        picture(art.page.clone(), 1, Vec2::new(0.0, 165.0)),
+        picture(art.page.clone(), 2, Vec2::new(113.0, 165.0)),
+        picture(art.page.clone(), 3, Vec2::new(478.0, 165.0)),
+        picture(art.gold_icon.clone(), 0, Vec2::new(514.0, 422.0)),
     ];
-    let exit = sprite(exit, 16, Vec2::new(596.0, 450.0));
-    let corner = sprite(corner, 0, Vec2::ZERO);
-    let bottom_bar = sprite(bar, 0, Vec2::new(0.0, 450.0));
+    let exit = picture(art.exit.clone(), 16, Vec2::new(596.0, 450.0));
+    let corner = picture(art.corner.clone(), 0, Vec2::ZERO);
+    let bottom_bar = picture(art.bottom_bar.clone(), 0, Vec2::new(0.0, 450.0));
     let cells: Vec<_> = EnumSet::<EquipSlot>::all()
         .iter()
         .map(|slot| Cell::Member(Slot::Equipment(slot)))
         .chain((0..BACKPACK_SLOTS).map(|i| Cell::Member(Slot::Backpack(i))))
         .map(|cell| cell_controls(cell, &art))
         .collect();
-    commands.entity(root).insert(InventoryBuilt);
     let content = commands
         .spawn_scene(bsn! {
             @screen() ChildOf(root)
@@ -1325,10 +1253,10 @@ impl Plugin for InventoryPlugin {
                     .before(EnhancedInputSystems::Update),
             )
             .add_systems(OnEnter(Screen::Inventory), enter_inventory)
+            .add_observer(spawn_inventory_screen)
             .add_systems(
                 Update,
                 (
-                    spawn_inventory_screen,
                     (
                         sync_member_portraits,
                         draw_header,
@@ -1340,7 +1268,6 @@ impl Plugin for InventoryPlugin {
                         draw_gold,
                         draw_cells,
                     )
-                        .after(spawn_inventory_screen)
                         .after(GameplaySet::Burden)
                         .run_if(any_with_component::<InventoryScreen>),
                     follow_held,
@@ -1361,7 +1288,6 @@ impl Plugin for InventoryPlugin {
                     spells::refresh,
                     pool_scroll::sync.before(draw_cells),
                 )
-                    .after(spawn_inventory_screen)
                     .after(GameplaySet::Burden),
             );
     }
@@ -1554,9 +1480,10 @@ mod tests {
             app.world_mut().get_mut::<PartyInventory>(party).unwrap().hand.held = Some(item);
             app.world_mut().resource_mut::<super::super::main_screen::SelectedMember>().0 =
                 Some(member);
-            app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Inventory);
             app.finish();
             app.cleanup();
+            app.update();
+            app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Inventory);
             app.update();
             if !still_a_member {
                 app.world_mut()
@@ -1566,8 +1493,8 @@ mod tests {
             if explicit_close {
                 key(&mut app, window, KeyCode::Escape, true);
             } else {
-                // The artwork-failure path only hides the screen. It must not
-                // implicitly accept an inventory operation through OnExit.
+                // A screen transition must not implicitly accept an inventory
+                // operation through OnExit.
                 app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::World);
             }
             app.update();
@@ -1731,27 +1658,6 @@ mod tests {
         app.finish();
         app.cleanup();
         app.update();
-        let frame =
-            crate::content::ui::Frame { offset: [0, 0], width: 1, height: 1, rgba: vec![255; 4] };
-        let sheet = app.world_mut().resource_mut::<Assets<SpriteSheet>>().add(SpriteSheet {
-            frames: vec![frame; 100],
-            images: vec![Handle::default(); 100],
-            palette: None,
-        });
-        let strings = app
-            .world_mut()
-            .resource_mut::<Assets<crate::content::ui::TextTable>>()
-            .add(crate::content::ui::TextTable(vec![Some(String::new()); 0xa00]));
-        app.insert_resource(crate::presentation::screen_art::StringTable(strings));
-        app.world_mut().insert_resource(InventoryArt {
-            corner: sheet.clone(),
-            page: sheet.clone(),
-            bottom_bar: sheet.clone(),
-            gold_icon: sheet.clone(),
-            exit: sheet.clone(),
-            font: sheet,
-            ..default()
-        });
         tap(&mut app, window, KeyCode::KeyI);
         for _ in 0..3 {
             app.update();
@@ -1803,6 +1709,27 @@ mod tests {
         for entity in [pool_cell, item_detail] {
             assert!(!app.world().get::<InheritedVisibility>(entity).unwrap().get());
         }
+        // Controls already work without artwork. The information popup also
+        // needs its text sources, which can arrive after the review opens.
+        let font = app.world_mut().resource_mut::<Assets<SpriteSheet>>().add(SpriteSheet {
+            frames: vec![
+                crate::content::ui::Frame {
+                    offset: [0, 0],
+                    width: 1,
+                    height: 1,
+                    rgba: vec![255; 4],
+                };
+                100
+            ],
+            images: vec![],
+            palette: None,
+        });
+        app.world_mut().resource_mut::<InventoryArt>().font = font;
+        let strings = app
+            .world_mut()
+            .resource_mut::<Assets<crate::content::ui::TextTable>>()
+            .add(crate::content::ui::TextTable(vec![]));
+        app.insert_resource(crate::presentation::screen_art::StringTable(strings));
         let target = app
             .world_mut()
             .query::<(Entity, &info::InfoTarget)>()
