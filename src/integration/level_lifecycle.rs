@@ -866,7 +866,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
         body.max_hp = 9;
     }
     // A merchant re-enters at authored quote zero even after its greeting was remembered.
-    use crate::game::npcs::conversation::{self, Conversation, ConversationRequest};
+    use crate::game::npcs::conversation::{self, Conversation, ConversationRequest, Talk};
     let at = app.world().get::<Transform>(body).unwrap().translation;
     let party = party_entities(&mut app)[0];
     app.world_mut().get_mut::<avian3d::prelude::Position>(party).unwrap().0 = at + Vec3::X;
@@ -879,7 +879,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
             app.world().get::<Conversation>(session).unwrap().wait
         {
             app.world_mut()
-                .write_message(ConversationRequest::Advance { conversation: session, speech });
+                .write_message(ConversationRequest::new(session, Talk::Advance { speech }));
             app.update();
         }
         // Buying one and selling it back, through the merchant's definition
@@ -894,23 +894,23 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
                 conversation::quote_trade(app.world_mut(), session, TradeSource::Stock(lot), 1)
                     .unwrap();
             // A confirmation buys once, however often it arrives.
-            app.world_mut().write_message(ConversationRequest::Trade(quote));
-            app.world_mut().write_message(ConversationRequest::Trade(quote));
+            app.world_mut().write_message(ConversationRequest::trade(quote));
+            app.world_mut().write_message(ConversationRequest::trade(quote));
             app.update();
-            app.world_mut().write_message(ConversationRequest::Trade(quote));
+            app.world_mut().write_message(ConversationRequest::trade(quote));
             app.update();
             assert_eq!(purse(&app), 10_000 - quote.gold);
             assert_eq!(app.world().get::<Npc>(actor).unwrap().stock.lots[0].units, 1);
             let bought = app.world().get::<PartyInventory>(party).unwrap().pool.stacks[0].id;
             let source = TradeSource::Party(ItemRef { owner: ItemOwner::Pool, id: bought });
             let sale = conversation::quote_trade(app.world_mut(), session, source, 1).unwrap();
-            app.world_mut().write_message(ConversationRequest::Trade(sale));
-            app.world_mut().write_message(ConversationRequest::Trade(sale));
+            app.world_mut().write_message(ConversationRequest::trade(sale));
+            app.world_mut().write_message(ConversationRequest::trade(sale));
             app.update();
             assert_eq!(purse(&app), 10_000 - quote.gold + sale.gold);
             assert!(app.world().get::<PartyInventory>(party).unwrap().pool.stacks.is_empty());
         }
-        app.world_mut().write_message(ConversationRequest::Close { conversation: session });
+        app.world_mut().write_message(ConversationRequest::new(session, Talk::Close));
         app.update();
         assert!(app.world().get_entity(session).is_err());
     }

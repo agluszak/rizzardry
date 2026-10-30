@@ -384,6 +384,7 @@ impl Plugin for NpcPlugin {
             .init_resource::<conversation::StoryFacts>()
             .init_resource::<conversation::NoAnswerTurn>()
             .add_message::<conversation::ConversationRequest>()
+            .add_message::<conversation::BeginConversation>()
             .add_message::<conversation::PartyRemark>()
             .add_message::<conversation::NpcSpeech>()
             .add_observer(conversation::end_conversations)

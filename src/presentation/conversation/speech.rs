@@ -1,6 +1,6 @@
 //! Speech pacing lives on the session's line entity, independently of its UI.
 use crate::game::npcs::conversation::{
-    ConversationRequest, ConversationSpeech, update_conversation,
+    ConversationRequest, ConversationSpeech, Talk, update_conversation,
 };
 use bevy::prelude::*;
 
@@ -81,7 +81,7 @@ fn advance_lines(
         *remaining -= time.delta_secs();
         if *remaining <= 0.0 {
             *pace = LinePace::Said;
-            requests.write(ConversationRequest::Advance { conversation: parent.parent(), speech });
+            requests.write(ConversationRequest::new(parent.parent(), Talk::Advance { speech }));
         }
     }
 }
@@ -101,6 +101,7 @@ mod tests {
                 std::time::Duration::from_millis(100),
             ))
             .add_message::<ConversationRequest>()
+            .add_message::<crate::game::npcs::conversation::BeginConversation>()
             .add_plugins(plugin);
         let conversation = app.world_mut().spawn_empty().id();
         let speech = app
@@ -127,7 +128,7 @@ mod tests {
         assert!((23..=25).contains(frame), "{frame}");
         assert!(matches!(
             request,
-            ConversationRequest::Advance { conversation: c, speech: s }
+            ConversationRequest { conversation: c, talk: Talk::Advance { speech: s } }
                 if *c == conversation && *s == speech
         ));
     }

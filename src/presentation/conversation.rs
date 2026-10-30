@@ -305,7 +305,7 @@ fn advance_bubble(
     if let Ok(conversation) = sessions.get(session)
         && let ConversationWait::Line { speech, .. } = conversation.wait
     {
-        requests.write(ConversationRequest::Advance { conversation: session, speech });
+        requests.write(ConversationRequest::new(session, Talk::Advance { speech }));
     }
 }
 
@@ -551,10 +551,10 @@ fn activate_choice(
     let (_, session) = (views.root(), views.session());
     requests.write(match &choice.answer {
         Answer::Reply(text) => {
-            ConversationRequest::Reply { conversation: session, text: text.clone() }
+            ConversationRequest::new(session, Talk::Reply { text: text.clone() })
         }
         Answer::Price(accept) => {
-            ConversationRequest::PriceAnswer { conversation: session, accept: *accept }
+            ConversationRequest::new(session, Talk::PriceAnswer { accept: *accept })
         }
     });
 }
@@ -916,8 +916,10 @@ impl SubmitTopic {
         }
         let text = text.value().to_string();
         Some(match *self {
-            Self::Ask => ConversationRequest::Topic { conversation, text },
-            Self::Edit(edit) => ConversationRequest::EditNotebook { conversation, edit, text },
+            Self::Ask => ConversationRequest::new(conversation, Talk::Topic { text }),
+            Self::Edit(edit) => {
+                ConversationRequest::new(conversation, Talk::EditNotebook { edit, text })
+            }
         })
     }
 }
@@ -937,10 +939,10 @@ fn submit_topic(
         if let Some(request) = submit.request(text, session) {
             let c = sessions.get(session).unwrap();
             let request = match request {
-                ConversationRequest::Topic { conversation, text }
+                ConversationRequest { conversation, talk: Talk::Topic { text } }
                     if matches!(c.wait, ConversationWait::Options { typed: true, .. }) =>
                 {
-                    ConversationRequest::Reply { conversation, text }
+                    ConversationRequest::new(conversation, Talk::Reply { text })
                 }
                 request => request,
             };
@@ -963,6 +965,7 @@ pub(crate) mod tests {
             .add_observer(create_view)
             .add_observer(close_views)
             .add_message::<ConversationRequest>()
+            .add_message::<BeginConversation>()
             .add_systems(Update, sync_transcript);
         let actor = app.world_mut().spawn_empty().id();
         let mut conversation = make(actor);
@@ -1002,7 +1005,7 @@ pub(crate) mod tests {
         let requests: Vec<_> =
             app.world_mut().resource_mut::<Messages<ConversationRequest>>().drain().collect();
         assert!(
-            matches!(&requests[..], [ConversationRequest::Advance { conversation, speech: line }]
+            matches!(&requests[..], [ConversationRequest { conversation, talk: Talk::Advance { speech: line } }]
             if *conversation == session && *line == speech)
         );
         app.world_mut().get_mut::<Conversation>(session).unwrap().wait = ConversationWait::Ready;
@@ -1033,7 +1036,7 @@ pub(crate) mod tests {
         for edit in [NotebookEdit::Remember, NotebookEdit::Forget] {
             let request = SubmitTopic::Edit(edit).request(&text, session).unwrap();
             assert!(matches!(request,
-                ConversationRequest::EditNotebook { conversation, edit: action, text }
+                ConversationRequest { conversation, talk: Talk::EditNotebook { edit: action, text } }
                 if conversation == session && action == edit && text == " Ship "
             ));
         }
@@ -1059,6 +1062,7 @@ pub(crate) mod tests {
             .init_resource::<SelectedMember>()
             .init_resource::<InputFocus>()
             .add_message::<ConversationRequest>()
+            .add_message::<BeginConversation>()
             .add_plugins(ConversationViewPlugin)
             .add_systems(Update, super::super::screen_art::render_text.after(sync_topic_rows));
         app.world_mut().resource_mut::<StoryFacts>().topics =

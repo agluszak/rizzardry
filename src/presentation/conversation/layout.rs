@@ -193,24 +193,19 @@ fn edit_state(
     );
 }
 /// Activating `button` asks this of its view's conversation.
-fn request_on(
-    world: &mut World,
-    button: Entity,
-    root: Entity,
-    request: impl Fn(Entity) -> ConversationRequest + Send + Sync + 'static,
-) {
+fn request_on(world: &mut World, button: Entity, root: Entity, talk: Talk) {
     world.entity_mut(button).observe(
         move |_: On<Activate>,
               roots: Query<&ConversationView>,
               mut requests: MessageWriter<ConversationRequest>| {
             if let Ok(view) = roots.get(root) {
-                requests.write(request(view.0));
+                requests.write(ConversationRequest::new(view.0, talk.clone()));
             }
         },
     );
 }
 fn leave_on(world: &mut World, button: Entity, root: Entity) {
-    request_on(world, button, root, |conversation| ConversationRequest::Close { conversation });
+    request_on(world, button, root, Talk::Close);
 }
 /// Retail `ShowNpcDialogueTopicMenu`: an NPC not yet friendly may be
 /// charmed, talked to or bribed before it talks of anything else.
@@ -242,10 +237,7 @@ fn build_menu(world: &mut World, canvas: Entity, root: Entity) {
             0 | 1 => {
                 let approach = if i == 0 { Approach::Charm } else { Approach::SmallTalk };
                 world.entity_mut(e).insert(ApproachButton(approach));
-                request_on(world, e, root, move |conversation| ConversationRequest::Approach {
-                    conversation,
-                    approach,
-                });
+                request_on(world, e, root, Talk::Approach { approach });
             }
             // Retail's bribe opens the give layout.
             2 => {
@@ -302,9 +294,7 @@ fn build_actions(world: &mut World, group: Entity, root: Entity, trade: bool) {
                 });
             }
             (false, 3) => {
-                request_on(world, e, root, |conversation| ConversationRequest::Recruit {
-                    conversation,
-                });
+                request_on(world, e, root, Talk::Recruit);
             }
             (false, 5) => leave_on(world, e, root),
             (true, 4..=5) => {
@@ -467,18 +457,17 @@ fn build_offer(world: &mut World, group: Entity, root: Entity, canvas: Entity) {
                 && amount > 0
                 && let Ok(view) = roots.get(root)
             {
-                requests.write(ConversationRequest::GiveGold { conversation: view.0, amount });
+                requests.write(ConversationRequest::new(view.0, Talk::GiveGold { amount }));
                 state.set_mode(Mode::Talk);
             } else if let Some(q) = state.quote()
                 && roots.get(root).is_ok_and(|v| v.0 == q.conversation)
             {
                 if state.mode != Mode::Give {
-                    requests.write(ConversationRequest::Trade(q));
+                    requests.write(ConversationRequest::trade(q));
                     // The trade settles the selection.
                     state.offer = None;
                 } else if let TradeSource::Party(item) = q.source {
-                    requests
-                        .write(ConversationRequest::Give { conversation: q.conversation, item });
+                    requests.write(ConversationRequest::new(q.conversation, Talk::Give { item }));
                     // Retail returns to the transcript for the answer.
                     state.set_mode(Mode::Talk);
                 }
@@ -662,7 +651,7 @@ pub(super) fn build(world: &mut World, session: Entity) -> Entity {
                 if state.mode != Mode::Talk {
                     state.set_mode(Mode::Talk);
                 } else {
-                    requests.write(ConversationRequest::Close { conversation: view.0 });
+                    requests.write(ConversationRequest::new(view.0, Talk::Close));
                 }
             }
         },
