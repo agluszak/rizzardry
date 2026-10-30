@@ -1260,7 +1260,6 @@ fn mana_fountains_share_use_and_refill_history_and_restore_deficits() {
     let mut points = SpellPoints::default();
     use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
     use crate::game::magic::LearnedSpells;
-    scene.world.init_resource::<Assets<SpellCatalog>>();
     let spells = SpellCatalog(vec![
         SpellDefinition::default(),
         SpellDefinition { id: SpellId(1), realm: Some(Realm::Fire), cost: 8, ..default() },
@@ -1323,7 +1322,6 @@ fn restorative_fountains_require_spell_content_before_consuming_a_use() {
     }
     assert!(!scene.run("TEMPLE").0);
     assert!(scene.world.get::<FountainState>(scene.device("TEMPLE")).unwrap().used.is_none());
-    scene.world.init_resource::<Assets<SpellCatalog>>();
     let mut definitions = vec![SpellDefinition::default(); 69];
     definitions[68] = SpellDefinition {
         id: SpellId::HEAL_ALL,

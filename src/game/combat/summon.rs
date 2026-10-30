@@ -210,7 +210,6 @@ mod tests {
         .insert_resource(GameRng::seeded(3))
         .init_resource::<crate::game::factions::Factions>()
         .init_asset::<MonsterBody>()
-        .init_asset::<MonsterCatalog>()
         .init_asset::<LevelDefinition>()
         .init_resource::<Assets<WalkerMotionConfig>>()
         .add_message::<Summon>()

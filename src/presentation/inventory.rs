@@ -1399,7 +1399,6 @@ mod tests {
             .init_asset::<SpriteSheet>()
             .init_asset::<TextTable>()
             .init_asset::<Image>()
-            .init_asset::<ItemCatalog>()
             .init_resource::<UiScale>()
             .add_message::<crate::game::inventory::ItemNews>()
             .add_observer(crate::game::inventory::operations::put_away_held)
@@ -1420,7 +1419,6 @@ mod tests {
         };
         let mut app = crate::presentation::test_input::input_app();
         app.init_asset::<SpriteSheet>()
-            .init_asset::<ItemCatalog>()
             .add_message::<crate::game::inventory::ItemNews>()
             .init_resource::<ItemIds>()
             .init_resource::<crate::game::rng::GameRng>()

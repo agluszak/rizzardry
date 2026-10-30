@@ -644,13 +644,6 @@ pub fn perform(
     // Instruments can pay fatigue while finding power, so validate the target
     // first. Radius changes may widen victims but cannot rescue an invalid aim.
     capture(caster, spell, choice.aim, situation, forced_self)?;
-    if (spell.targeting == Targeting::Radius
-        || spell.id == SpellId::BOILING_BLOOD
-        || spell.id == SpellId::RING_OF_FIRE)
-        && world.visibility.is_none()
-    {
-        return Err(Refusal::MissingContent);
-    }
     let power = match &item {
         Some(use_) if matches!(use_.definition.use_type, UseType::Instrument | UseType::Gadget) => {
             play(caster, &character, use_, spell, rng, world.members)?

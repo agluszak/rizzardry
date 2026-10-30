@@ -523,7 +523,7 @@ pub struct MagicContext<'w, 's> {
     pub news: MessageWriter<'w, casting::MagicNews>,
     level: Single<'w, 's, Entity, With<crate::game::world::level::Level>>,
     level_rules: Query<'w, 's, &'static crate::game::world::triggers::LevelState>,
-    visibility: Option<crate::game::world::obstacles::WorldObstacles<'w, 's>>,
+    visibility: crate::game::world::obstacles::WorldObstacles<'w, 's>,
     /// Missiles leave in launch order, so equal arrivals land in it too.
     pub flight_order: ResMut<'w, casting::FlightOrder>,
     provocations: MessageWriter<'w, crate::game::world::hostility::Provocation>,
@@ -573,7 +573,7 @@ impl MagicContext<'_, '_> {
         );
         let items = &self.content.items;
         let mut field = Field {
-            visibility: self.visibility.as_ref(),
+            visibility: &self.visibility,
             underwater: self.level_rules.get(*self.level).is_ok_and(|state| state.camera_sway),
             members,
             monsters,
@@ -731,7 +731,6 @@ pub fn deliver_spells(
     if flights.iter().any(|(_, flight)| {
         spells.get(flight.spell).is_none()
             || !impacts::ready(flight.spell, spells)
-            || flight.spell == SpellId::BOILING_BLOOD && context.visibility.is_none()
             || flight.spell == SpellId::BOILING_BLOOD && party_at.is_none()
     }) {
         return;
@@ -877,10 +876,6 @@ mod tests {
         use casting::{Aim, MagicChoice, MagicNews, Refusal, Source};
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-            .init_asset::<ItemCatalog>()
-            .init_asset::<MonsterCatalog>()
-            .init_asset::<SpellCatalog>()
-            .init_asset::<LootTables>()
             .init_resource::<crate::game::factions::Factions>()
             .init_resource::<crate::game::time::GameClock>()
             .add_message::<crate::game::factions::FactionNews>()
@@ -1049,10 +1044,6 @@ mod tests {
         ] {
             let mut app = App::new();
             app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-                .init_asset::<ItemCatalog>()
-                .init_asset::<MonsterCatalog>()
-                .init_asset::<SpellCatalog>()
-                .init_asset::<LootTables>()
                 .init_resource::<crate::game::factions::Factions>()
                 .init_resource::<crate::game::time::GameClock>()
                 .add_message::<crate::game::factions::FactionNews>()

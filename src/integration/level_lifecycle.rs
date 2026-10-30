@@ -3,7 +3,7 @@
 //! keeps the source authoritative until the destination can commit, or
 //! leaves it untouched when destination preparation fails.
 
-use crate::content::items::{ItemCatalog, LootTables};
+use crate::content::items::ItemCatalog;
 use crate::content::level::{CollisionMesh, LevelDefinition, MonsterPlacement};
 use crate::content::monster::MonsterBody;
 use crate::content::species::{MonsterCatalog, Species};
@@ -28,10 +28,6 @@ fn app() -> App {
         .add_plugins(crate::game::npcs::NpcPlugin)
         .init_resource::<crate::game::time::GameClock>()
         .init_asset::<LevelDefinition>()
-        .init_asset::<ItemCatalog>()
-        .init_asset::<LootTables>()
-        .init_asset::<MonsterCatalog>()
-        .init_asset::<crate::content::spells::SpellCatalog>()
         .init_asset::<bevy_landmass::NavMesh3d>()
         .init_asset::<MonsterBody>()
         .init_asset::<crate::content::ui::TextTable>()

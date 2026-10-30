@@ -243,7 +243,6 @@ mod tests {
             PhysicsPlugins::default(),
             bevy::state::app::StatesPlugin,
         ))
-        .init_resource::<Assets<ItemCatalog>>()
         .add_message::<ItemNews>()
         .add_message::<WorldRequest>()
         .add_systems(Update, super::super::handle_world_requests);
@@ -311,7 +310,6 @@ mod tests {
         use avian3d::prelude::Position;
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .init_resource::<Assets<ItemCatalog>>()
             .add_message::<ItemNews>()
             .add_message::<super::super::WorldRequest>()
             .add_systems(Update, super::super::handle_world_requests);

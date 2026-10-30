@@ -127,7 +127,7 @@ mod tests {
 pub(crate) fn pass_time(
     time: Res<Time>,
     camp: Option<Res<Camp>>,
-    search: Option<Res<crate::game::world::search::Search>>,
+    search: Res<crate::game::world::search::Search>,
     battle: Option<Single<&crate::game::combat::Battle>>,
     party: Query<(&Position, &PartyBody, &LinearVelocity)>,
     roster: Single<&PartyRoster>,
@@ -206,7 +206,7 @@ pub(crate) fn pass_time(
                 body.forward(),
                 None,
                 enchantments.0.has(crate::content::spells::SpellId::SHADOW_HOUND),
-                search.as_ref().is_some_and(|s| s.on(false)),
+                search.on(false),
                 &mut rng,
             );
         }
@@ -229,10 +229,9 @@ mod pass_time_tests {
             .insert_resource(Time::<Fixed>::from_hz(64.0))
             .insert_resource(GameClock::at(0))
             .init_resource::<GameRng>()
+            .init_resource::<crate::game::world::search::Search>()
             .init_resource::<crate::game::factions::Factions>()
             .add_message::<crate::game::factions::FactionNews>()
-            .init_resource::<Assets<crate::content::species::MonsterCatalog>>()
-            .init_resource::<Assets<crate::content::spells::SpellCatalog>>()
             .init_resource::<Assets<crate::content::level::LevelDefinition>>()
             .add_message::<crate::game::world::identify::Identified>()
             .add_message::<CampNews>()

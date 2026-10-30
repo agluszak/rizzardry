@@ -239,9 +239,7 @@ mod settlement_tests {
             [(false, false, true), (true, false, true), (false, true, true), (false, false, false)]
         {
             let mut app = App::new();
-            app.init_resource::<Assets<ItemCatalog>>()
-                .add_message::<ItemNews>()
-                .add_observer(put_away_held);
+            app.add_message::<ItemNews>().add_observer(put_away_held);
             let definition =
                 ItemDefinition { quantity: QuantityKind::Stack, stack_limit: 20, ..default() };
             let mut ids = ItemIds::default();

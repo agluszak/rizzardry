@@ -992,10 +992,9 @@ pub(super) fn monster_attacks(
             if other != entity
                 && !body.is_dead()
                 && field.monsters.active(other)
-                && field.visibility.is_some_and(|obstacles| {
-                    obstacles
-                        .clear(eye, body_centre(feet(other_at.translation(), other_walker), body))
-                })
+                && field
+                    .visibility
+                    .clear(eye, body_centre(feet(other_at.translation(), other_walker), body))
                 && (fight.attacks)(Victim::Monster(other))
                 && gap <= attack.reach.metres()
             {

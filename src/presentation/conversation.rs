@@ -2358,7 +2358,7 @@ fn advance_lines(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::content::{items::ItemCatalog, ui::TextTable};
+    use crate::content::ui::TextTable;
 
     pub(crate) fn check_session_views(
         make: impl Fn(Entity, Handle<crate::content::npcs::DialogueScript>) -> Conversation,
@@ -2566,7 +2566,6 @@ pub(crate) mod tests {
             .init_resource::<crate::game::time::GameClock>()
             .init_resource::<Assets<NpcCatalog>>()
             .init_resource::<Assets<TextTable>>()
-            .init_resource::<Assets<ItemCatalog>>()
             .init_resource::<NpcAssets>()
             .init_resource::<SelectedMember>()
             .init_resource::<InputFocus>()

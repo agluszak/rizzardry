@@ -281,7 +281,6 @@ mod tests {
             .init_resource::<crate::game::factions::Factions>()
             .init_resource::<avian3d::collider_tree::ColliderTrees>()
             .init_resource::<Assets<LevelDefinition>>()
-            .init_resource::<Assets<MonsterCatalog>>()
             .insert_resource(GameRng::seeded(4))
             .add_message::<Identified>()
             .add_systems(

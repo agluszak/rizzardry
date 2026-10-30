@@ -551,7 +551,7 @@ fn burn_stack(
 /// What a spell's effects need from the world.
 pub struct Field<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
     pub underwater: bool,
-    pub visibility: Option<&'a crate::game::world::obstacles::WorldObstacles<'a, 'a>>,
+    pub visibility: &'a crate::game::world::obstacles::WorldObstacles<'a, 'a>,
     pub enchantments: &'a mut super::enchantments::Enchantments,
     pub members: &'a mut Members<'m, 'ms>,
     pub monsters: &'a mut MonsterDamage<'d, 'ds>,

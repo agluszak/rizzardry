@@ -208,7 +208,6 @@ mod tests {
     fn armour_labels_follow_live_inputs_and_clear_without_equipment() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .init_resource::<Assets<ItemCatalog>>()
             .insert_resource(InventoryArt::default())
             .add_systems(Update, refresh);
         let items = ItemCatalog(vec![]);

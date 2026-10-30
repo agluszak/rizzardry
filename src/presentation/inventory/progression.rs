@@ -481,8 +481,6 @@ mod tests {
         let mut app = crate::presentation::test_input::input_app();
         app.init_asset::<SpriteSheet>()
             .init_asset::<TextTable>()
-            .init_asset::<SpellCatalog>()
-            .init_asset::<ItemCatalog>()
             .init_resource::<InventoryArt>()
             .init_resource::<crate::game::inventory::ItemIds>()
             .init_resource::<crate::game::rng::GameRng>()

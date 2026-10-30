@@ -474,7 +474,6 @@ mod tests {
         use crate::game::world::population::{Monster, ScaledBody};
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .init_resource::<Assets<MonsterCatalog>>()
             .init_resource::<avian3d::collider_tree::ColliderTrees>()
             .init_resource::<Factions>()
             .init_resource::<GameClock>()

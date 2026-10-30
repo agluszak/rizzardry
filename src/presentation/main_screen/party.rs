@@ -861,7 +861,6 @@ mod tests {
         use crate::game::rng::GameRng;
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-            .init_asset::<ItemCatalog>()
             .init_resource::<SelectedMember>()
             .init_resource::<ButtonInput<MouseButton>>()
             .add_message::<crate::game::inventory::ItemNews>()

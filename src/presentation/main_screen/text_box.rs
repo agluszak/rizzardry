@@ -324,7 +324,7 @@ pub fn draw_text_box(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::{species::MonsterCatalog, ui::SpriteSheet, ui::TextTable};
+    use crate::content::{ui::SpriteSheet, ui::TextTable};
     use crate::game::{
         camp::CampNews,
         combat::CombatNews,
@@ -350,8 +350,6 @@ mod tests {
         .add_observer(crate::presentation::retail_controls::primary_buttons_only)
         .init_asset::<SpriteSheet>()
         .init_asset::<TextTable>()
-        .init_asset::<MonsterCatalog>()
-        .init_asset::<crate::content::spells::SpellCatalog>()
         .init_resource::<TextLog>()
         .add_message::<TriggerEffect>()
         .add_message::<CampNews>()

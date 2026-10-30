@@ -1084,7 +1084,6 @@ mod keyboard_tests {
         ))
         .init_asset::<crate::content::ui::Credits>()
         .init_asset::<crate::content::ui::TextTable>()
-        .init_asset::<crate::content::spells::SpellCatalog>()
         .init_asset::<crate::content::spells::SpellText>()
         .init_asset::<Image>()
         .init_asset::<Font>()

@@ -210,7 +210,6 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(TimeUpdateStrategy::ManualDuration(frame))
-            .init_resource::<Assets<MonsterCatalog>>()
             .init_resource::<Ended>()
             .add_systems(FixedPreUpdate, steer_moves)
             .add_systems(FixedPostUpdate, spend_moves)

@@ -653,7 +653,7 @@ mod tests {
     use crate::content::characters::Skill;
     use crate::content::items::{ItemDefinition, ItemId, QuantityKind};
     use crate::content::level::Lock;
-    use crate::content::{items::ItemCatalog, ui::TextTable};
+    use crate::content::ui::TextTable;
     use crate::game::characters::{Gender, Profession, Race};
     use crate::game::inventory::{ItemIds, ItemStack};
     use crate::game::world::interaction::{LockNews, Unable};
@@ -669,7 +669,6 @@ mod tests {
         .add_observer(crate::game::world::interaction::end_attempts)
         .init_asset::<SpriteSheet>()
         .init_asset::<TextTable>()
-        .init_asset::<ItemCatalog>()
         .init_resource::<SelectedMember>()
         .init_resource::<ItemIds>()
         .init_resource::<crate::game::difficulty::Difficulty>()

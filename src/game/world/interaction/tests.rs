@@ -101,8 +101,6 @@ fn a_locked_chest_opens_once_picked_and_stays_unlocked() {
 
 fn with_trap_spell(level: &mut Scenario, spell: crate::content::spells::SpellDefinition) {
     use crate::content::{species::MonsterCatalog, spells::SpellCatalog};
-    level.world.init_resource::<Assets<MonsterCatalog>>();
-    level.world.init_resource::<Assets<SpellCatalog>>();
     level.world.init_resource::<crate::game::factions::Factions>();
     level.world.init_resource::<Messages<crate::game::factions::FactionNews>>();
     level.world.init_resource::<Messages<crate::game::magic::casting::MagicNews>>();

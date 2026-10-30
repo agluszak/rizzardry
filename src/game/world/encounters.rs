@@ -500,7 +500,7 @@ pub fn run_encounters(
     (time, clock, difficulty, mut rng): (
         Res<Time<Fixed>>,
         Res<GameClock>,
-        Option<Res<Difficulty>>,
+        Res<Difficulty>,
         ResMut<GameRng>,
     ),
     content: If<Res<crate::game::data::Catalogs>>,
@@ -516,7 +516,7 @@ pub fn run_encounters(
     let (in_battle, talking) = blocked;
     let in_battle = in_battle.is_some();
     let blocked = in_battle || !talking.is_empty();
-    let difficulty = difficulty.map_or_else(Difficulty::default, |d| *d);
+    let difficulty = *difficulty;
     let now_s = clock.ms / 1000;
     let members = roster.into_iter().flat_map(|roster| roster.iter());
     let level = crate::game::party::mean_level(
@@ -700,9 +700,9 @@ mod tests {
             PhysicsPlugins::default(),
         ))
         .init_resource::<GameClock>()
+        .init_resource::<Difficulty>()
         .insert_resource(GameRng::seeded(9))
         .init_asset::<MonsterBody>()
-        .init_asset::<MonsterCatalog>()
         .init_asset::<LevelDefinition>()
         .init_resource::<Assets<WalkerMotionConfig>>();
         app.finish();

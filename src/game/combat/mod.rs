@@ -774,7 +774,7 @@ pub fn start_battle(
     battles: Query<Entity, With<Battle>>,
     (camp, search, movement, effects): (
         Option<Res<crate::game::camp::Camp>>,
-        Option<Res<crate::game::world::search::Search>>,
+        Res<crate::game::world::search::Search>,
         Query<&crate::game::party::body::PartyMovement>,
         Query<&crate::game::magic::enchantments::PartyEffects>,
     ),
@@ -1081,7 +1081,7 @@ pub fn start_battle(
     info!("combat: {} monsters", joined.len());
     let shadow_hound =
         effects.single().is_ok_and(|e| e.0.has(crate::content::spells::SpellId::SHADOW_HOUND));
-    let searching = search.as_ref().is_some_and(|s| s.on(false));
+    let searching = search.on(false);
     let view = crate::game::world::perception::View {
         eye: sight.eye,
         forward: body.forward(),
@@ -3281,16 +3281,13 @@ mod tests {
             .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
                 std::time::Duration::from_secs(1),
             ))
-            .init_resource::<Assets<ItemCatalog>>()
-            .init_resource::<Assets<MonsterCatalog>>()
-            .init_resource::<Assets<crate::content::spells::SpellCatalog>>()
-            .init_resource::<Assets<LootTables>>()
             .init_resource::<Assets<crate::content::monster::MonsterBody>>()
             .init_resource::<Assets<crate::game::world::navigation::WalkerMotionConfig>>()
             .init_resource::<avian3d::collider_tree::ColliderTrees>()
             .init_resource::<crate::game::factions::Factions>()
             .add_message::<crate::game::factions::FactionNews>()
             .init_resource::<crate::game::difficulty::Difficulty>()
+            .init_resource::<crate::game::world::search::Search>()
             .add_message::<MagicNews>()
             .add_message::<crate::game::world::hostility::Provocation>()
             .init_resource::<ItemIds>()
