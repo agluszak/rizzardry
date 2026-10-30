@@ -846,12 +846,12 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     with_data(&mut app);
     {
         let mut catalogs = app.world_mut().resource_mut::<Catalogs>();
-        catalogs.items.0.push(ItemDefinition {
+        catalogs.items.0[0] = ItemDefinition {
             id: ItemId(0),
             value: 100,
             class: crate::content::items::EquipClass::Potion,
             ..default()
-        });
+        };
         catalogs.species.0[0].npc = Some(NpcId(0));
     }
     let catalog = NpcCatalog(vec![NpcDefinition {
