@@ -612,14 +612,12 @@ pub fn accept_magic(
     mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
     mut context: MagicContext,
     mut rng: ResMut<GameRng>,
-    party: Query<(&avian3d::prelude::Position, &PartyBody)>,
+    party: Single<(&avian3d::prelude::Position, &PartyBody)>,
     mut commands: Commands,
     clock: Res<GameClock>,
 ) {
+    let (party_at, facing) = (PartyBody::eye(party.0), party.1.forward());
     for &MagicRequest { caster, choice } in requests.read() {
-        if !context.roster.contains(&caster) {
-            continue;
-        }
         let spell = choice.source.spell_id(
             members.get(caster).unwrap().2,
             &context.inventory,
@@ -646,15 +644,6 @@ pub fn accept_magic(
             orders.get_mut(caster).unwrap().set_if_neq(crate::game::party::Order::Magic(choice));
             continue;
         }
-        let Ok((party_at, facing)) =
-            party.single().map(|(at, body)| (PartyBody::eye(at), body.forward()))
-        else {
-            context.news.write(casting::MagicNews::Refused {
-                caster,
-                refusal: casting::Refusal::WrongTime,
-            });
-            continue;
-        };
         // Outside a fight no monster is a target: the hostile spells are
         // combat spells.
         let level = context.level();
@@ -688,7 +677,7 @@ pub fn accept_magic(
 /// died meanwhile is missed. Kills in a fight count for it.
 pub fn deliver_spells(
     mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
-    party: Query<&avian3d::prelude::Position, With<PartyBody>>,
+    party: Single<&avian3d::prelude::Position, With<PartyBody>>,
     time: Res<Time<Fixed>>,
     mut flights: Query<(Entity, &mut casting::SpellInFlight)>,
     (mut members, mut monsters): (Members, MonsterDamage),
@@ -702,7 +691,7 @@ pub fn deliver_spells(
     if flights.is_empty() {
         return;
     }
-    let party_at = PartyBody::eye(party.single().unwrap());
+    let party_at = PartyBody::eye(*party);
     // Every impact due in this update, in the order they arrive.
     let mut due = Vec::new();
     for (entity, mut flight) in &mut flights {
