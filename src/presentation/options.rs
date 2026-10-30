@@ -232,11 +232,7 @@ fn style_buttons(
 }
 
 /// The settings shown follow the draft, redrawn only when it changes.
-fn refresh(
-    view: Option<Single<Ref<OptionsView>>>,
-    mut status: Query<&mut BitmapText, With<Status>>,
-) {
-    let Some(view) = view else { return };
+fn refresh(view: Single<Ref<OptionsView>>, mut status: Query<&mut BitmapText, With<Status>>) {
     for mut text in &mut status {
         if !view.is_changed() && !text.is_added() {
             continue;

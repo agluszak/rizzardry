@@ -563,9 +563,8 @@ pub fn paint_buttons(
     levels: PlayedLevel,
     mut commands: Commands,
     buttons: Query<(Entity, &SheetButton, Has<InteractionDisabled>, Has<Selected>)>,
-    automap: Option<Single<Ref<Automap>>>,
+    automap: Single<Ref<Automap>>,
 ) {
-    let Some(automap) = automap else { return };
     let layers = levels.of(automap.level).map(|g| g.map_layers.len());
     for (entity, button, disabled, selected) in &buttons {
         let on = matches!(button.action, ButtonAction::Tool(tool) if automap.tool == Some(tool));
@@ -723,7 +722,7 @@ pub fn glow_note_markers(time: Res<Time>, mut markers: Query<&mut ImageNode, Wit
 
 /// Redraw the raster only when its view changes, not while typing or glowing.
 pub fn update_map_view(
-    automap: Option<Single<Ref<Automap>>>,
+    automap: Single<Ref<Automap>>,
     levels: PlayedLevel,
     plans: Query<(Entity, &ImageNode), With<FloorPlan>>,
     mut images: ResMut<Assets<Image>>,
@@ -731,7 +730,6 @@ pub fn update_map_view(
     mut markers: Query<&mut Node, With<PartyMarker>>,
     mut previous: Local<Option<(Entity, Vec2, f32, usize)>>,
 ) {
-    let Some(automap) = automap else { return };
     let Some(level) = levels.of(automap.level) else {
         return;
     };
@@ -755,11 +753,10 @@ pub fn update_map_view(
 }
 
 pub fn draw_layer_label(
-    automap: Option<Single<&Automap>>,
+    map: Single<&Automap>,
     levels: PlayedLevel,
     mut labels: Query<&mut BitmapText, With<LayerLabel>>,
 ) {
-    let Some(map) = automap else { return };
     let Some(level) = levels.of(map.level) else {
         return;
     };

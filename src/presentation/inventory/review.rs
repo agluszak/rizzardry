@@ -465,11 +465,10 @@ fn words(value: impl std::fmt::Debug) -> String {
     result
 }
 pub(super) fn show_pages(
-    selected: Option<Single<&SelectedTab, With<PageTabs>>>,
+    selected: Single<&SelectedTab, With<PageTabs>>,
     buttons: Query<&PageButton>,
     mut pages: Query<(&Page, &mut Node, &mut Visibility)>,
 ) {
-    let Some(selected) = selected else { return };
     let current = selected.0.and_then(|entity| buttons.get(entity).ok()).map(|button| button.0);
     for (page, mut node, mut visibility) in &mut pages {
         let shown = Some(*page) == current;
@@ -789,10 +788,9 @@ pub(super) fn layout_skills(
 }
 
 pub(super) fn style_info_button(
-    info: Option<Single<&StatsInfo>>,
+    info: Single<&StatsInfo>,
     mut buttons: Query<(&mut ControlSkin, &mut Picture), With<InfoToggle>>,
 ) {
-    let Some(info) = info else { return };
     let base = if info.armour { 10 } else { 15 };
     for (mut skin, mut picture) in &mut buttons {
         skin.set_if_neq(ControlSkin::new(base, base + 2, base + 1, base + 4, base));
@@ -803,11 +801,10 @@ pub(super) fn style_info_button(
 }
 
 pub(super) fn style_effect_buttons(
-    info: Option<Single<&StatsInfo>>,
+    info: Single<&StatsInfo>,
     mut commands: Commands,
     buttons: Query<(Entity, &EffectButton, Has<Selected>)>,
 ) {
-    let Some(info) = info else { return };
     for (entity, button, selected) in &buttons {
         let active = match button.0 {
             0 => info.filter == EffectFilter::Beneficial,

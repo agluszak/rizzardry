@@ -313,7 +313,7 @@ pub(super) fn sync_views(
 }
 
 pub(super) fn refresh(
-    session: Option<Single<Ref<Creation>>>,
+    session: Single<Ref<Creation>>,
     assets: Res<AssetServer>,
     mut commands: Commands,
     controls: Query<(Entity, &Action, Has<InteractionDisabled>), With<Control>>,
@@ -334,7 +334,6 @@ pub(super) fn refresh(
     strings: crate::presentation::screen_art::GameStrings,
     added: Query<(), Or<(Added<Control>, Added<Label>, Added<RowBackground>, Added<SlotFrame>)>>,
 ) {
-    let Some(session) = session else { return };
     if !session.is_changed() && !strings.is_changed() && added.is_empty() {
         return;
     }

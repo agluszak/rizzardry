@@ -252,7 +252,7 @@ pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer)
 }
 
 pub(super) fn refresh(
-    session: Option<Single<Ref<Creation>>>,
+    session: Single<Ref<Creation>>,
     assets: Res<AssetServer>,
     mut inputs: Query<(Entity, &mut BackgroundColor), Or<(With<NameInput>, With<NicknameInput>)>>,
     focus: Res<InputFocus>,
@@ -261,7 +261,6 @@ pub(super) fn refresh(
     mut portraits: Query<&mut Picture, With<Portrait>>,
     mut commands: Commands,
 ) {
-    let Some(session) = session else { return };
     let Some(draft) = session.mode.draft() else { return };
     for (entity, mut background) in &mut inputs {
         background.set_if_neq(BackgroundColor(if focus.get() == Some(entity) {
