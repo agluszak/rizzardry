@@ -4044,6 +4044,46 @@ mod tests {
     /// launch order, whatever the entity order: one long step and many short
     /// ones give the same impacts and leave the RNG in the same state.
     #[test]
+    fn missiles_land_the_same_whatever_the_frame_rate() {
+        let fight_for = |frame: std::time::Duration| {
+            let (mut app, [caster, _]) = round_app(true);
+            app.world_mut().resource_mut::<CombatSettings>().continuous = true;
+            let monster = order_spell(
+                &mut app,
+                caster,
+                crate::content::spells::SpellDefinition { missile: Some(2), ..energy_blast() },
+            );
+            // Far enough for a flight of several steps.
+            app.world_mut().get_mut::<Transform>(monster).unwrap().translation = Vec3::NEG_Z * 20.0;
+            app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(frame));
+            let frames = (6.0 / frame.as_secs_f64()).round() as u32;
+            let mut news = Vec::new();
+            for _ in 0..frames {
+                app.update();
+                news.extend(
+                    app.world_mut()
+                        .resource_mut::<Messages<MagicNews>>()
+                        .drain()
+                        .map(|n| format!("{n:?}")),
+                );
+                news.extend(
+                    app.world_mut()
+                        .resource_mut::<Messages<CombatNews>>()
+                        .drain()
+                        .map(|n| format!("{n:?}")),
+                );
+            }
+            let hp = app.world().get::<Monster>(monster).unwrap().hp;
+            let next = app.world_mut().resource_mut::<GameRng>().below(u32::MAX);
+            (news, hp, next)
+        };
+        let fast = fight_for(std::time::Duration::from_micros(31_250));
+        let slow = fight_for(std::time::Duration::from_millis(750));
+        assert!(fast.0.iter().any(|n| n.starts_with("Landed")), "{:?}", fast.0);
+        assert_eq!(fast, slow);
+    }
+
+    #[test]
     fn due_spell_impacts_land_in_arrival_order_however_time_is_batched() {
         use crate::game::magic::Strength;
         use crate::game::magic::casting::SpellInFlight;

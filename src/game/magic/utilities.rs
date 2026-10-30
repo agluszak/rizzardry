@@ -183,6 +183,17 @@ mod tests {
         scene
     }
 
+    /// Utility casting needs no monster, loot, faction or formation
+    /// services; scenarios that cast without them keep it so.
+    fn without_unrelated_services(scene: &mut Scenario) {
+        let party = the_party(&mut scene.world).unwrap();
+        scene.world.remove_resource::<crate::game::factions::Factions>();
+        scene.world.remove_resource::<Assets<MonsterCatalog>>();
+        scene.world.remove_resource::<Assets<crate::content::items::LootTables>>();
+        scene.world.remove_resource::<ItemIds>();
+        scene.world.entity_mut(party).remove::<crate::game::party::formation::Formation>();
+    }
+
     fn request(scene: &mut Scenario, spell: SpellId, aim: Aim) -> MagicNews {
         let caster = scene.members[0];
         scene.world.write_message(MagicRequest {
@@ -210,6 +221,7 @@ mod tests {
     fn underwater_fire_fizzles_with_normal_payment_for_ordinary_and_utility_casts() {
         use crate::content::{items::Dice, spells::Targeting};
         let mut scene = scenario();
+        without_unrelated_services(&mut scene);
         let caster = scene.members[0];
         let handle = scene.world.resource::<GameData>().spells.clone();
         scene.world.resource_mut::<Assets<SpellCatalog>>().get_mut(&handle).unwrap().0
@@ -260,6 +272,7 @@ mod tests {
             let seed =
                 (0..100).find(|&seed| (GameRng::seeded(seed).below(100) < 50) == fizzles).unwrap();
             let mut scene = scenario();
+            without_unrelated_services(&mut scene);
             let caster = scene.members[0];
             scene
                 .world
