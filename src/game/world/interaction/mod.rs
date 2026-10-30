@@ -380,20 +380,16 @@ fn member(world: &mut World, actor: Entity) -> Result<(&Character, &Vitals), Una
     if world.get::<PartyMember>(actor).is_none() {
         return Err(Unable::NotMember);
     }
-    let entity = world.get_entity(actor).map_err(|_| Unable::NotMember)?;
-    let vitals = entity.get::<Vitals>().ok_or(Unable::NotMember)?;
+    let vitals = world.get::<Vitals>(actor).unwrap();
     if !vitals.can_act() {
         return Err(Unable::CannotAct);
     }
-    Ok((entity.get::<Character>().ok_or(Unable::NotMember)?, vitals))
+    Ok((world.get::<Character>(actor).unwrap(), vitals))
 }
 
-/// Whether the device is still guarded and on the loaded level.
-fn guarded_on_level(world: &World, device: Entity) -> bool {
+/// Whether the device is still guarded.
+fn guarded(world: &World, device: Entity) -> bool {
     world.get::<Guarded>(device).is_some()
-        && world
-            .get::<super::level::LevelOwned>(device)
-            .is_some_and(|owner| world.get::<super::level::Level>(owner.0).is_some())
 }
 
 fn rng(world: &mut World) -> Mut<'_, GameRng> {
@@ -494,7 +490,7 @@ fn ready_trap(world: &mut World, on: Entity) -> Result<Disarming, Unable> {
     }
     let (_, device) = attempt(world, on)?;
     let trap = disarming(world, on)?.clone();
-    if !guarded_on_level(world, device) {
+    if !guarded(world, device) {
         return Err(Unable::NotNow);
     }
     if let Err(error) = crate::game::magic::traps::validate(trap.trap) {
@@ -675,7 +671,7 @@ pub fn cast_device(
     };
     member(world, actor).map_err(|_| Refusal::CannotAct)?;
     let (work, device) = attempt(world, on).map_err(|_| Refusal::NoTarget)?;
-    if !guarded_on_level(world, device) {
+    if !guarded(world, device) {
         return Err(Refusal::NoTarget);
     }
     let context = match work {
