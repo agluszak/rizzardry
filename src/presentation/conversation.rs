@@ -267,6 +267,15 @@ fn label(world: &mut World, parent: Entity, text: &str, at: Vec2, width: f32) ->
     world.get_mut::<Node>(e).unwrap().position_type = PositionType::Absolute;
     e
 }
+/// The speaker's name, in bold across the top of a left panel.
+fn name_caption(world: &mut World, panel: Entity) {
+    let name = label(world, panel, "", Vec2::new(5., 2.), 132.);
+    let bold = world.resource::<AssetServer>().load("retail://data/fonts/wiz_text_font_bold.sti");
+    let mut text = world.get_mut::<BitmapText>(name).unwrap();
+    text.justify = bevy::text::Justify::Center;
+    text.font = bold;
+    world.entity_mut(name).insert(Caption::Name);
+}
 fn picture(world: &mut World, parent: Entity, path: &str, frame: usize, at: Vec2) -> Entity {
     let sheet =
         world.resource::<AssetServer>().load(format!("retail://data/npc interaction/{path}.sti"));
@@ -422,28 +431,47 @@ fn open_trade(world: &mut World, button: Entity, root: Entity) {
         },
     );
 }
-fn leave_on(world: &mut World, button: Entity, root: Entity) {
+/// Activating `button` edits its view's dialogue state.
+fn edit_state(
+    world: &mut World,
+    button: Entity,
+    root: Entity,
+    edit: impl Fn(&mut DialogueState) + Send + Sync + 'static,
+) {
+    world.entity_mut(button).observe(
+        move |_: On<Activate>, mut states: Query<&mut DialogueState>| {
+            if let Ok(mut state) = states.get_mut(root) {
+                edit(&mut state);
+            }
+        },
+    );
+}
+/// Activating `button` asks this of its view's conversation.
+fn request_on(
+    world: &mut World,
+    button: Entity,
+    root: Entity,
+    request: impl Fn(Entity) -> ConversationRequest + Send + Sync + 'static,
+) {
     world.entity_mut(button).observe(
         move |_: On<Activate>,
               roots: Query<&ConversationView>,
               mut requests: MessageWriter<ConversationRequest>| {
             if let Ok(view) = roots.get(root) {
-                requests.write(ConversationRequest::Close { conversation: view.0 });
+                requests.write(request(view.0));
             }
         },
     );
+}
+fn leave_on(world: &mut World, button: Entity, root: Entity) {
+    request_on(world, button, root, |conversation| ConversationRequest::Close { conversation });
 }
 /// Retail `ShowNpcDialogueTopicMenu`: an NPC not yet friendly may be
 /// charmed, talked to or bribed before it talks of anything else.
 fn build_menu(world: &mut World, canvas: Entity, root: Entity) {
     let group = world.spawn((Node::default(), MenuPanel, Pickable::IGNORE, ChildOf(canvas))).id();
     let left = panel(world, group, Vec2::new(23., 358.), Vec2::new(141., 92.), 0);
-    let name = label(world, left, "", Vec2::new(5., 2.), 132.);
-    let bold = world.resource::<AssetServer>().load("retail://data/fonts/wiz_text_font_bold.sti");
-    let mut text = world.get_mut::<BitmapText>(name).unwrap();
-    text.justify = bevy::text::Justify::Center;
-    text.font = bold;
-    world.entity_mut(name).insert(Caption::Name);
+    name_caption(world, left);
     let strings = world
         .get_resource::<super::screen_art::StringTable>()
         .and_then(|t| world.resource::<Assets<crate::content::ui::TextTable>>().get(&t.0));
@@ -467,28 +495,17 @@ fn build_menu(world: &mut World, canvas: Entity, root: Entity) {
         match i {
             0 | 1 => {
                 let approach = if i == 0 { Approach::Charm } else { Approach::SmallTalk };
-                world.entity_mut(e).insert(ApproachButton(approach)).observe(
-                    move |_: On<Activate>,
-                          roots: Query<&ConversationView>,
-                          mut requests: MessageWriter<ConversationRequest>| {
-                        if let Ok(view) = roots.get(root) {
-                            requests.write(ConversationRequest::Approach {
-                                conversation: view.0,
-                                approach,
-                            });
-                        }
-                    },
-                );
+                world.entity_mut(e).insert(ApproachButton(approach));
+                request_on(world, e, root, move |conversation| ConversationRequest::Approach {
+                    conversation,
+                    approach,
+                });
             }
             // Retail's bribe opens the give layout.
             2 => {
-                world.entity_mut(e).observe(
-                    move |_: On<Activate>, mut states: Query<&mut DialogueState>| {
-                        if let Ok(mut state) = states.get_mut(root) {
-                            set_mode(&mut state, Mode::Give);
-                        }
-                    },
-                );
+                edit_state(world, e, root, move |state| {
+                    set_mode(state, Mode::Give);
+                });
             }
             4 => open_trade(world, e, root),
             5 => leave_on(world, e, root),
@@ -569,12 +586,7 @@ fn build(world: &mut World, session: Entity) -> Entity {
             Vec2::new(141., 92.),
             if trade { 17 } else { 0 },
         );
-        let name = label(world, left, "", Vec2::new(5., 2.), 132.);
-        world.get_mut::<BitmapText>(name).unwrap().justify = bevy::text::Justify::Center;
-        world.entity_mut(name).insert(Caption::Name);
-        let bold =
-            world.resource::<AssetServer>().load("retail://data/fonts/wiz_text_font_bold.sti");
-        world.get_mut::<BitmapText>(name).unwrap().font = bold;
+        name_caption(world, left);
         let labels = if trade {
             ["Buy", "Sell", "Give", "Steal", "Party Items", "PC Items"]
         } else {
@@ -596,13 +608,9 @@ fn build(world: &mut World, session: Entity) -> Entity {
                     if mode != Mode::Give {
                         world.entity_mut(e).insert(TradeAvailable);
                     }
-                    world.entity_mut(e).observe(
-                        move |_: On<Activate>, mut states: Query<&mut DialogueState>| {
-                            if let Ok(mut state) = states.get_mut(root) {
-                                set_mode(&mut state, mode);
-                            }
-                        },
-                    );
+                    edit_state(world, e, root, move |state| {
+                        set_mode(state, mode);
+                    });
                 }
                 (false, 2) => {
                     world.entity_mut(e).observe(move |_: On<Activate>, roots: Query<&ConversationView>, conversations: Query<&crate::game::npcs::conversation::Conversation>,
@@ -614,30 +622,21 @@ fn build(world: &mut World, session: Entity) -> Entity {
                     });
                 }
                 (false, 3) => {
-                    world.entity_mut(e).observe(
-                        move |_: On<Activate>,
-                              roots: Query<&ConversationView>,
-                              mut requests: MessageWriter<ConversationRequest>| {
-                            let Ok(view) = roots.get(root) else { return };
-                            requests.write(ConversationRequest::Recruit { conversation: view.0 });
-                        },
-                    );
+                    request_on(world, e, root, |conversation| ConversationRequest::Recruit {
+                        conversation,
+                    });
                 }
                 (false, 5) => leave_on(world, e, root),
                 (true, 4..=5) => {
                     let pool = i == 4;
                     world.entity_mut(e).insert(PoolButton(pool));
-                    world.entity_mut(e).observe(
-                        move |_: On<Activate>, mut states: Query<&mut DialogueState>| {
-                            if let Ok(mut state) = states.get_mut(root)
-                                && state.pool != pool
-                            {
-                                state.pool = pool;
-                                state.selected = None;
-                                state.error = None;
-                            }
-                        },
-                    );
+                    edit_state(world, e, root, move |state| {
+                        if state.pool != pool {
+                            state.pool = pool;
+                            state.selected = None;
+                            state.error = None;
+                        }
+                    });
                 }
                 _ => {
                     world.entity_mut(e).insert(InteractionDisabled);
@@ -715,13 +714,9 @@ fn build(world: &mut World, session: Entity) -> Entity {
                 Pickable::default(),
             ));
             world.entity_mut(back).insert(ModeFocus(true));
-            world.entity_mut(back).observe(
-                move |_: On<Activate>, mut states: Query<&mut DialogueState>| {
-                    if let Ok(mut state) = states.get_mut(root) {
-                        set_mode(&mut state, Mode::Talk);
-                    }
-                },
-            );
+            edit_state(world, back, root, move |state| {
+                set_mode(state, Mode::Talk);
+            });
         }
         let centre = panel(world, group, Vec2::new(164., 358.), Vec2::new(312., 92.), 1);
         let list = world
@@ -922,13 +917,9 @@ fn build(world: &mut World, session: Entity) -> Entity {
             );
             add_radio(world, sort);
             world.entity_mut(sort).insert(SortToggle);
-            world.entity_mut(sort).observe(
-                move |_: On<Activate>, mut states: Query<&mut DialogueState>| {
-                    if let Ok(mut state) = states.get_mut(root) {
-                        state.alphabetical = !state.alphabetical;
-                    }
-                },
-            );
+            edit_state(world, sort, root, move |state| {
+                state.alphabetical = !state.alphabetical;
+            });
             for (i, (text, category)) in [
                 ("People", Some(TopicCategory::Person)),
                 ("Places", Some(TopicCategory::Place)),
@@ -948,15 +939,7 @@ fn build(world: &mut World, session: Entity) -> Entity {
                 );
                 world.entity_mut(e).insert(CategoryButton(category));
                 add_radio(world, e);
-                world.entity_mut(e).observe(
-                    move |_: On<Activate>, mut states: Query<&mut DialogueState>| {
-                        if let Ok(mut state) = states.get_mut(root)
-                            && state.category != category
-                        {
-                            state.category = category;
-                        }
-                    },
-                );
+                edit_state(world, e, root, move |state| state.category = category);
             }
             let input_panel = panel(world, group, Vec2::new(476., 358.), Vec2::new(141., 92.), 13);
             let input = world
