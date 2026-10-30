@@ -171,16 +171,9 @@ fn open_trade(world: &mut World, button: Entity, root: Entity) {
               sessions: Query<&Conversation>,
               npcs: Query<&crate::game::npcs::ActorId>,
               catalogs: Res<Catalogs>| {
-            let merchant = roots
-                .get(root)
-                .ok()
-                .and_then(|view| sessions.get(view.0).ok())
-                .and_then(|c| npcs.get(c.actor).ok())
-                .and_then(|n| catalogs.npcs.get(n.npc()))
-                .is_some_and(|d| d.owns_stock);
-            if let Ok(mut state) = states.get_mut(root) {
-                state.set_mode(if merchant { Mode::Buy } else { Mode::Give });
-            }
+            let c = sessions.get(roots.get(root).unwrap().0).unwrap();
+            let merchant = catalogs.npcs[npcs.get(c.actor).unwrap().npc()].owns_stock;
+            states.get_mut(root).unwrap().set_mode(if merchant { Mode::Buy } else { Mode::Give });
         },
     );
 }

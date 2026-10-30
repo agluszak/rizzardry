@@ -16,9 +16,8 @@ pub(super) struct TradeWidgets<'w, 's> {
     quantities: Query<'w, 's, (Entity, Has<InteractionDisabled>), With<QuantityControl>>,
     texts: Query<'w, 's, &'static mut BitmapText>,
     controls: Query<'w, 's, (Entity, Has<InteractionDisabled>), With<Confirm>>,
-    previews:
-        Query<'w, 's, (Entity, &'static mut Picture, &'static mut Visibility), With<ItemPreview>>,
-    gifts: Query<'w, 's, (Entity, &'static EditableText, &'static mut Node), With<GiftGold>>,
+    previews: Query<'w, 's, (&'static mut Picture, &'static mut Visibility), With<ItemPreview>>,
+    gifts: Query<'w, 's, (&'static EditableText, &'static mut Node), With<GiftGold>>,
 }
 struct Listing<'a> {
     source: TradeSource,
@@ -54,8 +53,8 @@ pub(super) fn sync_trade_rows(
     let items = &content.items;
     let Ok((roster, party)) = parties.single() else { return };
     for (list, children) in &lists {
-        let Some((root, session)) = views.owner(list) else { continue };
-        let (Ok(state), Ok(c)) = (views.states.get(root), sessions.get(session)) else { continue };
+        let session = views.session();
+        let (state, c) = (views.state(), sessions.get(session).unwrap());
         if state.mode == Mode::Talk {
             continue;
         }
@@ -65,19 +64,17 @@ pub(super) fn sync_trade_rows(
             state.item_group.is_none_or(|group| group == ItemGroup::of(d.class))
                 && state.usability.is_none_or(|party_wide| {
                     if party_wide {
-                        roster.iter().any(|e| members.get(e).is_ok_and(|(c, _)| c.can_use(d)))
+                        roster.iter().any(|e| members.get(e).unwrap().0.can_use(d))
                     } else {
-                        member.and_then(|e| members.get(e).ok()).is_some_and(|(c, _)| c.can_use(d))
+                        member.is_some_and(|e| members.get(e).unwrap().0.can_use(d))
                     }
                 })
         };
         let mut rows = Vec::new();
         if state.mode == Mode::Buy {
             for lot in &npc.stock.lots {
-                if let Some(d) = items.get(lot.item)
-                    && trade::on_sale(lot, d)
-                    && allows(d)
-                {
+                let d = &items[lot.item];
+                if trade::on_sale(lot, d) && allows(d) {
                     rows.push(Listing {
                         source: TradeSource::Stock(lot.id),
                         text: format!("{} ({})", d.name, lot.units),
@@ -88,7 +85,7 @@ pub(super) fn sync_trade_rows(
                 }
             }
         } else {
-            let carried = member.and_then(|e| members.get(e).ok()).map(|(_, c)| c);
+            let carried = member.map(|e| members.get(e).unwrap().1);
             let pool = party.pool.stacks.iter().filter(|_| state.pool);
             let backpack = carried
                 .into_iter()
@@ -127,17 +124,14 @@ pub(super) fn sync_trade_rows(
             String::new()
         };
         for entity in &offers {
-            if views.owner(entity).is_some_and(|(owner, _)| owner == root)
-                && let Ok(mut text) = texts.get_mut(entity)
+            if let Ok(mut text) = texts.get_mut(entity)
                 && text.value != offer
             {
                 text.value = offer.clone();
             }
         }
         for (entity, count) in &captions {
-            if views.owner(entity).is_some_and(|(owner, _)| owner == root)
-                && let Ok(mut text) = texts.get_mut(entity)
-            {
+            if let Ok(mut text) = texts.get_mut(entity) {
                 let value = quote.map_or_else(String::new, |q| {
                     if count {
                         if units > 1 { q.quantity.to_string() } else { String::new() }
@@ -153,34 +147,25 @@ pub(super) fn sync_trade_rows(
             }
         }
         for (entity, disabled) in &quantities {
-            if views.owner(entity).is_some_and(|(owner, _)| owner == root) {
-                set_enabled(
-                    &mut commands,
-                    entity,
-                    state.mode != Mode::Give
-                        && units > 1
-                        && item.is_some_and(|d| d.class != EquipClass::Ammunition),
-                    disabled,
-                );
-            }
+            set_enabled(
+                &mut commands,
+                entity,
+                state.mode != Mode::Give
+                    && units > 1
+                    && item.is_some_and(|d| d.class != EquipClass::Ammunition),
+                disabled,
+            );
         }
         let mut gold_typed = false;
-        for (entity, text, mut node) in &mut gifts {
-            if views.owner(entity).is_some_and(|(owner, _)| owner == root) {
-                let shown = state.mode == Mode::Give && quote.is_none();
-                crate::presentation::screen_art::display_if(&mut node, shown);
-                gold_typed = shown && gift_amount(text) > 0;
-            }
+        for (text, mut node) in &mut gifts {
+            let shown = state.mode == Mode::Give && quote.is_none();
+            crate::presentation::screen_art::display_if(&mut node, shown);
+            gold_typed = shown && gift_amount(text) > 0;
         }
         for (entity, disabled) in &controls {
-            if views.owner(entity).is_some_and(|(owner, _)| owner == root) {
-                set_enabled(&mut commands, entity, quote.is_some() || gold_typed, disabled);
-            }
+            set_enabled(&mut commands, entity, quote.is_some() || gold_typed, disabled);
         }
-        for (entity, mut picture, mut visibility) in &mut previews {
-            if !views.owner(entity).is_some_and(|(owner, _)| owner == root) {
-                continue;
-            }
+        for (mut picture, mut visibility) in &mut previews {
             visibility.set_if_neq(if item.is_some() {
                 Visibility::Inherited
             } else {

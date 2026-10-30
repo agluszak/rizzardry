@@ -330,7 +330,7 @@ fn finish(world: &mut World, panel: Entity, accept: bool) {
                 return;
             }
         }
-        select(world, view, q.conversation, q.source, q.quantity);
+        select(world, view, q.source, q.quantity);
     }
     world.despawn(overlay);
 }
