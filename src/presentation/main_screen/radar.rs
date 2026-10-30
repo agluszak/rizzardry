@@ -201,7 +201,7 @@ pub fn update_radar(
         WorldObstacles,
     ),
     (content, stances, clock): (
-        crate::game::data::Content,
+        If<Res<crate::game::data::Catalogs>>,
         crate::game::world::hostility::Stances,
         Res<crate::game::time::GameClock>,
     ),
@@ -226,7 +226,7 @@ pub fn update_radar(
         Ok((p, eye)) => (bevy::camera::CameraProjection::far(&**p), eye.translation()),
         _ => (0.0, position.0),
     };
-    let catalog = content.species();
+    let catalog = &content.species;
     let xray = effects.is_some_and(|effects| effects.0.has(crate::content::spells::SpellId::X_RAY));
     // Each blip's visibility is decided once, so one that stays in view
     // stays clean.
@@ -260,11 +260,8 @@ pub fn update_radar(
     let shadow_hound =
         effects.is_some_and(|effects| effects.0.has(crate::content::spells::SpellId::SHADOW_HOUND));
     for (entity, monster, at, walker, in_combat, owner) in &monsters {
-        let (Some(roster), Some(species)) =
-            (roster, catalog.and_then(|catalog| catalog.kind(monster.species)))
-        else {
-            continue;
-        };
+        let Some(roster) = roster else { continue };
+        let species = &catalog[monster.species];
         let feet = crate::game::world::navigation::feet(at.translation(), walker);
         if !levels.contains(owner.0) || !view.in_range(monster, feet) {
             continue;
@@ -283,7 +280,7 @@ pub fn update_radar(
             continue;
         }
         let delta = at.translation() - position.0;
-        let class = blip_class(catalog.and_then(|c| stances.own(entity, c, clock.ms)));
+        let class = blip_class(stances.own(entity, catalog, clock.ms));
         let at = blip_position(delta, body.yaw, false) - Vec2::ONE;
         show(entity, at, class.at(delta.y));
     }
@@ -354,17 +351,8 @@ mod tests {
         app.world_mut().entity_mut(party).insert((PartyBody::default(), Position::default()));
         app.init_resource::<crate::game::factions::Factions>()
             .init_resource::<crate::game::time::GameClock>();
-        app.world_mut().init_resource::<Assets<crate::content::species::MonsterCatalog>>();
-        let species = app
-            .world_mut()
-            .resource_mut::<Assets<crate::content::species::MonsterCatalog>>()
-            .add(crate::content::species::MonsterCatalog(vec![default()]));
-        app.insert_resource(crate::game::data::GameData {
-            species,
-            items: default(),
-            loot: default(),
-            spells: default(),
-        });
+        let species = crate::content::species::MonsterCatalog(vec![default()]);
+        app.insert_resource(crate::game::data::Catalogs { species, ..default() });
         let root = app.world_mut().spawn(Level::test(default())).id();
         let monster = app
             .world_mut()
@@ -473,7 +461,6 @@ mod tests {
     #[test]
     fn a_blip_shows_how_the_group_stands_now() {
         use crate::content::species::{MonsterCatalog, Species};
-        use crate::game::data::GameData;
         use crate::game::factions::Factions;
         use crate::game::time::GameClock;
         use crate::game::world::hostility::{SetStance, Stance};
@@ -481,23 +468,14 @@ mod tests {
         use crate::game::world::population::{Monster, ScaledBody};
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .init_resource::<Assets<MonsterCatalog>>()
             .init_resource::<avian3d::collider_tree::ColliderTrees>()
             .init_resource::<Factions>()
             .init_resource::<GameClock>()
             .add_systems(Update, update_radar);
         let mut species = Species { faction: 7, ..default() };
         species.attributes.intelligence = 10;
-        let species = app
-            .world_mut()
-            .resource_mut::<Assets<MonsterCatalog>>()
-            .add(MonsterCatalog(vec![species]));
-        app.insert_resource(GameData {
-            items: default(),
-            loot: default(),
-            species,
-            spells: default(),
-        });
+        let species = MonsterCatalog(vec![species]);
+        app.insert_resource(crate::game::data::Catalogs { species, ..default() });
         use crate::game::characters::{Character, Gender, Profession, Race, Vitals};
         let profile = Character::new("Watcher", Race::Human, Gender::Male, Profession::Fighter);
         let watcher = app.world_mut().spawn((Vitals::new(&profile), profile)).id();

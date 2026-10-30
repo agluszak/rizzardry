@@ -5,7 +5,7 @@ use crate::game::party::roster::the_party;
 use crate::game::world::level::LevelOwned;
 use bevy::prelude::*;
 
-use crate::game::data::GameData;
+use crate::game::data::Catalogs;
 
 use crate::content::items::{ItemCatalog, ItemDefinition, ItemId, QuantityKind};
 use crate::content::level::ItemPlacement;
@@ -130,7 +130,7 @@ pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
     if !distance.is_finite() || !(0.0..=REACH).contains(&distance) {
         return Err(Refusal::DoesNotFit);
     }
-    let catalog = GameData::items(world).ok_or(Refusal::MissingContent)?;
+    let catalog = &world.resource::<crate::game::data::Catalogs>().items;
     let item = world.get::<WorldItem>(target).ok_or(Refusal::Nothing)?;
     let owner = world.get::<LevelOwned>(target).ok_or(Refusal::Nothing)?.0;
     if world.get::<super::level::Level>(owner).is_none() || item.hidden {
@@ -143,10 +143,9 @@ pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
     }
     let mut item = world.entity_mut(target).take::<WorldItem>().unwrap();
     if let GroundLoot::Pile { contents, .. } = &mut item.loot {
-        let taken = GameData::with_items(world, |world, catalog| {
-            world.get_mut::<PartyInventory>(party).unwrap().pool.collect(contents, catalog)
-        })
-        .unwrap();
+        let taken = Catalogs::scope(world, |world, catalogs| {
+            world.get_mut::<PartyInventory>(party).unwrap().pool.collect(contents, &catalogs.items)
+        });
         let moved = !taken.is_empty();
         for (name, _) in taken {
             world.write_message(ItemNews::Takes { member: None, item: name });
@@ -179,8 +178,7 @@ pub fn drop_held(world: &mut World, level: Entity, aim: Dir3) -> Result<Entity, 
     let party = the_party(world).ok_or(Refusal::Nothing)?;
     let held =
         world.get::<PartyInventory>(party).unwrap().hand.held.as_ref().ok_or(Refusal::Nothing)?;
-    let definition =
-        GameData::items(world).and_then(|c| c.get(held.item)).ok_or(Refusal::MissingContent)?;
+    let definition = &world.resource::<crate::game::data::Catalogs>().items[held.item];
     if definition.crucial {
         return Err(Refusal::Crucial);
     }
@@ -241,19 +239,13 @@ mod tests {
             PhysicsPlugins::default(),
             bevy::state::app::StatesPlugin,
         ))
-        .init_resource::<Assets<ItemCatalog>>()
         .add_message::<ItemNews>()
         .add_message::<WorldRequest>()
         .add_systems(Update, super::super::handle_world_requests);
         app.finish();
         app.cleanup();
-        let catalog = app.world_mut().resource_mut::<Assets<ItemCatalog>>().add(catalog());
-        app.insert_resource(GameData {
-            items: catalog,
-            loot: default(),
-            species: default(),
-            spells: default(),
-        });
+        let catalog = catalog();
+        app.insert_resource(crate::game::data::Catalogs { items: catalog, ..default() });
         let party = crate::game::party::roster::test_party(app.world_mut(), &[]);
         app.world_mut().entity_mut(party).insert((PartyBody::default(), Position::default()));
         let eye = PartyBody::eye(&Position::default());
@@ -309,17 +301,11 @@ mod tests {
         use avian3d::prelude::Position;
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .init_resource::<Assets<ItemCatalog>>()
             .add_message::<ItemNews>()
             .add_message::<super::super::WorldRequest>()
             .add_systems(Update, super::super::handle_world_requests);
-        let catalog = app.world_mut().resource_mut::<Assets<ItemCatalog>>().add(catalog());
-        app.insert_resource(GameData {
-            items: catalog,
-            loot: default(),
-            species: default(),
-            spells: default(),
-        });
+        let catalog = catalog();
+        app.insert_resource(crate::game::data::Catalogs { items: catalog, ..default() });
         let party = crate::game::party::roster::test_party(app.world_mut(), &[]);
         app.world_mut().entity_mut(party).insert((PartyBody::default(), Position::default()));
         let level = app.world_mut().spawn(super::super::level::Level::test(default())).id();

@@ -292,7 +292,10 @@ pub fn read_dialogue(data: &[u8]) -> Result<DialogueScript, LoadError> {
     let mut b = Bytes::new(data);
     let h = b.take(14)?;
     let count = u16_at(h, 4)? as usize;
-    let name = if h[6..10] != [0; 4] { Some(narrow(&mut b)?) } else { None };
+    // The script's own name, which nothing reads.
+    if h[6..10] != [0; 4] {
+        narrow(&mut b)?;
+    }
     if count > b.remaining() / 12 {
         return Err(invalid("quote count"));
     }
@@ -347,7 +350,7 @@ pub fn read_dialogue(data: &[u8]) -> Result<DialogueScript, LoadError> {
             }
         }
     }
-    Ok(DialogueScript { name, quotes })
+    Ok(DialogueScript { quotes })
 }
 #[derive(Default, TypePath)]
 pub struct NpcCatalogLoader;

@@ -500,12 +500,13 @@ pub fn run_encounters(
     (time, clock, difficulty, mut rng): (
         Res<Time<Fixed>>,
         Res<GameClock>,
-        Option<Res<Difficulty>>,
+        Res<Difficulty>,
         ResMut<GameRng>,
     ),
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
 ) {
-    let (Some(definition), Some(species)) = (level.definition(), content.species()) else { return };
+    let Some(definition) = level.definition() else { return };
+    let species = &content.species;
     let encounters = &definition.encounters;
     if encounters.generators.is_empty() {
         return;
@@ -515,7 +516,7 @@ pub fn run_encounters(
     let (in_battle, talking) = blocked;
     let in_battle = in_battle.is_some();
     let blocked = in_battle || !talking.is_empty();
-    let difficulty = difficulty.map_or_else(Difficulty::default, |d| *d);
+    let difficulty = *difficulty;
     let now_s = clock.ms / 1000;
     let members = roster.into_iter().flat_map(|roster| roster.iter());
     let level = crate::game::party::mean_level(
@@ -699,24 +700,17 @@ mod tests {
             PhysicsPlugins::default(),
         ))
         .init_resource::<GameClock>()
+        .init_resource::<Difficulty>()
         .insert_resource(GameRng::seeded(9))
         .init_asset::<MonsterBody>()
-        .init_asset::<MonsterCatalog>()
         .init_asset::<LevelDefinition>()
         .init_resource::<Assets<WalkerMotionConfig>>();
         app.finish();
         app.cleanup();
         let world = app.world_mut();
         let crab = Species { group_size: Dice { base: 2, count: 0, sides: 0 }, ..default() };
-        let species = world
-            .resource_mut::<Assets<MonsterCatalog>>()
-            .add(MonsterCatalog(vec![default(), crab]));
-        world.insert_resource(crate::game::data::GameData {
-            items: default(),
-            loot: default(),
-            species,
-            spells: default(),
-        });
+        let species = MonsterCatalog(vec![default(), crab]);
+        world.insert_resource(crate::game::data::Catalogs { species, ..default() });
         let body = world.resource_mut::<Assets<MonsterBody>>().add(MonsterBody {
             scale: 1.0,
             fight_radius: 0.5,

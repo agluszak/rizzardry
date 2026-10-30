@@ -848,7 +848,7 @@ fn draw_header_condition(
 fn draw_header_hands(
     screen: Option<Single<&InventoryScreen>>,
     assets: Res<AssetServer>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     members: Query<crate::presentation::character_view::CharacterView>,
     battle: Option<Single<&crate::game::combat::Battle>>,
     party_effects: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
@@ -856,11 +856,11 @@ fn draw_header_hands(
     mut parts: Query<(&HeaderHand, &mut Visibility, Option<&mut Picture>, Option<&mut BitmapText>)>,
 ) {
     let Some(screen) = screen else { return };
-    let Some(catalog) = content.items() else { return };
+    let catalog = &content.items;
     let Ok(view) = members.get(screen.member) else { return };
     let armour = view.armour(
         screen.member,
-        Some(catalog),
+        catalog,
         battle.as_deref().copied(),
         party_effects.as_deref().copied(),
     );
@@ -870,7 +870,7 @@ fn draw_header_hands(
     let carried = carried.unwrap_or(&empty);
     let two_handed = carried
         .worn(EquipSlot::Primary)
-        .and_then(|item| catalog.get(item.item))
+        .map(|item| &catalog[item.item])
         .is_some_and(|item| item.two_handed);
     for (part, mut visibility, picture, text) in &mut parts {
         let mut source = None;
@@ -889,7 +889,7 @@ fn draw_header_hands(
             HeaderHand::Hand(off) => {
                 shown = !(off && two_handed);
                 let slot = if off { EquipSlot::Secondary } else { EquipSlot::Primary };
-                let item = carried.worn(slot).and_then(|item| catalog.get(item.item));
+                let item = carried.worn(slot).map(|item| &catalog[item.item]);
                 let (hand_path, frame, x) = if let Some(item) = item {
                     (item.image.clone(), 2, 132.0)
                 } else {
@@ -916,11 +916,7 @@ fn draw_header_hands(
                 value = Some(
                     match carried
                         .worn(slot)
-                        .filter(|item| {
-                            catalog
-                                .get(item.item)
-                                .is_some_and(|d| d.quantity == QuantityKind::Stack)
-                        })
+                        .filter(|item| catalog[item.item].quantity == QuantityKind::Stack)
                         .map(ItemStack::count)
                     {
                         Some(count) => count.to_string(),
@@ -1106,7 +1102,7 @@ fn draw_gold(
 fn draw_cells(
     screen: Option<Single<&InventoryScreen>>,
     assets: Res<AssetServer>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     members: Query<(&Character, Option<&Carried>)>,
     party: Single<&PartyInventory>,
     pool_scroll: Option<Single<&bevy::ui_widgets::SliderValue, With<pool_scroll::PoolScroll>>>,
@@ -1119,7 +1115,7 @@ fn draw_cells(
     )>,
 ) {
     let Some(screen) = screen else { return };
-    let Some(catalog) = content.items() else { return };
+    let catalog = &content.items;
     let Ok((profile, carried)) = members.get(screen.member) else { return };
     let empty = Carried::default();
     let carried = carried.unwrap_or(&empty);
@@ -1129,7 +1125,7 @@ fn draw_cells(
             CellLocation::Member(slot) => carried.slot(slot.slot),
             CellLocation::Pool(index) => party.pool.stacks.get(index),
         };
-        let definition = item.and_then(|i| Some((i, catalog.get(i.item)?)));
+        let definition = item.map(|i| (i, &catalog[i.item]));
         let grid = !matches!(cell.cell, Cell::Member(Slot::Equipment(_)));
         let count = definition.and_then(|(i, d)| count_label(i, d.quantity));
         for child in children.iter() {
@@ -1280,13 +1276,13 @@ pub fn follow_held(
     scale: Res<UiScale>,
     assets: Res<AssetServer>,
     sheets: Res<Assets<SpriteSheet>>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     mut picture: Single<(&mut ImageNode, &mut Node, &mut Visibility), With<HeldPicture>>,
     mut loading: Local<Option<(String, Handle<SpriteSheet>)>>,
 ) {
     let (image, node, visibility) = &mut *picture;
-    let catalog = content.items();
-    let definition = party.hand.held.as_ref().zip(catalog).and_then(|(h, c)| c.get(h.item));
+    let catalog = &content.items;
+    let definition = party.hand.held.as_ref().map(|h| &catalog[h.item]);
     let cursor = pointers
         .iter()
         .find(|(id, _)| **id == PointerId::Mouse)
@@ -1391,16 +1387,15 @@ mod tests {
     use super::*;
     use crate::content::items::ItemDefinition;
     use crate::content::{items::ItemCatalog, ui::TextTable};
-    use crate::game::data::GameData;
 
     /// The inventory screen as the game installs it, over keyboard input.
     fn inventory_app() -> App {
         let mut app = crate::presentation::test_input::input_app();
         app.init_state::<Screen>()
+            .init_resource::<crate::game::data::Catalogs>()
             .init_asset::<SpriteSheet>()
             .init_asset::<TextTable>()
             .init_asset::<Image>()
-            .init_asset::<ItemCatalog>()
             .init_resource::<UiScale>()
             .add_message::<crate::game::inventory::ItemNews>()
             .add_observer(crate::game::inventory::operations::put_away_held)
@@ -1421,23 +1416,14 @@ mod tests {
         };
         let mut app = crate::presentation::test_input::input_app();
         app.init_asset::<SpriteSheet>()
-            .init_asset::<ItemCatalog>()
             .add_message::<crate::game::inventory::ItemNews>()
             .init_resource::<ItemIds>()
             .init_resource::<crate::game::rng::GameRng>()
             .add_systems(Update, draw_cells);
         let definition =
             ItemDefinition { quantity: QuantityKind::Stack, stack_limit: 99, ..default() };
-        let items = app
-            .world_mut()
-            .resource_mut::<Assets<ItemCatalog>>()
-            .add(ItemCatalog(vec![definition.clone()]));
-        app.insert_resource(GameData {
-            items,
-            loot: default(),
-            species: default(),
-            spells: default(),
-        });
+        let items = ItemCatalog(vec![definition.clone()]);
+        app.insert_resource(crate::game::data::Catalogs { items, ..default() });
         let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
         let member =
             app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();
@@ -1522,13 +1508,9 @@ mod tests {
         use crate::game::inventory::{ItemIds, make_item};
         use crate::game::rng::GameRng;
         use crate::presentation::test_input::key;
-        for (still_a_member, explicit_close, full, loaded) in [
-            (true, true, false, true),
-            (false, true, false, true),
-            (true, true, true, true),
-            (true, true, false, false),
-            (true, false, false, true),
-        ] {
+        for (still_a_member, explicit_close, full) in
+            [(true, true, false), (false, true, false), (true, true, true), (true, false, false)]
+        {
             let mut app = inventory_app();
             let window =
                 app.world_mut().spawn((Window::default(), bevy::window::PrimaryWindow)).id();
@@ -1541,16 +1523,8 @@ mod tests {
                 true,
             );
             let id = item.id;
-            let items = app
-                .world_mut()
-                .resource_mut::<Assets<ItemCatalog>>()
-                .add(ItemCatalog(vec![definition.clone()]));
-            app.insert_resource(GameData {
-                items: if loaded { items } else { default() },
-                loot: default(),
-                species: default(),
-                spells: default(),
-            });
+            let items = ItemCatalog(vec![definition.clone()]);
+            app.insert_resource(crate::game::data::Catalogs { items, ..default() });
             let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
             let member = app
                 .world_mut()
@@ -1600,7 +1574,7 @@ mod tests {
             }
             app.update();
             assert_eq!(*app.world().resource::<State<Screen>>().get(), Screen::World);
-            if !explicit_close || full || !loaded {
+            if !explicit_close || full {
                 assert_eq!(
                     app.world()
                         .get::<PartyInventory>(party)

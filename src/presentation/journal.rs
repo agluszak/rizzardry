@@ -1,10 +1,6 @@
 //! Retail fact journal: twelve historical transitions per page, newest page first.
 use super::screen_art::{BitmapText, spawn_picture};
-use crate::content::npcs::FactCatalog;
-use crate::game::{
-    difficulty::Difficulty,
-    npcs::{NpcAssets, conversation::StoryFacts},
-};
+use crate::game::{difficulty::Difficulty, npcs::conversation::StoryFacts};
 use crate::presentation::retail_controls::RestoreFocus;
 use crate::presentation::screen::Screen;
 use bevy::input_focus::{FocusCause, InputFocus, tab_navigation::TabGroup};
@@ -228,9 +224,8 @@ fn refresh(
         Res<Difficulty>,
         Res<crate::game::factions::Factions>,
     ),
-    (assets, catalogs, strings, asset_server): (
-        Res<NpcAssets>,
-        Res<Assets<FactCatalog>>,
+    (catalogs, strings, asset_server): (
+        If<Res<crate::game::data::Catalogs>>,
         super::screen_art::GameStrings,
         Res<AssetServer>,
     ),
@@ -252,7 +247,7 @@ fn refresh(
     if !changed {
         return;
     }
-    let Some(catalog) = catalogs.get(&assets.facts) else { return };
+    let catalog = &catalogs.facts;
     let mut entries: Vec<(String, String, bool)> = Vec::new();
     match view.mode {
         JournalMode::Events => {
@@ -397,14 +392,13 @@ mod tests {
     fn filtering_uses_historical_text_and_pages_follow_visible_history() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-            .init_asset::<FactCatalog>()
             .init_resource::<crate::game::factions::Factions>()
             .insert_resource(Difficulty::Expert)
             .init_resource::<InputFocus>()
             .init_resource::<NextState<Screen>>()
             .add_observer(activate)
             .add_systems(Update, refresh);
-        let catalog = app.world_mut().resource_mut::<Assets<FactCatalog>>().add(FactCatalog(vec![
+        let facts = crate::content::npcs::FactCatalog(vec![
             FactDefinition {
                 id: FactId(1),
                 symbol: "FACT_BURZ_SAID130".into(),
@@ -421,8 +415,8 @@ mod tests {
                 visibility: crate::content::npcs::JournalVisibility::NoviceOnly,
                 highlight_when_true: false,
             },
-        ]));
-        app.insert_resource(NpcAssets { catalog: default(), facts: catalog, scripts: default() });
+        ]);
+        app.insert_resource(crate::game::data::Catalogs { facts, ..default() });
         let mut facts = StoryFacts::default();
         for index in 0..13 {
             facts.journal.push(JournalEntry {

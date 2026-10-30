@@ -192,7 +192,6 @@ pub struct Quote {
 }
 #[derive(Asset, TypePath, Clone, Debug, Default)]
 pub struct DialogueScript {
-    pub name: Option<String>,
     pub quotes: Vec<Quote>,
 }
 impl DialogueScript {

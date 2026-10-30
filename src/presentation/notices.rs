@@ -339,7 +339,7 @@ fn effect_line(names: &super::names::ActorNames, effect: crate::game::magic::Eff
 fn magic_lines(
     news: &crate::game::magic::casting::MagicNews,
     names: &super::names::ActorNames,
-    spells: Option<&crate::content::spells::SpellCatalog>,
+    spells: &crate::content::spells::SpellCatalog,
     string: &impl Fn(usize) -> String,
 ) -> Vec<String> {
     use crate::game::magic::Outcome;
@@ -376,7 +376,7 @@ fn magic_lines(
             lines
         }
         MagicNews::Done(report) => {
-            let spell = spells.and_then(|s| s.get(report.spell)).map_or("", |s| s.name.as_str());
+            let spell = spells.get(report.spell).map_or("", |s| s.name.as_str());
             let mut lines = vec![match &report.item {
                 Some(item) => format!("{} uses {item}.", name(report.caster)),
                 None => format!("{} casts {spell} ({}).", name(report.caster), report.power),
@@ -436,14 +436,14 @@ pub fn queue_notices(
     mut log: ResMut<TextLog>,
     (mut magic, content, mut factions, mut speech): (
         MessageReader<crate::game::magic::casting::MagicNews>,
-        crate::game::data::Content,
+        If<Res<crate::game::data::Catalogs>>,
         MessageReader<crate::game::factions::FactionNews>,
         MessageReader<crate::game::npcs::conversation::NpcSpeech>,
     ),
 ) {
     let font = sheets.get(&art.font);
     let channel = usize::from(battle.is_some());
-    let spells = content.spells();
+    let spells = &content.spells;
     let string = |index| strings.get(index).to_owned();
     for remark in remarks.read() {
         if let Some(name) = names.name(remark.actor) {
@@ -737,6 +737,7 @@ mod tests {
     #[test]
     fn combat_outcomes_are_visible_after_returning_to_general() {
         let mut app = App::new();
+        app.init_resource::<crate::game::data::Catalogs>();
         app.add_plugins(MinimalPlugins)
             .init_resource::<Assets<SpriteSheet>>()
             .init_resource::<Assets<TextTable>>()

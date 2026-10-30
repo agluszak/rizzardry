@@ -51,15 +51,14 @@ pub fn summon(
     (level, obstacles): (PlayedLevel, WorldObstacles),
     (definitions, mut configs): (Res<Assets<MonsterBody>>, ResMut<Assets<WalkerMotionConfig>>),
     (clock, mut rng): (Res<GameClock>, ResMut<GameRng>),
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     mut news: MessageWriter<CombatNews>,
 ) {
-    let (Some(battle), Some(species), Some(far)) =
-        (battle, content.species(), level.view_distance())
-    else {
+    let (Some(battle), Some(far)) = (battle, level.view_distance()) else {
         summons.clear();
         return;
     };
+    let species = &content.species;
     let Ok((party_at, party_body)) = party.single() else { return };
     let Ok((root, navigation, mut unborn, bodies)) = levels.single_mut() else { return };
     let eye = PartyBody::eye(party_at);
@@ -211,7 +210,6 @@ mod tests {
         .insert_resource(GameRng::seeded(3))
         .init_resource::<crate::game::factions::Factions>()
         .init_asset::<MonsterBody>()
-        .init_asset::<MonsterCatalog>()
         .init_asset::<LevelDefinition>()
         .init_resource::<Assets<WalkerMotionConfig>>()
         .add_message::<Summon>()
@@ -221,13 +219,8 @@ mod tests {
         let world = app.world_mut();
         let mut catalog = vec![Species::default(); 13];
         catalog[12] = Species { group_size: Dice { base: 3, count: 0, sides: 0 }, ..default() };
-        let species = world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog(catalog));
-        world.insert_resource(crate::game::data::GameData {
-            items: default(),
-            loot: default(),
-            species,
-            spells: default(),
-        });
+        let species = MonsterCatalog(catalog);
+        world.insert_resource(crate::game::data::Catalogs { species, ..default() });
         let body = world.resource_mut::<Assets<MonsterBody>>().add(MonsterBody {
             scale: 1.0,
             fight_radius: 0.5,

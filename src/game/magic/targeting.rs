@@ -25,7 +25,7 @@ pub(crate) fn radius(
     party_at: Option<Vec3>,
     recipients: Recipients,
 ) -> Vec<Victim> {
-    let Some(obstacles) = world.visibility else { return vec![] };
+    let obstacles = world.visibility;
     if radius <= 0.0 {
         return vec![];
     }

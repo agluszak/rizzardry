@@ -570,7 +570,7 @@ fn prepare_source<'a>(
                 ItemOwner::Member(_) => carried.find_stack(id),
             }
             .ok_or(Refusal::NoItem)?;
-            let definition = items.get(stack.item).ok_or(Refusal::MissingContent)?;
+            let definition = &items[stack.item];
             let cast = definition.spell.ok_or(Refusal::CannotUse)?;
             if cast.power == 0
                 && !matches!(definition.use_type, UseType::Instrument | UseType::Gadget)
@@ -643,21 +643,7 @@ pub fn perform(
     }
     // Instruments can pay fatigue while finding power, so validate the target
     // first. Radius changes may widen victims but cannot rescue an invalid aim.
-    let (targets, _) = capture(caster, spell, choice.aim, situation, forced_self)?;
-    if (spell.targeting == Targeting::Radius
-        || spell.id == SpellId::BOILING_BLOOD
-        || targets.iter().any(|victim| matches!(victim, Victim::Monster(_))))
-        && (world.species.is_none() || !world.monsters.ready())
-    {
-        return Err(Refusal::MissingContent);
-    }
-    if (spell.targeting == Targeting::Radius
-        || spell.id == SpellId::BOILING_BLOOD
-        || spell.id == SpellId::RING_OF_FIRE)
-        && world.visibility.is_none()
-    {
-        return Err(Refusal::MissingContent);
-    }
+    capture(caster, spell, choice.aim, situation, forced_self)?;
     let power = match &item {
         Some(use_) if matches!(use_.definition.use_type, UseType::Instrument | UseType::Gadget) => {
             play(caster, &character, use_, spell, rng, world.members)?
@@ -1122,7 +1108,7 @@ pub fn usable_stack(
     items: &crate::content::items::ItemCatalog,
     worn: bool,
 ) -> Option<SpellId> {
-    let definition = items.get(stack.item)?;
+    let definition = &items[stack.item];
     let cast = definition.spell?;
     (can_activate(character, definition, worn)
         && stack.remaining_uses() != Some(0)

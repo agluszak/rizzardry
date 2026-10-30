@@ -95,27 +95,13 @@ pub struct PointLightSource {
 }
 
 impl PointLightSource {
-    pub fn at(&self, position: Vec3, normal: Option<Vec3>) -> Vec3 {
-        let to_light = self.position - position;
-        let distance = to_light.length();
+    /// Light at a point in range: `colour * (1 - d / range)`.
+    pub fn at(&self, position: Vec3) -> Vec3 {
+        let distance = self.position.distance(position);
         if distance >= self.range || distance == 0.0 {
             return Vec3::ZERO;
         }
-        let facing = normal.map_or(1.0, |n| n.dot(to_light / distance).max(0.0));
-        self.colour * (1.0 - distance / self.range) * facing
-    }
-}
-
-impl LevelLighting {
-    /// Light at a point from the offset and every light in range:
-    /// `colour * (1 - d / range) * facing`, with facing 1 when `normal` is
-    /// none.
-    pub fn at(&self, position: Vec3, normal: Option<Vec3>) -> Vec3 {
-        let mut light = self.offset;
-        for source in self.lights.iter().filter(|s| s.enabled) {
-            light += source.at(position, normal);
-        }
-        light
+        self.colour * (1.0 - distance / self.range)
     }
 }
 

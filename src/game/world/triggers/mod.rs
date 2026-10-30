@@ -29,7 +29,6 @@ use crate::content::level::{
     VariableName,
 };
 use crate::game::characters::{Character, Vitals};
-use crate::game::data::GameData;
 use crate::game::inventory::PartyInventory;
 use crate::game::party::DamageApplied;
 use crate::game::party::roster::PartyRoster;
@@ -174,17 +173,12 @@ fn drink_fountain(
         &mut Vitals,
         Option<(&crate::game::magic::LearnedSpells, &mut crate::game::magic::SpellPoints)>,
     )>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     mut rng: ResMut<GameRng>,
     mut outcomes: MessageWriter<TriggerEffect>,
 ) -> bool {
-    if fountain.restores == Restores::Magic && content.spells().is_none() {
-        return false;
-    }
     let restoration = if fountain.restores == Restores::Restoration {
-        let Some(spell) =
-            content.spells().and_then(|s| s.get(crate::content::spells::SpellId::HEAL_ALL))
-        else {
+        let Some(spell) = content.spells.get(crate::content::spells::SpellId::HEAL_ALL) else {
             return false;
         };
         Some(spell)
@@ -322,13 +316,12 @@ pub fn activate(world: &mut World, entity: Entity, player: bool) -> bool {
     world.resource_scope(|world, geometry: Mut<Assets<LevelDefinition>>| {
         let Some(geometry) = geometry.get(&handle) else { return false };
         let definition = &geometry.triggers[world.get::<Device>(entity).unwrap().definition];
-        if (player
+        if player
             && (!usable(world, entity, definition)
                 || player_distance(world, geometry, entity).is_none_or(|distance| {
                     !distance.is_finite()
                         || !(definition.range.0..=definition.range.1).contains(&distance)
-                })))
-            || !ready(world, entity)
+                }))
         {
             return false;
         }
@@ -413,13 +406,6 @@ fn usable(world: &World, entity: Entity, definition: &TriggerDefinition) -> bool
     world
         .get::<TriggerState>(entity)
         .is_some_and(|state| definition.usable && state.on && !(definition.once && state.fired))
-}
-
-fn ready(world: &World, entity: Entity) -> bool {
-    if world.get::<Container>(entity).is_none() {
-        return true;
-    }
-    GameData::items(world).is_some() && GameData::loot(world).is_some()
 }
 
 /// Choose the use a run performs (retail `Trigger::SelectAction`). As in
@@ -602,9 +588,6 @@ fn execute(
     depth: usize,
     source: i32,
 ) -> Ran {
-    if !ready(world, entity) {
-        return Ran::Declined;
-    }
     let Some(device) = world.get::<Device>(entity) else { return Ran::Declined };
     let Some(&LevelOwned(level)) = world.get::<LevelOwned>(entity) else { return Ran::Declined };
     let definition = &geometry.triggers[device.definition];

@@ -159,7 +159,7 @@ pub fn search_pulse(
     members: Query<(&Character, &Vitals)>,
     mut items: Query<(Entity, &mut WorldItem, &Transform)>,
     obstacles: WorldObstacles,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     mut news: MessageWriter<SearchNews>,
 ) {
     if !search.pulse.tick(time.delta()).just_finished() {
@@ -186,7 +186,7 @@ pub fn search_pulse(
         }
     }
     let Some((score, searcher)) = best else { return };
-    let catalog = content.items();
+    let catalog = &content.items;
     for (target, mut item, at) in &mut items {
         if !item.hidden {
             continue;
@@ -201,8 +201,7 @@ pub fn search_pulse(
             continue;
         }
         item.hidden = false;
-        let name =
-            catalog.and_then(|c| c.get(item.appearance())).map(|d| item.display_name(d, false));
+        let name = catalog.get(item.appearance()).map(|d| item.display_name(d, false));
         news.write(SearchNews::Spotted {
             target,
             member: searcher.name.clone(),
@@ -220,6 +219,7 @@ mod tests {
     fn search_intent_survives_a_fight_which_holds_it_off() {
         use crate::game::world::level::{Destination, Level};
         let mut app = App::new();
+        app.init_resource::<crate::game::data::Catalogs>();
         app.init_resource::<Search>()
             .add_message::<ToggleSearch>()
             .add_message::<SearchNews>()
@@ -281,6 +281,7 @@ mod tests {
         use std::time::Duration;
         let run = |frame: Duration| {
             let mut app = App::new();
+            app.init_resource::<crate::game::data::Catalogs>();
             app.add_plugins(MinimalPlugins)
                 .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(frame))
                 .insert_resource(Time::<Fixed>::from_duration(Duration::from_millis(125)))

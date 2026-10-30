@@ -125,7 +125,7 @@ pub fn monster_own(
 pub fn monster_stance(world: &World, monster: Entity) -> Stance {
     let Some(species) = world
         .get::<Monster>(monster)
-        .and_then(|m| crate::game::data::GameData::species(world)?.kind(m.species))
+        .map(|m| &world.resource::<crate::game::data::Catalogs>().species[m.species])
     else {
         return Stance::Neutral;
     };
@@ -158,7 +158,7 @@ impl Stances<'_, '_> {
     /// species' default.
     pub fn group(&self, monster: Entity, species: &MonsterCatalog, now: u64) -> Option<Stance> {
         let (body, member, fighting) = self.monsters.get(monster).ok()?;
-        let kind = species.kind(body.species)?;
+        let kind = &species[body.species];
         let set = member.and_then(|m| self.groups.get(m.0).ok()).and_then(|g| g.set);
         Some(stance(set, kind, &self.factions, now, fighting))
     }

@@ -387,7 +387,7 @@ fn draw_device_panel(
     roster: Single<&PartyRoster>,
     members: Query<(&Character, &Vitals)>,
     containers: Query<&Container>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     strings: crate::presentation::screen_art::GameStrings,
     mut captions: Query<(&Caption, &mut BitmapText)>,
     mut buttons: Query<(Entity, &Control, &mut BackgroundColor, Has<InteractionDisabled>)>,
@@ -401,7 +401,7 @@ fn draw_device_panel(
         let name = strings.get(crate::content::ui::TRAP_NAMES + trap);
         if name.is_empty() { "Trap" } else { name }.to_owned()
     };
-    let catalog = content.items();
+    let catalog = &content.items;
     let stacks = containers.get(on.0).map_or(&[][..], |c| &c.contents.items[..]);
     let percent = |value: Option<i64>| value.map_or("-".to_owned(), |v| format!("{v}%"));
 
@@ -454,9 +454,7 @@ fn draw_device_panel(
                     let Some(stack) = stacks.iter().find(|s| s.id == id) else {
                         return String::new();
                     };
-                    let item = catalog
-                        .and_then(|c| c.get(stack.item))
-                        .map_or(String::new(), |d| stack.display_name(d, false));
+                    let item = stack.display_name(&catalog[stack.item], false);
                     match panel.chosen.iter().find(|(c, _)| *c == id) {
                         Some((_, amount)) if stack.count() > 1 => {
                             format!("[{amount}/{}] {item}", stack.count())
@@ -653,7 +651,7 @@ mod tests {
     use crate::content::characters::Skill;
     use crate::content::items::{ItemDefinition, ItemId, QuantityKind};
     use crate::content::level::Lock;
-    use crate::content::{items::ItemCatalog, ui::TextTable};
+    use crate::content::ui::TextTable;
     use crate::game::characters::{Gender, Profession, Race};
     use crate::game::inventory::{ItemIds, ItemStack};
     use crate::game::world::interaction::{LockNews, Unable};
@@ -669,7 +667,6 @@ mod tests {
         .add_observer(crate::game::world::interaction::end_attempts)
         .init_asset::<SpriteSheet>()
         .init_asset::<TextTable>()
-        .init_asset::<ItemCatalog>()
         .init_resource::<SelectedMember>()
         .init_resource::<ItemIds>()
         .init_resource::<crate::game::difficulty::Difficulty>()

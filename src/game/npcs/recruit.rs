@@ -12,7 +12,7 @@ use crate::content::items::ItemCatalog;
 use crate::content::npcs::{NpcCharacter, NpcDefinition, NpcId};
 use crate::content::spells::SpellCatalog;
 use crate::game::characters::{Character, Vitals};
-use crate::game::data::GameData;
+use crate::game::data::Catalogs;
 use crate::game::inventory::{Carried, EquipSlot, Equipped, ItemIds, ItemStack, PartyInventory};
 use crate::game::magic::{LearnedSpells, SpellPoints};
 use crate::game::party::body::PartyBody;
@@ -143,14 +143,13 @@ pub fn joinable(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
     // The items it brings are part of its character: one the catalog lacks
     // is missing content, and it does not join without it.
     let template = definition.character.as_ref().unwrap();
-    let complete = GameData::items(world).is_some_and(|items| {
-        template
-            .equipment
-            .iter()
-            .chain(&template.backpack)
-            .flatten()
-            .all(|&id| items.get(id).is_some())
-    });
+    let items = &world.resource::<Catalogs>().items;
+    let complete = template
+        .equipment
+        .iter()
+        .chain(&template.backpack)
+        .flatten()
+        .all(|&id| items.get(id).is_some());
     if !complete {
         warn!("NPC {id:?} cannot join: its items are missing from the catalog");
         return Err(JoinRefusal::Declines);
@@ -233,7 +232,10 @@ pub fn join(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
             .ok_or(JoinRefusal::Declines)?;
         let made = world.resource_scope(|world, mut ids: Mut<ItemIds>| {
             world.resource_scope(|world, mut rng: Mut<GameRng>| {
-                let catalogs = (GameData::items(world)?, GameData::spells(world)?);
+                let catalogs = (
+                    &world.resource::<crate::game::data::Catalogs>().items,
+                    &world.resource::<crate::game::data::Catalogs>().spells,
+                );
                 Some(first_character(&template, catalogs, (&mut ids, &mut rng)))
             })
         });
@@ -275,8 +277,8 @@ pub fn join(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
 fn hand_over(world: &mut World, actor: Entity, level: Entity, keep: impl Fn(&ItemStack) -> bool) {
     let Some(party) = the_party(world) else { return };
     let feet = PartyBody::feet_in(world).unwrap_or_default();
-    // Nothing leaves the member unless the catalog to place it with is there.
-    GameData::with_items(world, |world, items| {
+    Catalogs::scope(world, |world, catalogs| {
+        let items = &catalogs.items;
         let given: Vec<ItemStack> = {
             let Some(mut carried) = world.get_mut::<Carried>(actor) else { return };
             let carried = &mut *carried;
@@ -303,12 +305,11 @@ fn hand_over(world: &mut World, actor: Entity, level: Entity, keep: impl Fn(&Ite
 }
 
 /// What a member's parting needs before anything about it changes: the
-/// catalogs, and the level being played, where items the party's pool cannot
-/// hold are dropped. A body that will stand again also needs its species.
+/// level being played, where items the party's pool cannot hold are
+/// dropped. A body that will stand again also needs its species.
 fn ready_to_part(world: &mut World, body: Option<Entity>) -> Option<Entity> {
     let species = body.and_then(|body| world.get::<Monster>(body)).map(|m| m.species);
-    GameData::items(world)?;
-    let catalog = GameData::species(world)?;
+    let catalog = &world.resource::<Catalogs>().species;
     species.is_none_or(|s| catalog.kind(s).is_some()).then_some(())?;
     world.query_filtered::<Entity, With<Level>>().iter(world).next()
 }
@@ -335,13 +336,15 @@ pub fn dismiss(world: &mut World, actor: Entity) -> bool {
     let wanted = definition(world, actor)
         .and_then(|definition| definition.character)
         .map_or_else(Vec::new, |character| character.wanted);
-    let cursed = |stack: &ItemStack| GameData::items(world)?.get(stack.item).map(|d| d.cursed);
+    let cursed = |stack: &ItemStack| {
+        world.resource::<crate::game::data::Catalogs>().items[stack.item].cursed
+    };
     let held: Vec<_> = world
         .get::<Carried>(actor)
         .map(|carried| {
             carried
                 .active_equipment()
-                .filter(|(_, e)| !e.curse_released && cursed(&e.stack).unwrap_or(false))
+                .filter(|(_, e)| !e.curse_released && cursed(&e.stack))
                 .map(|(_, e)| e.stack.id)
                 .collect()
         })
@@ -379,7 +382,7 @@ fn stand_beside_party(world: &mut World, actor: Entity, body: Entity, party: Ent
         world.get::<Character>(actor).map_or(stamina, |c| c.base_stats().max_stamina());
     let Some(species) = world.get::<Monster>(body).map(|m| m.species) else { return };
     let rolled = world.resource_scope(|world, mut rng: Mut<GameRng>| {
-        let kind = GameData::species(world)?.kind(species)?;
+        let kind = world.resource::<crate::game::data::Catalogs>().species.kind(species)?;
         Some((rng.roll(kind.hit_points).max(1), rng.roll(kind.stamina)))
     });
     let Some((max_hp, max_stamina)) = rolled else { return };

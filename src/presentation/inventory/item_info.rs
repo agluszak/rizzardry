@@ -139,7 +139,7 @@ pub(super) fn build(commands: &mut Commands, panel: Entity, root: Entity, art: &
 pub(super) fn refresh(
     screen: Option<Single<&InventoryScreen>>,
     members: Query<CharacterView>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     battle: Option<Single<&crate::game::combat::Battle>>,
     party_effects: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
     art: Option<Res<InventoryArt>>,
@@ -151,7 +151,7 @@ pub(super) fn refresh(
     let load = view.load();
     let armour = view.armour(
         screen.member,
-        content.items(),
+        &content.items,
         battle.as_deref().copied(),
         party_effects.as_deref().copied(),
     );
@@ -203,22 +203,15 @@ mod tests {
     use super::*;
     use crate::content::items::ItemCatalog;
     use crate::game::characters::{Character, Gender, Profession, Race, Vitals};
-    use crate::game::data::GameData;
 
     #[test]
     fn armour_labels_follow_live_inputs_and_clear_without_equipment() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .init_resource::<Assets<ItemCatalog>>()
             .insert_resource(InventoryArt::default())
             .add_systems(Update, refresh);
-        let items = app.world_mut().resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog(vec![]));
-        app.insert_resource(GameData {
-            items,
-            loot: default(),
-            species: default(),
-            spells: default(),
-        });
+        let items = ItemCatalog(vec![]);
+        app.insert_resource(crate::game::data::Catalogs { items, ..default() });
         let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
         let actor =
             app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();

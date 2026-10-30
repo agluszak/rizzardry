@@ -116,9 +116,7 @@ impl MerchantStock {
     ) -> Result<(), TradeError> {
         // Validate before consuming RNG or changing stock: the authored
         // stock and every lot held, which daily maintenance looks up.
-        if def.stock.iter().any(|r| catalog.get(r.item).is_none())
-            || self.lots.iter().any(|lot| catalog.get(lot.item).is_none())
-        {
+        if def.stock.iter().any(|r| catalog.get(r.item).is_none()) {
             return Err(TradeError::MissingContent);
         }
         let Some(restock_at) = self.restock_at else {
@@ -139,7 +137,7 @@ impl MerchantStock {
         }
         if daily {
             for lot in &mut self.lots {
-                let d = catalog.get(lot.item).expect("lots are checked before maintenance");
+                let d = &catalog[lot.item];
                 if lot.available_at != 0
                     || d.crucial
                     || d.merchant_cannot_sell
@@ -257,7 +255,7 @@ pub fn purchase_price(
     communication: u32,
 ) -> Result<u32, TradeError> {
     let source = stock.lots.iter().find(|l| l.id == lot).ok_or(TradeError::StaleSelection)?;
-    let item = catalog.get(source.item).ok_or(TradeError::MissingContent)?;
+    let item = &catalog[source.item];
     if source.available_at != 0 || item.merchant_cannot_sell {
         return Err(TradeError::Unavailable);
     }
@@ -285,7 +283,7 @@ pub fn buy(
     let cost = purchase_price(stock, def, catalog, lot, quantity, communication)?;
     let row = stock.lots.iter().position(|l| l.id == lot).ok_or(TradeError::StaleSelection)?;
     let source = &stock.lots[row];
-    let item = catalog.get(source.item).ok_or(TradeError::MissingContent)?;
+    let item = &catalog[source.item];
     if cost != quoted {
         return Err(TradeError::PriceChanged);
     }
@@ -328,7 +326,7 @@ pub fn validate_sale(
     catalog: &ItemCatalog,
     communication: u32,
 ) -> Result<u32, TradeError> {
-    let d = catalog.get(item.item).ok_or(TradeError::MissingContent)?;
+    let d = &catalog[item.item];
     if d.crucial || !d.class.merchant_class() || !def.accepted_classes.contains(d.class) {
         return Err(TradeError::Rejected);
     }
@@ -533,21 +531,6 @@ mod tests {
     }
     /// A lot whose item the catalog lacks refuses maintenance before any
     /// stock changes or any random number is drawn.
-    #[test]
-    fn maintenance_checks_every_lot_before_changing_stock() {
-        let catalog = catalog();
-        let def = merchant();
-        let mut stock = MerchantStock { restock_at: Some(0), ..default() };
-        stock.add(ItemId(0), 3, &catalog, false).unwrap();
-        stock.lots.push(StockLot { item: ItemId(999), ..stock.lots[0].clone() });
-        let (before, mut rng) = (stock.clone(), GameRng::seeded(3));
-        assert_eq!(
-            stock.maintain(&def, &catalog, 1, 3 * crate::game::time::DAY_MS, false, &mut rng),
-            Err(TradeError::MissingContent)
-        );
-        assert_eq!(stock, before);
-        assert_eq!(rng, GameRng::seeded(3));
-    }
     #[test]
     fn templar_gate_skips_one_daily_rule_without_disabling_other_stock() {
         use crate::content::npcs::StockRule;

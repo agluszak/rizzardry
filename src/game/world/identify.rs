@@ -114,7 +114,7 @@ pub struct GroupRecognition<'w, 's> {
     level: PlayedLevel<'w, 's>,
     roster: Single<'w, 's, &'static PartyRoster>,
     members: Query<'w, 's, (&'static Character, &'static Vitals, &'static mut MonsterKnowledge)>,
-    content: crate::game::data::Content<'w>,
+    content: If<Res<'w, crate::game::data::Catalogs>>,
     obstacles: Option<super::obstacles::WorldObstacles<'w, 's>>,
     pub(crate) factions: ResMut<'w, crate::game::factions::Factions>,
     news: MessageWriter<'w, Identified>,
@@ -133,9 +133,7 @@ impl GroupRecognition<'_, '_> {
         let (Some(level), Some(far)) = (self.level.entity(), self.level.view_distance()) else {
             return;
         };
-        let Some(catalog) = self.content.species() else {
-            return;
-        };
+        let catalog = &self.content.species;
         let Some(obstacles) = self.obstacles.as_ref() else { return };
         let view = super::perception::View { eye: from, forward, far, searching };
         let (groups, monsters, roster, members, news) =
@@ -164,7 +162,7 @@ impl GroupRecognition<'_, '_> {
                 }
                 species_id.get_or_insert(monster.species);
                 count += 1;
-                let Some(species) = catalog.kind(monster.species) else { continue };
+                let species = &catalog[monster.species];
                 in_view |= view.sees(
                     members
                         .iter_many(roster.iter())
@@ -232,7 +230,6 @@ mod tests {
     use super::*;
     use crate::content::species::MonsterCatalog;
     use crate::game::characters::{Gender, Profession, Race};
-    use crate::game::data::GameData;
     use crate::game::party::body::PartyBody;
     use avian3d::prelude::Position;
 
@@ -284,7 +281,6 @@ mod tests {
             .init_resource::<crate::game::factions::Factions>()
             .init_resource::<avian3d::collider_tree::ColliderTrees>()
             .init_resource::<Assets<LevelDefinition>>()
-            .init_resource::<Assets<MonsterCatalog>>()
             .insert_resource(GameRng::seeded(4))
             .add_message::<Identified>()
             .add_systems(
@@ -307,21 +303,13 @@ mod tests {
             .world_mut()
             .resource_mut::<Assets<LevelDefinition>>()
             .add(LevelDefinition { sight_distance: Some(5.0), ..default() });
-        let species =
-            app.world_mut().resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog(vec![
-                Species {
-                    name: "Crab".into(),
-                    generic_name: "Crustacean".into(),
-                    faction: 4,
-                    ..default()
-                },
-            ]));
-        app.insert_resource(GameData {
-            items: default(),
-            loot: default(),
-            species,
-            spells: default(),
-        });
+        let species = MonsterCatalog(vec![Species {
+            name: "Crab".into(),
+            generic_name: "Crustacean".into(),
+            faction: 4,
+            ..default()
+        }]);
+        app.insert_resource(crate::game::data::Catalogs { species, ..default() });
         let root = app.world_mut().spawn(Level::test(geometry.clone())).id();
         let group = app
             .world_mut()
@@ -378,9 +366,7 @@ mod tests {
         // Aging and recognition settle in the same operation: blindness
         // expires during this interval and recognition can then succeed.
         app.world_mut().get_mut::<MonsterGroup>(group).unwrap().identified = false;
-        let catalog = app.world().resource::<GameData>().species.clone();
-        app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&catalog).unwrap().0[0]
-            .level = 1;
+        app.world_mut().resource_mut::<crate::game::data::Catalogs>().species.0[0].level = 1;
         app.world_mut().get_mut::<Vitals>(member).unwrap().inflict(
             crate::game::characters::Condition::Blind,
             crate::game::characters::Lasting::Rounds(2),
@@ -392,7 +378,7 @@ mod tests {
             .unwrap();
         app.world_mut().entity_mut(body).insert(avian3d::prelude::LinearVelocity::ZERO);
         app.init_resource::<crate::game::time::GameClock>();
-        app.init_resource::<Assets<crate::content::spells::SpellCatalog>>();
+        app.init_resource::<crate::game::world::search::Search>();
         app.add_message::<crate::game::camp::CampNews>();
         app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_secs(30));
         use bevy::ecs::system::RunSystemOnce;

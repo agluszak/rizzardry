@@ -2,7 +2,6 @@ use super::*;
 use std::time::Duration;
 
 use crate::content::items::{Dice, ItemCatalog, ItemDefinition, ItemId, LootTable, LootTables};
-use crate::game::data::GameData;
 use crate::game::inventory::{ItemIds, ItemStack, make_item};
 use crate::game::world::scripts::LevelScript;
 
@@ -92,9 +91,8 @@ impl Scenario {
             .collect();
         let geometry = LevelDefinition { triggers, props: models, ..default() };
         let mut world = World::new();
+        world.init_resource::<avian3d::collider_tree::ColliderTrees>();
         world.init_resource::<Assets<LevelDefinition>>();
-        world.init_resource::<Assets<ItemCatalog>>();
-        world.init_resource::<Assets<LootTables>>();
         world.init_resource::<Messages<TriggerEffect>>();
         world.init_resource::<Messages<DamageApplied>>();
         world.init_resource::<Messages<crate::game::world::hostility::Provocation>>();
@@ -113,9 +111,9 @@ impl Scenario {
         ));
         world.insert_resource(GameClock::at(0));
         world.insert_resource(GameRng::seeded(5));
-        let items = world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog::default());
-        let loot = world.resource_mut::<Assets<LootTables>>().add(LootTables::default());
-        world.insert_resource(GameData { items, loot, species: default(), spells: default() });
+        let items = ItemCatalog::default();
+        let loot = LootTables::default();
+        world.insert_resource(crate::game::data::Catalogs { items, loot, ..default() });
         let root = world.spawn_empty().id();
         let mut scenario = Self { world, geometry, script, root, devices: vec![], members: vec![] };
         scenario.visit(None);
@@ -134,14 +132,8 @@ impl Scenario {
             .iter()
             .map(|_| self.world.spawn(LevelOwned(self.root)).id())
             .collect();
-        let tables = LootTables(
-            self.world
-                .resource::<Assets<LootTables>>()
-                .get(&self.world.resource::<GameData>().loot)
-                .unwrap()
-                .0
-                .clone(),
-        );
+        let tables =
+            LootTables(self.world.resource::<crate::game::data::Catalogs>().loot.0.clone());
         let mut state = SystemState::<Commands>::new(&mut self.world);
         let mut commands = state.get_mut(&mut self.world).unwrap();
         self.devices = spawn_devices(
@@ -244,8 +236,7 @@ pub(crate) fn chest_level(lock: Option<crate::content::level::Lock>, gold: i16) 
         item_count: Dice::default(),
         gold: Dice { count: 0, sides: 0, base: gold },
     }]);
-    let handle = level.world.resource::<GameData>().loot.clone();
-    level.world.resource_mut::<Assets<LootTables>>().insert(&handle, loot).unwrap();
+    level.world.resource_mut::<crate::game::data::Catalogs>().loot = loot;
     level.visit(None);
     level
 }
@@ -269,9 +260,8 @@ fn a_chest_keeps_what_is_left_in_it_through_closing_and_revisits() {
     arrows.quantity = QuantityKind::Stack;
     arrows.stack_limit = 99;
     let dagger = ItemDefinition { id: ItemId(1), name: "dagger".into(), ..default() };
-    let handle = level.world.resource::<GameData>().items.clone();
     let catalog = ItemCatalog(vec![arrows.clone(), dagger.clone()]);
-    level.world.resource_mut::<Assets<ItemCatalog>>().insert(&handle, catalog).unwrap();
+    level.world.resource_mut::<crate::game::data::Catalogs>().items = catalog;
     let chest = level.device("CHEST");
     let stacks = {
         let mut ids = level.world.resource_mut::<ItemIds>();
@@ -450,8 +440,7 @@ fn a_container_opens_its_table_once_and_one_without_a_table_holds_nothing() {
         item_count: Dice::default(),
         gold: Dice { count: 0, sides: 0, base: 5 },
     }]);
-    let handle = level.world.resource::<GameData>().loot.clone();
-    level.world.resource_mut::<Assets<LootTables>>().insert(&handle, loot).unwrap();
+    level.world.resource_mut::<crate::game::data::Catalogs>().loot = loot;
     level.visit(None);
     // An item put in before the first opening leaves the table to be drawn.
     let definition = ItemDefinition { id: ItemId(9), ..default() };
@@ -828,7 +817,7 @@ fn damage_uses_roster_order_and_leaves_nonmembers_alone() {
 }
 
 #[test]
-fn only_loot_operations_require_catalogs_and_departed_devices_cannot_run() {
+fn departed_devices_cannot_run() {
     let mut door = trigger("DOOR", TriggerAction::OpenDoor);
     door.alternate = Some(act(TriggerAction::ToggleDoor));
     let mut chest = trigger("CHEST", TriggerAction::Animate(Animation::Toggle));
@@ -838,15 +827,7 @@ fn only_loot_operations_require_catalogs_and_departed_devices_cannot_run() {
         &[PropSpec("DOOR", 10.0, false, &[]), PropSpec("CHEST", 5.0, false, &[])],
         LevelScript::None,
     );
-    let data = level.world.remove_resource::<GameData>().unwrap();
-    assert!(level.run("DOOR").0, "door state does not depend on loot catalogs");
-    level.world.clear_trackers();
-    assert!(!level.run("CHEST").0);
-    assert_eq!(
-        level.world.query_filtered::<Entity, Changed<TriggerState>>().iter(&level.world).count(),
-        0
-    );
-    level.world.insert_resource(data);
+    assert!(level.run("DOOR").0);
     level.settle();
     let source = level.world.entity_mut(level.root).take::<Level>().unwrap();
     assert!(!level.run("DOOR").0);
@@ -1026,7 +1007,6 @@ fn a_refused_take_leaves_container_receiver_and_identities_untouched() {
     arrows.quantity = QuantityKind::Stack;
     arrows.stack_limit = 99;
     let dagger = ItemDefinition { id: ItemId(1), name: "dagger".into(), ..default() };
-    let handle = level.world.resource::<GameData>().items.clone();
     let catalog = ItemCatalog(vec![arrows.clone(), dagger.clone()]);
     let chest = level.device("CHEST");
     let quiver = {
@@ -1045,14 +1025,7 @@ fn a_refused_take_leaves_container_receiver_and_identities_untouched() {
     };
     let next_id = |level: &Scenario| level.world.resource::<ItemIds>().clone().allocate();
     let before = contents(&level);
-
-    // Content not loaded yet: refused, not a silent success.
-    let on = attempt(&level);
-    assert_eq!(
-        take_from_container(&mut level.world, on, &[(quiver, 4)], Recipient::Party),
-        Err(Refusal::MissingContent)
-    );
-    level.world.resource_mut::<Assets<ItemCatalog>>().insert(&handle, catalog).unwrap();
+    level.world.resource_mut::<crate::game::data::Catalogs>().items = catalog;
 
     // A member with no room at all: nothing moves and no identity is used.
     let member = level.members[0];
@@ -1276,13 +1249,12 @@ fn mana_fountains_share_use_and_refill_history_and_restore_deficits() {
     let mut points = SpellPoints::default();
     use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
     use crate::game::magic::LearnedSpells;
-    scene.world.init_resource::<Assets<SpellCatalog>>();
-    let spells = scene.world.resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(vec![
+    let spells = SpellCatalog(vec![
         SpellDefinition::default(),
         SpellDefinition { id: SpellId(1), realm: Some(Realm::Fire), cost: 8, ..default() },
         SpellDefinition { id: SpellId(2), realm: Some(Realm::Water), cost: 6, ..default() },
-    ]));
-    scene.world.resource_mut::<GameData>().spells = spells;
+    ]);
+    scene.world.resource_mut::<crate::game::data::Catalogs>().spells = spells;
     scene.world.entity_mut(member).insert(LearnedSpells([SpellId(1), SpellId(2)].into()));
     points.fraction[Realm::Fire] = 0.25;
     scene.world.entity_mut(member).insert(points);
@@ -1339,15 +1311,14 @@ fn restorative_fountains_require_spell_content_before_consuming_a_use() {
     }
     assert!(!scene.run("TEMPLE").0);
     assert!(scene.world.get::<FountainState>(scene.device("TEMPLE")).unwrap().used.is_none());
-    scene.world.init_resource::<Assets<SpellCatalog>>();
     let mut definitions = vec![SpellDefinition::default(); 69];
     definitions[68] = SpellDefinition {
         id: SpellId::HEAL_ALL,
         dice: Some(Dice { count: 1, sides: 1, base: 0 }),
         ..default()
     };
-    let spells = scene.world.resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(definitions));
-    scene.world.resource_mut::<GameData>().spells = spells;
+    let spells = SpellCatalog(definitions);
+    scene.world.resource_mut::<crate::game::data::Catalogs>().spells = spells;
     assert!(scene.run("TEMPLE").0);
     let vitals = scene.world.get::<Vitals>(member).unwrap();
     assert_eq!(vitals.hp, 2, "out-of-range authored power becomes one, not seven");

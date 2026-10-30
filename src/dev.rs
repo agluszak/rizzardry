@@ -32,11 +32,9 @@ pub fn screenshot_and_exit(
     party: Query<(), With<PartyBody>>,
     offscreen: Option<Res<Offscreen>>,
     dialogue: Option<Res<TalkTo>>,
-    question: Option<Res<AskAbout>>,
-    trade: Option<Res<crate::presentation::conversation::InspectTrade>>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    if party.is_empty() || dialogue.is_some() || question.is_some() || trade.is_some() {
+    if party.is_empty() || dialogue.is_some() {
         return;
     }
     if !request.wait.tick(time.delta()).is_finished() {
@@ -194,15 +192,13 @@ pub fn log_news(
 pub struct TalkTo(pub String);
 
 pub fn talk_to_npc(world: &mut World) {
-    use crate::content::npcs::NpcCatalog;
-    use crate::game::npcs::{NpcAssets, NpcBodies, conversation};
+    use crate::game::npcs::{NpcBodies, conversation};
     let Some(request) = world.get_resource::<TalkTo>() else { return };
     let name = request.0.clone();
     if world.query::<&Level>().iter(world).next().is_none() {
         return;
     }
-    let assets = world.resource::<NpcAssets>();
-    let Some(catalog) = world.resource::<Assets<NpcCatalog>>().get(&assets.catalog) else { return };
+    let catalog = crate::game::npcs::catalog(world);
     let definition = catalog.0.iter().position(|npc| npc.source_name.eq_ignore_ascii_case(&name));
     let Some(definition) = definition else {
         error!("unknown NPC for --talk-to: {name}");
@@ -231,36 +227,5 @@ pub fn talk_to_npc(world: &mut World) {
             world.write_message(AppExit::error());
             world.remove_resource::<TalkTo>();
         }
-    }
-}
-
-/// A developer-supplied topic goes through the same request as the UI; no
-/// fabricated dialogue state, payment bypass or forced quote selection.
-#[derive(Resource)]
-pub struct AskAbout(pub String);
-pub(crate) fn ask_about(
-    mut commands: Commands,
-    question: Option<Res<AskAbout>>,
-    mut inputs: Query<
-        &mut bevy::text::EditableText,
-        With<crate::presentation::conversation::TopicInput>,
-    >,
-    sessions: Query<(Entity, &crate::game::npcs::conversation::Conversation)>,
-    mut requests: MessageWriter<crate::game::npcs::conversation::ConversationRequest>,
-) {
-    let Some(question) = question else { return };
-    let Ok((conversation, state)) = sessions.single() else { return };
-    if state.ready() {
-        info!("asking NPC about {}", question.0);
-        for mut input in &mut inputs {
-            input.clear();
-            input.queue_edit(bevy::text::TextEdit::Insert(question.0.clone().into()));
-        }
-        requests.write(crate::game::npcs::conversation::ConversationRequest::Topic {
-            conversation,
-            revision: state.revision,
-            text: question.0.clone(),
-        });
-        commands.remove_resource::<AskAbout>();
     }
 }

@@ -376,13 +376,13 @@ pub fn give_birth(
     mut levels: Query<(Entity, &mut Unborn, &LevelNavigation), With<super::level::Level>>,
     groups: Query<(Entity, &MonsterGroup, &LevelOwned)>,
     mut configs: ResMut<Assets<WalkerMotionConfig>>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
 ) {
     let Ok((root, mut unborn, navigation)) = levels.single_mut() else {
         births.clear();
         return;
     };
-    let Some(species) = content.species() else { return };
+    let species = &content.species;
     for &Birth(authored) in births.read() {
         let (born, waiting): (Vec<_>, Vec<_>) =
             std::mem::take(&mut unborn.0).into_iter().partition(|k| k.group == Some(authored));
@@ -414,13 +414,14 @@ pub fn populate(
     root: Entity,
     geometry: &LevelDefinition,
     remembered: Option<LevelRecord>,
-    (species, items, tables): (&MonsterCatalog, &ItemCatalog, &crate::content::items::LootTables),
+    catalogs: &crate::game::data::Catalogs,
     (map, npcs): (&str, &mut crate::game::npcs::NpcPopulation),
     (handles, bodies): (&MonsterBodies, &Assets<MonsterBody>),
     (navigation, configs): (&LevelNavigation, &mut Assets<WalkerMotionConfig>),
     ids: &mut ItemIds,
     rng: &mut GameRng,
 ) {
+    let (species, items, tables) = (&catalogs.species, &catalogs.items, &catalogs.loot);
     let (remembered_monsters, remembered_items, groups, encounters) = match remembered {
         Some(record) => (
             Some((record.monsters, record.unborn)),
@@ -477,7 +478,7 @@ pub fn populate(
         let Some(id) = kind.npc else { continue };
         let body = handles.get(placed.species, bodies).unwrap();
         let place = crate::game::npcs::Placing { placed, tables, id, map, average };
-        let Some(actor) = npcs.place(commands, place, items, &mut placed_actors, rng, |rng| {
+        let Some(actor) = npcs.place(commands, place, catalogs, &mut placed_actors, rng, |rng| {
             KeptMonster::placed(placed, kind, body, rng)
         }) else {
             continue;

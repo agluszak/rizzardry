@@ -299,7 +299,7 @@ pub fn hands(
     load: Load,
 ) -> Hands {
     const SLOTS: [EquipSlot; 2] = [EquipSlot::Primary, EquipSlot::Secondary];
-    let worn = SLOTS.map(|slot| carried.worn(slot).and_then(|s| Some((s, catalog.get(s.item)?))));
+    let worn = SLOTS.map(|slot| carried.worn(slot).map(|s| (s, &catalog[s.item])));
     let definition = |hand: usize| worn[hand].map(|(_, d)| d);
     let holds = |hand: usize| match definition(hand) {
         None => Holds::Nothing,
@@ -575,7 +575,7 @@ pub fn armour(
     load: Load,
     defending: bool,
 ) -> Armour {
-    let definition = |slot| carried.worn(slot).and_then(|i| catalog.get(i.item));
+    let definition = |slot| carried.worn(slot).map(|i| &catalog[i.item]);
     let speed = c.attribute(Attribute::Speed);
     let speed = i32::from(speed > 79) + i32::from(speed > 89)
         - i32::from(speed < 20)

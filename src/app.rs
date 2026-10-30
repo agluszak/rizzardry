@@ -84,13 +84,6 @@ pub struct Options {
     /// Combine with --start and --screenshot for reproducible UI captures.
     #[arg(long)]
     pub talk_to: Option<String>,
-    /// Developer: ask a topic after the greeting finishes, through normal validation.
-    #[arg(long, requires = "talk_to")]
-    pub ask_about: Option<String>,
-    /// Developer: inspect Buy UI (or its quantity dialog), skipping greeting playback.
-    /// Selects a real quote but never buys an item.
-    #[arg(long, requires = "talk_to", conflicts_with = "ask_about", value_parser = ["buy", "quantity"])]
-    pub inspect_trade: Option<String>,
     /// Developer: draw the navmesh, agent paths and avoidance.
     #[arg(long)]
     pub nav_debug: bool,
@@ -266,20 +259,6 @@ pub fn build(options: &Options) -> Result<App, String> {
             Update,
             crate::dev::talk_to_npc.after(crate::game::GameplaySet::LevelActivation),
         );
-    }
-    if let Some(topic) = options.ask_about.clone() {
-        app.insert_resource(crate::dev::AskAbout(topic)).add_systems(
-            Update,
-            crate::dev::ask_about.after(crate::game::npcs::conversation::update_conversation),
-        );
-    }
-    if let Some(mode) = &options.inspect_trade {
-        app.insert_resource(crate::presentation::conversation::InspectTrade(mode == "quantity"))
-            .add_systems(
-                Update,
-                crate::presentation::conversation::inspect_trade
-                    .after(crate::game::npcs::conversation::update_conversation),
-            );
     }
     if let Some(line) = options.say.clone() {
         app.insert_resource(SayLine { line, started: None }).add_systems(Update, say_line);

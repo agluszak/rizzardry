@@ -33,10 +33,10 @@ pub struct ItemShown {
 pub fn show_world_items(
     mut commands: Commands,
     items: Query<(Entity, &WorldItem, Option<&ItemShown>)>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     assets: Res<AssetServer>,
 ) {
-    let Some(catalog) = content.items() else { return };
+    let catalog = &content.items;
     for (entity, item, shown) in &items {
         let model = match shown {
             _ if item.hidden => continue,
@@ -148,9 +148,7 @@ pub fn light_world_items(
         let highlight = if hovered.entity() == Some(entity) { Vec3::Y * pulse } else { Vec3::ZERO };
         light.set_if_neq(ActorLight {
             sky: sky * sky_scale,
-            fixed: fixed
-                + highlight
-                + torch.as_ref().map_or(Vec3::ZERO, |light| light.at(at, None)),
+            fixed: fixed + highlight + torch.as_ref().map_or(Vec3::ZERO, |light| light.at(at)),
         });
     }
 }

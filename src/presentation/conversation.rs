@@ -5,9 +5,9 @@ use super::main_screen::SelectedMember;
 use super::retail_controls::{ControlSkin, FocusRing};
 use super::screen_art::{BitmapInk, BitmapText, BitmapWrap, Picture, absolute};
 use crate::content::npcs::TopicCategory;
-use crate::content::{items::EquipClass, npcs::NpcCatalog, ui::SpriteSheet};
+use crate::content::{items::EquipClass, ui::SpriteSheet};
 use crate::game::npcs::{
-    Npc, NpcAssets,
+    Npc,
     conversation::*,
     trade::{self, TradeQuote, TradeSource},
 };
@@ -409,14 +409,13 @@ fn open_trade(world: &mut World, button: Entity, root: Entity) {
               roots: Query<&ConversationView>,
               sessions: Query<&Conversation>,
               npcs: Query<&crate::game::npcs::ActorId>,
-              definitions: Res<Assets<NpcCatalog>>,
-              assets: Res<NpcAssets>| {
+              catalogs: Res<crate::game::data::Catalogs>| {
             let merchant = roots
                 .get(root)
                 .ok()
                 .and_then(|view| sessions.get(view.0).ok())
                 .and_then(|c| npcs.get(c.actor).ok())
-                .and_then(|n| definitions.get(&assets.catalog)?.get(n.npc()))
+                .and_then(|n| catalogs.npcs.get(n.npc()))
                 .is_some_and(|d| d.owns_stock);
             if let Ok(mut state) = states.get_mut(root) {
                 set_mode(&mut state, if merchant { Mode::Buy } else { Mode::Give });
@@ -1201,8 +1200,7 @@ fn project_text(
     sessions: Query<&Conversation>,
     speech: Query<&ConversationSpeech>,
     npcs: Query<&crate::game::npcs::ActorId>,
-    definitions: Res<Assets<NpcCatalog>>,
-    assets: Res<NpcAssets>,
+    catalogs: If<Res<crate::game::data::Catalogs>>,
     parties: Query<&PartyInventory, With<crate::game::party::roster::Party>>,
     mut labels: Query<(Entity, &Caption, &mut BitmapText)>,
 ) {
@@ -1214,7 +1212,7 @@ fn project_text(
                 Mode::Talk => npcs
                     .get(c.actor)
                     .ok()
-                    .and_then(|n| definitions.get(&assets.catalog)?.get(n.npc()))
+                    .and_then(|n| catalogs.npcs.get(n.npc()))
                     .map_or("NPC", |d| d.source_name.as_str())
                     .to_owned(),
                 Mode::Buy => "Buy".into(),
@@ -1414,8 +1412,7 @@ fn project_modes(
     mut commands: Commands,
     sessions: Query<&Conversation>,
     npcs: Query<(&crate::game::npcs::ActorId, &Npc)>,
-    definitions: Res<Assets<NpcCatalog>>,
-    assets: Res<NpcAssets>,
+    catalogs: If<Res<crate::game::data::Catalogs>>,
     clock: Res<crate::game::time::GameClock>,
     mut panels: Query<
         (Entity, &mut Node, Option<&ModePanel>, Option<&mut QuoteBubble>, Has<MenuPanel>),
@@ -1484,7 +1481,7 @@ fn project_modes(
             let can_trade = npcs
                 .get(c.actor)
                 .ok()
-                .and_then(|(id, _)| definitions.get(&assets.catalog)?.get(id.npc()))
+                .and_then(|(id, _)| catalogs.npcs.get(id.npc()))
                 .is_some_and(|d| d.owns_stock);
             set_enabled(&mut commands, entity, can_trade, disabled);
         } else if pool.is_some() {
@@ -1898,7 +1895,7 @@ fn sync_trade_rows(
     views: ViewScope,
     mut commands: Commands,
     assets: Res<AssetServer>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     sessions: Query<&Conversation>,
     npcs: Query<&Npc>,
     parties: Query<(&PartyRoster, &PartyInventory), With<crate::game::party::roster::Party>>,
@@ -1917,7 +1914,7 @@ fn sync_trade_rows(
         mut previews,
         mut gifts,
     } = widgets;
-    let Some(items) = content.items() else { return };
+    let items = &content.items;
     let Ok((roster, party)) = parties.single() else { return };
     for (list, children) in &lists {
         let Some((root, session)) = views.owner(list) else { continue };
@@ -1959,9 +1956,8 @@ fn sync_trade_rows(
                 .flat_map(|c| c.backpack.iter().flatten())
                 .filter(|_| !state.pool);
             for item in pool.chain(backpack) {
-                if let Some(d) = items.get(item.item)
-                    && allows(d)
-                {
+                let d = &items[item.item];
+                if allows(d) {
                     let owner = if state.pool {
                         ItemOwner::Pool
                     } else {
@@ -2358,7 +2354,7 @@ fn advance_lines(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::content::{items::ItemCatalog, ui::TextTable};
+    use crate::content::ui::TextTable;
 
     pub(crate) fn check_session_views(
         make: impl Fn(Entity, Handle<crate::content::npcs::DialogueScript>) -> Conversation,
@@ -2564,10 +2560,8 @@ pub(crate) mod tests {
             .init_resource::<Assets<Image>>()
             .init_resource::<StoryFacts>()
             .init_resource::<crate::game::time::GameClock>()
-            .init_resource::<Assets<NpcCatalog>>()
+            .init_resource::<crate::game::data::Catalogs>()
             .init_resource::<Assets<TextTable>>()
-            .init_resource::<Assets<ItemCatalog>>()
-            .init_resource::<NpcAssets>()
             .init_resource::<SelectedMember>()
             .init_resource::<InputFocus>()
             .add_message::<ConversationRequest>()
@@ -2633,59 +2627,4 @@ pub(crate) mod tests {
         assert!(app.world().get_entity(row).is_err());
         assert!(app.world().get_entity(other_row).is_ok());
     }
-}
-
-/// Reproducible inspection only: use normal conversation/quote validation and
-/// never submit a purchase. Used by `--inspect-trade` with offscreen captures.
-#[derive(Resource)]
-pub struct InspectTrade(pub bool);
-pub(crate) fn inspect_trade(world: &mut World) {
-    let Some(split) = world.get_resource::<InspectTrade>().map(|s| s.0) else { return };
-    let Some((session, actor, wait, ready)) = world
-        .query::<(Entity, &Conversation)>()
-        .iter(world)
-        .next()
-        .map(|(e, c)| (e, c.actor, c.wait.clone(), c.ready()))
-    else {
-        return;
-    };
-    if !ready {
-        if let ConversationWait::Line { speech, .. } = wait {
-            world.write_message(ConversationRequest::Advance { conversation: session, speech });
-        }
-        return;
-    }
-    let Some(view) = world
-        .query::<(Entity, &ConversationView)>()
-        .iter(world)
-        .find(|(_, v)| v.0 == session)
-        .map(|(e, _)| e)
-    else {
-        return;
-    };
-    let Some(canvas) = world.get::<Children>(view).and_then(|c| c.first().copied()) else { return };
-    set_mode(&mut world.get_mut::<DialogueState>(view).unwrap(), Mode::Buy);
-    let item = crate::game::data::GameData::items(world).and_then(|items| {
-        world
-            .get::<Npc>(actor)?
-            .stock
-            .lots
-            .iter()
-            .find(|lot| {
-                items.get(lot.item).is_some_and(|d| {
-                    trade::on_sale(lot, d)
-                        && (!split || (lot.units > 1 && d.class != EquipClass::Ammunition))
-                })
-            })
-            .map(|lot| (lot.id, trade::trade_quantity(items.get(lot.item).unwrap(), lot.units)))
-    });
-    if let Some((lot, count)) = item {
-        select(world, view, session, TradeSource::Stock(lot), count);
-        if split {
-            quantity::open(world, view, canvas);
-        }
-    } else {
-        warn!("no matching stock for --inspect-trade");
-    }
-    world.remove_resource::<InspectTrade>();
 }

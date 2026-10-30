@@ -2,7 +2,7 @@
 pub mod conversation;
 pub mod recruit;
 pub mod trade;
-use crate::content::{npcs::*, species::MonsterCatalog};
+use crate::content::npcs::*;
 use crate::game::{
     characters::Character,
     party::{body::PartyBody, roster::PartyRoster},
@@ -17,14 +17,14 @@ use std::collections::HashMap;
 /// Named NPCs use their definition identity; repeatable monster-bound NPCs also
 /// need the authored placement. Neither key uses a transient retail runtime slot.
 /// The NPC catalog, for operations that hold the whole world.
-pub(crate) fn catalog(world: &World) -> Option<&NpcCatalog> {
-    world.resource::<Assets<NpcCatalog>>().get(&world.resource::<NpcAssets>().catalog)
+pub(crate) fn catalog(world: &World) -> &NpcCatalog {
+    &world.resource::<crate::game::data::Catalogs>().npcs
 }
 
 /// An NPC actor's authored definition, for operations that hold the whole
 /// world.
 pub(crate) fn definition(world: &World, actor: Entity) -> Option<&NpcDefinition> {
-    catalog(world)?.get(world.get::<ActorId>(actor)?.npc())
+    catalog(world).get(world.get::<ActorId>(actor)?.npc())
 }
 
 /// The party's members awake and well enough to fight, in roster order: the
@@ -149,23 +149,11 @@ impl Possessions {
 }
 #[derive(Resource, Default)]
 pub struct NpcAssets {
-    pub catalog: Handle<NpcCatalog>,
-    pub facts: Handle<FactCatalog>,
     pub scripts: HashMap<NpcId, Handle<DialogueScript>>,
-}
-fn load_npcs(mut content: ResMut<NpcAssets>, assets: Res<AssetServer>) {
-    if content.catalog == Handle::default() {
-        content.catalog = assets.load(crate::content::paths::NPCS);
-    }
-    if content.facts == Handle::default() {
-        content.facts = assets.load(crate::content::paths::FACTS);
-    }
 }
 #[derive(SystemParam)]
 pub struct NpcPopulation<'w, 's> {
     pub assets: ResMut<'w, NpcAssets>,
-    pub definitions: Res<'w, Assets<NpcCatalog>>,
-    pub facts: Res<'w, Assets<FactCatalog>>,
     pub scripts: Res<'w, Assets<DialogueScript>>,
     pub npcs: Query<'w, 's, (Entity, &'static ActorId, &'static NpcBodies)>,
     // Activation owns both live and dormant roles. Departure and placement
@@ -212,16 +200,12 @@ impl NpcPopulation<'_, '_> {
         &mut self,
         commands: &mut Commands,
         Placing { placed, tables, id, map, average }: Placing,
-        items: &crate::content::items::ItemCatalog,
+        catalogs: &crate::game::data::Catalogs,
         placed_actors: &mut std::collections::HashSet<ActorId>,
         rng: &mut crate::game::rng::GameRng,
         roll: impl FnOnce(&mut crate::game::rng::GameRng) -> KeptMonster,
     ) -> Option<(Entity, Vec3, f32, crate::game::world::population::ScaledBody, Option<i32>)> {
-        let definition = self
-            .definitions
-            .get(&self.assets.catalog)
-            .and_then(|c| c.get(id))
-            .expect("NPC preparation validated definition");
+        let definition = catalogs.npcs.get(id).expect("NPC preparation validated definition");
         let key = ActorId::for_placement(id, definition, map, placed.location);
         if !placed_actors.insert(key.clone()) {
             return None;
@@ -249,7 +233,7 @@ impl NpcPopulation<'_, '_> {
         let mut stock = trade::MerchantStock::default();
         if definition.owns_stock {
             stock
-                .maintain(definition, items, average, self.clock.ms, false, rng)
+                .maintain(definition, &catalogs.items, average, self.clock.ms, false, rng)
                 .expect("validated NPC stock");
         }
         let actor = commands
@@ -292,32 +276,17 @@ impl NpcPopulation<'_, '_> {
     /// fails activation without touching the currently played world.
     pub fn prepare(
         &mut self,
-        species: &MonsterCatalog,
+        catalogs: &crate::game::data::Catalogs,
         placements: &[crate::content::level::MonsterPlacement],
-        items: &crate::content::items::ItemCatalog,
         server: &AssetServer,
     ) -> Result<bool, String> {
+        let (species, items) = (&catalogs.species, &catalogs.items);
         let ids: Vec<_> =
             placements.iter().filter_map(|p| species.kind(p.species).and_then(|s| s.npc)).collect();
         if ids.is_empty() {
             return Ok(true);
         }
-        if matches!(
-            server.get_load_state(&self.assets.facts),
-            Some(bevy::asset::LoadState::Failed(_))
-        ) {
-            return Err("fact database failed".into());
-        }
-        if !self.facts.contains(&self.assets.facts) {
-            return Ok(false);
-        }
-        if matches!(
-            server.get_load_state(&self.assets.catalog),
-            Some(bevy::asset::LoadState::Failed(_))
-        ) {
-            return Err("NPC database failed".into());
-        }
-        let Some(catalog) = self.definitions.get(&self.assets.catalog) else { return Ok(false) };
+        let catalog = &catalogs.npcs;
         let mut ready = true;
         for id in ids {
             let def = catalog.get(id).ok_or_else(|| format!("missing NPC definition {id:?}"))?;
@@ -404,9 +373,7 @@ fn retire(commands: &mut Commands, entity: Entity, at: Transform) {
 pub struct NpcPlugin;
 impl Plugin for NpcPlugin {
     fn build(&self, app: &mut App) {
-        app.init_asset::<NpcCatalog>()
-            .init_asset::<DialogueScript>()
-            .init_asset::<FactCatalog>()
+        app.init_asset::<DialogueScript>()
             .init_resource::<NpcAssets>()
             .init_resource::<conversation::StoryFacts>()
             .init_resource::<conversation::NoAnswerTurn>()
@@ -414,7 +381,6 @@ impl Plugin for NpcPlugin {
             .add_message::<conversation::PartyRemark>()
             .add_message::<conversation::NpcSpeech>()
             .add_observer(conversation::end_conversations)
-            .add_systems(Startup, load_npcs)
             .add_systems(
                 Update,
                 conversation::update_conversation.after(crate::game::GameplaySet::Combat),

@@ -57,7 +57,7 @@ const DETAILS: [usize; 41] = [
 
 pub(super) fn open_info(
     click: On<PointerClick>,
-    spell_state: (Query<&crate::game::magic::LearnedSpells>, crate::game::data::Content),
+    spell_state: (Query<&crate::game::magic::LearnedSpells>, If<Res<crate::game::data::Catalogs>>),
     targets: Query<&InfoTarget>,
     screen: Single<&InventoryScreen>,
     profiles: Query<&Character>,
@@ -81,7 +81,7 @@ pub(super) fn open_info(
         return;
     };
     let learned = spell_state.0.get(screen.member).ok();
-    let spell_catalog = spell_state.1.spells();
+    let spell_catalog = &spell_state.1.spells;
     let string = |id| strings.get(id).unwrap_or("");
     let (title_id, detail_id) = match target.subject {
         Subject::Skill(skill) => {

@@ -29,7 +29,7 @@ use crate::content::monster::MonsterBody;
 use crate::content::navmesh::navmesh_path;
 use crate::content::ui::TextTable;
 use crate::game::automap::MapNotes;
-use crate::game::data::GameData;
+use crate::game::data::Catalogs;
 use crate::game::inventory::ItemIds;
 use crate::game::party::body::{PartyPlacement, PartyStart};
 use crate::game::party::roster::Party;
@@ -477,9 +477,7 @@ pub fn resume_physics_after_entry(
 
 /// A level has become active, with the party in it.
 #[derive(Message, Debug, Clone, Copy)]
-pub struct LevelReady {
-    pub level: Entity,
-}
+pub struct LevelReady;
 
 /// A level's collision, built and checked before its entry commits: the
 /// level's own, and each prop part's by prop and part. Walk-through sprites
@@ -581,8 +579,7 @@ fn build_world(
 /// The databases every level's gameplay needs.
 #[derive(SystemParam)]
 pub struct SharedData<'w> {
-    data: Option<Res<'w, GameData>>,
-    content: crate::game::data::Content<'w>,
+    catalogs: Option<Res<'w, Catalogs>>,
     bodies: Res<'w, Assets<MonsterBody>>,
     motion_configs: ResMut<'w, Assets<navigation::WalkerMotionConfig>>,
 }
@@ -627,12 +624,8 @@ pub fn activate_level(
             }
         }
         let geometry = geometry.get(&level.definition).expect("prepared");
-        let content = &shared.content;
-        let (Some(items), Some(loot), Some(species), Some(_spells)) =
-            (content.items(), content.loot(), content.species(), content.spells())
-        else {
-            continue;
-        };
+        let catalogs = shared.catalogs.as_deref().expect("prepared");
+        let (items, loot) = (&catalogs.items, &catalogs.loot);
         let traveller = parties.single().ok();
         if matches!(destination.entry, Entry::Travel) && traveller.is_none() {
             fail("there is no party to travel");
@@ -680,7 +673,7 @@ pub fn activate_level(
             root,
             geometry,
             remembered,
-            (species, items, loot),
+            catalogs,
             (&level.path, &mut npcs),
             (&destination.bodies, &shared.bodies),
             (&navigation, &mut shared.motion_configs),
@@ -698,7 +691,7 @@ pub fn activate_level(
         info!("{} is active", level.path);
         let bodies = std::mem::take(&mut destination.bodies);
         commands.entity(root).remove::<Destination>().insert((level.clone(), navigation, bodies));
-        ready.write(LevelReady { level: root });
+        ready.write(LevelReady);
         break;
     }
 }
@@ -717,29 +710,19 @@ fn prepare(
     let failed = |handle: UntypedAssetId| {
         matches!(assets.get_load_state(handle), Some(LoadState::Failed(_)))
     };
-    let Some(data) = shared.data.as_ref() else { return Ok(false) };
     if failed(level.definition.id().untyped())
         || level.navmeshes.iter().any(|h| failed(h.id().untyped()))
-        || failed(data.items.id().untyped())
-        || failed(data.loot.id().untyped())
-        || failed(data.species.id().untyped())
-        || failed(data.spells.id().untyped())
     {
         return Err("an asset it needs failed to load".into());
     }
-    let content = &shared.content;
-    let (Some(geometry), Some(items), Some(species), Some(_), Some(_)) = (
-        geometry.get(&level.definition),
-        content.items(),
-        content.species(),
-        content.loot(),
-        content.spells(),
-    ) else {
+    let (Some(geometry), Some(catalogs)) = (geometry.get(&level.definition), &shared.catalogs)
+    else {
         return Ok(false);
     };
+    let (items, species) = (&catalogs.items, &catalogs.species);
     population::check(geometry, species, items)?;
     super::triggers::check(geometry)?;
-    if !npcs.prepare(species, &geometry.monsters, items, assets)? {
+    if !npcs.prepare(catalogs, &geometry.monsters, assets)? {
         return Ok(false);
     }
     let bodies = bodies.for_level(geometry, species, assets);

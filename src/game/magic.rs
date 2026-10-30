@@ -18,8 +18,7 @@ pub(crate) mod targeting;
 pub(crate) mod traps;
 pub(crate) mod utilities;
 
-pub use casting::resolvable;
-pub use effects::{Effect, Field, Victim, modelled};
+pub use effects::{Effect, Field, Victim};
 
 use crate::game::party::Members;
 
@@ -48,7 +47,7 @@ pub struct LearnedSpells(pub BTreeSet<SpellId>);
 pub fn skill_available(
     character: &Character,
     learned: Option<&LearnedSpells>,
-    catalog: Option<&SpellCatalog>,
+    catalog: &SpellCatalog,
     skill: Skill,
 ) -> bool {
     if skill as usize >= Skill::Wizardry as usize
@@ -64,7 +63,7 @@ pub fn skill_available(
         {
             return false;
         }
-        return learned.zip(catalog).is_some_and(|(learned, catalog)| {
+        return learned.is_some_and(|learned| {
             learned
                 .0
                 .iter()
@@ -515,7 +514,7 @@ pub struct MagicRequest {
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct MagicContext<'w, 's> {
     pub roster: Single<'w, 's, &'static crate::game::party::roster::PartyRoster>,
-    pub content: crate::game::data::Content<'w>,
+    pub content: If<Res<'w, crate::game::data::Catalogs>>,
     difficulty: Res<'w, crate::game::difficulty::Difficulty>,
     pub formation: Single<'w, 's, &'static mut Formation>,
     pub party_damage: MessageWriter<'w, DamageApplied>,
@@ -524,7 +523,7 @@ pub struct MagicContext<'w, 's> {
     pub news: MessageWriter<'w, casting::MagicNews>,
     level: Single<'w, 's, Entity, With<crate::game::world::level::Level>>,
     level_rules: Query<'w, 's, &'static crate::game::world::triggers::LevelState>,
-    visibility: Option<crate::game::world::obstacles::WorldObstacles<'w, 's>>,
+    visibility: crate::game::world::obstacles::WorldObstacles<'w, 's>,
     /// Missiles leave in launch order, so equal arrivals land in it too.
     pub flight_order: ResMut<'w, casting::FlightOrder>,
     provocations: MessageWriter<'w, crate::game::world::hostility::Provocation>,
@@ -545,44 +544,14 @@ impl MagicContext<'_, '_> {
         members: &mut Members,
         monsters: &mut MonsterDamage,
         cast: impl FnOnce(&mut Field, &SpellCatalog) -> R,
-    ) -> Result<R, casting::Refusal> {
-        self.field(now, members, monsters, |field, spells| {
-            spells.map(|spells| cast(field, spells))
-        })?
-        .ok_or(casting::Refusal::MissingContent)
-    }
-
-    /// The field of members, monsters and party belongings that blows
-    /// change; refused until items and monsters have loaded.
-    pub fn with_field<R>(
-        &mut self,
-        now: u64,
-        members: &mut Members,
-        monsters: &mut MonsterDamage,
-        act: impl FnOnce(&mut Field) -> R,
-    ) -> Result<R, casting::Refusal> {
-        if self.content.species().is_none() || !monsters.ready() {
-            return Err(casting::Refusal::MissingContent);
-        }
-        self.field(now, members, monsters, |field, _| act(field))
-    }
-
-    fn field<R>(
-        &mut self,
-        now: u64,
-        members: &mut Members,
-        monsters: &mut MonsterDamage,
-        act: impl FnOnce(&mut Field, Option<&SpellCatalog>) -> R,
-    ) -> Result<R, casting::Refusal> {
+    ) -> R {
         let party: Vec<Entity> = self.roster.iter().collect();
         let party_level = crate::game::party::average_level(
             members.iter_many(self.roster.iter()).matched().map(|(c, ..)| c.level()),
         );
-        let Some(items) = self.content.items() else {
-            return Err(casting::Refusal::MissingContent);
-        };
+        let items = &self.content.items;
         let mut field = Field {
-            visibility: self.visibility.as_ref(),
+            visibility: &self.visibility,
             underwater: self.level_rules.get(*self.level).is_ok_and(|state| state.camera_sway),
             members,
             monsters,
@@ -591,8 +560,8 @@ impl MagicContext<'_, '_> {
             formation: &mut self.formation,
             party_damage: &mut self.party_damage,
             items,
-            species: self.content.species(),
-            spells: self.content.spells(),
+            species: &self.content.species,
+            spells: &self.content.spells,
             party_level,
             now,
             difficulty: *self.difficulty,
@@ -601,7 +570,19 @@ impl MagicContext<'_, '_> {
             provocations: &mut self.provocations,
             fight: self.fight.single().ok(),
         };
-        Ok(act(&mut field, self.content.spells()))
+        cast(&mut field, &self.content.spells)
+    }
+
+    /// The field of members, monsters and party belongings that blows
+    /// change.
+    pub fn with_field<R>(
+        &mut self,
+        now: u64,
+        members: &mut Members,
+        monsters: &mut MonsterDamage,
+        act: impl FnOnce(&mut Field) -> R,
+    ) -> R {
+        self.resolve(now, members, monsters, |field, _| act(field))
     }
 }
 
@@ -647,13 +628,11 @@ pub fn accept_magic(
         if !context.roster.contains(&caster) {
             continue;
         }
-        let spell = context.content.items().and_then(|items| {
-            choice.source.spell_id(
-                members.get(caster).ok().map(|(_, _, carried, ..)| carried),
-                &context.inventory,
-                items,
-            )
-        });
+        let spell = choice.source.spell_id(
+            members.get(caster).ok().map(|(_, _, carried, ..)| carried),
+            &context.inventory,
+            &context.content.items,
+        );
         // A point cast in a fight waits for its turn, as any other order.
         let in_world = (spell.is_some_and(utilities::spell)
             && (battle.is_none() || !spell.is_some_and(pointcasts::spell)))
@@ -703,11 +682,9 @@ pub fn accept_magic(
             group_of: &|m| vec![m],
         };
         let level = context.level();
-        let performed = context
-            .resolve(clock.ms, &mut members, &mut monsters, |field, spells| {
-                casting::perform(caster, choice, &situation, spells, &mut points, &mut rng, field)
-            })
-            .and_then(|performed| performed);
+        let performed = context.resolve(clock.ms, &mut members, &mut monsters, |field, spells| {
+            casting::perform(caster, choice, &situation, spells, &mut points, &mut rng, field)
+        });
         context.news.write(match performed {
             Ok((report, flights)) => {
                 context.flight_order.launch(&mut commands, flights, level);
@@ -737,22 +714,11 @@ pub fn deliver_spells(
     if flights.is_empty() {
         return;
     }
-    // Keep accepted impacts pending while mandatory assets/services are absent.
-    if context.content.spells().is_none()
-        || context.content.items().is_none()
-        || (flights.iter().any(|(_, flight)| {
-            flight.spell == SpellId::BOILING_BLOOD
-                || flight.victims.iter().any(|victim| matches!(victim, Victim::Monster(_)))
-        }) && !monsters.ready())
-    {
-        return;
-    }
     let party_at = party.single().ok().map(crate::game::party::body::PartyBody::eye);
-    let spells = context.content.spells().unwrap();
+    let spells = &context.content.spells;
     if flights.iter().any(|(_, flight)| {
         spells.get(flight.spell).is_none()
             || !impacts::ready(flight.spell, spells)
-            || flight.spell == SpellId::BOILING_BLOOD && context.visibility.is_none()
             || flight.spell == SpellId::BOILING_BLOOD && party_at.is_none()
     }) {
         return;
@@ -798,7 +764,7 @@ pub fn deliver_spells(
             );
             Some((effects, std::mem::take(&mut field.improved)))
         });
-        let Ok(Some((effects, improved))) = landed else { continue };
+        let Some((effects, improved)) = landed else { continue };
         if let Some(battle) = battle.as_mut() {
             battle.credit_kills(&effects, &mut combat_news);
         }
@@ -827,7 +793,7 @@ fn test_maximum(world: &World, member: Entity) -> EnumMap<Realm, u32> {
     let profile = world.get::<Character>(member).unwrap();
     let vitals = world.get::<crate::game::characters::Vitals>(member).unwrap();
     let learned = world.get::<LearnedSpells>(member).unwrap();
-    let spells = crate::game::data::GameData::spells(world).unwrap();
+    let spells = &world.resource::<crate::game::data::Catalogs>().spells;
     profile.stats(&vitals.enchantments).max_points(learned, spells)
 }
 
@@ -898,15 +864,12 @@ mod tests {
         use casting::{Aim, MagicChoice, MagicNews, Refusal, Source};
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-            .init_asset::<ItemCatalog>()
-            .init_asset::<MonsterCatalog>()
-            .init_asset::<SpellCatalog>()
-            .init_asset::<LootTables>()
             .init_resource::<crate::game::factions::Factions>()
             .init_resource::<crate::game::time::GameClock>()
             .add_message::<crate::game::factions::FactionNews>()
             .init_resource::<ItemIds>()
             .init_resource::<crate::game::difficulty::Difficulty>()
+            .init_resource::<avian3d::collider_tree::ColliderTrees>()
             .init_resource::<casting::FlightOrder>()
             .insert_resource(GameRng::seeded(3))
             .add_message::<DamageApplied>()
@@ -942,14 +905,18 @@ mod tests {
         let charged = ItemStack::new(&wand, &mut ids, 1, true);
         let (potion_id, wand_id) = (potions.id, charged.id);
         let world = app.world_mut();
-        let items =
-            world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog(vec![potion, wand]));
-        let species = world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog::default());
-        let loot = world.resource_mut::<Assets<LootTables>>().add(LootTables::default());
-        let spells = world.resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(
-            (0..=6).map(|i| if i == 6 { heal_wounds() } else { default() }).collect(),
-        ));
-        world.insert_resource(crate::game::data::GameData { items, loot, species, spells });
+        let items = ItemCatalog(vec![potion, wand]);
+        let species = MonsterCatalog::default();
+        let loot = LootTables::default();
+        let spells =
+            SpellCatalog((0..=6).map(|i| if i == 6 { heal_wounds() } else { default() }).collect());
+        world.insert_resource(crate::game::data::Catalogs {
+            items,
+            loot,
+            species,
+            spells,
+            ..default()
+        });
         let profile = Character::new("Drinker", Race::Human, Gender::Male, Profession::Fighter);
         let mut vitals = Vitals::new(&profile);
         vitals.hp = 1;
@@ -1072,15 +1039,12 @@ mod tests {
         ] {
             let mut app = App::new();
             app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-                .init_asset::<ItemCatalog>()
-                .init_asset::<MonsterCatalog>()
-                .init_asset::<SpellCatalog>()
-                .init_asset::<LootTables>()
                 .init_resource::<crate::game::factions::Factions>()
                 .init_resource::<crate::game::time::GameClock>()
                 .add_message::<crate::game::factions::FactionNews>()
                 .init_resource::<ItemIds>()
                 .init_resource::<crate::game::difficulty::Difficulty>()
+                .init_resource::<avian3d::collider_tree::ColliderTrees>()
                 .init_resource::<casting::FlightOrder>()
                 .insert_resource(GameRng::seeded(3))
                 .add_message::<DamageApplied>()
@@ -1107,11 +1071,9 @@ mod tests {
             let stack = ItemStack::new(&definition, &mut ItemIds::default(), 2, true);
             let stack_id = stack.id;
             let world = app.world_mut();
-            let items =
-                world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog(vec![definition]));
-            let species =
-                world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog::default());
-            let loot = world.resource_mut::<Assets<LootTables>>().add(LootTables::default());
+            let items = ItemCatalog(vec![definition]);
+            let species = MonsterCatalog::default();
+            let loot = LootTables::default();
             let mut definitions = vec![SpellDefinition::default(); 117];
             definitions[usize::from(SpellId::HEAL_WOUNDS.0)] = heal_wounds();
             definitions[usize::from(id.0)] = SpellDefinition {
@@ -1121,9 +1083,14 @@ mod tests {
                 dice: Some(Dice { base: 0, count: 1, sides: 1 }),
                 ..default()
             };
-            let spells =
-                world.resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(definitions));
-            world.insert_resource(crate::game::data::GameData { items, loot, species, spells });
+            let spells = SpellCatalog(definitions);
+            world.insert_resource(crate::game::data::Catalogs {
+                items,
+                loot,
+                species,
+                spells,
+                ..default()
+            });
             let mut user = Character::new("User", Race::Human, Gender::Male, Profession::Priest);
             user.skill_points[Skill::ThrowingAndSling] = 100;
             let mut carried = Carried::default();

@@ -54,13 +54,6 @@ impl MonsterBody {
     }
 }
 
-impl MonsterModel {
-    /// A cycle, or IDLE in its place as retail falls back.
-    pub fn cycle(&self, name: &str) -> Option<&MonsterCycleModel> {
-        self.cycles.get(name).or_else(|| self.cycles.get("IDLE"))
-    }
-}
-
 /// One cycle: render meshes whose vertices follow the frames.
 #[derive(Debug)]
 pub struct MonsterCycleModel {

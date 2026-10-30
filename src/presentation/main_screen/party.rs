@@ -304,7 +304,7 @@ pub fn draw_party(
     members: Query<CharacterView>,
     battle: Option<Single<&crate::game::combat::Battle>>,
     party_effects: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     mut parts: Query<(
         &PartyPart,
         &mut Node,
@@ -314,7 +314,7 @@ pub fn draw_party(
         Option<&mut ImageNode>,
     )>,
 ) {
-    let catalog = content.items();
+    let catalog = &content.items;
     let closed = layout.mode == LayoutMode::Closed;
     for (part, mut node, mut visible, picture, label, image_node) in &mut parts {
         let Some(slot) = slots.slot(part.member) else { continue };
@@ -335,9 +335,7 @@ pub fn draw_party(
             );
             let CharacterViewItem { profile, vitals, carried, .. } = view;
             let dead = vitals.is_dead();
-            let worn = |slot| {
-                carried.as_ref().and_then(|c| c.worn(slot)).and_then(|i| catalog?.get(i.item))
-            };
+            let worn = |slot| carried.as_ref().and_then(|c| c.worn(slot)).map(|i| &catalog[i.item]);
             let two_handed = worn(EquipSlot::Primary).is_some_and(|d| d.two_handed);
             let condition = condition_icon(vitals);
             match part.kind {
@@ -829,7 +827,6 @@ mod tests {
     use super::*;
     use crate::content::items::ItemCatalog;
     use crate::game::characters::{Gender, Profession};
-    use crate::game::data::GameData;
     use crate::presentation::screen::Screen;
     use bevy::picking::backend::HitData;
 
@@ -840,6 +837,7 @@ mod tests {
     fn rpc_slots_are_reserved_without_reordering_the_roster() {
         use bevy::ecs::system::RunSystemOnce;
         let mut world = World::new();
+        world.init_resource::<crate::game::data::Catalogs>();
         let pcs: Vec<_> = (0..6).map(|_| world.spawn_empty().id()).collect();
         let party = crate::game::party::roster::test_party(&mut world, &pcs);
         let project = |slots: PortraitSlots| (0..8).map(|i| slots.member(i)).collect::<Vec<_>>();
@@ -861,8 +859,8 @@ mod tests {
         use crate::game::inventory::{ItemIds, PartyInventory, make_item};
         use crate::game::rng::GameRng;
         let mut app = App::new();
+        app.init_resource::<crate::game::data::Catalogs>();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-            .init_asset::<ItemCatalog>()
             .init_resource::<SelectedMember>()
             .init_resource::<ButtonInput<MouseButton>>()
             .add_message::<crate::game::inventory::ItemNews>()
@@ -875,16 +873,8 @@ mod tests {
         let definition = ItemDefinition::default();
         let item =
             make_item(&definition, &mut ItemIds::default(), &mut GameRng::seeded(1), false, true);
-        let items = app
-            .world_mut()
-            .resource_mut::<Assets<ItemCatalog>>()
-            .add(ItemCatalog(vec![definition]));
-        app.insert_resource(GameData {
-            items,
-            loot: default(),
-            species: default(),
-            spells: default(),
-        });
+        let items = ItemCatalog(vec![definition]);
+        app.insert_resource(crate::game::data::Catalogs { items, ..default() });
         let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
         let actor =
             app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();
@@ -952,6 +942,7 @@ mod tests {
     #[test]
     fn new_damage_refreshes_the_existing_splat_before_playback_expires_it() {
         let mut app = App::new();
+        app.init_resource::<crate::game::data::Catalogs>();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<SpriteSheet>()
             .init_resource::<PresentationRng>()
@@ -998,9 +989,8 @@ mod tests {
         use crate::presentation::main_screen::magic_view::MagicView;
         let click_with = |targeting: Targeting| {
             let mut world = World::new();
+            world.init_resource::<crate::game::data::Catalogs>();
             world.init_resource::<ScreenLayout>();
-            world.init_resource::<Assets<ItemCatalog>>();
-            world.init_resource::<Assets<SpellCatalog>>();
             world.init_resource::<SelectedMember>();
             world.init_resource::<Messages<crate::game::inventory::ItemNews>>();
             world.insert_resource(State::new(Screen::World));
@@ -1008,14 +998,9 @@ mod tests {
             let spell = SpellId::HEAL_WOUNDS;
             let mut catalog: Vec<SpellDefinition> = (0..=spell.0).map(|_| default()).collect();
             catalog[usize::from(spell.0)] = SpellDefinition { id: spell, targeting, ..default() };
-            let spells = world.resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(catalog));
-            let items = world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog::default());
-            world.insert_resource(crate::game::data::GameData {
-                items,
-                loot: default(),
-                species: default(),
-                spells,
-            });
+            let spells = SpellCatalog(catalog);
+            let items = ItemCatalog::default();
+            world.insert_resource(crate::game::data::Catalogs { items, spells, ..default() });
             let profile = Character::new("A", Race::Human, Gender::Male, Profession::Priest);
             let caster = world.spawn((Vitals::new(&profile), profile, Carried::default())).id();
             let profile = Character::new("B", Race::Human, Gender::Male, Profession::Fighter);
@@ -1052,8 +1037,8 @@ mod tests {
     #[test]
     fn native_click_counts_review_only_the_current_selection_gesture() {
         let mut world = World::new();
+        world.init_resource::<crate::game::data::Catalogs>();
         world.init_resource::<ScreenLayout>();
-        world.init_resource::<Assets<ItemCatalog>>();
         world.init_resource::<SelectedMember>();
         world.init_resource::<Messages<crate::game::inventory::ItemNews>>();
         world.insert_resource(State::new(Screen::World));

@@ -72,22 +72,13 @@ pub struct MonsterDamage<'w, 's> {
         Query<'w, 's, &'static mut crate::game::npcs::Npc>,
     ),
     commands: Commands<'w, 's>,
-    content: crate::game::data::Content<'w>,
-    ids: Option<ResMut<'w, ItemIds>>,
-    factions: Option<ResMut<'w, crate::game::factions::Factions>>,
-    faction_news: Option<MessageWriter<'w, crate::game::factions::FactionNews>>,
+    content: If<Res<'w, crate::game::data::Catalogs>>,
+    ids: ResMut<'w, ItemIds>,
+    factions: ResMut<'w, crate::game::factions::Factions>,
+    faction_news: MessageWriter<'w, crate::game::factions::FactionNews>,
 }
 
 impl<'w, 's> MonsterDamage<'w, 's> {
-    pub fn ready(&self) -> bool {
-        self.ids.is_some()
-            && self.factions.is_some()
-            && self.faction_news.is_some()
-            && self.content.items().is_some()
-            && self.content.species().is_some()
-            && self.content.loot().is_some()
-    }
-
     pub fn group(&self, entity: Entity) -> Vec<Entity> {
         use bevy::ecs::relationship::RelationshipTarget;
         self.membership
@@ -117,19 +108,14 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     pub fn group_stance(&self, entity: Entity, now: u64) -> super::hostility::Stance {
         use super::hostility::{self, Stance};
         let Ok((monster, ..)) = self.monsters.get(entity) else { return Stance::Neutral };
-        let (Some(kind), Some(factions)) = (
-            self.content.species().and_then(|catalog| catalog.kind(monster.species)),
-            self.factions.as_deref(),
-        ) else {
-            return Stance::Neutral;
-        };
+        let kind = &self.content.species[monster.species];
         let set = self
             .membership
             .get(entity)
             .ok()
             .and_then(|member| self.groups.get(member.0).ok())
             .and_then(|group| group.set);
-        hostility::stance(set, kind, factions, now, self.combatants.contains(entity))
+        hostility::stance(set, kind, &self.factions, now, self.combatants.contains(entity))
     }
 
     /// Commit hostility before damage/conditions inspect the target's side.
@@ -140,15 +126,10 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         if body.is_dead() || body.conditions.has(Condition::Turncoat) {
             return false;
         }
-        let (Some(kind), Some(factions)) = (
-            self.content.species().and_then(|catalog| catalog.kind(body.species)),
-            self.factions.as_deref(),
-        ) else {
-            return false;
-        };
+        let kind = &self.content.species[body.species];
         if let Ok(member) = self.membership.get(entity)
             && let Ok(mut group) = self.groups.get_mut(member.0)
-            && hostility::stance(group.set, kind, factions, now, true) != Stance::Hostile
+            && hostility::stance(group.set, kind, &self.factions, now, true) != Stance::Hostile
         {
             group.set = Some(SetStance { stance: Stance::Hostile, at: now });
         }
@@ -218,10 +199,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     /// the actor. Casting and draining read the same species-plus-history rule.
     pub fn drain_magic(&mut self, entity: Entity, amount: u32) -> u32 {
         let Ok((mut monster, ..)) = self.monsters.get_mut(entity) else { return 0 };
-        let Some(kind) = self.content.species().and_then(|catalog| catalog.kind(monster.species))
-        else {
-            return 0;
-        };
+        let kind = &self.content.species[monster.species];
         let lost = monster.spell_budget(kind).min(amount);
         monster.spell_points = monster.spell_points.saturating_sub(lost as i32);
         lost
@@ -245,12 +223,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     pub fn targetable(&self, target: Entity) -> bool {
         self.active(target)
             && self.monsters.get(target).is_ok_and(|(body, ..)| {
-                !body.is_dead()
-                    && self
-                        .content
-                        .species()
-                        .and_then(|catalog| catalog.kind(body.species))
-                        .is_some_and(|kind| !kind.untargetable)
+                !body.is_dead() && !self.content.species[body.species].untargetable
             })
     }
 
@@ -270,17 +243,11 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         if !self.levels.contains(level) {
             return Err(DamageRefusal::InactiveLevel);
         }
-        let (Some(catalog), Some(species), Some(tables)) =
-            (self.content.items(), self.content.species(), self.content.loot())
-        else {
-            return Err(DamageRefusal::MissingContent);
-        };
-        let kind = species.kind(monster.species).ok_or(DamageRefusal::MissingContent)?;
-        let (Some(ids), Some(factions), Some(faction_news)) =
-            (self.ids.as_deref_mut(), self.factions.as_deref_mut(), self.faction_news.as_mut())
-        else {
-            return Err(DamageRefusal::MissingContent);
-        };
+        let catalogs = &self.content;
+        let (catalog, tables) = (&catalogs.items, &catalogs.loot);
+        let kind = &catalogs.species[monster.species];
+        let (ids, factions, faction_news) =
+            (&mut *self.ids, &mut *self.factions, &mut self.faction_news);
         if monster.is_dead() || amount == 0 {
             return Ok(DamageOutcome::default());
         }

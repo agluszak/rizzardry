@@ -30,7 +30,6 @@ enum Location {
 
 #[derive(Debug)]
 pub struct RetailFiles {
-    root: PathBuf,
     archives: Vec<PathBuf>,
     files: BTreeMap<String, Location>,
 }
@@ -116,11 +115,7 @@ impl RetailFiles {
                 files.insert(name, Location::Loose(path));
             }
         }
-        Ok(RetailFiles { root, archives, files })
-    }
-
-    pub fn root(&self) -> &Path {
-        &self.root
+        Ok(RetailFiles { archives, files })
     }
 
     pub fn contains(&self, name: &str) -> bool {

@@ -150,12 +150,12 @@ impl MagicView {
 pub struct SourceTargeting<'w, 's> {
     carried: Query<'w, 's, &'static Carried>,
     pool: Query<'w, 's, &'static PartyInventory>,
-    content: crate::game::data::Content<'w>,
+    content: If<Res<'w, crate::game::data::Catalogs>>,
 }
 
 impl SourceTargeting<'_, '_> {
     pub fn of(&self, caster: Entity, source: Source) -> Option<Targeting> {
-        let (spells, items) = (self.content.spells()?, self.content.items()?);
+        let (spells, items) = (&self.content.spells, &self.content.items);
         let id = source.spell_id(self.carried.get(caster).ok(), self.pool.single().ok()?, items)?;
         Some(spells.get(id)?.targeting)
     }
@@ -623,7 +623,7 @@ fn offers<'a>(
             .into_iter()
             .filter_map(|(source, stack, id)| {
                 let spell = spells.get(id)?;
-                let definition = items.get(stack.item)?;
+                let definition = &items[stack.item];
                 let silenced =
                     silenced && definition.use_type == crate::content::items::UseType::Instrument;
                 let available = usable_now(spell, context) && !silenced;
@@ -706,7 +706,7 @@ pub(super) fn refresh_magic_view(
         Query<&crate::game::world::interaction::DeviceInteraction>,
         Single<&PartyInventory>,
     ),
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     (conversations, speakers, monsters, party): (
         Query<&crate::game::npcs::conversation::Conversation>,
         Query<&crate::game::npcs::NpcBody>,
@@ -770,9 +770,7 @@ pub(super) fn refresh_magic_view(
         commands.entity(root).despawn();
         return;
     }
-    let (Some(spells), Some(items)) = (content.spells(), content.items()) else {
-        return;
-    };
+    let (spells, items) = (&content.spells, &content.items);
     let Some(context) = context(
         attempt,
         conversation_target.map(|r| r.0),
@@ -959,7 +957,7 @@ pub(super) fn refresh_magic_view(
                 Source::PoolItem(id) => pool.pool.stacks.iter().find(|s| s.id == id),
                 Source::Spell { .. } => None,
             })
-            .and_then(|stack| items.get(stack.item));
+            .map(|stack| &items[stack.item]);
         for (mut picture, mut visibility) in &mut parts.p7() {
             visibility.set_if_neq(visible_if(icon.is_some()));
             if let Some(definition) = icon {
@@ -1059,7 +1057,7 @@ fn choose_row(
         Query<&crate::game::world::interaction::DeviceInteraction>,
         Single<&PartyInventory>,
     ),
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     conversations: Query<&crate::game::npcs::conversation::Conversation>,
 ) {
     let (Ok(row), Ok((mut view, casts_at, conversation_target))) =
@@ -1067,9 +1065,7 @@ fn choose_row(
     else {
         return;
     };
-    let (Some(spells), Some(items)) = (content.spells(), content.items()) else {
-        return;
-    };
+    let (spells, items) = (&content.spells, &content.items);
     let Ok((character, vitals, carried)) = members.get(view.caster) else { return };
     let (learned, points) = casters.get(view.caster).map_or((None, None), |(l, p)| (Some(l), p));
     let silenced = vitals.conditions.has(crate::game::characters::Condition::Silenced);

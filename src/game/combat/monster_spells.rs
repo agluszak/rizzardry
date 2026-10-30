@@ -404,25 +404,22 @@ pub(super) fn cast(
                 victims: victims.clone(),
                 reflected: false,
             };
-            if let Some(spells) = field.spells {
-                crate::game::magic::impacts::resolve(
-                    scene.caster,
-                    crate::game::magic::casting::Origin::Actor(Victim::Monster(scene.caster)),
-                    backfired,
-                    spell,
-                    strength,
-                    &victims,
-                    Some(&finish),
-                    crate::game::party::body::PartyBody::eye_above(scene.party_at),
-                    spells,
-                    rng,
-                    field,
-                    points,
-                    &mut flights,
-                )
-            } else {
-                vec![]
-            }
+            let spells = field.spells;
+            crate::game::magic::impacts::resolve(
+                scene.caster,
+                crate::game::magic::casting::Origin::Actor(Victim::Monster(scene.caster)),
+                backfired,
+                spell,
+                strength,
+                &victims,
+                Some(&finish),
+                crate::game::party::body::PartyBody::eye_above(scene.party_at),
+                spells,
+                rng,
+                field,
+                points,
+                &mut flights,
+            )
         }
     };
     (

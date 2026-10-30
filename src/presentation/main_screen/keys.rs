@@ -258,16 +258,14 @@ fn breathe(
         &crate::game::world::population::Monster,
         crate::game::world::ActorPose,
     )>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     mut orders: MessageWriter<crate::game::combat::GiveOrder>,
 ) {
     let (Some(member), Ok((position, body)), Ok(combatants), Some(spell)) = (
         selected.member(&roster),
         party.single(),
         battle.single(),
-        content
-            .spells()
-            .and_then(|spells| spells.get(crate::content::spells::SpellId::SPECIAL_ATTACK_CONE)),
+        content.spells.get(crate::content::spells::SpellId::SPECIAL_ATTACK_CONE),
     ) else {
         return;
     };

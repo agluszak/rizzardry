@@ -20,7 +20,6 @@ use crate::game::world::triggers::tests::*;
 use crate::game::world::triggers::{TriggerEffect, activate};
 
 use crate::content::items::{Dice, ItemCatalog, ItemDefinition, ItemId};
-use crate::game::data::GameData;
 use crate::game::inventory::{ItemIds, ItemStack};
 
 #[test]
@@ -102,19 +101,16 @@ fn a_locked_chest_opens_once_picked_and_stays_unlocked() {
 
 fn with_trap_spell(level: &mut Scenario, spell: crate::content::spells::SpellDefinition) {
     use crate::content::{species::MonsterCatalog, spells::SpellCatalog};
-    level.world.init_resource::<Assets<MonsterCatalog>>();
-    level.world.init_resource::<Assets<SpellCatalog>>();
     level.world.init_resource::<crate::game::factions::Factions>();
     level.world.init_resource::<Messages<crate::game::factions::FactionNews>>();
     level.world.init_resource::<Messages<crate::game::magic::casting::MagicNews>>();
-    let species =
-        level.world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog::default());
+    let species = MonsterCatalog::default();
     let mut spells = vec![crate::content::spells::SpellDefinition::default(); 128];
     let id = usize::from(spell.id.0);
     spells[id] = spell;
-    let spells = level.world.resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(spells));
-    level.world.resource_mut::<GameData>().species = species;
-    level.world.resource_mut::<GameData>().spells = spells;
+    let spells = SpellCatalog(spells);
+    level.world.resource_mut::<crate::game::data::Catalogs>().species = species;
+    level.world.resource_mut::<crate::game::data::Catalogs>().spells = spells;
     for &member in &level.members {
         level.world.entity_mut(member).insert(crate::game::inventory::Carried::default());
     }
@@ -290,12 +286,8 @@ fn trap_losses_use_existing_purse_items_and_all_party_spell_points() {
             quantity: QuantityKind::Stack,
             ..default()
         };
-        let handle = level.world.resource::<GameData>().items.clone();
-        level
-            .world
-            .resource_mut::<Assets<ItemCatalog>>()
-            .insert(&handle, ItemCatalog(vec![potion.clone(), scroll.clone()]))
-            .unwrap();
+        level.world.resource_mut::<crate::game::data::Catalogs>().items =
+            ItemCatalog(vec![potion.clone(), scroll.clone()]);
         let mut ids = ItemIds::default();
         let potions = ItemStack::new(&potion, &mut ids, 30, true);
         let scrolls = ItemStack::new(&scroll, &mut ids, 30, true);
@@ -404,12 +396,8 @@ fn device_casts_revalidate_targets_and_pay_from_the_selected_item_owner() {
         armor_class_bonus: 1,
         ..pool_tool.clone()
     };
-    let handle = level.world.resource::<GameData>().items.clone();
-    level
-        .world
-        .resource_mut::<Assets<ItemCatalog>>()
-        .insert(&handle, ItemCatalog(vec![pool_tool.clone(), worn_tool.clone()]))
-        .unwrap();
+    level.world.resource_mut::<crate::game::data::Catalogs>().items =
+        ItemCatalog(vec![pool_tool.clone(), worn_tool.clone()]);
     let mut ids = ItemIds::default();
     let pooled = ItemStack::new(&pool_tool, &mut ids, 1, true);
     let worn = ItemStack::new(&worn_tool, &mut ids, 1, true);
@@ -510,7 +498,7 @@ fn divine_trap_replaces_its_session_bonus_and_uses_shared_spell_payment() {
     use super::super::interaction::{cast_device, leave};
     use crate::content::{
         characters::{Realm, Skill},
-        spells::{SpellCatalog, SpellDefinition, SpellId, Spellbook, Targeting, Usable},
+        spells::{SpellDefinition, SpellId, Spellbook, Targeting, Usable},
     };
     use crate::game::magic::{LearnedSpells, SpellPoints, casting::Source};
     let mut level =
@@ -519,17 +507,15 @@ fn divine_trap_replaces_its_session_bonus_and_uses_shared_spell_payment() {
         &mut level,
         SpellDefinition { id: SpellId::VAMPIRIC_VORTEX, realm: Some(Realm::Divine), ..default() },
     );
-    let handle = level.world.resource::<GameData>().spells.clone();
-    level.world.resource_mut::<Assets<SpellCatalog>>().get_mut(&handle).unwrap().0[18] =
-        SpellDefinition {
-            id: SpellId::DIVINE_TRAP,
-            realm: Some(Realm::Mental),
-            cost: 1,
-            books: Spellbook::Wizardry.into(),
-            targeting: Targeting::LockOrTrap,
-            usable: Usable::OnLockOrTrap,
-            ..default()
-        };
+    level.world.resource_mut::<crate::game::data::Catalogs>().spells.0[18] = SpellDefinition {
+        id: SpellId::DIVINE_TRAP,
+        realm: Some(Realm::Mental),
+        cost: 1,
+        books: Spellbook::Wizardry.into(),
+        targeting: Targeting::LockOrTrap,
+        usable: Usable::OnLockOrTrap,
+        ..default()
+    };
     let actor = level.members[0];
     let mut profile = Character::new("Caster", Race::Human, Gender::Male, Profession::Mage);
     profile.skill_points[Skill::Wizardry] = 100;

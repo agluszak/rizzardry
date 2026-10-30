@@ -19,7 +19,7 @@ pub(crate) fn source_spell(
 ) -> Result<SpellId, Refusal> {
     let party = the_party(world).ok_or(Refusal::CannotAct)?;
     let inventory = world.get::<PartyInventory>(party).ok_or(Refusal::MissingContent)?;
-    let items = crate::game::data::GameData::items(world).ok_or(Refusal::MissingContent)?;
+    let items = &world.resource::<crate::game::data::Catalogs>().items;
     source.spell_id(world.get::<Carried>(caster), inventory, items).ok_or(Refusal::NoItem)
 }
 
@@ -63,9 +63,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
     let Aim::Item(target_id) = choice.aim else { return Err(Refusal::NoTarget) };
     let party = the_party(world).ok_or(Refusal::CannotAct)?;
     let stack = target(world, party, target_id).ok_or(Refusal::NoTarget)?;
-    let definition = crate::game::data::GameData::items(world)
-        .and_then(|items| items.get(stack.item))
-        .ok_or(Refusal::MissingContent)?;
+    let definition = &world.resource::<crate::game::data::Catalogs>().items[stack.item];
     let difficulty = definition.identify_difficulty;
     // The source cannot consume its own target and then silently identify a
     // replacement. A fully known stack likewise needs no paid attempt.
@@ -75,7 +73,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
         return Err(Refusal::NoTarget);
     }
     let source = if let Source::Spell { spell, power: super::casting::AUTO_POWER } = choice.source {
-        let spells = crate::game::data::GameData::spells(world).ok_or(Refusal::MissingContent)?;
+        let spells = &world.resource::<crate::game::data::Catalogs>().spells;
         let definition = spells.get(spell).ok_or(Refusal::MissingContent)?;
         let profile =
             world.get::<crate::game::characters::Character>(caster).ok_or(Refusal::CannotAct)?;
@@ -125,7 +123,6 @@ mod tests {
     };
     use crate::game::{
         characters::{Character, Gender, Profession, Race, Vitals},
-        data::GameData,
         inventory::ItemIds,
         magic::{LearnedSpells, MagicRequest, SpellPoints, portals::Portal},
         party::body::PartyBody,
@@ -144,12 +141,12 @@ mod tests {
             LevelScript::None,
         );
         let world = &mut scene.world;
-        world.init_resource::<Assets<MonsterCatalog>>();
-        world.init_resource::<Assets<SpellCatalog>>();
         world.init_resource::<crate::game::factions::Factions>();
+        world.init_resource::<Messages<crate::game::factions::FactionNews>>();
+        world.init_resource::<ItemIds>();
         world.init_resource::<Messages<MagicRequest>>();
         world.init_resource::<Messages<MagicNews>>();
-        let species = world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog::default());
+        let species = MonsterCatalog::default();
         let mut definitions = vec![SpellDefinition::default(); 76];
         let ids = [SpellId::SET_PORTAL, SpellId::RETURN_TO_PORTAL, SpellId::IDENTIFY_ITEM];
         for id in ids {
@@ -162,8 +159,8 @@ mod tests {
                 ..default()
             };
         }
-        let spells = world.resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(definitions));
-        let mut data = world.resource_mut::<GameData>();
+        let spells = SpellCatalog(definitions);
+        let mut data = world.resource_mut::<crate::game::data::Catalogs>();
         data.spells = spells;
         data.species = species;
         let mut profile = Character::new("Caster", Race::Human, Gender::Male, Profession::Mage);
@@ -185,13 +182,6 @@ mod tests {
 
     /// Casting outside a fight needs no monster, loot or faction services;
     /// scenarios that cast without them keep it so.
-    fn without_unrelated_services(scene: &mut Scenario) {
-        scene.world.remove_resource::<crate::game::factions::Factions>();
-        scene.world.remove_resource::<Assets<MonsterCatalog>>();
-        scene.world.remove_resource::<Assets<crate::content::items::LootTables>>();
-        scene.world.remove_resource::<ItemIds>();
-    }
-
     fn request(scene: &mut Scenario, spell: SpellId, aim: Aim) -> MagicNews {
         let caster = scene.members[0];
         scene.world.write_message(MagicRequest {
@@ -219,10 +209,8 @@ mod tests {
     fn underwater_fire_fizzles_with_normal_payment_for_ordinary_and_utility_casts() {
         use crate::content::{items::Dice, spells::Targeting};
         let mut scene = scenario();
-        without_unrelated_services(&mut scene);
         let caster = scene.members[0];
-        let handle = scene.world.resource::<GameData>().spells.clone();
-        scene.world.resource_mut::<Assets<SpellCatalog>>().get_mut(&handle).unwrap().0
+        scene.world.resource_mut::<crate::game::data::Catalogs>().spells.0
             [usize::from(SpellId::HEAL_WOUNDS.0)] = SpellDefinition {
             id: SpellId::HEAL_WOUNDS,
             realm: Some(Realm::Fire),
@@ -270,7 +258,6 @@ mod tests {
             let seed =
                 (0..100).find(|&seed| (GameRng::seeded(seed).below(100) < 50) == fizzles).unwrap();
             let mut scene = scenario();
-            without_unrelated_services(&mut scene);
             // A utility source pays without the party's formation.
             let party = the_party(&mut scene.world).unwrap();
             scene.world.entity_mut(party).remove::<crate::game::party::formation::Formation>();
@@ -293,9 +280,8 @@ mod tests {
             };
             let stack = ItemStack::new(&item, &mut ItemIds::default(), 2, true);
             let id = stack.id;
-            let handle =
-                scene.world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog(vec![item]));
-            scene.world.resource_mut::<GameData>().items = handle;
+            let handle = ItemCatalog(vec![item]);
+            scene.world.resource_mut::<crate::game::data::Catalogs>().items = handle;
             scene.inventory().pool.stacks.push(stack);
             scene.world.insert_resource(GameRng::seeded(seed));
             let (report, _) = super::super::sources::cast_source(
@@ -349,9 +335,8 @@ mod tests {
         let definition = ItemDefinition { id: ItemId(0), identify_difficulty: 3, ..default() };
         let target = ItemStack::new(&definition, &mut ItemIds::default(), 1, false);
         let target_id = target.id;
-        let items =
-            scene.world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog(vec![definition]));
-        scene.world.resource_mut::<GameData>().items = items;
+        let items = ItemCatalog(vec![definition]);
+        scene.world.resource_mut::<crate::game::data::Catalogs>().items = items;
         scene.inventory().hand.held = Some(target);
         scene.world.write_message(MagicRequest {
             caster,

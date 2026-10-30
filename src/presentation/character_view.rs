@@ -20,14 +20,14 @@ impl CharacterViewItem<'_, '_> {
     pub fn armour(
         &self,
         actor: bevy::prelude::Entity,
-        catalog: Option<&crate::content::items::ItemCatalog>,
+        catalog: &crate::content::items::ItemCatalog,
         battle: Option<&crate::game::combat::Battle>,
         party: Option<&crate::game::magic::enchantments::PartyEffects>,
     ) -> Option<crate::game::combat::attack::Armour> {
         Some(crate::game::combat::attack::enchanted_armour(
             &self.profile.stats(&self.vitals.enchantments),
             self.carried?,
-            catalog?,
+            catalog,
             self.load(),
             battle.is_some_and(|battle| battle.defends(actor)),
             (&self.vitals.enchantments, party.filter(|_| self.member.is_some()).map(|p| &p.0)),
@@ -38,12 +38,12 @@ impl CharacterViewItem<'_, '_> {
     /// carry nothing.
     pub fn hand(
         &self,
-        catalog: Option<&crate::content::items::ItemCatalog>,
+        catalog: &crate::content::items::ItemCatalog,
     ) -> Option<crate::game::combat::attack::Hand> {
         Some(crate::game::combat::attack::primary_hand(
             &self.profile.stats(&self.vitals.enchantments),
             self.carried?,
-            catalog?,
+            catalog,
             self.load(),
         ))
     }
@@ -112,7 +112,7 @@ mod tests {
             let party = effects.iter(world).next();
             let view = views.get(world, member).unwrap();
             (
-                view.hand(Some(&catalog)).unwrap().to_hit,
+                view.hand(&catalog).unwrap().to_hit,
                 view.resistances(&catalog, party)[Realm::Fire].total,
             )
         };

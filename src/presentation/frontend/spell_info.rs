@@ -143,7 +143,7 @@ pub(super) fn populate(
     // Built once its contents have loaded, which gives it its scrollbar.
     dialogs: Query<(Entity, &SpellInfo), Without<Scroll>>,
     assets: Res<AssetServer>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     game_strings: crate::presentation::screen_art::GameStrings,
     spell_texts: Res<Assets<SpellText>>,
     sheets: Res<Assets<SpriteSheet>>,
@@ -151,7 +151,7 @@ pub(super) fn populate(
 ) {
     for (root, info) in &dialogs {
         let (Some(spell), Some(strings), Some(effects), Some(descriptions), Some(font)) = (
-            content.spells().and_then(|c| c.get(info.id)),
+            content.spells.get(info.id),
             game_strings.table(),
             spell_texts.get(&info.effects),
             spell_texts.get(&info.descriptions),

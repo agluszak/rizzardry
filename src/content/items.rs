@@ -361,6 +361,14 @@ impl ItemCatalog {
     }
 }
 
+/// The definition of an item that exists: every stack is made from one.
+impl std::ops::Index<ItemId> for ItemCatalog {
+    type Output = ItemDefinition;
+    fn index(&self, id: ItemId) -> &ItemDefinition {
+        &self.0[usize::from(id.0)]
+    }
+}
+
 /// A loot table: weighted items and how many to draw.
 #[derive(Clone, Debug)]
 pub struct LootTable {
@@ -375,13 +383,6 @@ pub struct LootTable {
 
 #[derive(Asset, TypePath, Debug, Default)]
 pub struct LootTables(pub Vec<LootTable>);
-
-impl LootTables {
-    /// A table by name, ignoring case as retail does.
-    pub fn find(&self, name: &str) -> Option<&LootTable> {
-        self.0.iter().find(|table| table.name.eq_ignore_ascii_case(name))
-    }
-}
 
 /// What an item looks like lying in the world (retail `.itm`).
 #[derive(Asset, TypePath, Debug)]

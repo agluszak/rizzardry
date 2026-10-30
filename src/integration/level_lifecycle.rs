@@ -3,12 +3,12 @@
 //! keeps the source authoritative until the destination can commit, or
 //! leaves it untouched when destination preparation fails.
 
-use crate::content::items::{ItemCatalog, LootTables};
+use crate::content::items::ItemCatalog;
 use crate::content::level::{CollisionMesh, LevelDefinition, MonsterPlacement};
 use crate::content::monster::MonsterBody;
 use crate::content::species::{MonsterCatalog, Species};
 use crate::game::characters::{Character, Gender, Profession, Race};
-use crate::game::data::GameData;
+use crate::game::data::Catalogs;
 use crate::game::inventory::ItemIds;
 use crate::game::party::body::{PartyBody, PartyMotionConfig};
 use crate::game::party::roster::Party;
@@ -28,10 +28,6 @@ fn app() -> App {
         .add_plugins(crate::game::npcs::NpcPlugin)
         .init_resource::<crate::game::time::GameClock>()
         .init_asset::<LevelDefinition>()
-        .init_asset::<ItemCatalog>()
-        .init_asset::<LootTables>()
-        .init_asset::<MonsterCatalog>()
-        .init_asset::<crate::content::spells::SpellCatalog>()
         .init_asset::<bevy_landmass::NavMesh3d>()
         .init_asset::<MonsterBody>()
         .init_asset::<crate::content::ui::TextTable>()
@@ -57,14 +53,12 @@ fn app() -> App {
 /// loaded.
 fn with_data(app: &mut App) {
     let world = app.world_mut();
-    let items = world.resource_mut::<Assets<ItemCatalog>>().add(starting_catalog());
-    let loot = world.resource_mut::<Assets<LootTables>>().add(LootTables::default());
     let crab = Species { name: "Crab".into(), model: "crab".into(), ..default() };
-    let species = world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog(vec![crab]));
-    let spells = world
-        .resource_mut::<Assets<crate::content::spells::SpellCatalog>>()
-        .add(crate::content::spells::SpellCatalog::default());
-    world.insert_resource(GameData { items, loot, species, spells });
+    world.insert_resource(Catalogs {
+        items: starting_catalog(),
+        species: MonsterCatalog(vec![crab]),
+        ..default()
+    });
     // Required body metadata is available without a visual asset or renderer.
     let body = world.resource_mut::<Assets<MonsterBody>>().add(MonsterBody::default());
     for mut destination in world.query::<&mut Destination>().iter_mut(world) {
@@ -282,11 +276,7 @@ fn a_new_party_is_complete_when_its_first_level_is_ready() {
 fn a_new_game_missing_a_starting_item_does_not_begin() {
     let mut app = app();
     with_data(&mut app);
-    let handle = app.world().resource::<GameData>().items.clone();
-    app.world_mut()
-        .resource_mut::<Assets<ItemCatalog>>()
-        .insert(&handle, ItemCatalog::default())
-        .unwrap();
+    app.world_mut().resource_mut::<Catalogs>().items = ItemCatalog::default();
     let destination = spawn_level(&mut app, floor());
     app.update();
     assert!(failed(&app, destination));
@@ -590,20 +580,10 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
     use bevy::ecs::system::RunSystemOnce;
     let mut app = app();
     with_data(&mut app);
-    let (items, species) = {
-        let d = app.world().resource::<GameData>();
-        (d.items.clone(), d.species.clone())
-    };
-    app.world_mut()
-        .resource_mut::<Assets<ItemCatalog>>()
-        .get_mut(&items)
-        .unwrap()
-        .0
-        .push(ItemDefinition { id: ItemId(0), ..default() });
     {
-        let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
-        let mut catalog = catalogs.get_mut(&species).unwrap();
-        let kind = &mut catalog.0[0];
+        let mut catalogs = app.world_mut().resource_mut::<Catalogs>();
+        catalogs.items.0.push(ItemDefinition { id: ItemId(0), ..default() });
+        let kind = &mut catalogs.species.0[0];
         kind.hit_points = Dice { base: 10, ..default() };
         kind.gold = Dice { base: 7, ..default() };
         kind.treasure = vec![Treasure {
@@ -864,32 +844,36 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     use crate::game::npcs::{ActorId, Npc, NpcAssets, NpcBodies};
     let mut app = app();
     with_data(&mut app);
-    let data = app.world().resource::<GameData>();
-    let items = data.items.clone();
-    let species = data.species.clone();
-    app.world_mut()
-        .resource_mut::<Assets<ItemCatalog>>()
-        .get_mut(&items)
-        .unwrap()
-        .0
-        .push(ItemDefinition { id: ItemId(0), ..default() });
-    app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&species).unwrap().0[0].npc =
-        Some(NpcId(0));
-    let catalog =
-        app.world_mut().resource_mut::<Assets<NpcCatalog>>().add(NpcCatalog(vec![NpcDefinition {
-            source_name: "Fixture".into(),
-            merchant: true,
-            disposition: 80,
-            owns_stock: true,
-            stock: vec![StockRule { item: ItemId(0), quantity: 3, persistent: true }],
+    {
+        let mut catalogs = app.world_mut().resource_mut::<Catalogs>();
+        catalogs.items.0[0] = ItemDefinition {
+            id: ItemId(0),
+            value: 100,
+            class: crate::content::items::EquipClass::Potion,
             ..default()
-        }]));
-    let facts = app.world_mut().resource_mut::<Assets<FactCatalog>>().add(FactCatalog::default());
-    let script = app.world_mut().resource_mut::<Assets<DialogueScript>>().add(DialogueScript {
-        quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }],
+        };
+        catalogs.species.0[0].npc = Some(NpcId(0));
+    }
+    let catalog = NpcCatalog(vec![NpcDefinition {
+        source_name: "Fixture".into(),
+        merchant: true,
+        disposition: 80,
+        owns_stock: true,
+        accepted_classes: crate::content::items::EquipClass::Potion.into(),
+        stock: vec![StockRule { item: ItemId(0), quantity: 3, persistent: true }],
         ..default()
-    });
-    app.insert_resource(NpcAssets { catalog, facts, scripts: [(NpcId(0), script)].into() });
+    }]);
+    let facts = FactCatalog::default();
+    let script = app
+        .world_mut()
+        .resource_mut::<Assets<DialogueScript>>()
+        .add(DialogueScript { quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }] });
+    {
+        let mut catalogs = app.world_mut().resource_mut::<Catalogs>();
+        catalogs.npcs = catalog;
+        catalogs.facts = facts;
+    }
+    app.insert_resource(NpcAssets { scripts: [(NpcId(0), script)].into() });
     let source = spawn_level(&mut app, floor());
     app.update();
     assert!(is_played(&app, source));
@@ -914,7 +898,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     let at = app.world().get::<Transform>(body).unwrap().translation;
     let party = party_entities(&mut app)[0];
     app.world_mut().get_mut::<avian3d::prelude::Position>(party).unwrap().0 = at + Vec3::X;
-    for _ in 0..2 {
+    for round in 0..2 {
         let session = conversation::begin(app.world_mut(), actor).unwrap();
         app.update();
         assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((0, 0)));
@@ -925,6 +909,29 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
             app.world_mut()
                 .write_message(ConversationRequest::Advance { conversation: session, speech });
             app.update();
+        }
+        // Buying one and selling it back, through the merchant's definition
+        // and the item catalog at once.
+        if round == 0 {
+            use crate::game::inventory::{ItemOwner, ItemRef, PartyInventory};
+            use crate::game::npcs::trade::TradeSource;
+            let purse = |app: &App| app.world().get::<PartyInventory>(party).unwrap().gold;
+            app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 10_000;
+            let lot = app.world().get::<Npc>(actor).unwrap().stock.lots[0].id;
+            let quote =
+                conversation::quote_trade(app.world_mut(), session, TradeSource::Stock(lot), 1)
+                    .unwrap();
+            app.world_mut().write_message(ConversationRequest::Trade(quote));
+            app.update();
+            assert_eq!(purse(&app), 10_000 - quote.gold);
+            assert_eq!(app.world().get::<Npc>(actor).unwrap().stock.lots[0].units, 1);
+            let bought = app.world().get::<PartyInventory>(party).unwrap().pool.stacks[0].id;
+            let source = TradeSource::Party(ItemRef { owner: ItemOwner::Pool, id: bought });
+            let sale = conversation::quote_trade(app.world_mut(), session, source, 1).unwrap();
+            app.world_mut().write_message(ConversationRequest::Trade(sale));
+            app.update();
+            assert_eq!(purse(&app), 10_000 - quote.gold + sale.gold);
+            assert!(app.world().get::<PartyInventory>(party).unwrap().pool.stacks.is_empty());
         }
         app.world_mut().write_message(ConversationRequest::Close { conversation: session });
         app.update();
@@ -1017,32 +1024,33 @@ fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
     use bevy::ecs::system::RunSystemOnce;
     let mut app = app();
     with_data(&mut app);
-    let data = app.world().resource::<GameData>();
-    let (species, loot) = (data.species.clone(), data.loot.clone());
-    app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&species).unwrap().0[0].npc =
-        Some(NpcId(0));
-    app.world_mut().resource_mut::<Assets<LootTables>>().get_mut(&loot).unwrap().0 =
-        vec![LootTable {
-            name: "Pockets".into(),
-            entries: vec![(ItemId(1), 0), (ItemId(2), 5), (ItemId(3), 5)],
-            level_scaled: false,
-            item_count: Dice { count: 0, sides: 0, base: 1 },
-            gold: default(),
-        }];
-    let catalog =
-        app.world_mut().resource_mut::<Assets<NpcCatalog>>().add(NpcCatalog(vec![NpcDefinition {
-            source_name: "Fixture".into(),
-            disposition: 80,
-            item_table: Some(0),
-            gold: 25,
-            ..default()
-        }]));
-    let facts = app.world_mut().resource_mut::<Assets<FactCatalog>>().add(FactCatalog::default());
-    let script = app.world_mut().resource_mut::<Assets<DialogueScript>>().add(DialogueScript {
-        quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }],
+    let mut catalogs = app.world_mut().resource_mut::<Catalogs>();
+    catalogs.species.0[0].npc = Some(NpcId(0));
+    catalogs.loot.0 = vec![LootTable {
+        name: "Pockets".into(),
+        entries: vec![(ItemId(1), 0), (ItemId(2), 5), (ItemId(3), 5)],
+        level_scaled: false,
+        item_count: Dice { count: 0, sides: 0, base: 1 },
+        gold: default(),
+    }];
+    let catalog = NpcCatalog(vec![NpcDefinition {
+        source_name: "Fixture".into(),
+        disposition: 80,
+        item_table: Some(0),
+        gold: 25,
         ..default()
-    });
-    app.insert_resource(NpcAssets { catalog, facts, scripts: [(NpcId(0), script)].into() });
+    }]);
+    let facts = FactCatalog::default();
+    let script = app
+        .world_mut()
+        .resource_mut::<Assets<DialogueScript>>()
+        .add(DialogueScript { quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }] });
+    {
+        let mut catalogs = app.world_mut().resource_mut::<Catalogs>();
+        catalogs.npcs = catalog;
+        catalogs.facts = facts;
+    }
+    app.insert_resource(NpcAssets { scripts: [(NpcId(0), script)].into() });
     let source = spawn_level(&mut app, floor());
     app.update();
     assert!(is_played(&app, source));
@@ -1110,9 +1118,7 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     use bevy::ecs::entity_disabling::Disabled;
     let mut app = app();
     with_data(&mut app);
-    let species = app.world().resource::<GameData>().species.clone();
-    app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&species).unwrap().0[0].npc =
-        Some(NpcId(0));
+    app.world_mut().resource_mut::<Catalogs>().species.0[0].npc = Some(NpcId(0));
     let mut equipment = [None; 12];
     equipment[6] = Some(ItemId(5));
     let mut backpack = [None; 8];
@@ -1131,19 +1137,23 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
         backpack,
         wanted: vec![ItemId(5)],
     };
-    let catalog =
-        app.world_mut().resource_mut::<Assets<NpcCatalog>>().add(NpcCatalog(vec![NpcDefinition {
-            source_name: "Fixture".into(),
-            disposition: 80,
-            character: Some(template),
-            ..default()
-        }]));
-    let facts = app.world_mut().resource_mut::<Assets<FactCatalog>>().add(FactCatalog::default());
-    let script = app.world_mut().resource_mut::<Assets<DialogueScript>>().add(DialogueScript {
-        quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }],
+    let catalog = NpcCatalog(vec![NpcDefinition {
+        source_name: "Fixture".into(),
+        disposition: 80,
+        character: Some(template),
         ..default()
-    });
-    app.insert_resource(NpcAssets { catalog, facts, scripts: [(NpcId(0), script)].into() });
+    }]);
+    let facts = FactCatalog::default();
+    let script = app
+        .world_mut()
+        .resource_mut::<Assets<DialogueScript>>()
+        .add(DialogueScript { quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }] });
+    {
+        let mut catalogs = app.world_mut().resource_mut::<Catalogs>();
+        catalogs.npcs = catalog;
+        catalogs.facts = facts;
+    }
+    app.insert_resource(NpcAssets { scripts: [(NpcId(0), script)].into() });
     let source = spawn_level(&mut app, floor());
     app.update();
     assert!(is_played(&app, source));
@@ -1206,15 +1216,6 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
         app.world_mut().spawn(Destination::new(elsewhere, default(), Entry::Travel)).id();
     app.update();
     assert!(is_played(&app, elsewhere));
-    // Without the item catalog to place its items with, it does not leave:
-    // nothing moves, nothing is lost.
-    let items = app.world().resource::<GameData>().items.clone();
-    let catalog = app.world_mut().resource_mut::<Assets<ItemCatalog>>().remove(&items).unwrap();
-    assert!(!recruit::dismiss(app.world_mut(), actor));
-    assert_eq!(members(&app), 2);
-    assert!(app.world().get::<Carried>(actor).unwrap().backpack[0].is_some());
-    assert!(app.world().get::<Disabled>(body).is_some());
-    app.world_mut().resource_mut::<Assets<ItemCatalog>>().insert(&items, catalog).unwrap();
     assert!(recruit::dismiss(app.world_mut(), actor));
     assert_eq!(members(&app), 1);
     assert!(app.world().get::<PartyMember>(actor).is_none());

@@ -8,7 +8,6 @@ use crate::{
     game::{
         characters::{Character, Condition},
         combat::{Battle, Combatant},
-        data::GameData,
         rng::GameRng,
         time::{AGING_TICK_MS, GameClock},
         world::{
@@ -70,7 +69,7 @@ pub const ELEMENTALS: std::ops::RangeInclusive<u32> = 21..=48;
 /// is paid for.
 fn bodies(world: &World, root: Entity) -> Result<Vec<(u32, MonsterBody)>, Refusal> {
     let handles = world.get::<MonsterBodies>(root).ok_or(Refusal::MissingContent)?;
-    let assets = world.get_resource::<Assets<MonsterBody>>().ok_or(Refusal::MissingContent)?;
+    let assets = world.resource::<Assets<MonsterBody>>();
     ELEMENTALS
         .map(|id| Ok((id, *handles.get(id, assets).ok_or(Refusal::MissingContent)?)))
         .collect()
@@ -94,14 +93,16 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
         .map_err(|_| Refusal::WrongTime)?;
     let battle = world.query_filtered::<Entity, With<Battle>>().single(world).ok();
     let (spell, far) = {
-        let spell = GameData::spells(world)
-            .and_then(|catalog| catalog.get(id))
+        let spell = world
+            .resource::<crate::game::data::Catalogs>()
+            .spells
+            .get(id)
             .cloned()
             .ok_or(Refusal::MissingContent)?;
         let level = world.get::<Level>(root).unwrap();
         let far = world
-            .get_resource::<Assets<crate::content::level::LevelDefinition>>()
-            .and_then(|assets| assets.get(&level.definition))
+            .resource::<Assets<crate::content::level::LevelDefinition>>()
+            .get(&level.definition)
             .ok_or(Refusal::MissingContent)?
             .view_distance();
         (spell, far)
@@ -130,7 +131,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
             .get::<Character>(caster)
             .is_some_and(|profile| super::Strength::of(profile, &spell, 1).boost != 0)
         {
-            let spells = GameData::spells(world).ok_or(Refusal::MissingContent)?;
+            let spells = &world.resource::<crate::game::data::Catalogs>().spells;
             if [
                 SpellId::HASTE,
                 SpellId::BODY_OF_STONE,
@@ -144,13 +145,11 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
             }
         }
         let bodies = bodies(world, root)?;
-        // Spawning needs walker configs; a walking elemental needs every
-        // size class's navigation too.
-        if !world.contains_resource::<Assets<WalkerMotionConfig>>()
-            || bodies.iter().any(|(_, body)| body.movement_rate > 0.0)
-                && world
-                    .get::<LevelNavigation>(root)
-                    .is_none_or(|nav| nav.archipelagos.len() < navigation::bake::SIZE_CLASSES.len())
+        // A walking elemental needs every size class's navigation.
+        if bodies.iter().any(|(_, body)| body.movement_rate > 0.0)
+            && world
+                .get::<LevelNavigation>(root)
+                .is_none_or(|nav| nav.archipelagos.len() < navigation::bake::SIZE_CLASSES.len())
         {
             return Err(Refusal::MissingContent);
         }
@@ -218,7 +217,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
                 if (here - at).abs().max_element() > far {
                     continue;
                 }
-                let kind = GameData::species(world).unwrap().kind(body.species).unwrap();
+                let kind = &world.resource::<crate::game::data::Catalogs>().species[body.species];
                 if kind.kind == MonsterKind::Undead {
                     continue;
                 }
@@ -261,7 +260,12 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
             let roll = world.resource_mut::<GameRng>().below(weights.iter().sum());
             let realm = crate::game::rng::weighted(roll, weights).unwrap_or(3);
             let species_id = tier(strength.power, realm);
-            let kind = GameData::species(world).unwrap().kind(species_id).unwrap().clone();
+            let kind = &world
+                .resource::<crate::game::data::Catalogs>()
+                .species
+                .kind(species_id)
+                .unwrap()
+                .clone();
             let body = &definitions.iter().find(|(id, _)| *id == species_id).unwrap().1;
             let locations: Vec<i32> = world
                 .query::<(&Monster, &LevelOwned)>()
@@ -283,7 +287,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
             let mut members = population::roll_group(
                 ids,
                 (species_id, 1),
-                (&kind, body),
+                (kind, body),
                 &mut world.resource_mut::<GameRng>(),
             );
             members[0].feet = at;
@@ -299,21 +303,18 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
                     .get::<LevelNavigation>(root)
                     .map_or_else(Vec::new, |nav| nav.archipelagos.clone()),
             };
-            let catalog = world.resource::<GameData>().species.clone();
-            let (group, spawned) = world.resource_scope(
-                |world, catalogs: Mut<Assets<crate::content::species::MonsterCatalog>>| {
-                    world.resource_scope(|world, mut configs: Mut<Assets<WalkerMotionConfig>>| {
-                        population::spawn_group(
-                            &mut world.commands(),
-                            root,
-                            members,
-                            (ids.1, Some(SetStance { stance, at: now })),
-                            catalogs.get(&catalog).unwrap(),
-                            (&navigation, &mut configs),
-                        )
-                    })
-                },
-            );
+            let (group, spawned) = crate::game::data::Catalogs::scope(world, |world, catalogs| {
+                world.resource_scope(|world, mut configs: Mut<Assets<WalkerMotionConfig>>| {
+                    population::spawn_group(
+                        &mut world.commands(),
+                        root,
+                        members,
+                        (ids.1, Some(SetStance { stance, at: now })),
+                        &catalogs.species,
+                        (&navigation, &mut configs),
+                    )
+                })
+            });
             world.flush();
             // The summoning lasts no longer than the fight.
             world.entity_mut(group).insert(ChildOf(battle));
@@ -331,7 +332,8 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
                     SpellId::MISSILE_SHIELD,
                     SpellId::ARMORPLATE,
                 ][realm];
-                let definition = GameData::spells(world).and_then(|c| c.get(buff)).cloned();
+                let definition =
+                    world.resource::<crate::game::data::Catalogs>().spells.get(buff).cloned();
                 if let Some(definition) = definition {
                     let turns = super::effects::duration(
                         &mut world.resource_mut::<GameRng>(),
@@ -369,7 +371,7 @@ fn remove_lure(world: &mut World, entity: Entity) {
 }
 
 pub(crate) fn update_lure(world: &mut World) {
-    let Some(now) = world.get_resource::<GameClock>().map(|clock| clock.ms) else { return };
+    let now = world.resource::<GameClock>().ms;
     let expired: Vec<_> = world
         .query::<(Entity, &Lure)>()
         .iter(world)
@@ -431,8 +433,6 @@ mod tests {
         let world = &mut scene.world;
         world.init_resource::<avian3d::collider_tree::ColliderTrees>();
         world.init_resource::<crate::game::factions::Factions>();
-        world.init_resource::<Assets<MonsterCatalog>>();
-        world.init_resource::<Assets<SpellCatalog>>();
         world.init_resource::<Assets<MonsterBody>>();
         world.init_resource::<Assets<WalkerMotionConfig>>();
         world.init_resource::<Messages<MagicNews>>();
@@ -441,7 +441,7 @@ mod tests {
         for kind in &mut species {
             kind.experience = 9000;
         }
-        let species = world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog(species));
+        let species = MonsterCatalog(species);
         let mut spells = vec![SpellDefinition::default(); 62];
         for id in [SpellId::HYPNOTIC_LURE, SpellId::SUMMON_ELEMENTAL] {
             spells[id.0 as usize] = SpellDefinition {
@@ -460,9 +460,9 @@ mod tests {
                 ..default()
             };
         }
-        let spells = world.resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(spells));
+        let spells = SpellCatalog(spells);
         {
-            let mut data = world.resource_mut::<GameData>();
+            let mut data = world.resource_mut::<crate::game::data::Catalogs>();
             data.spells = spells;
             data.species = species;
         }

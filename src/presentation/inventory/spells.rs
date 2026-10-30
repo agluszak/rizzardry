@@ -86,14 +86,13 @@ pub(super) fn refresh(
     screen: Option<Single<&InventoryScreen>>,
     characters: Query<crate::presentation::character_view::CharacterView>,
     party: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     mut values: Query<(&Value, &mut BitmapText)>,
     mut segments: Query<(&Segment, &mut PictureCrop, &mut Picture)>,
 ) {
     let Some(screen) = screen else { return };
-    let (Ok(view), Some(catalog)) = (characters.get(screen.member), content.items()) else {
-        return;
-    };
+    let Ok(view) = characters.get(screen.member) else { return };
+    let catalog = &content.items;
     let scores = view.resistances(catalog, party.as_deref().copied());
     for (value, mut text) in &mut values {
         let desired = scores[value.0].total.to_string();

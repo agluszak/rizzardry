@@ -4,7 +4,6 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use super::*;
-use crate::game::data::Content;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 
@@ -27,7 +26,7 @@ pub struct InventoryOperations<'w, 's> {
     party: Single<'w, 's, &'static mut PartyInventory>,
     roster: Single<'w, 's, &'static PartyRoster>,
     members: Members<'w, 's>,
-    content: Content<'w>,
+    content: If<Res<'w, crate::game::data::Catalogs>>,
     battle: Option<Single<'w, 's, &'static crate::game::combat::Battle>>,
     news: MessageWriter<'w, ItemNews>,
 }
@@ -38,9 +37,9 @@ impl InventoryOperations<'_, '_> {
     /// portrait only supplies its target. False when nothing was held.
     pub fn give_to(&mut self, member: Entity) -> Result<bool, Refusal> {
         let Some(held) = self.party.hand.held.as_ref() else { return Ok(false) };
-        let catalog = self.content.items().ok_or(Refusal::MissingContent)?;
+        let catalog = &self.content.items;
         let (profile, vitals, mut carried) = self::member(&self.roster, &mut self.members, member)?;
-        let definition = catalog.get(held.item).ok_or(Refusal::MissingContent)?;
+        let definition = &catalog[held.item];
         let item = held.display_name(definition, false);
         let name = profile.name.clone();
         let eligible = vitals.can_act();
@@ -64,7 +63,7 @@ impl InventoryOperations<'_, '_> {
         if self.party.hand.held.is_none() {
             return Ok(());
         }
-        let catalog = self.content.items().ok_or(Refusal::MissingContent)?;
+        let catalog = &self.content.items;
         let mut carried = self::member(&self.roster, &mut self.members, member).ok();
         self.party.give_held(carried.as_mut().map(|(_, _, c)| &mut **c), false, catalog);
         Ok(())
@@ -76,7 +75,7 @@ impl InventoryOperations<'_, '_> {
         let anchor = self.party.pool.stacks.get(row).map(|s| s.id);
         if self.party.hand.held.is_some() {
             // Ammunition over its gun loads it, however many charges that takes.
-            let catalog = self.content.items().ok_or(Refusal::MissingContent)?;
+            let catalog = &self.content.items;
             if let Some(anchor) = anchor
                 && self.party.load_row(anchor, catalog).is_some()
             {
@@ -91,11 +90,11 @@ impl InventoryOperations<'_, '_> {
         }
     }
     pub fn deposit(&mut self, position: PoolPosition) -> Result<u32, Refusal> {
-        let catalog = self.content.items().ok_or(Refusal::MissingContent)?;
+        let catalog = &self.content.items;
         self.party.deposit_hand(position, catalog)
     }
     pub fn interact_slot(&mut self, destination: MemberSlot) -> Result<(), Refusal> {
-        let catalog = self.content.items().ok_or(Refusal::MissingContent)?;
+        let catalog = &self.content.items;
         let (character, vitals, mut carried) =
             member(&self.roster, &mut self.members, destination.member)?;
         self.party.interact_slot(&character, vitals, &mut carried, destination.slot, catalog)
@@ -119,7 +118,7 @@ impl InventoryOperations<'_, '_> {
         target: ItemAt,
         (ids, rng): (&mut ItemIds, &mut GameRng),
     ) -> Result<merge::Merged, Refusal> {
-        let catalog = self.content.items().ok_or(Refusal::MissingContent)?;
+        let catalog = &self.content.items;
         let (mut character, _, mut carried) =
             self::member(&self.roster, &mut self.members, member)?;
         let merged = self.party.merge(&mut character, &mut carried, target, catalog, (ids, rng))?;
@@ -147,7 +146,7 @@ impl InventoryOperations<'_, '_> {
         item: ItemAt,
         rng: &mut GameRng,
     ) -> Result<bool, Refusal> {
-        let catalog = self.content.items().ok_or(Refusal::MissingContent)?;
+        let catalog = &self.content.items;
         let stack = match item {
             ItemAt::Hand => self.party.hand.held.as_ref(),
             ItemAt::Pool(id) => self.party.pool.stacks.iter().find(|s| s.id == id),
@@ -162,8 +161,7 @@ impl InventoryOperations<'_, '_> {
         if stack.identified {
             return Ok(false);
         }
-        let difficulty =
-            catalog.get(stack.item).ok_or(Refusal::MissingContent)?.identify_difficulty;
+        let difficulty = catalog[stack.item].identify_difficulty;
         let (mut identified, mut binding) = (false, false);
         let attempts = self.members.iter_many_unique_mut(self.roster.iter()).matched();
         for (mut character, vitals, _) in attempts {
@@ -199,11 +197,6 @@ impl InventoryOperations<'_, '_> {
         }
     }
 
-    pub fn switch_weapon_sets(&mut self, member: Entity) -> Result<(), Refusal> {
-        let catalog = self.content.items().ok_or(Refusal::MissingContent)?;
-        let (_, vitals, mut carried) = self::member(&self.roster, &mut self.members, member)?;
-        carried.switch_weapon_sets(catalog, vitals.is_dead())
-    }
     pub fn take(&mut self, source: ItemRef) -> Result<(), Refusal> {
         if self.party.hand.held.is_some() {
             return Err(Refusal::HandFull);
@@ -216,41 +209,6 @@ impl InventoryOperations<'_, '_> {
                 self.interact_slot(MemberSlot { member, slot })
             }
         }
-    }
-    pub fn take_units(
-        &mut self,
-        source: ItemRef,
-        amount: u16,
-        ids: &mut ItemIds,
-    ) -> Result<(), Refusal> {
-        let catalog = self.content.items().ok_or(Refusal::MissingContent)?;
-        let PartyInventory { hand, pool, .. } = &mut **self.party;
-        match source.owner {
-            ItemOwner::Pool => {
-                let index =
-                    pool.stacks.iter().position(|s| s.id == source.id).ok_or(Refusal::Nothing)?;
-                let stack = &pool.stacks[index];
-                let definition = catalog.get(stack.item).ok_or(Refusal::MissingContent)?;
-                hand.check_take_units(stack, amount, definition)?;
-                let stack = pool.stacks.remove(index);
-                if let Some(rest) = hand.take_units(stack, amount, ids) {
-                    pool.stacks.insert(index, rest);
-                }
-            }
-            ItemOwner::Member(member) => {
-                let (_, vitals, mut carried) =
-                    self::member(&self.roster, &mut self.members, member)?;
-                let slot = carried.find(source.id).ok_or(Refusal::Nothing)?;
-                let stack = carried.slot(slot).unwrap();
-                let definition = catalog.get(stack.item).ok_or(Refusal::MissingContent)?;
-                hand.check_take_units(stack, amount, definition)?;
-                if stack.count() == amount {
-                    carried.check_removal(slot, catalog, vitals.is_dead())?;
-                }
-                carried.offer_slot(slot, |stack| hand.take_units(stack, amount, ids));
-            }
-        }
-        Ok(())
     }
 }
 
@@ -273,7 +231,6 @@ fn member<'a>(
 mod settlement_tests {
     use super::*;
     use crate::game::characters::{Gender, Profession, Race};
-    use crate::game::data::GameData;
 
     #[test]
     fn put_away_needs_no_view_and_preserves_fallbacks_and_refusals() {
@@ -281,24 +238,14 @@ mod settlement_tests {
             [(false, false, true), (true, false, true), (false, true, true), (false, false, false)]
         {
             let mut app = App::new();
-            app.init_resource::<Assets<ItemCatalog>>()
-                .add_message::<ItemNews>()
-                .add_observer(put_away_held);
+            app.add_message::<ItemNews>().add_observer(put_away_held);
             let definition =
                 ItemDefinition { quantity: QuantityKind::Stack, stack_limit: 20, ..default() };
             let mut ids = ItemIds::default();
             let held = ItemStack::new(&definition, &mut ids, 7, true);
-            let items = app
-                .world_mut()
-                .resource_mut::<Assets<ItemCatalog>>()
-                .add(ItemCatalog(vec![definition.clone()]));
+            let items = ItemCatalog(vec![definition.clone()]);
             if loaded {
-                app.insert_resource(GameData {
-                    items,
-                    loot: default(),
-                    species: default(),
-                    spells: default(),
-                });
+                app.insert_resource(crate::game::data::Catalogs { items, ..default() });
             }
             let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
             let mut carried = Carried::default();

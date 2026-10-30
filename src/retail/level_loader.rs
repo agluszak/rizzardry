@@ -1019,7 +1019,7 @@ mod tests {
             for trigger in level_triggers(&sections).0 {
                 let Some(name) = &trigger.loot_table else { continue };
                 containers += 1;
-                if tables.find(name).is_none() {
+                if !tables.0.iter().any(|t| t.name.eq_ignore_ascii_case(name)) {
                     missing.push(format!("{level}: {name}"));
                 }
             }

@@ -117,18 +117,7 @@ pub fn initialize(draft: &mut CharacterDraft) {
         (2, 2),
     ];
     let (personality, voice) = table[class * 2 + draft.gender() as usize];
-    let choices = [
-        Personality::Aggressive,
-        Personality::Intellectual,
-        Personality::Burly,
-        Personality::Chaotic,
-        Personality::Cunning,
-        Personality::Eccentric,
-        Personality::Kindly,
-        Personality::Laidback,
-        Personality::Loner,
-    ];
-    draft.personality = choices[personality];
+    draft.personality = Personality::ALL[personality];
     draft.voice = if voice == 1 { Voice::First } else { Voice::Second };
 }
 fn position(current: &str) -> (usize, usize) {

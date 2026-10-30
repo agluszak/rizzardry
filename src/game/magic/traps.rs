@@ -42,11 +42,8 @@ pub(crate) fn validate(world: &mut World, trap: u8) -> Result<(), Unable> {
     world
         .run_system_once(
             move |members: Members,
-                  monsters: MonsterDamage,
                   points: Query<(&LearnedSpells, &mut SpellPoints)>,
-                  context: MagicContext| {
-                ready(&context, &members, &monsters, &points, trap)
-            },
+                  context: MagicContext| { ready(&context, &members, &points, trap) },
         )
         .map_err(|_| Unable::MissingContent)?
 }
@@ -54,27 +51,19 @@ pub(crate) fn validate(world: &mut World, trap: u8) -> Result<(), Unable> {
 fn ready(
     context: &MagicContext,
     members: &Members,
-    monsters: &MonsterDamage,
     points: &Query<(&LearnedSpells, &mut SpellPoints)>,
     trap: u8,
 ) -> Result<(), Unable> {
     let id = trap_spell(trap)?;
-    let spell = context.content.spells().and_then(|s| s.get(id)).ok_or(Unable::MissingContent)?;
-    let items = context.content.items().ok_or(Unable::MissingContent)?;
-    if spell.id != id || spell.realm.is_none() || !monsters.ready() {
+    let spell = context.content.spells.get(id).ok_or(Unable::MissingContent)?;
+    if spell.id != id || spell.realm.is_none() {
         return Err(Unable::MissingContent);
     }
     for actor in context.roster.iter() {
-        let (_, vitals, carried, ..) = members.get(actor).map_err(|_| Unable::MissingContent)?;
+        let (_, vitals, ..) = members.get(actor).map_err(|_| Unable::MissingContent)?;
         if id == SpellId::ANTI_MAGIC && !vitals.is_dead() && points.get(actor).is_err() {
             return Err(Unable::MissingContent);
         }
-        if carried.stacks().any(|stack| items.get(stack.item).is_none()) {
-            return Err(Unable::MissingContent);
-        }
-    }
-    if context.inventory.pool.stacks.iter().any(|stack| items.get(stack.item).is_none()) {
-        return Err(Unable::MissingContent);
     }
     Ok(())
 }
@@ -96,7 +85,7 @@ pub(crate) fn discharge(
                   mut rng: ResMut<crate::game::rng::GameRng>,
                   clock: Res<crate::game::time::GameClock>|
                   -> Result<bool, Unable> {
-                ready(&context, &members, &monsters, &points, trap)?;
+                ready(&context, &members, &points, trap)?;
                 if selected.is_some_and(|actor| !context.roster.contains(&actor)) {
                     return Err(Unable::NotMember);
                 }
@@ -145,8 +134,6 @@ pub(crate) fn discharge(
                         );
                         Some((spell.id, effects, std::mem::take(&mut field.improved), destroyed))
                     })
-                    .ok()
-                    .flatten()
                     .ok_or(Unable::MissingContent)?;
                 context.news.write(MagicNews::Triggered { spell, effects, improved });
                 Ok(destroyed)

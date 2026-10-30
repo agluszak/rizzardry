@@ -55,7 +55,7 @@ pub(super) fn needs_approach(
     if monster.is_dead() || walker.speed <= 0.0 {
         return false;
     }
-    let Some(kind) = species.kind(monster.species) else { return false };
+    let kind = &species[monster.species];
     let reach = kind.attacks.iter().map(|a| a.reach).max().unwrap_or(Reach::Touch);
     let feet = crate::game::world::navigation::feet(origin, Some(walker));
     crate::game::world::perception::party_distance(party_eye, monster, feet)
@@ -81,7 +81,7 @@ pub(super) fn move_budget(
     if !needs_approach(monster, origin, walker, party_eye, species) {
         return None;
     }
-    let kind = species.kind(monster.species)?;
+    let kind = &species[monster.species];
     let charge = monster.charges();
     Some(MoveBudget { metres: move_metres(monster, kind, charge), charge })
 }
@@ -121,10 +121,10 @@ pub fn steer_moves(
     mut commands: Commands,
     party: Query<(Entity, &Position), With<PartyBody>>,
     mut walkers: Query<(Entity, &Monster, ActorPose, &Walker, &mut AgentTarget3d, &CombatMove)>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     targets: Query<(&Monster, ActorPose, Option<&Walker>)>,
 ) {
-    let Some(catalog) = content.species() else { return };
+    let catalog = &content.species;
     let Ok((party, party_at)) = party.single() else { return };
     let party_eye = PartyBody::eye(party_at);
     for (entity, monster, at, walker, mut target, movement) in &mut walkers {
@@ -141,9 +141,11 @@ pub fn steer_moves(
                         target_at.translation(),
                         target_walker,
                     );
-                    let reach = catalog
-                        .kind(monster.species)
-                        .and_then(|kind| kind.attacks.iter().map(|a| a.reach).max())
+                    let reach = catalog[monster.species]
+                        .attacks
+                        .iter()
+                        .map(|a| a.reach)
+                        .max()
                         .unwrap_or(Reach::Touch)
                         .metres();
                     !target.is_dead() && monster.gap(here, target, there) > reach - REACH_MARGIN
@@ -206,12 +208,10 @@ mod tests {
     /// fixed time from its start to its end, and the walking it counted.
     fn run_move(frame: Duration, during_step: bool) -> (Duration, f32) {
         use crate::content::species::Species;
-        use crate::game::data::GameData;
         use crate::game::world::population::ScaledBody;
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(TimeUpdateStrategy::ManualDuration(frame))
-            .init_resource::<Assets<MonsterCatalog>>()
             .init_resource::<Ended>()
             .add_systems(FixedPreUpdate, steer_moves)
             .add_systems(FixedPostUpdate, spend_moves)
@@ -225,16 +225,8 @@ mod tests {
                     ended.0 = Some((time.elapsed(), moved));
                 },
             );
-        let species = app
-            .world_mut()
-            .resource_mut::<Assets<MonsterCatalog>>()
-            .add(MonsterCatalog(vec![Species::default()]));
-        app.insert_resource(GameData {
-            items: default(),
-            loot: default(),
-            species,
-            spells: default(),
-        });
+        let species = MonsterCatalog(vec![Species::default()]);
+        app.insert_resource(crate::game::data::Catalogs { species, ..default() });
         app.world_mut().spawn((PartyBody::default(), Position::default()));
         let monster = app
             .world_mut()

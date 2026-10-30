@@ -324,7 +324,7 @@ pub fn draw_text_box(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::{species::MonsterCatalog, ui::SpriteSheet, ui::TextTable};
+    use crate::content::{ui::SpriteSheet, ui::TextTable};
     use crate::game::{
         camp::CampNews,
         combat::CombatNews,
@@ -338,6 +338,7 @@ mod tests {
     #[test]
     fn notice_scrolling_follows_pointer_and_held_arrows() {
         let mut app = App::new();
+        app.init_resource::<crate::game::data::Catalogs>();
         app.add_plugins((
             MinimalPlugins,
             AssetPlugin::default(),
@@ -350,8 +351,6 @@ mod tests {
         .add_observer(crate::presentation::retail_controls::primary_buttons_only)
         .init_asset::<SpriteSheet>()
         .init_asset::<TextTable>()
-        .init_asset::<MonsterCatalog>()
-        .init_asset::<crate::content::spells::SpellCatalog>()
         .init_resource::<TextLog>()
         .add_message::<TriggerEffect>()
         .add_message::<CampNews>()
@@ -457,6 +456,7 @@ mod tests {
     #[test]
     fn native_tabs_follow_log_selection_and_survive_view_rebuilds() {
         let mut app = App::new();
+        app.init_resource::<crate::game::data::Catalogs>();
         app.add_plugins(MinimalPlugins)
             .init_resource::<TextLog>()
             .add_systems(Update, sync_channels);

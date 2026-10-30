@@ -89,17 +89,6 @@ impl ItemStack {
             name.to_owned()
         }
     }
-    /// Split a proper subset; only the additional surviving stack gets an ID.
-    pub fn split_off(&mut self, amount: u16, ids: &mut ItemIds) -> Option<Self> {
-        if amount == 0 || amount >= self.count() {
-            return None;
-        }
-        let mut split = self.clone();
-        split.id = ids.allocate();
-        split.count = NonZeroU16::new(amount).unwrap();
-        self.count = NonZeroU16::new(self.count() - amount).unwrap();
-        Some(split)
-    }
     /// Offer a proper part of this stack to a receiver, which returns what it
     /// refuses and whether it kept the part as a stack of its own. Refused
     /// units come back here, so a refusal changes nothing; only a part kept
@@ -214,7 +203,7 @@ fn fill<'a>(
     mut incoming: ItemStack,
     catalog: &ItemCatalog,
 ) -> Option<ItemStack> {
-    let Some(definition) = catalog.get(incoming.item) else { return Some(incoming) };
+    let definition = &catalog[incoming.item];
     for target in targets {
         incoming = target.absorb(incoming, definition)?;
     }
@@ -453,27 +442,11 @@ impl Carried {
     ) -> Result<(), Refusal> {
         if let Slot::Equipment(s) = slot {
             let Some(e) = self.equipment[s].as_mut() else { return Ok(()) };
-            let d = catalog.get(e.stack.item).ok_or(Refusal::MissingContent)?;
+            let d = &catalog[e.stack.item];
             if d.cursed && !e.curse_released && !dead && s.is_active() {
                 e.stack.curse_known = true;
                 return Err(Refusal::Cursed);
             }
-        }
-        Ok(())
-    }
-    /// New placements intentionally lose release, including the alternate set.
-    fn switch_weapon_sets(&mut self, catalog: &ItemCatalog, dead: bool) -> Result<(), Refusal> {
-        for s in [EquipSlot::Primary, EquipSlot::Secondary] {
-            self.check_removal(Slot::Equipment(s), catalog, dead)?;
-        }
-        for (a, b) in [
-            (EquipSlot::Primary, EquipSlot::AlternatePrimary),
-            (EquipSlot::Secondary, EquipSlot::AlternateSecondary),
-        ] {
-            let left = self.take(Slot::Equipment(a));
-            let right = self.take(Slot::Equipment(b));
-            self.put(Slot::Equipment(a), right);
-            self.put(Slot::Equipment(b), left);
         }
         Ok(())
     }
@@ -531,8 +504,7 @@ impl ItemPool {
         let mut remaining = Vec::new();
         for item in contents.drain(..) {
             let before = item.units();
-            let name =
-                catalog.get(item.item).map(|d| item.display_name(d, false)).unwrap_or_default();
+            let name = item.display_name(&catalog[item.item], false);
             let after = match self.receive(item, catalog) {
                 None => 0,
                 Some(item) => {
@@ -655,9 +627,7 @@ pub fn allowed_slots(
     let empty = |slot: EquipSlot| worn(slot).is_none();
     // A main hand also counts as free for the off hand when its weapon is
     // one-handed.
-    let main_free = |slot: EquipSlot| {
-        worn(slot).is_none_or(|i| catalog.get(i.item).is_none_or(|d| !d.two_handed))
-    };
+    let main_free = |slot: EquipSlot| worn(slot).is_none_or(|i| !catalog[i.item].two_handed);
     match definition.class {
         ShortWeapon | ExtendedWeapon | ThrownWeapon | RangedWeapon
             if definition.weapon_skill.is_none() =>
@@ -830,7 +800,8 @@ pub fn place_at_creation(
     member: &Character,
 ) -> Option<ItemStack> {
     let mut item = item;
-    if let Some(d) = catalog.get(item.item).filter(|d| member.can_use(d))
+    let d = &catalog[item.item];
+    if member.can_use(d)
         && let Some(slot) = creation_slot(d, carried, catalog, member)
         && allowed_slots(d, carried, catalog, None).contains(&slot)
     {
@@ -847,7 +818,7 @@ pub fn place_at_creation(
     carried.receive(item, catalog)
 }
 pub fn item_weight(item: &ItemStack, catalog: &ItemCatalog) -> u32 {
-    catalog.get(item.item).map_or(0, |d| u32::from(d.weight) * item.units())
+    u32::from(catalog[item.item].weight) * item.units()
 }
 pub fn carried_weight(carried: &Carried, catalog: &ItemCatalog) -> u32 {
     carried.stacks().map(|i| item_weight(i, catalog)).sum()
@@ -866,7 +837,7 @@ fn creation_slot(
     let ranged_in = |slot| {
         carried
             .worn(slot)
-            .and_then(|i| catalog.get(i.item))
+            .map(|i| &catalog[i.item])
             .filter(|d| d.class == RangedWeapon && can_hold_together(d, definition))
             .is_some()
     };
@@ -916,10 +887,10 @@ pub struct Burden {
 pub fn distribute_burden(
     party: Single<(Ref<PartyRoster>, Ref<PartyInventory>)>,
     mut members: Query<(Ref<Character>, Ref<Vitals>, Ref<Carried>, &mut Burden)>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
 ) {
     let (roster, inventory) = party.into_inner();
-    let Some(catalog) = content.items() else { return };
+    let catalog = &content.items;
     let changed = roster.is_changed()
         || inventory.is_changed()
         || members
@@ -1019,7 +990,7 @@ impl PartyInventory {
     pub fn load_row(&mut self, id: StackId, catalog: &ItemCatalog) -> Option<u16> {
         let held = self.hand.held.as_ref()?;
         let gun = self.pool.stacks.iter_mut().find(|s| s.id == id)?;
-        let (source, definition) = (catalog.get(held.item)?, catalog.get(gun.item)?);
+        let (source, definition) = (&catalog[held.item], &catalog[gun.item]);
         if loaded_by(definition.kind) != Some(source.kind) {
             return None;
         }
@@ -1065,7 +1036,7 @@ impl PartyInventory {
             return Err(Refusal::Nothing);
         }
         if let Some((held, target)) = self.hand.held.as_ref().zip(current) {
-            let d = catalog.get(held.item).ok_or(Refusal::MissingContent)?;
+            let d = &catalog[held.item];
             if held.item == target.item && d.quantity == QuantityKind::Stack {
                 if matches!(slot, Slot::Equipment(_)) && !character.can_use(d) {
                     return Err(Refusal::DoesNotFit);
@@ -1081,8 +1052,8 @@ impl PartyInventory {
         carried.check_removal(slot, catalog, vitals.is_dead())?;
         // Ammunition held over its gun loads it.
         if let Some((held, target)) = self.hand.held.as_ref().zip(carried.slot(slot)) {
-            let source = catalog.get(held.item).ok_or(Refusal::MissingContent)?;
-            let definition = catalog.get(target.item).ok_or(Refusal::MissingContent)?;
+            let source = &catalog[held.item];
+            let definition = &catalog[target.item];
             if loaded_by(definition.kind) == Some(source.kind) {
                 if matches!(slot, Slot::Equipment(_)) && !character.can_use(source) {
                     return Err(Refusal::DoesNotFit);
@@ -1094,14 +1065,14 @@ impl PartyInventory {
             }
         }
         if let (Slot::Equipment(equip), Some(held)) = (slot, self.hand.held.as_ref()) {
-            let definition = catalog.get(held.item).ok_or(Refusal::MissingContent)?;
+            let definition = &catalog[held.item];
             if !character.can_use(definition) {
                 return Err(Refusal::DoesNotFit);
             }
             let displaced = equip.partner().filter(|p| {
-                carried.worn(*p).is_some_and(|partner| {
-                    catalog.get(partner.item).is_none_or(|d| !can_hold_together(definition, d))
-                })
+                carried
+                    .worn(*p)
+                    .is_some_and(|partner| !can_hold_together(definition, &catalog[partner.item]))
             });
             if let Some(partner) = displaced {
                 carried.check_removal(Slot::Equipment(partner), catalog, vitals.is_dead())?;
@@ -1137,48 +1108,6 @@ impl PartyInventory {
     }
 }
 
-impl Hand {
-    fn check_take_units(
-        &self,
-        source: &ItemStack,
-        amount: u16,
-        definition: &ItemDefinition,
-    ) -> Result<(), Refusal> {
-        if definition.quantity != QuantityKind::Stack || amount == 0 || amount > source.count() {
-            return Err(Refusal::Nothing);
-        }
-        if definition.crucial {
-            return Err(Refusal::Crucial);
-        }
-        if let Some(held) = &self.held
-            && (held.item != source.item
-                || u32::from(held.count()) + u32::from(amount) > u32::from(definition.stack_limit))
-        {
-            return Err(Refusal::HandFull);
-        }
-        Ok(())
-    }
-    /// After validation, move units into the hand and return the source remainder.
-    /// Shift-taking retains held knowledge and allocates no ID when merging.
-    fn take_units(
-        &mut self,
-        mut source: ItemStack,
-        amount: u16,
-        ids: &mut ItemIds,
-    ) -> Option<ItemStack> {
-        if let Some(held) = &mut self.held {
-            held.count = NonZeroU16::new(held.count() + amount).unwrap();
-            source.count = NonZeroU16::new(source.count() - amount)?;
-        } else if amount == source.count() {
-            self.held = Some(source);
-            return None;
-        } else {
-            self.held = source.split_off(amount, ids);
-        }
-        Some(source)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1198,15 +1127,8 @@ mod tests {
             ..default()
         };
         let mut ids = ItemIds::default();
-        let mut catalogs = Assets::<ItemCatalog>::default();
-        let items = catalogs.add(ItemCatalog(vec![rock.clone()]));
-        world.insert_resource(catalogs);
-        world.insert_resource(crate::game::data::GameData {
-            items,
-            loot: default(),
-            species: default(),
-            spells: default(),
-        });
+        let items = ItemCatalog(vec![rock.clone()]);
+        world.insert_resource(crate::game::data::Catalogs { items, ..default() });
         let strong = Character::new("Strong", Race::Dwarf, Gender::Male, Profession::Fighter);
         let weak = Character::new("Weak", Race::Faerie, Gender::Female, Profession::Mage);
         let members =
@@ -1264,36 +1186,6 @@ mod tests {
     }
 
     #[test]
-    fn split_absorb_move_and_shift_take_have_batch_identity() {
-        let (c, mut ids) = (catalog(), ItemIds::default());
-        let mut source = stack(&c, &mut ids, 0, 10);
-        let original = source.id;
-        let part = source.split_off(4, &mut ids).unwrap();
-        let split_id = part.id;
-        assert_ne!(original, split_id);
-        assert_eq!(source.count(), 6);
-        let mut hand = Hand { held: Some(part) };
-        source.identified = false;
-        let next = ids.next;
-        hand.check_take_units(&source, 3, &c.0[0]).unwrap();
-        let source = hand.take_units(source, 3, &mut ids).unwrap();
-        assert_eq!(ids.next, next, "merging into an existing hand allocates no identity");
-        assert_eq!((source.id, source.count()), (original, 3));
-        assert_eq!(
-            (hand.held.as_ref().unwrap().id, hand.held.as_ref().unwrap().count()),
-            (split_id, 7)
-        );
-        let mut pool = ItemPool::default();
-        hand.offer(|s| pool.receive(s, &c));
-        assert_eq!(pool.stacks[0].id, split_id);
-        assert!(hand.held.is_none());
-        // Ordinary merging requires matching identification, unlike shift-taking.
-        let source = pool.stacks[0].absorb(source, &c.0[0]).unwrap();
-        assert_eq!(source.id, original);
-        assert_eq!(source.count(), 3);
-    }
-
-    #[test]
     fn partial_collection_conserves_counts_metadata_and_source_identity() {
         let (c, mut ids) = (catalog(), ItemIds::default());
         let mut party = PartyInventory::default();
@@ -1341,8 +1233,6 @@ mod tests {
             Some(Equipped { stack: stack(&c, &mut ids, 0, 18), curse_released: true });
         assert!(carried.receive(stack(&c, &mut ids, 0, 2), &c).is_none());
         assert!(carried.equipment[EquipSlot::Secondary].as_ref().unwrap().curse_released);
-        carried.switch_weapon_sets(&c, false).unwrap();
-        assert!(!carried.equipment[EquipSlot::AlternateSecondary].as_ref().unwrap().curse_released);
     }
 
     #[test]
@@ -1465,37 +1355,8 @@ mod tests {
     }
 
     #[test]
-    fn partial_equipment_extraction_retains_release_and_whole_extraction_retires_source() {
-        let (c, mut ids) = (catalog(), ItemIds::default());
-        let mut carried = Carried::default();
-        let item = stack(&c, &mut ids, 0, 4);
-        let source_id = item.id;
-        carried.equipment[EquipSlot::Secondary] =
-            Some(Equipped { stack: item, curse_released: true });
-        let mut hand = Hand::default();
-        carried
-            .offer_slot(Slot::Equipment(EquipSlot::Secondary), |s| hand.take_units(s, 2, &mut ids));
-        let remaining = carried.equipment[EquipSlot::Secondary].as_ref().unwrap();
-        assert_eq!(
-            (remaining.stack.id, remaining.stack.count(), remaining.curse_released),
-            (source_id, 2, true)
-        );
-        let held_id = hand.held.as_ref().unwrap().id;
-        let next = ids.next;
-        carried
-            .offer_slot(Slot::Equipment(EquipSlot::Secondary), |s| hand.take_units(s, 2, &mut ids));
-        assert!(carried.worn(EquipSlot::Secondary).is_none());
-        assert_eq!(
-            (hand.held.as_ref().unwrap().id, hand.held.as_ref().unwrap().count()),
-            (held_id, 4)
-        );
-        assert_eq!(ids.next, next);
-    }
-
-    #[test]
     fn gameplay_operations_revalidate_membership_and_stack_identity() {
         use super::operations::InventoryOperations;
-        use crate::game::data::GameData;
         use crate::game::party::roster::{test_join, test_party};
         use bevy::ecs::system::RunSystemOnce;
         let mut world = World::new();
@@ -1503,15 +1364,8 @@ mod tests {
         let (c, mut ids) = (catalog(), ItemIds::default());
         let item = stack(&c, &mut ids, 0, 7);
         let id = item.id;
-        let mut catalogs = Assets::<ItemCatalog>::default();
-        let items = catalogs.add(c);
-        world.insert_resource(catalogs);
-        world.insert_resource(GameData {
-            items,
-            loot: default(),
-            species: default(),
-            spells: default(),
-        });
+        let items = c;
+        world.insert_resource(crate::game::data::Catalogs { items, ..default() });
         // Someone else is in the party; the actor is not, at first.
         let other = world.spawn((Vitals::new(&wearer()), wearer(), Carried::default())).id();
         let party = test_party(&mut world, &[other]);
@@ -1642,7 +1496,6 @@ mod tests {
     #[test]
     fn the_party_identifies_by_its_best_artifacts() {
         use super::operations::InventoryOperations;
-        use crate::game::data::GameData;
         use bevy::ecs::system::RunSystemOnce;
         let mut world = World::new();
         world.init_resource::<Messages<ItemNews>>();
@@ -1651,15 +1504,8 @@ mod tests {
         let mut ids = ItemIds::default();
         let mut item = stack(&c, &mut ids, 1, 1);
         item.identified = false;
-        let mut catalogs = Assets::<ItemCatalog>::default();
-        let items = catalogs.add(c);
-        world.insert_resource(catalogs);
-        world.insert_resource(GameData {
-            items,
-            loot: default(),
-            species: default(),
-            spells: default(),
-        });
+        let items = c;
+        world.insert_resource(crate::game::data::Catalogs { items, ..default() });
         let member = |world: &mut World, artifacts: u8| {
             let mut character = wearer();
             character.skill_points[Skill::Artifacts] = artifacts;
@@ -1692,7 +1538,6 @@ mod tests {
     fn a_charged_source_loads_a_pool_gun_and_keeps_its_rest() {
         use super::operations::InventoryOperations;
         use crate::content::items::Dice;
-        use crate::game::data::GameData;
         use bevy::ecs::system::RunSystemOnce;
         let gun = ItemDefinition {
             id: ItemId(0),
@@ -1714,15 +1559,8 @@ mod tests {
         let mut ids = ItemIds::default();
         let (gun_stack, cell_stack) =
             (ItemStack::new(&gun, &mut ids, 4, true), ItemStack::new(&cell, &mut ids, 8, true));
-        let mut catalogs = Assets::<ItemCatalog>::default();
-        let items = catalogs.add(ItemCatalog(vec![gun, cell]));
-        world.insert_resource(catalogs);
-        world.insert_resource(GameData {
-            items,
-            loot: default(),
-            species: default(),
-            spells: default(),
-        });
+        let items = ItemCatalog(vec![gun, cell]);
+        world.insert_resource(crate::game::data::Catalogs { items, ..default() });
         let member = world.spawn((Vitals::new(&wearer()), wearer(), Carried::default())).id();
         let party = crate::game::party::roster::test_party(&mut world, &[member]);
         {

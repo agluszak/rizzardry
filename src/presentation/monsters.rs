@@ -65,12 +65,12 @@ pub fn remove_monster_visuals(
 pub fn request_monster_visuals(
     mut commands: Commands,
     actors: Query<(Entity, &Monster), Without<MonsterVisual>>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     assets: Res<AssetServer>,
 ) {
-    let Some(catalog) = content.species() else { return };
+    let catalog = &content.species;
     for (entity, monster) in &actors {
-        let Some(kind) = catalog.kind(monster.species) else { continue };
+        let kind = &catalog[monster.species];
         let model = assets.load(crate::content::paths::monster(&kind.model));
         commands.entity(entity).insert(MonsterVisual(model));
     }
@@ -291,7 +291,7 @@ pub fn light_monsters(
         }
         light.set_if_neq(ActorLight {
             sky: sky * sampled.sky_scale,
-            fixed: fixed + torch.as_ref().map_or(Vec3::ZERO, |light| light.at(centre, None)),
+            fixed: fixed + torch.as_ref().map_or(Vec3::ZERO, |light| light.at(centre)),
         });
     }
 }
