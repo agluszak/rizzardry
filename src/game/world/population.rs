@@ -8,7 +8,6 @@ use bevy::prelude::*;
 
 use super::identify::{GroupMember, MonsterGroup};
 use super::level::{KeptMonster, LevelRecord};
-use crate::content::items::ItemCatalog;
 use crate::content::level::LevelDefinition;
 use crate::content::monster::MonsterBody;
 use crate::content::species::MonsterCatalog;
@@ -144,11 +143,10 @@ impl MonsterBodies {
     /// companions, the elementals the party may summon, and whatever any of
     /// these can summon, in turn.
     pub fn for_level(
-        &mut self,
         geometry: &LevelDefinition,
         species: &MonsterCatalog,
         assets: &AssetServer,
-    ) -> Vec<Handle<MonsterBody>> {
+    ) -> Self {
         let encountered: Vec<u32> = geometry
             .encounters
             .generators
@@ -175,43 +173,21 @@ impl MonsterBodies {
             }
             next += 1;
         }
-        spawnable
-            .into_iter()
-            .filter_map(|id| {
-                let kind = species.kind(id)?;
-                let body = self
-                    .0
-                    .entry(id)
-                    .or_insert_with(|| assets.load(crate::content::paths::monster(&kind.model)));
-                Some(body.clone())
-            })
-            .collect()
+        Self(
+            spawnable
+                .into_iter()
+                .filter_map(|id| {
+                    let kind = species.kind(id)?;
+                    Some((id, assets.load(crate::content::paths::monster(&kind.model))))
+                })
+                .collect(),
+        )
     }
-}
-
-/// Check that every monster and item the level places exists, as part of
-/// its preparation: one missing is broken content, not something to leave
-/// out of the level.
-pub fn check(
-    geometry: &LevelDefinition,
-    species: &MonsterCatalog,
-    items: &ItemCatalog,
-) -> Result<(), String> {
-    if let Some(placed) = geometry.monsters.iter().find(|p| species.kind(p.species).is_none()) {
-        return Err(format!(
-            "monster {} is of unknown species {}",
-            placed.location, placed.species
-        ));
-    }
-    if let Some(placed) = geometry.items.iter().find(|p| items.get(p.item).is_none()) {
-        return Err(format!("an item lying about is unknown ({:?})", placed.item));
-    }
-    Ok(())
 }
 
 /// The name an actor goes by in the world's inspector.
 fn actor_name(species: &MonsterCatalog, (id, location): (u32, i32)) -> String {
-    let kind = species.kind(id).map_or("", |kind| kind.name.as_str());
+    let kind = &species[id].name;
     format!("{kind} #{location}")
 }
 
@@ -475,7 +451,7 @@ pub fn populate(
     let mut placed_actors = std::collections::HashSet::new();
     // Unborn NPCs are not placed; NPCs are never born.
     for placed in geometry.monsters.iter().filter(|placed| !placed.unborn) {
-        let Some(kind) = species.kind(placed.species) else { continue };
+        let kind = &species[placed.species];
         let Some(id) = kind.npc else { continue };
         let body = handles.get(placed.species, bodies).unwrap();
         let place = crate::game::npcs::Placing { placed, tables, id, map, average };
@@ -504,7 +480,7 @@ pub fn populate(
             .items
             .iter()
             .map(|placement| {
-                let definition = items.get(placement.item).expect("checked in preparation");
+                let definition = &items[placement.item];
                 let loot = if definition.container {
                     super::items::GroundLoot::Pile {
                         appearance: definition.id,
@@ -563,9 +539,8 @@ mod tests {
             },
             ..default()
         };
-        let mut bodies = MonsterBodies::default();
         let assets = app.world().resource::<AssetServer>().clone();
-        bodies.for_level(&geometry, &MonsterCatalog(catalog), &assets);
+        let bodies = MonsterBodies::for_level(&geometry, &MonsterCatalog(catalog), &assets);
         let mut readied: Vec<_> = bodies.0.keys().copied().collect();
         readied.sort();
         assert_eq!(readied, [1, 3, 12]);
@@ -577,10 +552,9 @@ mod tests {
     fn every_level_readies_the_elementals() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default())).init_asset::<MonsterBody>();
-        let mut bodies = MonsterBodies::default();
         let assets = app.world().resource::<AssetServer>().clone();
         let catalog = MonsterCatalog(vec![Species::default(); 49]);
-        bodies.for_level(&LevelDefinition::default(), &catalog, &assets);
+        let bodies = MonsterBodies::for_level(&LevelDefinition::default(), &catalog, &assets);
         let mut elementals = crate::game::magic::pointcasts::ELEMENTALS;
         assert!(elementals.all(|id| bodies.0.contains_key(&id)));
     }

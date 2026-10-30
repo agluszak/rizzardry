@@ -15,7 +15,7 @@ use crate::{
             hostility::{self, SetStance, Stance},
             identify::{GroupMember, GroupMembers, MonsterGroup},
             level::{Level, LevelOwned},
-            navigation::{self, LevelNavigation, WalkerMotionConfig},
+            navigation::{LevelNavigation, WalkerMotionConfig},
             obstacles::WorldObstacles,
             population::{self, Monster, MonsterBodies, Unborn},
         },
@@ -66,16 +66,6 @@ fn tier(power: u8, realm: usize) -> u32 {
 /// level ([`MonsterBodies::for_level`]).
 pub const ELEMENTALS: std::ops::RangeInclusive<u32> = 21..=48;
 
-/// Every elemental's body definition, which a summoning needs before it
-/// is paid for.
-fn bodies(world: &World, root: Entity) -> Result<Vec<(u32, MonsterBody)>, Refusal> {
-    let handles = world.get::<MonsterBodies>(root).ok_or(Refusal::MissingContent)?;
-    let assets = world.resource::<Assets<MonsterBody>>();
-    ELEMENTALS
-        .map(|id| Ok((id, *handles.get(id, assets).ok_or(Refusal::MissingContent)?)))
-        .collect()
-}
-
 pub(crate) fn cast(
     world: &mut World,
     caster: Entity,
@@ -114,7 +104,7 @@ pub(crate) fn cast(
     if !view.clear(eye, at) {
         return Err(Refusal::NoTarget);
     }
-    let definitions = if id == SpellId::SUMMON_ELEMENTAL {
+    if id == SpellId::SUMMON_ELEMENTAL {
         if battle.is_none() {
             return Err(Refusal::WrongTime);
         }
@@ -125,36 +115,7 @@ pub(crate) fn cast(
         }) {
             return Err(Refusal::NoTarget);
         }
-        if world
-            .get::<Character>(caster)
-            .is_some_and(|profile| super::Strength::of(profile, &spell, 1).boost != 0)
-        {
-            let spells = &world.resource::<Catalogs>().spells;
-            if [
-                SpellId::HASTE,
-                SpellId::BODY_OF_STONE,
-                SpellId::MISSILE_SHIELD,
-                SpellId::ARMORPLATE,
-            ]
-            .iter()
-            .any(|&id| spells.get(id).is_none())
-            {
-                return Err(Refusal::MissingContent);
-            }
-        }
-        let bodies = bodies(world, root)?;
-        // A walking elemental needs every size class's navigation.
-        if bodies.iter().any(|(_, body)| body.movement_rate > 0.0)
-            && world
-                .get::<LevelNavigation>(root)
-                .is_none_or(|nav| nav.archipelagos.len() < navigation::bake::SIZE_CLASSES.len())
-        {
-            return Err(Refusal::MissingContent);
-        }
-        bodies
-    } else {
-        vec![]
-    };
+    }
     let underwater = world
         .get::<crate::game::world::triggers::LevelState>(root)
         .is_some_and(|state| state.camera_sway);
@@ -258,8 +219,6 @@ pub(crate) fn cast(
             let roll = world.resource_mut::<GameRng>().below(weights.iter().sum());
             let realm = crate::game::rng::weighted(roll, weights).unwrap_or(3);
             let species_id = tier(strength.power, realm);
-            let kind = &world.resource::<Catalogs>().species.kind(species_id).unwrap().clone();
-            let body = &definitions.iter().find(|(id, _)| *id == species_id).unwrap().1;
             let locations: Vec<i32> = world
                 .query::<(&Monster, &LevelOwned)>()
                 .iter(world)
@@ -277,20 +236,21 @@ pub(crate) fn cast(
                 groups,
                 world.get::<Unborn>(root).unwrap_or(&Unborn::default()),
             );
-            let mut members = population::roll_group(
-                ids,
-                (species_id, 1),
-                (kind, body),
-                &mut world.resource_mut::<GameRng>(),
-            );
+            let mut members = world.resource_scope(|world, mut rng: Mut<GameRng>| {
+                let kind = &world.resource::<Catalogs>().species[species_id];
+                let body = world
+                    .get::<MonsterBodies>(root)
+                    .unwrap()
+                    .get(species_id, world.resource::<Assets<MonsterBody>>())
+                    .unwrap();
+                population::roll_group(ids, (species_id, 1), (kind, body), &mut rng)
+            });
             members[0].feet = at;
             let stance = if report.outcome == Outcome::Backfired {
                 Stance::Hostile
             } else {
                 Stance::Friendly
             };
-            // Checked before payment for elementals that walk; one that
-            // stands needs none.
             let navigation = LevelNavigation {
                 archipelagos: world
                     .get::<LevelNavigation>(root)
@@ -325,23 +285,19 @@ pub(crate) fn cast(
                     SpellId::MISSILE_SHIELD,
                     SpellId::ARMORPLATE,
                 ][realm];
-                let definition = world.resource::<Catalogs>().spells.get(buff).cloned();
-                if let Some(definition) = definition {
-                    let turns = super::effects::duration(
-                        &mut world.resource_mut::<GameRng>(),
-                        &definition,
-                        strength,
-                    );
-                    world.get_mut::<Monster>(elemental).unwrap().enchantments.apply_to_monster(
-                        super::enchantments::Enchantment {
-                            spell: buff,
-                            power: strength.power,
-                            boost: 0,
-                            turns,
-                            absorption: 0,
-                        },
-                    );
-                }
+                let turns = world.resource_scope(|world, mut rng: Mut<GameRng>| {
+                    let definition = world.resource::<Catalogs>().spells.get(buff).unwrap();
+                    super::effects::duration(&mut rng, definition, strength)
+                });
+                world.get_mut::<Monster>(elemental).unwrap().enchantments.apply_to_monster(
+                    super::enchantments::Enchantment {
+                        spell: buff,
+                        power: strength.power,
+                        boost: 0,
+                        turns,
+                        absorption: 0,
+                    },
+                );
             }
         }
     }
@@ -492,15 +448,6 @@ mod tests {
         let root = scene.root;
         let world = &mut scene.world;
         let battle = world.spawn((Battle::default(), LevelOwned(root))).id();
-        let definitions = world.entity_mut(root).take::<MonsterBodies>().unwrap();
-        let rng = world.resource::<GameRng>().clone();
-        assert_eq!(
-            super::super::execute_in_world(world, caster, choice(SpellId::SUMMON_ELEMENTAL)),
-            Err(Refusal::MissingContent)
-        );
-        assert_eq!(&rng, world.resource::<GameRng>());
-        assert_eq!(crate::game::magic::test_points(world, caster, Realm::Fire), 100);
-        world.entity_mut(root).insert(definitions);
         super::super::execute_in_world(world, caster, choice(SpellId::SUMMON_ELEMENTAL)).unwrap();
         let summon = world.get::<Elementals>(caster).unwrap().iter().next().unwrap();
         assert!((21..=24).contains(&world.get::<Monster>(summon).unwrap().species));

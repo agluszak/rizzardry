@@ -110,7 +110,7 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
             Button,
             // Picture defaults to non-interactive; this image is the control.
             Pickable::default(),
-            TabIndex(0),
+            TabIndex(-1),
             FocusRing,
             // Retail CreateRcsLevelUpPanel: an 18x18 icon at (233, 63),
             // beside the portrait, never over the character's level text.

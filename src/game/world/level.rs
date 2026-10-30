@@ -385,8 +385,9 @@ pub struct Destination {
     pub level: Level,
     pub start: PartyStart,
     pub entry: Entry,
-    /// Its monsters' bodies, held while it loads.
-    pub bodies: MonsterBodies,
+    /// Body requests discovered once catalogs and geometry are available,
+    /// then retained through loading and transferred to the active level.
+    pub bodies: Option<MonsterBodies>,
 }
 
 impl Destination {
@@ -644,15 +645,6 @@ pub fn activate_level(
                 continue;
             }
         };
-        if let Entry::NewGame(characters) = &destination.entry
-            && let Err(missing) = crate::game::party::roster::check_starting_items(
-                characters.iter().map(|(character, _)| character),
-                items,
-            )
-        {
-            fail(&missing.to_string());
-            continue;
-        }
         // Capture the source's state exactly at departure; it has not
         // changed since travel was accepted.
         for (entity, source, state, owned) in &current {
@@ -679,7 +671,7 @@ pub fn activate_level(
             remembered,
             catalogs,
             (&level.path, &mut npcs),
-            (&destination.bodies, &shared.bodies),
+            (destination.bodies.as_ref().unwrap(), &shared.bodies),
             (&navigation, &mut shared.motion_configs),
             &mut ids,
             &mut rng,
@@ -693,7 +685,7 @@ pub fn activate_level(
         transition.p1().place(&mut commands, party, geometry, &destination.start);
         navigation::add_party_characters(&mut commands, root, party, &navigation);
         info!("{} is active", level.path);
-        let bodies = std::mem::take(&mut destination.bodies);
+        let bodies = destination.bodies.take().unwrap();
         commands.entity(root).remove::<Destination>().insert((level.clone(), navigation, bodies));
         ready.write(LevelReady);
         break;
@@ -705,7 +697,7 @@ pub fn activate_level(
 /// never will.
 fn prepare(
     level: &Level,
-    bodies: &mut MonsterBodies,
+    bodies: &mut Option<MonsterBodies>,
     geometry: &Assets<LevelDefinition>,
     shared: &SharedData,
     npcs: &mut crate::game::npcs::NpcPopulation,
@@ -723,17 +715,15 @@ fn prepare(
     else {
         return Ok(false);
     };
-    let (items, species) = (&catalogs.items, &catalogs.species);
-    population::check(geometry, species, items)?;
-    super::triggers::check(geometry)?;
+    let species = &catalogs.species;
     if !npcs.prepare(catalogs, &geometry.monsters, assets)? {
         return Ok(false);
     }
-    let bodies = bodies.for_level(geometry, species, assets);
-    if bodies.iter().any(|body| failed(body.id().untyped())) {
+    let bodies = bodies.get_or_insert_with(|| MonsterBodies::for_level(geometry, species, assets));
+    if bodies.0.values().any(|body| failed(body.id().untyped())) {
         return Err("a monster's body definition failed to load".into());
     }
-    Ok(bodies.iter().all(|body| shared.bodies.contains(body))
+    Ok(bodies.0.values().all(|body| shared.bodies.contains(body))
         && navigation::navmeshes_ready(level, assets))
 }
 

@@ -63,7 +63,7 @@ fn with_data(app: &mut App) {
     // Required body metadata is available without a visual asset or renderer.
     let body = world.resource_mut::<Assets<MonsterBody>>().add(MonsterBody::default());
     for mut destination in world.query::<&mut Destination>().iter_mut(world) {
-        destination.bodies.0.insert(0, body.clone());
+        destination.bodies.get_or_insert_default().0.insert(0, body.clone());
     }
     world.insert_resource(CrabBody(body));
 }
@@ -80,7 +80,7 @@ fn give_bodies(
     let (Some(body), Ok(mut destination)) = (body, destinations.get_mut(add.entity)) else {
         return;
     };
-    destination.bodies.0.insert(0, body.0.clone());
+    destination.bodies.get_or_insert_default().0.insert(0, body.0.clone());
 }
 
 /// Plain items under every id a new character can start with.
@@ -269,26 +269,6 @@ fn a_new_party_is_complete_when_its_first_level_is_ready() {
     spawn_level(&mut app, floor());
     app.update();
     assert_eq!(app.world().resource::<Seen>().0, [(true, true, true, true)]);
-}
-
-/// A starting item the catalog lacks refuses the new game's entry rather
-/// than making an incomplete member.
-#[test]
-fn a_new_game_missing_a_starting_item_does_not_begin() {
-    let mut app = app();
-    with_data(&mut app);
-    app.world_mut().resource_mut::<Catalogs>().items = ItemCatalog::default();
-    let destination = spawn_level(&mut app, floor());
-    app.update();
-    assert!(failed(&app, destination));
-    assert!(app.world_mut().query::<&Party>().iter(app.world()).next().is_none());
-    assert!(
-        app.world_mut()
-            .query::<&crate::game::party::roster::PartyMember>()
-            .iter(app.world())
-            .next()
-            .is_none()
-    );
 }
 
 #[test]

@@ -104,42 +104,12 @@ impl Recruit {
     }
 }
 
-/// A new member's starting item that the item catalog lacks.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MissingStartingItem {
-    pub member: String,
-    pub item: ItemId,
-}
-
-impl std::fmt::Display for MissingStartingItem {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}'s starting item {} is not in the item catalog", self.member, self.item.0)
-    }
-}
-
-/// Check that every starting item of these characters exists, before
-/// anything is made.
-pub fn check_starting_items<'a>(
-    characters: impl IntoIterator<Item = &'a Character>,
-    catalog: &ItemCatalog,
-) -> Result<(), MissingStartingItem> {
-    for character in characters {
-        if let Some(item) =
-            starting_items(character).into_iter().find(|&id| catalog.get(id).is_none())
-        {
-            return Err(MissingStartingItem { member: character.name.clone(), item });
-        }
-    }
-    Ok(())
-}
-
 /// Commit a new member complete, as one operation: the profile with the
 /// player's allocated points, vitals, learned spells with full spell
 /// points, starting equipment at full quantity, identified and worn where
 /// it fits (retail `AddCharacterStartingEquipment`), order, membership and
 /// seat. Items are made in the starting set's order, so their identities
-/// and random rolls follow the order members join. The starting items must
-/// have been checked ([`check_starting_items`]).
+/// and random rolls follow the order members join.
 pub fn recruit_character(
     commands: &mut Commands,
     party: Entity,
@@ -150,7 +120,7 @@ pub fn recruit_character(
 ) -> Entity {
     let mut carried = Carried::default();
     for id in starting_items(&character) {
-        let definition = items.get(id).expect("starting items are checked before recruiting");
+        let definition = &items[id];
         let item = make_item(definition, ids, rng, true, true);
         if place_at_creation(&mut carried, item, items, &character).is_some() {
             warn!("{}: no room for {}", character.name, definition.name);

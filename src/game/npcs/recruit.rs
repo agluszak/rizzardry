@@ -136,20 +136,6 @@ pub fn joinable(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
     if !willing(world, id, &definition) {
         return Err(JoinRefusal::Declines);
     }
-    // The items it brings are part of its character: one the catalog lacks
-    // is missing content, and it does not join without it.
-    let template = definition.character.as_ref().unwrap();
-    let items = &world.resource::<Catalogs>().items;
-    let complete = template
-        .equipment
-        .iter()
-        .chain(&template.backpack)
-        .flatten()
-        .all(|&id| items.get(id).is_some());
-    if !complete {
-        warn!("NPC {id:?} cannot join: its items are missing from the catalog");
-        return Err(JoinRefusal::Declines);
-    }
     Ok(())
 }
 
@@ -191,18 +177,14 @@ fn first_character(
             .collect(),
     );
     let mut carried = Carried::default();
-    let mut make = |id| {
-        items
-            .get(id)
-            .map(|definition| crate::game::inventory::make_item(definition, ids, rng, true, true))
-    };
+    let mut make = |id| crate::game::inventory::make_item(&items[id], ids, rng, true, true);
     for (slot, id) in template.equipment.iter().enumerate() {
-        if let Some(stack) = id.and_then(&mut make) {
+        if let Some(stack) = id.map(&mut make) {
             carried.equipment[EquipSlot::from_usize(slot)] = Some(Equipped::new(stack));
         }
     }
     for (slot, id) in template.backpack.iter().enumerate() {
-        carried.backpack[slot] = id.and_then(&mut make);
+        carried.backpack[slot] = id.map(&mut make);
     }
     let points = SpellPoints::default();
     let vitals = Vitals::new(&character);
@@ -223,18 +205,17 @@ pub fn join(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
     joinable(world, actor)?;
     let party = the_party(world).ok_or(JoinRefusal::Declines)?;
     if world.get::<Character>(actor).is_none() {
-        let template =
-            super::definition(world, actor).character.clone().ok_or(JoinRefusal::Declines)?;
         let made = world.resource_scope(|world, mut ids: Mut<ItemIds>| {
             world.resource_scope(|world, mut rng: Mut<GameRng>| {
                 let catalogs = (
                     &world.resource::<crate::game::data::Catalogs>().items,
                     &world.resource::<crate::game::data::Catalogs>().spells,
                 );
-                Some(first_character(&template, catalogs, (&mut ids, &mut rng)))
+                let template = super::definition(world, actor).character.as_ref().unwrap();
+                first_character(template, catalogs, (&mut ids, &mut rng))
             })
         });
-        let (character, vitals, learned, points, carried) = made.ok_or(JoinRefusal::Declines)?;
+        let (character, vitals, learned, points, carried) = made;
         world.entity_mut(actor).insert((
             Name::new(character.name.clone()),
             character,
@@ -299,16 +280,6 @@ fn hand_over(world: &mut World, actor: Entity, level: Entity, keep: impl Fn(&Ite
     });
 }
 
-/// What a member's parting needs before anything about it changes: the
-/// level being played, where items the party's pool cannot hold are
-/// dropped. A body that will stand again also needs its species.
-fn ready_to_part(world: &mut World, body: Option<Entity>) -> Option<Entity> {
-    let species = body.and_then(|body| world.get::<Monster>(body)).map(|m| m.species);
-    let catalog = &world.resource::<Catalogs>().species;
-    species.is_none_or(|s| catalog.kind(s).is_some()).then_some(())?;
-    world.query_filtered::<Entity, With<Level>>().iter(world).next()
-}
-
 /// Let the NPC leave the party (retail `DismissNpcFromParty`, its body not
 /// held back): it gives up its NPC place; alive, it stands again beside the
 /// party with the conditions it has, at a fresh roll of its species' health;
@@ -322,7 +293,9 @@ pub fn dismiss(world: &mut World, actor: Entity) -> bool {
     }
     let alive = world.get::<Vitals>(actor).is_some_and(|vitals| !vitals.is_dead());
     let body = world.get::<NpcBodies>(actor).and_then(|bodies| bodies.first().copied());
-    let Some(level) = ready_to_part(world, body.filter(|_| alive)) else { return false };
+    let Some(level) = world.query_filtered::<Entity, With<Level>>().single(world).ok() else {
+        return false;
+    };
     world.entity_mut(actor).remove::<PartyMember>();
     world.get_mut::<Formation>(party).unwrap().unseat(actor);
     if alive && let Some(body) = body {
@@ -451,7 +424,9 @@ pub fn settle_npc_members(world: &mut World) {
     if fallen.is_empty() {
         return;
     }
-    let Some(level) = ready_to_part(world, None) else { return };
+    let Some(level) = world.query_filtered::<Entity, With<Level>>().single(world).ok() else {
+        return;
+    };
     for member in fallen {
         world.entity_mut(member).remove::<PartyMember>();
         world.get_mut::<Formation>(party).unwrap().unseat(member);
