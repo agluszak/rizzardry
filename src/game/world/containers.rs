@@ -186,7 +186,7 @@ pub fn take_from_container(
             let items = &mut container.contents.items;
             for &(id, amount) in picks {
                 let Some(index) = items.iter().position(|s| s.id == id) else { continue };
-                let definition = catalog.get(items[index].item).unwrap();
+                let definition = &catalog[items[index].item];
                 let name = items[index].display_name(definition, false);
                 let mut receive = |part: ItemStack| {
                     let part_id = part.id;

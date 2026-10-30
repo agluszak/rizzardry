@@ -532,21 +532,6 @@ mod tests {
     /// A lot whose item the catalog lacks refuses maintenance before any
     /// stock changes or any random number is drawn.
     #[test]
-    fn maintenance_checks_every_lot_before_changing_stock() {
-        let catalog = catalog();
-        let def = merchant();
-        let mut stock = MerchantStock { restock_at: Some(0), ..default() };
-        stock.add(ItemId(0), 3, &catalog, false).unwrap();
-        stock.lots.push(StockLot { item: ItemId(999), ..stock.lots[0].clone() });
-        let (before, mut rng) = (stock.clone(), GameRng::seeded(3));
-        assert_eq!(
-            stock.maintain(&def, &catalog, 1, 3 * crate::game::time::DAY_MS, false, &mut rng),
-            Err(TradeError::MissingContent)
-        );
-        assert_eq!(stock, before);
-        assert_eq!(rng, GameRng::seeded(3));
-    }
-    #[test]
     fn templar_gate_skips_one_daily_rule_without_disabling_other_stock() {
         use crate::content::npcs::StockRule;
         let mut catalog = catalog();

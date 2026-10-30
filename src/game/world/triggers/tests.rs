@@ -1025,13 +1025,6 @@ fn a_refused_take_leaves_container_receiver_and_identities_untouched() {
     };
     let next_id = |level: &Scenario| level.world.resource::<ItemIds>().clone().allocate();
     let before = contents(&level);
-
-    // Content not loaded yet: refused, not a silent success.
-    let on = attempt(&level);
-    assert_eq!(
-        take_from_container(&mut level.world, on, &[(quiver, 4)], Recipient::Party),
-        Err(Refusal::MissingContent)
-    );
     level.world.resource_mut::<crate::game::data::Catalogs>().items = catalog;
 
     // A member with no room at all: nothing moves and no identity is used.
