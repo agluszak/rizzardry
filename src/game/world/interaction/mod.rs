@@ -284,7 +284,6 @@ pub enum Unable {
     /// That tumbler or component is already done.
     Done,
     UnsupportedTrap,
-    MissingContent,
 }
 
 /// A member's Locks & Traps level, if they can use it now (retail
@@ -498,7 +497,7 @@ fn ready_trap(world: &mut World, on: Entity) -> Result<Disarming, Unable> {
     if !guarded_on_level(world, device) {
         return Err(Unable::NotNow);
     }
-    if let Err(error) = crate::game::magic::traps::validate(world, trap.trap) {
+    if let Err(error) = crate::game::magic::traps::validate(trap.trap) {
         if error == Unable::UnsupportedTrap {
             world.write_message(LockNews::UnsupportedTrap);
         }
@@ -687,7 +686,6 @@ pub fn cast_device(
     if context == UseContext::Trap {
         ready_trap(world, on).map_err(|why| match why {
             Unable::UnsupportedTrap => Refusal::Unsupported,
-            Unable::MissingContent => Refusal::MissingContent,
             _ => Refusal::NoTarget,
         })?;
     }
@@ -717,7 +715,7 @@ pub fn cast_device(
             world.write_message(LockNews::Disarmed { trap: kind });
             complete(world, on);
         } else {
-            spring_trap(world, on, Some(actor)).map_err(|_| Refusal::MissingContent)?;
+            spring_trap(world, on, Some(actor)).expect("the trap was ready");
         }
     }
     Ok(())

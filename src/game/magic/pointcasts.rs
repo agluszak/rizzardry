@@ -15,7 +15,7 @@ use crate::{
             hostility::{self, SetStance, Stance},
             identify::{GroupMember, GroupMembers, MonsterGroup},
             level::{Level, LevelOwned},
-            navigation::{self, LevelNavigation, WalkerMotionConfig},
+            navigation::{LevelNavigation, WalkerMotionConfig},
             obstacles::WorldObstacles,
             population::{self, Monster, MonsterBodies, Unborn},
         },
@@ -68,11 +68,11 @@ pub const ELEMENTALS: std::ops::RangeInclusive<u32> = 21..=48;
 
 /// Every elemental's body definition, which a summoning needs before it
 /// is paid for.
-fn bodies(world: &World, root: Entity) -> Result<Vec<(u32, MonsterBody)>, Refusal> {
-    let handles = world.get::<MonsterBodies>(root).ok_or(Refusal::MissingContent)?;
+fn bodies(world: &World, root: Entity) -> Vec<(u32, MonsterBody)> {
+    let handles = world.get::<MonsterBodies>(root).unwrap();
     let assets = world.resource::<Assets<MonsterBody>>();
     ELEMENTALS
-        .map(|id| Ok((id, *handles.get(id, assets).ok_or(Refusal::MissingContent)?)))
+        .map(|id| (id, *handles.get(id, assets).expect("elementals load with the level")))
         .collect()
 }
 
@@ -94,13 +94,12 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
         .map_err(|_| Refusal::WrongTime)?;
     let battle = world.query_filtered::<Entity, With<Battle>>().single(world).ok();
     let (spell, far) = {
-        let spell =
-            world.resource::<Catalogs>().spells.get(id).cloned().ok_or(Refusal::MissingContent)?;
+        let spell = world.resource::<Catalogs>().spells[id].clone();
         let level = world.get::<Level>(root).unwrap();
         let far = world
             .resource::<Assets<crate::content::level::LevelDefinition>>()
             .get(&level.definition)
-            .ok_or(Refusal::MissingContent)?
+            .unwrap()
             .view_distance();
         (spell, far)
     };
@@ -109,7 +108,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
         return Err(Refusal::NoTarget);
     }
     let mut obstacles = SystemState::<WorldObstacles>::new(world);
-    let view = obstacles.get(world).map_err(|_| Refusal::MissingContent)?;
+    let view = obstacles.get(world).unwrap();
     if !view.clear(eye, at) {
         return Err(Refusal::NoTarget);
     }
@@ -124,33 +123,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
         }) {
             return Err(Refusal::NoTarget);
         }
-        if world
-            .get::<Character>(caster)
-            .is_some_and(|profile| super::Strength::of(profile, &spell, 1).boost != 0)
-        {
-            let spells = &world.resource::<Catalogs>().spells;
-            if [
-                SpellId::HASTE,
-                SpellId::BODY_OF_STONE,
-                SpellId::MISSILE_SHIELD,
-                SpellId::ARMORPLATE,
-            ]
-            .iter()
-            .any(|&id| spells.get(id).is_none())
-            {
-                return Err(Refusal::MissingContent);
-            }
-        }
-        let bodies = bodies(world, root)?;
-        // A walking elemental needs every size class's navigation.
-        if bodies.iter().any(|(_, body)| body.movement_rate > 0.0)
-            && world
-                .get::<LevelNavigation>(root)
-                .is_none_or(|nav| nav.archipelagos.len() < navigation::bake::SIZE_CLASSES.len())
-        {
-            return Err(Refusal::MissingContent);
-        }
-        bodies
+        bodies(world, root)
     } else {
         vec![]
     };
@@ -485,21 +458,12 @@ mod tests {
         }
     }
     #[test]
-    fn summoning_validates_definitions_before_payment_and_uses_native_lifetimes_without_rewards() {
+    fn summoning_uses_native_lifetimes_without_rewards() {
         let mut scene = scene();
         let caster = scene.members[0];
         let root = scene.root;
         let world = &mut scene.world;
         let battle = world.spawn((Battle::default(), LevelOwned(root))).id();
-        let definitions = world.entity_mut(root).take::<MonsterBodies>().unwrap();
-        let rng = world.resource::<GameRng>().clone();
-        assert_eq!(
-            cast(world, caster, choice(SpellId::SUMMON_ELEMENTAL)),
-            Err(Refusal::MissingContent)
-        );
-        assert_eq!(&rng, world.resource::<GameRng>());
-        assert_eq!(crate::game::magic::test_points(world, caster, Realm::Fire), 100);
-        world.entity_mut(root).insert(definitions);
         cast(world, caster, choice(SpellId::SUMMON_ELEMENTAL)).unwrap();
         let summon = world.get::<Elementals>(caster).unwrap().iter().next().unwrap();
         assert!((21..=24).contains(&world.get::<Monster>(summon).unwrap().species));

@@ -36,36 +36,9 @@ fn trap_spell(trap: u8) -> Result<SpellId, Unable> {
     Ok(id)
 }
 
-/// No attempted inspection/disarm may roll if its failure cannot be paid.
-pub(crate) fn validate(world: &mut World, trap: u8) -> Result<(), Unable> {
-    trap_spell(trap)?;
-    world
-        .run_system_once(
-            move |members: Members,
-                  points: Query<(&LearnedSpells, &mut SpellPoints)>,
-                  context: MagicContext| { ready(&context, &members, &points, trap) },
-        )
-        .map_err(|_| Unable::MissingContent)?
-}
-
-fn ready(
-    context: &MagicContext,
-    members: &Members,
-    points: &Query<(&LearnedSpells, &mut SpellPoints)>,
-    trap: u8,
-) -> Result<(), Unable> {
-    let id = trap_spell(trap)?;
-    let spell = context.content.spells.get(id).ok_or(Unable::MissingContent)?;
-    if spell.id != id || spell.realm.is_none() {
-        return Err(Unable::MissingContent);
-    }
-    for actor in context.roster.iter() {
-        let (_, vitals, ..) = members.get(actor).map_err(|_| Unable::MissingContent)?;
-        if id == SpellId::ANTI_MAGIC && !vitals.is_dead() && points.get(actor).is_err() {
-            return Err(Unable::MissingContent);
-        }
-    }
-    Ok(())
+/// No attempted inspection/disarm may roll if its failure cannot be resolved.
+pub(crate) fn validate(trap: u8) -> Result<(), Unable> {
+    trap_spell(trap).map(|_| ())
 }
 
 /// Returns whether this discharge destroys the trap. The caller still owns
@@ -85,22 +58,17 @@ pub(crate) fn discharge(
                   mut rng: ResMut<crate::game::rng::GameRng>,
                   clock: Res<crate::game::time::GameClock>|
                   -> Result<bool, Unable> {
-                ready(&context, &members, &points, trap)?;
                 if selected.is_some_and(|actor| !context.roster.contains(&actor)) {
                     return Err(Unable::NotMember);
                 }
-                let party: Vec<Entity> = context.roster.iter().collect();
-                if party.iter().any(|&actor| members.get(actor).is_err()) {
-                    return Err(Unable::MissingContent);
-                }
-                let mut targets: Vec<Entity> = party
+                let mut targets: Vec<Entity> = context
+                    .roster
                     .iter()
-                    .copied()
                     .filter(|&actor| members.get(actor).is_ok_and(|(_, v, ..)| !v.is_dead()))
                     .collect();
-                let (spell, effects, improved, destroyed) = context
-                    .resolve(clock.ms, &mut members, &mut monsters, |field, spells| {
-                        let spell: &SpellDefinition = spells.get(SPELLS[usize::from(trap)])?;
+                let (spell, effects, improved, destroyed) =
+                    context.resolve(clock.ms, &mut members, &mut monsters, |field, spells| {
+                        let spell: &SpellDefinition = &spells[SPELLS[usize::from(trap)]];
                         let difficulty = difficulty.clamp(1, 7);
                         let destroyed = rng.below(2) == 0;
                         let mut count =
@@ -132,12 +100,11 @@ pub(crate) fn discharge(
                             field,
                             &mut points,
                         );
-                        Some((spell.id, effects, std::mem::take(&mut field.improved), destroyed))
-                    })
-                    .ok_or(Unable::MissingContent)?;
+                        (spell.id, effects, std::mem::take(&mut field.improved), destroyed)
+                    });
                 context.news.write(MagicNews::Triggered { spell, effects, improved });
                 Ok(destroyed)
             },
         )
-        .map_err(|_| Unable::MissingContent)?
+        .unwrap()
 }

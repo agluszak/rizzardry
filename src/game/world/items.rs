@@ -130,13 +130,11 @@ pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
     if !distance.is_finite() || !(0.0..=REACH).contains(&distance) {
         return Err(Refusal::DoesNotFit);
     }
-    let catalog = &world.resource::<crate::game::data::Catalogs>().items;
     let item = world.get::<WorldItem>(target).ok_or(Refusal::Nothing)?;
     let owner = world.get::<LevelOwned>(target).ok_or(Refusal::Nothing)?.0;
     if world.get::<super::level::Level>(owner).is_none() || item.hidden {
         return Err(Refusal::DoesNotFit);
     }
-    catalog.get(item.appearance()).ok_or(Refusal::MissingContent)?;
     let party = the_party(world).ok_or(Refusal::Nothing)?;
     if world.get::<PartyInventory>(party).unwrap().hand.held.is_some() {
         return Err(Refusal::HandFull);

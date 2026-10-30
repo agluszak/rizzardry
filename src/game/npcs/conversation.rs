@@ -1,6 +1,6 @@
 //! Authored continuation and waits belong to gameplay, not the dialogue view.
 use super::{
-    Npc, NpcAssets, definition,
+    Npc, definition,
     trade::{self, TradeError, TradeQuote, TradeSource},
 };
 use crate::content::factions::Faction;
@@ -543,12 +543,6 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     if !available(world, actor) {
         return Err(TradeError::Unavailable);
     }
-    let id = world.get::<super::ActorId>(actor).ok_or(TradeError::Unavailable)?.npc();
-    let script =
-        world.resource::<NpcAssets>().scripts.get(&id).ok_or(TradeError::MissingContent)?;
-    if !world.resource::<Assets<DialogueScript>>().contains(script) {
-        return Err(TradeError::MissingContent);
-    }
     let def = definition(world, actor);
     // Retail `BeginNpcDialogueInternal` and `OpenNpcDialoguePanel`: an NPC
     // that speaks through its own script greets as it is; otherwise one
@@ -581,8 +575,7 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
         let gated = stock.restock_at.is_some()
             && now.saturating_sub(stock.maintenance_at) >= crate::game::time::DAY_MS
             && def.stock.iter().any(|r| !r.persistent && r.item == super::trade::TEMPLAR_GATED);
-        let templar = gated
-            && fact_named(world, "FACT_TEMPLAR").map_err(|_| TradeError::MissingContent)? != 0;
+        let templar = gated && fact_named(world, "FACT_TEMPLAR").expect("the Templar fact") != 0;
         with_definition(world, actor, |world, def, items| {
             world.resource_scope(|world, mut rng: Mut<GameRng>| {
                 world
@@ -1863,7 +1856,7 @@ mod tests {
             alternate_description: String::new(),
         }]);
         let script = w.resource_mut::<Assets<DialogueScript>>().add(script);
-        w.insert_resource(NpcAssets { scripts: [(NpcId(0), script)].into() });
+        w.insert_resource(super::super::NpcAssets { scripts: [(NpcId(0), script)].into() });
         let level = w.spawn(Level::test(default())).id();
         let actor = w
             .spawn((
@@ -2338,7 +2331,7 @@ mod tests {
             NpcId(catalog.0.len() as u16 - 1)
         };
         let script = world.resource_mut::<Assets<DialogueScript>>().add(script);
-        world.resource_mut::<NpcAssets>().scripts.insert(id, script);
+        world.resource_mut::<super::super::NpcAssets>().scripts.insert(id, script);
         let level = world.query_filtered::<Entity, With<Level>>().single(world).unwrap();
         let actor = world
             .spawn((

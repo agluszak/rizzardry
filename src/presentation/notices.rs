@@ -363,7 +363,6 @@ fn magic_lines(
                 Refusal::Unsupported => "cannot do that yet",
                 Refusal::WrongTime => "cannot do that now",
                 Refusal::NoTarget => "has no target in reach",
-                Refusal::MissingContent => "cannot do that: data missing",
                 Refusal::PlayedBadly { .. } => "fails to play it",
             };
             let mut lines = vec![format!("{} {why}.", name(*caster))];

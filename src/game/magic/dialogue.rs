@@ -36,10 +36,6 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
     if choice.aim != Aim::Monster(body) {
         return Err(Refusal::NoTarget);
     }
-    let script = crate::game::npcs::conversation::script(world, conversation);
-    if script.quotes.get(0x16).is_none() || id == SpellId::MINDREAD && script.quotes.len() <= 0x69 {
-        return Err(Refusal::MissingContent);
-    }
     world.get::<Npc>(actor).ok_or(Refusal::NoTarget)?;
     let monster = world.get::<Monster>(body).ok_or(Refusal::NoTarget)?;
     let kind = &world.resource::<crate::game::data::Catalogs>().species[monster.species];

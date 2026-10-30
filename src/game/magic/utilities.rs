@@ -18,8 +18,8 @@ pub(crate) fn source_spell(
     caster: Entity,
     source: Source,
 ) -> Result<SpellId, Refusal> {
-    let party = the_party(world).ok_or(Refusal::CannotAct)?;
-    let inventory = world.get::<PartyInventory>(party).ok_or(Refusal::MissingContent)?;
+    let party = the_party(world).unwrap();
+    let inventory = world.get::<PartyInventory>(party).unwrap();
     let items = &world.resource::<Catalogs>().items;
     source.spell_id(world.get::<Carried>(caster), inventory, items).ok_or(Refusal::NoItem)
 }
@@ -75,7 +75,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
     }
     let source = if let Source::Spell { spell, power: super::casting::AUTO_POWER } = choice.source {
         let spells = &world.resource::<Catalogs>().spells;
-        let definition = spells.get(spell).ok_or(Refusal::MissingContent)?;
+        let definition = &spells[spell];
         let profile =
             world.get::<crate::game::characters::Character>(caster).ok_or(Refusal::CannotAct)?;
         let power = (1..=crate::content::spells::MAX_POWER)

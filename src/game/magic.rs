@@ -720,14 +720,6 @@ pub fn deliver_spells(
         return;
     }
     let party_at = party.single().ok().map(PartyBody::eye);
-    let spells = &context.content.spells;
-    if flights.iter().any(|(_, flight)| {
-        spells.get(flight.spell).is_none()
-            || !impacts::ready(flight.spell, spells)
-            || flight.spell == SpellId::BOILING_BLOOD && party_at.is_none()
-    }) {
-        return;
-    }
     // Every impact due in this update, in the order they arrive.
     let mut due = Vec::new();
     for (entity, mut flight) in &mut flights {

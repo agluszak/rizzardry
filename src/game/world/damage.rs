@@ -36,7 +36,6 @@ pub struct DamageOutcome {
 pub enum DamageRefusal {
     MissingTarget,
     InactiveLevel,
-    MissingContent,
 }
 
 /// Monsters in play, changed only through its operations. [`apply`] is

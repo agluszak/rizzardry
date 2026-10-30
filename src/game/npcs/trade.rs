@@ -34,7 +34,6 @@ pub struct MerchantStock {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TradeError {
-    MissingContent,
     StaleSelection,
     Unavailable,
     InvalidQuantity,

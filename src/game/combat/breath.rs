@@ -36,7 +36,7 @@ pub(super) fn execute(
     if !available(profile, vitals) {
         return Err(Refusal::CannotAct);
     }
-    let cone = spells.get(SpellId::SPECIAL_ATTACK_CONE).ok_or(Refusal::MissingContent)?;
+    let cone = &spells[SpellId::SPECIAL_ATTACK_CONE];
     let (mut victims, _) = casting::capture(actor, cone, Aim::Monster(target), situation, false)?;
     victims.retain(|victim| match *victim {
         effects::Victim::Monster(entity) => world.monsters.targetable(entity),

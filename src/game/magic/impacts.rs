@@ -375,6 +375,3 @@ pub(crate) fn resolve(
     }
     landed
 }
-pub(crate) fn ready(spell: SpellId, spells: &SpellCatalog) -> bool {
-    spell != SpellId::BOILING_BLOOD || spells.get(SpellId::BOILING_BLOOD_EXPLOSION).is_some()
-}

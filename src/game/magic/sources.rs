@@ -49,5 +49,5 @@ pub(crate) fn cast_source(
                 )
             },
         )
-        .map_err(|_| Refusal::MissingContent)?
+        .unwrap()
 }

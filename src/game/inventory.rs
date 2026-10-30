@@ -603,7 +603,6 @@ pub enum Given {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    MissingContent,
     NotMember,
     Nothing,
     Crucial,

@@ -110,7 +110,6 @@ pub enum Refusal {
     PlayedBadly {
         improved: Option<Skill>,
     },
-    MissingContent,
 }
 
 /// What became of a magic action, for whoever tells the player.
@@ -552,7 +551,7 @@ fn prepare_source<'a>(
             if !learned.0.contains(&spell) {
                 return Err(Refusal::NotLearned);
             }
-            let definition = spells.get(spell).ok_or(Refusal::MissingContent)?;
+            let definition = &spells[spell];
             let maximum = profile.stats(&vitals.enchantments).max_points(learned, spells);
             if pool.affordable_power(definition, &maximum) == 0 {
                 return Err(Refusal::NoSpellPoints);
@@ -590,7 +589,7 @@ fn prepare_source<'a>(
             {
                 return Err(Refusal::Silenced);
             }
-            let spell = spells.get(cast.spell).ok_or(Refusal::MissingContent)?;
+            let spell = &spells[cast.spell];
             // Drinking in combat is always done by the drinker (retail
             // `UseItem` aims potions at their user).
             let forced = in_combat && consumed_by_anyone(definition);
@@ -629,9 +628,6 @@ pub fn perform(
     if !effects::modelled(spell.id) {
         return Err(Refusal::Unsupported);
     }
-    if !super::impacts::ready(spell.id, spells) {
-        return Err(Refusal::MissingContent);
-    }
     if !usable_now(spell, situation.context) {
         return Err(Refusal::WrongTime);
     }
@@ -668,7 +664,7 @@ pub fn perform(
             Some(_) => power,
             None => {
                 let (learned, pool) = points.get(caster).map_err(|_| Refusal::NotLearned)?;
-                let maximum = world.mana_maximum(caster, learned).ok_or(Refusal::MissingContent)?;
+                let maximum = world.mana_maximum(caster, learned);
                 let affordable = pool.affordable_power(spell, &maximum);
                 if affordable == 0 {
                     break;
@@ -851,7 +847,7 @@ pub fn perform(
             .get(caster)
             .ok()
             .and_then(|(learned, pool)| {
-                Some(pool.available(spell.realm?, &world.mana_maximum(caster, learned)?))
+                Some(pool.available(spell.realm?, &world.mana_maximum(caster, learned)))
             })
             .unwrap_or(0);
         let again = auto
@@ -894,9 +890,6 @@ pub(crate) fn perform_utility(
         || !usable_now(spell, context)
     {
         return Err(Refusal::WrongTime);
-    }
-    if spell.realm.is_none() {
-        return Err(Refusal::MissingContent);
     }
     let power = match &item {
         Some(use_) if matches!(use_.definition.use_type, UseType::Instrument | UseType::Gadget) => {
@@ -1003,7 +996,7 @@ fn pay(
     let fatigue = match item {
         None => {
             let (_, mut pool) = points.get_mut(caster).map_err(|_| Refusal::NotLearned)?;
-            let realm = spell.realm.ok_or(Refusal::MissingContent)?;
+            let realm = spell.realm.expect("a cast spell has a realm");
             pool.spend(realm, spell.cost_at(power));
             super::cast_fatigue(spell, power)
         }
