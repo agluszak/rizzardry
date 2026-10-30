@@ -519,7 +519,8 @@ pub const MAX_LEVEL: u8 = 50;
     MonsterKnowledge,
     crate::game::inventory::Carried,
     crate::game::magic::LearnedSpells,
-    crate::game::magic::SpellPoints
+    crate::game::magic::SpellPoints,
+    crate::game::party::Order
 )]
 pub struct Character {
     pub name: String,

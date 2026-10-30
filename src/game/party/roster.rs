@@ -164,7 +164,6 @@ pub fn recruit_character(
             Name::new(character.name.clone()),
             character,
             vitals,
-            super::Order::Attack,
             learned,
             points,
             carried,

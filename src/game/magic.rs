@@ -640,9 +640,7 @@ pub fn accept_magic(
             continue;
         }
         if battle.is_some() {
-            if let Ok(mut order) = orders.get_mut(caster) {
-                order.set_if_neq(crate::game::party::Order::Magic(choice));
-            }
+            orders.get_mut(caster).unwrap().set_if_neq(crate::game::party::Order::Magic(choice));
             continue;
         }
         let Ok((party_at, facing)) =

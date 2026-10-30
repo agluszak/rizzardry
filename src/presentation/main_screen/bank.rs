@@ -127,8 +127,7 @@ pub fn draw_bank(
     )>,
 ) {
     let fighting = battle.is_some();
-    let order =
-        selected.member(&roster).and_then(|m| orders.get(m).ok()).copied().unwrap_or_default();
+    let order = selected.member(&roster).map_or_else(Order::default, |m| *orders.get(m).unwrap());
     for (entity, face, skin, selected, disabled, mut picture, mut visible) in &mut buttons {
         let combat_only = matches!(face.kind, Some(Bank::Order(_) | Bank::Round | Bank::PartyMove));
         visible.set_if_neq(visible_if(!combat_only || fighting));
@@ -293,9 +292,7 @@ pub fn draw_caption(
             let mut second = if battle.is_some() {
                 match selected
                     .member(&roster)
-                    .and_then(|m| orders.get(m).ok())
-                    .copied()
-                    .unwrap_or_default()
+                    .map_or_else(Order::default, |m| *orders.get(m).unwrap())
                 {
                     Order::Defend => "Defend".into(),
                     Order::Breathe(_) => "Breathe".into(),

@@ -149,7 +149,7 @@ pub(super) fn accept_round(
             let (character, vitals, carried, burden) = members.get(member).unwrap();
             let stats = character.stats(&vitals.enchantments);
             let hands = attack::hands(&stats, carried, items, burden.load);
-            let lightning = orders.get(member).copied().unwrap_or_default() == Order::Attack
+            let lightning = *orders.get(member).unwrap() == Order::Attack
                 && character.has_trait(Trait::LightningStrike)
                 && hands.hands[0].weapon_skill == Skill::Sword
                 && rng.below(100) < u32::from(character.scale_by_profession(12.0) as u8);
@@ -164,7 +164,7 @@ pub(super) fn accept_round(
         let order = if vitals.conditions.has(Condition::Turncoat) {
             Order::Attack
         } else {
-            orders.get(member).copied().unwrap_or_default()
+            *orders.get(member).unwrap()
         };
         let action = match order {
             Order::Attack => RoundAction::Attack { weapons, berserk: false },
