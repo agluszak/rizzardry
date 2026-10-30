@@ -52,7 +52,7 @@ pub struct LearnedSpells(pub BTreeSet<SpellId>);
 /// Skill eligibility combines profile rules with the actual learned spell set.
 pub fn skill_available(
     character: &Character,
-    learned: Option<&LearnedSpells>,
+    learned: &LearnedSpells,
     catalog: &SpellCatalog,
     skill: Skill,
 ) -> bool {
@@ -69,12 +69,7 @@ pub fn skill_available(
         {
             return false;
         }
-        return learned.is_some_and(|learned| {
-            learned
-                .0
-                .iter()
-                .any(|&id| catalog.get(id).is_some_and(|spell| spell.realm == Some(realm)))
-        });
+        return learned.0.iter().any(|&id| catalog[id].realm == Some(realm));
     }
     character.skill_available(skill)
 }
@@ -635,7 +630,7 @@ pub fn accept_magic(
             continue;
         }
         let spell = choice.source.spell_id(
-            members.get(caster).ok().map(|(_, _, carried, ..)| carried),
+            members.get(caster).unwrap().2,
             &context.inventory,
             &context.content.items,
         );

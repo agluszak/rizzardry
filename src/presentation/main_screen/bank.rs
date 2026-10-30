@@ -274,7 +274,7 @@ pub fn draw_caption(
     pool: Single<&crate::game::inventory::PartyInventory>,
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
-    members: Query<(&Character, &Vitals, Option<&Carried>)>,
+    members: Query<(&Character, &Vitals, &Carried)>,
     content: If<Res<crate::game::data::Catalogs>>,
     battle: Option<Single<&Battle>>,
     orders: Query<&Order>,
@@ -302,7 +302,7 @@ pub fn draw_caption(
                     Order::Breathe(_) => "Breathe".into(),
                     order @ (Order::Attack | Order::Berserk) => {
                         let weapon = carried
-                            .and_then(|c| c.worn(EquipSlot::Primary))
+                            .worn(EquipSlot::Primary)
                             .map(|i| &catalog[i.item])
                             .map_or("Unarmed", |d| d.name.as_str());
                         let verb = if order == Order::Berserk { "Berserk" } else { "Attack" };
@@ -324,7 +324,7 @@ pub fn draw_caption(
                         }
                         crate::game::magic::casting::Source::Item(id) => {
                             let name = carried
-                                .and_then(|c| c.find_stack(id))
+                                .find_stack(id)
                                 .map(|i| &catalog[i.item])
                                 .map_or("", |d| d.name.as_str());
                             format!("Use {name}")

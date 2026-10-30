@@ -1734,7 +1734,7 @@ fn party_turn(
         let point_cast = choice
             .source
             .spell_id(
-                members.get(member).ok().map(|(_, _, carried, ..)| carried),
+                members.get(member).unwrap().2,
                 &magic.context.inventory,
                 &magic.context.content.items,
             )

@@ -51,13 +51,13 @@ impl Source {
     /// not acceptance: the cast revalidates eligibility and payment.
     pub fn spell_id(
         self,
-        carried: Option<&Carried>,
+        carried: &Carried,
         inventory: &PartyInventory,
         items: &ItemCatalog,
     ) -> Option<SpellId> {
         match self {
             Self::Spell { spell, .. } => Some(spell),
-            Self::Item(id) => items[carried?.find_stack(id)?.item].spell.map(|s| s.spell),
+            Self::Item(id) => items[carried.find_stack(id)?.item].spell.map(|s| s.spell),
             Self::PoolItem(id) => items[inventory.pool.stacks.iter().find(|s| s.id == id)?.item]
                 .spell
                 .map(|s| s.spell),

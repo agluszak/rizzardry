@@ -440,7 +440,7 @@ mod tests {
         let character = draft.finish().unwrap();
         assert!(crate::game::magic::skill_available(
             &character,
-            Some(&crate::game::magic::LearnedSpells(draft.spells())),
+            &crate::game::magic::LearnedSpells(draft.spells()),
             &catalog,
             Skill::FireMagic
         ));

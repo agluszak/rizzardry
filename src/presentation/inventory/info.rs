@@ -80,7 +80,7 @@ pub(super) fn open_info(
     ) else {
         return;
     };
-    let learned = spell_state.0.get(screen.member).ok();
+    let learned = spell_state.0.get(screen.member).unwrap();
     let spell_catalog = &spell_state.1.spells;
     let string = |id| strings.get(id).unwrap_or("");
     let (title_id, detail_id) = match target.subject {

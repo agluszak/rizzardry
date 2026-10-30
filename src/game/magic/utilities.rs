@@ -21,7 +21,7 @@ pub(crate) fn source_spell(
     let party = the_party(world);
     let inventory = world.get::<PartyInventory>(party).unwrap();
     let items = &world.resource::<Catalogs>().items;
-    source.spell_id(world.get::<Carried>(caster), inventory, items).ok_or(Refusal::NoItem)
+    source.spell_id(world.get::<Carried>(caster).unwrap(), inventory, items).ok_or(Refusal::NoItem)
 }
 
 /// Search only the current roster and party inventory. Stable stack IDs allow

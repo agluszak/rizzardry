@@ -521,7 +521,7 @@ pub(super) fn refresh(
     let catalog = &content.items;
     let unidentified = carried.worn(EquipSlot::Primary).is_some_and(|item| !item.identified);
     let table = strings.table();
-    let learned = learned_spells.get(screen.member).ok();
+    let learned = learned_spells.get(screen.member).unwrap();
     let spell_catalog = &content.spells;
     let string = |id| table.and_then(|table| table.get(id)).unwrap_or("");
     let mut effects = Vec::new();
@@ -750,7 +750,7 @@ pub(super) fn layout_skills(
 ) {
     let Some(screen) = screen else { return };
     let Ok(profile) = characters.get(screen.member) else { return };
-    let learned = spell_state.0.get(screen.member).ok();
+    let learned = spell_state.0.get(screen.member).unwrap();
     let spell_catalog = &spell_state.1.spells;
     let mut ordered: Vec<_> =
         rows.iter().map(|(entity, row, _, _)| (row.0 as usize, entity)).collect();
