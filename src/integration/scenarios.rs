@@ -213,30 +213,20 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
         .unwrap()
         .topic("MONASTERY")
         .unwrap();
-    let revision = app.world().get::<Conversation>(session).unwrap().revision;
     app.world_mut().write_message(ConversationRequest::Topic {
         conversation: session,
-        revision,
         text: "MONASTERY".into(),
     });
     finish(&mut app, session);
     let c = app.world().get::<Conversation>(session).unwrap();
     assert!(matches!(c.wait, ConversationWait::Price { .. }));
-    let revision = c.revision;
-    app.world_mut().write_message(ConversationRequest::PriceAnswer {
-        conversation: session,
-        revision,
-        accept: true,
-    });
+    app.world_mut()
+        .write_message(ConversationRequest::PriceAnswer { conversation: session, accept: true });
     finish(&mut app, session);
     let c = app.world().get::<Conversation>(session).unwrap();
     assert!(matches!(c.wait, ConversationWait::Options { .. }));
-    let revision = c.revision;
-    app.world_mut().write_message(ConversationRequest::Reply {
-        conversation: session,
-        revision,
-        text: "NO".into(),
-    });
+    app.world_mut()
+        .write_message(ConversationRequest::Reply { conversation: session, text: "NO".into() });
     finish(&mut app, session);
     assert!(app.world().get::<Conversation>(session).unwrap().ready());
     assert!(app.world().get::<Npc>(actor).unwrap().paid_topics.contains(&topic));

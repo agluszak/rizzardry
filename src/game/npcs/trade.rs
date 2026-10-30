@@ -51,7 +51,6 @@ pub enum TradeSource {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TradeQuote {
     pub conversation: Entity,
-    pub revision: u64,
     pub source: TradeSource,
     pub quantity: u32,
     pub gold: u32,

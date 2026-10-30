@@ -130,7 +130,12 @@ fn fact(world: &World, id: FactId) -> Result<u8, String> {
 }
 #[derive(Debug)]
 enum Step {
-    Quote { quote: u16, subquote: usize, paid: bool, plan: Option<QuotePlan> },
+    Quote {
+        quote: u16,
+        subquote: usize,
+        paid: bool,
+        plan: Option<QuotePlan>,
+    },
     /// The party is asked for an answer.
     Wait(ConversationWait),
     Join,
@@ -203,7 +208,6 @@ pub enum QuestReward {
 pub struct Conversation {
     pub actor: Entity,
     pub script: Handle<DialogueScript>,
-    pub revision: u64,
     /// Temporary effects belong to the affected speakers. Closing the
     /// conversation clears all of them; handing it over transfers none.
     charms: BTreeMap<Entity, i8>,
@@ -216,8 +220,9 @@ pub struct Conversation {
     /// The NPC is not friendly yet: the party sees retail's topic menu
     /// (charm, small talk, bribe) rather than the dialogue's topics.
     pub menu: bool,
-    /// Revision-scoped gameplay outcome; presentation owns its wording.
-    result: Option<(u64, Outcome)>,
+    /// What the party's last request came to; presentation owns its
+    /// wording.
+    result: Option<Outcome>,
     queue: VecDeque<Step>,
 }
 /// What the party's last request came to.
@@ -243,7 +248,6 @@ impl Conversation {
     }
 
     pub(crate) fn magical_reply(&mut self, reply: MagicalReply) {
-        self.revision += 1;
         self.result = None;
         match reply {
             MagicalReply::Unnoticed => {}
@@ -258,13 +262,13 @@ impl Conversation {
         }
     }
 
-    /// What the last request came to, until the conversation moves on.
+    /// What the last request came to, until the party asks something else.
     pub fn outcome(&self) -> Option<Outcome> {
-        self.result.filter(|&(revision, _)| revision == self.revision).map(|(_, o)| o)
+        self.result
     }
 
     fn report(&mut self, outcome: Outcome) {
-        self.result = Some((self.revision, outcome));
+        self.result = Some(outcome);
     }
 }
 /// A line said: the words and the voice stem presentation may play. How
@@ -298,17 +302,14 @@ pub enum ConversationRequest {
     },
     Topic {
         conversation: Entity,
-        revision: u64,
         text: String,
     },
     Reply {
         conversation: Entity,
-        revision: u64,
         text: String,
     },
     PriceAnswer {
         conversation: Entity,
-        revision: u64,
         accept: bool,
     },
     Advance {
@@ -320,11 +321,9 @@ pub enum ConversationRequest {
     },
     Recruit {
         conversation: Entity,
-        revision: u64,
     },
     EditNotebook {
         conversation: Entity,
-        revision: u64,
         edit: NotebookEdit,
         text: String,
     },
@@ -332,19 +331,16 @@ pub enum ConversationRequest {
     /// Hand the NPC an item from a member's pack or the party's items.
     Give {
         conversation: Entity,
-        revision: u64,
         item: ItemRef,
     },
     /// Hand the NPC some of the party's gold.
     GiveGold {
         conversation: Entity,
-        revision: u64,
         amount: u32,
     },
     /// Try to win over an NPC that is not yet friendly.
     Approach {
         conversation: Entity,
-        revision: u64,
         approach: Approach,
     },
 }
@@ -566,7 +562,6 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     let conversation = |queue| Conversation {
         actor,
         script: script.clone(),
-        revision: 0,
         charms: default(),
         current: None,
         wait: ConversationWait::Ready,
@@ -756,7 +751,7 @@ enum Continuation {
 }
 fn plan_quote(
     world: &World,
-    party: Option<Entity>,
+    party: Entity,
     q: &Quote,
 ) -> Result<QuotePlan, (usize, String)> {
     let story = world.resource::<StoryFacts>();
@@ -776,29 +771,17 @@ fn plan_quote(
                 plan.effects.push(QuoteEffect::SetFact(*id, *value));
             }
             DialogueOp::GiveGold(amount) => {
-                let party = party
-                    .filter(|&p| world.get::<PartyInventory>(p).is_some())
-                    .ok_or_else(|| (i, "party purse unavailable".into()))?;
                 plan.effects.push(QuoteEffect::Gold { party, amount: *amount });
             }
             DialogueOp::GiveExperience(amount) => {
-                let roster = party
-                    .and_then(|p| world.get::<PartyRoster>(p))
-                    .ok_or_else(|| (i, "party roster unavailable".into()))?;
-                let mut members = Vec::new();
-                for member in roster.iter() {
-                    let vitals = world
-                        .get::<Vitals>(member)
-                        .ok_or_else(|| (i, "party member vitals unavailable".into()))?;
-                    if world.get::<Character>(member).is_none() {
-                        return Err((i, "party member character unavailable".into()));
-                    }
-                    // CanPartySlotParticipate includes the unconscious. Quest
-                    // XP is the authored amount for EACH eligible member.
-                    if !vitals.is_dead() {
-                        members.push(member);
-                    }
-                }
+                // CanPartySlotParticipate includes the unconscious. Quest
+                // XP is the authored amount for EACH eligible member.
+                let members = world
+                    .get::<PartyRoster>(party)
+                    .into_iter()
+                    .flat_map(|roster| roster.iter())
+                    .filter(|&member| world.get::<Vitals>(member).is_some_and(|v| !v.is_dead()))
+                    .collect();
                 plan.effects.push(QuoteEffect::Experience { members, amount: *amount });
             }
             DialogueOp::AdjustFaction { faction: Some(faction), delta } => {
@@ -810,15 +793,9 @@ fn plan_quote(
                 if world.resource::<crate::game::data::Catalogs>().items.get(*item).is_none() {
                     return Err((i, format!("unknown item {}", item.0)));
                 }
-                let party = party
-                    .filter(|&p| world.get::<PartyInventory>(p).is_some())
-                    .ok_or_else(|| (i, "party items unavailable".into()))?;
                 plan.effects.push(QuoteEffect::GiveItem { party, item: *item });
             }
             DialogueOp::TakeItem(item) => {
-                let party = party
-                    .filter(|&p| world.get::<PartyInventory>(p).is_some())
-                    .ok_or_else(|| (i, "party items unavailable".into()))?;
                 plan.effects.push(QuoteEffect::TakeItem { party, item: *item });
             }
             DialogueOp::Conditional { facts, response } => {
@@ -1088,14 +1065,11 @@ fn commit_effects(world: &mut World, entity: Entity, effects: Vec<QuoteEffect>) 
 }
 fn run(world: &mut World, entity: Entity) {
     let c = world.get::<Conversation>(entity).unwrap();
-    if c.wait != ConversationWait::Ready
-        || c.queue.is_empty()
-        || definition(world, c.actor).is_err()
-    {
+    if c.wait != ConversationWait::Ready || c.queue.is_empty() {
         return;
     }
     let handle = c.script.clone();
-    let party = the_party(world);
+    let Some(party) = the_party(world) else { return };
     world.resource_scope(|world, scripts: Mut<Assets<DialogueScript>>| {
         // Asset loading is not a terminal dialogue error. Keep the queued work
         // and retry when its immutable definition is available.
@@ -1104,7 +1078,7 @@ fn run(world: &mut World, entity: Entity) {
         }
     });
 }
-fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party: Option<Entity>) {
+fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party: Entity) {
     let actor = world.get::<Conversation>(entity).unwrap().actor;
     // Bound immediate authored transitions, including malicious empty-quote loops.
     for _ in 0..256 {
@@ -1130,7 +1104,6 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party:
             Step::Wait(wait) => {
                 let mut c = world.get_mut::<Conversation>(entity).unwrap();
                 c.wait = wait;
-                c.revision += 1;
                 return;
             }
             Step::Quote { quote, subquote, paid, plan } => {
@@ -1197,15 +1170,7 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party:
                     })
                 }
                 let text = q.text.get(subquote).cloned().unwrap_or_default();
-                let Ok(def) = definition(world, actor) else {
-                    block(
-                        &mut world.get_mut::<Conversation>(entity).unwrap(),
-                        quote,
-                        None,
-                        "NPC definition unavailable".into(),
-                    );
-                    return;
-                };
+                let def = definition(world, actor).expect("a speaker has its definition");
                 // Retail `SpeakNpcSubquote`: an alert line is shown with the
                 // alert chime and no recording; otherwise a few words stand
                 // for something other than a line.
@@ -1263,7 +1228,6 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party:
                 let mut c = world.get_mut::<Conversation>(entity).unwrap();
                 c.transcript.push(TranscriptLine::Npc(text));
                 c.wait = ConversationWait::Line { speech };
-                c.revision += 1;
                 return;
             }
         }
@@ -1305,7 +1269,6 @@ fn ask_to_join(world: &mut World, entity: Entity) {
     if answer.is_ok() {
         c.queue.extend([Step::Join, Step::End]);
     }
-    c.revision += 1;
 }
 fn topic(world: &mut World, entity: Entity, text: &str) {
     let c = world.get::<Conversation>(entity).unwrap();
@@ -1329,7 +1292,6 @@ fn topic(world: &mut World, entity: Entity, text: &str) {
         let mut c = world.get_mut::<Conversation>(entity).unwrap();
         c.transcript.push(TranscriptLine::Question(text.to_owned()));
         c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None });
-        c.revision += 1;
     } else {
         world.get_mut::<Conversation>(entity).unwrap().report(Outcome::NoTopic);
     }
@@ -1355,7 +1317,7 @@ fn approach_npc(world: &mut World, entity: Entity, approach: Approach) {
         Approach::Charm => def.charm_scale,
         Approach::SmallTalk => def.talk_scale,
     });
-    if !c.menu || !approach_ready(at, now) {
+    if !c.ready() || !c.menu || !approach_ready(at, now) {
         return;
     }
     let Some((speaker, level)) = best_communicator(world) else { return };
@@ -1401,7 +1363,6 @@ fn approach_npc(world: &mut World, entity: Entity, approach: Approach) {
         c.queue.push_back(Step::End);
     }
     c.menu = !friendly;
-    c.revision += 1;
 }
 /// Retail `GetItemStackValue`: ammunition by the bundle of 25, a stack of
 /// things by each, anything else as one.
@@ -1456,7 +1417,6 @@ pub(crate) fn won_over(world: &mut World, entity: Entity, greeting: bool) {
     if let Some(quote) = greeting {
         c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None });
     }
-    c.revision += 1;
 }
 /// What a friendly NPC says to an item it has no quote for: it takes it
 /// gladly, or turns down one the party may not give away.
@@ -1516,11 +1476,11 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
     let plan = script
         .quotes
         .get(usize::from(quote))
-        .and_then(|line| plan_quote(world, Some(party), line).ok());
+        .and_then(|line| plan_quote(world, party, line).ok());
     // Retail takes the item at once; the answer's effects follow at its last
     // line, which plays out even if the party leaves the dialogue. A content
     // gap keeps the item and queues the answer to show it.
-    if keeps && plan.as_ref().is_some_and(|plan| executable(world, plan)) {
+    if keeps && plan.is_some() {
         let mut items = PartyItems::of(world, party).ok_or(TradeError::Unavailable)?;
         if !items.hand_in(item) {
             return Err(TradeError::StaleSelection);
@@ -1533,7 +1493,6 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
     }
     let mut c = world.get_mut::<Conversation>(entity).unwrap();
     c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan });
-    c.revision += 1;
     won_over(world, entity, true);
     Ok(())
 }
@@ -1554,7 +1513,6 @@ fn give_gold(world: &mut World, entity: Entity, amount: u32) -> Result<(), Trade
     if amount == gold {
         let mut c = world.get_mut::<Conversation>(entity).unwrap();
         c.wait = ConversationWait::GiveAll { gold };
-        c.revision += 1;
         return Ok(());
     }
     spend_gift(world, entity, party, amount, false)
@@ -1579,7 +1537,6 @@ fn spend_gift(
             paid: true,
             plan: None,
         });
-        c.revision += 1;
         return Ok(());
     }
     let mut inventory = world.get_mut::<PartyInventory>(party).ok_or(TradeError::Unavailable)?;
@@ -1591,7 +1548,6 @@ fn spend_gift(
         if band(world, actor) == Band::Friendly { ACCEPTED_GIFT_QUOTE } else { UNBRIBED_QUOTE };
     let mut c = world.get_mut::<Conversation>(entity).unwrap();
     c.queue.push_back(Step::Quote { quote, subquote: 0, paid: true, plan: None });
-    c.revision += 1;
     won_over(world, entity, !all);
     Ok(())
 }
@@ -1628,7 +1584,6 @@ fn reply(world: &mut World, entity: Entity, text: &str) {
             c.transcript.push(TranscriptLine::Reply(text.to_owned()));
             c.wait = ConversationWait::Ready;
             c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None });
-            c.revision += 1;
         }
     }
 }
@@ -1638,7 +1593,6 @@ fn answer_price(world: &mut World, entity: Entity, accept: bool) {
     if let ConversationWait::GiveAll { gold } = c.wait {
         let mut c = world.get_mut::<Conversation>(entity).unwrap();
         c.wait = ConversationWait::Ready;
-        c.revision += 1;
         if accept && let Err(refused) = spend_gift(world, entity, party, gold, true) {
             world.get_mut::<Conversation>(entity).unwrap().report(Outcome::GiftRefused(refused));
         }
@@ -1658,7 +1612,7 @@ fn answer_price(world: &mut World, entity: Entity, accept: bool) {
             let (next, plan) = if world.get::<PartyInventory>(party).unwrap().gold < gold {
                 (TOO_POOR_QUOTE, None)
             } else {
-                let plan = match plan_quote(world, Some(party), line) {
+                let plan = match plan_quote(world, party, line) {
                     Ok(plan) => plan,
                     Err((entry, reason)) => {
                         block(
@@ -1697,7 +1651,6 @@ fn answer_price(world: &mut World, entity: Entity, accept: bool) {
         }
         let mut c = world.get_mut::<Conversation>(entity).unwrap();
         c.wait = ConversationWait::Ready;
-        c.revision += 1;
     });
 }
 
@@ -1718,7 +1671,6 @@ pub fn quote_trade(
         return Err(TradeError::Unavailable);
     }
     let actor = c.actor;
-    let revision = c.revision;
     let party = the_party(world).ok_or(TradeError::Unavailable)?;
     let communication = party_communication(world);
     let def = definition(world, actor)?;
@@ -1733,7 +1685,7 @@ pub fn quote_trade(
             trade::validate_sale(def, item, quantity, catalog, communication)
         }
     }?;
-    Ok(TradeQuote { conversation, revision, source, quantity, gold })
+    Ok(TradeQuote { conversation, source, quantity, gold })
 }
 fn sale_item(
     world: &World,
@@ -1761,7 +1713,7 @@ fn sale_item(
 fn execute_trade(world: &mut World, quote: TradeQuote) -> Result<(), TradeError> {
     let occupied = crate::game::world::party_occupied(world);
     let c = world.get::<Conversation>(quote.conversation).ok_or(TradeError::StaleSelection)?;
-    if !c.ready() || c.revision != quote.revision {
+    if !c.ready() {
         return Err(TradeError::StaleSelection);
     }
     if !available(world, c.actor) || !trade_allowed(world, c.actor) || occupied {
@@ -1825,7 +1777,6 @@ fn execute_trade(world: &mut World, quote: TradeQuote) -> Result<(), TradeError>
             Ok(())
         }
     })?;
-    world.get_mut::<Conversation>(quote.conversation).unwrap().revision += 1;
     Ok(())
 }
 pub fn update_conversation(world: &mut World) {
@@ -1877,11 +1828,9 @@ pub fn update_conversation(world: &mut World) {
             close_one(world, entity);
             continue;
         }
-        let revision = c.revision;
+        world.get_mut::<Conversation>(entity).unwrap().result = None;
         match request {
-            ConversationRequest::EditNotebook { revision: requested, edit, text, .. }
-                if requested == revision =>
-            {
+            ConversationRequest::EditNotebook { edit, text, .. } => {
                 let mut facts = world.resource_mut::<StoryFacts>();
                 match edit {
                     NotebookEdit::Remember => {
@@ -1892,36 +1841,19 @@ pub fn update_conversation(world: &mut World) {
                     }
                 }
             }
-            ConversationRequest::Topic { revision: requested, text, .. }
-                if requested == revision =>
-            {
-                topic(world, entity, &text)
-            }
-            ConversationRequest::Reply { revision: requested, text, .. }
-                if requested == revision =>
-            {
-                reply(world, entity, &text)
-            }
-            ConversationRequest::PriceAnswer { revision: requested, accept, .. }
-                if requested == revision =>
-            {
-                answer_price(world, entity, accept)
-            }
-            ConversationRequest::Recruit { revision: requested, .. } if requested == revision => {
-                ask_to_join(world, entity)
-            }
+            ConversationRequest::Topic { text, .. } => topic(world, entity, &text),
+            ConversationRequest::Reply { text, .. } => reply(world, entity, &text),
+            ConversationRequest::PriceAnswer { accept, .. } => answer_price(world, entity, accept),
+            ConversationRequest::Recruit { .. } => ask_to_join(world, entity),
             ConversationRequest::Advance { speech, .. } => {
                 if matches!(world.get::<Conversation>(entity).unwrap().wait,ConversationWait::Line{speech:s,..} if s==speech)
                 {
                     world.despawn(speech);
                     let mut c = world.get_mut::<Conversation>(entity).unwrap();
                     c.wait = ConversationWait::Ready;
-                    c.revision += 1;
                 }
             }
-            ConversationRequest::Give { revision: requested, item, .. }
-                if requested == revision =>
-            {
+            ConversationRequest::Give { item, .. } => {
                 if let Err(refused) = give(world, entity, item) {
                     world
                         .get_mut::<Conversation>(entity)
@@ -1929,9 +1861,7 @@ pub fn update_conversation(world: &mut World) {
                         .report(Outcome::GiftRefused(refused));
                 }
             }
-            ConversationRequest::GiveGold { revision: requested, amount, .. }
-                if requested == revision =>
-            {
+            ConversationRequest::GiveGold { amount, .. } => {
                 if let Err(refused) = give_gold(world, entity, amount) {
                     world
                         .get_mut::<Conversation>(entity)
@@ -1939,11 +1869,7 @@ pub fn update_conversation(world: &mut World) {
                         .report(Outcome::GiftRefused(refused));
                 }
             }
-            ConversationRequest::Approach { revision: requested, approach, .. }
-                if requested == revision =>
-            {
-                approach_npc(world, entity, approach)
-            }
+            ConversationRequest::Approach { approach, .. } => approach_npc(world, entity, approach),
             ConversationRequest::Trade(q) => {
                 let outcome = match execute_trade(world, q) {
                     Ok(()) => Outcome::Traded,
@@ -2049,7 +1975,6 @@ mod tests {
             .spawn(Conversation {
                 actor,
                 script,
-                revision: 0,
                 charms: default(),
                 current: None,
                 wait: ConversationWait::Ready,
@@ -2105,8 +2030,7 @@ mod tests {
             }
             let mut c = w.get_mut::<Conversation>(session).unwrap();
             c.queue.clear();
-            let revision = c.revision;
-            w.write_message(ConversationRequest::Recruit { conversation: session, revision });
+            w.write_message(ConversationRequest::Recruit { conversation: session });
             app.update();
             let c = app.world().get::<Conversation>(session).unwrap();
             (c.current, c.queue.iter().any(|step| matches!(step, Step::Join)))
@@ -2474,10 +2398,8 @@ mod tests {
                 .map_or(0, |s| s.count())
         };
         for (item, quote, kept) in [(1, 1, 1), (2, 2, 2), (0, 0x10, 1), (3, 0x11, 2)] {
-            let revision = app.world().get::<Conversation>(session).unwrap().revision;
             app.world_mut().write_message(ConversationRequest::Give {
                 conversation: session,
-                revision,
                 item: refs[item],
             });
             app.update();
@@ -2635,12 +2557,8 @@ mod tests {
         (app, session, actor)
     }
     fn approach(app: &mut App, session: Entity, approach: Approach) {
-        let revision = app.world().get::<Conversation>(session).unwrap().revision;
-        app.world_mut().write_message(ConversationRequest::Approach {
-            conversation: session,
-            revision,
-            approach,
-        });
+        app.world_mut()
+            .write_message(ConversationRequest::Approach { conversation: session, approach });
         app.update();
     }
 
@@ -2684,12 +2602,8 @@ mod tests {
         let party = the_party(app.world_mut()).unwrap();
         app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 500;
         for (amount, pool, quote) in [(60, 40, UNBRIBED_QUOTE), (60, 100, ACCEPTED_GIFT_QUOTE)] {
-            let revision = app.world().get::<Conversation>(session).unwrap().revision;
-            app.world_mut().write_message(ConversationRequest::GiveGold {
-                conversation: session,
-                revision,
-                amount,
-            });
+            app.world_mut()
+                .write_message(ConversationRequest::GiveGold { conversation: session, amount });
             app.update();
             assert_eq!(app.world().get::<Npc>(actor).unwrap().trade_pool, pool);
             assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((quote, 0)));
@@ -2704,12 +2618,8 @@ mod tests {
         let (mut app, session, _) = wary((0, 0), 0);
         let party = the_party(app.world_mut()).unwrap();
         app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 500;
-        let revision = app.world().get::<Conversation>(session).unwrap().revision;
-        app.world_mut().write_message(ConversationRequest::GiveGold {
-            conversation: session,
-            revision,
-            amount: 60,
-        });
+        app.world_mut()
+            .write_message(ConversationRequest::GiveGold { conversation: session, amount: 60 });
         app.update();
         assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 500);
         assert_eq!(
@@ -2735,10 +2645,8 @@ mod tests {
             }
             let member = carrier(&mut app, "Ragnar", 1, 1);
             let id = app.world().get::<Carried>(member).unwrap().backpack[0].as_ref().unwrap().id;
-            let revision = app.world().get::<Conversation>(session).unwrap().revision;
             app.world_mut().write_message(ConversationRequest::Give {
                 conversation: session,
-                revision,
                 item: ItemRef { owner: ItemOwner::Member(member), id },
             });
             app.update();
@@ -2792,10 +2700,8 @@ mod tests {
         finish_line(&mut app, session);
         let c = app.world().get::<Conversation>(session).unwrap();
         assert!(matches!(c.wait, ConversationWait::Options { typed: true, .. }));
-        let revision = c.revision;
         app.world_mut().write_message(ConversationRequest::Reply {
             conversation: session,
-            revision,
             text: "swordfish".into(),
         });
         app.update();
@@ -2983,10 +2889,8 @@ mod tests {
         app.update();
         finish_line(&mut app, session);
         let id = app.world().get::<Carried>(member).unwrap().backpack[0].as_ref().unwrap().id;
-        let revision = app.world().get::<Conversation>(session).unwrap().revision;
         app.world_mut().write_message(ConversationRequest::Give {
             conversation: session,
-            revision,
             item: ItemRef { owner: ItemOwner::Member(member), id },
         });
         app.update();
@@ -3034,10 +2938,8 @@ mod tests {
             app.update();
             finish_line(&mut app, session);
             let id = app.world().get::<Carried>(member).unwrap().backpack[0].as_ref().unwrap().id;
-            let revision = app.world().get::<Conversation>(session).unwrap().revision;
             app.world_mut().write_message(ConversationRequest::Give {
                 conversation: session,
-                revision,
                 item: ItemRef { owner: ItemOwner::Member(member), id },
             });
             app.update();
@@ -3109,12 +3011,8 @@ mod tests {
         finish_line(&mut app, session);
         for (amount, left, refused) in [(150, 100, true), (40, 60, false)] {
             finish_line(&mut app, session);
-            let revision = app.world().get::<Conversation>(session).unwrap().revision;
-            app.world_mut().write_message(ConversationRequest::GiveGold {
-                conversation: session,
-                revision,
-                amount,
-            });
+            app.world_mut()
+                .write_message(ConversationRequest::GiveGold { conversation: session, amount });
             app.update();
             let c = app.world().get::<Conversation>(session).unwrap();
             assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, left);
@@ -3126,19 +3024,13 @@ mod tests {
         }
         // All of it only once the party confirms.
         finish_line(&mut app, session);
-        let revision = app.world().get::<Conversation>(session).unwrap().revision;
-        app.world_mut().write_message(ConversationRequest::GiveGold {
-            conversation: session,
-            revision,
-            amount: 60,
-        });
+        app.world_mut()
+            .write_message(ConversationRequest::GiveGold { conversation: session, amount: 60 });
         app.update();
         let c = app.world().get::<Conversation>(session).unwrap();
         assert_eq!(c.wait, ConversationWait::GiveAll { gold: 60 });
-        let revision = c.revision;
         app.world_mut().write_message(ConversationRequest::PriceAnswer {
             conversation: session,
-            revision,
             accept: true,
         });
         app.update();
@@ -3172,12 +3064,7 @@ mod tests {
         app.world_mut().get_mut::<PartyInventory>(party).unwrap().pool.stacks.push(offered);
         app.update();
         finish_line(&mut app, session);
-        let revision = app.world().get::<Conversation>(session).unwrap().revision;
-        app.world_mut().write_message(ConversationRequest::Give {
-            conversation: session,
-            revision,
-            item,
-        });
+        app.world_mut().write_message(ConversationRequest::Give { conversation: session, item });
         app.update();
         let world = app.world();
         assert!(matches!(
@@ -3238,25 +3125,23 @@ mod tests {
                 level: "home".into(),
             });
         }
-        let edit = |world: &mut World, conversation, revision, edit, text: &str| {
+        let edit = |world: &mut World, conversation, edit, text: &str| {
             world.write_message(ConversationRequest::EditNotebook {
                 conversation,
-                revision,
                 edit,
                 text: text.into(),
             });
         };
         for text in [" Ship ", "ship", "   "] {
-            edit(app.world_mut(), session, 0, NotebookEdit::Remember, text);
+            edit(app.world_mut(), session, NotebookEdit::Remember, text);
         }
-        edit(app.world_mut(), session, 99, NotebookEdit::Forget, "Arnika");
         app.update();
         assert_eq!(
             app.world().resource::<StoryFacts>().topics,
             [(TopicCategory::Place, "Arnika".into()), (TopicCategory::Misc, "Ship".into()),]
         );
         for _ in 0..2 {
-            edit(app.world_mut(), session, 0, NotebookEdit::Forget, " ARNIKA ");
+            edit(app.world_mut(), session, NotebookEdit::Forget, " ARNIKA ");
         }
         app.update();
         let facts = app.world().resource::<StoryFacts>();
@@ -3267,15 +3152,15 @@ mod tests {
             app.world().get::<Conversation>(session).unwrap().learned_topics.contains("arnika")
         );
         // A new session sees the same notebook. Delayed edits from the old
-        // session cannot change it, even with the same revision number.
+        // session cannot change it.
         let mut reopened = app.world_mut().entity_mut(session).take::<Conversation>().unwrap();
         app.world_mut().despawn(session);
         reopened.learned_topics.clear();
         let next = app.world_mut().spawn(reopened).id();
-        edit(app.world_mut(), session, 0, NotebookEdit::Forget, "ship");
+        edit(app.world_mut(), session, NotebookEdit::Forget, "ship");
         app.update();
         assert_eq!(app.world().resource::<StoryFacts>().topics.len(), 1);
-        edit(app.world_mut(), next, 0, NotebookEdit::Forget, "SHIP");
+        edit(app.world_mut(), next, NotebookEdit::Forget, "SHIP");
         app.update();
         assert!(app.world().resource::<StoryFacts>().topics.is_empty());
     }
@@ -3315,7 +3200,6 @@ mod tests {
                 let rng = world.resource::<GameRng>().clone();
                 world.write_message(ConversationRequest::PriceAnswer {
                     conversation: session,
-                    revision: 0,
                     accept: true,
                 });
                 app.update();
@@ -3563,11 +3447,8 @@ mod tests {
                 typed: false,
             };
         }
-        app.world_mut().write_message(ConversationRequest::Reply {
-            conversation: session,
-            revision: 0,
-            text: "NO".into(),
-        });
+        app.world_mut()
+            .write_message(ConversationRequest::Reply { conversation: session, text: "NO".into() });
         app.update();
         let world = app.world();
         assert_eq!(world.resource::<StoryFacts>().values[&said_arnika], 1);
@@ -3622,11 +3503,9 @@ mod tests {
             ],
         });
         app.update();
-        let revision = app.world().get::<Conversation>(session).unwrap().revision;
         for text in ["SHIP", "ship"] {
             app.world_mut().write_message(ConversationRequest::Topic {
                 conversation: session,
-                revision,
                 text: text.into(),
             });
         }
@@ -3748,10 +3627,8 @@ mod tests {
             app.update();
         }
         fn ask(app: &mut App, session: Entity) {
-            let revision = app.world().get::<Conversation>(session).unwrap().revision;
             app.world_mut().write_message(ConversationRequest::Topic {
                 conversation: session,
-                revision,
                 text: "INFO".into(),
             });
             app.update();
@@ -3759,10 +3636,8 @@ mod tests {
         }
         app.update();
         advance(&mut app, session);
-        let revision = app.world().get::<Conversation>(session).unwrap().revision;
         app.world_mut().write_message(ConversationRequest::PriceAnswer {
             conversation: session,
-            revision,
             accept: true,
         });
         app.update();
@@ -3771,10 +3646,8 @@ mod tests {
         assert!(app.world().resource::<StoryFacts>().values.is_empty());
         advance(&mut app, session);
         ask(&mut app, session);
-        let revision = app.world().get::<Conversation>(session).unwrap().revision;
         app.world_mut().write_message(ConversationRequest::PriceAnswer {
             conversation: session,
-            revision,
             accept: false,
         });
         app.update();
@@ -3782,11 +3655,9 @@ mod tests {
         assert!(app.world().resource::<StoryFacts>().values.is_empty());
         app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 100;
         ask(&mut app, session);
-        let revision = app.world().get::<Conversation>(session).unwrap().revision;
         for _ in 0..2 {
             app.world_mut().write_message(ConversationRequest::PriceAnswer {
                 conversation: session,
-                revision,
                 accept: true,
             });
         }
@@ -3830,11 +3701,9 @@ mod tests {
             app.world_mut()
                 .write_message(ConversationRequest::Advance { conversation: session, speech });
             app.update();
-            let revision = app.world().get::<Conversation>(session).unwrap().revision;
             for _ in 0..2 {
                 app.world_mut().write_message(ConversationRequest::Reply {
                     conversation: session,
-                    revision,
                     text: word.into(),
                 });
             }
@@ -3883,14 +3752,7 @@ mod tests {
         ] {
             assert!(!trade_allowed(world, actor));
             assert_eq!(quote_trade(world, session, source, 1), Err(TradeError::Unavailable));
-            let c = world.get::<Conversation>(session).unwrap();
-            let quote = TradeQuote {
-                conversation: session,
-                revision: c.revision,
-                source,
-                quantity: 1,
-                gold: 1,
-            };
+            let quote = TradeQuote { conversation: session, source, quantity: 1, gold: 1 };
             assert_eq!(execute_trade(world, quote), Err(TradeError::Unavailable));
         }
         assert_eq!(world.get::<PartyInventory>(party).unwrap().gold, 0);
@@ -3929,7 +3791,6 @@ mod view_lifecycle_test {
             Conversation {
                 actor,
                 script,
-                revision: 0,
                 current: None,
                 wait: ConversationWait::Ready,
                 transcript: vec![],
