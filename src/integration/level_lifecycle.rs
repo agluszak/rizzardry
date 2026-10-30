@@ -885,10 +885,10 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
             ..default()
         }]));
     let facts = app.world_mut().resource_mut::<Assets<FactCatalog>>().add(FactCatalog::default());
-    let script = app.world_mut().resource_mut::<Assets<DialogueScript>>().add(DialogueScript {
-        quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }],
-        ..default()
-    });
+    let script = app
+        .world_mut()
+        .resource_mut::<Assets<DialogueScript>>()
+        .add(DialogueScript { quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }] });
     app.insert_resource(NpcAssets { catalog, facts, scripts: [(NpcId(0), script)].into() });
     let source = spawn_level(&mut app, floor());
     app.update();
@@ -1038,10 +1038,10 @@ fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
             ..default()
         }]));
     let facts = app.world_mut().resource_mut::<Assets<FactCatalog>>().add(FactCatalog::default());
-    let script = app.world_mut().resource_mut::<Assets<DialogueScript>>().add(DialogueScript {
-        quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }],
-        ..default()
-    });
+    let script = app
+        .world_mut()
+        .resource_mut::<Assets<DialogueScript>>()
+        .add(DialogueScript { quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }] });
     app.insert_resource(NpcAssets { catalog, facts, scripts: [(NpcId(0), script)].into() });
     let source = spawn_level(&mut app, floor());
     app.update();
@@ -1139,10 +1139,10 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
             ..default()
         }]));
     let facts = app.world_mut().resource_mut::<Assets<FactCatalog>>().add(FactCatalog::default());
-    let script = app.world_mut().resource_mut::<Assets<DialogueScript>>().add(DialogueScript {
-        quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }],
-        ..default()
-    });
+    let script = app
+        .world_mut()
+        .resource_mut::<Assets<DialogueScript>>()
+        .add(DialogueScript { quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }] });
     app.insert_resource(NpcAssets { catalog, facts, scripts: [(NpcId(0), script)].into() });
     let source = spawn_level(&mut app, floor());
     app.update();

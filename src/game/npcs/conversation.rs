@@ -2157,7 +2157,7 @@ mod tests {
                       gear: Option<crate::content::items::ItemId>| {
             let quotes =
                 (0..16).map(|i| Quote { text: vec![format!("quote {i}")], ..default() }).collect();
-            let (mut app, session, _) = app(DialogueScript { quotes, ..default() });
+            let (mut app, session, _) = app(DialogueScript { quotes });
             let w = app.world_mut();
             w.init_resource::<Assets<ItemCatalog>>();
             w.init_resource::<Assets<crate::content::items::LootTables>>();
@@ -2235,8 +2235,7 @@ mod tests {
                 casting::{Aim, MagicChoice, Refusal, Source},
             },
         };
-        let (mut app, session, actor) =
-            app(DialogueScript { quotes: vec![Quote::default(); 106], ..default() });
+        let (mut app, session, actor) = app(DialogueScript { quotes: vec![Quote::default(); 106] });
         let world = app.world_mut();
         world.init_resource::<Assets<ItemCatalog>>();
         world.init_resource::<Assets<MonsterCatalog>>();
@@ -2360,7 +2359,6 @@ mod tests {
                     Quote { text: vec!["Reward".into()], operations: ops, ..default() },
                     Quote { text: vec!["Done".into()], ..default() },
                 ],
-                ..default()
             });
             app.init_resource::<Factions>();
             let world = app.world_mut();
@@ -2531,7 +2529,6 @@ mod tests {
                 },
                 Quote { text: vec!["Done".into()], ..default() },
             ],
-            ..default()
         });
         with_items(&mut app);
         let member = carrier(&mut app, "Ragnar", 2, 3);
@@ -2565,7 +2562,7 @@ mod tests {
         quotes[1].operations =
             vec![DialogueOp::ItemQuote { item: ItemId(1), keeps: true }, DialogueOp::GiveGold(50)];
         quotes[2].operations = vec![DialogueOp::ItemQuote { item: ItemId(2), keeps: false }];
-        let (mut app, session, _) = app(DialogueScript { quotes, ..default() });
+        let (mut app, session, _) = app(DialogueScript { quotes });
         with_items(&mut app);
         let party = the_party(app.world_mut()).unwrap();
         let mut refs = Vec::new();
@@ -2661,7 +2658,6 @@ mod tests {
                     })],
                     ..default()
                 }],
-                ..default()
             });
             let other = second_speaker(
                 &mut app,
@@ -2670,7 +2666,6 @@ mod tests {
                     quotes: (0..3)
                         .map(|i| Quote { text: vec![format!("Gadrock {i}")], ..default() })
                         .collect(),
-                    ..default()
                 },
             );
             app.world_mut()
@@ -2712,7 +2707,6 @@ mod tests {
                 &["Off I go"],
                 vec![DialogueOp::CloseAndResume, DialogueOp::GiveGold(5)],
             )],
-            ..default()
         });
         let party = the_party(app.world_mut()).unwrap();
         app.update();
@@ -2725,7 +2719,7 @@ mod tests {
     /// A conversation with a neutral NPC at its topic menu.
     fn wary(scales: (i8, i8), trade_pool: u16) -> (App, Entity, Entity) {
         let quotes = (0..0x19).map(|i| lines(&[format!("Line {i}").as_str()], vec![])).collect();
-        let (mut app, session, actor) = app(DialogueScript { quotes, ..default() });
+        let (mut app, session, actor) = app(DialogueScript { quotes });
         let catalog = app.world().resource::<NpcAssets>().catalog.clone();
         {
             let mut catalogs = app.world_mut().resource_mut::<Assets<NpcCatalog>>();
@@ -2909,7 +2903,6 @@ mod tests {
                 lines(&["Enter"], vec![]),
                 lines(&["Wrong"], vec![]),
             ],
-            ..default()
         });
         app.update();
         finish_line(&mut app, session);
@@ -2942,7 +2935,6 @@ mod tests {
                     DialogueOp::PartyRemark(511),
                 ],
             )],
-            ..default()
         });
         app.add_message::<PartyRemark>();
         let other = second_speaker(&mut app, "Gadrock", DialogueScript::default());
@@ -2973,7 +2965,7 @@ mod tests {
         quotes[3] = lines(&["SOUND"], vec![]);
         quotes[4] = Quote { alert: true, ..lines(&["Beware"], vec![]) };
         quotes[0x67] = lines(&["EMPTY"], vec![]);
-        let (mut app, session, _) = app(DialogueScript { quotes, ..default() });
+        let (mut app, session, _) = app(DialogueScript { quotes });
         app.update();
         finish_line(&mut app, session);
         let speech = |app: &App| {
@@ -3027,7 +3019,6 @@ mod tests {
                 operations,
                 ..default()
             }],
-            ..default()
         }
     }
 
@@ -3122,7 +3113,6 @@ mod tests {
                     ..default()
                 },
             ],
-            ..default()
         });
         with_items(&mut app);
         let member = carrier(&mut app, "Ragnar", 2, 1);
@@ -3174,7 +3164,6 @@ mod tests {
                         ..default()
                     },
                 ],
-                ..default()
             });
             with_items(&mut app);
             let member = carrier(&mut app, "Ragnar", 2, 1);
@@ -3221,7 +3210,6 @@ mod tests {
                     ..default()
                 },
             ],
-            ..default()
         });
         with_items(&mut app);
         let member = carrier(&mut app, "Ragnar", 2, 1);
@@ -3306,7 +3294,7 @@ mod tests {
         let mut quotes: Vec<_> =
             (0..0x11).map(|i| lines(&[format!("Line {i}").as_str()], vec![])).collect();
         quotes[0x10] = lines(&["Thank you"], vec![]);
-        let (mut app, session, _) = app(DialogueScript { quotes, ..default() });
+        let (mut app, session, _) = app(DialogueScript { quotes });
         let party = the_party(app.world_mut()).unwrap();
         app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 100;
         app.update();
@@ -3368,7 +3356,6 @@ mod tests {
                     ..default()
                 },
             ],
-            ..default()
         });
         with_items(&mut app);
         let party = the_party(app.world_mut()).unwrap();
@@ -3401,7 +3388,6 @@ mod tests {
                 operations: vec![DialogueOp::GiveExperience(100)],
                 ..default()
             }],
-            ..default()
         });
         let character = Character::new("Recipient", Race::Human, Gender::Male, Profession::Fighter);
         let vitals = Vitals::new(&character);
@@ -3508,7 +3494,6 @@ mod tests {
                         ],
                         ..default()
                     }],
-                    ..default()
                 });
                 let world = app.world_mut();
                 let party = the_party(world).unwrap();
@@ -3571,7 +3556,6 @@ mod tests {
                 ],
                 ..default()
             }],
-            ..default()
         });
         app.update();
         assert!(app.world().resource::<StoryFacts>().journal.is_empty());
@@ -3607,7 +3591,6 @@ mod tests {
                 ],
                 ..default()
             }],
-            ..default()
         });
         let world = app.world_mut();
         let party = the_party(world).unwrap();
@@ -3644,8 +3627,7 @@ mod tests {
             removed: usize,
             changed: usize,
         }
-        let (mut app, session, actor) =
-            app(DialogueScript { quotes: vec![Quote::default()], ..default() });
+        let (mut app, session, actor) = app(DialogueScript { quotes: vec![Quote::default()] });
         app.init_resource::<Lifecycle>()
             .add_observer(|_: On<Add<Conversation>>, mut counts: ResMut<Lifecycle>| {
                 counts.added += 1
@@ -3843,7 +3825,6 @@ mod tests {
                     ..default()
                 },
             ],
-            ..default()
         });
         app.update();
         let revision = app.world().get::<Conversation>(session).unwrap().revision;
@@ -3880,7 +3861,7 @@ mod tests {
             ],
             alert: false,
         };
-        let (mut app, session, _) = app(DialogueScript { quotes: vec![q], ..default() });
+        let (mut app, session, _) = app(DialogueScript { quotes: vec![q] });
         app.update();
         let c = app.world().get::<Conversation>(session).unwrap();
         assert!(matches!(c.wait, ConversationWait::Blocked { entry: Some(1), .. }));
@@ -3899,7 +3880,6 @@ mod tests {
                 },
                 Quote { text: vec!["Second".into()], ..default() },
             ],
-            ..default()
         });
         app.update();
         let speech = match app.world().get::<Conversation>(session).unwrap().wait {
@@ -3961,7 +3941,7 @@ mod tests {
         };
         quotes[18].text = vec!["Information has a price".into()];
         quotes[20].text = vec!["Insufficient funds".into()];
-        let (mut app, session, actor) = app(DialogueScript { quotes, ..default() });
+        let (mut app, session, actor) = app(DialogueScript { quotes });
         let party = the_party(app.world_mut()).unwrap();
         fn advance(app: &mut App, session: Entity) {
             let speech = match app.world().get::<Conversation>(session).unwrap().wait {
@@ -4045,7 +4025,6 @@ mod tests {
                         ..default()
                     },
                 ],
-                ..default()
             };
             let (mut app, session, _) = app(script);
             app.update();
@@ -4087,7 +4066,6 @@ mod tests {
                     }],
                     ..default()
                 }],
-                ..default()
             });
             app.update();
             let c = app.world().get::<Conversation>(session).unwrap();
