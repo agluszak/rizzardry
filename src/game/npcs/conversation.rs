@@ -435,10 +435,8 @@ fn standing(world: &World, actor: Entity, disposition: u8) -> i32 {
         .and_then(|mut q| q.iter(world).find_map(|c| c.charms.get(&actor).copied()))
         .unwrap_or(0);
     let own = if turned { 100 } else { i32::from(disposition.wrapping_add(charm as u8)) };
-    let (Ok(def), Some(factions)) = (definition(world, actor), world.get_resource::<Factions>())
-    else {
-        return own;
-    };
+    let Ok(def) = definition(world, actor) else { return own };
+    let factions = world.resource::<Factions>();
     let faction = i32::from(def.faction);
     if def.faction != 0 && (def.monster_bound || factions.band(faction) == Band::Hostile) {
         return factions.score(faction).map_or(own, i32::from);
@@ -835,9 +833,6 @@ fn plan_quote(
                 plan.effects.push(QuoteEffect::Experience { members, amount: *amount });
             }
             DialogueOp::AdjustFaction { faction: Some(faction), delta } => {
-                if !world.contains_resource::<Factions>() {
-                    return Err((i, "faction state unavailable".into()));
-                }
                 plan.effects.push(QuoteEffect::Faction { faction: *faction, delta: *delta });
             }
             // Retail ignores a faction name it does not know.
@@ -931,7 +926,6 @@ fn executable(world: &World, plan: &QuotePlan) -> bool {
         QuoteEffect::Experience { members, .. } => {
             members.iter().all(|&member| world.get::<Character>(member).is_some())
         }
-        QuoteEffect::Faction { .. } => world.contains_resource::<Factions>(),
         QuoteEffect::SetFact(id, _) => {
             fact_catalog(world).is_some_and(|catalog| StoryFacts::can_set(*id, catalog))
         }
@@ -942,7 +936,7 @@ fn executable(world: &World, plan: &QuotePlan) -> bool {
         }
         QuoteEffect::TakeItem { party, .. } => world.get::<PartyInventory>(*party).is_some(),
         QuoteEffect::Disposition { npc, .. } => world.get::<Npc>(*npc).is_some(),
-        QuoteEffect::PartyRemark(_) | QuoteEffect::Resume => true,
+        QuoteEffect::Faction { .. } | QuoteEffect::PartyRemark(_) | QuoteEffect::Resume => true,
     })
 }
 /// Retail `AddItemToPartyOrDrop`: a gift the party's items have no room for
@@ -2079,6 +2073,7 @@ mod tests {
             .add_message::<NpcSpeech>()
             .add_message::<crate::game::inventory::ItemNews>()
             .init_resource::<StoryFacts>()
+            .init_resource::<Factions>()
             .init_resource::<GameRng>()
             .init_resource::<crate::game::time::GameClock>()
             .init_resource::<Assets<NpcCatalog>>()
@@ -2340,7 +2335,6 @@ mod tests {
                     Quote { text: vec!["Done".into()], ..default() },
                 ],
             });
-            app.init_resource::<Factions>();
             let world = app.world_mut();
             let party = the_party(world).unwrap();
             let members: Vec<_> = (0..4)
@@ -2858,7 +2852,6 @@ mod tests {
         let catalog = app.world().resource::<NpcAssets>().catalog.clone();
         app.world_mut().resource_mut::<Assets<NpcCatalog>>().get_mut(&catalog).unwrap().0[0]
             .faction = Faction::Mook as u8;
-        app.world_mut().init_resource::<Factions>();
         assert_eq!(band(app.world(), actor), Band::Friendly);
         app.world_mut().resource_mut::<Factions>().adjust(Faction::Mook, -60, 0);
         assert_eq!(disposition(app.world(), actor), 20);
@@ -3569,7 +3562,7 @@ mod tests {
             hostility::{SetStance, Stance},
             identify::{GroupMember, MonsterGroup},
         };
-        app.init_resource::<Factions>().insert_resource(crate::game::data::Catalogs {
+        app.insert_resource(crate::game::data::Catalogs {
             species: crate::content::species::MonsterCatalog(vec![default()]),
             ..default()
         });
@@ -3599,7 +3592,6 @@ mod tests {
                 crate::retail::npcs::read_dialogue(&files.read(path).unwrap().unwrap()).unwrap();
             let line_count = script.quotes[quote as usize].text.len();
             let (mut app, session, _) = app(script);
-            app.init_resource::<Factions>();
             let world = app.world_mut();
             let party = the_party(world).unwrap();
             let profile =

@@ -69,7 +69,7 @@ pub const ELEMENTALS: std::ops::RangeInclusive<u32> = 21..=48;
 /// is paid for.
 fn bodies(world: &World, root: Entity) -> Result<Vec<(u32, MonsterBody)>, Refusal> {
     let handles = world.get::<MonsterBodies>(root).ok_or(Refusal::MissingContent)?;
-    let assets = world.get_resource::<Assets<MonsterBody>>().ok_or(Refusal::MissingContent)?;
+    let assets = world.resource::<Assets<MonsterBody>>();
     ELEMENTALS
         .map(|id| Ok((id, *handles.get(id, assets).ok_or(Refusal::MissingContent)?)))
         .collect()
@@ -101,8 +101,8 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
             .ok_or(Refusal::MissingContent)?;
         let level = world.get::<Level>(root).unwrap();
         let far = world
-            .get_resource::<Assets<crate::content::level::LevelDefinition>>()
-            .and_then(|assets| assets.get(&level.definition))
+            .resource::<Assets<crate::content::level::LevelDefinition>>()
+            .get(&level.definition)
             .ok_or(Refusal::MissingContent)?
             .view_distance();
         (spell, far)
@@ -145,13 +145,11 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
             }
         }
         let bodies = bodies(world, root)?;
-        // Spawning needs walker configs; a walking elemental needs every
-        // size class's navigation too.
-        if !world.contains_resource::<Assets<WalkerMotionConfig>>()
-            || bodies.iter().any(|(_, body)| body.movement_rate > 0.0)
-                && world
-                    .get::<LevelNavigation>(root)
-                    .is_none_or(|nav| nav.archipelagos.len() < navigation::bake::SIZE_CLASSES.len())
+        // A walking elemental needs every size class's navigation.
+        if bodies.iter().any(|(_, body)| body.movement_rate > 0.0)
+            && world
+                .get::<LevelNavigation>(root)
+                .is_none_or(|nav| nav.archipelagos.len() < navigation::bake::SIZE_CLASSES.len())
         {
             return Err(Refusal::MissingContent);
         }
@@ -377,7 +375,7 @@ fn remove_lure(world: &mut World, entity: Entity) {
 }
 
 pub(crate) fn update_lure(world: &mut World) {
-    let Some(now) = world.get_resource::<GameClock>().map(|clock| clock.ms) else { return };
+    let now = world.resource::<GameClock>().ms;
     let expired: Vec<_> = world
         .query::<(Entity, &Lure)>()
         .iter(world)

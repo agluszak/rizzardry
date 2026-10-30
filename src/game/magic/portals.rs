@@ -53,7 +53,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, source: Source) -> Result<
     // failure later leaves the source level intact through normal entry policy.
     let destination = match &saved {
         Some(portal) if portal.level != path => {
-            let assets = world.get_resource::<AssetServer>().ok_or(Refusal::MissingContent)?;
+            let assets = world.resource::<AssetServer>();
             Some(Destination::new(
                 Level::load(&portal.level, assets),
                 PartyStart {
