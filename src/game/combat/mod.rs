@@ -2639,14 +2639,13 @@ fn end_round(
     }
     for actor in roster.iter() {
         let (mut profile, mut vitals, ..) = members.get_mut(actor).unwrap();
-        let mut pool = magic.points.get_mut(actor).ok();
-        let mana = pool.as_mut().map(|(known, pool)| (*known, pool));
+        let (known, mut pool) = magic.points.get_mut(actor).unwrap();
         recovery::pass(
             &mut profile,
             &mut vitals,
             ticks,
             recovery::Pace::Fighting,
-            mana,
+            (known, &mut pool),
             &magic.context.content.spells,
             &mut crate::game::characters::Fate { fight: Some(fight), rng },
         );

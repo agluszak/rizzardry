@@ -66,13 +66,11 @@ pub fn pass(
     member: &mut Mut<Vitals>,
     ticks: Ticks,
     pace: Pace,
-    magic: Option<(&LearnedSpells, &mut Mut<SpellPoints>)>,
+    (known, pool): (&LearnedSpells, &mut Mut<SpellPoints>),
     spells: &SpellCatalog,
     fate: &mut crate::game::characters::Fate,
 ) {
-    let magic = magic
-        .filter(|(_, pool)| ticks.aging > 0 && pool.needs_recovery())
-        .map(|(known, pool)| (known, &mut **pool, spells));
+    let magic = (ticks.aging > 0 && pool.needs_recovery()).then(|| (known, &mut **pool, spells));
     let vitals = member.bypass_change_detection();
     let before = vitals.clone();
     if elapse(profile.bypass_change_detection(), vitals, ticks, pace, fate, magic).is_some() {

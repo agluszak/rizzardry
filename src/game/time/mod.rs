@@ -171,15 +171,14 @@ pub(crate) fn pass_time(
         };
         let mut members = affected.p0();
         for actor in roster.iter() {
-            let Ok((mut profile, mut vitals)) = members.get_mut(actor) else { continue };
-            let mut pool = points.get_mut(actor).ok().filter(|_| ticks.aging > 0);
-            let magic = pool.as_mut().map(|(known, pool)| (*known, pool));
+            let (mut profile, mut vitals) = members.get_mut(actor).unwrap();
+            let (known, mut pool) = points.get_mut(actor).unwrap();
             recovery::pass(
                 &mut profile,
                 &mut vitals,
                 ticks,
                 pace,
-                magic,
+                (known, &mut pool),
                 &content.spells,
                 &mut crate::game::characters::Fate { fight: None, rng: &mut rng },
             );
