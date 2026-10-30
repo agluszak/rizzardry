@@ -183,15 +183,13 @@ mod tests {
         scene
     }
 
-    /// Utility casting needs no monster, loot, faction or formation
-    /// services; scenarios that cast without them keep it so.
+    /// Casting outside a fight needs no monster, loot or faction services;
+    /// scenarios that cast without them keep it so.
     fn without_unrelated_services(scene: &mut Scenario) {
-        let party = the_party(&mut scene.world).unwrap();
         scene.world.remove_resource::<crate::game::factions::Factions>();
         scene.world.remove_resource::<Assets<MonsterCatalog>>();
         scene.world.remove_resource::<Assets<crate::content::items::LootTables>>();
         scene.world.remove_resource::<ItemIds>();
-        scene.world.entity_mut(party).remove::<crate::game::party::formation::Formation>();
     }
 
     fn request(scene: &mut Scenario, spell: SpellId, aim: Aim) -> MagicNews {
@@ -273,6 +271,9 @@ mod tests {
                 (0..100).find(|&seed| (GameRng::seeded(seed).below(100) < 50) == fizzles).unwrap();
             let mut scene = scenario();
             without_unrelated_services(&mut scene);
+            // A utility source pays without the party's formation.
+            let party = the_party(&mut scene.world).unwrap();
+            scene.world.entity_mut(party).remove::<crate::game::party::formation::Formation>();
             let caster = scene.members[0];
             scene
                 .world
