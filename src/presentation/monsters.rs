@@ -291,7 +291,7 @@ pub fn light_monsters(
         }
         light.set_if_neq(ActorLight {
             sky: sky * sampled.sky_scale,
-            fixed: fixed + torch.as_ref().map_or(Vec3::ZERO, |light| light.at(centre, None)),
+            fixed: fixed + torch.as_ref().map_or(Vec3::ZERO, |light| light.at(centre)),
         });
     }
 }

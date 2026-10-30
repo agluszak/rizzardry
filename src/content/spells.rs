@@ -181,20 +181,6 @@ pub enum Targeting {
     LockOrTrap,
 }
 
-impl Targeting {
-    pub fn hostile(self) -> bool {
-        matches!(
-            self,
-            Targeting::Enemy
-                | Targeting::EnemyGroup
-                | Targeting::Cone
-                | Targeting::Radius
-                | Targeting::AllEnemies
-                | Targeting::Point
-        )
-    }
-}
-
 /// When a spell may be cast (record 0x13b).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Usable {
@@ -237,8 +223,6 @@ pub struct SpellDefinition {
     /// Flies to its target as a missile (`MissileTables.dbs` row).
     pub missile: Option<u32>,
     pub monsters_cast: bool,
-    /// `data/spells/sounds/<sound>`.
-    pub sound: String,
 }
 
 impl SpellDefinition {

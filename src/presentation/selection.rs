@@ -21,7 +21,6 @@ use bevy_enhanced_input::prelude::*;
 pub struct WorldHit {
     pub entity: Entity,
     pub distance: f32,
-    pub position: Vec3,
 }
 
 #[derive(Resource, Clone, Copy, Debug, Default)]
@@ -65,11 +64,7 @@ pub fn select_world_target(
     selection.ray = Some(ray);
     selection.hit =
         drawn_under_ray(ray, &mut meshes, &sky, &mut morphs).and_then(|(hit, distance)| {
-            Some(WorldHit {
-                entity: owner(hit, |e| owners.contains(e), &parents)?,
-                distance,
-                position: ray.get_point(distance),
-            })
+            Some(WorldHit { entity: owner(hit, |e| owners.contains(e), &parents)?, distance })
         });
 }
 

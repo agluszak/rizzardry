@@ -199,11 +199,6 @@ impl InventoryOperations<'_, '_> {
         }
     }
 
-    pub fn switch_weapon_sets(&mut self, member: Entity) -> Result<(), Refusal> {
-        let catalog = self.content.items().ok_or(Refusal::MissingContent)?;
-        let (_, vitals, mut carried) = self::member(&self.roster, &mut self.members, member)?;
-        carried.switch_weapon_sets(catalog, vitals.is_dead())
-    }
     pub fn take(&mut self, source: ItemRef) -> Result<(), Refusal> {
         if self.party.hand.held.is_some() {
             return Err(Refusal::HandFull);
@@ -216,41 +211,6 @@ impl InventoryOperations<'_, '_> {
                 self.interact_slot(MemberSlot { member, slot })
             }
         }
-    }
-    pub fn take_units(
-        &mut self,
-        source: ItemRef,
-        amount: u16,
-        ids: &mut ItemIds,
-    ) -> Result<(), Refusal> {
-        let catalog = self.content.items().ok_or(Refusal::MissingContent)?;
-        let PartyInventory { hand, pool, .. } = &mut **self.party;
-        match source.owner {
-            ItemOwner::Pool => {
-                let index =
-                    pool.stacks.iter().position(|s| s.id == source.id).ok_or(Refusal::Nothing)?;
-                let stack = &pool.stacks[index];
-                let definition = catalog.get(stack.item).ok_or(Refusal::MissingContent)?;
-                hand.check_take_units(stack, amount, definition)?;
-                let stack = pool.stacks.remove(index);
-                if let Some(rest) = hand.take_units(stack, amount, ids) {
-                    pool.stacks.insert(index, rest);
-                }
-            }
-            ItemOwner::Member(member) => {
-                let (_, vitals, mut carried) =
-                    self::member(&self.roster, &mut self.members, member)?;
-                let slot = carried.find(source.id).ok_or(Refusal::Nothing)?;
-                let stack = carried.slot(slot).unwrap();
-                let definition = catalog.get(stack.item).ok_or(Refusal::MissingContent)?;
-                hand.check_take_units(stack, amount, definition)?;
-                if stack.count() == amount {
-                    carried.check_removal(slot, catalog, vitals.is_dead())?;
-                }
-                carried.offer_slot(slot, |stack| hand.take_units(stack, amount, ids));
-            }
-        }
-        Ok(())
     }
 }
 

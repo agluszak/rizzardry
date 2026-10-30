@@ -171,6 +171,22 @@ pub fn label(font: Handle<SpriteSheet>, at: Vec2, width: f32) -> impl Scene {
     }
 }
 
+/// The sprite sheets that have loaded, changed or gone since last read.
+fn changed_sheets(
+    events: &mut MessageReader<AssetEvent<SpriteSheet>>,
+) -> std::collections::HashSet<AssetId<SpriteSheet>> {
+    events
+        .read()
+        .filter_map(|event| match event {
+            AssetEvent::Added { id }
+            | AssetEvent::Modified { id }
+            | AssetEvent::Removed { id }
+            | AssetEvent::LoadedWithDependencies { id } => Some(*id),
+            AssetEvent::Unused { .. } => None,
+        })
+        .collect()
+}
+
 pub fn render_pictures(
     sheets: Res<Assets<SpriteSheet>>,
     mut removed_crops: RemovedComponents<PictureCrop>,
@@ -184,16 +200,7 @@ pub fn render_pictures(
     )>,
 ) {
     let removed: Vec<_> = removed_crops.read().collect();
-    let changed: std::collections::HashSet<_> = events
-        .read()
-        .filter_map(|event| match event {
-            AssetEvent::Added { id }
-            | AssetEvent::Modified { id }
-            | AssetEvent::Removed { id }
-            | AssetEvent::LoadedWithDependencies { id } => Some(*id),
-            AssetEvent::Unused { .. } => None,
-        })
-        .collect();
+    let changed = changed_sheets(&mut events);
     for (entity, source, crop, mut image, mut node) in &mut pictures {
         if !source.is_changed()
             && !removed.contains(&entity)
@@ -223,20 +230,10 @@ pub fn render_pictures(
         image.color.set_alpha(if size.x > 0.0 && size.y > 0.0 { 1.0 } else { 0.0 });
         image.rect =
             crop.as_ref().map(|_| Rect::from_corners(shown.min - offset, shown.max - offset));
-        let desired =
-            (px(source.at.x + shown.min.x), px(source.at.y + shown.min.y), px(size.x), px(size.y));
-        if node.left != desired.0 {
-            node.left = desired.0;
-        }
-        if node.top != desired.1 {
-            node.top = desired.1;
-        }
-        if node.width != desired.2 {
-            node.width = desired.2;
-        }
-        if node.height != desired.3 {
-            node.height = desired.3;
-        }
+        node.left = px(source.at.x + shown.min.x);
+        node.top = px(source.at.y + shown.min.y);
+        node.width = px(size.x);
+        node.height = px(size.y);
     }
 }
 
@@ -258,16 +255,7 @@ pub fn render_text(
         Without<Picture>,
     >,
 ) {
-    let changed: std::collections::HashSet<_> = events
-        .read()
-        .filter_map(|event| match event {
-            AssetEvent::Added { id }
-            | AssetEvent::Modified { id }
-            | AssetEvent::Removed { id }
-            | AssetEvent::LoadedWithDependencies { id } => Some(*id),
-            AssetEvent::Unused { .. } => None,
-        })
-        .collect();
+    let changed = changed_sheets(&mut events);
     let removed: Vec<_> = removed_wraps.read().chain(removed_inks.read()).collect();
     for (entity, text, wrap, ink, mut image, mut node) in &mut labels {
         if !text.is_changed()

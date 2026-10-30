@@ -70,6 +70,20 @@ pub enum Personality {
     Loner,
 }
 
+impl Personality {
+    pub const ALL: [Self; 9] = [
+        Self::Aggressive,
+        Self::Intellectual,
+        Self::Burly,
+        Self::Chaotic,
+        Self::Cunning,
+        Self::Eccentric,
+        Self::Kindly,
+        Self::Laidback,
+        Self::Loner,
+    ];
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Voice {
     #[default]

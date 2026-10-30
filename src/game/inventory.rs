@@ -89,17 +89,6 @@ impl ItemStack {
             name.to_owned()
         }
     }
-    /// Split a proper subset; only the additional surviving stack gets an ID.
-    pub fn split_off(&mut self, amount: u16, ids: &mut ItemIds) -> Option<Self> {
-        if amount == 0 || amount >= self.count() {
-            return None;
-        }
-        let mut split = self.clone();
-        split.id = ids.allocate();
-        split.count = NonZeroU16::new(amount).unwrap();
-        self.count = NonZeroU16::new(self.count() - amount).unwrap();
-        Some(split)
-    }
     /// Offer a proper part of this stack to a receiver, which returns what it
     /// refuses and whether it kept the part as a stack of its own. Refused
     /// units come back here, so a refusal changes nothing; only a part kept
@@ -458,22 +447,6 @@ impl Carried {
                 e.stack.curse_known = true;
                 return Err(Refusal::Cursed);
             }
-        }
-        Ok(())
-    }
-    /// New placements intentionally lose release, including the alternate set.
-    fn switch_weapon_sets(&mut self, catalog: &ItemCatalog, dead: bool) -> Result<(), Refusal> {
-        for s in [EquipSlot::Primary, EquipSlot::Secondary] {
-            self.check_removal(Slot::Equipment(s), catalog, dead)?;
-        }
-        for (a, b) in [
-            (EquipSlot::Primary, EquipSlot::AlternatePrimary),
-            (EquipSlot::Secondary, EquipSlot::AlternateSecondary),
-        ] {
-            let left = self.take(Slot::Equipment(a));
-            let right = self.take(Slot::Equipment(b));
-            self.put(Slot::Equipment(a), right);
-            self.put(Slot::Equipment(b), left);
         }
         Ok(())
     }
@@ -1137,48 +1110,6 @@ impl PartyInventory {
     }
 }
 
-impl Hand {
-    fn check_take_units(
-        &self,
-        source: &ItemStack,
-        amount: u16,
-        definition: &ItemDefinition,
-    ) -> Result<(), Refusal> {
-        if definition.quantity != QuantityKind::Stack || amount == 0 || amount > source.count() {
-            return Err(Refusal::Nothing);
-        }
-        if definition.crucial {
-            return Err(Refusal::Crucial);
-        }
-        if let Some(held) = &self.held
-            && (held.item != source.item
-                || u32::from(held.count()) + u32::from(amount) > u32::from(definition.stack_limit))
-        {
-            return Err(Refusal::HandFull);
-        }
-        Ok(())
-    }
-    /// After validation, move units into the hand and return the source remainder.
-    /// Shift-taking retains held knowledge and allocates no ID when merging.
-    fn take_units(
-        &mut self,
-        mut source: ItemStack,
-        amount: u16,
-        ids: &mut ItemIds,
-    ) -> Option<ItemStack> {
-        if let Some(held) = &mut self.held {
-            held.count = NonZeroU16::new(held.count() + amount).unwrap();
-            source.count = NonZeroU16::new(source.count() - amount)?;
-        } else if amount == source.count() {
-            self.held = Some(source);
-            return None;
-        } else {
-            self.held = source.split_off(amount, ids);
-        }
-        Some(source)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1264,36 +1195,6 @@ mod tests {
     }
 
     #[test]
-    fn split_absorb_move_and_shift_take_have_batch_identity() {
-        let (c, mut ids) = (catalog(), ItemIds::default());
-        let mut source = stack(&c, &mut ids, 0, 10);
-        let original = source.id;
-        let part = source.split_off(4, &mut ids).unwrap();
-        let split_id = part.id;
-        assert_ne!(original, split_id);
-        assert_eq!(source.count(), 6);
-        let mut hand = Hand { held: Some(part) };
-        source.identified = false;
-        let next = ids.next;
-        hand.check_take_units(&source, 3, &c.0[0]).unwrap();
-        let source = hand.take_units(source, 3, &mut ids).unwrap();
-        assert_eq!(ids.next, next, "merging into an existing hand allocates no identity");
-        assert_eq!((source.id, source.count()), (original, 3));
-        assert_eq!(
-            (hand.held.as_ref().unwrap().id, hand.held.as_ref().unwrap().count()),
-            (split_id, 7)
-        );
-        let mut pool = ItemPool::default();
-        hand.offer(|s| pool.receive(s, &c));
-        assert_eq!(pool.stacks[0].id, split_id);
-        assert!(hand.held.is_none());
-        // Ordinary merging requires matching identification, unlike shift-taking.
-        let source = pool.stacks[0].absorb(source, &c.0[0]).unwrap();
-        assert_eq!(source.id, original);
-        assert_eq!(source.count(), 3);
-    }
-
-    #[test]
     fn partial_collection_conserves_counts_metadata_and_source_identity() {
         let (c, mut ids) = (catalog(), ItemIds::default());
         let mut party = PartyInventory::default();
@@ -1341,8 +1242,6 @@ mod tests {
             Some(Equipped { stack: stack(&c, &mut ids, 0, 18), curse_released: true });
         assert!(carried.receive(stack(&c, &mut ids, 0, 2), &c).is_none());
         assert!(carried.equipment[EquipSlot::Secondary].as_ref().unwrap().curse_released);
-        carried.switch_weapon_sets(&c, false).unwrap();
-        assert!(!carried.equipment[EquipSlot::AlternateSecondary].as_ref().unwrap().curse_released);
     }
 
     #[test]
@@ -1462,34 +1361,6 @@ mod tests {
             (id, 6)
         );
         assert_eq!(party.give_held(Some(&mut carried), false, &c), Some(Given::NoRoom));
-    }
-
-    #[test]
-    fn partial_equipment_extraction_retains_release_and_whole_extraction_retires_source() {
-        let (c, mut ids) = (catalog(), ItemIds::default());
-        let mut carried = Carried::default();
-        let item = stack(&c, &mut ids, 0, 4);
-        let source_id = item.id;
-        carried.equipment[EquipSlot::Secondary] =
-            Some(Equipped { stack: item, curse_released: true });
-        let mut hand = Hand::default();
-        carried
-            .offer_slot(Slot::Equipment(EquipSlot::Secondary), |s| hand.take_units(s, 2, &mut ids));
-        let remaining = carried.equipment[EquipSlot::Secondary].as_ref().unwrap();
-        assert_eq!(
-            (remaining.stack.id, remaining.stack.count(), remaining.curse_released),
-            (source_id, 2, true)
-        );
-        let held_id = hand.held.as_ref().unwrap().id;
-        let next = ids.next;
-        carried
-            .offer_slot(Slot::Equipment(EquipSlot::Secondary), |s| hand.take_units(s, 2, &mut ids));
-        assert!(carried.worn(EquipSlot::Secondary).is_none());
-        assert_eq!(
-            (hand.held.as_ref().unwrap().id, hand.held.as_ref().unwrap().count()),
-            (held_id, 4)
-        );
-        assert_eq!(ids.next, next);
     }
 
     #[test]

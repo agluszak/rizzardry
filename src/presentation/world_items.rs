@@ -148,9 +148,7 @@ pub fn light_world_items(
         let highlight = if hovered.entity() == Some(entity) { Vec3::Y * pulse } else { Vec3::ZERO };
         light.set_if_neq(ActorLight {
             sky: sky * sky_scale,
-            fixed: fixed
-                + highlight
-                + torch.as_ref().map_or(Vec3::ZERO, |light| light.at(at, None)),
+            fixed: fixed + highlight + torch.as_ref().map_or(Vec3::ZERO, |light| light.at(at)),
         });
     }
 }

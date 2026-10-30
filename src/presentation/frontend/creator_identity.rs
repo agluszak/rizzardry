@@ -91,19 +91,8 @@ fn choice_group(commands: &mut Commands, root: Entity, assets: &AssetServer, per
         ))
         .observe(select)
         .id();
-    let personalities = [
-        Personality::Aggressive,
-        Personality::Intellectual,
-        Personality::Burly,
-        Personality::Chaotic,
-        Personality::Cunning,
-        Personality::Eccentric,
-        Personality::Kindly,
-        Personality::Laidback,
-        Personality::Loner,
-    ];
     let count = if personality { 9 } else { 2 };
-    for (i, personality_value) in personalities.iter().copied().take(count).enumerate() {
+    for (i, personality_value) in Personality::ALL.into_iter().take(count).enumerate() {
         let (x, y, choice, id, width) = if personality {
             (
                 231. + (i % 3) as f32 * 128.,

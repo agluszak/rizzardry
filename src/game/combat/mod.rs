@@ -736,9 +736,7 @@ impl PartyView {
             obstacles,
         }
     }
-}
 
-impl PartyView {
     fn reaches(
         &self,
         formation: &Formation,

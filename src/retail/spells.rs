@@ -8,7 +8,7 @@ use bevy::reflect::TypePath;
 use enumset::EnumSet;
 
 use super::record::{dice_at, reach};
-use crate::bytes::{Bytes, DecodeError, c_string, f32_at, i32_at, utf16_string};
+use crate::bytes::{Bytes, DecodeError, f32_at, i32_at, utf16_string};
 use crate::content::UNITS_PER_METRE;
 use crate::content::characters::Realm;
 use crate::content::spells::{
@@ -81,7 +81,6 @@ fn read_spell(index: usize, record: &[u8]) -> Result<SpellDefinition, DecodeErro
         // until those missiles land; a flight here is that wait itself.
         missile: (r[0x13f] != 0).then(|| u32::try_from(missile).ok()).flatten(),
         monsters_cast: r[0x126] != 0,
-        sound: c_string(&r[0x14b..0x14b + 0x74]).unwrap_or_default(),
     })
 }
 

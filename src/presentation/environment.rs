@@ -71,7 +71,7 @@ pub(super) fn actor_light(
             .filter(|light| {
                 state.map_or(light.enabled, |state| state.light_enabled(&light.name, light.enabled))
             })
-            .map(|light| light.at(at, None))
+            .map(|light| light.at(at))
             .sum::<Vec3>()
 }
 

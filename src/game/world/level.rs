@@ -477,9 +477,7 @@ pub fn resume_physics_after_entry(
 
 /// A level has become active, with the party in it.
 #[derive(Message, Debug, Clone, Copy)]
-pub struct LevelReady {
-    pub level: Entity,
-}
+pub struct LevelReady;
 
 /// A level's collision, built and checked before its entry commits: the
 /// level's own, and each prop part's by prop and part. Walk-through sprites
@@ -698,7 +696,7 @@ pub fn activate_level(
         info!("{} is active", level.path);
         let bodies = std::mem::take(&mut destination.bodies);
         commands.entity(root).remove::<Destination>().insert((level.clone(), navigation, bodies));
-        ready.write(LevelReady { level: root });
+        ready.write(LevelReady);
         break;
     }
 }
