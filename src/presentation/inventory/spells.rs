@@ -77,14 +77,13 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
 }
 
 pub(super) fn refresh(
-    screen: Option<Single<&InventoryScreen>>,
+    screen: Single<&InventoryScreen>,
     characters: Query<crate::presentation::character_view::CharacterView>,
     party: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
     content: If<Res<crate::game::data::Catalogs>>,
     mut values: Query<(&Value, &mut BitmapText)>,
     mut segments: Query<(&Segment, &mut PictureCrop, &mut Picture)>,
 ) {
-    let Some(screen) = screen else { return };
     let view = characters.get(screen.member).unwrap();
     let catalog = &content.items;
     let scores = view.resistances(catalog, party.as_deref().copied());

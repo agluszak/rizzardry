@@ -481,7 +481,7 @@ pub(super) fn show_pages(
 pub(super) fn refresh(
     enchantments: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
     learned_spells: Query<&LearnedSpells>,
-    screen: Option<Single<&InventoryScreen>>,
+    screen: Single<&InventoryScreen>,
     characters: Query<CharacterView>,
     roster: Option<Single<&PartyRoster>>,
     profiles: Query<&Character>,
@@ -494,7 +494,6 @@ pub(super) fn refresh(
     mut fields: Query<(&Field, &mut BitmapText)>,
     mut info_background: Query<&mut Picture, With<InfoBackground>>,
 ) {
-    let Some(screen) = screen else { return };
     let view = characters.get(screen.member).unwrap();
     let load = view.load();
     let hand = view.hand(&content.items);
@@ -722,7 +721,7 @@ pub(super) fn refresh(
 
 pub(super) fn layout_skills(
     spell_state: (Query<&LearnedSpells>, If<Res<Catalogs>>),
-    screen: Option<Single<&InventoryScreen>>,
+    screen: Single<&InventoryScreen>,
     characters: Query<&Character>,
     mut rows: Query<
         (Entity, &SkillRow, &mut Node, &mut Visibility),
@@ -732,7 +731,6 @@ pub(super) fn layout_skills(
     mut backdrop: Query<&mut Picture, With<ExpertBackdrop>>,
     mut icons: Query<(&CategoryIcon, &mut Visibility), Without<SkillRow>>,
 ) {
-    let Some(screen) = screen else { return };
     let profile = characters.get(screen.member).unwrap();
     let learned = spell_state.0.get(screen.member).unwrap();
     let spell_catalog = &spell_state.1.spells;
