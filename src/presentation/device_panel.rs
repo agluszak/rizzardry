@@ -394,7 +394,7 @@ fn draw_device_panel(
 ) {
     let Ok((panel_of, panel)) = panels.single() else { return };
     let Ok((interaction, on)) = attempts.get(panel_of.0) else { return };
-    let member = selected.member(&roster).and_then(|m| Some((m, members.get(m).ok()?)));
+    let member = selected.member(&roster).map(|m| (m, members.get(m).unwrap()));
     let name = member.map_or(String::new(), |(_, (c, _))| c.name.clone());
     let skill = member.and_then(|(_, (c, v))| interaction::lock_skill(c, v));
     let trap_name = |trap: usize| {

@@ -511,7 +511,7 @@ pub(super) fn refresh(
     mut info_background: Query<&mut Picture, With<InfoBackground>>,
 ) {
     let Some(screen) = screen else { return };
-    let Ok(view) = characters.get(screen.member) else { return };
+    let view = characters.get(screen.member).unwrap();
     let load = view.load();
     let hand = view.hand(&content.items);
     let CharacterViewItem { profile, vitals, carried, .. } = view;
@@ -749,7 +749,7 @@ pub(super) fn layout_skills(
     mut icons: Query<(&CategoryIcon, &mut Visibility), Without<SkillRow>>,
 ) {
     let Some(screen) = screen else { return };
-    let Ok(profile) = characters.get(screen.member) else { return };
+    let profile = characters.get(screen.member).unwrap();
     let learned = spell_state.0.get(screen.member).unwrap();
     let spell_catalog = &spell_state.1.spells;
     let mut ordered: Vec<_> =

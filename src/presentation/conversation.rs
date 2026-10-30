@@ -1832,9 +1832,9 @@ fn sync_trade_rows(
             state.item_group.is_none_or(|group| group == ItemGroup::of(d.class))
                 && state.usability.is_none_or(|party_wide| {
                     if party_wide {
-                        roster.iter().any(|e| members.get(e).is_ok_and(|(c, _)| c.can_use(d)))
+                        roster.iter().any(|e| members.get(e).unwrap().0.can_use(d))
                     } else {
-                        member.and_then(|e| members.get(e).ok()).is_some_and(|(c, _)| c.can_use(d))
+                        member.is_some_and(|e| members.get(e).unwrap().0.can_use(d))
                     }
                 })
         };
@@ -1851,7 +1851,7 @@ fn sync_trade_rows(
                 }
             }
         } else {
-            let carried = member.and_then(|e| members.get(e).ok()).map(|(_, c)| c);
+            let carried = member.map(|e| members.get(e).unwrap().1);
             let pool = party.pool.stacks.iter().filter(|_| state.pool);
             let backpack = carried
                 .into_iter()
@@ -1887,7 +1887,7 @@ fn sync_trade_rows(
                         party.pool.stacks.iter().find(|s| s.id == item.id).map(|s| s.item)
                     }
                     ItemOwner::Member(e) => {
-                        members.get(e).ok()?.1.find_stack(item.id).map(|s| s.item)
+                        members.get(e).unwrap().1.find_stack(item.id).map(|s| s.item)
                     }
                 },
             })
@@ -1916,7 +1916,7 @@ fn sync_trade_rows(
                         party.pool.stacks.iter().find(|s| s.id == r.id).map(|s| s.units())
                     }
                     ItemOwner::Member(e) => {
-                        members.get(e).ok()?.1.find_stack(r.id).map(|s| s.units())
+                        members.get(e).unwrap().1.find_stack(r.id).map(|s| s.units())
                     }
                 },
             })

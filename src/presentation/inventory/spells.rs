@@ -85,7 +85,7 @@ pub(super) fn refresh(
     mut segments: Query<(&Segment, &mut PictureCrop, &mut Picture)>,
 ) {
     let Some(screen) = screen else { return };
-    let Ok(view) = characters.get(screen.member) else { return };
+    let view = characters.get(screen.member).unwrap();
     let catalog = &content.items;
     let scores = view.resistances(catalog, party.as_deref().copied());
     for (value, mut text) in &mut values {

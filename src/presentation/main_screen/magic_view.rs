@@ -769,7 +769,7 @@ pub(super) fn refresh_magic_view(
             member: None,
         };
     }
-    if attempt.is_some() && !members.get(view.caster).is_ok_and(|(_, v, _)| v.can_act()) {
+    if attempt.is_some() && !members.get(view.caster).unwrap().1.can_act() {
         commands.entity(root).despawn();
         return;
     }

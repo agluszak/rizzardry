@@ -141,7 +141,7 @@ pub(super) fn refresh(
     mut bars: Query<&mut PictureCrop, With<ExperienceBar>>,
 ) {
     let (Some(screen), Some(art)) = (screen, art) else { return };
-    let Ok(view) = members.get(screen.member) else { return };
+    let view = members.get(screen.member).unwrap();
     let load = view.load();
     let armour = view.armour(
         screen.member,

@@ -283,7 +283,7 @@ pub fn draw_caption(
 ) {
     let spells = &content.spells;
     let catalog = &content.items;
-    let (first, second) = match selected.member(&roster).and_then(|m| members.get(m).ok()) {
+    let (first, second) = match selected.member(&roster).map(|m| members.get(m).unwrap()) {
         None => (String::new(), String::new()),
         Some((profile, vitals, carried)) => {
             let first = format!(
