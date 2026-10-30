@@ -1543,7 +1543,7 @@ pub fn run_battle(
             let sight = party.sight(
                 &members,
                 roster,
-                &magic.obstacles,
+                &magic.context.visibility,
                 magic.context.enchantments.0.concealment(),
             );
             let staying = leave_fight(
@@ -1888,7 +1888,6 @@ fn next_phase(step: u8, attacks_left: u32) -> u8 {
 pub struct BattleMagic<'w, 's> {
     context: MagicContext<'w, 's>,
     points: Query<'w, 's, (&'static LearnedSpells, &'static mut SpellPoints)>,
-    obstacles: WorldObstacles<'w, 's>,
     groups: Query<'w, 's, &'static GroupMember>,
     group_members: Query<'w, 's, &'static GroupMembers>,
     /// Missiles still on their way hold the fight's next action, as do
@@ -1955,9 +1954,9 @@ fn member_acts<R>(
         &mut Query<(&LearnedSpells, &mut SpellPoints)>,
     ) -> Result<R, casting::Refusal>,
 ) -> Result<R, casting::Refusal> {
-    let BattleMagic { context, points, obstacles, groups, group_members, .. } = magic;
+    let BattleMagic { context, points, groups, group_members, .. } = magic;
     let party_members: Vec<Entity> = context.roster.iter().collect();
-    let in_sight: Vec<_> = visible_monsters(combatants, damage, obstacles, party.eye)
+    let in_sight: Vec<_> = visible_monsters(combatants, damage, &context.visibility, party.eye)
         .into_iter()
         .map(|candidate| (candidate, groups.get(candidate.entity).ok().map(|g| g.0)))
         .collect();
@@ -2149,7 +2148,7 @@ fn monster_turn(
                             &party.sight(
                                 members,
                                 &magic.context.roster,
-                                &magic.obstacles,
+                                &magic.context.visibility,
                                 magic.context.enchantments.0.concealment(),
                             ),
                             &toward,
@@ -2193,7 +2192,7 @@ fn monster_turn(
             let sight = party.sight(
                 members,
                 roster,
-                &magic.obstacles,
+                &magic.context.visibility,
                 magic.context.enchantments.0.concealment(),
             );
             let scene = spell_scene(

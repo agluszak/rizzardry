@@ -523,7 +523,7 @@ pub struct MagicContext<'w, 's> {
     pub news: MessageWriter<'w, casting::MagicNews>,
     level: Single<'w, 's, Entity, With<crate::game::world::level::Level>>,
     level_rules: Query<'w, 's, &'static crate::game::world::triggers::LevelState>,
-    visibility: crate::game::world::obstacles::WorldObstacles<'w, 's>,
+    pub visibility: crate::game::world::obstacles::WorldObstacles<'w, 's>,
     /// Missiles leave in launch order, so equal arrivals land in it too.
     pub flight_order: ResMut<'w, casting::FlightOrder>,
     provocations: MessageWriter<'w, crate::game::world::hostility::Provocation>,
