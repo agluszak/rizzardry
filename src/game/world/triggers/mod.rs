@@ -299,16 +299,12 @@ pub fn activate(world: &mut World, entity: Entity, player: bool) -> bool {
     if player && !crate::game::freedom::free_in(world) {
         return false;
     }
-    if world.get::<Device>(entity).is_none() {
-        return false;
-    }
-    let Some(&LevelOwned(level)) = world.get::<LevelOwned>(entity) else { return false };
-    let Some(level) = world.get::<Level>(level) else { return false };
-    let handle = level.definition.clone();
+    let level = world.get::<LevelOwned>(entity).unwrap().0;
+    let handle = world.get::<Level>(level).unwrap().definition.clone();
     // Borrow immutable definitions for the entire synchronous operation. Nested
     // links use these same definitions, without cloning a graph or a definition.
     world.resource_scope(|world, geometry: Mut<Assets<LevelDefinition>>| {
-        let Some(geometry) = geometry.get(&handle) else { return false };
+        let geometry = geometry.get(&handle).unwrap();
         let definition = &geometry.triggers[world.get::<Device>(entity).unwrap().definition];
         if player
             && (!usable(world, entity, definition)
@@ -582,8 +578,8 @@ fn execute(
     depth: usize,
     source: i32,
 ) -> Ran {
-    let Some(device) = world.get::<Device>(entity) else { return Ran::Declined };
-    let Some(&LevelOwned(level)) = world.get::<LevelOwned>(entity) else { return Ran::Declined };
+    let device = world.get::<Device>(entity).unwrap();
+    let level = world.get::<LevelOwned>(entity).unwrap().0;
     let definition = &geometry.triggers[device.definition];
     if depth > MAX_DEPTH {
         warn!("trigger {} recurses too deeply", definition.name);
@@ -666,12 +662,11 @@ fn execute(
                 return Ran::Declined;
             };
             if world.get::<Container>(entity).is_some() {
-                // Without a party there is nobody to use it.
-                match world.run_system_cached_with(use_container, entity) {
-                    Err(_) | Ok(ContainerUse::Busy) => return Ran::Declined,
-                    Ok(ContainerUse::Deposited) => return Ran::Answered,
-                    Ok(ContainerUse::Toggle) => {}
-                    Ok(ContainerUse::Look { open }) => {
+                match world.run_system_cached_with(use_container, entity).unwrap() {
+                    ContainerUse::Busy => return Ran::Declined,
+                    ContainerUse::Deposited => return Ran::Answered,
+                    ContainerUse::Toggle => {}
+                    ContainerUse::Look { open } => {
                         super::interaction::begin(world, entity, Work::Looting);
                         if open {
                             return Ran::Answered;
