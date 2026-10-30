@@ -57,9 +57,14 @@ impl Origin {
     pub(crate) fn recipients(self, world: &Field, reversed: bool) -> Recipients {
         let side = match self.owner() {
             Some(Victim::Member(entity)) => {
-                if world.members.get(entity).is_ok_and(|(_, v, ..)| {
-                    v.conditions.has(crate::game::characters::Condition::Turncoat)
-                }) {
+                if world
+                    .members
+                    .get(entity)
+                    .unwrap()
+                    .1
+                    .conditions
+                    .has(crate::game::characters::Condition::Turncoat)
+                {
                     Stance::Hostile
                 } else {
                     Stance::Friendly
@@ -208,9 +213,7 @@ pub(crate) fn resolve(
                             .party
                             .iter()
                             .copied()
-                            .find(|&actor| {
-                                world.members.get(actor).is_ok_and(|(_, v, ..)| v.can_fight())
-                            })
+                            .find(|&actor| world.members.get(actor).unwrap().1.can_fight())
                             .unwrap_or(caster),
                     )),
                 },
@@ -222,9 +225,7 @@ pub(crate) fn resolve(
                         .party
                         .iter()
                         .copied()
-                        .filter(|&entity| {
-                            world.members.get(entity).is_ok_and(|(_, v, ..)| !v.is_dead())
-                        })
+                        .filter(|&entity| !world.members.get(entity).unwrap().1.is_dead())
                         .map(Victim::Member)
                         .collect(),
                     Some(Victim::Monster(entity)) => {
@@ -320,11 +321,9 @@ pub(crate) fn resolve(
         let explosion = &spells[SpellId::BOILING_BLOOD_EXPLOSION];
         for &victim in &finish.victims {
             let dead = match victim {
-                Victim::Member(entity) => {
-                    world.members.get(entity).is_ok_and(|(_, v, ..)| v.is_dead())
-                }
+                Victim::Member(entity) => world.members.get(entity).unwrap().1.is_dead(),
                 Victim::Monster(entity) => {
-                    world.monsters.monsters().get(entity).is_ok_and(|(body, ..)| body.is_dead())
+                    world.monsters.monsters().get(entity).unwrap().0.is_dead()
                 }
             };
             if !dead {
