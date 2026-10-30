@@ -866,7 +866,8 @@ pub fn start_battle(
             party_at,
             members: roster
                 .iter()
-                .filter_map(|m| members.get(m).ok().map(|(c, v)| (m, c, v)))
+                .map(|m| (m, members.get(m).unwrap()))
+                .map(|(m, (c, v))| (m, c, v))
                 .filter(|(_, _, v)| !v.is_dead())
                 .map(|(m, c, v)| member_in_scene((m, c, v), (party_at, distance), &toward))
                 .collect(),
@@ -1325,7 +1326,7 @@ fn accept_round(
         })
         .collect();
     for (member, lightning) in roster.iter().zip(lightning).filter(|_| !surprised) {
-        let Ok((character, vitals, carried, burden)) = members.get(member) else { continue };
+        let (character, vitals, carried, burden) = members.get(member).unwrap();
         let stats = character.stats(&vitals.enchantments);
         let hands = attack::hands(&stats, carried, items, burden.load);
         let weapons =
@@ -1387,7 +1388,7 @@ fn accept_round(
         Some(pace) => {
             let latest = roster
                 .iter()
-                .filter_map(|m| members.get(m).ok())
+                .map(|m| members.get(m).unwrap())
                 .filter(|(_, vitals, ..)| !vitals.is_dead())
                 .map(|(c, vitals, _, burden)| {
                     phase(rng, c.stats(&vitals.enchantments).initiative(burden.load))
@@ -1523,7 +1524,7 @@ pub fn run_battle(
             let haste = roster
                 .iter()
                 .try_fold(0, |sum, member| {
-                    let (_, vitals, ..) = members.get(member).ok()?;
+                    let (_, vitals, ..) = members.get(member).unwrap();
                     let effect = vitals.enchantments.get(crate::content::spells::SpellId::HASTE)?;
                     Some(sum + effect.scaled(u32::from(effect.power) * 10))
                 })
@@ -1654,8 +1655,8 @@ fn party_armours(
     context
         .roster
         .iter()
-        .filter_map(|member| {
-            let (character, vitals, carried, burden) = members.get(member).ok()?;
+        .map(|member| {
+            let (character, vitals, carried, burden) = members.get(member).unwrap();
             let armour = attack::enchanted_armour(
                 &character.stats(&vitals.enchantments),
                 carried,
@@ -1664,7 +1665,7 @@ fn party_armours(
                 battle.defends(member),
                 (&vitals.enchantments, Some(&context.enchantments.0)),
             );
-            Some((member, armour))
+            (member, armour)
         })
         .collect()
 }
@@ -1861,7 +1862,7 @@ fn finish_party_move(battle: &mut Battle, rng: &mut GameRng, members: &mut Membe
         }
     }
     for work in &battle.this_round.party {
-        let Ok((_, mut vitals, _, burden)) = members.get_mut(work.actor) else { continue };
+        let (_, mut vitals, _, burden) = members.get_mut(work.actor).unwrap();
         if vitals.is_dead() {
             continue;
         }
@@ -2500,8 +2501,9 @@ fn party_of<'a>(
     members: &'a Members,
     roster: &'a PartyRoster,
 ) -> impl Iterator<Item = (Entity, &'a Character, &'a Vitals)> {
-    roster.iter().filter_map(|member| {
-        members.get(member).ok().map(|(character, vitals, ..)| (member, character, vitals))
+    roster.iter().map(|member| {
+        let (character, vitals, ..) = members.get(member).unwrap();
+        (member, character, vitals)
     })
 }
 
@@ -2636,7 +2638,7 @@ fn end_round(
         }
     }
     for actor in roster.iter() {
-        let Ok((mut profile, mut vitals, ..)) = members.get_mut(actor) else { continue };
+        let (mut profile, mut vitals, ..) = members.get_mut(actor).unwrap();
         let mut pool = magic.points.get_mut(actor).ok();
         let mana = pool.as_mut().map(|(known, pool)| (*known, pool));
         recovery::pass(
@@ -2688,7 +2690,7 @@ fn end_round(
         if !roster.contains(&member) {
             continue;
         }
-        let Ok((character, mut vitals, ..)) = members.get_mut(member) else { continue };
+        let (character, mut vitals, ..) = members.get_mut(member).unwrap();
         let resting = battle.defends(member)
             || matches!(
                 vitals.conditions.worst(),

@@ -398,7 +398,7 @@ impl Progression<'_, '_> {
         if !self.roster.single().is_ok_and(|r| r.contains(&member)) {
             return Err("This character is no longer in the party.");
         }
-        let (c, v, ..) = self.members.get(member).map_err(|_| "Character data is unavailable.")?;
+        let (c, v, ..) = self.members.get(member).unwrap();
         if !ready(c, v) {
             return Err("This character is not ready to gain a level.");
         }

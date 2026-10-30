@@ -32,7 +32,7 @@ pub(super) fn execute(
     world: &mut Field,
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
 ) -> Result<Vec<Effect>, Refusal> {
-    let (profile, vitals, ..) = world.members.get(actor).map_err(|_| Refusal::CannotAct)?;
+    let (profile, vitals, ..) = world.members.get(actor).unwrap();
     if !available(profile, vitals) {
         return Err(Refusal::CannotAct);
     }

@@ -533,7 +533,7 @@ fn prepare_source<'a>(
     points: &Query<(&LearnedSpells, &mut SpellPoints)>,
     inventory: &PartyInventory,
 ) -> Result<Prepared<'a>, Refusal> {
-    let (profile, vitals, carried, ..) = members.get(caster).map_err(|_| Refusal::CannotAct)?;
+    let (profile, vitals, carried, ..) = members.get(caster).unwrap();
     if !vitals.can_fight() {
         return Err(Refusal::CannotAct);
     }
@@ -898,7 +898,7 @@ pub(crate) fn perform_utility(
         Some(_) => power,
         None => {
             let (learned, pool) = points.get(caster).map_err(|_| Refusal::NotLearned)?;
-            let vitals = members.get(caster).map_err(|_| Refusal::CannotAct)?.1;
+            let vitals = members.get(caster).unwrap().1;
             let maximum = character.stats(&vitals.enchantments).max_points(learned, spells);
             power.min(MAX_POWER).min(pool.affordable_power(spell, &maximum))
         }
@@ -969,7 +969,7 @@ fn play(
         power -= 1;
         chance = chance.saturating_sub(7);
     }
-    let (mut profile, mut vitals, ..) = members.get_mut(caster).map_err(|_| Refusal::CannotAct)?;
+    let (mut profile, mut vitals, ..) = members.get_mut(caster).unwrap();
     vitals.spend_stamina(u32::from(spell.level) * 8 + 20);
     if power == 0 {
         // The refusal carries the practice, since no report follows it.
@@ -1012,7 +1012,7 @@ fn pay(
             if !consumed {
                 return Err(Refusal::NoItem);
             }
-            let (_, vitals, ..) = members.get(caster).map_err(|_| Refusal::CannotAct)?;
+            let (_, vitals, ..) = members.get(caster).unwrap();
             report.item = Some(use_.definition.name.clone());
             match use_.definition.use_type {
                 UseType::Thrown => 10,
@@ -1026,7 +1026,7 @@ fn pay(
         }
     };
     // Action fatigue weighs more under load (retail `FatigueCharacter`).
-    let (_, mut vitals, _, burden) = members.get_mut(caster).map_err(|_| Refusal::CannotAct)?;
+    let (_, mut vitals, _, burden) = members.get_mut(caster).unwrap();
     let slowed = vitals.conditions.has(Condition::Slowed);
     let hasted = vitals.enchantments.has(crate::content::spells::SpellId::HASTE);
     vitals.spend_stamina(burden.load.scale_fatigue(fatigue, slowed, hasted));

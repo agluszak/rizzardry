@@ -242,7 +242,7 @@ fn member_defence(
     fight: &Fight,
     member: Entity,
 ) -> Option<(Character, Defence<'static>)> {
-    let (character, vitals, ..) = field.members.get(member).ok()?;
+    let (character, vitals, ..) = field.members.get(member).unwrap();
     let armour = fight.armour(member)?;
     let running = battle.this_round.pace == Some(PartyPace::Run);
     let defending = battle
@@ -544,7 +544,7 @@ pub(super) fn member_attacks(
         _ => 1,
     };
     let (items, difficulty) = (field.items, field.difficulty);
-    let Ok((character, vitals, carried, burden)) = field.members.get(member) else { return };
+    let (character, vitals, carried, burden) = field.members.get(member).unwrap();
     let (character, load) = (character.clone(), burden.load);
     let controlled = vitals.conditions.has(Condition::Turncoat);
     let slowed = vitals.conditions.has(Condition::Slowed);
@@ -966,7 +966,7 @@ pub(super) fn monster_attacks(
     let mut evaded = Vec::new();
     for (a, attack) in kind.attacks.iter().enumerate() {
         for &member in field.party {
-            let Ok((_, vitals, ..)) = field.members.get(member) else { continue };
+            let (_, vitals, ..) = field.members.get(member).unwrap();
             if !vitals.is_dead()
                 && (fight.attacks)(Victim::Member(member))
                 && fight.party.reaches(formation, member, position, attack.reach, distance)

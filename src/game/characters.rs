@@ -515,7 +515,7 @@ pub const MAX_LEVEL: u8 = 50;
 
 /// An adventurer's identity, training and progression.
 #[derive(Component, Clone, Debug, PartialEq)]
-#[require(MonsterKnowledge)]
+#[require(MonsterKnowledge, crate::game::inventory::Carried)]
 pub struct Character {
     pub name: String,
     pub full_name: String,

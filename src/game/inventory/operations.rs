@@ -224,7 +224,7 @@ fn member<'a>(
     if !roster.contains(&member) {
         return Err(Refusal::NotMember);
     }
-    members.get_mut(member).map_err(|_| Refusal::NotMember)
+    Ok(members.get_mut(member).unwrap())
 }
 
 #[cfg(test)]
