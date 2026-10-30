@@ -62,12 +62,7 @@ pub fn move_party(
         // flying through its trigger runs it again.
         PartyMove::Fly(_) if flying => {}
         PartyMove::Fly(path) => {
-            let Some(camera) =
-                geometry.get(&level.definition).and_then(|level| level.camera_paths.get(path))
-            else {
-                warn!("invalid camera path {path}");
-                return;
-            };
+            let camera = &geometry.get(&level.definition).unwrap().camera_paths[path];
             info!("flying camera path {}", camera.name);
             commands.entity(entity).insert(PathFlight { path, frame: 0.0 });
         }
@@ -94,8 +89,7 @@ pub fn fly_party(
     else {
         return;
     };
-    let Some(path) = level.definition().and_then(|level| level.camera_paths.get(flight.path))
-    else {
+    let Some(path) = level.definition().map(|level| &level.camera_paths[flight.path]) else {
         commands.entity(entity).remove_with_requires::<PathFlight>();
         return;
     };

@@ -723,9 +723,7 @@ fn prepare(
     else {
         return Ok(false);
     };
-    let (items, species) = (&catalogs.items, &catalogs.species);
-    population::check(geometry, species, items)?;
-    super::triggers::check(geometry)?;
+    let species = &catalogs.species;
     if !npcs.prepare(catalogs, &geometry.monsters, assets)? {
         return Ok(false);
     }

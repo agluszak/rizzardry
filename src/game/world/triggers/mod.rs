@@ -343,35 +343,6 @@ fn player_distance(world: &mut World, geometry: &LevelDefinition, entity: Entity
     Some(distance.unwrap_or_else(|| eye.distance(centre)))
 }
 
-/// Check a level's triggers before it is entered: each camera path a
-/// trigger can fly has keys, so a flight always has somewhere to go.
-pub fn check(geometry: &LevelDefinition) -> Result<(), String> {
-    for trigger in &geometry.triggers {
-        let uses =
-            std::iter::once(&trigger.initial).chain(&trigger.alternate).chain(&trigger.fallback);
-        for chosen in uses {
-            match &chosen.action {
-                TriggerAction::CameraPath(path)
-                    if geometry.camera_paths.get(*path).is_none_or(|c| c.keys.is_empty()) =>
-                {
-                    return Err(format!(
-                        "trigger {} flies camera path {path}, which has no keys",
-                        trigger.name
-                    ));
-                }
-                TriggerAction::MissingCameraPath(name) => {
-                    return Err(format!(
-                        "trigger {} flies camera path \"{name}\", which the level does not have",
-                        trigger.name
-                    ));
-                }
-                _ => {}
-            }
-        }
-    }
-    Ok(())
-}
-
 /// How running a device went.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Ran {
@@ -764,7 +735,6 @@ fn execute(
             world.entity_mut(level).insert(PendingPartyMove(PartyMove::Fly(*path)));
         }
         // Refused with its level at preparation.
-        TriggerAction::MissingCameraPath(_) => return Ran::Declined,
         TriggerAction::HurtParty(dice) => {
             if world.run_system_cached_with(damage_party, *dice).is_err() {
                 return Ran::Declined;

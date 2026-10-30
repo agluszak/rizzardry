@@ -8,7 +8,6 @@ use bevy::prelude::*;
 
 use super::identify::{GroupMember, MonsterGroup};
 use super::level::{KeptMonster, LevelRecord};
-use crate::content::items::ItemCatalog;
 use crate::content::level::LevelDefinition;
 use crate::content::monster::MonsterBody;
 use crate::content::species::MonsterCatalog;
@@ -188,26 +187,6 @@ impl MonsterBodies {
             })
             .collect()
     }
-}
-
-/// Check that every monster and item the level places exists, as part of
-/// its preparation: one missing is broken content, not something to leave
-/// out of the level.
-pub fn check(
-    geometry: &LevelDefinition,
-    species: &MonsterCatalog,
-    items: &ItemCatalog,
-) -> Result<(), String> {
-    if let Some(placed) = geometry.monsters.iter().find(|p| species.kind(p.species).is_none()) {
-        return Err(format!(
-            "monster {} is of unknown species {}",
-            placed.location, placed.species
-        ));
-    }
-    if let Some(placed) = geometry.items.iter().find(|p| items.get(p.item).is_none()) {
-        return Err(format!("an item lying about is unknown ({:?})", placed.item));
-    }
-    Ok(())
 }
 
 /// The name an actor goes by in the world's inspector.
