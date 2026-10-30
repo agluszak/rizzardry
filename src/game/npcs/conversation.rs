@@ -143,6 +143,16 @@ enum Step {
     Join,
     End,
 }
+impl Step {
+    /// A quote from its first line, asking its price first if it has one.
+    fn quote(quote: u16) -> Self {
+        Step::Quote { quote, subquote: 0, paid: false, plan: None }
+    }
+    /// A quote from its first line, said without asking a price.
+    fn said(quote: u16) -> Self {
+        Step::Quote { quote, subquote: 0, paid: true, plan: None }
+    }
+}
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConversationWait {
     Ready,
@@ -257,9 +267,7 @@ impl Conversation {
                 self.transcript.push(TranscriptLine::Npc("Charmed.".into()));
             }
             MagicalReply::Charmed(_) => {}
-            MagicalReply::Quote(quote) => {
-                self.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None })
-            }
+            MagicalReply::Quote(quote) => self.queue.push_back(Step::quote(quote)),
         }
     }
 
@@ -548,8 +556,7 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     // topic menu, and a merchant always does business.
     let scripted = def.monster_bound || def.voice_script;
     let band = band(world, actor);
-    let quote =
-        |quote| VecDeque::from([Step::Quote { quote, subquote: 0, paid: false, plan: None }]);
+    let quote = |quote| VecDeque::from([Step::quote(quote)]);
     let conversation = |queue| Conversation {
         actor,
         charms: default(),
@@ -683,7 +690,7 @@ fn hand_over(world: &mut World, entity: Entity, name: &str, quote: u16) {
     let Some(speaker) = npc_named(world, name) else { return };
     let mut c = world.get_mut::<Conversation>(entity).unwrap();
     c.actor = speaker;
-    c.queue.push_front(Step::Quote { quote, subquote: 0, paid: false, plan: None });
+    c.queue.push_front(Step::quote(quote));
 }
 fn block(c: &mut Conversation, quote: u16, entry: Option<usize>, reason: String) {
     c.wait = ConversationWait::Blocked { quote, entry, reason };
@@ -1064,12 +1071,7 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party:
                         (gold - gold.saturating_mul(party_communication(world)) / 500).max(1);
                     let mut c = world.get_mut::<Conversation>(entity).unwrap();
                     c.queue.push_front(Step::Wait(ConversationWait::Price { quote, gold, always }));
-                    c.queue.push_front(Step::Quote {
-                        quote: PRICE_QUOTE,
-                        subquote: 0,
-                        paid: true,
-                        plan: None,
-                    });
+                    c.queue.push_front(Step::said(PRICE_QUOTE));
                     continue;
                 }
                 let plan = match plan.map_or_else(|| plan_quote(world, party, q), Ok) {
@@ -1106,42 +1108,43 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party:
                 // alert chime and no recording; otherwise a few words stand
                 // for something other than a line.
                 let is = |word: &str| text.eq_ignore_ascii_case(word);
-                let voice =
-                    if q.alert {
-                        None
-                    } else if text.is_empty() {
-                        continue;
-                    } else if is("EMPTY") || is("BLANK") {
-                        // The answer to a question it has nothing to say to.
-                        if (NO_ANSWER_QUOTES).contains(&quote) {
-                            let npc = def.source_name.clone();
-                            let mut turn = world.get_resource_or_init::<NoAnswerTurn>();
-                            let second = turn.0;
-                            turn.0 = !second;
-                            let mut c = world.get_mut::<Conversation>(entity).unwrap();
-                            c.transcript.push(TranscriptLine::NoAnswer { npc, second });
-                        }
-                        continue;
-                    } else if is("UNKNOWN") || is("CLASSIFIED") {
-                        let next = if is("CLASSIFIED") {
-                            CLASSIFIED_QUOTE
-                        } else if world.resource_mut::<GameRng>().below(100) < 50 {
-                            UNKNOWN_QUOTES[0]
-                        } else {
-                            UNKNOWN_QUOTES[1]
-                        };
-                        world.get_mut::<Conversation>(entity).unwrap().queue.push_back(
-                            Step::Quote { quote: next, subquote: 0, paid: false, plan: None },
-                        );
-                        continue;
+                let voice = if q.alert {
+                    None
+                } else if text.is_empty() {
+                    continue;
+                } else if is("EMPTY") || is("BLANK") {
+                    // The answer to a question it has nothing to say to.
+                    if (NO_ANSWER_QUOTES).contains(&quote) {
+                        let npc = def.source_name.clone();
+                        let mut turn = world.get_resource_or_init::<NoAnswerTurn>();
+                        let second = turn.0;
+                        turn.0 = !second;
+                        let mut c = world.get_mut::<Conversation>(entity).unwrap();
+                        c.transcript.push(TranscriptLine::NoAnswer { npc, second });
+                    }
+                    continue;
+                } else if is("UNKNOWN") || is("CLASSIFIED") {
+                    let next = if is("CLASSIFIED") {
+                        CLASSIFIED_QUOTE
+                    } else if world.resource_mut::<GameRng>().below(100) < 50 {
+                        UNKNOWN_QUOTES[0]
                     } else {
-                        let suffix = if subquote == 0 {
-                            String::new()
-                        } else {
-                            char::from(b'a' + (subquote - 1) as u8).to_string()
-                        };
-                        Some(format!("{}_{quote:03}{suffix}", def.voice_stem()))
+                        UNKNOWN_QUOTES[1]
                     };
+                    world
+                        .get_mut::<Conversation>(entity)
+                        .unwrap()
+                        .queue
+                        .push_back(Step::quote(next));
+                    continue;
+                } else {
+                    let suffix = if subquote == 0 {
+                        String::new()
+                    } else {
+                        char::from(b'a' + (subquote - 1) as u8).to_string()
+                    };
+                    Some(format!("{}_{quote:03}{suffix}", def.voice_stem()))
+                };
                 // "SOUND" plays its recording without showing a line.
                 let text = if is("SOUND") && !q.alert { String::new() } else { text };
                 let speaker = def.source_name.clone();
@@ -1196,7 +1199,7 @@ fn ask_to_join(world: &mut World, entity: Entity) {
         Err(super::recruit::JoinRefusal::Declines) => DECLINES_TO_JOIN,
     };
     let mut c = world.get_mut::<Conversation>(entity).unwrap();
-    c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None });
+    c.queue.push_back(Step::quote(quote));
     if answer.is_ok() {
         c.queue.extend([Step::Join, Step::End]);
     }
@@ -1222,7 +1225,7 @@ fn topic(world: &mut World, entity: Entity, text: &str) {
         world.resource_mut::<StoryFacts>().remember_topic(TopicCategory::Misc, &cleaned);
         let mut c = world.get_mut::<Conversation>(entity).unwrap();
         c.transcript.push(TranscriptLine::Question(text.to_owned()));
-        c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None });
+        c.queue.push_back(Step::quote(quote));
     } else {
         world.get_mut::<Conversation>(entity).unwrap().report(Outcome::NoTopic);
     }
@@ -1288,7 +1291,7 @@ fn approach_npc(world: &mut World, entity: Entity, approach: Approach) {
     let friendly = band(world, actor) == Band::Friendly;
     let mut c = world.get_mut::<Conversation>(entity).unwrap();
     if let Some(quote) = answer {
-        c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None });
+        c.queue.push_back(Step::quote(quote));
     }
     if !friendly && answer == Some(HOSTILE_QUOTE) {
         c.queue.push_back(Step::End);
@@ -1346,7 +1349,7 @@ pub(crate) fn won_over(world: &mut World, entity: Entity, greeting: bool) {
     let mut c = world.get_mut::<Conversation>(entity).unwrap();
     c.menu = false;
     if let Some(quote) = greeting {
-        c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None });
+        c.queue.push_back(Step::quote(quote));
     }
 }
 /// What a friendly NPC says to an item it has no quote for: it takes it
@@ -1453,12 +1456,7 @@ fn spend_gift(
     let bribe = band(world, actor) != Band::Friendly;
     if bribe && definition(world, actor).trade_pool == 0 {
         let mut c = world.get_mut::<Conversation>(entity).unwrap();
-        c.queue.push_back(Step::Quote {
-            quote: UNBRIBED_QUOTE,
-            subquote: 0,
-            paid: true,
-            plan: None,
-        });
+        c.queue.push_back(Step::said(UNBRIBED_QUOTE));
         return Ok(());
     }
     let mut inventory = world.get_mut::<PartyInventory>(party).ok_or(TradeError::Unavailable)?;
@@ -1469,7 +1467,7 @@ fn spend_gift(
     let quote =
         if band(world, actor) == Band::Friendly { ACCEPTED_GIFT_QUOTE } else { UNBRIBED_QUOTE };
     let mut c = world.get_mut::<Conversation>(entity).unwrap();
-    c.queue.push_back(Step::Quote { quote, subquote: 0, paid: true, plan: None });
+    c.queue.push_back(Step::said(quote));
     won_over(world, entity, !all);
     Ok(())
 }
@@ -1505,7 +1503,7 @@ fn reply(world: &mut World, entity: Entity, text: &str) {
             let mut c = world.get_mut::<Conversation>(entity).unwrap();
             c.transcript.push(TranscriptLine::Reply(text.to_owned()));
             c.wait = ConversationWait::Ready;
-            c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None });
+            c.queue.push_back(Step::quote(quote));
         }
     }
 }
@@ -1559,12 +1557,7 @@ fn answer_price(world: &mut World, entity: Entity, accept: bool) {
             let mut c = world.get_mut::<Conversation>(entity).unwrap();
             for op in &line.operations {
                 if let DialogueOp::Decline(quote) = op {
-                    c.queue.push_back(Step::Quote {
-                        quote: *quote,
-                        subquote: 0,
-                        paid: false,
-                        plan: None,
-                    });
+                    c.queue.push_back(Step::quote(*quote));
                 }
             }
         }
@@ -1905,12 +1898,7 @@ mod tests {
                 learned_topics: default(),
                 menu: false,
                 result: None,
-                queue: VecDeque::from([Step::Quote {
-                    quote: 0,
-                    subquote: 0,
-                    paid: false,
-                    plan: None,
-                }]),
+                queue: VecDeque::from([Step::quote(0)]),
             })
             .id();
         (app, entity, actor)
@@ -2469,12 +2457,7 @@ mod tests {
         crate::game::party::roster::test_join(app.world_mut(), member);
         let mut c = app.world_mut().get_mut::<Conversation>(session).unwrap();
         c.menu = true;
-        c.queue = VecDeque::from([Step::Quote {
-            quote: NEUTRAL_GREETING,
-            subquote: 0,
-            paid: false,
-            plan: None,
-        }]);
+        c.queue = VecDeque::from([Step::quote(NEUTRAL_GREETING)]);
         app.update();
         finish_line(&mut app, session);
         (app, session, actor)
@@ -2689,7 +2672,7 @@ mod tests {
         };
         let ask = |app: &mut App, quote: u16| {
             let mut c = app.world_mut().get_mut::<Conversation>(session).unwrap();
-            c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None });
+            c.queue.push_back(Step::quote(quote));
             app.update();
         };
         ask(&mut app, 1);
@@ -3304,7 +3287,7 @@ mod tests {
             let member = world.spawn((profile, vitals)).id();
             crate::game::party::roster::test_join(world, member);
             world.get_mut::<Conversation>(session).unwrap().queue =
-                VecDeque::from([Step::Quote { quote, subquote: 0, paid: true, plan: None }]);
+                VecDeque::from([Step::said(quote)]);
             app.update();
             for _ in 1..line_count {
                 let speech = match app.world().get::<Conversation>(session).unwrap().wait {
