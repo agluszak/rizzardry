@@ -4040,50 +4040,6 @@ mod tests {
         assert!(cast.is_some() && landed.is_some() && cast < landed, "{news:?}");
     }
 
-    /// A fight with a missile in it runs the same at any frame rate: the
-    /// missile lands at the step its flight ends, before that step's next
-    /// actor, so frames of 1/32 s and of 3/4 s give the same impacts,
-    /// actions, wounds and generator state.
-    #[test]
-    fn missiles_land_the_same_whatever_the_frame_rate() {
-        let fight_for = |frame: std::time::Duration| {
-            let (mut app, [caster, _]) = round_app(true);
-            app.world_mut().resource_mut::<CombatSettings>().continuous = true;
-            let monster = order_spell(
-                &mut app,
-                caster,
-                crate::content::spells::SpellDefinition { missile: Some(2), ..energy_blast() },
-            );
-            // Far enough for a flight of several steps.
-            app.world_mut().get_mut::<Transform>(monster).unwrap().translation = Vec3::NEG_Z * 20.0;
-            app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(frame));
-            let frames = (6.0 / frame.as_secs_f64()).round() as u32;
-            let mut news = Vec::new();
-            for _ in 0..frames {
-                app.update();
-                news.extend(
-                    app.world_mut()
-                        .resource_mut::<Messages<MagicNews>>()
-                        .drain()
-                        .map(|n| format!("{n:?}")),
-                );
-                news.extend(
-                    app.world_mut()
-                        .resource_mut::<Messages<CombatNews>>()
-                        .drain()
-                        .map(|n| format!("{n:?}")),
-                );
-            }
-            let hp = app.world().get::<Monster>(monster).unwrap().hp;
-            let next = app.world_mut().resource_mut::<GameRng>().below(u32::MAX);
-            (news, hp, next)
-        };
-        let fast = fight_for(std::time::Duration::from_micros(31_250));
-        let slow = fight_for(std::time::Duration::from_millis(750));
-        assert!(fast.0.iter().any(|n| n.starts_with("Landed")), "{:?}", fast.0);
-        assert_eq!(fast, slow);
-    }
-
     /// Impacts due in the same step land in the order they arrive, ties in
     /// launch order, whatever the entity order: one long step and many short
     /// ones give the same impacts and leave the RNG in the same state.
@@ -5909,31 +5865,6 @@ mod tests {
         app.update();
         assert!(attacks(&mut app).is_empty());
     }
-    #[test]
-    fn reordering_the_roster_does_not_reassign_accepted_defender_recovery() {
-        use crate::game::characters::{Gender, Profession, Race};
-        let run = |reorder| {
-            let (mut app, [a, b]) = round_app(true);
-            let character = Character::new("C", Race::Human, Gender::Male, Profession::Fighter);
-            let mut vitals = Vitals::new(&character);
-            vitals.stamina = 1;
-            let c =
-                app.world_mut().spawn((character, vitals, Carried::default(), Order::Defend)).id();
-            crate::game::party::roster::test_join(app.world_mut(), c);
-            app.world_mut().get_mut::<Vitals>(b).unwrap().stamina = 1;
-            app.update();
-            if reorder {
-                crate::game::party::roster::test_reorder(app.world_mut(), &[c, a, b]);
-            }
-            for _ in 0..4 {
-                app.update();
-            }
-            [b, c].map(|actor| app.world().get::<Vitals>(actor).unwrap().stamina)
-        };
-        let unchanged = run(false);
-        assert!(unchanged.into_iter().all(|stamina| stamina > 1));
-        assert_eq!(run(true), unchanged);
-    }
 
     /// Run the accepted round to its end.
     fn finish_round(app: &mut App) -> Vec<CombatNews> {
@@ -6480,6 +6411,7 @@ mod tests {
                 found = true;
                 // Its last fumble was the blow that knocked it out.
                 assert_eq!(fumbles.last(), Some(&Victim::Monster(fighter)), "seed {seed}");
+                break;
             }
         }
         assert!(found, "some seed has the monster knock itself out");

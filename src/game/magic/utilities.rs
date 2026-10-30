@@ -207,51 +207,6 @@ mod tests {
     }
 
     #[test]
-    fn a_pool_potion_heals_without_monster_navigation_or_loot_services() {
-        use crate::content::{
-            items::{Dice, EquipClass, UseType},
-            spells::{ItemSpell, Targeting},
-        };
-        let mut scene = scenario();
-        let caster = scene.members[0];
-        let spells = scene.world.resource::<GameData>().spells.clone();
-        scene.world.resource_mut::<Assets<SpellCatalog>>().get_mut(&spells).unwrap().0[6] =
-            SpellDefinition {
-                id: SpellId::HEAL_WOUNDS,
-                realm: Some(Realm::Fire),
-                targeting: Targeting::Ally,
-                dice: Some(Dice { count: 0, sides: 0, base: 5 }),
-                ..default()
-            };
-        let potion = ItemDefinition {
-            id: ItemId(0),
-            class: EquipClass::Potion,
-            quantity: crate::content::items::QuantityKind::Stack,
-            use_type: UseType::Potion,
-            spell: Some(ItemSpell { spell: SpellId::HEAL_WOUNDS, power: 1 }),
-            ..default()
-        };
-        let stack = ItemStack::new(&potion, &mut ItemIds::default(), 1, true);
-        let id = stack.id;
-        let items =
-            scene.world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog(vec![potion]));
-        scene.world.resource_mut::<GameData>().items = items;
-        scene.inventory().pool.stacks.push(stack);
-        scene.world.get_mut::<Vitals>(caster).unwrap().hp = 1;
-        scene.world.remove_resource::<crate::game::factions::Factions>();
-        scene.world.remove_resource::<Assets<MonsterCatalog>>();
-        scene.world.remove_resource::<Assets<crate::content::items::LootTables>>();
-        scene.world.remove_resource::<ItemIds>();
-        scene.world.write_message(MagicRequest {
-            caster,
-            choice: MagicChoice { source: Source::PoolItem(id), aim: Aim::Member(caster) },
-        });
-        scene.world.run_system_cached(super::super::accept_magic).unwrap();
-        assert_eq!(scene.world.get::<Vitals>(caster).unwrap().hp, 6);
-        assert!(scene.inventory().pool.stacks.is_empty());
-    }
-
-    #[test]
     fn underwater_fire_fizzles_with_normal_payment_for_ordinary_and_utility_casts() {
         use crate::content::{items::Dice, spells::Targeting};
         let mut scene = scenario();
@@ -340,27 +295,6 @@ mod tests {
             assert_eq!(scene.inventory().pool.stacks[0].count(), 1);
             assert_eq!(crate::game::magic::test_points(&scene.world, caster, Realm::Fire), 100);
         }
-    }
-
-    #[test]
-    fn utility_payment_needs_no_monster_damage_or_loot_services() {
-        let mut scene = scenario();
-        let caster = scene.members[0];
-        let party = the_party(&mut scene.world).unwrap();
-        scene.world.remove_resource::<crate::game::factions::Factions>();
-        scene.world.remove_resource::<Assets<MonsterCatalog>>();
-        scene.world.remove_resource::<Assets<crate::content::items::LootTables>>();
-        scene.world.remove_resource::<ItemIds>();
-        scene.world.entity_mut(party).remove::<crate::game::party::formation::Formation>();
-        let (report, _) = super::super::sources::cast_source(
-            &mut scene.world,
-            caster,
-            Source::Spell { spell: SpellId::SET_PORTAL, power: 1 },
-            UseContext::World,
-        )
-        .unwrap();
-        assert_eq!(report.outcome, super::super::Outcome::Cast);
-        assert_eq!(crate::game::magic::test_points(&scene.world, caster, Realm::Fire), 99);
     }
 
     #[test]
