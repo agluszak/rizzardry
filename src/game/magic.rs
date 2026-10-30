@@ -542,14 +542,14 @@ impl MagicContext<'_, '_> {
         *self.level
     }
 
-    /// Resolve magic at game time `now`: `cast` gets the field of members,
-    /// monsters and party belongings it changes, and the spells.
+    /// Resolve one action against the live party, monsters and shared content.
+    /// The field is the sole source of both rule catalogs and roster order.
     pub fn resolve<R>(
         &mut self,
         now: u64,
         members: &mut Members,
         monsters: &mut MonsterDamage,
-        cast: impl FnOnce(&mut Field, &SpellCatalog) -> R,
+        cast: impl FnOnce(&mut Field) -> R,
     ) -> R {
         let party: Vec<Entity> = self.roster.iter().collect();
         let party_level = crate::game::party::average_level(
@@ -576,19 +576,7 @@ impl MagicContext<'_, '_> {
             provocations: &mut self.provocations,
             fight: self.fight.single().ok(),
         };
-        cast(&mut field, &self.content.spells)
-    }
-
-    /// The field of members, monsters and party belongings that blows
-    /// change.
-    pub fn with_field<R>(
-        &mut self,
-        now: u64,
-        members: &mut Members,
-        monsters: &mut MonsterDamage,
-        act: impl FnOnce(&mut Field) -> R,
-    ) -> R {
-        self.resolve(now, members, monsters, |field, _| act(field))
+        cast(&mut field)
     }
 }
 
@@ -671,24 +659,23 @@ pub fn accept_magic(
             });
             continue;
         };
-        let roster: Vec<Entity> = context.roster.iter().collect();
         // Outside a fight no monster is a target: the hostile spells are
         // combat spells.
-        let situation = casting::Situation {
-            context: if camp.is_some() {
-                casting::UseContext::Camp
-            } else {
-                casting::UseContext::World
-            },
-            party: &roster,
-            party_at,
-            facing,
-            monsters: &[],
-            group_of: &|m| vec![m],
-        };
         let level = context.level();
-        let performed = context.resolve(clock.ms, &mut members, &mut monsters, |field, spells| {
-            casting::perform(caster, choice, &situation, spells, &mut points, &mut rng, field)
+        let performed = context.resolve(clock.ms, &mut members, &mut monsters, |field| {
+            let situation = casting::Situation {
+                context: if camp.is_some() {
+                    casting::UseContext::Camp
+                } else {
+                    casting::UseContext::World
+                },
+                party: field.party,
+                party_at,
+                facing,
+                monsters: &[],
+                group_of: &|m| vec![m],
+            };
+            casting::perform(caster, choice, &situation, &mut points, &mut rng, field)
         });
         context.news.write(match performed {
             Ok((report, flights)) => {
@@ -750,8 +737,8 @@ pub fn deliver_spells(
             commands.entity(entity).despawn();
         }
         let mut secondary = Vec::new();
-        let landed = context.resolve(clock.ms, &mut members, &mut monsters, |field, spells| {
-            let spell = spells.get(flight.spell)?;
+        let landed = context.resolve(clock.ms, &mut members, &mut monsters, |field| {
+            let spell = field.spells.get(flight.spell)?;
             let effects = impacts::resolve(
                 flight.caster,
                 flight.origin,
@@ -761,7 +748,6 @@ pub fn deliver_spells(
                 &flight.victims,
                 flight.finish.as_ref(),
                 party_at.unwrap_or_default(),
-                spells,
                 &mut rng,
                 field,
                 &mut points,

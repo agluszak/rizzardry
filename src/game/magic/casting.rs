@@ -612,11 +612,11 @@ pub fn perform(
     caster: Entity,
     choice: MagicChoice,
     situation: &Situation,
-    spells: &SpellCatalog,
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
     rng: &mut GameRng,
     world: &mut Field,
 ) -> Result<(Report, Vec<SpellInFlight>), Refusal> {
+    let spells = world.spells;
     let Prepared { character, spell, power, item, forced_self } = prepare_source(
         caster,
         choice.source,
@@ -815,7 +815,6 @@ pub fn perform(
                 &victims,
                 Some(&finish),
                 situation.party_at,
-                spells,
                 rng,
                 world,
                 &mut *points,
