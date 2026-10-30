@@ -131,7 +131,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
         .get::<crate::game::world::triggers::LevelState>(root)
         .is_some_and(|state| state.camera_sway);
     let weights = if id == SpellId::SUMMON_ELEMENTAL {
-        let profile = world.get::<Character>(caster).ok_or(Refusal::CannotAct)?;
+        let profile = world.get::<Character>(caster).unwrap();
         [Skill::FireMagic, Skill::WaterMagic, Skill::AirMagic, Skill::EarthMagic]
             .map(|skill| profile.skill(skill) + 20)
     } else {

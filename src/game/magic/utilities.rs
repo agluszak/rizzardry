@@ -29,9 +29,10 @@ pub(crate) fn source_spell(
 fn target(world: &World, party: Entity, id: StackId) -> Option<&ItemStack> {
     world.get::<PartyInventory>(party).unwrap().find_stack(id).or_else(|| {
         world
-            .get::<PartyRoster>(party)?
+            .get::<PartyRoster>(party)
+            .unwrap()
             .iter()
-            .find_map(|member| world.get::<Carried>(member)?.find_stack(id))
+            .find_map(|member| world.get::<Carried>(member).unwrap().find_stack(id))
     })
 }
 
@@ -76,8 +77,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
     let source = if let Source::Spell { spell, power: super::casting::AUTO_POWER } = choice.source {
         let spells = &world.resource::<Catalogs>().spells;
         let definition = &spells[spell];
-        let profile =
-            world.get::<crate::game::characters::Character>(caster).ok_or(Refusal::CannotAct)?;
+        let profile = world.get::<crate::game::characters::Character>(caster).unwrap();
         let power = (1..=crate::content::spells::MAX_POWER)
             .find(|&power| identifies(super::Strength::of(profile, definition, power), difficulty))
             .unwrap_or(crate::content::spells::MAX_POWER);

@@ -36,8 +36,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
     if choice.aim != Aim::Monster(body) {
         return Err(Refusal::NoTarget);
     }
-    world.get::<Npc>(actor).ok_or(Refusal::NoTarget)?;
-    let monster = world.get::<Monster>(body).ok_or(Refusal::NoTarget)?;
+    let monster = world.get::<Monster>(body).unwrap();
     let kind = &world.resource::<crate::game::data::Catalogs>().species[monster.species];
     let (level, resistance, notice_chance) = (
         u32::from(kind.level),
@@ -61,7 +60,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
                 reply = MagicalReply::Quote(if saved {
                     0x69
                 } else {
-                    let mut npc = world.get_mut::<Npc>(actor).ok_or(Refusal::NoTarget)?;
+                    let mut npc = world.get_mut::<Npc>(actor).unwrap();
                     let quote = 0x67 + u16::from(npc.mindread_refusals);
                     npc.mindread_refusals = (npc.mindread_refusals + 1).min(2);
                     quote
