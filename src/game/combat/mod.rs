@@ -1050,8 +1050,7 @@ pub fn finish_round(
         &mut clock,
         &mut rng,
         roster,
-        &mut members,
-        &mut damage,
+        (&mut members, &mut damage),
         party.eye,
         species,
         &mut news,
@@ -1544,41 +1543,75 @@ fn party_fallen(roster: &PartyRoster, members: &Members) -> bool {
     )
 }
 
-/// The round is over: a round's game time passes. Returns whether the fight
-/// is over: no hostile is left or nobody could attack for two rounds.
+/// The round is over: a round's game time passes and the defenders rest.
+/// Returns whether the fight is over: no hostile is left or nobody could
+/// attack for two rounds.
 fn end_round(
     (fight, battle): (Entity, &mut Battle),
     combatants: &[Entity],
     clock: &mut GameClock,
     rng: &mut GameRng,
     roster: &PartyRoster,
-    members: &mut Members,
-    damage: &mut MonsterDamage,
+    (members, damage): (&mut Members, &mut MonsterDamage),
     party_eye: Vec3,
     species: &MonsterCatalog,
     news: &mut MessageWriter<CombatNews>,
     magic: &mut BattleMagic,
     staying: &[Entity],
 ) -> bool {
-    // The round's time passes now, with its meaning: conditions age, spell
-    // points come back at half rate and nothing else recovers (retail
-    // `AdvanceCombatRound`, `AdvanceTimedEffects`).
-    // A round takes one aging tick.
+    pass_round(
+        (fight, battle),
+        combatants,
+        clock,
+        rng,
+        roster,
+        (members, damage),
+        party_eye,
+        news,
+        magic,
+    );
+    // Poison may have killed the last of the party as the time passed: that
+    // is their defeat, which `settle_defeat` reports, not a victory.
+    if party_fallen(roster, members) {
+        return false;
+    }
+    rest_defenders(battle, roster, members, rng);
+    battle.wait = Timer::from_seconds(ROUND_SECONDS, TimerMode::Once);
+    if !fight_over(battle, combatants, staying, damage, (clock.ms, party_eye), species) {
+        return false;
+    }
+    award_victory(battle, roster, members, news);
+    true
+}
+
+/// A round's game time passes, with its meaning: conditions age, spell
+/// points come back at half rate and nothing else recovers (retail
+/// `AdvanceCombatRound`, `AdvanceTimedEffects`). A round takes one aging
+/// tick.
+fn pass_round(
+    (fight, battle): (Entity, &mut Battle),
+    combatants: &[Entity],
+    clock: &mut GameClock,
+    rng: &mut GameRng,
+    roster: &PartyRoster,
+    (members, damage): (&mut Members, &mut MonsterDamage),
+    party_eye: Vec3,
+    news: &mut MessageWriter<CombatNews>,
+    magic: &mut BattleMagic,
+) {
     let ticks = clock.advance(crate::game::time::AGING_TICK_MS);
     // A monster that waited, or lies asleep or knocked out, gets its
     // breath back (retail `AdvanceCombatRound`).
     for &entity in combatants {
-        let waited =
-            battle.this_round.monsters.iter().any(|turn| turn.actor == entity && turn.waited);
-        let resting = waited
-            || damage.monsters().get(entity).is_ok_and(|(monster, ..)| {
-                monster
+        let (monster, ..) = damage.monsters().get(entity).unwrap();
+        let resting =
+            battle.this_round.monsters.iter().any(|turn| turn.actor == entity && turn.waited)
+                || monster
                     .conditions
                     .iter()
-                    .any(|&(c, _)| matches!(c, Condition::Asleep | Condition::Unconscious))
-            });
+                    .any(|&(c, _)| matches!(c, Condition::Asleep | Condition::Unconscious));
         if resting {
-            let maximum = damage.monsters().get(entity).map_or(0, |(m, ..)| m.max_stamina);
+            let maximum = monster.max_stamina;
             damage.restore_stamina(entity, recovery::rest_roll(maximum, rng));
         }
     }
@@ -1635,12 +1668,11 @@ fn end_round(
         damage.enchantments_mut(entity).age(ticks.aging);
     }
     battle.phase = RoundPhase::Waiting;
-    // Poison may have killed the last of the party as the time passed: that
-    // is their defeat, which `settle_defeat` reports, not a victory.
-    if party_fallen(roster, members) {
-        return false;
-    }
-    // Recover after aging conditions, in accepted actor order.
+}
+
+/// Members who defended, or lie asleep or knocked out, get their breath
+/// back after their conditions age, in accepted actor order.
+fn rest_defenders(battle: &Battle, roster: &PartyRoster, members: &mut Members, rng: &mut GameRng) {
     for work in &battle.this_round.party {
         let member = work.actor;
         if !roster.contains(&member) {
@@ -1655,32 +1687,44 @@ fn end_round(
         if vitals.is_dead() || !resting {
             continue;
         }
-        let rolled = recovery::rest_roll(character.stats(&vitals.enchantments).max_stamina(), rng);
-        let gained = recovery::combat_rest_amount(&character, rolled);
-        if vitals.stamina < character.stats(&vitals.enchantments).max_stamina()
-            || vitals.conditions.exhausted()
-        {
-            let maximum = character.stats(&vitals.enchantments).max_stamina();
+        let maximum = character.stats(&vitals.enchantments).max_stamina();
+        let gained = recovery::combat_rest_amount(&character, recovery::rest_roll(maximum, rng));
+        if vitals.stamina < maximum || vitals.conditions.exhausted() {
             vitals.restore_stamina(gained, maximum);
         }
     }
-    battle.wait = Timer::from_seconds(ROUND_SECONDS, TimerMode::Once);
+}
+
+/// Whether the fight is over: no hostile stays in it, or nobody attacked
+/// or closed in for two rounds.
+fn fight_over(
+    battle: &mut Battle,
+    combatants: &[Entity],
+    staying: &[Entity],
+    damage: &MonsterDamage,
+    (now, party_eye): (u64, Vec3),
+    species: &MonsterCatalog,
+) -> bool {
     let monsters = damage.monsters();
     let approaching = combatants.iter().any(|&entity| {
-        monsters.get(entity).is_ok_and(|(monster, at, walker, ..)| {
-            approach::needs_approach(monster, at.translation(), walker, party_eye, species)
-        })
+        let (monster, at, walker, ..) = monsters.get(entity).unwrap();
+        approach::needs_approach(monster, at.translation(), walker, party_eye, species)
     });
     let active = battle.this_round.attacked || approaching;
     battle.passive_rounds = if active { 0 } else { battle.passive_rounds + 1 };
     let hostiles_left = staying.iter().any(|&e| {
-        damage.stance(e, clock.ms) == hostility::Stance::Hostile
-            && monsters.get(e).is_ok_and(|(m, ..)| !m.is_dead())
+        damage.stance(e, now) == hostility::Stance::Hostile && !monsters.get(e).unwrap().0.is_dead()
     });
-    if hostiles_left && battle.passive_rounds < PASSIVE_ROUNDS {
-        return false;
-    }
-    // Experience is shared among the living, the unconscious included.
+    !hostiles_left || battle.passive_rounds >= PASSIVE_ROUNDS
+}
+
+/// Experience is shared among the living, the unconscious included.
+fn award_victory(
+    battle: &Battle,
+    roster: &PartyRoster,
+    members: &mut Members,
+    news: &mut MessageWriter<CombatNews>,
+) {
     let living =
         members.iter_many(roster.iter()).matched().filter(|(_, v, ..)| !v.is_dead()).count() as u32;
     let each = battle.experience / living.max(1);
@@ -1696,7 +1740,6 @@ fn end_round(
     } else {
         CombatNews::Over
     });
-    true
 }
 
 #[cfg(test)]
