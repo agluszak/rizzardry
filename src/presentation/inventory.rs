@@ -1384,11 +1384,17 @@ mod tests {
             .add_systems(Update, sync_member_portraits);
         let a = app
             .world_mut()
-            .spawn(Character::new("A", Race::Human, Gender::Male, Profession::Fighter))
+            .spawn({
+                let c = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
+                (crate::game::characters::Vitals::new(&c), c)
+            })
             .id();
         let b = app
             .world_mut()
-            .spawn(Character::new("B", Race::Human, Gender::Male, Profession::Fighter))
+            .spawn({
+                let c = Character::new("B", Race::Human, Gender::Male, Profession::Fighter);
+                (crate::game::characters::Vitals::new(&c), c)
+            })
             .id();
         crate::game::party::roster::test_party(app.world_mut(), &[a, b]);
         app.world_mut().spawn(MemberSelector);
@@ -1448,7 +1454,10 @@ mod tests {
             // Someone else stays when the selected member leaves.
             let other = app
                 .world_mut()
-                .spawn(Character::new("B", Race::Human, Gender::Male, Profession::Fighter))
+                .spawn({
+                    let c = Character::new("B", Race::Human, Gender::Male, Profession::Fighter);
+                    (crate::game::characters::Vitals::new(&c), c)
+                })
                 .id();
             let party = crate::game::party::roster::test_party(app.world_mut(), &[member, other]);
             if full {
