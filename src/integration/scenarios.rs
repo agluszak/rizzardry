@@ -154,7 +154,6 @@ fn the_party_rests_eight_hours_and_wakes() {
 #[test]
 #[ignore = "requires a retail installation"]
 fn burz_conversation_trade_and_revisit_keep_one_actor() {
-    use crate::content::npcs::DialogueScript;
     use crate::game::inventory::{ItemOwner, ItemRef};
     use crate::game::npcs::conversation::{
         self, Conversation, ConversationRequest, ConversationWait,
@@ -205,14 +204,8 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     }
     finish(&mut app, session);
     assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((121, 0)));
-    let script = app.world().get::<Conversation>(session).unwrap().script.clone();
-    let topic = app
-        .world()
-        .resource::<Assets<DialogueScript>>()
-        .get(&script)
-        .unwrap()
-        .topic("MONASTERY")
-        .unwrap();
+    let c = app.world().get::<Conversation>(session).unwrap();
+    let topic = crate::game::npcs::conversation::script(app.world(), c).topic("MONASTERY").unwrap();
     app.world_mut().write_message(ConversationRequest::Topic {
         conversation: session,
         text: "MONASTERY".into(),
@@ -257,9 +250,9 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
         app.world().get::<PartyInventory>(party).unwrap().gold,
         gold - quote.gold + sale.gold
     );
-    let current = app.world().get::<Conversation>(session).unwrap().current.unwrap().0;
-    let fact = app.world().resource::<Assets<DialogueScript>>().get(&script).unwrap().quotes
-        [current as usize]
+    let c = app.world().get::<Conversation>(session).unwrap();
+    let current = c.current.unwrap().0;
+    let fact = crate::game::npcs::conversation::script(app.world(), c).quotes[current as usize]
         .operations
         .iter()
         .find_map(|op| match op {

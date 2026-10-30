@@ -5,7 +5,7 @@ use super::{
     casting::{Aim, MagicChoice, MagicNews, Refusal, UseContext},
 };
 use crate::{
-    content::{characters::Realm, npcs::DialogueScript, spells::SpellId},
+    content::{characters::Realm, spells::SpellId},
     game::{
         npcs::{
             Npc,
@@ -36,10 +36,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
     if choice.aim != Aim::Monster(body) {
         return Err(Refusal::NoTarget);
     }
-    let script = world
-        .get_resource::<Assets<DialogueScript>>()
-        .and_then(|scripts| scripts.get(&conversation.script))
-        .ok_or(Refusal::MissingContent)?;
+    let script = crate::game::npcs::conversation::script(world, conversation);
     if script.quotes.get(0x16).is_none() || id == SpellId::MINDREAD && script.quotes.len() <= 0x69 {
         return Err(Refusal::MissingContent);
     }

@@ -27,6 +27,13 @@ pub(crate) fn definition(world: &World, actor: Entity) -> &NpcDefinition {
     &catalog(world)[world.get::<ActorId>(actor).expect("an NPC actor").npc()]
 }
 
+/// An NPC actor's dialogue script, loaded before the level that placed it
+/// was entered.
+pub(crate) fn script(world: &World, actor: Entity) -> AssetId<DialogueScript> {
+    let id = world.get::<ActorId>(actor).expect("an NPC actor").npc();
+    world.resource::<NpcAssets>().scripts[&id].id()
+}
+
 /// The party's members awake and well enough to fight, in roster order: the
 /// population retail's NPC rules work with (`hp_current != 0 &&
 /// highest_condition < ASLEEP`, as in `CanNpcJoinParty`, the charm and

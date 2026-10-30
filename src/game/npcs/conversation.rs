@@ -207,7 +207,6 @@ pub enum QuestReward {
 #[derive(Component, Debug)]
 pub struct Conversation {
     pub actor: Entity,
-    pub script: Handle<DialogueScript>,
     /// Temporary effects belong to the affected speakers. Closing the
     /// conversation clears all of them; handing it over transfers none.
     charms: BTreeMap<Entity, i8>,
@@ -537,13 +536,9 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
         return Err(TradeError::Unavailable);
     }
     let id = world.get::<super::ActorId>(actor).ok_or(TradeError::Unavailable)?.npc();
-    let script = world
-        .resource::<NpcAssets>()
-        .scripts
-        .get(&id)
-        .cloned()
-        .ok_or(TradeError::MissingContent)?;
-    if !world.resource::<Assets<DialogueScript>>().contains(&script) {
+    let script =
+        world.resource::<NpcAssets>().scripts.get(&id).ok_or(TradeError::MissingContent)?;
+    if !world.resource::<Assets<DialogueScript>>().contains(script) {
         return Err(TradeError::MissingContent);
     }
     let def = definition(world, actor);
@@ -557,7 +552,6 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
         |quote| VecDeque::from([Step::Quote { quote, subquote: 0, paid: false, plan: None }]);
     let conversation = |queue| Conversation {
         actor,
-        script: script.clone(),
         charms: default(),
         current: None,
         wait: ConversationWait::Ready,
@@ -687,22 +681,16 @@ fn npc_named(world: &World, name: &str) -> Option<Entity> {
 /// answers to it, the conversation simply waits for the party.
 fn hand_over(world: &mut World, entity: Entity, name: &str, quote: u16) {
     let Some(speaker) = npc_named(world, name) else { return };
-    let id = world.get::<super::ActorId>(speaker).unwrap().npc();
-    let Some(script) = world.resource::<NpcAssets>().scripts.get(&id).cloned() else {
-        let mut c = world.get_mut::<Conversation>(entity).unwrap();
-        block(&mut c, quote, None, format!("{name}'s script unavailable"));
-        return;
-    };
     let mut c = world.get_mut::<Conversation>(entity).unwrap();
     c.actor = speaker;
-    c.script = script;
     c.queue.push_front(Step::Quote { quote, subquote: 0, paid: false, plan: None });
 }
 fn block(c: &mut Conversation, quote: u16, entry: Option<usize>, reason: String) {
     c.wait = ConversationWait::Blocked { quote, entry, reason };
 }
-fn script<'w>(world: &'w World, c: &Conversation) -> Option<&'w DialogueScript> {
-    world.resource::<Assets<DialogueScript>>().get(&c.script)
+/// The speaker's script, which loaded before the conversation began.
+pub fn script<'w>(world: &'w World, c: &Conversation) -> &'w DialogueScript {
+    world.resource::<Assets<DialogueScript>>().get(super::script(world, c.actor)).unwrap()
 }
 /// A quote's supported effects and selected control transfer. Planning reads
 /// through preceding assignments, but never changes campaign state or draws RNG.
@@ -1046,14 +1034,10 @@ fn run(world: &mut World, entity: Entity) {
     if c.wait != ConversationWait::Ready || c.queue.is_empty() {
         return;
     }
-    let handle = c.script.clone();
+    let handle = super::script(world, c.actor);
     let Some(party) = the_party(world) else { return };
     world.resource_scope(|world, scripts: Mut<Assets<DialogueScript>>| {
-        // Asset loading is not a terminal dialogue error. Keep the queued work
-        // and retry when its immutable definition is available.
-        if let Some(script) = scripts.get(&handle) {
-            run_script(world, entity, script, party);
-        }
+        run_script(world, entity, scripts.get(handle).unwrap(), party);
     });
 }
 fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party: Entity) {
@@ -1253,7 +1237,7 @@ fn topic(world: &mut World, entity: Entity, text: &str) {
     if !c.ready() || c.menu {
         return;
     }
-    let Some(script) = script(world, c) else { return };
+    let script = script(world, c);
     let cleaned: String = text
         .chars()
         .filter(|ch| ch.is_alphanumeric() || ch.is_whitespace() || *ch == '\'')
@@ -1418,7 +1402,7 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
     let (crucial, value) = (definition_of.crucial, stack_value(definition_of, count));
     let def = definition(world, actor);
     let (voiced, kind) = (def.voice_script, def.kind);
-    let script = script(world, c).ok_or(TradeError::MissingContent)?;
+    let script = script(world, c);
     let answer = script.item_quote(offered);
     // Retail `HandleNpcDialogueItem`: an NPC not yet friendly takes an item
     // as a bribe, valued by the whole stack offered, and keeps it whatever
@@ -1445,8 +1429,7 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
         None if crucial => (REFUSED_GIFT_QUOTE, false),
         None => (ACCEPTED_GIFT_QUOTE, true),
     };
-    let script = self::script(world, world.get::<Conversation>(entity).unwrap())
-        .ok_or(TradeError::MissingContent)?;
+    let script = self::script(world, world.get::<Conversation>(entity).unwrap());
     let plan =
         script.quotes.get(usize::from(quote)).and_then(|line| plan_quote(world, party, line).ok());
     // Retail takes the item at once; the answer's effects follow at its last
@@ -1525,7 +1508,7 @@ fn spend_gift(
 }
 fn reply(world: &mut World, entity: Entity, text: &str) {
     let c = world.get::<Conversation>(entity).unwrap();
-    let Some(script) = script(world, c) else { return };
+    let script = script(world, c);
     if let ConversationWait::Options { quote, words, .. } = &c.wait {
         let matched = words.iter().any(|w| w.eq_ignore_ascii_case(text));
         let Some(entries) = script.quotes.get(usize::from(*quote)).map(|q| &q.operations) else {
@@ -1572,9 +1555,9 @@ fn answer_price(world: &mut World, entity: Entity, accept: bool) {
     }
     let ConversationWait::Price { quote, gold, always } = c.wait else { return };
     let actor = c.actor;
-    let handle = c.script.clone();
+    let handle = super::script(world, actor);
     world.resource_scope(|world, scripts: Mut<Assets<DialogueScript>>| {
-        let Some(line) = scripts.get(&handle).and_then(|s| s.quotes.get(usize::from(quote))) else {
+        let Some(line) = scripts.get(handle).unwrap().quotes.get(usize::from(quote)) else {
             return;
         };
         if accept {
@@ -1915,7 +1898,7 @@ mod tests {
             alternate_description: String::new(),
         }]);
         let script = w.resource_mut::<Assets<DialogueScript>>().add(script);
-        w.insert_resource(NpcAssets { scripts: default() });
+        w.insert_resource(NpcAssets { scripts: [(NpcId(0), script)].into() });
         let level = w.spawn(Level::test(default())).id();
         let actor = w
             .spawn((
@@ -1943,7 +1926,6 @@ mod tests {
         let entity = w
             .spawn(Conversation {
                 actor,
-                script,
                 charms: default(),
                 current: None,
                 wait: ConversationWait::Ready,
@@ -2607,9 +2589,9 @@ mod tests {
             with_items(&mut app);
             app.world_mut().resource_mut::<crate::game::data::Catalogs>().items.0[1].value = 400;
             if !runs {
-                let script = app.world().get::<Conversation>(session).unwrap().script.clone();
+                let script = super::super::script(app.world(), actor);
                 let mut scripts = app.world_mut().resource_mut::<Assets<DialogueScript>>();
-                scripts.get_mut(&script).unwrap().quotes[usize::from(ACCEPTED_GIFT_QUOTE)] =
+                scripts.get_mut(script).unwrap().quotes[usize::from(ACCEPTED_GIFT_QUOTE)] =
                     lines(&["Thanks"], vec![DialogueOp::GiveItem(ItemId(9))]);
             }
             let member = carrier(&mut app, "Ragnar", 1, 1);
@@ -3303,18 +3285,6 @@ mod tests {
                 })
                 .after(update_conversation),
             );
-        let handle = app.world().get::<Conversation>(session).unwrap().script.clone();
-        let script =
-            app.world_mut().resource_mut::<Assets<DialogueScript>>().remove(handle.id()).unwrap();
-        app.update();
-        let changed = app.world().resource::<Lifecycle>().changed;
-        app.update();
-        assert_eq!(app.world().resource::<Lifecycle>().changed, changed);
-        assert_eq!(app.world().get::<Conversation>(session).unwrap().queue.len(), 1);
-        app.world_mut()
-            .resource_mut::<Assets<DialogueScript>>()
-            .insert(handle.id(), script)
-            .unwrap();
         app.update();
         assert!(app.world().get::<Conversation>(session).unwrap().ready());
         let changed = app.world().resource::<Lifecycle>().changed;
@@ -3756,19 +3726,16 @@ mod view_lifecycle_test {
 
     #[test]
     fn added_sessions_build_once_and_idle_transcripts_keep_their_labels() {
-        crate::presentation::conversation::tests::check_session_views(|actor, script| {
-            Conversation {
-                actor,
-                script,
-                current: None,
-                wait: ConversationWait::Ready,
-                transcript: vec![],
-                learned_topics: default(),
-                menu: false,
-                charms: default(),
-                result: None,
-                queue: default(),
-            }
+        crate::presentation::conversation::tests::check_session_views(|actor| Conversation {
+            actor,
+            current: None,
+            wait: ConversationWait::Ready,
+            transcript: vec![],
+            learned_topics: default(),
+            menu: false,
+            charms: default(),
+            result: None,
+            queue: default(),
         });
     }
 }
