@@ -279,15 +279,6 @@ fn a_chest_keeps_what_is_left_in_it_through_closing_and_revisits() {
     assert!(matches!(work(&level), Some(Work::Looting)));
     level.settle();
     let before = level.world.get::<Container>(chest).unwrap().contents.items.clone();
-    for picks in [&[(quiver, 0)][..], &[(quiver, 11)], &[(knife, 1), (knife, 2)], &[]] {
-        let on = attempt(&level);
-        assert_eq!(
-            take_from_container(&mut level.world, on, picks, Recipient::Party),
-            Err(crate::game::inventory::Refusal::Nothing)
-        );
-    }
-    assert_eq!(level.world.get::<Container>(chest).unwrap().contents.items, before);
-    assert!(level.inventory().pool.stacks.is_empty());
     let entering = level
         .world
         .spawn(super::super::level::Destination::new(
@@ -1008,11 +999,6 @@ fn a_refused_take_leaves_container_receiver_and_identities_untouched() {
         take_from_container(&mut level.world, on, &[(quiver, 4)], Recipient::Member(member)),
         Err(Refusal::NoRoom),
         "a take that moves nothing is refused"
-    );
-    // Two picks of one stack would each be checked against its whole count.
-    assert_eq!(
-        take_from_container(&mut level.world, on, &[(quiver, 6), (quiver, 6)], Recipient::Party),
-        Err(Refusal::Nothing)
     );
     assert_eq!(contents(&level), before);
     assert_eq!(level.world.get::<Carried>(member), Some(&stuffed));

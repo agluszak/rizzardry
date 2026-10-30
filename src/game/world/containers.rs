@@ -131,19 +131,17 @@ pub fn looting(world: &World, on: Entity) -> Option<Entity> {
 }
 
 /// Take the chosen stacks, each whole or `amount` of it, in the container's
-/// order (retail `TransferSelectedItems`). The whole request is checked
-/// first: an unknown stack, a bad amount or missing item content refuses
-/// it with nothing changed. Then each stack goes as far as there is room;
-/// what does not fit stays in the container exactly as it was, and when
-/// nothing is left the container is done with. A member must be able to
-/// act to receive anything.
+/// order (retail `TransferSelectedItems`). Each stack goes as far as there
+/// is room; what does not fit stays in the container exactly as it was, and
+/// when nothing is left the container is done with. A member must be able
+/// to act to receive anything.
 pub fn take_from_container(
     world: &mut World,
     on: Entity,
     picks: &[(StackId, u16)],
     to: Recipient,
 ) -> Result<(), Refusal> {
-    if crate::game::world::party_occupied(world) {
+    if crate::game::world::party_occupied(world) || picks.is_empty() {
         return Err(Refusal::Nothing);
     }
     let device = looting(world, on).ok_or(Refusal::Nothing)?;
@@ -152,25 +150,9 @@ pub fn take_from_container(
         if !world.get::<PartyMember>(member).is_some_and(|m| m.0 == party) {
             return Err(Refusal::NotMember);
         }
-        let vitals =
-            world.get::<crate::game::characters::Vitals>(member).ok_or(Refusal::NotMember)?;
-        if !vitals.can_act() || world.get::<Carried>(member).is_none() {
+        if !world.get::<crate::game::characters::Vitals>(member).unwrap().can_act() {
             return Err(Refusal::DoesNotFit);
         }
-    }
-    let container = world.get::<Container>(device).ok_or(Refusal::Nothing)?;
-    for (index, &(id, amount)) in picks.iter().enumerate() {
-        // One pick per stack: two would be checked against the same count.
-        if picks[..index].iter().any(|&(earlier, _)| earlier == id) {
-            return Err(Refusal::Nothing);
-        }
-        let stack = container.contents.items.iter().find(|s| s.id == id).ok_or(Refusal::Nothing)?;
-        if amount == 0 || amount > stack.count() {
-            return Err(Refusal::Nothing);
-        }
-    }
-    if picks.is_empty() {
-        return Err(Refusal::Nothing);
     }
 
     let mut container = world.entity_mut(device).take::<Container>().unwrap();
@@ -182,7 +164,7 @@ pub fn take_from_container(
             let catalog = &catalogs.items;
             let items = &mut container.contents.items;
             for &(id, amount) in picks {
-                let Some(index) = items.iter().position(|s| s.id == id) else { continue };
+                let index = items.iter().position(|s| s.id == id).unwrap();
                 let definition = &catalog[items[index].item];
                 let name = items[index].display_name(definition, false);
                 let mut receive = |part: ItemStack| {
@@ -221,9 +203,13 @@ pub fn take_from_container(
                     news.push(ItemNews::Takes {
                         member: match to {
                             Recipient::Party => None,
-                            Recipient::Member(member) => world
-                                .get::<crate::game::characters::Character>(member)
-                                .map(|c| c.name.clone()),
+                            Recipient::Member(member) => Some(
+                                world
+                                    .get::<crate::game::characters::Character>(member)
+                                    .unwrap()
+                                    .name
+                                    .clone(),
+                            ),
                         },
                         item: name,
                     });

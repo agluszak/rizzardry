@@ -181,9 +181,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
                 if !body.can_fight() || body.conditions.has(Condition::Blind) {
                     continue;
                 }
-                let Some(here) = crate::game::world::actor_position(world, entity) else {
-                    continue;
-                };
+                let here = crate::game::world::actor_position(world, entity);
                 if (here - at).abs().max_element() > far {
                     continue;
                 }
@@ -358,16 +356,15 @@ pub(crate) fn update_lure(world: &mut World) {
             .is_some_and(|body| body.can_fight() && !body.conditions.has(Condition::Blind))
             && influence.response == LureResponse::Controlled;
         let here = crate::game::world::actor_position(world, entity);
-        let goal = match (follows, here, target) {
-            (true, Some(here), Some(target)) if here.distance(target) > 5.0 => {
-                AgentTarget3d::Entity(influence.lure)
-            }
-            _ => AgentTarget3d::None,
+        let goal = if follows && here.distance(target) > 5.0 {
+            AgentTarget3d::Entity(influence.lure)
+        } else {
+            AgentTarget3d::None
         };
         if let Some(mut walking) = world.get_mut::<AgentTarget3d>(entity) {
             *walking = goal;
         }
-        if follows && let Some(target) = target {
+        if follows {
             crate::game::world::face(world, entity, target);
         }
     }
