@@ -131,16 +131,15 @@ pub(super) fn build(commands: &mut Commands, panel: Entity, root: Entity, art: &
 }
 
 pub(super) fn refresh(
-    screen: Option<Single<&InventoryScreen>>,
+    screen: Single<&InventoryScreen>,
     members: Query<CharacterView>,
     content: If<Res<crate::game::data::Catalogs>>,
     battle: Option<Single<&crate::game::combat::Battle>>,
     party_effects: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
-    art: Option<Res<InventoryArt>>,
+    art: Res<InventoryArt>,
     mut values: Query<(&Value, &mut BitmapText)>,
     mut bars: Query<&mut PictureCrop, With<ExperienceBar>>,
 ) {
-    let (Some(screen), Some(art)) = (screen, art) else { return };
     let view = members.get(screen.member).unwrap();
     let load = view.load();
     let armour = view.armour(

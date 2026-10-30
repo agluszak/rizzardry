@@ -127,12 +127,12 @@ struct LootRow(StackId);
 fn open_panel(
     add: On<Add<DeviceInteraction>>,
     attempts: Query<&DeviceInteraction>,
-    art: Option<Res<DevicePanelArt>>,
+    art: Res<DevicePanelArt>,
     focus: Option<ResMut<InputFocus>>,
     mut commands: Commands,
 ) {
     let attempt = add.entity;
-    let (Ok(interaction), Some(art)) = (attempts.get(attempt), art) else { return };
+    let interaction = attempts.get(attempt).unwrap();
     let font = art.font.clone();
     let root = commands
         .spawn((

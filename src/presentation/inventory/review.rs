@@ -489,7 +489,7 @@ pub(super) fn refresh(
     slider: Option<Single<(Entity, &SliderValue, &SliderRange), With<StatsScroll>>>,
     mut commands: Commands,
     content: If<Res<Catalogs>>,
-    art: Option<Res<InventoryArt>>,
+    art: Res<InventoryArt>,
     strings: crate::presentation::screen_art::GameStrings,
     mut fields: Query<(&Field, &mut BitmapText)>,
     mut info_background: Query<&mut Picture, With<InfoBackground>>,
@@ -619,7 +619,7 @@ pub(super) fn refresh(
             Field::Effect(index)
                 if effects.get(index + offset).is_some_and(|(_, heading)| *heading) =>
             {
-                art.as_ref().map(|art| art.green.clone())
+                Some(art.green.clone())
             }
             Field::SkillName(skill) => {
                 let active =
@@ -632,12 +632,12 @@ pub(super) fn refresh(
                             .matched()
                             .all(|other| other.skill(skill) <= level)
                     });
-                art.as_ref().and_then(|art| match (best, active) {
+                match (best, active) {
                     (true, true) => Some(art.yellow.clone()),
                     (true, false) => Some(art.beige.clone()),
                     (false, false) => Some(art.gray.clone()),
                     (false, true) => None,
-                })
+                }
             }
             _ => None,
         };

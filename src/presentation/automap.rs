@@ -347,7 +347,7 @@ pub fn route_map_keys(
 /// world, once its art has loaded.
 pub fn build_automap(
     mut commands: Commands,
-    art: Option<Res<AutomapArt>>,
+    art: Res<AutomapArt>,
     sheets: Res<Assets<SpriteSheet>>,
     mut images: ResMut<Assets<Image>>,
     party: Query<&Transform, With<PartyBody>>,
@@ -355,7 +355,7 @@ pub fn build_automap(
     roots: Query<(Entity, &Automap), Without<AutomapBuilt>>,
 ) {
     let Ok((root, automap)) = roots.single() else { return };
-    let (Some(art), Ok(party)) = (art, party.single()) else { return };
+    let Ok(party) = party.single() else { return };
     let (
         Some(border),
         Some(note_buttons),
@@ -645,11 +645,11 @@ pub fn draw_notes(
     layer: Query<(Entity, Ref<NotesLayer>)>,
     automap: Option<Single<Ref<Automap>>>,
     notes: Query<Ref<MapNotes>>,
-    art: Option<Res<AutomapArt>>,
+    art: Res<AutomapArt>,
     mut views: Query<(Entity, &NoteView, &mut Node, &mut Visibility, &Children)>,
     mut labels: Query<(&mut BitmapText, &mut Visibility), Without<NoteView>>,
 ) {
-    let (Some(map), Some(art), Ok((layer, built))) = (automap, art, layer.single()) else {
+    let (Some(map), Ok((layer, built))) = (automap, layer.single()) else {
         return;
     };
     let Ok(notes) = notes.get(map.level) else { return };
@@ -779,7 +779,7 @@ pub fn update_map_cursor(
     mut commands: Commands,
     windows: Query<(Entity, Option<&bevy::window::CursorIcon>), With<bevy::window::PrimaryWindow>>,
     automap: Option<Single<Ref<Automap>>>,
-    art: Option<Res<AutomapArt>>,
+    art: Res<AutomapArt>,
     sheets: Res<Assets<SpriteSheet>>,
     viewport: Query<&Hovered, With<MapViewport>>,
     assets: Res<AssetServer>,
@@ -788,8 +788,8 @@ pub fn update_map_cursor(
     use bevy::window::{CursorIcon, CustomCursor, CustomCursorImage};
     let Ok((window, current)) = windows.single() else { return };
     let arrow = arrow.get_or_insert_with(|| assets.load("retail://data/cursors/2d-cursors.sti"));
-    let cursor = match (automap, art) {
-        (Some(map), Some(art)) => {
+    let cursor = match automap {
+        Some(map) => {
             let inside = viewport.single().is_ok_and(|hovered| hovered.get());
             let index = match map.tool {
                 Some(MapTool::AddNote) => 2,
@@ -811,7 +811,7 @@ pub fn update_map_cursor(
                 },
             )
         }
-        _ => sheets.get(&*arrow).and_then(|sheet| sheet.images.first()).map_or_else(
+        None => sheets.get(&*arrow).and_then(|sheet| sheet.images.first()).map_or_else(
             CursorIcon::default,
             |handle| {
                 CursorIcon::Custom(CustomCursor::Image(CustomCursorImage {
