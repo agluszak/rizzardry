@@ -952,7 +952,7 @@ fn sync_member_portraits(
     mut commands: Commands,
     roots: Query<Entity, With<MemberSelector>>,
     roster: Single<&PartyRoster>,
-    members: Query<(&Character, Option<&Vitals>)>,
+    members: Query<(&Character, &Vitals)>,
     mut buttons: Query<(Entity, &InventoryMemberButton, &mut Picture)>,
     mut empty: Query<(&EmptyMemberSlot, &mut Visibility)>,
     art: Res<InventoryArt>,
@@ -960,17 +960,17 @@ fn sync_member_portraits(
 ) {
     let Ok(root) = roots.single() else { return };
     for (slot, mut visible) in &mut empty {
-        let occupied = roster.get_index(slot.0).is_some_and(|e| members.contains(*e));
+        let occupied = roster.get_index(slot.0).is_some();
         visible.set_if_neq(visible_if(!occupied));
     }
     for (entity, button, _) in &buttons {
-        if !roster.contains(&button.0) || !members.contains(button.0) {
+        if !roster.contains(&button.0) {
             commands.entity(entity).despawn();
         }
     }
     for (slot, member) in roster.iter().enumerate() {
-        let Ok((profile, vitals)) = members.get(member) else { continue };
-        let name = if vitals.is_some_and(Vitals::is_dead) {
+        let (profile, vitals) = members.get(member).unwrap();
+        let name = if vitals.is_dead() {
             &super::screen_art::skull(profile.race)[1..]
         } else {
             &profile.portrait
