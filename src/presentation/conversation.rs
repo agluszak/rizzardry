@@ -1091,25 +1091,23 @@ fn select(world: &mut World, view: Entity, session: Entity, source: TradeSource,
 /// singleton or a separate registry of UI entity IDs.
 #[derive(bevy::ecs::system::SystemParam)]
 struct ViewScope<'w, 's> {
-    roots: Query<'w, 's, &'static ConversationView>,
-    states: Query<'w, 's, &'static DialogueState>,
+    view: Single<'w, 's, (Entity, &'static ConversationView, &'static DialogueState)>,
     parents: Query<'w, 's, &'static ChildOf>,
 }
 impl ViewScope<'_, '_> {
-    fn owner(&self, entity: Entity) -> Option<(Entity, Entity)> {
-        scope(entity, &self.parents, &self.roots)
+    /// Whether the entity is part of the view.
+    fn contains(&self, entity: Entity) -> bool {
+        entity == self.root() || self.parents.iter_ancestors(entity).any(|a| a == self.root())
     }
-}
-
-/// Existing hierarchy owns controls; the relationship owns the complete view.
-fn scope(
-    entity: Entity,
-    parents: &Query<&ChildOf>,
-    roots: &Query<&ConversationView>,
-) -> Option<(Entity, Entity)> {
-    roots.get(entity).ok().map(|v| (entity, v.0)).or_else(|| {
-        parents.iter_ancestors(entity).find_map(|root| roots.get(root).ok().map(|v| (root, v.0)))
-    })
+    fn root(&self) -> Entity {
+        self.view.0
+    }
+    fn session(&self) -> Entity {
+        self.view.1.0
+    }
+    fn state(&self) -> &DialogueState {
+        self.view.2
+    }
 }
 /// A dialogue the party has left plays out without its view.
 fn close_views(
@@ -1139,11 +1137,11 @@ fn project_text(
     npcs: Query<&crate::game::npcs::ActorId>,
     catalogs: If<Res<Catalogs>>,
     parties: Query<&PartyInventory, With<crate::game::party::roster::Party>>,
-    mut labels: Query<(Entity, &Caption, &mut BitmapText)>,
+    mut labels: Query<(&Caption, &mut BitmapText)>,
 ) {
-    for (entity, caption, mut text) in &mut labels {
-        let Some((root, session)) = views.owner(entity) else { continue };
-        let (Ok(state), Ok(c)) = (views.states.get(root), sessions.get(session)) else { continue };
+    for (caption, mut text) in &mut labels {
+        let session = views.session();
+        let (state, c) = (views.state(), sessions.get(session).unwrap());
         let value = match caption {
             Caption::Name => match state.mode {
                 Mode::Talk => catalogs.npcs[npcs.get(c.actor).unwrap().npc()].source_name.clone(),
@@ -1192,8 +1190,8 @@ fn sync_transcript(
     mut rows: Query<(&TranscriptRow, &mut BitmapText)>,
 ) {
     for (list, children) in &lists {
-        let Some((_, session)) = views.owner(list) else { continue };
-        let Ok(c) = sessions.get(session) else { continue };
+        let (_, session) = (views.root(), views.session());
+        let c = sessions.get(session).unwrap();
         // The current line is still in its speech bubble. Do not print it a
         // second time in the transcript before playback has finished.
         let count = c
@@ -1347,7 +1345,7 @@ fn project_modes(
     catalogs: If<Res<Catalogs>>,
     clock: Res<crate::game::time::GameClock>,
     mut panels: Query<
-        (Entity, &mut Node, Option<&ModePanel>, Option<&mut QuoteBubble>, Has<MenuPanel>),
+        (&mut Node, Option<&ModePanel>, Option<&mut QuoteBubble>, Has<MenuPanel>),
         Or<(With<ModePanel>, With<QuoteBubble>, With<MenuPanel>)>,
     >,
     approaches: Query<(Entity, &ApproachButton, Has<InteractionDisabled>)>,
@@ -1373,9 +1371,9 @@ fn project_modes(
         )>,
     >,
 ) {
-    for (entity, mut node, panel, bubble, menu) in &mut panels {
-        let Some((root, session)) = views.owner(entity) else { continue };
-        let (Ok(state), Ok(c)) = (views.states.get(root), sessions.get(session)) else { continue };
+    for (mut node, panel, bubble, menu) in &mut panels {
+        let session = views.session();
+        let (state, c) = (views.state(), sessions.get(session).unwrap());
         let visible = if let Some(mut bubble) = bubble {
             let line = if let ConversationWait::Line { speech, .. } = c.wait {
                 Some((session, speech))
@@ -1396,7 +1394,7 @@ fn project_modes(
     }
     // Each approach waits half a day once tried.
     for (entity, button, disabled) in &approaches {
-        let Some((_, session)) = views.owner(entity) else { continue };
+        let (_, session) = (views.root(), views.session());
         let Some((_, npc)) = sessions.get(session).ok().and_then(|c| npcs.get(c.actor).ok()) else {
             continue;
         };
@@ -1407,8 +1405,8 @@ fn project_modes(
         set_enabled(&mut commands, entity, approach_ready(at, clock.ms), disabled);
     }
     for (entity, disabled, was_selected, mode, pool, category, filter, trade, sort) in &controls {
-        let Some((root, session)) = views.owner(entity) else { continue };
-        let (Ok(state), Ok(c)) = (views.states.get(root), sessions.get(session)) else { continue };
+        let session = views.session();
+        let (state, c) = (views.state(), sessions.get(session).unwrap());
         if trade {
             let can_trade = catalogs.npcs[npcs.get(c.actor).unwrap().0.npc()].owns_stock;
             set_enabled(&mut commands, entity, can_trade, disabled);
@@ -1444,7 +1442,7 @@ fn colour_selections(
     mut labels: Query<(Entity, &ChildOf, &mut ImageNode), With<BitmapText>>,
 ) {
     for (entity, parent, mut image) in &mut labels {
-        if views.owner(entity).is_none() {
+        if !views.contains(entity) {
             continue;
         }
         if let Ok((selected, disabled)) = controls.get(parent.parent()) {
@@ -1466,17 +1464,15 @@ fn colour_selections(
 fn paint_topic_text(
     views: ViewScope,
     assets: Res<AssetServer>,
-    rows: Query<(Entity, &TopicRow, &bevy::picking::hover::Hovered, &Children)>,
+    rows: Query<(&TopicRow, &bevy::picking::hover::Hovered, &Children)>,
     sessions: Query<&Conversation>,
     inputs: Query<(Entity, &EditableText), With<TopicInput>>,
     mut texts: Query<&mut BitmapText>,
 ) {
-    for (entity, row, hovered, children) in &rows {
-        let Some((root, session)) = views.owner(entity) else { continue };
-        let selected = inputs.iter().any(|(input, text)| {
-            views.owner(input).is_some_and(|(owner, _)| owner == root)
-                && text.value().to_string().eq_ignore_ascii_case(&row.0)
-        });
+    for (row, hovered, children) in &rows {
+        let session = views.session();
+        let selected =
+            inputs.iter().any(|(_, text)| text.value().to_string().eq_ignore_ascii_case(&row.0));
         let name = if hovered.0 {
             "paletteyellow"
         } else if sessions
@@ -1506,16 +1502,12 @@ fn route_mode_focus(
     mut focus: ResMut<InputFocus>,
 ) {
     let Some(focused) = focus.get() else { return };
-    let Some((root, _)) = views.owner(focused) else { return };
-    let Ok(state) = views.states.get(root) else { return };
+    let state = views.state();
     if views
         .parents
         .iter_ancestors(focused)
         .any(|p| panels.get(p).is_ok_and(|p| p.0 != (state.mode != Mode::Talk)))
-        && let Some((target, _)) = targets.iter().find(|(e, f)| {
-            f.0 == (state.mode != Mode::Talk)
-                && views.owner(*e).is_some_and(|(owner, _)| owner == root)
-        })
+        && let Some((target, _)) = targets.iter().find(|(_, f)| f.0 == (state.mode != Mode::Talk))
     {
         focus.set(target, FocusCause::Navigated);
     }
@@ -1553,7 +1545,7 @@ fn activate_choice(
     mut requests: MessageWriter<ConversationRequest>,
 ) {
     let Ok(choice) = choices.get(event.entity) else { return };
-    let Some((_, session)) = views.owner(event.entity) else { return };
+    let (_, session) = (views.root(), views.session());
     requests.write(match &choice.answer {
         Answer::Reply(text) => {
             ConversationRequest::Reply { conversation: session, text: text.clone() }
@@ -1570,23 +1562,20 @@ fn activate_trade(
     mut commands: Commands,
 ) {
     let Ok(row) = rows.get(event.entity) else { return };
-    let Some((root, session)) = views.owner(event.entity) else { return };
+    let (root, session) = (views.root(), views.session());
     let (source, quantity) = (row.source, row.quantity);
     commands.queue(move |world: &mut World| select(world, root, session, source, quantity));
 }
 fn activate_topic(
     event: On<Activate>,
-    views: ViewScope,
+    _views: ViewScope,
     rows: Query<&TopicRow>,
     mut inputs: Query<(Entity, &mut EditableText), With<TopicInput>>,
 ) {
     let Ok(row) = rows.get(event.entity) else { return };
-    let Some((root, _)) = views.owner(event.entity) else { return };
-    for (entity, mut input) in &mut inputs {
-        if views.owner(entity).is_some_and(|(owner, _)| owner == root) {
-            input.clear();
-            input.queue_edit(bevy::text::TextEdit::Insert(row.0.clone().into()));
-        }
+    for (_, mut input) in &mut inputs {
+        input.clear();
+        input.queue_edit(bevy::text::TextEdit::Insert(row.0.clone().into()));
     }
 }
 fn sync_choices(
@@ -1613,8 +1602,8 @@ fn sync_choices(
         let string = |id, fallback: &str| {
             strings.table().and_then(|s| s.get(id)).unwrap_or(fallback).to_owned()
         };
-        let Some((_, session)) = views.owner(list) else { continue };
-        let Ok(c) = sessions.get(session) else { continue };
+        let (_, session) = (views.root(), views.session());
+        let c = sessions.get(session).unwrap();
         let answers: Vec<(String, Answer)> = match &c.wait {
             // A typed answer goes through the topic input instead.
             ConversationWait::Options { words, typed: false, .. } => {
@@ -1746,8 +1735,7 @@ fn sync_topic_rows(
     rows: Query<&TopicRow>,
 ) {
     for (list, children) in &lists {
-        let Some((root, _)) = views.owner(list) else { continue };
-        let Ok(state) = views.states.get(root) else { continue };
+        let state = views.state();
         let mut topics: Vec<_> = facts
             .topics
             .iter()
@@ -1811,9 +1799,8 @@ struct TradeWidgets<'w, 's> {
     quantities: Query<'w, 's, (Entity, Has<InteractionDisabled>), With<QuantityControl>>,
     texts: Query<'w, 's, &'static mut BitmapText>,
     controls: Query<'w, 's, (Entity, Has<InteractionDisabled>), With<Confirm>>,
-    previews:
-        Query<'w, 's, (Entity, &'static mut Picture, &'static mut Visibility), With<ItemPreview>>,
-    gifts: Query<'w, 's, (Entity, &'static EditableText, &'static mut Node), With<GiftGold>>,
+    previews: Query<'w, 's, (&'static mut Picture, &'static mut Visibility), With<ItemPreview>>,
+    gifts: Query<'w, 's, (&'static EditableText, &'static mut Node), With<GiftGold>>,
 }
 fn sync_trade_rows(
     views: ViewScope,
@@ -1841,8 +1828,8 @@ fn sync_trade_rows(
     let items = &content.items;
     let Ok((roster, party)) = parties.single() else { return };
     for (list, children) in &lists {
-        let Some((root, session)) = views.owner(list) else { continue };
-        let (Ok(state), Ok(c)) = (views.states.get(root), sessions.get(session)) else { continue };
+        let session = views.session();
+        let (state, c) = (views.state(), sessions.get(session).unwrap());
         if state.mode == Mode::Talk {
             continue;
         }
@@ -1920,8 +1907,7 @@ fn sync_trade_rows(
             String::new()
         };
         for entity in &offers {
-            if views.owner(entity).is_some_and(|(owner, _)| owner == root)
-                && let Ok(mut text) = texts.get_mut(entity)
+            if let Ok(mut text) = texts.get_mut(entity)
                 && text.value != offer
             {
                 text.value = offer.clone();
@@ -1943,9 +1929,7 @@ fn sync_trade_rows(
             })
             .unwrap_or(0);
         for (entity, count) in &captions {
-            if views.owner(entity).is_some_and(|(owner, _)| owner == root)
-                && let Ok(mut text) = texts.get_mut(entity)
-            {
+            if let Ok(mut text) = texts.get_mut(entity) {
                 let value = quote.map_or_else(String::new, |q| {
                     if count {
                         if units > 1 { q.quantity.to_string() } else { String::new() }
@@ -1961,34 +1945,25 @@ fn sync_trade_rows(
             }
         }
         for (entity, disabled) in &quantities {
-            if views.owner(entity).is_some_and(|(owner, _)| owner == root) {
-                set_enabled(
-                    &mut commands,
-                    entity,
-                    state.mode != Mode::Give
-                        && units > 1
-                        && item.is_some_and(|d| d.class != EquipClass::Ammunition),
-                    disabled,
-                );
-            }
+            set_enabled(
+                &mut commands,
+                entity,
+                state.mode != Mode::Give
+                    && units > 1
+                    && item.is_some_and(|d| d.class != EquipClass::Ammunition),
+                disabled,
+            );
         }
         let mut gold_typed = false;
-        for (entity, text, mut node) in &mut gifts {
-            if views.owner(entity).is_some_and(|(owner, _)| owner == root) {
-                let shown = state.mode == Mode::Give && quote.is_none();
-                crate::presentation::screen_art::display_if(&mut node, shown);
-                gold_typed = shown && gift_amount(text) > 0;
-            }
+        for (text, mut node) in &mut gifts {
+            let shown = state.mode == Mode::Give && quote.is_none();
+            crate::presentation::screen_art::display_if(&mut node, shown);
+            gold_typed = shown && gift_amount(text) > 0;
         }
         for (entity, disabled) in &controls {
-            if views.owner(entity).is_some_and(|(owner, _)| owner == root) {
-                set_enabled(&mut commands, entity, quote.is_some() || gold_typed, disabled);
-            }
+            set_enabled(&mut commands, entity, quote.is_some() || gold_typed, disabled);
         }
-        for (entity, mut picture, mut visibility) in &mut previews {
-            if !views.owner(entity).is_some_and(|(owner, _)| owner == root) {
-                continue;
-            }
+        for (mut picture, mut visibility) in &mut previews {
             visibility.set_if_neq(if item.is_some() {
                 Visibility::Inherited
             } else {
@@ -2190,10 +2165,9 @@ fn submit_topic(
         if !text.pending_edits.is_empty() || text.pending_paste.is_some() {
             continue;
         }
-        if let Some((_, session)) = views.owner(entity)
-            && let Ok(c) = sessions.get(session)
-            && let Some(request) = submit.request(text, session)
-        {
+        let session = views.session();
+        if let Some(request) = submit.request(text, session) {
+            let c = sessions.get(session).unwrap();
             let request = match request {
                 ConversationRequest::Topic { conversation, text }
                     if matches!(c.wait, ConversationWait::Options { typed: true, .. }) =>
@@ -2387,71 +2361,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn session_ownership_rejects_stale_choices_and_cleans_only_its_views() {
-        let mut world = World::new();
-        world.init_resource::<Messages<ConversationRequest>>();
-        world.add_observer(activate_choice);
-        world.add_observer(activate_trade);
-        let first = world.spawn_empty().id();
-        let second = world.spawn_empty().id();
-        let view = world.spawn((ConversationView(first), DialogueState::default())).id();
-        let other = world.spawn((ConversationView(second), DialogueState::default())).id();
-        let row = world
-            .spawn((Button, Choice { index: 0, answer: Answer::Price(true) }, ChildOf(view)))
-            .id();
-        world.trigger(Activate { entity: row });
-        let requests: Vec<_> =
-            world.resource_mut::<Messages<ConversationRequest>>().drain().collect();
-        assert!(
-            matches!(&requests[..],[ConversationRequest::PriceAnswer{conversation,accept:true}] if *conversation==first)
-        );
-        let other_row = world
-            .spawn((Button, Choice { index: 0, answer: Answer::Price(false) }, ChildOf(other)))
-            .id();
-        world.trigger(Activate { entity: other_row });
-        let requests: Vec<_> =
-            world.resource_mut::<Messages<ConversationRequest>>().drain().collect();
-        assert!(matches!(&requests[..], [ConversationRequest::PriceAnswer {
-            conversation, accept: false
-        }] if *conversation == second));
-        let trade = world
-            .spawn((
-                TradeRow {
-                    source: TradeSource::Stock(crate::game::npcs::trade::StockLotId(1)),
-                    quantity: 1,
-                },
-                ChildOf(other),
-            ))
-            .id();
-        world.trigger(Activate { entity: trade });
-        world.flush();
-        // The stale stock is refused on its own view, never the first view.
-        assert!(world.get::<DialogueState>(other).unwrap().error.is_some());
-        assert!(world.get::<DialogueState>(view).unwrap().error.is_none());
-        // A removed view's retained callback cannot route into the other session.
-        world.despawn(first);
-        assert!(world.get_entity(view).is_err());
-        assert!(world.get_entity(row).is_err());
-        assert!(world.get_entity(other).is_ok());
-        world.trigger(Activate { entity: row });
-        assert!(world.resource::<Messages<ConversationRequest>>().is_empty());
-        // Queued trade selection retains its accepted identity and revalidates it.
-        select(
-            &mut world,
-            other,
-            first,
-            TradeSource::Stock(crate::game::npcs::trade::StockLotId(1)),
-            1,
-        );
-        assert!(world.get::<DialogueState>(other).unwrap().selected.is_none());
-        world.despawn(second);
-        for entity in [other, other_row, trade] {
-            assert!(world.get_entity(entity).is_err());
-        }
-    }
-
-    #[test]
-    fn topic_projection_retains_rows_and_late_art_without_crossing_view_boundaries() {
+    fn topic_projection_retains_rows_and_late_art() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<SpriteSheet>()
@@ -2468,7 +2378,6 @@ pub(crate) mod tests {
         app.world_mut().resource_mut::<StoryFacts>().topics =
             vec![(TopicCategory::Person, "Burz".into()), (TopicCategory::Place, "Arnika".into())];
         let first = app.world_mut().spawn_empty().id();
-        let second = app.world_mut().spawn_empty().id();
         let view = app
             .world_mut()
             .spawn((
@@ -2476,20 +2385,10 @@ pub(crate) mod tests {
                 DialogueState { category: Some(TopicCategory::Person), ..default() },
             ))
             .id();
-        let other = app
-            .world_mut()
-            .spawn((
-                ConversationView(second),
-                DialogueState { category: Some(TopicCategory::Place), ..default() },
-            ))
-            .id();
         let list = app.world_mut().spawn((TopicRows, ChildOf(view))).id();
-        let other_list = app.world_mut().spawn((TopicRows, ChildOf(other))).id();
         app.update();
         let row = app.world().get::<Children>(list).unwrap()[0];
-        let other_row = app.world().get::<Children>(other_list).unwrap()[0];
         assert_eq!(app.world().get::<TopicRow>(row).unwrap().0, "Burz");
-        assert_eq!(app.world().get::<TopicRow>(other_row).unwrap().0, "Arnika");
         let label = app.world().get::<Children>(row).unwrap()[0];
         let font = app.world().get::<BitmapText>(label).unwrap().font.clone();
         let frames = vec![
@@ -2518,11 +2417,9 @@ pub(crate) mod tests {
         app.update();
         app.update();
         assert_eq!(app.world().get::<Children>(list).unwrap()[1], row);
-        assert_eq!(app.world().get::<Children>(other_list).unwrap()[0], other_row);
         assert_eq!(app.world().get::<ImageNode>(label).unwrap().color.alpha(), 1.);
         assert_eq!(app.world().get::<Node>(label).unwrap().width, px(8));
         app.world_mut().despawn(first);
         assert!(app.world().get_entity(row).is_err());
-        assert!(app.world().get_entity(other_row).is_ok());
     }
 }
