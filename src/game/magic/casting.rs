@@ -546,7 +546,7 @@ fn prepare_source<'a>(
             if vitals.conditions.has(Condition::Silenced) {
                 return Err(Refusal::Silenced);
             }
-            let (learned, pool) = points.get(caster).map_err(|_| Refusal::NotLearned)?;
+            let (learned, pool) = points.get(caster).unwrap();
             if !learned.0.contains(&spell) {
                 return Err(Refusal::NotLearned);
             }
@@ -662,7 +662,7 @@ pub fn perform(
         let cast_power = match &item {
             Some(_) => power,
             None => {
-                let (learned, pool) = points.get(caster).map_err(|_| Refusal::NotLearned)?;
+                let (learned, pool) = points.get(caster).unwrap();
                 let maximum = world.mana_maximum(caster, learned);
                 let affordable = pool.affordable_power(spell, &maximum);
                 if affordable == 0 {
@@ -896,7 +896,7 @@ pub(crate) fn perform_utility(
         }
         Some(_) => power,
         None => {
-            let (learned, pool) = points.get(caster).map_err(|_| Refusal::NotLearned)?;
+            let (learned, pool) = points.get(caster).unwrap();
             let vitals = members.get(caster).unwrap().1;
             let maximum = character.stats(&vitals.enchantments).max_points(learned, spells);
             power.min(MAX_POWER).min(pool.affordable_power(spell, &maximum))
@@ -994,7 +994,7 @@ fn pay(
 ) -> Result<(), Refusal> {
     let fatigue = match item {
         None => {
-            let (_, mut pool) = points.get_mut(caster).map_err(|_| Refusal::NotLearned)?;
+            let (_, mut pool) = points.get_mut(caster).unwrap();
             let realm = spell.realm.expect("a cast spell has a realm");
             pool.spend(realm, spell.cost_at(power));
             super::cast_fatigue(spell, power)

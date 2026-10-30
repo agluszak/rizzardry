@@ -397,12 +397,12 @@ pub fn special_attack(
                                     .members
                                     .get(member)
                                     .is_ok_and(|(_, vitals, ..)| !vitals.is_dead());
-                                let drained = match points.get_mut(member) {
-                                    Ok((known, mut pool)) if alive => {
-                                        let maximum = world.mana_maximum(member, known);
-                                        pool.drain_realm(realm, amount * 6, &maximum)
-                                    }
-                                    _ => 0,
+                                let drained = if alive {
+                                    let (known, mut pool) = points.get_mut(member).unwrap();
+                                    let maximum = world.mana_maximum(member, known);
+                                    pool.drain_realm(realm, amount * 6, &maximum)
+                                } else {
+                                    0
                                 };
                                 Some(Effect::Drained { victim, amount: drained })
                             }
@@ -1065,12 +1065,12 @@ pub fn blow(
             }
             E::DrainSpellPoints => match victim {
                 Victim::Member(member) => {
-                    drain(rng, world, victim, Realm::Divine, power, (count, 6, count)).and_then(
+                    drain(rng, world, victim, Realm::Divine, power, (count, 6, count)).map(
                         |amount| {
-                            let (learned, mut pool) = points.get_mut(member).ok()?;
+                            let (learned, mut pool) = points.get_mut(member).unwrap();
                             let maximum = world.mana_maximum(member, learned);
                             let amount = pool.drain(amount, &maximum, rng);
-                            Some(Effect::Drained { victim, amount })
+                            Effect::Drained { victim, amount }
                         },
                     )
                 }
@@ -1265,9 +1265,8 @@ pub fn resolve(
                 let amount = base + base * strength.boost / 100;
                 // Anti-Magic drains the whole living party, not only captured victims.
                 for &member in world.party {
-                    if world.members.get(member).is_ok_and(|(_, v, ..)| !v.is_dead())
-                        && let Ok((learned, mut pool)) = points.get_mut(member)
-                    {
+                    if world.members.get(member).is_ok_and(|(_, v, ..)| !v.is_dead()) {
+                        let (learned, mut pool) = points.get_mut(member).unwrap();
                         let maximum = world.mana_maximum(member, learned);
                         let amount = pool.drain(amount, &maximum, rng);
                         effects.push(Effect::Drained { victim: Victim::Member(member), amount });
@@ -1285,9 +1284,7 @@ pub fn resolve(
             }
             // Retail rolls even when every realm is already full.
             let amount = magnitude(rng, spell.dice, strength);
-            let Ok((_, mut pool)) = points.get_mut(member) else {
-                return Some(Effect::Nothing { victim: v });
-            };
+            let (_, mut pool) = points.get_mut(member).unwrap();
             let amount = pool.restore_evenly(amount);
             Some(if amount == 0 {
                 Effect::Nothing { victim: v }
@@ -1499,7 +1496,8 @@ pub fn resolve(
                         victim: Victim::Member(member),
                         amount: v.hp - before,
                     });
-                } else if let Ok((_, mut pool)) = points.get_mut(member) {
+                } else {
+                    let (_, mut pool) = points.get_mut(member).unwrap();
                     let amount = pool.restore_evenly(drained);
                     effects.push(Effect::Replenished { victim: Victim::Member(member), amount });
                 }
@@ -1783,7 +1781,7 @@ fn neediest(
             let percent = if health {
                 i64::from(v.hp * 100 / c.stats(&v.enchantments).max_hp().max(1))
             } else {
-                let (learned, pool) = points.get(m).ok()?;
+                let (learned, pool) = points.get(m).unwrap();
                 let maxima = world.mana_maximum(m, learned);
                 let maximum: u32 = maxima.values().sum();
                 if maximum == 0 {
@@ -1968,11 +1966,10 @@ pub(crate) fn pulse_clouds(
                     if id == SpellId::DRAINING_CLOUD && amount > 0 {
                         match victim {
                             Victim::Member(member) => {
-                                if let Ok((known, mut mana)) = points.get_mut(member) {
-                                    let maximum = world.mana_maximum(member, known);
-                                    for realm in enumset::EnumSet::<Realm>::all() {
-                                        mana.drain_realm(realm, amount, &maximum);
-                                    }
+                                let (known, mut mana) = points.get_mut(member).unwrap();
+                                let maximum = world.mana_maximum(member, known);
+                                for realm in enumset::EnumSet::<Realm>::all() {
+                                    mana.drain_realm(realm, amount, &maximum);
                                 }
                             }
                             Victim::Monster(monster) => {
