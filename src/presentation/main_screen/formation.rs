@@ -4,11 +4,10 @@
 
 use bevy::prelude::*;
 
-use super::{MainScreenArt, layer, loaded};
-use crate::content::ui::SpriteSheet;
+use super::{MainScreenArt, layer};
 use crate::game::party::formation::{Formation, Row};
 use crate::game::party::roster::PartyRoster;
-use crate::presentation::screen_art::{Picture, picture, sprite};
+use crate::presentation::screen_art::{Picture, picture};
 
 const BOARD: Vec2 = Vec2::new(519.0, 359.0);
 
@@ -31,9 +30,9 @@ pub(super) struct FormationMarker {
     arrow: bool,
 }
 
-pub fn panel(art: &MainScreenArt, sheets: &Assets<SpriteSheet>) -> impl SceneList {
-    let cage = sprite(loaded(sheets, &art.formation_cage), 0, BOARD);
-    let cone = sprite(loaded(sheets, &art.view_cone), 0, BOARD);
+pub fn panel(art: &MainScreenArt) -> impl SceneList {
+    let cage = picture(art.formation_cage.clone(), 0, BOARD);
+    let cone = picture(art.view_cone.clone(), 0, BOARD);
     let markers: Vec<_> = (0..8).flat_map(|slot| [true, false].map(move |arrow| (slot, arrow)))
         .map(|(slot, arrow)| {
             let sheet = if arrow { art.formation_symbols.clone() } else { art.formation_jewels.clone() };

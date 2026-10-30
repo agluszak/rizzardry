@@ -403,7 +403,6 @@ pub(super) fn cast(
                 victims: victims.clone(),
                 reflected: false,
             };
-            let spells = field.spells;
             crate::game::magic::impacts::resolve(
                 scene.caster,
                 crate::game::magic::casting::Origin::Actor(Victim::Monster(scene.caster)),
@@ -413,7 +412,6 @@ pub(super) fn cast(
                 &victims,
                 Some(&finish),
                 PartyBody::eye_above(scene.party_at),
-                spells,
                 rng,
                 field,
                 points,

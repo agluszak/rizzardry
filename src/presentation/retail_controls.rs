@@ -66,6 +66,17 @@ pub fn set_enabled(commands: &mut Commands, entity: Entity, enabled: bool, disab
     }
 }
 
+/// Project a screen's choice into the native widget state only when it changes.
+pub fn set_selected(commands: &mut Commands, entity: Entity, selected: bool, was_selected: bool) {
+    if selected != was_selected {
+        if selected {
+            commands.entity(entity).insert(bevy::ui::Selected);
+        } else {
+            commands.entity(entity).remove::<bevy::ui::Selected>();
+        }
+    }
+}
+
 pub fn paint_controls(
     focus: Option<Res<InputFocus>>,
     mut controls: Query<(

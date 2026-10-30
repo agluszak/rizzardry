@@ -610,11 +610,11 @@ pub fn perform(
     caster: Entity,
     choice: MagicChoice,
     situation: &Situation,
-    spells: &SpellCatalog,
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
     rng: &mut GameRng,
     world: &mut Field,
 ) -> Result<(Report, Vec<SpellInFlight>), Refusal> {
+    let spells = world.spells;
     let Prepared { character, spell, power, item, forced_self } = prepare_source(
         caster,
         choice.source,
@@ -638,7 +638,7 @@ pub fn perform(
     }
     // Instruments can pay fatigue while finding power, so validate the target
     // first. Radius changes may widen victims but cannot rescue an invalid aim.
-    capture(caster, spell, choice.aim, situation, forced_self)?;
+    let (captured, landing) = capture(caster, spell, choice.aim, situation, forced_self)?;
     let power = match &item {
         Some(use_) if matches!(use_.definition.use_type, UseType::Instrument | UseType::Gadget) => {
             play(caster, &character, use_, spell, rng, world.members)?
@@ -683,7 +683,7 @@ pub fn perform(
                 }
             }
         };
-        let (mut victims, landing) = capture(caster, spell, choice.aim, situation, forced_self)?;
+        let mut victims = captured.clone();
         if spell.targeting == Targeting::Radius && !forced_self {
             let centre = landing.ok_or(Refusal::NoTarget)?;
             victims = super::targeting::radius(
@@ -810,7 +810,6 @@ pub fn perform(
                 &victims,
                 Some(&finish),
                 situation.party_at,
-                spells,
                 rng,
                 world,
                 &mut *points,

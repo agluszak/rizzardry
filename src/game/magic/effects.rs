@@ -567,7 +567,7 @@ pub struct Field<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
     /// dated by.
     pub now: u64,
     pub difficulty: Difficulty,
-    /// The living party, for spells that pick among it.
+    /// The current roster in order, including dead members eligible for revival.
     pub party: &'a [Entity],
     /// Skills that improved while resolving, for the notices.
     pub improved: Vec<(Entity, Skill)>,
@@ -1894,11 +1894,11 @@ pub fn all_restored(spell: SpellId, victims: &[Victim], members: &Members) -> bo
 pub(crate) fn pulse_clouds(
     combatants: &[Entity],
     party_eye: Vec3,
-    spells: &crate::content::spells::SpellCatalog,
     rng: &mut GameRng,
     world: &mut Field,
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
 ) -> Vec<(SpellId, Vec<Effect>)> {
+    let spells = world.spells;
     let mut reports = Vec::new();
     let party: Vec<_> = world.party.iter().copied().map(Victim::Member).collect();
     let targets = std::iter::once(None).chain(combatants.iter().copied().map(Some));

@@ -794,7 +794,7 @@ pub enum DeviceRequest {
 pub(crate) fn plugin(app: &mut App) {
     app.add_message::<DeviceRequest>().add_systems(
         Update,
-        handle_device_requests.after(GameplaySet::Stats).before(GameplaySet::Combat),
+        handle_device_requests.after(GameplaySet::Burden).before(GameplaySet::Combat),
     );
 }
 

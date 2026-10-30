@@ -16,6 +16,19 @@ use enum_map::{Enum, EnumMap};
 use enumset::EnumSetType;
 use std::num::NonZeroU16;
 
+pub(crate) fn plugin(app: &mut App) {
+    app.init_resource::<ItemIds>()
+        .add_message::<ItemNews>()
+        .add_observer(operations::put_away_held)
+        .add_systems(
+            Update,
+            distribute_burden
+                .run_if(not(any_with_component::<super::combat::Battle>))
+                .in_set(super::GameplaySet::Burden)
+                .run_if(super::world::level::level_active),
+        );
+}
+
 /// Identifies a surviving stack, not each physical object within it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct StackId(pub u64);

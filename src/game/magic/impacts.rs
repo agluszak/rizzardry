@@ -7,7 +7,7 @@ use super::{
     targeting::{self, Recipients},
 };
 use crate::{
-    content::spells::{SpellCatalog, SpellDefinition, SpellId, Targeting},
+    content::spells::{SpellDefinition, SpellId, Targeting},
     game::{rng::GameRng, world::hostility::Stance},
 };
 use bevy::prelude::*;
@@ -118,12 +118,12 @@ pub(crate) fn resolve(
     victims: &[Victim],
     finish: Option<&Finalization>,
     party_at: Vec3,
-    spells: &SpellCatalog,
     rng: &mut GameRng,
     world: &mut Field,
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
     flights: &mut Vec<SpellInFlight>,
 ) -> Vec<Effect> {
+    let spells = world.spells;
     let mut landed =
         effects::resolve(origin.actor(), backfired, spell, strength, victims, rng, world, points);
     let Some(finish) = finish else { return landed };
@@ -308,7 +308,6 @@ pub(crate) fn resolve(
                     &victims,
                     Some(&finish),
                     party_at,
-                    spells,
                     rng,
                     world,
                     points,
@@ -360,7 +359,6 @@ pub(crate) fn resolve(
                 &victims,
                 Some(&finish),
                 party_at,
-                spells,
                 rng,
                 world,
                 points,

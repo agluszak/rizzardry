@@ -79,16 +79,6 @@ pub fn screen() -> impl Scene {
     bsn! { Node { width: px(SCREEN.x), height: px(SCREEN.y) } }
 }
 
-/// A sheet's frame drawn with its top-left at `at`, shifted by the frame's
-/// own offset as retail's sprite drawing does. It does not catch the
-/// pointer; a button adds `Pickable::default()`.
-pub fn sprite(sheet: &SpriteSheet, frame: usize, at: Vec2) -> Option<impl Scene + use<>> {
-    let (image, info) = (sheet.images.get(frame)?.clone(), sheet.frames.get(frame)?);
-    let offset = Vec2::new(f32::from(info.offset[0]), f32::from(info.offset[1]));
-    let node = absolute(at + offset, Vec2::new(info.width as f32, info.height as f32));
-    Some(bsn! { ImageNode { image: {image} } node Pickable::IGNORE })
-}
-
 /// A rectangle of colour at `at` of `size`.
 pub fn rect(at: Vec2, size: Vec2, colour: Color) -> impl Scene {
     let node = absolute(at, size);

@@ -88,16 +88,20 @@ fn a_green_slime_leaves_treasure() {
     // With this seed the three Green Slimes leave two item stacks.
     let mut app = game(&["--continuous", "--seed", "9", "--start=69.5,10,-24", "--yaw", "0"]);
     step_until(&mut app, "the Monastery becoming active", |w| playing(w).is_some());
-    let before = lying_items(app.world_mut());
+    let world = app.world_mut();
+    let before: Vec<_> = world.query_filtered::<Entity, With<WorldItem>>().iter(world).collect();
     step_until(&mut app, "a fight with the slimes", |w| fighting(w));
     step_until(&mut app, "the fight's end", |w| !fighting(w));
-    assert_eq!(lying_items(app.world_mut()), before + 2);
+    assert_eq!(lying_items(app.world_mut()), before.len() + 2);
 
     // Taking the resolved treasure, within reach, uses the same gameplay
     // operation as the rendered input adapter.
     let world = app.world_mut();
-    let loot = world.query::<(Entity, &Name)>().iter(world).find(|(_, n)| n.as_str() == "loot");
-    let (loot, _) = loot.expect("the treasure lies in the world");
+    let loot = world
+        .query_filtered::<Entity, With<WorldItem>>()
+        .iter(world)
+        .find(|entity| !before.contains(entity))
+        .expect("new treasure lies in the world");
     let at = world.get::<Transform>(loot).unwrap().translation;
     let mut body = world
         .query_filtered::<&mut avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>()
@@ -108,7 +112,7 @@ fn a_green_slime_leaves_treasure() {
     step_until(&mut app, "taking the treasure", |w| {
         w.try_query::<&PartyInventory>().unwrap().single(w).is_ok_and(|p| p.hand.held.is_some())
     });
-    assert_eq!(lying_items(app.world_mut()), before + 1);
+    assert_eq!(lying_items(app.world_mut()), before.len() + 1);
 }
 
 #[test]
