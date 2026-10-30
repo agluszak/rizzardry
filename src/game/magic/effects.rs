@@ -333,7 +333,7 @@ fn resisted(
     amount: u32,
     against: u32,
 ) -> Option<u32> {
-    let target = target(world, victim, realm, None)?;
+    let target = target(world, victim, realm, None);
     (!target.dead).then(|| resist(rng, amount, target.resistance, target.level, against))
 }
 
@@ -393,10 +393,7 @@ pub fn special_attack(
                         Some(amount) => match victim {
                             // Retail drains the realm six times over.
                             Victim::Member(member) => {
-                                let alive = world
-                                    .members
-                                    .get(member)
-                                    .is_ok_and(|(_, vitals, ..)| !vitals.is_dead());
+                                let alive = !world.members.get(member).unwrap().1.is_dead();
                                 let drained = if alive {
                                     let (known, mut pool) = points.get_mut(member).unwrap();
                                     let maximum = world.mana_maximum(member, known);
@@ -426,9 +423,11 @@ pub fn special_attack(
                     if definition.resisted {
                         damage(rng, world, victim, realm, rolled, against)
                     } else {
-                        target(world, victim, realm, None)
-                            .filter(|t| !t.dead)
-                            .and_then(|_| hurt(rng, world, victim, rolled))
+                        if target(world, victim, realm, None).dead {
+                            None
+                        } else {
+                            hurt(rng, world, victim, rolled)
+                        }
                     }
                 }
             };
@@ -680,24 +679,19 @@ struct Target {
     dead: bool,
 }
 
-fn target(
-    world: &Field,
-    victim: Victim,
-    realm: Realm,
-    condition: Option<Condition>,
-) -> Option<Target> {
+fn target(world: &Field, victim: Victim, realm: Realm, condition: Option<Condition>) -> Target {
     match victim {
         Victim::Monster(monster) => {
-            let (body, ..) = world.monsters.monsters().get(monster).ok()?;
+            let (body, ..) = world.monsters.monsters().get(monster).unwrap();
             let kind = &world.species[body.species];
-            Some(Target {
+            Target {
                 level: u32::from(kind.level),
                 resistance: body.resistance(kind, realm),
                 side: Some(world.monsters.stance(monster, world.now)),
                 turncoat: false,
                 immune: condition.is_some_and(|c| immune(kind.kind, c)),
                 dead: body.is_dead(),
-            })
+            }
         }
         Victim::Member(member) => {
             let (character, vitals, carried, _) = world.members.get(member).unwrap();
@@ -707,14 +701,14 @@ fn target(
                 world.items,
                 world.enchantments,
             );
-            Some(Target {
+            Target {
                 level: u32::from(character.level()),
                 resistance: resistances[realm].total,
                 side: None,
                 turncoat: vitals.conditions.has(Condition::Turncoat),
                 immune: false,
                 dead: vitals.is_dead(),
-            })
+            }
         }
     }
 }
@@ -782,7 +776,10 @@ fn resisted_magnitude(
     rolled: u32,
     against: u32,
 ) -> Option<u32> {
-    let target = target(world, victim, realm, None).filter(|target| !target.dead)?;
+    let target = target(world, victim, realm, None);
+    if target.dead {
+        return None;
+    }
     Some(resist(rng, rolled, target.resistance, target.level, against))
 }
 
@@ -907,7 +904,9 @@ fn attack(
         return None;
     }
     // A victim that died or left is not attacked at all.
-    target(world, victim, realm, Some(condition)).filter(|t| !t.dead)?;
+    if target(world, victim, realm, Some(condition)).dead {
+        return None;
+    }
     let rounds = duration(rng, spell, strength);
     afflict(rng, world, victim, (Some(condition), 0), realm, strength.against, Some(rounds))
 }
@@ -926,14 +925,14 @@ fn afflict(
     against: u32,
     rounds: Option<u32>,
 ) -> Option<Effect> {
-    let target = target(world, victim, realm, condition)?;
+    let target = target(world, victim, realm, condition);
     if target.dead {
         return None;
     }
     let death_immune = match victim {
         Victim::Monster(monster) => {
             condition.is_none() && {
-                let (body, ..) = world.monsters.monsters().get(monster).ok()?;
+                let (body, ..) = world.monsters.monsters().get(monster).unwrap();
                 world.species[body.species].death_immune
             }
         }
@@ -1013,7 +1012,7 @@ pub fn blow(
     use crate::content::items::AttackEffect as E;
     let mut landed = Vec::new();
     for (effect, &chance) in &effects.chances {
-        if target(world, victim, Realm::Fire, None).is_none_or(|t| t.dead) {
+        if target(world, victim, Realm::Fire, None).dead {
             break;
         }
         if chance == 0 || rng.below(100) >= u32::from(chance) {
@@ -1094,7 +1093,10 @@ fn drain(
     power: u32,
     (count, sides, base): (u32, u8, u32),
 ) -> Option<u32> {
-    let target = target(world, victim, realm, None).filter(|t| !t.dead)?;
+    let target = target(world, victim, realm, None);
+    if target.dead {
+        return None;
+    }
     if saves(rng, world, victim, &target, 0, power) {
         return None;
     }
@@ -1112,7 +1114,7 @@ fn slay(
     realm: Realm,
     strength: Strength,
 ) -> Option<Effect> {
-    let target = target(world, victim, realm, None)?;
+    let target = target(world, victim, realm, None);
     if target.dead {
         return None;
     }
@@ -1129,7 +1131,7 @@ fn slay(
 fn kill(rng: &mut GameRng, world: &mut Field, victim: Victim) -> Option<Effect> {
     // A failed death save inflicts Dead; it is not absorbable damage.
     let Victim::Monster(monster) = victim else { return perish(rng, world, victim) };
-    let hp = world.monsters.monsters().get(monster).ok()?.0.hp;
+    let hp = world.monsters.monsters().get(monster).unwrap().0.hp;
     world
         .monsters
         .enchantments_mut(monster)
@@ -1265,7 +1267,7 @@ pub fn resolve(
                 let amount = base + base * strength.boost / 100;
                 // Anti-Magic drains the whole living party, not only captured victims.
                 for &member in world.party {
-                    if world.members.get(member).is_ok_and(|(_, v, ..)| !v.is_dead()) {
+                    if !world.members.get(member).unwrap().1.is_dead() {
                         let (learned, mut pool) = points.get_mut(member).unwrap();
                         let maximum = world.mana_maximum(member, learned);
                         let amount = pool.drain(amount, &maximum, rng);
@@ -1310,7 +1312,7 @@ pub fn resolve(
         }),
         Kind::DamageUndead { banish } => each(&mut |v, rng, world| {
             let Victim::Monster(m) = v else { return None };
-            let (body, ..) = world.monsters.monsters().get(m).ok()?;
+            let (body, ..) = world.monsters.monsters().get(m).unwrap();
             let kind = world.species[body.species].kind;
             if !(UNDEAD_KINDS.contains(&kind) || (banish && kind == BANISHED_KIND)) {
                 return Some(Effect::Nothing { victim: v });
@@ -1363,7 +1365,7 @@ pub fn resolve(
             strength,
         ) {
             Some(Effect::Resisted { .. }) => {
-                let target = target(world, v, realm, Some(Condition::Afraid))?;
+                let target = target(world, v, realm, Some(Condition::Afraid));
                 let rounds = duration(rng, spell, strength);
                 let rounds = resist(rng, rounds, target.resistance, target.level, strength.against);
                 if rounds == 0 || target.immune {
@@ -1398,7 +1400,10 @@ pub fn resolve(
                 // Members take the plain roll, without the cast's boost.
                 Victim::Member(_) => {
                     let rolled = magnitude(rng, spell.dice, Strength { boost: 0, ..strength });
-                    let target = target(world, v, realm, None).filter(|t| !t.dead)?;
+                    let target = target(world, v, realm, None);
+                    if target.dead {
+                        return None;
+                    }
                     match resist(rng, rolled, target.resistance, target.level, strength.against) {
                         0 => Some(Effect::Resisted { victim: v }),
                         amount => sap(rng, world, v, amount),
@@ -1462,7 +1467,7 @@ pub fn resolve(
         Kind::Lifesteal | Kind::MightToMagic => {
             let mut drained = 0;
             each(&mut |v, rng, world| {
-                let target = target(world, v, realm, None)?;
+                let target = target(world, v, realm, None);
                 if target.dead {
                     return None;
                 }
@@ -1613,7 +1618,7 @@ fn restore_victim(
 ) -> Option<Effect> {
     let dead = match v {
         Victim::Member(member) => world.members.get(member).unwrap().1.is_dead(),
-        Victim::Monster(entity) => world.monsters.monsters().get(entity).ok()?.0.is_dead(),
+        Victim::Monster(entity) => world.monsters.monsters().get(entity).unwrap().0.is_dead(),
     };
     if dead {
         return None;
@@ -1711,21 +1716,20 @@ fn enchant(
         };
         let changed = match victim {
             Victim::Member(member) if personal => {
-                world.members.get_mut(member).is_ok_and(|(_, mut v, ..)| {
-                    if v.is_dead() {
-                        return false;
-                    }
-                    if spell.id == SpellId::HASTE {
-                        let v = &mut *v;
-                        return super::enchantments::haste(
-                            &mut v.conditions,
-                            &mut v.enchantments,
-                            effect,
-                            false,
-                        );
-                    }
+                let (_, mut v, ..) = world.members.get_mut(member).unwrap();
+                let v = &mut *v;
+                if v.is_dead() {
+                    false
+                } else if spell.id == SpellId::HASTE {
+                    super::enchantments::haste(
+                        &mut v.conditions,
+                        &mut v.enchantments,
+                        effect,
+                        false,
+                    )
+                } else {
                     apply(&mut v.enchantments, false)
-                })
+                }
             }
             Victim::Member(_) => {
                 if party_applied {
@@ -1832,7 +1836,7 @@ fn restore(
             }
         }
         Victim::Monster(entity) => {
-            let (body, ..) = world.monsters.monsters().get(entity).ok()?;
+            let (body, ..) = world.monsters.monsters().get(entity).unwrap();
             if body.is_dead() {
                 return None;
             }
@@ -1876,15 +1880,14 @@ pub fn affected(effects: &[Effect]) -> bool {
 pub fn all_restored(spell: SpellId, victims: &[Victim], members: &Members) -> bool {
     victims.iter().all(|&victim| {
         let Victim::Member(member) = victim else { return true };
-        members.get(member).is_ok_and(|(character, vitals, ..)| {
-            vitals.is_dead()
-                || match kind(spell) {
-                    Some(Kind::Stamina) => {
-                        vitals.stamina >= character.stats(&vitals.enchantments).max_stamina()
-                    }
-                    _ => vitals.hp >= character.stats(&vitals.enchantments).max_hp(),
+        let (character, vitals, ..) = members.get(member).unwrap();
+        vitals.is_dead()
+            || match kind(spell) {
+                Some(Kind::Stamina) => {
+                    vitals.stamina >= character.stats(&vitals.enchantments).max_stamina()
                 }
-        })
+                _ => vitals.hp >= character.stats(&vitals.enchantments).max_hp(),
+            }
     })
 }
 
@@ -1921,23 +1924,20 @@ pub(crate) fn pulse_clouds(
             let victims = actor.map_or_else(|| party.clone(), |a| vec![Victim::Monster(a)]);
             let mut landed = Vec::new();
             for victim in victims {
-                if target(world, victim, realm, None).is_none_or(|t| t.dead) {
+                if target(world, victim, realm, None).dead {
                     continue;
                 }
                 if id == SpellId::DEATH_CLOUD {
                     // TickCombatEffectSlots makes a death save directly: no
                     // duration roll or duration resistance reduction.
                     let immune = match victim {
-                        Victim::Monster(actor) => world
-                            .monsters
-                            .monsters()
-                            .get(actor)
-                            .ok()
-                            .map(|(body, ..)| &world.species[body.species])
-                            .is_none_or(|kind| kind.death_immune),
+                        Victim::Monster(actor) => {
+                            let (body, ..) = world.monsters.monsters().get(actor).unwrap();
+                            world.species[body.species].death_immune
+                        }
                         Victim::Member(_) => false,
                     };
-                    let target = target(world, victim, realm, None).unwrap();
+                    let target = target(world, victim, realm, None);
                     let result = if immune
                         || saves(rng, world, victim, &target, DEATH_SAVE, strength.against)
                     {
@@ -1975,11 +1975,10 @@ pub(crate) fn pulse_clouds(
                     }
                     landed.extend(hit);
                     if id == SpellId::TOXIC_CLOUD {
-                        let Some(victim_stats) =
-                            target(world, victim, realm, None).filter(|t| !t.dead)
-                        else {
+                        let victim_stats = target(world, victim, realm, None);
+                        if victim_stats.dead {
                             continue;
-                        };
+                        }
                         let turns = duration(rng, spell, strength);
                         let turns = resist(
                             rng,
@@ -1996,9 +1995,7 @@ pub(crate) fn pulse_clouds(
                         for condition in
                             [Condition::Nauseated, Condition::Poisoned, Condition::Unconscious]
                         {
-                            let Some(target) = target(world, victim, realm, Some(condition)) else {
-                                continue;
-                            };
+                            let target = target(world, victim, realm, Some(condition));
                             if target.immune
                                 || saves(
                                     rng,
