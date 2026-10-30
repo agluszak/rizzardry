@@ -13,6 +13,7 @@ use crate::game::inventory::ItemIds;
 use crate::game::party::body::{PartyBody, PartyMotionConfig};
 use crate::game::party::roster::Party;
 use crate::game::rng::GameRng;
+use crate::game::world::hostility::Stance;
 use crate::game::world::level::{
     Destination, Entry, Level, LevelEntryFailed, LevelMemory, LevelOwned, LevelReady, Travel,
     activate_level, travel,
@@ -552,10 +553,7 @@ fn group_knowledge_survives_revisit() {
     let (mut app, _) = playing();
     let monster =
         app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
-    let provoked = crate::game::world::hostility::SetStance {
-        stance: crate::game::world::hostility::Stance::Hostile,
-        at: 7,
-    };
+    let provoked = crate::game::world::hostility::SetStance { stance: Stance::Hostile, at: 7 };
     let old = app.world().get::<GroupMember>(monster).unwrap().0;
     let mut group = app.world_mut().get_mut::<MonsterGroup>(old).unwrap();
     group.identified = true;
@@ -942,10 +940,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
         app.update();
         assert!(app.world().get_entity(session).is_err());
     }
-    let provoked = crate::game::world::hostility::SetStance {
-        stance: crate::game::world::hostility::Stance::Hostile,
-        at: 7,
-    };
+    let provoked = crate::game::world::hostility::SetStance { stance: Stance::Hostile, at: 7 };
     let group = app.world().get::<crate::game::world::identify::GroupMember>(body).unwrap().0;
     app.world_mut().get_mut::<crate::game::world::identify::MonsterGroup>(group).unwrap().set =
         Some(provoked);

@@ -11,6 +11,7 @@ use enum_map::EnumMap;
 use crate::content::characters::{Attribute, Realm, Skill};
 pub use crate::content::characters::{Gender, Profession, Race};
 use crate::content::items::ItemDefinition;
+use crate::game::rng::GameRng;
 
 /// Stamina above which an exhausted member comes round.
 pub(crate) const COMES_ROUND_ABOVE: u32 = 9;
@@ -148,7 +149,7 @@ impl Conditions {
     /// A hit that is not quiet may wake a sleeper: `SEN/2 + 50` percent
     /// (retail `damageCharacter`, `MonsterReactsToBeingStruck`). Whether it
     /// woke.
-    pub fn wake_on_hit(&mut self, senses: u32, rng: &mut crate::game::rng::GameRng) -> bool {
+    pub fn wake_on_hit(&mut self, senses: u32, rng: &mut GameRng) -> bool {
         if self.has(Condition::Asleep) && rng.below(100) < senses / 2 + 50 {
             self.lift(Condition::Asleep);
             return true;
@@ -497,7 +498,7 @@ pub fn resized(current: u32, old: u32, new: u32) -> u32 {
 /// it falls in, if any, and the dice.
 pub struct Fate<'a> {
     pub fight: Option<Entity>,
-    pub rng: &'a mut crate::game::rng::GameRng,
+    pub rng: &'a mut GameRng,
 }
 
 /// What disease did to a member ([`Vitals::sicken`]).
@@ -651,12 +652,7 @@ impl Character {
     /// use counts with chance `(100 − points)·base/100` percent (halved for
     /// the expert skills, at least 1), and every eighth count is a point, up
     /// to 100. Returns whether the skill improved.
-    pub fn practise(
-        &mut self,
-        skill: Skill,
-        usage: u32,
-        rng: &mut crate::game::rng::GameRng,
-    ) -> bool {
+    pub fn practise(&mut self, skill: Skill, usage: u32, rng: &mut GameRng) -> bool {
         let index = skill as usize;
         let allowed = if index >= Skill::PowerStrike as usize {
             self.skill_available(skill)
@@ -990,7 +986,7 @@ impl Vitals {
 
     /// Count timed conditions down, lifting those that run out (retail
     /// `TickCharacterCondition`), the poison weakening as it goes.
-    pub fn age_conditions(&mut self, ticks: u32, rng: &mut crate::game::rng::GameRng) {
+    pub fn age_conditions(&mut self, ticks: u32, rng: &mut GameRng) {
         self.weaken_poison(ticks, rng);
         self.conditions.age(ticks);
         self.enchantments.age(ticks);
@@ -1000,7 +996,7 @@ impl Vitals {
     /// share of what is left of it, a roll deciding a share under one
     /// (retail `TickCharacterCondition`, for aging and partial cures alike).
     /// The caller counts the poison's duration down.
-    pub fn weaken_poison(&mut self, ticks: u32, rng: &mut crate::game::rng::GameRng) {
+    pub fn weaken_poison(&mut self, ticks: u32, rng: &mut GameRng) {
         let left = match self.conditions.lasting(Condition::Poisoned) {
             Some(Lasting::Rounds(left)) => Some(u32::from(left)),
             _ => None,

@@ -6,6 +6,7 @@ use crate::game::characters::creation::{
     CharacterDraft, PARTY_LIMIT, PLAYABLE_RACES, admit, default_gender, identity,
 };
 use crate::game::session::begin_adventure;
+use crate::presentation::screen::Screen;
 use crate::presentation::screen_art::visible_if;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input_focus::{
@@ -417,7 +418,7 @@ fn main_menu(mut commands: Commands, assets: Res<AssetServer>, mut focus: ResMut
             -- InputBindingAction::<MenuOptions>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::KeyO) ]
             -- InputBindingAction::<MenuExit>::new() ActionSettings { consume_input: true, require_reset: true } Bindings [ Binding(KeyCode::Escape) Binding(KeyCode::KeyX) Binding(KeyCode::KeyE) ]
         ]
-        on(|_: On<Start<MenuOptions>>, mut menu: ResMut<NextState<MenuPage>>, mut screen: ResMut<NextState<crate::presentation::screen::Screen>>| {menu.set(MenuPage::Options);screen.set(crate::presentation::screen::Screen::Options);})
+        on(|_: On<Start<MenuOptions>>, mut menu: ResMut<NextState<MenuPage>>, mut screen: ResMut<NextState<Screen>>| {menu.set(MenuPage::Options);screen.set(Screen::Options);})
         on(menu_up)
         on(menu_down)
         on(|_: On<Start<MenuStart>>, mut next: ResMut<NextState<Session>>| { next.set(Session::Creation); })
@@ -528,7 +529,7 @@ fn activate(
     mut sessions: Query<(Entity, &mut Creation)>,
     mut next: ResMut<NextState<Session>>,
     mut menu: ResMut<NextState<MenuPage>>,
-    mut screen: ResMut<NextState<crate::presentation::screen::Screen>>,
+    mut screen: ResMut<NextState<Screen>>,
     mut focus: ResMut<InputFocus>,
     mut exit: MessageWriter<AppExit>,
     mut commands: Commands,
@@ -566,7 +567,7 @@ fn activate(
         }
         Action::Options => {
             menu.set(MenuPage::Options);
-            screen.set(crate::presentation::screen::Screen::Options);
+            screen.set(Screen::Options);
         }
         Action::Credits => {
             focus.clear();

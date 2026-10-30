@@ -9,6 +9,7 @@ use avian3d::prelude::LinearVelocity;
 use bevy::prelude::*;
 
 use crate::game::characters::Vitals;
+use crate::game::combat::Battle;
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use crate::game::time::GameClock;
@@ -80,7 +81,7 @@ pub(crate) fn advance_camp(
     mut commands: Commands,
     clock: Res<GameClock>,
     camp: Option<Res<Camp>>,
-    battle: Option<Single<&crate::game::combat::Battle>>,
+    battle: Option<Single<&Battle>>,
     roster: Single<&PartyRoster>,
     members: Query<&Vitals>,
     mut news: MessageWriter<CampNews>,
@@ -105,7 +106,7 @@ pub fn request_camp(
     clock: Res<GameClock>,
     freedom: crate::game::freedom::Freedom,
     mut button: MessageReader<CampRequest>,
-    battle: Option<Single<&crate::game::combat::Battle>>,
+    battle: Option<Single<&Battle>>,
     party: Query<&LinearVelocity, With<PartyBody>>,
     mut news: MessageWriter<CampNews>,
 ) {
@@ -129,7 +130,7 @@ pub fn request_camp(
 pub fn force_camp(
     mut commands: Commands,
     camp: Option<Res<Camp>>,
-    battle: Option<Single<&crate::game::combat::Battle>>,
+    battle: Option<Single<&Battle>>,
     roster: Single<&PartyRoster>,
     members: Query<&Vitals>,
     mut news: MessageWriter<CampNews>,

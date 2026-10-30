@@ -28,15 +28,21 @@ use bevy::prelude::*;
 use enum_map::EnumMap;
 use enumset::EnumSet;
 
+use crate::content::characters::Trait;
 use crate::content::characters::{Attribute, Realm, Skill};
 use crate::content::spells::{
     MAX_POWER, SpellCatalog, SpellDefinition, SpellId, Spellbook, Targeting, min_caster_level,
 };
+use crate::game::GameplaySet;
 use crate::game::characters::{Character, Profession};
+use crate::game::combat::Battle;
+use crate::game::data::Catalogs;
 use crate::game::inventory::PartyInventory;
 use crate::game::party::DamageApplied;
+use crate::game::party::body::PartyBody;
 use crate::game::party::formation::Formation;
 use crate::game::rng::GameRng;
+use crate::game::time::GameClock;
 use crate::game::world::damage::MonsterDamage;
 
 /// The spells a character has learned. Creation picks the first ones.
@@ -52,7 +58,7 @@ pub fn skill_available(
 ) -> bool {
     if skill as usize >= Skill::Wizardry as usize
         && (skill as usize) < Skill::PowerStrike as usize
-        && character.traits().contains(crate::content::characters::Trait::CannotLearn)
+        && character.traits().contains(Trait::CannotLearn)
     {
         return false;
     }
@@ -301,7 +307,7 @@ pub fn can_learn(character: &Character, spell: &SpellDefinition) -> bool {
     if spell.id.0 == 0 || spell.id.0 >= SpellId::LEARNABLE || (spell.books & books).is_empty() {
         return false;
     }
-    if character.traits().contains(crate::content::characters::Trait::CannotLearn)
+    if character.traits().contains(Trait::CannotLearn)
         || caster_level(character, character.profession) <= 0
         || spell.realm.is_none()
     {
@@ -493,8 +499,8 @@ impl Plugin for MagicPlugin {
                 Update,
                 (accept_magic, pointcasts::update_lure)
                     .chain()
-                    .after(crate::game::GameplaySet::Stats)
-                    .before(crate::game::GameplaySet::Combat)
+                    .after(GameplaySet::Stats)
+                    .before(GameplaySet::Combat)
                     .run_if(crate::game::world::level::level_active),
             );
         // Missiles fly on the fixed step, ahead of the fight's step there
@@ -514,7 +520,7 @@ pub struct MagicRequest {
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct MagicContext<'w, 's> {
     pub roster: Single<'w, 's, &'static crate::game::party::roster::PartyRoster>,
-    pub content: If<Res<'w, crate::game::data::Catalogs>>,
+    pub content: If<Res<'w, Catalogs>>,
     difficulty: Res<'w, crate::game::difficulty::Difficulty>,
     pub formation: Single<'w, 's, &'static mut Formation>,
     pub party_damage: MessageWriter<'w, DamageApplied>,
@@ -527,7 +533,7 @@ pub struct MagicContext<'w, 's> {
     /// Missiles leave in launch order, so equal arrivals land in it too.
     pub flight_order: ResMut<'w, casting::FlightOrder>,
     provocations: MessageWriter<'w, crate::game::world::hostility::Provocation>,
-    fight: Query<'w, 's, Entity, With<crate::game::combat::Battle>>,
+    fight: Query<'w, 's, Entity, With<Battle>>,
 }
 
 impl MagicContext<'_, '_> {
@@ -612,7 +618,7 @@ pub(crate) fn execute_in_world(
 /// choice; outside it, execute it now.
 pub fn accept_magic(
     mut requests: MessageReader<MagicRequest>,
-    battle: Option<Single<&crate::game::combat::Battle>>,
+    battle: Option<Single<&Battle>>,
     camp: Option<Res<crate::game::camp::Camp>>,
     interaction: Query<(), With<crate::game::world::interaction::DeviceInteraction>>,
     mut orders: Query<&mut crate::game::party::Order>,
@@ -620,9 +626,9 @@ pub fn accept_magic(
     mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
     mut context: MagicContext,
     mut rng: ResMut<GameRng>,
-    party: Query<(&avian3d::prelude::Position, &crate::game::party::body::PartyBody)>,
+    party: Query<(&avian3d::prelude::Position, &PartyBody)>,
     mut commands: Commands,
-    clock: Res<crate::game::time::GameClock>,
+    clock: Res<GameClock>,
 ) {
     for &MagicRequest { caster, choice } in requests.read() {
         if !context.roster.contains(&caster) {
@@ -656,9 +662,8 @@ pub fn accept_magic(
             }
             continue;
         }
-        let Ok((party_at, facing)) = party
-            .single()
-            .map(|(at, body)| (crate::game::party::body::PartyBody::eye(at), body.forward()))
+        let Ok((party_at, facing)) =
+            party.single().map(|(at, body)| (PartyBody::eye(at), body.forward()))
         else {
             context.news.write(casting::MagicNews::Refused {
                 caster,
@@ -700,21 +705,21 @@ pub fn accept_magic(
 /// died meanwhile is missed. Kills in a fight count for it.
 pub fn deliver_spells(
     mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
-    party: Query<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>,
+    party: Query<&avian3d::prelude::Position, With<PartyBody>>,
     time: Res<Time<Fixed>>,
     mut flights: Query<(Entity, &mut casting::SpellInFlight)>,
     (mut members, mut monsters): (Members, MonsterDamage),
     mut context: MagicContext,
     mut rng: ResMut<GameRng>,
-    mut battle: Option<Single<&mut crate::game::combat::Battle>>,
+    mut battle: Option<Single<&mut Battle>>,
     mut combat_news: MessageWriter<crate::game::combat::CombatNews>,
     mut commands: Commands,
-    clock: Res<crate::game::time::GameClock>,
+    clock: Res<GameClock>,
 ) {
     if flights.is_empty() {
         return;
     }
-    let party_at = party.single().ok().map(crate::game::party::body::PartyBody::eye);
+    let party_at = party.single().ok().map(PartyBody::eye);
     let spells = &context.content.spells;
     if flights.iter().any(|(_, flight)| {
         spells.get(flight.spell).is_none()
@@ -793,7 +798,7 @@ fn test_maximum(world: &World, member: Entity) -> EnumMap<Realm, u32> {
     let profile = world.get::<Character>(member).unwrap();
     let vitals = world.get::<crate::game::characters::Vitals>(member).unwrap();
     let learned = world.get::<LearnedSpells>(member).unwrap();
-    let spells = &world.resource::<crate::game::data::Catalogs>().spells;
+    let spells = &world.resource::<Catalogs>().spells;
     profile.stats(&vitals.enchantments).max_points(learned, spells)
 }
 

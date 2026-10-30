@@ -6,6 +6,7 @@ use super::retail_controls::{ControlSkin, FocusRing};
 use super::screen_art::{BitmapInk, BitmapText, BitmapWrap, Picture, absolute};
 use crate::content::npcs::TopicCategory;
 use crate::content::{items::EquipClass, ui::SpriteSheet};
+use crate::game::data::Catalogs;
 use crate::game::npcs::{
     Npc,
     conversation::*,
@@ -417,7 +418,7 @@ fn open_trade(world: &mut World, button: Entity, root: Entity) {
               roots: Query<&ConversationView>,
               sessions: Query<&Conversation>,
               npcs: Query<&crate::game::npcs::ActorId>,
-              catalogs: Res<crate::game::data::Catalogs>| {
+              catalogs: Res<Catalogs>| {
             let merchant = roots
                 .get(root)
                 .ok()
@@ -1163,7 +1164,7 @@ fn project_text(
     sessions: Query<&Conversation>,
     speech: Query<&ConversationSpeech>,
     npcs: Query<&crate::game::npcs::ActorId>,
-    catalogs: If<Res<crate::game::data::Catalogs>>,
+    catalogs: If<Res<Catalogs>>,
     parties: Query<&PartyInventory, With<crate::game::party::roster::Party>>,
     mut labels: Query<(Entity, &Caption, &mut BitmapText)>,
 ) {
@@ -1375,7 +1376,7 @@ fn project_modes(
     mut commands: Commands,
     sessions: Query<&Conversation>,
     npcs: Query<(&crate::game::npcs::ActorId, &Npc)>,
-    catalogs: If<Res<crate::game::data::Catalogs>>,
+    catalogs: If<Res<Catalogs>>,
     clock: Res<crate::game::time::GameClock>,
     mut panels: Query<
         (Entity, &mut Node, Option<&ModePanel>, Option<&mut QuoteBubble>, Has<MenuPanel>),
@@ -1854,7 +1855,7 @@ fn sync_trade_rows(
     views: ViewScope,
     mut commands: Commands,
     assets: Res<AssetServer>,
-    content: If<Res<crate::game::data::Catalogs>>,
+    content: If<Res<Catalogs>>,
     sessions: Query<&Conversation>,
     npcs: Query<&Npc>,
     parties: Query<(&PartyRoster, &PartyInventory), With<crate::game::party::roster::Party>>,

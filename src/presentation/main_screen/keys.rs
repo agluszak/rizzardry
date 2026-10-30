@@ -12,6 +12,7 @@ use bevy_enhanced_input::prelude::*;
 use super::{ScreenLayout, SelectedMember};
 use crate::game::combat::{Battle, StartRound};
 use crate::game::party::Order;
+use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::notices::{TextLog, VISIBLE_LINES};
 use crate::presentation::screen::Screen;
@@ -251,7 +252,7 @@ fn breathe(
     _: On<Start<Breathe>>,
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
-    party: Query<(&avian3d::prelude::Position, &crate::game::party::body::PartyBody)>,
+    party: Query<(&avian3d::prelude::Position, &PartyBody)>,
     battle: Query<&crate::game::combat::Combatants>,
     monsters: Query<(
         Entity,
@@ -269,7 +270,7 @@ fn breathe(
     ) else {
         return;
     };
-    let eye = crate::game::party::body::PartyBody::eye(position);
+    let eye = PartyBody::eye(position);
     if let Some(target) = crate::game::magic::target_ahead(
         eye,
         body.forward(),

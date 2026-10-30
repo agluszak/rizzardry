@@ -5,6 +5,7 @@
 use bevy::prelude::*;
 
 use crate::content::ui::SpriteSheet;
+use crate::content::ui::TextTable;
 use crate::game::characters::{Race, Vitals};
 
 /// The two empty hand sprites used by the HUD and character review.
@@ -350,7 +351,7 @@ pub fn show_sheet(picture: &mut Mut<Picture>, assets: &AssetServer, path: String
 
 /// The game's string table, loaded at startup.
 #[derive(Resource)]
-pub struct StringTable(pub(super) Handle<crate::content::ui::TextTable>);
+pub struct StringTable(pub(super) Handle<TextTable>);
 
 pub fn load_string_table(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(StringTable(assets.load(crate::content::paths::STRINGS)));
@@ -360,11 +361,11 @@ pub fn load_string_table(mut commands: Commands, assets: Res<AssetServer>) {
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct GameStrings<'w> {
     table: Option<Res<'w, StringTable>>,
-    tables: Option<Res<'w, Assets<crate::content::ui::TextTable>>>,
+    tables: Option<Res<'w, Assets<TextTable>>>,
 }
 
 impl GameStrings<'_> {
-    pub fn table(&self) -> Option<&crate::content::ui::TextTable> {
+    pub fn table(&self) -> Option<&TextTable> {
         self.tables.as_ref()?.get(&self.table.as_ref()?.0)
     }
 

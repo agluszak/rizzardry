@@ -1,6 +1,7 @@
 //! Checked NPC database and NSF decoding. See the original ReadNpcScriptQuote
 //! (0x0055a140), LoadNpcScriptFile (0x0055a480) and packed database records.
 use super::LoadError;
+use crate::content::npcs::JournalVisibility;
 use crate::{
     bytes::{Bytes, i32_at, lenient_string, u16_at, u32_at, utf16_units},
     content::{factions::Faction, items::ItemId, npcs::*},
@@ -403,10 +404,10 @@ pub fn read_facts(data: &[u8]) -> Result<FactCatalog, LoadError> {
         facts.push(FactDefinition {
             highlight_when_true: r[0x36] != 0,
             visibility: match r[0x37] as i8 {
-                ..=0 => crate::content::npcs::JournalVisibility::AllDifficulties,
-                1 => crate::content::npcs::JournalVisibility::NoviceAndNormal,
-                2 => crate::content::npcs::JournalVisibility::NoviceOnly,
-                _ => crate::content::npcs::JournalVisibility::Hidden,
+                ..=0 => JournalVisibility::AllDifficulties,
+                1 => JournalVisibility::NoviceAndNormal,
+                2 => JournalVisibility::NoviceOnly,
+                _ => JournalVisibility::Hidden,
             },
             id,
             symbol: lenient_string(&r[4..0x36]),

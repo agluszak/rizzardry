@@ -8,6 +8,8 @@ pub mod attack;
 mod blows;
 pub mod breath;
 mod conduct;
+use crate::game::GameplaySet;
+use crate::game::data::Catalogs;
 pub use conduct::Interrupt;
 mod monster_spells;
 pub mod summon;
@@ -71,7 +73,7 @@ impl Plugin for CombatPlugin {
                     control_combat,
                 )
                     .chain()
-                    .in_set(crate::game::GameplaySet::Combat)
+                    .in_set(GameplaySet::Combat)
                     .run_if(crate::game::world::level::level_active),
             )
             // Rounds run on the fixed step: when each actor acts, and so
@@ -93,7 +95,7 @@ impl Plugin for CombatPlugin {
                     settle_defeat,
                 )
                     .chain()
-                    .in_set(crate::game::GameplaySet::Combat)
+                    .in_set(GameplaySet::Combat)
                     .after(crate::game::party::body::turn_party)
                     .before(bevy_tnua::TnuaUserControlsSystems)
                     .run_if(crate::game::world::level::level_active),
@@ -800,7 +802,7 @@ pub fn start_battle(
     )>,
     clock: Res<GameClock>,
     obstacles: WorldObstacles,
-    content: If<Res<crate::game::data::Catalogs>>,
+    content: If<Res<Catalogs>>,
     roster: Single<&PartyRoster>,
     mut news: MessageWriter<CombatNews>,
     mut rng: ResMut<GameRng>,
@@ -1411,7 +1413,7 @@ pub fn begin_round(
     mut rng: ResMut<GameRng>,
     (mut members, damage): (Members, MonsterDamage),
     (roster, orders, settings): (Single<&PartyRoster>, Query<&Order>, Res<CombatSettings>),
-    content: If<Res<crate::game::data::Catalogs>>,
+    content: If<Res<Catalogs>>,
     (in_flight, moving): (
         Query<(), With<casting::SpellInFlight>>,
         Query<(), With<approach::CombatMove>>,
@@ -1483,11 +1485,7 @@ pub fn run_battle(
     mut clock: ResMut<GameClock>,
     mut actors: ParamSet<((Members, MonsterDamage), GroupRecognition)>,
     party_body: Query<(&Position, &PartyBody)>,
-    (roster, content, level): (
-        Single<&PartyRoster>,
-        If<Res<crate::game::data::Catalogs>>,
-        PlayedLevel,
-    ),
+    (roster, content, level): (Single<&PartyRoster>, If<Res<Catalogs>>, PlayedLevel),
     mut magic: BattleMagic,
     (mut news, mut summons): (MessageWriter<CombatNews>, MessageWriter<summon::Summon>),
 ) {

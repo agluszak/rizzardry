@@ -2,7 +2,12 @@
 pub mod conversation;
 pub mod recruit;
 pub mod trade;
+use crate::content::items::ItemId;
 use crate::content::npcs::*;
+use crate::game::GameplaySet;
+use crate::game::data::Catalogs;
+use crate::game::rng::GameRng;
+use crate::game::world::level::LevelOwned;
 use crate::game::{
     characters::Character,
     party::{body::PartyBody, roster::PartyRoster},
@@ -18,7 +23,7 @@ use std::collections::HashMap;
 /// need the authored placement. Neither key uses a transient retail runtime slot.
 /// The NPC catalog, for operations that hold the whole world.
 pub(crate) fn catalog(world: &World) -> &NpcCatalog {
-    &world.resource::<crate::game::data::Catalogs>().npcs
+    &world.resource::<Catalogs>().npcs
 }
 
 /// An NPC actor's authored definition, for operations that hold the whole
@@ -119,7 +124,7 @@ pub struct Npc {
 /// weights, how many of the weighted ones it gives up, and its purse.
 #[derive(Clone, Debug, Default)]
 pub struct Possessions {
-    pub items: Vec<(crate::content::items::ItemId, u8)>,
+    pub items: Vec<(ItemId, u8)>,
     pub count: crate::content::items::Dice,
     pub gold: u32,
 }
@@ -140,8 +145,8 @@ impl Possessions {
     pub fn give_up(
         &mut self,
         catalog: &crate::content::items::ItemCatalog,
-        rng: &mut crate::game::rng::GameRng,
-    ) -> (Vec<crate::content::items::ItemId>, u32) {
+        rng: &mut GameRng,
+    ) -> (Vec<ItemId>, u32) {
         let table = crate::content::items::LootTable {
             name: String::new(),
             entries: std::mem::take(&mut self.items),
@@ -174,7 +179,7 @@ pub struct NpcPopulation<'w, 's> {
             &'static Monster,
             ActorPose,
             Option<&'static Walker>,
-            Option<&'static crate::game::world::level::LevelOwned>,
+            Option<&'static LevelOwned>,
             Option<&'static crate::game::world::identify::GroupMember>,
         ),
         (With<NpcBody>, Allow<Disabled>, Without<PartyBody>),
@@ -207,10 +212,10 @@ impl NpcPopulation<'_, '_> {
         &mut self,
         commands: &mut Commands,
         Placing { placed, tables, id, map, average }: Placing,
-        catalogs: &crate::game::data::Catalogs,
+        catalogs: &Catalogs,
         placed_actors: &mut std::collections::HashSet<ActorId>,
-        rng: &mut crate::game::rng::GameRng,
-        roll: impl FnOnce(&mut crate::game::rng::GameRng) -> KeptMonster,
+        rng: &mut GameRng,
+        roll: impl FnOnce(&mut GameRng) -> KeptMonster,
     ) -> Option<(Entity, Vec3, f32, crate::game::world::population::ScaledBody, Option<i32>)> {
         let definition = catalogs.npcs.get(id).expect("NPC preparation validated definition");
         let key = ActorId::for_placement(id, definition, map, placed.location);
@@ -283,7 +288,7 @@ impl NpcPopulation<'_, '_> {
     /// fails activation without touching the currently played world.
     pub fn prepare(
         &mut self,
-        catalogs: &crate::game::data::Catalogs,
+        catalogs: &Catalogs,
         placements: &[crate::content::level::MonsterPlacement],
         server: &AssetServer,
     ) -> Result<bool, String> {
@@ -368,7 +373,7 @@ fn retire(commands: &mut Commands, entity: Entity, at: Transform) {
     use avian3d::prelude::{Collider, RigidBody};
     commands
         .entity(entity)
-        .remove::<crate::game::world::level::LevelOwned>()
+        .remove::<LevelOwned>()
         .remove::<crate::game::world::identify::GroupMember>()
         .remove_with_requires::<(Collider, RigidBody)>()
         .remove_with_requires::<bevy_landmass::prelude::Agent3dBundle>()
@@ -388,18 +393,12 @@ impl Plugin for NpcPlugin {
             .add_message::<conversation::PartyRemark>()
             .add_message::<conversation::NpcSpeech>()
             .add_observer(conversation::end_conversations)
-            .add_systems(
-                Update,
-                conversation::update_conversation.after(crate::game::GameplaySet::Combat),
-            )
-            .add_systems(
-                Update,
-                recruit::settle_npc_members.before(crate::game::GameplaySet::LevelActivation),
-            )
+            .add_systems(Update, conversation::update_conversation.after(GameplaySet::Combat))
+            .add_systems(Update, recruit::settle_npc_members.before(GameplaySet::LevelActivation))
             .add_systems(
                 FixedUpdate,
                 recruit::settle_npc_members
-                    .after(crate::game::GameplaySet::Combat)
+                    .after(GameplaySet::Combat)
                     .run_if(crate::game::world::level::level_active),
             );
     }

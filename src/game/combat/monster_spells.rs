@@ -17,6 +17,7 @@ use crate::game::characters::Condition;
 use crate::game::magic::casting::Report;
 use crate::game::magic::effects::{self, Field, Standing, Victim};
 use crate::game::magic::{LearnedSpells, Outcome, SpellPoints, Strength};
+use crate::game::party::body::PartyBody;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::Stance;
 use crate::game::world::population::Monster;
@@ -297,7 +298,7 @@ fn victims(
                 _ => None,
             }
         };
-        let party_eye = crate::game::party::body::PartyBody::eye_above(scene.party_at);
+        let party_eye = PartyBody::eye_above(scene.party_at);
         let (centre, origin) = if let Some(target) = target {
             let Ok((body, at, walker, ..)) = field.monsters.monsters().get(target) else {
                 return vec![];
@@ -413,7 +414,7 @@ pub(super) fn cast(
                 strength,
                 &victims,
                 Some(&finish),
-                crate::game::party::body::PartyBody::eye_above(scene.party_at),
+                PartyBody::eye_above(scene.party_at),
                 spells,
                 rng,
                 field,

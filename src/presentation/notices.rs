@@ -14,6 +14,7 @@ use crate::content::species::AttackWord;
 use crate::content::ui::{SpriteSheet, TextTable};
 use crate::game::camp::CampNews;
 use crate::game::combat::{Announcement, CombatNews};
+use crate::game::factions::FactionNews;
 use crate::game::inventory::ItemNews;
 use crate::game::world::identify::Identified;
 use crate::game::world::interaction::LockNews;
@@ -401,10 +402,7 @@ fn magic_lines(
 /// Retail `AdjustFactionDisposition`'s notice: "%s standing %s." with the
 /// faction's name (`g_faction_name_ids`, whose two spare factions reuse the
 /// first name) and whether it worsened or improved.
-fn faction_line(
-    news: &crate::game::factions::FactionNews,
-    string: &impl Fn(usize) -> String,
-) -> String {
+fn faction_line(news: &FactionNews, string: &impl Fn(usize) -> String) -> String {
     const NAMES: usize = 0x5a1;
     const WORSENED: usize = 0x245;
     const IMPROVED: usize = 0x246;
@@ -502,7 +500,7 @@ fn post_speech(
 }
 
 fn post_factions(
-    mut factions: MessageReader<crate::game::factions::FactionNews>,
+    mut factions: MessageReader<FactionNews>,
     strings: GameStrings,
     mut notices: Notices,
 ) {

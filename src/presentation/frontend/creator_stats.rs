@@ -1,7 +1,9 @@
 //! Retail profession and attributes page of character creation.
 use super::{Action, Creation, CreatorChoice, Page};
 use crate::content::characters::{Attribute, Gender, Profession, Realm, Skill};
+use crate::content::items::ItemCatalog;
 use crate::content::ui::SpriteSheet;
+use crate::game::inventory::Carried;
 use crate::presentation::retail_controls::{ControlSkin, FocusHighlight, set_enabled};
 use crate::presentation::screen_art::visible_if;
 use crate::presentation::screen_art::{BitmapText, Picture, spawn_picture};
@@ -479,8 +481,8 @@ pub(super) fn refresh(
     };
     let resistances = crate::game::characters::resistance::resistances(
         &profile.base_stats(),
-        &crate::game::inventory::Carried::default(),
-        &crate::content::items::ItemCatalog::default(),
+        &Carried::default(),
+        &ItemCatalog::default(),
     );
     let help = [0xe5, 0xe8, 0xe9, 0xea].map(|id| {
         sheets
@@ -631,8 +633,8 @@ pub(super) fn refresh(
                 if session.choices.race {
                     crate::game::combat::attack::armour(
                         &profile.base_stats(),
-                        &crate::game::inventory::Carried::default(),
-                        &crate::content::items::ItemCatalog::default(),
+                        &Carried::default(),
+                        &ItemCatalog::default(),
                         crate::game::characters::Load::None,
                         false,
                     )

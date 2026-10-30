@@ -13,6 +13,7 @@ use crate::content::level::LevelDefinition;
 use crate::content::monster::MonsterBody;
 use crate::content::species::MonsterCatalog;
 use crate::game::characters::Condition;
+use crate::game::data::Catalogs;
 use crate::game::inventory::ItemIds;
 use crate::game::rng::GameRng;
 use crate::game::world::items::{WorldItem, placed_item};
@@ -376,7 +377,7 @@ pub fn give_birth(
     mut levels: Query<(Entity, &mut Unborn, &LevelNavigation), With<super::level::Level>>,
     groups: Query<(Entity, &MonsterGroup, &LevelOwned)>,
     mut configs: ResMut<Assets<WalkerMotionConfig>>,
-    content: If<Res<crate::game::data::Catalogs>>,
+    content: If<Res<Catalogs>>,
 ) {
     let Ok((root, mut unborn, navigation)) = levels.single_mut() else {
         births.clear();
@@ -414,7 +415,7 @@ pub fn populate(
     root: Entity,
     geometry: &LevelDefinition,
     remembered: Option<LevelRecord>,
-    catalogs: &crate::game::data::Catalogs,
+    catalogs: &Catalogs,
     (map, npcs): (&str, &mut crate::game::npcs::NpcPopulation),
     (handles, bodies): (&MonsterBodies, &Assets<MonsterBody>),
     (navigation, configs): (&LevelNavigation, &mut Assets<WalkerMotionConfig>),

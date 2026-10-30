@@ -24,7 +24,9 @@ use super::triggers::{Device, DoorState};
 use crate::content::characters::{Attribute, Skill};
 use crate::content::level::{Lock, TRAP_TYPES};
 use crate::content::spells::SpellId;
+use crate::game::GameplaySet;
 use crate::game::characters::{Character, Vitals};
+use crate::game::combat::Battle;
 use crate::game::difficulty::Difficulty;
 use crate::game::inventory::StackId;
 use crate::game::party::roster::PartyMember;
@@ -323,12 +325,7 @@ pub(crate) fn confront(world: &mut World, device: Entity, lock: Lock) {
     if current(world).is_some() {
         return;
     }
-    if world
-        .query_filtered::<Entity, With<crate::game::combat::Battle>>()
-        .iter(world)
-        .next()
-        .is_some()
-    {
+    if world.query_filtered::<Entity, With<Battle>>().iter(world).next().is_some() {
         world.write_message(LockNews::NotInCombat);
         return;
     }
@@ -750,7 +747,7 @@ pub fn leave(world: &mut World, on: Entity) {
 /// Travel and fights end the attempt under way (its device's own end takes
 /// the attempt with it through [`DeviceAttempt`]).
 pub(crate) fn end_attempts(
-    _: On<Add<(super::level::Destination, crate::game::combat::Battle)>>,
+    _: On<Add<(super::level::Destination, Battle)>>,
     attempts: Query<Entity, With<DeviceInteraction>>,
     mut commands: Commands,
 ) {
@@ -803,9 +800,7 @@ pub enum DeviceRequest {
 pub(crate) fn plugin(app: &mut App) {
     app.add_message::<DeviceRequest>().add_systems(
         Update,
-        handle_device_requests
-            .after(crate::game::GameplaySet::Stats)
-            .before(crate::game::GameplaySet::Combat),
+        handle_device_requests.after(GameplaySet::Stats).before(GameplaySet::Combat),
     );
 }
 

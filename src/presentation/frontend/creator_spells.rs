@@ -3,6 +3,7 @@ use super::{Action, Creation, Page, creator_stats};
 use crate::content::characters::{Realm, Skill};
 use crate::content::spells::SpellId;
 use crate::content::ui::SpriteSheet;
+use crate::game::data::Catalogs;
 use crate::presentation::retail_controls::set_enabled;
 use crate::presentation::screen_art::visible_if;
 use crate::presentation::screen_art::{BitmapText, absolute, spawn_picture};
@@ -169,7 +170,7 @@ pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer)
 fn select_spell(
     event: On<Activate>,
     choices: Query<&SpellOption, Without<InteractionDisabled>>,
-    content: If<Res<crate::game::data::Catalogs>>,
+    content: If<Res<Catalogs>>,
     mut session: Single<&mut Creation>,
 ) {
     let (Ok(choice), Some(draft)) = (choices.get(event.entity), session.mode.draft_mut()) else {
@@ -181,7 +182,7 @@ fn select_spell(
 pub(super) fn refresh(
     session: Option<Single<Ref<Creation>>>,
     art: Option<Single<&SpellArt>>,
-    content: If<Res<crate::game::data::Catalogs>>,
+    content: If<Res<Catalogs>>,
     mut rows: Query<(
         Entity,
         &SpellOption,
