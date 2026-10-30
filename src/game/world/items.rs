@@ -117,21 +117,19 @@ pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
     if !crate::game::freedom::free_in(world) {
         return Err(Refusal::DoesNotFit);
     }
-    let eye = crate::game::party::body::PartyBody::eye_in(world).ok_or(Refusal::Nothing)?;
-    let at = world
-        .query::<super::ActorPose>()
-        .get(world, target)
-        .map_err(|_| Refusal::Nothing)?
-        .translation();
+    // A second take of an item already taken finds nothing.
+    if world.get::<WorldItem>(target).is_none() {
+        return Err(Refusal::Nothing);
+    }
+    let eye = crate::game::party::body::PartyBody::eye_in(world).unwrap();
+    let at = world.query::<super::ActorPose>().get(world, target).unwrap().translation();
     // Retail measures to the model bounds' centre (ItemDistanceToCamera).
     // Deliberately use the gameplay placement so pickup never requires artwork.
     let distance = eye.distance(at);
     if !distance.is_finite() || !(0.0..=REACH).contains(&distance) {
         return Err(Refusal::DoesNotFit);
     }
-    let item = world.get::<WorldItem>(target).ok_or(Refusal::Nothing)?;
-    let owner = world.get::<LevelOwned>(target).ok_or(Refusal::Nothing)?.0;
-    if world.get::<super::level::Level>(owner).is_none() || item.hidden {
+    if world.get::<WorldItem>(target).unwrap().hidden {
         return Err(Refusal::DoesNotFit);
     }
     let party = the_party(world);
@@ -163,10 +161,10 @@ pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
 /// current level and party activity: it stops short of what it hits and
 /// rests above the ground below, or stays in hand if there is no ground.
 pub fn drop_held(world: &mut World, level: Entity, aim: Dir3) -> Result<Entity, Refusal> {
-    if !crate::game::freedom::free_in(world) || world.get::<super::level::Level>(level).is_none() {
+    if !crate::game::freedom::free_in(world) {
         return Err(Refusal::DoesNotFit);
     }
-    let eye = crate::game::party::body::PartyBody::eye_in(world).ok_or(Refusal::Nothing)?;
+    let eye = crate::game::party::body::PartyBody::eye_in(world).unwrap();
     let ground = world
         .run_system_cached_with(landing, (eye, aim))
         .ok()
@@ -179,8 +177,7 @@ pub fn drop_held(world: &mut World, level: Entity, aim: Dir3) -> Result<Entity, 
     if definition.crucial {
         return Err(Refusal::Crucial);
     }
-    let held =
-        world.get_mut::<PartyInventory>(party).unwrap().hand.held.take().ok_or(Refusal::Nothing)?;
+    let held = world.get_mut::<PartyInventory>(party).unwrap().hand.held.take().unwrap();
     let item = lay(&mut world.commands(), level, ground, WorldItem::loose(held, false));
     world.flush();
     Ok(item)
