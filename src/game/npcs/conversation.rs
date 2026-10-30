@@ -1,6 +1,6 @@
 //! Authored continuation and waits belong to gameplay, not the dialogue view.
 use super::{
-    Npc, NpcAssets,
+    Npc, NpcAssets, definition,
     trade::{self, TradeError, TradeQuote, TradeSource},
 };
 use crate::content::factions::Faction;
@@ -350,10 +350,6 @@ pub enum Approach {
     Charm,
     SmallTalk,
 }
-fn definition(world: &World, actor: Entity) -> Result<&NpcDefinition, TradeError> {
-    world.get::<super::ActorId>(actor).ok_or(TradeError::Unavailable)?;
-    super::definition(world, actor).ok_or(TradeError::MissingContent)
-}
 /// Run `f` with the NPC's definition and the item catalog while the world
 /// stays writable; the catalogs are out of the world meanwhile.
 fn with_definition<T>(
@@ -361,9 +357,9 @@ fn with_definition<T>(
     actor: Entity,
     f: impl FnOnce(&mut World, &NpcDefinition, &ItemCatalog) -> Result<T, TradeError>,
 ) -> Result<T, TradeError> {
-    let id = world.get::<super::ActorId>(actor).ok_or(TradeError::Unavailable)?.npc();
+    let id = world.get::<super::ActorId>(actor).expect("an NPC actor").npc();
     crate::game::data::Catalogs::scope(world, |world, catalogs| {
-        f(world, catalogs.npcs.get(id).ok_or(TradeError::MissingContent)?, &catalogs.items)
+        f(world, &catalogs.npcs[id], &catalogs.items)
     })
 }
 pub fn party_communication(world: &mut World) -> u32 {
@@ -420,7 +416,7 @@ fn standing(world: &World, actor: Entity, disposition: u8) -> i32 {
         .and_then(|mut q| q.iter(world).find_map(|c| c.charms.get(&actor).copied()))
         .unwrap_or(0);
     let own = if turned { 100 } else { i32::from(disposition.wrapping_add(charm as u8)) };
-    let Ok(def) = definition(world, actor) else { return own };
+    let def = definition(world, actor);
     let factions = world.resource::<Factions>();
     let faction = i32::from(def.faction);
     if def.faction != 0 && (def.monster_bound || factions.band(faction) == Band::Hostile) {
@@ -501,7 +497,7 @@ fn available(world: &World, actor: Entity) -> bool {
 }
 /// Shared gameplay permission, also used to derive the trade controls.
 pub fn trade_allowed(world: &World, actor: Entity) -> bool {
-    definition(world, actor).is_ok_and(|def| def.owns_stock)
+    definition(world, actor).owns_stock
 }
 fn entry_quote(def: &NpcDefinition, npc: &Npc) -> u16 {
     if def.merchant || npc.greeting_pending { 0 } else { 1 }
@@ -509,14 +505,14 @@ fn entry_quote(def: &NpcDefinition, npc: &Npc) -> u16 {
 /// What the NPC says to open its dialogue; meeting it for the first time
 /// teaches the party's members Communication (retail
 /// `HandleNpcDialogueDeparture`).
-fn greet(world: &mut World, actor: Entity) -> Result<u16, TradeError> {
-    let def = definition(world, actor)?;
+fn greet(world: &mut World, actor: Entity) -> u16 {
+    let def = definition(world, actor);
     let greeting = entry_quote(def, world.get::<Npc>(actor).unwrap());
     if greeting == 0 && !def.monster_bound && !def.voice_script && !def.merchant {
         let members = super::able_members(world);
         practise_communication(world, &members, 0xf);
     }
-    Ok(greeting)
+    greeting
 }
 pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     let party = the_party(world).ok_or(TradeError::Unavailable)?;
@@ -550,7 +546,7 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     if !world.resource::<Assets<DialogueScript>>().contains(&script) {
         return Err(TradeError::MissingContent);
     }
-    let def = definition(world, actor)?;
+    let def = definition(world, actor);
     // Retail `BeginNpcDialogueInternal` and `OpenNpcDialoguePanel`: an NPC
     // that speaks through its own script greets as it is; otherwise one
     // hostile to the party only turns it away, a neutral one offers the
@@ -575,27 +571,17 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
         return Ok(world.spawn((conversation(quote(HOSTILE_QUOTE)), Closing)).id());
     }
     let menu = !scripted && !def.merchant && band == Band::Neutral;
-    let greeting = if menu { NEUTRAL_GREETING } else { greet(world, actor)? };
+    let greeting = if menu { NEUTRAL_GREETING } else { greet(world, actor) };
     let now = world.resource::<crate::game::time::GameClock>().ms;
     let average = average_level(world);
-    let def = definition(world, actor)?;
+    let def = definition(world, actor);
     if def.owns_stock {
         let stock = &world.get::<Npc>(actor).unwrap().stock;
         let gated = stock.restock_at.is_some()
             && now.saturating_sub(stock.maintenance_at) >= crate::game::time::DAY_MS
             && def.stock.iter().any(|r| !r.persistent && r.item == super::trade::TEMPLAR_GATED);
-        let templar = if gated {
-            let catalog = fact_catalog(world);
-            let id = catalog
-                .0
-                .iter()
-                .find(|f| f.symbol == "FACT_TEMPLAR")
-                .ok_or(TradeError::MissingContent)?
-                .id;
-            fact(world, id).map_err(|_| TradeError::MissingContent)? != 0
-        } else {
-            false
-        };
+        let templar = gated
+            && fact_named(world, "FACT_TEMPLAR").map_err(|_| TradeError::MissingContent)? != 0;
         with_definition(world, actor, |world, def, items| {
             world.resource_scope(|world, mut rng: Mut<GameRng>| {
                 world
@@ -684,11 +670,7 @@ const RFS81_FIXED_NAME: &str = "RFS81B";
 /// The NPC a script names by its display name (retail `FindNpcStateByName`).
 fn npc_named(world: &World, name: &str) -> Option<Entity> {
     let catalog = super::catalog(world);
-    let fixed = fact_catalog(world)
-        .0
-        .iter()
-        .find(|f| f.symbol == "FACT_RFS81_HAS_BEEN_FIXED")
-        .is_some_and(|f| fact(world, f.id).is_ok_and(|value| value != 0));
+    let fixed = fact_named(world, "FACT_RFS81_HAS_BEEN_FIXED").is_ok_and(|value| value != 0);
     world.iter_entities().find_map(|e| {
         let id = e.get::<super::ActorId>()?.npc();
         let shown = if id == RFS81 && fixed {
@@ -749,11 +731,7 @@ enum Continuation {
     Options { words: Vec<String>, typed: bool },
     End,
 }
-fn plan_quote(
-    world: &World,
-    party: Entity,
-    q: &Quote,
-) -> Result<QuotePlan, (usize, String)> {
+fn plan_quote(world: &World, party: Entity, q: &Quote) -> Result<QuotePlan, (usize, String)> {
     let story = world.resource::<StoryFacts>();
     let catalog = fact_catalog(world);
     let mut writes = BTreeMap::new();
@@ -985,7 +963,7 @@ fn commit_effects(world: &mut World, entity: Entity, effects: Vec<QuoteEffect>) 
                 let mut purse = world.get_mut::<PartyInventory>(party).unwrap();
                 purse.gold = purse.gold.wrapping_add(amount);
                 let actor = world.get::<Conversation>(entity).unwrap().actor;
-                let giver = definition(world, actor).unwrap().source_name.clone();
+                let giver = definition(world, actor).source_name.clone();
                 world
                     .get_mut::<Conversation>(entity)
                     .unwrap()
@@ -1152,8 +1130,8 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party:
                 };
                 if quote == 0 {
                     let first = world.get::<Npc>(actor).unwrap().greeting_pending;
-                    if first && let Ok(definition) = definition(world, actor) {
-                        let name = definition.source_name.clone();
+                    if first {
+                        let name = definition(world, actor).source_name.clone();
                         learn_topic(world, entity, TopicCategory::Person, &name);
                     }
                     world.get_mut::<Npc>(actor).unwrap().greeting_pending = false;
@@ -1170,7 +1148,7 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party:
                     })
                 }
                 let text = q.text.get(subquote).cloned().unwrap_or_default();
-                let def = definition(world, actor).expect("a speaker has its definition");
+                let def = definition(world, actor);
                 // Retail `SpeakNpcSubquote`: an alert line is shown with the
                 // alert chime and no recording; otherwise a few words stand
                 // for something other than a line.
@@ -1312,7 +1290,7 @@ fn approach_npc(world: &mut World, entity: Entity, approach: Approach) {
         Approach::Charm => npc.charmed_at,
         Approach::SmallTalk => npc.small_talk_at,
     };
-    let Ok(def) = definition(world, actor) else { return };
+    let def = definition(world, actor);
     let scale = i32::from(match approach {
         Approach::Charm => def.charm_scale,
         Approach::SmallTalk => def.talk_scale,
@@ -1346,7 +1324,7 @@ fn approach_npc(world: &mut World, entity: Entity, approach: Approach) {
     practise_communication(world, &[speaker], usage);
     let answer = match (band(world, actor), approach) {
         (Band::Friendly, Approach::Charm) => Some(CHARMED_QUOTE),
-        (Band::Friendly, Approach::SmallTalk) => greet(world, actor).ok(),
+        (Band::Friendly, Approach::SmallTalk) => Some(greet(world, actor)),
         (Band::Neutral, Approach::Charm) => Some(UNCHARMED_QUOTE),
         (Band::Neutral, Approach::SmallTalk) => Some(SMALL_TALK_QUOTE),
         (Band::Hostile, _) => {
@@ -1394,7 +1372,7 @@ fn debit_trade_pool(world: &mut World, actor: Entity, price: u32) {
 fn debited(world: &mut World, actor: Entity, price: u32) -> (u16, u8) {
     let level = party_communication(world);
     let adjusted = price.wrapping_add(level * ((price & 0xffff) / 5) / 100);
-    let refill = definition(world, actor).map_or(0, |d| d.trade_pool);
+    let refill = definition(world, actor).trade_pool;
     let cold = band(world, actor) != Band::Friendly;
     let npc = world.get::<Npc>(actor).unwrap();
     match npc.trade_pool.saturating_sub(adjusted as u16) {
@@ -1411,7 +1389,7 @@ pub(crate) fn won_over(world: &mut World, entity: Entity, greeting: bool) {
     if !world.get::<Conversation>(entity).unwrap().menu || band(world, actor) != Band::Friendly {
         return;
     }
-    let greeting = if greeting { greet(world, actor).ok() } else { None };
+    let greeting = if greeting { Some(greet(world, actor)) } else { None };
     let mut c = world.get_mut::<Conversation>(entity).unwrap();
     c.menu = false;
     if let Some(quote) = greeting {
@@ -1436,13 +1414,9 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
     let actor = c.actor;
     let stack = sale_item(world, TradeSource::Party(item), party)?;
     let (offered, count) = (stack.item, stack.count());
-    let definition_of = world
-        .resource::<crate::game::data::Catalogs>()
-        .items
-        .get(offered)
-        .ok_or(TradeError::MissingContent)?;
+    let definition_of = &world.resource::<crate::game::data::Catalogs>().items[offered];
     let (crucial, value) = (definition_of.crucial, stack_value(definition_of, count));
-    let def = definition(world, actor)?;
+    let def = definition(world, actor);
     let (voiced, kind) = (def.voice_script, def.kind);
     let script = script(world, c).ok_or(TradeError::MissingContent)?;
     let answer = script.item_quote(offered);
@@ -1473,10 +1447,8 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
     };
     let script = self::script(world, world.get::<Conversation>(entity).unwrap())
         .ok_or(TradeError::MissingContent)?;
-    let plan = script
-        .quotes
-        .get(usize::from(quote))
-        .and_then(|line| plan_quote(world, party, line).ok());
+    let plan =
+        script.quotes.get(usize::from(quote)).and_then(|line| plan_quote(world, party, line).ok());
     // Retail takes the item at once; the answer's effects follow at its last
     // line, which plays out even if the party leaves the dialogue. A content
     // gap keeps the item and queues the answer to show it.
@@ -1529,7 +1501,7 @@ fn spend_gift(
 ) -> Result<(), TradeError> {
     let actor = world.get::<Conversation>(entity).unwrap().actor;
     let bribe = band(world, actor) != Band::Friendly;
-    if bribe && definition(world, actor)?.trade_pool == 0 {
+    if bribe && definition(world, actor).trade_pool == 0 {
         let mut c = world.get_mut::<Conversation>(entity).unwrap();
         c.queue.push_back(Step::Quote {
             quote: UNBRIBED_QUOTE,
@@ -1600,9 +1572,6 @@ fn answer_price(world: &mut World, entity: Entity, accept: bool) {
     }
     let ConversationWait::Price { quote, gold, always } = c.wait else { return };
     let actor = c.actor;
-    if definition(world, actor).is_err() {
-        return;
-    }
     let handle = c.script.clone();
     world.resource_scope(|world, scripts: Mut<Assets<DialogueScript>>| {
         let Some(line) = scripts.get(&handle).and_then(|s| s.quotes.get(usize::from(quote))) else {
@@ -1673,7 +1642,7 @@ pub fn quote_trade(
     let actor = c.actor;
     let party = the_party(world).ok_or(TradeError::Unavailable)?;
     let communication = party_communication(world);
-    let def = definition(world, actor)?;
+    let def = definition(world, actor);
     let catalog = &world.resource::<crate::game::data::Catalogs>().items;
     let gold = match source {
         TradeSource::Stock(lot) => {

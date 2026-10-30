@@ -69,10 +69,6 @@ const GLUMPH: NpcId = NpcId(0x2b);
 const MADRAS: NpcId = NpcId(0x4a);
 const SEXUS: NpcId = NpcId(0x4f);
 
-fn definition(world: &World, actor: Entity) -> Option<NpcDefinition> {
-    super::definition(world, actor).cloned()
-}
-
 /// Whether the NPC would join now (retail `CanNpcJoinParty`): it has a
 /// character to bring; it does not offer the service of the region the party
 /// is in; its authored terms hold (a term whose fact is not ported refuses);
@@ -125,7 +121,7 @@ fn willing(world: &mut World, id: NpcId, definition: &NpcDefinition) -> bool {
 /// before the party's room is counted).
 pub fn joinable(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
     let id = world.get::<super::ActorId>(actor).ok_or(JoinRefusal::Declines)?.npc();
-    let definition = definition(world, actor).ok_or(JoinRefusal::Declines)?;
+    let definition = super::definition(world, actor).clone();
     let gone = world.get::<Npc>(actor).is_some_and(|npc| npc.dead);
     if definition.character.is_none() || gone || world.get::<PartyMember>(actor).is_some() {
         return Err(JoinRefusal::Declines);
@@ -227,9 +223,8 @@ pub fn join(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
     joinable(world, actor)?;
     let party = the_party(world).ok_or(JoinRefusal::Declines)?;
     if world.get::<Character>(actor).is_none() {
-        let template = definition(world, actor)
-            .and_then(|definition| definition.character)
-            .ok_or(JoinRefusal::Declines)?;
+        let template =
+            super::definition(world, actor).character.clone().ok_or(JoinRefusal::Declines)?;
         let made = world.resource_scope(|world, mut ids: Mut<ItemIds>| {
             world.resource_scope(|world, mut rng: Mut<GameRng>| {
                 let catalogs = (
@@ -333,9 +328,10 @@ pub fn dismiss(world: &mut World, actor: Entity) -> bool {
     if alive && let Some(body) = body {
         stand_beside_party(world, actor, body, party);
     }
-    let wanted = definition(world, actor)
-        .and_then(|definition| definition.character)
-        .map_or_else(Vec::new, |character| character.wanted);
+    let wanted = super::definition(world, actor)
+        .character
+        .as_ref()
+        .map_or_else(Vec::new, |character| character.wanted.clone());
     let cursed = |stack: &ItemStack| {
         world.resource::<crate::game::data::Catalogs>().items[stack.item].cursed
     };

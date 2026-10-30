@@ -22,9 +22,9 @@ pub(crate) fn catalog(world: &World) -> &NpcCatalog {
 }
 
 /// An NPC actor's authored definition, for operations that hold the whole
-/// world.
-pub(crate) fn definition(world: &World, actor: Entity) -> Option<&NpcDefinition> {
-    catalog(world).get(world.get::<ActorId>(actor)?.npc())
+/// world. A level places only NPCs it has definitions for.
+pub(crate) fn definition(world: &World, actor: Entity) -> &NpcDefinition {
+    &catalog(world)[world.get::<ActorId>(actor).expect("an NPC actor").npc()]
 }
 
 /// The party's members awake and well enough to fight, in roster order: the

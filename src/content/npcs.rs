@@ -92,6 +92,13 @@ impl NpcCatalog {
         self.0.get(id.0 as usize)
     }
 }
+/// The definition of an NPC that exists.
+impl std::ops::Index<NpcId> for NpcCatalog {
+    type Output = NpcDefinition;
+    fn index(&self, id: NpcId) -> &NpcDefinition {
+        &self.0[id.0 as usize]
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TopicCategory {
