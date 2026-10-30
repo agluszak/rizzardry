@@ -232,9 +232,7 @@ pub(super) fn choose(
         .zip(SLOT_WEIGHTS)
         .filter_map(|(id, weight)| {
             let spell = spells.get((*id)?)?;
-            if !castable(spell, caster, kind)
-                || !crate::game::magic::impacts::ready(spell.id, spells)
-            {
+            if !castable(spell, caster, kind) {
                 return None;
             }
             let aims = aims(spell, scene);

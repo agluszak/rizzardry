@@ -383,7 +383,7 @@ fn main_menu(mut commands: Commands, assets: Res<AssetServer>, mut focus: ResMut
                 focus.set(button.id(), bevy::input_focus::FocusCause::Navigated);
             }
         } else {
-            button.insert(InteractionDisabled);
+            button.insert((InteractionDisabled, TabIndex(-1)));
         }
         let button = button.id();
         commands.spawn((
@@ -1104,8 +1104,7 @@ mod keyboard_tests {
         })
         .add_message::<AppExit>()
         .add_plugins(FrontendPlugin)
-        .add_observer(crate::presentation::retail_controls::primary_buttons_only)
-        .add_systems(PostUpdate, crate::presentation::retail_controls::sync_button_navigation);
+        .add_observer(crate::presentation::retail_controls::primary_buttons_only);
         let window = app.world_mut().spawn((Window::default(), PrimaryWindow)).id();
         app.finish();
         app.cleanup();

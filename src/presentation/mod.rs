@@ -132,7 +132,6 @@ impl Plugin for PresentationPlugin {
             PostUpdate,
             (
                 retail_controls::sync_scrollbars,
-                retail_controls::sync_button_navigation,
                 retail_controls::paint_controls,
                 retail_controls::paint_focus,
                 screen_art::render_pictures,

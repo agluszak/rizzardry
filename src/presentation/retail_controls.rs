@@ -39,29 +39,14 @@ impl ControlSkin {
     }
 }
 
-/// Keep ordinary buttons out of tab traversal while unavailable. Tabs retain
-/// their native roving-tab policy and are deliberately not handled here.
-pub fn sync_button_navigation(
-    mut commands: Commands,
-    mut buttons: Query<
-        (Entity, Has<InteractionDisabled>, Has<Pressed>, &mut TabIndex),
-        With<Button>,
-    >,
-) {
-    for (entity, disabled, pressed, mut tab) in &mut buttons {
-        tab.set_if_neq(TabIndex(if disabled { -1 } else { 0 }));
-        if disabled && pressed {
-            commands.entity(entity).remove::<Pressed>();
-        }
-    }
-}
-
+/// Change availability, keyboard eligibility and press state together.
+/// This helper is for ordinary buttons; native tabs own their roving tab index.
 pub fn set_enabled(commands: &mut Commands, entity: Entity, enabled: bool, disabled: bool) {
     if enabled == disabled {
         if enabled {
-            commands.entity(entity).remove::<InteractionDisabled>();
+            commands.entity(entity).remove::<InteractionDisabled>().insert(TabIndex(0));
         } else {
-            commands.entity(entity).insert(InteractionDisabled).remove::<Pressed>();
+            commands.entity(entity).insert((InteractionDisabled, TabIndex(-1))).remove::<Pressed>();
         }
     }
 }
@@ -450,7 +435,7 @@ mod tests {
             .add_observer(primary_buttons_only)
             .init_resource::<UiScale>()
             .init_resource::<bevy::picking::hover::PointerCaptureMap>()
-            .add_systems(Update, (sync_scrollbars, sync_button_navigation, paint_controls).chain());
+            .add_systems(Update, (sync_scrollbars, paint_controls).chain());
         let parent = app.world_mut().spawn_empty().id();
         let (first, second) = {
             let mut commands = app.world_mut().commands();

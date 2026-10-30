@@ -75,11 +75,8 @@ pub fn summon(
     let mut landed: Vec<(Vec3, f32)> = vec![];
     for &Summon { summoner, species: id } in summons.read() {
         let Ok((caller, caller_at, caller_walker)) = monsters.get(summoner) else { continue };
-        let Some(kind) = species.kind(id) else { continue };
-        let Some(definition) = bodies.get(id, &definitions) else {
-            warn!("summoned species {id} has no body ready");
-            continue;
-        };
+        let kind = &species[id];
+        let definition = bodies.get(id, &definitions).unwrap();
         let authored = next_group;
         let count = rng.roll(kind.group_size);
         let mut members = population::roll_group(
