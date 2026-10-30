@@ -83,7 +83,7 @@ impl MerchantStock {
         catalog: &ItemCatalog,
         ammunition_bundle: bool,
     ) -> Result<(), TradeError> {
-        let d = catalog.get(item).ok_or(TradeError::MissingContent)?;
+        let d = &catalog[item];
         if units == 0 {
             return Ok(());
         }
@@ -113,15 +113,9 @@ impl MerchantStock {
         templar: bool,
         rng: &mut GameRng,
     ) -> Result<(), TradeError> {
-        // Validate before consuming RNG or changing stock: the authored
-        // stock and every lot held, which daily maintenance looks up.
-        if def.stock.iter().any(|r| catalog.get(r.item).is_none()) {
-            return Err(TradeError::MissingContent);
-        }
         let Some(restock_at) = self.restock_at else {
             for r in &def.stock {
-                let chance =
-                    if r.persistent { 100 } else { tier(catalog.get(r.item).unwrap(), level) * 25 };
+                let chance = if r.persistent { 100 } else { tier(&catalog[r.item], level) * 25 };
                 let n = (0..r.quantity).filter(|_| rng.below(100) < chance).count() as u32;
                 self.add(r.item, n, catalog, true)?;
             }
@@ -183,17 +177,13 @@ impl MerchantStock {
                 continue;
             }
             let held = self.lots.iter().find(|l| l.item == r.item).map_or(0, |l| {
-                if catalog.get(r.item).unwrap().quantity == QuantityKind::Stack {
-                    1
-                } else {
-                    l.units
-                }
+                if catalog[r.item].quantity == QuantityKind::Stack { 1 } else { l.units }
             });
             let configured = u32::from(r.quantity);
             if configured == 0 || held > configured / 2 {
                 continue;
             }
-            if !persistent && rng.below(100) >= tier(catalog.get(r.item).unwrap(), level) * 25 {
+            if !persistent && rng.below(100) >= tier(&catalog[r.item], level) * 25 {
                 continue;
             }
             let n = jitter(configured - held, rng);
