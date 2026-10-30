@@ -3531,10 +3531,11 @@ mod tests {
             hostility::{SetStance, Stance},
             identify::{GroupMember, MonsterGroup},
         };
+        let now = app.world().resource::<crate::game::time::GameClock>().ms;
         let group = app
             .world_mut()
             .spawn(MonsterGroup {
-                set: Some(SetStance { stance: Stance::Hostile, at: 0 }),
+                set: Some(SetStance { stance: Stance::Hostile, at: now }),
                 ..default()
             })
             .id();
