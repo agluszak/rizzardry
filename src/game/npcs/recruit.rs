@@ -109,7 +109,7 @@ fn willing(world: &mut World, id: NpcId, definition: &NpcDefinition) -> bool {
 pub fn joinable(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
     let id = world.get::<super::ActorId>(actor).unwrap().npc();
     let definition = super::definition(world, actor).clone();
-    let gone = world.get::<Npc>(actor).is_some_and(|npc| npc.dead);
+    let gone = world.get::<Npc>(actor).unwrap().dead;
     if definition.character.is_none() || gone || world.get::<PartyMember>(actor).is_some() {
         return Err(JoinRefusal::Declines);
     }

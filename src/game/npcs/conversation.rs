@@ -384,7 +384,7 @@ pub(crate) fn active_body(world: &World, actor: Entity) -> Option<Entity> {
         world
             .get::<crate::game::world::level::LevelOwned>(*body)
             .is_some_and(|parent| world.get::<Level>(parent.0).is_some())
-            && world.get::<Monster>(*body).is_some_and(|m| !m.is_dead())
+            && !world.get::<Monster>(*body).unwrap().is_dead()
     })
 }
 /// What a neutral NPC says first, and its answers to charm, small talk and
@@ -475,9 +475,11 @@ fn best_communicator(world: &mut World) -> Option<(Entity, u32)> {
 fn practise_communication(world: &mut World, members: &[Entity], usage: u32) {
     world.resource_scope(|world, mut rng: Mut<GameRng>| {
         for &member in members {
-            if let Some(mut c) = world.get_mut::<Character>(member) {
-                c.practise(crate::content::characters::Skill::Communication, usage, &mut rng);
-            }
+            world.get_mut::<Character>(member).unwrap().practise(
+                crate::content::characters::Skill::Communication,
+                usage,
+                &mut rng,
+            );
         }
     });
 }
@@ -1619,7 +1621,7 @@ fn execute_trade(world: &mut World, quote: TradeQuote) -> Result<(), TradeError>
         return Err(TradeError::Unavailable);
     }
     let actor = c.actor;
-    if world.get::<Npc>(actor).is_none_or(|npc| npc.stock.trades != quote.trade) {
+    if world.get::<Npc>(actor).unwrap().stock.trades != quote.trade {
         return Err(TradeError::StaleSelection);
     }
     let party = the_party(world);

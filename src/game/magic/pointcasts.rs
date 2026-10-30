@@ -117,9 +117,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
             return Err(Refusal::WrongTime);
         }
         if world.get::<Elementals>(caster).is_some_and(|summons| {
-            summons
-                .iter()
-                .any(|entity| world.get::<Monster>(entity).is_some_and(|body| !body.is_dead()))
+            summons.iter().any(|entity| !world.get::<Monster>(entity).unwrap().is_dead())
         }) {
             return Err(Refusal::NoTarget);
         }
