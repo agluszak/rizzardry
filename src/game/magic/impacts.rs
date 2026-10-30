@@ -132,7 +132,7 @@ pub(crate) fn resolve(
         let mut order = finish.victims.clone();
         order.sort_by_key(|victim| match *victim {
             Victim::Member(entity) => {
-                (0, world.party.iter().position(|&member| member == entity).unwrap_or(usize::MAX))
+                (0, world.party.iter().position(|member| member == entity).unwrap_or(usize::MAX))
             }
             Victim::Monster(entity) => (
                 1,
@@ -211,7 +211,6 @@ pub(crate) fn resolve(
                         world
                             .party
                             .iter()
-                            .copied()
                             .find(|&actor| {
                                 world.members.get(actor).is_ok_and(|(_, v, ..)| v.can_fight())
                             })
@@ -225,14 +224,13 @@ pub(crate) fn resolve(
                     Some(Victim::Member(_)) => world
                         .party
                         .iter()
-                        .copied()
                         .filter(|&entity| {
                             world.members.get(entity).is_ok_and(|(_, v, ..)| !v.is_dead())
                         })
                         .map(Victim::Member)
                         .collect(),
                     Some(Victim::Monster(entity)) => {
-                        world.monsters.group(entity).into_iter().map(Victim::Monster).collect()
+                        world.monsters.group(entity).map(Victim::Monster).collect()
                     }
                     None => vec![],
                 },

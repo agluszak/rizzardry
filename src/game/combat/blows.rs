@@ -11,8 +11,8 @@ use bevy::prelude::*;
 
 use super::attack::{self, Aim, Defence, Hand, Surprise};
 use super::{
-    Announcement, Armour, Battle, CombatNews, HandTurns, PartyPace, PartyView, RoundAction,
-    RoundPhase, Turn,
+    Announcement, Battle, CombatNews, HandTurns, PartyPace, PartyView, RoundAction, RoundPhase,
+    Turn,
 };
 use crate::content::characters::{Skill, Trait};
 use crate::content::items::{AttackEffect, AttackMode};
@@ -29,8 +29,6 @@ use crate::game::world::navigation::feet;
 pub(super) struct Fight<'a, 'w, 's> {
     pub combatants: &'a [Entity],
     pub party: &'a PartyView,
-    /// The party's armour as this round's blows meet it ([`super::party_armours`]).
-    pub armours: Vec<(Entity, Armour)>,
     /// Monsters advancing this round, which drop their guard.
     pub moving: &'a Query<'w, 's, (), With<super::approach::CombatMove>>,
     pub points: &'a mut Query<'w, 's, (&'static LearnedSpells, &'static mut SpellPoints)>,
@@ -41,12 +39,6 @@ pub(super) struct Fight<'a, 'w, 's> {
     /// The acting monster may hold back instead, as one more choice beside
     /// its attacks (a wary monster's wait).
     pub waits: bool,
-}
-
-impl Fight<'_, '_, '_> {
-    fn armour(&self, member: Entity) -> Option<Armour> {
-        self.armours.iter().find(|&&(m, _)| m == member).map(|&(_, a)| a)
-    }
 }
 
 /// How an attack goes at its target: a shot from `from` (blinded, perhaps,
@@ -202,8 +194,9 @@ fn razor_backlash(
         crate::game::magic::Strength { power: charge.power, boost: 0, against: 0 },
     );
     let amount = match attacker {
-        Victim::Member(member) => member_defence(battle, field, fight, member)
-            .map(|(_, defence)| defence.reduce(rolled as i32)),
+        Victim::Member(member) => {
+            member_defence(battle, field, member).map(|defence| defence.reduce(rolled as i32))
+        }
         Victim::Monster(monster) => {
             monster_defence(field, fight, monster).map(|defence| defence.reduce(rolled as i32))
         }
@@ -235,22 +228,27 @@ fn back_to_party(forward: Vec3, at: Vec3, party_eye: Vec3) -> bool {
 }
 
 /// How a member stands this round, for the blows aimed at them.
-fn member_defence(
+pub(super) fn member_defence(
     battle: &Battle,
     field: &Field,
-    fight: &Fight,
     member: Entity,
-) -> Option<(Character, Defence<'static>)> {
-    let (character, vitals, ..) = field.members.get(member).ok()?;
-    let armour = fight.armour(member)?;
-    let running = battle.this_round.pace == Some(PartyPace::Run);
-    let defending = battle
-        .this_round
-        .party
-        .iter()
-        .any(|p| p.actor == member && matches!(p.action, RoundAction::Defend));
+) -> Option<Defence<'static>> {
+    if !field.party.contains(&member) {
+        return None;
+    }
+    let (character, vitals, carried, burden) = field.members.get(member).ok()?;
     let stats = character.stats(&vitals.enchantments);
-    Some((character.clone(), Defence::member(&stats, armour, running, defending)))
+    let defending = battle.defends(member);
+    let armour = attack::enchanted_armour(
+        &stats,
+        carried,
+        field.items,
+        burden.load,
+        defending,
+        (&vitals.enchantments, Some(field.enchantments)),
+    );
+    let running = battle.this_round.pace == Some(PartyPace::Run);
+    Some(Defence::member(&stats, armour, running, defending))
 }
 
 fn monster_defence<'a>(
@@ -274,13 +272,10 @@ fn victim_defence<'a>(
     field: &Field<'a, '_, '_, '_, '_, '_, '_>,
     fight: &Fight,
     victim: Victim,
-) -> Option<(Defence<'a>, Option<(Entity, Character)>)> {
+) -> Option<Defence<'a>> {
     match victim {
-        Victim::Monster(entity) => Some((monster_defence(field, fight, entity)?, None)),
-        Victim::Member(entity) => {
-            let (profile, defence) = member_defence(battle, field, fight, entity)?;
-            Some((defence, Some((entity, profile))))
-        }
+        Victim::Monster(entity) => monster_defence(field, fight, entity),
+        Victim::Member(entity) => member_defence(battle, field, entity),
     }
 }
 fn victim_body(field: &Field, fight: &Fight, victim: Victim) -> Option<(Vec3, f32, f32)> {
@@ -381,9 +376,9 @@ fn member_bystanders(
     let mut bystanders: Vec<Victim> = field
         .party
         .iter()
-        .filter(|&&m| field.members.get(m).is_ok_and(|(_, v, ..)| !v.is_dead()))
-        .filter(|&&m| m == member || hand.reach > Reach::Touch || !formation.screens(member, m))
-        .map(|&m| Victim::Member(m))
+        .filter(|&m| field.members.get(m).is_ok_and(|(_, v, ..)| !v.is_dead()))
+        .filter(|&m| m == member || hand.reach > Reach::Touch || !formation.screens(member, m))
+        .map(Victim::Member)
         .collect();
     for &entity in fight.combatants {
         let Ok((monster, at, walker, ..)) = field.monsters.monsters().get(entity) else {
@@ -419,10 +414,10 @@ fn monster_bystanders(
     let mut bystanders: Vec<Victim> = field
         .party
         .iter()
-        .filter(|&&m| m != target)
-        .filter(|&&m| field.members.get(m).is_ok_and(|(_, v, ..)| !v.is_dead()))
-        .filter(|&&m| fight.party.reaches(formation, m, at.translation(), reach, distance))
-        .map(|&m| Victim::Member(m))
+        .filter(|&m| m != target)
+        .filter(|&m| field.members.get(m).is_ok_and(|(_, v, ..)| !v.is_dead()))
+        .filter(|&m| fight.party.reaches(formation, m, at.translation(), reach, distance))
+        .map(Victim::Member)
         .collect();
     for &entity in fight.combatants {
         let Ok((other, other_at, other_walker, ..)) = monsters.get(entity) else { continue };
@@ -511,7 +506,6 @@ fn member_target(
         let mut targets: Vec<_> = field
             .party
             .iter()
-            .copied()
             .filter(|&target| {
                 target != member
                     && field.members.get(target).is_ok_and(|(_, vitals, ..)| {
@@ -630,7 +624,7 @@ pub(super) fn member_attacks(
             break;
         }
         let stats = character.stats(&vitals.enchantments);
-        let Some((aimed_at, _)) = victim_defence(battle, field, fight, target) else { break };
+        let Some(aimed_at) = victim_defence(battle, field, fight, target) else { break };
         let aim =
             attack::member_aim(&stats, &vitals, &hand, mode, surprise, Some(&aimed_at), difficulty);
         let delivery = if hand.reach >= Reach::Long {
@@ -751,7 +745,7 @@ fn member_blow(
 ) -> Option<u32> {
     let hand = &hands.hands[current];
     let difficulty = field.difficulty;
-    let (struck, victim_character) = victim_defence(battle, field, fight, landing.victim)?;
+    let struck = victim_defence(battle, field, fight, landing.victim)?;
     let at = struck.locate(rng, None);
     if !landing.sure && aim < landing.roll as i32 {
         return None;
@@ -792,8 +786,8 @@ fn member_blow(
     };
     let rolled = attack::roll_dice(rng, dice, count);
     let mut damage = attack::member_damage(hand, rolled, &struck);
-    if let Some((victim, c)) = &victim_character {
-        iron_skin(rng, field, *victim, c, tally);
+    if let Victim::Member(victim) = landing.victim {
+        iron_skin(rng, field, victim, tally);
     }
     if damage == 0 {
         return Some(0);
@@ -843,15 +837,9 @@ fn member_blow(
 
 /// A member struck practises Iron Skin as their reduction is worked out
 /// (retail `ApplyCharacterDamageReduction`).
-fn iron_skin(
-    rng: &mut GameRng,
-    field: &mut Field,
-    member: Entity,
-    character: &Character,
-    tally: &mut Tally,
-) {
-    if character.skill_available(Skill::IronSkin)
-        && let Ok((mut c, ..)) = field.members.get_mut(member)
+fn iron_skin(rng: &mut GameRng, field: &mut Field, member: Entity, tally: &mut Tally) {
+    if let Ok((mut c, ..)) = field.members.get_mut(member)
+        && c.skill_available(Skill::IronSkin)
         && c.practise(Skill::IronSkin, 1, rng)
     {
         tally.improved.push((member, Skill::IronSkin));
@@ -908,11 +896,7 @@ fn notices(
         && vitals.stamina > 0
         && vitals.conditions.worst().is_none_or(|c| c < Condition::Webbed)
         && !vitals.conditions.has(Condition::Blind);
-    let defending = battle
-        .this_round
-        .party
-        .iter()
-        .any(|p| p.actor == member && matches!(p.action, RoundAction::Defend));
+    let defending = battle.defends(member);
     if !alert || !defending {
         return false;
     }
@@ -958,7 +942,7 @@ pub(super) fn monster_attacks(
     // A member's Stealth may keep it out of the monster's eye this time:
     // three quarters of it, in percent.
     let mut unseen = Vec::new();
-    for &member in field.party {
+    for member in field.party.iter() {
         let stealth = field.members.get(member).map_or(0, |(c, ..)| c.skill(Skill::Stealth));
         if rng.below(100) < stealth * 75 / 100 {
             unseen.push(member);
@@ -969,7 +953,7 @@ pub(super) fn monster_attacks(
     let mut candidates = vec![];
     let mut evaded = Vec::new();
     for (a, attack) in kind.attacks.iter().enumerate() {
-        for &member in field.party {
+        for member in field.party.iter() {
             let Ok((_, vitals, ..)) = field.members.get(member) else { continue };
             if !vitals.is_dead()
                 && (fight.attacks)(Victim::Member(member))
@@ -1072,7 +1056,7 @@ pub(super) fn monster_attacks(
         if !monster.can_fight() {
             break;
         }
-        let Some((aimed_at, _)) = victim_defence(battle, field, fight, target) else { break };
+        let Some(aimed_at) = victim_defence(battle, field, fight, target) else { break };
         let aim = attack::monster_aim(
             (kind, &monster, stance),
             attack,
@@ -1110,11 +1094,10 @@ pub(super) fn monster_attacks(
         let pressing = attack::monster_protection(kind, &monster);
         landing.victim =
             intercept(battle, rng, field, (pressing, &mut surprise), landing.victim, news);
-        let Some((struck, victim_character)) = victim_defence(battle, field, fight, landing.victim)
-        else {
+        let Some(struck) = victim_defence(battle, field, fight, landing.victim) else {
             continue;
         };
-        let at = struck.locate(rng, victim_character.as_ref().map(|_| kind));
+        let at = struck.locate(rng, matches!(landing.victim, Victim::Member(_)).then_some(kind));
         if !landing.sure && aim < landing.roll as i32 {
             continue;
         }
@@ -1134,8 +1117,8 @@ pub(super) fn monster_attacks(
             let count = attack::dice_count(rng, mode, &struck, surprise, backstab, 0);
             let rolled = attack::roll_dice(rng, attack.damage, count);
             let mut damage = attack::monster_damage(rolled, &struck);
-            if let Some((victim, c)) = &victim_character {
-                iron_skin(rng, field, *victim, c, &mut tally);
+            if let Victim::Member(victim) = landing.victim {
+                iron_skin(rng, field, victim, &mut tally);
             }
             if damage > 0 && landing.fumbled {
                 damage = struck.fumble_cap(damage);

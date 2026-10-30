@@ -545,7 +545,6 @@ impl MagicContext<'_, '_> {
         monsters: &mut MonsterDamage,
         cast: impl FnOnce(&mut Field, &SpellCatalog) -> R,
     ) -> R {
-        let party: Vec<Entity> = self.roster.iter().collect();
         let party_level = crate::game::party::average_level(
             members.iter_many(self.roster.iter()).matched().map(|(c, ..)| c.level()),
         );
@@ -565,7 +564,7 @@ impl MagicContext<'_, '_> {
             party_level,
             now,
             difficulty: *self.difficulty,
-            party: &party,
+            party: &self.roster,
             improved: Vec::new(),
             provocations: &mut self.provocations,
             fight: self.fight.single().ok(),
@@ -666,7 +665,6 @@ pub fn accept_magic(
             });
             continue;
         };
-        let roster: Vec<Entity> = context.roster.iter().collect();
         // Outside a fight no monster is a target: the hostile spells are
         // combat spells.
         let situation = casting::Situation {
@@ -675,11 +673,9 @@ pub fn accept_magic(
             } else {
                 casting::UseContext::World
             },
-            party: &roster,
             party_at,
             facing,
             monsters: &[],
-            group_of: &|m| vec![m],
         };
         let level = context.level();
         let performed = context.resolve(clock.ms, &mut members, &mut monsters, |field, spells| {

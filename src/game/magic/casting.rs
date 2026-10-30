@@ -236,13 +236,10 @@ pub fn usable_now(spell: &SpellDefinition, context: UseContext) -> bool {
 /// Where the actor is and what it can reach, as the caller sees it.
 pub struct Situation<'a> {
     pub context: UseContext,
-    /// The party, in roster order, the dead included.
-    pub party: &'a [Entity],
     pub party_at: Vec3,
     /// The way the party faces, level ([`crate::game::party::body::PartyBody::forward`]).
     pub facing: Vec3,
     pub monsters: &'a [Candidate],
-    pub group_of: &'a dyn Fn(Entity) -> Vec<Entity>,
 }
 
 impl Situation<'_> {
@@ -263,10 +260,6 @@ impl Situation<'_> {
             self.monsters.iter().map(|c| (c.entity, c.at, c.distance)),
         )?;
         self.monsters.iter().find(|c| c.entity == entity)
-    }
-
-    fn party_victims(&self) -> Vec<Victim> {
-        self.party.iter().map(|&m| Victim::Member(m)).collect()
     }
 }
 
@@ -291,6 +284,7 @@ pub(crate) fn capture(
     spell: &SpellDefinition,
     aim: Aim,
     situation: &Situation,
+    field: &Field,
     forced_self: bool,
 ) -> Result<(Vec<Victim>, Option<Vec3>), Refusal> {
     if forced_self {
@@ -305,12 +299,12 @@ pub(crate) fn capture(
     Ok(match spell.targeting {
         Targeting::Caster => (vec![Victim::Member(caster)], None),
         Targeting::Ally => match aim {
-            Aim::Member(member) if situation.party.contains(&member) => {
+            Aim::Member(member) if field.party.contains(&member) => {
                 (vec![Victim::Member(member)], None)
             }
             _ => return Err(Refusal::NoTarget),
         },
-        Targeting::Party => (situation.party_victims(), None),
+        Targeting::Party => (field.party.iter().map(Victim::Member).collect(), None),
         Targeting::Enemy => {
             let target = aimed()?;
             (vec![Victim::Monster(target.entity)], Some(target.at))
@@ -318,7 +312,7 @@ pub(crate) fn capture(
         Targeting::EnemyGroup => {
             let first = aimed()?;
             let mut victims = vec![Victim::Monster(first.entity)];
-            for mate in (situation.group_of)(first.entity) {
+            for mate in field.monsters.group(first.entity) {
                 if mate != first.entity && situation.candidate(mate, spell).is_some() {
                     victims.push(Victim::Monster(mate));
                 }
@@ -363,10 +357,10 @@ pub(crate) fn capture(
 /// Whom a backfire turns on (retail `PrepareSpellTarget`): a spell aimed at
 /// one victim turns on its caster; a group, cone, blast or all-enemies spell
 /// on the whole party.
-fn backfire_victims(caster: Entity, spell: &SpellDefinition, situation: &Situation) -> Vec<Victim> {
+fn backfire_victims(caster: Entity, spell: &SpellDefinition, field: &Field) -> Vec<Victim> {
     match spell.targeting {
         Targeting::Caster | Targeting::Ally | Targeting::Enemy => vec![Victim::Member(caster)],
-        _ => situation.party_victims(),
+        _ => field.party.iter().map(Victim::Member).collect(),
     }
 }
 
@@ -643,7 +637,7 @@ pub fn perform(
     }
     // Instruments can pay fatigue while finding power, so validate the target
     // first. Radius changes may widen victims but cannot rescue an invalid aim.
-    capture(caster, spell, choice.aim, situation, forced_self)?;
+    capture(caster, spell, choice.aim, situation, world, forced_self)?;
     let power = match &item {
         Some(use_) if matches!(use_.definition.use_type, UseType::Instrument | UseType::Gadget) => {
             play(caster, &character, use_, spell, rng, world.members)?
@@ -688,7 +682,8 @@ pub fn perform(
                 }
             }
         };
-        let (mut victims, landing) = capture(caster, spell, choice.aim, situation, forced_self)?;
+        let (mut victims, landing) =
+            capture(caster, spell, choice.aim, situation, world, forced_self)?;
         if spell.targeting == Targeting::Radius && !forced_self {
             let centre = landing.ok_or(Refusal::NoTarget)?;
             victims = super::targeting::radius(
@@ -732,7 +727,7 @@ pub fn perform(
         )?;
         let victims = match outcome {
             Outcome::Cast => victims,
-            Outcome::Backfired => backfire_victims(caster, spell, situation),
+            Outcome::Backfired => backfire_victims(caster, spell, world),
             Outcome::Fizzled => Vec::new(),
         };
         // Missiles fly to their victims, one each, or to where they burst; a
