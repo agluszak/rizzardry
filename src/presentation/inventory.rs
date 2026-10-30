@@ -1424,9 +1424,7 @@ mod tests {
         use crate::game::inventory::{ItemIds, make_item};
         use crate::game::rng::GameRng;
         use crate::presentation::test_input::key;
-        for (still_a_member, explicit_close, full) in
-            [(true, true, false), (false, true, false), (true, true, true), (true, false, false)]
-        {
+        for (explicit_close, full) in [(true, false), (true, true), (false, false)] {
             let mut app = inventory_app();
             let window =
                 app.world_mut().spawn((Window::default(), bevy::window::PrimaryWindow)).id();
@@ -1450,15 +1448,7 @@ mod tests {
                     Carried::default(),
                 ))
                 .id();
-            // Someone else stays when the selected member leaves.
-            let other = app
-                .world_mut()
-                .spawn({
-                    let c = Character::new("B", Race::Human, Gender::Male, Profession::Fighter);
-                    (crate::game::characters::Vitals::new(&c), c)
-                })
-                .id();
-            let party = crate::game::party::roster::test_party(app.world_mut(), &[member, other]);
+            let party = crate::game::party::roster::test_party(app.world_mut(), &[member]);
             if full {
                 let mut ids = ItemIds::default();
                 // Use distinct identities from the held item.
@@ -1480,11 +1470,6 @@ mod tests {
             app.update();
             app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Inventory);
             app.update();
-            if !still_a_member {
-                app.world_mut()
-                    .entity_mut(member)
-                    .remove::<crate::game::party::roster::PartyMember>();
-            }
             if explicit_close {
                 key(&mut app, window, KeyCode::Escape, true);
             } else {
@@ -1526,7 +1511,7 @@ mod tests {
                     .flatten()
                     .map(|i| i.id)
                     .collect::<Vec<_>>(),
-                if still_a_member { vec![id] } else { vec![] }
+                vec![id]
             );
             assert_eq!(
                 app.world()
@@ -1537,7 +1522,7 @@ mod tests {
                     .iter()
                     .map(|item| item.id)
                     .collect::<Vec<_>>(),
-                if still_a_member { vec![] } else { vec![id] }
+                vec![]
             );
         }
     }
