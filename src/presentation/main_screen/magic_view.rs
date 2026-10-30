@@ -1161,6 +1161,7 @@ mod tests {
             bevy::input_focus::tab_navigation::TabNavigationPlugin,
         ))
         .add_input_context::<Beneath>()
+        .add_observer(crate::presentation::retail_controls::give_focus_back)
         .init_asset::<SpriteSheet>()
         .init_resource::<Left>()
         .insert_resource(MagicViewArt {
