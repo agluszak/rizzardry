@@ -3,44 +3,44 @@
 //! keeps the source authoritative until the destination can commit, or
 //! leaves it untouched when destination preparation fails.
 
-use avian3d::prelude::{Collider, RigidBodyDisabled};
-use bevy::prelude::*;
-use rizzardry::content::items::{ItemCatalog, LootTables};
-use rizzardry::content::level::{CollisionMesh, LevelDefinition, MonsterPlacement};
-use rizzardry::content::monster::MonsterBody;
-use rizzardry::content::species::{MonsterCatalog, Species};
-use rizzardry::game::characters::{Character, Gender, Profession, Race};
-use rizzardry::game::data::GameData;
-use rizzardry::game::inventory::ItemIds;
-use rizzardry::game::party::body::{PartyBody, PartyMotionConfig};
-use rizzardry::game::party::roster::Party;
-use rizzardry::game::rng::GameRng;
-use rizzardry::game::world::level::{
+use crate::content::items::{ItemCatalog, LootTables};
+use crate::content::level::{CollisionMesh, LevelDefinition, MonsterPlacement};
+use crate::content::monster::MonsterBody;
+use crate::content::species::{MonsterCatalog, Species};
+use crate::game::characters::{Character, Gender, Profession, Race};
+use crate::game::data::GameData;
+use crate::game::inventory::ItemIds;
+use crate::game::party::body::{PartyBody, PartyMotionConfig};
+use crate::game::party::roster::Party;
+use crate::game::rng::GameRng;
+use crate::game::world::level::{
     Destination, Entry, Level, LevelEntryFailed, LevelMemory, LevelOwned, LevelReady, Travel,
     activate_level, travel,
 };
-use rizzardry::game::world::population::{Monster, MonsterBodies};
-use rizzardry::game::world::triggers::PendingPartyMove;
+use crate::game::world::population::{Monster, MonsterBodies};
+use crate::game::world::triggers::PendingPartyMove;
+use avian3d::prelude::{Collider, RigidBodyDisabled};
+use bevy::prelude::*;
 
 fn app() -> App {
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-        .add_plugins(rizzardry::game::npcs::NpcPlugin)
-        .init_resource::<rizzardry::game::time::GameClock>()
+        .add_plugins(crate::game::npcs::NpcPlugin)
+        .init_resource::<crate::game::time::GameClock>()
         .init_asset::<LevelDefinition>()
         .init_asset::<ItemCatalog>()
         .init_asset::<LootTables>()
         .init_asset::<MonsterCatalog>()
-        .init_asset::<rizzardry::content::spells::SpellCatalog>()
+        .init_asset::<crate::content::spells::SpellCatalog>()
         .init_asset::<bevy_landmass::NavMesh3d>()
         .init_asset::<MonsterBody>()
-        .init_asset::<rizzardry::content::ui::TextTable>()
+        .init_asset::<crate::content::ui::TextTable>()
         .init_resource::<Assets<PartyMotionConfig>>()
-        .init_resource::<Assets<rizzardry::game::world::navigation::WalkerMotionConfig>>()
+        .init_resource::<Assets<crate::game::world::navigation::WalkerMotionConfig>>()
         .init_resource::<LevelMemory>()
         .add_observer(give_bodies)
-        .init_resource::<rizzardry::game::factions::Factions>()
-        .add_message::<rizzardry::game::factions::FactionNews>()
+        .init_resource::<crate::game::factions::Factions>()
+        .add_message::<crate::game::factions::FactionNews>()
         .init_resource::<ItemIds>()
         .init_resource::<GameRng>()
         .add_message::<LevelReady>()
@@ -62,8 +62,8 @@ fn with_data(app: &mut App) {
     let crab = Species { name: "Crab".into(), model: "crab".into(), ..default() };
     let species = world.resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog(vec![crab]));
     let spells = world
-        .resource_mut::<Assets<rizzardry::content::spells::SpellCatalog>>()
-        .add(rizzardry::content::spells::SpellCatalog::default());
+        .resource_mut::<Assets<crate::content::spells::SpellCatalog>>()
+        .add(crate::content::spells::SpellCatalog::default());
     world.insert_resource(GameData { items, loot, species, spells });
     // Required body metadata is available without a visual asset or renderer.
     let body = world.resource_mut::<Assets<MonsterBody>>().add(MonsterBody::default());
@@ -90,7 +90,7 @@ fn give_bodies(
 
 /// Plain items under every id a new character can start with.
 fn starting_catalog() -> ItemCatalog {
-    use rizzardry::content::items::{ItemDefinition, ItemId};
+    use crate::content::items::{ItemDefinition, ItemId};
     ItemCatalog(
         (0..800u16)
             .map(|id| ItemDefinition {
@@ -207,8 +207,8 @@ fn update_until(app: &mut App, what: &str, done: impl Fn(&World) -> bool) {
 
 #[test]
 fn travel_dialogs_end_with_their_question_without_a_cleanup_system() {
-    use rizzardry::game::world::level::{TravelAnswer, answer_travel_questions, ask_travel};
-    use rizzardry::presentation::dialog::QuestionDialog;
+    use crate::game::world::level::{TravelAnswer, answer_travel_questions, ask_travel};
+    use crate::presentation::dialog::QuestionDialog;
 
     let mut app = app();
     app.add_message::<TravelAnswer>().add_systems(Update, answer_travel_questions);
@@ -238,8 +238,8 @@ fn travel_dialogs_end_with_their_question_without_a_cleanup_system() {
 /// spell points, vitals and a seat.
 #[test]
 fn a_new_party_is_complete_when_its_first_level_is_ready() {
-    use rizzardry::game::inventory::Carried;
-    use rizzardry::game::magic::SpellPoints;
+    use crate::game::inventory::Carried;
+    use crate::game::magic::SpellPoints;
     #[derive(Resource, Default)]
     struct Seen(Vec<(bool, bool, bool, bool)>);
     let mut app = app();
@@ -251,10 +251,10 @@ fn a_new_party_is_complete_when_its_first_level_is_ready() {
             Entity,
             Option<&Carried>,
             Option<&SpellPoints>,
-            Option<&rizzardry::game::characters::Vitals>,
-            &rizzardry::game::party::roster::PartyMember,
+            Option<&crate::game::characters::Vitals>,
+            &crate::game::party::roster::PartyMember,
         )>,
-          formations: Query<&rizzardry::game::party::formation::Formation>,
+          formations: Query<&crate::game::party::formation::Formation>,
           mut seen: ResMut<Seen>| {
             if ready.read().next().is_some() {
                 for (member, carried, points, vitals, party) in &members {
@@ -293,7 +293,7 @@ fn a_new_game_missing_a_starting_item_does_not_begin() {
     assert!(app.world_mut().query::<&Party>().iter(app.world()).next().is_none());
     assert!(
         app.world_mut()
-            .query::<&rizzardry::game::party::roster::PartyMember>()
+            .query::<&crate::game::party::roster::PartyMember>()
             .iter(app.world())
             .next()
             .is_none()
@@ -319,7 +319,7 @@ fn a_level_without_collision_fails_and_places_no_party() {
 /// through is built without it.
 #[test]
 fn a_solid_prop_without_collision_fails_entry_and_keeps_the_source() {
-    use rizzardry::content::level::{PropModel, PropModelPart};
+    use crate::content::level::{PropModel, PropModelPart};
     let (mut app, first_level) = playing();
     let party = party_entities(&mut app);
     let prop = |collidable| PropModel {
@@ -426,9 +426,9 @@ fn monsters(app: &mut App) -> Vec<Monster> {
 
 #[test]
 fn body_metadata_loads_even_when_the_visual_cycles_fail() {
+    use crate::content::monster::MonsterModel;
+    use crate::retail::monster_loader::{MlsBodyLoader, MlsLoader};
     use bevy::asset::LoadState;
-    use rizzardry::content::monster::MonsterModel;
-    use rizzardry::retail::monster_loader::{MlsBodyLoader, MlsLoader};
 
     let directory =
         std::env::temp_dir().join(format!("rizzardry-body-loader-{}", std::process::id()));
@@ -467,10 +467,10 @@ fn body_metadata_loads_even_when_the_visual_cycles_fail() {
 
 #[test]
 fn attaching_visuals_does_not_change_physical_state_or_revisit_placement() {
-    use rizzardry::content::monster::MonsterModel;
-    use rizzardry::game::world::navigation::Walker;
-    use rizzardry::game::world::population::ScaledBody;
-    use rizzardry::presentation::monsters::{MonsterVisual, build_monster_instances};
+    use crate::content::monster::MonsterModel;
+    use crate::game::world::navigation::Walker;
+    use crate::game::world::population::ScaledBody;
+    use crate::presentation::monsters::{MonsterVisual, build_monster_instances};
 
     for show_visuals in [false, true] {
         let (mut app, first) = playing();
@@ -514,7 +514,7 @@ fn attaching_visuals_does_not_change_physical_state_or_revisit_placement() {
             world.query::<(&Monster, &Transform, &Walker)>().single(world).unwrap();
         assert_eq!(monster.body, body);
         assert!(
-            rizzardry::game::world::navigation::feet(pose.translation, Some(walker)).distance(feet)
+            crate::game::world::navigation::feet(pose.translation, Some(walker)).distance(feet)
                 < 0.00001
         );
         assert!((pose.rotation.to_euler(EulerRot::YXZ).0 - 0.7).abs() < 0.001);
@@ -542,8 +542,8 @@ fn a_level_waits_for_body_metadata_and_sizes_monsters_without_render_assets() {
     assert_eq!((crab.body.scale, crab.body.radius), (2.0, 1.0), "its body at its size");
     let held = world.get::<MonsterBodies>(root).expect("the played level holds its bodies");
     assert_eq!(held.0[&0], loading, "for monsters spawned while it is played");
+    use crate::game::world::navigation::{Walker, WalkerMotion, feet};
     use bevy_tnua::TnuaController;
-    use rizzardry::game::world::navigation::{Walker, WalkerMotion, feet};
     let (at, walker, _) = world
         .query_filtered::<(&Transform, &Walker, &TnuaController<WalkerMotion>), With<Monster>>()
         .single(world)
@@ -551,19 +551,19 @@ fn a_level_waits_for_body_metadata_and_sizes_monsters_without_render_assets() {
     assert_eq!(walker.speed, 3.0);
     assert_eq!(feet(at.translation, Some(walker)), Vec3::ZERO);
     assert!(
-        world.query::<&rizzardry::game::combat::Battle>().iter(world).next().is_none(),
+        world.query::<&crate::game::combat::Battle>().iter(world).next().is_none(),
         "walking bodies exist before combat, without visual assets"
     );
 }
 
 #[test]
 fn group_knowledge_survives_revisit() {
-    use rizzardry::game::world::identify::{GroupMember, MonsterGroup};
+    use crate::game::world::identify::{GroupMember, MonsterGroup};
     let (mut app, _) = playing();
     let monster =
         app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
-    let provoked = rizzardry::game::world::hostility::SetStance {
-        stance: rizzardry::game::world::hostility::Stance::Hostile,
+    let provoked = crate::game::world::hostility::SetStance {
+        stance: crate::game::world::hostility::Stance::Hostile,
         at: 7,
     };
     let old = app.world().get::<GroupMember>(monster).unwrap().0;
@@ -582,12 +582,12 @@ fn group_knowledge_survives_revisit() {
 
 #[test]
 fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() {
+    use crate::content::items::{Dice, ItemDefinition, ItemId};
+    use crate::content::species::{Drop, Treasure};
+    use crate::game::inventory::PartyInventory;
+    use crate::game::world::damage::MonsterDamage;
+    use crate::game::world::items::WorldItem;
     use bevy::ecs::system::RunSystemOnce;
-    use rizzardry::content::items::{Dice, ItemDefinition, ItemId};
-    use rizzardry::content::species::{Drop, Treasure};
-    use rizzardry::game::inventory::PartyInventory;
-    use rizzardry::game::world::damage::MonsterDamage;
-    use rizzardry::game::world::items::WorldItem;
     let mut app = app();
     with_data(&mut app);
     let (items, species) = {
@@ -620,17 +620,17 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
         world
             .run_system_once(
                 move |mut damage: MonsterDamage,
-                      mut purse: Single<&mut rizzardry::game::inventory::PartyInventory>,
+                      mut purse: Single<&mut crate::game::inventory::PartyInventory>,
                       mut rng: ResMut<GameRng>| {
                     damage.apply(target, 10, (1, 0), &mut purse, &mut rng)
                 },
             )
             .unwrap()
     };
+    use crate::game::world::navigation::{Walker, WalkerMotion, links::Crossing};
     use avian3d::prelude::{LinearVelocity, Position};
     use bevy_landmass::{AgentTarget3d, UsingAnimationLink};
     use bevy_tnua::{TnuaController, TnuaMotor};
-    use rizzardry::game::world::navigation::{Walker, WalkerMotion, links::Crossing};
     let physical = Vec3::new(20.0, 3.0, 40.0);
     let mut controller = TnuaController::<WalkerMotion>::default();
     controller.basis.desired_motion = Vec3::X;
@@ -684,8 +684,8 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
 
 #[test]
 fn entry_suspends_gameplay_and_departure_captures_the_source_at_commit() {
+    use crate::game::world::level::level_active;
     use bevy::ecs::system::RunSystemOnce;
-    use rizzardry::game::world::level::level_active;
     let (mut app, source) = playing();
     let party = party_entities(&mut app)[0];
     let loading = app.world_mut().resource_mut::<Assets<LevelDefinition>>().reserve_handle();
@@ -728,16 +728,16 @@ fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
     let party = party_entities(&mut app)[0];
     let at = app.world().get::<Position>(party).unwrap().0;
     // Start through the real camera-path operation, not a hand-made marker.
+    use crate::game::party::walk_in::{PathFlight, move_party};
+    use crate::game::world::triggers::PartyMove;
     use bevy::ecs::system::RunSystemOnce;
-    use rizzardry::game::party::walk_in::{PathFlight, move_party};
-    use rizzardry::game::world::triggers::PartyMove;
     let handle = app.world().get::<Level>(source).unwrap().definition.clone();
     app.world_mut()
         .resource_mut::<Assets<LevelDefinition>>()
         .get_mut(&handle)
         .unwrap()
         .camera_paths
-        .push(rizzardry::content::level::CameraPathModel {
+        .push(crate::content::level::CameraPathModel {
             name: "travel flight".into(),
             keys: vec![Transform::default()],
             keys_per_second: 1.0,
@@ -773,7 +773,7 @@ fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
     assert!(monsters(&mut app).is_empty());
     assert_eq!(
         app.world().get::<Position>(party).unwrap().0,
-        Vec3::new(9.0, 4.0, 2.0) - Vec3::Y * rizzardry::game::party::body::EYE_ABOVE_CENTRE
+        Vec3::new(9.0, 4.0, 2.0) - Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE
     );
 }
 
@@ -794,8 +794,8 @@ fn failed_navigation_is_a_failed_destination_not_degraded_activation() {
 
 #[test]
 fn retail_level_definitions_load_without_render_asset_resources() {
-    use rizzardry::content::level::LevelGeometry;
-    use rizzardry::retail::level_loader::{PvlDefinitionLoader, PvlLoader};
+    use crate::content::level::LevelGeometry;
+    use crate::retail::level_loader::{PvlDefinitionLoader, PvlLoader};
     // An empty compiled level with one material. Even this material would need
     // StandardMaterial registration if gameplay still ran the visual loader.
     let mut pvl = vec![0; 8]; // mesh/root counts
@@ -831,10 +831,9 @@ fn retail_level_definitions_load_without_render_asset_resources() {
     std::fs::create_dir_all(directory).unwrap();
     std::fs::write(directory.join("empty.pvl"), pvl).unwrap();
     std::fs::write(directory.join("empty.oct"), oct).unwrap();
-    let files =
-        std::sync::Arc::new(rizzardry::retail::files::RetailFiles::open(directory).unwrap());
+    let files = std::sync::Arc::new(crate::retail::files::RetailFiles::open(directory).unwrap());
     let mut app = App::new();
-    app.register_asset_source("retail", rizzardry::retail::source::retail_source(files))
+    app.register_asset_source("retail", crate::retail::source::retail_source(files))
         .add_plugins((MinimalPlugins, AssetPlugin::default()))
         .init_asset::<LevelDefinition>()
         .init_asset::<LevelGeometry>()
@@ -858,11 +857,11 @@ fn retail_level_definitions_load_without_render_asset_resources() {
 
 #[test]
 fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
-    use rizzardry::content::{
+    use crate::content::{
         items::{ItemDefinition, ItemId},
         npcs::{DialogueScript, FactCatalog, NpcCatalog, NpcDefinition, NpcId, Quote, StockRule},
     };
-    use rizzardry::game::npcs::{ActorId, Npc, NpcAssets, NpcBodies};
+    use crate::game::npcs::{ActorId, Npc, NpcAssets, NpcBodies};
     let mut app = app();
     with_data(&mut app);
     let data = app.world().resource::<GameData>();
@@ -911,7 +910,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
         body.max_hp = 9;
     }
     // A merchant re-enters at authored quote zero even after its greeting was remembered.
-    use rizzardry::game::npcs::conversation::{self, Conversation, ConversationRequest};
+    use crate::game::npcs::conversation::{self, Conversation, ConversationRequest};
     let at = app.world().get::<Transform>(body).unwrap().translation;
     let party = party_entities(&mut app)[0];
     app.world_mut().get_mut::<avian3d::prelude::Position>(party).unwrap().0 = at + Vec3::X;
@@ -931,12 +930,12 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
         app.update();
         assert!(app.world().get_entity(session).is_err());
     }
-    let provoked = rizzardry::game::world::hostility::SetStance {
-        stance: rizzardry::game::world::hostility::Stance::Hostile,
+    let provoked = crate::game::world::hostility::SetStance {
+        stance: crate::game::world::hostility::Stance::Hostile,
         at: 7,
     };
-    let group = app.world().get::<rizzardry::game::world::identify::GroupMember>(body).unwrap().0;
-    app.world_mut().get_mut::<rizzardry::game::world::identify::MonsterGroup>(group).unwrap().set =
+    let group = app.world().get::<crate::game::world::identify::GroupMember>(body).unwrap().0;
+    app.world_mut().get_mut::<crate::game::world::identify::MonsterGroup>(group).unwrap().set =
         Some(provoked);
     let stock = app.world().get::<Npc>(actor).unwrap().stock.clone();
     // Replacing the current map departs and reuses this role in the same
@@ -954,7 +953,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     let source = replacement;
     app.world_mut()
         .entity_mut(body)
-        .insert(rizzardry::game::world::navigation::links::Crossing { link: source, to: Vec3::X });
+        .insert(crate::game::world::navigation::links::Crossing { link: source, to: Vec3::X });
     let mut away = test_level(&mut app, floor());
     away.path = "levels/away/away.pvl".into();
     app.world_mut()
@@ -989,9 +988,9 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(returned_body).is_none());
     assert_eq!(app.world().get::<Monster>(returned_body).unwrap().hp, 4);
     let group =
-        app.world().get::<rizzardry::game::world::identify::GroupMember>(returned_body).unwrap().0;
+        app.world().get::<crate::game::world::identify::GroupMember>(returned_body).unwrap().0;
     assert_eq!(
-        app.world().get::<rizzardry::game::world::identify::MonsterGroup>(group).unwrap().set,
+        app.world().get::<crate::game::world::identify::MonsterGroup>(group).unwrap().set,
         Some(provoked),
         "the NPC's group keeps the provocation"
     );
@@ -1007,15 +1006,15 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
 /// its purse once, and its world role never comes back.
 #[test]
 fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
-    use bevy::ecs::system::RunSystemOnce;
-    use rizzardry::content::items::{Dice, ItemId, LootTable};
-    use rizzardry::content::npcs::{
+    use crate::content::items::{Dice, ItemId, LootTable};
+    use crate::content::npcs::{
         DialogueScript, FactCatalog, NpcCatalog, NpcDefinition, NpcId, Quote,
     };
-    use rizzardry::game::inventory::PartyInventory;
-    use rizzardry::game::npcs::{Npc, NpcAssets, NpcBodies};
-    use rizzardry::game::world::damage::MonsterDamage;
-    use rizzardry::game::world::items::{GroundLoot, WorldItem};
+    use crate::game::inventory::PartyInventory;
+    use crate::game::npcs::{Npc, NpcAssets, NpcBodies};
+    use crate::game::world::damage::MonsterDamage;
+    use crate::game::world::items::{GroundLoot, WorldItem};
+    use bevy::ecs::system::RunSystemOnce;
     let mut app = app();
     with_data(&mut app);
     let data = app.world().resource::<GameData>();
@@ -1097,18 +1096,18 @@ fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
 /// second NPC, and never a body in the world while it travels with the party.
 #[test]
 fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
-    use bevy::ecs::entity_disabling::Disabled;
-    use rizzardry::content::characters::{Attribute, Skill};
-    use rizzardry::content::items::ItemId;
-    use rizzardry::content::npcs::{
+    use crate::content::characters::{Attribute, Skill};
+    use crate::content::items::ItemId;
+    use crate::content::npcs::{
         DialogueScript, FactCatalog, NpcCatalog, NpcCharacter, NpcDefinition, NpcId, Quote,
     };
-    use rizzardry::game::characters::{Condition, Lasting, Vitals};
-    use rizzardry::game::inventory::{Carried, EquipSlot, PartyInventory};
-    use rizzardry::game::npcs::recruit::{self, JoinRefusal};
-    use rizzardry::game::npcs::{Npc, NpcAssets, NpcBodies, NpcWorldRole};
-    use rizzardry::game::party::roster::{PartyMember, PartyRoster};
-    use rizzardry::game::world::level::LevelOwned;
+    use crate::game::characters::{Condition, Lasting, Vitals};
+    use crate::game::inventory::{Carried, EquipSlot, PartyInventory};
+    use crate::game::npcs::recruit::{self, JoinRefusal};
+    use crate::game::npcs::{Npc, NpcAssets, NpcBodies, NpcWorldRole};
+    use crate::game::party::roster::{PartyMember, PartyRoster};
+    use crate::game::world::level::LevelOwned;
+    use bevy::ecs::entity_disabling::Disabled;
     let mut app = app();
     with_data(&mut app);
     let species = app.world().resource::<GameData>().species.clone();
@@ -1299,8 +1298,8 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
 
 #[test]
 fn prop_motion_resumes_from_its_actual_frame_after_a_revisit() {
-    use rizzardry::content::level::{PropModel, PropModelPart};
-    use rizzardry::game::world::props::{Prop, PropMotion};
+    use crate::content::level::{PropModel, PropModelPart};
+    use crate::game::world::props::{Prop, PropMotion};
     let (mut app, source) = playing();
     let definition = app.world().get::<Level>(source).unwrap().definition.clone();
     app.world_mut()
@@ -1346,8 +1345,8 @@ fn prop_motion_resumes_from_its_actual_frame_after_a_revisit() {
 /// revisit (retail `GiveBirthToMonster`).
 #[test]
 fn an_unborn_group_waits_until_born_and_is_born_once() {
-    use rizzardry::game::world::identify::{GroupMember, MonsterGroup};
-    use rizzardry::game::world::population::{Birth, Unborn, give_birth};
+    use crate::game::world::identify::{GroupMember, MonsterGroup};
+    use crate::game::world::population::{Birth, Unborn, give_birth};
     let mut app = app();
     app.add_message::<Birth>().add_systems(Update, give_birth.after(activate_level));
     with_data(&mut app);

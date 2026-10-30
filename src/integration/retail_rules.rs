@@ -1,15 +1,15 @@
 //! Rules checked against the retail databases. Ignored by default: run
 //! them with `RIZZARDRY_RETAIL` set.
 
-use rizzardry::content::items::{AttackMode, ItemCatalog, ItemId};
-use rizzardry::game::characters::{Character, Gender, Load, Profession, Race, Vitals};
-use rizzardry::game::combat::attack::*;
-use rizzardry::game::difficulty::Difficulty;
-use rizzardry::game::inventory::{Carried, EquipSlot, ItemIds, make_item, place_at_creation};
-use rizzardry::game::party::roster::starting_items;
-use rizzardry::game::rng::GameRng;
-use rizzardry::game::world::population::{Monster, ScaledBody};
-use rizzardry::retail::files::RetailFiles;
+use crate::content::items::{AttackMode, ItemCatalog, ItemId};
+use crate::game::characters::{Character, Gender, Load, Profession, Race, Vitals};
+use crate::game::combat::attack::*;
+use crate::game::difficulty::Difficulty;
+use crate::game::inventory::{Carried, EquipSlot, ItemIds, make_item, place_at_creation};
+use crate::game::party::roster::starting_items;
+use crate::game::rng::GameRng;
+use crate::game::world::population::{Monster, ScaledBody};
+use crate::retail::files::RetailFiles;
 
 fn retail_files() -> RetailFiles {
     let root = std::env::var("RIZZARDRY_RETAIL")
@@ -19,9 +19,9 @@ fn retail_files() -> RetailFiles {
 
 fn retail_catalog(files: &RetailFiles) -> ItemCatalog {
     let strings = files.read("data/strings/stringdata.dat").unwrap().unwrap();
-    let strings = rizzardry::retail::strings::read_string_table(&strings).unwrap();
+    let strings = crate::retail::strings::read_string_table(&strings).unwrap();
     let items = files.read("data/databases/items.dbs").unwrap().unwrap();
-    rizzardry::retail::items::read_item_catalog(&items, &strings).unwrap()
+    crate::retail::items::read_item_catalog(&items, &strings).unwrap()
 }
 
 #[test]
@@ -29,7 +29,7 @@ fn retail_catalog(files: &RetailFiles) -> ItemCatalog {
 fn a_fighter_and_a_crab_trade_blows() {
     let files = retail_files();
     let catalog = retail_catalog(&files);
-    let species = rizzardry::retail::species::read_species(
+    let species = crate::retail::species::read_species(
         &files.read("data/databases/monsters.dbs").unwrap().unwrap(),
     )
     .unwrap();
@@ -70,7 +70,7 @@ fn a_fighter_and_a_crab_trade_blows() {
     let attack = &crab.attacks[0];
     let mode = choose_mode(&mut rng, attack.modes);
     let theirs = monster_aim(
-        (crab, &body, rizzardry::game::world::hostility::Stance::Hostile),
+        (crab, &body, crate::game::world::hostility::Stance::Hostile),
         attack,
         mode,
         Surprise::default(),
