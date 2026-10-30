@@ -181,7 +181,7 @@ fn select_spell(
 
 pub(super) fn refresh(
     session: Option<Single<Ref<Creation>>>,
-    art: Option<Single<&SpellArt>>,
+    art: Option<Single<Ref<SpellArt>>>,
     content: If<Res<Catalogs>>,
     mut rows: Query<(
         Entity,
@@ -193,9 +193,13 @@ pub(super) fn refresh(
     )>,
     mut labels: Query<(&mut BitmapText, Option<&RealmValue>, Option<&SpellText>)>,
     mut headers: Query<(&RealmHeader, &mut Visibility), Without<SpellOption>>,
+    added: Query<(), Or<(Added<SpellOption>, Added<RealmValue>, Added<RealmHeader>)>>,
     mut commands: Commands,
 ) {
     let (Some(session), Some(art)) = (session, art) else { return };
+    if !session.is_changed() && !art.is_changed() && !content.is_changed() && added.is_empty() {
+        return;
+    }
     let Some(draft) = session.mode.draft() else { return };
     let catalog = &content.spells;
     let profile = draft.preview();
