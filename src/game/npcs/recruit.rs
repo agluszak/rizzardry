@@ -114,9 +114,8 @@ pub fn joinable(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
         return Err(JoinRefusal::Declines);
     }
     let party = the_party(world);
-    let npcs = world
-        .get::<PartyRoster>(party)
-        .map_or(0, |roster| roster.iter().filter(|&m| world.get::<Npc>(m).is_some()).count());
+    let roster = world.get::<PartyRoster>(party).unwrap();
+    let npcs = roster.iter().filter(|&m| world.get::<Npc>(m).is_some()).count();
     if npcs >= NPC_PLACES {
         return Err(JoinRefusal::NoRoom);
     }

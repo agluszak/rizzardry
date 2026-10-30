@@ -374,9 +374,12 @@ pub fn party_communication(world: &mut World) -> u32 {
 }
 fn average_level(world: &mut World) -> u32 {
     let party = the_party(world);
-    let Some(roster) = world.get::<PartyRoster>(party) else { return 1 };
     crate::game::party::average_level(
-        roster.iter().filter_map(|member| world.get::<Character>(member)).map(|c| c.level()),
+        world
+            .get::<PartyRoster>(party)
+            .unwrap()
+            .iter()
+            .map(|member| world.get::<Character>(member).unwrap().level()),
     )
 }
 pub(crate) fn active_body(world: &World, actor: Entity) -> Option<Entity> {

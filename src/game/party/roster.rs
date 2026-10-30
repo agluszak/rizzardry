@@ -15,6 +15,7 @@ use crate::game::rng::GameRng;
 /// its body ([`super::body::PartyBody`]).
 #[derive(Component, Debug, Default)]
 #[require(
+    PartyRoster,
     super::formation::Formation,
     crate::game::magic::enchantments::PartyEffects,
     crate::game::inventory::PartyInventory,
