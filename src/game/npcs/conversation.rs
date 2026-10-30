@@ -131,8 +131,8 @@ fn fact(world: &World, id: FactId) -> Result<u8, String> {
 #[derive(Debug)]
 enum Step {
     Quote { quote: u16, subquote: usize, paid: bool, plan: Option<QuotePlan> },
-    Options { quote: u16, words: Vec<String>, typed: bool },
-    Price { quote: u16, gold: u32, always: bool },
+    /// The party is asked for an answer.
+    Wait(ConversationWait),
     Join,
     End,
 }
@@ -631,26 +631,7 @@ pub(crate) fn end_conversations(
 /// a paid answer or an accepted hand-in among them, so their effects commit
 /// as it ends; only their lines are lost.
 fn close_one(world: &mut World, entity: Entity) {
-    let Some(c) = world.get::<Conversation>(entity) else { return };
-    // Closing removes the view, not ownership of an exchange already paid for.
-    // Retain every accepted plan until the whole settlement can run. The
-    // unavailable-speaker/battle path retries this operation on later updates.
-    let accepted = c.queue.iter().any(|step| matches!(step, Step::Quote { plan: Some(_), .. }));
-    if accepted && definition(world, c.actor).is_err()
-        || c.queue.iter().any(|step| match step {
-            Step::Quote { plan: Some(plan), .. } => !executable(world, plan),
-            _ => false,
-        })
-    {
-        if !c.charms.is_empty() {
-            world.get_mut::<Conversation>(entity).unwrap().charms.clear();
-        }
-        if world.get::<Closing>(entity).is_none() {
-            world.entity_mut(entity).insert(Closing);
-        }
-        return;
-    }
-    let mut c = world.get_mut::<Conversation>(entity).unwrap();
+    let Some(mut c) = world.get_mut::<Conversation>(entity) else { return };
     let plans: Vec<_> = c
         .queue
         .drain(..)
@@ -901,24 +882,6 @@ fn plan_quote(
     }
     Ok(plan)
 }
-/// Whether the plan can commit now: its recipients and content exist.
-fn executable(world: &World, plan: &QuotePlan) -> bool {
-    plan.effects.iter().all(|effect| match effect {
-        QuoteEffect::Gold { party, .. } => world.get::<PartyInventory>(*party).is_some(),
-        QuoteEffect::Experience { members, .. } => {
-            members.iter().all(|&member| world.get::<Character>(member).is_some())
-        }
-        QuoteEffect::SetFact(id, _) => StoryFacts::can_set(*id, fact_catalog(world)),
-        QuoteEffect::Mention(..) => true,
-        QuoteEffect::GiveItem { party, item } => {
-            world.get::<PartyInventory>(*party).is_some()
-                && world.resource::<crate::game::data::Catalogs>().items.get(*item).is_some()
-        }
-        QuoteEffect::TakeItem { party, .. } => world.get::<PartyInventory>(*party).is_some(),
-        QuoteEffect::Disposition { npc, .. } => world.get::<Npc>(*npc).is_some(),
-        QuoteEffect::Faction { .. } | QuoteEffect::PartyRemark(_) | QuoteEffect::Resume => true,
-    })
-}
 /// Retail `AddItemToPartyOrDrop`: a gift the party's items have no room for
 /// lands at the party's feet, unless the party may not part with it; that
 /// one goes to the hand with retail's notice (`DropUnstoredCharacterItem`).
@@ -1017,7 +980,9 @@ fn commit_quote(world: &mut World, entity: Entity, quote: u16, plan: QuotePlan) 
                 paid: false,
                 plan: None,
             },
-            Continuation::Options { words, typed } => Step::Options { quote, words, typed },
+            Continuation::Options { words, typed } => {
+                Step::Wait(ConversationWait::Options { quote, words, typed })
+            }
             Continuation::End => Step::End,
         };
         world.get_mut::<Conversation>(entity).unwrap().queue.push_front(next);
@@ -1162,15 +1127,9 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party:
                     warn!("NPC did not join after all: {refusal:?}");
                 }
             }
-            Step::Options { quote, words, typed } => {
+            Step::Wait(wait) => {
                 let mut c = world.get_mut::<Conversation>(entity).unwrap();
-                c.wait = ConversationWait::Options { quote, words, typed };
-                c.revision += 1;
-                return;
-            }
-            Step::Price { quote, gold, always } => {
-                let mut c = world.get_mut::<Conversation>(entity).unwrap();
-                c.wait = ConversationWait::Price { quote, gold, always };
+                c.wait = wait;
                 c.revision += 1;
                 return;
             }
@@ -1200,7 +1159,7 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party:
                     let gold =
                         (gold - gold.saturating_mul(party_communication(world)) / 500).max(1);
                     let mut c = world.get_mut::<Conversation>(entity).unwrap();
-                    c.queue.push_front(Step::Price { quote, gold, always });
+                    c.queue.push_front(Step::Wait(ConversationWait::Price { quote, gold, always }));
                     c.queue.push_front(Step::Quote {
                         quote: PRICE_QUOTE,
                         subquote: 0,
@@ -1218,12 +1177,6 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party:
                         return;
                     }
                 };
-                if !executable(world, &plan) {
-                    let mut c = world.get_mut::<Conversation>(entity).unwrap();
-                    c.queue.push_front(Step::Quote { quote, subquote, paid, plan: Some(plan) });
-                    block(&mut c, quote, None, "accepted reward recipient unavailable".into());
-                    return;
-                }
                 if quote == 0 {
                     let first = world.get::<Npc>(actor).unwrap().greeting_pending;
                     if first && let Ok(definition) = definition(world, actor) {
@@ -1717,16 +1670,6 @@ fn answer_price(world: &mut World, entity: Entity, accept: bool) {
                         return;
                     }
                 };
-                // Nothing is charged for an answer that cannot commit.
-                if !executable(world, &plan) {
-                    block(
-                        &mut world.get_mut::<Conversation>(entity).unwrap(),
-                        quote,
-                        None,
-                        "accepted reward recipient unavailable".into(),
-                    );
-                    return;
-                }
                 world.get_mut::<PartyInventory>(party).unwrap().gold -= gold;
                 if !always {
                     world.get_mut::<Npc>(actor).unwrap().paid_topics.push(quote);
