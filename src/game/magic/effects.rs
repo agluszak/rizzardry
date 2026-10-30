@@ -690,7 +690,7 @@ fn target(
     match victim {
         Victim::Monster(monster) => {
             let (body, ..) = world.monsters.monsters().get(monster).ok()?;
-            let kind = world.species.kind(body.species)?;
+            let kind = &world.species[body.species];
             Some(Target {
                 level: u32::from(kind.level),
                 resistance: body.resistance(kind, realm),
@@ -932,7 +932,7 @@ fn afflict(
         Victim::Monster(monster) => {
             condition.is_none() && {
                 let (body, ..) = world.monsters.monsters().get(monster).ok()?;
-                world.species.kind(body.species)?.death_immune
+                world.species[body.species].death_immune
             }
         }
         Victim::Member(_) => false,
@@ -1474,7 +1474,7 @@ pub fn resolve(
         Kind::DamageUndead { banish } => each(&mut |v, rng, world| {
             let Victim::Monster(m) = v else { return None };
             let (body, ..) = world.monsters.monsters().get(m).ok()?;
-            let kind = world.species.kind(body.species)?.kind;
+            let kind = world.species[body.species].kind;
             if !(UNDEAD_KINDS.contains(&kind) || (banish && kind == BANISHED_KIND)) {
                 return Some(Effect::Nothing { victim: v });
             }
@@ -1890,7 +1890,7 @@ pub(crate) fn pulse_clouds(
                             .monsters()
                             .get(actor)
                             .ok()
-                            .and_then(|(body, ..)| world.species.kind(body.species))
+                            .map(|(body, ..)| &world.species[body.species])
                             .is_none_or(|kind| kind.death_immune),
                         Victim::Member(_) => false,
                     };

@@ -1411,7 +1411,7 @@ fn approach_npc(world: &mut World, entity: Entity, approach: Approach) {
         let average = crate::game::party::average_level(super::able_levels(world));
         let own = active_body(world, actor)
             .and_then(|body| world.get::<Monster>(body))
-            .and_then(|m| world.resource::<crate::game::data::Catalogs>().species.kind(m.species))
+            .map(|m| &world.resource::<crate::game::data::Catalogs>().species[m.species])
             .map_or(1, |kind| u32::from(kind.level).max(1));
         delta = (average * delta as u32 / own) as i32;
     }

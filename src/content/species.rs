@@ -515,3 +515,11 @@ impl MonsterCatalog {
         self.0.get(species as usize)
     }
 }
+
+/// The species of a monster that exists: every one is spawned from one.
+impl std::ops::Index<u32> for MonsterCatalog {
+    type Output = Species;
+    fn index(&self, species: u32) -> &Species {
+        &self.0[species as usize]
+    }
+}

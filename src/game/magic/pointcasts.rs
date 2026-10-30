@@ -217,11 +217,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
                 if (here - at).abs().max_element() > far {
                     continue;
                 }
-                let kind = &world
-                    .resource::<crate::game::data::Catalogs>()
-                    .species
-                    .kind(body.species)
-                    .unwrap();
+                let kind = &world.resource::<crate::game::data::Catalogs>().species[body.species];
                 if kind.kind == MonsterKind::Undead {
                     continue;
                 }

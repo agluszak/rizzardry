@@ -162,7 +162,7 @@ impl GroupRecognition<'_, '_> {
                 }
                 species_id.get_or_insert(monster.species);
                 count += 1;
-                let Some(species) = catalog.kind(monster.species) else { continue };
+                let species = &catalog[monster.species];
                 in_view |= view.sees(
                     members
                         .iter_many(roster.iter())

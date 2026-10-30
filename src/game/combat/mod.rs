@@ -833,8 +833,7 @@ pub fn start_battle(
             .iter()
             .filter(|&member| {
                 monsters.get(member).is_ok_and(|(_, monster, ..)| {
-                    !monster.is_dead()
-                        && catalog.kind(monster.species).is_some_and(|k| k.npc.is_none())
+                    !monster.is_dead() && catalog[monster.species].npc.is_none()
                 })
             })
             .collect()
@@ -846,7 +845,7 @@ pub fn start_battle(
     // cast or breathe at the party.
     let look = |fighter: Entity| -> Option<(f32, bool, bool)> {
         let (_, monster, at, walker, ..) = monsters.get(fighter).ok()?;
-        let kind = catalog.kind(monster.species)?;
+        let kind = &catalog[monster.species];
         let at_feet = feet(at.translation(), walker);
         let distance = party_distance(sight.eye, monster, at_feet);
         let sees = sight.sees(monster, &at, walker, kind);
@@ -885,7 +884,7 @@ pub fn start_battle(
     };
     let seen = |member: Entity| -> Option<Seen> {
         let (_, monster, at, walker, ..) = monsters.get(member).ok()?;
-        let kind = catalog.kind(monster.species)?;
+        let kind = &catalog[monster.species];
         let at_feet = feet(at.translation(), walker);
         Some(Seen {
             entity: member,
@@ -921,7 +920,7 @@ pub fn start_battle(
         let (mut groups, factions) = stage.p0();
         let stands = |monster: Entity, group: Option<&MonsterGroup>| -> Option<hostility::Stance> {
             let (_, body, ..) = monsters.get(monster).ok()?;
-            let kind = catalog.kind(body.species)?;
+            let kind = &catalog[body.species];
             Some(hostility::stance(group.and_then(|g| g.set), kind, &factions, now, true))
         };
         let living = |membership: &GroupMembers| -> Option<Entity> {
@@ -946,7 +945,7 @@ pub fn start_battle(
             .filter_map(|(entity, group, membership, owner)| {
                 let leader = living(membership).filter(|_| owner.0 == root)?;
                 let (_, body, .., fighting) = monsters.get(leader).ok()?;
-                let kind = catalog.kind(body.species)?;
+                let kind = &catalog[body.species];
                 (fighting
                     && kind.faction != crate::game::factions::UNALIGNED
                     && stands(leader, Some(group)) == Some(hostility::Stance::Hostile))
@@ -954,9 +953,10 @@ pub fn start_battle(
             })
             .collect();
         let view = |monster: Entity| {
-            monsters.get(monster).ok().and_then(|(_, body, at, walker, ..)| {
-                Some((body, at, walker, catalog.kind(body.species)?))
-            })
+            monsters
+                .get(monster)
+                .ok()
+                .map(|(_, body, at, walker, ..)| (body, at, walker, &catalog[body.species]))
         };
         for (entity, mut group, membership, owner) in &mut groups {
             let Some(leader) = living(membership).filter(|_| owner.0 == root) else { continue };
@@ -1002,9 +1002,7 @@ pub fn start_battle(
         monsters
             .iter()
             .filter(|(_, monster, .., group, _)| {
-                group.is_none()
-                    && !monster.is_dead()
-                    && catalog.kind(monster.species).is_some_and(|k| k.npc.is_none())
+                group.is_none() && !monster.is_dead() && catalog[monster.species].npc.is_none()
             })
             .map(|(entity, ..)| (i32::MAX, None, vec![entity])),
     );
@@ -1090,7 +1088,7 @@ pub fn start_battle(
     };
     let seen = joined.iter().any(|&entity| {
         let Ok((_, monster, at, walker, ..)) = monsters.get(entity) else { return false };
-        let Some(kind) = catalog.kind(monster.species) else { return false };
+        let kind = &catalog[monster.species];
         view.sees(
             members.iter_many(roster.iter()).matched(),
             shadow_hound,
@@ -1176,7 +1174,7 @@ fn allegiance(
     species: &MonsterCatalog,
 ) -> Option<hostility::Allegiance> {
     let (body, ..) = damage.monsters().get(entity).ok()?;
-    let kind = species.kind(body.species)?;
+    let kind = &species[body.species];
     Some(hostility::Allegiance {
         species: body.species,
         stance: damage.stance(entity, now),
@@ -1206,7 +1204,7 @@ fn leave_fight(
     let stance_of = |monster: Entity| Some(damage.group_stance(monster, now));
     let seen = |monster: Entity| -> Option<(Seen, bool)> {
         let (body, at, walker, ..) = monsters.get(monster).ok()?;
-        let kind = species.kind(body.species)?;
+        let kind = &species[body.species];
         if body.is_dead() {
             return None;
         }
@@ -1253,7 +1251,7 @@ fn leave_fight(
                     return false;
                 };
                 let Ok((body, at, walker, ..)) = monsters.get(fellow.entity) else { return false };
-                let Some(kind) = species.kind(body.species) else { return false };
+                let kind = &species[body.species];
                 combatants.iter().any(|&enemy| {
                     let Some(theirs) = allegiance(enemy, damage, now, species) else {
                         return false;
@@ -1261,7 +1259,7 @@ fn leave_fight(
                     let Ok((target, target_at, target_walker, ..)) = monsters.get(enemy) else {
                         return false;
                     };
-                    let Some(target_kind) = species.kind(target.species) else { return false };
+                    let target_kind = &species[target.species];
                     !target.is_dead()
                         && hostility::between(mine, theirs) == Stance::Hostile
                         && sight.sees_monster(
@@ -1369,7 +1367,7 @@ fn accept_round(
     }
     for &entity in combatants {
         let Ok((monster, ..)) = monsters.get(entity) else { continue };
-        let Some(kind) = species.kind(monster.species) else { continue };
+        let kind = &species[monster.species];
         let turn = if monster.is_dead() {
             Turn::default()
         } else {
@@ -2108,7 +2106,7 @@ fn monster_turn(
     let mut decision = Decision::Fight { waits: false };
     let mut interrupted = None;
     if let Ok((body, at, walker, ..)) = damage.monsters().get(monster)
-        && let Some(kind) = species.kind(body.species)
+        && let kind = &species[body.species]
         && turn.attacks_left == u32::from(kind.attacks_per_round)
         && !battle.this_round.moved.contains(&monster)
     {
@@ -2244,7 +2242,7 @@ fn monster_turn(
                                     body.gap(feet, o, self::feet(o_at.translation(), o_walker));
                                 !o.is_dead()
                                     && gap <= reach
-                                    && species.kind(o.species).is_some_and(|k| k.level > kind.level)
+                                    && species[o.species].level > kind.level
                                     && o.hp * 100 / o.max_hp.max(1) < 40
                             })
                     })
@@ -2324,7 +2322,7 @@ fn monster_turn(
         Decision::Move { conduct, quiet } => {
             battle.this_round.monsters[index].1 = Turn::default();
             let Ok((body, at, walker, ..)) = damage.monsters().get(monster) else { return false };
-            let Some(kind) = species.kind(body.species) else { return false };
+            let kind = &species[body.species];
             if conduct == conduct::Conduct::Hold {
                 return false;
             }
@@ -2443,7 +2441,7 @@ fn monster_turn(
         };
         let budget = damage.monsters().get(monster).ok().and_then(|(body, at, walker, ..)| {
             if let Some(target) = destination {
-                let kind = species.kind(body.species)?;
+                let kind = &species[body.species];
                 walker.filter(|walker| walker.speed > 0.0)?;
                 let charge = body.charges();
                 Some((

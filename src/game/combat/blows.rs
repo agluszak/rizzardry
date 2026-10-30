@@ -263,7 +263,7 @@ fn monster_defence<'a>(
     if body.is_dead() || !field.monsters.active(monster) {
         return None;
     }
-    let kind = species.kind(body.species)?;
+    let kind = &species[body.species];
     Some(Defence::monster(kind, body, fight.moving.contains(monster)))
 }
 
@@ -331,7 +331,7 @@ fn intercept(
         .filter_map(|(i, g)| {
             let (body, at, walker, ..) = monsters.get(g.guard).ok()?;
             let (ward_body, ward_at, ward_walker, ..) = monsters.get(ward).ok()?;
-            let kind = species.kind(body.species)?;
+            let kind = &species[body.species];
             let first = kind.attacks.first()?;
             let gap = body.gap(
                 feet(at.translation(), walker),
@@ -462,7 +462,10 @@ pub(super) fn melee_target<'a>(
         .iter()
         .filter_map(|&entity| {
             let (monster, at, walker, ..) = field.monsters.monsters().get(entity).ok()?;
-            let kind = species.kind(monster.species).filter(|kind| kind.npc.is_none())?;
+            let kind = &species[monster.species];
+            if kind.npc.is_some() {
+                return None;
+            }
             let distance = party_distance(fight.party.eye, monster, feet(at.translation(), walker));
             let turned = field
                 .members
@@ -945,7 +948,7 @@ pub(super) fn monster_attacks(
     let Ok((monster, at, walker, ..)) = field.monsters.monsters().get(entity) else {
         return false;
     };
-    let Some(kind) = species.kind(monster.species) else { return false };
+    let kind = &species[monster.species];
     let distance = party_distance(fight.party.eye, monster, feet(at.translation(), walker));
     let position = at.translation();
     let eye = monster.eye(feet(position, walker));

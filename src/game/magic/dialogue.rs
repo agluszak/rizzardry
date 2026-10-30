@@ -45,11 +45,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
     }
     world.get::<Npc>(actor).ok_or(Refusal::NoTarget)?;
     let monster = world.get::<Monster>(body).ok_or(Refusal::NoTarget)?;
-    let kind = world
-        .resource::<crate::game::data::Catalogs>()
-        .species
-        .kind(monster.species)
-        .ok_or(Refusal::MissingContent)?;
+    let kind = &world.resource::<crate::game::data::Catalogs>().species[monster.species];
     let (level, resistance, notice_chance) = (
         u32::from(kind.level),
         monster.resistance(kind, Realm::Mental),

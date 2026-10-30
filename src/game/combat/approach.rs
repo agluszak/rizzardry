@@ -55,7 +55,7 @@ pub(super) fn needs_approach(
     if monster.is_dead() || walker.speed <= 0.0 {
         return false;
     }
-    let Some(kind) = species.kind(monster.species) else { return false };
+    let kind = &species[monster.species];
     let reach = kind.attacks.iter().map(|a| a.reach).max().unwrap_or(Reach::Touch);
     let feet = crate::game::world::navigation::feet(origin, Some(walker));
     crate::game::world::perception::party_distance(party_eye, monster, feet)
@@ -81,7 +81,7 @@ pub(super) fn move_budget(
     if !needs_approach(monster, origin, walker, party_eye, species) {
         return None;
     }
-    let kind = species.kind(monster.species)?;
+    let kind = &species[monster.species];
     let charge = monster.charges();
     Some(MoveBudget { metres: move_metres(monster, kind, charge), charge })
 }
@@ -141,9 +141,11 @@ pub fn steer_moves(
                         target_at.translation(),
                         target_walker,
                     );
-                    let reach = catalog
-                        .kind(monster.species)
-                        .and_then(|kind| kind.attacks.iter().map(|a| a.reach).max())
+                    let reach = catalog[monster.species]
+                        .attacks
+                        .iter()
+                        .map(|a| a.reach)
+                        .max()
                         .unwrap_or(Reach::Touch)
                         .metres();
                     !target.is_dead() && monster.gap(here, target, there) > reach - REACH_MARGIN

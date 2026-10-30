@@ -70,7 +70,7 @@ pub fn request_monster_visuals(
 ) {
     let catalog = &content.species;
     for (entity, monster) in &actors {
-        let Some(kind) = catalog.kind(monster.species) else { continue };
+        let kind = &catalog[monster.species];
         let model = assets.load(crate::content::paths::monster(&kind.model));
         commands.entity(entity).insert(MonsterVisual(model));
     }

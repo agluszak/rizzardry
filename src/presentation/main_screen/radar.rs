@@ -260,9 +260,8 @@ pub fn update_radar(
     let shadow_hound =
         effects.is_some_and(|effects| effects.0.has(crate::content::spells::SpellId::SHADOW_HOUND));
     for (entity, monster, at, walker, in_combat, owner) in &monsters {
-        let (Some(roster), Some(species)) = (roster, catalog.kind(monster.species)) else {
-            continue;
-        };
+        let Some(roster) = roster else { continue };
+        let species = &catalog[monster.species];
         let feet = crate::game::world::navigation::feet(at.translation(), walker);
         if !levels.contains(owner.0) || !view.in_range(monster, feet) {
             continue;
