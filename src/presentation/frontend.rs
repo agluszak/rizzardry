@@ -237,7 +237,6 @@ struct CreatorChoices {
     race: bool,
     gender: bool,
     open: Option<CreatorChoice>,
-    identity_initialized: bool,
 }
 impl CreatorChoices {
     fn complete(self) -> bool {
@@ -663,12 +662,6 @@ fn activate(
             if session.mode.draft().is_some_and(|draft| {
                 !EnumSet::<Skill>::all().iter().any(|skill| draft.can_adjust_skill(skill, true))
             }) {
-                if !session.choices.identity_initialized {
-                    if let Some(draft) = session.mode.draft_mut() {
-                        identity::initialize(draft);
-                    }
-                    session.choices.identity_initialized = true;
-                }
                 session.mode.set_page(Page::Review);
                 let nickname =
                     session.mode.draft().is_some_and(|draft| !draft.name.trim().is_empty());
@@ -813,17 +806,6 @@ fn activate(
             if let Err(message) = result {
                 session.message = message.into();
             } else {
-                if matches!(
-                    action,
-                    Action::Race(_)
-                        | Action::Gender(_)
-                        | Action::Profession(_)
-                        | Action::ChooseRace(_)
-                        | Action::ChooseGender(_)
-                        | Action::ChooseProfession(_)
-                ) {
-                    session.choices.identity_initialized = false;
-                }
                 match action {
                     Action::Race(_) => session.choices.race = true,
                     Action::Gender(_) => session.choices.gender = true,
@@ -1029,13 +1011,7 @@ mod keyboard_tests {
                     },
                     step: EditStep::Identity,
                 },
-                choices: CreatorChoices {
-                    profession: true,
-                    race: true,
-                    gender: true,
-                    open: None,
-                    identity_initialized: true,
-                },
+                choices: CreatorChoices { profession: true, race: true, gender: true, open: None },
                 message: String::new(),
             })
             .id();

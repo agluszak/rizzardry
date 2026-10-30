@@ -96,8 +96,10 @@ impl CharacterDraft {
         self.profession
     }
 
-    /// Changing the recipe refunds allocations. The caller can preview eligibility
-    /// without altering the draft, and rejection leaves it intact.
+    /// Changing the recipe refunds allocations and gives the draft the
+    /// recipe's default portrait, personality and voice. The caller can
+    /// preview eligibility without altering the draft, and rejection leaves
+    /// it intact.
     pub fn choose(
         &mut self,
         race: Race,
@@ -112,6 +114,7 @@ impl CharacterDraft {
         self.skills = EnumMap::default();
         self.learned_spells = EnumMap::default();
         self.last_spell = None;
+        identity::initialize(self);
         Ok(())
     }
 
