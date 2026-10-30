@@ -512,13 +512,7 @@ fn draw_device_panel(
     };
     for (entity, control, mut background, disabled) in &mut buttons {
         let on = enabled(*control);
-        if on == disabled {
-            if on {
-                commands.entity(entity).remove::<InteractionDisabled>();
-            } else {
-                commands.entity(entity).insert(InteractionDisabled);
-            }
-        }
+        super::retail_controls::set_enabled(&mut commands, entity, on, disabled);
         let chosen =
             matches!(control, Control::Row(id) if panel.chosen.iter().any(|(c, _)| c == id));
         let colour = if chosen {
