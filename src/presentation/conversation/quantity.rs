@@ -63,9 +63,7 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
         return;
     }
     let Some(q) = world.get::<DialogueState>(view).and_then(|s| s.selected) else { return };
-    if world.get::<ConversationView>(view).is_none_or(|v| v.0 != q.conversation)
-        || quote_trade(world, q.conversation, q.source, q.quantity).is_err()
-    {
+    if quote_trade(world, q.conversation, q.source, q.quantity).is_err() {
         return;
     }
     let Some((item, maximum)) = stack(world, q) else { return };
@@ -332,7 +330,7 @@ fn finish(world: &mut World, panel: Entity, accept: bool) {
                 return;
             }
         }
-        select(world, view, q.conversation, q.source, q.quantity);
+        select(world, view, q.source, q.quantity);
     }
     world.despawn(overlay);
 }

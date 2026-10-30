@@ -1061,21 +1061,15 @@ fn build(world: &mut World, session: Entity) -> Entity {
 #[derive(Component)]
 struct TopicRows;
 
-fn select(world: &mut World, view: Entity, session: Entity, source: TradeSource, quantity: u32) {
-    if world.get::<ConversationView>(view).is_none_or(|v| v.0 != session) {
-        return;
-    }
+fn select(world: &mut World, view: Entity, source: TradeSource, quantity: u32) {
+    let session = world.get::<ConversationView>(view).unwrap().0;
     // A gift has no price: one of the item is chosen as it is.
-    let giving = world.get::<DialogueState>(view).is_some_and(|s| s.mode == Mode::Give);
-    let result = if giving {
-        world
-            .get::<Conversation>(session)
-            .map(|_| TradeQuote { conversation: session, trade: 0, source, quantity: 1, gold: 0 })
-            .ok_or(trade::TradeError::StaleSelection)
+    let result = if world.get::<DialogueState>(view).unwrap().mode == Mode::Give {
+        Ok(TradeQuote { conversation: session, trade: 0, source, quantity: 1, gold: 0 })
     } else {
         quote_trade(world, session, source, quantity)
     };
-    let Some(mut v) = world.get_mut::<DialogueState>(view) else { return };
+    let mut v = world.get_mut::<DialogueState>(view).unwrap();
     match result {
         Ok(q) => {
             v.selected = Some(q);
@@ -1087,8 +1081,7 @@ fn select(world: &mut World, view: Entity, session: Entity, source: TradeSource,
         }
     }
 }
-/// Resolve a retained control through its real UI hierarchy, not a global
-/// singleton or a separate registry of UI entity IDs.
+/// The dialogue view of the open conversation.
 #[derive(bevy::ecs::system::SystemParam)]
 struct ViewScope<'w, 's> {
     view: Single<'w, 's, (Entity, &'static ConversationView, &'static DialogueState)>,
@@ -1562,9 +1555,9 @@ fn activate_trade(
     mut commands: Commands,
 ) {
     let Ok(row) = rows.get(event.entity) else { return };
-    let (root, session) = (views.root(), views.session());
+    let root = views.root();
     let (source, quantity) = (row.source, row.quantity);
-    commands.queue(move |world: &mut World| select(world, root, session, source, quantity));
+    commands.queue(move |world: &mut World| select(world, root, source, quantity));
 }
 fn activate_topic(
     event: On<Activate>,
