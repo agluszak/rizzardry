@@ -382,9 +382,7 @@ fn member_bystanders(
         .map(|&m| Victim::Member(m))
         .collect();
     for &entity in fight.combatants {
-        let Ok((monster, at, walker, ..)) = field.monsters.monsters().get(entity) else {
-            continue;
-        };
+        let (monster, at, walker, ..) = field.monsters.monsters().get(entity).unwrap();
         let distance = party_distance(fight.party.eye, monster, feet(at.translation(), walker));
         if entity != target
             && !monster.is_dead()

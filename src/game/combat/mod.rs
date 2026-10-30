@@ -2286,17 +2286,7 @@ fn spell_scene<'a>(
     use crate::game::magic::effects::Victim;
     let party_eye = sight.eye;
     let party_at = PartyBody::feet_below(party_eye);
-    let Ok((body, at, walker, ..)) = monsters.get(caster) else {
-        return monster_spells::Scene {
-            caster,
-            from: party_at,
-            party_at,
-            members: vec![],
-            monsters: vec![],
-            party: f32::INFINITY,
-            sees_party: false,
-        };
-    };
+    let (body, at, walker, ..) = monsters.get(caster).unwrap();
     let feet_at = feet(at.translation(), walker);
     let eye = body.eye(feet_at);
     let party = party_distance(party_eye, body, feet_at);
