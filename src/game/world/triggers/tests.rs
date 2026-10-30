@@ -91,6 +91,7 @@ impl Scenario {
             .collect();
         let geometry = LevelDefinition { triggers, props: models, ..default() };
         let mut world = World::new();
+        world.init_resource::<avian3d::collider_tree::ColliderTrees>();
         world.init_resource::<Assets<LevelDefinition>>();
         world.init_resource::<Messages<TriggerEffect>>();
         world.init_resource::<Messages<DamageApplied>>();

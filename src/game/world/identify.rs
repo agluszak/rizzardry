@@ -378,6 +378,7 @@ mod tests {
             .unwrap();
         app.world_mut().entity_mut(body).insert(avian3d::prelude::LinearVelocity::ZERO);
         app.init_resource::<crate::game::time::GameClock>();
+        app.init_resource::<crate::game::world::search::Search>();
         app.add_message::<crate::game::camp::CampNews>();
         app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_secs(30));
         use bevy::ecs::system::RunSystemOnce;

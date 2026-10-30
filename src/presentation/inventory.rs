@@ -1396,6 +1396,7 @@ mod tests {
     fn inventory_app() -> App {
         let mut app = crate::presentation::test_input::input_app();
         app.init_state::<Screen>()
+            .init_resource::<crate::game::data::Catalogs>()
             .init_asset::<SpriteSheet>()
             .init_asset::<TextTable>()
             .init_asset::<Image>()
