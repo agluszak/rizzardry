@@ -103,7 +103,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
             .view_distance();
         (spell, far)
     };
-    let eye = crate::game::party::body::PartyBody::eye_in(world).ok_or(Refusal::WrongTime)?;
+    let eye = crate::game::party::body::PartyBody::eye_in(world);
     if eye.distance(at) > spell.reach.metres() + crate::content::EYE_HEIGHT {
         return Err(Refusal::NoTarget);
     }

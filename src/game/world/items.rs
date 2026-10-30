@@ -121,7 +121,7 @@ pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
     if world.get::<WorldItem>(target).is_none() {
         return Err(Refusal::Nothing);
     }
-    let eye = crate::game::party::body::PartyBody::eye_in(world).unwrap();
+    let eye = crate::game::party::body::PartyBody::eye_in(world);
     let at = world.query::<super::ActorPose>().get(world, target).unwrap().translation();
     // Retail measures to the model bounds' centre (ItemDistanceToCamera).
     // Deliberately use the gameplay placement so pickup never requires artwork.
@@ -164,7 +164,7 @@ pub fn drop_held(world: &mut World, level: Entity, aim: Dir3) -> Result<Entity, 
     if !crate::game::freedom::free_in(world) {
         return Err(Refusal::DoesNotFit);
     }
-    let eye = crate::game::party::body::PartyBody::eye_in(world).unwrap();
+    let eye = crate::game::party::body::PartyBody::eye_in(world);
     let ground = world
         .run_system_cached_with(landing, (eye, aim))
         .ok()

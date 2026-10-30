@@ -327,7 +327,7 @@ pub fn activate(world: &mut World, entity: Entity, player: bool) -> bool {
 /// Colliderless props fall back to their authored centre.
 fn player_distance(world: &mut World, geometry: &LevelDefinition, entity: Entity) -> Option<f32> {
     use avian3d::prelude::Collider;
-    let eye = crate::game::party::body::PartyBody::eye_in(world)?;
+    let eye = crate::game::party::body::PartyBody::eye_in(world);
     let centre = geometry.props.get(world.get::<Prop>(entity)?.definition)?.centre();
     let distance = world
         .get::<Children>(entity)

@@ -241,7 +241,7 @@ pub fn join(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
 /// for dropped at its feet. `keep` says which the member keeps.
 fn hand_over(world: &mut World, actor: Entity, level: Entity, keep: impl Fn(&ItemStack) -> bool) {
     let party = the_party(world);
-    let feet = PartyBody::feet_in(world).unwrap_or_default();
+    let feet = PartyBody::feet_in(world);
     Catalogs::scope(world, |world, catalogs| {
         let items = &catalogs.items;
         let given: Vec<ItemStack> = {
@@ -324,13 +324,8 @@ fn stand_beside_party(world: &mut World, actor: Entity, body: Entity, party: Ent
     else {
         return;
     };
-    let Some((at, yaw)) = world
-        .get::<avian3d::prelude::Position>(party)
-        .zip(world.get::<PartyBody>(party))
-        .map(|(at, facing)| (*at, facing.yaw))
-    else {
-        return;
-    };
+    let at = *world.get::<avian3d::prelude::Position>(party).unwrap();
+    let yaw = world.get::<PartyBody>(party).unwrap().yaw;
     // Retail asks the navigator for a place out from the party along its
     // heading turned by an eighth of a turn; this stands it two metres out
     // that way, without the navigator's search.

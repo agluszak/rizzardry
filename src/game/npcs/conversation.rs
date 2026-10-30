@@ -536,10 +536,12 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
         .ok()
         .flatten()
         .ok_or(TradeError::Unavailable)?;
-    let party_at = crate::game::party::body::PartyBody::eye_in(world)
-        .map(crate::game::party::body::PartyBody::centre)
-        .filter(|centre| centre.distance(at) <= crate::game::world::items::REACH)
-        .ok_or(TradeError::Unavailable)?;
+    let party_at = crate::game::party::body::PartyBody::centre(
+        crate::game::party::body::PartyBody::eye_in(world),
+    );
+    if party_at.distance(at) > crate::game::world::items::REACH {
+        return Err(TradeError::Unavailable);
+    }
     if !available(world, actor) {
         return Err(TradeError::Unavailable);
     }
@@ -832,7 +834,7 @@ fn drop_gift(
 ) {
     use crate::game::{party::body::PartyBody, world::items};
     let level = world.query_filtered::<Entity, With<Level>>().single(world).ok();
-    let feet = PartyBody::feet_in(world).unwrap_or_default();
+    let feet = PartyBody::feet_in(world);
     match level {
         Some(level) if !crucial => {
             items::lay(&mut world.commands(), level, feet, items::WorldItem::loose(gift, false));
@@ -1824,7 +1826,11 @@ mod tests {
             .add_observer(end_conversations)
             .add_systems(Update, update_conversation);
         let w = app.world_mut();
-        crate::game::party::roster::test_party(w, &[]);
+        let party = crate::game::party::roster::test_party(w, &[]);
+        w.entity_mut(party).insert((
+            crate::game::party::body::PartyBody::default(),
+            avian3d::prelude::Position::default(),
+        ));
         let mut catalogs = w.resource_mut::<crate::game::data::Catalogs>();
         // The NPC's body is of a species bound to it, as placed NPCs are.
         catalogs.species =
