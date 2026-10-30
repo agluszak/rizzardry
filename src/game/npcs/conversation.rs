@@ -2060,7 +2060,11 @@ mod tests {
         let w = app.world_mut();
         crate::game::party::roster::test_party(w, &[]);
         let mut catalogs = w.resource_mut::<crate::game::data::Catalogs>();
-        catalogs.species = crate::content::species::MonsterCatalog(vec![default()]);
+        catalogs.species =
+            crate::content::species::MonsterCatalog(vec![crate::content::species::Species {
+                disposition: crate::content::species::Disposition::Neutral,
+                ..default()
+            }]);
         catalogs.npcs =
             NpcCatalog(vec![NpcDefinition { source_name: "Speaker".into(), ..default() }]);
         catalogs.facts = FactCatalog(vec![FactDefinition {
