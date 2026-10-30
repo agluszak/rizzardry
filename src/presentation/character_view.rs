@@ -105,7 +105,7 @@ mod tests {
             .spawn((Vitals::new(&character), character, Carried::default(), Burden::default()))
             .id();
         crate::game::party::roster::test_party(&mut world, &[member]);
-        let party = crate::game::party::roster::the_party(&mut world).unwrap();
+        let party = crate::game::party::roster::the_party(&mut world);
         let read = |world: &mut World| {
             let mut views = world.query::<CharacterView>();
             let mut effects = world.query::<&PartyEffects>();

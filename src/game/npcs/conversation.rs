@@ -364,8 +364,8 @@ pub enum Approach {
 fn with_definition<T>(
     world: &mut World,
     actor: Entity,
-    f: impl FnOnce(&mut World, &NpcDefinition, &ItemCatalog) -> Result<T, TradeError>,
-) -> Result<T, TradeError> {
+    f: impl FnOnce(&mut World, &NpcDefinition, &ItemCatalog) -> T,
+) -> T {
     let id = world.get::<super::ActorId>(actor).expect("an NPC actor").npc();
     Catalogs::scope(world, |world, catalogs| f(world, &catalogs.npcs[id], &catalogs.items))
 }
@@ -373,7 +373,7 @@ pub fn party_communication(world: &mut World) -> u32 {
     best_communicator(world).map_or(0, |(_, level)| level)
 }
 fn average_level(world: &mut World) -> u32 {
-    let Some(party) = the_party(world) else { return 1 };
+    let party = the_party(world);
     let Some(roster) = world.get::<PartyRoster>(party) else { return 1 };
     crate::game::party::average_level(
         roster.iter().filter_map(|member| world.get::<Character>(member)).map(|c| c.level()),
@@ -463,7 +463,7 @@ fn resume(world: &mut World, actor: Entity) {
 /// The member with the best Communication, the first on a tie, and that
 /// level (retail `GetBestPartySkillLevel`).
 fn best_communicator(world: &mut World) -> Option<(Entity, u32)> {
-    let party = the_party(world)?;
+    let party = the_party(world);
     let roster = world.get::<PartyRoster>(party)?;
     crate::game::party::best_skill(
         roster.iter().filter_map(|member| {
@@ -522,7 +522,7 @@ fn greet(world: &mut World, actor: Entity) -> u16 {
     greeting
 }
 pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
-    let party = the_party(world).ok_or(TradeError::Unavailable)?;
+    let party = the_party(world);
     if !crate::game::freedom::free_in(world) || crate::game::combat::in_battle(world) {
         return Err(TradeError::Busy);
     }
@@ -584,7 +584,7 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
                     .stock
                     .maintain(def, items, average, now, templar, &mut rng)
             })
-        })?;
+        });
     }
     // OpenNpcDialoguePanel / MonsterForwardReferencePosition: the accepted
     // speaker faces the party. Physics rotation owns a moving body's facing.
@@ -877,7 +877,7 @@ fn take_item(world: &mut World, party: Entity, item: ItemId) -> Option<Option<En
             return Some(Some(member));
         }
     }
-    let mut inventory = world.get_mut::<PartyInventory>(party)?;
+    let mut inventory = world.get_mut::<PartyInventory>(party).unwrap();
     let id = inventory.pool.stacks.iter().find(|s| s.item == item)?.id;
     inventory.pool.consume_units(id, 1).ok()?;
     Some(None)
@@ -1004,7 +1004,7 @@ fn run(world: &mut World, entity: Entity) {
         return;
     }
     let handle = super::script(world, c.actor);
-    let Some(party) = the_party(world) else { return };
+    let party = the_party(world);
     world.resource_scope(|world, scripts: Mut<Assets<DialogueScript>>| {
         run_script(world, entity, scripts.get(handle).unwrap(), party);
     });
@@ -1355,7 +1355,7 @@ const REFUSED_GIFT_QUOTE: u16 = 0x11;
 /// ignores an item it has nothing to say about. The item is taken only when
 /// its answer's effects are valid; a content gap keeps it.
 fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeError> {
-    let party = the_party(world).ok_or(TradeError::Unavailable)?;
+    let party = the_party(world);
     let c = world.get::<Conversation>(entity).unwrap();
     if !c.ready() {
         return Err(TradeError::Busy);
@@ -1417,11 +1417,11 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
 /// The party gives the NPC gold (retail `HandleNpcDialogueItem` with trade
 /// gold): all of it only once the party confirms, as retail asks.
 fn give_gold(world: &mut World, entity: Entity, amount: u32) -> Result<(), TradeError> {
-    let party = the_party(world).ok_or(TradeError::Unavailable)?;
+    let party = the_party(world);
     if !world.get::<Conversation>(entity).unwrap().ready() {
         return Err(TradeError::Busy);
     }
-    let gold = world.get::<PartyInventory>(party).ok_or(TradeError::Unavailable)?.gold;
+    let gold = world.get::<PartyInventory>(party).unwrap().gold;
     if amount == 0 {
         return Err(TradeError::InvalidQuantity);
     }
@@ -1452,7 +1452,7 @@ fn spend_gift(
         c.queue.push_back(Step::said(UNBRIBED_QUOTE));
         return Ok(());
     }
-    let mut inventory = world.get_mut::<PartyInventory>(party).ok_or(TradeError::Unavailable)?;
+    let mut inventory = world.get_mut::<PartyInventory>(party).unwrap();
     inventory.gold = inventory.gold.checked_sub(amount).ok_or(TradeError::Funds)?;
     if bribe {
         debit_trade_pool(world, actor, amount);
@@ -1501,7 +1501,7 @@ fn reply(world: &mut World, entity: Entity, text: &str) {
     }
 }
 fn answer_price(world: &mut World, entity: Entity, accept: bool) {
-    let Some(party) = the_party(world) else { return };
+    let party = the_party(world);
     let c = world.get::<Conversation>(entity).unwrap();
     if let ConversationWait::GiveAll { gold } = c.wait {
         let mut c = world.get_mut::<Conversation>(entity).unwrap();
@@ -1576,14 +1576,14 @@ pub fn quote_trade(
         return Err(TradeError::Unavailable);
     }
     let actor = c.actor;
-    let party = the_party(world).ok_or(TradeError::Unavailable)?;
+    let party = the_party(world);
     let communication = party_communication(world);
     let def = definition(world, actor);
     let catalog = &world.resource::<Catalogs>().items;
-    let trade = world.get::<Npc>(actor).ok_or(TradeError::Unavailable)?.stock.trades;
+    let trade = world.get::<Npc>(actor).unwrap().stock.trades;
     let gold = match source {
         TradeSource::Stock(lot) => {
-            let stock = &world.get::<Npc>(actor).ok_or(TradeError::Unavailable)?.stock;
+            let stock = &world.get::<Npc>(actor).unwrap().stock;
             trade::purchase_price(stock, def, catalog, lot, quantity, communication)
         }
         _ => {
@@ -1629,15 +1629,13 @@ fn execute_trade(world: &mut World, quote: TradeQuote) -> Result<(), TradeError>
     if world.get::<Npc>(actor).is_none_or(|npc| npc.stock.trades != quote.trade) {
         return Err(TradeError::StaleSelection);
     }
-    let party = the_party(world).ok_or(TradeError::Unavailable)?;
+    let party = the_party(world);
     let communication = party_communication(world);
     with_definition(world, actor, |world, def, catalog| match quote.source {
         TradeSource::Stock(lot) => world.resource_scope(|world, mut ids: Mut<ItemIds>| {
-            let [mut party_entity, mut actor] =
-                world.get_entity_mut([party, actor]).map_err(|_| TradeError::Unavailable)?;
-            let mut inventory =
-                party_entity.get_mut::<PartyInventory>().ok_or(TradeError::Unavailable)?;
-            let mut npc = actor.get_mut::<Npc>().ok_or(TradeError::Unavailable)?;
+            let [mut party_entity, mut actor] = world.get_entity_mut([party, actor]).unwrap();
+            let mut inventory = party_entity.get_mut::<PartyInventory>().unwrap();
+            let mut npc = actor.get_mut::<Npc>().unwrap();
             trade::buy(
                 &mut npc.stock,
                 &mut inventory,
@@ -1653,13 +1651,8 @@ fn execute_trade(world: &mut World, quote: TradeQuote) -> Result<(), TradeError>
         TradeSource::Party(source) => {
             let item = sale_item(world, TradeSource::Party(source), party)?;
             let units = u16::try_from(quote.quantity).map_err(|_| TradeError::InvalidQuantity)?;
-            let gold = world
-                .get::<PartyInventory>(party)
-                .ok_or(TradeError::Unavailable)?
-                .gold
-                .checked_add(quote.gold)
-                .ok_or(TradeError::Overflow)?;
-            let merchant = &world.get::<Npc>(actor).ok_or(TradeError::Unavailable)?.stock;
+            let gold = world.get::<PartyInventory>(party).unwrap().gold + quote.gold;
+            let merchant = &world.get::<Npc>(actor).unwrap().stock;
             let stock = trade::sell(
                 merchant,
                 def,
@@ -2082,7 +2075,7 @@ mod tests {
                 ],
             });
             let world = app.world_mut();
-            let party = the_party(world).unwrap();
+            let party = the_party(world);
             let members: Vec<_> = (0..4)
                 .map(|index| {
                     let mut character =
@@ -2250,7 +2243,7 @@ mod tests {
         });
         with_items(&mut app);
         let member = carrier(&mut app, "Ragnar", 2, 3);
-        let party = the_party(app.world_mut()).unwrap();
+        let party = the_party(app.world_mut());
         let pooled = stack(&mut app, 2, 4);
         app.world_mut().get_mut::<PartyInventory>(party).unwrap().pool.stacks.push(pooled);
         app.update();
@@ -2282,7 +2275,7 @@ mod tests {
         quotes[2].operations = vec![DialogueOp::ItemQuote { item: ItemId(2), keeps: false }];
         let (mut app, session, _) = app(DialogueScript { quotes });
         with_items(&mut app);
-        let party = the_party(app.world_mut()).unwrap();
+        let party = the_party(app.world_mut());
         let mut refs = Vec::new();
         for item in 0..4 {
             let stack = stack(&mut app, item, 2);
@@ -2423,7 +2416,7 @@ mod tests {
                 vec![DialogueOp::CloseAndResume, DialogueOp::GiveGold(5)],
             )],
         });
-        let party = the_party(app.world_mut()).unwrap();
+        let party = the_party(app.world_mut());
         app.update();
         finish_line(&mut app, session);
         assert!(app.world().get::<Conversation>(session).is_none());
@@ -2498,7 +2491,7 @@ mod tests {
     #[test]
     fn gold_bribes_draw_on_the_trade_pool() {
         let (mut app, session, actor) = wary((0, 0), 100);
-        let party = the_party(app.world_mut()).unwrap();
+        let party = the_party(app.world_mut());
         app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 500;
         for (amount, pool, quote) in [(60, 40, UNBRIBED_QUOTE), (60, 100, ACCEPTED_GIFT_QUOTE)] {
             app.world_mut()
@@ -2515,7 +2508,7 @@ mod tests {
         assert_eq!(c.current, Some((0, 0)));
 
         let (mut app, session, _) = wary((0, 0), 0);
-        let party = the_party(app.world_mut()).unwrap();
+        let party = the_party(app.world_mut());
         app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 500;
         app.world_mut()
             .write_message(ConversationRequest::GiveGold { conversation: session, amount: 60 });
@@ -2693,7 +2686,7 @@ mod tests {
 
     /// Fill the party's items to `rows` full, unmergeable stacks of item 0.
     fn fill_pool(app: &mut App, rows: usize) -> Entity {
-        let party = the_party(app.world_mut()).unwrap();
+        let party = the_party(app.world_mut());
         for _ in 0..rows {
             let full = stack(app, 0, 20);
             app.world_mut().get_mut::<PartyInventory>(party).unwrap().pool.stacks.push(full);
@@ -2784,7 +2777,7 @@ mod tests {
         });
         with_items(&mut app);
         let member = carrier(&mut app, "Ragnar", 2, 1);
-        let party = the_party(app.world_mut()).unwrap();
+        let party = the_party(app.world_mut());
         app.update();
         finish_line(&mut app, session);
         let id = app.world().get::<Carried>(member).unwrap().backpack[0].as_ref().unwrap().id;
@@ -2833,7 +2826,7 @@ mod tests {
             });
             with_items(&mut app);
             let member = carrier(&mut app, "Ragnar", 2, 1);
-            let party = the_party(app.world_mut()).unwrap();
+            let party = the_party(app.world_mut());
             app.update();
             finish_line(&mut app, session);
             let id = app.world().get::<Carried>(member).unwrap().backpack[0].as_ref().unwrap().id;
@@ -2904,7 +2897,7 @@ mod tests {
             (0..0x11).map(|i| lines(&[format!("Line {i}").as_str()], vec![])).collect();
         quotes[0x10] = lines(&["Thank you"], vec![]);
         let (mut app, session, _) = app(DialogueScript { quotes });
-        let party = the_party(app.world_mut()).unwrap();
+        let party = the_party(app.world_mut());
         app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 100;
         app.update();
         finish_line(&mut app, session);
@@ -2957,7 +2950,7 @@ mod tests {
             ],
         });
         with_items(&mut app);
-        let party = the_party(app.world_mut()).unwrap();
+        let party = the_party(app.world_mut());
         let offered = stack(&mut app, 1, 1);
         let item = ItemRef { owner: ItemOwner::Pool, id: offered.id };
         app.world_mut().get_mut::<PartyInventory>(party).unwrap().pool.stacks.push(offered);
@@ -3088,7 +3081,7 @@ mod tests {
                     }],
                 });
                 let world = app.world_mut();
-                let party = the_party(world).unwrap();
+                let party = the_party(world);
                 world.get_mut::<PartyInventory>(party).unwrap().gold = 100;
                 world.resource_mut::<StoryFacts>().values.insert(FactId(91), initial);
                 {
@@ -3184,7 +3177,7 @@ mod tests {
             }],
         });
         let world = app.world_mut();
-        let party = the_party(world).unwrap();
+        let party = the_party(world);
         world.get_mut::<PartyInventory>(party).unwrap().gold = 100;
         {
             let mut c = world.get_mut::<Conversation>(session).unwrap();
@@ -3273,7 +3266,7 @@ mod tests {
             let line_count = script.quotes[quote as usize].text.len();
             let (mut app, session, _) = app(script);
             let world = app.world_mut();
-            let party = the_party(world).unwrap();
+            let party = the_party(world);
             let profile =
                 Character::new("Recipient", Race::Human, Gender::Male, Profession::Fighter);
             let vitals = Vitals::new(&profile);
@@ -3503,7 +3496,7 @@ mod tests {
         quotes[18].text = vec!["Information has a price".into()];
         quotes[20].text = vec!["Insufficient funds".into()];
         let (mut app, session, actor) = app(DialogueScript { quotes });
-        let party = the_party(app.world_mut()).unwrap();
+        let party = the_party(app.world_mut());
         fn advance(app: &mut App, session: Entity) {
             let speech = match app.world().get::<Conversation>(session).unwrap().wait {
                 ConversationWait::Line { speech, .. } => speech,
@@ -3628,7 +3621,7 @@ mod tests {
     fn an_npc_without_stock_ownership_cannot_quote_or_settle_a_trade() {
         let (mut app, session, actor) = app(DialogueScript::default());
         let world = app.world_mut();
-        let party = the_party(world).unwrap();
+        let party = the_party(world);
         world.get_mut::<Conversation>(session).unwrap().queue.clear();
         for source in [
             TradeSource::Stock(trade::StockLotId(1)),
@@ -3652,7 +3645,7 @@ mod tests {
         use crate::game::inventory::{EquipSlot, Equipped, ItemStack};
         let (mut app, _, _) = app(DialogueScript::default());
         let world = app.world_mut();
-        let party = the_party(world).unwrap();
+        let party = the_party(world);
         let mut ids = ItemIds::default();
         let item = ItemStack::new(&ItemDefinition::default(), &mut ids, 1, true);
         let mut carried = Carried::default();

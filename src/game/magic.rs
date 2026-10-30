@@ -1163,7 +1163,7 @@ mod tests {
                 }
                 SpellId::ARMORPLATE => {
                     assert!(vitals.enchantments.0.is_empty());
-                    let party = crate::game::party::roster::the_party(world).unwrap();
+                    let party = crate::game::party::roster::the_party(world);
                     assert_eq!(
                         world.get::<enchantments::PartyEffects>(party).unwrap().0.armour(),
                         2

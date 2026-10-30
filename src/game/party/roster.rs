@@ -43,9 +43,9 @@ impl std::ops::Deref for PartyRoster {
     }
 }
 
-/// The party, for operations that hold the whole world.
-pub fn the_party(world: &mut World) -> Option<Entity> {
-    world.query_filtered::<Entity, With<Party>>().single(world).ok()
+/// The party, for operations that hold the whole world while it plays.
+pub fn the_party(world: &mut World) -> Entity {
+    world.query_filtered::<Entity, With<Party>>().single(world).expect("the party")
 }
 
 /// A party of `members`, in order, each seated; for tests.
@@ -62,7 +62,7 @@ pub fn test_party(world: &mut World, members: &[Entity]) -> Entity {
 /// Add `member` to the end of the party and seat them; for tests.
 #[cfg(test)]
 pub fn test_join(world: &mut World, member: Entity) {
-    let party = the_party(world).unwrap();
+    let party = the_party(world);
     world.entity_mut(member).insert(PartyMember(party));
     world.get_mut::<super::formation::Formation>(party).unwrap().seat(member);
 }
@@ -70,7 +70,7 @@ pub fn test_join(world: &mut World, member: Entity) {
 /// Put the party's members in `order`; for tests.
 #[cfg(test)]
 pub fn test_reorder(world: &mut World, order: &[Entity]) {
-    let party = the_party(world).unwrap();
+    let party = the_party(world);
     for &member in order {
         world.entity_mut(member).remove::<PartyMember>().insert(PartyMember(party));
     }

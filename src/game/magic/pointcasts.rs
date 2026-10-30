@@ -469,7 +469,7 @@ mod tests {
         assert!((21..=24).contains(&world.get::<Monster>(summon).unwrap().species));
         assert_eq!(crate::game::magic::test_points(world, caster, Realm::Fire), 99);
         assert_eq!(cast(world, caster, choice(SpellId::SUMMON_ELEMENTAL)), Err(Refusal::NoTarget));
-        let party = crate::game::party::roster::the_party(world).unwrap();
+        let party = crate::game::party::roster::the_party(world);
         let before = world.get::<PartyInventory>(party).unwrap().gold;
         let result = world
             .run_system_once(

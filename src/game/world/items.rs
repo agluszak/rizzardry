@@ -135,7 +135,7 @@ pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
     if world.get::<super::level::Level>(owner).is_none() || item.hidden {
         return Err(Refusal::DoesNotFit);
     }
-    let party = the_party(world).ok_or(Refusal::Nothing)?;
+    let party = the_party(world);
     if world.get::<PartyInventory>(party).unwrap().hand.held.is_some() {
         return Err(Refusal::HandFull);
     }
@@ -173,7 +173,7 @@ pub fn drop_held(world: &mut World, level: Entity, aim: Dir3) -> Result<Entity, 
         .ok()
         .flatten()
         .ok_or(Refusal::DoesNotFit)?;
-    let party = the_party(world).ok_or(Refusal::Nothing)?;
+    let party = the_party(world);
     let held =
         world.get::<PartyInventory>(party).unwrap().hand.held.as_ref().ok_or(Refusal::Nothing)?;
     let definition = &world.resource::<crate::game::data::Catalogs>().items[held.item];

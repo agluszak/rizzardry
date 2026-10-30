@@ -2866,7 +2866,7 @@ mod tests {
             app.world_mut().resource_mut::<crate::game::data::Catalogs>().species.0[0]
                 .disposition = crate::content::species::Disposition::Hostile;
             if hound {
-                let party = crate::game::party::roster::the_party(app.world_mut()).unwrap();
+                let party = crate::game::party::roster::the_party(app.world_mut());
                 app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.apply(Enchantment {
                     spell: SpellId::SHADOW_HOUND,
                     power: 1,
@@ -3168,7 +3168,7 @@ mod tests {
         };
         let before = armour(&mut app, members[0]);
         let outsider = armour(&mut app, stranger);
-        let party = crate::game::party::roster::the_party(app.world_mut()).unwrap();
+        let party = crate::game::party::roster::the_party(app.world_mut());
         app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.apply(Enchantment {
             spell: crate::content::spells::SpellId::ARMORPLATE,
             power: 5,
@@ -4547,7 +4547,7 @@ mod tests {
             let health: Vec<_> =
                 app.world_mut().query::<&Vitals>().iter(app.world()).map(|v| v.hp).collect();
             if ring {
-                let party = crate::game::party::roster::the_party(app.world_mut()).unwrap();
+                let party = crate::game::party::roster::the_party(app.world_mut());
                 app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.apply(Enchantment {
                     spell: SpellId::RING_OF_FIRE,
                     power: 1,
@@ -5860,7 +5860,7 @@ mod tests {
             SpellDefinition { id: SpellId::ACID_BOMB, ..default() };
         let effect =
             Enchantment { spell: SpellId::ACID_BOMB, power: 1, boost: 0, turns: 10, absorption: 0 };
-        let party = crate::game::party::roster::the_party(app.world_mut()).unwrap();
+        let party = crate::game::party::roster::the_party(app.world_mut());
         app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.apply(effect);
         app.world_mut().get_mut::<Monster>(monster).unwrap().enchantments.apply(effect);
         app.update();
@@ -5967,7 +5967,7 @@ mod tests {
             },
         );
         app.world_mut().get_mut::<Transform>(monster).unwrap().translation = Vec3::X * 100.0;
-        let party = crate::game::party::roster::the_party(app.world_mut()).unwrap();
+        let party = crate::game::party::roster::the_party(app.world_mut());
         app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.apply(Enchantment {
             spell: SpellId::RING_OF_FIRE,
             power: 1,

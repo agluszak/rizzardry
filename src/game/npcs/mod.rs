@@ -44,7 +44,7 @@ pub(crate) fn script(world: &World, actor: Entity) -> AssetId<DialogueScript> {
 /// highest_condition < ASLEEP`, as in `CanNpcJoinParty`, the charm and
 /// dialogue practice).
 pub(crate) fn able_members(world: &mut World) -> Vec<Entity> {
-    let Some(party) = crate::game::party::roster::the_party(world) else { return Vec::new() };
+    let party = crate::game::party::roster::the_party(world);
     let Some(roster) = world.get::<crate::game::party::roster::PartyRoster>(party) else {
         return Vec::new();
     };
@@ -244,9 +244,7 @@ impl NpcPopulation<'_, '_> {
         }
         let mut stock = trade::MerchantStock::default();
         if definition.owns_stock {
-            stock
-                .maintain(definition, &catalogs.items, average, self.clock.ms, false, rng)
-                .expect("validated NPC stock");
+            stock.maintain(definition, &catalogs.items, average, self.clock.ms, false, rng);
         }
         let actor = commands
             .spawn((

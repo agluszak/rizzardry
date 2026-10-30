@@ -103,9 +103,6 @@ fn willing(world: &mut World, id: NpcId, definition: &NpcDefinition) -> bool {
         }
     }
     if definition.min_party_level > 0 {
-        if the_party(world).is_none() {
-            return false;
-        }
         // Retail counts no able member as an average of nothing.
         let levels = super::able_levels(world);
         let average = if levels.is_empty() { 0 } else { crate::game::party::average_level(levels) };
@@ -126,7 +123,7 @@ pub fn joinable(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
     if definition.character.is_none() || gone || world.get::<PartyMember>(actor).is_some() {
         return Err(JoinRefusal::Declines);
     }
-    let party = the_party(world).ok_or(JoinRefusal::Declines)?;
+    let party = the_party(world);
     let npcs = world
         .get::<PartyRoster>(party)
         .map_or(0, |roster| roster.iter().filter(|&m| world.get::<Npc>(m).is_some()).count());
@@ -221,7 +218,7 @@ fn standing_body(world: &World, actor: Entity) -> Option<Entity> {
 /// and takes an NPC place; its world body goes dormant.
 pub fn join(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
     joinable(world, actor)?;
-    let party = the_party(world).ok_or(JoinRefusal::Declines)?;
+    let party = the_party(world);
     if world.get::<Character>(actor).is_none() {
         let template =
             super::definition(world, actor).character.clone().ok_or(JoinRefusal::Declines)?;
@@ -270,7 +267,7 @@ pub fn join(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
 /// Give a departing member's items to the party, those the pool has no room
 /// for dropped at its feet. `keep` says which the member keeps.
 fn hand_over(world: &mut World, actor: Entity, level: Entity, keep: impl Fn(&ItemStack) -> bool) {
-    let Some(party) = the_party(world) else { return };
+    let party = the_party(world);
     let feet = PartyBody::feet_in(world).unwrap_or_default();
     Catalogs::scope(world, |world, catalogs| {
         let items = &catalogs.items;
@@ -314,7 +311,7 @@ fn ready_to_part(world: &mut World, body: Option<Entity>) -> Option<Entity> {
 /// party with the conditions it has, at a fresh roll of its species' health;
 /// and it gives the party every item it neither wants nor has cursed on.
 pub fn dismiss(world: &mut World, actor: Entity) -> bool {
-    let Some(party) = the_party(world) else { return false };
+    let party = the_party(world);
     if world.get::<PartyMember>(actor).is_none_or(|member| member.0 != party)
         || world.get::<Npc>(actor).is_none()
     {
@@ -435,7 +432,7 @@ fn stand_beside_party(world: &mut World, actor: Entity, body: Entity, party: Ent
 /// `UpdateNpcPartyMember`): its items go to the party, it is dead for good
 /// (retail `spawned`), and it never stands in the world again.
 pub fn settle_npc_members(world: &mut World) {
-    let Some(party) = the_party(world) else { return };
+    let party = the_party(world);
     let fallen: Vec<Entity> = world
         .get::<PartyRoster>(party)
         .map(|roster| {

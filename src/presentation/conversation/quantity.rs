@@ -41,9 +41,10 @@ fn stack(world: &mut World, q: TradeQuote) -> Option<(crate::content::items::Ite
             .map(|lot| (lot.item, lot.units)),
         TradeSource::Party(item) => match item.owner {
             ItemOwner::Pool => {
-                let party = crate::game::party::roster::the_party(world)?;
+                let party = crate::game::party::roster::the_party(world);
                 world
-                    .get::<PartyInventory>(party)?
+                    .get::<PartyInventory>(party)
+                    .unwrap()
                     .pool
                     .stacks
                     .iter()
@@ -327,9 +328,8 @@ fn finish(world: &mut World, panel: Entity, accept: bool) {
     if accept && world.get::<Conversation>(q.conversation).is_some_and(Conversation::ready) {
         let Ok(verified) = quote_trade(world, q.conversation, q.source, q.quantity) else { return };
         if matches!(q.source, TradeSource::Stock(_)) {
-            let gold = crate::game::party::roster::the_party(world)
-                .and_then(|e| world.get::<PartyInventory>(e))
-                .map_or(0, |p| p.gold);
+            let party = crate::game::party::roster::the_party(world);
+            let gold = world.get::<PartyInventory>(party).unwrap().gold;
             if gold < verified.gold {
                 return;
             }

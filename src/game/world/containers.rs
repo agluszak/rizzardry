@@ -150,7 +150,7 @@ pub fn take_from_container(
         return Err(Refusal::Nothing);
     }
     let device = looting(world, on).ok_or(Refusal::Nothing)?;
-    let party = the_party(world).ok_or(Refusal::NotMember)?;
+    let party = the_party(world);
     if let Recipient::Member(member) = to {
         if !world.get::<PartyMember>(member).is_some_and(|m| m.0 == party) {
             return Err(Refusal::NotMember);

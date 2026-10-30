@@ -152,12 +152,12 @@ impl Scenario {
     }
 
     pub(crate) fn inventory(&mut self) -> Mut<'_, PartyInventory> {
-        let party = crate::game::party::roster::the_party(&mut self.world).unwrap();
+        let party = crate::game::party::roster::the_party(&mut self.world);
         self.world.get_mut::<PartyInventory>(party).unwrap()
     }
 
     pub(crate) fn formation(&mut self) -> &crate::game::party::formation::Formation {
-        let party = crate::game::party::roster::the_party(&mut self.world).unwrap();
+        let party = crate::game::party::roster::the_party(&mut self.world);
         self.world.get::<crate::game::party::formation::Formation>(party).unwrap()
     }
 
@@ -378,7 +378,7 @@ fn a_door_opens_then_toggles_and_a_locked_one_stays_shut() {
     assert_eq!(level.run("LOCKED"), (false, vec![TriggerEffect::Locked]));
     assert_eq!(level.motion("LOCKED").target, 0.0);
     let plain = level.device("PLAIN");
-    let party = crate::game::party::roster::the_party(&mut level.world).unwrap();
+    let party = crate::game::party::roster::the_party(&mut level.world);
     level.world.init_resource::<Messages<crate::game::world::WorldRequest>>();
     level.world.write_message(crate::game::world::WorldRequest::Activate { device: plain });
     // Move after queuing the click: execution must use the new position.

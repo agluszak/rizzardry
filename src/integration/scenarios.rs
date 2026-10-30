@@ -181,7 +181,7 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     let body = app.world().get::<NpcBodies>(actor).unwrap()[0];
     let position = app.world().get::<avian3d::prelude::Position>(body).unwrap().0;
     for mut p in app.world_mut().query_filtered::<&mut avian3d::prelude::Position,With<crate::game::party::body::PartyBody>>().iter_mut(app.world_mut()){p.0=position+Vec3::X*2.0;}
-    let party = crate::game::party::roster::the_party(app.world_mut()).unwrap();
+    let party = crate::game::party::roster::the_party(app.world_mut());
     app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 10000;
     let session = conversation::begin(app.world_mut(), actor).unwrap();
     fn finish(app: &mut App, session: Entity) {

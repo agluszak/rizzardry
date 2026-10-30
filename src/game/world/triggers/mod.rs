@@ -601,10 +601,7 @@ fn execute(
         return Ran::Declined;
     }
     let party = crate::game::party::roster::the_party(world);
-    let offered = party
-        .and_then(|party| world.get::<PartyInventory>(party))
-        .and_then(|p| p.hand.held.as_ref())
-        .map(|h| h.item);
+    let offered = world.get::<PartyInventory>(party).unwrap().hand.held.as_ref().map(|h| h.item);
     let chosen = select_use(
         &world.entity(entity),
         world.get::<LevelState>(level).unwrap(),
