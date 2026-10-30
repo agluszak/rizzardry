@@ -150,7 +150,7 @@ pub fn recruit_character(
 ) -> Entity {
     let mut carried = Carried::default();
     for id in starting_items(&character) {
-        let definition = items.get(id).expect("starting items are checked before recruiting");
+        let definition = &items[id];
         let item = make_item(definition, ids, rng, true, true);
         if place_at_creation(&mut carried, item, items, &character).is_some() {
             warn!("{}: no room for {}", character.name, definition.name);

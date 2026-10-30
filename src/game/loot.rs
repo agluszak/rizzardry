@@ -43,7 +43,7 @@ pub fn table_items(
     let mut items: Vec<ItemId> =
         table.entries.iter().filter(|(_, w)| *w == 0).map(|(item, _)| *item).collect();
     let fits = |item: ItemId| {
-        let value = catalog.get(item).map_or(0, |d| d.value);
+        let value = catalog[item].value;
         LEVEL_SCALE
             .iter()
             .any(|&(level, low, high)| level <= party_level && low <= value && value < high)

@@ -1532,9 +1532,8 @@ fn purify(
     for &victim in victims {
         let purify = |slots: &mut super::enchantments::Enchantments| {
             slots.0.retain_mut(|slot| {
-                if super::enchantments::OFFENSIVE.contains(&slot.spell)
-                    && let Some(cloud) = catalog.get(slot.spell)
-                {
+                if super::enchantments::OFFENSIVE.contains(&slot.spell) {
+                    let cloud = &catalog[slot.spell];
                     let removed =
                         (amount + u32::from(spell.level)).saturating_sub(u32::from(cloud.level));
                     slot.turns = slot.turns.saturating_sub(removed);
@@ -1922,7 +1921,8 @@ pub(crate) fn pulse_clouds(
                     .filter(|(monster, ..)| !monster.is_dead())
                     .and_then(|(monster, ..)| monster.enchantments.get(id).copied()),
             };
-            let (Some(effect), Some(spell)) = (effect, spells.get(id)) else { continue };
+            let Some(effect) = effect else { continue };
+            let spell = &spells[id];
             let Some(realm) = spell.realm else { continue };
             let strength = Strength::at(0, spell, effect.power, effect.boost);
             let victims = actor.map_or_else(|| party.clone(), |a| vec![Victim::Monster(a)]);
@@ -2031,10 +2031,8 @@ pub(crate) fn pulse_clouds(
         // Ring of Fire follows the party and samples current nearby actors on
         // every pulse, including actors that entered its radius after casting.
         if actor.is_none()
-            && let (Some(effect), Some(spell)) = (
-                world.enchantments.get(SpellId::RING_OF_FIRE).copied(),
-                spells.get(SpellId::RING_OF_FIRE),
-            )
+            && let Some(effect) = world.enchantments.get(SpellId::RING_OF_FIRE).copied()
+            && let spell = &spells[SpellId::RING_OF_FIRE]
             && let Some(realm) = spell.realm
         {
             let centre = crate::game::party::body::PartyBody::centre(party_eye);

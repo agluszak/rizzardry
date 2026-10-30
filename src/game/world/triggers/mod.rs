@@ -177,14 +177,8 @@ fn drink_fountain(
     mut rng: ResMut<GameRng>,
     mut outcomes: MessageWriter<TriggerEffect>,
 ) -> bool {
-    let restoration = if fountain.restores == Restores::Restoration {
-        let Some(spell) = content.spells.get(crate::content::spells::SpellId::HEAL_ALL) else {
-            return false;
-        };
-        Some(spell)
-    } else {
-        None
-    };
+    let restoration = (fountain.restores == Restores::Restoration)
+        .then(|| &content.spells[crate::content::spells::SpellId::HEAL_ALL]);
     let mut state = fountains.get_mut(entity).unwrap();
     let now = clock.ms;
     // A dry fountain is assessed without marking it changed.

@@ -91,10 +91,7 @@ pub(crate) fn use_container(
         let (found, gold) = roll_loot(&loot.0[table], catalog, party_level, &mut rng);
         let contents = &mut container.contents;
         contents.items.extend(
-            found
-                .into_iter()
-                .filter_map(|id| catalog.get(id))
-                .map(|d| make_item(d, &mut ids, &mut rng, false, false)),
+            found.into_iter().map(|id| make_item(&catalog[id], &mut ids, &mut rng, false, false)),
         );
         contents.gold += gold;
         container.table = None;

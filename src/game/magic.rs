@@ -743,7 +743,7 @@ pub fn deliver_spells(
         }
         let mut secondary = Vec::new();
         let landed = context.resolve(clock.ms, &mut members, &mut monsters, |field, spells| {
-            let spell = spells.get(flight.spell)?;
+            let spell = &spells[flight.spell];
             let effects = impacts::resolve(
                 flight.caster,
                 flight.origin,

@@ -2201,12 +2201,12 @@ fn monster_turn(
                 &sight,
                 &toward,
             );
-            if let Some(plan) = monster_spells::choose(rng, body, kind, chance, spells, &scene)
-                .and_then(|(id, aim)| {
-                    let spell = spells.get(id)?.clone();
+            if let Some(plan) =
+                monster_spells::choose(rng, body, kind, chance, spells, &scene).map(|(id, aim)| {
+                    let spell = spells[id].clone();
                     let budget = body.spell_budget(kind);
                     let power = monster_spells::power(rng, budget, &spell);
-                    Some(Plan::Spell { spell, power, aim, scene, caster: (kind, budget) })
+                    Plan::Spell { spell, power, aim, scene, caster: (kind, budget) }
                 })
             {
                 decision = Decision::Plan(Box::new(plan));

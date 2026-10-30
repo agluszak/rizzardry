@@ -158,7 +158,7 @@ impl MonsterBodies {
             .collect();
         let companions: Vec<u32> = encountered
             .iter()
-            .filter_map(|&id| species.kind(id))
+            .map(|&id| &species[id])
             .flat_map(|kind| kind.companions.iter().flatten().map(|&(id, _)| id))
             .collect();
         let mut spawnable: Vec<u32> =
@@ -168,7 +168,7 @@ impl MonsterBodies {
         spawnable.extend(crate::game::magic::pointcasts::ELEMENTALS);
         let mut next = 0;
         while let Some(&id) = spawnable.get(next) {
-            if let Some(called) = species.kind(id).and_then(|kind| kind.special.kind?.summons())
+            if let Some(called) = species[id].special.kind.and_then(|kind| kind.summons())
                 && !spawnable.contains(&called)
             {
                 spawnable.push(called);
@@ -177,13 +177,13 @@ impl MonsterBodies {
         }
         spawnable
             .into_iter()
-            .filter_map(|id| {
-                let kind = species.kind(id)?;
-                let body = self
-                    .0
+            .map(|id| {
+                self.0
                     .entry(id)
-                    .or_insert_with(|| assets.load(crate::content::paths::monster(&kind.model)));
-                Some(body.clone())
+                    .or_insert_with(|| {
+                        assets.load(crate::content::paths::monster(&species[id].model))
+                    })
+                    .clone()
             })
             .collect()
     }
@@ -211,8 +211,7 @@ pub fn check(
 
 /// The name an actor goes by in the world's inspector.
 fn actor_name(species: &MonsterCatalog, (id, location): (u32, i32)) -> String {
-    let kind = species.kind(id).map_or("", |kind| kind.name.as_str());
-    format!("{kind} #{location}")
+    format!("{} #{location}", species[id].name)
 }
 
 /// Make a monster an actor of its level: standing at its feet and facing
@@ -475,7 +474,7 @@ pub fn populate(
     let mut placed_actors = std::collections::HashSet::new();
     // Unborn NPCs are not placed; NPCs are never born.
     for placed in geometry.monsters.iter().filter(|placed| !placed.unborn) {
-        let Some(kind) = species.kind(placed.species) else { continue };
+        let kind = &species[placed.species];
         let Some(id) = kind.npc else { continue };
         let body = handles.get(placed.species, bodies).unwrap();
         let place = crate::game::npcs::Placing { placed, tables, id, map, average };
@@ -520,7 +519,7 @@ pub fn populate(
     };
     info!("placed {monster_count} monsters and {} items", lying.len());
     for (item, at) in lying {
-        let name = items.get(item.appearance()).map_or_else(String::new, |d| d.name.clone());
+        let name = items[item.appearance()].name.clone();
         commands.spawn((Name::new(name), item, Transform::from_translation(at), LevelOwned(root)));
     }
 }

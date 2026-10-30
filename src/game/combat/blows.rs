@@ -182,9 +182,7 @@ fn razor_backlash(
     news: &mut MessageWriter<CombatNews>,
 ) {
     use crate::content::spells::SpellId;
-    let Some(spell) = field.spells.get(SpellId::RAZOR_CLOAK) else {
-        return;
-    };
+    let spell = &field.spells[SpellId::RAZOR_CLOAK];
     let charge = match defender {
         Victim::Member(member) => field
             .members

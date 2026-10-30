@@ -264,11 +264,8 @@ impl Spawning<'_, '_, '_> {
         group: MonsterGroup,
         unborn: &mut Unborn,
     ) -> Option<Vec<Vec3>> {
-        let kind = self.species.kind(id)?;
-        let Some(definition) = self.bodies.0.get(id, self.bodies.1) else {
-            warn!("encounter species {id} has no body ready");
-            return None;
-        };
+        let kind = &self.species[id];
+        let definition = self.bodies.0.get(id, self.bodies.1).expect("bodies load with the level");
         let (location, authored) = self.next;
         let mut members = population::roll_group(self.next, (id, count), (kind, definition), rng);
         if members.is_empty() {
@@ -326,7 +323,7 @@ fn generate(
     let candidates = candidates(table, party.level, night, rng);
     let &chosen = candidates.first()?;
     let id = table.entries[chosen].species;
-    let kind = spawning.species.kind(id)?;
+    let kind = &spawning.species[id];
     let companions: Vec<u32> = kind
         .companions
         .iter()
@@ -349,7 +346,7 @@ fn generate(
     )?;
     let leader = spawning.next.1 - 1;
     for companion in companions {
-        let Some(companion_kind) = spawning.species.kind(companion) else { break };
+        let companion_kind = &spawning.species[companion];
         let count = rng.roll(companion_kind.group_size);
         let escort = MonsterGroup { escort_of: Some(leader), ..default() };
         feet.extend(

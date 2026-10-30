@@ -201,11 +201,10 @@ pub fn search_pulse(
             continue;
         }
         item.hidden = false;
-        let name = catalog.get(item.appearance()).map(|d| item.display_name(d, false));
         news.write(SearchNews::Spotted {
             target,
             member: searcher.name.clone(),
-            item: name.unwrap_or_default(),
+            item: item.display_name(&catalog[item.appearance()], false),
         });
     }
 }

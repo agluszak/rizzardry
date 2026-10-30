@@ -67,18 +67,17 @@ pub fn drop_loot(
     let mut lay = |lying| {
         lay(commands, level, feet, lying);
     };
-    match (items.len(), catalog.get(BAG_OF_ITEMS)) {
-        (0, _) => {}
-        (1, _) => lay(WorldItem::loose(items.remove(0), false)),
-        (_, Some(bag)) => lay(WorldItem {
+    match items.len() {
+        0 => {}
+        1 => lay(WorldItem::loose(items.remove(0), false)),
+        _ => lay(WorldItem {
             loot: GroundLoot::Pile {
                 appearance: BAG_OF_ITEMS,
-                identified: bag.auto_identify,
+                identified: catalog[BAG_OF_ITEMS].auto_identify,
                 contents: items,
             },
             hidden: false,
         }),
-        (_, None) => items.into_iter().for_each(|item| lay(WorldItem::loose(item, false))),
     }
 }
 

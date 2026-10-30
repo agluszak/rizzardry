@@ -667,11 +667,8 @@ fn npc_named(world: &World, name: &str) -> Option<Entity> {
     let fixed = fact_named(world, "FACT_RFS81_HAS_BEEN_FIXED").is_ok_and(|value| value != 0);
     world.iter_entities().find_map(|e| {
         let id = e.get::<super::ActorId>()?.npc();
-        let shown = if id == RFS81 && fixed {
-            RFS81_FIXED_NAME
-        } else {
-            catalog.get(id)?.display_name.as_str()
-        };
+        let shown =
+            if id == RFS81 && fixed { RFS81_FIXED_NAME } else { catalog[id].display_name.as_str() };
         shown.eq_ignore_ascii_case(name).then(|| e.id())
     })
 }
@@ -756,9 +753,6 @@ fn plan_quote(world: &World, party: Entity, q: &Quote) -> Result<QuotePlan, (usi
             // Retail ignores a faction name it does not know.
             DialogueOp::AdjustFaction { faction: None, .. } => {}
             DialogueOp::GiveItem(item) => {
-                if world.resource::<Catalogs>().items.get(*item).is_none() {
-                    return Err((i, format!("unknown item {}", item.0)));
-                }
                 plan.effects.push(QuoteEffect::GiveItem { party, item: *item });
             }
             DialogueOp::TakeItem(item) => {
@@ -945,7 +939,7 @@ fn commit_effects(world: &mut World, entity: Entity, effects: Vec<QuoteEffect>) 
             QuoteEffect::GiveItem { party, item } => {
                 let (name, crucial, rest) = Catalogs::scope(world, |world, c| {
                     let catalog = &c.items;
-                    let definition = catalog.get(item).expect("a validated gift has its item");
+                    let definition = &catalog[item];
                     let stack = world.resource_scope(|world, mut ids: Mut<ItemIds>| {
                         let mut rng = world.resource_mut::<GameRng>();
                         make_item(definition, &mut ids, &mut rng, true, true)
@@ -1935,11 +1929,6 @@ mod tests {
         assert_eq!(answer(false, 0, None), (Some((DECLINES_TO_JOIN, 0)), false));
         assert_eq!(answer(true, 2, None), (Some((NO_ROOM_TO_JOIN, 0)), false));
         assert_eq!(answer(true, 1, None), (Some((JOINS, 0)), true));
-        // Gear the catalog lacks is missing content: it declines, nothing made.
-        assert_eq!(
-            answer(true, 1, Some(crate::content::items::ItemId(5))),
-            (Some((DECLINES_TO_JOIN, 0)), false)
-        );
     }
 
     #[test]
@@ -2532,8 +2521,14 @@ mod tests {
             if !runs {
                 let script = super::super::script(app.world(), actor);
                 let mut scripts = app.world_mut().resource_mut::<Assets<DialogueScript>>();
-                scripts.get_mut(script).unwrap().quotes[usize::from(ACCEPTED_GIFT_QUOTE)] =
-                    lines(&["Thanks"], vec![DialogueOp::GiveItem(ItemId(9))]);
+                scripts.get_mut(script).unwrap().quotes[usize::from(ACCEPTED_GIFT_QUOTE)] = lines(
+                    &["Thanks"],
+                    vec![DialogueOp::Unsupported {
+                        opcode: 99,
+                        operands: [0; 3],
+                        subentries: vec![],
+                    }],
+                );
             }
             let member = carrier(&mut app, "Ragnar", 1, 1);
             let id = app.world().get::<Carried>(member).unwrap().backpack[0].as_ref().unwrap().id;

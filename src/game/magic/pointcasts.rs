@@ -297,23 +297,21 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
                     SpellId::MISSILE_SHIELD,
                     SpellId::ARMORPLATE,
                 ][realm];
-                let definition = world.resource::<Catalogs>().spells.get(buff).cloned();
-                if let Some(definition) = definition {
-                    let turns = super::effects::duration(
-                        &mut world.resource_mut::<GameRng>(),
-                        &definition,
-                        strength,
-                    );
-                    world.get_mut::<Monster>(elemental).unwrap().enchantments.apply_to_monster(
-                        super::enchantments::Enchantment {
-                            spell: buff,
-                            power: strength.power,
-                            boost: 0,
-                            turns,
-                            absorption: 0,
-                        },
-                    );
-                }
+                let definition = world.resource::<Catalogs>().spells[buff].clone();
+                let turns = super::effects::duration(
+                    &mut world.resource_mut::<GameRng>(),
+                    &definition,
+                    strength,
+                );
+                world.get_mut::<Monster>(elemental).unwrap().enchantments.apply_to_monster(
+                    super::enchantments::Enchantment {
+                        spell: buff,
+                        power: strength.power,
+                        boost: 0,
+                        turns,
+                        absorption: 0,
+                    },
+                );
             }
         }
     }

@@ -60,7 +60,7 @@ pub fn advance(
         |tier| ItemNews::Omnigun { member: character.name.clone(), gender: character.gender, tier };
     let level = character.profession_levels[Profession::Gadgeteer];
     if level == 1 {
-        let Some(definition) = catalog.get(ItemId(599)) else { return Vec::new() };
+        let definition = &catalog[ItemId(599)];
         if carries(carried, member) {
             return Vec::new();
         }

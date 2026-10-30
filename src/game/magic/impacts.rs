@@ -321,9 +321,8 @@ pub(crate) fn resolve(
             }
         }
     }
-    if spell.id == SpellId::BOILING_BLOOD
-        && let Some(explosion) = spells.get(SpellId::BOILING_BLOOD_EXPLOSION)
-    {
+    if spell.id == SpellId::BOILING_BLOOD {
+        let explosion = &spells[SpellId::BOILING_BLOOD_EXPLOSION];
         for &victim in &finish.victims {
             let dead = match victim {
                 Victim::Member(entity) => {

@@ -57,9 +57,8 @@ impl Source {
     ) -> Option<SpellId> {
         match self {
             Self::Spell { spell, .. } => Some(spell),
-            Self::Item(id) => items.get(carried?.find_stack(id)?.item)?.spell.map(|s| s.spell),
-            Self::PoolItem(id) => items
-                .get(inventory.pool.stacks.iter().find(|s| s.id == id)?.item)?
+            Self::Item(id) => items[carried?.find_stack(id)?.item].spell.map(|s| s.spell),
+            Self::PoolItem(id) => items[inventory.pool.stacks.iter().find(|s| s.id == id)?.item]
                 .spell
                 .map(|s| s.spell),
         }
