@@ -76,13 +76,14 @@ fn bodies(world: &World, root: Entity) -> Result<Vec<(u32, MonsterBody)>, Refusa
         .collect()
 }
 
-pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Result<(), Refusal> {
+pub(crate) fn cast(
+    world: &mut World,
+    caster: Entity,
+    choice: MagicChoice,
+    id: SpellId,
+) -> Result<(), Refusal> {
     if !crate::game::freedom::free_in(world) {
         return Err(Refusal::WrongTime);
-    }
-    let id = super::utilities::source_spell(world, caster, choice.source)?;
-    if !spell(id) {
-        return Err(Refusal::Unsupported);
     }
     let Aim::Point(at) = choice.aim else { return Err(Refusal::NoTarget) };
     if !at.is_finite() {
@@ -164,7 +165,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
     } else {
         [0; 4]
     };
-    let (report, strength) = super::sources::cast_source(
+    let (report, strength) = super::casting::cast_source(
         world,
         caster,
         choice.source,
@@ -494,17 +495,20 @@ mod tests {
         let definitions = world.entity_mut(root).take::<MonsterBodies>().unwrap();
         let rng = world.resource::<GameRng>().clone();
         assert_eq!(
-            cast(world, caster, choice(SpellId::SUMMON_ELEMENTAL)),
+            super::super::execute_in_world(world, caster, choice(SpellId::SUMMON_ELEMENTAL)),
             Err(Refusal::MissingContent)
         );
         assert_eq!(&rng, world.resource::<GameRng>());
         assert_eq!(crate::game::magic::test_points(world, caster, Realm::Fire), 100);
         world.entity_mut(root).insert(definitions);
-        cast(world, caster, choice(SpellId::SUMMON_ELEMENTAL)).unwrap();
+        super::super::execute_in_world(world, caster, choice(SpellId::SUMMON_ELEMENTAL)).unwrap();
         let summon = world.get::<Elementals>(caster).unwrap().iter().next().unwrap();
         assert!((21..=24).contains(&world.get::<Monster>(summon).unwrap().species));
         assert_eq!(crate::game::magic::test_points(world, caster, Realm::Fire), 99);
-        assert_eq!(cast(world, caster, choice(SpellId::SUMMON_ELEMENTAL)), Err(Refusal::NoTarget));
+        assert_eq!(
+            super::super::execute_in_world(world, caster, choice(SpellId::SUMMON_ELEMENTAL)),
+            Err(Refusal::NoTarget)
+        );
         let party = crate::game::party::roster::the_party(world).unwrap();
         let before = world.get::<PartyInventory>(party).unwrap().gold;
         let result = world
@@ -519,7 +523,7 @@ mod tests {
             .unwrap();
         assert_eq!(result.experience, 0);
         assert_eq!(world.get::<PartyInventory>(party).unwrap().gold, before);
-        cast(world, caster, choice(SpellId::SUMMON_ELEMENTAL)).unwrap();
+        super::super::execute_in_world(world, caster, choice(SpellId::SUMMON_ELEMENTAL)).unwrap();
         let new = world
             .get::<Elementals>(caster)
             .unwrap()
@@ -557,7 +561,7 @@ mod tests {
             .id();
         for seed in 0..30 {
             world.insert_resource(GameRng::seeded(seed));
-            cast(world, caster, choice(SpellId::HYPNOTIC_LURE)).unwrap();
+            super::super::execute_in_world(world, caster, choice(SpellId::HYPNOTIC_LURE)).unwrap();
             if world
                 .get::<LureInfluence>(target)
                 .is_some_and(|influence| influence.response == LureResponse::Controlled)

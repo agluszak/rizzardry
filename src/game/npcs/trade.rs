@@ -240,14 +240,12 @@ pub fn trade_quantity(item: &ItemDefinition, units: u32) -> u32 {
 }
 /// What `quantity` of the lot costs, if the merchant will sell that many.
 pub fn purchase_price(
-    stock: &MerchantStock,
+    source: &StockLot,
     def: &NpcDefinition,
     catalog: &ItemCatalog,
-    lot: StockLotId,
     quantity: u32,
     communication: u32,
 ) -> Result<u32, TradeError> {
-    let source = stock.lots.iter().find(|l| l.id == lot).ok_or(TradeError::StaleSelection)?;
     let item = &catalog[source.item];
     if source.available_at != 0 || item.merchant_cannot_sell {
         return Err(TradeError::Unavailable);
@@ -260,8 +258,7 @@ pub fn purchase_price(
     }
     price(def, item, quantity, true, true, communication)
 }
-/// The delivery draft uses existing pool insertion, including partial merging.
-/// No authoritative item, allocator, stock or payment changes until it all fits.
+/// Check the complete delivery against insertion capacity, then commit directly.
 pub fn buy(
     stock: &mut MerchantStock,
     party: &mut PartyInventory,
@@ -273,9 +270,9 @@ pub fn buy(
     quoted: u32,
     communication: u32,
 ) -> Result<(), TradeError> {
-    let cost = purchase_price(stock, def, catalog, lot, quantity, communication)?;
     let row = stock.lots.iter().position(|l| l.id == lot).ok_or(TradeError::StaleSelection)?;
     let source = &stock.lots[row];
+    let cost = purchase_price(source, def, catalog, quantity, communication)?;
     let item = &catalog[source.item];
     if cost != quoted {
         return Err(TradeError::PriceChanged);
@@ -283,8 +280,9 @@ pub fn buy(
     if cost > party.gold {
         return Err(TradeError::Funds);
     }
-    let mut draft = party.clone();
-    let mut next_ids = ids.clone();
+    if party.pool.room_for(item, true) < quantity {
+        return Err(TradeError::Capacity);
+    }
     let mut remaining = quantity;
     while remaining > 0 {
         let units = if item.quantity == QuantityKind::Stack {
@@ -299,15 +297,11 @@ pub fn buy(
         } else {
             item.initial_quantity.maximum().min(255) as u16
         };
-        let delivered = ItemStack::new(item, &mut next_ids, amount, true);
-        if draft.pool.receive(delivered, catalog).is_some() {
-            return Err(TradeError::Capacity);
-        }
+        let delivered = ItemStack::new(item, ids, amount, true);
+        let _ = party.pool.receive(delivered, catalog);
         remaining -= units;
     }
-    draft.gold -= cost;
-    *party = draft;
-    *ids = next_ids;
+    party.gold -= cost;
     stock.lots[row].units -= quantity;
     stock.lots.retain(|l| l.units != 0);
     Ok(())
@@ -331,26 +325,6 @@ pub fn validate_sale(
     }
     price(def, d, quantity, item.identified, false, communication)
 }
-/// The merchant's stock once it has bought the item at the quoted price.
-/// Nothing changes until the seller gives the item up. The stock template
-/// deliberately does not retain sold charges or knowledge.
-pub fn sell(
-    stock: &MerchantStock,
-    def: &NpcDefinition,
-    item: &ItemStack,
-    quantity: u32,
-    quoted: u32,
-    catalog: &ItemCatalog,
-    communication: u32,
-) -> Result<MerchantStock, TradeError> {
-    if validate_sale(def, item, quantity, catalog, communication)? != quoted {
-        return Err(TradeError::PriceChanged);
-    }
-    let mut stock = stock.clone();
-    stock.add(item.item, quantity, catalog, false)?;
-    Ok(stock)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,7 +449,7 @@ mod tests {
         );
     }
     #[test]
-    fn full_destination_rolls_back_partial_merges_and_allocator() {
+    fn a_purchase_that_cannot_fit_leaves_items_gold_stock_and_ids_untouched() {
         let catalog = catalog();
         let def = merchant();
         let mut stock = MerchantStock::default();

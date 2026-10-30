@@ -7,7 +7,7 @@ use super::{
     targeting::{self, Recipients},
 };
 use crate::{
-    content::spells::{SpellCatalog, SpellDefinition, SpellId, Targeting},
+    content::spells::{SpellDefinition, SpellId, Targeting},
     game::{rng::GameRng, world::hostility::Stance},
 };
 use bevy::prelude::*;
@@ -320,9 +320,8 @@ pub(crate) fn resolve(
             }
         }
     }
-    if spell.id == SpellId::BOILING_BLOOD
-        && let Some(explosion) = spells.get(SpellId::BOILING_BLOOD_EXPLOSION)
-    {
+    if spell.id == SpellId::BOILING_BLOOD {
+        let explosion = spells.get(SpellId::BOILING_BLOOD_EXPLOSION).unwrap();
         for &victim in &finish.victims {
             let dead = match victim {
                 Victim::Member(entity) => {
@@ -372,7 +371,4 @@ pub(crate) fn resolve(
         }
     }
     landed
-}
-pub(crate) fn ready(spell: SpellId, spells: &SpellCatalog) -> bool {
-    spell != SpellId::BOILING_BLOOD || spells.get(SpellId::BOILING_BLOOD_EXPLOSION).is_some()
 }

@@ -95,7 +95,7 @@ impl PartyInventory {
             || match target {
                 ItemAt::Slot(Slot::Equipment(slot)) => {
                     let fits = character.can_use(product)
-                        && allowed_slots(product, carried, catalog, Some(slot)).contains(&slot);
+                        && allowed_slots(product, carried, catalog, &[slot]).contains(&slot);
                     if !fits && held_survives {
                         return Err(Refusal::DoesNotFit);
                     }

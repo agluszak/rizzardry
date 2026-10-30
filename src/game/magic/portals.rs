@@ -23,7 +23,12 @@ pub(crate) fn spell(id: SpellId) -> bool {
     matches!(id, SpellId::SET_PORTAL | SpellId::RETURN_TO_PORTAL)
 }
 
-pub(crate) fn cast(world: &mut World, caster: Entity, source: Source) -> Result<(), Refusal> {
+pub(crate) fn cast(
+    world: &mut World,
+    caster: Entity,
+    source: Source,
+    id: SpellId,
+) -> Result<(), Refusal> {
     if world.query::<&crate::game::combat::Battle>().iter(world).next().is_some() {
         return Err(Refusal::WrongTime);
     }
@@ -40,10 +45,6 @@ pub(crate) fn cast(world: &mut World, caster: Entity, source: Source) -> Result<
         .single(world)
         .map(|(e, body, at)| (e, PartyBody::eye(at), body.yaw, body.pitch))
         .map_err(|_| Refusal::WrongTime)?;
-    let id = super::utilities::source_spell(world, caster, source)?;
-    if !spell(id) {
-        return Err(Refusal::Unsupported);
-    }
     let saved = if id == SpellId::RETURN_TO_PORTAL {
         Some(world.get::<Portal>(caster).cloned().ok_or(Refusal::NoTarget)?)
     } else {
@@ -67,7 +68,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, source: Source) -> Result<
         }
         _ => None,
     };
-    let (report, _) = super::sources::cast_source(world, caster, source, UseContext::World)?;
+    let (report, _) = super::casting::cast_source(world, caster, source, UseContext::World)?;
     if report.outcome == Outcome::Cast {
         match saved {
             None => {
