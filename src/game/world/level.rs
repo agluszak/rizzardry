@@ -29,7 +29,7 @@ use crate::content::monster::MonsterBody;
 use crate::content::navmesh::navmesh_path;
 use crate::content::ui::TextTable;
 use crate::game::automap::MapNotes;
-use crate::game::data::GameData;
+use crate::game::data::Catalogs;
 use crate::game::inventory::ItemIds;
 use crate::game::party::body::{PartyPlacement, PartyStart};
 use crate::game::party::roster::Party;
@@ -579,8 +579,7 @@ fn build_world(
 /// The databases every level's gameplay needs.
 #[derive(SystemParam)]
 pub struct SharedData<'w> {
-    data: Option<Res<'w, GameData>>,
-    content: crate::game::data::Content<'w>,
+    catalogs: Option<Res<'w, Catalogs>>,
     bodies: Res<'w, Assets<MonsterBody>>,
     motion_configs: ResMut<'w, Assets<navigation::WalkerMotionConfig>>,
 }
@@ -625,12 +624,8 @@ pub fn activate_level(
             }
         }
         let geometry = geometry.get(&level.definition).expect("prepared");
-        let content = &shared.content;
-        let (Some(items), Some(loot), Some(species), Some(_spells)) =
-            (content.items(), content.loot(), content.species(), content.spells())
-        else {
-            continue;
-        };
+        let catalogs = shared.catalogs.as_deref().expect("prepared");
+        let (items, loot, species) = (&catalogs.items, &catalogs.loot, &catalogs.species);
         let traveller = parties.single().ok();
         if matches!(destination.entry, Entry::Travel) && traveller.is_none() {
             fail("there is no party to travel");
@@ -715,26 +710,16 @@ fn prepare(
     let failed = |handle: UntypedAssetId| {
         matches!(assets.get_load_state(handle), Some(LoadState::Failed(_)))
     };
-    let Some(data) = shared.data.as_ref() else { return Ok(false) };
     if failed(level.definition.id().untyped())
         || level.navmeshes.iter().any(|h| failed(h.id().untyped()))
-        || failed(data.items.id().untyped())
-        || failed(data.loot.id().untyped())
-        || failed(data.species.id().untyped())
-        || failed(data.spells.id().untyped())
     {
         return Err("an asset it needs failed to load".into());
     }
-    let content = &shared.content;
-    let (Some(geometry), Some(items), Some(species), Some(_), Some(_)) = (
-        geometry.get(&level.definition),
-        content.items(),
-        content.species(),
-        content.loot(),
-        content.spells(),
-    ) else {
+    let (Some(geometry), Some(catalogs)) = (geometry.get(&level.definition), &shared.catalogs)
+    else {
         return Ok(false);
     };
+    let (items, species) = (&catalogs.items, &catalogs.species);
     population::check(geometry, species, items)?;
     super::triggers::check(geometry)?;
     if !npcs.prepare(species, &geometry.monsters, items, assets)? {

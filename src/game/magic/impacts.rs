@@ -88,7 +88,7 @@ impl Origin {
                 .monsters()
                 .get(entity)
                 .ok()
-                .and_then(|(body, ..)| world.species?.kind(body.species))
+                .and_then(|(body, ..)| world.species.kind(body.species))
                 .map_or(0, |kind| u32::from(kind.level)),
             None => 0,
         }

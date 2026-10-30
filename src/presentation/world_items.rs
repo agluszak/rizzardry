@@ -33,10 +33,10 @@ pub struct ItemShown {
 pub fn show_world_items(
     mut commands: Commands,
     items: Query<(Entity, &WorldItem, Option<&ItemShown>)>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     assets: Res<AssetServer>,
 ) {
-    let Some(catalog) = content.items() else { return };
+    let catalog = &content.items;
     for (entity, item, shown) in &items {
         let model = match shown {
             _ if item.hidden => continue,

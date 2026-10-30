@@ -643,14 +643,7 @@ pub fn perform(
     }
     // Instruments can pay fatigue while finding power, so validate the target
     // first. Radius changes may widen victims but cannot rescue an invalid aim.
-    let (targets, _) = capture(caster, spell, choice.aim, situation, forced_self)?;
-    if (spell.targeting == Targeting::Radius
-        || spell.id == SpellId::BOILING_BLOOD
-        || targets.iter().any(|victim| matches!(victim, Victim::Monster(_))))
-        && (world.species.is_none() || !world.monsters.ready())
-    {
-        return Err(Refusal::MissingContent);
-    }
+    capture(caster, spell, choice.aim, situation, forced_self)?;
     if (spell.targeting == Targeting::Radius
         || spell.id == SpellId::BOILING_BLOOD
         || spell.id == SpellId::RING_OF_FIRE)

@@ -159,7 +159,7 @@ pub fn search_pulse(
     members: Query<(&Character, &Vitals)>,
     mut items: Query<(Entity, &mut WorldItem, &Transform)>,
     obstacles: WorldObstacles,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     mut news: MessageWriter<SearchNews>,
 ) {
     if !search.pulse.tick(time.delta()).just_finished() {
@@ -186,7 +186,7 @@ pub fn search_pulse(
         }
     }
     let Some((score, searcher)) = best else { return };
-    let catalog = content.items();
+    let catalog = &content.items;
     for (target, mut item, at) in &mut items {
         if !item.hidden {
             continue;
@@ -201,8 +201,7 @@ pub fn search_pulse(
             continue;
         }
         item.hidden = false;
-        let name =
-            catalog.and_then(|c| c.get(item.appearance())).map(|d| item.display_name(d, false));
+        let name = catalog.get(item.appearance()).map(|d| item.display_name(d, false));
         news.write(SearchNews::Spotted {
             target,
             member: searcher.name.clone(),

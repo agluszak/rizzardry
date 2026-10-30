@@ -503,9 +503,10 @@ pub fn run_encounters(
         Option<Res<Difficulty>>,
         ResMut<GameRng>,
     ),
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
 ) {
-    let (Some(definition), Some(species)) = (level.definition(), content.species()) else { return };
+    let Some(definition) = level.definition() else { return };
+    let species = &content.species;
     let encounters = &definition.encounters;
     if encounters.generators.is_empty() {
         return;
@@ -708,10 +709,8 @@ mod tests {
         app.cleanup();
         let world = app.world_mut();
         let crab = Species { group_size: Dice { base: 2, count: 0, sides: 0 }, ..default() };
-        let species = world
-            .resource_mut::<Assets<MonsterCatalog>>()
-            .add(MonsterCatalog(vec![default(), crab]));
-        world.insert_resource(crate::game::data::GameData {
+        let species = MonsterCatalog(vec![default(), crab]);
+        world.insert_resource(crate::game::data::Catalogs {
             items: default(),
             loot: default(),
             species,

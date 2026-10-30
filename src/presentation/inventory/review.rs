@@ -501,7 +501,7 @@ pub(super) fn refresh(
     info: Option<Single<&StatsInfo>>,
     slider: Option<Single<(Entity, &SliderValue, &SliderRange), With<StatsScroll>>>,
     mut commands: Commands,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     art: Option<Res<InventoryArt>>,
     strings: crate::presentation::screen_art::GameStrings,
     mut fields: Query<(&Field, &mut BitmapText)>,
@@ -510,23 +510,23 @@ pub(super) fn refresh(
     let Some(screen) = screen else { return };
     let Ok(view) = characters.get(screen.member) else { return };
     let load = view.load();
-    let hand = view.hand(content.items());
+    let hand = view.hand(&content.items);
     let CharacterViewItem { profile, vitals, carried, .. } = view;
     let armour_view = info.as_ref().is_some_and(|info| info.armour);
     let effect_filter = info.as_ref().map_or(EffectFilter::All, |info| info.filter);
     let show_items = info.as_ref().is_some_and(|info| info.items);
-    let catalog = content.items();
+    let catalog = &content.items;
     let unidentified = carried
         .as_ref()
         .and_then(|c| c.worn(EquipSlot::Primary))
         .is_some_and(|item| !item.identified);
     let table = strings.table();
     let learned = learned_spells.get(screen.member).ok();
-    let spell_catalog = content.spells();
+    let spell_catalog = &content.spells;
     let string = |id| table.and_then(|table| table.get(id)).unwrap_or("");
     let mut effects = Vec::new();
     if show_items {
-        if let (Some(carried), Some(catalog)) = (carried.as_ref(), catalog) {
+        if let Some(carried) = carried.as_ref() {
             for (slot, equipped) in carried.active_equipment().filter(|(_, e)| e.stack.identified) {
                 let item = &equipped.stack;
                 let Some(definition) = catalog.get(item.item) else { continue };
@@ -616,10 +616,8 @@ pub(super) fn refresh(
             .iter()
             .chain(enchantments.as_ref().into_iter().flat_map(|p| p.0.0.iter()))
         {
-            let name = spell_catalog
-                .and_then(|c| c.get(effect.spell))
-                .map(|s| s.name.as_str())
-                .unwrap_or("Enchantment");
+            let name =
+                spell_catalog.get(effect.spell).map(|s| s.name.as_str()).unwrap_or("Enchantment");
             effects.push((name.to_owned(), true));
             effects.push((format!("Power {} · {} turns", effect.power, effect.turns), false));
             effects.push((String::new(), false));
@@ -750,7 +748,7 @@ pub(super) fn refresh(
 }
 
 pub(super) fn layout_skills(
-    spell_state: (Query<&crate::game::magic::LearnedSpells>, crate::game::data::Content),
+    spell_state: (Query<&crate::game::magic::LearnedSpells>, If<Res<crate::game::data::Catalogs>>),
     screen: Option<Single<&InventoryScreen>>,
     characters: Query<&Character>,
     mut rows: Query<
@@ -764,7 +762,7 @@ pub(super) fn layout_skills(
     let Some(screen) = screen else { return };
     let Ok(profile) = characters.get(screen.member) else { return };
     let learned = spell_state.0.get(screen.member).ok();
-    let spell_catalog = spell_state.1.spells();
+    let spell_catalog = &spell_state.1.spells;
     let mut ordered: Vec<_> =
         rows.iter().map(|(entity, row, _, _)| (row.0 as usize, entity)).collect();
     ordered.sort_unstable_by_key(|(skill, _)| *skill);
@@ -862,7 +860,6 @@ mod tests {
     use crate::content::ui::TextTable;
     use crate::game::characters::Vitals;
     use crate::game::characters::{Condition, Gender, Lasting, Profession, Race};
-    use crate::game::data::GameData;
     use crate::game::inventory::Carried;
 
     #[test]
@@ -929,11 +926,8 @@ mod tests {
         let definition = ItemDefinition::default();
         let weapon =
             make_item(&definition, &mut ItemIds::default(), &mut GameRng::seeded(1), false, false);
-        let items = app
-            .world_mut()
-            .resource_mut::<Assets<ItemCatalog>>()
-            .add(ItemCatalog(vec![definition]));
-        app.insert_resource(GameData {
+        let items = ItemCatalog(vec![definition]);
+        app.insert_resource(crate::game::data::Catalogs {
             items,
             loot: default(),
             species: default(),

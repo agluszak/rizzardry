@@ -12,9 +12,6 @@ use crate::game::characters::{Character, Vitals};
 use crate::game::magic::{LearnedSpells, SpellPoints, recovery_scale};
 use crate::game::time::Ticks;
 
-/// Apply the Fighter's combat-rest trait to an already rolled recovery amount.
-/// It follows the current profession's level, capped at twenty, and truncates
-/// only after scaling the roll (retail ScaleValueByProfessionLevel).
 /// Stamina a round's rest brings back to anyone in a fight (retail
 /// `AdvanceCombatRound`): two dice of a twentieth of their maximum, less
 /// one, from one to 255 sides.
@@ -23,6 +20,9 @@ pub fn rest_roll(max_stamina: u32, rng: &mut crate::game::rng::GameRng) -> u32 {
     rng.roll(crate::content::items::Dice { count: 2, sides, base: 0 })
 }
 
+/// Apply the Fighter's combat-rest trait to an already rolled recovery amount.
+/// It follows the current profession's level, capped at twenty, and truncates
+/// only after scaling the roll (retail ScaleValueByProfessionLevel).
 pub fn combat_rest_amount(profile: &Character, rolled: u32) -> u32 {
     use crate::game::characters::Profession;
     if profile.profession != Profession::Fighter {
@@ -67,14 +67,12 @@ pub fn pass(
     ticks: Ticks,
     pace: Pace,
     magic: Option<(&LearnedSpells, &mut Mut<SpellPoints>)>,
-    spells: Option<&SpellCatalog>,
+    spells: &SpellCatalog,
     fate: &mut crate::game::characters::Fate,
 ) {
-    if ticks.aging > 0 && magic.is_some() && spells.is_none() {
-        return;
-    }
-    let magic = magic.filter(|(_, pool)| ticks.aging > 0 && pool.needs_recovery());
-    let magic = magic.zip(spells).map(|((known, pool), spells)| (known, &mut **pool, spells));
+    let magic = magic
+        .filter(|(_, pool)| ticks.aging > 0 && pool.needs_recovery())
+        .map(|(known, pool)| (known, &mut **pool, spells));
     let vitals = member.bypass_change_detection();
     let before = vitals.clone();
     if elapse(profile.bypass_change_detection(), vitals, ticks, pace, fate, magic).is_some() {

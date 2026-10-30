@@ -150,12 +150,12 @@ impl MagicView {
 pub struct SourceTargeting<'w, 's> {
     carried: Query<'w, 's, &'static Carried>,
     pool: Query<'w, 's, &'static PartyInventory>,
-    content: crate::game::data::Content<'w>,
+    content: If<Res<'w, crate::game::data::Catalogs>>,
 }
 
 impl SourceTargeting<'_, '_> {
     pub fn of(&self, caster: Entity, source: Source) -> Option<Targeting> {
-        let (spells, items) = (self.content.spells()?, self.content.items()?);
+        let (spells, items) = (&self.content.spells, &self.content.items);
         let id = source.spell_id(self.carried.get(caster).ok(), self.pool.single().ok()?, items)?;
         Some(spells.get(id)?.targeting)
     }
@@ -706,7 +706,7 @@ pub(super) fn refresh_magic_view(
         Query<&crate::game::world::interaction::DeviceInteraction>,
         Single<&PartyInventory>,
     ),
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     (conversations, speakers, monsters, party): (
         Query<&crate::game::npcs::conversation::Conversation>,
         Query<&crate::game::npcs::NpcBody>,
@@ -770,9 +770,7 @@ pub(super) fn refresh_magic_view(
         commands.entity(root).despawn();
         return;
     }
-    let (Some(spells), Some(items)) = (content.spells(), content.items()) else {
-        return;
-    };
+    let (spells, items) = (&content.spells, &content.items);
     let Some(context) = context(
         attempt,
         conversation_target.map(|r| r.0),
@@ -1059,7 +1057,7 @@ fn choose_row(
         Query<&crate::game::world::interaction::DeviceInteraction>,
         Single<&PartyInventory>,
     ),
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     conversations: Query<&crate::game::npcs::conversation::Conversation>,
 ) {
     let (Ok(row), Ok((mut view, casts_at, conversation_target))) =
@@ -1067,9 +1065,7 @@ fn choose_row(
     else {
         return;
     };
-    let (Some(spells), Some(items)) = (content.spells(), content.items()) else {
-        return;
-    };
+    let (spells, items) = (&content.spells, &content.items);
     let Ok((character, vitals, carried)) = members.get(view.caster) else { return };
     let (learned, points) = casters.get(view.caster).map_or((None, None), |(l, p)| (Some(l), p));
     let silenced = vitals.conditions.has(crate::game::characters::Condition::Silenced);

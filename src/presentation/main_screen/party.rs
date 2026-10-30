@@ -304,7 +304,7 @@ pub fn draw_party(
     members: Query<CharacterView>,
     battle: Option<Single<&crate::game::combat::Battle>>,
     party_effects: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     mut parts: Query<(
         &PartyPart,
         &mut Node,
@@ -314,7 +314,7 @@ pub fn draw_party(
         Option<&mut ImageNode>,
     )>,
 ) {
-    let catalog = content.items();
+    let catalog = &content.items;
     let closed = layout.mode == LayoutMode::Closed;
     for (part, mut node, mut visible, picture, label, image_node) in &mut parts {
         let Some(slot) = slots.slot(part.member) else { continue };
@@ -336,7 +336,7 @@ pub fn draw_party(
             let CharacterViewItem { profile, vitals, carried, .. } = view;
             let dead = vitals.is_dead();
             let worn = |slot| {
-                carried.as_ref().and_then(|c| c.worn(slot)).and_then(|i| catalog?.get(i.item))
+                carried.as_ref().and_then(|c| c.worn(slot)).and_then(|i| catalog.get(i.item))
             };
             let two_handed = worn(EquipSlot::Primary).is_some_and(|d| d.two_handed);
             let condition = condition_icon(vitals);
@@ -829,7 +829,6 @@ mod tests {
     use super::*;
     use crate::content::items::ItemCatalog;
     use crate::game::characters::{Gender, Profession};
-    use crate::game::data::GameData;
     use crate::presentation::screen::Screen;
     use bevy::picking::backend::HitData;
 
@@ -875,11 +874,8 @@ mod tests {
         let definition = ItemDefinition::default();
         let item =
             make_item(&definition, &mut ItemIds::default(), &mut GameRng::seeded(1), false, true);
-        let items = app
-            .world_mut()
-            .resource_mut::<Assets<ItemCatalog>>()
-            .add(ItemCatalog(vec![definition]));
-        app.insert_resource(GameData {
+        let items = ItemCatalog(vec![definition]);
+        app.insert_resource(crate::game::data::Catalogs {
             items,
             loot: default(),
             species: default(),
@@ -999,8 +995,6 @@ mod tests {
         let click_with = |targeting: Targeting| {
             let mut world = World::new();
             world.init_resource::<ScreenLayout>();
-            world.init_resource::<Assets<ItemCatalog>>();
-            world.init_resource::<Assets<SpellCatalog>>();
             world.init_resource::<SelectedMember>();
             world.init_resource::<Messages<crate::game::inventory::ItemNews>>();
             world.insert_resource(State::new(Screen::World));
@@ -1008,9 +1002,9 @@ mod tests {
             let spell = SpellId::HEAL_WOUNDS;
             let mut catalog: Vec<SpellDefinition> = (0..=spell.0).map(|_| default()).collect();
             catalog[usize::from(spell.0)] = SpellDefinition { id: spell, targeting, ..default() };
-            let spells = world.resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(catalog));
-            let items = world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog::default());
-            world.insert_resource(crate::game::data::GameData {
+            let spells = SpellCatalog(catalog);
+            let items = ItemCatalog::default();
+            world.insert_resource(crate::game::data::Catalogs {
                 items,
                 loot: default(),
                 species: default(),
@@ -1053,7 +1047,6 @@ mod tests {
     fn native_click_counts_review_only_the_current_selection_gesture() {
         let mut world = World::new();
         world.init_resource::<ScreenLayout>();
-        world.init_resource::<Assets<ItemCatalog>>();
         world.init_resource::<SelectedMember>();
         world.init_resource::<Messages<crate::game::inventory::ItemNews>>();
         world.insert_resource(State::new(Screen::World));

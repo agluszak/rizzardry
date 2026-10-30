@@ -1,22 +1,33 @@
 //! The retail databases the rules read, loaded once.
 
-use bevy::ecs::system::SystemParam;
+use bevy::asset::LoadState;
 use bevy::prelude::*;
 
 use crate::content::items::{ItemCatalog, LootTables};
 use crate::content::species::MonsterCatalog;
 use crate::content::spells::SpellCatalog;
 
-#[derive(Resource, Debug)]
-pub struct GameData {
-    pub items: Handle<ItemCatalog>,
-    pub loot: Handle<LootTables>,
-    pub species: Handle<MonsterCatalog>,
-    pub spells: Handle<SpellCatalog>,
+/// The databases, present once every one has loaded. A level cannot be
+/// entered before, so whatever runs in play may rely on them.
+#[derive(Resource, Debug, Default)]
+pub struct Catalogs {
+    pub items: ItemCatalog,
+    pub loot: LootTables,
+    pub species: MonsterCatalog,
+    pub spells: SpellCatalog,
 }
 
-pub fn load_game_data(mut commands: Commands, assets: Res<AssetServer>) {
-    commands.insert_resource(GameData {
+/// The databases while they load.
+#[derive(Resource)]
+pub struct Loading {
+    items: Handle<ItemCatalog>,
+    loot: Handle<LootTables>,
+    species: Handle<MonsterCatalog>,
+    spells: Handle<SpellCatalog>,
+}
+
+pub fn load_catalogs(mut commands: Commands, assets: Res<AssetServer>) {
+    commands.insert_resource(Loading {
         items: assets.load(crate::content::paths::ITEMS),
         loot: assets.load(crate::content::paths::LOOT_TABLES),
         species: assets.load(crate::content::paths::SPECIES),
@@ -24,67 +35,48 @@ pub fn load_game_data(mut commands: Commands, assets: Res<AssetServer>) {
     });
 }
 
-/// The loaded databases, for systems that read them. Each is `None` until
-/// it has loaded.
-#[derive(SystemParam)]
-pub struct Content<'w> {
-    data: Option<Res<'w, GameData>>,
-    items: Option<Res<'w, Assets<ItemCatalog>>>,
-    loot: Option<Res<'w, Assets<LootTables>>>,
-    species: Option<Res<'w, Assets<MonsterCatalog>>>,
-    spells: Option<Res<'w, Assets<SpellCatalog>>>,
+/// Once every database has loaded, they become the [`Catalogs`]; the game
+/// cannot be played without one that failed.
+pub fn publish_catalogs(
+    mut commands: Commands,
+    loading: Res<Loading>,
+    assets: Res<AssetServer>,
+    (mut items, mut loot, mut species, mut spells): (
+        ResMut<Assets<ItemCatalog>>,
+        ResMut<Assets<LootTables>>,
+        ResMut<Assets<MonsterCatalog>>,
+        ResMut<Assets<SpellCatalog>>,
+    ),
+    mut exit: MessageWriter<AppExit>,
+) {
+    let handles = [
+        loading.items.id().untyped(),
+        loading.loot.id().untyped(),
+        loading.species.id().untyped(),
+        loading.spells.id().untyped(),
+    ];
+    if handles.iter().any(|&id| matches!(assets.get_load_state(id), Some(LoadState::Failed(_)))) {
+        error!("a retail database failed to load");
+        commands.remove_resource::<Loading>();
+        exit.write(AppExit::error());
+        return;
+    }
+    if !handles.iter().all(|&id| assets.is_loaded(id)) {
+        return;
+    }
+    commands.insert_resource(Catalogs {
+        items: items.remove(&loading.items).unwrap(),
+        loot: loot.remove(&loading.loot).unwrap(),
+        species: species.remove(&loading.species).unwrap(),
+        spells: spells.remove(&loading.spells).unwrap(),
+    });
+    commands.remove_resource::<Loading>();
 }
 
-impl Content<'_> {
-    pub fn items(&self) -> Option<&ItemCatalog> {
-        self.items.as_ref()?.get(&self.data.as_ref()?.items)
-    }
-
-    pub fn loot(&self) -> Option<&LootTables> {
-        self.loot.as_ref()?.get(&self.data.as_ref()?.loot)
-    }
-
-    pub fn species(&self) -> Option<&MonsterCatalog> {
-        self.species.as_ref()?.get(&self.data.as_ref()?.species)
-    }
-
-    pub fn spells(&self) -> Option<&SpellCatalog> {
-        self.spells.as_ref()?.get(&self.data.as_ref()?.spells)
-    }
-}
-
-impl GameData {
-    /// The item catalog, for operations that hold the whole world.
-    pub fn items(world: &World) -> Option<&ItemCatalog> {
-        world.get_resource::<Assets<ItemCatalog>>()?.get(&world.get_resource::<GameData>()?.items)
-    }
-
-    /// The species catalog, for operations that hold the whole world.
-    pub fn species(world: &World) -> Option<&MonsterCatalog> {
-        world
-            .get_resource::<Assets<MonsterCatalog>>()?
-            .get(&world.get_resource::<GameData>()?.species)
-    }
-
-    /// Run `f` with the item catalog while the world stays writable, for
-    /// operations that hold the whole world; nothing runs without it.
-    pub fn with_items<T>(
-        world: &mut World,
-        f: impl FnOnce(&mut World, &ItemCatalog) -> T,
-    ) -> Option<T> {
-        let handle = world.get_resource::<GameData>()?.items.clone();
-        world.resource_scope(|world, catalogs: Mut<Assets<ItemCatalog>>| {
-            Some(f(world, catalogs.get(&handle)?))
-        })
-    }
-
-    /// The spell catalog, for operations that hold the whole world.
-    pub fn spells(world: &World) -> Option<&SpellCatalog> {
-        world.get_resource::<Assets<SpellCatalog>>()?.get(&world.get_resource::<GameData>()?.spells)
-    }
-
-    /// The loot tables, for operations that hold the whole world.
-    pub fn loot(world: &World) -> Option<&LootTables> {
-        world.get_resource::<Assets<LootTables>>()?.get(&world.get_resource::<GameData>()?.loot)
+impl Catalogs {
+    /// Run `f` with the catalogs while the world stays writable, for
+    /// operations that hold the whole world.
+    pub fn scope<T>(world: &mut World, f: impl FnOnce(&mut World, &Catalogs) -> T) -> T {
+        world.resource_scope(|world, catalogs: Mut<Catalogs>| f(world, &catalogs))
     }
 }

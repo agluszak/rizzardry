@@ -121,10 +121,10 @@ pub fn steer_moves(
     mut commands: Commands,
     party: Query<(Entity, &Position), With<PartyBody>>,
     mut walkers: Query<(Entity, &Monster, ActorPose, &Walker, &mut AgentTarget3d, &CombatMove)>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     targets: Query<(&Monster, ActorPose, Option<&Walker>)>,
 ) {
-    let Some(catalog) = content.species() else { return };
+    let catalog = &content.species;
     let Ok((party, party_at)) = party.single() else { return };
     let party_eye = PartyBody::eye(party_at);
     for (entity, monster, at, walker, mut target, movement) in &mut walkers {
@@ -206,7 +206,6 @@ mod tests {
     /// fixed time from its start to its end, and the walking it counted.
     fn run_move(frame: Duration, during_step: bool) -> (Duration, f32) {
         use crate::content::species::Species;
-        use crate::game::data::GameData;
         use crate::game::world::population::ScaledBody;
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
@@ -225,11 +224,8 @@ mod tests {
                     ended.0 = Some((time.elapsed(), moved));
                 },
             );
-        let species = app
-            .world_mut()
-            .resource_mut::<Assets<MonsterCatalog>>()
-            .add(MonsterCatalog(vec![Species::default()]));
-        app.insert_resource(GameData {
+        let species = MonsterCatalog(vec![Species::default()]);
+        app.insert_resource(crate::game::data::Catalogs {
             items: default(),
             loot: default(),
             species,

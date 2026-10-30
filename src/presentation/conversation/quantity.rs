@@ -1,7 +1,6 @@
 //! Retail split-item presentation. This edits a quote, never inventory itself.
 use super::*;
 use crate::content::ui::TextTable;
-use crate::game::data::GameData;
 use crate::presentation::screen_art::StringTable;
 use bevy::text::{EditableTextFilter, TextEdit};
 use bevy::ui_widgets::ModalDialog;
@@ -70,7 +69,9 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
         return;
     }
     let Some((item, maximum)) = stack(world, q) else { return };
-    let Some(item) = GameData::items(world).and_then(|items| items.get(item)) else { return };
+    let Some(item) = world.resource::<crate::game::data::Catalogs>().items.get(item) else {
+        return;
+    };
     if maximum < 2 || item.class == EquipClass::Ammunition {
         return;
     }

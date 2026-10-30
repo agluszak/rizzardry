@@ -255,7 +255,7 @@ impl Advancement {
         self.skill_remaining() > 0
             && self.skills[s] < 3
             && c.skill_points[s] < 75
-            && magic::skill_available(c, Some(&draft.learned), Some(catalog), s)
+            && magic::skill_available(c, Some(&draft.learned), catalog, s)
     }
     pub fn adjust_skill(&mut self, s: Skill, up: bool, catalog: &SpellCatalog) -> bool {
         if !self.can_adjust_skill(s, up, catalog) {
@@ -329,7 +329,7 @@ impl Advancement {
         let c = self.preview();
         let learned = self.learned();
         for s in EnumSet::<Skill>::all() {
-            if !magic::skill_available(&c, Some(&learned), Some(catalog), s) {
+            if !magic::skill_available(&c, Some(&learned), catalog, s) {
                 self.skills[s] = 0;
             }
         }
@@ -350,7 +350,7 @@ impl Advancement {
         if self
             .skills
             .iter()
-            .any(|(s, &n)| n > 0 && !magic::skill_available(&c, Some(&learned), Some(catalog), s))
+            .any(|(s, &n)| n > 0 && !magic::skill_available(&c, Some(&learned), catalog, s))
         {
             return Err("Refund training in unavailable skills.");
         }
@@ -385,7 +385,7 @@ pub struct Progression<'w, 's> {
             With<crate::game::world::level::TravelQuestion>,
         )>,
     >,
-    content: crate::game::data::Content<'w>,
+    content: If<Res<'w, crate::game::data::Catalogs>>,
     ids: ResMut<'w, crate::game::inventory::ItemIds>,
     rng: ResMut<'w, crate::game::rng::GameRng>,
     news: MessageWriter<'w, crate::game::inventory::ItemNews>,
@@ -411,8 +411,8 @@ impl Progression<'_, '_> {
     }
     pub fn accept(&mut self, draft: &Advancement) -> Result<(), &'static str> {
         self.eligibility(draft.member)?;
-        let spells = self.content.spells().ok_or("Spell definitions are not ready.")?;
-        let items = self.content.items().ok_or("Item definitions are not ready.")?;
+        let spells = &self.content.spells;
+        let items = &self.content.items;
         let (mut c, mut v, mut known, mut carried) = self.members.get_mut(draft.member).unwrap();
         if *c != draft.original || *known != draft.known {
             return Err("This character's training changed. Reopen level-up.");
@@ -479,7 +479,6 @@ mod tests {
     };
     use crate::game::magic::SpellPoints;
     use crate::game::{
-        data::GameData,
         inventory::{EquipSlot, Equipped, ItemIds, ItemStack, POOL_LIMIT},
         party::roster::{self, PartyMember},
     };
@@ -630,7 +629,7 @@ mod tests {
         assert!(magic::skill_available(
             &draft.preview(),
             Some(&draft.learned()),
-            Some(&spells),
+            &spells,
             Skill::MentalMagic
         ));
         complete(&mut draft, &spells);
@@ -640,7 +639,7 @@ mod tests {
         assert!(!magic::skill_available(
             &next.preview(),
             Some(&learned),
-            Some(&spells),
+            &spells,
             Skill::MentalMagic
         ));
         assert!(draft.toggle_spell(SpellId::RETURN_TO_PORTAL, &spells));
@@ -666,18 +665,7 @@ mod tests {
         world.init_resource::<ItemIds>();
         world.init_resource::<crate::game::rng::GameRng>();
         world.init_resource::<Messages<crate::game::inventory::ItemNews>>();
-        let mut items = Assets::<ItemCatalog>::default();
-        let items_handle = items.add(catalog);
-        let mut spells = Assets::<SpellCatalog>::default();
-        let spells_handle = spells.add(SpellCatalog::default());
-        world.insert_resource(items);
-        world.insert_resource(spells);
-        world.insert_resource(GameData {
-            items: items_handle,
-            spells: spells_handle,
-            loot: default(),
-            species: default(),
-        });
+        world.insert_resource(crate::game::data::Catalogs { items: catalog, ..default() });
         let member = world
             .spawn((
                 Vitals::new(&c),
@@ -836,18 +824,16 @@ mod tests {
         mana.spend(Realm::Divine, 2);
         mana.fraction[Realm::Divine] = 0.25;
         w.entity_mut(member).insert((known, mana));
-        let handle = w.resource::<GameData>().spells.clone();
-        w.resource_mut::<Assets<SpellCatalog>>().insert(handle.id(), catalog).unwrap();
+        w.resource_mut::<crate::game::data::Catalogs>().spells = catalog;
         let mut draft = begin(&mut w, member);
-        let catalog = w.resource::<Assets<SpellCatalog>>().get(&handle).unwrap();
+        let catalog = &w.resource::<crate::game::data::Catalogs>().spells;
         assert!(draft.toggle_spell(SpellId::BLESS, catalog));
         complete(&mut draft, catalog);
         accept(&mut w, &draft).unwrap();
         let c = w.get::<Character>(member).unwrap();
         let learned = w.get::<LearnedSpells>(member).unwrap();
-        let maximum = c
-            .base_stats()
-            .max_points(learned, w.resource::<Assets<SpellCatalog>>().get(&handle).unwrap());
+        let maximum =
+            c.base_stats().max_points(learned, &w.resource::<crate::game::data::Catalogs>().spells);
         let mana = w.get::<SpellPoints>(member).unwrap();
         assert_eq!(mana.current(Realm::Divine, &maximum), i64::from(maximum[Realm::Divine]) - 2);
         assert_eq!(mana.fraction[Realm::Divine], 0.25);

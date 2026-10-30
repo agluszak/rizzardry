@@ -441,7 +441,7 @@ mod tests {
         assert!(crate::game::magic::skill_available(
             &character,
             Some(&crate::game::magic::LearnedSpells(draft.spells())),
-            Some(&catalog),
+            &catalog,
             Skill::FireMagic
         ));
         assert!(draft.spells().contains(&SpellId::BLESS));

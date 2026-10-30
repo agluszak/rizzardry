@@ -8,9 +8,8 @@ use bevy::prelude::*;
 use super::interaction::{AttemptOn, DeviceAttempt, DeviceInteraction, Work};
 use super::props::PropMotion;
 use super::triggers::TriggerEffect;
-use crate::content::items::ItemCatalog;
 use crate::game::characters::Character;
-use crate::game::data::GameData;
+use crate::game::data::Catalogs;
 use crate::game::inventory::{
     Carried, ItemIds, ItemNews, ItemStack, PartyInventory, Refusal, StackId, make_item,
 };
@@ -61,7 +60,7 @@ pub(crate) enum ContainerUse {
 pub(crate) fn use_container(
     In(entity): In<Entity>,
     mut containers: Query<(&mut Container, &PropMotion)>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     attempts: Query<&DeviceAttempt>,
     mut party: Single<&mut PartyInventory>,
     (roster, profiles): (Single<&PartyRoster>, Query<&Character>),
@@ -78,9 +77,9 @@ pub(crate) fn use_container(
         return ContainerUse::Busy;
     }
     // Devices with containers run only once the databases have loaded.
-    let catalog = content.items().unwrap();
+    let catalog = &content.items;
     if let Some(table) = container.table {
-        let loot = content.loot().unwrap();
+        let loot = &content.loot;
         // Level-scaled tables draw for the party's average level (retail
         // `GetAveragePartyLevel`). Retail reseeds its generator from the
         // trigger's own seed first; here the draw comes from the shared
@@ -162,11 +161,7 @@ pub fn take_from_container(
             return Err(Refusal::DoesNotFit);
         }
     }
-    let handle = world.get_resource::<GameData>().ok_or(Refusal::MissingContent)?.items.clone();
-    let catalog = world
-        .get_resource::<Assets<ItemCatalog>>()
-        .and_then(|catalogs| catalogs.get(&handle))
-        .ok_or(Refusal::MissingContent)?;
+    let catalog = &world.resource::<Catalogs>().items;
     let container = world.get::<Container>(device).ok_or(Refusal::Nothing)?;
     for (index, &(id, amount)) in picks.iter().enumerate() {
         // One pick per stack: two would be checked against the same count.
@@ -187,9 +182,9 @@ pub fn take_from_container(
     let mut news = Vec::new();
     let mut refused = false;
     let mut moved_any = false;
-    world.resource_scope(|world, catalogs: Mut<Assets<ItemCatalog>>| {
+    Catalogs::scope(world, |world, catalogs| {
         world.resource_scope(|world, mut ids: Mut<ItemIds>| {
-            let catalog = catalogs.get(&handle).unwrap();
+            let catalog = &catalogs.items;
             let items = &mut container.contents.items;
             for &(id, amount) in picks {
                 let Some(index) = items.iter().position(|s| s.id == id) else { continue };

@@ -169,21 +169,19 @@ pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer)
 fn select_spell(
     event: On<Activate>,
     choices: Query<&SpellOption, Without<InteractionDisabled>>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     mut session: Single<&mut Creation>,
 ) {
-    let (Ok(choice), Some(catalog), Some(draft)) =
-        (choices.get(event.entity), content.spells(), session.mode.draft_mut())
-    else {
+    let (Ok(choice), Some(draft)) = (choices.get(event.entity), session.mode.draft_mut()) else {
         return;
     };
-    draft.toggle_spell(catalog, choice.0);
+    draft.toggle_spell(&content.spells, choice.0);
 }
 
 pub(super) fn refresh(
     session: Option<Single<Ref<Creation>>>,
     art: Option<Single<&SpellArt>>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     mut rows: Query<(
         Entity,
         &SpellOption,
@@ -197,9 +195,8 @@ pub(super) fn refresh(
     mut commands: Commands,
 ) {
     let (Some(session), Some(art)) = (session, art) else { return };
-    let (Some(draft), Some(catalog)) = (session.mode.draft(), content.spells()) else {
-        return;
-    };
+    let Some(draft) = session.mode.draft() else { return };
+    let catalog = &content.spells;
     let profile = draft.preview();
     for (mut label, role, _) in &mut labels {
         let Some(role) = role else { continue };

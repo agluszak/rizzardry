@@ -65,10 +65,10 @@ pub fn remove_monster_visuals(
 pub fn request_monster_visuals(
     mut commands: Commands,
     actors: Query<(Entity, &Monster), Without<MonsterVisual>>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     assets: Res<AssetServer>,
 ) {
-    let Some(catalog) = content.species() else { return };
+    let catalog = &content.species;
     for (entity, monster) in &actors {
         let Some(kind) = catalog.kind(monster.species) else { continue };
         let model = assets.load(crate::content::paths::monster(&kind.model));

@@ -46,7 +46,8 @@ impl Plugin for GamePlugin {
             .add_message::<inventory::ItemNews>()
             .add_message::<factions::FactionNews>()
             .add_observer(inventory::operations::put_away_held)
-            .add_systems(Startup, data::load_game_data)
+            .add_systems(Startup, data::load_catalogs)
+            .add_systems(Update, data::publish_catalogs.run_if(resource_exists::<data::Loading>))
             .configure_sets(
                 Update,
                 (GameplaySet::LevelActivation, GameplaySet::Stats, GameplaySet::Combat).chain(),

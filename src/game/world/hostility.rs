@@ -125,7 +125,7 @@ pub fn monster_own(
 pub fn monster_stance(world: &World, monster: Entity) -> Stance {
     let Some(species) = world
         .get::<Monster>(monster)
-        .and_then(|m| crate::game::data::GameData::species(world)?.kind(m.species))
+        .and_then(|m| world.resource::<crate::game::data::Catalogs>().species.kind(m.species))
     else {
         return Stance::Neutral;
     };

@@ -7,7 +7,6 @@ use super::{
 use crate::{
     content::{characters::Realm, npcs::DialogueScript, spells::SpellId},
     game::{
-        data::GameData,
         npcs::{
             Npc,
             conversation::{Conversation, MagicalReply, active_body},
@@ -46,8 +45,10 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
     }
     world.get::<Npc>(actor).ok_or(Refusal::NoTarget)?;
     let monster = world.get::<Monster>(body).ok_or(Refusal::NoTarget)?;
-    let kind = GameData::species(world)
-        .and_then(|catalog| catalog.kind(monster.species))
+    let kind = world
+        .resource::<crate::game::data::Catalogs>()
+        .species
+        .kind(monster.species)
         .ok_or(Refusal::MissingContent)?;
     let (level, resistance, notice_chance) = (
         u32::from(kind.level),

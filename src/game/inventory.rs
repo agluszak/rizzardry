@@ -889,10 +889,10 @@ pub struct Burden {
 pub fn distribute_burden(
     party: Single<(Ref<PartyRoster>, Ref<PartyInventory>)>,
     mut members: Query<(Ref<Character>, Ref<Vitals>, Ref<Carried>, &mut Burden)>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
 ) {
     let (roster, inventory) = party.into_inner();
-    let Some(catalog) = content.items() else { return };
+    let catalog = &content.items;
     let changed = roster.is_changed()
         || inventory.is_changed()
         || members
@@ -1129,10 +1129,8 @@ mod tests {
             ..default()
         };
         let mut ids = ItemIds::default();
-        let mut catalogs = Assets::<ItemCatalog>::default();
-        let items = catalogs.add(ItemCatalog(vec![rock.clone()]));
-        world.insert_resource(catalogs);
-        world.insert_resource(crate::game::data::GameData {
+        let items = ItemCatalog(vec![rock.clone()]);
+        world.insert_resource(crate::game::data::Catalogs {
             items,
             loot: default(),
             species: default(),
@@ -1366,7 +1364,6 @@ mod tests {
     #[test]
     fn gameplay_operations_revalidate_membership_and_stack_identity() {
         use super::operations::InventoryOperations;
-        use crate::game::data::GameData;
         use crate::game::party::roster::{test_join, test_party};
         use bevy::ecs::system::RunSystemOnce;
         let mut world = World::new();
@@ -1374,10 +1371,8 @@ mod tests {
         let (c, mut ids) = (catalog(), ItemIds::default());
         let item = stack(&c, &mut ids, 0, 7);
         let id = item.id;
-        let mut catalogs = Assets::<ItemCatalog>::default();
-        let items = catalogs.add(c);
-        world.insert_resource(catalogs);
-        world.insert_resource(GameData {
+        let items = c;
+        world.insert_resource(crate::game::data::Catalogs {
             items,
             loot: default(),
             species: default(),
@@ -1513,7 +1508,6 @@ mod tests {
     #[test]
     fn the_party_identifies_by_its_best_artifacts() {
         use super::operations::InventoryOperations;
-        use crate::game::data::GameData;
         use bevy::ecs::system::RunSystemOnce;
         let mut world = World::new();
         world.init_resource::<Messages<ItemNews>>();
@@ -1522,10 +1516,8 @@ mod tests {
         let mut ids = ItemIds::default();
         let mut item = stack(&c, &mut ids, 1, 1);
         item.identified = false;
-        let mut catalogs = Assets::<ItemCatalog>::default();
-        let items = catalogs.add(c);
-        world.insert_resource(catalogs);
-        world.insert_resource(GameData {
+        let items = c;
+        world.insert_resource(crate::game::data::Catalogs {
             items,
             loot: default(),
             species: default(),
@@ -1563,7 +1555,6 @@ mod tests {
     fn a_charged_source_loads_a_pool_gun_and_keeps_its_rest() {
         use super::operations::InventoryOperations;
         use crate::content::items::Dice;
-        use crate::game::data::GameData;
         use bevy::ecs::system::RunSystemOnce;
         let gun = ItemDefinition {
             id: ItemId(0),
@@ -1585,10 +1576,8 @@ mod tests {
         let mut ids = ItemIds::default();
         let (gun_stack, cell_stack) =
             (ItemStack::new(&gun, &mut ids, 4, true), ItemStack::new(&cell, &mut ids, 8, true));
-        let mut catalogs = Assets::<ItemCatalog>::default();
-        let items = catalogs.add(ItemCatalog(vec![gun, cell]));
-        world.insert_resource(catalogs);
-        world.insert_resource(GameData {
+        let items = ItemCatalog(vec![gun, cell]);
+        world.insert_resource(crate::game::data::Catalogs {
             items,
             loot: default(),
             species: default(),

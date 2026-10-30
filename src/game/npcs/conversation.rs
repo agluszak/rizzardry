@@ -11,7 +11,6 @@ use crate::content::{
 use crate::game::factions::{Band, Factions};
 use crate::game::{
     characters::{Character, Condition, Vitals},
-    data::GameData,
     inventory::{Carried, ItemIds, ItemOwner, ItemPool, ItemRef, PartyInventory, make_item},
     party::roster::{PartyMember, PartyRoster, the_party},
     rng::GameRng,
@@ -380,7 +379,7 @@ fn with_items<T>(
     world: &mut World,
     f: impl FnOnce(&mut World, &ItemCatalog) -> Result<T, TradeError>,
 ) -> Result<T, TradeError> {
-    GameData::with_items(world, f).ok_or(TradeError::MissingContent)?
+    crate::game::data::Catalogs::scope(world, |world, catalogs| f(world, &catalogs.items))
 }
 pub fn party_communication(world: &mut World) -> u32 {
     best_communicator(world).map_or(0, |(_, level)| level)
@@ -844,7 +843,7 @@ fn plan_quote(
             // Retail ignores a faction name it does not know.
             DialogueOp::AdjustFaction { faction: None, .. } => {}
             DialogueOp::GiveItem(item) => {
-                if GameData::items(world).and_then(|c| c.get(*item)).is_none() {
+                if world.resource::<crate::game::data::Catalogs>().items.get(*item).is_none() {
                     return Err((i, format!("unknown item {}", item.0)));
                 }
                 let party = party
@@ -939,7 +938,7 @@ fn executable(world: &World, plan: &QuotePlan) -> bool {
         QuoteEffect::Mention(..) => true,
         QuoteEffect::GiveItem { party, item } => {
             world.get::<PartyInventory>(*party).is_some()
-                && GameData::items(world).is_some_and(|catalog| catalog.get(*item).is_some())
+                && world.resource::<crate::game::data::Catalogs>().items.get(*item).is_some()
         }
         QuoteEffect::TakeItem { party, .. } => world.get::<PartyInventory>(*party).is_some(),
         QuoteEffect::Disposition { npc, .. } => world.get::<Npc>(*npc).is_some(),
@@ -1438,7 +1437,7 @@ fn approach_npc(world: &mut World, entity: Entity, approach: Approach) {
         let average = crate::game::party::average_level(super::able_levels(world));
         let own = active_body(world, actor)
             .and_then(|body| world.get::<Monster>(body))
-            .and_then(|m| GameData::species(world)?.kind(m.species))
+            .and_then(|m| world.resource::<crate::game::data::Catalogs>().species.kind(m.species))
             .map_or(1, |kind| u32::from(kind.level).max(1));
         delta = (average * delta as u32 / own) as i32;
     }
@@ -1550,8 +1549,10 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
     let actor = c.actor;
     let stack = sale_item(world, TradeSource::Party(item), party)?;
     let (offered, count) = (stack.item, stack.count());
-    let definition_of = GameData::items(world)
-        .and_then(|catalog| catalog.get(offered))
+    let definition_of = world
+        .resource::<crate::game::data::Catalogs>()
+        .items
+        .get(offered)
         .ok_or(TradeError::MissingContent)?;
     let (crucial, value) = (definition_of.crucial, stack_value(definition_of, count));
     let def = definition(world, actor)?;
@@ -1804,7 +1805,7 @@ pub fn quote_trade(
     let party = the_party(world).ok_or(TradeError::Unavailable)?;
     let communication = party_communication(world);
     let def = definition(world, actor)?;
-    let catalog = GameData::items(world).ok_or(TradeError::MissingContent)?;
+    let catalog = &world.resource::<crate::game::data::Catalogs>().items;
     let gold = match source {
         TradeSource::Stock(lot) => {
             let stock = &world.get::<Npc>(actor).ok_or(TradeError::Unavailable)?.stock;
@@ -2159,23 +2160,7 @@ mod tests {
                 (0..16).map(|i| Quote { text: vec![format!("quote {i}")], ..default() }).collect();
             let (mut app, session, _) = app(DialogueScript { quotes });
             let w = app.world_mut();
-            w.init_resource::<Assets<ItemCatalog>>();
-            w.init_resource::<Assets<crate::content::items::LootTables>>();
-            w.init_resource::<Assets<crate::content::species::MonsterCatalog>>();
-            w.init_resource::<Assets<crate::content::spells::SpellCatalog>>();
-            let data = GameData {
-                items: w.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog::default()),
-                loot: w
-                    .resource_mut::<Assets<crate::content::items::LootTables>>()
-                    .add(crate::content::items::LootTables::default()),
-                species: w
-                    .resource_mut::<Assets<crate::content::species::MonsterCatalog>>()
-                    .add(crate::content::species::MonsterCatalog::default()),
-                spells: w
-                    .resource_mut::<Assets<crate::content::spells::SpellCatalog>>()
-                    .add(crate::content::spells::SpellCatalog::default()),
-            };
-            w.insert_resource(data);
+            w.init_resource::<crate::game::data::Catalogs>();
             if character {
                 let handle = w.resource::<NpcAssets>().catalog.clone();
                 w.resource_mut::<Assets<NpcCatalog>>().get_mut(&handle).unwrap().0[0].character =
@@ -2222,7 +2207,6 @@ mod tests {
     fn dialogue_magic_validates_before_payment_charm_is_scoped_and_mindread_advances_responses() {
         use crate::content::{
             characters::{Realm, Skill},
-            items::ItemCatalog,
             species::{MonsterCatalog, Species},
             spells::{SpellCatalog, SpellDefinition, SpellId, Spellbook, Usable},
         };
@@ -2237,15 +2221,8 @@ mod tests {
         };
         let (mut app, session, actor) = app(DialogueScript { quotes: vec![Quote::default(); 106] });
         let world = app.world_mut();
-        world.init_resource::<Assets<ItemCatalog>>();
-        world.init_resource::<Assets<MonsterCatalog>>();
-        world.init_resource::<Assets<SpellCatalog>>();
         world.init_resource::<Difficulty>();
         world.init_resource::<Messages<crate::game::magic::casting::MagicNews>>();
-        let items = world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog::default());
-        let species = world
-            .resource_mut::<Assets<MonsterCatalog>>()
-            .add(MonsterCatalog(vec![Species::default()]));
         let mut spells = vec![SpellDefinition::default(); 42];
         for id in [SpellId::CHARM, SpellId::MINDREAD] {
             spells[id.0 as usize] = SpellDefinition {
@@ -2257,8 +2234,11 @@ mod tests {
                 ..default()
             };
         }
-        let spells = world.resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(spells));
-        world.insert_resource(GameData { items, species, spells, loot: default() });
+        world.insert_resource(crate::game::data::Catalogs {
+            species: MonsterCatalog(vec![Species::default()]),
+            spells: SpellCatalog(spells),
+            ..default()
+        });
         let mut profile = Character::new("Reader", Race::Human, Gender::Male, Profession::Mage);
 
         profile.profession_levels[Profession::Mage] = 30;
@@ -2443,7 +2423,6 @@ mod tests {
     fn with_items(app: &mut App) {
         use crate::content::items::{Dice, ItemDefinition, QuantityKind};
         let world = app.world_mut();
-        world.init_resource::<Assets<ItemCatalog>>();
         world.init_resource::<ItemIds>();
         let items = (0..4)
             .map(|id| ItemDefinition {
@@ -2456,20 +2435,22 @@ mod tests {
                 ..default()
             })
             .collect();
-        let items = world.resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog(items));
-        world.insert_resource(GameData {
-            items,
-            loot: default(),
-            species: default(),
-            spells: default(),
+        world.insert_resource(crate::game::data::Catalogs {
+            items: ItemCatalog(items),
+            ..default()
         });
     }
 
     fn stack(app: &mut App, item: u16, count: u16) -> crate::game::inventory::ItemStack {
         let world = app.world_mut();
-        let definition = GameData::items(world).unwrap().get(ItemId(item)).unwrap().clone();
+        let definition = &world
+            .resource::<crate::game::data::Catalogs>()
+            .items
+            .get(ItemId(item))
+            .unwrap()
+            .clone();
         crate::game::inventory::ItemStack::new(
-            &definition,
+            definition,
             &mut world.resource_mut::<ItemIds>(),
             count,
             true,
@@ -2838,9 +2819,7 @@ mod tests {
         for runs in [false, true] {
             let (mut app, session, actor) = wary((0, 0), 100);
             with_items(&mut app);
-            let items = app.world().resource::<GameData>().items.clone();
-            app.world_mut().resource_mut::<Assets<ItemCatalog>>().get_mut(&items).unwrap().0[1]
-                .value = 400;
+            app.world_mut().resource_mut::<crate::game::data::Catalogs>().items.0[1].value = 400;
             if !runs {
                 let script = app.world().get::<Conversation>(session).unwrap().script.clone();
                 let mut scripts = app.world_mut().resource_mut::<Assets<DialogueScript>>();
@@ -3075,27 +3054,6 @@ mod tests {
         assert_eq!(pool.iter().find(|s| s.item == ItemId(1)).unwrap().count(), 10);
     }
 
-    /// Content that disappears before an answer's last line holds the whole
-    /// answer back: no gift is lost and no other effect commits.
-    #[test]
-    fn missing_item_content_at_the_last_line_holds_the_whole_answer() {
-        let (mut app, session, _) =
-            app(reward_script(vec![DialogueOp::GiveGold(10), DialogueOp::GiveItem(ItemId(1))], 2));
-        with_items(&mut app);
-        let party = the_party(app.world_mut()).unwrap();
-        app.update();
-        let handle = app.world().resource::<GameData>().items.clone();
-        app.world_mut().resource_mut::<Assets<ItemCatalog>>().remove(&handle);
-        finish_line(&mut app, session);
-        let world = app.world();
-        assert!(matches!(
-            world.get::<Conversation>(session).unwrap().wait,
-            ConversationWait::Blocked { .. }
-        ));
-        let inventory = world.get::<PartyInventory>(party).unwrap();
-        assert_eq!((inventory.gold, inventory.pool.stacks.len()), (0, 0));
-    }
-
     /// Retail keeps its message queue when the dialogue closes: a handed-in
     /// item's answer plays out in the world and commits at its last line.
     #[test]
@@ -3193,61 +3151,6 @@ mod tests {
             assert!(app.world().get::<Conversation>(session).is_none());
             assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 50);
         }
-    }
-
-    #[test]
-    fn interrupted_exchange_waits_for_missing_reward_content_without_losing_or_repeating_it() {
-        let (mut app, session, actor) = app(DialogueScript {
-            quotes: vec![
-                Quote { text: vec!["Hello".into()], ..default() },
-                Quote {
-                    text: vec!["Thanks".into(), "Here".into()],
-                    operations: vec![
-                        DialogueOp::ItemQuote { item: ItemId(2), keeps: true },
-                        DialogueOp::GiveGold(50),
-                        DialogueOp::GiveItem(ItemId(1)),
-                    ],
-                    ..default()
-                },
-            ],
-        });
-        with_items(&mut app);
-        let member = carrier(&mut app, "Ragnar", 2, 1);
-        let party = the_party(app.world_mut()).unwrap();
-        app.update();
-        finish_line(&mut app, session);
-        let id = app.world().get::<Carried>(member).unwrap().backpack[0].as_ref().unwrap().id;
-        let revision = app.world().get::<Conversation>(session).unwrap().revision;
-        app.world_mut().write_message(ConversationRequest::Give {
-            conversation: session,
-            revision,
-            item: ItemRef { owner: ItemOwner::Member(member), id },
-        });
-        app.update();
-        assert!(app.world().get::<Carried>(member).unwrap().backpack[0].is_none());
-        let handle = app.world().resource::<GameData>().items.clone();
-        let catalog =
-            app.world_mut().resource_mut::<Assets<ItemCatalog>>().remove(&handle).unwrap();
-        let body = app.world().get::<super::super::NpcBodies>(actor).unwrap()[0];
-        app.world_mut().despawn(body);
-        for _ in 0..3 {
-            app.update();
-            assert!(app.world().get::<Conversation>(session).is_some());
-            assert!(app.world().get::<Closing>(session).is_some());
-            assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 0);
-        }
-        app.world_mut().resource_mut::<Assets<ItemCatalog>>().insert(&handle, catalog).unwrap();
-        app.update();
-        assert!(app.world().get::<Conversation>(session).is_none());
-        let inventory = app.world().get::<PartyInventory>(party).unwrap().clone();
-        assert_eq!(inventory.gold, 50);
-        assert_eq!(inventory.pool.stacks.iter().filter(|stack| stack.item == ItemId(1)).count(), 1);
-        app.update();
-        assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, inventory.gold);
-        assert_eq!(
-            app.world().get::<PartyInventory>(party).unwrap().pool.stacks,
-            inventory.pool.stacks
-        );
     }
 
     /// Removals empty the members' packs before the party's items, and the
@@ -3666,17 +3569,9 @@ mod tests {
             hostility::{SetStance, Stance},
             identify::{GroupMember, MonsterGroup},
         };
-        app.init_resource::<Assets<crate::content::species::MonsterCatalog>>()
-            .init_resource::<Factions>();
-        let species = app
-            .world_mut()
-            .resource_mut::<Assets<crate::content::species::MonsterCatalog>>()
-            .add(crate::content::species::MonsterCatalog(vec![default()]));
-        app.world_mut().insert_resource(GameData {
-            species,
-            items: default(),
-            loot: default(),
-            spells: default(),
+        app.init_resource::<Factions>().insert_resource(crate::game::data::Catalogs {
+            species: crate::content::species::MonsterCatalog(vec![default()]),
+            ..default()
         });
         let group = app
             .world_mut()

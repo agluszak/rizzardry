@@ -387,7 +387,7 @@ fn draw_device_panel(
     roster: Single<&PartyRoster>,
     members: Query<(&Character, &Vitals)>,
     containers: Query<&Container>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     strings: crate::presentation::screen_art::GameStrings,
     mut captions: Query<(&Caption, &mut BitmapText)>,
     mut buttons: Query<(Entity, &Control, &mut BackgroundColor, Has<InteractionDisabled>)>,
@@ -401,7 +401,7 @@ fn draw_device_panel(
         let name = strings.get(crate::content::ui::TRAP_NAMES + trap);
         if name.is_empty() { "Trap" } else { name }.to_owned()
     };
-    let catalog = content.items();
+    let catalog = &content.items;
     let stacks = containers.get(on.0).map_or(&[][..], |c| &c.contents.items[..]);
     let percent = |value: Option<i64>| value.map_or("-".to_owned(), |v| format!("{v}%"));
 
@@ -455,7 +455,7 @@ fn draw_device_panel(
                         return String::new();
                     };
                     let item = catalog
-                        .and_then(|c| c.get(stack.item))
+                        .get(stack.item)
                         .map_or(String::new(), |d| stack.display_name(d, false));
                     match panel.chosen.iter().find(|(c, _)| *c == id) {
                         Some((_, amount)) if stack.count() > 1 => {

@@ -4,7 +4,6 @@ use super::{
     casting::{self, Refusal, Report, Source, UseContext},
 };
 use crate::game::{
-    data::Content,
     difficulty::Difficulty,
     inventory::PartyInventory,
     party::{Members, roster::PartyRoster},
@@ -28,15 +27,13 @@ pub(crate) fn cast_source(
                 &crate::game::world::triggers::LevelState,
                 With<crate::game::world::level::Level>,
             >,
-                  content: Content,
+                  content: If<Res<crate::game::data::Catalogs>>,
                   difficulty: Res<Difficulty>,
                   mut rng: ResMut<GameRng>| {
                 if !roster.contains(&caster) {
                     return Err(Refusal::CannotAct);
                 }
-                let (Some(spells), Some(items)) = (content.spells(), content.items()) else {
-                    return Err(Refusal::MissingContent);
-                };
+                let (spells, items) = (&content.spells, &content.items);
                 casting::perform_utility(
                     caster,
                     source,

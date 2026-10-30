@@ -376,13 +376,13 @@ pub fn give_birth(
     mut levels: Query<(Entity, &mut Unborn, &LevelNavigation), With<super::level::Level>>,
     groups: Query<(Entity, &MonsterGroup, &LevelOwned)>,
     mut configs: ResMut<Assets<WalkerMotionConfig>>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
 ) {
     let Ok((root, mut unborn, navigation)) = levels.single_mut() else {
         births.clear();
         return;
     };
-    let Some(species) = content.species() else { return };
+    let species = &content.species;
     for &Birth(authored) in births.read() {
         let (born, waiting): (Vec<_>, Vec<_>) =
             std::mem::take(&mut unborn.0).into_iter().partition(|k| k.group == Some(authored));

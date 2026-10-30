@@ -140,14 +140,9 @@ pub(crate) fn pass_time(
     mut clock: ResMut<GameClock>,
     mut rng: ResMut<GameRng>,
     mut points: Query<(&crate::game::magic::LearnedSpells, &mut crate::game::magic::SpellPoints)>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
 ) {
     if battle.is_some() {
-        return;
-    }
-    // No game-time transition commits until every caster's coupled mana and
-    // personal expiry operation has its mandatory spell definitions.
-    if content.spells().is_none() && roster.iter().any(|actor| points.contains(actor)) {
         return;
     }
     let racing = camp.is_some();
@@ -185,7 +180,7 @@ pub(crate) fn pass_time(
                 ticks,
                 pace,
                 magic,
-                content.spells(),
+                &content.spells,
                 &mut crate::game::characters::Fate { fight: None, rng: &mut rng },
             );
         }
@@ -251,7 +246,6 @@ mod pass_time_tests {
     fn mana_expiry_uses_the_same_history_across_fixed_step_batches() {
         use crate::content::characters::Realm;
         use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
-        use crate::game::data::GameData;
         use crate::game::magic::enchantments::Enchantment;
         use crate::game::magic::{LearnedSpells, SpellPoints};
         let run = |steps_per_update: u32| {
@@ -289,29 +283,9 @@ mod pass_time_tests {
             expected.recover(1, 0.5, &boosted);
             expected.recover(1, 0.5, &base);
             expected.recover(1, 0.5, &base);
-            let spells = app.world_mut().resource_mut::<Assets<SpellCatalog>>().add(catalog);
-            app.insert_resource(GameData {
-                spells,
-                items: default(),
-                loot: default(),
-                species: default(),
-            });
+            app.insert_resource(crate::game::data::Catalogs { spells: catalog, ..default() });
             let member = app.world_mut().spawn((profile, vitals, learned, points)).id();
             crate::game::party::roster::test_party(app.world_mut(), &[member]);
-            let data = app.world_mut().remove_resource::<GameData>().unwrap();
-            let before = app.world().get::<SpellPoints>(member).unwrap().clone();
-            app.update();
-            assert_eq!(app.world().get::<SpellPoints>(member).unwrap(), &before);
-            assert_eq!(app.world().resource::<GameClock>().ms, 0);
-            assert!(
-                app.world()
-                    .get::<Vitals>(member)
-                    .unwrap()
-                    .enchantments
-                    .get(SpellId::SUPERMAN)
-                    .is_some()
-            );
-            app.insert_resource(data);
             for _ in 0..3 / steps_per_update {
                 app.update();
             }

@@ -560,8 +560,8 @@ pub struct Field<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
     pub formation: &'a mut Mut<'f, Formation>,
     pub party_damage: &'a mut MessageWriter<'p, DamageApplied>,
     pub items: &'a ItemCatalog,
-    pub species: Option<&'a MonsterCatalog>,
-    pub spells: Option<&'a crate::content::spells::SpellCatalog>,
+    pub species: &'a MonsterCatalog,
+    pub spells: &'a crate::content::spells::SpellCatalog,
     /// What monster loot tables scale by.
     pub party_level: u32,
     /// The game time the action happens at, which a kill's offence is
@@ -597,7 +597,7 @@ impl Field<'_, '_, '_, '_, '_, '_, '_> {
         learned: &LearnedSpells,
     ) -> Option<enum_map::EnumMap<Realm, u32>> {
         let (profile, vitals, ..) = self.members.get(member).ok()?;
-        Some(profile.stats(&vitals.enchantments).max_points(learned, self.spells?))
+        Some(profile.stats(&vitals.enchantments).max_points(learned, self.spells))
     }
 }
 
@@ -690,7 +690,7 @@ fn target(
     match victim {
         Victim::Monster(monster) => {
             let (body, ..) = world.monsters.monsters().get(monster).ok()?;
-            let kind = world.species?.kind(body.species)?;
+            let kind = world.species.kind(body.species)?;
             Some(Target {
                 level: u32::from(kind.level),
                 resistance: body.resistance(kind, realm),
@@ -932,7 +932,7 @@ fn afflict(
         Victim::Monster(monster) => {
             condition.is_none() && {
                 let (body, ..) = world.monsters.monsters().get(monster).ok()?;
-                world.species?.kind(body.species)?.death_immune
+                world.species.kind(body.species)?.death_immune
             }
         }
         Victim::Member(_) => false,
@@ -1243,7 +1243,7 @@ pub fn resolve(
     };
     match kind {
         Kind::Purify => {
-            let Some(catalog) = world.spells else { return effects };
+            let catalog = world.spells;
             // Purify rolls from power alone, rather than its authored duration.
             let base = u32::from(strength.power) + 1;
             let amount = match rng.below(4) {
@@ -1474,7 +1474,7 @@ pub fn resolve(
         Kind::DamageUndead { banish } => each(&mut |v, rng, world| {
             let Victim::Monster(m) = v else { return None };
             let (body, ..) = world.monsters.monsters().get(m).ok()?;
-            let kind = world.species?.kind(body.species)?.kind;
+            let kind = world.species.kind(body.species)?.kind;
             if !(UNDEAD_KINDS.contains(&kind) || (banish && kind == BANISHED_KIND)) {
                 return Some(Effect::Nothing { victim: v });
             }
@@ -1890,7 +1890,7 @@ pub(crate) fn pulse_clouds(
                             .monsters()
                             .get(actor)
                             .ok()
-                            .and_then(|(body, ..)| world.species?.kind(body.species))
+                            .and_then(|(body, ..)| world.species.kind(body.species))
                             .is_none_or(|kind| kind.death_immune),
                         Victim::Member(_) => false,
                     };

@@ -181,7 +181,7 @@ fn razor_backlash(
     news: &mut MessageWriter<CombatNews>,
 ) {
     use crate::content::spells::SpellId;
-    let Some(spell) = field.spells.and_then(|spells| spells.get(SpellId::RAZOR_CLOAK)) else {
+    let Some(spell) = field.spells.get(SpellId::RAZOR_CLOAK) else {
         return;
     };
     let charge = match defender {
@@ -258,7 +258,7 @@ fn monster_defence<'a>(
     fight: &Fight,
     monster: Entity,
 ) -> Option<Defence<'a>> {
-    let species = field.species.expect("physical blows preflight monster content");
+    let species = field.species;
     let (body, ..) = field.monsters.monsters().get(monster).ok()?;
     if body.is_dead() || !field.monsters.active(monster) {
         return None;
@@ -331,7 +331,7 @@ fn intercept(
         .filter_map(|(i, g)| {
             let (body, at, walker, ..) = monsters.get(g.guard).ok()?;
             let (ward_body, ward_at, ward_walker, ..) = monsters.get(ward).ok()?;
-            let kind = species?.kind(body.species)?;
+            let kind = species.kind(body.species)?;
             let first = kind.attacks.first()?;
             let gap = body.gap(
                 feet(at.translation(), walker),
@@ -456,7 +456,7 @@ pub(super) fn melee_target<'a>(
     fight: &Fight,
 ) -> Option<(Entity, &'a Species)> {
     let formation = &**field.formation;
-    let species = field.species.expect("physical blows preflight monster content");
+    let species = field.species;
     fight
         .combatants
         .iter()
@@ -940,7 +940,7 @@ pub(super) fn monster_attacks(
     news: &mut MessageWriter<CombatNews>,
 ) -> bool {
     let (entity, turn) = battle.this_round.monsters[index];
-    let species = field.species.expect("physical blows preflight monster content");
+    let species = field.species;
     let difficulty = field.difficulty;
     let Ok((monster, at, walker, ..)) = field.monsters.monsters().get(entity) else {
         return false;

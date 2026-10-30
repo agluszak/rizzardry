@@ -848,7 +848,7 @@ fn draw_header_condition(
 fn draw_header_hands(
     screen: Option<Single<&InventoryScreen>>,
     assets: Res<AssetServer>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     members: Query<crate::presentation::character_view::CharacterView>,
     battle: Option<Single<&crate::game::combat::Battle>>,
     party_effects: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
@@ -856,11 +856,11 @@ fn draw_header_hands(
     mut parts: Query<(&HeaderHand, &mut Visibility, Option<&mut Picture>, Option<&mut BitmapText>)>,
 ) {
     let Some(screen) = screen else { return };
-    let Some(catalog) = content.items() else { return };
+    let catalog = &content.items;
     let Ok(view) = members.get(screen.member) else { return };
     let armour = view.armour(
         screen.member,
-        Some(catalog),
+        catalog,
         battle.as_deref().copied(),
         party_effects.as_deref().copied(),
     );
@@ -1106,7 +1106,7 @@ fn draw_gold(
 fn draw_cells(
     screen: Option<Single<&InventoryScreen>>,
     assets: Res<AssetServer>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     members: Query<(&Character, Option<&Carried>)>,
     party: Single<&PartyInventory>,
     pool_scroll: Option<Single<&bevy::ui_widgets::SliderValue, With<pool_scroll::PoolScroll>>>,
@@ -1119,7 +1119,7 @@ fn draw_cells(
     )>,
 ) {
     let Some(screen) = screen else { return };
-    let Some(catalog) = content.items() else { return };
+    let catalog = &content.items;
     let Ok((profile, carried)) = members.get(screen.member) else { return };
     let empty = Carried::default();
     let carried = carried.unwrap_or(&empty);
@@ -1280,13 +1280,13 @@ pub fn follow_held(
     scale: Res<UiScale>,
     assets: Res<AssetServer>,
     sheets: Res<Assets<SpriteSheet>>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     mut picture: Single<(&mut ImageNode, &mut Node, &mut Visibility), With<HeldPicture>>,
     mut loading: Local<Option<(String, Handle<SpriteSheet>)>>,
 ) {
     let (image, node, visibility) = &mut *picture;
-    let catalog = content.items();
-    let definition = party.hand.held.as_ref().zip(catalog).and_then(|(h, c)| c.get(h.item));
+    let catalog = &content.items;
+    let definition = party.hand.held.as_ref().and_then(|h| catalog.get(h.item));
     let cursor = pointers
         .iter()
         .find(|(id, _)| **id == PointerId::Mouse)
@@ -1391,7 +1391,6 @@ mod tests {
     use super::*;
     use crate::content::items::ItemDefinition;
     use crate::content::{items::ItemCatalog, ui::TextTable};
-    use crate::game::data::GameData;
 
     /// The inventory screen as the game installs it, over keyboard input.
     fn inventory_app() -> App {
@@ -1428,11 +1427,8 @@ mod tests {
             .add_systems(Update, draw_cells);
         let definition =
             ItemDefinition { quantity: QuantityKind::Stack, stack_limit: 99, ..default() };
-        let items = app
-            .world_mut()
-            .resource_mut::<Assets<ItemCatalog>>()
-            .add(ItemCatalog(vec![definition.clone()]));
-        app.insert_resource(GameData {
+        let items = ItemCatalog(vec![definition.clone()]);
+        app.insert_resource(crate::game::data::Catalogs {
             items,
             loot: default(),
             species: default(),
@@ -1541,11 +1537,8 @@ mod tests {
                 true,
             );
             let id = item.id;
-            let items = app
-                .world_mut()
-                .resource_mut::<Assets<ItemCatalog>>()
-                .add(ItemCatalog(vec![definition.clone()]));
-            app.insert_resource(GameData {
+            let items = ItemCatalog(vec![definition.clone()]);
+            app.insert_resource(crate::game::data::Catalogs {
                 items: if loaded { items } else { default() },
                 loot: default(),
                 species: default(),

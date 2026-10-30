@@ -1898,7 +1898,7 @@ fn sync_trade_rows(
     views: ViewScope,
     mut commands: Commands,
     assets: Res<AssetServer>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     sessions: Query<&Conversation>,
     npcs: Query<&Npc>,
     parties: Query<(&PartyRoster, &PartyInventory), With<crate::game::party::roster::Party>>,
@@ -1917,7 +1917,7 @@ fn sync_trade_rows(
         mut previews,
         mut gifts,
     } = widgets;
-    let Some(items) = content.items() else { return };
+    let items = &content.items;
     let Ok((roster, party)) = parties.single() else { return };
     for (list, children) in &lists {
         let Some((root, session)) = views.owner(list) else { continue };

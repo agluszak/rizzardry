@@ -800,7 +800,7 @@ pub fn start_battle(
     )>,
     clock: Res<GameClock>,
     obstacles: WorldObstacles,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     roster: Single<&PartyRoster>,
     mut news: MessageWriter<CombatNews>,
     mut rng: ResMut<GameRng>,
@@ -817,7 +817,7 @@ pub fn start_battle(
     {
         return;
     }
-    let Some(catalog) = content.species() else { return };
+    let catalog = &content.species;
     let Ok((party_at, body)) = party.single() else { return };
     let (Some(far), Some(root)) = (level.view_distance(), level.entity()) else { return };
     let sight = Sight {
@@ -839,7 +839,7 @@ pub fn start_battle(
             })
             .collect()
     };
-    let spells = content.spells();
+    let spells = &content.spells;
     // How far a fighter is, whether it sees the party, and whether it can
     // act on it (retail `MonsterGroupCanEngage`): one of its attacks
     // reaches, or its best attack is close and it can walk up, or it can
@@ -873,12 +873,11 @@ pub fn start_battle(
             party: distance,
             sees_party: sees,
         };
-        let casts = spells
-            .is_some_and(|spells| monster_spells::casts_at_foes(monster, kind, spells, &scene));
+        let casts = monster_spells::casts_at_foes(monster, kind, spells, &scene);
         let breathes = kind.special.chance != 0
             && special_ready(monster, kind, false, None)
             && spells
-                .and_then(|spells| spells.get(crate::content::spells::SpellId::SPECIAL_ATTACK_CONE))
+                .get(crate::content::spells::SpellId::SPECIAL_ATTACK_CONE)
                 .is_some_and(|cone| !monster_spells::aims(cone, &scene).is_empty());
         let acts = monster.can_fight()
             && (reaches || (close && monster.body.speed > 0.0) || casts || breathes);
@@ -1414,7 +1413,7 @@ pub fn begin_round(
     mut rng: ResMut<GameRng>,
     (mut members, damage): (Members, MonsterDamage),
     (roster, orders, settings): (Single<&PartyRoster>, Query<&Order>, Res<CombatSettings>),
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     (in_flight, moving): (
         Query<(), With<casting::SpellInFlight>>,
         Query<(), With<approach::CombatMove>>,
@@ -1444,11 +1443,7 @@ pub fn begin_round(
         finish_party_move(&mut battle, &mut rng, &mut members);
         news.write(CombatNews::PartyStops);
     }
-    // Content exists whenever a level is played.
-    let (Some(items), Some(species)) = (content.items(), content.species()) else { return };
-    if !damage.ready() {
-        return;
-    }
+    let (items, species) = (&content.items, &content.species);
     let roster = &**roster;
     let accept = |battle: &mut Battle, rng: &mut GameRng| {
         accept_round(
@@ -1490,20 +1485,21 @@ pub fn run_battle(
     mut clock: ResMut<GameClock>,
     mut actors: ParamSet<((Members, MonsterDamage), GroupRecognition)>,
     party_body: Query<(&Position, &PartyBody)>,
-    (roster, content, level): (Single<&PartyRoster>, crate::game::data::Content, PlayedLevel),
+    (roster, content, level): (
+        Single<&PartyRoster>,
+        If<Res<crate::game::data::Catalogs>>,
+        PlayedLevel,
+    ),
     mut magic: BattleMagic,
     (mut news, mut summons): (MessageWriter<CombatNews>, MessageWriter<summon::Summon>),
 ) {
     let Some((entity, mut battle, combatants)) = battle.map(Single::into_inner) else { return };
     let combatants = combatants.map_or(&[][..], Combatants::entities);
-    if content.spells().is_none() && roster.iter().any(|actor| magic.points.contains(actor)) {
-        return;
-    }
     // Content and the party's body exist whenever a level is played.
-    let Some(species) = content.species() else { return };
+    let species = &content.species;
     let (mut members, mut damage) = actors.p0();
     let Ok((position, body)) = party_body.single() else { return };
-    if !damage.ready() || !battle.executing() || !battle.wait.is_finished() {
+    if !battle.executing() || !battle.wait.is_finished() {
         return;
     }
     if !magic.in_flight.is_empty() || !magic.moving.is_empty() {
@@ -1658,7 +1654,7 @@ fn party_armours(
     members: &Members,
     context: &MagicContext,
 ) -> Vec<(Entity, Armour)> {
-    let Some(items) = context.content.items() else { return Vec::new() };
+    let items = &context.content.items;
     context
         .roster
         .iter()
@@ -1738,17 +1734,13 @@ fn party_turn(
     }
     if let RoundAction::Magic(choice) = work.action {
         battle.this_round.party[index].end();
-        let point_cast = magic
-            .context
-            .content
-            .items()
-            .and_then(|items| {
-                choice.source.spell_id(
-                    members.get(member).ok().map(|(_, _, carried, ..)| carried),
-                    &magic.context.inventory,
-                    items,
-                )
-            })
+        let point_cast = choice
+            .source
+            .spell_id(
+                members.get(member).ok().map(|(_, _, carried, ..)| carried),
+                &magic.context.inventory,
+                &magic.context.content.items,
+            )
             .is_some_and(crate::game::magic::pointcasts::spell);
         if point_cast {
             // A refusal falls back to defending, as below.
@@ -2153,10 +2145,8 @@ fn monster_turn(
                 magic
                     .context
                     .content
-                    .spells()
-                    .and_then(|spells| {
-                        spells.get(crate::content::spells::SpellId::SPECIAL_ATTACK_CONE)
-                    })
+                    .spells
+                    .get(crate::content::spells::SpellId::SPECIAL_ATTACK_CONE)
                     .map(|cone| {
                         let scene = spell_scene(
                             (monster, kind),
@@ -2202,10 +2192,8 @@ fn monster_turn(
                 breather,
                 victims,
             }));
-        } else if kind.magic.chance != 0
-            && !closes_in
-            && let Some(spells) = magic.context.content.spells()
-        {
+        } else if kind.magic.chance != 0 && !closes_in {
+            let spells = &magic.context.content.spells;
             let chance = if reaches { u32::from(kind.magic.chance) } else { 100 };
             let roster = &magic.context.roster;
             let sight = party.sight(
@@ -2672,7 +2660,7 @@ fn end_round(
             ticks,
             recovery::Pace::Fighting,
             mana,
-            magic.context.content.spells(),
+            &magic.context.content.spells,
             &mut crate::game::characters::Fate { fight: Some(fight), rng },
         );
     }
@@ -2775,7 +2763,6 @@ mod tests {
     use crate::content::items::Dice;
     use crate::content::items::{ItemId, LootTables};
     use crate::content::spells::SpellCatalog;
-    use crate::game::data::GameData;
     use crate::game::inventory::{Carried, ItemIds, ItemStack, make_item};
     use crate::game::party::DamageApplied;
     use enumset::EnumSet;
@@ -2876,27 +2863,24 @@ mod tests {
                 app.world_mut().get_mut::<Character>(member).unwrap().attributes
                     [Attribute::Senses] = 0;
             }
-            let catalog = app.world().resource::<GameData>().species.clone();
-            app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&catalog).unwrap().0
-                [0]
-            .attacks = vec![MonsterAttack {
-                word: AttackWord::Verb,
-                weapon: MonsterWeapon::Unarmed,
-                reach: Reach::Extreme,
-                score: 0,
-                modes: EnumSet::only(AttackMode::Swing),
-                damage: default(),
-                effects: default(),
-            }];
+            app.world_mut().resource_mut::<crate::game::data::Catalogs>().species.0[0].attacks =
+                vec![MonsterAttack {
+                    word: AttackWord::Verb,
+                    weapon: MonsterWeapon::Unarmed,
+                    reach: Reach::Extreme,
+                    score: 0,
+                    modes: EnumSet::only(AttackMode::Swing),
+                    damage: default(),
+                    effects: default(),
+                }];
             let monster = app
                 .world_mut()
                 .query_filtered::<Entity, With<Monster>>()
                 .single(app.world())
                 .unwrap();
             app.world_mut().entity_mut(monster).insert(Transform::from_translation(Vec3::Z * 30.0));
-            app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&catalog).unwrap().0
-                [0]
-            .disposition = crate::content::species::Disposition::Hostile;
+            app.world_mut().resource_mut::<crate::game::data::Catalogs>().species.0[0]
+                .disposition = crate::content::species::Disposition::Hostile;
             if hound {
                 let party = crate::game::party::roster::the_party(app.world_mut()).unwrap();
                 app.world_mut().get_mut::<PartyEffects>(party).unwrap().0.apply(Enchantment {
@@ -2955,9 +2939,8 @@ mod tests {
             reach: Reach::Short,
             ..default()
         };
-        let spells =
-            app.world_mut().resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(spells));
-        app.world_mut().resource_mut::<GameData>().spells = spells;
+        let spells = SpellCatalog(spells);
+        app.world_mut().resource_mut::<crate::game::data::Catalogs>().spells = spells;
         app.world_mut().get_mut::<Vitals>(actor).unwrap().enchantments.apply(Enchantment {
             spell: SpellId::DRACON_BREATH,
             power: 1,
@@ -3045,10 +3028,9 @@ mod tests {
             .unwrap()
             .conditions
             .inflict(Condition::Turncoat, Lasting::Rounds(2));
-        let handle = app.world().resource::<GameData>().species.clone();
         {
-            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
-            let kind = &mut catalogs.get_mut(&handle).unwrap().0[0];
+            let mut catalogs = app.world_mut().resource_mut::<crate::game::data::Catalogs>();
+            let kind = &mut catalogs.species.0[0];
             kind.attacks_per_round = 1;
             kind.swings_per_round = 3;
             kind.attacks = vec![MonsterAttack {
@@ -3132,10 +3114,8 @@ mod tests {
                         .with_rotation(Quat::from_rotation_y(std::f32::consts::PI)),
                 ))
                 .id();
-            let catalog = app.world().resource::<GameData>().species.clone();
-            app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&catalog).unwrap().0
-                [0]
-            .faction = crate::game::factions::UNALIGNED;
+            app.world_mut().resource_mut::<crate::game::data::Catalogs>().species.0[0].faction =
+                crate::game::factions::UNALIGNED;
             let staying = app
                 .world_mut()
                 .run_system_once(
@@ -3143,7 +3123,7 @@ mod tests {
                           damage: MonsterDamage,
                           membership: Query<&GroupMember>,
                           obstacles: WorldObstacles,
-                          content: crate::game::data::Content| {
+                          content: If<Res<crate::game::data::Catalogs>>| {
                         let sight = Sight {
                             eye: Vec3::Y,
                             far: 100.0,
@@ -3151,7 +3131,7 @@ mod tests {
                             concealment: 0,
                             obstacles: &obstacles,
                         };
-                        let species = content.species().unwrap();
+                        let species = &content.species;
                         let (body, at, walker, ..) = damage.monsters().get(hostile).unwrap();
                         assert!(
                             sight.sees(body, &at, walker, &species.0[0]),
@@ -3194,11 +3174,11 @@ mod tests {
                 Option<Single<&PartyEffects>>,
             )>::new(app.world_mut());
             let (views, party) = state.get(app.world()).unwrap();
-            let items = GameData::items(app.world()).unwrap();
+            let items = &app.world().resource::<crate::game::data::Catalogs>().items;
             views
                 .get(member)
                 .unwrap()
-                .armour(member, Some(items), None, party.as_deref().copied())
+                .armour(member, items, None, party.as_deref().copied())
                 .unwrap()
                 .total
         };
@@ -3365,13 +3345,19 @@ mod tests {
                 app.world_mut().spawn((Vitals::new(&character), character, carried, order)).id();
             members.push(entity);
         }
-        let items = app.world_mut().resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog(weapons));
-        let species =
-            app.world_mut().resource_mut::<Assets<MonsterCatalog>>().add(MonsterCatalog(vec![
-                Species { name: "Target".into(), generic_name: "Target".into(), ..default() },
-            ]));
-        let loot = app.world_mut().resource_mut::<Assets<LootTables>>().add(LootTables::default());
-        app.insert_resource(GameData { items, species, loot, spells: default() });
+        let items = ItemCatalog(weapons);
+        let species = MonsterCatalog(vec![Species {
+            name: "Target".into(),
+            generic_name: "Target".into(),
+            ..default()
+        }]);
+        let loot = LootTables::default();
+        app.insert_resource(crate::game::data::Catalogs {
+            items,
+            species,
+            loot,
+            spells: default(),
+        });
         let party = crate::game::party::roster::test_party(app.world_mut(), &members);
         app.world_mut().entity_mut(party).insert((PartyBody::default(), Position::default()));
         let root = app.world_mut().spawn(crate::game::world::level::Level::test(default())).id();
@@ -3440,9 +3426,8 @@ mod tests {
         let id = spell.id;
         let mut catalog: Vec<_> = (0..=id.0).map(|_| default()).collect();
         catalog[usize::from(id.0)] = spell;
-        let handle =
-            app.world_mut().resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(catalog));
-        app.world_mut().resource_mut::<GameData>().spells = handle;
+        let handle = SpellCatalog(catalog);
+        app.world_mut().resource_mut::<crate::game::data::Catalogs>().spells = handle;
         {
             let mut character = app.world_mut().get_mut::<Character>(member).unwrap();
             character.profession = Profession::Mage;
@@ -3575,13 +3560,11 @@ mod tests {
         let id = blast.id;
         let mut catalog: Vec<_> = (0..=id.0).map(|_| default()).collect();
         catalog[usize::from(id.0)] = blast;
-        let handle =
-            app.world_mut().resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(catalog));
-        app.world_mut().resource_mut::<GameData>().spells = handle;
-        let data = app.world().resource::<GameData>().species.clone();
+        let handle = SpellCatalog(catalog);
+        app.world_mut().resource_mut::<crate::game::data::Catalogs>().spells = handle;
         {
-            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
-            let mut species = catalogs.get_mut(&data).unwrap();
+            let mut catalogs = app.world_mut().resource_mut::<crate::game::data::Catalogs>();
+            let species = &mut catalogs.species;
             species.0[0].level = 5;
             species.0[0].magic.chance = 100;
             species.0[0].magic.budget = 200;
@@ -3634,10 +3617,9 @@ mod tests {
                 .single(app.world())
                 .unwrap()
                 .entities()[0];
-            let data = app.world().resource::<GameData>().species.clone();
             {
-                let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
-                let species = &mut catalogs.get_mut(&data).unwrap().0;
+                let mut catalogs = app.world_mut().resource_mut::<crate::game::data::Catalogs>();
+                let species = &mut catalogs.species.0;
                 species[0].special = SpecialAttack { kind: Some(call), chance: 100, cooldown: 3 };
                 let kind = species[0].clone();
                 assert!(
@@ -3691,13 +3673,11 @@ mod tests {
             reach: Reach::Long,
             ..default()
         };
-        let handle =
-            app.world_mut().resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(catalog));
-        app.world_mut().resource_mut::<GameData>().spells = handle;
-        let data = app.world().resource::<GameData>().species.clone();
+        let handle = SpellCatalog(catalog);
+        app.world_mut().resource_mut::<crate::game::data::Catalogs>().spells = handle;
         {
-            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
-            let mut species = catalogs.get_mut(&data).unwrap();
+            let mut catalogs = app.world_mut().resource_mut::<crate::game::data::Catalogs>();
+            let species = &mut catalogs.species;
             species.0[0].special = SpecialAttack { kind: Some(burn), chance: 100, cooldown: 3 };
             species.0[0].level = 5;
         }
@@ -3744,10 +3724,9 @@ mod tests {
         let turned =
             app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
                 [0];
-        let data = app.world().resource::<GameData>().species.clone();
         {
-            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
-            let mut species = catalogs.get_mut(&data).unwrap();
+            let mut catalogs = app.world_mut().resource_mut::<crate::game::data::Catalogs>();
+            let species = &mut catalogs.species;
             species.0[0].attacks_per_round = 1;
             species.0[0].swings_per_round = 1;
             species.0[0].attacks = vec![crate::content::species::MonsterAttack {
@@ -3816,10 +3795,9 @@ mod tests {
             modes: EnumSet::only(AttackMode::Bash),
             damage: Dice { base: 1, count: 1, sides: 1 },
         };
-        let data = app.world().resource::<GameData>().species.clone();
         {
-            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
-            let catalog = &mut catalogs.get_mut(&data).unwrap().0;
+            let mut catalogs = app.world_mut().resource_mut::<crate::game::data::Catalogs>();
+            let catalog = &mut catalogs.species.0;
             catalog[0].level = 5;
             catalog[0].attacks = vec![claw.clone()];
             let mut guard = Species {
@@ -3897,13 +3875,11 @@ mod tests {
         let id = blast.id;
         let mut catalog: Vec<_> = (0..=id.0).map(|_| default()).collect();
         catalog[usize::from(id.0)] = blast;
-        let handle =
-            app.world_mut().resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(catalog));
-        app.world_mut().resource_mut::<GameData>().spells = handle;
-        let data = app.world().resource::<GameData>().species.clone();
+        let handle = SpellCatalog(catalog);
+        app.world_mut().resource_mut::<crate::game::data::Catalogs>().spells = handle;
         {
-            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
-            let mut species = catalogs.get_mut(&data).unwrap();
+            let mut catalogs = app.world_mut().resource_mut::<crate::game::data::Catalogs>();
+            let species = &mut catalogs.species;
             species.0[0].magic.chance = 50;
             species.0[0].magic.spells[0] = Some(id);
         }
@@ -3989,7 +3965,7 @@ mod tests {
         let character = world.get::<Character>(caster).unwrap();
         let carried = world.get::<Carried>(caster).unwrap();
         let load = world.get::<Burden>(caster).unwrap().load;
-        let items = GameData::items(world).unwrap();
+        let items = &world.resource::<crate::game::data::Catalogs>().items;
         let stats = character.base_stats();
         let baseline = attack::armour(&stats, carried, items, load, false);
         let defended = attack::armour(&stats, carried, items, load, battle.defends(caster));
@@ -4151,31 +4127,6 @@ mod tests {
         world.run_system_cached(crate::game::magic::deliver_spells).unwrap();
         world.flush();
         world.resource_mut::<Messages<MagicNews>>().drain().collect()
-    }
-
-    #[test]
-    fn accepted_missiles_wait_for_monster_damage_services_without_spending_rng() {
-        let (mut app, [caster, _]) = round_app(true);
-        let monster = order_spell(&mut app, caster, energy_blast());
-        let loot = app.world_mut().remove_resource::<Assets<LootTables>>().unwrap();
-        let rng = app.world().resource::<GameRng>().clone();
-        let health = app.world().get::<Monster>(monster).unwrap().hp;
-        let news = land(
-            &mut app,
-            vec![missile(
-                caster,
-                crate::content::spells::SpellId::ENERGY_BLAST,
-                Victim::Monster(monster),
-            )],
-        );
-        assert!(news.is_empty());
-        assert_eq!(app.world().resource::<GameRng>(), &rng);
-        assert_eq!(app.world().get::<Monster>(monster).unwrap().hp, health);
-        assert_eq!(app.world_mut().query::<&casting::SpellInFlight>().iter(app.world()).count(), 1);
-        app.insert_resource(loot);
-        assert!(matches!(land(&mut app, vec![]).as_slice(), [MagicNews::Landed { .. }]));
-        assert!(app.world().get::<Monster>(monster).unwrap().hp < health);
-        assert_eq!(app.world_mut().query::<&casting::SpellInFlight>().iter(app.world()).count(), 0);
     }
 
     fn missile(
@@ -4349,8 +4300,8 @@ mod tests {
                       mut damage: MonsterDamage,
                       mut rng: ResMut<GameRng>,
                       mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
-                      content: crate::game::data::Content| {
-                    let kind = &content.species().unwrap().0[0];
+                      content: If<Res<crate::game::data::Catalogs>>| {
+                    let kind = &&content.species.0[0];
                     context
                         .with_field(0, &mut members, &mut damage, |field| {
                             monster_spells::cast(
@@ -4494,10 +4445,9 @@ mod tests {
                     ..energy_blast()
                 },
             );
-            let handle = app.world().resource::<GameData>().spells.clone();
             {
-                let mut catalogs = app.world_mut().resource_mut::<Assets<SpellCatalog>>();
-                let mut catalog = catalogs.get_mut(&handle).unwrap();
+                let mut catalogs = app.world_mut().resource_mut::<crate::game::data::Catalogs>();
+                let catalog = &mut catalogs.spells;
                 catalog.0.resize_with(
                     usize::from(SpellId::BOILING_BLOOD_EXPLOSION.0) + 1,
                     Default::default,
@@ -4554,10 +4504,9 @@ mod tests {
                     ..energy_blast()
                 },
             );
-            let handle = app.world().resource::<GameData>().spells.clone();
             {
-                let mut catalogs = app.world_mut().resource_mut::<Assets<SpellCatalog>>();
-                let mut catalog = catalogs.get_mut(&handle).unwrap();
+                let mut catalogs = app.world_mut().resource_mut::<crate::game::data::Catalogs>();
+                let catalog = &mut catalogs.spells;
                 catalog.0.resize_with(
                     usize::from(SpellId::BOILING_BLOOD_EXPLOSION.0) + 1,
                     Default::default,
@@ -4599,11 +4548,9 @@ mod tests {
                     owner,
                 ))
                 .id();
-            let species = app.world().resource::<GameData>().species.clone();
             app.world_mut()
-                .resource_mut::<Assets<MonsterCatalog>>()
-                .get_mut(&species)
-                .unwrap()
+                .resource_mut::<crate::game::data::Catalogs>()
+                .species
                 .0
                 .push(crate::content::species::Species { untargetable: true, ..default() });
             body.location += 1;
@@ -4845,10 +4792,9 @@ mod tests {
             app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
         let battle = app.world().get::<Combatant>(friendly).unwrap().0;
         let owner = *app.world().get::<LevelOwned>(friendly).unwrap();
-        let catalog = app.world().resource::<GameData>().species.clone();
         {
-            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
-            let mut catalog = catalogs.get_mut(&catalog).unwrap();
+            let mut catalogs = app.world_mut().resource_mut::<crate::game::data::Catalogs>();
+            let catalog = &mut catalogs.species;
             catalog.0[0].faction = 7;
             catalog.0[0].combat_move_range = 1.0;
             catalog.0[0].attacks = vec![crate::content::species::MonsterAttack {
@@ -4923,10 +4869,9 @@ mod tests {
             Walker { speed: 2.0, float_height: 1.0 },
             Transform::from_translation(Vec3::NEG_Z * 20.0),
         ));
-        let data = app.world().resource::<GameData>().species.clone();
         {
-            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
-            let mut species = catalogs.get_mut(&data).unwrap();
+            let mut catalogs = app.world_mut().resource_mut::<crate::game::data::Catalogs>();
+            let species = &mut catalogs.species;
             species.0[0].combat_move_range = 1.0;
             species.0[0].temper.craven = true;
         }
@@ -4960,10 +4905,9 @@ mod tests {
             Walker { speed: 2.0, float_height: 1.0 },
             Transform::from_translation(Vec3::NEG_Z * 20.0),
         ));
-        let data = app.world().resource::<GameData>().species.clone();
         {
-            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
-            let mut species = catalogs.get_mut(&data).unwrap();
+            let mut catalogs = app.world_mut().resource_mut::<crate::game::data::Catalogs>();
+            let species = &mut catalogs.species;
             species.0[0].combat_move_range = 1.0;
             species.0[0].attacks = vec![crate::content::species::MonsterAttack {
                 word: AttackWord::Verb,
@@ -5238,10 +5182,11 @@ mod tests {
         use crate::game::world::level::Level;
         let (mut app, _) = round_app(true);
         define_level(&mut app);
-        let species = app.world().resource::<GameData>().species.clone();
-        app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&species).unwrap().0.push(
-            Species { name: "Bystander".into(), disposition: Disposition::Neutral, ..default() },
-        );
+        app.world_mut().resource_mut::<crate::game::data::Catalogs>().species.0.push(Species {
+            name: "Bystander".into(),
+            disposition: Disposition::Neutral,
+            ..default()
+        });
         let level =
             app.world_mut().query_filtered::<Entity, With<Level>>().single(app.world()).unwrap();
         let target = app.world_mut().query::<(Entity, &Monster)>().single(app.world()).unwrap().0;
@@ -5426,10 +5371,9 @@ mod tests {
         use crate::game::world::level::Level;
         let (mut app, _) = round_app(true);
         define_level(&mut app);
-        let species = app.world().resource::<GameData>().species.clone();
         {
-            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
-            let catalog = &mut catalogs.get_mut(&species).unwrap().0;
+            let mut catalogs = app.world_mut().resource_mut::<crate::game::data::Catalogs>();
+            let catalog = &mut catalogs.species.0;
             catalog.push(Species { name: "Rattkin".into(), faction: RATTKIN_COMMON, ..default() });
             catalog.push(Species { name: "Templar".into(), faction: RAPAX_TEMPLAR, ..default() });
         }
@@ -5486,10 +5430,11 @@ mod tests {
         use crate::game::world::level::Level;
         let (mut app, _) = round_app(true);
         define_level(&mut app);
-        let species = app.world().resource::<GameData>().species.clone();
-        app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&species).unwrap().0.push(
-            Species { name: "Bystander".into(), disposition: Disposition::Neutral, ..default() },
-        );
+        app.world_mut().resource_mut::<crate::game::data::Catalogs>().species.0.push(Species {
+            name: "Bystander".into(),
+            disposition: Disposition::Neutral,
+            ..default()
+        });
         let level =
             app.world_mut().query_filtered::<Entity, With<Level>>().single(app.world()).unwrap();
         let foe = app.world_mut().query::<(Entity, &Monster)>().single(app.world()).unwrap().0;
@@ -5535,10 +5480,11 @@ mod tests {
         use crate::game::world::level::Level;
         let (mut app, [caster, _]) = round_app(true);
         define_level(&mut app);
-        let species = app.world().resource::<GameData>().species.clone();
-        app.world_mut().resource_mut::<Assets<MonsterCatalog>>().get_mut(&species).unwrap().0.push(
-            Species { name: "Bystander".into(), disposition: Disposition::Neutral, ..default() },
-        );
+        app.world_mut().resource_mut::<crate::game::data::Catalogs>().species.0.push(Species {
+            name: "Bystander".into(),
+            disposition: Disposition::Neutral,
+            ..default()
+        });
         let level =
             app.world_mut().query_filtered::<Entity, With<Level>>().single(app.world()).unwrap();
         let target = order_spell(&mut app, caster, energy_blast());
@@ -5587,10 +5533,9 @@ mod tests {
         let fight_for = |frame: std::time::Duration| {
             let (mut app, members) = round_app(false);
             app.world_mut().resource_mut::<CombatSettings>().continuous = true;
-            let data = app.world().resource::<GameData>().species.clone();
             {
-                let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
-                let kind = &mut catalogs.get_mut(&data).unwrap().0[0];
+                let mut catalogs = app.world_mut().resource_mut::<crate::game::data::Catalogs>();
+                let kind = &mut catalogs.species.0[0];
                 kind.attacks_per_round = 2;
                 kind.attacks = vec![MonsterAttack {
                     word: AttackWord::Verb,
@@ -5825,11 +5770,10 @@ mod tests {
     }
 
     #[test]
-    fn defeat_settles_without_round_input_content_or_an_expired_timer() {
+    fn defeat_settles_without_round_input_or_an_expired_timer() {
         let (mut app, members) = round_app(false);
         fight_mut(app.world_mut()).wait = Timer::from_seconds(60.0, TimerMode::Once);
         app.world_mut().resource_mut::<Messages<StartRound>>().clear();
-        let data = app.world_mut().remove_resource::<GameData>().unwrap();
         for member in members {
             app.world_mut().get_mut::<Vitals>(member).unwrap().hp = 0;
         }
@@ -5842,7 +5786,7 @@ mod tests {
         app.update();
         assert!(app.world().resource::<Messages<CombatNews>>().is_empty());
 
-        // A visible hostile must not restart combat once content is ready again.
+        // A visible hostile must not restart the lost fight.
         {
             let world = app.world_mut();
             let geometry = world
@@ -5853,9 +5797,8 @@ mod tests {
                 .single_mut(world)
                 .unwrap()
                 .definition = geometry;
-            world.resource_mut::<Assets<MonsterCatalog>>().get_mut(&data.species).unwrap().0[0]
-                .attacks
-                .push(crate::content::species::MonsterAttack {
+            world.resource_mut::<crate::game::data::Catalogs>().species.0[0].attacks.push(
+                crate::content::species::MonsterAttack {
                     word: AttackWord::Verb,
                     weapon: crate::content::species::MonsterWeapon::Unarmed,
                     effects: default(),
@@ -5863,8 +5806,8 @@ mod tests {
                     score: 0,
                     modes: EnumSet::only(AttackMode::Swing),
                     damage: Dice::default(),
-                });
-            world.insert_resource(data);
+                },
+            );
         }
         app.update();
         assert!(fight(app.world()).is_none());
@@ -5939,8 +5882,7 @@ mod tests {
                 ..default()
             },
         );
-        let handle = app.world().resource::<GameData>().spells.clone();
-        app.world_mut().resource_mut::<Assets<SpellCatalog>>().get_mut(&handle).unwrap().0[48] =
+        app.world_mut().resource_mut::<crate::game::data::Catalogs>().spells.0[48] =
             SpellDefinition { id: SpellId::ACID_BOMB, ..default() };
         let effect =
             Enchantment { spell: SpellId::ACID_BOMB, power: 1, boost: 0, turns: 10, absorption: 0 };
@@ -5994,9 +5936,8 @@ mod tests {
             dice: Some(Dice { count: 0, sides: 0, base: 5 }),
             ..default()
         };
-        let catalog =
-            app.world_mut().resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog(definitions));
-        app.world_mut().resource_mut::<GameData>().spells = catalog;
+        let catalog = SpellCatalog(definitions);
+        app.world_mut().resource_mut::<crate::game::data::Catalogs>().spells = catalog;
         let monster =
             app.world().try_query::<&Combatants>().unwrap().single(app.world()).unwrap().entities()
                 [0];
@@ -6083,13 +6024,9 @@ mod tests {
                 caster,
                 SpellDefinition { id: SpellId::DEATH_CLOUD, realm: Some(Realm::Air), ..default() },
             );
-            let species_handle = app.world().resource::<GameData>().species.clone();
             let species_id = app.world().get::<Monster>(monster).unwrap().species;
-            app.world_mut()
-                .resource_mut::<Assets<MonsterCatalog>>()
-                .get_mut(&species_handle)
-                .unwrap()
-                .0[species_id as usize]
+            app.world_mut().resource_mut::<crate::game::data::Catalogs>().species.0
+                [species_id as usize]
                 .death_immune = immune;
             {
                 let mut target = app.world_mut().get_mut::<Monster>(monster).unwrap();
@@ -6212,10 +6149,8 @@ mod tests {
     #[test]
     fn an_off_hand_weapon_attacks_too() {
         let (mut app, [a, _]) = round_app(true);
-        let handle = app.world().resource::<GameData>().items.clone();
-        let catalog = ItemCatalog(
-            app.world().resource::<Assets<ItemCatalog>>().get(&handle).unwrap().0.clone(),
-        );
+        let catalog =
+            ItemCatalog(app.world().resource::<crate::game::data::Catalogs>().items.0.clone());
         let mut ids = ItemIds::default();
         let off = make_item(&catalog.0[1], &mut ids, &mut GameRng::seeded(1), false, true);
         app.world_mut().get_mut::<Carried>(a).unwrap().equipment[EquipSlot::Secondary] =
@@ -6270,15 +6205,12 @@ mod tests {
     fn a_weapons_effects_land_on_blows_that_draw_blood() {
         use crate::content::items::AttackEffect;
         let (mut app, [a, _]) = round_app(true);
-        let handle = app.world().resource::<GameData>().items.clone();
-        app.world_mut().resource_mut::<Assets<ItemCatalog>>().get_mut(&handle).unwrap().0[0]
-            .effects
-            .chances[AttackEffect::KnockOut] = 100;
+        app.world_mut().resource_mut::<crate::game::data::Catalogs>().items.0[0].effects.chances
+            [AttackEffect::KnockOut] = 100;
         // An easy target: no evasion, no armour where blows land.
-        let species = app.world().resource::<GameData>().species.clone();
         {
-            let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
-            let target = &mut catalogs.get_mut(&species).unwrap().0[0];
+            let mut catalogs = app.world_mut().resource_mut::<crate::game::data::Catalogs>();
+            let target = &mut catalogs.species.0[0];
             target.evasion = 10;
             target.armour_by_location = [10; 7];
         }
@@ -6333,7 +6265,6 @@ mod tests {
         // The main gun is quicker and has more attacks, so it is due again
         // after its first; it has a single shot.
         let catalog = ItemCatalog(vec![gun(0, 10), gun(1, 0)]);
-        let handle = app.world().resource::<GameData>().items.clone();
         let mut ids = ItemIds::default();
         let (main, off) = (
             ItemStack::new(&catalog.0[0], &mut ids, 1, true),
@@ -6359,7 +6290,7 @@ mod tests {
         let hands = attack::hands(&character.base_stats(), &carried, &catalog, Default::default());
         assert!(hands.dual_wielding);
         assert!(hands.hands[0].attacks > hands.hands[1].attacks, "{hands:?}");
-        app.world_mut().resource_mut::<Assets<ItemCatalog>>().insert(&handle, catalog).unwrap();
+        app.world_mut().resource_mut::<crate::game::data::Catalogs>().items = catalog;
         let news = finish_round(&mut app);
         let attacks = news
             .iter()
@@ -6381,10 +6312,9 @@ mod tests {
             let (mut app, [a, _]) = round_app(true);
             app.world_mut().entity_mut(a).insert(Order::Defend);
             app.insert_resource(GameRng::seeded(seed));
-            let species = app.world().resource::<GameData>().species.clone();
             {
-                let mut catalogs = app.world_mut().resource_mut::<Assets<MonsterCatalog>>();
-                let mut catalog = catalogs.get_mut(&species).unwrap();
+                let mut catalogs = app.world_mut().resource_mut::<crate::game::data::Catalogs>();
+                let catalog = &mut catalogs.species;
                 // Aim at 0 less fatigue: most swings stray onto a bystander.
                 // Its own armour gives way, and every blow knocks out.
                 let mut effects = AttackEffects::default();

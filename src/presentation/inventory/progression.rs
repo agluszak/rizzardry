@@ -3,7 +3,6 @@ use super::{InventoryArt, InventoryScreen};
 use crate::content::characters::{Attribute, Profession, Skill};
 use crate::content::spells::SpellId;
 use crate::game::characters::progression::{Advancement, Progression};
-use crate::game::data::Content;
 use crate::presentation::retail_controls::{ControlSkin, FocusRing, set_enabled};
 use crate::presentation::screen_art::{BitmapText, Picture, absolute};
 use bevy::input_focus::{
@@ -152,7 +151,7 @@ fn open(
     screens: Query<(Entity, &InventoryScreen)>,
     editors: Query<(), With<Editor>>,
     progression: Progression,
-    content: Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     art: Res<InventoryArt>,
     mut focus: ResMut<InputFocus>,
 ) {
@@ -161,7 +160,7 @@ fn open(
     }
     let Ok((parent, screen)) = screens.single() else { return };
     let Ok(draft) = progression.begin(screen.member) else { return };
-    let Some(spells) = content.spells() else { return };
+    let spells = &content.spells;
     let root = commands.spawn_scene(bsn! {
         Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), justify_content: JustifyContent::Center, align_items: AlignItems::Center }
         GlobalZIndex(20) BackgroundColor(Color::srgba(0.,0.,0.,0.95))
@@ -302,14 +301,14 @@ fn press(
     mut commands: Commands,
     actions: Query<&Action>,
     mut editors: Query<(Entity, &mut Editor)>,
-    content: Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     mut progression: Progression,
     mut focus: ResMut<InputFocus>,
     offers: Query<Entity, With<Open>>,
 ) {
     let Ok(action) = actions.get(event.entity) else { return };
     let Ok((id, mut editor)) = editors.single_mut() else { return };
-    let Some(spells) = content.spells() else { return };
+    let spells = &content.spells;
     editor.message.clear();
     match *action {
         Action::Cancel | Action::Accept => {
@@ -374,23 +373,20 @@ fn scroll_to_focus(
 fn refresh(
     mut commands: Commands,
     editors: Query<Ref<Editor>>,
-    content: Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     strings: crate::presentation::screen_art::GameStrings,
     mut captions: Query<(&Caption, &mut BitmapText)>,
     mut pages: Query<(&PagePanel, &mut Node, &mut Visibility)>,
     mut actions: Query<(Entity, &Action, Has<InteractionDisabled>, &mut BackgroundColor)>,
     added: Query<(), Or<(Added<Caption>, Added<Action>, Added<PagePanel>)>>,
-    spell_catalogs: Option<Res<Assets<crate::content::spells::SpellCatalog>>>,
 ) {
     let Ok(editor) = editors.single() else { return };
-    let changed = editor.is_changed()
-        || spell_catalogs.is_some_and(|c| c.is_changed())
-        || strings.is_changed()
-        || !added.is_empty();
+    let changed =
+        editor.is_changed() || content.is_changed() || strings.is_changed() || !added.is_empty();
     if !changed {
         return;
     }
-    let Some(spells) = content.spells() else { return };
+    let spells = &content.spells;
     let draft = &editor.draft;
     let evaluated = draft.evaluate();
     let c = &evaluated.preview;
@@ -474,7 +470,6 @@ mod tests {
     };
     use crate::game::{
         characters::{Character, Gender, Race, Vitals},
-        data::GameData,
         inventory::Carried,
         magic::{LearnedSpells, SpellPoints},
         party::roster,
@@ -500,11 +495,14 @@ mod tests {
                 OnEnter(crate::presentation::screen::Screen::Inventory),
                 super::super::enter_inventory,
             );
-        let spells =
-            app.world_mut().resource_mut::<Assets<SpellCatalog>>().add(SpellCatalog::default());
-        let items =
-            app.world_mut().resource_mut::<Assets<ItemCatalog>>().add(ItemCatalog::default());
-        app.insert_resource(GameData { items, spells, species: default(), loot: default() });
+        let spells = SpellCatalog::default();
+        let items = ItemCatalog::default();
+        app.insert_resource(crate::game::data::Catalogs {
+            items,
+            spells,
+            species: default(),
+            loot: default(),
+        });
         let members = party
             .iter()
             .map(|c| {

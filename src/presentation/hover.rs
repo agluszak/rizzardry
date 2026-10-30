@@ -78,7 +78,7 @@ pub fn show_tooltip(
     scale: Res<UiScale>,
     cameras: Query<&Camera, With<bevy::ui::IsDefaultUiCamera>>,
     (content, sheets, assets): (
-        crate::game::data::Content,
+        If<Res<crate::game::data::Catalogs>>,
         Res<Assets<SpriteSheet>>,
         Res<AssetServer>,
     ),
@@ -101,13 +101,13 @@ pub fn show_tooltip(
         let sheet = sheets.get(&*font)?;
         let text = if let Ok(item) = items.get(entity) {
             // "Bullets (Unidentified) (16)".
-            let catalog = content.items();
-            let definition = catalog.and_then(|c| c.get(item.appearance()))?;
+            let catalog = &content.items;
+            let definition = catalog.get(item.appearance())?;
             item.display_name(definition, true)
         } else if let Ok(monster) = monsters.get(entity) {
             // "Crustacean (?/12)" (retail `SetCombatSelection`).
-            let catalog = content.species();
-            let kind = catalog.and_then(|c| c.kind(monster.species))?;
+            let catalog = &content.species;
+            let kind = catalog.kind(monster.species)?;
             let identified = memberships
                 .get(entity)
                 .ok()

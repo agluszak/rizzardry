@@ -275,14 +275,14 @@ pub fn draw_caption(
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
     members: Query<(&Character, &Vitals, Option<&Carried>)>,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     battle: Option<Single<&Battle>>,
     orders: Query<&Order>,
     mut captions: Query<(&CaptionLine, &mut BitmapText)>,
     strings: crate::presentation::screen_art::GameStrings,
 ) {
-    let spells = content.spells();
-    let catalog = content.items();
+    let spells = &content.spells;
+    let catalog = &content.items;
     let (first, second) = match selected.member(&roster).and_then(|m| members.get(m).ok()) {
         None => (String::new(), String::new()),
         Some((profile, vitals, carried)) => {
@@ -303,14 +303,14 @@ pub fn draw_caption(
                     order @ (Order::Attack | Order::Berserk) => {
                         let weapon = carried
                             .and_then(|c| c.worn(EquipSlot::Primary))
-                            .and_then(|i| catalog?.get(i.item))
+                            .and_then(|i| catalog.get(i.item))
                             .map_or("Unarmed", |d| d.name.as_str());
                         let verb = if order == Order::Berserk { "Berserk" } else { "Attack" };
                         format!("{verb} - {weapon}")
                     }
                     Order::Magic(choice) => match choice.source {
                         crate::game::magic::casting::Source::Spell { spell, power } => {
-                            let name = spells.and_then(|s| s.get(spell)).map_or("", |s| &s.name);
+                            let name = spells.get(spell).map_or("", |s| &s.name);
                             format!("Cast {name} ({power})")
                         }
                         crate::game::magic::casting::Source::PoolItem(id) => {
@@ -319,14 +319,14 @@ pub fn draw_caption(
                                 .stacks
                                 .iter()
                                 .find(|s| s.id == id)
-                                .and_then(|s| catalog?.get(s.item))
+                                .and_then(|s| catalog.get(s.item))
                                 .map_or("", |d| d.name.as_str());
                             format!("Use {name} from party pool")
                         }
                         crate::game::magic::casting::Source::Item(id) => {
                             let name = carried
                                 .and_then(|c| c.find_stack(id))
-                                .and_then(|i| catalog?.get(i.item))
+                                .and_then(|i| catalog.get(i.item))
                                 .map_or("", |d| d.name.as_str());
                             format!("Use {name}")
                         }

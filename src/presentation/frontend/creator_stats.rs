@@ -457,7 +457,7 @@ pub(super) fn refresh(
     session: Option<Single<Ref<Creation>>>,
     art: Option<Single<&StatsAssets>>,
     strings: crate::presentation::screen_art::GameStrings,
-    content: crate::game::data::Content,
+    content: If<Res<crate::game::data::Catalogs>>,
     sheets: Res<Assets<SpriteSheet>>,
     mut labels: Query<(&Value, &mut BitmapText)>,
     mut icons: Query<(&Icon, &mut Picture)>,
@@ -644,14 +644,9 @@ pub(super) fn refresh(
             }
             Value::SpellPoints => {
                 if session.choices.race {
-                    content
-                        .spells()
-                        .map(|catalog| {
-                            let learned = crate::game::magic::LearnedSpells(draft.spells());
-                            profile.base_stats().max_points(&learned, catalog).values().sum::<u32>()
-                        })
-                        .unwrap_or(0)
-                        .to_string()
+                    let learned = crate::game::magic::LearnedSpells(draft.spells());
+                    let points = profile.base_stats().max_points(&learned, &content.spells);
+                    points.values().sum::<u32>().to_string()
                 } else {
                     String::new()
                 }
