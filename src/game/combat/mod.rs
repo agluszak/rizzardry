@@ -3161,12 +3161,7 @@ mod tests {
             )>::new(app.world_mut());
             let (views, party) = state.get(app.world()).unwrap();
             let items = &app.world().resource::<crate::game::data::Catalogs>().items;
-            views
-                .get(member)
-                .unwrap()
-                .armour(member, items, None, party.as_deref().copied())
-                .unwrap()
-                .total
+            views.get(member).unwrap().armour(member, items, None, party.as_deref().copied()).total
         };
         let before = armour(&mut app, members[0]);
         let outsider = armour(&mut app, stranger);

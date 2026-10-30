@@ -151,7 +151,7 @@ pub(super) fn refresh(
     );
     let CharacterViewItem { profile: character, vitals, burden, .. } = view;
 
-    let weight = burden.map(|burden| burden.weight);
+    let weight = burden.weight;
     let stats = character.stats(&vitals.enchantments);
     for (kind, mut text) in &mut values {
         let (value, palette) = match *kind {
@@ -159,7 +159,7 @@ pub(super) fn refresh(
             Value::Goal => (format_gold(character.experience_goal()), None),
             Value::HitPoints => (format!("{}/{}", vitals.hp, stats.max_hp()), None),
             Value::Stamina => (format!("{}/{}", vitals.stamina, stats.max_stamina()), None),
-            Value::Load => weight.map_or((String::new(), None), |weight| {
+            Value::Load => {
                 let palette = match load {
                     Load::None => None,
                     Load::Light => Some(art.blue.clone()),
@@ -168,13 +168,9 @@ pub(super) fn refresh(
                     Load::Extreme => Some(art.red.clone()),
                 };
                 (format!("{}/{}", weight / 10, stats.capacity() / 10), palette)
-            }),
-            Value::BaseArmour => {
-                (armour.as_ref().map_or(String::new(), |armour| armour.total.to_string()), None)
             }
-            Value::AverageArmour => {
-                (armour.as_ref().map_or(String::new(), |armour| armour.average().to_string()), None)
-            }
+            Value::BaseArmour => (armour.total.to_string(), None),
+            Value::AverageArmour => (armour.average().to_string(), None),
             Value::Attribute(attribute) => (stats.attribute(attribute).to_string(), None),
         };
         if text.value != value {
@@ -199,7 +195,7 @@ mod tests {
     use crate::game::characters::{Character, Gender, Profession, Race, Vitals};
 
     #[test]
-    fn armour_labels_follow_live_inputs_and_clear_without_equipment() {
+    fn armour_labels_follow_live_inputs() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(InventoryArt::default())
@@ -220,9 +216,5 @@ mod tests {
         app.update();
         assert_eq!(app.world().get::<BitmapText>(base).unwrap().value, "2");
         assert_eq!(app.world().get::<BitmapText>(average).unwrap().value, "2");
-        app.world_mut().entity_mut(actor).remove::<Carried>();
-        app.update();
-        assert!(app.world().get::<BitmapText>(base).unwrap().value.is_empty());
-        assert!(app.world().get::<BitmapText>(average).unwrap().value.is_empty());
     }
 }

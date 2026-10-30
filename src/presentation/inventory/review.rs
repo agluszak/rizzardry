@@ -519,73 +519,68 @@ pub(super) fn refresh(
     let effect_filter = info.as_ref().map_or(EffectFilter::All, |info| info.filter);
     let show_items = info.as_ref().is_some_and(|info| info.items);
     let catalog = &content.items;
-    let unidentified = carried
-        .as_ref()
-        .and_then(|c| c.worn(EquipSlot::Primary))
-        .is_some_and(|item| !item.identified);
+    let unidentified = carried.worn(EquipSlot::Primary).is_some_and(|item| !item.identified);
     let table = strings.table();
     let learned = learned_spells.get(screen.member).ok();
     let spell_catalog = &content.spells;
     let string = |id| table.and_then(|table| table.get(id)).unwrap_or("");
     let mut effects = Vec::new();
     if show_items {
-        if let Some(carried) = carried.as_ref() {
-            for (slot, equipped) in carried.active_equipment().filter(|(_, e)| e.stack.identified) {
-                let item = &equipped.stack;
-                let definition = &catalog[item.item];
-                let armour = if definition.armor_class_bonus < 0
-                    || (!matches!(
-                        slot,
-                        EquipSlot::Head
-                            | EquipSlot::Torso
-                            | EquipSlot::Hands
-                            | EquipSlot::Legs
-                            | EquipSlot::Feet
-                    ) && definition.class != EquipClass::Shield)
-                {
-                    definition.armor_class_bonus
-                } else {
-                    0
-                };
-                let cursed = definition.cursed && !equipped.curse_released;
-                let beneficial = definition.hit_bonus > 0
-                    || armour > 0
-                    || definition.resistance_bonus.values().any(|&value| value > 0);
-                let detrimental = definition.hit_bonus < 0
-                    || armour < 0
-                    || cursed
-                    || definition.resistance_bonus.values().any(|&value| value < 0);
-                if !(beneficial || detrimental)
-                    || (effect_filter == EffectFilter::Beneficial && !beneficial)
-                    || (effect_filter == EffectFilter::Detrimental && !detrimental)
-                {
-                    continue;
-                }
-                effects.push((item.display_name(definition, false), true));
-                if definition.hit_bonus != 0 {
-                    effects.push((format!("{} {:+}", string(0x8b7), definition.hit_bonus), false));
-                }
-                if armour != 0 {
-                    effects.push((format!("{} {:+}", string(0x8df), armour), false));
-                }
-                for (realm, &bonus) in definition.resistance_bonus.iter() {
-                    if bonus != 0 {
-                        effects.push((
-                            format!(
-                                "{} {} {:+}%",
-                                string(0x30b + realm as usize),
-                                string(0x8e0),
-                                bonus
-                            ),
-                            false,
-                        ));
-                    }
-                }
-                if cursed {
-                    effects.push((string(0x8e1).to_owned(), false));
-                }
-                effects.push((String::new(), false));
+        for (slot, equipped) in carried.active_equipment().filter(|(_, e)| e.stack.identified) {
+            let item = &equipped.stack;
+            let definition = &catalog[item.item];
+            let armour = if definition.armor_class_bonus < 0
+                || (!matches!(
+                    slot,
+                    EquipSlot::Head
+                        | EquipSlot::Torso
+                        | EquipSlot::Hands
+                        | EquipSlot::Legs
+                        | EquipSlot::Feet
+                ) && definition.class != EquipClass::Shield)
+            {
+                definition.armor_class_bonus
+            } else {
+                0
+            };
+            let cursed = definition.cursed && !equipped.curse_released;
+            let beneficial = definition.hit_bonus > 0
+                || armour > 0
+                || definition.resistance_bonus.values().any(|&value| value > 0);
+            let detrimental = definition.hit_bonus < 0
+                || armour < 0
+                || cursed
+                || definition.resistance_bonus.values().any(|&value| value < 0);
+            if !(beneficial || detrimental)
+                || (effect_filter == EffectFilter::Beneficial && !beneficial)
+                || (effect_filter == EffectFilter::Detrimental && !detrimental)
+            {
+                continue;
             }
+            effects.push((item.display_name(definition, false), true));
+            if definition.hit_bonus != 0 {
+                effects.push((format!("{} {:+}", string(0x8b7), definition.hit_bonus), false));
+            }
+            if armour != 0 {
+                effects.push((format!("{} {:+}", string(0x8df), armour), false));
+            }
+            for (realm, &bonus) in definition.resistance_bonus.iter() {
+                if bonus != 0 {
+                    effects.push((
+                        format!(
+                            "{} {} {:+}%",
+                            string(0x30b + realm as usize),
+                            string(0x8e0),
+                            bonus
+                        ),
+                        false,
+                    ));
+                }
+            }
+            if cursed {
+                effects.push((string(0x8e1).to_owned(), false));
+            }
+            effects.push((String::new(), false));
         }
     } else if effect_filter != EffectFilter::Beneficial {
         if vitals.is_dead() {
@@ -689,9 +684,8 @@ pub(super) fn refresh(
             }
             Field::HandName(_) if armour_view => String::new(),
             Field::HandName(left) => {
-                let empty = carried.as_ref().is_none_or(|c| {
-                    c.worn(EquipSlot::Primary).is_none() && c.worn(EquipSlot::Secondary).is_none()
-                });
+                let empty = carried.worn(EquipSlot::Primary).is_none()
+                    && carried.worn(EquipSlot::Secondary).is_none();
                 string(match (empty, left) {
                     (true, true) => 0x8b5,
                     (true, false) => 0x8b4,
@@ -702,37 +696,31 @@ pub(super) fn refresh(
             }
             Field::CombatValue(_) if armour_view => String::new(),
             Field::CombatValue(index) => {
-                if let Some(hand) = &hand {
-                    if unidentified && index != 8 {
-                        "?".to_owned()
-                    } else {
-                        match index {
-                            1 => {
-                                let min = i32::from(hand.dice.base) + i32::from(hand.dice.count);
-                                let max = i32::from(hand.dice.base)
-                                    + i32::from(hand.dice.count) * i32::from(hand.dice.sides);
-                                let scale = 100 + hand.damage_percent;
-                                format!(
-                                    "{}-{}",
-                                    ((min * scale + 50) / 100).max(1),
-                                    ((max * scale + 50) / 100).max(1)
-                                )
-                            }
-                            3 => hand.attacks.to_string(),
-                            4 => hand.swings.to_string(),
-                            5 => format!("{:+}", hand.to_hit),
-                            7 => format!("{:+}%", hand.damage_percent),
-                            8 => character_initiative(
-                                &profile.stats(&vitals.enchantments),
-                                hand,
-                                load,
-                            )
-                            .to_string(),
-                            _ => String::new(),
-                        }
-                    }
+                if unidentified && index != 8 {
+                    "?".to_owned()
                 } else {
-                    String::new()
+                    match index {
+                        1 => {
+                            let min = i32::from(hand.dice.base) + i32::from(hand.dice.count);
+                            let max = i32::from(hand.dice.base)
+                                + i32::from(hand.dice.count) * i32::from(hand.dice.sides);
+                            let scale = 100 + hand.damage_percent;
+                            format!(
+                                "{}-{}",
+                                ((min * scale + 50) / 100).max(1),
+                                ((max * scale + 50) / 100).max(1)
+                            )
+                        }
+                        3 => hand.attacks.to_string(),
+                        4 => hand.swings.to_string(),
+                        5 => format!("{:+}", hand.to_hit),
+                        7 => format!("{:+}%", hand.damage_percent),
+                        8 => {
+                            character_initiative(&profile.stats(&vitals.enchantments), &hand, load)
+                                .to_string()
+                        }
+                        _ => String::new(),
+                    }
                 }
             }
         };

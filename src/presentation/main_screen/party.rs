@@ -336,7 +336,7 @@ pub fn draw_party(
             );
             let CharacterViewItem { profile, vitals, carried, .. } = view;
             let dead = vitals.is_dead();
-            let worn = |slot| carried.as_ref().and_then(|c| c.worn(slot)).map(|i| &catalog[i.item]);
+            let worn = |slot| carried.worn(slot).map(|i| &catalog[i.item]);
             let two_handed = worn(EquipSlot::Primary).is_some_and(|d| d.two_handed);
             let condition = condition_icon(vitals);
             match part.kind {
@@ -413,12 +413,7 @@ pub fn draw_party(
                 }
                 Part::Armour => {
                     shown = !dead;
-                    value = Some(
-                        armour
-                            .as_ref()
-                            .map_or(0, crate::game::combat::attack::Armour::average)
-                            .to_string(),
-                    );
+                    value = Some(armour.average().to_string());
                 }
                 Part::Name => value = Some(profile.name.clone()),
                 Part::HitPoints => {

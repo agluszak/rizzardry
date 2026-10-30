@@ -30,7 +30,6 @@ use crate::content::items::QuantityKind;
 use crate::content::ui::SpriteSheet;
 use crate::game::GameplaySet;
 use crate::game::characters::{Character, Gender, Race, Vitals};
-use crate::game::combat::attack::Armour;
 use crate::game::data::Catalogs;
 use crate::game::inventory::{
     BACKPACK_SLOTS, Carried, EquipSlot, ItemAt, ItemStack, MemberSlot, PartyInventory, Slot,
@@ -866,8 +865,6 @@ fn draw_header_hands(
     );
     let profile = view.profile;
     let carried = view.carried;
-    let empty = Carried::default();
-    let carried = carried.unwrap_or(&empty);
     let two_handed = carried
         .worn(EquipSlot::Primary)
         .map(|item| &catalog[item.item])
@@ -924,9 +921,7 @@ fn draw_header_hands(
                     },
                 );
             }
-            HeaderHand::Armour => {
-                value = Some(armour.as_ref().map_or(0, Armour::average).to_string())
-            }
+            HeaderHand::Armour => value = Some(armour.average().to_string()),
         }
         visibility.set_if_neq(visible_if(shown));
         if let (Some(mut picture), Some(mut source)) = (picture, source) {
