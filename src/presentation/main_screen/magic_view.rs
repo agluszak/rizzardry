@@ -295,7 +295,7 @@ pub fn open(
         // Serialize replacements, including multiple opens queued in one frame.
         // A replacement gives focus back to what the first view took it from.
         let previous: Vec<_> = world
-            .query::<(Entity, &RestoreFocus)>()
+            .query_filtered::<(Entity, &RestoreFocus), With<MagicView>>()
             .iter(world)
             .map(|(view, restore)| (view, restore.0))
             .collect();
@@ -1195,11 +1195,16 @@ mod tests {
         app.world_mut()
             .resource_mut::<InputFocus>()
             .set(before, bevy::input_focus::FocusCause::Navigated);
+        // Another view giving focus back must outlive magic views replacing
+        // each other, two opens queued in one frame.
+        let other = app.world_mut().spawn(RestoreFocus(None)).id();
         let caster = app.world_mut().spawn_empty().id();
         let art = app.world().resource::<MagicViewArt>().clone();
         open(&mut app.world_mut().commands(), &art, caster, false, None);
+        open(&mut app.world_mut().commands(), &art, caster, false, None);
         app.update();
         app.update();
+        assert!(app.world().get::<RestoreFocus>(other).is_some(), "another view stays");
         let focused = app.world().resource::<InputFocus>().get().unwrap();
         assert_ne!(focused, before, "the view takes focus");
         assert_eq!(app.world_mut().query::<&MagicView>().iter(app.world()).count(), 1);
