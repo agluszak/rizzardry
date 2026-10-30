@@ -602,17 +602,9 @@ fn press(
         view.aim_at(member);
         return;
     }
-    match operations.p0().give_to(member) {
-        Ok(true) => {
-            button.review_armed = false;
-            return;
-        }
-        Err(reason) => {
-            button.review_armed = false;
-            info!("giving item refused: {reason:?}");
-            return;
-        }
-        Ok(false) => {}
+    if operations.p0().give_to(member) {
+        button.review_armed = false;
+        return;
     }
     let already_selected = review.selected.0 == Some(member);
     review.selected.set_if_neq(SelectedMember(Some(member)));
@@ -670,13 +662,8 @@ fn release_right(
     if !control && time.elapsed() - hold.since < REVIEW_HOLD {
         // Retail's right-release give always offers the party pool first
         // (`force_to_party`); this uses the left click's pool rule.
-        match inventory.give_to(member) {
-            Ok(true) => return,
-            Err(reason) => {
-                info!("giving item refused: {reason:?}");
-                return;
-            }
-            Ok(false) => {}
+        if inventory.give_to(member) {
+            return;
         }
     }
     review.open(member);

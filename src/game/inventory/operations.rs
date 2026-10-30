@@ -16,9 +16,7 @@ pub struct PutAwayHeld {
 }
 
 pub(crate) fn put_away_held(request: On<PutAwayHeld>, mut inventory: InventoryOperations) {
-    if let Err(reason) = inventory.put_away(request.member) {
-        warn!("held item could not be put away: {reason:?}");
-    }
+    inventory.put_away(request.member);
 }
 
 #[derive(SystemParam)]
@@ -35,10 +33,10 @@ impl InventoryOperations<'_, '_> {
     /// Give the held item to an identified actor, telling who took it.
     /// Eligibility and battle pool precedence are rules here; the clicked
     /// portrait only supplies its target. False when nothing was held.
-    pub fn give_to(&mut self, member: Entity) -> Result<bool, Refusal> {
-        let Some(held) = self.party.hand.held.as_ref() else { return Ok(false) };
+    pub fn give_to(&mut self, member: Entity) -> bool {
+        let Some(held) = self.party.hand.held.as_ref() else { return false };
         let catalog = &self.content.items;
-        let (profile, vitals, mut carried) = self::member(&self.roster, &mut self.members, member)?;
+        let (profile, vitals, mut carried) = self.members.get_mut(member).unwrap();
         let definition = &catalog[held.item];
         let item = held.display_name(definition, false);
         let name = profile.name.clone();
@@ -47,26 +45,26 @@ impl InventoryOperations<'_, '_> {
         let Some(given) =
             self.party.give_held(eligible.then_some(&mut *carried), pool_first, catalog)
         else {
-            return Ok(false);
+            return false;
         };
         self.news.write(match given {
             Given::Member => ItemNews::Takes { member: Some(name), item },
             Given::Pool => ItemNews::Takes { member: None, item },
             Given::NoRoom => ItemNews::NoRoom,
         });
-        Ok(true)
+        true
     }
 
     /// Return the hand to the reviewed member, falling back to the pool. A
     /// departed member cannot receive it; overflow remains owned by the hand.
-    pub fn put_away(&mut self, member: Entity) -> Result<(), Refusal> {
+    pub fn put_away(&mut self, member: Entity) {
         if self.party.hand.held.is_none() {
-            return Ok(());
+            return;
         }
         let catalog = &self.content.items;
-        let mut carried = self::member(&self.roster, &mut self.members, member).ok();
+        let mut carried =
+            self.roster.contains(&member).then(|| self.members.get_mut(member).unwrap());
         self.party.give_held(carried.as_mut().map(|(_, _, c)| &mut **c), false, catalog);
-        Ok(())
     }
 
     /// Resolve a pool row immediately at the UI boundary. Delayed requests use
