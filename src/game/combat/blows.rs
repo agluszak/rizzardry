@@ -45,8 +45,8 @@ pub(super) struct Fight<'a, 'w, 's> {
 }
 
 impl Fight<'_, '_, '_> {
-    fn armour(&self, member: Entity) -> Option<Armour> {
-        self.armours.iter().find(|&&(m, _)| m == member).map(|&(_, a)| a)
+    fn armour(&self, member: Entity) -> Armour {
+        self.armours.iter().find(|&&(m, _)| m == member).expect("a member's armour").1
     }
 }
 
@@ -199,8 +199,9 @@ fn razor_backlash(
         crate::game::magic::Strength { power: charge.power, boost: 0, against: 0 },
     );
     let amount = match attacker {
-        Victim::Member(member) => member_defence(battle, field, fight, member)
-            .map(|(_, defence)| defence.reduce(rolled as i32)),
+        Victim::Member(member) => {
+            Some(member_defence(battle, field, fight, member).1.reduce(rolled as i32))
+        }
         Victim::Monster(monster) => {
             monster_defence(field, fight, monster).map(|defence| defence.reduce(rolled as i32))
         }
@@ -237,9 +238,9 @@ fn member_defence(
     field: &Field,
     fight: &Fight,
     member: Entity,
-) -> Option<(Character, Defence<'static>)> {
+) -> (Character, Defence<'static>) {
     let (character, vitals, ..) = field.members.get(member).unwrap();
-    let armour = fight.armour(member)?;
+    let armour = fight.armour(member);
     let running = battle.this_round.pace == Some(PartyPace::Run);
     let defending = battle
         .this_round
@@ -247,7 +248,7 @@ fn member_defence(
         .iter()
         .any(|p| p.actor == member && matches!(p.action, RoundAction::Defend));
     let stats = character.stats(&vitals.enchantments);
-    Some((character.clone(), Defence::member(&stats, armour, running, defending)))
+    (character.clone(), Defence::member(&stats, armour, running, defending))
 }
 
 fn monster_defence<'a>(
@@ -275,7 +276,7 @@ fn victim_defence<'a>(
     match victim {
         Victim::Monster(entity) => Some((monster_defence(field, fight, entity)?, None)),
         Victim::Member(entity) => {
-            let (profile, defence) = member_defence(battle, field, fight, entity)?;
+            let (profile, defence) = member_defence(battle, field, fight, entity);
             Some((defence, Some((entity, profile))))
         }
     }
@@ -289,14 +290,12 @@ fn victim_body(field: &Field, fight: &Fight, victim: Victim) -> Option<(Vec3, f3
             Some((body::PartyBody::centre(fight.party.eye), body::RADIUS, body::RADIUS))
         }
         Victim::Monster(entity) => {
-            let (monster, at, walker, ..) = field.monsters.monsters().get(entity).ok()?;
-            (!monster.is_dead()).then(|| {
-                (
-                    body_centre(feet(at.translation(), walker), monster),
-                    monster.body.radius,
-                    monster.body.eye_height * 0.5,
-                )
-            })
+            let (monster, at, walker, ..) = field.monsters.monsters().get(entity).unwrap();
+            Some((
+                body_centre(feet(at.translation(), walker), monster),
+                monster.body.radius,
+                monster.body.eye_height * 0.5,
+            ))
         }
     }
 }
