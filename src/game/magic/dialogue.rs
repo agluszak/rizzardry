@@ -21,11 +21,12 @@ pub(crate) fn spell(id: SpellId) -> bool {
     matches!(id, SpellId::CHARM | SpellId::MINDREAD)
 }
 
-pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Result<(), Refusal> {
-    let id = super::utilities::source_spell(world, caster, choice.source)?;
-    if !spell(id) {
-        return Err(Refusal::Unsupported);
-    }
+pub(crate) fn cast(
+    world: &mut World,
+    caster: Entity,
+    choice: MagicChoice,
+    id: SpellId,
+) -> Result<(), Refusal> {
     let (entity, conversation) =
         world.query::<(Entity, &Conversation)>().single(world).map_err(|_| Refusal::WrongTime)?;
     if !conversation.ready() {
@@ -44,7 +45,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
         (u32::from(kind.attributes.senses) + u32::from(kind.attributes.intelligence)) / 2,
     );
     let (mut report, strength) =
-        super::sources::cast_source(world, caster, choice.source, UseContext::Conversation)?;
+        super::casting::cast_source(world, caster, choice.source, UseContext::Conversation)?;
     let mut reply = MagicalReply::Unnoticed;
     match report.outcome {
         Outcome::Fizzled => {}

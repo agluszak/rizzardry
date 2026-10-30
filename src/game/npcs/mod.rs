@@ -216,7 +216,7 @@ impl NpcPopulation<'_, '_> {
         rng: &mut GameRng,
         roll: impl FnOnce(&mut GameRng) -> KeptMonster,
     ) -> Option<(Entity, Vec3, f32, crate::game::world::population::ScaledBody, Option<i32>)> {
-        let definition = catalogs.npcs.get(id).expect("NPC preparation validated definition");
+        let definition = &catalogs.npcs[id];
         let key = ActorId::for_placement(id, definition, map, placed.location);
         if !placed_actors.insert(key.clone()) {
             return None;
@@ -289,7 +289,7 @@ impl NpcPopulation<'_, '_> {
         placements: &[crate::content::level::MonsterPlacement],
         server: &AssetServer,
     ) -> Result<bool, String> {
-        let (species, items) = (&catalogs.species, &catalogs.items);
+        let species = &catalogs.species;
         let ids: Vec<_> =
             placements.iter().filter_map(|p| species.kind(p.species).and_then(|s| s.npc)).collect();
         if ids.is_empty() {
@@ -298,10 +298,7 @@ impl NpcPopulation<'_, '_> {
         let catalog = &catalogs.npcs;
         let mut ready = true;
         for id in ids {
-            let def = catalog.get(id).ok_or_else(|| format!("missing NPC definition {id:?}"))?;
-            if def.stock.iter().any(|r| items.get(r.item).is_none()) {
-                return Err(format!("missing stock item for {id:?}"));
-            }
+            let def = &catalog[id];
             let script =
                 self.assets.scripts.entry(id).or_insert_with(|| {
                     server.load(crate::content::paths::retail(&def.script_path()))

@@ -13,7 +13,6 @@ pub mod enchantments;
 pub(crate) mod impacts;
 pub(crate) mod pointcasts;
 pub mod portals;
-pub(crate) mod sources;
 pub(crate) mod targeting;
 pub(crate) mod traps;
 pub(crate) mod utilities;
@@ -583,14 +582,18 @@ pub(crate) fn execute_in_world(
     caster: Entity,
     choice: casting::MagicChoice,
 ) -> Result<(), casting::Refusal> {
-    let utility = utilities::source_spell(world, caster, choice.source).is_ok_and(utilities::spell);
-    let result = match choice.aim {
-        _ if utility => utilities::cast(world, caster, choice),
-        casting::Aim::Device(attempt) => {
-            crate::game::world::interaction::cast_device(world, caster, attempt, choice.source)
-        }
-        _ => Err(casting::Refusal::Unsupported),
-    };
+    let result = utilities::source_spell(world, caster, choice.source).and_then(|id| match id {
+        id if pointcasts::spell(id) => pointcasts::cast(world, caster, choice, id),
+        id if dialogue::spell(id) => dialogue::cast(world, caster, choice, id),
+        id if portals::spell(id) => portals::cast(world, caster, choice.source, id),
+        SpellId::IDENTIFY_ITEM => utilities::identify(world, caster, choice),
+        _ => match choice.aim {
+            casting::Aim::Device(attempt) => {
+                crate::game::world::interaction::cast_device(world, caster, attempt, choice.source)
+            }
+            _ => Err(casting::Refusal::Unsupported),
+        },
+    });
     if let Err(refusal) = result {
         world.write_message(casting::MagicNews::Refused { caster, refusal });
     }
@@ -699,7 +702,7 @@ pub fn deliver_spells(
     if flights.is_empty() {
         return;
     }
-    let party_at = party.single().ok().map(PartyBody::eye);
+    let party_at = PartyBody::eye(party.single().unwrap());
     // Every impact due in this update, in the order they arrive.
     let mut due = Vec::new();
     for (entity, mut flight) in &mut flights {
@@ -722,7 +725,7 @@ pub fn deliver_spells(
             commands.entity(entity).despawn();
         }
         let mut secondary = Vec::new();
-        let landed = context.resolve(clock.ms, &mut members, &mut monsters, |field| {
+        let (effects, improved) = context.resolve(clock.ms, &mut members, &mut monsters, |field| {
             let spell = &field.spells[flight.spell];
             let effects = impacts::resolve(
                 flight.caster,
@@ -732,15 +735,14 @@ pub fn deliver_spells(
                 flight.strength,
                 &flight.victims,
                 flight.finish.as_ref(),
-                party_at.unwrap_or_default(),
+                party_at,
                 &mut rng,
                 field,
                 &mut points,
                 &mut secondary,
             );
-            Some((effects, std::mem::take(&mut field.improved)))
+            (effects, std::mem::take(&mut field.improved))
         });
-        let Some((effects, improved)) = landed else { continue };
         if let Some(battle) = battle.as_mut() {
             battle.credit_kills(&effects, &mut combat_news);
         }

@@ -143,11 +143,10 @@ impl MonsterBodies {
     /// companions, the elementals the party may summon, and whatever any of
     /// these can summon, in turn.
     pub fn for_level(
-        &mut self,
         geometry: &LevelDefinition,
         species: &MonsterCatalog,
         assets: &AssetServer,
-    ) -> Vec<Handle<MonsterBody>> {
+    ) -> Self {
         let encountered: Vec<u32> = geometry
             .encounters
             .generators
@@ -174,18 +173,15 @@ impl MonsterBodies {
             }
             next += 1;
         }
-        spawnable
-            .into_iter()
-            // Tests stand in a few species for retail's full catalog.
-            .filter_map(|id| {
-                let kind = species.kind(id)?;
-                let body = self
-                    .0
-                    .entry(id)
-                    .or_insert_with(|| assets.load(crate::content::paths::monster(&kind.model)));
-                Some(body.clone())
-            })
-            .collect()
+        Self(
+            spawnable
+                .into_iter()
+                .filter_map(|id| {
+                    let kind = species.kind(id)?;
+                    Some((id, assets.load(crate::content::paths::monster(&kind.model))))
+                })
+                .collect(),
+        )
     }
 }
 
@@ -483,7 +479,7 @@ pub fn populate(
             .items
             .iter()
             .map(|placement| {
-                let definition = items.get(placement.item).expect("checked in preparation");
+                let definition = &items[placement.item];
                 let loot = if definition.container {
                     super::items::GroundLoot::Pile {
                         appearance: definition.id,
@@ -542,9 +538,8 @@ mod tests {
             },
             ..default()
         };
-        let mut bodies = MonsterBodies::default();
         let assets = app.world().resource::<AssetServer>().clone();
-        bodies.for_level(&geometry, &MonsterCatalog(catalog), &assets);
+        let bodies = MonsterBodies::for_level(&geometry, &MonsterCatalog(catalog), &assets);
         let mut readied: Vec<_> = bodies.0.keys().copied().collect();
         readied.sort();
         assert_eq!(readied, [1, 3, 12]);
@@ -556,10 +551,9 @@ mod tests {
     fn every_level_readies_the_elementals() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default())).init_asset::<MonsterBody>();
-        let mut bodies = MonsterBodies::default();
         let assets = app.world().resource::<AssetServer>().clone();
         let catalog = MonsterCatalog(vec![Species::default(); 49]);
-        bodies.for_level(&LevelDefinition::default(), &catalog, &assets);
+        let bodies = MonsterBodies::for_level(&LevelDefinition::default(), &catalog, &assets);
         let mut elementals = crate::game::magic::pointcasts::ELEMENTALS;
         assert!(elementals.all(|id| bodies.0.contains_key(&id)));
     }

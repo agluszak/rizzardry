@@ -89,11 +89,7 @@ pub fn fly_party(
     else {
         return;
     };
-    let Some(path) = level.definition().map(|level| &level.camera_paths[flight.path]) else {
-        commands.entity(entity).remove_with_requires::<PathFlight>();
-        return;
-    };
-    // Triggers start only paths with keys.
+    let path = &level.definition().unwrap().camera_paths[flight.path];
     let last = (path.keys.len() - 1) as f32;
     flight.frame = (flight.frame + path.keys_per_second * time.delta_secs()).min(last);
     let key = pose(&path.keys, flight.frame);

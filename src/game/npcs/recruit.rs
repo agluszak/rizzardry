@@ -161,18 +161,14 @@ fn first_character(
             .collect(),
     );
     let mut carried = Carried::default();
-    let mut make = |id| {
-        items
-            .get(id)
-            .map(|definition| crate::game::inventory::make_item(definition, ids, rng, true, true))
-    };
+    let mut make = |id| crate::game::inventory::make_item(&items[id], ids, rng, true, true);
     for (slot, id) in template.equipment.iter().enumerate() {
-        if let Some(stack) = id.and_then(&mut make) {
+        if let Some(stack) = id.map(&mut make) {
             carried.equipment[EquipSlot::from_usize(slot)] = Some(Equipped::new(stack));
         }
     }
     for (slot, id) in template.backpack.iter().enumerate() {
-        carried.backpack[slot] = id.and_then(&mut make);
+        carried.backpack[slot] = id.map(&mut make);
     }
     let points = SpellPoints::default();
     let vitals = Vitals::new(&character);
@@ -193,17 +189,17 @@ pub fn join(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
     joinable(world, actor)?;
     let party = the_party(world);
     if world.get::<Character>(actor).is_none() {
-        let template = super::definition(world, actor).character.clone().unwrap();
-        let (character, vitals, learned, points, carried) =
-            world.resource_scope(|world, mut ids: Mut<ItemIds>| {
-                world.resource_scope(|world, mut rng: Mut<GameRng>| {
-                    let catalogs = (
-                        &world.resource::<crate::game::data::Catalogs>().items,
-                        &world.resource::<crate::game::data::Catalogs>().spells,
-                    );
-                    first_character(&template, catalogs, (&mut ids, &mut rng))
-                })
-            });
+        let made = world.resource_scope(|world, mut ids: Mut<ItemIds>| {
+            world.resource_scope(|world, mut rng: Mut<GameRng>| {
+                let catalogs = (
+                    &world.resource::<crate::game::data::Catalogs>().items,
+                    &world.resource::<crate::game::data::Catalogs>().spells,
+                );
+                let template = super::definition(world, actor).character.as_ref().unwrap();
+                first_character(template, catalogs, (&mut ids, &mut rng))
+            })
+        });
+        let (character, vitals, learned, points, carried) = made;
         world.entity_mut(actor).insert((
             Name::new(character.name.clone()),
             character,

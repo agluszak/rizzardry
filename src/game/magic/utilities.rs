@@ -43,20 +43,11 @@ fn identifies(strength: super::Strength, difficulty: u8) -> bool {
     score + score * strength.boost / 100 >= u32::from(difficulty)
 }
 
-pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Result<(), Refusal> {
-    let id = source_spell(world, caster, choice.source)?;
-    if super::pointcasts::spell(id) {
-        return super::pointcasts::cast(world, caster, choice);
-    }
-    if super::dialogue::spell(id) {
-        return super::dialogue::cast(world, caster, choice);
-    }
-    if super::portals::spell(id) {
-        return super::portals::cast(world, caster, choice.source);
-    }
-    if id != SpellId::IDENTIFY_ITEM {
-        return Err(Refusal::Unsupported);
-    }
+pub(crate) fn identify(
+    world: &mut World,
+    caster: Entity,
+    choice: MagicChoice,
+) -> Result<(), Refusal> {
     if !world.run_system_cached(crate::game::freedom::unoccupied).unwrap_or(false)
         || world.query::<&crate::game::combat::Battle>().iter(world).next().is_some()
     {
@@ -85,7 +76,7 @@ pub(crate) fn cast(world: &mut World, caster: Entity, choice: MagicChoice) -> Re
     } else {
         choice.source
     };
-    let (report, strength) = super::sources::cast_source(world, caster, source, UseContext::World)?;
+    let (report, strength) = super::casting::cast_source(world, caster, source, UseContext::World)?;
     // No item roll or extra RNG draw; success reveals identity, spell and
     // binding.
     if report.outcome == super::Outcome::Cast && identifies(strength, difficulty) {
@@ -285,7 +276,7 @@ mod tests {
             scene.world.resource_mut::<crate::game::data::Catalogs>().items = handle;
             scene.inventory().pool.stacks.push(stack);
             scene.world.insert_resource(GameRng::seeded(seed));
-            let (report, _) = super::super::sources::cast_source(
+            let (report, _) = super::super::casting::cast_source(
                 &mut scene.world,
                 caster,
                 Source::PoolItem(id),

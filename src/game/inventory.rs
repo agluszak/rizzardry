@@ -133,19 +133,20 @@ impl ItemStack {
         self.count = NonZeroU16::new(self.count().saturating_sub(amount))?;
         Some(self)
     }
+    /// Units of this definition that can join the stack without changing its metadata.
+    pub(crate) fn room_for(&self, definition: &ItemDefinition, identified: bool) -> u16 {
+        if self.item == definition.id
+            && self.identified == identified
+            && definition.quantity == QuantityKind::Stack
+        {
+            u16::from(definition.stack_limit).saturating_sub(self.count())
+        } else {
+            0
+        }
+    }
     /// Ordinary absorption retains destination metadata and source remainder identity.
     pub fn absorb(&mut self, mut source: Self, definition: &ItemDefinition) -> Option<Self> {
-        if definition.id != self.item
-            || definition.quantity != QuantityKind::Stack
-            || self.item != source.item
-            || self.identified != source.identified
-            || self.remaining_uses.is_some()
-            || source.remaining_uses.is_some()
-        {
-            return Some(source);
-        }
-        let moved =
-            source.count().min(u16::from(definition.stack_limit).saturating_sub(self.count()));
+        let moved = source.count().min(self.room_for(definition, source.identified));
         self.count = NonZeroU16::new(self.count() + moved).unwrap();
         source.count = NonZeroU16::new(source.count() - moved)?;
         Some(source)
@@ -414,17 +415,11 @@ impl Carried {
         Ok(())
     }
     /// Spend one use of a carried stack (retail `RemoveCharacterItem`): an
-    /// exhausted stack leaves its slot unless `keep_empty`. Returns whether
-    /// the stack was there.
-    pub fn consume_use(
-        &mut self,
-        id: StackId,
-        definition: &ItemDefinition,
-        keep_empty: bool,
-    ) -> bool {
-        let Some(slot) = self.find(id) else { return false };
+    /// exhausted stack leaves its slot unless `keep_empty`. The caller owns
+    /// a live stack resolved in the same operation.
+    pub fn consume_use(&mut self, id: StackId, definition: &ItemDefinition, keep_empty: bool) {
+        let slot = self.find(id).unwrap();
         self.offer_slot(slot, |stack| stack.consume_use(definition, keep_empty));
-        true
     }
     pub fn stacks(&self) -> impl Iterator<Item = &ItemStack> {
         self.equipment.values().flatten().map(|e| &e.stack).chain(self.backpack.iter().flatten())
@@ -470,6 +465,17 @@ pub struct ItemPool {
     pub stacks: Vec<ItemStack>,
 }
 impl ItemPool {
+    /// Capacity follows the same absorption rule as insertion, plus empty rows.
+    pub(crate) fn room_for(&self, definition: &ItemDefinition, identified: bool) -> u32 {
+        let per_row = if definition.quantity == QuantityKind::Stack {
+            u32::from(definition.stack_limit).max(1)
+        } else {
+            1
+        };
+        self.stacks.iter().map(|s| u32::from(s.room_for(definition, identified))).sum::<u32>()
+            + POOL_LIMIT.saturating_sub(self.stacks.len()) as u32 * per_row
+    }
+
     fn position(&self, position: PoolPosition) -> Result<usize, Refusal> {
         match position {
             PoolPosition::Front => Ok(0),
@@ -535,14 +541,13 @@ impl ItemPool {
     }
 
     /// Spend a use from the same shared row, retaining its identity if it survives.
-    pub fn consume_use(&mut self, id: StackId, definition: &ItemDefinition) -> bool {
-        let Some(at) = self.stacks.iter().position(|stack| stack.id == id) else { return false };
+    pub fn consume_use(&mut self, id: StackId, definition: &ItemDefinition) {
+        let at = self.stacks.iter().position(|stack| stack.id == id).unwrap();
         if let Some(remaining) =
             self.stacks.remove(at).consume_use(definition, definition.keeps_empty())
         {
             self.stacks.insert(at, remaining);
         }
-        true
     }
 
     /// Consume physical units while preserving the remainder's identity and row.
@@ -630,11 +635,11 @@ pub fn allowed_slots(
     definition: &ItemDefinition,
     carried: &Carried,
     catalog: &ItemCatalog,
-    vacating: Option<EquipSlot>,
+    vacating: &[EquipSlot],
 ) -> Vec<EquipSlot> {
     use EquipClass::*;
     // What is worn, but for the slot being emptied for this item.
-    let worn = |slot: EquipSlot| carried.worn(slot).filter(|_| vacating != Some(slot));
+    let worn = |slot: EquipSlot| carried.worn(slot).filter(|_| !vacating.contains(&slot));
     let empty = |slot: EquipSlot| worn(slot).is_none();
     // A main hand also counts as free for the off hand when its weapon is
     // one-handed.
@@ -814,7 +819,7 @@ pub fn place_at_creation(
     let d = &catalog[item.item];
     if member.can_use(d)
         && let Some(slot) = creation_slot(d, carried, catalog, member)
-        && allowed_slots(d, carried, catalog, None).contains(&slot)
+        && allowed_slots(d, carried, catalog, &[]).contains(&slot)
     {
         match &mut carried.equipment[slot] {
             None => {
@@ -1030,7 +1035,7 @@ impl PartyInventory {
         Ok(self.hand.offer(|item| pool.deposit(item, position, catalog)))
     }
     /// Merge or exchange a concrete member slot. Compound weapon displacement
-    /// stages only the touched containers; no identities or random rolls occur.
+    /// checks destination room before changing either hand; no rollback copies.
     pub fn interact_slot(
         &mut self,
         character: &Character,
@@ -1087,28 +1092,38 @@ impl PartyInventory {
             });
             if let Some(partner) = displaced {
                 carried.check_removal(Slot::Equipment(partner), catalog, vitals.is_dead())?;
-                let mut candidate = carried.clone();
-                let mut pool = self.pool.clone();
-                let partner_item = candidate.take(Slot::Equipment(partner)).unwrap();
-                if !allowed_slots(definition, &candidate, catalog, Some(equip)).contains(&equip) {
+                if !allowed_slots(definition, carried, catalog, &[equip, partner]).contains(&equip)
+                {
                     return Err(Refusal::DoesNotFit);
                 }
-                // Do not merge the displaced partner back into equipment about to leave.
-                let current = candidate.take(slot);
-                if candidate
-                    .receive(partner_item, catalog)
-                    .and_then(|rest| pool.receive(rest, catalog))
-                    .is_some()
+                let displaced = carried.worn(partner).unwrap();
+                let displaced_definition = &catalog[displaced.item];
+                // Both weapon slots leave before receipt, so neither can absorb the partner.
+                let room = carried
+                    .equipment
+                    .iter()
+                    .filter(|(s, _)| *s != equip && *s != partner)
+                    .filter_map(|(_, e)| e.as_ref().map(|e| &e.stack))
+                    .chain(carried.backpack.iter().flatten())
+                    .map(|s| u32::from(s.room_for(displaced_definition, displaced.identified)))
+                    .sum::<u32>()
+                    + self.pool.room_for(displaced_definition, displaced.identified);
+                if !carried.backpack.iter().any(Option::is_none)
+                    && self.pool.stacks.len() >= POOL_LIMIT
+                    && room < displaced.units()
                 {
                     return Err(Refusal::NoRoom);
                 }
-                candidate.put(slot, self.hand.held.take());
+                let partner_item = carried.take(Slot::Equipment(partner)).unwrap();
+                let current = carried.take(slot);
+                let _ = carried
+                    .receive(partner_item, catalog)
+                    .and_then(|rest| self.pool.receive(rest, catalog));
+                carried.put(slot, self.hand.held.take());
                 self.hand.held = current;
-                *carried = candidate;
-                self.pool = pool;
                 return Ok(());
             }
-            if !allowed_slots(definition, carried, catalog, Some(equip)).contains(&equip) {
+            if !allowed_slots(definition, carried, catalog, &[equip]).contains(&equip) {
                 return Err(Refusal::DoesNotFit);
             }
         }
@@ -1286,6 +1301,40 @@ mod tests {
         assert!(carried.worn(EquipSlot::Secondary).is_none());
         assert_eq!(carried.backpack[3].as_ref().unwrap().item, ItemId(3));
         assert_eq!(party.hand.held.as_ref().unwrap().item, ItemId(1));
+    }
+
+    #[test]
+    fn displaced_ammunition_uses_partial_stacks_then_an_empty_row() {
+        let (c, mut ids) = (catalog(), ItemIds::default());
+        let character = wearer();
+        let vitals = Vitals::new(&character);
+        let mut carried = Carried::default();
+        for place in &mut carried.backpack {
+            *place = Some(stack(&c, &mut ids, 0, 19));
+        }
+        let mut party = PartyInventory::default();
+        party.pool.stacks = (0..POOL_LIMIT).map(|_| stack(&c, &mut ids, 0, 20)).collect();
+        // One unit per backpack slot is enough even though no row is empty.
+        carried.equipment[EquipSlot::Secondary] =
+            Some(Equipped::new(stack(&c, &mut ids, 0, BACKPACK_SLOTS as u16)));
+        party.hand.held = Some(stack(&c, &mut ids, 2, 1));
+        let slot = Slot::Equipment(EquipSlot::Primary);
+        party.interact_slot(&character, &vitals, &mut carried, slot, &c).unwrap();
+        assert!(carried.backpack.iter().flatten().all(|s| s.count() == 20));
+        assert!(carried.worn(EquipSlot::Secondary).is_none());
+
+        // Authored stacks can exceed the ordinary merge limit; an empty row
+        // accepts the whole remainder without repacking or losing its identity.
+        carried.equipment[EquipSlot::Primary] = None;
+        let ammunition = stack(&c, &mut ids, 0, 80);
+        let id = ammunition.id;
+        carried.equipment[EquipSlot::Secondary] = Some(Equipped::new(ammunition));
+        party.pool.stacks.pop();
+        party.hand.held = Some(stack(&c, &mut ids, 2, 1));
+        party.interact_slot(&character, &vitals, &mut carried, slot, &c).unwrap();
+        let stored = party.pool.stacks.iter().find(|s| s.id == id).unwrap();
+        assert_eq!((stored.id, stored.count()), (id, 80));
+        assert!(carried.worn(EquipSlot::Secondary).is_none());
     }
 
     #[test]

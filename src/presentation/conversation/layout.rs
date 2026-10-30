@@ -256,7 +256,7 @@ fn build_menu(world: &mut World, canvas: Entity, root: Entity) {
             4 => open_trade(world, e, root),
             5 => leave_on(world, e, root),
             _ => {
-                world.entity_mut(e).insert(InteractionDisabled);
+                world.entity_mut(e).insert((InteractionDisabled, TabIndex(-1)));
             }
         }
     }
@@ -318,7 +318,7 @@ fn build_actions(world: &mut World, group: Entity, root: Entity, trade: bool) {
                 });
             }
             _ => {
-                world.entity_mut(e).insert(InteractionDisabled);
+                world.entity_mut(e).insert((InteractionDisabled, TabIndex(-1)));
             }
         }
     }
@@ -618,7 +618,7 @@ fn build_topics(world: &mut World, group: Entity, root: Entity) {
                 });
             }
             _ => {
-                world.entity_mut(e).insert(InteractionDisabled);
+                world.entity_mut(e).insert((InteractionDisabled, TabIndex(-1)));
             }
         }
     }

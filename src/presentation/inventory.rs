@@ -1313,8 +1313,7 @@ mod tests {
             .init_resource::<crate::game::rng::GameRng>()
             .init_resource::<super::super::main_screen::SelectedMember>()
             .add_plugins(InventoryPlugin)
-            .add_observer(crate::presentation::retail_controls::primary_buttons_only)
-            .add_systems(PostUpdate, crate::presentation::retail_controls::sync_button_navigation);
+            .add_observer(crate::presentation::retail_controls::primary_buttons_only);
         app
     }
 

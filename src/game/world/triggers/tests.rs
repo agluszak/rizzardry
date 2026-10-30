@@ -923,8 +923,6 @@ fn same_named_props_keep_their_own_device_state_and_animation() {
         assert!(level.world.get::<DoorState>(device).unwrap().open);
     }
 }
-/// A level whose trigger, by any of its uses, would fly a camera path
-/// without keys is refused before it is entered; paths with keys pass.
 #[test]
 fn a_pending_move_cannot_be_applied_to_a_later_visit() {
     let arrival = Arrival::Here { eye: Vec3::X, yaw: 0.0 };
