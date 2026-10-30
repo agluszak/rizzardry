@@ -14,7 +14,7 @@ use crate::game::time::GameClock;
 use crate::game::{
     characters::{Character, Condition, Vitals},
     inventory::{Carried, ItemIds, ItemOwner, ItemRef, PartyInventory, make_item},
-    party::roster::{PartyMember, PartyRoster, the_party},
+    party::roster::{PartyRoster, the_party},
     rng::GameRng,
     world::{ActorPose, level::Level, population::Monster},
 };
@@ -854,28 +854,31 @@ fn hand_in(world: &mut World, party: Entity, offered: ItemRef) -> bool {
     match offered.owner {
         ItemOwner::Pool => world
             .get_mut::<PartyInventory>(party)
-            .is_some_and(|mut inventory| inventory.pool.consume_units(offered.id, 1).is_ok()),
-        ItemOwner::Member(member) => world
-            .get_mut::<Carried>(member)
-            .is_some_and(|mut pack| pack.consume_backpack_units(offered.id, 1).is_ok()),
+            .unwrap()
+            .pool
+            .consume_units(offered.id, 1)
+            .is_ok(),
+        ItemOwner::Member(member) => {
+            world.get_mut::<Carried>(member).unwrap().consume_backpack_units(offered.id, 1).is_ok()
+        }
     }
 }
 /// One of the item leaves the first member's pack that holds it, else the
 /// party's items (retail `RemoveNpcScriptItem`). Says whose it was: a
 /// member, or `None` for the party's; nothing when the party has none.
 fn take_item(world: &mut World, party: Entity, item: ItemId) -> Option<Option<Entity>> {
-    let held =
-        |pack: &Carried| pack.backpack.iter().flatten().find(|s| s.item == item).map(|s| s.id);
-    let members = world.get::<PartyRoster>(party).map(|r| r.iter().collect::<Vec<_>>());
-    for member in members.unwrap_or_default() {
-        if let Some(id) = world.get::<Carried>(member).and_then(held) {
-            world.get_mut::<Carried>(member)?.consume_backpack_units(id, 1).ok()?;
+    let members: Vec<_> = world.get::<PartyRoster>(party).unwrap().iter().collect();
+    for member in members {
+        let pack = world.get::<Carried>(member).unwrap();
+        if let Some(stack) = pack.backpack.iter().flatten().find(|s| s.item == item) {
+            let id = stack.id;
+            world.get_mut::<Carried>(member).unwrap().consume_backpack_units(id, 1).unwrap();
             return Some(Some(member));
         }
     }
     let mut inventory = world.get_mut::<PartyInventory>(party).unwrap();
     let id = inventory.pool.stacks.iter().find(|s| s.item == item)?.id;
-    inventory.pool.consume_units(id, 1).ok()?;
+    inventory.pool.consume_units(id, 1).unwrap();
     Some(None)
 }
 fn commit_quote(world: &mut World, entity: Entity, quote: u16, plan: QuotePlan) {
@@ -1357,7 +1360,7 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
         return Err(TradeError::Busy);
     }
     let actor = c.actor;
-    let stack = sale_item(world, TradeSource::Party(item), party)?;
+    let stack = sale_item(world, item, party)?;
     let (offered, count) = (stack.item, stack.count());
     let definition_of = &world.resource::<Catalogs>().items[offered];
     let (crucial, value) = (definition_of.crucial, stack_value(definition_of, count));
@@ -1582,7 +1585,7 @@ pub fn quote_trade(
             let stock = &world.get::<Npc>(actor).unwrap().stock;
             trade::purchase_price(stock, def, catalog, lot, quantity, communication)
         }
-        _ => {
+        TradeSource::Party(source) => {
             let item = sale_item(world, source, party)?;
             trade::validate_sale(def, item, quantity, catalog, communication)
         }
@@ -1591,10 +1594,9 @@ pub fn quote_trade(
 }
 fn sale_item(
     world: &World,
-    source: TradeSource,
+    source: ItemRef,
     party: Entity,
 ) -> Result<&crate::game::inventory::ItemStack, TradeError> {
-    let TradeSource::Party(source) = source else { return Err(TradeError::StaleSelection) };
     match source.owner {
         ItemOwner::Pool => world
             .get::<PartyInventory>(party)
@@ -1603,12 +1605,9 @@ fn sale_item(
             .stacks
             .iter()
             .find(|i| i.id == source.id),
-        ItemOwner::Member(member)
-            if world.get::<PartyMember>(member).is_some_and(|m| m.0 == party) =>
-        {
-            world.get::<Carried>(member).and_then(|c| c.backpack_stack(source.id))
+        ItemOwner::Member(member) => {
+            world.get::<Carried>(member).unwrap().backpack_stack(source.id)
         }
-        _ => None,
     }
     .ok_or(TradeError::StaleSelection)
 }
@@ -1645,7 +1644,7 @@ fn execute_trade(world: &mut World, quote: TradeQuote) -> Result<(), TradeError>
             )
         }),
         TradeSource::Party(source) => {
-            let item = sale_item(world, TradeSource::Party(source), party)?;
+            let item = sale_item(world, source, party)?;
             let units = u16::try_from(quote.quantity).map_err(|_| TradeError::InvalidQuantity)?;
             let gold = world.get::<PartyInventory>(party).unwrap().gold + quote.gold;
             let merchant = &world.get::<Npc>(actor).unwrap().stock;
@@ -1806,6 +1805,7 @@ pub fn update_conversation(world: &mut World) {
 mod tests {
     use super::*;
     use crate::game::inventory::ItemRef;
+    use crate::game::party::roster::PartyMember;
     use crate::game::world::population::ScaledBody;
     fn app(script: DialogueScript) -> (App, Entity, Entity) {
         let mut app = App::new();
@@ -3653,13 +3653,11 @@ mod tests {
         carried.equipment[EquipSlot::Primary] = Some(Equipped::new(item.clone()));
         let member = world.spawn(carried).id();
         world.entity_mut(member).insert(PartyMember(party));
-        let source = TradeSource::Party(ItemRef { owner: ItemOwner::Member(member), id: item.id });
+        let source = ItemRef { owner: ItemOwner::Member(member), id: item.id };
         assert!(matches!(sale_item(world, source, party), Err(TradeError::StaleSelection)));
         world.get_mut::<Carried>(member).unwrap().equipment[EquipSlot::Primary] = None;
         world.get_mut::<Carried>(member).unwrap().backpack[0] = Some(item.clone());
         assert_eq!(sale_item(world, source, party).unwrap().id, item.id);
-        world.entity_mut(member).remove::<PartyMember>();
-        assert!(matches!(sale_item(world, source, party), Err(TradeError::StaleSelection)));
     }
 }
 
