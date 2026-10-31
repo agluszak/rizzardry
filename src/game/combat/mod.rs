@@ -202,6 +202,13 @@ enum RoundPhase {
 }
 
 impl Battle {
+    /// A member whose action was refused defends instead (retail
+    /// `ExecuteCharacterAction`), the turn spent.
+    pub fn falls_back_to_defending(&mut self, member: Entity) {
+        let work = self.this_round.party.iter_mut().find(|work| work.actor == member).unwrap();
+        work.action = RoundAction::Defend;
+    }
+
     /// A round is accepted or running, including its pacing delay.
     pub fn executing(&self) -> bool {
         self.phase != RoundPhase::Waiting

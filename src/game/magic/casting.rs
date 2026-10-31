@@ -937,22 +937,6 @@ impl Payment<'_, '_> {
     }
 }
 
-/// [`Payment::pay`], for operations that hold the whole world.
-pub(crate) fn cast_source(
-    world: &mut World,
-    caster: Entity,
-    source: Source,
-    context: UseContext,
-) -> Result<(Report, Strength), Refusal> {
-    world
-        .run_system_cached_with(
-            |In((caster, source, context)): In<(Entity, Source, UseContext)>,
-             mut payment: Payment| { payment.pay(caster, source, context) },
-            (caster, source, context),
-        )
-        .unwrap()
-}
-
 /// An attempt at `power`: its failure chance, whether it is quiet (a
 /// thrown item), and the strength it casts with, from a learned spell or an
 /// item.

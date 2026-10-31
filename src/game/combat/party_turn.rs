@@ -139,7 +139,7 @@ pub(super) fn breathe(
 
 /// A member casts or uses an item. A refused action falls back to
 /// defending (retail `ExecuteCharacterAction`), its turn spent; a point
-/// cast needs the whole world and settles once this step is done.
+/// cast is carried out by its own system.
 pub(super) fn cast(
     commands: &mut Commands,
     battle: &mut Battle,
@@ -160,14 +160,12 @@ pub(super) fn cast(
             &magic.context.inventory,
             &magic.context.content.items,
         )
-        .is_some_and(crate::game::magic::pointcasts::spell);
-    if point_cast {
-        commands.queue(move |world: &mut World| {
-            if crate::game::magic::execute_in_world(world, member, choice).is_err() {
-                let mut battle = world.query::<&mut Battle>().single_mut(world).unwrap();
-                let work = battle.this_round.party.iter_mut().find(|w| w.actor == member).unwrap();
-                work.action = RoundAction::Defend;
-            }
+        .filter(|&id| crate::game::magic::pointcasts::spell(id));
+    if let Some(spell) = point_cast {
+        commands.write_message(crate::game::magic::utilities::UtilityCast {
+            caster: member,
+            choice,
+            spell,
         });
         return;
     }

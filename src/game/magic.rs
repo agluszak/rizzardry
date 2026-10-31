@@ -497,6 +497,7 @@ impl Plugin for MagicPlugin {
                     utilities::identify_items,
                     portals::cast_portals,
                     dialogue::cast_at_speakers,
+                    pointcasts::cast_at_points,
                     pointcasts::expire_lures,
                     pointcasts::follow_lures,
                 )
@@ -582,45 +583,6 @@ impl MagicContext<'_, '_> {
     }
 }
 
-/// Carry out magic that needs the whole world, announcing a refusal: a
-/// utility spell (portals, dialogue, point casts, Identify) or a cast at a
-/// device. The one way such magic executes, in or out of a fight.
-pub(crate) fn execute_in_world(
-    world: &mut World,
-    caster: Entity,
-    choice: casting::MagicChoice,
-) -> Result<(), casting::Refusal> {
-    let result = utilities::source_spell(world, caster, choice.source).and_then(|id| match id {
-        id if pointcasts::spell(id) => pointcasts::cast(world, caster, choice, id),
-        id if dialogue::spell(id) => {
-            world.write_message(utilities::UtilityCast { caster, choice, spell: id });
-            Ok(())
-        }
-        id if portals::spell(id) => {
-            world.write_message(utilities::UtilityCast { caster, choice, spell: id });
-            Ok(())
-        }
-        SpellId::IDENTIFY_ITEM => {
-            world.write_message(utilities::UtilityCast {
-                caster,
-                choice,
-                spell: SpellId::IDENTIFY_ITEM,
-            });
-            Ok(())
-        }
-        _ => match choice.aim {
-            casting::Aim::Device(attempt) => {
-                crate::game::world::interaction::cast_device(world, caster, attempt, choice.source)
-            }
-            _ => Err(casting::Refusal::Unsupported),
-        },
-    });
-    if let Err(refusal) = result {
-        world.write_message(casting::MagicNews::Refused { caster, refusal });
-    }
-    result
-}
-
 /// Accept magic requests (retail `ChooseAction`): in combat only record the
 /// choice; outside it, execute it now.
 pub fn accept_magic(
@@ -636,6 +598,10 @@ pub fn accept_magic(
     party: Single<(&avian3d::prelude::Position, &PartyBody)>,
     mut commands: Commands,
     clock: Res<GameClock>,
+    (mut utility, mut device): (
+        MessageWriter<utilities::UtilityCast>,
+        MessageWriter<crate::game::world::interaction::DeviceCast>,
+    ),
 ) {
     let (party_at, facing) = (PartyBody::eye(party.0), party.1.forward());
     for &MagicRequest { caster, choice } in requests.read() {
@@ -649,9 +615,24 @@ pub fn accept_magic(
             && (battle.is_none() || !spell.is_some_and(pointcasts::spell)))
             || matches!(choice.aim, casting::Aim::Device(_));
         if in_world {
-            commands.queue(move |world: &mut World| {
-                let _ = execute_in_world(world, caster, choice);
-            });
+            match (spell, choice.aim) {
+                (Some(spell), _) if utilities::spell(spell) => {
+                    utility.write(utilities::UtilityCast { caster, choice, spell });
+                }
+                (Some(_), casting::Aim::Device(on)) => {
+                    device.write(crate::game::world::interaction::DeviceCast {
+                        caster,
+                        on,
+                        source: choice.source,
+                    });
+                }
+                _ => {
+                    context.news.write(casting::MagicNews::Refused {
+                        caster,
+                        refusal: casting::Refusal::NoItem,
+                    });
+                }
+            }
             continue;
         }
         if !interaction.is_empty() {

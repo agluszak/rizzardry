@@ -122,19 +122,6 @@ pub fn current(world: &World) -> Option<(Entity, Entity)> {
     attempts.iter(world).next().map(|(attempt, on)| (attempt, on.0))
 }
 
-/// The named attempt's work and device, if it is still the one under way and
-/// its device still stands.
-fn attempt(world: &World, attempt: Entity) -> Result<(&Work, Entity), Unable> {
-    // A request may name an attempt that has since ended.
-    let entity = world.get_entity(attempt).map_err(|_| Unable::NotNow)?;
-    let interaction = entity.get::<DeviceInteraction>().ok_or(Unable::NotNow)?;
-    Ok((&interaction.work, entity.get::<AttemptOn>().unwrap().0))
-}
-
-fn work_mut(world: &mut World, attempt: Entity) -> Mut<'_, Work> {
-    world.get_mut::<DeviceInteraction>(attempt).unwrap().map_unchanged(|i| &mut i.work)
-}
-
 #[derive(Debug)]
 pub enum Work {
     Picking(Picking),
@@ -662,10 +649,53 @@ pub fn magic_attempt(world: &World, requested: Option<Entity>) -> Result<Option<
 /// Per mille that Knock-Knock moves each tumbler it reaches, by power.
 const KNOCK_CHANCE: [u32; 8] = [0, 344, 459, 516, 550, 573, 589, 602];
 
-fn knock(world: &mut World, on: Entity, actor: Entity, power: u8, backfire: bool) {
-    let (done, dropped) = world.resource_scope(|world, mut rng: Mut<GameRng>| {
-        let mut work = work_mut(world, on);
-        let Work::Picking(picking) = &mut *work else { unreachable!("a lock's spell") };
+/// A member casts at the device attempt under way.
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
+pub struct DeviceCast {
+    pub caster: Entity,
+    pub on: Entity,
+    pub source: crate::game::magic::casting::Source,
+}
+
+impl DeviceWork<'_, '_> {
+    /// What a spell at the attempt works on: its lock, or its trap's kind
+    /// and difficulty, while the device still stands guarded.
+    fn spell_target(
+        &mut self,
+        on: Entity,
+        actor: Entity,
+    ) -> Result<Option<(u8, u8)>, crate::game::magic::casting::Refusal> {
+        use crate::game::magic::casting::Refusal;
+        if !self.entering.is_empty()
+            || !self.battles.is_empty()
+            || !self.members.get(actor).unwrap().1.can_act()
+        {
+            return Err(Refusal::CannotAct);
+        }
+        let (work, device) = self.work(on).map_err(|_| Refusal::NoTarget)?;
+        let trap = match &*work {
+            Work::Picking(_) => None,
+            Work::Disarming(trap) => Some((trap.trap, trap.difficulty)),
+            Work::Looting => return Err(Refusal::NoTarget),
+        };
+        if !self.guards.contains(device) {
+            return Err(Refusal::NoTarget);
+        }
+        if let Some((kind, _)) = trap
+            && crate::game::magic::traps::validate(kind).is_err()
+        {
+            self.news.write(LockNews::UnsupportedTrap);
+            return Err(Refusal::Unsupported);
+        }
+        Ok(trap)
+    }
+
+    /// Knock-Knock lifts tumblers at random, or drops them when it
+    /// backfires.
+    fn knock(&mut self, on: Entity, actor: Entity, power: u8, backfire: bool) {
+        let (mut interaction, _) = self.attempts.get_mut(on).unwrap();
+        let Work::Picking(picking) = &mut interaction.work else { unreachable!("a lock's spell") };
+        let rng = &mut self.rng;
         let mut order: Vec<_> = (0..picking.tumblers.len()).collect();
         for _ in 0..order.len() {
             let a = rng.below(order.len() as u32) as usize;
@@ -684,77 +714,80 @@ fn knock(world: &mut World, on: Entity, actor: Entity, power: u8, backfire: bool
                 }
             }
         }
-        (picking.tumblers.iter().all(|pin| pin.raised()), dropped)
-    });
-    world.write_message(LockNews::Tumbler { dropped });
-    if done {
-        world.write_message(LockNews::Picked);
-        world.write_message(DeviceOpened { on });
-    }
-}
-
-/// One exclusive operation: target preflight, shared cast/payment/practice,
-/// and the device effect, which springs or opens the device by the same
-/// messages as the party's own work.
-pub fn cast_device(
-    world: &mut World,
-    actor: Entity,
-    on: Entity,
-    source: crate::game::magic::casting::Source,
-) -> Result<(), crate::game::magic::casting::Refusal> {
-    use crate::game::magic::{
-        Outcome,
-        casting::{MagicNews, Refusal, UseContext},
-    };
-    if crate::game::world::party_occupied(world) || !world.get::<Vitals>(actor).unwrap().can_act() {
-        return Err(Refusal::CannotAct);
-    }
-    let (work, device) = attempt(world, on).map_err(|_| Refusal::NoTarget)?;
-    if world.get::<Guarded>(device).is_none() {
-        return Err(Refusal::NoTarget);
-    }
-    let (context, trap) = match work {
-        Work::Picking(_) => (UseContext::Lock, None),
-        Work::Disarming(trap) => (UseContext::Trap, Some((trap.trap, trap.difficulty))),
-        Work::Looting => return Err(Refusal::NoTarget),
-    };
-    if let Some((kind, _)) = trap
-        && crate::game::magic::traps::validate(kind).is_err()
-    {
-        world.write_message(LockNews::UnsupportedTrap);
-        return Err(Refusal::Unsupported);
-    }
-    let (report, strength) =
-        crate::game::magic::casting::cast_source(world, actor, source, context)?;
-    let outcome = report.outcome;
-    let spell = report.spell;
-    world.write_message(MagicNews::Done(report));
-    if outcome == Outcome::Fizzled {
-        return Ok(());
-    }
-    let power =
-        (u32::from(strength.power) + u32::from(strength.power) * strength.boost / 100).min(7) as u8;
-    match trap {
-        None => knock(world, on, actor, power, outcome == Outcome::Backfired),
-        Some(_) if spell == SpellId::DIVINE_TRAP => {
-            let Work::Disarming(trap) = &mut *work_mut(world, on) else { unreachable!() };
-            trap.divine_power = power;
+        let done = picking.tumblers.iter().all(|pin| pin.raised());
+        self.news.write(LockNews::Tumbler { dropped });
+        if done {
+            self.news.write(LockNews::Picked);
+            self.opened.write(DeviceOpened { on });
         }
-        Some((kind, difficulty)) => {
-            let chance = if outcome == Outcome::Backfired {
-                0
-            } else {
-                i32::from(power) * 5 + 50 - i32::from(difficulty) * 6
-            };
-            if (world.resource_mut::<GameRng>().below(100) as i32) < chance {
-                world.write_message(LockNews::Disarmed { trap: kind });
-                world.write_message(DeviceOpened { on });
-            } else {
-                world.write_message(TrapSprung { on, selected: Some(actor) });
+    }
+
+    /// A spell lands on the device: Knock-Knock on a lock, Divine Trap
+    /// readies its power for the next disarm, any other trap spell disarms
+    /// or springs it.
+    fn spell_lands(
+        &mut self,
+        (on, actor): (Entity, Entity),
+        (spell, power, backfired): (SpellId, u8, bool),
+        trap: Option<(u8, u8)>,
+    ) {
+        match trap {
+            None => self.knock(on, actor, power, backfired),
+            Some(_) if spell == SpellId::DIVINE_TRAP => {
+                let (mut work, _) = self.work(on).unwrap();
+                let Work::Disarming(trap) = &mut *work else { unreachable!() };
+                trap.divine_power = power;
+            }
+            Some((kind, difficulty)) => {
+                let chance = if backfired {
+                    0
+                } else {
+                    i32::from(power) * 5 + 50 - i32::from(difficulty) * 6
+                };
+                if (self.rng.below(100) as i32) < chance {
+                    self.news.write(LockNews::Disarmed { trap: kind });
+                    self.opened.write(DeviceOpened { on });
+                } else {
+                    self.sprung.write(TrapSprung { on, selected: Some(actor) });
+                }
             }
         }
     }
-    Ok(())
+}
+
+/// Magic at a device: target preflight, the shared payment and practice,
+/// then the effect, which springs or opens the device by the same messages
+/// as the party's own work.
+pub(crate) fn cast_at_devices(
+    mut casts: MessageReader<DeviceCast>,
+    mut casting: ParamSet<(DeviceWork, crate::game::magic::casting::Payment)>,
+    mut news: MessageWriter<crate::game::magic::casting::MagicNews>,
+) {
+    use crate::game::magic::{
+        Outcome,
+        casting::{MagicNews, UseContext},
+    };
+    for &DeviceCast { caster, on, source } in casts.read() {
+        let paid = casting.p0().spell_target(on, caster).and_then(|trap| {
+            let context = if trap.is_some() { UseContext::Trap } else { UseContext::Lock };
+            Ok((casting.p1().pay(caster, source, context)?, trap))
+        });
+        let ((report, strength), trap) = match paid {
+            Ok(paid) => paid,
+            Err(refusal) => {
+                news.write(MagicNews::Refused { caster, refusal });
+                continue;
+            }
+        };
+        let (outcome, spell) = (report.outcome, report.spell);
+        news.write(MagicNews::Done(report));
+        if outcome == Outcome::Fizzled {
+            continue;
+        }
+        let power = (u32::from(strength.power) + u32::from(strength.power) * strength.boost / 100)
+            .min(7) as u8;
+        casting.p0().spell_lands((on, caster), (spell, power, outcome == Outcome::Backfired), trap);
+    }
 }
 
 /// Travel and fights end the attempt under way (its device's own end takes
@@ -807,10 +840,17 @@ pub(crate) fn plugin(app: &mut App) {
     app.add_message::<DeviceRequest>()
         .add_message::<TrapSprung>()
         .add_message::<DeviceOpened>()
+        .add_message::<DeviceCast>()
         .add_message::<super::containers::TakeFromContainer>()
         .add_systems(
             Update,
-            (work_devices, spring_traps, open_devices, super::containers::take_from_containers)
+            (
+                work_devices,
+                cast_at_devices,
+                spring_traps,
+                open_devices,
+                super::containers::take_from_containers,
+            )
                 .chain()
                 .after(GameplaySet::Burden)
                 .before(GameplaySet::Combat),

@@ -1,9 +1,7 @@
 //! Utility targets are validated before the shared cast/payment operation.
 use super::casting::{Aim, MagicChoice, MagicNews, Refusal, Source, UseContext};
 use crate::content::spells::SpellId;
-use crate::game::data::Catalogs;
-use crate::game::inventory::{Carried, PartyInventory};
-use crate::game::party::roster::{PartyRoster, the_party};
+use crate::game::party::roster::PartyRoster;
 use bevy::prelude::*;
 
 pub(crate) fn spell(id: SpellId) -> bool {
@@ -11,17 +9,6 @@ pub(crate) fn spell(id: SpellId) -> bool {
         || super::dialogue::spell(id)
         || super::pointcasts::spell(id)
         || id == SpellId::IDENTIFY_ITEM
-}
-
-pub(crate) fn source_spell(
-    world: &mut World,
-    caster: Entity,
-    source: Source,
-) -> Result<SpellId, Refusal> {
-    let party = the_party(world);
-    let inventory = world.get::<PartyInventory>(party).unwrap();
-    let items = &world.resource::<Catalogs>().items;
-    source.spell_id(world.get::<Carried>(caster).unwrap(), inventory, items).ok_or(Refusal::NoItem)
 }
 
 /// A member casts a utility spell, carried out by the system for its kind.
