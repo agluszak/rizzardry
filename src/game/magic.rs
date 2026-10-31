@@ -486,12 +486,18 @@ pub struct MagicPlugin;
 impl Plugin for MagicPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<MagicRequest>()
+            .add_message::<utilities::UtilityCast>()
             .add_message::<casting::MagicNews>()
             .add_message::<crate::game::world::hostility::Provocation>()
             .init_resource::<casting::FlightOrder>()
             .add_systems(
                 Update,
-                (accept_magic, pointcasts::expire_lures, pointcasts::follow_lures)
+                (
+                    accept_magic,
+                    utilities::identify_items,
+                    pointcasts::expire_lures,
+                    pointcasts::follow_lures,
+                )
                     .chain()
                     .after(GameplaySet::Burden)
                     .before(GameplaySet::Combat)
@@ -586,7 +592,14 @@ pub(crate) fn execute_in_world(
         id if pointcasts::spell(id) => pointcasts::cast(world, caster, choice, id),
         id if dialogue::spell(id) => dialogue::cast(world, caster, choice, id),
         id if portals::spell(id) => portals::cast(world, caster, choice.source, id),
-        SpellId::IDENTIFY_ITEM => utilities::identify(world, caster, choice),
+        SpellId::IDENTIFY_ITEM => {
+            world.write_message(utilities::UtilityCast {
+                caster,
+                choice,
+                spell: SpellId::IDENTIFY_ITEM,
+            });
+            Ok(())
+        }
         _ => match choice.aim {
             casting::Aim::Device(attempt) => {
                 crate::game::world::interaction::cast_device(world, caster, attempt, choice.source)

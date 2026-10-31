@@ -858,80 +858,99 @@ pub fn perform(
     Ok((report, flights))
 }
 
-/// Execute the source side of a utility or device cast. The exclusive caller
-/// validates its target first and applies the consequence immediately.
+/// What paying for a utility or device cast from its source needs: the
+/// caster and the party's members, their spell points, the party's items,
+/// the catalogs, the setting and the dice.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct Payment<'w, 's> {
+    pub members: crate::game::party::Members<'w, 's>,
+    points: Query<'w, 's, (&'static LearnedSpells, &'static mut SpellPoints)>,
+    pub inventory: Single<'w, 's, &'static mut PartyInventory>,
+    roster: Single<'w, 's, &'static crate::game::party::roster::PartyRoster>,
+    pub content: Res<'w, crate::game::data::Catalogs>,
+    difficulty: Res<'w, Difficulty>,
+    levels: Query<
+        'w,
+        's,
+        &'static crate::game::world::triggers::LevelState,
+        With<crate::game::world::level::Level>,
+    >,
+    pub rng: ResMut<'w, GameRng>,
+}
+
+impl Payment<'_, '_> {
+    /// The spell the caster's source casts.
+    pub fn spell_of(&self, caster: Entity, source: Source) -> Option<SpellId> {
+        source.spell_id(self.members.get(caster).unwrap().2, &self.inventory, &self.content.items)
+    }
+
+    /// Cast from the source: roll, pay whatever the roll and practise. The
+    /// caller validates its target first and applies the consequence.
+    pub fn pay(
+        &mut self,
+        caster: Entity,
+        source: Source,
+        context: UseContext,
+    ) -> Result<(Report, Strength), Refusal> {
+        let Self { members, points, inventory, roster, content, difficulty, levels, rng } = self;
+        if !roster.contains(&caster) {
+            return Err(Refusal::CannotAct);
+        }
+        let (spells, items) = (&content.spells, &content.items);
+        let underwater = levels.single().is_ok_and(|state| state.camera_sway);
+        let Prepared { spell, power, item, .. } =
+            prepare_source(caster, source, false, (spells, items), members, points, inventory)?;
+        if !usable_now(spell, context) {
+            return Err(Refusal::WrongTime);
+        }
+        let power = match &item {
+            Some(use_)
+                if matches!(use_.definition.use_type, UseType::Instrument | UseType::Gadget) =>
+            {
+                play(caster, use_, spell, rng, members)?
+            }
+            Some(_) => power,
+            None => {
+                let (learned, pool) = points.get(caster).unwrap();
+                let (character, vitals, ..) = members.get(caster).unwrap();
+                let maximum = character.stats(&vitals.enchantments).max_points(learned, spells);
+                power.min(MAX_POWER).min(pool.affordable_power(spell, &maximum))
+            }
+        };
+        let (chance, quiet, strength) =
+            attempt(members.get(caster).unwrap().0, item.as_ref(), spell, power, **difficulty);
+        let outcome = super::roll(rng, chance, spell, quiet, underwater);
+        let mut report = Report {
+            caster,
+            spell: spell.id,
+            power,
+            item: None,
+            outcome,
+            effects: Vec::new(),
+            improved: Vec::new(),
+            repeats: 0,
+        };
+        pay(caster, spell, power, item.as_ref(), points, rng, members, inventory, &mut report);
+        // Retail considers these utility spells affected even on a fizzle.
+        report.improved.extend(practise(caster, spell, power, item.as_ref(), rng, members));
+        Ok((report, strength))
+    }
+}
+
+/// [`Payment::pay`], for operations that hold the whole world.
 pub(crate) fn cast_source(
     world: &mut World,
     caster: Entity,
     source: Source,
     context: UseContext,
 ) -> Result<(Report, Strength), Refusal> {
-    world.run_system_cached_with(perform_utility, (caster, source, context)).unwrap()
-}
-
-fn perform_utility(
-    In((caster, source, context)): In<(Entity, Source, UseContext)>,
-    mut members: crate::game::party::Members,
-    mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
-    mut inventory: Single<&mut PartyInventory>,
-    roster: Single<&crate::game::party::roster::PartyRoster>,
-    content: Res<crate::game::data::Catalogs>,
-    difficulty: Res<Difficulty>,
-    levels: Query<
-        &crate::game::world::triggers::LevelState,
-        With<crate::game::world::level::Level>,
-    >,
-    mut rng: ResMut<GameRng>,
-) -> Result<(Report, Strength), Refusal> {
-    if !roster.contains(&caster) {
-        return Err(Refusal::CannotAct);
-    }
-    let (spells, items) = (&content.spells, &content.items);
-    let underwater = levels.single().is_ok_and(|state| state.camera_sway);
-    let Prepared { spell, power, item, .. } =
-        prepare_source(caster, source, false, (spells, items), &members, &points, &inventory)?;
-    if !usable_now(spell, context) {
-        return Err(Refusal::WrongTime);
-    }
-    let power = match &item {
-        Some(use_) if matches!(use_.definition.use_type, UseType::Instrument | UseType::Gadget) => {
-            play(caster, use_, spell, &mut rng, &mut members)?
-        }
-        Some(_) => power,
-        None => {
-            let (learned, pool) = points.get(caster).unwrap();
-            let (character, vitals, ..) = members.get(caster).unwrap();
-            let maximum = character.stats(&vitals.enchantments).max_points(learned, spells);
-            power.min(MAX_POWER).min(pool.affordable_power(spell, &maximum))
-        }
-    };
-    let (chance, quiet, strength) =
-        attempt(members.get(caster).unwrap().0, item.as_ref(), spell, power, *difficulty);
-    let outcome = super::roll(&mut rng, chance, spell, quiet, underwater);
-    let mut report = Report {
-        caster,
-        spell: spell.id,
-        power,
-        item: None,
-        outcome,
-        effects: Vec::new(),
-        improved: Vec::new(),
-        repeats: 0,
-    };
-    pay(
-        caster,
-        spell,
-        power,
-        item.as_ref(),
-        &mut points,
-        &mut rng,
-        &mut members,
-        &mut inventory,
-        &mut report,
-    );
-    // Retail considers these utility spells affected even on a fizzle.
-    report.improved.extend(practise(caster, spell, power, item.as_ref(), &mut rng, &mut members));
-    Ok((report, strength))
+    world
+        .run_system_cached_with(
+            |In((caster, source, context)): In<(Entity, Source, UseContext)>,
+             mut payment: Payment| { payment.pay(caster, source, context) },
+            (caster, source, context),
+        )
+        .unwrap()
 }
 
 /// An attempt at `power`: its failure chance, whether it is quiet (a

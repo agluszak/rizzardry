@@ -2,7 +2,7 @@
 use super::casting::{Aim, MagicChoice, MagicNews, Refusal, Source, UseContext};
 use crate::content::spells::SpellId;
 use crate::game::data::Catalogs;
-use crate::game::inventory::{Carried, ItemStack, PartyInventory, StackId};
+use crate::game::inventory::{Carried, PartyInventory};
 use crate::game::party::roster::{PartyRoster, the_party};
 use bevy::prelude::*;
 
@@ -24,16 +24,12 @@ pub(crate) fn source_spell(
     source.spell_id(world.get::<Carried>(caster).unwrap(), inventory, items).ok_or(Refusal::NoItem)
 }
 
-/// Search only the current roster and party inventory. Stable stack IDs allow
-/// a target to move between those owners without retargeting a different item.
-fn target(world: &World, party: Entity, id: StackId) -> Option<&ItemStack> {
-    world.get::<PartyInventory>(party).unwrap().find_stack(id).or_else(|| {
-        world
-            .get::<PartyRoster>(party)
-            .unwrap()
-            .iter()
-            .find_map(|member| world.get::<Carried>(member).unwrap().find_stack(id))
-    })
+/// A member casts a utility spell, carried out by the system for its kind.
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
+pub struct UtilityCast {
+    pub caster: Entity,
+    pub choice: MagicChoice,
+    pub spell: SpellId,
 }
 
 /// Whether an identify at `strength` reveals an item this hard (retail
@@ -43,21 +39,51 @@ fn identifies(strength: super::Strength, difficulty: u8) -> bool {
     score + score * strength.boost / 100 >= u32::from(difficulty)
 }
 
-pub(crate) fn identify(
-    world: &mut World,
+/// Identify Item, outside a fight and while the party is free: success
+/// reveals the target's identity, spell and binding, with no item roll.
+pub(crate) fn identify_items(
+    mut casts: MessageReader<UtilityCast>,
+    freedom: crate::game::freedom::Freedom,
+    battles: Query<(), With<crate::game::combat::Battle>>,
+    roster: Single<&PartyRoster>,
+    mut payment: super::casting::Payment,
+    mut news: MessageWriter<MagicNews>,
+) {
+    for &UtilityCast { caster, choice, spell } in casts.read() {
+        if spell != SpellId::IDENTIFY_ITEM {
+            continue;
+        }
+        let identified = if !freedom.unoccupied() || !battles.is_empty() {
+            Err(Refusal::WrongTime)
+        } else {
+            identify(&roster, &mut payment, caster, choice)
+        };
+        news.write(match identified {
+            Ok(report) => MagicNews::Done(report),
+            Err(refusal) => MagicNews::Refused { caster, refusal },
+        });
+    }
+}
+
+fn identify(
+    roster: &PartyRoster,
+    payment: &mut super::casting::Payment,
     caster: Entity,
     choice: MagicChoice,
-) -> Result<(), Refusal> {
-    if !world.run_system_cached(crate::game::freedom::unoccupied).unwrap_or(false)
-        || world.query::<&crate::game::combat::Battle>().iter(world).next().is_some()
-    {
-        return Err(Refusal::WrongTime);
-    }
+) -> Result<super::casting::Report, Refusal> {
     let Aim::Item(target_id) = choice.aim else { return Err(Refusal::NoTarget) };
-    let party = the_party(world);
-    let stack = target(world, party, target_id).ok_or(Refusal::NoTarget)?;
-    let definition = &world.resource::<Catalogs>().items[stack.item];
-    let difficulty = definition.identify_difficulty;
+    // Search only the current roster and party inventory. Stable stack IDs
+    // allow a target to move between those owners without retargeting a
+    // different item.
+    let target = |payment: &super::casting::Payment| {
+        payment.inventory.find_stack(target_id).cloned().or_else(|| {
+            roster
+                .iter()
+                .find_map(|m| payment.members.get(m).unwrap().2.find_stack(target_id).cloned())
+        })
+    };
+    let stack = target(payment).ok_or(Refusal::NoTarget)?;
+    let difficulty = payment.content.items[stack.item].identify_difficulty;
     // The source cannot consume its own target and then silently identify a
     // replacement. A fully known stack likewise needs no paid attempt.
     if matches!(choice.source, Source::Item(s) | Source::PoolItem(s) if s == target_id)
@@ -66,9 +92,8 @@ pub(crate) fn identify(
         return Err(Refusal::NoTarget);
     }
     let source = if let Source::Spell { spell, power: super::casting::AUTO_POWER } = choice.source {
-        let spells = &world.resource::<Catalogs>().spells;
-        let definition = &spells[spell];
-        let profile = world.get::<crate::game::characters::Character>(caster).unwrap();
+        let definition = &payment.content.spells[spell];
+        let profile = payment.members.get(caster).unwrap().0;
         let power = (1..=crate::content::spells::MAX_POWER)
             .find(|&power| identifies(super::Strength::of(profile, definition, power), difficulty))
             .unwrap_or(crate::content::spells::MAX_POWER);
@@ -76,30 +101,28 @@ pub(crate) fn identify(
     } else {
         choice.source
     };
-    let (report, strength) = super::casting::cast_source(world, caster, source, UseContext::World)?;
-    // No item roll or extra RNG draw; success reveals identity, spell and
-    // binding.
+    let (report, strength) = payment.pay(caster, source, UseContext::World)?;
     if report.outcome == super::Outcome::Cast && identifies(strength, difficulty) {
-        let reveal = |stack: &mut ItemStack| {
-            stack.identified = true;
-            stack.spell_known = true;
-            stack.curse_known = true;
+        let stack = match payment.inventory.find_stack_mut(target_id) {
+            Some(stack) => stack,
+            None => {
+                let owner = roster
+                    .iter()
+                    .find(|&m| payment.members.get(m).unwrap().2.find_stack(target_id).is_some())
+                    .unwrap();
+                payment
+                    .members
+                    .get_mut(owner)
+                    .unwrap()
+                    .2
+                    .into_inner()
+                    .find_stack_mut(target_id)
+                    .unwrap()
+            }
         };
-        let mut inventory = world.get_mut::<PartyInventory>(party).unwrap();
-        if let Some(stack) = inventory.find_stack_mut(target_id) {
-            reveal(stack);
-        } else {
-            let owner = world
-                .get::<PartyRoster>(party)
-                .unwrap()
-                .iter()
-                .find(|&member| {
-                    world.get::<Carried>(member).unwrap().find_stack(target_id).is_some()
-                })
-                .unwrap();
-            reveal(world.get_mut::<Carried>(owner).unwrap().find_stack_mut(target_id).unwrap());
-        }
+        stack.identified = true;
+        stack.spell_known = true;
+        stack.curse_known = true;
     }
-    world.write_message(MagicNews::Done(report));
-    Ok(())
+    Ok(report)
 }
