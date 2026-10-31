@@ -43,8 +43,11 @@ pub enum LureResponse {
     #[default]
     Resisted,
 }
+/// A lured monster's hold. Losing it, however the lure goes, frees a
+/// monster outside the fight to walk where it would.
 #[derive(Component, Clone, Copy)]
 #[relationship(relationship_target = LureTargets)]
+#[component(on_remove = release_lured)]
 pub struct LureInfluence {
     #[relationship]
     pub lure: Entity,
@@ -53,6 +56,17 @@ pub struct LureInfluence {
 #[derive(Component)]
 #[relationship_target(relationship = LureInfluence)]
 pub struct LureTargets(Vec<Entity>);
+
+fn release_lured(
+    mut world: bevy::ecs::world::DeferredWorld,
+    context: bevy::ecs::lifecycle::HookContext,
+) {
+    if world.get::<Combatant>(context.entity).is_none()
+        && let Some(mut target) = world.get_mut::<AgentTarget3d>(context.entity)
+    {
+        *target = AgentTarget3d::None;
+    }
+}
 
 pub fn spell(id: SpellId) -> bool {
     matches!(id, SpellId::HYPNOTIC_LURE | SpellId::SUMMON_ELEMENTAL)
@@ -134,7 +148,7 @@ pub(crate) fn cast(
         if id == SpellId::HYPNOTIC_LURE {
             let old: Vec<_> = world.query_filtered::<Entity, With<Lure>>().iter(world).collect();
             for old in old {
-                remove_lure(world, old);
+                world.despawn(old);
             }
             let turns =
                 super::effects::duration(&mut world.resource_mut::<GameRng>(), &spell, strength);
@@ -300,55 +314,53 @@ pub(crate) fn cast(
     Ok(())
 }
 
-fn remove_lure(world: &mut World, entity: Entity) {
-    let affected: Vec<_> =
-        world.get::<LureTargets>(entity).map_or_else(Vec::new, |targets| targets.iter().collect());
-    for actor in affected {
-        if world.get::<Combatant>(actor).is_none()
-            && let Some(mut target) = world.get_mut::<AgentTarget3d>(actor)
-        {
-            *target = AgentTarget3d::None;
+/// Lures last their turns, then go, and with them their hold.
+pub(crate) fn expire_lures(
+    mut commands: Commands,
+    lures: Query<(Entity, &Lure)>,
+    clock: Res<GameClock>,
+) {
+    for (entity, lure) in &lures {
+        if lure.expires <= clock.ms {
+            commands.entity(entity).despawn();
         }
     }
-    world.despawn(entity);
 }
 
-pub(crate) fn update_lure(world: &mut World) {
-    let now = world.resource::<GameClock>().ms;
-    let expired: Vec<_> = world
-        .query::<(Entity, &Lure)>()
-        .iter(world)
-        .filter(|(_, lure)| lure.expires <= now)
-        .map(|(entity, _)| entity)
-        .collect();
-    for entity in expired {
-        remove_lure(world, entity);
-    }
-    let followers: Vec<_> = world
-        .query::<(Entity, &LureInfluence)>()
-        .iter(world)
-        .map(|(entity, influence)| (entity, *influence))
-        .collect();
-    for (entity, influence) in followers {
-        if world.get::<Combatant>(entity).is_some() {
-            continue;
+/// A controlled monster outside the fight that can see walks to its lure
+/// while it is more than five metres off, and faces it.
+pub(crate) fn follow_lures(
+    lures: Query<&Transform, With<Lure>>,
+    mut followers: Query<
+        (
+            &LureInfluence,
+            &Monster,
+            Option<&mut AgentTarget3d>,
+            Option<&avian3d::prelude::Position>,
+            &mut Transform,
+            Option<&mut avian3d::prelude::Rotation>,
+        ),
+        (Without<Combatant>, Without<Lure>),
+    >,
+) {
+    for (influence, body, walking, position, mut transform, rotation) in &mut followers {
+        let target = lures.get(influence.lure).unwrap().translation;
+        let here = position.map_or(transform.translation, |p| p.0);
+        let follows = influence.response == LureResponse::Controlled
+            && body.can_fight()
+            && !body.conditions.has(Condition::Blind);
+        if let Some(mut walking) = walking {
+            *walking = if follows && here.distance(target) > 5.0 {
+                AgentTarget3d::Entity(influence.lure)
+            } else {
+                AgentTarget3d::None
+            };
         }
-        let target = crate::game::world::actor_position(world, influence.lure);
-        let follows = world
-            .get::<Monster>(entity)
-            .is_some_and(|body| body.can_fight() && !body.conditions.has(Condition::Blind))
-            && influence.response == LureResponse::Controlled;
-        let here = crate::game::world::actor_position(world, entity);
-        let goal = if follows && here.distance(target) > 5.0 {
-            AgentTarget3d::Entity(influence.lure)
-        } else {
-            AgentTarget3d::None
-        };
-        if let Some(mut walking) = world.get_mut::<AgentTarget3d>(entity) {
-            *walking = goal;
-        }
-        if follows {
-            crate::game::world::face(world, entity, target);
+        if follows && let Some(facing) = crate::game::world::facing(here, target) {
+            if let Some(mut rotation) = rotation {
+                rotation.0 = facing;
+            }
+            transform.rotation = facing;
         }
     }
 }
@@ -511,7 +523,7 @@ mod tests {
         }
         let influence = *world.get::<LureInfluence>(target).unwrap();
         assert_eq!(influence.response, LureResponse::Controlled);
-        update_lure(world);
+        world.run_system_once(follow_lures).unwrap();
         assert_eq!(
             world.get::<AgentTarget3d>(target),
             Some(&AgentTarget3d::Entity(influence.lure))
@@ -528,7 +540,7 @@ mod tests {
         assert_eq!(world.get::<LureInfluence>(target).unwrap().response, LureResponse::Resisted);
         assert_eq!(world.get::<AgentTarget3d>(target), Some(&AgentTarget3d::None));
         world.resource_mut::<GameClock>().advance(AGING_TICK_MS * 10);
-        update_lure(world);
+        world.run_system_once(expire_lures).unwrap();
         assert!(world.get::<LureInfluence>(target).is_none());
         assert!(world.get::<Monster>(target).is_some());
     }

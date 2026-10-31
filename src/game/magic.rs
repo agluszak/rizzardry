@@ -491,7 +491,7 @@ impl Plugin for MagicPlugin {
             .init_resource::<casting::FlightOrder>()
             .add_systems(
                 Update,
-                (accept_magic, pointcasts::update_lure)
+                (accept_magic, pointcasts::expire_lures, pointcasts::follow_lures)
                     .chain()
                     .after(GameplaySet::Burden)
                     .before(GameplaySet::Combat)

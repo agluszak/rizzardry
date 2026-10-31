@@ -54,17 +54,20 @@ pub fn actor_position(world: &World, actor: Entity) -> Vec3 {
     )
 }
 
+/// The level rotation that looks from `here` toward `toward`, if they are
+/// apart.
+pub fn facing(here: Vec3, toward: Vec3) -> Option<Quat> {
+    let delta = (toward - here).with_y(0.0);
+    (delta.length_squared() > 0.0001)
+        .then(|| Quat::from_rotation_y(crate::game::party::body::yaw_toward(delta)))
+}
+
 /// Turn an actor, level, to face the point `toward`, for operations that
 /// hold the whole world. Its physics rotation and its transform turn
 /// together, so physics' transform synchronization cannot restore the old
 /// yaw.
 pub fn face(world: &mut World, actor: Entity, toward: Vec3) {
-    let here = actor_position(world, actor);
-    let delta = (toward - here).with_y(0.0);
-    if delta.length_squared() <= 0.0001 {
-        return;
-    }
-    let facing = Quat::from_rotation_y(crate::game::party::body::yaw_toward(delta));
+    let Some(facing) = facing(actor_position(world, actor), toward) else { return };
     if let Some(mut rotation) = world.get_mut::<avian3d::prelude::Rotation>(actor) {
         rotation.0 = facing;
     }
