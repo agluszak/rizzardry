@@ -767,12 +767,7 @@ impl Dialogue<'_, '_> {
         // speaker faces the party. Physics rotation owns a moving body's facing.
         let (_, _, _, _, mut transform, position, rotation) = self.bodies.get_mut(body).unwrap();
         let here = position.map_or(transform.translation, |position| position.0);
-        if let Some(facing) = crate::game::world::facing(here, party_at) {
-            if let Some(mut rotation) = rotation {
-                rotation.0 = facing;
-            }
-            transform.rotation = facing;
-        }
+        crate::game::world::face(here, party_at, &mut transform, rotation);
         Ok(self.commands.spawn(Conversation { menu, ..conversation(quote(greeting)) }).id())
     }
 

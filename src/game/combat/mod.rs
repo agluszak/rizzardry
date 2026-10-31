@@ -423,10 +423,6 @@ fn lineup<'a>(roster: &PartyRoster, members: &'a Members) -> crate::game::party:
     })
 }
 
-pub fn in_battle(world: &mut World) -> bool {
-    world.query_filtered::<(), With<Battle>>().iter(world).next().is_some()
-}
-
 /// Terminal state is settled independently of whose action dealt the damage.
 /// Used before/after combat execution and at the end of environmental damage.
 pub fn settle_defeat(

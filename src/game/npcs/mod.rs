@@ -371,6 +371,7 @@ impl Plugin for NpcPlugin {
             .add_message::<conversation::PartyRemark>()
             .add_message::<conversation::NpcSpeech>()
             .add_message::<recruit::JoinParty>()
+            .add_message::<crate::game::inventory::ItemNews>()
             .add_observer(conversation::end_conversations)
             .add_systems(
                 Update,

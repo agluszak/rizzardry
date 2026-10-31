@@ -39,12 +39,6 @@ use crate::game::party::body::{PartyPlacement, PartyStart};
 use crate::game::party::roster::Party;
 use crate::game::rng::GameRng;
 
-/// Whether the party is on its way into a level, for operations that hold
-/// the whole world.
-pub fn entering(world: &mut World) -> bool {
-    world.query_filtered::<(), With<Destination>>().iter(world).next().is_some()
-}
-
 /// The root of the level being played, including during travel preparation. A level
 /// becomes one only by [`activate_level`]; until then its root is a
 /// [`Destination`].

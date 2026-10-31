@@ -414,11 +414,8 @@ pub(crate) fn follow_lures(
                 AgentTarget3d::None
             };
         }
-        if follows && let Some(facing) = crate::game::world::facing(here, target) {
-            if let Some(mut rotation) = rotation {
-                rotation.0 = facing;
-            }
-            transform.rotation = facing;
+        if follows {
+            crate::game::world::face(here, target, &mut transform, rotation);
         }
     }
 }

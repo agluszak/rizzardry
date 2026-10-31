@@ -58,11 +58,6 @@ pub fn party_free(freedom: Freedom) -> bool {
     freedom.free()
 }
 
-/// Whether the party is free, for operations that hold the whole world.
-pub fn free_in(world: &mut World) -> bool {
-    world.run_system_cached(party_free).unwrap_or(false)
-}
-
 /// Run condition: free but perhaps camping ([`Freedom::unoccupied`]).
 pub fn unoccupied(freedom: Freedom) -> bool {
     freedom.unoccupied()
