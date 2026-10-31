@@ -266,7 +266,7 @@ impl Battle {
         match self.phase {
             RoundPhase::Waiting => None,
             RoundPhase::Accepted => Some(0.0),
-            RoundPhase::Executing(step) => Some(f32::from(step.min(100)) / 100.0),
+            RoundPhase::Executing(step) => Some(step.min(100) as f32 / 100.0),
         }
     }
 }

@@ -215,7 +215,7 @@ const SKILL_AVAILABILITY: [u16; 28] = [
 
 /// A playable race's base attributes (retail `g_race_base_attributes`);
 /// the five monster races have none.
-fn race_attributes(race: Race) -> Option<EnumMap<Attribute, u8>> {
+fn race_attributes(race: Race) -> Option<EnumMap<Attribute, u32>> {
     let attributes = match race {
         Race::Human => [45, 45, 45, 45, 45, 45, 45],
         Race::Elf => [35, 50, 50, 35, 50, 45, 40],
@@ -236,7 +236,7 @@ fn race_attributes(race: Race) -> Option<EnumMap<Attribute, u8>> {
 /// What a profession asks and gives (retail `g_profession_table`).
 struct ProfessionRow {
     /// Attribute minimums; 0 for none.
-    minimums: EnumMap<Attribute, u8>,
+    minimums: EnumMap<Attribute, u32>,
     hp_factor: f32,
     experience: u64,
     bonus_skill: Skill,
@@ -249,7 +249,7 @@ fn profession_row(profession: Profession) -> ProfessionRow {
     use Profession::*;
     use Skill::*;
     let (minimums, hp_factor, experience, bonus_skill, skills, physical): (
-        [u8; 7],
+        [u32; 7],
         f32,
         _,
         Skill,
@@ -530,9 +530,9 @@ pub struct Character {
     pub experience: u64,
     /// The threshold actually passed, retaining the prices of earlier professions.
     pub experience_previous_goal: u64,
-    pub attributes: EnumMap<Attribute, u8>,
+    pub attributes: EnumMap<Attribute, u32>,
     /// Points invested per skill.
-    pub skill_points: EnumMap<Skill, u8>,
+    pub skill_points: EnumMap<Skill, u32>,
     /// Unspent spell picks carried forward to later character advancement.
     pub spell_picks: progression::SpellPicks,
     /// Successful practice towards each skill's next point (retail
@@ -602,14 +602,14 @@ impl Character {
         self.skill_points = EnumMap::default();
         let share = 60 / (1 + row.skills.len() as u32);
         for &skill in row.skills.iter().chain(std::iter::once(&row.bonus_skill)) {
-            self.skill_points[skill] = (self.skill_base(skill) * share / 100) as u8;
+            self.skill_points[skill] = self.skill_base(skill) * share / 100;
         }
     }
 
     /// The attribute without enchantments, within retail's 1..=125; its
     /// [`CharacterStats::attribute`] adds them.
     fn base_attribute(&self, attribute: Attribute) -> u32 {
-        u32::from(self.attributes[attribute]).clamp(1, 125)
+        self.attributes[attribute].clamp(1, 125)
     }
 
     /// Whether retail currently permits this character to use a skill.
@@ -666,7 +666,7 @@ impl Character {
         }
         let mut improved = false;
         for _ in 0..usage {
-            let points = u32::from(self.skill_points[skill]);
+            let points = self.skill_points[skill];
             if points >= 100 {
                 break;
             }
@@ -755,13 +755,13 @@ impl Character {
     /// The average of a skill's governing attributes' bases.
     fn skill_base(&self, skill: Skill) -> u32 {
         let (a, b) = governing(skill);
-        (u32::from(self.attributes[a]) + u32::from(self.attributes[b])) / 2
+        (self.attributes[a] + self.attributes[b]) / 2
     }
 
     /// Effective skill level: the points, plus a quarter (at least one) for
     /// the profession's bonus skill.
     pub fn skill(&self, skill: Skill) -> u32 {
-        let points = u32::from(self.skill_points[skill]);
+        let points = self.skill_points[skill];
         let bonus = if profession_row(self.profession).bonus_skill == skill {
             (points * 25 / 100).max(1)
         } else {
@@ -1338,7 +1338,7 @@ mod tests {
         assert_eq!(fighter.experience_goal(), 1000);
         // Profession and bonus skills are seeded; others are not.
         let close_combat = fighter.skill_points[Skill::CloseCombat];
-        assert!(fighter.skill(Skill::CloseCombat) > close_combat.into());
+        assert!(fighter.skill(Skill::CloseCombat) > close_combat);
         assert!(fighter.skill_points[Skill::Sword] > 0);
         assert_eq!(fighter.skill_points[Skill::LocksAndTraps], 0);
     }

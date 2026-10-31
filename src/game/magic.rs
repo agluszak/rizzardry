@@ -309,7 +309,7 @@ pub fn can_learn(character: &Character, spell: &SpellDefinition) -> bool {
     }
     let caster = total_caster_level(character, spell.books);
     let by_level = (1..=7).filter(|&l| min_caster_level(l) <= caster).max().unwrap_or(0);
-    let realm_points = spell.realm.map_or(0, |r| u32::from(character.skill_points[r.skill()]));
+    let realm_points = spell.realm.map_or(0, |r| character.skill_points[r.skill()]);
     let book = [Spellbook::Wizardry, Spellbook::Divinity, Spellbook::Alchemy, Spellbook::Psionics]
         .into_iter()
         .filter(|book| spell.books.contains(*book))

@@ -773,12 +773,11 @@ pub(super) fn layout_skills(
             Bar::Attribute(attribute) => {
                 (0.0, profile.base_stats().attribute(attribute).min(125) as f32)
             }
-            Bar::SkillBase(skill) => (
-                0.0,
-                u32::from(profile.skill_points[skill]).min(profile.skill(skill)).min(125) as f32,
-            ),
+            Bar::SkillBase(skill) => {
+                (0.0, profile.skill_points[skill].min(profile.skill(skill)).min(125) as f32)
+            }
             Bar::SkillBonus(skill) => (
-                u32::from(profile.skill_points[skill]).min(profile.skill(skill)).min(125) as f32,
+                profile.skill_points[skill].min(profile.skill(skill)).min(125) as f32,
                 profile.skill(skill).min(125) as f32,
             ),
         };
