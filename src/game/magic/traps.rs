@@ -1,7 +1,7 @@
 //! Indirect trap spells: preflight content, capture real party actors and
 //! settle consequences synchronously, before the device may unlock.
 
-use super::{Field, LearnedSpells, SpellPoints, Strength, Victim, casting::MagicNews, effects};
+use super::{Field, Strength, Victim, casting::MagicNews, effects};
 use crate::content::spells::{SpellDefinition, SpellId};
 use crate::game::world::interaction::Unable;
 use bevy::prelude::*;
@@ -43,7 +43,6 @@ pub(crate) fn validate(trap: u8) -> Result<(), Unable> {
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct Discharge<'w, 's> {
     field: Field<'w, 's>,
-    points: Query<'w, 's, (&'static LearnedSpells, &'static mut SpellPoints)>,
     rng: ResMut<'w, crate::game::rng::GameRng>,
 }
 
@@ -54,7 +53,7 @@ impl Discharge<'_, '_> {
     /// unconscious members may be struck too). Returns whether the trap is
     /// destroyed.
     pub fn fire(&mut self, trap: u8, difficulty: u8, selected: Option<Entity>) -> bool {
-        let Self { field, points, rng } = self;
+        let Self { field, rng } = self;
         let mut targets: Vec<Entity> = field
             .party
             .iter()
@@ -79,7 +78,7 @@ impl Discharge<'_, '_> {
         let victims: Vec<_> = targets.into_iter().map(Victim::Member).collect();
         field.improved.clear();
         let strength = Strength::at(0, spell, power, 0);
-        let effects = effects::resolve(None, false, spell, strength, &victims, rng, field, points);
+        let effects = effects::resolve(None, false, spell, strength, &victims, rng, field);
         let improved = std::mem::take(&mut *field.improved);
         field.news.write(MagicNews::Triggered { spell: spell.id, effects, improved });
         destroyed

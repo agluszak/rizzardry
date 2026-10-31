@@ -144,7 +144,6 @@ pub fn special_attack(
     victims: &[Victim],
     rng: &mut GameRng,
     world: &mut Field,
-    points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
 ) -> Vec<Effect> {
     if definition.summons {
         return Vec::new();
@@ -190,8 +189,8 @@ pub fn special_attack(
                             Victim::Member(member) => {
                                 let alive = !world.members.get(member).unwrap().1.is_dead();
                                 let drained = if alive {
-                                    let (known, mut pool) = points.get_mut(member).unwrap();
-                                    let maximum = world.mana_maximum(member, known);
+                                    let maximum = world.mana_maximum(member);
+                                    let (_, mut pool) = world.points.get_mut(member).unwrap();
                                     pool.drain_realm(realm, amount * 6, &maximum)
                                 } else {
                                     0
@@ -240,7 +239,6 @@ pub(crate) fn pulse_clouds(
     party_eye: Vec3,
     rng: &mut GameRng,
     world: &mut Field,
-    points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
 ) -> Vec<(SpellId, Vec<Effect>)> {
     let spells = world.spells();
     let mut reports = Vec::new();
@@ -302,8 +300,8 @@ pub(crate) fn pulse_clouds(
                     if id == SpellId::DRAINING_CLOUD && amount > 0 {
                         match victim {
                             Victim::Member(member) => {
-                                let (known, mut mana) = points.get_mut(member).unwrap();
-                                let maximum = world.mana_maximum(member, known);
+                                let maximum = world.mana_maximum(member);
+                                let (_, mut mana) = world.points.get_mut(member).unwrap();
                                 for realm in enumset::EnumSet::<Realm>::all() {
                                     mana.drain_realm(realm, amount, &maximum);
                                 }

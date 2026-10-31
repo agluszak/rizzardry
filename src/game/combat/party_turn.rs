@@ -69,13 +69,12 @@ pub(super) fn party_turn(
             cast(commands, battle, index, choice, combatants, rng, party, magic, news);
         }
         RoundAction::Attack { .. } => {
-            let BattleMagic { field, points, moving, .. } = magic;
+            let BattleMagic { field, moving, .. } = magic;
             let mut fight = blows::Fight {
                 combatants,
                 party,
                 armours: party_armours(battle, field),
                 moving,
-                points,
                 attacks: &|_| false,
                 waits: false,
             };
@@ -104,8 +103,8 @@ pub(super) fn breathe(
     news: &mut MessageWriter<CombatNews>,
 ) {
     let member = battle.this_round.party[index].actor;
-    let result = member_acts(combatants, party, magic, |situation, field, points| {
-        breath::execute(member, target, situation, rng, field, points)
+    let result = member_acts(combatants, party, magic, |situation, field| {
+        breath::execute(member, target, situation, rng, field)
     });
     match result {
         Ok(effects) => {
@@ -197,8 +196,8 @@ pub(super) fn member_casts(
     party: &PartyView,
     magic: &mut BattleMagic,
 ) -> Result<(casting::Report, Vec<casting::SpellInFlight>), casting::Refusal> {
-    member_acts(combatants, party, magic, |situation, field, points| {
-        casting::perform(member, choice, situation, points, rng, field)
+    member_acts(combatants, party, magic, |situation, field| {
+        casting::perform(member, choice, situation, rng, field)
     })
 }
 
@@ -213,10 +212,9 @@ pub(super) fn member_acts<R>(
     act: impl FnOnce(
         &casting::Situation,
         &mut crate::game::magic::effects::Field,
-        &mut Query<(&LearnedSpells, &mut SpellPoints)>,
     ) -> Result<R, casting::Refusal>,
 ) -> Result<R, casting::Refusal> {
-    let BattleMagic { field, points, groups, group_members, .. } = magic;
+    let BattleMagic { field, groups, group_members, .. } = magic;
     let candidates = visible_monsters(combatants, &field.monsters, &field.visibility, party.eye);
     let group_of = |monster: Entity| -> Vec<Entity> {
         let group = groups.get(monster).ok().map(|group| group.0);
@@ -235,5 +233,5 @@ pub(super) fn member_acts<R>(
         group_of: &group_of,
     };
     field.improved.clear();
-    act(&situation, field, points)
+    act(&situation, field)
 }

@@ -16,7 +16,6 @@ use crate::content::items::{AttackEffect, AttackMode};
 use crate::content::species::{Reach, Species};
 use crate::game::characters::{Character, CharacterStats, Condition, Vitals};
 use crate::game::magic::effects::{self, Effect, Field, Victim};
-use crate::game::magic::{LearnedSpells, SpellPoints};
 use crate::game::party::body;
 use crate::game::party::formation::{self, Row};
 use crate::game::rng::GameRng;
@@ -38,7 +37,6 @@ pub(super) struct Fight<'a, 'w, 's> {
     pub armours: Vec<(Entity, Armour)>,
     /// Monsters advancing this round, which drop their guard.
     pub moving: &'a Query<'w, 's, (), With<super::approach::CombatMove>>,
-    pub points: &'a mut Query<'w, 's, (&'static LearnedSpells, &'static mut SpellPoints)>,
     /// Whom the acting monster may attack (retail `BuildMonsterActionQueue`'s
     /// `MonsterVsCharDisposition` and `MonsterHostility` tests); members
     /// act on their own orders.

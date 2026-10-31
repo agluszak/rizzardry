@@ -298,15 +298,8 @@ pub(in crate::game::combat) fn monster_attacks(
             };
             if dealt > 0 {
                 let power = attack::effect_power(u32::from(kind.level));
-                let landed = effects::blow(
-                    rng,
-                    field,
-                    fight.points,
-                    landing.victim,
-                    &attack.effects,
-                    power,
-                    true,
-                );
+                let landed =
+                    effects::blow(rng, field, landing.victim, &attack.effects, power, true);
                 for effect in &landed {
                     tally.struck(Some(*effect), false);
                 }

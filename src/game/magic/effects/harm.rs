@@ -406,7 +406,6 @@ pub(super) fn blow_roll(rng: &mut GameRng, count: u32, sides: u8, base: u32) -> 
 pub fn blow(
     rng: &mut GameRng,
     world: &mut Field,
-    points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
     victim: Victim,
     effects: &crate::content::items::AttackEffects,
     power: u32,
@@ -469,8 +468,8 @@ pub fn blow(
                 Victim::Member(member) => {
                     drain(rng, world, victim, Realm::Divine, power, (count, 6, count)).map(
                         |amount| {
-                            let (learned, mut pool) = points.get_mut(member).unwrap();
-                            let maximum = world.mana_maximum(member, learned);
+                            let maximum = world.mana_maximum(member);
+                            let (_, mut pool) = world.points.get_mut(member).unwrap();
                             let amount = pool.drain(amount, &maximum, rng);
                             Effect::Drained { victim, amount }
                         },

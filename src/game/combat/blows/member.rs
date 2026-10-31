@@ -405,7 +405,7 @@ pub(super) fn member_blow(
             }
         }
         let power = attack::effect_power(u32::from(character.level()));
-        let landed = effects::blow(rng, field, fight.points, landing.victim, &blow, power, false);
+        let landed = effects::blow(rng, field, landing.victim, &blow, power, false);
         for effect in &landed {
             tally.struck(Some(*effect), true);
         }

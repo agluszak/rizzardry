@@ -420,12 +420,12 @@ fn carry_out(
     (news, summons): (&mut MessageWriter<CombatNews>, &mut MessageWriter<summon::Summon>),
 ) {
     let monster = battle.this_round.monsters[index].actor;
-    let BattleMagic { field, points, .. } = magic;
+    let BattleMagic { field, .. } = magic;
     field.improved.clear();
     match plan {
         Plan::Spell { spell, power, aim, scene, caster } => {
             let (report, flights) =
-                monster_spells::cast((&spell, power, aim), caster, &scene, rng, field, points);
+                monster_spells::cast((&spell, power, aim), caster, &scene, rng, field);
             battle.credit_kills(&report.effects, news);
             let level = field.level();
             field.flight_order.launch(commands, flights, level);
@@ -444,7 +444,6 @@ fn carry_out(
                 &victims,
                 rng,
                 field,
-                points,
             );
             if !effects.is_empty() {
                 news.write(CombatNews::Effects(effects));
@@ -473,7 +472,7 @@ fn strike(
     news: &mut MessageWriter<CombatNews>,
 ) {
     let monster = battle.this_round.monsters[index].actor;
-    let BattleMagic { field, points, moving, .. } = magic;
+    let BattleMagic { field, moving, .. } = magic;
     let wanted =
         if battle.this_round.monsters[index].berserk { Stance::Friendly } else { Stance::Hostile };
     let may_attack = |victim: Victim| sides.toward(victim) == wanted;
@@ -482,7 +481,6 @@ fn strike(
         party,
         armours: party_armours(battle, field),
         moving,
-        points,
         attacks: &may_attack,
         waits,
     };

@@ -212,9 +212,9 @@ pub(super) fn pass_round(
     news: &mut MessageWriter<CombatNews>,
     magic: &mut BattleMagic,
 ) {
-    let BattleMagic { field, points, .. } = magic;
+    let BattleMagic { field, .. } = magic;
     let spells = field.spells();
-    let Field { members, monsters: damage, .. } = &mut *field;
+    let Field { members, monsters: damage, points, .. } = &mut *field;
     // A monster that waited, or lies asleep or knocked out, gets its
     // breath back (retail `AdvanceCombatRound`).
     for &entity in combatants {
@@ -261,8 +261,7 @@ pub(super) fn pass_round(
     // AdvanceTimedEffects applies offensive slots after personal aging and
     // before expiring the slots. Their final remaining turn still pulses.
     field.improved.clear();
-    let reports =
-        crate::game::magic::effects::pulse_clouds(combatants, party_eye, rng, field, points);
+    let reports = crate::game::magic::effects::pulse_clouds(combatants, party_eye, rng, field);
     for (spell, effects) in reports {
         battle.credit_kills(&effects, news);
         battle.this_round.attacked |= crate::game::magic::effects::affected(&effects);

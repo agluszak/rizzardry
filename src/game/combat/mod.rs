@@ -43,7 +43,7 @@ use crate::content::species::{MonsterCatalog, Reach, Species};
 use crate::game::characters::{Character, Condition, Vitals};
 use crate::game::inventory::EquipSlot;
 use crate::game::magic::casting::{self, MagicChoice, MagicNews};
-use crate::game::magic::{Effect, Field, LearnedSpells, SpellPoints, Victim};
+use crate::game::magic::{Effect, Field, Victim};
 use crate::game::party::Members;
 use crate::game::party::Order;
 use crate::game::party::body::PartyBody;
@@ -649,7 +649,6 @@ fn next_phase(step: u8, attacks_left: u32) -> u8 {
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct BattleMagic<'w, 's> {
     field: Field<'w, 's>,
-    points: Query<'w, 's, (&'static LearnedSpells, &'static mut SpellPoints)>,
     groups: Query<'w, 's, &'static GroupMember>,
     group_members: Query<'w, 's, &'static GroupMembers>,
     /// Missiles still on their way hold the fight's next action, as do

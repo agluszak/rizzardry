@@ -250,11 +250,7 @@ pub(super) fn enchant(
 
 /// The living member furthest below full health, or below full spell points
 /// when not `health`, whom a drain restores.
-pub(super) fn neediest(
-    world: &Field,
-    points: &Query<(&LearnedSpells, &mut SpellPoints)>,
-    health: bool,
-) -> Option<Entity> {
+pub(super) fn neediest(world: &Field, health: bool) -> Option<Entity> {
     world
         .party
         .iter()
@@ -266,8 +262,8 @@ pub(super) fn neediest(
             let percent = if health {
                 i64::from(v.hp * 100 / c.stats(&v.enchantments).max_hp().max(1))
             } else {
-                let (learned, pool) = points.get(m).unwrap();
-                let maxima = world.mana_maximum(m, learned);
+                let (_learned, pool) = world.points.get(m).unwrap();
+                let maxima = world.mana_maximum(m);
                 let maximum: u32 = maxima.values().sum();
                 if maximum == 0 {
                     return None;

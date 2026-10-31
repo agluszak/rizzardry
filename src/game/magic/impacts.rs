@@ -1,7 +1,7 @@
 //! Finalization is accepted work on the last-arriving missile of a cast.
 //! It runs after every original hit, once, and retains the original aim.
 use super::{
-    LearnedSpells, SpellPoints, Strength,
+    Strength,
     casting::{self, Aim, SpellInFlight},
     effects::{self, Effect, Field, Victim},
     targeting::{self, Recipients},
@@ -125,12 +125,11 @@ pub(crate) fn resolve(
     party_at: Vec3,
     rng: &mut GameRng,
     world: &mut Field,
-    points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
     flights: &mut Vec<SpellInFlight>,
 ) -> Vec<Effect> {
     let spells = world.spells();
     let mut landed =
-        effects::resolve(origin.actor(), backfired, spell, strength, victims, rng, world, points);
+        effects::resolve(origin.actor(), backfired, spell, strength, victims, rng, world);
     let Some(finish) = finish else { return landed };
     // The strongest surviving charge pays once, after all original impacts.
     if !backfired && !finish.reflected && spell.aimed_at_enemies() {
@@ -300,7 +299,6 @@ pub(crate) fn resolve(
                     party_at,
                     rng,
                     world,
-                    points,
                     flights,
                 ));
             }
@@ -349,7 +347,6 @@ pub(crate) fn resolve(
                 party_at,
                 rng,
                 world,
-                points,
                 flights,
             ));
         }

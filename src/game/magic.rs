@@ -521,7 +521,6 @@ pub fn accept_magic(
     camp: Option<Res<crate::game::camp::Camp>>,
     interaction: Query<(), With<crate::game::world::interaction::DeviceInteraction>>,
     mut orders: Query<&mut crate::game::party::Order>,
-    mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
     mut field: Field,
     mut rng: ResMut<GameRng>,
     party: Single<(&avian3d::prelude::Position, &PartyBody)>,
@@ -589,8 +588,7 @@ pub fn accept_magic(
             group_of: &|m| vec![m],
         };
         field.improved.clear();
-        let performed =
-            casting::perform(caster, choice, &situation, &mut points, &mut rng, &mut field);
+        let performed = casting::perform(caster, choice, &situation, &mut rng, &mut field);
         let news = match performed {
             Ok((report, flights)) => {
                 let level = field.level();
@@ -607,7 +605,6 @@ pub fn accept_magic(
 /// `ResolveSpellMissileHit`): on the victims captured at the cast; one that
 /// died meanwhile is missed. Kills in a fight count for it.
 pub fn deliver_spells(
-    mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
     party: Single<&avian3d::prelude::Position, With<PartyBody>>,
     time: Res<Time<Fixed>>,
     mut flights: Query<(Entity, &mut casting::SpellInFlight)>,
@@ -656,7 +653,6 @@ pub fn deliver_spells(
             party_at,
             &mut rng,
             &mut field,
-            &mut points,
             &mut secondary,
         );
         let improved = std::mem::take(&mut *field.improved);

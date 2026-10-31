@@ -604,7 +604,6 @@ pub fn perform(
     caster: Entity,
     choice: MagicChoice,
     situation: &Situation,
-    points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
     rng: &mut GameRng,
     world: &mut Field,
 ) -> Result<(Report, Vec<SpellInFlight>), Refusal> {
@@ -615,7 +614,7 @@ pub fn perform(
         situation.in_combat(),
         (spells, world.items()),
         &world.members,
-        points,
+        &world.points,
         &world.inventory,
     )?;
     if !effects::modelled(spell.id) {
@@ -656,8 +655,8 @@ pub fn perform(
         let cast_power = match &item {
             Some(_) => power,
             None => {
-                let (learned, pool) = points.get(caster).unwrap();
-                let maximum = world.mana_maximum(caster, learned);
+                let (_, pool) = world.points.get(caster).unwrap();
+                let maximum = world.mana_maximum(caster);
                 let affordable = pool.affordable_power(spell, &maximum);
                 if affordable == 0 {
                     break;
@@ -720,7 +719,7 @@ pub fn perform(
             spell,
             cast_power,
             item.as_ref(),
-            points,
+            &mut world.points,
             rng,
             &mut world.members,
             &mut world.inventory,
@@ -813,7 +812,6 @@ pub fn perform(
                 situation.party_at,
                 rng,
                 world,
-                &mut *points,
                 &mut flights,
             )
         };
@@ -844,8 +842,8 @@ pub fn perform(
             break;
         }
         let (_, vitals, ..) = world.members.get(caster).unwrap();
-        let (learned, pool) = points.get(caster).unwrap();
-        let maximum = world.mana_maximum(caster, learned);
+        let (_, pool) = world.points.get(caster).unwrap();
+        let maximum = world.mana_maximum(caster);
         if vitals.stamina <= u32::from(spell.level)
             || pool.available(spell.realm.unwrap(), &maximum) < spell.cost
             || outcome != Outcome::Fizzled

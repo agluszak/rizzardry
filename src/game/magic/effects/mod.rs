@@ -301,6 +301,8 @@ pub enum Effect {
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct Field<'w, 's> {
     pub members: Members<'w, 's>,
+    /// The members' spells and points.
+    pub points: Query<'w, 's, (&'static LearnedSpells, &'static mut SpellPoints)>,
     pub monsters: MonsterDamage<'w, 's>,
     /// The current roster in order, including dead members eligible for revival.
     pub party: Single<'w, 's, &'static crate::game::party::roster::PartyRoster>,
@@ -391,12 +393,10 @@ impl<'w> Field<'w, '_> {
 }
 
 impl Field<'_, '_> {
-    pub fn mana_maximum(
-        &self,
-        member: Entity,
-        learned: &LearnedSpells,
-    ) -> enum_map::EnumMap<Realm, u32> {
+    /// The member's spell point maximum in each realm.
+    pub fn mana_maximum(&self, member: Entity) -> enum_map::EnumMap<Realm, u32> {
         let (profile, vitals, ..) = self.members.get(member).unwrap();
+        let (learned, _) = self.points.get(member).unwrap();
         profile.stats(&vitals.enchantments).max_points(learned, self.spells())
     }
 }
@@ -456,7 +456,6 @@ pub fn resolve(
     victims: &[Victim],
     rng: &mut GameRng,
     world: &mut Field,
-    points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
 ) -> Vec<Effect> {
     if victims.is_empty() {
         return Vec::new();
@@ -506,8 +505,8 @@ pub fn resolve(
                 // Anti-Magic drains the whole living party, not only captured victims.
                 for member in world.party.iter() {
                     if !world.members.get(member).unwrap().1.is_dead() {
-                        let (learned, mut pool) = points.get_mut(member).unwrap();
-                        let maximum = world.mana_maximum(member, learned);
+                        let maximum = world.mana_maximum(member);
+                        let (_, mut pool) = world.points.get_mut(member).unwrap();
                         let amount = pool.drain(amount, &maximum, rng);
                         effects.push(Effect::Drained { victim: Victim::Member(member), amount });
                     }
@@ -524,7 +523,7 @@ pub fn resolve(
             }
             // Retail rolls even when every realm is already full.
             let amount = magnitude(rng, spell.dice, strength);
-            let (_, mut pool) = points.get_mut(member).unwrap();
+            let (_, mut pool) = world.points.get_mut(member).unwrap();
             let amount = pool.restore_evenly(amount);
             Some(if amount == 0 {
                 Effect::Nothing { victim: v }
@@ -729,7 +728,7 @@ pub fn resolve(
             }
             // Retail chooses once after every target has been drained. Do not
             // heal a different member after each hit or round each share separately.
-            if let Some(member) = neediest(world, points, kind == Kind::Lifesteal) {
+            if let Some(member) = neediest(world, kind == Kind::Lifesteal) {
                 let (c, mut v, ..) = world.members.get_mut(member).unwrap();
                 if kind == Kind::Lifesteal {
                     let maximum = c.stats(&v.enchantments).max_hp();
@@ -740,7 +739,7 @@ pub fn resolve(
                         amount: v.hp - before,
                     });
                 } else {
-                    let (_, mut pool) = points.get_mut(member).unwrap();
+                    let (_, mut pool) = world.points.get_mut(member).unwrap();
                     let amount = pool.restore_evenly(drained);
                     effects.push(Effect::Replenished { victim: Victim::Member(member), amount });
                 }
