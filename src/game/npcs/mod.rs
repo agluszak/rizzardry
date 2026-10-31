@@ -364,10 +364,24 @@ impl Plugin for NpcPlugin {
             .init_resource::<conversation::NoAnswerTurn>()
             .add_message::<conversation::ConversationRequest>()
             .add_message::<conversation::BeginConversation>()
+            .add_message::<conversation::LineSpoken>()
+            .add_message::<conversation::EditNotebook>()
             .add_message::<conversation::PartyRemark>()
             .add_message::<conversation::NpcSpeech>()
             .add_observer(conversation::end_conversations)
-            .add_systems(Update, conversation::update_conversation.after(GameplaySet::Combat))
+            .add_systems(
+                Update,
+                (
+                    conversation::finish_lines,
+                    conversation::edit_notebook,
+                    conversation::begin_conversations,
+                    conversation::answer_requests,
+                    conversation::run_conversations,
+                )
+                    .chain()
+                    .in_set(conversation::Conversing)
+                    .after(GameplaySet::Combat),
+            )
             .add_systems(Update, recruit::settle_npc_members.before(GameplaySet::LevelActivation))
             .add_systems(
                 FixedUpdate,

@@ -194,8 +194,10 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
             let c = app.world().get::<Conversation>(session).expect("conversation remains open");
             match c.wait {
                 ConversationWait::Line { speech, .. } => {
-                    app.world_mut()
-                        .write_message(ConversationRequest::new(session, Talk::Advance { speech }));
+                    app.world_mut().write_message(crate::game::npcs::conversation::LineSpoken {
+                        conversation: session,
+                        speech,
+                    });
                 }
                 ConversationWait::Blocked { ref reason, .. } => {
                     panic!("unexpected content gap: {reason}")

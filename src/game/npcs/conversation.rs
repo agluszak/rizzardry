@@ -339,15 +339,8 @@ pub enum Talk {
     PriceAnswer {
         accept: bool,
     },
-    Advance {
-        speech: Entity,
-    },
     Close,
     Recruit,
-    EditNotebook {
-        edit: NotebookEdit,
-        text: String,
-    },
     Trade(TradeQuote),
     /// Hand the NPC an item from a member's pack or the party's items.
     Give {
@@ -1661,11 +1654,62 @@ fn execute_trade(world: &mut World, quote: TradeQuote) -> Result<(), TradeError>
     world.get_mut::<Npc>(actor).unwrap().stock.trades += 1;
     Ok(())
 }
-pub fn update_conversation(world: &mut World) {
+/// The systems that carry conversations: lines spoken, conversations
+/// begun, the party's requests answered, then scripts run.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Conversing;
+
+/// The NPC has finished saying a line.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineSpoken {
+    pub conversation: Entity,
+    pub speech: Entity,
+}
+
+/// The party remembers or forgets a topic in its notebook.
+#[derive(Message, Clone, Debug, PartialEq, Eq)]
+pub struct EditNotebook {
+    pub edit: NotebookEdit,
+    pub text: String,
+}
+
+/// A spoken line gives way to what follows it.
+pub fn finish_lines(
+    mut spoken: MessageReader<LineSpoken>,
+    mut conversations: Query<&mut Conversation>,
+    mut commands: Commands,
+) {
+    for &LineSpoken { conversation, speech } in spoken.read() {
+        let Ok(mut c) = conversations.get_mut(conversation) else { continue };
+        if matches!(c.wait, ConversationWait::Line { speech: s, .. } if s == speech) {
+            commands.entity(speech).despawn();
+            c.wait = ConversationWait::Ready;
+        }
+    }
+}
+
+pub fn edit_notebook(mut edits: MessageReader<EditNotebook>, mut facts: ResMut<StoryFacts>) {
+    for EditNotebook { edit, text } in edits.read() {
+        match edit {
+            NotebookEdit::Remember => facts.remember_topic(TopicCategory::Misc, text),
+            NotebookEdit::Forget => facts.forget_topic(text),
+        };
+    }
+}
+
+/// Whether a conversation may go on: its NPC there to talk and no fight
+/// under way.
+fn still_open(world: &mut World, entity: Entity) -> bool {
+    let in_battle = crate::game::combat::in_battle(world);
+    world.get::<Conversation>(entity).is_some_and(|c| available(world, c.actor)) && !in_battle
+}
+
+/// Talking to an NPC begins a conversation. An accepted level entry has
+/// ended every dialogue (`end_conversations`); no queued request may alter
+/// the departing campaign.
+pub fn begin_conversations(world: &mut World) {
     if crate::game::world::level::entering(world) {
-        // An accepted entry has ended the dialogue (`end_conversations`);
-        // no queued payment, trade or authored effect may alter the
-        // departing campaign.
+        world.resource_mut::<Messages<BeginConversation>>().clear();
         world.resource_mut::<Messages<ConversationRequest>>().clear();
         return;
     }
@@ -1675,21 +1719,19 @@ pub fn update_conversation(world: &mut World) {
             warn!("conversation refused: {e:?}");
         }
     }
+}
+
+/// Answer the party's requests in a conversation. A dialogue the party has
+/// left takes none; anything but leaving ends a dialogue whose NPC, a
+/// fight or a camp no longer allows it.
+pub fn answer_requests(world: &mut World) {
     let requests: Vec<_> = world.resource_mut::<Messages<ConversationRequest>>().drain().collect();
     for ConversationRequest { conversation: entity, talk } in requests {
-        // Nothing but its lines' playback reaches a dialogue the party left.
-        if world.get::<Closing>(entity).is_some() && !matches!(talk, Talk::Advance { .. }) {
+        if world.get::<Closing>(entity).is_some() {
             continue;
         }
-        // Leaving needs nothing of the NPC; anything else ends the dialogue
-        // when the NPC, a fight or a camp no longer allows it.
         if !matches!(talk, Talk::Close) {
-            let in_battle = crate::game::combat::in_battle(world);
-            let Some(c) = world.get::<Conversation>(entity) else { continue };
-            if !available(world, c.actor)
-                || in_battle
-                || world.contains_resource::<crate::game::camp::Camp>()
-            {
+            if !still_open(world, entity) || world.contains_resource::<crate::game::camp::Camp>() {
                 close_one(world, entity);
                 continue;
             }
@@ -1698,14 +1740,6 @@ pub fn update_conversation(world: &mut World) {
         let outcome = match talk {
             Talk::Close => {
                 leave(world, entity);
-                None
-            }
-            Talk::EditNotebook { edit, text } => {
-                let mut facts = world.resource_mut::<StoryFacts>();
-                match edit {
-                    NotebookEdit::Remember => facts.remember_topic(TopicCategory::Misc, &text),
-                    NotebookEdit::Forget => facts.forget_topic(&text),
-                };
                 None
             }
             Talk::Topic { text } => {
@@ -1722,14 +1756,6 @@ pub fn update_conversation(world: &mut World) {
             }
             Talk::Recruit => {
                 ask_to_join(world, entity);
-                None
-            }
-            Talk::Advance { speech } => {
-                if matches!(world.get::<Conversation>(entity).unwrap().wait, ConversationWait::Line { speech: s, .. } if s == speech)
-                {
-                    world.despawn(speech);
-                    world.get_mut::<Conversation>(entity).unwrap().wait = ConversationWait::Ready;
-                }
                 None
             }
             Talk::Give { item } => give(world, entity, item).err().map(Outcome::GiftRefused),
@@ -1749,12 +1775,15 @@ pub fn update_conversation(world: &mut World) {
             world.get_mut::<Conversation>(entity).unwrap().report(outcome);
         }
     }
+}
+
+/// Run each conversation's script as far as it goes, and close those that
+/// are done: ended, left with nothing more to say, or no longer possible.
+pub fn run_conversations(world: &mut World) {
     let sessions: Vec<_> =
         world.query_filtered::<Entity, With<Conversation>>().iter(world).collect();
     for entity in sessions {
-        let in_battle = crate::game::combat::in_battle(world);
-        let Some(c) = world.get::<Conversation>(entity) else { continue };
-        if !available(world, c.actor) || in_battle {
+        if !still_open(world, entity) {
             close_one(world, entity);
             continue;
         }

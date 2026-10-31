@@ -1,12 +1,10 @@
 //! Speech pacing lives on the session's line entity, independently of its UI.
-use crate::game::npcs::conversation::{
-    ConversationRequest, ConversationSpeech, Talk, update_conversation,
-};
+use crate::game::npcs::conversation::{ConversationSpeech, Conversing, LineSpoken};
 use bevy::prelude::*;
 
 pub(super) fn plugin(app: &mut App) {
     app.add_observer(play_line)
-        .add_systems(Update, (watch_playback, advance_lines).chain().after(update_conversation));
+        .add_systems(Update, (watch_playback, advance_lines).chain().after(Conversing));
 }
 
 /// How long a said line shows before the conversation is advanced past
@@ -72,7 +70,7 @@ fn watch_playback(mut lines: Query<(&bevy::audio::AudioSink, &mut LinePace)>) {
 fn advance_lines(
     time: Res<Time<Real>>,
     mut lines: Query<(Entity, &mut LinePace, &ChildOf), With<ConversationSpeech>>,
-    mut requests: MessageWriter<ConversationRequest>,
+    mut spoken: MessageWriter<LineSpoken>,
 ) {
     for (speech, mut pace, parent) in &mut lines {
         let (LinePace::Text { remaining } | LinePace::Hold { remaining }) = &mut *pace else {
@@ -81,7 +79,7 @@ fn advance_lines(
         *remaining -= time.delta_secs();
         if *remaining <= 0.0 {
             *pace = LinePace::Said;
-            requests.write(ConversationRequest::new(parent.parent(), Talk::Advance { speech }));
+            spoken.write(LineSpoken { conversation: parent.parent(), speech });
         }
     }
 }

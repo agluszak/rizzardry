@@ -810,8 +810,10 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
         if let conversation::ConversationWait::Line { speech, .. } =
             app.world().get::<Conversation>(session).unwrap().wait
         {
-            app.world_mut()
-                .write_message(ConversationRequest::new(session, Talk::Advance { speech }));
+            app.world_mut().write_message(crate::game::npcs::conversation::LineSpoken {
+                conversation: session,
+                speech,
+            });
             app.update();
         }
         // Buying one and selling it back, through the merchant's definition

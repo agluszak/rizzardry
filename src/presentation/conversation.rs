@@ -229,7 +229,7 @@ impl Plugin for ConversationViewPlugin {
                     (sync_bubble_geometry, sync_topic_geometry, route_mode_focus, paint_wells),
                 )
                     .chain()
-                    .after(crate::game::npcs::conversation::update_conversation),
+                    .after(crate::game::npcs::conversation::Conversing),
             )
             .add_systems(
                 PostUpdate,
@@ -299,13 +299,13 @@ fn advance_bubble(
     _: On<Activate>,
     views: ViewScope,
     sessions: Query<&Conversation>,
-    mut requests: MessageWriter<ConversationRequest>,
+    mut spoken: MessageWriter<LineSpoken>,
 ) {
     let (_, session) = (views.root(), views.session());
     if let Ok(conversation) = sessions.get(session)
         && let ConversationWait::Line { speech, .. } = conversation.wait
     {
-        requests.write(ConversationRequest::new(session, Talk::Advance { speech }));
+        spoken.write(LineSpoken { conversation: session, speech });
     }
 }
 
@@ -907,46 +907,37 @@ fn sync_topic_geometry(
     }
 }
 
-impl SubmitTopic {
-    /// Only committed editor text becomes a gameplay request. Normalization
-    /// and notebook matching belong to the game.
-    fn request(&self, text: &EditableText, conversation: Entity) -> Option<ConversationRequest> {
-        if text.is_composing() {
-            return None;
-        }
-        let text = text.value().to_string();
-        Some(match *self {
-            Self::Ask => ConversationRequest::new(conversation, Talk::Topic { text }),
-            Self::Edit(edit) => {
-                ConversationRequest::new(conversation, Talk::EditNotebook { edit, text })
-            }
-        })
-    }
-}
-
+/// Only committed editor text becomes a gameplay request: a topic, the
+/// answer to a typed question, or a notebook edit. Normalization and
+/// notebook matching belong to the game.
 fn submit_topic(
     views: ViewScope,
     mut commands: Commands,
     inputs: Query<(Entity, &EditableText, &SubmitTopic)>,
     sessions: Query<&Conversation>,
     mut requests: MessageWriter<ConversationRequest>,
+    mut notebook: MessageWriter<EditNotebook>,
 ) {
     for (entity, text, submit) in &inputs {
         if !text.pending_edits.is_empty() || text.pending_paste.is_some() {
             continue;
         }
-        let session = views.session();
-        if let Some(request) = submit.request(text, session) {
-            let c = sessions.get(session).unwrap();
-            let request = match request {
-                ConversationRequest { conversation, talk: Talk::Topic { text } }
-                    if matches!(c.wait, ConversationWait::Options { typed: true, .. }) =>
-                {
-                    ConversationRequest::new(conversation, Talk::Reply { text })
+        if !text.is_composing() {
+            let session = views.session();
+            let text = text.value().to_string();
+            match *submit {
+                SubmitTopic::Ask => {
+                    let typed = matches!(
+                        sessions.get(session).unwrap().wait,
+                        ConversationWait::Options { typed: true, .. }
+                    );
+                    let talk = if typed { Talk::Reply { text } } else { Talk::Topic { text } };
+                    requests.write(ConversationRequest::new(session, talk));
                 }
-                request => request,
-            };
-            requests.write(request);
+                SubmitTopic::Edit(edit) => {
+                    notebook.write(EditNotebook { edit, text });
+                }
+            }
         }
         commands.entity(entity).remove::<SubmitTopic>();
     }
