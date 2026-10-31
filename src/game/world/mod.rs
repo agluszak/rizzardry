@@ -156,12 +156,14 @@ pub struct ActivateDevice {
     pub device: Entity,
 }
 
-/// Run the devices the player uses, in order: the trigger interpreter
-/// needs the whole world.
-pub fn activate_devices(world: &mut World) {
-    let requests: Vec<_> = world.resource_mut::<Messages<ActivateDevice>>().drain().collect();
-    for ActivateDevice { device } in requests {
-        triggers::activate(world, device, true);
+/// Run the devices the player uses, in order.
+pub fn activate_devices(
+    mut requests: MessageReader<ActivateDevice>,
+    mut devices: triggers::Devices,
+    geometry: Res<Assets<crate::content::level::LevelDefinition>>,
+) {
+    for &ActivateDevice { device } in requests.read() {
+        devices.activate(&geometry, device, true);
     }
 }
 

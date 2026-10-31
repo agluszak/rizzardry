@@ -5,16 +5,13 @@
 
 use bevy::prelude::*;
 
-use super::interaction::{AttemptOn, DeviceAttempt, DeviceInteraction, Work};
-use super::props::PropMotion;
-use super::triggers::TriggerEffect;
-use crate::game::characters::Character;
+use super::interaction::{AttemptOn, DeviceInteraction, Work};
 use crate::game::data::Catalogs;
 use crate::game::inventory::{
     Carried, ItemIds, ItemNews, ItemStack, PartyInventory, Refusal, StackId, make_item,
 };
 use crate::game::loot::roll_loot;
-use crate::game::party::roster::{PartyRoster, the_party};
+use crate::game::party::roster::the_party;
 use crate::game::rng::GameRng;
 
 /// A container's contents, drawn from its loot table the first time it is
@@ -46,62 +43,23 @@ pub(crate) enum ContainerUse {
     Look { open: bool },
 }
 
-/// Retail `Trigger::RunAction` case 3: a held item goes in; otherwise the
-/// contents are drawn once, their gold goes to the party, a lone item to
-/// the hand, and several are looked through.
-pub(crate) fn use_container(
-    In(entity): In<Entity>,
-    mut containers: Query<(&mut Container, &PropMotion)>,
-    content: If<Res<crate::game::data::Catalogs>>,
-    attempts: Query<&DeviceAttempt>,
-    mut party: Single<&mut PartyInventory>,
-    (roster, profiles): (Single<&PartyRoster>, Query<&Character>),
-    mut ids: ResMut<ItemIds>,
-    mut rng: ResMut<GameRng>,
-    mut outcomes: MessageWriter<TriggerEffect>,
-) -> ContainerUse {
-    let (mut container, motion) = containers.get_mut(entity).unwrap();
-    if let Some(held) = party.hand.held.take() {
-        container.contents.items.push(held);
-        return ContainerUse::Deposited;
-    }
-    if attempts.contains(entity) {
-        return ContainerUse::Busy;
-    }
-    // Devices with containers run only once the databases have loaded.
+/// Draw a container's loot table once (retail `GetAveragePartyLevel`
+/// scales level-scaled tables). Retail reseeds its generator from the
+/// trigger's own seed first; here the draw comes from the shared gameplay
+/// generator, so contents depend on when the chest is first opened.
+pub(crate) fn draw_loot(
+    contents: &mut Contents,
+    table: usize,
+    party_level: u32,
+    content: &crate::game::data::Catalogs,
+    (ids, rng): (&mut ItemIds, &mut GameRng),
+) {
     let catalog = &content.items;
-    if let Some(table) = container.table {
-        let loot = &content.loot;
-        // Level-scaled tables draw for the party's average level (retail
-        // `GetAveragePartyLevel`). Retail reseeds its generator from the
-        // trigger's own seed first; here the draw comes from the shared
-        // gameplay generator, so contents depend on when the chest is first
-        // opened.
-        let party_level = crate::game::party::average_level(
-            profiles.iter_many(roster.iter()).matched().map(|c| c.level()),
-        );
-        let (found, gold) = roll_loot(&loot.0[table], catalog, party_level, &mut rng);
-        let contents = &mut container.contents;
-        contents.items.extend(
-            found.into_iter().map(|id| make_item(&catalog[id], &mut ids, &mut rng, false, false)),
-        );
-        contents.gold += gold;
-        container.table = None;
-    }
-    let contents = &mut container.contents;
-    if contents.gold > 0 {
-        party.gold += contents.gold;
-        outcomes.write(TriggerEffect::Gold(contents.gold));
-        contents.gold = 0;
-    }
-    match contents.items.len() {
-        0 => ContainerUse::Toggle,
-        1 => {
-            party.hand.held = contents.items.pop();
-            ContainerUse::Toggle
-        }
-        _ => ContainerUse::Look { open: motion.target > 0.0 },
-    }
+    let (found, gold) = roll_loot(&content.loot.0[table], catalog, party_level, rng);
+    contents
+        .items
+        .extend(found.into_iter().map(|id| make_item(&catalog[id], ids, rng, false, false)));
+    contents.gold += gold;
 }
 
 /// Where taken items go.
