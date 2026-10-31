@@ -620,7 +620,7 @@ fn click_map(
                 let note = notes.notes[index].clone();
                 commits.write(CommitNote(NoteDraft {
                     level: map.level,
-                    original: Some((index, note.clone())),
+                    original: Some(index),
                     note: MapNote { text: String::new(), ..note },
                 }));
             }
@@ -629,7 +629,7 @@ fn click_map(
             if let Some(index) = original {
                 map.editing = Some(NoteDraft {
                     level: map.level,
-                    original: Some((index, notes.notes[index].clone())),
+                    original: Some(index),
                     note: notes.notes[index].clone(),
                 });
             } else {
@@ -663,7 +663,7 @@ pub fn draw_notes(
         .enumerate()
         .map(|(i, n)| (Some(i), n))
         .chain(map.editing.iter().map(|d| (None, &d.note)));
-    let hidden = map.editing.as_ref().and_then(|d| d.original.as_ref().map(|(i, _)| *i));
+    let hidden = map.editing.as_ref().and_then(|d| d.original);
     for (key, note) in displayed {
         let at = map.project(note.position);
         let show =
