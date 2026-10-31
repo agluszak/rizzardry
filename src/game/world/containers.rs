@@ -122,6 +122,23 @@ pub fn looting(world: &World, on: Entity) -> Option<Entity> {
     }
 }
 
+/// The player takes the chosen stacks from the container being looted.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub struct TakeFromContainer {
+    pub on: Entity,
+    pub picks: Vec<(StackId, u16)>,
+    pub to: Recipient,
+}
+
+pub fn take_from_containers(world: &mut World) {
+    let requests: Vec<_> = world.resource_mut::<Messages<TakeFromContainer>>().drain().collect();
+    for TakeFromContainer { on, picks, to } in requests {
+        if let Err(why) = take_from_container(world, on, &picks, to) {
+            debug!("taking from the container refused: {why:?}");
+        }
+    }
+}
+
 /// Take the chosen stacks, each whole or `amount` of it, in the container's
 /// order (retail `TransferSelectedItems`). Each stack goes as far as there
 /// is room; what does not fit stays in the container exactly as it was, and
