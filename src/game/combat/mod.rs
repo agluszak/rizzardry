@@ -43,7 +43,7 @@ use crate::content::species::{MonsterCatalog, Reach, Species};
 use crate::game::characters::{Character, Condition, Vitals};
 use crate::game::inventory::EquipSlot;
 use crate::game::magic::casting::{self, MagicChoice, MagicNews};
-use crate::game::magic::{Effect, LearnedSpells, MagicContext, SpellPoints, Victim};
+use crate::game::magic::{Effect, Field, LearnedSpells, SpellPoints, Victim};
 use crate::game::party::Members;
 use crate::game::party::Order;
 use crate::game::party::body::PartyBody;
@@ -547,7 +547,6 @@ pub fn run_battle(
     battle: Option<Single<(Entity, &mut Battle, Option<&Combatants>)>>,
     mut rng: ResMut<GameRng>,
     clock: Res<GameClock>,
-    (mut members, mut damage): (Members, MonsterDamage),
     party_body: Query<(&Position, &PartyBody)>,
     (roster, content, level): (Single<&PartyRoster>, If<Res<Catalogs>>, PlayedLevel),
     mut magic: BattleMagic,
@@ -579,7 +578,7 @@ pub fn run_battle(
             let haste = roster
                 .iter()
                 .try_fold(0, |sum, member| {
-                    let (_, vitals, ..) = members.get(member).unwrap();
+                    let (_, vitals, ..) = magic.field.members.get(member).unwrap();
                     let effect = vitals.enchantments.get(crate::content::spells::SpellId::HASTE)?;
                     Some(sum + effect.scaled(u32::from(effect.power) * 10))
                 })
@@ -604,7 +603,6 @@ pub fn run_battle(
                 index,
                 combatants,
                 &mut rng,
-                (&mut members, &mut damage),
                 &party,
                 &mut magic,
                 &mut news,
@@ -622,7 +620,6 @@ pub fn run_battle(
                 (index, step),
                 combatants,
                 &mut rng,
-                (&mut members, &mut damage),
                 &party,
                 &mut magic,
                 species,
@@ -651,7 +648,7 @@ fn next_phase(step: u8, attacks_left: u32) -> u8 {
 /// What casting in a fight needs beside the fight itself.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct BattleMagic<'w, 's> {
-    context: MagicContext<'w, 's>,
+    field: Field<'w, 's>,
     points: Query<'w, 's, (&'static LearnedSpells, &'static mut SpellPoints)>,
     groups: Query<'w, 's, &'static GroupMember>,
     group_members: Query<'w, 's, &'static GroupMembers>,

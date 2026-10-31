@@ -34,6 +34,19 @@ pub struct Enchantments(pub Vec<Enchantment>);
 #[derive(Component, Clone, Debug, Default, PartialEq, Eq)]
 pub struct PartyEffects(pub Enchantments);
 
+impl std::ops::Deref for PartyEffects {
+    type Target = Enchantments;
+    fn deref(&self) -> &Enchantments {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for PartyEffects {
+    fn deref_mut(&mut self) -> &mut Enchantments {
+        &mut self.0
+    }
+}
+
 pub fn personal(spell: SpellId) -> bool {
     matches!(
         spell,

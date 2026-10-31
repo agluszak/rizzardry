@@ -28,7 +28,7 @@ pub(super) fn execute(
     world: &mut Field,
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
 ) -> Result<Vec<Effect>, Refusal> {
-    let spells = world.spells;
+    let spells = world.spells();
     let (profile, vitals, ..) = world.members.get(actor).unwrap();
     if !available(profile, vitals) {
         return Err(Refusal::CannotAct);

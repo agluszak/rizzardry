@@ -608,15 +608,15 @@ pub fn perform(
     rng: &mut GameRng,
     world: &mut Field,
 ) -> Result<(Report, Vec<SpellInFlight>), Refusal> {
-    let spells = world.spells;
+    let spells = world.spells();
     let Prepared { spell, power, item, forced_self } = prepare_source(
         caster,
         choice.source,
         situation.in_combat(),
-        (spells, world.items),
-        world.members,
+        (spells, world.items()),
+        &world.members,
         points,
-        world.inventory,
+        &world.inventory,
     )?;
     if !effects::modelled(spell.id) {
         return Err(Refusal::Unsupported);
@@ -635,7 +635,7 @@ pub fn perform(
     let (captured, landing) = capture(caster, spell, choice.aim, situation, forced_self)?;
     let power = match &item {
         Some(use_) if matches!(use_.definition.use_type, UseType::Instrument | UseType::Gadget) => {
-            play(caster, use_, spell, rng, world.members)?
+            play(caster, use_, spell, rng, &mut world.members)?
         }
         _ => power,
     };
@@ -712,9 +712,9 @@ pub fn perform(
             item.as_ref(),
             spell,
             cast_power,
-            world.difficulty,
+            world.difficulty(),
         );
-        let outcome = super::roll(rng, chance, spell, quiet, world.underwater);
+        let outcome = super::roll(rng, chance, spell, quiet, world.underwater());
         pay(
             caster,
             spell,
@@ -722,8 +722,8 @@ pub fn perform(
             item.as_ref(),
             points,
             rng,
-            world.members,
-            world.inventory,
+            &mut world.members,
+            &mut world.inventory,
             &mut report,
         );
         let victims = match outcome {
@@ -825,7 +825,7 @@ pub fn perform(
                 cast_power,
                 item.as_ref(),
                 rng,
-                world.members,
+                &mut world.members,
             ));
         }
         if first {
@@ -849,7 +849,7 @@ pub fn perform(
         if vitals.stamina <= u32::from(spell.level)
             || pool.available(spell.realm.unwrap(), &maximum) < spell.cost
             || outcome != Outcome::Fizzled
-                && (!repeat || effects::all_restored(spell.id, &victims, world.members))
+                && (!repeat || effects::all_restored(spell.id, &victims, &world.members))
         {
             break;
         }

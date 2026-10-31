@@ -306,7 +306,7 @@ fn victims(
         } else {
             (scene.party_at, party_eye)
         };
-        let side = field.monsters.stance(scene.caster, field.now);
+        let side = field.monsters.stance(scene.caster, field.now());
         let source = if backfired {
             match side {
                 crate::game::world::hostility::Stance::Hostile => {
@@ -378,7 +378,7 @@ pub(super) fn cast(
 ) -> (Report, Vec<crate::game::magic::casting::SpellInFlight>) {
     let strength = Strength::at(u32::from(kind.level), spell, power, 0);
     let failure = crate::game::magic::spell_failure(budget, spell, power);
-    let outcome = crate::game::magic::roll(rng, failure, spell, false, field.underwater);
+    let outcome = crate::game::magic::roll(rng, failure, spell, false, field.underwater());
     let mut flights = Vec::new();
     let effects = match outcome {
         Outcome::Fizzled => Vec::new(),

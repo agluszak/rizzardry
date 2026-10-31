@@ -195,7 +195,7 @@ fn razor_backlash(
     let Some(charge) = charge else { return };
     let rolled = effects::magnitude(
         rng,
-        field.spells[SpellId::RAZOR_CLOAK].dice,
+        field.spells()[SpellId::RAZOR_CLOAK].dice,
         crate::game::magic::Strength { power: charge.power, boost: 0, against: 0 },
     );
     let amount = match attacker {
@@ -252,11 +252,11 @@ fn member_defence(
 }
 
 fn monster_defence<'a>(
-    field: &Field<'a, '_, '_, '_, '_, '_, '_>,
+    field: &Field<'a, '_>,
     fight: &Fight,
     monster: Entity,
 ) -> Option<Defence<'a>> {
-    let species = field.species;
+    let species = field.species();
     let (body, ..) = field.monsters.monsters().get(monster).ok()?;
     if body.is_dead() || !field.monsters.active(monster) {
         return None;
@@ -269,7 +269,7 @@ fn monster_defence<'a>(
 /// at deliberately or hit by a fumble.
 fn victim_defence<'a>(
     battle: &Battle,
-    field: &Field<'a, '_, '_, '_, '_, '_, '_>,
+    field: &Field<'a, '_>,
     fight: &Fight,
     victim: Victim,
 ) -> Option<(Defence<'a>, Option<(Entity, Character)>)> {
@@ -316,7 +316,7 @@ fn intercept(
     news: &mut MessageWriter<CombatNews>,
 ) -> Victim {
     let Victim::Monster(ward) = victim else { return victim };
-    let species = field.species;
+    let species = field.species();
     let monsters = field.monsters.monsters();
     let able: Vec<(usize, i32)> = battle
         .this_round
@@ -377,9 +377,9 @@ fn member_bystanders(
     let mut bystanders: Vec<Victim> = field
         .party
         .iter()
-        .filter(|&&m| field.members.get(m).is_ok_and(|(_, v, ..)| !v.is_dead()))
-        .filter(|&&m| m == member || hand.reach > Reach::Touch || !formation.screens(member, m))
-        .map(|&m| Victim::Member(m))
+        .filter(|&m| field.members.get(m).is_ok_and(|(_, v, ..)| !v.is_dead()))
+        .filter(|&m| m == member || hand.reach > Reach::Touch || !formation.screens(member, m))
+        .map(Victim::Member)
         .collect();
     for &entity in fight.combatants {
         let (monster, at, walker, ..) = field.monsters.monsters().get(entity).unwrap();
@@ -413,10 +413,10 @@ fn monster_bystanders(
     let mut bystanders: Vec<Victim> = field
         .party
         .iter()
-        .filter(|&&m| m != target)
-        .filter(|&&m| field.members.get(m).is_ok_and(|(_, v, ..)| !v.is_dead()))
-        .filter(|&&m| fight.party.reaches(formation, m, at.translation(), reach, distance))
-        .map(|&m| Victim::Member(m))
+        .filter(|&m| m != target)
+        .filter(|&m| field.members.get(m).is_ok_and(|(_, v, ..)| !v.is_dead()))
+        .filter(|&m| fight.party.reaches(formation, m, at.translation(), reach, distance))
+        .map(Victim::Member)
         .collect();
     for &entity in fight.combatants {
         let (other, other_at, other_walker, ..) = monsters.get(entity).unwrap();
@@ -446,11 +446,11 @@ pub(super) fn can_berserk(character: &Character, hands: &attack::Hands) -> bool 
 pub(super) fn melee_target<'a>(
     member: Entity,
     hand: &Hand,
-    field: &Field<'a, '_, '_, '_, '_, '_, '_>,
+    field: &Field<'a, '_>,
     fight: &Fight,
 ) -> Option<(Entity, &'a Species)> {
     let formation = &**field.formation;
-    let species = field.species;
+    let species = field.species();
     fight
         .combatants
         .iter()
@@ -465,7 +465,7 @@ pub(super) fn melee_target<'a>(
                 .members
                 .get(member)
                 .is_ok_and(|(_, vitals, ..)| vitals.conditions.has(Condition::Turncoat));
-            let side = field.monsters.stance(entity, field.now);
+            let side = field.monsters.stance(entity, field.now());
             let wanted = if turned { Stance::Friendly } else { Stance::Hostile };
             if (turned && side != wanted || !turned && side == Stance::Friendly)
                 || !field.monsters.active(entity)
@@ -500,7 +500,6 @@ fn member_target(
         let mut targets: Vec<_> = field
             .party
             .iter()
-            .copied()
             .filter(|&target| {
                 target != member
                     && field.members.get(target).is_ok_and(|(_, vitals, ..)| {
@@ -536,7 +535,7 @@ pub(super) fn member_attacks(
         RoundPhase::Executing(step) => step,
         _ => 1,
     };
-    let (items, difficulty) = (field.items, field.difficulty);
+    let (items, difficulty) = (field.items(), field.difficulty());
     let (character, vitals, carried, burden) = field.members.get(member).unwrap();
     let (character, load) = (character.clone(), burden.load);
     let controlled = vitals.conditions.has(Condition::Turncoat);
@@ -739,7 +738,7 @@ fn member_blow(
     tally: &mut Tally,
 ) -> Option<u32> {
     let hand = &hands.hands[current];
-    let difficulty = field.difficulty;
+    let difficulty = field.difficulty();
     let (struck, victim_character) = victim_defence(battle, field, fight, landing.victim)?;
     let at = struck.locate(rng, None);
     if !landing.sure && aim < landing.roll as i32 {
@@ -937,7 +936,7 @@ fn reachable_targets(
     let eye = monster.eye(here);
     let formation = &**field.formation;
     let mut unseen = Vec::new();
-    for &member in field.party {
+    for member in field.party.iter() {
         let stealth = field.members.get(member).unwrap().0.skill(Skill::Stealth);
         if rng.below(100) < stealth * 75 / 100 {
             unseen.push(member);
@@ -946,7 +945,7 @@ fn reachable_targets(
     let mut candidates = vec![];
     let mut evaded = Vec::new();
     for (a, attack) in kind.attacks.iter().enumerate() {
-        for &member in field.party {
+        for member in field.party.iter() {
             let (_, vitals, ..) = field.members.get(member).unwrap();
             if !vitals.is_dead()
                 && (fight.attacks)(Victim::Member(member))
@@ -1003,13 +1002,13 @@ pub(super) fn monster_attacks(
 ) -> bool {
     let turn = battle.this_round.monsters[index];
     let entity = turn.actor;
-    let species = field.species;
-    let difficulty = field.difficulty;
+    let species = field.species();
+    let difficulty = field.difficulty();
     let (monster, at, walker, ..) = field.monsters.monsters().get(entity).unwrap();
     let kind = &species[monster.species];
     let position = at.translation();
     let eye = monster.eye(feet(position, walker));
-    let stance = field.monsters.stance(entity, field.now);
+    let stance = field.monsters.stance(entity, field.now());
     let candidates = reachable_targets(entity, kind, rng, field, fight, news);
     let turn_left = turn.attacks_left.saturating_sub(1);
     battle.this_round.monsters[index].end();

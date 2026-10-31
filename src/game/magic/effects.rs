@@ -546,56 +546,109 @@ fn burn_stack(
     stack.remove_units(lost)
 }
 
-/// What a spell's effects need from the world.
-pub struct Field<'a, 'm, 'ms, 'd, 'ds, 'f, 'p> {
-    pub underwater: bool,
-    pub visibility: &'a crate::game::world::obstacles::WorldObstacles<'a, 'a>,
-    pub enchantments: &'a mut super::enchantments::Enchantments,
-    pub members: &'a mut Members<'m, 'ms>,
-    pub monsters: &'a mut MonsterDamage<'d, 'ds>,
-    /// The party's pool and purse.
-    pub inventory: &'a mut PartyInventory,
-    pub formation: &'a mut Mut<'f, Formation>,
-    pub party_damage: &'a mut MessageWriter<'p, DamageApplied>,
-    pub items: &'a ItemCatalog,
-    pub species: &'a MonsterCatalog,
-    pub spells: &'a crate::content::spells::SpellCatalog,
-    /// What monster loot tables scale by.
-    pub party_level: u32,
-    /// The game time the action happens at, which a kill's offence is
-    /// dated by.
-    pub now: u64,
-    pub difficulty: Difficulty,
+/// What resolving an action needs and changes: the members and monsters
+/// it acts on, the party's shared effects, items, purse and formation, the
+/// rule catalogs, the played level and the fight under way.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct Field<'w, 's> {
+    pub members: Members<'w, 's>,
+    pub monsters: MonsterDamage<'w, 's>,
     /// The current roster in order, including dead members eligible for revival.
-    pub party: &'a [Entity],
-    /// Skills that improved while resolving, for the notices.
-    pub improved: Vec<(Entity, Skill)>,
-    /// Monsters the party acted against, eligible to provoke their groups
-    /// when the action was accepted ([`Field::provoke`]).
-    pub fight: Option<Entity>,
-    pub provocations: &'a mut MessageWriter<'p, crate::game::world::hostility::Provocation>,
+    pub party: Single<'w, 's, &'static crate::game::party::roster::PartyRoster>,
+    content: If<Res<'w, crate::game::data::Catalogs>>,
+    difficulty: Res<'w, Difficulty>,
+    pub enchantments: Single<'w, 's, &'static mut super::enchantments::PartyEffects>,
+    /// The party's pool and purse.
+    pub inventory: Single<'w, 's, &'static mut PartyInventory>,
+    pub formation: Single<'w, 's, &'static mut Formation>,
+    pub party_damage: MessageWriter<'w, DamageApplied>,
+    pub news: MessageWriter<'w, super::casting::MagicNews>,
+    pub visibility: crate::game::world::obstacles::WorldObstacles<'w, 's>,
+    /// Missiles leave in launch order, so equal arrivals land in it too.
+    pub flight_order: ResMut<'w, super::casting::FlightOrder>,
+    /// Skills that improved while resolving an action, for its notices.
+    pub improved: Local<'s, Vec<(Entity, Skill)>>,
+    level: Single<
+        'w,
+        's,
+        (Entity, Option<&'static crate::game::world::triggers::LevelState>),
+        With<crate::game::world::level::Level>,
+    >,
+    fights: Query<'w, 's, Entity, With<crate::game::combat::Battle>>,
+    provocations: MessageWriter<'w, crate::game::world::hostility::Provocation>,
+    clock: Res<'w, crate::game::time::GameClock>,
 }
 
-impl Field<'_, '_, '_, '_, '_, '_, '_> {
+impl<'w> Field<'w, '_> {
+    /// The rule catalogs, held for the whole run apart from the field's
+    /// other borrows.
+    pub fn catalogs(&self) -> &'w crate::game::data::Catalogs {
+        Res::into_inner(Res::clone(&self.content.0))
+    }
+
+    pub fn items(&self) -> &'w ItemCatalog {
+        &self.catalogs().items
+    }
+
+    pub fn species(&self) -> &'w MonsterCatalog {
+        &self.catalogs().species
+    }
+
+    pub fn spells(&self) -> &'w crate::content::spells::SpellCatalog {
+        &self.catalogs().spells
+    }
+
+    pub fn difficulty(&self) -> Difficulty {
+        *self.difficulty
+    }
+
+    /// The level being played, which spell missiles belong to.
+    pub fn level(&self) -> Entity {
+        self.level.0
+    }
+
+    /// Whether the level is under water, where fire fails.
+    pub fn underwater(&self) -> bool {
+        self.level.1.is_some_and(|state| state.camera_sway)
+    }
+
+    /// The game time the action happens at, which a kill's offence is
+    /// dated by.
+    pub fn now(&self) -> u64 {
+        self.clock.ms
+    }
+
+    /// The fight under way.
+    pub fn fight(&self) -> Option<Entity> {
+        self.fights.single().ok()
+    }
+
+    /// What monster loot tables scale by: the party's average level.
+    pub fn party_level(&self) -> u32 {
+        crate::game::party::average_level(
+            self.members.iter_many(self.party.iter()).matched().map(|(c, ..)| c.level()),
+        )
+    }
+
     /// The party acts against this monster. Whether that provokes its group
     /// is settled now, as the action is accepted, so nothing the action then
     /// does (a kill, a Turncoat) undoes it (retail `MakeTargetGroupHostile`):
     /// a living monster not under Turncoat does.
     pub fn provoke(&mut self, monster: Entity) {
-        if self.monsters.provoke(monster, self.now) {
+        if self.monsters.provoke(monster, self.clock.ms) {
             self.provocations.write(crate::game::world::hostility::Provocation(monster));
         }
     }
 }
 
-impl Field<'_, '_, '_, '_, '_, '_, '_> {
+impl Field<'_, '_> {
     pub fn mana_maximum(
         &self,
         member: Entity,
         learned: &LearnedSpells,
     ) -> enum_map::EnumMap<Realm, u32> {
         let (profile, vitals, ..) = self.members.get(member).unwrap();
-        profile.stats(&vitals.enchantments).max_points(learned, self.spells)
+        profile.stats(&vitals.enchantments).max_points(learned, self.spells())
     }
 }
 
@@ -683,11 +736,11 @@ fn target(world: &Field, victim: Victim, realm: Realm, condition: Option<Conditi
     match victim {
         Victim::Monster(monster) => {
             let (body, ..) = world.monsters.monsters().get(monster).unwrap();
-            let kind = &world.species[body.species];
+            let kind = &world.species()[body.species];
             Target {
                 level: u32::from(kind.level),
                 resistance: body.resistance(kind, realm),
-                side: Some(world.monsters.stance(monster, world.now)),
+                side: Some(world.monsters.stance(monster, world.now())),
                 turncoat: false,
                 immune: condition.is_some_and(|c| immune(kind.kind, c)),
                 dead: body.is_dead(),
@@ -698,8 +751,8 @@ fn target(world: &Field, victim: Victim, realm: Realm, condition: Option<Conditi
             let resistances = crate::game::characters::resistance::member_resistances(
                 &character.stats(&vitals.enchantments),
                 carried,
-                world.items,
-                world.enchantments,
+                world.items(),
+                &world.enchantments,
             );
             Target {
                 level: u32::from(character.level()),
@@ -736,8 +789,8 @@ fn saves(
 ) -> bool {
     let chance = condition_chance(target.level, target.resistance, against, base);
     let chance = match target.side {
-        Some(side) => world.difficulty.for_monster(chance, side),
-        None => world.difficulty.for_character(chance, target.turncoat),
+        Some(side) => world.difficulty().for_monster(chance, side),
+        None => world.difficulty().for_character(chance, target.turncoat),
     };
     let saved = save_roll(rng, chance);
     if saved
@@ -788,14 +841,15 @@ fn resisted_magnitude(
 /// damage.
 fn sap(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -> Option<Effect> {
     let Victim::Member(member) = victim else { return None };
+    let fight = world.fight();
     let (mut character, mut vitals, ..) = world.members.get_mut(member).unwrap();
-    let mut fate = Fate { fight: world.fight, rng };
+    let mut fate = Fate { fight, rng };
     let lost = crate::game::party::drain_member(
         member,
         (&mut character, &mut vitals),
-        world.formation,
+        &mut world.formation,
         (amount, &mut fate),
-        world.party_damage,
+        &mut world.party_damage,
     );
     let outcome = DamageOutcome { damage: lost, died: vitals.is_dead(), experience: 0 };
     Some(Effect::Damaged { victim, outcome })
@@ -821,21 +875,22 @@ pub fn hurt(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -
             let outcome = world.monsters.apply(
                 monster,
                 amount,
-                (world.party_level, world.now),
-                world.inventory,
+                (world.party_level(), world.now()),
+                &mut world.inventory,
                 rng,
             );
             Some(Effect::Damaged { victim, outcome })
         }
         Victim::Member(member) => {
+            let fight = world.fight();
             let (character, mut vitals, ..) = world.members.get_mut(member).unwrap();
-            let mut fate = Fate { fight: world.fight, rng: &mut *rng };
+            let mut fate = Fate { fight, rng: &mut *rng };
             let lost = crate::game::party::damage_member(
                 member,
                 (&character, &mut vitals),
-                world.formation,
+                &mut world.formation,
                 (amount, &mut fate),
-                world.party_damage,
+                &mut world.party_damage,
             );
             if lost > 0 && !vitals.is_dead() {
                 let senses = character.stats(&vitals.enchantments).attribute(Attribute::Senses);
@@ -857,7 +912,7 @@ fn inflict_on(
 ) -> Option<()> {
     if condition == Condition::Turncoat
         && let Victim::Monster(entity) = victim
-        && world.monsters.stance(entity, world.now)
+        && world.monsters.stance(entity, world.now())
             == crate::game::world::hostility::Stance::Neutral
     {
         return None;
@@ -933,7 +988,7 @@ fn afflict(
         Victim::Monster(monster) => {
             condition.is_none() && {
                 let (body, ..) = world.monsters.monsters().get(monster).unwrap();
-                world.species[body.species].death_immune
+                world.species()[body.species].death_immune
             }
         }
         Victim::Member(_) => false,
@@ -1144,14 +1199,15 @@ fn kill(rng: &mut GameRng, world: &mut Field, victim: Victim) -> Option<Effect> 
 /// no damage first, so nothing absorbs or tires, but death may be cheated.
 fn perish(rng: &mut GameRng, world: &mut Field, victim: Victim) -> Option<Effect> {
     let Victim::Member(member) = victim else { return None };
+    let fight = world.fight();
     let (character, mut vitals, ..) = world.members.get_mut(member).unwrap();
-    let mut fate = Fate { fight: world.fight, rng };
+    let mut fate = Fate { fight, rng };
     let lost = crate::game::party::kill_member(
         member,
         (&character, &mut vitals),
-        world.formation,
+        &mut world.formation,
         &mut fate,
-        world.party_damage,
+        &mut world.party_damage,
     );
     let outcome = DamageOutcome { damage: lost, died: vitals.is_dead(), experience: 0 };
     Some(Effect::Damaged { victim, outcome })
@@ -1266,7 +1322,7 @@ pub fn resolve(
                 let base = u32::from(strength.power) * 50;
                 let amount = base + base * strength.boost / 100;
                 // Anti-Magic drains the whole living party, not only captured victims.
-                for &member in world.party {
+                for member in world.party.iter() {
                     if !world.members.get(member).unwrap().1.is_dead() {
                         let (learned, mut pool) = points.get_mut(member).unwrap();
                         let maximum = world.mana_maximum(member, learned);
@@ -1275,7 +1331,7 @@ pub fn resolve(
                     }
                 }
                 // Anti-Magic clears persistent party slots, not combat or actor enchantments.
-                world.enchantments.0.retain(|e| super::enchantments::combat_only(e.spell));
+                world.enchantments.0.0.retain(|e| super::enchantments::combat_only(e.spell));
             }
         }
         Kind::RestoreMagic => each(&mut |v, rng, world| {
@@ -1313,7 +1369,7 @@ pub fn resolve(
         Kind::DamageUndead { banish } => each(&mut |v, rng, world| {
             let Victim::Monster(m) = v else { return None };
             let (body, ..) = world.monsters.monsters().get(m).unwrap();
-            let kind = world.species[body.species].kind;
+            let kind = world.species()[body.species].kind;
             if !(UNDEAD_KINDS.contains(&kind) || (banish && kind == BANISHED_KIND)) {
                 return Some(Effect::Nothing { victim: v });
             }
@@ -1522,7 +1578,7 @@ fn purify(
     world: &mut Field,
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
-    let catalog = world.spells;
+    let catalog = world.spells();
     // Purify rolls from power alone, rather than its authored duration.
     let base = u32::from(strength.power) + 1;
     let amount = match rng.below(4) {
@@ -1546,7 +1602,7 @@ fn purify(
         };
         match victim {
             Victim::Member(_) if !party_done => {
-                purify(world.enchantments);
+                purify(&mut world.enchantments);
                 party_done = true;
             }
             Victim::Member(_) => continue,
@@ -1569,23 +1625,24 @@ fn destroy_consumables(
     let mut effects = Vec::new();
     let mut totals = [0; 3];
     let chance = u32::from(strength.power) * 10;
+    let items = world.items();
     for &victim in victims {
         let Victim::Member(member) = victim else { continue };
         let (_, _, mut carried, ..) = world.members.get_mut(member).unwrap();
         // Retail visits all twelve equipped slots, including alternate hands.
         for (_, slot) in &mut carried.equipment {
             if let Some(equipped) = slot.take() {
-                *slot = burn_stack(equipped.stack, world.items, chance, rng, &mut totals).map(
-                    |stack| crate::game::inventory::Equipped {
+                *slot = burn_stack(equipped.stack, items, chance, rng, &mut totals).map(|stack| {
+                    crate::game::inventory::Equipped {
                         stack,
                         curse_released: equipped.curse_released,
-                    },
-                );
+                    }
+                });
             }
         }
         for slot in &mut carried.backpack {
             if let Some(stack) = slot.take() {
-                *slot = burn_stack(stack, world.items, chance, rng, &mut totals);
+                *slot = burn_stack(stack, items, chance, rng, &mut totals);
             }
         }
     }
@@ -1593,7 +1650,7 @@ fn destroy_consumables(
         let pool = &mut world.inventory.pool.stacks;
         *pool = std::mem::take(pool)
             .into_iter()
-            .filter_map(|stack| burn_stack(stack, world.items, chance, rng, &mut totals))
+            .filter_map(|stack| burn_stack(stack, items, chance, rng, &mut totals))
             .collect();
     }
     for (class, amount) in
@@ -1736,7 +1793,7 @@ fn enchant(
                     continue;
                 }
                 party_applied = true;
-                apply(world.enchantments, false)
+                apply(&mut world.enchantments, false)
             }
             Victim::Monster(entity) => {
                 if spell.id == SpellId::HASTE {
@@ -1771,7 +1828,6 @@ fn neediest(
     world
         .party
         .iter()
-        .copied()
         .filter_map(|m| {
             let (c, v, ..) = world.members.get(m).unwrap();
             if v.is_dead() {
@@ -1901,9 +1957,9 @@ pub(crate) fn pulse_clouds(
     world: &mut Field,
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
 ) -> Vec<(SpellId, Vec<Effect>)> {
-    let spells = world.spells;
+    let spells = world.spells();
     let mut reports = Vec::new();
-    let party: Vec<_> = world.party.iter().copied().map(Victim::Member).collect();
+    let party: Vec<_> = world.party.iter().map(Victim::Member).collect();
     let targets = std::iter::once(None).chain(combatants.iter().copied().map(Some));
     for actor in targets {
         for id in super::enchantments::OFFENSIVE {
@@ -1933,7 +1989,7 @@ pub(crate) fn pulse_clouds(
                     let immune = match victim {
                         Victim::Monster(actor) => {
                             let (body, ..) = world.monsters.monsters().get(actor).unwrap();
-                            world.species[body.species].death_immune
+                            world.species()[body.species].death_immune
                         }
                         Victim::Member(_) => false,
                     };

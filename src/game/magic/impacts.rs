@@ -70,7 +70,7 @@ impl Origin {
                     Stance::Friendly
                 }
             }
-            Some(Victim::Monster(entity)) => world.monsters.stance(entity, world.now),
+            Some(Victim::Monster(entity)) => world.monsters.stance(entity, world.now()),
             None => return Recipients::Everyone,
         };
         Recipients::Opponents(if reversed {
@@ -93,7 +93,7 @@ impl Origin {
                 .monsters()
                 .get(entity)
                 .ok()
-                .map(|(body, ..)| &world.species[body.species])
+                .map(|(body, ..)| &world.species()[body.species])
                 .map_or(0, |kind| u32::from(kind.level)),
             None => 0,
         }
@@ -128,7 +128,7 @@ pub(crate) fn resolve(
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
     flights: &mut Vec<SpellInFlight>,
 ) -> Vec<Effect> {
-    let spells = world.spells;
+    let spells = world.spells();
     let mut landed =
         effects::resolve(origin.actor(), backfired, spell, strength, victims, rng, world, points);
     let Some(finish) = finish else { return landed };
@@ -137,7 +137,7 @@ pub(crate) fn resolve(
         let mut order = finish.victims.clone();
         order.sort_by_key(|victim| match *victim {
             Victim::Member(entity) => {
-                (0, world.party.iter().position(|&member| member == entity).unwrap())
+                (0, world.party.iter().position(|member| member == entity).unwrap())
             }
             Victim::Monster(entity) => {
                 (1, world.monsters.monsters().get(entity).unwrap().0.location as usize)
@@ -203,7 +203,6 @@ pub(crate) fn resolve(
                         world
                             .party
                             .iter()
-                            .copied()
                             .find(|&actor| world.members.get(actor).unwrap().1.can_fight())
                             .unwrap_or(caster),
                     )),
@@ -215,7 +214,6 @@ pub(crate) fn resolve(
                     Some(Victim::Member(_)) => world
                         .party
                         .iter()
-                        .copied()
                         .filter(|&entity| !world.members.get(entity).unwrap().1.is_dead())
                         .map(Victim::Member)
                         .collect(),
