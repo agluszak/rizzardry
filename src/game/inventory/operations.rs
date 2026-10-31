@@ -18,9 +18,12 @@ pub struct PutAwayHeld {
 /// Return the hand to the reviewed member, falling back to the pool;
 /// overflow remains owned by the hand.
 pub(crate) fn put_away_held(request: On<PutAwayHeld>, mut inventory: InventoryOperations) {
-    let InventoryOperations { party, members, content, .. } = &mut inventory;
-    let (_, _, mut carried) = members.get_mut(request.member).unwrap();
-    party.give_held(Some(&mut carried), false, &content.items);
+    let InventoryOperations { party, roster, members, content, .. } = &mut inventory;
+    let mut carried = roster
+        .contains(&request.member)
+        .then_some(request.member)
+        .and_then(|member| members.get_mut(member).ok());
+    party.give_held(carried.as_mut().map(|(_, _, carried)| &mut **carried), false, &content.items);
 }
 
 #[derive(SystemParam)]
@@ -188,7 +191,13 @@ mod settlement_tests {
 
     #[test]
     fn put_away_needs_no_view_and_preserves_fallbacks_and_refusals() {
-        for (full, loaded) in [(false, true), (true, true), (false, false)] {
+        for (full, loaded, departed, despawned) in [
+            (false, true, false, false),
+            (true, true, false, false),
+            (false, false, false, false),
+            (false, true, true, false),
+            (false, true, false, true),
+        ] {
             let mut app = App::new();
             app.add_message::<ItemNews>().add_observer(put_away_held);
             let definition =
@@ -220,17 +229,36 @@ mod settlement_tests {
                 }
                 inventory.hand.held = Some(held.clone());
             }
+            if departed {
+                app.world_mut()
+                    .entity_mut(member)
+                    .remove::<crate::game::party::roster::PartyMember>();
+            } else if despawned {
+                app.world_mut().despawn(member);
+            }
             // The request retains the member identity without any screen or
             // selection resource. Duplicate closes never duplicate the stack.
             app.world_mut().trigger(PutAwayHeld { member });
             app.world_mut().trigger(PutAwayHeld { member });
             let inventory = app.world().get::<PartyInventory>(party).unwrap();
-            let carried = app.world().get::<Carried>(member).unwrap();
             if full || !loaded {
                 assert_eq!(inventory.hand.held, Some(held));
+            } else if departed || despawned {
+                assert!(inventory.hand.held.is_none());
+                assert_eq!(inventory.pool.stacks, vec![held]);
+                if departed {
+                    assert!(
+                        app.world()
+                            .get::<Carried>(member)
+                            .unwrap()
+                            .backpack
+                            .iter()
+                            .all(Option::is_none)
+                    );
+                }
             } else {
                 assert!(inventory.hand.held.is_none());
-                assert_eq!(carried.backpack[0], Some(held));
+                assert_eq!(app.world().get::<Carried>(member).unwrap().backpack[0], Some(held));
                 assert!(inventory.pool.stacks.is_empty());
             }
         }
