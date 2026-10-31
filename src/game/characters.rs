@@ -126,9 +126,9 @@ impl Conditions {
     /// out (retail `TickCharacterCondition`, `TickMonsterCondition`).
     pub fn age(&mut self, ticks: u32) {
         self.0.retain_mut(|(_, lasting)| match lasting {
-            Lasting::Rounds(left) if u32::from(*left) <= ticks => false,
+            Lasting::Rounds(left) if *left <= ticks => false,
             Lasting::Rounds(left) => {
-                *left -= ticks as u16;
+                *left -= ticks;
                 true
             }
             Lasting::Indefinite => true,
@@ -200,7 +200,7 @@ pub fn rest(stamina: &mut u32, conditions: &mut Conditions, amount: u32, maximum
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lasting {
     /// Combat rounds, which are also the 120-second aging ticks outside it.
-    Rounds(u16),
+    Rounds(u32),
     /// Until something lifts it, like exhaustion until stamina returns.
     Indefinite,
 }
@@ -238,7 +238,7 @@ struct ProfessionRow {
     /// Attribute minimums; 0 for none.
     minimums: EnumMap<Attribute, u8>,
     hp_factor: f32,
-    experience: u32,
+    experience: u64,
     bonus_skill: Skill,
     skills: &'static [Skill],
     /// Weight of its levels in a hand's physical score.
@@ -999,7 +999,7 @@ impl Vitals {
     /// The caller counts the poison's duration down.
     pub fn weaken_poison(&mut self, ticks: u32, rng: &mut GameRng) {
         let left = match self.conditions.lasting(Condition::Poisoned) {
-            Some(Lasting::Rounds(left)) => Some(u32::from(left)),
+            Some(Lasting::Rounds(left)) => Some(left),
             _ => None,
         };
         if let Some(left) = left.filter(|&left| left > ticks) {
@@ -1069,7 +1069,7 @@ impl Vitals {
         }
         let rounds = match self.conditions.lasting(Condition::Unconscious) {
             None => 0,
-            Some(Lasting::Rounds(rounds)) => u32::from(rounds),
+            Some(Lasting::Rounds(rounds)) => rounds,
             Some(Lasting::Indefinite) => return false,
         };
         if rounds >= 7 {
@@ -1077,7 +1077,7 @@ impl Vitals {
         }
         let stint = (rounds as i32 + 7 - profile.scale_by_profession(5.0) as i32).max(0);
         if stint > 0 {
-            self.inflict(Condition::Unconscious, Lasting::Rounds(stint as u16));
+            self.inflict(Condition::Unconscious, Lasting::Rounds(stint as u32));
         }
         let maximum = self.maxima(profile).0;
         self.hp = match fate.fight {
@@ -1512,6 +1512,10 @@ mod tests {
             ])
         );
         mage.age_conditions(1, &mut crate::game::rng::GameRng::default());
+        mage.inflict(Condition::Asleep, Lasting::Rounds(70_000));
+        mage.conditions.age(69_999);
+        assert_eq!(mage.conditions.lasting(Condition::Asleep), Some(Lasting::Rounds(1)));
+        mage.conditions.age(1);
         assert_eq!(
             mage.conditions,
             Conditions::from([(Condition::Unconscious, Lasting::Indefinite)])

@@ -953,7 +953,7 @@ fn afflict(
         0 => return Some(Effect::Resisted { victim }),
         _ if rounds.is_none() => Lasting::Indefinite,
         1 => Lasting::Rounds(2),
-        rounds => Lasting::Rounds(rounds.min(u32::from(u16::MAX)) as u16),
+        rounds => Lasting::Rounds(rounds),
     };
     let Some(condition) = condition else { return kill(rng, world, victim) };
     inflict_on(world, victim, (condition, argument), lasting)?;
@@ -1179,9 +1179,9 @@ fn cure(
         let Some(lasting) = conditions.lasting_mut(condition) else { continue };
         let gone = match lasting {
             _ if forced => true,
-            Lasting::Rounds(left) if u32::from(*left) <= per => true,
+            Lasting::Rounds(left) if *left <= per => true,
             Lasting::Rounds(left) => {
-                *left -= per as u16;
+                *left -= per;
                 false
             }
             Lasting::Indefinite => rng.below(100) < strength.power * 15,
@@ -1371,7 +1371,7 @@ pub fn resolve(
                 if rounds == 0 || target.immune {
                     return Some(Effect::Resisted { victim: v });
                 }
-                let lasting = Lasting::Rounds(rounds.max(2).min(u32::from(u16::MAX)) as u16);
+                let lasting = Lasting::Rounds(rounds.max(2));
                 inflict_on(world, v, (Condition::Afraid, 0), lasting)?;
                 Some(Effect::Inflicted { victim: v, condition: Condition::Afraid })
             }
@@ -1989,7 +1989,7 @@ pub(crate) fn pulse_clouds(
                         if turns == 0 {
                             continue;
                         }
-                        let lasting = Lasting::Rounds(turns.max(2).min(u32::from(u16::MAX)) as u16);
+                        let lasting = Lasting::Rounds(turns.max(2));
                         // One duration reduction, followed by three separate saves.
                         for condition in
                             [Condition::Nauseated, Condition::Poisoned, Condition::Unconscious]

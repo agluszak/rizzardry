@@ -153,9 +153,7 @@ impl CharacterDraft {
     }
 
     pub fn spell_remaining(&self) -> usize {
-        (self.spell_points_total() as isize
-            - self.learned_spells.values().map(Vec::len).sum::<usize>() as isize)
-            .max(0) as usize
+        self.spell_points_total() - self.learned_spells.values().map(Vec::len).sum::<usize>()
     }
 
     /// The accepted selection, shared with the live LearnedSpells component.
@@ -311,7 +309,7 @@ impl CharacterDraft {
         character.full_name = self.name.trim().to_owned();
         character.personality = self.personality;
         character.voice = self.voice;
-        character.spell_picks.grant(self.profession, self.spell_remaining() as u16);
+        character.spell_picks.grant(self.profession, self.spell_remaining());
         character.portrait.clone_from(&self.portrait);
         for a in EnumSet::<Attribute>::all() {
             character.attributes[a] += self.attributes[a];
