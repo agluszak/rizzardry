@@ -1311,6 +1311,22 @@ fn debited(world: &mut World, actor: Entity, price: u32) -> (u16, u8) {
         pool => (pool, npc.disposition),
     }
 }
+/// An NPC is won over by charm or a bribe.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WonOver {
+    pub conversation: Entity,
+    pub greeting: bool,
+}
+
+pub fn win_over(world: &mut World) {
+    let won: Vec<_> = world.resource_mut::<Messages<WonOver>>().drain().collect();
+    for WonOver { conversation, greeting } in won {
+        if world.get::<Conversation>(conversation).is_some() {
+            won_over(world, conversation, greeting);
+        }
+    }
+}
+
 /// A bribe that wins the NPC over from the topic menu turns it to its
 /// dialogue; it greets the party unless it took all the party's gold
 /// (retail `HandleNpcDialogueItemChoice`, `OnNpcTradeDialogClosed`).
@@ -1559,6 +1575,28 @@ fn sale_item(
     .ok_or(TradeError::StaleSelection)
 }
 
+/// Where an NPC stands in the played level: the body of its that is
+/// there and alive.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct NpcPresence<'w, 's> {
+    bodies: Query<'w, 's, (&'static Monster, &'static crate::game::world::level::LevelOwned)>,
+    levels: Query<'w, 's, (), With<Level>>,
+}
+
+impl NpcPresence<'_, '_> {
+    pub fn body(&self, bodies: Option<&super::NpcBodies>) -> Option<Entity> {
+        bodies.into_iter().flat_map(|b| b.iter()).find(|&body| {
+            self.bodies
+                .get(body)
+                .is_ok_and(|(monster, owner)| self.levels.contains(owner.0) && !monster.is_dead())
+        })
+    }
+
+    pub fn monster(&self, body: Entity) -> &Monster {
+        self.bodies.get(body).unwrap().0
+    }
+}
+
 /// What a trade reads and changes: the conversation and its NPC, the
 /// NPC's presence and stance, the party's purse, pool and packs, and the
 /// catalogs.
@@ -1570,8 +1608,7 @@ pub struct Trading<'w, 's> {
         's,
         (&'static mut Npc, &'static super::ActorId, Option<&'static super::NpcBodies>),
     >,
-    bodies: Query<'w, 's, (&'static Monster, &'static crate::game::world::level::LevelOwned)>,
-    levels: Query<'w, 's, (), With<Level>>,
+    presence: NpcPresence<'w, 's>,
     stances: crate::game::world::hostility::Stances<'w, 's>,
     party: Single<'w, 's, (&'static mut PartyInventory, &'static PartyRoster)>,
     members: Query<'w, 's, (&'static Character, &'static Vitals)>,
@@ -1590,12 +1627,9 @@ impl Trading<'_, '_> {
     fn open_for_trade(&self, actor: Entity) -> bool {
         let (_, id, bodies) = self.npcs.get(actor).unwrap();
         let species = &self.content.species;
-        let standing = bodies.into_iter().flat_map(|b| b.iter()).any(|body| {
-            self.bodies
-                .get(body)
-                .is_ok_and(|(monster, owner)| self.levels.contains(owner.0) && !monster.is_dead())
-                && self.stances.own(body, species, self.clock.ms)
-                    != Some(crate::game::world::hostility::Stance::Hostile)
+        let standing = self.presence.body(bodies).is_some_and(|body| {
+            self.stances.own(body, species, self.clock.ms)
+                != Some(crate::game::world::hostility::Stance::Hostile)
         });
         standing && self.content.npcs[id.npc()].owns_stock
     }

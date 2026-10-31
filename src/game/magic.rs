@@ -496,6 +496,7 @@ impl Plugin for MagicPlugin {
                     accept_magic,
                     utilities::identify_items,
                     portals::cast_portals,
+                    dialogue::cast_at_speakers,
                     pointcasts::expire_lures,
                     pointcasts::follow_lures,
                 )
@@ -591,7 +592,10 @@ pub(crate) fn execute_in_world(
 ) -> Result<(), casting::Refusal> {
     let result = utilities::source_spell(world, caster, choice.source).and_then(|id| match id {
         id if pointcasts::spell(id) => pointcasts::cast(world, caster, choice, id),
-        id if dialogue::spell(id) => dialogue::cast(world, caster, choice, id),
+        id if dialogue::spell(id) => {
+            world.write_message(utilities::UtilityCast { caster, choice, spell: id });
+            Ok(())
+        }
         id if portals::spell(id) => {
             world.write_message(utilities::UtilityCast { caster, choice, spell: id });
             Ok(())

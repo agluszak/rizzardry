@@ -365,6 +365,7 @@ impl Plugin for NpcPlugin {
             .add_message::<conversation::ConversationRequest>()
             .add_message::<conversation::BeginConversation>()
             .add_message::<conversation::TradeRequest>()
+            .add_message::<conversation::WonOver>()
             .add_message::<conversation::LineSpoken>()
             .add_message::<conversation::EditNotebook>()
             .add_message::<conversation::PartyRemark>()
@@ -378,6 +379,7 @@ impl Plugin for NpcPlugin {
                     conversation::begin_conversations,
                     conversation::answer_requests,
                     conversation::settle_trades,
+                    conversation::win_over,
                     conversation::run_conversations,
                 )
                     .chain()
