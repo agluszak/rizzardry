@@ -391,7 +391,7 @@ fn item_failure(
         UseType::Thrown => failure = failure * 8 / 10,
         UseType::Charged | UseType::Scroll => failure = failure * 9 / 10,
         UseType::Instrument | UseType::Gadget => {
-            let shortfall = u32::from(spell.level) * 15;
+            let shortfall = spell.level * 15;
             if level < shortfall {
                 failure += (shortfall - level) / 3;
             }
@@ -405,7 +405,7 @@ fn item_failure(
                 - 1
                 + power as i32;
             if adjust > 0 {
-                failure += u32::from(spell.level) * adjust as u32;
+                failure += spell.level * adjust as u32;
             }
         }
         _ => {}
@@ -846,7 +846,7 @@ pub fn perform(
         let (_, vitals, ..) = world.members.get(caster).unwrap();
         let (learned, pool) = points.get(caster).unwrap();
         let maximum = world.mana_maximum(caster, learned);
-        if vitals.stamina <= u32::from(spell.level)
+        if vitals.stamina <= spell.level
             || pool.available(spell.realm.unwrap(), &maximum) < spell.cost
             || outcome != Outcome::Fizzled
                 && (!repeat || effects::all_restored(spell.id, &victims, world.members))
@@ -977,7 +977,7 @@ fn play(
     while power > 0 && power * 7 > rng.below(100) {
         power -= 1;
     }
-    vitals.spend_stamina(u32::from(spell.level) * 8 + 20);
+    vitals.spend_stamina(spell.level * 8 + 20);
     if power == 0 {
         // The refusal carries the practice, since no report follows it.
         let improved =
@@ -1047,7 +1047,7 @@ fn practise(
     let mut improved = Vec::new();
     let practice: Vec<(Skill, u32)> = match item {
         None => {
-            let index = u32::from(spell.level) + power;
+            let index = spell.level + power;
             let mut practice = vec![(super::best_book(&character, spell), (index + 2) >> 2)];
             if let Some(realm) = spell.realm {
                 practice.push((realm.skill(), index));
@@ -1061,7 +1061,7 @@ fn practise(
             .definition
             .use_type
             .skill()
-            .map(|skill| vec![(skill, u32::from(spell.level) + power / 2)])
+            .map(|skill| vec![(skill, spell.level + power / 2)])
             .unwrap_or_default(),
     };
     for (skill, usage) in practice {

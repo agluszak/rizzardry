@@ -308,7 +308,7 @@ pub fn can_learn(character: &Character, spell: &SpellDefinition) -> bool {
         return false;
     }
     let caster = total_caster_level(character, spell.books);
-    let by_level = (1..=7u8).filter(|&l| min_caster_level(l) <= caster).max().unwrap_or(0);
+    let by_level = (1..=7).filter(|&l| min_caster_level(l) <= caster).max().unwrap_or(0);
     let realm_points = spell.realm.map_or(0, |r| u32::from(character.skill_points[r.skill()]));
     let book = [Spellbook::Wizardry, Spellbook::Divinity, Spellbook::Alchemy, Spellbook::Psionics]
         .into_iter()
@@ -316,7 +316,7 @@ pub fn can_learn(character: &Character, spell: &SpellDefinition) -> bool {
         .max_by_key(|book| character.skill_points[book_skill(*book)]);
     let best = book.map_or(0, |book| character.skill(book_skill(book)));
     let by_skill = (realm_points / 10 + best) / 15 + 1;
-    u32::from(spell.level) <= u32::from(by_level).min(by_skill)
+    spell.level <= by_level.min(by_skill)
 }
 
 /// How many first spells a new character picks: two for the pure casters,
@@ -372,7 +372,7 @@ const CAST_THRESHOLDS: [u32; 17] =
 /// Retail `GetSpellFailureChance`: the skill a spell's difficulty band
 /// needs at `power`, and up to 70% failure for falling short of it.
 pub(crate) fn spell_failure(skill: u32, spell: &SpellDefinition, power: u32) -> u32 {
-    let band = (spell.cost / 2 + u32::from(spell.level)).min(16) as usize;
+    let band = (spell.cost / 2 + spell.level).min(16) as usize;
     let need = CAST_THRESHOLDS[band] * power / 7;
     if skill < need { ((need - skill) * 70 / need.max(1)).min(100) } else { 0 }
 }
@@ -381,13 +381,13 @@ pub(crate) fn spell_failure(skill: u32, spell: &SpellDefinition, power: u32) -> 
 /// before combat pace: the casting skill's shortfall, and the caster levels the
 /// spell's level and power call for.
 pub fn fail_chance(character: &Character, spell: &SpellDefinition, power: u32) -> u32 {
-    let mut chance = spell_failure(casting_skill(character, spell), spell, power) as i32;
+    let mut chance = spell_failure(casting_skill(character, spell), spell, power);
     let caster = total_caster_level(character, spell.books);
     let short = min_caster_level(spell.level) - caster - 1 + power as i32;
     if short > 0 {
-        chance += i32::from(spell.level) * short;
+        chance += spell.level * short as u32;
     }
-    chance.clamp(0, 100) as u32
+    chance.min(100)
 }
 
 /// Retail's Power Cast bonus: `(level >> 2) + 1` while the skill is available.
@@ -419,7 +419,7 @@ impl Strength {
     /// three less against all enemies, less the death spells' floors, then
     /// raised by half the boost.
     pub fn at(figure: u32, spell: &SpellDefinition, power: u32, boost: u32) -> Self {
-        let mut against = figure / 2 + power + (spell.cost / 2 + u32::from(spell.level)) / 2;
+        let mut against = figure / 2 + power + (spell.cost / 2 + spell.level) / 2;
         let floor = match spell.id {
             SpellId::INSTANT_DEATH => 2,
             SpellId::QUICKSAND => 4,
@@ -475,7 +475,7 @@ pub fn roll(
 
 /// Retail fatigue for a learned cast: the spell's level plus its power.
 fn cast_fatigue(spell: &SpellDefinition, power: u32) -> u32 {
-    u32::from(spell.level) + power
+    spell.level + power
 }
 
 pub struct MagicPlugin;
