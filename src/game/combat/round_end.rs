@@ -101,11 +101,9 @@ pub fn finish_round(
     mut commands: Commands,
     battle: Option<Single<(Entity, &mut Battle, Option<&Combatants>)>>,
     mut rng: ResMut<GameRng>,
-    mut clock: ResMut<GameClock>,
-    mut actors: ParamSet<((Members, MonsterDamage), GroupRecognition)>,
+    mut actors: ParamSet<(BattleMagic, GroupRecognition, ResMut<GameClock>)>,
     party_body: Query<(&Position, &PartyBody)>,
     (roster, content, level): (Single<&PartyRoster>, If<Res<Catalogs>>, PlayedLevel),
-    mut magic: BattleMagic,
     mut news: MessageWriter<CombatNews>,
 ) {
     let Some((entity, mut battle, combatants)) = battle.map(Single::into_inner) else { return };
@@ -113,7 +111,7 @@ pub fn finish_round(
     if step <= 100
         || matches!(battle.party_move, PartyMove::Moving { .. })
         || !battle.wait.is_finished()
-        || magic.busy()
+        || actors.p0().busy()
     {
         return;
     }
@@ -121,55 +119,49 @@ pub fn finish_round(
     let species = &content.species;
     let Ok((position, body)) = party_body.single() else { return };
     let roster = &**roster;
-    let party = PartyView::new((position, body), &level, clock.ms);
-    let (mut members, mut damage) = actors.p0();
-    let sight = party.sight(
-        &members,
-        roster,
-        &magic.context.visibility,
-        magic.context.enchantments.0.concealment(),
-    );
+    let party = PartyView::new((position, body), &level, actors.p2().ms);
+    let magic = actors.p0();
+    let field = &magic.field;
+    let sight =
+        party.sight(&field.members, roster, &field.visibility, field.enchantments.0.concealment());
     let staying = leave_fight(
         &mut commands,
         combatants,
-        (&damage, party.now),
+        (&field.monsters, party.now),
         &magic.groups,
         &sight,
         species,
     );
+    // A round's game time passes as it ends.
+    let ticks = actors.p2().advance(crate::game::time::AGING_TICK_MS);
+    let mut magic = actors.p0();
     let over = end_round(
         (entity, &mut battle),
         combatants,
-        &mut clock,
+        ticks,
         &mut rng,
         roster,
-        (&mut members, &mut damage),
         party.eye,
         species,
         &mut news,
         &mut magic,
         &staying,
     );
-    if !lineup(roster, &members).anyone_alive() {
+    if !lineup(roster, &magic.field.members).anyone_alive() {
         return;
     }
     if over {
         for &actor in combatants {
-            damage.enchantments_mut(actor).end_combat();
+            magic.field.monsters.enchantments_mut(actor).end_combat();
         }
     }
+    let hound = magic.field.enchantments.0.get(crate::content::spells::SpellId::SHADOW_HOUND);
+    let hound = hound.is_some();
     // Recognition is a required part of this round, before the next
     // accepted action or the battle's end can change its meaning.
-    actors.p1().detect(
-        party.eye,
-        body.forward(),
-        Some(combatants),
-        magic.context.enchantments.0.get(crate::content::spells::SpellId::SHADOW_HOUND).is_some(),
-        false,
-        &mut rng,
-    );
+    actors.p1().detect(party.eye, body.forward(), Some(combatants), hound, false, &mut rng);
     if over {
-        magic.context.enchantments.0.end_combat();
+        actors.p0().field.enchantments.0.end_combat();
         commands.entity(entity).despawn();
     }
 }
@@ -180,27 +172,18 @@ pub fn finish_round(
 pub(super) fn end_round(
     (fight, battle): (Entity, &mut Battle),
     combatants: &[Entity],
-    clock: &mut GameClock,
+    ticks: crate::game::time::Ticks,
     rng: &mut GameRng,
     roster: &PartyRoster,
-    (members, damage): (&mut Members, &mut MonsterDamage),
     party_eye: Vec3,
     species: &MonsterCatalog,
     news: &mut MessageWriter<CombatNews>,
     magic: &mut BattleMagic,
     staying: &[Entity],
 ) -> bool {
-    pass_round(
-        (fight, battle),
-        combatants,
-        clock,
-        rng,
-        roster,
-        (members, damage),
-        party_eye,
-        news,
-        magic,
-    );
+    pass_round((fight, battle), combatants, ticks, rng, roster, party_eye, news, magic);
+    let now = magic.field.now();
+    let Field { members, monsters: damage, .. } = &mut magic.field;
     // Poison may have killed the last of the party as the time passed: that
     // is their defeat, which `settle_defeat` reports, not a victory.
     if !lineup(roster, members).anyone_alive() {
@@ -208,7 +191,7 @@ pub(super) fn end_round(
     }
     rest_defenders(battle, roster, members, rng);
     battle.wait = Timer::from_seconds(ROUND_SECONDS, TimerMode::Once);
-    if !fight_over(battle, combatants, staying, damage, (clock.ms, party_eye), species) {
+    if !fight_over(battle, combatants, staying, damage, (now, party_eye), species) {
         return false;
     }
     award_victory(battle, roster, members, news);
@@ -222,15 +205,16 @@ pub(super) fn end_round(
 pub(super) fn pass_round(
     (fight, battle): (Entity, &mut Battle),
     combatants: &[Entity],
-    clock: &mut GameClock,
+    ticks: crate::game::time::Ticks,
     rng: &mut GameRng,
     roster: &PartyRoster,
-    (members, damage): (&mut Members, &mut MonsterDamage),
     party_eye: Vec3,
     news: &mut MessageWriter<CombatNews>,
     magic: &mut BattleMagic,
 ) {
-    let ticks = clock.advance(crate::game::time::AGING_TICK_MS);
+    let BattleMagic { field, .. } = magic;
+    let spells = field.spells();
+    let Field { members, monsters: damage, points, .. } = &mut *field;
     // A monster that waited, or lies asleep or knocked out, gets its
     // breath back (retail `AdvanceCombatRound`).
     for &entity in combatants {
@@ -263,40 +247,29 @@ pub(super) fn pass_round(
     }
     for actor in roster.iter() {
         let (mut profile, mut vitals, ..) = members.get_mut(actor).unwrap();
-        let (known, mut pool) = magic.points.get_mut(actor).unwrap();
+        let (known, mut pool) = points.get_mut(actor).unwrap();
         recovery::pass(
             &mut profile,
             &mut vitals,
             ticks,
             recovery::Pace::Fighting,
             (known, &mut pool),
-            &magic.context.content.spells,
+            spells,
             &mut crate::game::characters::Fate { fight: Some(fight), rng },
         );
     }
     // AdvanceTimedEffects applies offensive slots after personal aging and
     // before expiring the slots. Their final remaining turn still pulses.
-    let reports = magic.context.resolve(clock.ms, members, damage, |field| {
-        crate::game::magic::effects::pulse_clouds(
-            combatants,
-            party_eye,
-            rng,
-            field,
-            &mut magic.points,
-        )
-    });
+    field.improved.clear();
+    let reports = crate::game::magic::effects::pulse_clouds(combatants, party_eye, rng, field);
     for (spell, effects) in reports {
         battle.credit_kills(&effects, news);
         battle.this_round.attacked |= crate::game::magic::effects::affected(&effects);
-        magic.context.news.write(casting::MagicNews::Triggered {
-            spell,
-            effects,
-            improved: vec![],
-        });
+        field.news.write(casting::MagicNews::Triggered { spell, effects, improved: vec![] });
     }
-    magic.context.enchantments.0.age(ticks.aging);
+    field.enchantments.0.age(ticks.aging);
     for &entity in combatants {
-        damage.enchantments_mut(entity).age(ticks.aging);
+        field.monsters.enchantments_mut(entity).age(ticks.aging);
     }
     battle.phase = RoundPhase::Waiting;
 }

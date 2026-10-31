@@ -43,7 +43,7 @@ use crate::content::species::{MonsterCatalog, Reach, Species};
 use crate::game::characters::{Character, Condition, Vitals};
 use crate::game::inventory::EquipSlot;
 use crate::game::magic::casting::{self, MagicChoice, MagicNews};
-use crate::game::magic::{Effect, LearnedSpells, MagicContext, SpellPoints, Victim};
+use crate::game::magic::{Effect, Field, Victim};
 use crate::game::party::Members;
 use crate::game::party::Order;
 use crate::game::party::body::PartyBody;
@@ -202,6 +202,13 @@ enum RoundPhase {
 }
 
 impl Battle {
+    /// A member whose action was refused defends instead (retail
+    /// `ExecuteCharacterAction`), the turn spent.
+    pub fn falls_back_to_defending(&mut self, member: Entity) {
+        let work = self.this_round.party.iter_mut().find(|work| work.actor == member).unwrap();
+        work.action = RoundAction::Defend;
+    }
+
     /// A round is accepted or running, including its pacing delay.
     pub fn executing(&self) -> bool {
         self.phase != RoundPhase::Waiting
@@ -416,10 +423,6 @@ fn lineup<'a>(roster: &PartyRoster, members: &'a Members) -> crate::game::party:
     })
 }
 
-pub fn in_battle(world: &mut World) -> bool {
-    world.query_filtered::<(), With<Battle>>().iter(world).next().is_some()
-}
-
 /// Terminal state is settled independently of whose action dealt the damage.
 /// Used before/after combat execution and at the end of environmental damage.
 pub fn settle_defeat(
@@ -544,7 +547,6 @@ pub fn run_battle(
     battle: Option<Single<(Entity, &mut Battle, Option<&Combatants>)>>,
     mut rng: ResMut<GameRng>,
     clock: Res<GameClock>,
-    (mut members, mut damage): (Members, MonsterDamage),
     party_body: Query<(&Position, &PartyBody)>,
     (roster, content, level): (Single<&PartyRoster>, If<Res<Catalogs>>, PlayedLevel),
     mut magic: BattleMagic,
@@ -576,7 +578,7 @@ pub fn run_battle(
             let haste = roster
                 .iter()
                 .try_fold(0, |sum, member| {
-                    let (_, vitals, ..) = members.get(member).unwrap();
+                    let (_, vitals, ..) = magic.field.members.get(member).unwrap();
                     let effect = vitals.enchantments.get(crate::content::spells::SpellId::HASTE)?;
                     Some(sum + effect.scaled(u32::from(effect.power) * 10))
                 })
@@ -601,7 +603,6 @@ pub fn run_battle(
                 index,
                 combatants,
                 &mut rng,
-                (&mut members, &mut damage),
                 &party,
                 &mut magic,
                 &mut news,
@@ -619,7 +620,6 @@ pub fn run_battle(
                 (index, step),
                 combatants,
                 &mut rng,
-                (&mut members, &mut damage),
                 &party,
                 &mut magic,
                 species,
@@ -648,8 +648,7 @@ fn next_phase(step: u8, attacks_left: u32) -> u8 {
 /// What casting in a fight needs beside the fight itself.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct BattleMagic<'w, 's> {
-    context: MagicContext<'w, 's>,
-    points: Query<'w, 's, (&'static LearnedSpells, &'static mut SpellPoints)>,
+    field: Field<'w, 's>,
     groups: Query<'w, 's, &'static GroupMember>,
     group_members: Query<'w, 's, &'static GroupMembers>,
     /// Missiles still on their way hold the fight's next action, as do

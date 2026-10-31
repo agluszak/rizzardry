@@ -16,7 +16,7 @@ use crate::content::spells::{
 use crate::game::characters::Condition;
 use crate::game::magic::casting::Report;
 use crate::game::magic::effects::{self, Field, Standing, Victim};
-use crate::game::magic::{LearnedSpells, Outcome, SpellPoints, Strength};
+use crate::game::magic::{Outcome, Strength};
 use crate::game::party::body::PartyBody;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::Stance;
@@ -306,7 +306,7 @@ fn victims(
         } else {
             (scene.party_at, party_eye)
         };
-        let side = field.monsters.stance(scene.caster, field.now);
+        let side = field.monsters.stance(scene.caster, field.now());
         let source = if backfired {
             match side {
                 crate::game::world::hostility::Stance::Hostile => {
@@ -374,11 +374,10 @@ pub(super) fn cast(
     scene: &Scene,
     rng: &mut GameRng,
     field: &mut Field,
-    points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
 ) -> (Report, Vec<crate::game::magic::casting::SpellInFlight>) {
     let strength = Strength::at(u32::from(kind.level), spell, power, 0);
     let failure = crate::game::magic::spell_failure(budget, spell, power);
-    let outcome = crate::game::magic::roll(rng, failure, spell, false, field.underwater);
+    let outcome = crate::game::magic::roll(rng, failure, spell, false, field.underwater());
     let mut flights = Vec::new();
     let effects = match outcome {
         Outcome::Fizzled => Vec::new(),
@@ -414,7 +413,6 @@ pub(super) fn cast(
                 PartyBody::eye_above(scene.party_at),
                 rng,
                 field,
-                points,
                 &mut flights,
             )
         }

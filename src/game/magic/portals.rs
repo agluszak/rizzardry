@@ -1,7 +1,7 @@
 //! Each caster owns their saved location; return uses ordinary level entry.
 use super::{
     Outcome,
-    casting::{MagicNews, Refusal, Source, UseContext},
+    casting::{MagicNews, Refusal, UseContext},
 };
 use crate::content::spells::SpellId;
 use crate::game::party::body::{PartyBody, PartyMovement, PartyStart};
@@ -23,86 +23,97 @@ pub(crate) fn spell(id: SpellId) -> bool {
     matches!(id, SpellId::SET_PORTAL | SpellId::RETURN_TO_PORTAL)
 }
 
-pub(crate) fn cast(
-    world: &mut World,
-    caster: Entity,
-    source: Source,
-    id: SpellId,
-) -> Result<(), Refusal> {
-    if world.query::<&crate::game::combat::Battle>().iter(world).next().is_some() {
-        return Err(Refusal::WrongTime);
-    }
-    if !world.run_system_cached(crate::game::freedom::unoccupied).unwrap_or(false) {
-        return Err(Refusal::WrongTime);
-    }
-    let (level, path) = world
-        .query::<(Entity, &Level)>()
-        .single(world)
-        .map(|(e, l)| (e, l.path.clone()))
-        .map_err(|_| Refusal::WrongTime)?;
-    let (party, eye, yaw, pitch) = world
-        .query::<(Entity, &PartyBody, &Position)>()
-        .single(world)
-        .map(|(e, body, at)| (e, PartyBody::eye(at), body.yaw, body.pitch))
-        .map_err(|_| Refusal::WrongTime)?;
-    let saved = if id == SpellId::RETURN_TO_PORTAL {
-        Some(world.get::<Portal>(caster).cloned().ok_or(Refusal::NoTarget)?)
-    } else {
-        None
-    };
-    // Prepare mandatory destination access before any roll or payment. Loading
-    // failure later leaves the source level intact through normal entry policy.
-    let destination = match &saved {
-        Some(portal) if portal.level != path => {
-            let assets = world.resource::<AssetServer>();
-            Some(Destination::new(
-                Level::load(&portal.level, assets),
-                PartyStart {
-                    eye: Some(portal.eye),
-                    yaw: Some(portal.yaw),
-                    pitch: portal.pitch,
-                    ..default()
-                },
-                Entry::Travel,
-            ))
+/// Set Portal saves where the party stands to the caster; Return to Portal
+/// takes the party back there, entering its level when it is another. The
+/// destination is prepared before any roll or payment; a load failure later
+/// leaves the source level intact through normal entry policy.
+pub(crate) fn cast_portals(
+    mut casts: MessageReader<super::utilities::UtilityCast>,
+    freedom: crate::game::freedom::Freedom,
+    battles: Query<(), With<crate::game::combat::Battle>>,
+    level: Single<(Entity, &Level)>,
+    mut party: Single<(
+        &mut PartyBody,
+        &mut Position,
+        &mut Transform,
+        Option<&mut LinearVelocity>,
+        &mut PartyMovement,
+    )>,
+    portals: Query<&Portal>,
+    assets: Res<AssetServer>,
+    mut casting: ParamSet<(
+        super::casting::Payment,
+        Query<&mut crate::game::world::triggers::LevelState>,
+    )>,
+    mut news: MessageWriter<MagicNews>,
+    mut commands: Commands,
+) {
+    let (root, level) = *level;
+    for &super::utilities::UtilityCast { caster, choice, spell } in casts.read() {
+        if !self::spell(spell) {
+            continue;
         }
-        _ => None,
-    };
-    let (report, _) = super::casting::cast_source(world, caster, source, UseContext::World)?;
-    if report.outcome == Outcome::Cast {
-        match saved {
-            None => {
-                world.entity_mut(caster).insert(Portal { level: path, eye, yaw, pitch });
-            }
-            Some(portal) => {
-                if let Some(destination) = destination {
-                    world.spawn(destination);
-                } else {
-                    let mut parts = world.query::<(
-                        &mut PartyBody,
-                        &mut Position,
-                        &mut Transform,
-                        Option<&mut LinearVelocity>,
-                    )>();
-                    let (mut body, mut at, mut transform, velocity) =
-                        parts.get_mut(world, party).unwrap();
-                    body.stand(&mut at, &mut transform, portal.eye, portal.yaw);
-                    body.pitch = portal.pitch;
-                    if let Some(mut velocity) = velocity {
-                        velocity.0 = Vec3::ZERO;
-                    }
-                    if let Some(mut state) =
-                        world.get_mut::<crate::game::world::triggers::LevelState>(level)
-                    {
-                        state.arrive(portal.eye);
-                    }
-                }
-                if let Some(mut movement) = world.get_mut::<PartyMovement>(party) {
-                    *movement = default();
+        if !battles.is_empty() || !freedom.unoccupied() {
+            news.write(MagicNews::Refused { caster, refusal: Refusal::WrongTime });
+            continue;
+        }
+        let saved = if spell == SpellId::RETURN_TO_PORTAL {
+            match portals.get(caster) {
+                Ok(portal) => Some(portal.clone()),
+                Err(_) => {
+                    news.write(MagicNews::Refused { caster, refusal: Refusal::NoTarget });
+                    continue;
                 }
             }
+        } else {
+            None
+        };
+        let destination =
+            saved.as_ref().filter(|portal| portal.level != level.path).map(|portal| {
+                Destination::new(
+                    Level::load(&portal.level, &assets),
+                    PartyStart {
+                        eye: Some(portal.eye),
+                        yaw: Some(portal.yaw),
+                        pitch: portal.pitch,
+                        ..default()
+                    },
+                    Entry::Travel,
+                )
+            });
+        let report = match casting.p0().pay(caster, choice.source, UseContext::World) {
+            Ok((report, _)) => report,
+            Err(refusal) => {
+                news.write(MagicNews::Refused { caster, refusal });
+                continue;
+            }
+        };
+        if report.outcome == Outcome::Cast {
+            let (body, at, transform, velocity, movement) = &mut *party;
+            match saved {
+                None => {
+                    commands.entity(caster).insert(Portal {
+                        level: level.path.clone(),
+                        eye: PartyBody::eye(at),
+                        yaw: body.yaw,
+                        pitch: body.pitch,
+                    });
+                }
+                Some(portal) => {
+                    if let Some(destination) = destination {
+                        commands.spawn(destination);
+                    } else {
+                        body.stand(at, transform, portal.eye, portal.yaw);
+                        body.pitch = portal.pitch;
+                        if let Some(velocity) = velocity {
+                            velocity.0 = Vec3::ZERO;
+                        }
+                        casting.p1().get_mut(root).unwrap().arrive(portal.eye);
+                    }
+                    **movement = default();
+                }
+            }
         }
+        news.write(MagicNews::Done(report));
     }
-    world.write_message(MagicNews::Done(report));
-    Ok(())
 }

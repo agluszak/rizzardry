@@ -26,12 +26,6 @@ pub(crate) fn catalog(world: &World) -> &NpcCatalog {
     &world.resource::<Catalogs>().npcs
 }
 
-/// An NPC actor's authored definition, for operations that hold the whole
-/// world. A level places only NPCs it has definitions for.
-pub(crate) fn definition(world: &World, actor: Entity) -> &NpcDefinition {
-    &catalog(world)[world.get::<ActorId>(actor).expect("an NPC actor").npc()]
-}
-
 /// An NPC actor's dialogue script, loaded before the level that placed it
 /// was entered.
 pub(crate) fn script(world: &World, actor: Entity) -> AssetId<DialogueScript> {
@@ -364,10 +358,14 @@ impl Plugin for NpcPlugin {
             .init_resource::<conversation::NoAnswerTurn>()
             .add_message::<conversation::ConversationRequest>()
             .add_message::<conversation::BeginConversation>()
+            .add_message::<conversation::TradeRequest>()
+            .add_message::<conversation::WonOver>()
             .add_message::<conversation::LineSpoken>()
             .add_message::<conversation::EditNotebook>()
             .add_message::<conversation::PartyRemark>()
             .add_message::<conversation::NpcSpeech>()
+            .add_message::<recruit::JoinParty>()
+            .add_message::<crate::game::inventory::ItemNews>()
             .add_observer(conversation::end_conversations)
             .add_systems(
                 Update,
@@ -376,7 +374,10 @@ impl Plugin for NpcPlugin {
                     conversation::edit_notebook,
                     conversation::begin_conversations,
                     conversation::answer_requests,
+                    conversation::settle_trades,
+                    conversation::win_over,
                     conversation::run_conversations,
+                    recruit::join_party,
                 )
                     .chain()
                     .in_set(conversation::Conversing)

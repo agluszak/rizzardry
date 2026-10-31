@@ -194,16 +194,24 @@ fn update_until(app: &mut App, what: &str, done: impl Fn(&World) -> bool) {
 
 #[test]
 fn travel_dialogs_end_with_their_question_without_a_cleanup_system() {
-    use crate::game::world::level::{TravelAnswer, answer_travel_questions, ask_travel};
+    use crate::game::world::level::{
+        LevelOwned, TravelAnswer, TravelQuestion, answer_travel_questions, replace_travel_question,
+    };
     use crate::presentation::dialog::QuestionDialog;
 
     let mut app = app();
-    app.add_message::<TravelAnswer>().add_systems(Update, answer_travel_questions);
+    app.add_message::<TravelAnswer>()
+        .add_systems(Update, answer_travel_questions)
+        .add_observer(replace_travel_question);
+    let ask = |app: &mut App, level, entrance: &str| {
+        let question = TravelQuestion { entrance: entrance.into() };
+        app.world_mut().spawn((question, LevelOwned(level))).id()
+    };
     let level = test_level(&mut app, floor());
     let level = app.world_mut().spawn(level).id();
-    let old = ask_travel(app.world_mut(), level, "first".into()).unwrap();
+    let old = ask(&mut app, level, "first");
     let old_dialog = app.world_mut().spawn(QuestionDialog(old)).id();
-    let current = ask_travel(app.world_mut(), level, "second".into()).unwrap();
+    let current = ask(&mut app, level, "second");
     assert!(app.world().get_entity(old_dialog).is_err());
 
     let dialog = app.world_mut().spawn(QuestionDialog(current)).id();
@@ -214,7 +222,7 @@ fn travel_dialogs_end_with_their_question_without_a_cleanup_system() {
     app.update();
     assert!(app.world().get_entity(dialog).is_err());
 
-    let question = ask_travel(app.world_mut(), level, "third".into()).unwrap();
+    let question = ask(&mut app, level, "third");
     let dialog = app.world_mut().spawn(QuestionDialog(question)).id();
     app.world_mut().despawn(level);
     assert!(app.world().get_entity(dialog).is_err(), "leaving ends the pending view");
@@ -828,18 +836,18 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
                 conversation::quote_trade(app.world_mut(), session, TradeSource::Stock(lot), 1)
                     .unwrap();
             // A confirmation buys once, however often it arrives.
-            app.world_mut().write_message(ConversationRequest::trade(quote));
-            app.world_mut().write_message(ConversationRequest::trade(quote));
+            app.world_mut().write_message(crate::game::npcs::conversation::TradeRequest(quote));
+            app.world_mut().write_message(crate::game::npcs::conversation::TradeRequest(quote));
             app.update();
-            app.world_mut().write_message(ConversationRequest::trade(quote));
+            app.world_mut().write_message(crate::game::npcs::conversation::TradeRequest(quote));
             app.update();
             assert_eq!(purse(&app), 10_000 - quote.gold);
             assert_eq!(app.world().get::<Npc>(actor).unwrap().stock.lots[0].units, 1);
             let bought = app.world().get::<PartyInventory>(party).unwrap().pool.stacks[0].id;
             let source = TradeSource::Party(ItemRef { owner: ItemOwner::Pool, id: bought });
             let sale = conversation::quote_trade(app.world_mut(), session, source, 1).unwrap();
-            app.world_mut().write_message(ConversationRequest::trade(sale));
-            app.world_mut().write_message(ConversationRequest::trade(sale));
+            app.world_mut().write_message(crate::game::npcs::conversation::TradeRequest(sale));
+            app.world_mut().write_message(crate::game::npcs::conversation::TradeRequest(sale));
             app.update();
             assert_eq!(purse(&app), 10_000 - quote.gold + sale.gold);
             assert!(app.world().get::<PartyInventory>(party).unwrap().pool.stacks.is_empty());

@@ -39,12 +39,6 @@ use crate::game::party::body::{PartyPlacement, PartyStart};
 use crate::game::party::roster::Party;
 use crate::game::rng::GameRng;
 
-/// Whether the party is on its way into a level, for operations that hold
-/// the whole world.
-pub fn entering(world: &mut World) -> bool {
-    world.query_filtered::<(), With<Destination>>().iter(world).next().is_some()
-}
-
 /// The root of the level being played, including during travel preparation. A level
 /// becomes one only by [`activate_level`]; until then its root is a
 /// [`Destination`].
@@ -121,16 +115,19 @@ pub struct TravelQuestion {
     pub entrance: String,
 }
 
-/// Replace the one pending question. The new identity rejects answers from
-/// the dismissed dialog, including two asks before presentation has run.
-pub fn ask_travel(world: &mut World, level: Entity, entrance: String) -> Option<Entity> {
-    world.get::<Level>(level)?;
-    let pending: Vec<_> =
-        world.query_filtered::<Entity, With<TravelQuestion>>().iter(world).collect();
-    for question in pending {
-        world.despawn(question);
+/// A question asked replaces the pending one. The new identity rejects
+/// answers from the dismissed dialog, including two asks before
+/// presentation has run.
+pub fn replace_travel_question(
+    asked: On<Add<TravelQuestion>>,
+    questions: Query<Entity, With<TravelQuestion>>,
+    mut commands: Commands,
+) {
+    for question in &questions {
+        if question != asked.entity {
+            commands.entity(question).despawn();
+        }
     }
-    Some(world.spawn((TravelQuestion { entrance }, LevelOwned(level))).id())
 }
 
 /// An answer addresses the particular question that was displayed. It cannot

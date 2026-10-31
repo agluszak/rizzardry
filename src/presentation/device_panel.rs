@@ -540,6 +540,7 @@ fn press(
     roster: Single<&PartyRoster>,
     mut commands: Commands,
     mut requests: MessageWriter<DeviceRequest>,
+    mut takes: MessageWriter<crate::game::world::containers::TakeFromContainer>,
 ) {
     let (Ok(&control), Ok((&PanelOf(on), mut panel))) =
         (controls.get(click.entity), panels.single_mut())
@@ -649,10 +650,7 @@ fn press(
                 },
             };
             let picks = std::mem::take(&mut panel.chosen);
-            requests.write(DeviceRequest {
-                on,
-                act: crate::game::world::interaction::DeviceAct::Take { picks, to },
-            });
+            takes.write(crate::game::world::containers::TakeFromContainer { on, picks, to });
         }
         Control::Leave => {
             requests.write(DeviceRequest {

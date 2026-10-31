@@ -84,11 +84,3 @@ pub fn publish_catalogs(
     });
     commands.remove_resource::<Loading>();
 }
-
-impl Catalogs {
-    /// Run `f` with the catalogs while the world stays writable, for
-    /// operations that hold the whole world.
-    pub fn scope<T>(world: &mut World, f: impl FnOnce(&mut World, &Catalogs) -> T) -> T {
-        world.resource_scope(|world, catalogs: Mut<Catalogs>| f(world, &catalogs))
-    }
-}

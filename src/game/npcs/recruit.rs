@@ -17,7 +17,7 @@ use crate::game::inventory::{Carried, EquipSlot, Equipped, ItemIds, ItemStack, P
 use crate::game::magic::{LearnedSpells, SpellPoints};
 use crate::game::party::body::PartyBody;
 use crate::game::party::formation::Formation;
-use crate::game::party::roster::{Party, PartyMember, PartyRoster, the_party};
+use crate::game::party::roster::{Party, PartyMember, PartyRoster};
 use crate::game::rng::GameRng;
 use crate::game::world::level::{Level, LevelOwned};
 use crate::game::world::population::Monster;
@@ -70,60 +70,40 @@ const MADRAS: NpcId = NpcId(0x4a);
 const SEXUS: NpcId = NpcId(0x4f);
 
 /// Whether the NPC would join now (retail `CanNpcJoinParty`): it does not
-/// offer the service of the region the party is in; its authored terms
-/// hold; and the party's living, able members average at least its minimum
-/// level.
-fn willing(world: &mut World, id: NpcId, definition: &NpcDefinition) -> bool {
-    let level = world.query::<&Level>().single(world).unwrap();
-    let band = crate::content::levels::LevelInfo::for_path(&level.path).map_or(0, |info| info.band);
-    if offers_service(definition, band) {
+/// offer the service of the party's `region`; its authored terms hold, by
+/// the story's facts; and the party's living, able members average at least
+/// its minimum level.
+pub(super) fn willing(
+    id: NpcId,
+    definition: &NpcDefinition,
+    region: u8,
+    fact: impl Fn(&str) -> u8,
+    average: u32,
+) -> bool {
+    if offers_service(definition, region) {
         return false;
     }
-    let fact = |world: &mut World, symbol: &str| {
-        super::conversation::fact_named(world, symbol).expect("a ported fact")
-    };
     let terms = match id {
-        GLUMPH => fact(world, "FACT_UMISSION_SCUBA_DONE") == 0,
-        SEXUS => fact(world, "FACT_SEXUS_PAID") != 0,
-        MADRAS => fact(world, "FACT_TRYNNIE_MADRAS_WILL_JOIN") != 0,
-        DRAZIC | RODAN => fact(world, "FACT_PEACE_ACHIEVED") == 0,
+        GLUMPH => fact("FACT_UMISSION_SCUBA_DONE") == 0,
+        SEXUS => fact("FACT_SEXUS_PAID") != 0,
+        MADRAS => fact("FACT_TRYNNIE_MADRAS_WILL_JOIN") != 0,
+        DRAZIC | RODAN => fact("FACT_PEACE_ACHIEVED") == 0,
         _ => true,
     };
-    if !terms {
-        return false;
-    }
-    if definition.min_party_level > 0 {
-        // Retail counts no able member as an average of nothing.
-        let lineup = crate::game::party::Lineup::in_world(world);
-        let levels: Vec<_> = lineup.able().map(|(_, c)| c.level()).collect();
-        let average = if levels.is_empty() { 0 } else { crate::game::party::average_level(levels) };
-        if average < u32::from(definition.min_party_level) {
-            return false;
-        }
-    }
-    true
+    terms && average >= u32::from(definition.min_party_level)
 }
 
-/// Whether the NPC would join the party now, and if not, why (retail
-/// `RequestNpcJoinParty`'s order: an NPC without a character declines
-/// before the party's room is counted).
+/// [`super::conversation::Dialogue::joinable`], for operations that hold
+/// the whole world.
 pub fn joinable(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
-    let id = world.get::<super::ActorId>(actor).unwrap().npc();
-    let definition = super::definition(world, actor).clone();
-    let gone = world.get::<Npc>(actor).unwrap().dead;
-    if definition.character.is_none() || gone || world.get::<PartyMember>(actor).is_some() {
-        return Err(JoinRefusal::Declines);
-    }
-    let party = the_party(world);
-    let roster = world.get::<PartyRoster>(party).unwrap();
-    let npcs = roster.iter().filter(|&m| world.get::<Npc>(m).is_some()).count();
-    if npcs >= NPC_PLACES {
-        return Err(JoinRefusal::NoRoom);
-    }
-    if !willing(world, id, &definition) {
-        return Err(JoinRefusal::Declines);
-    }
-    Ok(())
+    world
+        .run_system_cached_with(
+            |In(actor): In<Entity>, dialogue: super::conversation::Dialogue| {
+                dialogue.joinable(actor)
+            },
+            actor,
+        )
+        .unwrap()
 }
 
 /// The character an NPC brings the first time it joins (retail
@@ -176,239 +156,278 @@ fn first_character(
     (character, vitals, learned, points, carried)
 }
 
-/// The NPC's world body that stands in a played level.
-fn standing_body(world: &World, actor: Entity) -> Option<Entity> {
-    world.get::<NpcBodies>(actor)?.iter().find(|&body| {
-        world.get::<LevelOwned>(body).is_some() && world.get::<Disabled>(body).is_none()
-    })
+/// What joining and leaving touch: the party with its pool, roster and
+/// formation, the NPC actors that are or may become members, their world
+/// bodies, dormant or standing, and the played level.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct Recruits<'w, 's> {
+    party: Single<
+        'w,
+        's,
+        (
+            Entity,
+            &'static mut PartyInventory,
+            &'static PartyRoster,
+            &'static mut Formation,
+            &'static avian3d::prelude::Position,
+            &'static PartyBody,
+        ),
+        With<Party>,
+    >,
+    actors: Query<
+        'w,
+        's,
+        (
+            &'static mut Npc,
+            &'static super::ActorId,
+            Option<&'static NpcBodies>,
+            Option<&'static PartyMember>,
+            Option<&'static Character>,
+            Option<&'static mut Vitals>,
+            Option<&'static mut Carried>,
+        ),
+    >,
+    bodies: Query<
+        'w,
+        's,
+        (
+            &'static mut Monster,
+            &'static mut NpcWorldRole,
+            crate::game::world::ActorPose,
+            Option<&'static crate::game::world::navigation::Walker>,
+            Has<LevelOwned>,
+            Has<Disabled>,
+        ),
+        Allow<Disabled>,
+    >,
+    levels: Query<
+        'w,
+        's,
+        (Entity, &'static Level, Option<&'static crate::game::world::navigation::LevelNavigation>),
+    >,
+    content: If<Res<'w, Catalogs>>,
+    ids: ResMut<'w, ItemIds>,
+    rng: ResMut<'w, GameRng>,
+    configs: ResMut<'w, Assets<crate::game::world::navigation::WalkerMotionConfig>>,
+    commands: Commands<'w, 's>,
 }
 
-/// Take the NPC into the party (retail `RecruitNpcIntoParty`): it brings
-/// its character (made the first time), the conditions its world body had,
-/// and takes an NPC place; its world body goes dormant.
-pub fn join(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
-    joinable(world, actor)?;
-    let party = the_party(world);
-    if world.get::<Character>(actor).is_none() {
-        let made = world.resource_scope(|world, mut ids: Mut<ItemIds>| {
-            world.resource_scope(|world, mut rng: Mut<GameRng>| {
-                let catalogs = (
-                    &world.resource::<crate::game::data::Catalogs>().items,
-                    &world.resource::<crate::game::data::Catalogs>().spells,
-                );
-                let template = super::definition(world, actor).character.as_ref().unwrap();
-                first_character(template, catalogs, (&mut ids, &mut rng))
-            })
+impl Recruits<'_, '_> {
+    /// Take the NPC into the party (retail `RecruitNpcIntoParty`): it brings
+    /// its character (made the first time), the conditions its world body
+    /// had, and takes an NPC place; its world body goes dormant. Whether it
+    /// would join is the caller's to have asked.
+    fn join(&mut self, actor: Entity) {
+        let party = self.party.0;
+        let (_, id, bodies, _, character, ..) = self.actors.get(actor).unwrap();
+        // The NPC's world body that stands in a played level.
+        let standing = bodies.into_iter().flat_map(|b| b.iter()).find(|&body| {
+            self.bodies.get(body).is_ok_and(|(.., owned, disabled)| owned && !disabled)
         });
-        let (character, vitals, learned, points, carried) = made;
-        world.entity_mut(actor).insert((
-            Name::new(character.name.clone()),
-            character,
-            vitals,
-            learned,
-            points,
-            carried,
-        ));
+        let conditions = standing.map(|body| self.bodies.get(body).unwrap().0.conditions.clone());
+        if character.is_none() {
+            let template = self.content.npcs[id.npc()].character.as_ref().unwrap();
+            let catalogs = (&self.content.items, &self.content.spells);
+            let (character, mut vitals, learned, points, carried) =
+                first_character(template, catalogs, (&mut self.ids, &mut self.rng));
+            if let Some(conditions) = conditions {
+                vitals.conditions = conditions;
+            }
+            self.commands.entity(actor).insert((
+                Name::new(character.name.clone()),
+                character,
+                vitals,
+                learned,
+                points,
+                carried,
+            ));
+        } else if let Some(conditions) = conditions {
+            self.actors.get_mut(actor).unwrap().5.unwrap().conditions = conditions;
+        }
+        if let Some(body) = standing {
+            let (_, _, pose, walker, ..) = self.bodies.get(body).unwrap();
+            let at = Transform::from_translation(crate::game::world::navigation::feet(
+                pose.translation(),
+                walker,
+            ))
+            .with_rotation(pose.rotation());
+            super::retire(&mut self.commands, body, at);
+        }
+        self.commands.entity(actor).insert((PartyMember(party), crate::game::party::Order::Attack));
+        self.party.3.seat(actor);
     }
-    if let Some(body) = standing_body(world, actor) {
-        let conditions =
-            world.get::<Monster>(body).map(|m| m.conditions.clone()).unwrap_or_default();
-        world.get_mut::<Vitals>(actor).unwrap().conditions = conditions;
-        let at = world
-            .query::<(crate::game::world::ActorPose, Option<&crate::game::world::navigation::Walker>)>()
-            .get(world, body)
-            .map(|(pose, walker)| {
-                Transform::from_translation(crate::game::world::navigation::feet(
-                    pose.translation(),
-                    walker,
-                ))
-                .with_rotation(pose.rotation())
+
+    /// Let the NPC leave the party (retail `DismissNpcFromParty`, its body
+    /// not held back): it gives up its NPC place; alive, it stands again
+    /// beside the party with the conditions it has, at a fresh roll of its
+    /// species' health; and it gives the party every item it neither wants
+    /// nor has cursed on.
+    fn dismiss(&mut self, actor: Entity) -> bool {
+        let party = self.party.0;
+        let Ok((_, id, bodies, member, character, vitals, carried)) = self.actors.get(actor) else {
+            return false;
+        };
+        if member.is_none_or(|member| member.0 != party) {
+            return false;
+        }
+        let wanted = self.content.npcs[id.npc()]
+            .character
+            .as_ref()
+            .map_or_else(Vec::new, |character| character.wanted.clone());
+        let items = &self.content.items;
+        let held: Vec<_> = carried
+            .map(|carried| {
+                carried
+                    .active_equipment()
+                    .filter(|(_, e)| !e.curse_released && items[e.stack.item].cursed)
+                    .map(|(_, e)| e.stack.id)
+                    .collect()
             })
             .unwrap_or_default();
-        super::retire(&mut world.commands(), body, at);
-        world.flush();
-    }
-    world.entity_mut(actor).insert((PartyMember(party), crate::game::party::Order::Attack));
-    world.get_mut::<Formation>(party).unwrap().seat(actor);
-    Ok(())
-}
-
-/// Give a departing member's items to the party, those the pool has no room
-/// for dropped at its feet. `keep` says which the member keeps.
-fn hand_over(world: &mut World, actor: Entity, level: Entity, keep: impl Fn(&ItemStack) -> bool) {
-    let party = the_party(world);
-    let feet = PartyBody::feet_in(world);
-    Catalogs::scope(world, |world, catalogs| {
-        let items = &catalogs.items;
-        let given: Vec<ItemStack> = {
-            let mut carried = world.get_mut::<Carried>(actor).unwrap();
-            let carried = &mut *carried;
-            let worn = carried
-                .equipment
-                .values_mut()
-                .filter_map(|worn| worn.take_if(|e| !keep(&e.stack)).map(|e| e.stack));
-            let mut given: Vec<_> = worn.collect();
-            given.extend(
-                carried.backpack.iter_mut().filter_map(|place| place.take_if(|s| !keep(s))),
-            );
-            given
+        let body = bodies.and_then(|bodies| bodies.first().copied());
+        let stands = match (body, character, vitals) {
+            (Some(body), Some(character), Some(vitals)) if !vitals.is_dead() => Some((
+                body,
+                vitals.conditions.clone(),
+                vitals.stamina.min(character.base_stats().max_stamina()),
+            )),
+            _ => None,
         };
-        let mut left = Vec::new();
-        {
-            let mut inventory = world.get_mut::<PartyInventory>(party).unwrap();
-            for stack in given {
-                left.extend(inventory.pool.receive(stack, items));
-            }
+        self.commands.entity(actor).remove::<PartyMember>();
+        self.party.3.unseat(actor);
+        if let Some((body, conditions, stamina)) = stands {
+            self.stand_beside_party(body, conditions, stamina);
         }
-        crate::game::world::items::drop_loot(&mut world.commands(), level, feet, left, items);
-        world.flush();
-    });
-}
-
-/// The level being played, where items a parting member leaves that the
-/// party's pool cannot hold are dropped.
-fn played_level(world: &mut World) -> Entity {
-    world.query_filtered::<Entity, With<Level>>().single(world).unwrap()
-}
-
-/// Let the NPC leave the party (retail `DismissNpcFromParty`, its body not
-/// held back): it gives up its NPC place; alive, it stands again beside the
-/// party with the conditions it has, at a fresh roll of its species' health;
-/// and it gives the party every item it neither wants nor has cursed on.
-pub fn dismiss(world: &mut World, actor: Entity) -> bool {
-    let party = the_party(world);
-    if world.get::<PartyMember>(actor).is_none_or(|member| member.0 != party)
-        || world.get::<Npc>(actor).is_none()
-    {
-        return false;
+        self.hand_over(actor, |stack| wanted.contains(&stack.item) || held.contains(&stack.id));
+        true
     }
-    let alive = !world.get::<Vitals>(actor).unwrap().is_dead();
-    let body = world.get::<NpcBodies>(actor).and_then(|bodies| bodies.first().copied());
-    let level = played_level(world);
-    world.entity_mut(actor).remove::<PartyMember>();
-    world.get_mut::<Formation>(party).unwrap().unseat(actor);
-    if alive && let Some(body) = body {
-        stand_beside_party(world, actor, body, (party, level));
-    }
-    let wanted = super::definition(world, actor)
-        .character
-        .as_ref()
-        .map_or_else(Vec::new, |character| character.wanted.clone());
-    let cursed = |stack: &ItemStack| {
-        world.resource::<crate::game::data::Catalogs>().items[stack.item].cursed
-    };
-    let held: Vec<_> = world
-        .get::<Carried>(actor)
-        .map(|carried| {
-            carried
-                .active_equipment()
-                .filter(|(_, e)| !e.curse_released && cursed(&e.stack))
-                .map(|(_, e)| e.stack.id)
-                .collect()
-        })
-        .unwrap_or_default();
-    hand_over(world, actor, level, |stack| {
-        wanted.contains(&stack.item) || held.contains(&stack.id)
-    });
-    true
-}
 
-/// The NPC's dormant body stands again beside the party, on its level.
-fn stand_beside_party(
-    world: &mut World,
-    actor: Entity,
-    body: Entity,
-    (party, root): (Entity, Entity),
-) {
-    let map = world.get::<Level>(root).unwrap().path.clone();
-    let at = *world.get::<avian3d::prelude::Position>(party).unwrap();
-    let yaw = world.get::<PartyBody>(party).unwrap().yaw;
-    // Retail asks the navigator for a place out from the party along its
-    // heading turned by an eighth of a turn; this stands it two metres out
-    // that way, without the navigator's search.
-    let feet = PartyBody::feet(&at)
-        + Quat::from_rotation_y(yaw + std::f32::consts::FRAC_PI_4) * Vec3::NEG_Z * 2.0;
-    let (conditions, stamina) = {
-        let vitals = world.get::<Vitals>(actor).unwrap();
-        (vitals.conditions.clone(), vitals.stamina)
-    };
-    let stamina_max = world.get::<Character>(actor).unwrap().base_stats().max_stamina();
-    let species = world.get::<Monster>(body).unwrap().species;
-    let (max_hp, max_stamina) = world.resource_scope(|world, mut rng: Mut<GameRng>| {
-        let kind = &world.resource::<crate::game::data::Catalogs>().species[species];
-        (rng.roll(kind.hit_points).max(1), rng.roll(kind.stamina))
-    });
-    {
-        let mut monster = world.get_mut::<Monster>(body).unwrap();
+    /// The NPC's dormant body stands again beside the party, on its level;
+    /// one out cold stays as spent as it was.
+    fn stand_beside_party(
+        &mut self,
+        body: Entity,
+        conditions: crate::game::characters::Conditions,
+        stamina: u32,
+    ) {
+        let (at, yaw) = (*self.party.4, self.party.5.yaw);
+        let (root, level, navigation) = self.levels.single().unwrap();
+        // Retail asks the navigator for a place out from the party along its
+        // heading turned by an eighth of a turn; this stands it two metres out
+        // that way, without the navigator's search.
+        let feet = PartyBody::feet(&at)
+            + Quat::from_rotation_y(yaw + std::f32::consts::FRAC_PI_4) * Vec3::NEG_Z * 2.0;
+        let (mut monster, mut role, ..) = self.bodies.get_mut(body).unwrap();
+        let kind = &self.content.species[monster.species];
+        let (max_hp, max_stamina) =
+            (self.rng.roll(kind.hit_points).max(1), self.rng.roll(kind.stamina));
         monster.hp = max_hp;
         monster.max_hp = max_hp;
         monster.max_stamina = max_stamina;
-        monster.stamina = max_stamina;
-        // An NPC out cold stays as spent as it was.
-        if conditions.exhausted() {
-            monster.stamina = stamina.min(stamina_max);
-        }
+        monster.stamina = if conditions.exhausted() { stamina } else { max_stamina };
         monster.conditions = conditions;
-    }
-    {
-        let mut role = world.get_mut::<NpcWorldRole>(body).unwrap();
-        role.map = map;
+        role.map = level.path.clone();
         role.group = None;
+        let (speed, radius) = (monster.body.speed, monster.body.radius);
+        let mut entity = self.commands.entity(body);
+        entity.remove::<Disabled>().insert((
+            Transform::from_translation(
+                feet + Vec3::Y * crate::game::world::navigation::float_height(speed),
+            )
+            .with_rotation(Quat::from_rotation_y(yaw)),
+            LevelOwned(root),
+        ));
+        if speed > 0.0
+            && let Some(navigation) = navigation
+        {
+            crate::game::world::navigation::insert_walker(
+                &mut entity,
+                (feet, yaw),
+                (radius, speed),
+                navigation,
+                &mut self.configs,
+            );
+        }
     }
-    let speed = world.get::<Monster>(body).unwrap().body.speed;
-    let radius = world.get::<Monster>(body).unwrap().body.radius;
-    world.resource_scope(
-        |world, mut configs: Mut<Assets<crate::game::world::navigation::WalkerMotionConfig>>| {
-            let navigation = world
-                .get::<crate::game::world::navigation::LevelNavigation>(root)
-                .map(|n| n.archipelagos.clone());
-            let mut commands = world.commands();
-            let mut entity = commands.entity(body);
-            entity.remove::<Disabled>().insert((
-                Transform::from_translation(
-                    feet + Vec3::Y * crate::game::world::navigation::float_height(speed),
-                )
-                .with_rotation(Quat::from_rotation_y(yaw)),
-                LevelOwned(root),
-            ));
-            if speed > 0.0
-                && let Some(archipelagos) = navigation
-            {
-                crate::game::world::navigation::insert_walker(
-                    &mut entity,
-                    (feet, yaw),
-                    (radius, speed),
-                    &crate::game::world::navigation::LevelNavigation { archipelagos },
-                    &mut configs,
-                );
-            }
-        },
-    );
-    world.flush();
+
+    /// Give a departing member's items to the party, those the pool has no
+    /// room for dropped at its feet. `keep` says which the member keeps.
+    fn hand_over(&mut self, actor: Entity, keep: impl Fn(&ItemStack) -> bool) {
+        let Some(mut carried) = self.actors.get_mut(actor).unwrap().6 else { return };
+        let carried = &mut *carried;
+        let worn = carried
+            .equipment
+            .values_mut()
+            .filter_map(|worn| worn.take_if(|e| !keep(&e.stack)).map(|e| e.stack));
+        let mut given: Vec<_> = worn.collect();
+        given.extend(carried.backpack.iter_mut().filter_map(|place| place.take_if(|s| !keep(s))));
+        let items = &self.content.items;
+        let pool = &mut self.party.1.pool;
+        let left: Vec<_> =
+            given.into_iter().filter_map(|stack| pool.receive(stack, items)).collect();
+        let (level, ..) = self.levels.single().unwrap();
+        let feet = PartyBody::feet(self.party.4);
+        crate::game::world::items::drop_loot(&mut self.commands, level, feet, left, items);
+    }
+}
+
+/// An NPC that accepted the party's offer joins it.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JoinParty {
+    pub actor: Entity,
+}
+
+/// NPCs that accepted join, if they still would. The dialogue that asks
+/// them also says they join, so the request is read inside the set.
+pub fn join_party(
+    mut recruiting: ParamSet<(MessageReader<JoinParty>, super::conversation::Dialogue, Recruits)>,
+) {
+    let joins: Vec<_> = recruiting.p0().read().map(|join| join.actor).collect();
+    for actor in joins {
+        match recruiting.p1().joinable(actor) {
+            Ok(()) => recruiting.p2().join(actor),
+            Err(refusal) => warn!("NPC did not join after all: {refusal:?}"),
+        }
+    }
+}
+
+/// [`Recruits::join`] once the NPC would join, for operations that hold the
+/// whole world.
+pub fn join(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
+    joinable(world, actor)?;
+    world
+        .run_system_cached_with(|In(actor): In<Entity>, mut r: Recruits| r.join(actor), actor)
+        .unwrap();
+    Ok(())
+}
+
+/// [`Recruits::dismiss`], for operations that hold the whole world.
+pub fn dismiss(world: &mut World, actor: Entity) -> bool {
+    world
+        .run_system_cached_with(|In(actor): In<Entity>, mut r: Recruits| r.dismiss(actor), actor)
+        .unwrap()
 }
 
 /// A member NPC that dies leaves the party at once (retail
 /// `UpdateNpcPartyMember`): its items go to the party, it is dead for good
-/// (retail `spawned`), and it never stands in the world again.
-pub fn settle_npc_members(world: &mut World) {
-    // Before a campaign begins there is no party to settle.
-    let Ok(party) = world.query_filtered::<Entity, With<Party>>().single(world) else { return };
-    let fallen: Vec<Entity> = world
-        .get::<PartyRoster>(party)
-        .unwrap()
+/// (retail `spawned`), and it never stands in the world again. Before a
+/// campaign begins there is no party to settle.
+pub fn settle_npc_members(mut recruits: Recruits) {
+    let fallen: Vec<Entity> = recruits
+        .party
+        .2
         .iter()
         .filter(|&member| {
-            world.get::<Npc>(member).is_some() && world.get::<Vitals>(member).unwrap().is_dead()
+            recruits
+                .actors
+                .get(member)
+                .is_ok_and(|(npc, .., vitals, _)| !npc.dead && vitals.is_some_and(|v| v.is_dead()))
         })
         .collect();
-    if fallen.is_empty() {
-        return;
-    }
-    let level = played_level(world);
     for member in fallen {
-        world.entity_mut(member).remove::<PartyMember>();
-        world.get_mut::<Formation>(party).unwrap().unseat(member);
-        world.get_mut::<Npc>(member).unwrap().dead = true;
-        hand_over(world, member, level, |_| false);
+        recruits.commands.entity(member).remove::<PartyMember>();
+        recruits.party.3.unseat(member);
+        recruits.actors.get_mut(member).unwrap().0.dead = true;
+        recruits.hand_over(member, |_| false);
     }
 }
