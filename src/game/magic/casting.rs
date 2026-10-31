@@ -481,7 +481,7 @@ fn auto_power(
             .conditions
             .iter()
             .filter_map(|&(_, lasting)| match lasting {
-                Lasting::Rounds(t) => Some(u32::from(t)),
+                Lasting::Rounds(t) => Some(t),
                 Lasting::Indefinite => None,
             })
             .max();

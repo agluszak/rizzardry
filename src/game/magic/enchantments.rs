@@ -257,9 +257,9 @@ impl Enchantments {
 /// (retail `InflictCharacterCondition`, `InflictMonsterCondition`).
 pub fn slow(conditions: &mut Conditions, enchantments: &mut Enchantments, lasting: Lasting) {
     let lasting = match lasting {
-        Lasting::Rounds(turns) => match enchantments.counter_slow(u32::from(turns)) {
+        Lasting::Rounds(turns) => match enchantments.counter_slow(turns) {
             0 => return,
-            left => Lasting::Rounds(left as u16),
+            left => Lasting::Rounds(left),
         },
         Lasting::Indefinite => {
             enchantments.0.retain(|e| e.spell != SpellId::HASTE);
@@ -281,8 +281,8 @@ pub fn haste(
         None => effect.turns,
         Some(Lasting::Indefinite) => 0,
         Some(Lasting::Rounds(left)) => {
-            let cancelled = effect.turns.min(*left as u32);
-            *left -= cancelled as u16;
+            let cancelled = effect.turns.min(*left);
+            *left -= cancelled;
             if *left == 0 {
                 conditions.lift(Condition::Slowed);
             }

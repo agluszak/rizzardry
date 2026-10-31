@@ -144,7 +144,7 @@ pub const MAX_POWER: u32 = 7;
 
 /// The four spellbooks (retail mask bits: Wizardry 1, Divinity 2, Alchemy
 /// 4, Psionics 8).
-#[derive(Debug, EnumSetType)]
+#[derive(Debug, EnumSetType, enum_map::Enum)]
 #[enumset(repr = "u8")]
 pub enum Spellbook {
     Wizardry,
