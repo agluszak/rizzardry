@@ -246,9 +246,9 @@ pub struct ItemDefinition {
     pub extra_swings: i32,
     /// Thrown, it is not used up.
     pub never_depletes: bool,
-    pub damage_bonus: i8,
-    pub hit_bonus: i8,
-    pub armor_class_bonus: i8,
+    pub damage_bonus: i32,
+    pub hit_bonus: i32,
+    pub armor_class_bonus: i32,
     /// The spell it casts when used, at its own power.
     pub spell: Option<super::spells::ItemSpell>,
     /// How it is used, which decides the skill its spell is cast with.
