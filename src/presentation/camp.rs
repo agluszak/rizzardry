@@ -49,7 +49,7 @@ fn fade() -> Timer {
 /// the darkness and the picture behind it carry on unchanged.
 fn reversed(fade: &Timer) -> Timer {
     let mut back = self::fade();
-    back.set_elapsed(back.duration().saturating_sub(fade.elapsed()));
+    back.set_elapsed(back.duration() - fade.elapsed().min(back.duration()));
     back
 }
 

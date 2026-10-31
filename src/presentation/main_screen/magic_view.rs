@@ -107,7 +107,7 @@ pub struct MagicView {
     realm: Option<Realm>,
     source: Option<Source>,
     /// A chosen pip: power 1..=7, or [`AUTO_POWER`].
-    power: Option<u8>,
+    power: Option<u32>,
     /// The party member a one-victim spell is aimed at, from a portrait.
     member: Option<Entity>,
 }
@@ -195,7 +195,7 @@ pub(super) struct RowText(usize);
 #[derive(Component, Clone, Copy)]
 pub(super) struct RowCost(usize);
 #[derive(Component, Clone, Copy)]
-pub(super) struct Pip(u8);
+pub(super) struct Pip(u32);
 #[derive(Component)]
 pub(super) struct CostLabel;
 #[derive(Component)]
@@ -460,8 +460,8 @@ fn spawn_view(
             let icon = picture(commands, &art.realms[i], REALM_FRAMES[i], icon);
             commands.entity(icon).insert(RealmIcon(realm));
         }
-        for pip in 0..9u8 {
-            let (at, size) = PIPS[usize::from(pip)];
+        for pip in 0..9u32 {
+            let (at, size) = PIPS[pip as usize];
             commands
                 .spawn((
                     Pip(pip),
@@ -471,7 +471,7 @@ fn spawn_view(
                     Hovered::default(),
                     Picture {
                         sheet: art.pips.clone(),
-                        frame: usize::from(pip) * 6 + 3,
+                        frame: pip as usize * 6 + 3,
                         at,
                         bounds: None,
                     },
@@ -840,7 +840,7 @@ pub(super) fn draw_magic_view(
         silenced,
     );
     let Ok((scroll_value, scroll_range)) = sliders.get(scroll.0) else { return };
-    let maximum = offers.len().saturating_sub(ROWS);
+    let maximum = offers.len().max(ROWS) - ROWS;
     set_scroll_maximum(&mut commands, scroll.0, scroll_value, scroll_range, maximum as f32);
     let offset = (scroll_value.0 as usize).min(maximum);
     let hovered = parts.p2().iter().find(|(_, _, h)| h.get()).map(|(r, _, _)| r.0);
@@ -894,7 +894,7 @@ pub(super) fn draw_magic_view(
     if !view.items {
         let affordable = spell.map_or(0, |s| points.affordable_power(s, &mana_maximum));
         for (pip, hovered, mut picture, mut visibility) in &mut parts.p5() {
-            let index = usize::from(pip.0);
+            let index = pip.0 as usize;
             let shown = match (pip.0, spell.map(|s| s.power)) {
                 (7, Some(PowerChoice::ChosenOrRepeat)) => context != UseContext::Combat,
                 (8, Some(PowerChoice::Maximum)) => true,

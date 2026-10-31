@@ -363,12 +363,9 @@ fn sync_loot_rows(
         commands.entity(list).replace_children(&ordered);
         if let (Some(at), Some(focus)) = (lost_focus_at, focus.as_mut()) {
             // The stack that now stands where the focused one stood, if any.
-            let survivor = stacks
-                .get(at.min(stacks.len().saturating_sub(1)))
-                .filter(|_| !stacks.is_empty())
-                .and_then(|&id| {
-                    controls.iter().find(|(_, c)| **c == Control::Row(id)).map(|(e, _)| e)
-                });
+            let survivor = stacks.get(at).or_else(|| stacks.last()).and_then(|&id| {
+                controls.iter().find(|(_, c)| **c == Control::Row(id)).map(|(e, _)| e)
+            });
             let fallback = controls.iter().find(|(_, c)| **c == Control::All).map(|(e, _)| e);
             if let Some(target) = survivor.or(fallback) {
                 focus.set(target, bevy::input_focus::FocusCause::Navigated);
@@ -618,18 +615,14 @@ fn press(
         Control::Less(id) | Control::More(id) => {
             let all = count(id);
             let step = |amount: u16| match control {
-                Control::Less(_) => amount.saturating_sub(1).max(1),
+                Control::Less(_) => amount.max(2) - 1,
                 _ => (amount + 1).min(all),
             };
             match panel.chosen.iter_mut().find(|(c, _)| *c == id) {
                 Some((_, amount)) => *amount = step(*amount),
                 None => panel.chosen.push((
                     id,
-                    if matches!(control, Control::Less(_)) {
-                        all.saturating_sub(1).max(1)
-                    } else {
-                        1
-                    },
+                    if matches!(control, Control::Less(_)) { all.max(2) - 1 } else { 1 },
                 )),
             }
         }

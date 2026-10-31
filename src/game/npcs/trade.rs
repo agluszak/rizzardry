@@ -58,14 +58,14 @@ pub struct TradeQuote {
     pub gold: u32,
 }
 fn tier(def: &ItemDefinition, level: u32) -> u32 {
-    let base = (((level as i8) as i32 * 100 / 30) as i8) / 5;
+    let base = level * 2 / 3;
     let lower = base.clamp(1, 16);
-    let upper = base.wrapping_add(4).clamp(4, 20);
-    let difficulty = def.identify_difficulty as i8;
+    let upper = (base + 4).clamp(4, 20);
+    let difficulty = def.identify_difficulty as u32;
     if difficulty > upper {
         0
     } else if difficulty < lower {
-        1 + u32::from(difficulty.saturating_add(4) >= lower)
+        1 + (difficulty + 4 >= lower) as u32
     } else {
         3
     }
@@ -124,8 +124,8 @@ impl MerchantStock {
             self.maintenance_at = now;
             return;
         };
-        let daily = now.saturating_sub(self.maintenance_at) >= DAY_MS;
-        if now.saturating_sub(restock_at) > DAY_MS / 2 {
+        let daily = now - self.maintenance_at >= DAY_MS;
+        if now - restock_at > DAY_MS / 2 {
             self.replenish(def, catalog, level, true, templar, rng);
             self.restock_at = Some(now);
         }
@@ -145,7 +145,7 @@ impl MerchantStock {
                 for _ in 0..count {
                     rng.below(100);
                 }
-                lot.units = lot.units.saturating_sub(count);
+                lot.units -= count.min(lot.units);
             }
             self.replenish(def, catalog, level, false, templar, rng);
             self.lots.retain(|l| l.units > 0);

@@ -135,8 +135,8 @@ pub fn search_score(
     let score = match senses {
         0..=50 => base + senses / 5,
         51..=80 => base + 10 + (senses - 50) / 3,
-        81..=90 => (base + senses).saturating_sub(60),
-        91..=99 => (base + senses * 2).saturating_sub(150),
+        81..=90 => base + senses - 60,
+        91..=99 => base + senses * 2 - 150,
         100 => base + 50,
         _ => base + 50 + (senses * 10 - 1000) / 25,
     };

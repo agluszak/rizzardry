@@ -201,8 +201,8 @@ fn candidates(
 /// half on Normal (most on Expert, as rolled on Novice).
 fn group_size(kind: &Species, party_level: f32, difficulty: Difficulty, rng: &mut GameRng) -> u32 {
     let dice: Dice = kind.group_size;
-    let fewest = (i32::from(dice.base) + i32::from(dice.count)).max(0) as u32;
-    let most = (i32::from(dice.base) + i32::from(dice.count) * i32::from(dice.sides)).max(0) as u32;
+    let fewest = (dice.base + dice.count).max(0) as u32;
+    let most = (dice.base + dice.count * dice.sides).max(0) as u32;
     let middle = (fewest + most) as f32 * 0.5;
     let mut rolled = rng.roll(dice);
     if f32::from(kind.display_level) / party_level >= 1.2 {
@@ -444,7 +444,7 @@ fn admits(
             .active
             .iter()
             .filter(|&&(_, spawned, at)| {
-                (now_s.wrapping_sub(spawned) as u32) as f32 > lingers
+                (now_s - spawned.min(now_s)) as f32 > lingers
                     && at.is_none_or(|at| at.distance(party.feet) > RETIRED_BEYOND)
             })
             .map(|&(leader, ..)| leader)
@@ -621,7 +621,7 @@ pub fn run_encounters(
                 STALE_SECONDS + 1
             }
             Arrival::Returned { left } => {
-                let elapsed = now_s.saturating_sub(left);
+                let elapsed = now_s - left;
                 if encounters.limits.period > 0 {
                     state.budget += (elapsed / encounters.limits.period as u64) as i32;
                 }

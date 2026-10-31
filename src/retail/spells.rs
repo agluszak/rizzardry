@@ -37,7 +37,7 @@ fn read_spell(index: usize, record: &[u8]) -> Result<SpellDefinition, DecodeErro
         id: SpellId(index as u8),
         name: utf16_string(&r[0x9b..0x9b + 128]),
         realm: u8::try_from(i32_at(r, 0x133)?).ok().and_then(|r| Realm::try_from(r).ok()),
-        level: i32_at(r, 0x56)?.clamp(0, 7) as u8,
+        level: i32_at(r, 0x56)?.clamp(0, 7) as u32,
         cost: i32_at(r, 0x49)?.max(0) as u32,
         books,
         power: match i32_at(r, 0x12b)? {

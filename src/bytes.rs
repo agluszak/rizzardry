@@ -117,7 +117,7 @@ impl<'a> Bytes<'a> {
         record_size: usize,
         mut read: impl FnMut(&mut Self) -> Result<T, Truncated>,
     ) -> Result<Vec<T>, Truncated> {
-        let needed = count.saturating_mul(record_size);
+        let needed = count * record_size;
         if needed > self.remaining() {
             return Err(Truncated { offset: self.offset, needed, available: self.remaining() });
         }

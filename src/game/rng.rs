@@ -24,14 +24,14 @@ impl GameRng {
     }
 
     /// A number in `1..=sides`.
-    pub fn die(&mut self, sides: u8) -> u32 {
-        self.0.random_range(1..=u32::from(sides.max(1)))
+    pub fn die(&mut self, sides: i32) -> i32 {
+        self.0.random_range(1..=sides.max(1))
     }
 
     /// `count` d `sides` + `base`, never below 0.
     pub fn roll(&mut self, dice: Dice) -> u32 {
-        let thrown: u32 = (0..dice.count).map(|_| self.die(dice.sides)).sum();
-        (i64::from(thrown) + i64::from(dice.base)).max(0) as u32
+        let thrown: i32 = (0..dice.count).map(|_| self.die(dice.sides)).sum();
+        (thrown + dice.base).max(0) as u32
     }
 }
 
@@ -58,6 +58,6 @@ impl Default for GameRng {
 impl Dice {
     /// The largest result: every die at its maximum.
     pub fn maximum(self) -> u32 {
-        (i64::from(self.base) + i64::from(self.count) * i64::from(self.sides)).max(0) as u32
+        (self.base + self.count * self.sides).max(0) as u32
     }
 }

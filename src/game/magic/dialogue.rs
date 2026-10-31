@@ -71,7 +71,7 @@ pub(crate) fn cast(
                     .effects
                     .push(super::Effect::Resisted { victim: super::Victim::Monster(body) });
             } else {
-                let amount = u32::from(strength.power) * 7;
+                let amount = strength.power * 7;
                 let amount = amount + amount * strength.boost / 100;
                 let amount = super::effects::resist(
                     &mut world.resource_mut::<GameRng>(),
@@ -79,7 +79,7 @@ pub(crate) fn cast(
                     resistance.min(100),
                     level,
                     strength.against,
-                ) as u8 as i8;
+                );
                 if amount > world.get::<Conversation>(entity).unwrap().charm() {
                     reply = MagicalReply::Charmed(amount);
                 }

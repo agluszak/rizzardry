@@ -71,9 +71,9 @@ fn release_lured(
 pub fn spell(id: SpellId) -> bool {
     matches!(id, SpellId::HYPNOTIC_LURE | SpellId::SUMMON_ELEMENTAL)
 }
-fn tier(power: u8, realm: usize) -> u32 {
+fn tier(power: u32, realm: usize) -> u32 {
     // Retail g_elemental_summon_group_ids: air, earth, water, fire per tier.
-    21 + u32::from(power.saturating_sub(1).min(6)) * 4 + [3, 2, 0, 1][realm]
+    21 + (power.clamp(1, 7) - 1) * 4 + [3, 2, 0, 1][realm]
 }
 /// The elementals Summon Elemental may call, four elements to a tier
 /// (retail `g_elemental_summon_group_ids`). Their bodies load with every

@@ -187,10 +187,10 @@ fn enter(mut commands: Commands, assets: Res<AssetServer>, mut focus: ResMut<Inp
         .insert(ContextPriority::<Journal>::new(10))
         .observe(|_: On<Start<Close>>, mut next: ResMut<NextState<Screen>>| next.set(Screen::World))
         .observe(|_: On<Start<Previous>>, mut view: Single<&mut Journal>| {
-            view.pages_back = view.pages_back.saturating_add(1);
+            view.pages_back += 1;
         })
         .observe(|_: On<Start<Next>>, mut view: Single<&mut Journal>| {
-            view.pages_back = view.pages_back.saturating_sub(1);
+            view.pages_back -= view.pages_back.min(1);
         });
 }
 fn activate(
@@ -201,8 +201,8 @@ fn activate(
 ) {
     let (Ok(choice), Some(view)) = (choices.get(event.entity), view.as_mut()) else { return };
     match choice {
-        Choice::Previous => view.pages_back = view.pages_back.saturating_add(1),
-        Choice::Next => view.pages_back = view.pages_back.saturating_sub(1),
+        Choice::Previous => view.pages_back += 1,
+        Choice::Next => view.pages_back -= view.pages_back.min(1),
         Choice::Topics => {
             view.mode = view.mode.next();
             view.pages_back = 0;
@@ -314,7 +314,7 @@ fn refresh(
         }
     }
     let count = entries.len();
-    let last_page = count.saturating_sub(1) / 12;
+    let last_page = (count.max(1) - 1) / 12;
     if view.pages_back > last_page {
         view.pages_back = last_page;
     }

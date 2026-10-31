@@ -796,10 +796,10 @@ fn member_blow(
         let mut blow = hand.effects;
         if !landing.fumbled {
             let kill = &mut blow.chances[AttackEffect::Kill];
-            *kill = kill.wrapping_add(attack::critical_chance(rng, character, hand));
+            *kill = (*kill + attack::critical_chance(rng, character, hand)).min(100);
             if character.has_trait(Trait::Knockout) {
                 let knockout = &mut blow.chances[AttackEffect::KnockOut];
-                *knockout = knockout.wrapping_add(character.scale_by_profession(5.0) as u8);
+                *knockout = (*knockout + character.scale_by_profession(5.0) as u32).min(100);
             }
         }
         let power = attack::effect_power(u32::from(character.level()));
@@ -851,7 +851,13 @@ fn iron_skin(
 /// other hand while it has attacks, unless it has fewer and less
 /// initiative; spread over the rest of the round, and a switch costs the
 /// difference in the hands' initiative.
-fn next_hand(battle: &mut Battle, index: usize, step: u8, turns: HandTurns, hands: &attack::Hands) {
+fn next_hand(
+    battle: &mut Battle,
+    index: usize,
+    step: u32,
+    turns: HandTurns,
+    hands: &attack::Hands,
+) {
     let current = turns.current;
     let other = 1 - current;
     let (now, then) = (turns.left[current], turns.left[other]);
@@ -865,9 +871,9 @@ fn next_hand(battle: &mut Battle, index: usize, step: u8, turns: HandTurns, hand
     let phase = if left == 0 {
         None
     } else if chosen == current || then <= now {
-        Some(u32::from(step) + (100 - u32::from(step)) / (left + 1))
+        Some(step + (100 - step) / (left + 1))
     } else {
-        Some(u32::from(step))
+        Some(step)
     };
     let work = &mut battle.this_round.party[index];
     work.hands = turns;
@@ -876,7 +882,7 @@ fn next_hand(battle: &mut Battle, index: usize, step: u8, turns: HandTurns, hand
             let phase = phase as i32
                 + if chosen != current { initiative(current) - initiative(chosen) } else { 0 };
             work.hands.current = chosen;
-            work.phase = phase.clamp(i32::from(step), 100) as u8;
+            work.phase = phase.clamp(step as i32, 100) as u32;
         }
         None => work.end(),
     }
@@ -1011,7 +1017,7 @@ pub(super) fn monster_attacks(
     let eye = monster.eye(feet(position, walker));
     let stance = field.monsters.stance(entity, field.now);
     let candidates = reachable_targets(entity, kind, rng, field, fight, news);
-    let turn_left = turn.attacks_left.saturating_sub(1);
+    let turn_left = turn.attacks_left.max(1) - 1;
     battle.this_round.monsters[index].end();
     // A wary monster's wait comes first among its choices.
     let waits = usize::from(fight.waits);

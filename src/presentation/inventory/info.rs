@@ -138,8 +138,8 @@ pub(super) fn open_info(
     }
     let line_height = font.line_height();
     // The first two labels share a line (the differently coloured prefix).
-    let count = entries.len().saturating_sub(1);
-    let maximum = count.saturating_sub((185.0 / line_height).floor() as usize);
+    let count = entries.len().max(1) - 1;
+    let maximum = count - count.min((185.0 / line_height).floor() as usize);
     let root = commands.spawn_scene(bsn! {
         InfoDialog { line_height: {line_height} }
         ContextPriority::<InfoDialog>::new(2)
@@ -181,7 +181,7 @@ pub(super) fn open_info(
         let (x, y) = if i == 1 {
             (font.text_width(&prefix) as f32, 0.0)
         } else {
-            (0.0, i.saturating_sub(usize::from(i > 0)) as f32 * line_height)
+            (0.0, (i.max(1) - 1) as f32 * line_height)
         };
         text(&mut commands, lines, art.font.clone(), palette, value, Vec2::new(x, y), 0.0);
     }

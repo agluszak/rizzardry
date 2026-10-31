@@ -126,9 +126,9 @@ impl Conditions {
     /// out (retail `TickCharacterCondition`, `TickMonsterCondition`).
     pub fn age(&mut self, ticks: u32) {
         self.0.retain_mut(|(_, lasting)| match lasting {
-            Lasting::Rounds(left) if u32::from(*left) <= ticks => false,
+            Lasting::Rounds(left) if *left <= ticks => false,
             Lasting::Rounds(left) => {
-                *left -= ticks as u16;
+                *left -= ticks;
                 true
             }
             Lasting::Indefinite => true,
@@ -191,16 +191,16 @@ pub fn tire(stamina: &mut u32, conditions: &mut Conditions, amount: u32) -> u32 
 /// above 9. What it gave.
 pub fn rest(stamina: &mut u32, conditions: &mut Conditions, amount: u32, maximum: u32) -> u32 {
     let before = *stamina;
-    *stamina = stamina.saturating_add(amount).min(maximum);
+    *stamina = (*stamina + amount).min(maximum);
     conditions.come_round(*stamina);
-    stamina.saturating_sub(before)
+    (*stamina).max(before) - before
 }
 
 /// How long a condition lasts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lasting {
     /// Combat rounds, which are also the 120-second aging ticks outside it.
-    Rounds(u16),
+    Rounds(u32),
     /// Until something lifts it, like exhaustion until stamina returns.
     Indefinite,
 }
@@ -215,7 +215,7 @@ const SKILL_AVAILABILITY: [u16; 28] = [
 
 /// A playable race's base attributes (retail `g_race_base_attributes`);
 /// the five monster races have none.
-fn race_attributes(race: Race) -> Option<EnumMap<Attribute, u8>> {
+fn race_attributes(race: Race) -> Option<EnumMap<Attribute, u32>> {
     let attributes = match race {
         Race::Human => [45, 45, 45, 45, 45, 45, 45],
         Race::Elf => [35, 50, 50, 35, 50, 45, 40],
@@ -236,9 +236,9 @@ fn race_attributes(race: Race) -> Option<EnumMap<Attribute, u8>> {
 /// What a profession asks and gives (retail `g_profession_table`).
 struct ProfessionRow {
     /// Attribute minimums; 0 for none.
-    minimums: EnumMap<Attribute, u8>,
+    minimums: EnumMap<Attribute, u32>,
     hp_factor: f32,
-    experience: u32,
+    experience: u64,
     bonus_skill: Skill,
     skills: &'static [Skill],
     /// Weight of its levels in a hand's physical score.
@@ -249,9 +249,9 @@ fn profession_row(profession: Profession) -> ProfessionRow {
     use Profession::*;
     use Skill::*;
     let (minimums, hp_factor, experience, bonus_skill, skills, physical): (
-        [u8; 7],
+        [u32; 7],
         f32,
-        u32,
+        _,
         Skill,
         &'static [Skill],
         i32,
@@ -485,7 +485,7 @@ fn load_band(weight: u32, capacity: u32) -> Load {
 /// A pool's value once its maximum moves from `old` to `new`: it moves by
 /// as much, within 0 and the new maximum.
 pub fn resized(current: u32, old: u32, new: u32) -> u32 {
-    current.saturating_add(new.saturating_sub(old)).saturating_sub(old.saturating_sub(new)).min(new)
+    (current as i64 + new as i64 - old as i64).clamp(0, new as i64) as u32
 }
 
 /// What a lethal blow to a member needs, should she cheat death: the fight
@@ -527,12 +527,12 @@ pub struct Character {
     pub original_profession: Profession,
     /// Levels gained in each profession; the total level is their sum.
     pub profession_levels: EnumMap<Profession, u8>,
-    pub experience: u32,
+    pub experience: u64,
     /// The threshold actually passed, retaining the prices of earlier professions.
-    pub experience_previous_goal: u32,
-    pub attributes: EnumMap<Attribute, u8>,
+    pub experience_previous_goal: u64,
+    pub attributes: EnumMap<Attribute, u32>,
     /// Points invested per skill.
-    pub skill_points: EnumMap<Skill, u8>,
+    pub skill_points: EnumMap<Skill, u32>,
     /// Unspent spell picks carried forward to later character advancement.
     pub spell_picks: progression::SpellPicks,
     /// Successful practice towards each skill's next point (retail
@@ -602,14 +602,14 @@ impl Character {
         self.skill_points = EnumMap::default();
         let share = 60 / (1 + row.skills.len() as u32);
         for &skill in row.skills.iter().chain(std::iter::once(&row.bonus_skill)) {
-            self.skill_points[skill] = (self.skill_base(skill) * share / 100) as u8;
+            self.skill_points[skill] = self.skill_base(skill) * share / 100;
         }
     }
 
     /// The attribute without enchantments, within retail's 1..=125; its
     /// [`CharacterStats::attribute`] adds them.
     fn base_attribute(&self, attribute: Attribute) -> u32 {
-        u32::from(self.attributes[attribute]).clamp(1, 125)
+        self.attributes[attribute].clamp(1, 125)
     }
 
     /// Whether retail currently permits this character to use a skill.
@@ -666,7 +666,7 @@ impl Character {
         }
         let mut improved = false;
         for _ in 0..usage {
-            let points = u32::from(self.skill_points[skill]);
+            let points = self.skill_points[skill];
             if points >= 100 {
                 break;
             }
@@ -755,13 +755,13 @@ impl Character {
     /// The average of a skill's governing attributes' bases.
     fn skill_base(&self, skill: Skill) -> u32 {
         let (a, b) = governing(skill);
-        (u32::from(self.attributes[a]) + u32::from(self.attributes[b])) / 2
+        (self.attributes[a] + self.attributes[b]) / 2
     }
 
     /// Effective skill level: the points, plus a quarter (at least one) for
     /// the profession's bonus skill.
     pub fn skill(&self, skill: Skill) -> u32 {
-        let points = u32::from(self.skill_points[skill]);
+        let points = self.skill_points[skill];
         let bonus = if profession_row(self.profession).bonus_skill == skill {
             (points * 25 / 100).max(1)
         } else {
@@ -778,16 +778,16 @@ impl Character {
             .sum()
     }
 
-    /// AwardPartyExperience saturates instead of wrapping at the XP limit.
+    /// Add earned experience to the character.
     pub fn award_experience(&mut self, amount: u32) {
-        self.experience = self.experience.saturating_add(amount);
+        self.experience += amount as u64;
     }
 
     /// The passed threshold plus this profession's next increment: doubling
     /// to level 10, then 20% growth. Prior professions keep their actual cost.
-    pub fn experience_goal(&self) -> u32 {
+    pub fn experience_goal(&self) -> u64 {
         self.experience_previous_goal
-            .saturating_add(progression::experience_increment(self.profession, self.level()))
+            + progression::experience_increment(self.profession, self.level())
     }
 
     /// Whether the character may use an item (retail `CanCharacterUseItem`):
@@ -864,7 +864,7 @@ impl CharacterStats<'_> {
                 vitality * profession_row(profession).hp_factor * levels as f32
             })
             .sum();
-        (total.round() as u32).saturating_sub(self.hp_drained).max(1)
+        (total.round() as i64 - self.hp_drained as i64).max(1) as u32
     }
     /// `round((STR + PIE + VIT) / 3 × (0.1·level + 2))`.
     pub fn max_stamina(&self) -> u32 {
@@ -872,8 +872,9 @@ impl CharacterStats<'_> {
             .map(|a| self.attribute(a))
             .iter()
             .sum::<u32>() as f32;
-        ((sum / 3.0 * (0.1 * f32::from(self.level()) + 2.0)).round() as u32)
-            .saturating_sub(self.stamina_drained)
+        ((sum / 3.0 * (0.1 * self.level() as f32 + 2.0)).round() as i64
+            - self.stamina_drained as i64)
+            .max(0) as u32
     }
     /// Tenths of a pound: `(VIT + 2·STR) × 12`, × 8 for a Faerie.
     pub fn capacity(&self) -> u32 {
@@ -998,7 +999,7 @@ impl Vitals {
     /// The caller counts the poison's duration down.
     pub fn weaken_poison(&mut self, ticks: u32, rng: &mut GameRng) {
         let left = match self.conditions.lasting(Condition::Poisoned) {
-            Some(Lasting::Rounds(left)) => Some(u32::from(left)),
+            Some(Lasting::Rounds(left)) => Some(left),
             _ => None,
         };
         if let Some(left) = left.filter(|&left| left > ticks) {
@@ -1068,15 +1069,15 @@ impl Vitals {
         }
         let rounds = match self.conditions.lasting(Condition::Unconscious) {
             None => 0,
-            Some(Lasting::Rounds(rounds)) => u32::from(rounds),
+            Some(Lasting::Rounds(rounds)) => rounds,
             Some(Lasting::Indefinite) => return false,
         };
         if rounds >= 7 {
             return false;
         }
-        let stint = (rounds + 7).saturating_sub(profile.scale_by_profession(5.0) as u32);
+        let stint = (rounds as i32 + 7 - profile.scale_by_profession(5.0) as i32).max(0);
         if stint > 0 {
-            self.inflict(Condition::Unconscious, Lasting::Rounds(stint as u16));
+            self.inflict(Condition::Unconscious, Lasting::Rounds(stint as u32));
         }
         let maximum = self.maxima(profile).0;
         self.hp = match fate.fight {
@@ -1108,9 +1109,9 @@ impl Vitals {
         }
         self.spend_stamina(amount * 2 / 3);
         let (hp, before) = (self.hp, self.maxima(profile));
-        profile.hp_drained = profile.hp_drained.saturating_add(amount);
+        profile.hp_drained += amount;
         self.resize(profile, before, Some(fate));
-        let lost = hp.saturating_sub(self.hp);
+        let lost = hp.max(self.hp) - self.hp;
         if !self.conditions.has(Condition::Drained) {
             self.inflict(Condition::Drained, Lasting::Indefinite);
         }
@@ -1337,7 +1338,7 @@ mod tests {
         assert_eq!(fighter.experience_goal(), 1000);
         // Profession and bonus skills are seeded; others are not.
         let close_combat = fighter.skill_points[Skill::CloseCombat];
-        assert!(fighter.skill(Skill::CloseCombat) > close_combat.into());
+        assert!(fighter.skill(Skill::CloseCombat) > close_combat);
         assert!(fighter.skill_points[Skill::Sword] > 0);
         assert_eq!(fighter.skill_points[Skill::LocksAndTraps], 0);
     }
@@ -1511,6 +1512,10 @@ mod tests {
             ])
         );
         mage.age_conditions(1, &mut crate::game::rng::GameRng::default());
+        mage.inflict(Condition::Asleep, Lasting::Rounds(70_000));
+        mage.conditions.age(69_999);
+        assert_eq!(mage.conditions.lasting(Condition::Asleep), Some(Lasting::Rounds(1)));
+        mage.conditions.age(1);
         assert_eq!(
             mage.conditions,
             Conditions::from([(Condition::Unconscious, Lasting::Indefinite)])

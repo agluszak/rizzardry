@@ -114,12 +114,12 @@ fn move_particles(
             commands.entity(entity).despawn();
             continue;
         };
-        let age = time.elapsed().saturating_sub(particle.born);
+        let age = time.elapsed() - particle.born;
         if expired(&config.lifetime, age) {
             commands.entity(entity).despawn();
             continue;
         }
-        let elapsed = time.elapsed().saturating_sub(particle.integrated).as_secs_f32();
+        let elapsed = (time.elapsed() - particle.integrated).as_secs_f32();
         particle.integrated = time.elapsed();
         particle.velocity += config.acceleration * elapsed;
         let next = transform.translation + particle.velocity * elapsed;
@@ -163,16 +163,14 @@ fn emit_particles(
             emission.last = Some(now);
             continue;
         };
-        let elapsed = now.saturating_sub(last);
-        if elapsed < config.interval {
+        let elapsed = now - last;
+        if elapsed.is_zero() || elapsed < config.interval {
             continue;
         }
         let transform = emitter_pose(config, eye);
         let due = match config.emission {
             ParticleEmission::Single => 1,
-            _ => {
-                ((elapsed.as_nanos().saturating_sub(1)) / config.interval.as_nanos().max(1)) as u64
-            }
+            _ => ((elapsed.as_nanos() - 1) / config.interval.as_nanos().max(1)) as u64,
         };
         let mut existing: Vec<_> = produced
             .into_iter()
@@ -189,9 +187,9 @@ fn emit_particles(
                 ParticleEmission::CatchUp { .. } => emission.last.unwrap() + config.interval,
                 ParticleEmission::Single | ParticleEmission::None => now,
             };
-            if expired(&config.lifetime, now.saturating_sub(born)) {
+            if expired(&config.lifetime, now - born) {
                 emission.last = Some(born);
-                emission.emitted = emission.emitted.saturating_add(1);
+                emission.emitted += 1;
                 continue;
             }
             if existing.len() >= config.capacity as usize {
@@ -237,7 +235,7 @@ fn emit_particles(
                         + (maximum - minimum)
                             * Vec3::new(rng.random(), rng.random(), rng.random()));
                 emission.last = Some(born);
-                now.saturating_sub(born).as_secs_f32()
+                (now - born).as_secs_f32()
             } else {
                 emission.last = Some(now);
                 0.0
@@ -256,7 +254,7 @@ fn emit_particles(
                     ChildOf(entity),
                 ))
                 .id();
-            emission.emitted = emission.emitted.saturating_add(1);
+            emission.emitted += 1;
             existing.push((born, particle));
         }
         // The final birth spends it in the same update (retail
@@ -330,13 +328,13 @@ fn animate_particles(
             continue;
         };
         let Some(config) = config(&definitions, parent, emitter) else { continue };
-        let age = time.elapsed().saturating_sub(particle.born);
+        let age = time.elapsed() - particle.born;
         let fade = if age.is_zero() {
             1.0
         } else {
             match config.lifetime {
                 ParticleLifetime::Timed(life) => {
-                    (life.saturating_sub(age).as_secs_f32() / 0.5).min(1.0)
+                    ((life.as_secs_f64() - age.as_secs_f64()) * 2.0).clamp(0.0, 1.0) as f32
                 }
                 _ => 1.0,
             }

@@ -8,7 +8,7 @@ use bevy::prelude::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Enchantment {
     pub spell: SpellId,
-    pub power: u8,
+    pub power: u32,
     pub boost: u32,
     pub turns: u32,
     /// Guardian Angel's remaining absorption, rolled once on acceptance.
@@ -20,10 +20,9 @@ impl Enchantment {
         amount + amount * self.boost / 100
     }
 
-    /// A party or combat slot's figure raised by the boost, rounded and kept
-    /// to a byte (retail `AdjustByteByPercent`).
+    /// Raise the effect by its boost and round; stronger effects never wrap to zero.
     pub fn adjusted(&self, amount: u32) -> u32 {
-        (((self.boost + 100) * u32::from(amount as u8) + 50) / 100) as u8 as u32
+        ((self.boost + 100) * amount + 50) / 100
     }
 }
 
@@ -83,17 +82,17 @@ impl Enchantments {
     }
 
     /// A character's effect is replaced only by a stronger one.
-    pub fn accepts(&self, spell: SpellId, power: u8) -> bool {
+    pub fn accepts(&self, spell: SpellId, power: u32) -> bool {
         self.admits(spell, power, false)
     }
 
     /// A monster's effect is also refreshed at equal power (retail
     /// `ApplyMonsterCondition`).
-    pub fn monster_accepts(&self, spell: SpellId, power: u8) -> bool {
+    pub fn monster_accepts(&self, spell: SpellId, power: u32) -> bool {
         self.admits(spell, power, true)
     }
 
-    fn admits(&self, spell: SpellId, power: u8, equal: bool) -> bool {
+    fn admits(&self, spell: SpellId, power: u32, equal: bool) -> bool {
         !personal(spell)
             || self.get(spell).is_none_or(|e| power > e.power || equal && power == e.power)
     }
@@ -132,7 +131,7 @@ impl Enchantments {
     pub fn age(&mut self, ticks: u32) {
         self.0.retain_mut(|e| {
             if e.turns < 9999 {
-                e.turns = e.turns.saturating_sub(ticks);
+                e.turns -= ticks.min(e.turns);
             }
             e.turns > 0
         });
@@ -163,28 +162,28 @@ impl Enchantments {
     pub fn armour(&self) -> i32 {
         // RebuildPartyEffectBlock/RebuildMonsterDerivedStats subtract the
         // offensive slot's raw amount; Power Cast affects its duration.
-        let melted = self.get(SpellId::ARMORMELT).map_or(0, |effect| i32::from(effect.power));
+        let melted = self.get(SpellId::ARMORMELT).map_or(0, |effect| effect.power as i32);
         self.get(crate::content::spells::SpellId::BLESS).map_or(0, |e| e.adjusted(2)) as i32
             + self
                 .get(crate::content::spells::SpellId::ARMORPLATE)
-                .map_or(0, |e| e.adjusted(u32::from(e.power).div_ceil(2))) as i32
+                .map_or(0, |e| e.adjusted(e.power.div_ceil(2))) as i32
             + self
                 .get(crate::content::spells::SpellId::BODY_OF_STONE)
-                .map_or(0, |e| e.scaled(u32::from(e.power))) as i32
+                .map_or(0, |e| e.scaled(e.power)) as i32
             - melted
     }
 
     /// Chameleon removes ten sight percentage points per adjusted power.
     /// The byte is read by retail monster sight only outside a fight.
     pub fn concealment(&self) -> u32 {
-        self.get(SpellId::CHAMELEON).map_or(0, |effect| effect.adjusted(u32::from(effect.power)))
+        self.get(SpellId::CHAMELEON).map_or(0, |effect| effect.adjusted(effect.power))
     }
 
     pub fn hit_bonus(&self) -> i32 {
         self.get(crate::content::spells::SpellId::BLESS).map_or(0, |e| e.adjusted(2)) as i32
             + self
                 .get(crate::content::spells::SpellId::ENCHANTED_BLADE)
-                .map_or(0, |e| e.adjusted(u32::from(e.power).div_ceil(2))) as i32
+                .map_or(0, |e| e.adjusted(e.power.div_ceil(2))) as i32
     }
 
     pub fn resistance(&self, realm: Realm) -> i32 {
@@ -194,10 +193,10 @@ impl Enchantments {
             crate::content::spells::SpellId::ELEMENT_SHIELD
         };
         self.get(crate::content::spells::SpellId::MAGIC_SCREEN)
-            .map_or(0, |e| e.adjusted(u32::from(e.power) * 4 + 7)) as i32
+            .map_or(0, |e| e.adjusted(e.power * 4 + 7)) as i32
             + self.get(shield).map_or(0, |e| {
                 e.adjusted(
-                    u32::from(e.power)
+                    e.power
                         * if shield == crate::content::spells::SpellId::SOUL_SHIELD {
                             10
                         } else {
@@ -209,7 +208,7 @@ impl Enchantments {
 
     pub fn missile_deflection(&self) -> u32 {
         self.get(crate::content::spells::SpellId::MISSILE_SHIELD)
-            .map_or(0, |e| e.adjusted((u32::from(e.power) + 5) * 5))
+            .map_or(0, |e| e.adjusted((e.power + 5) * 5))
     }
 
     pub fn deflects(
@@ -230,18 +229,17 @@ impl Enchantments {
         let Some(haste) = self.0.iter_mut().find(|e| e.spell == SpellId::HASTE) else {
             return turns;
         };
-        let remaining = turns.saturating_sub(haste.turns);
-        haste.turns = haste.turns.saturating_sub(turns);
+        let cancelled = turns.min(haste.turns);
+        haste.turns -= cancelled;
         self.0.retain(|e| e.turns > 0);
-        remaining
+        turns - cancelled
     }
 
     pub fn attribute_bonus(&self, attribute: crate::content::characters::Attribute) -> u32 {
-        self.get(crate::content::spells::SpellId::SUPERMAN)
-            .map_or(0, |s| s.scaled(u32::from(s.power) * 5))
+        self.get(crate::content::spells::SpellId::SUPERMAN).map_or(0, |s| s.scaled(s.power * 5))
             + if attribute == crate::content::characters::Attribute::Speed {
                 self.get(crate::content::spells::SpellId::HASTE)
-                    .map_or(0, |s| s.scaled(u32::from(s.power) * 10))
+                    .map_or(0, |s| s.scaled(s.power * 10))
             } else {
                 0
             }
@@ -249,7 +247,7 @@ impl Enchantments {
 
     pub fn damage_reduction(&self) -> u32 {
         self.get(crate::content::spells::SpellId::BODY_OF_STONE)
-            .map_or(0, |e| e.scaled(u32::from(e.power) * 8))
+            .map_or(0, |e| e.scaled(e.power * 8))
             .min(100)
     }
 }
@@ -259,9 +257,9 @@ impl Enchantments {
 /// (retail `InflictCharacterCondition`, `InflictMonsterCondition`).
 pub fn slow(conditions: &mut Conditions, enchantments: &mut Enchantments, lasting: Lasting) {
     let lasting = match lasting {
-        Lasting::Rounds(turns) => match enchantments.counter_slow(u32::from(turns)) {
+        Lasting::Rounds(turns) => match enchantments.counter_slow(turns) {
             0 => return,
-            left => Lasting::Rounds(left as u16),
+            left => Lasting::Rounds(left),
         },
         Lasting::Indefinite => {
             enchantments.0.retain(|e| e.spell != SpellId::HASTE);
@@ -283,12 +281,12 @@ pub fn haste(
         None => effect.turns,
         Some(Lasting::Indefinite) => 0,
         Some(Lasting::Rounds(left)) => {
-            let remaining = effect.turns.saturating_sub(u32::from(*left));
-            *left = u32::from(*left).saturating_sub(effect.turns) as u16;
+            let cancelled = effect.turns.min(*left);
+            *left -= cancelled;
             if *left == 0 {
                 conditions.lift(Condition::Slowed);
             }
-            remaining
+            effect.turns - cancelled
         }
     };
     let effect = Enchantment { turns, ..effect };
@@ -299,7 +297,7 @@ pub fn haste(
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn effect(spell: SpellId, power: u8, turns: u32) -> Enchantment {
+    fn effect(spell: SpellId, power: u32, turns: u32) -> Enchantment {
         Enchantment { spell, power, turns, boost: 0, absorption: 12 }
     }
     #[test]
@@ -335,6 +333,8 @@ mod tests {
 
     #[test]
     fn actors_require_stronger_power_but_party_slots_replace() {
+        let boosted = Enchantment { boost: 100, ..effect(SpellId::ARMORPLATE, 7, 10) };
+        assert_eq!(boosted.adjusted(200), 400);
         let mut effects = Enchantments::default();
         assert!(effects.apply(effect(crate::content::spells::SpellId::GUARDIAN_ANGEL, 3, 4)));
         assert_eq!(effects.absorb(5), 0);

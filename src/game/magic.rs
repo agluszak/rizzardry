@@ -143,12 +143,12 @@ impl SpellPoints {
     }
 
     /// The highest power the realm's points pay for, 0 if none.
-    pub fn affordable_power(&self, spell: &SpellDefinition, maximum: &EnumMap<Realm, u32>) -> u8 {
+    pub fn affordable_power(&self, spell: &SpellDefinition, maximum: &EnumMap<Realm, u32>) -> u32 {
         let Some(realm) = spell.realm else { return 0 };
         if spell.cost == 0 {
             return MAX_POWER;
         }
-        (self.available(realm, maximum) / spell.cost).min(u32::from(MAX_POWER)) as u8
+        (self.available(realm, maximum) / spell.cost).min(MAX_POWER)
     }
 
     /// Whether any realm is short of its maximum.
@@ -308,15 +308,15 @@ pub fn can_learn(character: &Character, spell: &SpellDefinition) -> bool {
         return false;
     }
     let caster = total_caster_level(character, spell.books);
-    let by_level = (1..=7u8).filter(|&l| min_caster_level(l) <= caster).max().unwrap_or(0);
-    let realm_points = spell.realm.map_or(0, |r| u32::from(character.skill_points[r.skill()]));
+    let by_level = (1..=7).filter(|&l| min_caster_level(l) <= caster).max().unwrap_or(0);
+    let realm_points = spell.realm.map_or(0, |r| character.skill_points[r.skill()]);
     let book = [Spellbook::Wizardry, Spellbook::Divinity, Spellbook::Alchemy, Spellbook::Psionics]
         .into_iter()
         .filter(|book| spell.books.contains(*book))
         .max_by_key(|book| character.skill_points[book_skill(*book)]);
     let best = book.map_or(0, |book| character.skill(book_skill(book)));
     let by_skill = (realm_points / 10 + best) / 15 + 1;
-    u32::from(spell.level) <= u32::from(by_level).min(by_skill)
+    spell.level <= by_level.min(by_skill)
 }
 
 /// How many first spells a new character picks: two for the pure casters,
@@ -371,23 +371,23 @@ const CAST_THRESHOLDS: [u32; 17] =
 
 /// Retail `GetSpellFailureChance`: the skill a spell's difficulty band
 /// needs at `power`, and up to 70% failure for falling short of it.
-pub(crate) fn spell_failure(skill: u32, spell: &SpellDefinition, power: u8) -> u32 {
-    let band = (spell.cost / 2 + u32::from(spell.level)).min(16) as usize;
-    let need = CAST_THRESHOLDS[band] * u32::from(power) / 7;
+pub(crate) fn spell_failure(skill: u32, spell: &SpellDefinition, power: u32) -> u32 {
+    let band = (spell.cost / 2 + spell.level).min(16) as usize;
+    let need = CAST_THRESHOLDS[band] * power / 7;
     if skill < need { ((need - skill) * 70 / need.max(1)).min(100) } else { 0 }
 }
 
 /// The percent chance a learned cast fails (retail `ExecuteCharacterSpellCast`),
 /// before combat pace: the casting skill's shortfall, and the caster levels the
 /// spell's level and power call for.
-pub fn fail_chance(character: &Character, spell: &SpellDefinition, power: u8) -> u32 {
-    let mut chance = spell_failure(casting_skill(character, spell), spell, power) as i32;
+pub fn fail_chance(character: &Character, spell: &SpellDefinition, power: u32) -> u32 {
+    let mut chance = spell_failure(casting_skill(character, spell), spell, power);
     let caster = total_caster_level(character, spell.books);
-    let short = min_caster_level(spell.level) - caster - 1 + i32::from(power);
+    let short = min_caster_level(spell.level) - caster - 1 + power as i32;
     if short > 0 {
-        chance += i32::from(spell.level) * short;
+        chance += spell.level * short as u32;
     }
-    chance.clamp(0, 100) as u32
+    chance.min(100)
 }
 
 /// Retail's Power Cast bonus: `(level >> 2) + 1` while the skill is available.
@@ -403,14 +403,14 @@ fn power_cast(character: &Character) -> u32 {
 /// raised by (retail `CastSpellFromSource`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Strength {
-    pub power: u8,
+    pub power: u32,
     pub against: u32,
     pub boost: u32,
 }
 
 impl Strength {
     /// A character's cast: by their total caster level, raised by Power Cast.
-    pub fn of(character: &Character, spell: &SpellDefinition, power: u8) -> Self {
+    pub fn of(character: &Character, spell: &SpellDefinition, power: u32) -> Self {
         let caster = total_caster_level(character, spell.books).max(0) as u32;
         Strength::at(caster, spell, power, power_cast(character))
     }
@@ -418,19 +418,16 @@ impl Strength {
     /// Retail `GetSpellDifficulty`: `figure/2 + power + (cost/2 + level)/2`,
     /// three less against all enemies, less the death spells' floors, then
     /// raised by half the boost.
-    pub fn at(figure: u32, spell: &SpellDefinition, power: u8, boost: u32) -> Self {
-        let mut against =
-            figure / 2 + u32::from(power) + (spell.cost / 2 + u32::from(spell.level)) / 2;
-        if spell.targeting == Targeting::AllEnemies {
-            against = against.saturating_sub(3);
-        }
+    pub fn at(figure: u32, spell: &SpellDefinition, power: u32, boost: u32) -> Self {
+        let mut against = figure / 2 + power + (spell.cost / 2 + spell.level) / 2;
         let floor = match spell.id {
             SpellId::INSTANT_DEATH => 2,
             SpellId::QUICKSAND => 4,
             SpellId::ASPHYXIATION | SpellId::DEATH_CLOUD | SpellId::DEATH_WISH => 6,
             _ => 0,
         };
-        against = against.saturating_sub(floor);
+        let penalty = floor + if spell.targeting == Targeting::AllEnemies { 3 } else { 0 };
+        against = against.max(penalty) - penalty;
         against += against * (boost / 2) / 100;
         Strength { power, against, boost }
     }
@@ -477,8 +474,8 @@ pub fn roll(
 }
 
 /// Retail fatigue for a learned cast: the spell's level plus its power.
-fn cast_fatigue(spell: &SpellDefinition, power: u8) -> u32 {
-    u32::from(spell.level) + u32::from(power)
+fn cast_fatigue(spell: &SpellDefinition, power: u32) -> u32 {
+    spell.level + power
 }
 
 pub struct MagicPlugin;
@@ -747,7 +744,7 @@ pub fn deliver_spells(
             if arrival <= time.delta() {
                 due.push((arrival, reflection.launched, None, reflection));
             } else {
-                reflection.arrives.tick(time.delta().saturating_sub(at));
+                reflection.arrives.tick(time.delta() - at);
                 let level = context.level();
                 context.flight_order.launch(&mut commands, vec![reflection], level);
             }

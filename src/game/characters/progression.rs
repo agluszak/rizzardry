@@ -12,41 +12,41 @@ use std::collections::BTreeSet;
 /// are unrestricted, matching skill_costs and magic_bonus_pool in retail.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SpellPicks {
-    books: [u16; 4],
-    general: u16,
+    books: EnumMap<Spellbook, usize>,
+    general: usize,
 }
 impl SpellPicks {
-    pub fn total(&self) -> u32 {
-        self.books.iter().map(|&n| u32::from(n)).sum::<u32>() + u32::from(self.general)
+    pub fn total(&self) -> usize {
+        self.books.values().sum::<usize>() + self.general
     }
-    pub(super) fn grant(&mut self, profession: Profession, amount: u16) {
+    pub(super) fn grant(&mut self, profession: Profession, amount: usize) {
         if profession == Profession::Bishop {
-            self.general = self.general.saturating_add(amount);
+            self.general += amount;
         } else if let Some(book) = magic::profession_books(profession).iter().next() {
-            self.books[book as usize] = self.books[book as usize].saturating_add(amount);
+            self.books[book] += amount;
         }
     }
-    fn available(&self, c: &Character) -> u32 {
+    fn available(&self, c: &Character) -> usize {
         if magic::caster_level(c, c.profession) < 1 {
             return 0;
         }
-        u32::from(self.general)
+        self.general
             + magic::profession_books(c.profession)
                 .iter()
-                .map(|book| u32::from(self.books[book as usize]))
-                .sum::<u32>()
+                .map(|book| self.books[book])
+                .sum::<usize>()
     }
     fn spend(&mut self, c: &Character, books: EnumSet<Spellbook>) -> bool {
         let active = magic::profession_books(c.profession);
-        if let Some(book) = (active & books).iter().find(|&b| self.books[b as usize] > 0) {
-            self.books[book as usize] -= 1;
+        if let Some(book) = (active & books).iter().find(|&b| self.books[b] > 0) {
+            self.books[book] -= 1;
         } else if self.general > 0 {
             self.general -= 1;
         } else if c.profession == Profession::Bishop {
-            let Some(book) = active.iter().find(|&b| self.books[b as usize] > 0) else {
+            let Some(book) = active.iter().find(|&b| self.books[b] > 0) else {
                 return false;
             };
-            self.books[book as usize] -= 1;
+            self.books[book] -= 1;
         } else {
             return false;
         }
@@ -56,14 +56,14 @@ impl SpellPicks {
 
 /// CalcXPGoal adds the current profession's increment to the threshold
 /// actually passed; switching profession never reprices previous levels.
-pub(super) fn experience_increment(profession: Profession, level: u8) -> u32 {
+pub(super) fn experience_increment(profession: Profession, level: u8) -> u64 {
     let weight = profession_row(profession).experience;
     if level == 1 {
         return weight;
     }
-    let mut value = weight << (u32::from(level.min(10)) - 2);
+    let mut value = weight << (level.min(10) - 2);
     for _ in 10..level {
-        value = (u64::from(value) * 12 / 10).min(u64::from(u32::MAX)) as u32;
+        value = value * 12 / 10;
     }
     value
 }
@@ -79,8 +79,8 @@ pub struct Advancement {
     original: Character,
     known: LearnedSpells,
     profession: Profession,
-    attributes: EnumMap<Attribute, u8>,
-    skills: EnumMap<Skill, u8>,
+    attributes: EnumMap<Attribute, u32>,
+    skills: EnumMap<Skill, u32>,
     spells: BTreeSet<SpellId>,
 }
 /// An [`Advancement`] worked out once ([`Advancement::evaluate`]): a
@@ -89,7 +89,7 @@ pub struct Evaluation {
     baseline: Character,
     pub preview: Character,
     learned: LearnedSpells,
-    attributes_left: u8,
+    attributes_left: u32,
 }
 
 impl Advancement {
@@ -116,8 +116,8 @@ impl Advancement {
         }
         let minimums = profession_row(profession).minimums;
         let deficits: Vec<_> =
-            minimums.iter().map(|(a, &n)| n.saturating_sub(self.original.attributes[a])).collect();
-        deficits.iter().all(|&n| n <= 3) && deficits.iter().map(|&n| u16::from(n)).sum::<u16>() <= 6
+            minimums.iter().map(|(a, &n)| n - n.min(self.original.attributes[a])).collect();
+        deficits.iter().all(|&n| n <= 3) && deficits.iter().sum::<u32>() <= 6
     }
     pub fn choose_profession(&mut self, profession: Profession) -> bool {
         if !self.eligible_profession(profession) {
@@ -181,19 +181,19 @@ impl Advancement {
             preview,
         }
     }
-    fn attributes_left(&self, preview: &Character) -> u8 {
-        6 - preview.attributes.iter().map(|(a, &n)| n - self.original.attributes[a]).sum::<u8>()
+    fn attributes_left(&self, preview: &Character) -> u32 {
+        6 - preview.attributes.iter().map(|(a, &n)| n - self.original.attributes[a]).sum::<u32>()
     }
-    pub fn attribute_remaining(&self) -> u8 {
+    pub fn attribute_remaining(&self) -> u32 {
         self.attributes_left(&self.preview())
     }
-    pub fn skill_remaining(&self) -> u8 {
-        9 - self.skills.values().sum::<u8>()
+    pub fn skill_remaining(&self) -> u32 {
+        9 - self.skills.values().sum::<u32>()
     }
-    pub fn allocated_attribute(&self, a: Attribute) -> u8 {
+    pub fn allocated_attribute(&self, a: Attribute) -> u32 {
         self.attributes[a]
     }
-    pub fn allocated_skill(&self, s: Skill) -> u8 {
+    pub fn allocated_skill(&self, s: Skill) -> u32 {
         self.skills[s]
     }
     pub fn can_adjust_attribute(&self, a: Attribute, up: bool) -> bool {
@@ -300,7 +300,7 @@ impl Advancement {
         }
         Some(picks)
     }
-    pub fn spell_remaining(&self, catalog: &SpellCatalog) -> u32 {
+    pub fn spell_remaining(&self, catalog: &SpellCatalog) -> usize {
         self.remaining_picks(catalog).map_or(0, |p| p.available(&self.baseline()))
     }
     pub fn toggle_spell(&mut self, id: SpellId, catalog: &SpellCatalog) -> bool {

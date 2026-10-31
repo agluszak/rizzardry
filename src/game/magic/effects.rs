@@ -603,7 +603,7 @@ impl Field<'_, '_, '_, '_, '_, '_, '_> {
 /// dice count times power, then raised by the boost percent.
 pub(crate) fn magnitude(rng: &mut GameRng, dice: Option<Dice>, strength: Strength) -> u32 {
     let Some(dice) = dice else { return 0 };
-    let count = (u32::from(dice.count) * u32::from(strength.power)).min(255) as u8;
+    let count = dice.count * strength.power as i32;
     let rolled = rng.roll(Dice { count, ..dice });
     rolled + rolled * strength.boost / 100
 }
@@ -656,7 +656,7 @@ fn immune(kind: MonsterKind, condition: Condition) -> bool {
 
 /// Rounds a condition spell inflicts (retail `RollEffectDuration`).
 pub(super) fn duration(rng: &mut GameRng, spell: &SpellDefinition, strength: Strength) -> u32 {
-    let base = spell.duration_per_power * i32::from(strength.power) + spell.duration_base;
+    let base = spell.duration_per_power * strength.power as i32 + spell.duration_base;
     if base == 9999 {
         return 9999;
     }
@@ -953,7 +953,7 @@ fn afflict(
         0 => return Some(Effect::Resisted { victim }),
         _ if rounds.is_none() => Lasting::Indefinite,
         1 => Lasting::Rounds(2),
-        rounds => Lasting::Rounds(rounds.min(u32::from(u16::MAX)) as u16),
+        rounds => Lasting::Rounds(rounds),
     };
     let Some(condition) = condition else { return kill(rng, world, victim) };
     inflict_on(world, victim, (condition, argument), lasting)?;
@@ -988,11 +988,11 @@ const INDEFINITE: u32 = 9999;
 /// Rounds, or an amount, a blow's effect rolls (retail `RollEffectDuration`
 /// on an empty definition, then `count`d2 + `base` and one more when that
 /// came to under two).
-fn blow_roll(rng: &mut GameRng, count: u32, sides: u8, base: u32) -> u32 {
+fn blow_roll(rng: &mut GameRng, count: u32, sides: i32, base: u32) -> u32 {
     if rng.below(4) == 1 {
         return 2;
     }
-    let dice = Dice { count: count.min(255) as u8, sides, base: base.min(i16::MAX as u32) as i16 };
+    let dice = Dice { count: count as i32, sides, base: base as i32 };
     rng.roll(dice) + 1
 }
 
@@ -1015,7 +1015,7 @@ pub fn blow(
         if target(world, victim, Realm::Fire, None).dead {
             break;
         }
-        if chance == 0 || rng.below(100) >= u32::from(chance) {
+        if chance == 0 || rng.below(100) >= chance {
             continue;
         }
         let count = power / 3 + 1;
@@ -1030,12 +1030,12 @@ pub fn blow(
             // A poison bites at the weapon's strength (retail
             // `ApplyEffectConditions` passes its magnitude base).
             E::Poison => {
-                let rounds = blow_roll(rng, count * 3, 2, u32::from(effects.strength));
+                let rounds = blow_roll(rng, count * 3, 2, effects.strength);
                 afflict(
                     rng,
                     world,
                     victim,
-                    (Some(Condition::Poisoned), u32::from(effects.strength)),
+                    (Some(Condition::Poisoned), effects.strength),
                     Realm::Water,
                     power,
                     Some(rounds),
@@ -1091,7 +1091,7 @@ fn drain(
     victim: Victim,
     realm: Realm,
     power: u32,
-    (count, sides, base): (u32, u8, u32),
+    (count, sides, base): (u32, i32, u32),
 ) -> Option<u32> {
     let target = target(world, victim, realm, None);
     if target.dead {
@@ -1159,7 +1159,7 @@ fn perish(rng: &mut GameRng, world: &mut Field, victim: Victim) -> Option<Effect
 
 /// The rounds a cure takes off a timed condition: `power²`, boosted.
 fn cure_rounds(strength: Strength) -> u32 {
-    let per = u32::from(strength.power).pow(2);
+    let per = strength.power.pow(2);
     per + per * strength.boost / 100
 }
 
@@ -1179,12 +1179,12 @@ fn cure(
         let Some(lasting) = conditions.lasting_mut(condition) else { continue };
         let gone = match lasting {
             _ if forced => true,
-            Lasting::Rounds(left) if u32::from(*left) <= per => true,
+            Lasting::Rounds(left) if *left <= per => true,
             Lasting::Rounds(left) => {
-                *left -= per as u16;
+                *left -= per;
                 false
             }
-            Lasting::Indefinite => rng.below(100) < u32::from(strength.power) * 15,
+            Lasting::Indefinite => rng.below(100) < strength.power * 15,
         };
         if gone {
             conditions.lift(condition);
@@ -1263,7 +1263,7 @@ pub fn resolve(
         Kind::DestroyConsumables => effects = destroy_consumables(strength, victims, rng, world),
         Kind::DrainMagic => {
             if victims.iter().any(|v| matches!(v, Victim::Member(_))) {
-                let base = u32::from(strength.power) * 50;
+                let base = strength.power * 50;
                 let amount = base + base * strength.boost / 100;
                 // Anti-Magic drains the whole living party, not only captured victims.
                 for &member in world.party {
@@ -1300,7 +1300,7 @@ pub fn resolve(
                 let amount = restore(rng, world, v, Pool::Health, spell.dice, strength)?;
                 Some(Effect::Healed { victim: v, amount })
             });
-            let dice = spell.dice.map(|dice| Dice { count: dice.count.saturating_mul(2), ..dice });
+            let dice = spell.dice.map(|dice| Dice { count: dice.count * 2, ..dice });
             each(&mut |v, rng, world| {
                 let amount = restore(rng, world, v, Pool::Stamina, dice, strength)?;
                 Some(Effect::Refreshed { victim: v, amount })
@@ -1371,7 +1371,7 @@ pub fn resolve(
                 if rounds == 0 || target.immune {
                     return Some(Effect::Resisted { victim: v });
                 }
-                let lasting = Lasting::Rounds(rounds.max(2).min(u32::from(u16::MAX)) as u16);
+                let lasting = Lasting::Rounds(rounds.max(2));
                 inflict_on(world, v, (Condition::Afraid, 0), lasting)?;
                 Some(Effect::Inflicted { victim: v, condition: Condition::Afraid })
             }
@@ -1524,7 +1524,7 @@ fn purify(
     let mut effects = Vec::new();
     let catalog = world.spells;
     // Purify rolls from power alone, rather than its authored duration.
-    let base = u32::from(strength.power) + 1;
+    let base = strength.power + 1;
     let amount = match rng.below(4) {
         0 if base > 1 => base + 1,
         1 if base < 3 => base + 1,
@@ -1538,8 +1538,8 @@ fn purify(
                 if super::enchantments::OFFENSIVE.contains(&slot.spell) {
                     let cloud = &catalog[slot.spell];
                     let removed =
-                        (amount + u32::from(spell.level)).saturating_sub(u32::from(cloud.level));
-                    slot.turns = slot.turns.saturating_sub(removed);
+                        (amount as i64 + spell.level as i64 - cloud.level as i64).max(0) as u32;
+                    slot.turns -= removed.min(slot.turns);
                 }
                 slot.turns > 0
             });
@@ -1568,7 +1568,7 @@ fn destroy_consumables(
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
     let mut totals = [0; 3];
-    let chance = u32::from(strength.power) * 10;
+    let chance = strength.power * 10;
     for &victim in victims {
         let Victim::Member(member) = victim else { continue };
         let (_, _, mut carried, ..) = world.members.get_mut(member).unwrap();
@@ -1705,8 +1705,7 @@ fn enchant(
                 return false;
             }
             let absorption = if spell.id == SpellId::GUARDIAN_ANGEL {
-                let rolled =
-                    spell.dice.map_or(0, |dice| rng.roll(dice)) * u32::from(strength.power);
+                let rolled = spell.dice.map_or(0, |dice| rng.roll(dice)) * strength.power;
                 rolled + rolled * strength.boost / 100
             } else {
                 0
@@ -1846,7 +1845,7 @@ fn restore(
             }
         }
     };
-    let missing = maximum.saturating_sub(current);
+    let missing = maximum - current.min(maximum);
     if missing == 0 {
         return None;
     }
@@ -1990,7 +1989,7 @@ pub(crate) fn pulse_clouds(
                         if turns == 0 {
                             continue;
                         }
-                        let lasting = Lasting::Rounds(turns.max(2).min(u32::from(u16::MAX)) as u16);
+                        let lasting = Lasting::Rounds(turns.max(2));
                         // One duration reduction, followed by three separate saves.
                         for condition in
                             [Condition::Nauseated, Condition::Poisoned, Condition::Unconscious]
@@ -2040,20 +2039,9 @@ pub(crate) fn pulse_clouds(
                 let amount = magnitude(
                     rng,
                     spell.dice,
-                    Strength {
-                        power: effect.power,
-                        boost: 0,
-                        against: u32::from(effect.power) * 3,
-                    },
+                    Strength { power: effect.power, boost: 0, against: effect.power * 3 },
                 );
-                landed.extend(damage(
-                    rng,
-                    world,
-                    victim,
-                    realm,
-                    amount,
-                    u32::from(effect.power) * 3,
-                ));
+                landed.extend(damage(rng, world, victim, realm, amount, effect.power * 3));
             }
             reports.push((spell.id, landed));
         }

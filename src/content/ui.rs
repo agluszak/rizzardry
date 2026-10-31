@@ -140,7 +140,7 @@ fn render_text_spaced(font: &[Frame], text: &str, spacing: u32) -> (u32, u32, Ve
     let line = font.first().map_or(0, |a| (a.height as i32 + a.offset[1] as i32).max(0) as u32);
     let width = text_width(font, text).max(1);
     let rows = text.split('\n').count() as u32;
-    let height = line.max(1) * rows + spacing * rows.saturating_sub(1);
+    let height = line.max(1) * rows + spacing * (rows - 1);
     let mut rgba = vec![0; (width * height * 4) as usize];
     for (row, text) in text.split('\n').enumerate() {
         let mut pen = 0;

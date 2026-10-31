@@ -71,7 +71,7 @@ pub fn read_npcs(data: &[u8]) -> Result<NpcCatalog, LoadError> {
             voice_script: r[0x2ea] != 0,
             stock,
             // One-based; zero carries nothing.
-            item_table: u16::try_from(i32_at(r, 0x64)?).ok().and_then(|id| id.checked_sub(1)),
+            item_table: u16::try_from(i32_at(r, 0x64)?).ok().filter(|&id| id > 0).map(|id| id - 1),
             gold: u32::try_from(i32_at(r, 0x2eb)?).unwrap_or(0),
         });
     }
@@ -92,7 +92,7 @@ fn npc_character(r: &[u8]) -> Result<NpcCharacter, LoadError> {
             .map(T::from_usize)
             .ok_or_else(|| invalid(what))
     }
-    let byte = |value: i32| u8::try_from(value.clamp(0, 255)).unwrap_or(0);
+    let stat = |value: i32| value.clamp(0, 255) as u32;
     let item = |present: u16, id: u16| (present != 0 && id != 0xffff).then_some(ItemId(id));
     let mut equipment = [None; 12];
     for (slot, worn) in equipment.iter_mut().enumerate() {
@@ -106,8 +106,8 @@ fn npc_character(r: &[u8]) -> Result<NpcCharacter, LoadError> {
     for slot in 0..3 {
         // One-based; zero wants nothing.
         let id = u16_at(r, 0x2bb + 2 * slot)?;
-        if let Some(id) = id.checked_sub(1).filter(|&id| id < 0x7fff) {
-            wanted.push(ItemId(id));
+        if (1..=0x7fff).contains(&id) {
+            wanted.push(ItemId(id - 1));
         }
     }
     Ok(NpcCharacter {
@@ -116,12 +116,12 @@ fn npc_character(r: &[u8]) -> Result<NpcCharacter, LoadError> {
         race: index::<Race>(i32_at(r, 0x12c)?, 16, "NPC race")?,
         gender: index::<Gender>(i32::from(r[0x2ba] as i8), 2, "NPC gender")?,
         portrait: usize::try_from(i32_at(r, 0x130)?).map_err(|_| invalid("NPC portrait"))?,
-        level: byte(i32_at(r, 0x134)?).max(1),
+        level: i32_at(r, 0x134)?.clamp(1, 255) as u8,
         attributes: enum_map::EnumMap::from_fn(|a: Attribute| {
-            byte(i32_at(r, 0x138 + 4 * a.into_usize()).unwrap_or(0))
+            stat(i32_at(r, 0x138 + 4 * a.into_usize()).unwrap_or(0))
         }),
         skills: enum_map::EnumMap::from_fn(|s: Skill| {
-            byte(i32_at(r, 0x154 + 4 * s.into_usize()).unwrap_or(0))
+            stat(i32_at(r, 0x154 + 4 * s.into_usize()).unwrap_or(0))
         }),
         // One flag per spell, the first for spell 1.
         spells: (0..0x72u8)

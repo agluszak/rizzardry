@@ -16,7 +16,7 @@ use crate::game::time::Ticks;
 /// `AdvanceCombatRound`): two dice of a twentieth of their maximum, less
 /// one, from one to 255 sides.
 pub fn rest_roll(max_stamina: u32, rng: &mut crate::game::rng::GameRng) -> u32 {
-    let sides = (max_stamina / 20).saturating_sub(1).clamp(1, 255) as u8;
+    let sides = (max_stamina / 20).clamp(2, 256) as i32 - 1;
     rng.roll(crate::content::items::Dice { count: 2, sides, base: 0 })
 }
 

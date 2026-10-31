@@ -41,7 +41,7 @@ impl Monster {
     /// `MonsterCastsSpell`): its species' budget and what has been done to
     /// it, never below nothing.
     pub fn spell_budget(&self, kind: &crate::content::species::Species) -> u32 {
-        self.spell_points.saturating_add(kind.magic.budget).max(0) as u32
+        (self.spell_points + kind.magic.budget).max(0) as u32
     }
 
     /// Its resistance to a realm: its species' and its enchantments', at most

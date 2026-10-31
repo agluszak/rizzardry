@@ -459,7 +459,7 @@ fn floor_plan(collision: &CollisionMesh, layers: &[f32], automap: &Automap) -> I
     let (width, height) = (VIEWPORT.x as usize, VIEWPORT.y as usize);
     let mut rgba = vec![0u8; width * height * 4];
     let mut depth = vec![f32::NEG_INFINITY; width * height];
-    let ceiling = automap.layer.checked_sub(1).map_or(f32::INFINITY, |layer| layers[layer]);
+    let ceiling = if automap.layer == 0 { f32::INFINITY } else { layers[automap.layer - 1] };
     let (min_height, max_height) = collision
         .vertices
         .iter()
@@ -546,7 +546,7 @@ fn press_button(
                 automap.centre_on(party.translation.xz());
             }
         }
-        ButtonAction::LayerPrevious => automap.layer = automap.layer.saturating_sub(1),
+        ButtonAction::LayerPrevious => automap.layer -= automap.layer.min(1),
         ButtonAction::LayerNext => {
             if let Some(level) = levels.of(automap.level) {
                 automap.layer = (automap.layer + 1).min(level.map_layers.len());

@@ -20,7 +20,7 @@ use crate::game::world::damage::MonsterQuery;
 #[derive(Clone, Copy, Debug)]
 pub(super) struct MonsterTurn {
     pub(super) actor: Entity,
-    pub(super) phase: u8,
+    pub(super) phase: u32,
     pub(super) attacks_left: u32,
     pub(super) moved: bool,
     pub(super) special: bool,
@@ -28,7 +28,7 @@ pub(super) struct MonsterTurn {
     pub(super) waited: bool,
 }
 impl MonsterTurn {
-    fn new(actor: Entity, phase: u8, attacks_left: u32) -> Self {
+    fn new(actor: Entity, phase: u32, attacks_left: u32) -> Self {
         Self {
             actor,
             phase,
@@ -69,7 +69,7 @@ pub(super) struct PartyTurn {
     pub(super) actor: Entity,
     pub(super) action: RoundAction,
     /// When the member acts next, 1 to 100; 0 when done for the round.
-    pub(super) phase: u8,
+    pub(super) phase: u32,
     /// What an attack has left; other actions act once.
     pub(super) hands: HandTurns,
 }

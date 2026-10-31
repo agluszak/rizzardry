@@ -247,24 +247,19 @@ pub(super) fn populate(
             entries.push((0x11f, string(1307 + range as usize).to_owned()));
         }
         if let Some(dice) = spell.dice.filter(|_| spell.show_effect_dice) {
-            let min = i32::from(dice.base) + i32::from(dice.count);
-            let max = i32::from(dice.base) + i32::from(dice.count) * i32::from(dice.sides);
+            let min = dice.base + dice.count;
+            let max = dice.base + dice.count * dice.sides;
             let value =
                 if dice.count == 0 { dice.base.to_string() } else { format!("{min}-{max}") };
             entries.push((0x120, format!("{value} {}", string(0x121))));
         }
         // Retail expresses duration in rounds, minutes, hours, or as permanent.
         if spell.duration_base > 0 || spell.duration_per_power > 0 {
-            let unit = |value: i32| -> (i32, usize) {
-                if value == 9999 {
-                    (0, 0x129)
-                } else if value.saturating_mul(10) < 300 {
-                    (value, 0x123)
-                } else if value.saturating_mul(120) < 14400 {
-                    (value.saturating_mul(10) / 60, 0x125)
-                } else {
-                    (value.saturating_mul(120) / 3600, 0x127)
-                }
+            let unit = |value: i32| match value {
+                9999 => (0, 0x129),
+                ..30 => (value, 0x123),
+                30..120 => (value / 6, 0x125),
+                _ => (value / 30, 0x127),
             };
             let (per, per_unit) = unit(spell.duration_per_power);
             let (base, base_unit) = unit(spell.duration_base);
@@ -366,7 +361,7 @@ pub(super) fn populate(
             );
             y += line_height + if *end_entry { 1. } else { 0. };
         }
-        let max = lines.len().saturating_sub((185. / line_height).floor() as usize);
+        let max = lines.len() - lines.len().min((185. / line_height).floor() as usize);
         spawn_picture(
             &mut commands,
             root,

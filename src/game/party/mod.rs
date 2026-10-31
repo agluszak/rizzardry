@@ -199,7 +199,7 @@ pub fn averaged_places<T>(members: impl IntoIterator<Item = (T, bool)>) -> Vec<T
 pub fn average_level(levels: impl IntoIterator<Item = u8>) -> u32 {
     let (sum, count) =
         levels.into_iter().fold((0, 0), |(sum, count), level| (sum + u32::from(level), count + 1));
-    sum.checked_div(count).unwrap_or(1)
+    sum.max(1) / count.max(1)
 }
 
 /// Actual damage to an actor, after its gameplay consequences have settled.
@@ -245,7 +245,7 @@ pub fn kill_member(
     if vitals.is_dead() && formation.row_of(member).is_some() {
         formation.update_seat(member, true);
     }
-    let lost = hp.saturating_sub(vitals.hp);
+    let lost = hp.max(vitals.hp) - vitals.hp;
     if lost > 0 {
         damage.write(DamageApplied { member, amount: lost, died: vitals.is_dead() });
     }
