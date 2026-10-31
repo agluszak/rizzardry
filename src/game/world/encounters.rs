@@ -478,6 +478,30 @@ fn admits(
 /// the party; and let each generator whose timer runs out try to call one
 /// up.
 #[allow(clippy::too_many_arguments)]
+/// An encounter wiped out is off the books, and in a fight it costs the
+/// budget one (retail `UnregisterActiveEncounterGroup`).
+pub fn write_off_wiped_out(
+    mut levels: Query<&mut EncounterState, With<Level>>,
+    mut groups: Query<(&mut MonsterGroup, Option<&GroupMembers>)>,
+    monsters: Query<&Monster>,
+    battle: Option<Single<(), With<crate::game::combat::Battle>>>,
+    level: PlayedLevel,
+) {
+    let (Some(definition), Ok(mut state)) = (level.definition(), levels.single_mut()) else {
+        return;
+    };
+    for (mut group, members) in &mut groups {
+        let gone = members.is_none_or(|m| m.iter().all(|m| monsters.get(m).unwrap().is_dead()));
+        if group.encounter.is_some() && gone {
+            group.encounter = None;
+            if battle.is_some() {
+                state.budget -= 1;
+                state.clamp(&definition.encounters.limits);
+            }
+        }
+    }
+}
+
 pub fn run_encounters(
     mut commands: Commands,
     mut levels: Query<
@@ -486,7 +510,7 @@ pub fn run_encounters(
     >,
     mut groups: Query<(Entity, &mut MonsterGroup, Option<&GroupMembers>)>,
     monsters: Query<(&Monster, ActorPose, Option<&Walker>, Option<&super::identify::GroupMember>)>,
-    party: Query<(&Position, Option<&crate::game::party::roster::PartyRoster>), With<PartyBody>>,
+    party: Query<(&Position, &crate::game::party::roster::PartyRoster), With<PartyBody>>,
     characters: Query<(&crate::game::characters::Character, Has<crate::game::npcs::Npc>)>,
     blocked: (
         Option<Single<(), With<crate::game::combat::Battle>>>,
@@ -511,13 +535,11 @@ pub fn run_encounters(
     let Ok((root, mut state, navigation, mut unborn, bodies)) = levels.single_mut() else { return };
     let Ok((party_at, roster)) = party.single() else { return };
     let (in_battle, talking) = blocked;
-    let in_battle = in_battle.is_some();
-    let blocked = in_battle || !talking.is_empty();
+    let blocked = in_battle.is_some() || !talking.is_empty();
     let difficulty = *difficulty;
     let now_s = clock.ms / 1000;
-    let members = roster.into_iter().flat_map(|roster| roster.iter());
     let level = crate::game::party::mean_level(
-        crate::game::party::averaged_places(members.filter_map(|m| characters.get(m).ok()))
+        crate::game::party::averaged_places(roster.iter().map(|m| characters.get(m).unwrap()))
             .into_iter()
             .map(|c| c.level()),
     );
@@ -537,23 +559,6 @@ pub fn run_encounters(
         obstacles: &obstacles,
         next: (next_location, next_group),
     };
-    let alive = |members: Option<&GroupMembers>| {
-        members
-            .into_iter()
-            .flat_map(|m| m.iter())
-            .filter(|&m| monsters.get(m).is_ok_and(|(b, ..)| !b.is_dead()))
-            .count()
-    };
-    // Wiped out: off the books, and in a fight it costs the budget.
-    for (_, mut group, members) in &mut groups {
-        if group.encounter.is_some() && alive(members) == 0 {
-            group.encounter = None;
-            if in_battle {
-                state.budget -= 1;
-                state.clamp(&encounters.limits);
-            }
-        }
-    }
     let mut working = Working {
         active: groups
             .iter()
@@ -900,7 +905,7 @@ mod tests {
             monster.hp = 0;
         }
         world.spawn(crate::game::combat::Battle::default());
-        app.world_mut().run_system_once(run_encounters).unwrap();
+        app.world_mut().run_system_once(write_off_wiped_out).unwrap();
         let state = app.world().get::<EncounterState>(root).unwrap();
         assert_eq!((state.budget, state.limit), (7, 5));
         assert!(encounters(&mut app).is_empty());

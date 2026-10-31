@@ -127,7 +127,8 @@ impl Plugin for WorldPlugin {
             // Encounters come over ground physics has placed.
             .add_systems(
                 FixedPostUpdate,
-                encounters::run_encounters
+                (encounters::write_off_wiped_out, encounters::run_encounters)
+                    .chain()
                     .after(avian3d::prelude::PhysicsSystems::Writeback)
                     .run_if(level::level_active),
             )
