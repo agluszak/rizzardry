@@ -108,7 +108,7 @@ fn a_green_slime_leaves_treasure() {
         .single_mut(world)
         .unwrap();
     body.0 = at + Vec3::X;
-    crate::game::world::items::take_item(world, loot).unwrap();
+    world.write_message(crate::game::world::items::TakeItem { item: loot });
     step_until(&mut app, "taking the treasure", |w| {
         w.try_query::<&PartyInventory>().unwrap().single(w).is_ok_and(|p| p.hand.held.is_some())
     });
