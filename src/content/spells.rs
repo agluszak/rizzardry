@@ -202,7 +202,7 @@ pub struct SpellDefinition {
     pub realm: Option<Realm>,
     /// 1 to 7; a caster needs a caster level of at least
     /// [`min_caster_level`] for it.
-    pub level: u8,
+    pub level: u32,
     /// Spell points per power level.
     pub cost: u32,
     pub books: EnumSet<Spellbook>,
@@ -276,7 +276,7 @@ impl SpellDefinition {
 }
 
 /// The caster level a spell level needs (retail `Spells.cpp`).
-pub fn min_caster_level(spell_level: u8) -> i32 {
+pub fn min_caster_level(spell_level: u32) -> i32 {
     match spell_level {
         0 | 1 => 1,
         2 => 3,
