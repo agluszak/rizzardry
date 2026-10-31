@@ -1,7 +1,8 @@
 //! Retail split-item presentation. This edits a quote, never inventory itself.
+use super::layout::Ui;
 use super::*;
 use crate::content::ui::TextTable;
-use crate::presentation::screen_art::StringTable;
+use crate::presentation::screen_art::GameStrings;
 use bevy::text::{EditableTextFilter, TextEdit};
 use bevy::ui_widgets::ModalDialog;
 
@@ -29,143 +30,217 @@ pub(super) enum Control {
     Adjust(i32),
 }
 
-fn stack(world: &mut World, q: TradeQuote) -> Option<(crate::content::items::ItemId, u32)> {
-    let c = world.get::<Conversation>(q.conversation)?;
-    match q.source {
-        TradeSource::Stock(id) => world
-            .get::<Npc>(c.actor)?
-            .stock
-            .lots
-            .iter()
-            .find(|lot| lot.id == id)
-            .map(|lot| (lot.item, lot.units)),
-        TradeSource::Party(item) => match item.owner {
-            ItemOwner::Pool => {
-                let party = crate::game::party::roster::the_party(world);
-                world
-                    .get::<PartyInventory>(party)
-                    .unwrap()
-                    .pool
-                    .stacks
-                    .iter()
-                    .find(|stack| stack.id == item.id)
-                    .map(|s| (s.item, s.units()))
+/// The party asks to change a draft's count to `n`; the input already
+/// shows it.
+#[derive(Message, Clone, Copy)]
+pub(super) struct Requote {
+    panel: Entity,
+    n: u32,
+}
+
+/// What editing a draft reads and changes: the drafts, their count inputs,
+/// the views they choose for, and the trades they quote.
+#[derive(bevy::ecs::system::SystemParam)]
+pub(super) struct Drafting<'w, 's> {
+    drafts: Query<'w, 's, (&'static mut Draft, &'static ChildOf)>,
+    counts: Query<'w, 's, (&'static mut EditableText, &'static ChildOf), With<Count>>,
+    states: Query<'w, 's, &'static mut DialogueState>,
+    trading: Trading<'w, 's>,
+    commands: Commands<'w, 's>,
+}
+
+impl Drafting<'_, '_> {
+    /// Quote the draft for `n`, and what would be left, rewriting its input
+    /// when the change came from a button.
+    fn change(&mut self, panel: Entity, n: u32, rewrite: bool) {
+        let Ok((d, _)) = self.drafts.get(panel) else { return };
+        let (q, max) = (d.quote, d.maximum);
+        if n == 0 || n > max {
+            return;
+        }
+        let Ok(quote) = self.trading.quote(q.conversation, q.source, n) else { return };
+        let remaining = if max == n {
+            0
+        } else {
+            let Ok(remaining) = self.trading.quote(q.conversation, q.source, max - n) else {
+                return;
+            };
+            remaining.gold
+        };
+        let (mut draft, _) = self.drafts.get_mut(panel).unwrap();
+        draft.quote = quote;
+        draft.remaining_price = remaining;
+        if rewrite {
+            for (mut input, parent) in &mut self.counts {
+                if parent.parent() == panel {
+                    input.clear();
+                    input.queue_edit(TextEdit::Insert(n.to_string().into()));
+                }
             }
-            ItemOwner::Member(member) => world
-                .get::<Carried>(member)
-                .unwrap()
-                .find_stack(item.id)
-                .map(|s| (s.item, s.units())),
-        },
+        }
+    }
+
+    /// Close the draft, choosing its count for the view when accepted and
+    /// still affordable.
+    fn finish(&mut self, panel: Entity, accept: bool) {
+        let Ok((d, overlay)) = self.drafts.get(panel) else { return };
+        let (view, mut q, maximum, overlay) = (d.view, d.quote, d.maximum, overlay.parent());
+        if accept {
+            let Some((count, _)) = self.counts.iter().find(|(_, p)| p.parent() == panel) else {
+                return;
+            };
+            if count.is_composing() {
+                return;
+            }
+            let Ok(n) = count.value().to_string().parse::<u32>() else { return };
+            if n == 0 || n > maximum {
+                return;
+            }
+            q.quantity = n;
+        }
+        if accept && self.trading.ready(q.conversation) {
+            let Ok(verified) = self.trading.quote(q.conversation, q.source, q.quantity) else {
+                return;
+            };
+            if matches!(q.source, TradeSource::Stock(_)) && self.trading.gold() < verified.gold {
+                return;
+            }
+            let mut state = self.states.get_mut(view).unwrap();
+            select(&mut state, &self.trading, q.conversation, q.source, q.quantity);
+        }
+        self.commands.entity(overlay).despawn();
     }
 }
 
-pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
-    if world.query::<&Draft>().iter(world).any(|d| d.view == view) {
+/// The split-item dialog over the trade view, for the offer chosen when
+/// its count may change (retail's split dialog for a stack).
+pub(super) fn open(
+    event: On<Activate>,
+    controls: Query<&QuantityControl>,
+    drafts: Query<&Draft>,
+    states: Query<&DialogueState>,
+    trading: Trading,
+    (catalogs, sheets, strings): (Res<Catalogs>, Res<Assets<SpriteSheet>>, GameStrings),
+    (assets, focus): (Res<AssetServer>, Res<InputFocus>),
+    mut commands: Commands,
+) {
+    let Ok(&QuantityControl { view, canvas }) = controls.get(event.entity) else { return };
+    if drafts.iter().any(|d| d.view == view) {
         return;
     }
-    let Some(q) = world.get::<DialogueState>(view).and_then(|s| s.quote()) else { return };
-    if quote_trade(world, q.conversation, q.source, q.quantity).is_err() {
+    let Some(q) = states.get(view).ok().and_then(DialogueState::quote) else { return };
+    if trading.quote(q.conversation, q.source, q.quantity).is_err() {
         return;
     }
-    let Some((item, maximum)) = stack(world, q) else { return };
-    let item = &world.resource::<crate::game::data::Catalogs>().items[item];
+    let Some((item, maximum)) = trading.units(&q) else { return };
+    let item = &catalogs.items[item];
     if maximum < 2 || item.class == EquipClass::Ammunition {
         return;
     }
-    let (name, image, unit_weight, class, generic) =
-        (item.name.clone(), item.image.clone(), item.weight, item.class, item.kind_name.clone());
     let remaining_price = if maximum == q.quantity {
         0
     } else {
-        let Ok(remaining) = quote_trade(world, q.conversation, q.source, maximum - q.quantity)
-        else {
+        let Ok(remaining) = trading.quote(q.conversation, q.source, maximum - q.quantity) else {
             return;
         };
         remaining.gold
     };
-    let assets = world.resource::<AssetServer>().clone();
-    let previous_focus = world.resource::<InputFocus>().get();
-    let overlay = world
+    let overlay = commands
         .spawn((
             absolute(Vec2::ZERO, Vec2::new(640., 480.)),
             GlobalZIndex(100),
             Pickable::default(),
             TabGroup::modal(),
             ModalDialog,
-            crate::presentation::retail_controls::RestoreFocus(previous_focus),
+            crate::presentation::retail_controls::RestoreFocus(focus.get()),
             ChildOf(canvas),
         ))
         .id();
-    let panel = world
+    let unit_weight = item.weight;
+    let panel = commands
         .spawn((
             Draft { view, quote: q, maximum, unit_weight, remaining_price },
             absolute(Vec2::new(161., 148.), Vec2::new(322., 189.)),
             ChildOf(overlay),
         ))
         .id();
-    world.spawn((
-        Picture {
-            sheet: assets.load("retail://data/dialogs/popup_splititem.sti"),
-            frame: 0,
-            at: Vec2::ZERO,
-            bounds: None,
+    let mut ui = Ui { commands: &mut commands, assets: &assets };
+    build(&mut ui, panel, item, &q, (&sheets, strings.table()));
+    ui.observe(
+        overlay,
+        move |mut event: On<FocusedInput<KeyboardInput>>, mut drafting: Drafting| {
+            if event.input.state.is_pressed()
+                && matches!(event.input.logical_key, Key::Escape | Key::Enter)
+            {
+                event.propagate(false);
+                drafting.finish(panel, event.input.logical_key == Key::Enter);
+            }
         },
-        ChildOf(panel),
-    ));
-    world.spawn((
-        Picture {
-            sheet: assets.load(crate::content::paths::retail(&image)),
-            frame: 0,
-            at: Vec2::new(24., 14.),
-            bounds: None,
-        },
-        ChildOf(panel),
-    ));
-    label(world, panel, &name, Vec2::new(72., 15.), 226.);
-    let class_name = world
-        .get_resource::<StringTable>()
-        .and_then(|strings| world.get_resource::<Assets<TextTable>>()?.get(&strings.0))
-        .and_then(|s| s.get(1087 + u8::from(class) as usize))
-        .unwrap_or("")
-        .to_owned();
-    label(world, panel, "Type", Vec2::new(72., 35.), 53.);
-    let mut description = format!("{class_name} ({generic})");
-    let font = assets.load::<SpriteSheet>("retail://data/fonts/wiz_text_font.sti");
-    if let Some(font) = world.resource::<Assets<SpriteSheet>>().get(&font) {
+    );
+}
+
+/// The dialog's picture, labels, count and buttons.
+fn build(
+    ui: &mut Ui,
+    panel: Entity,
+    item: &crate::content::items::ItemDefinition,
+    q: &TradeQuote,
+    (sheets, strings): (&Assets<SpriteSheet>, Option<&TextTable>),
+) {
+    use bevy::text::Justify::{self, Center, Right};
+    fn dialog(ui: &Ui, path: &str) -> Handle<SpriteSheet> {
+        ui.assets.load(format!("retail://data/dialogs/{path}.sti"))
+    }
+    let picture = |sheet, at| Picture { sheet, frame: 0, at, bounds: None };
+    let frame = dialog(ui, "popup_splititem");
+    ui.commands.spawn((picture(frame.clone(), Vec2::ZERO), ChildOf(panel)));
+    let image = ui.assets.load(crate::content::paths::retail(&item.image));
+    ui.commands.spawn((picture(image, Vec2::new(24., 14.)), ChildOf(panel)));
+    fn text(
+        ui: &mut Ui,
+        panel: Entity,
+        value: &str,
+        at: Vec2,
+        width: f32,
+        justify: Justify,
+    ) -> Entity {
+        let e = ui.text(panel, value, at, width, justify);
+        ui.commands.entity(e).insert(ZIndex(1));
+        e
+    }
+    text(ui, panel, &item.name, Vec2::new(72., 15.), 226., Center);
+    let class_name =
+        strings.and_then(|s| s.get(1087 + u8::from(item.class) as usize)).unwrap_or("");
+    text(ui, panel, "Type", Vec2::new(72., 35.), 53., Center);
+    let mut description = format!("{class_name} ({})", item.kind_name);
+    let font = ui.assets.load::<SpriteSheet>("retail://data/fonts/wiz_text_font.sti");
+    if let Some(font) = sheets.get(&font) {
         while font.text_width(&description) > 169 {
             description.pop();
         }
     }
-    label(world, panel, &description, Vec2::new(129., 35.), 169.);
+    text(ui, panel, &description, Vec2::new(129., 35.), 169., Center);
     for (y, remaining) in [(53., true), (131., false)] {
-        label(world, panel, "Weight", Vec2::new(72., y), 53.);
-        let weight = label(world, panel, "", Vec2::new(129., y), 54.);
-        world.entity_mut(weight).insert((Weight(remaining), ZIndex(1)));
+        text(ui, panel, "Weight", Vec2::new(72., y), 53., Center);
+        let weight = text(ui, panel, "", Vec2::new(129., y), 54., Right);
+        ui.commands.entity(weight).insert(Weight(remaining));
     }
-    label(world, panel, "Value", Vec2::new(187., 53.), 53.);
-    let remaining_price_label = label(world, panel, "", Vec2::new(244., 53.), 54.);
-    world.entity_mut(remaining_price_label).insert((RemainingPrice, ZIndex(1)));
+    text(ui, panel, "Value", Vec2::new(187., 53.), 53., Center);
+    let remaining_price = text(ui, panel, "", Vec2::new(244., 53.), 54., Right);
+    ui.commands.entity(remaining_price).insert(RemainingPrice);
     let buying = matches!(q.source, TradeSource::Stock(_));
-    label(
-        world,
-        panel,
-        if buying { "Items in Stock" } else { "Items To Keep" },
-        Vec2::new(72., 73.),
-        110.,
-    );
-    label(
-        world,
-        panel,
-        if buying { "Items to Buy" } else { "Items to Sell" },
-        Vec2::new(72., 111.),
-        110.,
-    );
-    label(world, panel, "Value", Vec2::new(187., 131.), 53.);
-    let remaining = label(world, panel, "", Vec2::new(188., 73.), 51.);
-    world.entity_mut(remaining).insert((Remaining, ZIndex(1)));
-    let price = label(world, panel, "", Vec2::new(244., 131.), 54.);
-    world.entity_mut(price).insert((Price, ZIndex(1)));
+    let (keep, take) = if buying {
+        ("Items in Stock", "Items to Buy")
+    } else {
+        ("Items To Keep", "Items to Sell")
+    };
+    text(ui, panel, keep, Vec2::new(72., 73.), 110., Center);
+    text(ui, panel, take, Vec2::new(72., 111.), 110., Center);
+    text(ui, panel, "Value", Vec2::new(187., 131.), 53., Center);
+    let remaining = text(ui, panel, "", Vec2::new(188., 73.), 51., Right);
+    ui.commands.entity(remaining).insert(Remaining);
+    let price = text(ui, panel, "", Vec2::new(244., 131.), 54., Right);
+    ui.commands.entity(price).insert(Price);
     for at in [
         Vec2::new(188., 73.),
         Vec2::new(188., 111.),
@@ -174,17 +249,10 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
         Vec2::new(129., 53.),
         Vec2::new(129., 131.),
     ] {
-        world.spawn((
-            Picture {
-                sheet: assets.load("retail://data/dialogs/popup_splititem.sti"),
-                frame: 3,
-                at,
-                bounds: None,
-            },
-            ChildOf(panel),
-        ));
+        let well = Picture { frame: 3, ..picture(frame.clone(), at) };
+        ui.commands.spawn((well, ChildOf(panel)));
     }
-    world.spawn((
+    ui.commands.spawn((
         Count,
         TextInput,
         TextLayout::no_wrap(),
@@ -196,7 +264,7 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
         },
         EditableTextFilter::new(|c| c.is_ascii_digit()),
         TextFont {
-            font: assets.load("retail://data/fonts/wiz_text_font.sti#font").into(),
+            font: ui.assets.load("retail://data/fonts/wiz_text_font.sti#font").into(),
             font_size: 11.0.into(),
             ..default()
         },
@@ -212,132 +280,49 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
         (Vec2::new(273., 149.), 5, 0, Some(false)),
     ] {
         let path = if answer.is_some() { "popup_confirmationbuttons" } else { "popup_splititem" };
-        let button = world
+        let button = ui
+            .commands
             .spawn((
                 Button,
                 FocusRing,
                 TabIndex(0),
                 Pickable::default(),
-                Picture {
-                    sheet: assets.load(format!("retail://data/dialogs/{path}.sti")),
-                    frame: first,
-                    at,
-                    bounds: Some(first),
-                },
+                Picture { sheet: dialog(ui, path), frame: first, at, bounds: Some(first) },
                 ControlSkin::new(first, first + 1, first + 4, first + 2, first + 3),
                 ChildOf(panel),
             ))
-            .observe(move |_: On<Activate>, mut commands: Commands| {
-                commands.queue(move |world: &mut World| {
-                    if let Some(accept) = answer {
-                        finish(world, panel, accept);
-                    } else if let Some(draft) = world.get::<Draft>(panel) {
-                        let n = (draft.quote.quantity as i64 + i64::from(delta))
-                            .clamp(1, i64::from(draft.maximum))
-                            as u32;
-                        change(world, panel, n, true);
-                    }
-                });
+            .observe(move |_: On<Activate>, mut drafting: Drafting| {
+                if let Some(accept) = answer {
+                    drafting.finish(panel, accept);
+                } else if let Ok((draft, _)) = drafting.drafts.get(panel) {
+                    let n = (draft.quote.quantity as i64 + i64::from(delta))
+                        .clamp(1, i64::from(draft.maximum)) as u32;
+                    drafting.change(panel, n, true);
+                }
             })
             .id();
-        if answer == Some(true) {
-            world.entity_mut(button).insert(Control::Accept);
-        } else if answer.is_none() {
-            world.entity_mut(button).insert(Control::Adjust(delta));
-        }
-    }
-    let children: Vec<_> = world.get::<Children>(panel).into_iter().flatten().copied().collect();
-    for child in children {
-        let right = world.get::<Remaining>(child).is_some()
-            || world.get::<Price>(child).is_some()
-            || world.get::<RemainingPrice>(child).is_some()
-            || world.get::<Weight>(child).is_some();
-        if let Some(mut text) = world.get_mut::<BitmapText>(child) {
-            text.justify =
-                if right { bevy::text::Justify::Right } else { bevy::text::Justify::Center };
-            world.entity_mut(child).insert(ZIndex(1));
-        }
-    }
-    world.entity_mut(overlay).observe(
-        move |mut event: On<FocusedInput<KeyboardInput>>, mut commands: Commands| {
-            if event.input.state.is_pressed()
-                && matches!(event.input.logical_key, Key::Escape | Key::Enter)
-            {
-                event.propagate(false);
-                let accept = event.input.logical_key == Key::Enter;
-                commands.queue(move |world: &mut World| finish(world, panel, accept));
+        match answer {
+            Some(true) => {
+                ui.commands.entity(button).insert(Control::Accept);
             }
-        },
-    );
+            None => {
+                ui.commands.entity(button).insert(Control::Adjust(delta));
+            }
+            Some(false) => {}
+        }
+    }
+}
+
+/// Counts the party types are quoted.
+pub(super) fn requote(mut requests: MessageReader<Requote>, mut drafting: Drafting) {
+    for &Requote { panel, n } in requests.read() {
+        drafting.change(panel, n, false);
+    }
 }
 
-fn change(world: &mut World, panel: Entity, n: u32, rewrite: bool) {
-    let Some(d) = world.get::<Draft>(panel) else { return };
-    let (q, max) = (d.quote, d.maximum);
-    if n == 0 || n > max {
-        return;
-    }
-    if let Ok(quote) = quote_trade(world, q.conversation, q.source, n) {
-        let remaining = if max == n {
-            0
-        } else {
-            let Ok(remaining) = quote_trade(world, q.conversation, q.source, max - n) else {
-                return;
-            };
-            remaining.gold
-        };
-        let mut draft = world.get_mut::<Draft>(panel).unwrap();
-        draft.quote = quote;
-        draft.remaining_price = remaining;
-        if rewrite {
-            let children: Vec<_> =
-                world.get::<Children>(panel).into_iter().flatten().copied().collect();
-            for child in children {
-                if let Some(mut input) = world.get_mut::<EditableText>(child) {
-                    input.clear();
-                    input.queue_edit(TextEdit::Insert(n.to_string().into()));
-                }
-            }
-        }
-    }
-}
-fn finish(world: &mut World, panel: Entity, accept: bool) {
-    let Some(d) = world.get::<Draft>(panel) else { return };
-    let (view, mut q, maximum) = (d.view, d.quote, d.maximum);
-    if accept {
-        let Some(count) = world
-            .get::<Children>(panel)
-            .into_iter()
-            .flatten()
-            .find_map(|e| world.get::<EditableText>(*e))
-        else {
-            return;
-        };
-        if count.is_composing() {
-            return;
-        }
-        let Ok(n) = count.value().to_string().parse::<u32>() else { return };
-        if n == 0 || n > maximum {
-            return;
-        }
-        q.quantity = n;
-    }
-    let Some(overlay) = world.get::<ChildOf>(panel).map(ChildOf::parent) else { return };
-    if accept && world.get::<Conversation>(q.conversation).is_some_and(Conversation::ready) {
-        let Ok(verified) = quote_trade(world, q.conversation, q.source, q.quantity) else { return };
-        if matches!(q.source, TradeSource::Stock(_)) {
-            let party = crate::game::party::roster::the_party(world);
-            let gold = world.get::<PartyInventory>(party).unwrap().gold;
-            if gold < verified.gold {
-                return;
-            }
-        }
-        select(world, view, q.source, q.quantity);
-    }
-    world.despawn(overlay);
-}
 pub(super) fn sync(
     mut commands: Commands,
+    mut requotes: MessageWriter<Requote>,
     drafts: Query<(Entity, &Draft, &ChildOf)>,
     sessions: Query<&Conversation>,
     inputs: Query<(Ref<EditableText>, &ChildOf), With<Count>>,
@@ -360,7 +345,7 @@ pub(super) fn sync(
                 && let Ok(n) = input.value().to_string().parse::<u32>()
                 && n != d.quote.quantity
             {
-                commands.queue(move |world: &mut World| change(world, panel, n, false));
+                requotes.write(Requote { panel, n });
             }
         }
     }

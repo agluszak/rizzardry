@@ -78,6 +78,32 @@ impl Trading<'_, '_> {
         .ok_or(TradeError::StaleSelection)
     }
 
+    /// Whether the conversation stands ready for the party to trade in.
+    pub fn ready(&self, conversation: Entity) -> bool {
+        self.conversations.get(conversation).is_ok_and(|(c, _)| c.ready())
+    }
+
+    /// The party's gold.
+    pub fn gold(&self) -> u32 {
+        self.party.0.gold
+    }
+
+    /// The item a quote is of and how many of it there are to trade.
+    pub fn units(&self, quote: &TradeQuote) -> Option<(ItemId, u32)> {
+        let (c, _) = self.conversations.get(quote.conversation).ok()?;
+        match quote.source {
+            TradeSource::Stock(id) => {
+                let stock = &self.npcs.get(c.actor).ok()?.0.stock;
+                stock.lots.iter().find(|lot| lot.id == id).map(|lot| (lot.item, lot.units))
+            }
+            TradeSource::Party(item) => match item.owner {
+                ItemOwner::Pool => self.party.0.pool.stacks.iter().find(|s| s.id == item.id),
+                ItemOwner::Member(member) => self.packs.get(member).ok()?.find_stack(item.id),
+            }
+            .map(|stack| (stack.item, stack.units())),
+        }
+    }
+
     /// What the party would pay or get for `quantity` of a stock lot or one
     /// of its own items, now.
     pub fn quote(

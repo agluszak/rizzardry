@@ -31,7 +31,7 @@ use bevy::{
     text::EditableText,
     ui_widgets::{Activate, Button, ScrollArea, TextInput},
 };
-use layout::{build, label, paint_wells};
+use layout::{build, paint_wells};
 use trade_view::{GiftGold, gift_amount, sync_trade_rows};
 use transcript::{scroll_to_newest, sync_transcript};
 #[derive(Component)]
@@ -138,8 +138,12 @@ struct QuoteBubble;
 struct ItemPreview;
 #[derive(Component)]
 struct Confirm;
+/// The control opening the split-item dialog for its view's offer.
 #[derive(Component)]
-struct QuantityControl;
+struct QuantityControl {
+    view: Entity,
+    canvas: Entity,
+}
 #[derive(Component)]
 struct TradePrice;
 #[derive(Component)]
@@ -210,6 +214,7 @@ pub struct ConversationViewPlugin;
 impl Plugin for ConversationViewPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(speech::plugin)
+            .add_message::<quantity::Requote>()
             .add_observer(activate_choice)
             .add_observer(activate_trade)
             .add_observer(activate_topic)
@@ -238,7 +243,9 @@ impl Plugin for ConversationViewPlugin {
                     colour_selections,
                     paint_topic_text.before(super::screen_art::render_text),
                     scroll_to_newest.after(bevy::ui::UiSystems::Layout),
-                    quantity::sync.after(bevy::text::EditableTextSystems),
+                    (quantity::sync, quantity::requote)
+                        .chain()
+                        .after(bevy::text::EditableTextSystems),
                 ),
             );
     }
@@ -246,15 +253,21 @@ impl Plugin for ConversationViewPlugin {
 #[derive(Component)]
 struct TopicRows;
 
-fn select(world: &mut World, view: Entity, source: TradeSource, quantity: u32) {
-    let session = world.get::<ConversationView>(view).unwrap().0;
-    // A gift has no price: one of the item is chosen as it is.
-    let result = if world.get::<DialogueState>(view).unwrap().mode == Mode::Give {
+/// Choose `quantity` of the source for the view: quoted, or a gift of one
+/// as it is, which has no price.
+fn select(
+    state: &mut DialogueState,
+    trading: &Trading,
+    session: Entity,
+    source: TradeSource,
+    quantity: u32,
+) {
+    let result = if state.mode == Mode::Give {
         Ok(TradeQuote { conversation: session, trade: 0, source, quantity: 1, gold: 0 })
     } else {
-        quote_trade(world, session, source, quantity)
+        trading.quote(session, source, quantity)
     };
-    world.get_mut::<DialogueState>(view).unwrap().offer = Some(result);
+    state.offer = Some(result);
 }
 /// The dialogue view of the open conversation.
 #[derive(bevy::ecs::system::SystemParam)]
@@ -285,15 +298,23 @@ fn close_views(event: On<Add<Closing>>, mut commands: Commands, views: Query<&Co
         }
     }
 }
-fn create_view(event: On<Add<Conversation>>, mut commands: Commands) {
-    let session = event.entity;
-    commands.queue(move |world: &mut World| {
-        if world.get::<Conversation>(session).is_some()
-            && world.get::<crate::game::npcs::conversation::Closing>(session).is_none()
-        {
-            build(world, session);
-        }
-    });
+/// A conversation the party talks in opens its view, in portrait mode as
+/// retail `OpenNpcDialoguePanel` selects before building its controls.
+fn create_view(
+    event: On<Add<Conversation>>,
+    closing: Query<(), With<Closing>>,
+    (assets, strings): (Res<AssetServer>, super::screen_art::GameStrings),
+    mut layout: ResMut<crate::presentation::main_screen::ScreenLayout>,
+    mut focus: ResMut<InputFocus>,
+    mut commands: Commands,
+) {
+    if closing.contains(event.entity) {
+        return;
+    }
+    layout.mode = crate::presentation::main_screen::LayoutMode::Closed;
+    let mut ui = layout::Ui { commands: &mut commands, assets: &assets };
+    let (_, input) = build(&mut ui, strings.table(), event.entity);
+    focus.set(input, FocusCause::Navigated);
 }
 fn advance_bubble(
     _: On<Activate>,
@@ -560,14 +581,13 @@ fn activate_choice(
 }
 fn activate_trade(
     event: On<Activate>,
-    views: ViewScope,
+    mut view: Single<(&ConversationView, &mut DialogueState)>,
     rows: Query<&TradeRow>,
-    mut commands: Commands,
+    trading: Trading,
 ) {
     let Ok(row) = rows.get(event.entity) else { return };
-    let root = views.root();
-    let (source, quantity) = (row.source, row.quantity);
-    commands.queue(move |world: &mut World| select(world, root, source, quantity));
+    let (session, state) = &mut *view;
+    select(state, &trading, session.0, row.source, row.quantity);
 }
 fn activate_topic(
     event: On<Activate>,
