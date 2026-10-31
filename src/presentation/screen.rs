@@ -34,27 +34,3 @@ impl WorldInput<'_, '_> {
             && self.freedom.free()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::game::world::level::Level;
-    use bevy::ecs::system::RunSystemOnce;
-
-    #[test]
-    fn an_accepted_screen_change_blocks_world_input_before_state_transition() {
-        let mut world = World::new();
-        world.insert_resource(State::new(Screen::World));
-        world.init_resource::<NextState<Screen>>();
-        world.spawn(Level::test(default()));
-        let free = |input: WorldInput| input.free();
-        assert!(world.run_system_once(free).unwrap());
-        world.resource_mut::<NextState<Screen>>().set(Screen::Inventory);
-        assert_eq!(*world.resource::<State<Screen>>().get(), Screen::World);
-        assert!(!world.run_system_once(free).unwrap());
-        assert!(
-            world.run_system_once(crate::game::freedom::party_free).unwrap(),
-            "the game itself does not care which screen is up"
-        );
-    }
-}

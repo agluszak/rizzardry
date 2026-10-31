@@ -4,8 +4,9 @@ use super::controls::Interact;
 use super::morph_picking::MorphRayCast;
 use super::party_view::PartyCamera;
 use crate::game::inventory::PartyInventory;
-use crate::game::world::WorldRequest;
+use crate::game::world::ActivateDevice;
 use crate::game::world::items::WorldItem;
+use crate::game::world::items::{DropHeld, TakeItem};
 use crate::game::world::level::Level;
 use crate::game::world::population::Monster;
 use crate::game::world::props::Prop;
@@ -75,7 +76,7 @@ pub fn activate_selection(
     held: Single<&PartyInventory>,
     npcs: Query<&crate::game::npcs::NpcBody>,
     mut conversations: MessageWriter<crate::game::npcs::conversation::BeginConversation>,
-    mut requests: MessageWriter<WorldRequest>,
+    mut requests: (MessageWriter<ActivateDevice>, MessageWriter<TakeItem>, MessageWriter<DropHeld>),
 ) {
     if !interact.contains(ActionEvents::START) {
         return;
@@ -91,7 +92,7 @@ pub fn activate_selection(
         && let Ok(device) = props.get(hit.entity)
     {
         if device {
-            requests.write(WorldRequest::Activate { device: hit.entity });
+            requests.0.write(ActivateDevice { device: hit.entity });
         }
         return;
     }
@@ -99,9 +100,9 @@ pub fn activate_selection(
         // Only where the pointer aims matters; gameplay throws from the
         // party's eye, not the drawn (perhaps shaking) camera.
         let (Some(level), Some(ray)) = (selection.level, selection.ray) else { return };
-        requests.write(WorldRequest::DropHeld { level, aim: ray.direction });
+        requests.2.write(DropHeld { level, aim: ray.direction });
     } else if let Some(hit) = selection.hit {
-        requests.write(WorldRequest::TakeItem { item: hit.entity });
+        requests.1.write(TakeItem { item: hit.entity });
     }
 }
 

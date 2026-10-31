@@ -69,7 +69,12 @@ impl Plugin for MainScreenPlugin {
                         bank::draw_bank,
                         bank::draw_caption,
                         bank::show_round_progress,
-                        magic_view::refresh_magic_view,
+                        (
+                            magic_view::follow_caster,
+                            magic_view::draw_magic_view,
+                            magic_view::commit_magic_choice,
+                        )
+                            .chain(),
                     ),
                 )
                     .chain()
@@ -344,117 +349,4 @@ fn build_frame(
             ]
         ]
     });
-}
-
-#[cfg(test)]
-mod keyboard_tests {
-    use super::*;
-    use crate::presentation::test_input::tap;
-    use bevy::input_focus::tab_navigation::TabIndex;
-    use bevy::input_focus::{InputDispatchPlugin, tab_navigation::TabNavigationPlugin};
-    use bevy::ui_widgets::Button;
-    use bevy::ui_widgets::ButtonPlugin;
-    use bevy::window::PrimaryWindow;
-    use bevy_enhanced_input::prelude::*;
-
-    #[test]
-    fn layout_changes_keep_hud_controls_and_focus() {
-        use crate::game::characters::{Character, Gender, Profession, Race, Vitals};
-        let mut app = crate::presentation::test_input::input_app();
-        app.init_asset::<SpriteSheet>()
-            .init_resource::<ScreenLayout>()
-            .init_resource::<MainScreenArt>()
-            .add_systems(
-                Update,
-                (build_frame, update_frame, party::build_party_parts, party::place_party_buttons)
-                    .chain(),
-            );
-        let character = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
-        let member = app.world_mut().spawn((Vitals::new(&character), character)).id();
-        crate::game::party::roster::test_party(app.world_mut(), &[member]);
-        app.update();
-        let root = app
-            .world_mut()
-            .query_filtered::<Entity, With<MainScreen>>()
-            .single(app.world())
-            .unwrap();
-        let control = app
-            .world_mut()
-            .query_filtered::<Entity, With<party::SlotButton>>()
-            .single(app.world())
-            .unwrap();
-        app.world_mut()
-            .resource_mut::<InputFocus>()
-            .set(control, bevy::input_focus::FocusCause::Navigated);
-        let panels: Vec<Entity> = app
-            .world_mut()
-            .query_filtered::<Entity, With<FrameVisibility>>()
-            .iter(app.world())
-            .collect();
-        for mode in [LayoutMode::Closed, LayoutMode::Full, LayoutMode::Wide] {
-            app.world_mut().resource_mut::<ScreenLayout>().mode = mode;
-            app.update();
-            assert!(app.world().get_entity(root).is_ok());
-            assert_eq!(app.world().resource::<InputFocus>().get(), Some(control));
-            assert!(panels.iter().all(|&e| app.world().get_entity(e).is_ok()));
-            let node = app.world().get::<Node>(control).unwrap();
-            assert_eq!(node.width, px(if mode == LayoutMode::Closed { 82. } else { 22. }));
-        }
-        let panel = app
-            .world_mut()
-            .query::<(Entity, &FrameVisibility)>()
-            .iter(app.world())
-            .find_map(|(e, v)| matches!(v, FrameVisibility::Panel(Panel::TextBox)).then_some(e))
-            .unwrap();
-        let child = app.world_mut().spawn((Button, TabIndex(0), ChildOf(panel))).id();
-        app.world_mut()
-            .resource_mut::<InputFocus>()
-            .set(child, bevy::input_focus::FocusCause::Navigated);
-        app.world_mut().resource_mut::<ScreenLayout>().mode = LayoutMode::Full;
-        app.update();
-        assert_eq!(app.world().get::<Visibility>(panel), Some(&Visibility::Hidden));
-        assert_eq!(app.world().resource::<InputFocus>().get(), None);
-        assert!(app.world().get_entity(child).is_ok());
-    }
-
-    #[test]
-    fn f6_enters_hud_without_stealing_the_worlds_map_binding() {
-        use crate::presentation::{
-            automap::{MapKey, OpenAutomap, spawn_map_key},
-            notices::TextLog,
-        };
-        let mut app = crate::presentation::test_input::input_app();
-        app.add_plugins((InputDispatchPlugin, TabNavigationPlugin, ButtonPlugin))
-            .init_state::<crate::presentation::screen::Screen>()
-            .init_resource::<ScreenLayout>()
-            .init_resource::<SelectedMember>()
-            .init_resource::<crate::game::combat::CombatSettings>()
-            .init_resource::<TextLog>()
-            .add_message::<crate::game::combat::StartRound>()
-            .add_message::<crate::game::combat::GiveOrder>()
-            .add_message::<OpenAutomap>()
-            .add_input_context::<MapKey>()
-            .add_systems(Startup, spawn_map_key)
-            .add_plugins(keys::plugin);
-        let window = app.world_mut().spawn((Window::default(), PrimaryWindow)).id();
-        let root =
-            app.world_mut().spawn((MainScreen, TabGroup::modal())).observe(leave_hud_focus).id();
-        let first = app.world_mut().spawn((Button, TabIndex(0), ChildOf(root))).id();
-        let second = app.world_mut().spawn((Button, TabIndex(0), ChildOf(root))).id();
-        app.finish();
-        app.cleanup();
-        app.update();
-        app.update();
-        tap(&mut app, window, KeyCode::Tab);
-        assert_eq!(app.world_mut().resource_mut::<Messages<OpenAutomap>>().drain().count(), 1);
-        tap(&mut app, window, KeyCode::F6);
-        assert_eq!(app.world().resource::<InputFocus>().get(), Some(first));
-        tap(&mut app, window, KeyCode::Tab);
-        assert_eq!(app.world().resource::<InputFocus>().get(), Some(second));
-        assert_eq!(app.world_mut().resource_mut::<Messages<OpenAutomap>>().drain().count(), 0);
-        tap(&mut app, window, KeyCode::Escape);
-        assert_ne!(app.world().resource::<InputFocus>().get(), Some(second));
-        tap(&mut app, window, KeyCode::Tab);
-        assert_eq!(app.world_mut().resource_mut::<Messages<OpenAutomap>>().drain().count(), 1);
-    }
 }

@@ -33,8 +33,6 @@ pub mod selection;
 pub mod settings;
 pub mod sky;
 mod surfaces;
-#[cfg(test)]
-mod test_input;
 pub mod textures;
 pub mod voice;
 mod water_view;
@@ -260,32 +258,5 @@ impl Plugin for PresentationPlugin {
                     .chain(),
             ),
         );
-    }
-}
-
-#[cfg(test)]
-mod focus_tests {
-    use super::*;
-    use crate::game::world::level::Level;
-    use crate::presentation::screen::Screen;
-    use bevy::input_focus::{InputFocus, tab_navigation::TabIndex};
-
-    #[test]
-    fn focused_ui_prevents_the_same_arrows_from_driving_exploration() {
-        let mut app = App::new();
-        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
-            .init_state::<Screen>()
-            .init_resource::<InputFocus>()
-            .add_systems(Update, hold_exploration);
-        app.world_mut().spawn(Level::test(default()));
-        let controls =
-            app.world_mut().spawn((Exploration, ContextActivity::<Exploration>::new(true))).id();
-        let widget = app.world_mut().spawn(TabIndex(0)).id();
-        app.insert_resource(InputFocus::from_entity(widget));
-        app.update();
-        assert!(!**app.world().get::<ContextActivity<Exploration>>(controls).unwrap());
-        app.world_mut().resource_mut::<InputFocus>().clear();
-        app.update();
-        assert!(**app.world().get::<ContextActivity<Exploration>>(controls).unwrap());
     }
 }

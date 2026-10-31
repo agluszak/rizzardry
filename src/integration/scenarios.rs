@@ -108,7 +108,7 @@ fn a_green_slime_leaves_treasure() {
         .single_mut(world)
         .unwrap();
     body.0 = at + Vec3::X;
-    crate::game::world::items::take_item(world, loot).unwrap();
+    world.write_message(crate::game::world::items::TakeItem { item: loot });
     step_until(&mut app, "taking the treasure", |w| {
         w.try_query::<&PartyInventory>().unwrap().single(w).is_ok_and(|p| p.hand.held.is_some())
     });
@@ -194,8 +194,10 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
             let c = app.world().get::<Conversation>(session).expect("conversation remains open");
             match c.wait {
                 ConversationWait::Line { speech, .. } => {
-                    app.world_mut()
-                        .write_message(ConversationRequest::new(session, Talk::Advance { speech }));
+                    app.world_mut().write_message(crate::game::npcs::conversation::LineSpoken {
+                        conversation: session,
+                        speech,
+                    });
                 }
                 ConversationWait::Blocked { ref reason, .. } => {
                     panic!("unexpected content gap: {reason}")

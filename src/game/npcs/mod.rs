@@ -39,29 +39,6 @@ pub(crate) fn script(world: &World, actor: Entity) -> AssetId<DialogueScript> {
     world.resource::<NpcAssets>().scripts[&id].id()
 }
 
-/// The party's members awake and well enough to fight, in roster order: the
-/// population retail's NPC rules work with (`hp_current != 0 &&
-/// highest_condition < ASLEEP`, as in `CanNpcJoinParty`, the charm and
-/// dialogue practice).
-pub(crate) fn able_members(world: &mut World) -> Vec<Entity> {
-    let party = crate::game::party::roster::the_party(world);
-    world
-        .get::<crate::game::party::roster::PartyRoster>(party)
-        .unwrap()
-        .iter()
-        .filter(|&m| world.get::<crate::game::characters::Vitals>(m).unwrap().can_fight())
-        .collect()
-}
-
-/// The levels of [`able_members`], which retail's NPC rules average.
-pub(crate) fn able_levels(world: &mut World) -> Vec<u8> {
-    able_members(world)
-        .into_iter()
-        .filter_map(|m| world.get::<crate::game::characters::Character>(m))
-        .map(|character| character.level())
-        .collect()
-}
-
 #[derive(Component, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ActorId {
     Named(NpcId),
@@ -288,12 +265,12 @@ impl NpcPopulation<'_, '_> {
         catalogs: &Catalogs,
         placements: &[crate::content::level::MonsterPlacement],
         server: &AssetServer,
-    ) -> Result<bool, String> {
+    ) -> bool {
         let species = &catalogs.species;
         let ids: Vec<_> =
             placements.iter().filter_map(|p| species.kind(p.species).and_then(|s| s.npc)).collect();
         if ids.is_empty() {
-            return Ok(true);
+            return true;
         }
         let catalog = &catalogs.npcs;
         let mut ready = true;
@@ -303,12 +280,14 @@ impl NpcPopulation<'_, '_> {
                 self.assets.scripts.entry(id).or_insert_with(|| {
                     server.load(crate::content::paths::retail(&def.script_path()))
                 });
-            if matches!(server.get_load_state(&*script), Some(bevy::asset::LoadState::Failed(_))) {
-                return Err(format!("NPC script failed: {}", def.script_path()));
-            }
+            assert!(
+                !matches!(server.get_load_state(&*script), Some(bevy::asset::LoadState::Failed(_))),
+                "NPC script failed to load: {}",
+                def.script_path()
+            );
             ready &= self.scripts.contains(&*script);
         }
-        Ok(ready)
+        ready
     }
     /// Whether the NPC's world role may stand in a level: not while it
     /// travels with the party, and never once it has died, wherever.
@@ -385,10 +364,24 @@ impl Plugin for NpcPlugin {
             .init_resource::<conversation::NoAnswerTurn>()
             .add_message::<conversation::ConversationRequest>()
             .add_message::<conversation::BeginConversation>()
+            .add_message::<conversation::LineSpoken>()
+            .add_message::<conversation::EditNotebook>()
             .add_message::<conversation::PartyRemark>()
             .add_message::<conversation::NpcSpeech>()
             .add_observer(conversation::end_conversations)
-            .add_systems(Update, conversation::update_conversation.after(GameplaySet::Combat))
+            .add_systems(
+                Update,
+                (
+                    conversation::finish_lines,
+                    conversation::edit_notebook,
+                    conversation::begin_conversations,
+                    conversation::answer_requests,
+                    conversation::run_conversations,
+                )
+                    .chain()
+                    .in_set(conversation::Conversing)
+                    .after(GameplaySet::Combat),
+            )
             .add_systems(Update, recruit::settle_npc_members.before(GameplaySet::LevelActivation))
             .add_systems(
                 FixedUpdate,

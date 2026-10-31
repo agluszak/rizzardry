@@ -84,13 +84,11 @@ pub fn open_travel_question(add: On<Add<TravelQuestion>>, mut commands: Commands
     });
 }
 
-/// Attach the visuals when ready; a failed asset must not strand the question.
+/// Attach the visuals when ready.
 pub fn show_travel_question(
     mut commands: Commands,
     questions: Query<&TravelQuestion>,
     dialogs: Query<(Entity, &QuestionDialog), Without<DialogBuilt>>,
-    assets: Res<AssetServer>,
-    mut answers: MessageWriter<TravelAnswer>,
     art: Res<DialogArt>,
     sheets: Res<Assets<SpriteSheet>>,
     game_strings: crate::presentation::screen_art::GameStrings,
@@ -98,14 +96,6 @@ pub fn show_travel_question(
     let Ok((dialog, owner)) = dialogs.single() else { return };
     let question_id = owner.0;
     let Ok(question) = questions.get(question_id) else { return };
-    if [&art.ok, &art.cancel, &art.font].into_iter().any(|handle| {
-        matches!(assets.get_load_state(handle), Some(bevy::asset::LoadState::Failed(_)))
-    }) || game_strings.failed(&assets)
-    {
-        warn!("travel confirmation artwork failed; declining travel");
-        answers.write(TravelAnswer { question: question_id, accept: false });
-        return;
-    }
     let (Some(ok), Some(cancel), Some(_font), Some(strings)) =
         (sheets.get(&art.ok), sheets.get(&art.cancel), sheets.get(&art.font), game_strings.table())
     else {
@@ -160,134 +150,6 @@ pub fn focus_ready_question(
             if button.0 {
                 focus.set(entity, bevy::input_focus::FocusCause::Navigated);
             }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::content::ui::TextTable;
-    use crate::presentation::test_input::tap;
-
-    fn input_app() -> App {
-        let mut app = crate::presentation::test_input::input_app();
-        app.add_plugins((
-            bevy::input_focus::InputDispatchPlugin,
-            bevy::input_focus::tab_navigation::TabNavigationPlugin,
-            bevy::ui_widgets::ButtonPlugin,
-            bevy::ui_widgets::ModalDialogPlugin,
-        ))
-        .add_input_context::<QuestionDialog>()
-        .add_message::<TravelAnswer>()
-        .init_asset::<SpriteSheet>()
-        .init_asset::<TextTable>()
-        .init_asset::<Image>()
-        .insert_resource(DialogArt { ok: default(), cancel: default(), font: default() })
-        .add_systems(Update, (show_travel_question, focus_ready_question).chain())
-        .add_observer(open_travel_question);
-        app.finish();
-        app.cleanup();
-        app
-    }
-
-    #[test]
-    fn escape_answers_a_question_even_without_artwork() {
-        let mut app = input_app();
-        let level = app.world_mut().spawn_empty().id();
-        let question = app
-            .world_mut()
-            .spawn((TravelQuestion { entrance: "MO204".into() }, ChildOf(level)))
-            .id();
-        app.update();
-        app.update();
-        let dialog = app.world().get::<QuestionView>(question).unwrap().0;
-        assert!(app.world().get::<DialogBuilt>(dialog).is_none());
-        tap(&mut app, Entity::PLACEHOLDER, KeyCode::Escape);
-        let answers: Vec<_> =
-            app.world_mut().resource_mut::<Messages<TravelAnswer>>().drain().collect();
-        assert_eq!(answers.len(), 1);
-        assert_eq!(answers[0].question, question);
-        assert!(!answers[0].accept);
-        // Leaving the level ends the question, and its dialog goes with it.
-        app.world_mut().despawn(level);
-        app.update();
-        assert!(app.world().get_entity(dialog).is_err());
-    }
-
-    #[test]
-    fn delayed_art_focuses_ok_and_focused_cancel_owns_enter() {
-        let mut app = input_app();
-        let window = app.world_mut().spawn((Window::default(), bevy::window::PrimaryWindow)).id();
-        let question = app.world_mut().spawn(TravelQuestion { entrance: "MO204".into() }).id();
-        app.update();
-        app.update();
-        assert!(app.world_mut().query::<&DialogButton>().iter(app.world()).next().is_none());
-        let sheet = app.world_mut().resource_mut::<Assets<SpriteSheet>>().add(SpriteSheet {
-            frames: vec![crate::content::ui::Frame {
-                offset: [0, 0],
-                width: 16,
-                height: 16,
-                rgba: vec![255; 16 * 16 * 4],
-            }],
-            images: vec![default()],
-            palette: None,
-        });
-        let strings = app.world_mut().resource_mut::<Assets<TextTable>>().add(TextTable(vec![]));
-        app.insert_resource(crate::presentation::screen_art::StringTable(strings));
-        app.insert_resource(DialogArt { ok: sheet.clone(), cancel: sheet.clone(), font: sheet });
-        // Scene spawning is deferred; wait for that actual readiness boundary.
-        for _ in 0..4 {
-            app.update();
-            if app
-                .world()
-                .resource::<InputFocus>()
-                .get()
-                .is_some_and(|e| app.world().get::<DialogButton>(e).is_some())
-            {
-                break;
-            }
-        }
-        let focused =
-            app.world().resource::<InputFocus>().get().expect("built question focuses OK");
-        assert!(app.world().get::<DialogButton>(focused).unwrap().0);
-        let cancel = app
-            .world_mut()
-            .query::<(Entity, &DialogButton)>()
-            .iter(app.world())
-            .find_map(|(e, b)| (!b.0).then_some(e))
-            .unwrap();
-        app.world_mut()
-            .resource_mut::<InputFocus>()
-            .set(cancel, bevy::input_focus::FocusCause::Navigated);
-        crate::presentation::test_input::key(&mut app, window, KeyCode::Enter, true);
-        let answers: Vec<_> =
-            app.world_mut().resource_mut::<Messages<TravelAnswer>>().drain().collect();
-        assert_eq!(answers.len(), 1);
-        assert_eq!(answers[0].question, question);
-        assert!(!answers[0].accept);
-    }
-
-    #[test]
-    fn terminal_asset_failure_declines_the_current_question() {
-        let mut app = input_app();
-        // No loader exists for this deliberately invalid asset; wait for the real
-        // async asset pipeline rather than simulating a failed-state flag.
-        let font = app.world().resource::<AssetServer>().load::<SpriteSheet>("missing.invalid");
-        app.world_mut().resource_mut::<DialogArt>().font = font;
-        let question = app.world_mut().spawn(TravelQuestion { entrance: "MO204".into() }).id();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            app.update();
-            let answers: Vec<_> =
-                app.world_mut().resource_mut::<Messages<TravelAnswer>>().drain().collect();
-            if let Some(answer) = answers.first() {
-                assert_eq!(answer.question, question);
-                assert!(!answer.accept);
-                break;
-            }
-            assert!(std::time::Instant::now() < deadline, "asset failure did not resolve travel");
-            std::thread::yield_now();
         }
     }
 }

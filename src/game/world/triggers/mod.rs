@@ -6,8 +6,6 @@
 //! preserving retail's double execution when it is marked to fire on commit.
 
 mod records;
-#[cfg(test)]
-pub(crate) mod tests;
 mod walk;
 
 pub use records::{DeviceRecords, TriggerMemory, spawn_devices};

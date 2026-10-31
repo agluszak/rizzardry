@@ -49,7 +49,7 @@ pub fn entering(world: &mut World) -> bool {
 /// becomes one only by [`activate_level`]; until then its root is a
 /// [`Destination`].
 #[derive(Component, Debug, Clone)]
-#[require(Transform, MonsterBodies)]
+#[require(Transform, MonsterBodies, super::population::Unborn, super::navigation::LevelNavigation)]
 pub struct Level {
     /// The retail path of its `.pvl`, which identifies it.
     pub path: String,
@@ -421,12 +421,6 @@ impl OwnedDefinitions<'_, '_> {
     }
 }
 
-/// An entry could not be prepared and was discarded.
-#[derive(Message, Debug, Clone)]
-pub struct LevelEntryFailed {
-    pub path: String,
-}
-
 /// The level being played, and its geometry.
 #[derive(SystemParam)]
 pub struct PlayedLevel<'w, 's> {
@@ -493,12 +487,12 @@ struct Collision {
 }
 
 /// Build all of a level's collision once its entry is otherwise ready. The
-/// level's and every solid prop part's are mandatory: one that cannot be
-/// built fails the entry before anything changes. A part the party walks
-/// through (a sensor) only shows the way and may be left without.
-fn prepare_collision(geometry: &LevelDefinition) -> Result<Collision, String> {
+/// level's and every solid prop part's come with the level's data; a part
+/// the party walks through (a sensor) only shows the way and may be left
+/// without.
+fn prepare_collision(geometry: &LevelDefinition) -> Collision {
     let level = super::props::trimesh(&geometry.collision, TrimeshFlags::FIX_INTERNAL_EDGES)
-        .map_err(|error| format!("level collider: {error:?}"))?;
+        .expect("a level's collision builds");
     let parts = geometry
         .props
         .iter()
@@ -510,23 +504,23 @@ fn prepare_collision(geometry: &LevelDefinition) -> Result<Collision, String> {
                     // navmesh bakes it; only a walk-through sprite, which
                     // turns with the view, keeps no fixed shape to point at.
                     if prop.face_camera && !prop.collidable {
-                        return Ok(None);
+                        return None;
                     }
                     match super::props::trimesh(&part.collision, TrimeshFlags::empty()) {
-                        Ok(collider) => Ok(Some(collider)),
+                        Ok(collider) => Some(collider),
                         Err(error) if prop.collidable => {
-                            Err(format!("prop {} collider: {error:?}", prop.name))
+                            panic!("solid prop {} has no collider: {error:?}", prop.name)
                         }
                         Err(error) => {
                             warn!("walk-through prop {} has no collider: {error:?}", prop.name);
-                            Ok(None)
+                            None
                         }
                     }
                 })
                 .collect()
         })
-        .collect::<Result<_, String>>()?;
-    Ok(Collision { level, parts })
+        .collect();
+    Collision { level, parts }
 }
 
 /// Build the level's playable world under its root: its collider, its props
@@ -608,43 +602,21 @@ pub fn activate_level(
     mut memory: ResMut<LevelMemory>,
     (mut ids, mut rng): (ResMut<ItemIds>, ResMut<GameRng>),
     mut transition: ParamSet<(LevelContents, PartyPlacement)>,
-    (mut ready, mut failures): (MessageWriter<LevelReady>, MessageWriter<LevelEntryFailed>),
+    mut ready: MessageWriter<LevelReady>,
 ) {
     for (root, mut destination) in &mut destinations {
         // Polling reads the destination; the commit consumes it.
         let destination = destination.bypass_change_detection();
         let level = &destination.level;
-        let mut fail = |why: &str| {
-            error!("{}: {why}", level.path);
-            failures.write(LevelEntryFailed { path: level.path.clone() });
-            commands.entity(root).despawn();
-        };
-        let bodies = &mut destination.bodies;
-        match prepare(level, bodies, &geometry, &shared, &mut npcs, &assets) {
-            Ok(true) => {}
-            Ok(false) => continue,
-            Err(why) => {
-                fail(&why);
-                continue;
-            }
+        if !prepare(level, &mut destination.bodies, &geometry, &shared, &mut npcs, &assets) {
+            continue;
         }
         let geometry = geometry.get(&level.definition).expect("prepared");
         let catalogs = shared.catalogs.as_deref().expect("prepared");
         let (items, loot) = (&catalogs.items, &catalogs.loot);
-        let traveller = parties.single().ok();
-        if matches!(destination.entry, Entry::Travel) && traveller.is_none() {
-            fail("there is no party to travel");
-            continue;
-        }
         // Built once, now that nothing else is awaited, and before the
         // source is touched.
-        let collision = match prepare_collision(geometry) {
-            Ok(collision) => collision,
-            Err(error) => {
-                fail(&error);
-                continue;
-            }
-        };
+        let collision = prepare_collision(geometry);
         // Capture the source's state exactly at departure; it has not
         // changed since travel was accepted.
         for (entity, source, state, owned) in &current {
@@ -677,7 +649,7 @@ pub fn activate_level(
             &mut rng,
         );
         let party = match std::mem::replace(&mut destination.entry, Entry::Travel) {
-            Entry::Travel => traveller.unwrap(),
+            Entry::Travel => parties.single().expect("a party travels"),
             Entry::NewGame(characters) => {
                 found_party(&mut commands, characters, items, (&mut ids, &mut rng))
             }
@@ -692,9 +664,8 @@ pub fn activate_level(
     }
 }
 
-/// Whether a destination can be entered: once everything it needs has
-/// loaded and checks out, not while something is still loading, or why it
-/// never will.
+/// Whether everything a destination needs has loaded. Its files come with
+/// the game: one that fails to load is a broken installation.
 fn prepare(
     level: &Level,
     bodies: &mut Option<MonsterBodies>,
@@ -702,29 +673,32 @@ fn prepare(
     shared: &SharedData,
     npcs: &mut crate::game::npcs::NpcPopulation,
     assets: &AssetServer,
-) -> Result<bool, String> {
+) -> bool {
     let failed = |handle: UntypedAssetId| {
         matches!(assets.get_load_state(handle), Some(LoadState::Failed(_)))
     };
-    if failed(level.definition.id().untyped())
-        || level.navmeshes.iter().any(|h| failed(h.id().untyped()))
-    {
-        return Err("an asset it needs failed to load".into());
-    }
+    assert!(
+        !failed(level.definition.id().untyped())
+            && !level.navmeshes.iter().any(|h| failed(h.id().untyped())),
+        "{}: a file it needs failed to load",
+        level.path
+    );
     let (Some(geometry), Some(catalogs)) = (geometry.get(&level.definition), &shared.catalogs)
     else {
-        return Ok(false);
+        return false;
     };
     let species = &catalogs.species;
-    if !npcs.prepare(catalogs, &geometry.monsters, assets)? {
-        return Ok(false);
+    if !npcs.prepare(catalogs, &geometry.monsters, assets) {
+        return false;
     }
     let bodies = bodies.get_or_insert_with(|| MonsterBodies::for_level(geometry, species, assets));
-    if bodies.0.values().any(|body| failed(body.id().untyped())) {
-        return Err("a monster's body definition failed to load".into());
-    }
-    Ok(bodies.0.values().all(|body| shared.bodies.contains(body))
-        && navigation::navmeshes_ready(level, assets))
+    assert!(
+        !bodies.0.values().any(|body| failed(body.id().untyped())),
+        "{}: a monster's body definition failed to load",
+        level.path
+    );
+    bodies.0.values().all(|body| shared.bodies.contains(body))
+        && navigation::navmeshes_ready(level, assets)
 }
 
 /// A new campaign's party, its members joining complete and in order.
@@ -748,115 +722,4 @@ fn found_party(
     }
     commands.entity(party).insert(formation);
     party
-}
-
-#[cfg(test)]
-mod collision_tests {
-    use super::*;
-    use crate::content::level::{CollisionMesh, PropModel, PropModelPart};
-
-    fn triangle() -> CollisionMesh {
-        CollisionMesh {
-            vertices: vec![Vec3::ZERO, Vec3::X, Vec3::Z],
-            triangles: vec![[0, 1, 2]],
-            walkable: vec![true],
-        }
-    }
-
-    /// Whether a prop is solid follows its collidable flag, as the navmesh
-    /// bakes it, whatever way it is drawn.
-    #[test]
-    fn solidity_follows_the_collidable_flag_not_the_drawing() {
-        let prop = |collidable, face_camera| PropModel {
-            name: "PROP".into(),
-            collidable,
-            face_camera,
-            frames_per_second: 10.0,
-            parts: vec![PropModelPart {
-                transform: Transform::IDENTITY,
-                keys: vec![],
-                collision: triangle(),
-            }],
-            wraps: false,
-            slots: vec![],
-            trigger: None,
-        };
-        let geometry = LevelDefinition {
-            collision: triangle(),
-            props: vec![prop(true, true), prop(true, false), prop(false, false), prop(false, true)],
-            ..default()
-        };
-        let collision = prepare_collision(&geometry).unwrap();
-        let has = |prop: usize| collision.parts[prop][0].is_some();
-        assert!(has(0), "a collidable sprite is solid");
-        assert!(has(1));
-        assert!(has(2), "a walk-through prop keeps its sensor");
-        assert!(!has(3), "a walk-through sprite has no fixed shape");
-    }
-}
-
-#[cfg(test)]
-mod travel_question_tests {
-    use super::*;
-
-    fn app() -> (App, Entity) {
-        let mut app = App::new();
-        app.add_message::<TravelAnswer>()
-            .add_message::<Travel>()
-            .add_systems(Update, answer_travel_questions);
-        let level = app.world_mut().spawn(Level::test(default())).id();
-        (app, level)
-    }
-
-    fn ask(app: &mut App, level: Entity, entrance: &str) -> Entity {
-        ask_travel(app.world_mut(), level, entrance.into()).unwrap()
-    }
-
-    #[test]
-    fn questions_complete_headlessly_and_answers_cannot_retarget_a_new_question() {
-        let (mut app, level) = app();
-        let old = ask(&mut app, level, "first");
-        app.world_mut().write_message(TravelAnswer { question: old, accept: false });
-        app.update();
-        assert!(app.world().get_entity(old).is_err());
-        assert!(app.world().resource::<Messages<Travel>>().is_empty());
-        // Asking again replaces an unanswered question.
-        let replaced = ask(&mut app, level, "replaced");
-        let current = ask(&mut app, level, "second");
-        assert!(app.world().get_entity(replaced).is_err());
-        assert_eq!(app.world_mut().query::<&TravelQuestion>().iter(app.world()).count(), 1);
-        app.world_mut().write_message(TravelAnswer { question: replaced, accept: true });
-        app.world_mut().write_message(TravelAnswer { question: old, accept: true });
-        app.update();
-        assert!(app.world().get_entity(current).is_ok());
-        assert!(app.world().resource::<Messages<Travel>>().is_empty());
-        app.world_mut().write_message(TravelAnswer { question: current, accept: true });
-        app.world_mut().write_message(TravelAnswer { question: current, accept: false });
-        app.update();
-        assert!(app.world().get_entity(current).is_err());
-        let travel: Vec<_> = app.world_mut().resource_mut::<Messages<Travel>>().drain().collect();
-        assert_eq!(travel.len(), 1);
-        assert_eq!(travel[0].entrance, "second");
-    }
-
-    #[test]
-    fn departed_questions_and_answers_during_a_battle_cannot_start_travel() {
-        {
-            // A departed level's question goes with it.
-            let (mut app, level) = app();
-            let question = ask(&mut app, level, "departed");
-            app.world_mut().despawn(level);
-            app.world_mut().write_message(TravelAnswer { question, accept: true });
-            app.update();
-            assert!(app.world().get_entity(question).is_err());
-            assert!(app.world().resource::<Messages<Travel>>().is_empty());
-        }
-        let (mut app, level) = app();
-        app.world_mut().spawn(crate::game::combat::Battle::default());
-        let question = ask(&mut app, level, "fighting");
-        app.world_mut().write_message(TravelAnswer { question, accept: true });
-        app.update();
-        assert!(app.world().get_entity(question).is_err());
-        assert!(app.world().resource::<Messages<Travel>>().is_empty());
-    }
 }

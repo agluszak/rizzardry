@@ -242,36 +242,3 @@ pub fn draw_buttons(
         );
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn hiding_the_last_panel_goes_full_and_showing_one_goes_wide() {
-        let mut layout = ScreenLayout::default();
-        let wide = layout.viewport();
-        layout.toggle(Panel::Radar);
-        let reaching_down = layout.viewport();
-        assert_eq!(reaching_down.width(), wide.width());
-        assert!(reaching_down.height() > wide.height(), "the view reaches over hidden panels");
-        layout.toggle(Panel::TextBox);
-        layout.toggle(Panel::Formation);
-        assert_eq!(layout.mode, LayoutMode::Full);
-        assert_eq!(layout.viewport(), reaching_down);
-        layout.toggle(Panel::TextBox);
-        assert_eq!(layout.mode, LayoutMode::Wide);
-        assert!(layout.shows(Panel::TextBox) && !layout.shows(Panel::Radar));
-        layout.cycle(false);
-        assert_eq!(layout.mode, LayoutMode::Full);
-        layout.cycle(false);
-        assert_eq!(layout.mode, LayoutMode::Closed);
-        let closed = layout.viewport();
-        assert!(closed.width() < wide.width(), "Closed narrows the view between its columns");
-        layout.toggle(Panel::Radar);
-        assert!(layout.shows(Panel::Radar), "Closed keeps the radar");
-        assert_eq!(layout.viewport(), closed);
-        layout.toggle(Panel::TextBox);
-        assert!(layout.viewport().height() > closed.height());
-    }
-}

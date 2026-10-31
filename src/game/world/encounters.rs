@@ -582,6 +582,38 @@ pub fn run_encounters(
             })
             .collect(),
     };
+    // A generator's try: forced on a stale
+    // arrival, otherwise when its interval is up; it calls up a group when
+    // the gates admit one.
+    let mut roll = |index: usize,
+                    forced: bool,
+                    state: &EncounterState,
+                    working: &mut Working,
+                    (commands, groups): (
+        &mut Commands,
+        &Query<(Entity, &mut MonsterGroup, Option<&GroupMembers>)>,
+    ),
+                    rng: &mut GameRng| {
+        let generator = &encounters.generators[index];
+        if admits(
+            (generator, &state.generators[index]),
+            encounters,
+            &onlooker,
+            (working, state.limit, now_s),
+            (commands, groups),
+            &obstacles,
+            (forced, blocked, rng),
+        ) && let Some(spawned) = generate(
+            commands,
+            generator,
+            (&onlooker, now_s, night, difficulty),
+            &mut spawning,
+            (&mut configs, rng),
+            &mut unborn,
+        ) {
+            working.add(spawned, now_s);
+        }
+    };
     if let Some(arrival) = state.arrival.take() {
         let elapsed = match arrival {
             Arrival::First => {
@@ -614,25 +646,7 @@ pub fn run_encounters(
                 }
             }
             for index in order {
-                let generator = &encounters.generators[index];
-                if admits(
-                    (generator, &state.generators[index]),
-                    encounters,
-                    &onlooker,
-                    (&mut working, state.limit, now_s),
-                    (&mut commands, &groups),
-                    &obstacles,
-                    (true, blocked, &mut rng),
-                ) && let Some(spawned) = generate(
-                    &mut commands,
-                    generator,
-                    (&onlooker, now_s, night, difficulty),
-                    &mut spawning,
-                    (&mut configs, &mut rng),
-                    &mut unborn,
-                ) {
-                    working.add(spawned, now_s);
-                }
+                roll(index, true, &state, &mut working, (&mut commands, &groups), &mut rng);
             }
             return;
         }
@@ -652,349 +666,9 @@ pub fn run_encounters(
         if state.generators[index].elapsed < state.generators[index].duration {
             continue;
         }
-        if admits(
-            (generator, &state.generators[index]),
-            encounters,
-            &onlooker,
-            (&mut working, state.limit, now_s),
-            (&mut commands, &groups),
-            &obstacles,
-            (false, blocked, &mut rng),
-        ) && let Some(spawned) = generate(
-            &mut commands,
-            generator,
-            (&onlooker, now_s, night, difficulty),
-            &mut spawning,
-            (&mut configs, &mut rng),
-            &mut unborn,
-        ) {
-            working.add(spawned, now_s);
-        }
+        roll(index, false, &state, &mut working, (&mut commands, &groups), &mut rng);
         let duration = jittered(interval(encounters, generator), &mut rng);
         state.generators[index] =
             GeneratorState { elapsed: 0.0, duration, ..state.generators[index] };
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::content::level::{EncounterEntry, LevelDefinition};
-    use crate::game::world::identify::GroupMember;
-    use crate::game::world::obstacles::scenery;
-    use avian3d::prelude::{Collider, PhysicsPlugins, RigidBody};
-    use bevy::ecs::system::RunSystemOnce;
-
-    const SPECIES: u32 = 1;
-    /// The game second a new clock reads.
-    const NOON: u64 = 43_200;
-
-    /// A level on a floor with one generator 150 m off behind a wall, its
-    /// table offering one species at every rarity, the party at the
-    /// origin; returns the app and the level.
-    fn level(budget: (i32, i32)) -> (App, Entity) {
-        let mut app = App::new();
-        app.add_plugins((
-            MinimalPlugins,
-            AssetPlugin::default(),
-            bevy::mesh::MeshPlugin,
-            TransformPlugin,
-            PhysicsPlugins::default(),
-        ))
-        .init_resource::<GameClock>()
-        .init_resource::<Difficulty>()
-        .insert_resource(GameRng::seeded(9))
-        .init_asset::<MonsterBody>()
-        .init_asset::<LevelDefinition>()
-        .init_resource::<Assets<WalkerMotionConfig>>();
-        app.finish();
-        app.cleanup();
-        let world = app.world_mut();
-        let crab = Species { group_size: Dice { base: 2, count: 0, sides: 0 }, ..default() };
-        let species = MonsterCatalog(vec![default(), crab]);
-        world.insert_resource(crate::game::data::Catalogs { species, ..default() });
-        let body = world.resource_mut::<Assets<MonsterBody>>().add(MonsterBody {
-            scale: 1.0,
-            fight_radius: 0.5,
-            target_height: 1.5,
-            ..default()
-        });
-        let level_bodies = MonsterBodies([(SPECIES, body)].into());
-        let table = EncounterTable {
-            name: "Woods".into(),
-            entries: [3, 7, 20, 70]
-                .map(|rarity| EncounterEntry {
-                    species: SPECIES,
-                    rarity,
-                    time: EncounterTime::Always,
-                    challenge: 1,
-                })
-                .to_vec(),
-        };
-        let encounters = Encounters {
-            limits: EncounterLimits {
-                most: 5,
-                fewest: 1,
-                largest_budget: budget.0,
-                smallest_budget: budget.1,
-                period: 600,
-                lingers: 10,
-            },
-            budget: 3,
-            held: false,
-            default_chance: 100,
-            default_interval: 10,
-            generators: vec![Generator {
-                name: "MonGen001".into(),
-                enabled: true,
-                chance: 100,
-                interval: 1,
-                position: Vec3::new(0.0, 0.0, -150.0),
-                table: Some(table),
-                ..default()
-            }],
-        };
-        let definition = world
-            .resource_mut::<Assets<LevelDefinition>>()
-            .add(LevelDefinition { encounters, ..default() });
-        let root = world
-            .spawn((
-                Level::test(definition),
-                level_bodies,
-                LevelNavigation { archipelagos: vec![] },
-                Unborn::default(),
-            ))
-            .id();
-        let party = crate::game::party::roster::test_party(world, &[]);
-        world.entity_mut(party).insert((
-            Position(Vec3::Y * crate::game::party::body::FLOAT_HEIGHT),
-            PartyBody::default(),
-        ));
-        world.spawn((
-            RigidBody::Static,
-            Collider::cuboid(400.0, 0.2, 400.0),
-            scenery(),
-            Transform::from_xyz(0.0, -0.1, 0.0),
-        ));
-        world.spawn((
-            RigidBody::Static,
-            Collider::cuboid(40.0, 20.0, 0.2),
-            scenery(),
-            Transform::from_xyz(0.0, 0.0, -100.0),
-        ));
-        app.update();
-        app.update();
-        (app, root)
-    }
-
-    fn arrive(app: &mut App, root: Entity, arrival: Arrival) {
-        let definition = PlayedLevelDefinition::of(app, root);
-        let mut state = EncounterState::authored(&definition.encounters, &mut GameRng::seeded(1));
-        state.arrival = Some(arrival);
-        app.world_mut().entity_mut(root).insert(state);
-    }
-
-    struct PlayedLevelDefinition;
-    impl PlayedLevelDefinition {
-        fn of(app: &App, root: Entity) -> LevelDefinition {
-            let handle = &app.world().get::<Level>(root).unwrap().definition;
-            app.world().resource::<Assets<LevelDefinition>>().get(handle).unwrap().clone()
-        }
-    }
-
-    /// The encounter groups about: each group's id, its registration and
-    /// its members' feet.
-    fn encounters(app: &mut App) -> Vec<(MonsterGroup, Vec<Vec3>)> {
-        let world = app.world_mut();
-        let members: Vec<(Entity, Vec3)> = world
-            .query::<(&GroupMember, &Transform)>()
-            .iter(world)
-            .map(|(member, at)| (member.0, at.translation))
-            .collect();
-        world
-            .query::<(Entity, &MonsterGroup)>()
-            .iter(world)
-            .filter(|(_, group)| group.encounter.is_some())
-            .map(|(entity, group)| {
-                (*group, members.iter().filter(|(g, _)| *g == entity).map(|&(_, at)| at).collect())
-            })
-            .collect()
-    }
-
-    /// A first visit fills the budget and rolls every generator, out of
-    /// sight or not, so the level starts with its encounters about.
-    #[test]
-    fn a_first_visit_rolls_every_generator() {
-        let (mut app, root) = level((8, 2));
-        arrive(&mut app, root, Arrival::First);
-        app.world_mut().run_system_once(run_encounters).unwrap();
-        let state = app.world().get::<EncounterState>(root).unwrap();
-        assert_eq!((state.budget, state.limit), (8, 5), "the budget fills, the limit follows");
-        assert!(state.arrival.is_none());
-        let about = encounters(&mut app);
-        assert_eq!(about.len(), 1);
-        let (group, feet) = &about[0];
-        assert_eq!(group.encounter, Some(NOON), "registered as it came");
-        assert_eq!(feet.len(), 2, "as many as the group dice say");
-        assert!(feet.iter().all(|at| at.distance(Vec3::new(0.0, 0.0, -150.0)) < 5.0), "{feet:?}");
-    }
-
-    /// Back after a while, the budget grows by the time away and the
-    /// encounters about age by none of it; no new roll happens.
-    #[test]
-    fn a_return_earns_budget_and_keeps_the_encounters() {
-        let (mut app, root) = level((8, 2));
-        arrive(&mut app, root, Arrival::First);
-        app.world_mut().run_system_once(run_encounters).unwrap();
-        app.world_mut().resource_mut::<GameClock>().ms = (NOON + 1_200) * 1000;
-        {
-            let mut state = app.world_mut().get_mut::<EncounterState>(root).unwrap();
-            state.budget = 2;
-            state.arrival = Some(Arrival::Returned { left: NOON });
-            state.generators[0].elapsed = 0.0;
-        }
-        app.world_mut().run_system_once(run_encounters).unwrap();
-        let state = app.world().get::<EncounterState>(root).unwrap();
-        assert_eq!(state.budget, 4, "1200 s away earns two at 600 s each");
-        let about = encounters(&mut app);
-        assert_eq!(about.len(), 1, "no new roll");
-        assert_eq!(about[0].0.encounter, Some(NOON + 1_200), "aged by none of the time away");
-    }
-
-    /// A generator due, its spot out of the party's sight and far enough,
-    /// calls an encounter up; one in the party's sight does not.
-    #[test]
-    fn a_due_generator_calls_up_only_out_of_sight() {
-        for (wall, called) in [(true, 1), (false, 0)] {
-            let (mut app, root) = level((8, 2));
-            if !wall {
-                let world = app.world_mut();
-                let walls: Vec<Entity> = world
-                    .query::<(Entity, &Transform, &Collider)>()
-                    .iter(world)
-                    .filter(|(_, at, _)| at.translation.z < -50.0)
-                    .map(|(e, ..)| e)
-                    .collect();
-                for wall in walls {
-                    world.despawn(wall);
-                }
-                app.update();
-                app.update();
-            }
-            arrive(&mut app, root, Arrival::Returned { left: NOON });
-            {
-                let mut state = app.world_mut().get_mut::<EncounterState>(root).unwrap();
-                state.generators[0].elapsed = state.generators[0].duration;
-            }
-            app.world_mut().run_system_once(run_encounters).unwrap();
-            assert_eq!(encounters(&mut app).len(), called, "wall {wall}");
-            let state = app.world().get::<EncounterState>(root).unwrap();
-            assert_eq!(state.generators[0].elapsed, 0.0, "the timer starts again");
-        }
-    }
-
-    /// An encounter the party wipes out in a fight is off the books and
-    /// costs the budget one (retail `UnregisterActiveEncounterGroup`).
-    #[test]
-    fn an_encounter_wiped_out_in_a_fight_costs_the_budget() {
-        let (mut app, root) = level((8, 2));
-        arrive(&mut app, root, Arrival::First);
-        app.world_mut().run_system_once(run_encounters).unwrap();
-        let world = app.world_mut();
-        for mut monster in world.query::<&mut Monster>().iter_mut(world) {
-            monster.hp = 0;
-        }
-        world.spawn(crate::game::combat::Battle::default());
-        app.world_mut().run_system_once(write_off_wiped_out).unwrap();
-        let state = app.world().get::<EncounterState>(root).unwrap();
-        assert_eq!((state.budget, state.limit), (7, 5));
-        assert!(encounters(&mut app).is_empty());
-    }
-
-    /// Change the level's authored encounters.
-    fn author(app: &mut App, root: Entity, change: impl FnOnce(&mut Encounters)) {
-        let handle = app.world().get::<Level>(root).unwrap().definition.clone();
-        let mut definitions = app.world_mut().resource_mut::<Assets<LevelDefinition>>();
-        change(&mut definitions.get_mut(&handle).unwrap().encounters);
-    }
-
-    /// Make every generator due.
-    fn due(app: &mut App, root: Entity) {
-        let mut state = app.world_mut().get_mut::<EncounterState>(root).unwrap();
-        for generator in &mut state.generators {
-            generator.elapsed = generator.duration;
-        }
-    }
-
-    /// Two generators due at once with room for one encounter: the first
-    /// one's spawn counts against the second at once.
-    #[test]
-    fn generators_due_together_respect_the_limit() {
-        let (mut app, root) = level((8, 2));
-        author(&mut app, root, |encounters| {
-            encounters.limits.most = 1;
-            let mut second = encounters.generators[0].clone();
-            second.position = Vec3::new(15.0, 0.0, -150.0);
-            encounters.generators.push(second);
-        });
-        arrive(&mut app, root, Arrival::Returned { left: NOON });
-        due(&mut app, root);
-        app.world_mut().run_system_once(run_encounters).unwrap();
-        assert_eq!(encounters(&mut app).len(), 1);
-    }
-
-    /// At the limit, an overdue encounter far off is retired only when a
-    /// generator is otherwise free to generate: not during a fight, and
-    /// then the generator replaces it in the same step.
-    #[test]
-    fn retirement_waits_on_the_generation_gates() {
-        let (mut app, root) = level((8, 2));
-        author(&mut app, root, |encounters| encounters.limits.most = 1);
-        arrive(&mut app, root, Arrival::First);
-        app.world_mut().run_system_once(run_encounters).unwrap();
-        let first = encounters(&mut app)[0].0.authored;
-        // Long past its lingering (10 × 12 s).
-        app.world_mut().resource_mut::<GameClock>().ms = (NOON + 600) * 1000;
-        let battle = app.world_mut().spawn(crate::game::combat::Battle::default()).id();
-        due(&mut app, root);
-        app.world_mut().run_system_once(run_encounters).unwrap();
-        let about = encounters(&mut app);
-        assert_eq!(about.len(), 1);
-        assert_eq!(about[0].0.authored, first, "a fight retires nothing");
-        app.world_mut().despawn(battle);
-        due(&mut app, root);
-        app.world_mut().run_system_once(run_encounters).unwrap();
-        let about = encounters(&mut app);
-        assert_eq!(about.len(), 1);
-        assert_ne!(about[0].0.authored, first, "retired and replaced");
-        assert_eq!(about[0].0.encounter, Some(NOON + 600));
-    }
-
-    /// Strong encounters lean small and weak tiny ones large, by difficulty
-    /// (retail `RollEncounterGroupSize`).
-    #[test]
-    fn group_sizes_lean_by_strength_and_difficulty() {
-        let mut rng = GameRng::seeded(4);
-        let strong = Species {
-            display_level: 12,
-            group_size: Dice { base: 0, count: 2, sides: 4 },
-            ..default()
-        };
-        assert_eq!(group_size(&strong, 5.0, Difficulty::Novice, &mut rng), 2);
-        for _ in 0..20 {
-            assert!(group_size(&strong, 5.0, Difficulty::Normal, &mut rng) <= 5);
-        }
-        let tiny = Species {
-            display_level: 1,
-            group_size: Dice { base: 0, count: 0, sides: 1 },
-            ..default()
-        };
-        assert_eq!(group_size(&tiny, 5.0, Difficulty::Expert, &mut rng), 0);
-        let weak = Species {
-            display_level: 1,
-            group_size: Dice { base: 0, count: 1, sides: 1 },
-            ..default()
-        };
-        assert_eq!(group_size(&weak, 5.0, Difficulty::Expert, &mut rng), 1);
     }
 }

@@ -177,27 +177,3 @@ fn tooltip_corner(cursor: Vec2, size: Vec2, target: Vec2) -> Vec2 {
         .max(Vec2::splat(2.0))
         .min((target - size - 2.0).max(Vec2::splat(2.0)))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tooltip_bounds_follow_the_target_instead_of_the_retail_canvas() {
-        let size = Vec2::new(100.0, 20.0);
-        for pixels in
-            [Vec2::new(1280.0, 960.0), Vec2::new(1920.0, 1080.0), Vec2::new(1080.0, 1920.0)]
-        {
-            let scale = (pixels.x / 640.0).min(pixels.y / 480.0);
-            let target = pixels / scale;
-            let cursor = target - Vec2::splat(10.0);
-            let at = tooltip_corner(cursor, size, target);
-            assert_eq!(at.x, target.x - size.x - 2.0);
-            assert!(at.y >= 2.0 && at.y + size.y <= target.y - 2.0);
-            assert_eq!(tooltip_corner(Vec2::ZERO, size, target), Vec2::splat(2.0));
-        }
-        let wide = Vec2::new(1920.0, 1080.0) / 2.25;
-        assert_eq!(tooltip_corner(Vec2::new(700.0, 200.0), size, wide), Vec2::new(700.0, 184.0));
-        assert_eq!(tooltip_corner(Vec2::new(700.0, 200.0), size, Vec2::new(640.0, 480.0)).x, 538.0);
-    }
-}

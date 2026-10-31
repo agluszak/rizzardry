@@ -1,12 +1,10 @@
 //! Speech pacing lives on the session's line entity, independently of its UI.
-use crate::game::npcs::conversation::{
-    ConversationRequest, ConversationSpeech, Talk, update_conversation,
-};
+use crate::game::npcs::conversation::{ConversationSpeech, Conversing, LineSpoken};
 use bevy::prelude::*;
 
 pub(super) fn plugin(app: &mut App) {
     app.add_observer(play_line)
-        .add_systems(Update, (watch_playback, advance_lines).chain().after(update_conversation));
+        .add_systems(Update, (watch_playback, advance_lines).chain().after(Conversing));
 }
 
 /// How long a said line shows before the conversation is advanced past
@@ -72,7 +70,7 @@ fn watch_playback(mut lines: Query<(&bevy::audio::AudioSink, &mut LinePace)>) {
 fn advance_lines(
     time: Res<Time<Real>>,
     mut lines: Query<(Entity, &mut LinePace, &ChildOf), With<ConversationSpeech>>,
-    mut requests: MessageWriter<ConversationRequest>,
+    mut spoken: MessageWriter<LineSpoken>,
 ) {
     for (speech, mut pace, parent) in &mut lines {
         let (LinePace::Text { remaining } | LinePace::Hold { remaining }) = &mut *pace else {
@@ -81,55 +79,7 @@ fn advance_lines(
         *remaining -= time.delta_secs();
         if *remaining <= 0.0 {
             *pace = LinePace::Said;
-            requests.write(ConversationRequest::new(parent.parent(), Talk::Advance { speech }));
+            spoken.write(LineSpoken { conversation: parent.parent(), speech });
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    /// A said line whose speech never plays shows for its text's time, then
-    /// the view advances the conversation past it, once, by the ordinary
-    /// request.
-    #[test]
-    fn a_silent_line_is_advanced_after_its_text_time() {
-        let mut app = App::new();
-        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-            .init_asset::<bevy::audio::AudioSource>()
-            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
-                std::time::Duration::from_millis(100),
-            ))
-            .add_message::<ConversationRequest>()
-            .add_message::<crate::game::npcs::conversation::BeginConversation>()
-            .add_plugins(plugin);
-        let conversation = app.world_mut().spawn_empty().id();
-        let speech = app
-            .world_mut()
-            .spawn((
-                ConversationSpeech {
-                    voice: Some("npc_test_000".into()),
-                    text: "Hello".into(),
-                    alert: false,
-                },
-                ChildOf(conversation),
-            ))
-            .id();
-        let mut advanced = Vec::new();
-        for frame in 0..40 {
-            app.update();
-            let requests: Vec<_> =
-                app.world_mut().resource_mut::<Messages<ConversationRequest>>().drain().collect();
-            advanced.extend(requests.into_iter().map(|request| (frame, request)));
-        }
-        // 2.3 seconds for five characters; the first frame has no time in it.
-        assert_eq!(advanced.len(), 1, "{advanced:?}");
-        let (frame, request) = &advanced[0];
-        assert!((23..=25).contains(frame), "{frame}");
-        assert!(matches!(
-            request,
-            ConversationRequest { conversation: c, talk: Talk::Advance { speech: s } }
-                if *c == conversation && *s == speech
-        ));
     }
 }

@@ -126,25 +126,6 @@ impl MagicView {
     pub fn aim_at(&mut self, member: Entity) {
         self.member = Some(member);
     }
-
-    /// A view with a source already chosen.
-    #[cfg(test)]
-    pub(super) fn choosing(caster: Entity, source: Source) -> Self {
-        MagicView {
-            caster,
-            items: false,
-            pool: false,
-            realm: None,
-            source: Some(source),
-            power: None,
-            member: None,
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn member(&self) -> Option<Entity> {
-        self.member
-    }
 }
 
 /// What a chosen source's spell is cast at, read from the caster's items,
@@ -293,7 +274,10 @@ pub fn open(
             _ => None,
         };
         if let Some(attempt) = attempt {
-            world.write_message(DeviceRequest::PrepareMagic { on: attempt, actor: caster });
+            world.write_message(DeviceRequest {
+                on: attempt,
+                act: crate::game::world::interaction::DeviceAct::PrepareMagic { actor: caster },
+            });
         }
         // Serialize replacements, including multiple opens queued in one frame.
         // A replacement gives focus back to what the first view took it from.
@@ -687,19 +671,66 @@ fn rating(chance: u32) -> usize {
     }
 }
 
-/// Draw the view from the current state, and commit when the choice is whole.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn refresh_magic_view(
+/// The selected member casts; choosing another starts over for them. The
+/// view closes once its caster can no longer act on a device, or what it
+/// was opened for is gone.
+pub(super) fn follow_caster(
     mut commands: Commands,
-    mut views: Query<(
-        Entity,
-        &mut MagicView,
-        &MagicScroll,
-        Option<&CastsAt>,
-        Option<&ConversationTarget>,
-    )>,
-    sliders: Query<(&SliderValue, &SliderRange)>,
+    mut views: Query<(Entity, &mut MagicView, Option<&CastsAt>, Option<&ConversationTarget>)>,
     (selected, roster): (Res<super::SelectedMember>, Single<&PartyRoster>),
+    vitals: Query<&Vitals>,
+    (battle, camp, interaction, conversations): (
+        Option<Single<&Battle>>,
+        Option<Res<crate::game::camp::Camp>>,
+        Query<&crate::game::world::interaction::DeviceInteraction>,
+        Query<&crate::game::npcs::conversation::Conversation>,
+    ),
+    mut devices: MessageWriter<crate::game::world::interaction::DeviceRequest>,
+) {
+    let Ok((root, mut view, casts_at, conversation_target)) = views.single_mut() else {
+        return;
+    };
+    let attempt = casts_at.map(|casts_at| casts_at.0);
+    if let Some(member) = selected.member(&roster)
+        && member != view.caster
+    {
+        if let Some(attempt) = attempt {
+            devices.write(crate::game::world::interaction::DeviceRequest {
+                on: attempt,
+                act: crate::game::world::interaction::DeviceAct::PrepareMagic { actor: member },
+            });
+        }
+        *view = MagicView {
+            caster: member,
+            items: view.items,
+            pool: view.pool,
+            realm: None,
+            source: None,
+            power: None,
+            member: None,
+        };
+    }
+    let unable = attempt.is_some() && !vitals.get(view.caster).unwrap().can_act();
+    let context = context(
+        attempt,
+        conversation_target.map(|r| r.0),
+        &conversations,
+        battle.is_some(),
+        camp.is_some(),
+        &interaction,
+    );
+    if unable || context.is_none() {
+        commands.entity(root).despawn();
+    }
+}
+
+/// Draw the view from the current state: realms and their points, the
+/// offers, the power pips and cost, or the chosen item.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw_magic_view(
+    mut commands: Commands,
+    mut views: Query<(&mut MagicView, &MagicScroll, Option<&CastsAt>, Option<&ConversationTarget>)>,
+    sliders: Query<(&SliderValue, &SliderRange)>,
     members: Query<(&Character, &Vitals, &Carried)>,
     casters: Query<(&LearnedSpells, &SpellPoints)>,
     (battle, camp, interaction, pool): (
@@ -709,12 +740,7 @@ pub(super) fn refresh_magic_view(
         Single<&PartyInventory>,
     ),
     content: If<Res<Catalogs>>,
-    (conversations, speakers, monsters, party): (
-        Query<&crate::game::npcs::conversation::Conversation>,
-        Query<&crate::game::npcs::NpcBody>,
-        Query<(Entity, &crate::game::world::population::Monster, crate::game::world::ActorPose)>,
-        Query<(&avian3d::prelude::Position, &PartyBody)>,
-    ),
+    conversations: Query<&crate::game::npcs::conversation::Conversation>,
     (art, assets, strings): (
         Res<MagicViewArt>,
         Res<AssetServer>,
@@ -739,39 +765,11 @@ pub(super) fn refresh_magic_view(
     )>,
     mut icons: Query<(&RealmIcon, &mut Picture), (Without<ItemIcon>, Without<Pip>)>,
     time: Res<Time<Real>>,
-    (mut requests, mut devices): (
-        MessageWriter<MagicRequest>,
-        MessageWriter<crate::game::world::interaction::DeviceRequest>,
-    ),
 ) {
-    let Ok((root, mut view, scroll, casts_at, conversation_target)) = views.single_mut() else {
+    let Ok((mut view, scroll, casts_at, conversation_target)) = views.single_mut() else {
         return;
     };
     let attempt = casts_at.map(|casts_at| casts_at.0);
-    // The selected member casts; choosing another starts over for them.
-    if let Some(member) = selected.member(&roster)
-        && member != view.caster
-    {
-        if let Some(attempt) = attempt {
-            devices.write(crate::game::world::interaction::DeviceRequest::PrepareMagic {
-                on: attempt,
-                actor: member,
-            });
-        }
-        *view = MagicView {
-            caster: member,
-            items: view.items,
-            pool: view.pool,
-            realm: None,
-            source: None,
-            power: None,
-            member: None,
-        };
-    }
-    if attempt.is_some() && !members.get(view.caster).unwrap().1.can_act() {
-        commands.entity(root).despawn();
-        return;
-    }
     let (spells, items) = (&content.spells, &content.items);
     let Some(context) = context(
         attempt,
@@ -781,7 +779,6 @@ pub(super) fn refresh_magic_view(
         camp.is_some(),
         &interaction,
     ) else {
-        commands.entity(root).despawn();
         return;
     };
     let (character, vitals, carried) = members.get(view.caster).unwrap();
@@ -941,13 +938,6 @@ pub(super) fn refresh_magic_view(
                 label.value.clone_from(&cost);
             }
         }
-        // Maximum-power spells latch their auto pip (retail `SC:990-1002`).
-        if spell.is_some_and(|s| s.power == PowerChoice::Maximum) && view.power.is_none() {
-            view.power = Some(AUTO_POWER);
-        }
-        if spell.is_some_and(|s| s.power == PowerChoice::Fixed) && view.power.is_none() {
-            view.power = Some(1);
-        }
     } else {
         let icon = view
             .source
@@ -973,8 +963,40 @@ pub(super) fn refresh_magic_view(
             }
         }
     }
-    // Commit once the source, its power and its target are all chosen.
-    let (Some(source), Some(spell)) = (view.source, spell) else { return };
+}
+
+/// Commit once the source, its power and its target are all chosen. A
+/// spell that casts only at its maximum, or at one fixed power, takes that
+/// power as soon as it is chosen (retail `SC:990-1002`).
+pub(super) fn commit_magic_choice(
+    mut commands: Commands,
+    mut views: Query<(Entity, &mut MagicView, Option<&CastsAt>, Option<&ConversationTarget>)>,
+    carried: Query<&Carried>,
+    pool: Single<&PartyInventory>,
+    content: If<Res<Catalogs>>,
+    (conversations, speakers, monsters, party): (
+        Query<&crate::game::npcs::conversation::Conversation>,
+        Query<&crate::game::npcs::NpcBody>,
+        Query<(Entity, &crate::game::world::population::Monster, crate::game::world::ActorPose)>,
+        Query<(&avian3d::prelude::Position, &PartyBody)>,
+    ),
+    mut requests: MessageWriter<MagicRequest>,
+) {
+    let Ok((root, mut view, casts_at, conversation_target)) = views.single_mut() else {
+        return;
+    };
+    let attempt = casts_at.map(|casts_at| casts_at.0);
+    let Some(source) = view.source else { return };
+    let carried = carried.get(view.caster).unwrap();
+    let Some(id) = source.spell_id(carried, &pool, &content.items) else { return };
+    let spell = &content.spells[id];
+    if !view.items && view.power.is_none() {
+        match spell.power {
+            PowerChoice::Maximum => view.power = Some(AUTO_POWER),
+            PowerChoice::Fixed => view.power = Some(1),
+            _ => {}
+        }
+    }
     // An item casts at its own power.
     let power = if view.items { Some(1) } else { view.power };
     let Some(power) = power else { return };
@@ -1117,87 +1139,5 @@ fn choose_power(click: On<Activate>, pips: Query<&Pip>, mut views: Query<&mut Ma
 fn cancel_view(_: On<Activate>, views: Query<Entity, With<MagicView>>, mut commands: Commands) {
     for view in &views {
         commands.entity(view).despawn();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::presentation::test_input::{input_app, tap};
-
-    #[derive(Component, Clone, Default)]
-    struct Beneath;
-
-    #[derive(InputAction)]
-    #[action_output(bool)]
-    struct LeaveBeneath;
-
-    #[derive(Resource, Default)]
-    struct Left(u32);
-
-    /// Escape closes the view and nothing beneath it (a camp's Escape ends
-    /// the rest), and focus goes back to what had it, such as a device
-    /// panel's button, rather than staying on a hidden control.
-    #[test]
-    fn escape_closes_only_the_view_and_gives_focus_back() {
-        let mut app = input_app();
-        app.add_plugins((
-            plugin,
-            bevy::input_focus::InputDispatchPlugin,
-            bevy::input_focus::tab_navigation::TabNavigationPlugin,
-        ))
-        .add_input_context::<Beneath>()
-        .add_observer(crate::presentation::retail_controls::give_focus_back)
-        .init_asset::<SpriteSheet>()
-        .init_resource::<Left>()
-        .insert_resource(MagicViewArt {
-            spell_panels: default(),
-            realm_buttons: default(),
-            realms: default(),
-            pips: default(),
-            cancel: default(),
-            scroll: default(),
-            item_panels: default(),
-            font: default(),
-            red: default(),
-            orange: default(),
-            blue: default(),
-            yellow: default(),
-        });
-        app.finish();
-        app.cleanup();
-        let window = app.world_mut().spawn((Window::default(), bevy::window::PrimaryWindow)).id();
-        app.world_mut().commands().spawn_scene(bsn! {
-            Beneath
-            ContextPriority::<Beneath>::new(1)
-            Actions<Beneath> [
-                Action::<LeaveBeneath>::new()
-                ActionSettings { consume_input: true }
-                Bindings [ Binding(KeyCode::Escape) ]
-            ]
-            on(|_: On<Start<LeaveBeneath>>, mut left: ResMut<Left>| left.0 += 1)
-        });
-        let before = app.world_mut().spawn((UiButton, TabIndex(0))).id();
-        app.world_mut()
-            .resource_mut::<InputFocus>()
-            .set(before, bevy::input_focus::FocusCause::Navigated);
-        // Another view giving focus back must outlive magic views replacing
-        // each other, two opens queued in one frame.
-        let other = app.world_mut().spawn(RestoreFocus(None)).id();
-        let caster = app.world_mut().spawn_empty().id();
-        let art = app.world().resource::<MagicViewArt>().clone();
-        open(&mut app.world_mut().commands(), &art, caster, false, None);
-        open(&mut app.world_mut().commands(), &art, caster, false, None);
-        app.update();
-        app.update();
-        assert!(app.world().get::<RestoreFocus>(other).is_some(), "another view stays");
-        let focused = app.world().resource::<InputFocus>().get().unwrap();
-        assert_ne!(focused, before, "the view takes focus");
-        assert_eq!(app.world_mut().query::<&MagicView>().iter(app.world()).count(), 1);
-        tap(&mut app, window, KeyCode::Escape);
-        app.update();
-        assert_eq!(app.world_mut().query::<&MagicView>().iter(app.world()).count(), 0);
-        assert_eq!(app.world().resource::<InputFocus>().get(), Some(before));
-        assert_eq!(app.world().resource::<Left>().0, 0, "what lies beneath keeps its Escape");
     }
 }

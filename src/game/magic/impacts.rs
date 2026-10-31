@@ -137,35 +137,26 @@ pub(crate) fn resolve(
         let mut order = finish.victims.clone();
         order.sort_by_key(|victim| match *victim {
             Victim::Member(entity) => {
-                (0, world.party.iter().position(|&member| member == entity).unwrap_or(usize::MAX))
+                (0, world.party.iter().position(|&member| member == entity).unwrap())
             }
-            Victim::Monster(entity) => (
-                1,
-                world
-                    .monsters
-                    .monsters()
-                    .get(entity)
-                    .map_or(usize::MAX, |(body, ..)| body.location as usize),
-            ),
+            Victim::Monster(entity) => {
+                (1, world.monsters.monsters().get(entity).unwrap().0.location as usize)
+            }
         });
         let mut best = None;
         for victim in order {
             let effect = match victim {
-                Victim::Member(entity) => world
-                    .members
-                    .get(entity)
-                    .ok()
-                    .filter(|(_, v, ..)| !v.is_dead())
-                    .and_then(|(_, v, ..)| v.enchantments.get(SpellId::EYE_FOR_AN_EYE))
-                    .copied(),
-                Victim::Monster(entity) => world
-                    .monsters
-                    .monsters()
-                    .get(entity)
-                    .ok()
-                    .filter(|(body, ..)| !body.is_dead())
-                    .and_then(|(body, ..)| body.enchantments.get(SpellId::EYE_FOR_AN_EYE))
-                    .copied(),
+                Victim::Member(entity) => {
+                    let (_, v, ..) = world.members.get(entity).unwrap();
+                    v.enchantments.get(SpellId::EYE_FOR_AN_EYE).filter(|_| !v.is_dead()).copied()
+                }
+                Victim::Monster(entity) => {
+                    let (body, ..) = world.monsters.monsters().get(entity).unwrap();
+                    body.enchantments
+                        .get(SpellId::EYE_FOR_AN_EYE)
+                        .filter(|_| !body.is_dead())
+                        .copied()
+                }
             };
             if let Some(effect) = effect
                 && effect.power > best.map_or(0, |(_, power)| power)

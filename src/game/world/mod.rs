@@ -90,7 +90,6 @@ impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(navigation::NavigationPlugin)
             .add_message::<level::LevelReady>()
-            .add_message::<level::LevelEntryFailed>()
             .add_message::<level::Travel>()
             .add_message::<level::TravelAnswer>()
             .add_message::<search::ToggleSearch>()
@@ -100,7 +99,9 @@ impl Plugin for WorldPlugin {
             .init_resource::<level::LevelMemory>()
             .add_message::<triggers::TriggerEffect>()
             .add_message::<interaction::LockNews>()
-            .add_message::<WorldRequest>()
+            .add_message::<ActivateDevice>()
+            .add_message::<items::TakeItem>()
+            .add_message::<items::DropHeld>()
             .add_message::<population::Birth>()
             .add_message::<particles::EmissionSpent>()
             .add_message::<crate::game::automap::CommitNote>()
@@ -116,7 +117,13 @@ impl Plugin for WorldPlugin {
                 Update,
                 (
                     level::activate_level.in_set(GameplaySet::LevelActivation),
-                    (handle_world_requests, crate::game::automap::commit_notes)
+                    (
+                        activate_devices,
+                        items::take_items,
+                        items::drop_held,
+                        crate::game::automap::commit_notes,
+                    )
+                        .chain()
                         .after(GameplaySet::Burden)
                         .before(GameplaySet::Combat),
                     particles::switch_off_spent.before(GameplaySet::LevelActivation),
@@ -143,39 +150,18 @@ impl Plugin for WorldPlugin {
     }
 }
 
-/// What the player asks of the world under the pointer.
+/// The player uses a device, its reach checked when the request executes.
 #[derive(Message, Clone, Copy, Debug, PartialEq)]
-pub enum WorldRequest {
-    /// Use a device, validating reach when the request executes.
-    Activate {
-        device: Entity,
-    },
-    TakeItem {
-        item: Entity,
-    },
-    /// Throw the held item from the party's eye along `aim`.
-    DropHeld {
-        level: Entity,
-        aim: Dir3,
-    },
+pub struct ActivateDevice {
+    pub device: Entity,
 }
 
-/// Carry out the player's world requests in order; a refused one changes
-/// nothing.
-pub fn handle_world_requests(world: &mut World) {
-    let requests: Vec<_> = world.resource_mut::<Messages<WorldRequest>>().drain().collect();
-    for request in requests {
-        let refused = match request {
-            WorldRequest::Activate { device } => {
-                triggers::activate(world, device, true);
-                None
-            }
-            WorldRequest::TakeItem { item } => items::take_item(world, item).err(),
-            WorldRequest::DropHeld { level, aim } => items::drop_held(world, level, aim).err(),
-        };
-        if let Some(why) = refused {
-            debug!("{request:?} refused: {why:?}");
-        }
+/// Run the devices the player uses, in order: the trigger interpreter
+/// needs the whole world.
+pub fn activate_devices(world: &mut World) {
+    let requests: Vec<_> = world.resource_mut::<Messages<ActivateDevice>>().drain().collect();
+    for ActivateDevice { device } in requests {
+        triggers::activate(world, device, true);
     }
 }
 

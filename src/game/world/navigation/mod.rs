@@ -63,7 +63,7 @@ pub enum WalkerMotion {}
 
 /// On a level root: one archipelago per walker size class, once the
 /// level's navmeshes are installed.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Default)]
 pub struct LevelNavigation {
     pub archipelagos: Vec<Entity>,
 }

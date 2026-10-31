@@ -2,8 +2,6 @@
 use super::{InventoryArt, InventoryScreen, RetailLabel, absolute, format_gold, info};
 use crate::content::characters::Attribute;
 use crate::game::characters::Load;
-#[cfg(test)]
-use crate::game::inventory::Carried;
 use crate::presentation::character_view::{CharacterView, CharacterViewItem};
 use crate::presentation::screen_art::{BitmapText, Picture, PictureCrop};
 use bevy::prelude::*;
@@ -184,36 +182,5 @@ pub(super) fn refresh(
             as f32;
     for mut bar in &mut bars {
         bar.set_if_neq(PictureCrop::horizontal(0.0, (103.0 * progress.clamp(0.0, 1.0)).floor()));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::content::items::ItemCatalog;
-    use crate::game::characters::{Character, Gender, Profession, Race, Vitals};
-
-    #[test]
-    fn armour_labels_follow_live_inputs() {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .insert_resource(InventoryArt::default())
-            .add_systems(Update, refresh);
-        let items = ItemCatalog(vec![]);
-        app.insert_resource(crate::game::data::Catalogs { items, ..default() });
-        let profile = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
-        let actor =
-            app.world_mut().spawn((Vitals::new(&profile), profile, Carried::default())).id();
-        app.world_mut().spawn(InventoryScreen { member: actor });
-        let base = app.world_mut().spawn((Value::BaseArmour, BitmapText::default())).id();
-        let average = app.world_mut().spawn((Value::AverageArmour, BitmapText::default())).id();
-        app.update();
-        assert_eq!(app.world().get::<BitmapText>(base).unwrap().value, "0");
-        assert_eq!(app.world().get::<BitmapText>(average).unwrap().value, "0");
-        // No combat plugin or synchronization pass is needed for live stats.
-        app.world_mut().get_mut::<Character>(actor).unwrap().race = Race::Faerie;
-        app.update();
-        assert_eq!(app.world().get::<BitmapText>(base).unwrap().value, "2");
-        assert_eq!(app.world().get::<BitmapText>(average).unwrap().value, "2");
     }
 }

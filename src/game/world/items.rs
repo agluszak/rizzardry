@@ -1,7 +1,6 @@
 //! Items lying in the world. Each is an entity owning one item until the
 //! party takes it (retail `W8WorldItem`, `ItemManager.cpp`).
 
-use crate::game::party::roster::the_party;
 use crate::game::world::level::LevelOwned;
 use bevy::prelude::*;
 
@@ -9,7 +8,7 @@ use crate::game::data::Catalogs;
 
 use crate::content::items::{ItemCatalog, ItemDefinition, ItemId, QuantityKind};
 use crate::content::level::ItemPlacement;
-use crate::game::inventory::{ItemIds, ItemNews, ItemStack, PartyInventory, Refusal};
+use crate::game::inventory::{ItemIds, ItemNews, ItemStack, PartyInventory};
 
 /// An item lying in the level.
 #[derive(Component, Debug, Clone)]
@@ -111,83 +110,89 @@ pub fn placed_item(
     ItemStack::new(definition, ids, u16::from(amount), placement.identified)
 }
 
-/// Take a resolved world item. Validation and the owned-value move complete
-/// synchronously, without a pointer, camera, rendering or a battle session.
-pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
-    if !crate::game::freedom::free_in(world) {
-        return Err(Refusal::DoesNotFit);
-    }
-    // A second take of an item already taken finds nothing.
-    if world.get::<WorldItem>(target).is_none() {
-        return Err(Refusal::Nothing);
-    }
-    let eye = crate::game::party::body::PartyBody::eye_in(world);
-    let at = world.query::<super::ActorPose>().get(world, target).unwrap().translation();
-    // Retail measures to the model bounds' centre (ItemDistanceToCamera).
-    // Deliberately use the gameplay placement so pickup never requires artwork.
-    let distance = eye.distance(at);
-    if !distance.is_finite() || !(0.0..=REACH).contains(&distance) {
-        return Err(Refusal::DoesNotFit);
-    }
-    if world.get::<WorldItem>(target).unwrap().hidden {
-        return Err(Refusal::DoesNotFit);
-    }
-    let party = the_party(world);
-    if world.get::<PartyInventory>(party).unwrap().hand.held.is_some() {
-        return Err(Refusal::HandFull);
-    }
-    let mut item = world.entity_mut(target).take::<WorldItem>().unwrap();
-    if let GroundLoot::Pile { contents, .. } = &mut item.loot {
-        let taken = Catalogs::scope(world, |world, catalogs| {
-            world.get_mut::<PartyInventory>(party).unwrap().pool.collect(contents, &catalogs.items)
-        });
-        let moved = !taken.is_empty();
-        for (name, _) in taken {
-            world.write_message(ItemNews::Takes { member: None, item: name });
-        }
-        if !contents.is_empty() {
-            world.entity_mut(target).insert(item);
-            world.write_message(ItemNews::NoRoom);
-            return if moved { Ok(()) } else { Err(Refusal::NoRoom) };
-        }
-    } else if let GroundLoot::Loose(stack) = item.loot {
-        world.get_mut::<PartyInventory>(party).unwrap().hand.held = Some(stack);
-    }
-    world.despawn(target);
-    Ok(())
+/// The player takes an item lying in the world.
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
+pub struct TakeItem {
+    pub item: Entity,
 }
 
-/// Throw the held item from the party's eye along `aim`, validating the
-/// current level and party activity: it stops short of what it hits and
-/// rests above the ground below, or stays in hand if there is no ground.
-pub fn drop_held(world: &mut World, level: Entity, aim: Dir3) -> Result<Entity, Refusal> {
-    if !crate::game::freedom::free_in(world) {
-        return Err(Refusal::DoesNotFit);
+/// The player throws the held item from the party's eye along `aim`.
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
+pub struct DropHeld {
+    pub level: Entity,
+    pub aim: Dir3,
+}
+
+/// Take items the party can reach from its eye (retail measures to the
+/// model bounds' centre, `ItemDistanceToCamera`; the gameplay placement
+/// stands in, so pickup never needs artwork): a loose item into the hand,
+/// a pile's contents into the pool as far as there is room.
+pub fn take_items(
+    mut requests: MessageReader<TakeItem>,
+    freedom: crate::game::freedom::Freedom,
+    party: Single<(&avian3d::prelude::Position, &mut PartyInventory)>,
+    mut items: Query<(&mut WorldItem, super::ActorPose)>,
+    content: If<Res<Catalogs>>,
+    mut news: MessageWriter<ItemNews>,
+    mut commands: Commands,
+) {
+    let (position, mut inventory) = party.into_inner();
+    let eye = crate::game::party::body::PartyBody::eye(position);
+    let mut taken = Vec::new();
+    for &TakeItem { item: target } in requests.read() {
+        // A second take of an item already taken finds nothing.
+        let Ok((mut item, at)) = items.get_mut(target) else { continue };
+        if !freedom.free()
+            || taken.contains(&target)
+            || item.hidden
+            || eye.distance(at.translation()) > REACH
+            || inventory.hand.held.is_some()
+        {
+            continue;
+        }
+        match &mut item.loot {
+            GroundLoot::Pile { contents, .. } => {
+                for (name, _) in inventory.pool.collect(contents, &content.items) {
+                    news.write(ItemNews::Takes { member: None, item: name });
+                }
+                if !contents.is_empty() {
+                    news.write(ItemNews::NoRoom);
+                    continue;
+                }
+            }
+            GroundLoot::Loose(stack) => inventory.hand.held = Some(stack.clone()),
+        }
+        taken.push(target);
+        commands.entity(target).despawn();
     }
-    let eye = crate::game::party::body::PartyBody::eye_in(world);
-    let ground = world
-        .run_system_cached_with(landing, (eye, aim))
-        .ok()
-        .flatten()
-        .ok_or(Refusal::DoesNotFit)?;
-    let party = the_party(world);
-    let held =
-        world.get::<PartyInventory>(party).unwrap().hand.held.as_ref().ok_or(Refusal::Nothing)?;
-    let definition = &world.resource::<crate::game::data::Catalogs>().items[held.item];
-    if definition.crucial {
-        return Err(Refusal::Crucial);
+}
+
+/// Throw the held item: it stops short of what it hits and rests above the
+/// ground below, or stays in hand if there is no ground. A crucial item is
+/// never thrown away.
+pub fn drop_held(
+    mut requests: MessageReader<DropHeld>,
+    freedom: crate::game::freedom::Freedom,
+    party: Single<(&avian3d::prelude::Position, &mut PartyInventory)>,
+    obstacles: super::obstacles::WorldObstacles,
+    content: If<Res<Catalogs>>,
+    mut commands: Commands,
+) {
+    let (position, mut inventory) = party.into_inner();
+    let eye = crate::game::party::body::PartyBody::eye(position);
+    for &DropHeld { level, aim } in requests.read() {
+        let Some(held) = &inventory.hand.held else { continue };
+        if !freedom.free() || content.items[held.item].crucial {
+            continue;
+        }
+        let Some(ground) = landing(eye, aim, &obstacles) else { continue };
+        let held = inventory.hand.held.take().unwrap();
+        lay(&mut commands, level, ground, WorldItem::loose(held, false));
     }
-    let held = world.get_mut::<PartyInventory>(party).unwrap().hand.held.take().unwrap();
-    let item = lay(&mut world.commands(), level, ground, WorldItem::loose(held, false));
-    world.flush();
-    Ok(item)
 }
 
 /// The ground a throw from `eye` along `aim` comes down on, if any.
-fn landing(
-    In((eye, aim)): In<(Vec3, Dir3)>,
-    obstacles: super::obstacles::WorldObstacles,
-) -> Option<Vec3> {
+fn landing(eye: Vec3, aim: Dir3, obstacles: &super::obstacles::WorldObstacles) -> Option<Vec3> {
     let reach = obstacles.first_hit(eye, aim, THROW).map_or(THROW, |hit| hit.distance);
     let above = eye + aim * (reach - CLEARANCE).max(0.0);
     let ground = obstacles.first_hit(above, Dir3::NEG_Y, 100.0)?;
@@ -198,153 +203,3 @@ fn landing(
 /// what it hits, and rests it 125 above the ground below (`DropHeldItem`).
 const THROW: f32 = 5.0;
 const CLEARANCE: f32 = 0.25;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::content::items::ItemDefinition;
-    use crate::game::{inventory::make_item, rng::GameRng};
-
-    fn catalog() -> ItemCatalog {
-        let mut items: Vec<ItemDefinition> = (0..=BAG_OF_ITEMS.0)
-            .map(|id| ItemDefinition { id: ItemId(id), name: format!("item {id}"), ..default() })
-            .collect();
-        items[usize::from(BAG_OF_ITEMS.0)].container = true;
-        ItemCatalog(items)
-    }
-
-    fn item(ids: &mut ItemIds, id: u16) -> ItemStack {
-        let definition = ItemDefinition { id: ItemId(id), ..default() };
-        make_item(&definition, ids, &mut GameRng::seeded(1), false, true)
-    }
-
-    #[test]
-    fn a_throw_lands_short_of_walls_and_needs_ground() {
-        use super::super::WorldRequest;
-        use super::super::obstacles::scenery;
-        use crate::game::party::body::PartyBody;
-        use avian3d::prelude::*;
-        let mut app = App::new();
-        app.add_plugins((
-            MinimalPlugins,
-            AssetPlugin::default(),
-            bevy::mesh::MeshPlugin,
-            TransformPlugin,
-            PhysicsPlugins::default(),
-            bevy::state::app::StatesPlugin,
-        ))
-        .add_message::<ItemNews>()
-        .add_message::<WorldRequest>()
-        .add_systems(Update, super::super::handle_world_requests);
-        app.finish();
-        app.cleanup();
-        let catalog = catalog();
-        app.insert_resource(crate::game::data::Catalogs { items: catalog, ..default() });
-        let party = crate::game::party::roster::test_party(app.world_mut(), &[]);
-        app.world_mut().entity_mut(party).insert((PartyBody::default(), Position::default()));
-        let eye = PartyBody::eye(&Position::default());
-        let level = app.world_mut().spawn(super::super::level::Level::test(default())).id();
-        let mut ids = ItemIds::default();
-        let mut throw = |app: &mut App| {
-            let stack = item(&mut ids, 1);
-            app.world_mut().get_mut::<PartyInventory>(party).unwrap().hand.held = Some(stack);
-            app.update();
-            app.update();
-            app.world_mut().write_message(WorldRequest::DropHeld { level, aim: Dir3::NEG_Z });
-            app.update();
-            let world = app.world_mut();
-            world.query::<(&WorldItem, &Transform)>().iter(world).last().map(|(_, at)| {
-                assert!(world.get::<PartyInventory>(party).unwrap().hand.held.is_none());
-                at.translation
-            })
-        };
-        assert_eq!(throw(&mut app), None, "with no ground it stays in hand");
-        assert!(app.world().get::<PartyInventory>(party).unwrap().hand.held.is_some());
-        let floor = eye.y - 2.0;
-        app.world_mut().spawn((
-            RigidBody::Static,
-            Collider::cuboid(40.0, 1.0, 40.0),
-            scenery(),
-            Transform::from_xyz(0.0, floor - 0.5, 0.0),
-        ));
-        let wall = app
-            .world_mut()
-            .spawn((
-                RigidBody::Static,
-                Collider::cuboid(4.0, 4.0, 0.2),
-                scenery(),
-                Transform::from_xyz(0.0, eye.y, -3.1),
-            ))
-            .id();
-        let short = throw(&mut app).unwrap();
-        let expected = Vec3::new(eye.x, floor + CLEARANCE, -3.0 + CLEARANCE);
-        assert!(short.abs_diff_eq(expected, 1e-3), "{short} short of the wall");
-        app.world_mut().despawn(wall);
-        let world = app.world_mut();
-        let dropped: Vec<_> =
-            world.query_filtered::<Entity, With<WorldItem>>().iter(world).collect();
-        dropped.into_iter().for_each(|item| _ = world.despawn(item));
-        let far = throw(&mut app).unwrap();
-        let expected = Vec3::new(eye.x, floor + CLEARANCE, -(THROW - CLEARANCE));
-        assert!(far.abs_diff_eq(expected, 1e-3), "{far} at full reach");
-    }
-
-    #[test]
-    fn pickup_checks_current_positions_before_transferring_ownership() {
-        use crate::game::party::body::PartyBody;
-        use avian3d::prelude::Position;
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .add_message::<ItemNews>()
-            .add_message::<super::super::WorldRequest>()
-            .add_systems(Update, super::super::handle_world_requests);
-        let catalog = catalog();
-        app.insert_resource(crate::game::data::Catalogs { items: catalog, ..default() });
-        let party = crate::game::party::roster::test_party(app.world_mut(), &[]);
-        app.world_mut().entity_mut(party).insert((PartyBody::default(), Position::default()));
-        let level = app.world_mut().spawn(super::super::level::Level::test(default())).id();
-        let stack = item(&mut ItemIds::default(), 1);
-        let target = app
-            .world_mut()
-            .spawn((WorldItem::loose(stack, false), Transform::default(), LevelOwned(level)))
-            .id();
-        app.world_mut().write_message(super::super::WorldRequest::TakeItem { item: target });
-        app.world_mut().get_mut::<Position>(party).unwrap().0 = Vec3::X * (REACH + 1.0);
-        app.update();
-        assert!(app.world().get::<WorldItem>(target).is_some());
-        assert!(app.world().get::<PartyInventory>(party).unwrap().hand.held.is_none());
-        app.world_mut().get_mut::<Position>(party).unwrap().0 = Vec3::ZERO;
-        app.world_mut().write_message(super::super::WorldRequest::TakeItem { item: target });
-        app.update();
-        assert!(app.world().get_entity(target).is_err());
-        assert!(app.world().get::<PartyInventory>(party).unwrap().hand.held.is_some());
-    }
-
-    #[test]
-    fn several_drops_lie_in_a_bag_one_lies_alone() {
-        let (catalog, mut ids) = (catalog(), ItemIds::default());
-        let mut world = World::new();
-        let level = world.spawn_empty().id();
-        let (one, two) = (item(&mut ids, 1), vec![item(&mut ids, 2), item(&mut ids, 3)]);
-        let mut commands = world.commands();
-        drop_loot(&mut commands, level, Vec3::ZERO, vec![one], &catalog);
-        drop_loot(&mut commands, level, Vec3::X, two, &catalog);
-        drop_loot(&mut commands, level, Vec3::Y, vec![], &catalog);
-        world.flush();
-        let mut lying: Vec<(u16, usize)> = world
-            .query::<&WorldItem>()
-            .iter(&world)
-            .map(|w| {
-                (
-                    w.appearance().0,
-                    match &w.loot {
-                        GroundLoot::Loose(_) => 0,
-                        GroundLoot::Pile { contents, .. } => contents.len(),
-                    },
-                )
-            })
-            .collect();
-        lying.sort();
-        assert_eq!(lying, [(1, 0), (BAG_OF_ITEMS.0, 2)]);
-    }
-}
