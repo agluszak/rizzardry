@@ -449,7 +449,8 @@ fn build_offer(world: &mut World, group: Entity, root: Entity, canvas: Entity) {
               mut states: Query<&mut DialogueState>,
               roots: Query<&ConversationView>,
               gold: Query<&EditableText, With<GiftGold>>,
-              mut requests: MessageWriter<ConversationRequest>| {
+              mut requests: MessageWriter<ConversationRequest>,
+              mut trades: MessageWriter<crate::game::npcs::conversation::TradeRequest>| {
             let Ok(mut state) = states.get_mut(root) else { return };
             let amount = gold.get(gift_gold).map_or(0, gift_amount);
             if state.mode == Mode::Give
@@ -463,7 +464,7 @@ fn build_offer(world: &mut World, group: Entity, root: Entity, canvas: Entity) {
                 && roots.get(root).is_ok_and(|v| v.0 == q.conversation)
             {
                 if state.mode != Mode::Give {
-                    requests.write(ConversationRequest::trade(q));
+                    trades.write(crate::game::npcs::conversation::TradeRequest(q));
                     // The trade settles the selection.
                     state.offer = None;
                 } else if let TradeSource::Party(item) = q.source {

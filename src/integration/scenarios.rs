@@ -231,8 +231,8 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     let quote =
         conversation::quote_trade(app.world_mut(), session, TradeSource::Stock(lot), 1).unwrap();
     let gold = app.world().get::<PartyInventory>(party).unwrap().gold;
-    app.world_mut().write_message(ConversationRequest::trade(quote));
-    app.world_mut().write_message(ConversationRequest::trade(quote));
+    app.world_mut().write_message(crate::game::npcs::conversation::TradeRequest(quote));
+    app.world_mut().write_message(crate::game::npcs::conversation::TradeRequest(quote));
     app.update();
     assert_eq!(
         app.world().get::<PartyInventory>(party).unwrap().gold,
@@ -247,7 +247,7 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
         1,
     )
     .unwrap();
-    app.world_mut().write_message(ConversationRequest::trade(sale));
+    app.world_mut().write_message(crate::game::npcs::conversation::TradeRequest(sale));
     app.update();
     assert_eq!(
         app.world().get::<PartyInventory>(party).unwrap().gold,
