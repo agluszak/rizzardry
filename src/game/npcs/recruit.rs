@@ -70,60 +70,55 @@ const MADRAS: NpcId = NpcId(0x4a);
 const SEXUS: NpcId = NpcId(0x4f);
 
 /// Whether the NPC would join now (retail `CanNpcJoinParty`): it does not
-/// offer the service of the region the party is in; its authored terms
-/// hold; and the party's living, able members average at least its minimum
-/// level.
-fn willing(world: &mut World, id: NpcId, definition: &NpcDefinition) -> bool {
-    let level = world.query::<&Level>().single(world).unwrap();
-    let band = crate::content::levels::LevelInfo::for_path(&level.path).map_or(0, |info| info.band);
-    if offers_service(definition, band) {
+/// offer the service of the party's `region`; its authored terms hold, by
+/// the story's facts; and the party's living, able members average at least
+/// its minimum level.
+pub(super) fn willing(
+    id: NpcId,
+    definition: &NpcDefinition,
+    region: u8,
+    fact: impl Fn(&str) -> u8,
+    average: u32,
+) -> bool {
+    if offers_service(definition, region) {
         return false;
     }
-    let fact = |world: &mut World, symbol: &str| {
-        super::conversation::fact_named(world, symbol).expect("a ported fact")
-    };
     let terms = match id {
-        GLUMPH => fact(world, "FACT_UMISSION_SCUBA_DONE") == 0,
-        SEXUS => fact(world, "FACT_SEXUS_PAID") != 0,
-        MADRAS => fact(world, "FACT_TRYNNIE_MADRAS_WILL_JOIN") != 0,
-        DRAZIC | RODAN => fact(world, "FACT_PEACE_ACHIEVED") == 0,
+        GLUMPH => fact("FACT_UMISSION_SCUBA_DONE") == 0,
+        SEXUS => fact("FACT_SEXUS_PAID") != 0,
+        MADRAS => fact("FACT_TRYNNIE_MADRAS_WILL_JOIN") != 0,
+        DRAZIC | RODAN => fact("FACT_PEACE_ACHIEVED") == 0,
         _ => true,
     };
-    if !terms {
-        return false;
-    }
-    if definition.min_party_level > 0 {
-        // Retail counts no able member as an average of nothing.
-        let lineup = crate::game::party::Lineup::in_world(world);
-        let levels: Vec<_> = lineup.able().map(|(_, c)| c.level()).collect();
-        let average = if levels.is_empty() { 0 } else { crate::game::party::average_level(levels) };
-        if average < u32::from(definition.min_party_level) {
-            return false;
-        }
-    }
-    true
+    terms && average >= u32::from(definition.min_party_level)
 }
 
-/// Whether the NPC would join the party now, and if not, why (retail
-/// `RequestNpcJoinParty`'s order: an NPC without a character declines
-/// before the party's room is counted).
+/// [`super::conversation::Dialogue::joinable`], for operations that hold
+/// the whole world.
 pub fn joinable(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
-    let id = world.get::<super::ActorId>(actor).unwrap().npc();
-    let definition = super::definition(world, actor).clone();
-    let gone = world.get::<Npc>(actor).unwrap().dead;
-    if definition.character.is_none() || gone || world.get::<PartyMember>(actor).is_some() {
-        return Err(JoinRefusal::Declines);
+    world
+        .run_system_cached_with(
+            |In(actor): In<Entity>, dialogue: super::conversation::Dialogue| {
+                dialogue.joinable(actor)
+            },
+            actor,
+        )
+        .unwrap()
+}
+
+/// An NPC that accepted the party's offer joins it.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JoinParty {
+    pub actor: Entity,
+}
+
+pub fn join_party(world: &mut World) {
+    let joins: Vec<_> = world.resource_mut::<Messages<JoinParty>>().drain().collect();
+    for JoinParty { actor } in joins {
+        if let Err(refusal) = join(world, actor) {
+            warn!("NPC did not join after all: {refusal:?}");
+        }
     }
-    let party = the_party(world);
-    let roster = world.get::<PartyRoster>(party).unwrap();
-    let npcs = roster.iter().filter(|&m| world.get::<Npc>(m).is_some()).count();
-    if npcs >= NPC_PLACES {
-        return Err(JoinRefusal::NoRoom);
-    }
-    if !willing(world, id, &definition) {
-        return Err(JoinRefusal::Declines);
-    }
-    Ok(())
 }
 
 /// The character an NPC brings the first time it joins (retail

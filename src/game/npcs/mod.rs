@@ -370,6 +370,7 @@ impl Plugin for NpcPlugin {
             .add_message::<conversation::EditNotebook>()
             .add_message::<conversation::PartyRemark>()
             .add_message::<conversation::NpcSpeech>()
+            .add_message::<recruit::JoinParty>()
             .add_observer(conversation::end_conversations)
             .add_systems(
                 Update,
@@ -381,6 +382,7 @@ impl Plugin for NpcPlugin {
                     conversation::settle_trades,
                     conversation::win_over,
                     conversation::run_conversations,
+                    recruit::join_party,
                 )
                     .chain()
                     .in_set(conversation::Conversing)
