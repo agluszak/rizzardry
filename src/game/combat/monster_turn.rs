@@ -15,7 +15,7 @@ use hostility::Stance;
 enum Plan<'a> {
     Spell {
         spell: crate::content::spells::SpellDefinition,
-        power: u8,
+        power: u32,
         aim: monster_spells::SpellAim,
         scene: monster_spells::Scene,
         caster: (&'a Species, u32),

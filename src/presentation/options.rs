@@ -186,7 +186,7 @@ fn activate(
         }
         Choice::Combat => view.draft.continuous = !view.draft.continuous,
         Choice::VolumeDown => {
-            view.draft.preferences.volume = view.draft.preferences.volume.saturating_sub(10)
+            view.draft.preferences.volume -= view.draft.preferences.volume.min(10)
         }
         Choice::VolumeUp => {
             view.draft.preferences.volume = (view.draft.preferences.volume + 10).min(100)

@@ -221,7 +221,7 @@ pub struct Conversation {
     pub actor: Entity,
     /// Temporary effects belong to the affected speakers. Closing the
     /// conversation clears all of them; handing it over transfers none.
-    charms: BTreeMap<Entity, i8>,
+    charms: BTreeMap<Entity, u32>,
     pub current: Option<(u16, usize)>,
     pub wait: ConversationWait,
     pub transcript: Vec<TranscriptLine>,
@@ -246,7 +246,7 @@ pub enum Outcome {
 }
 pub(crate) enum MagicalReply {
     Unnoticed,
-    Charmed(i8),
+    Charmed(u32),
     Quote(u16),
 }
 impl Conversation {
@@ -254,7 +254,7 @@ impl Conversation {
         self.wait == ConversationWait::Ready && self.queue.is_empty()
     }
 
-    pub(crate) fn charm(&self) -> i8 {
+    pub(crate) fn charm(&self) -> u32 {
         self.charms.get(&self.actor).copied().unwrap_or(0)
     }
 
@@ -396,7 +396,7 @@ const HOSTILE_QUOTE: u16 = 0x18;
 const APPROACH_COOLDOWN_MS: u64 = 0xa8c0 * 1000;
 /// Whether an approach made at `at` may be tried again at `now`.
 pub fn approach_ready(at: Option<u64>, now: u64) -> bool {
-    at.is_none_or(|at| now.saturating_sub(at) > APPROACH_COOLDOWN_MS)
+    at.is_none_or(|at| now - at > APPROACH_COOLDOWN_MS)
 }
 /// How the NPC stands toward the party now (retail `GetNpcDisposition`):
 /// its own disposition, fully friendly while its body is turned. A
@@ -417,7 +417,7 @@ fn standing(world: &World, actor: Entity, disposition: u8) -> i32 {
         .try_query::<&Conversation>()
         .and_then(|mut q| q.iter(world).find_map(|c| c.charms.get(&actor).copied()))
         .unwrap_or(0);
-    let own = if turned { 100 } else { i32::from(disposition.wrapping_add(charm as u8)) };
+    let own = if turned { 100 } else { (disposition as u32 + charm).min(100) as i32 };
     let def = definition(world, actor);
     let factions = world.resource::<Factions>();
     let faction = i32::from(def.faction);
@@ -567,7 +567,7 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     if def.owns_stock {
         let stock = &world.get::<Npc>(actor).unwrap().stock;
         let gated = stock.restock_at.is_some()
-            && now.saturating_sub(stock.maintenance_at) >= crate::game::time::DAY_MS
+            && now - stock.maintenance_at >= crate::game::time::DAY_MS
             && def.stock.iter().any(|r| !r.persistent && r.item == super::trade::TEMPLAR_GATED);
         let templar = gated && fact_named(world, "FACT_TEMPLAR").expect("the Templar fact") != 0;
         with_definition(world, actor, |world, def, items| {
@@ -892,7 +892,7 @@ fn commit_effects(world: &mut World, entity: Entity, effects: Vec<QuoteEffect>) 
             QuoteEffect::Mention(category, text) => learn_topic(world, entity, category, &text),
             QuoteEffect::Gold { party, amount } => {
                 let mut purse = world.get_mut::<PartyInventory>(party).unwrap();
-                purse.gold = purse.gold.wrapping_add(amount);
+                purse.gold += amount;
                 let actor = world.get::<Conversation>(entity).unwrap().actor;
                 let giver = definition(world, actor).source_name.clone();
                 world
@@ -1043,10 +1043,9 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party:
                     })
                     && (always || !world.get::<Npc>(actor).unwrap().paid_topics.contains(&quote))
                 {
-                    let charm = world.get::<Conversation>(entity).unwrap().charm().max(0) as u32;
-                    let gold = gold - gold.saturating_mul(charm) / 100;
-                    let gold =
-                        (gold - gold.saturating_mul(party_communication(world)) / 500).max(1);
+                    let charm = world.get::<Conversation>(entity).unwrap().charm();
+                    let gold = gold - gold * charm.min(100) / 100;
+                    let gold = (gold - gold * party_communication(world).min(500) / 500).max(1);
                     let mut c = world.get_mut::<Conversation>(entity).unwrap();
                     c.queue.push_front(Step::Wait(ConversationWait::Price { quote, gold, always }));
                     c.queue.push_front(Step::said(PRICE_QUOTE));
@@ -1307,11 +1306,11 @@ fn debit_trade_pool(world: &mut World, actor: Entity, price: u32) {
 /// debited, without debiting it.
 fn debited(world: &mut World, actor: Entity, price: u32) -> (u16, u8) {
     let level = party_communication(world);
-    let adjusted = price.wrapping_add(level * ((price & 0xffff) / 5) / 100);
+    let adjusted = price as u64 + price as u64 * level as u64 / 500;
     let refill = definition(world, actor).trade_pool;
     let cold = band(world, actor) != Band::Friendly;
     let npc = world.get::<Npc>(actor).unwrap();
-    match npc.trade_pool.saturating_sub(adjusted as u16) {
+    match (npc.trade_pool as u64 - adjusted.min(npc.trade_pool as u64)) as u16 {
         0 if cold => (refill, 0x4b),
         0 => (refill, npc.disposition),
         pool => (pool, npc.disposition),
@@ -1438,7 +1437,10 @@ fn spend_gift(
         return Ok(());
     }
     let mut inventory = world.get_mut::<PartyInventory>(party).unwrap();
-    inventory.gold = inventory.gold.checked_sub(amount).ok_or(TradeError::Funds)?;
+    if amount > inventory.gold {
+        return Err(TradeError::Funds);
+    }
+    inventory.gold -= amount;
     if bribe {
         debit_trade_pool(world, actor, amount);
     }

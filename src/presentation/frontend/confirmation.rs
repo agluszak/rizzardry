@@ -144,11 +144,7 @@ pub(super) fn resolve(
                 if let Some(index) = session.candidates.iter().position(|(id, _)| id == candidate) {
                     session.candidates.remove(index);
                     session.party.retain(|id| id != candidate);
-                    session.selected = index
-                        .checked_sub(1)
-                        .and_then(|i| session.candidates.get(i))
-                        .or_else(|| session.candidates.first())
-                        .map(|(id, _)| *id);
+                    session.selected = session.candidates.get(index.max(1) - 1).map(|(id, _)| *id);
                 }
             }
             Purpose::KeepSpells => {

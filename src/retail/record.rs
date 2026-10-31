@@ -6,7 +6,7 @@ use crate::content::species::Reach;
 
 /// Dice as retail packs them: a signed base, then the count and sides.
 pub fn dice(bytes: &mut Bytes) -> Result<Dice, Truncated> {
-    Ok(Dice { base: bytes.i16()?, count: bytes.u8()?, sides: bytes.u8()? })
+    Ok(Dice { base: bytes.i16()? as i32, count: bytes.u8()? as i32, sides: bytes.u8()? as i32 })
 }
 
 /// Dice at `at` in a record.

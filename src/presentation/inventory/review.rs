@@ -601,7 +601,7 @@ pub(super) fn refresh(
             effects.push((String::new(), false));
         }
     }
-    let maximum = effects.len().saturating_sub(17);
+    let maximum = effects.len().max(17) - 17;
     let offset = slider.as_deref().map_or(0, |(_, value, _)| (value.0 as usize).min(maximum));
     if let Some((entity, value, range)) = slider.as_deref() {
         crate::presentation::retail_controls::set_scroll_maximum(
@@ -683,9 +683,8 @@ pub(super) fn refresh(
                 } else {
                     match index {
                         1 => {
-                            let min = i32::from(hand.dice.base) + i32::from(hand.dice.count);
-                            let max = i32::from(hand.dice.base)
-                                + i32::from(hand.dice.count) * i32::from(hand.dice.sides);
+                            let min = hand.dice.base + hand.dice.count;
+                            let max = hand.dice.base + hand.dice.count * hand.dice.sides;
                             let scale = 100 + hand.damage_percent;
                             format!(
                                 "{}-{}",

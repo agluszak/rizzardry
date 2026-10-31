@@ -191,9 +191,9 @@ pub fn tire(stamina: &mut u32, conditions: &mut Conditions, amount: u32) -> u32 
 /// above 9. What it gave.
 pub fn rest(stamina: &mut u32, conditions: &mut Conditions, amount: u32, maximum: u32) -> u32 {
     let before = *stamina;
-    *stamina = stamina.saturating_add(amount).min(maximum);
+    *stamina = (*stamina + amount).min(maximum);
     conditions.come_round(*stamina);
-    stamina.saturating_sub(before)
+    (*stamina).max(before) - before
 }
 
 /// How long a condition lasts.
@@ -485,7 +485,7 @@ fn load_band(weight: u32, capacity: u32) -> Load {
 /// A pool's value once its maximum moves from `old` to `new`: it moves by
 /// as much, within 0 and the new maximum.
 pub fn resized(current: u32, old: u32, new: u32) -> u32 {
-    current.saturating_add(new.saturating_sub(old)).saturating_sub(old.saturating_sub(new)).min(new)
+    (current as i64 + new as i64 - old as i64).clamp(0, new as i64) as u32
 }
 
 /// What a lethal blow to a member needs, should she cheat death: the fight
@@ -527,9 +527,9 @@ pub struct Character {
     pub original_profession: Profession,
     /// Levels gained in each profession; the total level is their sum.
     pub profession_levels: EnumMap<Profession, u8>,
-    pub experience: u32,
+    pub experience: u64,
     /// The threshold actually passed, retaining the prices of earlier professions.
-    pub experience_previous_goal: u32,
+    pub experience_previous_goal: u64,
     pub attributes: EnumMap<Attribute, u8>,
     /// Points invested per skill.
     pub skill_points: EnumMap<Skill, u8>,
@@ -778,16 +778,16 @@ impl Character {
             .sum()
     }
 
-    /// AwardPartyExperience saturates instead of wrapping at the XP limit.
+    /// Add earned experience to the character.
     pub fn award_experience(&mut self, amount: u32) {
-        self.experience = self.experience.saturating_add(amount);
+        self.experience += amount as u64;
     }
 
     /// The passed threshold plus this profession's next increment: doubling
     /// to level 10, then 20% growth. Prior professions keep their actual cost.
-    pub fn experience_goal(&self) -> u32 {
+    pub fn experience_goal(&self) -> u64 {
         self.experience_previous_goal
-            .saturating_add(progression::experience_increment(self.profession, self.level()))
+            + progression::experience_increment(self.profession, self.level())
     }
 
     /// Whether the character may use an item (retail `CanCharacterUseItem`):
@@ -864,7 +864,7 @@ impl CharacterStats<'_> {
                 vitality * profession_row(profession).hp_factor * levels as f32
             })
             .sum();
-        (total.round() as u32).saturating_sub(self.hp_drained).max(1)
+        (total.round() as i64 - self.hp_drained as i64).max(1) as u32
     }
     /// `round((STR + PIE + VIT) / 3 × (0.1·level + 2))`.
     pub fn max_stamina(&self) -> u32 {
@@ -872,8 +872,9 @@ impl CharacterStats<'_> {
             .map(|a| self.attribute(a))
             .iter()
             .sum::<u32>() as f32;
-        ((sum / 3.0 * (0.1 * f32::from(self.level()) + 2.0)).round() as u32)
-            .saturating_sub(self.stamina_drained)
+        ((sum / 3.0 * (0.1 * self.level() as f32 + 2.0)).round() as i64
+            - self.stamina_drained as i64)
+            .max(0) as u32
     }
     /// Tenths of a pound: `(VIT + 2·STR) × 12`, × 8 for a Faerie.
     pub fn capacity(&self) -> u32 {
@@ -1074,7 +1075,7 @@ impl Vitals {
         if rounds >= 7 {
             return false;
         }
-        let stint = (rounds + 7).saturating_sub(profile.scale_by_profession(5.0) as u32);
+        let stint = (rounds as i32 + 7 - profile.scale_by_profession(5.0) as i32).max(0);
         if stint > 0 {
             self.inflict(Condition::Unconscious, Lasting::Rounds(stint as u16));
         }
@@ -1108,9 +1109,9 @@ impl Vitals {
         }
         self.spend_stamina(amount * 2 / 3);
         let (hp, before) = (self.hp, self.maxima(profile));
-        profile.hp_drained = profile.hp_drained.saturating_add(amount);
+        profile.hp_drained += amount;
         self.resize(profile, before, Some(fate));
-        let lost = hp.saturating_sub(self.hp);
+        let lost = hp.max(self.hp) - self.hp;
         if !self.conditions.has(Condition::Drained) {
             self.inflict(Condition::Drained, Lasting::Indefinite);
         }

@@ -41,14 +41,11 @@ fn decode(data: &[u8]) -> Result<Image, DecodeError> {
     }
     // The header is long enough for every word read here.
     let word = |at| usize::from(u16::from_le_bytes([data[at], data[at + 1]]));
-    let width = word(8)
-        .checked_sub(word(4))
-        .and_then(|n| n.checked_add(1))
-        .ok_or(DecodeError::Invalid("width", 0))?;
-    let height = word(10)
-        .checked_sub(word(6))
-        .and_then(|n| n.checked_add(1))
-        .ok_or(DecodeError::Invalid("height", 0))?;
+    if word(8) < word(4) || word(10) < word(6) {
+        return Err(DecodeError::Invalid("dimensions", 0));
+    }
+    let width = word(8) - word(4) + 1;
+    let height = word(10) - word(6) + 1;
     let stride = word(66);
     if width > 8192 || height > 8192 || stride < width || stride > 8192 {
         return Err(DecodeError::Invalid("dimensions", 0));

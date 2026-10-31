@@ -47,9 +47,8 @@ pub fn resistances(
     for &(realm, amount) in changes {
         racial[realm] += amount;
     }
-    EnumMap::from_fn(|realm| {
-        let skill = Skill::try_from(Skill::FireMagic as u8 + realm as u8)
-            .expect("realm skills follow realm order");
+    EnumMap::from_fn(|realm: Realm| {
+        let skill = realm.skill();
         let iron_will = if character.skill_available(Skill::IronWill) {
             character.skill(Skill::IronWill) as i32 / 5 + 5
         } else {

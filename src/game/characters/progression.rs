@@ -21,9 +21,9 @@ impl SpellPicks {
     }
     pub(super) fn grant(&mut self, profession: Profession, amount: u16) {
         if profession == Profession::Bishop {
-            self.general = self.general.saturating_add(amount);
+            self.general += amount;
         } else if let Some(book) = magic::profession_books(profession).iter().next() {
-            self.books[book as usize] = self.books[book as usize].saturating_add(amount);
+            self.books[book as usize] += amount;
         }
     }
     fn available(&self, c: &Character) -> u32 {
@@ -56,14 +56,14 @@ impl SpellPicks {
 
 /// CalcXPGoal adds the current profession's increment to the threshold
 /// actually passed; switching profession never reprices previous levels.
-pub(super) fn experience_increment(profession: Profession, level: u8) -> u32 {
-    let weight = profession_row(profession).experience;
+pub(super) fn experience_increment(profession: Profession, level: u8) -> u64 {
+    let weight = profession_row(profession).experience as u64;
     if level == 1 {
         return weight;
     }
     let mut value = weight << (u32::from(level.min(10)) - 2);
     for _ in 10..level {
-        value = (u64::from(value) * 12 / 10).min(u64::from(u32::MAX)) as u32;
+        value = value * 12 / 10;
     }
     value
 }
@@ -116,7 +116,7 @@ impl Advancement {
         }
         let minimums = profession_row(profession).minimums;
         let deficits: Vec<_> =
-            minimums.iter().map(|(a, &n)| n.saturating_sub(self.original.attributes[a])).collect();
+            minimums.iter().map(|(a, &n)| n - n.min(self.original.attributes[a])).collect();
         deficits.iter().all(|&n| n <= 3) && deficits.iter().map(|&n| u16::from(n)).sum::<u16>() <= 6
     }
     pub fn choose_profession(&mut self, profession: Profession) -> bool {

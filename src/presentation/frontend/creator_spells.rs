@@ -1,6 +1,6 @@
 //! The retail creation spell lists, grouped by realm.
 use super::{Action, Creation, Page, creator_stats};
-use crate::content::characters::{Realm, Skill};
+use crate::content::characters::Realm;
 use crate::content::spells::SpellId;
 use crate::content::ui::SpriteSheet;
 use crate::game::data::Catalogs;
@@ -205,7 +205,7 @@ pub(super) fn refresh(
     let profile = draft.preview();
     for (mut label, role, _) in &mut labels {
         let Some(role) = role else { continue };
-        let skill = Skill::try_from(Skill::FireMagic as u8 + role.0 as u8).unwrap();
+        let skill = role.0.skill();
         let value = if role.1 {
             let learned = crate::game::magic::LearnedSpells(draft.spells());
             let points = profile.base_stats().max_points(&learned, catalog)[role.0];

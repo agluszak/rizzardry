@@ -12,7 +12,7 @@ fn decode(units: &[u8], encoded: bool) -> String {
         .0
         .iter()
         .map(|&pair| u16::from_le_bytes(pair))
-        .map(|unit| if encoded { (!unit).wrapping_add(0x9697) } else { unit })
+        .map(|unit| if encoded { (0x19696u32 - unit as u32) as u16 } else { unit })
         .take_while(|&unit| unit != 0)
         .collect();
     String::from_utf16_lossy(&units)
@@ -43,8 +43,15 @@ pub fn read_messages(data: &[u8]) -> Option<Vec<Option<String>>> {
     let word = |at: usize| -> Option<i32> {
         Some(i32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?))
     };
-    let count = usize::try_from(word(data.len().checked_sub(8)?)?).ok()?;
-    let table = data.len().checked_sub(8 + count * 4)?;
+    if data.len() < 8 {
+        return None;
+    }
+    let footer = data.len() - 8;
+    let count = usize::try_from(word(footer)?).ok()?;
+    if count > footer / 4 {
+        return None;
+    }
+    let table = footer - count * 4;
     Some(
         (0..count)
             .map(|index| {

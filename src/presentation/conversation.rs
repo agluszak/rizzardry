@@ -831,11 +831,11 @@ fn sync_bubble_geometry(
             (5, Vec2::new(0., height as f32 - 16.)),
             (7, Vec2::new(width as f32 - 16., height as f32 - 16.)),
         ];
-        for x in (16..width.saturating_sub(16)).step_by(16) {
+        for x in (16..width.max(16) - 16).step_by(16) {
             parts.push((1, Vec2::new(x as f32, 0.)));
             parts.push((6, Vec2::new(x as f32, height as f32 - 16.)));
         }
-        for y in (16..height.saturating_sub(16)).step_by(16) {
+        for y in (16..height.max(16) - 16).step_by(16) {
             parts.push((3, Vec2::new(0., y as f32)));
             parts.push((4, Vec2::new(width as f32 - 8., y as f32)));
         }
@@ -894,7 +894,7 @@ fn sync_topic_geometry(
         }
         let mut parts =
             vec![(2, Vec2::new(0., height as f32 - 18.)), (4, Vec2::new(0., -(margin as f32)))];
-        for y in (0..height.saturating_sub(line)).step_by(line as usize) {
+        for y in (0..height.max(line) - line).step_by(line as usize) {
             parts.push((3, Vec2::new(0., y as f32)));
         }
         for (frame, at) in parts {

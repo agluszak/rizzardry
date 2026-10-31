@@ -221,7 +221,7 @@ impl GroupRecognition<'_, '_> {
                         continue;
                     }
                     let seen = knowledge.seen.entry(species_id).or_default();
-                    *seen = seen.saturating_add(count.min(255) as u8);
+                    *seen += count.min((u8::MAX - *seen) as usize) as u8;
                 }
             }
         }

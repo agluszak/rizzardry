@@ -578,7 +578,7 @@ pub fn run_battle(
                 .try_fold(0, |sum, member| {
                     let (_, vitals, ..) = members.get(member).unwrap();
                     let effect = vitals.enchantments.get(crate::content::spells::SpellId::HASTE)?;
-                    Some(sum + effect.scaled(u32::from(effect.power) * 10))
+                    Some(sum + effect.scaled(effect.power * 10))
                 })
                 .map_or(0.0, |sum| (sum / roster.len().max(1) as u32) as f32 * 0.2);
             battle.party_move = PartyMove::Moving {

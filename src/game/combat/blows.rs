@@ -796,10 +796,10 @@ fn member_blow(
         let mut blow = hand.effects;
         if !landing.fumbled {
             let kill = &mut blow.chances[AttackEffect::Kill];
-            *kill = kill.wrapping_add(attack::critical_chance(rng, character, hand));
+            *kill = (*kill + attack::critical_chance(rng, character, hand)).min(100);
             if character.has_trait(Trait::Knockout) {
                 let knockout = &mut blow.chances[AttackEffect::KnockOut];
-                *knockout = knockout.wrapping_add(character.scale_by_profession(5.0) as u8);
+                *knockout = (*knockout + character.scale_by_profession(5.0) as u32).min(100);
             }
         }
         let power = attack::effect_power(u32::from(character.level()));
@@ -1011,7 +1011,7 @@ pub(super) fn monster_attacks(
     let eye = monster.eye(feet(position, walker));
     let stance = field.monsters.stance(entity, field.now);
     let candidates = reachable_targets(entity, kind, rng, field, fight, news);
-    let turn_left = turn.attacks_left.saturating_sub(1);
+    let turn_left = turn.attacks_left.max(1) - 1;
     battle.this_round.monsters[index].end();
     // A wary monster's wait comes first among its choices.
     let waits = usize::from(fight.waits);

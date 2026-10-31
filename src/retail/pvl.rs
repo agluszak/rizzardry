@@ -267,9 +267,9 @@ pub fn compiled_level_end(data: &[u8]) -> Result<usize, DecodeError> {
         let vertex_materials = if material < 0 { 4 } else { 0 };
         let sunlight = if (packed >> 8) as u8 != 0 { 4 } else { 0 };
         let per_vertex = 12 + vertex_materials + 12 + 12 + sunlight;
-        bytes.take(vertices.saturating_mul(per_vertex))?;
-        bytes.take(uvs.saturating_mul(8))?;
-        bytes.take(polygons.saturating_mul(12 + 12 + 4 + 16))?;
+        for (count, stride) in [(vertices, per_vertex), (uvs, 8), (polygons, 44)] {
+            bytes.take(count * stride)?;
+        }
         if bytes.i32()? != TERMINATOR {
             return Err(bytes.invalid("mesh record has the wrong length"));
         }
