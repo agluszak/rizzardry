@@ -843,6 +843,8 @@ mod tests {
             .insert_resource(GameRng::seeded(3))
             .add_message::<DamageApplied>()
             .add_message::<MagicRequest>()
+            .add_message::<utilities::UtilityCast>()
+            .add_message::<crate::game::world::interaction::DeviceCast>()
             .add_message::<casting::MagicNews>()
             .add_message::<crate::game::world::hostility::Provocation>()
             .add_systems(Update, accept_magic);
@@ -1018,6 +1020,8 @@ mod tests {
                 .insert_resource(GameRng::seeded(3))
                 .add_message::<DamageApplied>()
                 .add_message::<MagicRequest>()
+                .add_message::<utilities::UtilityCast>()
+                .add_message::<crate::game::world::interaction::DeviceCast>()
                 .add_message::<MagicNews>()
                 .add_message::<crate::game::world::hostility::Provocation>()
                 .add_systems(Update, accept_magic);
