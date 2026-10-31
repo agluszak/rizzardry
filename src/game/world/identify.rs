@@ -79,11 +79,14 @@ pub fn health_known(
     max_hp: u32,
     display_level: u8,
 ) -> String {
-    let mythology = crate::game::party::best_skill(
-        party.iter().map(|&(character, vitals, _)| ((), character, vitals)),
-        Skill::Mythology,
-    )
-    .map_or(0, |(_, level)| level);
+    // The best Mythology among those who can act (retail
+    // `GetBestPartySkillLevel`).
+    let mythology = party
+        .iter()
+        .filter(|(_, vitals, _)| vitals.can_act())
+        .map(|(character, ..)| character.skill(Skill::Mythology))
+        .max()
+        .unwrap_or(0);
     let average = crate::game::party::mean_level(
         crate::game::party::averaged_places(party.iter().map(|&(m, _, npc)| (m, npc)))
             .into_iter()

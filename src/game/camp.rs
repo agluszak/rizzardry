@@ -132,12 +132,12 @@ pub fn force_camp(
     camp: Option<Res<Camp>>,
     battle: Option<Single<&Battle>>,
     roster: Single<&PartyRoster>,
-    members: Query<&Vitals>,
+    members: Query<(&crate::game::characters::Character, &Vitals)>,
     mut news: MessageWriter<CampNews>,
 ) {
-    let anyone_alive =
-        crate::game::characters::anyone_alive(members.iter_many(roster.iter()).matched());
-    let anyone_able = members.iter_many(roster.iter()).matched().any(Vitals::can_act);
+    let lineup = crate::game::party::Lineup::of(&roster, |m| members.get(m).unwrap());
+    let anyone_alive = lineup.anyone_alive();
+    let anyone_able = lineup.members().any(|(_, _, v)| v.can_act());
     if camp.is_some() || battle.is_some() || !anyone_alive || anyone_able {
         return;
     }

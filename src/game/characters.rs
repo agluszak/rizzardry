@@ -46,12 +46,6 @@ pub fn scale_by_level(level: u8, value: f32) -> f32 {
     if level > 20 { value } else { (f32::from(level) * 2.0 + 60.0) * value * 0.01 }
 }
 
-/// Whether anyone among these is still alive: a party with nobody is
-/// defeated.
-pub fn anyone_alive<'a>(vitals: impl IntoIterator<Item = &'a Vitals>) -> bool {
-    vitals.into_iter().any(|vitals| !vitals.is_dead())
-}
-
 /// What ails a party member or a monster: each condition at most once, with
 /// how long it lasts.
 #[derive(Clone, Debug, Default, PartialEq)]

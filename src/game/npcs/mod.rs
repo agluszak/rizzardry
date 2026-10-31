@@ -39,29 +39,6 @@ pub(crate) fn script(world: &World, actor: Entity) -> AssetId<DialogueScript> {
     world.resource::<NpcAssets>().scripts[&id].id()
 }
 
-/// The party's members awake and well enough to fight, in roster order: the
-/// population retail's NPC rules work with (`hp_current != 0 &&
-/// highest_condition < ASLEEP`, as in `CanNpcJoinParty`, the charm and
-/// dialogue practice).
-pub(crate) fn able_members(world: &mut World) -> Vec<Entity> {
-    let party = crate::game::party::roster::the_party(world);
-    world
-        .get::<crate::game::party::roster::PartyRoster>(party)
-        .unwrap()
-        .iter()
-        .filter(|&m| world.get::<crate::game::characters::Vitals>(m).unwrap().can_fight())
-        .collect()
-}
-
-/// The levels of [`able_members`], which retail's NPC rules average.
-pub(crate) fn able_levels(world: &mut World) -> Vec<u8> {
-    able_members(world)
-        .into_iter()
-        .filter_map(|m| world.get::<crate::game::characters::Character>(m))
-        .map(|character| character.level())
-        .collect()
-}
-
 #[derive(Component, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ActorId {
     Named(NpcId),

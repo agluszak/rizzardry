@@ -408,6 +408,14 @@ pub enum CombatNews {
 }
 
 /// Whether the party is fighting, for operations that hold the whole world.
+/// The party's lineup as the fight's member query reads it.
+fn lineup<'a>(roster: &PartyRoster, members: &'a Members) -> crate::game::party::Lineup<'a> {
+    crate::game::party::Lineup::of(roster, |m| {
+        let (character, vitals, ..) = members.get(m).unwrap();
+        (character, vitals)
+    })
+}
+
 pub fn in_battle(world: &mut World) -> bool {
     world.query_filtered::<(), With<Battle>>().iter(world).next().is_some()
 }
@@ -418,13 +426,13 @@ pub fn settle_defeat(
     mut commands: Commands,
     battle: Option<Single<(Entity, Option<&Combatants>), With<Battle>>>,
     roster: Single<&PartyRoster>,
-    members: Query<&Vitals>,
+    members: Query<(&Character, &Vitals)>,
     mut news: MessageWriter<CombatNews>,
     mut effects: Single<&mut crate::game::magic::enchantments::PartyEffects>,
     mut monsters: Query<&mut Monster>,
 ) {
     let Some((battle, combatants)) = battle.map(Single::into_inner) else { return };
-    if !crate::game::characters::anyone_alive(members.iter_many(roster.iter()).matched()) {
+    if !crate::game::party::Lineup::of(&roster, |m| members.get(m).unwrap()).anyone_alive() {
         // What lasts a fight ends on the party and on those in it, as when
         // the party wins.
         effects.0.end_combat();

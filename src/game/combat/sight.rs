@@ -155,11 +155,6 @@ pub(super) fn reinforces(members: &[(Seen, bool)], hostiles: &[Seen]) -> bool {
         })
 }
 
-/// The party's lowest level among those who can act.
-pub(super) fn lowest_level<'a>(party: impl Iterator<Item = (&'a Character, &'a Vitals)>) -> i32 {
-    party.filter(|(_, v)| v.can_fight()).map(|(c, _)| i32::from(c.level())).min().unwrap_or(0)
-}
-
 /// Where the party stands and faces, and its formation, as reach needs them.
 pub(super) struct PartyView {
     pub(super) eye: Vec3,
@@ -196,9 +191,7 @@ impl PartyView {
             eye: self.eye,
             concealment,
             far: self.far,
-            lowest_level: lowest_level(
-                members.iter_many(roster.iter()).matched().map(|(c, v, ..)| (c, v)),
-            ),
+            lowest_level: lineup(roster, members).lowest_level(),
             obstacles,
         }
     }

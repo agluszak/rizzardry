@@ -150,7 +150,7 @@ pub fn finish_round(
         &mut magic,
         &staying,
     );
-    if party_fallen(roster, &members) {
+    if !lineup(roster, &members).anyone_alive() {
         return;
     }
     if over {
@@ -172,13 +172,6 @@ pub fn finish_round(
         magic.context.enchantments.0.end_combat();
         commands.entity(entity).despawn();
     }
-}
-
-/// Whether nobody in the party is left alive.
-pub(super) fn party_fallen(roster: &PartyRoster, members: &Members) -> bool {
-    !crate::game::characters::anyone_alive(
-        members.iter_many(roster.iter()).matched().map(|(_, vitals, ..)| vitals),
-    )
 }
 
 /// The round is over: a round's game time passes and the defenders rest.
@@ -210,7 +203,7 @@ pub(super) fn end_round(
     );
     // Poison may have killed the last of the party as the time passed: that
     // is their defeat, which `settle_defeat` reports, not a victory.
-    if party_fallen(roster, members) {
+    if !lineup(roster, members).anyone_alive() {
         return false;
     }
     rest_defenders(battle, roster, members, rng);
