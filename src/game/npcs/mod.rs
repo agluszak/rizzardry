@@ -26,12 +26,6 @@ pub(crate) fn catalog(world: &World) -> &NpcCatalog {
     &world.resource::<Catalogs>().npcs
 }
 
-/// An NPC actor's authored definition, for operations that hold the whole
-/// world. A level places only NPCs it has definitions for.
-pub(crate) fn definition(world: &World, actor: Entity) -> &NpcDefinition {
-    &catalog(world)[world.get::<ActorId>(actor).expect("an NPC actor").npc()]
-}
-
 /// An NPC actor's dialogue script, loaded before the level that placed it
 /// was entered.
 pub(crate) fn script(world: &World, actor: Entity) -> AssetId<DialogueScript> {
