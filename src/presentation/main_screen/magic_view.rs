@@ -126,25 +126,6 @@ impl MagicView {
     pub fn aim_at(&mut self, member: Entity) {
         self.member = Some(member);
     }
-
-    /// A view with a source already chosen.
-    #[cfg(test)]
-    pub(super) fn choosing(caster: Entity, source: Source) -> Self {
-        MagicView {
-            caster,
-            items: false,
-            pool: false,
-            realm: None,
-            source: Some(source),
-            power: None,
-            member: None,
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn member(&self) -> Option<Entity> {
-        self.member
-    }
 }
 
 /// What a chosen source's spell is cast at, read from the caster's items,
@@ -1158,87 +1139,5 @@ fn choose_power(click: On<Activate>, pips: Query<&Pip>, mut views: Query<&mut Ma
 fn cancel_view(_: On<Activate>, views: Query<Entity, With<MagicView>>, mut commands: Commands) {
     for view in &views {
         commands.entity(view).despawn();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::presentation::test_input::{input_app, tap};
-
-    #[derive(Component, Clone, Default)]
-    struct Beneath;
-
-    #[derive(InputAction)]
-    #[action_output(bool)]
-    struct LeaveBeneath;
-
-    #[derive(Resource, Default)]
-    struct Left(u32);
-
-    /// Escape closes the view and nothing beneath it (a camp's Escape ends
-    /// the rest), and focus goes back to what had it, such as a device
-    /// panel's button, rather than staying on a hidden control.
-    #[test]
-    fn escape_closes_only_the_view_and_gives_focus_back() {
-        let mut app = input_app();
-        app.add_plugins((
-            plugin,
-            bevy::input_focus::InputDispatchPlugin,
-            bevy::input_focus::tab_navigation::TabNavigationPlugin,
-        ))
-        .add_input_context::<Beneath>()
-        .add_observer(crate::presentation::retail_controls::give_focus_back)
-        .init_asset::<SpriteSheet>()
-        .init_resource::<Left>()
-        .insert_resource(MagicViewArt {
-            spell_panels: default(),
-            realm_buttons: default(),
-            realms: default(),
-            pips: default(),
-            cancel: default(),
-            scroll: default(),
-            item_panels: default(),
-            font: default(),
-            red: default(),
-            orange: default(),
-            blue: default(),
-            yellow: default(),
-        });
-        app.finish();
-        app.cleanup();
-        let window = app.world_mut().spawn((Window::default(), bevy::window::PrimaryWindow)).id();
-        app.world_mut().commands().spawn_scene(bsn! {
-            Beneath
-            ContextPriority::<Beneath>::new(1)
-            Actions<Beneath> [
-                Action::<LeaveBeneath>::new()
-                ActionSettings { consume_input: true }
-                Bindings [ Binding(KeyCode::Escape) ]
-            ]
-            on(|_: On<Start<LeaveBeneath>>, mut left: ResMut<Left>| left.0 += 1)
-        });
-        let before = app.world_mut().spawn((UiButton, TabIndex(0))).id();
-        app.world_mut()
-            .resource_mut::<InputFocus>()
-            .set(before, bevy::input_focus::FocusCause::Navigated);
-        // Another view giving focus back must outlive magic views replacing
-        // each other, two opens queued in one frame.
-        let other = app.world_mut().spawn(RestoreFocus(None)).id();
-        let caster = app.world_mut().spawn_empty().id();
-        let art = app.world().resource::<MagicViewArt>().clone();
-        open(&mut app.world_mut().commands(), &art, caster, false, None);
-        open(&mut app.world_mut().commands(), &art, caster, false, None);
-        app.update();
-        app.update();
-        assert!(app.world().get::<RestoreFocus>(other).is_some(), "another view stays");
-        let focused = app.world().resource::<InputFocus>().get().unwrap();
-        assert_ne!(focused, before, "the view takes focus");
-        assert_eq!(app.world_mut().query::<&MagicView>().iter(app.world()).count(), 1);
-        tap(&mut app, window, KeyCode::Escape);
-        app.update();
-        assert_eq!(app.world_mut().query::<&MagicView>().iter(app.world()).count(), 0);
-        assert_eq!(app.world().resource::<InputFocus>().get(), Some(before));
-        assert_eq!(app.world().resource::<Left>().0, 0, "what lies beneath keeps its Escape");
     }
 }

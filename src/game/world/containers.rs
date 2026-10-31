@@ -27,14 +27,6 @@ pub struct Container {
     pub contents: Contents,
 }
 
-#[cfg(test)]
-impl Container {
-    /// An opened container holding these stacks.
-    pub(crate) fn holding(items: Vec<ItemStack>) -> Self {
-        Container { table: None, contents: Contents { items, gold: 0 } }
-    }
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct Contents {
     pub items: Vec<ItemStack>,

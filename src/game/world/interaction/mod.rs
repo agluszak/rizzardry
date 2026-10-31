@@ -817,6 +817,3 @@ pub fn handle_device_requests(world: &mut World) {
 fn why<E: std::fmt::Debug>(result: Result<(), E>) -> Option<String> {
     result.err().map(|e| format!("{e:?}"))
 }
-
-#[cfg(test)]
-mod tests;

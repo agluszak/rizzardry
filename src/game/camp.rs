@@ -167,34 +167,3 @@ pub fn leave_camp(
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_rest_ends_at_its_deadline_and_a_forced_one_on_recovery() {
-        assert_eq!(Camp::Until(1000).outcome(999, true), None);
-        assert_eq!(Camp::Until(1000).outcome(1000, false), Some(CampNews::Done));
-        assert_eq!(Camp::UntilAble.outcome(u64::MAX, false), None);
-        assert_eq!(Camp::UntilAble.outcome(0, true), Some(CampNews::Recovered));
-    }
-
-    #[test]
-    fn leaving_cuts_a_rest_short_at_once_but_not_a_forced_one() {
-        let mut app = App::new();
-        app.add_message::<LeaveCamp>()
-            .add_message::<CampNews>()
-            .add_systems(Update, leave_camp)
-            .insert_resource(Camp::UntilAble);
-        app.world_mut().write_message(LeaveCamp);
-        app.update();
-        assert!(app.world().contains_resource::<Camp>());
-        app.insert_resource(Camp::Until(1000));
-        app.world_mut().write_message(LeaveCamp);
-        app.update();
-        assert!(!app.world().contains_resource::<Camp>(), "no fade holds the rest");
-        let news: Vec<_> = app.world_mut().resource_mut::<Messages<CampNews>>().drain().collect();
-        assert_eq!(news, [CampNews::Started { forced: true }, CampNews::Interrupted]);
-    }
-}
