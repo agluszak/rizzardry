@@ -84,7 +84,7 @@ pub fn stance(
     match set {
         Some(set)
             if fighting
-                || (now.saturating_sub(set.at) <= holds_for(species)
+                || (now - set.at <= holds_for(species)
                     && (species.faction == UNALIGNED
                         || set.at >= factions.band_changed_at(species.faction))) =>
         {

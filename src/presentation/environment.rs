@@ -45,13 +45,13 @@ fn spell_light(
     effects: &PartyEffects,
 ) -> Option<crate::content::level::PointLightSource> {
     let effect = effects.0.get(crate::content::spells::SpellId::LIGHT)?;
-    let amount = (effect.adjusted(u32::from(effect.power)) as u8).wrapping_mul(2);
+    let amount = effect.adjusted(effect.power) * 2;
     Some(crate::content::level::PointLightSource {
         name: String::new(),
         runtime: true,
         enabled: true,
         position: eye,
-        colour: Vec3::new(1.0, 0.85, 0.39) * (f32::from(amount) + 2.0),
+        colour: Vec3::new(1.0, 0.85, 0.39) * (amount as f32 + 2.0),
         range: 4000.0 / crate::content::UNITS_PER_METRE,
     })
 }

@@ -220,7 +220,7 @@ impl Realm {
 impl Skill {
     /// The realm this skill casts in, if it is a realm skill.
     pub fn realm(self) -> Option<Realm> {
-        (self as u8).checked_sub(Skill::FireMagic as u8).and_then(|i| Realm::try_from(i).ok())
+        enumset::EnumSet::<Realm>::all().iter().find(|realm| realm.skill() == self)
     }
 }
 

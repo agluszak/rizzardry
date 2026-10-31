@@ -29,10 +29,10 @@ pub(super) fn sync_transcript(
         }
         // The current line is still in its speech bubble. Do not print it a
         // second time in the transcript before playback has finished.
-        let count = c
-            .transcript
-            .len()
-            .saturating_sub(usize::from(matches!(c.wait, ConversationWait::Line { .. })));
+        let count = c.transcript.len()
+            - usize::from(
+                !c.transcript.is_empty() && matches!(c.wait, ConversationWait::Line { .. }),
+            );
         let lines: Vec<_> = c.transcript[..count]
             .iter()
             .map(|line| match line {

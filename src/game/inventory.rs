@@ -39,7 +39,7 @@ pub struct ItemIds {
 }
 impl ItemIds {
     pub fn allocate(&mut self) -> StackId {
-        self.next = self.next.checked_add(1).expect("stack identity exhausted");
+        self.next += 1;
         StackId(self.next)
     }
 }
@@ -122,7 +122,7 @@ impl ItemStack {
     /// Consume up to `amount` physical units, retaining the remainder's identity
     /// and metadata. Callers that settle payment validate the exact quantity first.
     pub(crate) fn remove_units(mut self, amount: u16) -> Option<Self> {
-        self.count = NonZeroU16::new(self.count().saturating_sub(amount))?;
+        self.count = NonZeroU16::new(self.count() - amount.min(self.count()))?;
         Some(self)
     }
     /// Units of this definition that can join the stack without changing its metadata.
@@ -130,8 +130,9 @@ impl ItemStack {
         if self.item == definition.id
             && self.identified == identified
             && definition.quantity == QuantityKind::Stack
+            && self.count() < u16::from(definition.stack_limit)
         {
-            u16::from(definition.stack_limit).saturating_sub(self.count())
+            u16::from(definition.stack_limit) - self.count()
         } else {
             0
         }
@@ -161,8 +162,8 @@ impl ItemStack {
             _ => from.remaining_uses.unwrap_or(0),
         };
         let maximum = definition.initial_quantity.maximum().min(u32::from(u16::MAX)) as u16;
-        // Retail's unsigned room wraps for an overfull item, taking everything.
-        let moved = maximum.checked_sub(uses).map_or(available, |room| room.min(available));
+        // An overfull item has no room; loading never increases it further.
+        let moved = available.min(maximum.max(uses) - uses);
         self.remaining_uses = Some(uses + moved);
         let mut rest = Some(from);
         for _ in 0..moved {
@@ -173,7 +174,7 @@ impl ItemStack {
     /// Consumption owns its input: exhausted physical stacks never survive as values.
     pub fn consume_use(mut self, definition: &ItemDefinition, keep_empty: bool) -> Option<Self> {
         if let Some(uses) = &mut self.remaining_uses {
-            *uses = uses.saturating_sub(1);
+            *uses -= (*uses).min(1);
             if *uses == 0 && !keep_empty {
                 return None;
             }
@@ -457,7 +458,7 @@ impl ItemPool {
             1
         };
         self.stacks.iter().map(|s| u32::from(s.room_for(definition, identified))).sum::<u32>()
-            + POOL_LIMIT.saturating_sub(self.stacks.len()) as u32 * per_row
+            + (POOL_LIMIT - self.stacks.len()) as u32 * per_row
     }
 
     fn position(&self, position: PoolPosition) -> Result<usize, Refusal> {
@@ -703,8 +704,8 @@ pub(crate) struct Identified {
 
 /// One member's go at identifying an item of this difficulty (retail
 /// `TryIdentifyItemFor`): someone alive and sane manages it when a sixth of
-/// their Artifacts reaches it. Retail compares signed bytes, so a
-/// difficulty past 127 is always managed.
+/// their Artifacts reaches it. Higher difficulty never becomes easier
+/// by overflowing a signed byte.
 pub(crate) fn identify_attempt(
     character: &Character,
     vitals: &Vitals,
@@ -713,15 +714,13 @@ pub(crate) fn identify_attempt(
     if !vitals.lucid() {
         return None;
     }
-    let strength = (character.skill(Skill::Artifacts) / 6) as i8;
-    if difficulty as i8 > strength {
+    let strength = character.skill(Skill::Artifacts) / 6;
+    let difficulty = difficulty as u32;
+    if difficulty > strength {
         return None;
     }
-    let margin = i32::from(strength) - i32::from(difficulty);
-    Some(Identified {
-        binding: difficulty.wrapping_add(3) as i8 <= strength,
-        practises: (0..3).contains(&margin),
-    })
+    let margin = strength - difficulty;
+    Some(Identified { binding: margin >= 3, practises: (0..3).contains(&margin) })
 }
 
 /// Guns and what loads them (retail `g_compatible_partner_pairs`).

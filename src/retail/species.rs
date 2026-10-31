@@ -50,8 +50,8 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
                 modes: EnumSet::from_repr_truncated(u16_at(attack, 0x15)?),
                 damage: dice_at(attack, 0x17)?,
                 effects: AttackEffects {
-                    chances: EnumMap::from_array(attack[5..0x15].try_into().unwrap()),
-                    strength: attack[0x1b],
+                    chances: EnumMap::from_array(std::array::from_fn(|i| attack[5 + i] as u32)),
+                    strength: attack[0x1b] as u32,
                 },
             })
         })

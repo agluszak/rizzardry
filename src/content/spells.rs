@@ -140,7 +140,7 @@ impl SpellId {
 
 /// The highest power a caster may choose; retail's "8" means the highest
 /// affordable one and is resolved before casting.
-pub const MAX_POWER: u8 = 7;
+pub const MAX_POWER: u32 = 7;
 
 /// The four spellbooks (retail mask bits: Wizardry 1, Divinity 2, Alchemy
 /// 4, Psionics 8).
@@ -242,8 +242,8 @@ impl SpellDefinition {
     }
 
     /// Spell points a cast at `power` costs.
-    pub fn cost_at(&self, power: u8) -> u32 {
-        self.cost * u32::from(power)
+    pub fn cost_at(&self, power: u32) -> u32 {
+        self.cost * power
     }
 
     /// Retail `CanSpellBackfire` (`Spells.cpp:1483-1531`): spells aimed at
@@ -308,7 +308,7 @@ impl std::ops::Index<SpellId> for SpellCatalog {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ItemSpell {
     pub spell: SpellId,
-    pub power: u8,
+    pub power: u32,
 }
 
 /// Localized spell effect and description text, loaded independently of rules.

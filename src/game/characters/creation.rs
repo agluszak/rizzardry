@@ -126,12 +126,12 @@ impl CharacterDraft {
         let required: u16 = profession_row(profession)
             .minimums
             .iter()
-            .map(|(a, &minimum)| u16::from(minimum.saturating_sub(base[a])))
+            .map(|(a, &minimum)| (minimum - minimum.min(base[a])) as u16)
             .sum();
-        60u16
-            .checked_sub(required)
-            .map(|n| n as u8)
-            .ok_or("This race cannot meet the profession's requirements.")
+        if required > 60 {
+            return Err("This race cannot meet the profession's requirements.");
+        }
+        Ok((60 - required) as u8)
     }
 
     pub fn attribute_remaining(&self) -> u8 {
@@ -153,7 +153,9 @@ impl CharacterDraft {
     }
 
     pub fn spell_remaining(&self) -> usize {
-        self.spell_points_total().saturating_sub(self.learned_spells.values().map(Vec::len).sum())
+        (self.spell_points_total() as isize
+            - self.learned_spells.values().map(Vec::len).sum::<usize>() as isize)
+            .max(0) as usize
     }
 
     /// The accepted selection, shared with the live LearnedSpells component.
@@ -206,8 +208,7 @@ impl CharacterDraft {
         // Allocations in a realm cease to be valid when its last spell is removed.
         for realm in EnumSet::<Realm>::all() {
             if self.learned_spells[realm].is_empty() {
-                let skill = Skill::try_from(Skill::FireMagic as u8 + realm as u8).unwrap();
-                self.skills[skill] = 0;
+                self.skills[realm.skill()] = 0;
             }
         }
         true
@@ -217,8 +218,7 @@ impl CharacterDraft {
         self.learned_spells = EnumMap::default();
         self.last_spell = None;
         for realm in EnumSet::<Realm>::all() {
-            let skill = Skill::try_from(Skill::FireMagic as u8 + realm as u8).unwrap();
-            self.skills[skill] = 0;
+            self.skills[realm.skill()] = 0;
         }
     }
 

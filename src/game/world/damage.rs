@@ -135,8 +135,8 @@ impl<'w, 's> MonsterDamage<'w, 's> {
             return 0;
         }
         let before = body.hp;
-        body.hp = body.hp.saturating_add(amount).min(body.max_hp);
-        body.hp.saturating_sub(before)
+        body.hp = (body.hp + amount).min(body.max_hp);
+        body.hp.max(before) - before
     }
     /// Restoring stamina wakes exhaustion, but leaves a timed knockout alone.
     pub fn restore_stamina(&mut self, entity: Entity, amount: u32) -> u32 {
@@ -154,7 +154,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     }
     pub fn restore_magic(&mut self, entity: Entity, amount: u32) {
         let (mut body, ..) = self.monsters.get_mut(entity).unwrap();
-        body.spell_points = body.spell_points.saturating_add(amount.min(i32::MAX as u32) as i32);
+        body.spell_points += amount as i32;
     }
     /// The monsters, to look at.
     pub fn monsters(&self) -> &MonsterQuery<'w, 's> {
@@ -192,7 +192,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         let (mut monster, ..) = self.monsters.get_mut(entity).unwrap();
         let kind = &self.content.species[monster.species];
         let lost = monster.spell_budget(kind).min(amount);
-        monster.spell_points = monster.spell_points.saturating_sub(lost as i32);
+        monster.spell_points -= lost as i32;
         lost
     }
 

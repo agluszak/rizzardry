@@ -66,16 +66,15 @@ pub(crate) fn discharge(
                 let (spell, effects, improved, destroyed) =
                     context.resolve(clock.ms, &mut members, &mut monsters, |field| {
                         let spell: &SpellDefinition = &field.spells[SPELLS[usize::from(trap)]];
-                        let difficulty = difficulty.clamp(1, 7);
+                        let difficulty = u32::from(difficulty.clamp(1, 7));
                         let destroyed = rng.below(2) == 0;
-                        let mut count =
-                            u32::from(difficulty) - rng.below(u32::from(difficulty / 2));
-                        let extra = difficulty.saturating_sub(
-                            crate::game::world::interaction::TRAP_GRADE[usize::from(trap)] as u8,
-                        );
+                        let mut count = difficulty - rng.below(difficulty / 2);
+                        let extra = (difficulty as i32
+                            - crate::game::world::interaction::TRAP_GRADE[trap as usize])
+                            .max(0) as u32;
                         let power = (extra + 4).min(7);
                         if extra > 3 {
-                            count += rng.below(u32::from(extra - 3));
+                            count += rng.below(extra - 3);
                         }
                         // Retail deletes random slots from roster order, retaining the
                         // selected living actor. Sleeping/unconscious members can be
