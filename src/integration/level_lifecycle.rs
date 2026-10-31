@@ -549,7 +549,7 @@ fn group_knowledge_survives_revisit() {
 }
 
 #[test]
-fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() {
+fn direct_damage_settles_death_once() {
     use crate::content::items::{Dice, ItemDefinition, ItemId};
     use crate::content::species::{Drop, Treasure};
     use crate::game::inventory::PartyInventory;
@@ -570,7 +570,7 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
             dice: Dice { base: 2, ..default() },
         }];
     }
-    let level = spawn_level(&mut app, floor());
+    spawn_level(&mut app, floor());
     app.update();
     let world = app.world_mut();
     let target = world.query_filtered::<Entity, With<Monster>>().single(world).unwrap();
@@ -603,13 +603,7 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
         controller,
     ));
     world.get_mut::<TnuaMotor>(target).unwrap().lin.boost = Vec3::X;
-    let before = world.resource::<GameRng>().clone();
-    let source = world.entity_mut(level).take::<Level>().unwrap();
-    assert!(hit(world).is_err());
-    assert_eq!(world.get::<Monster>(target).unwrap().hp, 10);
-    assert_eq!(*world.resource::<GameRng>(), before);
-    world.entity_mut(level).insert(source);
-    assert!(hit(world).unwrap().died);
+    assert!(hit(world).died);
     assert!(world.get::<Crossing>(target).is_none());
     assert!(world.get::<UsingAnimationLink>(target).is_none());
     assert!(matches!(world.get::<AgentTarget3d>(target), Some(AgentTarget3d::None)));
@@ -627,7 +621,7 @@ fn direct_damage_settles_death_once_and_rejection_leaves_the_target_unchanged() 
             .all(|at| { at.translation == physical - Vec3::Y + Vec3::Y * 0.25 })
     );
     let after = world.resource::<GameRng>().clone();
-    hit(world).unwrap();
+    hit(world);
     assert_eq!(*world.resource::<GameRng>(), after);
     assert_eq!(world.query::<&PartyInventory>().single(world).unwrap().gold, 7);
     let units = world
@@ -872,7 +866,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
         body.max_hp = 9;
     }
     // A merchant re-enters at authored quote zero even after its greeting was remembered.
-    use crate::game::npcs::conversation::{self, Conversation, ConversationRequest};
+    use crate::game::npcs::conversation::{self, Conversation, ConversationRequest, Talk};
     let at = app.world().get::<Transform>(body).unwrap().translation;
     let party = party_entities(&mut app)[0];
     app.world_mut().get_mut::<avian3d::prelude::Position>(party).unwrap().0 = at + Vec3::X;
@@ -885,7 +879,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
             app.world().get::<Conversation>(session).unwrap().wait
         {
             app.world_mut()
-                .write_message(ConversationRequest::Advance { conversation: session, speech });
+                .write_message(ConversationRequest::new(session, Talk::Advance { speech }));
             app.update();
         }
         // Buying one and selling it back, through the merchant's definition
@@ -900,23 +894,23 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
                 conversation::quote_trade(app.world_mut(), session, TradeSource::Stock(lot), 1)
                     .unwrap();
             // A confirmation buys once, however often it arrives.
-            app.world_mut().write_message(ConversationRequest::Trade(quote));
-            app.world_mut().write_message(ConversationRequest::Trade(quote));
+            app.world_mut().write_message(ConversationRequest::trade(quote));
+            app.world_mut().write_message(ConversationRequest::trade(quote));
             app.update();
-            app.world_mut().write_message(ConversationRequest::Trade(quote));
+            app.world_mut().write_message(ConversationRequest::trade(quote));
             app.update();
             assert_eq!(purse(&app), 10_000 - quote.gold);
             assert_eq!(app.world().get::<Npc>(actor).unwrap().stock.lots[0].units, 1);
             let bought = app.world().get::<PartyInventory>(party).unwrap().pool.stacks[0].id;
             let source = TradeSource::Party(ItemRef { owner: ItemOwner::Pool, id: bought });
             let sale = conversation::quote_trade(app.world_mut(), session, source, 1).unwrap();
-            app.world_mut().write_message(ConversationRequest::Trade(sale));
-            app.world_mut().write_message(ConversationRequest::Trade(sale));
+            app.world_mut().write_message(ConversationRequest::trade(sale));
+            app.world_mut().write_message(ConversationRequest::trade(sale));
             app.update();
             assert_eq!(purse(&app), 10_000 - quote.gold + sale.gold);
             assert!(app.world().get::<PartyInventory>(party).unwrap().pool.stacks.is_empty());
         }
-        app.world_mut().write_message(ConversationRequest::Close { conversation: session });
+        app.world_mut().write_message(ConversationRequest::new(session, Talk::Close));
         app.update();
         assert!(app.world().get_entity(session).is_err());
     }
@@ -1042,7 +1036,7 @@ fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
                        mut purses: Query<&mut PartyInventory>,
                        mut rng: ResMut<GameRng>| {
         let mut damage = damage;
-        damage.apply(body, 1000, (1, 0), &mut purses.get_mut(party).unwrap(), &mut rng).unwrap()
+        damage.apply(body, 1000, (1, 0), &mut purses.get_mut(party).unwrap(), &mut rng)
     };
     let killed = app.world_mut().run_system_once(strike).unwrap();
     assert!(killed.died);

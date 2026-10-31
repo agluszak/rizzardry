@@ -206,7 +206,7 @@ pub(super) fn casts_at_foes(
     scene: &Scene,
 ) -> bool {
     kind.magic.chance != 0
-        && kind.magic.spells.iter().flatten().filter_map(|&id| spells.get(id)).any(|spell| {
+        && kind.magic.spells.iter().flatten().map(|&id| &spells[id]).any(|spell| {
             spell.aimed_at_enemies()
                 && castable(spell, caster, kind)
                 && !aims(spell, scene).is_empty()
@@ -231,7 +231,7 @@ pub(super) fn choose(
         .iter()
         .zip(SLOT_WEIGHTS)
         .filter_map(|(id, weight)| {
-            let spell = spells.get((*id)?)?;
+            let spell = &spells[(*id)?];
             if !castable(spell, caster, kind) {
                 return None;
             }

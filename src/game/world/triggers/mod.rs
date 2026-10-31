@@ -144,7 +144,7 @@ fn damage_party(
 ) {
     let fight = fight.map(|fight| *fight);
     for entity in roster.iter() {
-        let Ok((profile, mut member)) = members.get_mut(entity) else { continue };
+        let (profile, mut member) = members.get_mut(entity).unwrap();
         if member.is_dead() {
             continue;
         }
@@ -177,14 +177,8 @@ fn drink_fountain(
     mut rng: ResMut<GameRng>,
     mut outcomes: MessageWriter<TriggerEffect>,
 ) -> bool {
-    let restoration = if fountain.restores == Restores::Restoration {
-        let Some(spell) = content.spells.get(crate::content::spells::SpellId::HEAL_ALL) else {
-            return false;
-        };
-        Some(spell)
-    } else {
-        None
-    };
+    let restoration = (fountain.restores == Restores::Restoration)
+        .then(|| &content.spells[crate::content::spells::SpellId::HEAL_ALL]);
     let mut state = fountains.get_mut(entity).unwrap();
     let now = clock.ms;
     // A dry fountain is assessed without marking it changed.
@@ -305,23 +299,17 @@ pub fn activate(world: &mut World, entity: Entity, player: bool) -> bool {
     if player && !crate::game::freedom::free_in(world) {
         return false;
     }
-    if world.get::<Device>(entity).is_none() {
-        return false;
-    }
-    let Some(&LevelOwned(level)) = world.get::<LevelOwned>(entity) else { return false };
-    let Some(level) = world.get::<Level>(level) else { return false };
-    let handle = level.definition.clone();
+    let level = world.get::<LevelOwned>(entity).unwrap().0;
+    let handle = world.get::<Level>(level).unwrap().definition.clone();
     // Borrow immutable definitions for the entire synchronous operation. Nested
     // links use these same definitions, without cloning a graph or a definition.
     world.resource_scope(|world, geometry: Mut<Assets<LevelDefinition>>| {
-        let Some(geometry) = geometry.get(&handle) else { return false };
+        let geometry = geometry.get(&handle).unwrap();
         let definition = &geometry.triggers[world.get::<Device>(entity).unwrap().definition];
         if player
             && (!usable(world, entity, definition)
-                || player_distance(world, geometry, entity).is_none_or(|distance| {
-                    !distance.is_finite()
-                        || !(definition.range.0..=definition.range.1).contains(&distance)
-                }))
+                || !(definition.range.0..=definition.range.1)
+                    .contains(&player_distance(world, geometry, entity)))
         {
             return false;
         }
@@ -334,11 +322,12 @@ pub fn activate(world: &mut World, entity: Entity, player: bool) -> bool {
 }
 
 /// Reach uses the current gameplay geometry, independent of the last pointer hit.
-/// Colliderless props fall back to their authored centre.
-fn player_distance(world: &mut World, geometry: &LevelDefinition, entity: Entity) -> Option<f32> {
+/// Colliderless props fall back to their authored centre. The player uses
+/// only props.
+fn player_distance(world: &mut World, geometry: &LevelDefinition, entity: Entity) -> f32 {
     use avian3d::prelude::Collider;
-    let eye = crate::game::party::body::PartyBody::eye_in(world)?;
-    let centre = geometry.props.get(world.get::<Prop>(entity)?.definition)?.centre();
+    let eye = crate::game::party::body::PartyBody::eye_in(world);
+    let centre = geometry.props[world.get::<Prop>(entity).unwrap().definition].centre();
     let distance = world
         .get::<Children>(entity)
         .into_iter()
@@ -350,7 +339,7 @@ fn player_distance(world: &mut World, geometry: &LevelDefinition, entity: Entity
             Some(collider.distance_to_point(at.translation, at.rotation, eye, true))
         })
         .min_by(f32::total_cmp);
-    Some(distance.unwrap_or_else(|| eye.distance(centre)))
+    distance.unwrap_or_else(|| eye.distance(centre))
 }
 
 /// How running a device went.
@@ -559,8 +548,8 @@ fn execute(
     depth: usize,
     source: i32,
 ) -> Ran {
-    let Some(device) = world.get::<Device>(entity) else { return Ran::Declined };
-    let Some(&LevelOwned(level)) = world.get::<LevelOwned>(entity) else { return Ran::Declined };
+    let device = world.get::<Device>(entity).unwrap();
+    let level = world.get::<LevelOwned>(entity).unwrap().0;
     let definition = &geometry.triggers[device.definition];
     if depth > MAX_DEPTH {
         warn!("trigger {} recurses too deeply", definition.name);
@@ -572,10 +561,7 @@ fn execute(
         return Ran::Declined;
     }
     let party = crate::game::party::roster::the_party(world);
-    let offered = party
-        .and_then(|party| world.get::<PartyInventory>(party))
-        .and_then(|p| p.hand.held.as_ref())
-        .map(|h| h.item);
+    let offered = world.get::<PartyInventory>(party).unwrap().hand.held.as_ref().map(|h| h.item);
     let chosen = select_use(
         &world.entity(entity),
         world.get::<LevelState>(level).unwrap(),
@@ -646,12 +632,11 @@ fn execute(
                 return Ran::Declined;
             };
             if world.get::<Container>(entity).is_some() {
-                // Without a party there is nobody to use it.
-                match world.run_system_cached_with(use_container, entity) {
-                    Err(_) | Ok(ContainerUse::Busy) => return Ran::Declined,
-                    Ok(ContainerUse::Deposited) => return Ran::Answered,
-                    Ok(ContainerUse::Toggle) => {}
-                    Ok(ContainerUse::Look { open }) => {
+                match world.run_system_cached_with(use_container, entity).unwrap() {
+                    ContainerUse::Busy => return Ran::Declined,
+                    ContainerUse::Deposited => return Ran::Answered,
+                    ContainerUse::Toggle => {}
+                    ContainerUse::Look { open } => {
                         super::interaction::begin(world, entity, Work::Looting);
                         if open {
                             return Ran::Answered;
@@ -748,7 +733,7 @@ fn execute(
         TriggerAction::CameraPath(path) => {
             world.entity_mut(level).insert(PendingPartyMove(PartyMove::Fly(*path)));
         }
-        TriggerAction::MissingCameraPath(name) => panic!("missing camera path {name}"),
+        // Refused with its level at preparation.
         TriggerAction::HurtParty(dice) => {
             if world.run_system_cached_with(damage_party, *dice).is_err() {
                 return Ran::Declined;

@@ -25,75 +25,48 @@ pub struct MapNotes {
     pub notes: Vec<MapNote>,
 }
 
-/// A draft belongs to one editing session and map. The index is bounded by
-/// that session. The expected committed value prevents delayed confirmation
-/// from retargeting an entry that was removed or changed in the meantime.
+/// A note being written on a level's map: a new one, or the one at
+/// `original` retyped. The map only starts one while the notes have room.
 #[derive(Debug)]
 pub struct NoteDraft {
     pub level: Entity,
-    pub original: Option<(usize, MapNote)>,
+    pub original: Option<usize>,
     pub note: MapNote,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum NoteRefusal {
-    InactiveMap,
-    MissingNote,
-    Full,
-    InvalidText,
 }
 
 /// The player accepts a note draft.
 #[derive(Message, Debug)]
 pub struct CommitNote(pub NoteDraft);
 
-pub fn commit_notes(world: &mut World) {
-    let requests: Vec<_> = world.resource_mut::<Messages<CommitNote>>().drain().collect();
-    for CommitNote(draft) in requests {
-        if let Err(why) = commit_note(world, draft) {
+/// A note too long for retail's notes (the editor counts characters,
+/// retail stores UTF-16).
+#[derive(Debug, PartialEq, Eq)]
+pub struct NoteTooLong;
+
+/// Pin accepted drafts to their level's map.
+pub fn commit_notes(mut requests: MessageReader<CommitNote>, mut levels: Query<&mut MapNotes>) {
+    for CommitNote(draft) in requests.read() {
+        let mut notes = levels.get_mut(draft.level).unwrap();
+        if let Err(why) = notes.commit(draft.original, draft.note.clone()) {
             debug!("note refused: {why:?}");
         }
     }
 }
 
-/// Commit an identified map's draft. Departure/cancellation cannot capture
-/// unfinished editing in the campaign's notes or a dormant level record.
-pub fn commit_note(world: &mut World, draft: NoteDraft) -> Result<(), NoteRefusal> {
-    use crate::game::world::level::Level;
-    if world.get::<Level>(draft.level).is_none() {
-        return Err(NoteRefusal::InactiveMap);
-    }
-    let notes = world.get_mut::<MapNotes>(draft.level);
-    if let Some((index, expected)) = &draft.original
-        && notes.as_ref().and_then(|notes| notes.notes.get(*index)) != Some(expected)
-    {
-        return Err(NoteRefusal::MissingNote);
-    }
-    notes
-        .ok_or(NoteRefusal::InactiveMap)?
-        .commit(draft.original.map(|(index, _)| index), draft.note)
-}
-
 impl MapNotes {
-    pub fn commit(&mut self, original: Option<usize>, note: MapNote) -> Result<(), NoteRefusal> {
-        if note.text.encode_utf16().count() > MAX_NOTE_LENGTH
-            || note.text.contains('\0')
-            || !note.position.is_finite()
-        {
-            return Err(NoteRefusal::InvalidText);
+    /// Pin a new note, or retype or (committed empty) erase the one at
+    /// `original`.
+    pub fn commit(&mut self, original: Option<usize>, note: MapNote) -> Result<(), NoteTooLong> {
+        if note.text.encode_utf16().count() > MAX_NOTE_LENGTH {
+            return Err(NoteTooLong);
         }
-        if let Some(index) = original {
-            let current = self.notes.get_mut(index).ok_or(NoteRefusal::MissingNote)?;
-            if note.text.is_empty() {
+        match original {
+            Some(index) if note.text.is_empty() => {
                 self.notes.remove(index);
-            } else {
-                *current = note;
             }
-        } else if !note.text.is_empty() {
-            if self.notes.len() >= MAX_NOTES {
-                return Err(NoteRefusal::Full);
-            }
-            self.notes.push(note);
+            Some(index) => self.notes[index] = note,
+            None if !note.text.is_empty() => self.notes.push(note),
+            None => {}
         }
         Ok(())
     }
@@ -141,7 +114,7 @@ mod tests {
             .id();
         let text = format!("{}ł", "😀".repeat(19));
         assert_eq!(text.encode_utf16().count(), MAX_NOTE_LENGTH);
-        for candidate in [text.clone(), format!("{text}a"), "before\0after".into()] {
+        for candidate in [text.clone(), format!("{text}a")] {
             app.world_mut().write_message(CommitNote(NoteDraft {
                 level,
                 original: None,
@@ -168,8 +141,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        let extra = MapNote { position: Vec2::ZERO, layer: 0, text: "N".into() };
-        assert_eq!(notes.commit(None, extra), Err(NoteRefusal::Full));
+        assert!(!notes.has_room());
         assert_eq!(notes.nearest(Vec2::new(3.2, 3.0), 1.0, 0), Some(3));
         assert_eq!(notes.nearest(Vec2::new(-5.0, 0.0), 1.0, 0), None);
     }

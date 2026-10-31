@@ -47,11 +47,19 @@ impl ActorPoseItem<'_, '_> {
 
 /// An actor's position, for operations that hold the whole world: as
 /// [`ActorPose`] reads it.
-pub fn actor_position(world: &World, actor: Entity) -> Option<Vec3> {
-    world
-        .get::<avian3d::prelude::Position>(actor)
-        .map(|position| position.0)
-        .or_else(|| world.get::<Transform>(actor).map(|transform| transform.translation))
+pub fn actor_position(world: &World, actor: Entity) -> Vec3 {
+    world.get::<avian3d::prelude::Position>(actor).map_or_else(
+        || world.get::<Transform>(actor).expect("an actor in the world").translation,
+        |position| position.0,
+    )
+}
+
+/// The level rotation that looks from `here` toward `toward`, if they are
+/// apart.
+pub fn facing(here: Vec3, toward: Vec3) -> Option<Quat> {
+    let delta = (toward - here).with_y(0.0);
+    (delta.length_squared() > 0.0001)
+        .then(|| Quat::from_rotation_y(crate::game::party::body::yaw_toward(delta)))
 }
 
 /// Turn an actor, level, to face the point `toward`, for operations that
@@ -59,18 +67,11 @@ pub fn actor_position(world: &World, actor: Entity) -> Option<Vec3> {
 /// together, so physics' transform synchronization cannot restore the old
 /// yaw.
 pub fn face(world: &mut World, actor: Entity, toward: Vec3) {
-    let Some(here) = actor_position(world, actor) else { return };
-    let delta = (toward - here).with_y(0.0);
-    if delta.length_squared() <= 0.0001 {
-        return;
-    }
-    let facing = Quat::from_rotation_y(crate::game::party::body::yaw_toward(delta));
+    let Some(facing) = facing(actor_position(world, actor), toward) else { return };
     if let Some(mut rotation) = world.get_mut::<avian3d::prelude::Rotation>(actor) {
         rotation.0 = facing;
     }
-    if let Some(mut transform) = world.get_mut::<Transform>(actor) {
-        transform.rotation = facing;
-    }
+    world.get_mut::<Transform>(actor).unwrap().rotation = facing;
 }
 
 /// The highest step the party and walking monsters climb: 300 retail units
@@ -126,7 +127,8 @@ impl Plugin for WorldPlugin {
             // Encounters come over ground physics has placed.
             .add_systems(
                 FixedPostUpdate,
-                encounters::run_encounters
+                (encounters::write_off_wiped_out, encounters::run_encounters)
+                    .chain()
                     .after(avian3d::prelude::PhysicsSystems::Writeback)
                     .run_if(level::level_active),
             )

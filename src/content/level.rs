@@ -457,10 +457,6 @@ pub enum TriggerAction {
     Animate(Animation),
     /// Fly the party along the named camera path (9).
     CameraPath(usize),
-    /// A camera path flight naming a path the level does not have (its
-    /// name, empty when it names none): broken content, which refuses the
-    /// level.
-    MissingCameraPath(String),
     /// Run the recipients (0xf).
     Relay(i32),
     /// Distort or restore the camera according to the signed call argument (0x10).

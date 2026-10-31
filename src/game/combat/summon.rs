@@ -74,9 +74,9 @@ pub fn summon(
     // not in the queries, yet the next group must stand clear of them.
     let mut landed: Vec<(Vec3, f32)> = vec![];
     for &Summon { summoner, species: id } in summons.read() {
-        let Ok((caller, caller_at, caller_walker)) = monsters.get(summoner) else { continue };
+        let (caller, caller_at, caller_walker) = monsters.get(summoner).unwrap();
         let kind = &species[id];
-        let definition = bodies.get(id, &definitions).unwrap();
+        let definition = bodies.get(id, &definitions).expect("bodies load with the level");
         let authored = next_group;
         let count = rng.roll(kind.group_size);
         let mut members = population::roll_group(

@@ -347,7 +347,7 @@ pub fn route_map_keys(
 /// world, once its art has loaded.
 pub fn build_automap(
     mut commands: Commands,
-    art: Option<Res<AutomapArt>>,
+    art: Res<AutomapArt>,
     sheets: Res<Assets<SpriteSheet>>,
     mut images: ResMut<Assets<Image>>,
     party: Query<&Transform, With<PartyBody>>,
@@ -355,7 +355,7 @@ pub fn build_automap(
     roots: Query<(Entity, &Automap), Without<AutomapBuilt>>,
 ) {
     let Ok((root, automap)) = roots.single() else { return };
-    let (Some(art), Ok(party)) = (art, party.single()) else { return };
+    let Ok(party) = party.single() else { return };
     let (
         Some(border),
         Some(note_buttons),
@@ -563,9 +563,8 @@ pub fn paint_buttons(
     levels: PlayedLevel,
     mut commands: Commands,
     buttons: Query<(Entity, &SheetButton, Has<InteractionDisabled>, Has<Selected>)>,
-    automap: Option<Single<Ref<Automap>>>,
+    automap: Single<Ref<Automap>>,
 ) {
-    let Some(automap) = automap else { return };
     let layers = levels.of(automap.level).map(|g| g.map_layers.len());
     for (entity, button, disabled, selected) in &buttons {
         let on = matches!(button.action, ButtonAction::Tool(tool) if automap.tool == Some(tool));
@@ -621,7 +620,7 @@ fn click_map(
                 let note = notes.notes[index].clone();
                 commits.write(CommitNote(NoteDraft {
                     level: map.level,
-                    original: Some((index, note.clone())),
+                    original: Some(index),
                     note: MapNote { text: String::new(), ..note },
                 }));
             }
@@ -630,7 +629,7 @@ fn click_map(
             if let Some(index) = original {
                 map.editing = Some(NoteDraft {
                     level: map.level,
-                    original: Some((index, notes.notes[index].clone())),
+                    original: Some(index),
                     note: notes.notes[index].clone(),
                 });
             } else {
@@ -645,11 +644,11 @@ pub fn draw_notes(
     layer: Query<(Entity, Ref<NotesLayer>)>,
     automap: Option<Single<Ref<Automap>>>,
     notes: Query<Ref<MapNotes>>,
-    art: Option<Res<AutomapArt>>,
+    art: Res<AutomapArt>,
     mut views: Query<(Entity, &NoteView, &mut Node, &mut Visibility, &Children)>,
     mut labels: Query<(&mut BitmapText, &mut Visibility), Without<NoteView>>,
 ) {
-    let (Some(map), Some(art), Ok((layer, built))) = (automap, art, layer.single()) else {
+    let (Some(map), Ok((layer, built))) = (automap, layer.single()) else {
         return;
     };
     let Ok(notes) = notes.get(map.level) else { return };
@@ -664,7 +663,7 @@ pub fn draw_notes(
         .enumerate()
         .map(|(i, n)| (Some(i), n))
         .chain(map.editing.iter().map(|d| (None, &d.note)));
-    let hidden = map.editing.as_ref().and_then(|d| d.original.as_ref().map(|(i, _)| *i));
+    let hidden = map.editing.as_ref().and_then(|d| d.original);
     for (key, note) in displayed {
         let at = map.project(note.position);
         let show =
@@ -723,7 +722,7 @@ pub fn glow_note_markers(time: Res<Time>, mut markers: Query<&mut ImageNode, Wit
 
 /// Redraw the raster only when its view changes, not while typing or glowing.
 pub fn update_map_view(
-    automap: Option<Single<Ref<Automap>>>,
+    automap: Single<Ref<Automap>>,
     levels: PlayedLevel,
     plans: Query<(Entity, &ImageNode), With<FloorPlan>>,
     mut images: ResMut<Assets<Image>>,
@@ -731,7 +730,6 @@ pub fn update_map_view(
     mut markers: Query<&mut Node, With<PartyMarker>>,
     mut previous: Local<Option<(Entity, Vec2, f32, usize)>>,
 ) {
-    let Some(automap) = automap else { return };
     let Some(level) = levels.of(automap.level) else {
         return;
     };
@@ -755,11 +753,10 @@ pub fn update_map_view(
 }
 
 pub fn draw_layer_label(
-    automap: Option<Single<&Automap>>,
+    map: Single<&Automap>,
     levels: PlayedLevel,
     mut labels: Query<&mut BitmapText, With<LayerLabel>>,
 ) {
-    let Some(map) = automap else { return };
     let Some(level) = levels.of(map.level) else {
         return;
     };
@@ -779,7 +776,7 @@ pub fn update_map_cursor(
     mut commands: Commands,
     windows: Query<(Entity, Option<&bevy::window::CursorIcon>), With<bevy::window::PrimaryWindow>>,
     automap: Option<Single<Ref<Automap>>>,
-    art: Option<Res<AutomapArt>>,
+    art: Res<AutomapArt>,
     sheets: Res<Assets<SpriteSheet>>,
     viewport: Query<&Hovered, With<MapViewport>>,
     assets: Res<AssetServer>,
@@ -788,8 +785,8 @@ pub fn update_map_cursor(
     use bevy::window::{CursorIcon, CustomCursor, CustomCursorImage};
     let Ok((window, current)) = windows.single() else { return };
     let arrow = arrow.get_or_insert_with(|| assets.load("retail://data/cursors/2d-cursors.sti"));
-    let cursor = match (automap, art) {
-        (Some(map), Some(art)) => {
+    let cursor = match automap {
+        Some(map) => {
             let inside = viewport.single().is_ok_and(|hovered| hovered.get());
             let index = match map.tool {
                 Some(MapTool::AddNote) => 2,
@@ -811,7 +808,7 @@ pub fn update_map_cursor(
                 },
             )
         }
-        _ => sheets.get(&*arrow).and_then(|sheet| sheet.images.first()).map_or_else(
+        None => sheets.get(&*arrow).and_then(|sheet| sheet.images.first()).map_or_else(
             CursorIcon::default,
             |handle| {
                 CursorIcon::Custom(CustomCursor::Image(CustomCursorImage {

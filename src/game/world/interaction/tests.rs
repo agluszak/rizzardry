@@ -298,19 +298,6 @@ fn trap_losses_use_existing_purse_items_and_all_party_spell_points() {
             Some(Equipped { stack: scrolls, curse_released: true });
         level.run("CHEST");
         level.world.insert_resource(GameRng::seeded(3));
-        if spell == 127 {
-            let points = level.world.entity_mut(other).take::<SpellPoints>().unwrap();
-            let before_rng = level.world.resource::<GameRng>().clone();
-            let on = attempt(&level);
-            assert_eq!(
-                spring_trap(&mut level.world, on, Some(selected)),
-                Err(super::super::interaction::Unable::MissingContent)
-            );
-            assert_eq!(*level.world.resource::<GameRng>(), before_rng);
-            assert!(level.world.get::<Guarded>(level.device("CHEST")).is_some());
-            assert_eq!(level.inventory().gold, 1000);
-            level.world.entity_mut(other).insert(points);
-        }
         let on = attempt(&level);
         spring_trap(&mut level.world, on, Some(selected)).unwrap();
         match spell {

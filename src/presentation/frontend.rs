@@ -915,10 +915,9 @@ fn finish_name(
 }
 
 fn show_editor(
-    session: Option<Single<Ref<Creation>>>,
+    session: Single<Ref<Creation>>,
     mut editors: Query<(&mut Node, &mut Visibility), With<EditorGroup>>,
 ) {
-    let Some(session) = session else { return };
     for (mut node, mut visibility) in &mut editors {
         let shown = session.mode.page() != Page::Party;
         crate::presentation::screen_art::display_if(&mut node, shown);
@@ -926,11 +925,7 @@ fn show_editor(
     }
 }
 
-fn refresh(
-    session: Option<Single<Ref<Creation>>>,
-    mut pages: Query<(&Page, &mut Node, &mut Visibility)>,
-) {
-    let Some(session) = session else { return };
+fn refresh(session: Single<Ref<Creation>>, mut pages: Query<(&Page, &mut Node, &mut Visibility)>) {
     for (page, mut node, mut visibility) in &mut pages {
         let shown = *page == session.mode.page();
         crate::presentation::screen_art::display_if(&mut node, shown);

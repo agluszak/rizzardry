@@ -65,7 +65,7 @@ pub(super) fn queue_device_remarks(
         let candidates: Vec<_> = roster
             .iter()
             .filter_map(|actor| {
-                let (character, vitals) = members.get(actor).ok()?;
+                let (character, vitals) = members.get(actor).unwrap();
                 vitals.can_fight().then_some((actor, character))
             })
             .collect();
@@ -106,7 +106,7 @@ pub(super) fn queue_dialogue_remarks(
             .iter()
             .filter(|&actor| selected.0 != Some(actor))
             .filter_map(|actor| {
-                let (character, vitals) = members.get(actor).ok()?;
+                let (character, vitals) = members.get(actor).unwrap();
                 vitals.can_fight().then_some((actor, character))
             })
             .collect();

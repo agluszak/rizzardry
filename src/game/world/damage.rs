@@ -32,13 +32,6 @@ pub struct DamageOutcome {
     pub experience: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DamageRefusal {
-    MissingTarget,
-    InactiveLevel,
-    MissingContent,
-}
-
 /// Monsters in play, changed only through its operations. [`apply`] is
 /// synchronous over the actual target and its owning level: it creates loot
 /// and transfers gold before returning a death outcome. Calling it again on
@@ -106,8 +99,8 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     /// How a monster's group stands now ([`super::hostility::stance`]); one
     /// outside any group by its species' default.
     pub fn group_stance(&self, entity: Entity, now: u64) -> super::hostility::Stance {
-        use super::hostility::{self, Stance};
-        let Ok((monster, ..)) = self.monsters.get(entity) else { return Stance::Neutral };
+        use super::hostility;
+        let (monster, ..) = self.monsters.get(entity).unwrap();
         let kind = &self.content.species[monster.species];
         let set = self
             .membership
@@ -122,7 +115,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     /// The later notification can start a fight even when this hit kills it.
     pub fn provoke(&mut self, entity: Entity, now: u64) -> bool {
         use super::hostility::{self, SetStance, Stance};
-        let Ok((body, ..)) = self.monsters.get(entity) else { return false };
+        let (body, ..) = self.monsters.get(entity).unwrap();
         if body.is_dead() || body.conditions.has(Condition::Turncoat) {
             return false;
         }
@@ -137,7 +130,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     }
 
     pub fn restore_health(&mut self, entity: Entity, amount: u32) -> u32 {
-        let Ok((mut body, ..)) = self.monsters.get_mut(entity) else { return 0 };
+        let (mut body, ..) = self.monsters.get_mut(entity).unwrap();
         if body.is_dead() {
             return 0;
         }
@@ -147,7 +140,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     }
     /// Restoring stamina wakes exhaustion, but leaves a timed knockout alone.
     pub fn restore_stamina(&mut self, entity: Entity, amount: u32) -> u32 {
-        let Ok((mut body, ..)) = self.monsters.get_mut(entity) else { return 0 };
+        let (mut body, ..) = self.monsters.get_mut(entity).unwrap();
         if body.is_dead() {
             return 0;
         }
@@ -160,10 +153,8 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         )
     }
     pub fn restore_magic(&mut self, entity: Entity, amount: u32) {
-        if let Ok((mut body, ..)) = self.monsters.get_mut(entity) {
-            body.spell_points =
-                body.spell_points.saturating_add(amount.min(i32::MAX as u32) as i32);
-        }
+        let (mut body, ..) = self.monsters.get_mut(entity).unwrap();
+        body.spell_points = body.spell_points.saturating_add(amount.min(i32::MAX as u32) as i32);
     }
     /// The monsters, to look at.
     pub fn monsters(&self) -> &MonsterQuery<'w, 's> {
@@ -174,20 +165,20 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     pub fn conditions_mut(
         &mut self,
         monster: Entity,
-    ) -> Option<Mut<'_, crate::game::characters::Conditions>> {
-        Some(self.monster_mut(monster)?.map_unchanged(|monster| &mut monster.conditions))
+    ) -> Mut<'_, crate::game::characters::Conditions> {
+        self.monster_mut(monster).map_unchanged(|monster| &mut monster.conditions)
     }
 
     /// A monster's body, for what changes its conditions and enchantments
     /// together.
-    pub fn monster_mut(&mut self, monster: Entity) -> Option<Mut<'_, Monster>> {
-        Some(self.monsters.get_mut(monster).ok()?.0)
+    pub fn monster_mut(&mut self, monster: Entity) -> Mut<'_, Monster> {
+        self.monsters.get_mut(monster).unwrap().0
     }
 
     /// Tire a monster (retail `FatigueMonster`); spent, it drops
     /// unconscious. Returns the stamina taken.
     pub fn fatigue(&mut self, monster: Entity, amount: u32) -> u32 {
-        let Ok((mut monster, ..)) = self.monsters.get_mut(monster) else { return 0 };
+        let (mut monster, ..) = self.monsters.get_mut(monster).unwrap();
         if monster.is_dead() {
             return 0;
         }
@@ -198,7 +189,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     /// Drain the current effective spell budget; only the change belongs to
     /// the actor. Casting and draining read the same species-plus-history rule.
     pub fn drain_magic(&mut self, entity: Entity, amount: u32) -> u32 {
-        let Ok((mut monster, ..)) = self.monsters.get_mut(entity) else { return 0 };
+        let (mut monster, ..) = self.monsters.get_mut(entity).unwrap();
         let kind = &self.content.species[monster.species];
         let lost = monster.spell_budget(kind).min(amount);
         monster.spell_points = monster.spell_points.saturating_sub(lost as i32);
@@ -208,8 +199,8 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     pub fn enchantments_mut(
         &mut self,
         entity: Entity,
-    ) -> Option<Mut<'_, crate::game::magic::enchantments::Enchantments>> {
-        Some(self.monster_mut(entity)?.map_unchanged(|m| &mut m.enchantments))
+    ) -> Mut<'_, crate::game::magic::enchantments::Enchantments> {
+        self.monster_mut(entity).map_unchanged(|m| &mut m.enchantments)
     }
 
     pub fn active(&self, target: Entity) -> bool {
@@ -236,24 +227,20 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         (party_level, now): (u32, u64),
         purse: &mut PartyInventory,
         rng: &mut GameRng,
-    ) -> Result<DamageOutcome, DamageRefusal> {
-        let (mut monster, at, walker, owner, _) =
-            self.monsters.get_mut(target).map_err(|_| DamageRefusal::MissingTarget)?;
+    ) -> DamageOutcome {
+        let (mut monster, at, walker, owner, _) = self.monsters.get_mut(target).unwrap();
         let level = owner.0;
-        if !self.levels.contains(level) {
-            return Err(DamageRefusal::InactiveLevel);
-        }
         let catalogs = &self.content;
         let (catalog, tables) = (&catalogs.items, &catalogs.loot);
         let kind = &catalogs.species[monster.species];
         let (ids, factions, faction_news) =
             (&mut *self.ids, &mut *self.factions, &mut self.faction_news);
         if monster.is_dead() || amount == 0 {
-            return Ok(DamageOutcome::default());
+            return DamageOutcome::default();
         }
         let amount = monster.enchantments.absorb(amount);
         if amount == 0 {
-            return Ok(DamageOutcome::default());
+            return DamageOutcome::default();
         }
         let position = feet(at.translation(), walker);
         let lost = amount.min(monster.hp);
@@ -274,7 +261,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         }
         if !monster.is_dead() {
             monster.conditions.wake_on_hit(u32::from(kind.attributes.senses), rng);
-            return Ok(DamageOutcome { damage: lost, ..default() });
+            return DamageOutcome { damage: lost, ..default() };
         }
         monster.enchantments.0.clear();
         // Stop autonomous work, not the body's geometry or vertical physics.
@@ -299,7 +286,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         }
         self.commands.entity(target).remove_with_requires::<Crossing>();
         if self.summoned.contains(target) {
-            return Ok(DamageOutcome { damage: lost, died: true, experience: 0 });
+            return DamageOutcome { damage: lost, died: true, experience: 0 };
         }
         // The kill counts against its faction (retail `RecordFactionOffense`).
         if let Some(news) = factions.record_offence(kind.faction, kind.npc.is_some(), now) {
@@ -316,12 +303,9 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         if gold > 0 {
             purse.gold += gold;
         }
-        let items = found
-            .into_iter()
-            .filter_map(|id| catalog.get(id))
-            .map(|definition| make_item(definition, ids, rng, false, false))
-            .collect();
+        let items =
+            found.into_iter().map(|id| make_item(&catalog[id], ids, rng, false, false)).collect();
         drop_loot(&mut self.commands, level, position, items, catalog);
-        Ok(DamageOutcome { damage: lost, died: true, experience: kind.experience })
+        DamageOutcome { damage: lost, died: true, experience: kind.experience }
     }
 }

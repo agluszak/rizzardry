@@ -150,8 +150,8 @@ pub(super) fn populate(
     mut commands: Commands,
 ) {
     for (root, info) in &dialogs {
-        let (Some(spell), Some(strings), Some(effects), Some(descriptions), Some(font)) = (
-            content.spells.get(info.id),
+        let spell = &content.spells[info.id];
+        let (Some(strings), Some(effects), Some(descriptions), Some(font)) = (
             game_strings.table(),
             spell_texts.get(&info.effects),
             spell_texts.get(&info.descriptions),

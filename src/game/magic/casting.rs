@@ -51,15 +51,14 @@ impl Source {
     /// not acceptance: the cast revalidates eligibility and payment.
     pub fn spell_id(
         self,
-        carried: Option<&Carried>,
+        carried: &Carried,
         inventory: &PartyInventory,
         items: &ItemCatalog,
     ) -> Option<SpellId> {
         match self {
             Self::Spell { spell, .. } => Some(spell),
-            Self::Item(id) => items.get(carried?.find_stack(id)?.item)?.spell.map(|s| s.spell),
-            Self::PoolItem(id) => items
-                .get(inventory.pool.stacks.iter().find(|s| s.id == id)?.item)?
+            Self::Item(id) => items[carried.find_stack(id)?.item].spell.map(|s| s.spell),
+            Self::PoolItem(id) => items[inventory.pool.stacks.iter().find(|s| s.id == id)?.item]
                 .spell
                 .map(|s| s.spell),
         }
@@ -110,7 +109,6 @@ pub enum Refusal {
     PlayedBadly {
         improved: Option<Skill>,
     },
-    MissingContent,
 }
 
 /// What became of a magic action, for whoever tells the player.
@@ -533,7 +531,7 @@ fn prepare_source<'a>(
     points: &Query<(&LearnedSpells, &mut SpellPoints)>,
     inventory: &PartyInventory,
 ) -> Result<Prepared<'a>, Refusal> {
-    let (profile, vitals, carried, ..) = members.get(caster).map_err(|_| Refusal::CannotAct)?;
+    let (profile, vitals, carried, ..) = members.get(caster).unwrap();
     if !vitals.can_fight() {
         return Err(Refusal::CannotAct);
     }
@@ -546,11 +544,11 @@ fn prepare_source<'a>(
             if vitals.conditions.has(Condition::Silenced) {
                 return Err(Refusal::Silenced);
             }
-            let (learned, pool) = points.get(caster).map_err(|_| Refusal::NotLearned)?;
+            let (learned, pool) = points.get(caster).unwrap();
             if !learned.0.contains(&spell) {
                 return Err(Refusal::NotLearned);
             }
-            let definition = spells.get(spell).ok_or(Refusal::MissingContent)?;
+            let definition = &spells[spell];
             let maximum = profile.stats(&vitals.enchantments).max_points(learned, spells);
             if pool.affordable_power(definition, &maximum) == 0 {
                 return Err(Refusal::NoSpellPoints);
@@ -584,7 +582,7 @@ fn prepare_source<'a>(
             {
                 return Err(Refusal::Silenced);
             }
-            let spell = spells.get(cast.spell).ok_or(Refusal::MissingContent)?;
+            let spell = &spells[cast.spell];
             // Drinking in combat is always done by the drinker (retail
             // `UseItem` aims potions at their user).
             let forced = in_combat && consumed_by_anyone(definition);
@@ -659,7 +657,7 @@ pub fn perform(
             Some(_) => power,
             None => {
                 let (learned, pool) = points.get(caster).unwrap();
-                let maximum = world.mana_maximum(caster, learned).unwrap();
+                let maximum = world.mana_maximum(caster, learned);
                 let affordable = pool.affordable_power(spell, &maximum);
                 if affordable == 0 {
                     break;
@@ -850,7 +848,7 @@ pub fn perform(
         }
         let (_, vitals, ..) = world.members.get(caster).unwrap();
         let (learned, pool) = points.get(caster).unwrap();
-        let maximum = world.mana_maximum(caster, learned).unwrap();
+        let maximum = world.mana_maximum(caster, learned);
         if vitals.stamina <= u32::from(spell.level)
             || pool.available(spell.realm.unwrap(), &maximum) < spell.cost
             || outcome != Outcome::Fizzled
@@ -1011,7 +1009,7 @@ fn pay(
     let fatigue = match item {
         None => {
             let (_, mut pool) = points.get_mut(caster).unwrap();
-            let realm = spell.realm.unwrap();
+            let realm = spell.realm.expect("a cast spell has a realm");
             pool.spend(realm, spell.cost_at(power));
             super::cast_fatigue(spell, power)
         }

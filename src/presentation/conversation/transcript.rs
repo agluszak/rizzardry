@@ -22,8 +22,8 @@ pub(super) fn sync_transcript(
     mut rows: Query<&mut BitmapText, With<TranscriptRow>>,
 ) {
     for (list, summary, children) in &lists {
-        let Some((_, session)) = views.owner(list) else { continue };
-        let Ok(c) = sessions.get(session) else { continue };
+        let (_, session) = (views.root(), views.session());
+        let c = sessions.get(session).unwrap();
         if !summary.is_added() && !c.is_changed() && !strings.is_changed() {
             continue;
         }

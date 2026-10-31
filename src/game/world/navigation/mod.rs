@@ -245,10 +245,9 @@ pub fn add_party_characters(
 
 /// Report the party's velocity to its avoidance characters.
 fn track_party_character(
-    party: Query<&LinearVelocity, With<PartyBody>>,
+    velocity: Single<&LinearVelocity, With<PartyBody>>,
     mut characters: Query<&mut Velocity3d, With<PartyCharacter>>,
 ) {
-    let Ok(velocity) = party.single() else { return };
     for mut tracked in &mut characters {
         tracked.velocity = velocity.0;
     }

@@ -127,12 +127,12 @@ struct LootRow(StackId);
 fn open_panel(
     add: On<Add<DeviceInteraction>>,
     attempts: Query<&DeviceInteraction>,
-    art: Option<Res<DevicePanelArt>>,
+    art: Res<DevicePanelArt>,
     focus: Option<ResMut<InputFocus>>,
     mut commands: Commands,
 ) {
     let attempt = add.entity;
-    let (Ok(interaction), Some(art)) = (attempts.get(attempt), art) else { return };
+    let interaction = attempts.get(attempt).unwrap();
     let font = art.font.clone();
     let root = commands
         .spawn((
@@ -394,7 +394,7 @@ fn draw_device_panel(
 ) {
     let Ok((panel_of, panel)) = panels.single() else { return };
     let Ok((interaction, on)) = attempts.get(panel_of.0) else { return };
-    let member = selected.member(&roster).and_then(|m| Some((m, members.get(m).ok()?)));
+    let member = selected.member(&roster).map(|m| (m, members.get(m).unwrap()));
     let name = member.map_or(String::new(), |(_, (c, _))| c.name.clone());
     let skill = member.and_then(|(_, (c, v))| interaction::lock_skill(c, v));
     let trap_name = |trap: usize| {
@@ -693,11 +693,26 @@ mod tests {
         app.world().get::<DeviceInteraction>(on).map(|i| &i.work)
     }
 
+    /// A locked device on a level of one trigger.
     fn device(app: &mut App, lock: Lock) -> Entity {
-        app.world_mut()
+        use crate::content::level::LevelDefinition;
+        use crate::game::world::level::{Level, LevelOwned};
+        app.init_asset::<LevelDefinition>();
+        let world = app.world_mut();
+        let lock_trigger = crate::game::world::triggers::tests::trigger(
+            "LOCK",
+            crate::content::level::TriggerAction::Nothing,
+        );
+        let geometry = LevelDefinition { triggers: vec![lock_trigger], ..default() };
+        let handle = world.resource_mut::<Assets<LevelDefinition>>().add(geometry);
+        let level = world
+            .spawn((Level::test(handle), crate::game::world::triggers::LevelState::default()))
+            .id();
+        world
             .spawn((
                 crate::game::world::triggers::Device { definition: 0, recipients: vec![] },
                 interaction::Guarded::new(lock),
+                LevelOwned(level),
             ))
             .id()
     }

@@ -29,11 +29,11 @@ pub(super) fn execute(
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
 ) -> Result<Vec<Effect>, Refusal> {
     let spells = world.spells;
-    let (profile, vitals, ..) = world.members.get(actor).map_err(|_| Refusal::CannotAct)?;
+    let (profile, vitals, ..) = world.members.get(actor).unwrap();
     if !available(profile, vitals) {
         return Err(Refusal::CannotAct);
     }
-    let cone = spells.get(SpellId::SPECIAL_ATTACK_CONE).ok_or(Refusal::MissingContent)?;
+    let cone = &spells[SpellId::SPECIAL_ATTACK_CONE];
     let (mut victims, _) = casting::capture(actor, cone, Aim::Monster(target), situation, false)?;
     victims.retain(|victim| match *victim {
         effects::Victim::Monster(entity) => world.monsters.targetable(entity),

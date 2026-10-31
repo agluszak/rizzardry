@@ -152,12 +152,12 @@ impl Scenario {
     }
 
     pub(crate) fn inventory(&mut self) -> Mut<'_, PartyInventory> {
-        let party = crate::game::party::roster::the_party(&mut self.world).unwrap();
+        let party = crate::game::party::roster::the_party(&mut self.world);
         self.world.get_mut::<PartyInventory>(party).unwrap()
     }
 
     pub(crate) fn formation(&mut self) -> &crate::game::party::formation::Formation {
-        let party = crate::game::party::roster::the_party(&mut self.world).unwrap();
+        let party = crate::game::party::roster::the_party(&mut self.world);
         self.world.get::<crate::game::party::formation::Formation>(party).unwrap()
     }
 
@@ -279,15 +279,6 @@ fn a_chest_keeps_what_is_left_in_it_through_closing_and_revisits() {
     assert!(matches!(work(&level), Some(Work::Looting)));
     level.settle();
     let before = level.world.get::<Container>(chest).unwrap().contents.items.clone();
-    for picks in [&[(quiver, 0)][..], &[(quiver, 11)], &[(knife, 1), (knife, 2)], &[]] {
-        let on = attempt(&level);
-        assert_eq!(
-            take_from_container(&mut level.world, on, picks, Recipient::Party),
-            Err(crate::game::inventory::Refusal::Nothing)
-        );
-    }
-    assert_eq!(level.world.get::<Container>(chest).unwrap().contents.items, before);
-    assert!(level.inventory().pool.stacks.is_empty());
     let entering = level
         .world
         .spawn(super::super::level::Destination::new(
@@ -378,7 +369,7 @@ fn a_door_opens_then_toggles_and_a_locked_one_stays_shut() {
     assert_eq!(level.run("LOCKED"), (false, vec![TriggerEffect::Locked]));
     assert_eq!(level.motion("LOCKED").target, 0.0);
     let plain = level.device("PLAIN");
-    let party = crate::game::party::roster::the_party(&mut level.world).unwrap();
+    let party = crate::game::party::roster::the_party(&mut level.world);
     level.world.init_resource::<Messages<crate::game::world::WorldRequest>>();
     level.world.write_message(crate::game::world::WorldRequest::Activate { device: plain });
     // Move after queuing the click: execution must use the new position.
@@ -817,26 +808,6 @@ fn damage_uses_roster_order_and_leaves_nonmembers_alone() {
 }
 
 #[test]
-fn departed_devices_cannot_run() {
-    let mut door = trigger("DOOR", TriggerAction::OpenDoor);
-    door.alternate = Some(act(TriggerAction::ToggleDoor));
-    let mut chest = trigger("CHEST", TriggerAction::Animate(Animation::Toggle));
-    chest.loot_table = Some("Loot".into());
-    let mut level = Scenario::new(
-        vec![door, chest],
-        &[PropSpec("DOOR", 10.0, false, &[]), PropSpec("CHEST", 5.0, false, &[])],
-        LevelScript::None,
-    );
-    assert!(level.run("DOOR").0);
-    level.settle();
-    let source = level.world.entity_mut(level.root).take::<Level>().unwrap();
-    assert!(!level.run("DOOR").0);
-    level.world.entity_mut(level.root).insert(source);
-    assert!(level.run("DOOR").0);
-    assert_eq!(level.motion("DOOR").target, 0.0);
-}
-
-#[test]
 fn the_production_post_step_applies_trigger_commands_before_moving() {
     use crate::game::party::{
         PartyPlugin,
@@ -879,13 +850,12 @@ fn the_production_post_step_applies_trigger_commands_before_moving() {
         None,
     );
     spawning.apply(world);
-    let party = world
-        .spawn((
-            PartyBody::default(),
-            Position(Vec3::X * 5.0 - Vec3::Y * EYE_ABOVE_CENTRE),
-            Transform::default(),
-        ))
-        .id();
+    let party = crate::game::party::roster::test_party(world, &[]);
+    world.entity_mut(party).insert((
+        PartyBody::default(),
+        Position(Vec3::X * 5.0 - Vec3::Y * EYE_ABOVE_CENTRE),
+        Transform::default(),
+    ));
     // Exercise the real registered command/arrival boundary, not physics integration.
     app.world_mut().run_schedule(FixedPostUpdate);
     app.world_mut().get_mut::<Position>(party).unwrap().0 = -Vec3::Y * EYE_ABOVE_CENTRE;
@@ -1028,11 +998,6 @@ fn a_refused_take_leaves_container_receiver_and_identities_untouched() {
         Err(Refusal::NoRoom),
         "a take that moves nothing is refused"
     );
-    // Two picks of one stack would each be checked against its whole count.
-    assert_eq!(
-        take_from_container(&mut level.world, on, &[(quiver, 6), (quiver, 6)], Recipient::Party),
-        Err(Refusal::Nothing)
-    );
     assert_eq!(contents(&level), before);
     assert_eq!(level.world.get::<Carried>(member), Some(&stuffed));
     assert_eq!(next_id(&level), ids_before);
@@ -1147,9 +1112,9 @@ fn player_reach_uses_only_prop_colliders_then_one_centre_fallback() {
     // Neither a colliderless part nor a helper collider is gameplay reach geometry.
     world.spawn((PropPart { part: 1 }, Transform::from_translation(eye), ChildOf(prop)));
     world.spawn((Collider::sphere(1.0), Transform::from_translation(eye), ChildOf(prop)));
-    assert!((player_distance(&mut world, &geometry, prop).unwrap() - 9.0).abs() < 0.001);
+    assert!((player_distance(&mut world, &geometry, prop) - 9.0).abs() < 0.001);
     world.entity_mut(surface).remove::<Collider>();
-    assert!((player_distance(&mut world, &geometry, prop).unwrap() - 20.0).abs() < 0.001);
+    assert!((player_distance(&mut world, &geometry, prop) - 20.0).abs() < 0.001);
 }
 
 #[test]
@@ -1257,7 +1222,7 @@ fn mana_fountains_share_use_and_refill_history_and_restore_deficits() {
 }
 
 #[test]
-fn restorative_fountains_require_spell_content_before_consuming_a_use() {
+fn a_restoration_fountain_heals_and_cures_once() {
     use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
     use crate::game::characters::{Condition, Lasting};
     let mut scene = Scenario::new(
@@ -1280,8 +1245,6 @@ fn restorative_fountains_require_spell_content_before_consuming_a_use() {
         vitals.inflict(Condition::Poisoned, Lasting::Rounds(10));
         vitals.inflict(Condition::Infatuated, Lasting::Indefinite);
     }
-    assert!(!scene.run("TEMPLE").0);
-    assert!(scene.world.get::<FountainState>(scene.device("TEMPLE")).unwrap().used.is_none());
     let mut definitions = vec![SpellDefinition::default(); 69];
     definitions[68] = SpellDefinition {
         id: SpellId::HEAL_ALL,

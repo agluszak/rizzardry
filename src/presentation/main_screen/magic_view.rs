@@ -152,15 +152,15 @@ impl MagicView {
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct SourceTargeting<'w, 's> {
     carried: Query<'w, 's, &'static Carried>,
-    pool: Query<'w, 's, &'static PartyInventory>,
+    pool: Single<'w, 's, &'static PartyInventory>,
     content: If<Res<'w, Catalogs>>,
 }
 
 impl SourceTargeting<'_, '_> {
     pub fn of(&self, caster: Entity, source: Source) -> Option<Targeting> {
         let (spells, items) = (&self.content.spells, &self.content.items);
-        let id = source.spell_id(self.carried.get(caster).ok(), self.pool.single().ok()?, items)?;
-        Some(spells.get(id)?.targeting)
+        let id = source.spell_id(self.carried.get(caster).unwrap(), &self.pool, items)?;
+        Some(spells[id].targeting)
     }
 }
 
@@ -595,9 +595,9 @@ fn glyph(targeting: Targeting) -> char {
 fn offers<'a>(
     view: &MagicView,
     character: &Character,
-    carried: Option<&Carried>,
-    learned: Option<&LearnedSpells>,
-    points: Option<&SpellPoints>,
+    carried: &Carried,
+    learned: &LearnedSpells,
+    points: &SpellPoints,
     maximum: &enum_map::EnumMap<Realm, u32>,
     spells: &'a SpellCatalog,
     items: &ItemCatalog,
@@ -616,7 +616,6 @@ fn offers<'a>(
                 })
                 .collect()
         } else {
-            let Some(carried) = carried else { return Vec::new() };
             usable_items(character, carried, items)
                 .into_iter()
                 .filter_map(|(id, spell)| Some((Source::Item(id), carried.find_stack(id)?, spell)))
@@ -625,7 +624,7 @@ fn offers<'a>(
         return sources
             .into_iter()
             .filter_map(|(source, stack, id)| {
-                let spell = spells.get(id)?;
+                let spell = &spells[id];
                 let definition = &items[stack.item];
                 let silenced =
                     silenced && definition.use_type == crate::content::items::UseType::Instrument;
@@ -651,14 +650,14 @@ fn offers<'a>(
             })
             .collect();
     }
-    let (Some(realm), Some(learned)) = (view.realm, learned) else { return Vec::new() };
+    let Some(realm) = view.realm else { return Vec::new() };
     let mut offers: Vec<_> = learned
         .0
         .iter()
-        .filter_map(|&id| spells.get(id))
+        .map(|&id| &spells[id])
         .filter(|s| s.realm == Some(realm))
         .map(|s| {
-            let affordable = points.map_or(0, |p| p.affordable_power(s, maximum));
+            let affordable = points.affordable_power(s, maximum);
             Offer {
                 source: Source::Spell { spell: s.id, power: 1 },
                 spell: s,
@@ -701,8 +700,8 @@ pub(super) fn refresh_magic_view(
     )>,
     sliders: Query<(&SliderValue, &SliderRange)>,
     (selected, roster): (Res<super::SelectedMember>, Single<&PartyRoster>),
-    members: Query<(&Character, &Vitals, Option<&Carried>)>,
-    casters: Query<(&LearnedSpells, Option<&SpellPoints>)>,
+    members: Query<(&Character, &Vitals, &Carried)>,
+    casters: Query<(&LearnedSpells, &SpellPoints)>,
     (battle, camp, interaction, pool): (
         Option<Single<&Battle>>,
         Option<Res<crate::game::camp::Camp>>,
@@ -769,7 +768,7 @@ pub(super) fn refresh_magic_view(
             member: None,
         };
     }
-    if attempt.is_some() && !members.get(view.caster).is_ok_and(|(_, v, _)| v.can_act()) {
+    if attempt.is_some() && !members.get(view.caster).unwrap().1.can_act() {
         commands.entity(root).despawn();
         return;
     }
@@ -785,11 +784,9 @@ pub(super) fn refresh_magic_view(
         commands.entity(root).despawn();
         return;
     };
-    let Ok((character, vitals, carried)) = members.get(view.caster) else { return };
-    let (learned, points) = casters.get(view.caster).map_or((None, None), |(l, p)| (Some(l), p));
-    let mana_maximum = learned
-        .map(|l| character.stats(&vitals.enchantments).max_points(l, spells))
-        .unwrap_or_default();
+    let (character, vitals, carried) = members.get(view.caster).unwrap();
+    let (learned, points) = casters.get(view.caster).unwrap();
+    let mana_maximum = character.stats(&vitals.enchantments).max_points(learned, spells);
     // Realms: their points, the chosen one latched; the first with points
     // chosen when none is.
     if !view.items {
@@ -824,7 +821,7 @@ pub(super) fn refresh_magic_view(
             }
         }
         for (realm, mut label) in &mut parts.p1() {
-            let current = points.map_or(0, |p| p.current(realm.0, &mana_maximum));
+            let current = points.current(realm.0, &mana_maximum);
             let value = format!("{current}/{}", mana_maximum[realm.0]);
             if label.value != value {
                 label.value = value;
@@ -898,7 +895,7 @@ pub(super) fn refresh_magic_view(
     // Pips: as many lit as the chosen power, rated by failure chance;
     // auto pips only where retail offers them.
     if !view.items {
-        let affordable = spell.zip(points).map_or(0, |(s, p)| p.affordable_power(s, &mana_maximum));
+        let affordable = spell.map_or(0, |s| points.affordable_power(s, &mana_maximum));
         for (pip, hovered, mut picture, mut visibility) in &mut parts.p5() {
             let index = usize::from(pip.0);
             let shown = match (pip.0, spell.map(|s| s.power)) {
@@ -955,7 +952,7 @@ pub(super) fn refresh_magic_view(
         let icon = view
             .source
             .and_then(|s| match s {
-                Source::Item(id) => carried?.find_stack(id),
+                Source::Item(id) => carried.find_stack(id),
                 Source::PoolItem(id) => pool.pool.stacks.iter().find(|s| s.id == id),
                 Source::Spell { .. } => None,
             })
@@ -1051,8 +1048,8 @@ fn choose_row(
     click: On<Activate>,
     rows: Query<&Row>,
     mut views: Query<(&mut MagicView, Option<&CastsAt>, Option<&ConversationTarget>)>,
-    members: Query<(&Character, &Vitals, Option<&Carried>)>,
-    casters: Query<(&LearnedSpells, Option<&SpellPoints>)>,
+    members: Query<(&Character, &Vitals, &Carried)>,
+    casters: Query<(&LearnedSpells, &SpellPoints)>,
     battle: Option<Single<&Battle>>,
     (camp, interaction, pool): (
         Option<Res<crate::game::camp::Camp>>,
@@ -1068,12 +1065,10 @@ fn choose_row(
         return;
     };
     let (spells, items) = (&content.spells, &content.items);
-    let Ok((character, vitals, carried)) = members.get(view.caster) else { return };
-    let (learned, points) = casters.get(view.caster).map_or((None, None), |(l, p)| (Some(l), p));
+    let (character, vitals, carried) = members.get(view.caster).unwrap();
+    let (learned, points) = casters.get(view.caster).unwrap();
     let silenced = vitals.conditions.has(Condition::Silenced);
-    let mana_maximum = learned
-        .map(|l| character.stats(&vitals.enchantments).max_points(l, spells))
-        .unwrap_or_default();
+    let mana_maximum = character.stats(&vitals.enchantments).max_points(learned, spells);
     let offers = offers(
         &view,
         character,

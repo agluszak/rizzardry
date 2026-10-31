@@ -296,6 +296,13 @@ impl SpellCatalog {
         self.0.get(usize::from(id.0)).filter(|_| id.0 != 0)
     }
 }
+/// The definition of a spell the game names.
+impl std::ops::Index<SpellId> for SpellCatalog {
+    type Output = SpellDefinition;
+    fn index(&self, id: SpellId) -> &SpellDefinition {
+        self.get(id).expect("a spell the catalog defines")
+    }
+}
 
 /// A spell an item casts, and at what power (item record 0x63).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

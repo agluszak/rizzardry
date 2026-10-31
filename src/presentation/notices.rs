@@ -363,7 +363,6 @@ fn magic_lines(
                 Refusal::Unsupported => "cannot do that yet",
                 Refusal::WrongTime => "cannot do that now",
                 Refusal::NoTarget => "has no target in reach",
-                Refusal::MissingContent => "cannot do that: data missing",
                 Refusal::PlayedBadly { .. } => "fails to play it",
             };
             let mut lines = vec![format!("{} {why}.", name(*caster))];
@@ -379,7 +378,7 @@ fn magic_lines(
             lines
         }
         MagicNews::Done(report) => {
-            let spell = spells.get(report.spell).map_or("", |s| s.name.as_str());
+            let spell = &spells[report.spell].name;
             let mut lines = vec![match &report.item {
                 Some(item) => format!("{} uses {item}.", name(report.caster)),
                 None => format!("{} casts {spell} ({}).", name(report.caster), report.power),

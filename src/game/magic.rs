@@ -51,7 +51,7 @@ pub struct LearnedSpells(pub BTreeSet<SpellId>);
 /// Skill eligibility combines profile rules with the actual learned spell set.
 pub fn skill_available(
     character: &Character,
-    learned: Option<&LearnedSpells>,
+    learned: &LearnedSpells,
     catalog: &SpellCatalog,
     skill: Skill,
 ) -> bool {
@@ -68,12 +68,7 @@ pub fn skill_available(
         {
             return false;
         }
-        return learned.is_some_and(|learned| {
-            learned
-                .0
-                .iter()
-                .any(|&id| catalog.get(id).is_some_and(|spell| spell.realm == Some(realm)))
-        });
+        return learned.0.iter().any(|&id| catalog[id].realm == Some(realm));
     }
     character.skill_available(skill)
 }
@@ -496,7 +491,7 @@ impl Plugin for MagicPlugin {
             .init_resource::<casting::FlightOrder>()
             .add_systems(
                 Update,
-                (accept_magic, pointcasts::update_lure)
+                (accept_magic, pointcasts::expire_lures, pointcasts::follow_lures)
                     .chain()
                     .after(GameplaySet::Burden)
                     .before(GameplaySet::Combat)
@@ -617,16 +612,14 @@ pub fn accept_magic(
     mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
     mut context: MagicContext,
     mut rng: ResMut<GameRng>,
-    party: Query<(&avian3d::prelude::Position, &PartyBody)>,
+    party: Single<(&avian3d::prelude::Position, &PartyBody)>,
     mut commands: Commands,
     clock: Res<GameClock>,
 ) {
+    let (party_at, facing) = (PartyBody::eye(party.0), party.1.forward());
     for &MagicRequest { caster, choice } in requests.read() {
-        if !context.roster.contains(&caster) {
-            continue;
-        }
         let spell = choice.source.spell_id(
-            members.get(caster).ok().map(|(_, _, carried, ..)| carried),
+            members.get(caster).unwrap().2,
             &context.inventory,
             &context.content.items,
         );
@@ -648,20 +641,9 @@ pub fn accept_magic(
             continue;
         }
         if battle.is_some() {
-            if let Ok(mut order) = orders.get_mut(caster) {
-                order.set_if_neq(crate::game::party::Order::Magic(choice));
-            }
+            orders.get_mut(caster).unwrap().set_if_neq(crate::game::party::Order::Magic(choice));
             continue;
         }
-        let Ok((party_at, facing)) =
-            party.single().map(|(at, body)| (PartyBody::eye(at), body.forward()))
-        else {
-            context.news.write(casting::MagicNews::Refused {
-                caster,
-                refusal: casting::Refusal::WrongTime,
-            });
-            continue;
-        };
         // Outside a fight no monster is a target: the hostile spells are
         // combat spells.
         let level = context.level();
@@ -695,7 +677,7 @@ pub fn accept_magic(
 /// died meanwhile is missed. Kills in a fight count for it.
 pub fn deliver_spells(
     mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
-    party: Query<&avian3d::prelude::Position, With<PartyBody>>,
+    party: Single<&avian3d::prelude::Position, With<PartyBody>>,
     time: Res<Time<Fixed>>,
     mut flights: Query<(Entity, &mut casting::SpellInFlight)>,
     (mut members, mut monsters): (Members, MonsterDamage),
@@ -709,7 +691,7 @@ pub fn deliver_spells(
     if flights.is_empty() {
         return;
     }
-    let party_at = PartyBody::eye(party.single().unwrap());
+    let party_at = PartyBody::eye(*party);
     // Every impact due in this update, in the order they arrive.
     let mut due = Vec::new();
     for (entity, mut flight) in &mut flights {
@@ -733,7 +715,7 @@ pub fn deliver_spells(
         }
         let mut secondary = Vec::new();
         let (effects, improved) = context.resolve(clock.ms, &mut members, &mut monsters, |field| {
-            let spell = field.spells.get(flight.spell).unwrap();
+            let spell = &field.spells[flight.spell];
             let effects = impacts::resolve(
                 flight.caster,
                 flight.origin,
@@ -1151,7 +1133,7 @@ mod tests {
                 }
                 SpellId::ARMORPLATE => {
                     assert!(vitals.enchantments.0.is_empty());
-                    let party = crate::game::party::roster::the_party(world).unwrap();
+                    let party = crate::game::party::roster::the_party(world);
                     assert_eq!(
                         world.get::<enchantments::PartyEffects>(party).unwrap().0.armour(),
                         2

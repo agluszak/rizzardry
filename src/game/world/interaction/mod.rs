@@ -20,7 +20,7 @@
 
 use bevy::prelude::*;
 
-use super::triggers::{Device, DoorState};
+use super::triggers::DoorState;
 use crate::content::characters::{Attribute, Skill};
 use crate::content::level::{Lock, TRAP_TYPES};
 use crate::content::spells::SpellId;
@@ -29,7 +29,6 @@ use crate::game::characters::{Character, Vitals};
 use crate::game::combat::Battle;
 use crate::game::difficulty::Difficulty;
 use crate::game::inventory::StackId;
-use crate::game::party::roster::PartyMember;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
 
@@ -134,16 +133,10 @@ pub(crate) fn begin(world: &mut World, device: Entity, work: Work) -> Entity {
 /// The named attempt's work and device, if it is still the one under way and
 /// its device still stands.
 fn attempt(world: &World, attempt: Entity) -> Result<(&Work, Entity), Unable> {
+    // A request may name an attempt that has since ended.
     let entity = world.get_entity(attempt).map_err(|_| Unable::NotNow)?;
-    let (Some(interaction), Some(on)) =
-        (entity.get::<DeviceInteraction>(), entity.get::<AttemptOn>())
-    else {
-        return Err(Unable::NotNow);
-    };
-    if world.get::<Device>(on.0).is_none() {
-        return Err(Unable::NotNow);
-    }
-    Ok((&interaction.work, on.0))
+    let interaction = entity.get::<DeviceInteraction>().ok_or(Unable::NotNow)?;
+    Ok((&interaction.work, entity.get::<AttemptOn>().unwrap().0))
 }
 
 fn work_mut(world: &mut World, attempt: Entity) -> Mut<'_, Work> {
@@ -275,7 +268,6 @@ pub enum LockNews {
 pub enum Unable {
     /// No such interaction, or not this kind of work.
     NotNow,
-    NotMember,
     CannotAct,
     /// The member lacks Locks & Traps, or cannot act.
     Unskilled,
@@ -284,7 +276,6 @@ pub enum Unable {
     /// That tumbler or component is already done.
     Done,
     UnsupportedTrap,
-    MissingContent,
 }
 
 /// A member's Locks & Traps level, if they can use it now (retail
@@ -378,23 +369,16 @@ fn member(world: &mut World, actor: Entity) -> Result<(&Character, &Vitals), Una
     if crate::game::world::party_occupied(world) {
         return Err(Unable::NotNow);
     }
-    if world.get::<PartyMember>(actor).is_none() {
-        return Err(Unable::NotMember);
-    }
-    let entity = world.get_entity(actor).map_err(|_| Unable::NotMember)?;
-    let vitals = entity.get::<Vitals>().ok_or(Unable::NotMember)?;
+    let vitals = world.get::<Vitals>(actor).unwrap();
     if !vitals.can_act() {
         return Err(Unable::CannotAct);
     }
-    Ok((entity.get::<Character>().ok_or(Unable::NotMember)?, vitals))
+    Ok((world.get::<Character>(actor).unwrap(), vitals))
 }
 
-/// Whether the device is still guarded and on the loaded level.
-fn guarded_on_level(world: &World, device: Entity) -> bool {
+/// Whether the device is still guarded.
+fn guarded(world: &World, device: Entity) -> bool {
     world.get::<Guarded>(device).is_some()
-        && world
-            .get::<super::level::LevelOwned>(device)
-            .is_some_and(|owner| world.get::<super::level::Level>(owner.0).is_some())
 }
 
 fn rng(world: &mut World) -> Mut<'_, GameRng> {
@@ -495,10 +479,10 @@ fn ready_trap(world: &mut World, on: Entity) -> Result<Disarming, Unable> {
     }
     let (_, device) = attempt(world, on)?;
     let trap = disarming(world, on)?.clone();
-    if !guarded_on_level(world, device) {
+    if !guarded(world, device) {
         return Err(Unable::NotNow);
     }
-    if let Err(error) = crate::game::magic::traps::validate(world, trap.trap) {
+    if let Err(error) = crate::game::magic::traps::validate(trap.trap) {
         if error == Unable::UnsupportedTrap {
             world.write_message(LockNews::UnsupportedTrap);
         }
@@ -676,7 +660,7 @@ pub fn cast_device(
     };
     member(world, actor).map_err(|_| Refusal::CannotAct)?;
     let (work, device) = attempt(world, on).map_err(|_| Refusal::NoTarget)?;
-    if !guarded_on_level(world, device) {
+    if !guarded(world, device) {
         return Err(Refusal::NoTarget);
     }
     let context = match work {
@@ -687,7 +671,6 @@ pub fn cast_device(
     if context == UseContext::Trap {
         ready_trap(world, on).map_err(|why| match why {
             Unable::UnsupportedTrap => Refusal::Unsupported,
-            Unable::MissingContent => Refusal::MissingContent,
             _ => Refusal::NoTarget,
         })?;
     }
@@ -717,7 +700,7 @@ pub fn cast_device(
             world.write_message(LockNews::Disarmed { trap: kind });
             complete(world, on);
         } else {
-            spring_trap(world, on, Some(actor)).map_err(|_| Refusal::MissingContent)?;
+            spring_trap(world, on, Some(actor)).expect("the trap was ready");
         }
     }
     Ok(())
@@ -728,7 +711,7 @@ pub fn cast_device(
 fn complete(world: &mut World, on: Entity) {
     let device = world.get::<AttemptOn>(on).unwrap().0;
     world.despawn(on);
-    let Ok(mut entity) = world.get_entity_mut(device) else { return };
+    let mut entity = world.entity_mut(device);
     entity.remove::<Guarded>();
     if let Some(mut door) = entity.get_mut::<DoorState>() {
         door.locked = false;

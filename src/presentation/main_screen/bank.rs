@@ -127,8 +127,7 @@ pub fn draw_bank(
     )>,
 ) {
     let fighting = battle.is_some();
-    let order =
-        selected.member(&roster).and_then(|m| orders.get(m).ok()).copied().unwrap_or_default();
+    let order = selected.member(&roster).map_or_else(Order::default, |m| *orders.get(m).unwrap());
     for (entity, face, skin, selected, disabled, mut picture, mut visible) in &mut buttons {
         let combat_only = matches!(face.kind, Some(Bank::Order(_) | Bank::Round | Bank::PartyMove));
         visible.set_if_neq(visible_if(!combat_only || fighting));
@@ -273,7 +272,7 @@ pub fn draw_caption(
     pool: Single<&crate::game::inventory::PartyInventory>,
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
-    members: Query<(&Character, &Vitals, Option<&Carried>)>,
+    members: Query<(&Character, &Vitals, &Carried)>,
     content: If<Res<crate::game::data::Catalogs>>,
     battle: Option<Single<&Battle>>,
     orders: Query<&Order>,
@@ -282,7 +281,7 @@ pub fn draw_caption(
 ) {
     let spells = &content.spells;
     let catalog = &content.items;
-    let (first, second) = match selected.member(&roster).and_then(|m| members.get(m).ok()) {
+    let (first, second) = match selected.member(&roster).map(|m| members.get(m).unwrap()) {
         None => (String::new(), String::new()),
         Some((profile, vitals, carried)) => {
             let first = format!(
@@ -293,15 +292,13 @@ pub fn draw_caption(
             let mut second = if battle.is_some() {
                 match selected
                     .member(&roster)
-                    .and_then(|m| orders.get(m).ok())
-                    .copied()
-                    .unwrap_or_default()
+                    .map_or_else(Order::default, |m| *orders.get(m).unwrap())
                 {
                     Order::Defend => "Defend".into(),
                     Order::Breathe(_) => "Breathe".into(),
                     order @ (Order::Attack | Order::Berserk) => {
                         let weapon = carried
-                            .and_then(|c| c.worn(EquipSlot::Primary))
+                            .worn(EquipSlot::Primary)
                             .map(|i| &catalog[i.item])
                             .map_or("Unarmed", |d| d.name.as_str());
                         let verb = if order == Order::Berserk { "Berserk" } else { "Attack" };
@@ -309,8 +306,7 @@ pub fn draw_caption(
                     }
                     Order::Magic(choice) => match choice.source {
                         crate::game::magic::casting::Source::Spell { spell, power } => {
-                            let name = spells.get(spell).map_or("", |s| &s.name);
-                            format!("Cast {name} ({power})")
+                            format!("Cast {} ({power})", spells[spell].name)
                         }
                         crate::game::magic::casting::Source::PoolItem(id) => {
                             let name = pool
@@ -324,7 +320,7 @@ pub fn draw_caption(
                         }
                         crate::game::magic::casting::Source::Item(id) => {
                             let name = carried
-                                .and_then(|c| c.find_stack(id))
+                                .find_stack(id)
                                 .map(|i| &catalog[i.item])
                                 .map_or("", |d| d.name.as_str());
                             format!("Use {name}")

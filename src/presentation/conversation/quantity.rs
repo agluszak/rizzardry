@@ -41,18 +41,21 @@ fn stack(world: &mut World, q: TradeQuote) -> Option<(crate::content::items::Ite
             .map(|lot| (lot.item, lot.units)),
         TradeSource::Party(item) => match item.owner {
             ItemOwner::Pool => {
-                let party = crate::game::party::roster::the_party(world)?;
+                let party = crate::game::party::roster::the_party(world);
                 world
-                    .get::<PartyInventory>(party)?
+                    .get::<PartyInventory>(party)
+                    .unwrap()
                     .pool
                     .stacks
                     .iter()
                     .find(|stack| stack.id == item.id)
                     .map(|s| (s.item, s.units()))
             }
-            ItemOwner::Member(member) => {
-                world.get::<Carried>(member)?.find_stack(item.id).map(|s| (s.item, s.units()))
-            }
+            ItemOwner::Member(member) => world
+                .get::<Carried>(member)
+                .unwrap()
+                .find_stack(item.id)
+                .map(|s| (s.item, s.units())),
         },
     }
 }
@@ -62,15 +65,11 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
         return;
     }
     let Some(q) = world.get::<DialogueState>(view).and_then(|s| s.quote()) else { return };
-    if world.get::<ConversationView>(view).is_none_or(|v| v.0 != q.conversation)
-        || quote_trade(world, q.conversation, q.source, q.quantity).is_err()
-    {
+    if quote_trade(world, q.conversation, q.source, q.quantity).is_err() {
         return;
     }
     let Some((item, maximum)) = stack(world, q) else { return };
-    let Some(item) = world.resource::<crate::game::data::Catalogs>().items.get(item) else {
-        return;
-    };
+    let item = &world.resource::<crate::game::data::Catalogs>().items[item];
     if maximum < 2 || item.class == EquipClass::Ammunition {
         return;
     }
@@ -327,14 +326,13 @@ fn finish(world: &mut World, panel: Entity, accept: bool) {
     if accept && world.get::<Conversation>(q.conversation).is_some_and(Conversation::ready) {
         let Ok(verified) = quote_trade(world, q.conversation, q.source, q.quantity) else { return };
         if matches!(q.source, TradeSource::Stock(_)) {
-            let gold = crate::game::party::roster::the_party(world)
-                .and_then(|e| world.get::<PartyInventory>(e))
-                .map_or(0, |p| p.gold);
+            let party = crate::game::party::roster::the_party(world);
+            let gold = world.get::<PartyInventory>(party).unwrap().gold;
             if gold < verified.gold {
                 return;
             }
         }
-        select(world, view, q.conversation, q.source, q.quantity);
+        select(world, view, q.source, q.quantity);
     }
     world.despawn(overlay);
 }

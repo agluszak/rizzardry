@@ -67,18 +67,17 @@ pub fn drop_loot(
     let mut lay = |lying| {
         lay(commands, level, feet, lying);
     };
-    match (items.len(), catalog.get(BAG_OF_ITEMS)) {
-        (0, _) => {}
-        (1, _) => lay(WorldItem::loose(items.remove(0), false)),
-        (_, Some(bag)) => lay(WorldItem {
+    match items.len() {
+        0 => {}
+        1 => lay(WorldItem::loose(items.remove(0), false)),
+        _ => lay(WorldItem {
             loot: GroundLoot::Pile {
                 appearance: BAG_OF_ITEMS,
-                identified: bag.auto_identify,
+                identified: catalog[BAG_OF_ITEMS].auto_identify,
                 contents: items,
             },
             hidden: false,
         }),
-        (_, None) => items.into_iter().for_each(|item| lay(WorldItem::loose(item, false))),
     }
 }
 
@@ -118,26 +117,22 @@ pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
     if !crate::game::freedom::free_in(world) {
         return Err(Refusal::DoesNotFit);
     }
-    let eye = crate::game::party::body::PartyBody::eye_in(world).ok_or(Refusal::Nothing)?;
-    let at = world
-        .query::<super::ActorPose>()
-        .get(world, target)
-        .map_err(|_| Refusal::Nothing)?
-        .translation();
+    // A second take of an item already taken finds nothing.
+    if world.get::<WorldItem>(target).is_none() {
+        return Err(Refusal::Nothing);
+    }
+    let eye = crate::game::party::body::PartyBody::eye_in(world);
+    let at = world.query::<super::ActorPose>().get(world, target).unwrap().translation();
     // Retail measures to the model bounds' centre (ItemDistanceToCamera).
     // Deliberately use the gameplay placement so pickup never requires artwork.
     let distance = eye.distance(at);
     if !distance.is_finite() || !(0.0..=REACH).contains(&distance) {
         return Err(Refusal::DoesNotFit);
     }
-    let catalog = &world.resource::<crate::game::data::Catalogs>().items;
-    let item = world.get::<WorldItem>(target).ok_or(Refusal::Nothing)?;
-    let owner = world.get::<LevelOwned>(target).ok_or(Refusal::Nothing)?.0;
-    if world.get::<super::level::Level>(owner).is_none() || item.hidden {
+    if world.get::<WorldItem>(target).unwrap().hidden {
         return Err(Refusal::DoesNotFit);
     }
-    catalog.get(item.appearance()).ok_or(Refusal::MissingContent)?;
-    let party = the_party(world).ok_or(Refusal::Nothing)?;
+    let party = the_party(world);
     if world.get::<PartyInventory>(party).unwrap().hand.held.is_some() {
         return Err(Refusal::HandFull);
     }
@@ -166,24 +161,23 @@ pub fn take_item(world: &mut World, target: Entity) -> Result<(), Refusal> {
 /// current level and party activity: it stops short of what it hits and
 /// rests above the ground below, or stays in hand if there is no ground.
 pub fn drop_held(world: &mut World, level: Entity, aim: Dir3) -> Result<Entity, Refusal> {
-    if !crate::game::freedom::free_in(world) || world.get::<super::level::Level>(level).is_none() {
+    if !crate::game::freedom::free_in(world) {
         return Err(Refusal::DoesNotFit);
     }
-    let eye = crate::game::party::body::PartyBody::eye_in(world).ok_or(Refusal::Nothing)?;
+    let eye = crate::game::party::body::PartyBody::eye_in(world);
     let ground = world
         .run_system_cached_with(landing, (eye, aim))
         .ok()
         .flatten()
         .ok_or(Refusal::DoesNotFit)?;
-    let party = the_party(world).ok_or(Refusal::Nothing)?;
+    let party = the_party(world);
     let held =
         world.get::<PartyInventory>(party).unwrap().hand.held.as_ref().ok_or(Refusal::Nothing)?;
     let definition = &world.resource::<crate::game::data::Catalogs>().items[held.item];
     if definition.crucial {
         return Err(Refusal::Crucial);
     }
-    let held =
-        world.get_mut::<PartyInventory>(party).unwrap().hand.held.take().ok_or(Refusal::Nothing)?;
+    let held = world.get_mut::<PartyInventory>(party).unwrap().hand.held.take().unwrap();
     let item = lay(&mut world.commands(), level, ground, WorldItem::loose(held, false));
     world.flush();
     Ok(item)
@@ -352,25 +346,5 @@ mod tests {
             .collect();
         lying.sort();
         assert_eq!(lying, [(1, 0), (BAG_OF_ITEMS.0, 2)]);
-        // Missing container art/definition must not lose gameplay ownership.
-        drop_loot(
-            &mut world.commands(),
-            level,
-            Vec3::Z,
-            vec![item(&mut ids, 4), item(&mut ids, 5)],
-            &ItemCatalog::default(),
-        );
-        world.flush();
-        assert_eq!(world.query::<&WorldItem>().iter(&world).count(), 4);
-        assert!(
-            world
-                .query_filtered::<&LevelOwned, With<WorldItem>>()
-                .iter(&world)
-                .all(|owner| owner.0 == level)
-        );
-        assert_eq!(
-            world.get::<crate::game::world::level::LevelEntities>(level).unwrap().entities().len(),
-            4
-        );
     }
 }

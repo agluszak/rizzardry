@@ -249,10 +249,11 @@ fn refresh(
     match view.mode {
         JournalMode::Events => {
             for entry in &facts.journal {
-                let Some(fact) = catalog.get(entry.fact) else { continue };
-                let Some(text) = entry.description(catalog).filter(|text| !text.is_empty()) else {
+                let fact = &catalog[entry.fact];
+                let text = entry.description(catalog);
+                if text.is_empty() {
                     continue;
-                };
+                }
                 if !match fact.visibility {
                     JournalVisibility::AllDifficulties => true,
                     JournalVisibility::NoviceAndNormal => *difficulty != Difficulty::Expert,

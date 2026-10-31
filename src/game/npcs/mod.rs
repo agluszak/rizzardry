@@ -44,13 +44,12 @@ pub(crate) fn script(world: &World, actor: Entity) -> AssetId<DialogueScript> {
 /// highest_condition < ASLEEP`, as in `CanNpcJoinParty`, the charm and
 /// dialogue practice).
 pub(crate) fn able_members(world: &mut World) -> Vec<Entity> {
-    let Some(party) = crate::game::party::roster::the_party(world) else { return Vec::new() };
-    let Some(roster) = world.get::<crate::game::party::roster::PartyRoster>(party) else {
-        return Vec::new();
-    };
-    roster
+    let party = crate::game::party::roster::the_party(world);
+    world
+        .get::<crate::game::party::roster::PartyRoster>(party)
+        .unwrap()
         .iter()
-        .filter(|&m| world.get::<crate::game::characters::Vitals>(m).is_some_and(|v| v.can_fight()))
+        .filter(|&m| world.get::<crate::game::characters::Vitals>(m).unwrap().can_fight())
         .collect()
 }
 
@@ -244,9 +243,7 @@ impl NpcPopulation<'_, '_> {
         }
         let mut stock = trade::MerchantStock::default();
         if definition.owns_stock {
-            stock
-                .maintain(definition, &catalogs.items, average, self.clock.ms, false, rng)
-                .expect("validated NPC stock");
+            stock.maintain(definition, &catalogs.items, average, self.clock.ms, false, rng);
         }
         let actor = commands
             .spawn((
@@ -387,6 +384,7 @@ impl Plugin for NpcPlugin {
             .init_resource::<conversation::StoryFacts>()
             .init_resource::<conversation::NoAnswerTurn>()
             .add_message::<conversation::ConversationRequest>()
+            .add_message::<conversation::BeginConversation>()
             .add_message::<conversation::PartyRemark>()
             .add_message::<conversation::NpcSpeech>()
             .add_observer(conversation::end_conversations)

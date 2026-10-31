@@ -30,7 +30,6 @@ use crate::content::items::QuantityKind;
 use crate::content::ui::SpriteSheet;
 use crate::game::GameplaySet;
 use crate::game::characters::{Character, Gender, Race, Vitals};
-use crate::game::combat::attack::Armour;
 use crate::game::data::Catalogs;
 use crate::game::inventory::{
     BACKPACK_SLOTS, Carried, EquipSlot, ItemAt, ItemStack, MemberSlot, PartyInventory, Slot,
@@ -547,12 +546,11 @@ fn select_inventory_member(
 }
 
 fn draw_portrait_highlights(
-    screen: Option<Single<&InventoryScreen>>,
+    screen: Single<&InventoryScreen>,
     roster: Single<Ref<PartyRoster>>,
     buttons: Query<(&InventoryMemberButton, &Hovered, &Children)>,
     mut highlights: Query<(&mut Picture, &mut Visibility), With<PortraitHighlight>>,
 ) {
-    let Some(screen) = screen else { return };
     for (button, hovered, children) in &buttons {
         for child in children.iter() {
             let Ok((mut picture, mut visibility)) = highlights.get_mut(child) else { continue };
@@ -717,12 +715,11 @@ fn profession_title(profile: &Character) -> usize {
 }
 
 fn draw_vitals(
-    screen: Option<Single<&InventoryScreen>>,
+    screen: Single<&InventoryScreen>,
     members: Query<(&Character, &Vitals)>,
     mut art: Query<(&VitalArt, Option<&VitalShade>, Option<&mut Node>, &mut Visibility)>,
 ) {
-    let Some(screen) = screen else { return };
-    let Ok((profile, vitals)) = members.get(screen.member) else { return };
+    let (profile, vitals) = members.get(screen.member).unwrap();
     for (_, shade, node, mut visibility) in &mut art {
         visibility.set_if_neq(visible_if(!vitals.is_dead()));
         if let (Some(shade), Some(mut node)) = (shade, node) {
@@ -742,14 +739,13 @@ fn draw_vitals(
 }
 
 fn draw_header_condition(
-    screen: Option<Single<&InventoryScreen>>,
+    screen: Single<&InventoryScreen>,
     members: Query<&Vitals>,
     assets: Res<AssetServer>,
     art: Res<InventoryArt>,
     mut displays: Query<(&HeaderCondition, &mut Picture, &mut Visibility)>,
 ) {
-    let Some(screen) = screen else { return };
-    let Ok(vitals) = members.get(screen.member) else { return };
+    let vitals = members.get(screen.member).unwrap();
     let condition = super::screen_art::condition_icon(vitals);
     for (display, mut picture, mut visibility) in &mut displays {
         match *display {
@@ -772,7 +768,7 @@ fn draw_header_condition(
 }
 
 fn draw_header_hands(
-    screen: Option<Single<&InventoryScreen>>,
+    screen: Single<&InventoryScreen>,
     assets: Res<AssetServer>,
     content: If<Res<Catalogs>>,
     members: Query<crate::presentation::character_view::CharacterView>,
@@ -781,9 +777,8 @@ fn draw_header_hands(
     art: Res<InventoryArt>,
     mut parts: Query<(&HeaderHand, &mut Visibility, Option<&mut Picture>, Option<&mut BitmapText>)>,
 ) {
-    let Some(screen) = screen else { return };
     let catalog = &content.items;
-    let Ok(view) = members.get(screen.member) else { return };
+    let view = members.get(screen.member).unwrap();
     let armour = view.armour(
         screen.member,
         catalog,
@@ -792,8 +787,6 @@ fn draw_header_hands(
     );
     let profile = view.profile;
     let carried = view.carried;
-    let empty = Carried::default();
-    let carried = carried.unwrap_or(&empty);
     let two_handed = carried
         .worn(EquipSlot::Primary)
         .map(|item| &catalog[item.item])
@@ -850,9 +843,7 @@ fn draw_header_hands(
                     },
                 );
             }
-            HeaderHand::Armour => {
-                value = Some(armour.as_ref().map_or(0, Armour::average).to_string())
-            }
+            HeaderHand::Armour => value = Some(armour.average().to_string()),
         }
         visibility.set_if_neq(visible_if(shown));
         if let (Some(mut picture), Some(mut source)) = (picture, source) {
@@ -881,27 +872,26 @@ fn member_position(slot: usize) -> Vec2 {
 /// Occupied controls retain actor identity; slots only determine placement.
 fn sync_member_portraits(
     mut commands: Commands,
-    roots: Query<Entity, With<MemberSelector>>,
+    root: Single<Entity, With<MemberSelector>>,
     roster: Single<&PartyRoster>,
-    members: Query<(&Character, Option<&Vitals>)>,
+    members: Query<(&Character, &Vitals)>,
     mut buttons: Query<(Entity, &InventoryMemberButton, &mut Picture)>,
     mut empty: Query<(&EmptyMemberSlot, &mut Visibility)>,
     art: Res<InventoryArt>,
     assets: Res<AssetServer>,
 ) {
-    let Ok(root) = roots.single() else { return };
     for (slot, mut visible) in &mut empty {
-        let occupied = roster.get_index(slot.0).is_some_and(|e| members.contains(*e));
+        let occupied = roster.get_index(slot.0).is_some();
         visible.set_if_neq(visible_if(!occupied));
     }
     for (entity, button, _) in &buttons {
-        if !roster.contains(&button.0) || !members.contains(button.0) {
+        if !roster.contains(&button.0) {
             commands.entity(entity).despawn();
         }
     }
     for (slot, member) in roster.iter().enumerate() {
-        let Ok((profile, vitals)) = members.get(member) else { continue };
-        let name = if vitals.is_some_and(Vitals::is_dead) {
+        let (profile, vitals) = members.get(member).unwrap();
+        let name = if vitals.is_dead() {
             &super::screen_art::skull(profile.race)[1..]
         } else {
             &profile.portrait
@@ -928,27 +918,26 @@ fn sync_member_portraits(
                         PortraitHighlight Visibility::Hidden
                     ]
                 })
-                .insert(ChildOf(root));
+                .insert(ChildOf(*root));
         }
     }
 }
 
 /// Update the existing header controls from their actual dependencies.
 fn draw_header(
-    screen: Option<Single<&InventoryScreen>>,
+    screen: Single<&InventoryScreen>,
     assets: Res<AssetServer>,
-    members: Query<(&Character, Option<&Vitals>)>,
+    members: Query<(&Character, &Vitals)>,
     strings: GameStrings,
     mut displays: Query<(&HeaderDisplay, Option<&mut Picture>, Option<&mut BitmapText>)>,
 ) {
-    let Some(screen) = screen else { return };
-    let Ok((profile, vitals)) = members.get(screen.member) else { return };
+    let (profile, vitals) = members.get(screen.member).unwrap();
     for (display, picture, label) in &mut displays {
         let mut source = None;
         let mut value = None;
         match display.0 {
             HeaderPart::Portrait => {
-                let name = if vitals.as_ref().is_some_and(|v| v.is_dead()) {
+                let name = if vitals.is_dead() {
                     &super::screen_art::skull(profile.race)[1..]
                 } else {
                     &profile.portrait
@@ -1026,10 +1015,10 @@ fn draw_gold(
 }
 
 fn draw_cells(
-    screen: Option<Single<&InventoryScreen>>,
+    screen: Single<&InventoryScreen>,
     assets: Res<AssetServer>,
     content: If<Res<Catalogs>>,
-    members: Query<(&Character, Option<&Carried>)>,
+    members: Query<(&Character, &Carried)>,
     party: Single<&PartyInventory>,
     pool_scroll: Option<Single<&bevy::ui_widgets::SliderValue, With<pool_scroll::PoolScroll>>>,
     cells: Query<(&ItemCell, &Children)>,
@@ -1040,11 +1029,8 @@ fn draw_cells(
         Option<&mut BitmapText>,
     )>,
 ) {
-    let Some(screen) = screen else { return };
     let catalog = &content.items;
-    let Ok((profile, carried)) = members.get(screen.member) else { return };
-    let empty = Carried::default();
-    let carried = carried.unwrap_or(&empty);
+    let (profile, carried) = members.get(screen.member).unwrap();
     let pool_start = pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2);
     for (cell, children) in &cells {
         let item = match cell.cell.location(screen.member, pool_start) {
@@ -1396,11 +1382,17 @@ mod tests {
             .add_systems(Update, sync_member_portraits);
         let a = app
             .world_mut()
-            .spawn(Character::new("A", Race::Human, Gender::Male, Profession::Fighter))
+            .spawn({
+                let c = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
+                (crate::game::characters::Vitals::new(&c), c)
+            })
             .id();
         let b = app
             .world_mut()
-            .spawn(Character::new("B", Race::Human, Gender::Male, Profession::Fighter))
+            .spawn({
+                let c = Character::new("B", Race::Human, Gender::Male, Profession::Fighter);
+                (crate::game::characters::Vitals::new(&c), c)
+            })
             .id();
         crate::game::party::roster::test_party(app.world_mut(), &[a, b]);
         app.world_mut().spawn(MemberSelector);
@@ -1431,9 +1423,7 @@ mod tests {
         use crate::game::inventory::{ItemIds, make_item};
         use crate::game::rng::GameRng;
         use crate::presentation::test_input::key;
-        for (still_a_member, explicit_close, full) in
-            [(true, true, false), (false, true, false), (true, true, true), (true, false, false)]
-        {
+        for (explicit_close, full) in [(true, false), (true, true), (false, false)] {
             let mut app = inventory_app();
             let window =
                 app.world_mut().spawn((Window::default(), bevy::window::PrimaryWindow)).id();
@@ -1457,12 +1447,7 @@ mod tests {
                     Carried::default(),
                 ))
                 .id();
-            // Someone else stays when the selected member leaves.
-            let other = app
-                .world_mut()
-                .spawn(Character::new("B", Race::Human, Gender::Male, Profession::Fighter))
-                .id();
-            let party = crate::game::party::roster::test_party(app.world_mut(), &[member, other]);
+            let party = crate::game::party::roster::test_party(app.world_mut(), &[member]);
             if full {
                 let mut ids = ItemIds::default();
                 // Use distinct identities from the held item.
@@ -1484,11 +1469,6 @@ mod tests {
             app.update();
             app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Inventory);
             app.update();
-            if !still_a_member {
-                app.world_mut()
-                    .entity_mut(member)
-                    .remove::<crate::game::party::roster::PartyMember>();
-            }
             if explicit_close {
                 key(&mut app, window, KeyCode::Escape, true);
             } else {
@@ -1530,7 +1510,7 @@ mod tests {
                     .flatten()
                     .map(|i| i.id)
                     .collect::<Vec<_>>(),
-                if still_a_member { vec![id] } else { vec![] }
+                vec![id]
             );
             assert_eq!(
                 app.world()
@@ -1541,7 +1521,7 @@ mod tests {
                     .iter()
                     .map(|item| item.id)
                     .collect::<Vec<_>>(),
-                if still_a_member { vec![] } else { vec![id] }
+                vec![]
             );
         }
     }

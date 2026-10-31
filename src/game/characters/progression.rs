@@ -255,7 +255,7 @@ impl Advancement {
         self.skill_remaining() > 0
             && self.skills[s] < 3
             && c.skill_points[s] < 75
-            && magic::skill_available(c, Some(&draft.learned), catalog, s)
+            && magic::skill_available(c, &draft.learned, catalog, s)
     }
     pub fn adjust_skill(&mut self, s: Skill, up: bool, catalog: &SpellCatalog) -> bool {
         if !self.can_adjust_skill(s, up, catalog) {
@@ -329,7 +329,7 @@ impl Advancement {
         let c = self.preview();
         let learned = self.learned();
         for s in EnumSet::<Skill>::all() {
-            if !magic::skill_available(&c, Some(&learned), catalog, s) {
+            if !magic::skill_available(&c, &learned, catalog, s) {
                 self.skills[s] = 0;
             }
         }
@@ -350,7 +350,7 @@ impl Advancement {
         if self
             .skills
             .iter()
-            .any(|(s, &n)| n > 0 && !magic::skill_available(&c, Some(&learned), catalog, s))
+            .any(|(s, &n)| n > 0 && !magic::skill_available(&c, &learned, catalog, s))
         {
             return Err("Refund training in unavailable skills.");
         }
@@ -398,7 +398,7 @@ impl Progression<'_, '_> {
         if !self.roster.single().is_ok_and(|r| r.contains(&member)) {
             return Err("This character is no longer in the party.");
         }
-        let (c, v, ..) = self.members.get(member).map_err(|_| "Character data is unavailable.")?;
+        let (c, v, ..) = self.members.get(member).unwrap();
         if !ready(c, v) {
             return Err("This character is not ready to gain a level.");
         }
@@ -626,7 +626,7 @@ mod tests {
         assert!(draft.learned().0.contains(&SpellId::RETURN_TO_PORTAL));
         assert!(magic::skill_available(
             &draft.preview(),
-            Some(&draft.learned()),
+            &draft.learned(),
             &spells,
             Skill::MentalMagic
         ));
@@ -634,12 +634,7 @@ mod tests {
         let (trained, learned) = draft.finish(&spells).unwrap();
         let mut next = Advancement::new(Entity::PLACEHOLDER, &trained, &learned);
         assert!(next.choose_profession(Profession::Fighter));
-        assert!(!magic::skill_available(
-            &next.preview(),
-            Some(&learned),
-            &spells,
-            Skill::MentalMagic
-        ));
+        assert!(!magic::skill_available(&next.preview(), &learned, &spells, Skill::MentalMagic));
         assert!(draft.toggle_spell(SpellId::RETURN_TO_PORTAL, &spells));
         assert_eq!(draft.spell_remaining(&spells), 1);
         assert!(draft.learned().0.is_empty());

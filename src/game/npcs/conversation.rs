@@ -1,6 +1,6 @@
 //! Authored continuation and waits belong to gameplay, not the dialogue view.
 use super::{
-    Npc, NpcAssets, definition,
+    Npc, definition,
     trade::{self, TradeError, TradeQuote, TradeSource},
 };
 use crate::content::factions::Faction;
@@ -14,7 +14,7 @@ use crate::game::time::GameClock;
 use crate::game::{
     characters::{Character, Condition, Vitals},
     inventory::{Carried, ItemIds, ItemOwner, ItemRef, PartyInventory, make_item},
-    party::roster::{PartyMember, PartyRoster, the_party},
+    party::roster::{PartyRoster, the_party},
     rng::GameRng,
     world::{ActorPose, level::Level, population::Monster},
 };
@@ -40,9 +40,9 @@ pub struct JournalEntry {
     pub level: String,
 }
 impl JournalEntry {
-    pub fn description<'a>(&self, catalog: &'a FactCatalog) -> Option<&'a str> {
-        let fact = catalog.get(self.fact)?;
-        Some(if self.was_true { &fact.alternate_description } else { &fact.description })
+    pub fn description<'a>(&self, catalog: &'a FactCatalog) -> &'a str {
+        let fact = &catalog[self.fact];
+        if self.was_true { &fact.alternate_description } else { &fact.description }
     }
 }
 impl StoryFacts {
@@ -142,6 +142,16 @@ enum Step {
     Wait(ConversationWait),
     Join,
     End,
+}
+impl Step {
+    /// A quote from its first line, asking its price first if it has one.
+    fn quote(quote: u16) -> Self {
+        Step::Quote { quote, subquote: 0, paid: false, plan: None }
+    }
+    /// A quote from its first line, said without asking a price.
+    fn said(quote: u16) -> Self {
+        Step::Quote { quote, subquote: 0, paid: true, plan: None }
+    }
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConversationWait {
@@ -257,9 +267,7 @@ impl Conversation {
                 self.transcript.push(TranscriptLine::Npc("Charmed.".into()));
             }
             MagicalReply::Charmed(_) => {}
-            MagicalReply::Quote(quote) => {
-                self.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None })
-            }
+            MagicalReply::Quote(quote) => self.queue.push_back(Step::quote(quote)),
         }
     }
 
@@ -296,52 +304,61 @@ pub enum NotebookEdit {
     Forget,
 }
 
+/// Start talking to an NPC.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct BeginConversation {
+    pub actor: Entity,
+}
+
+/// What the party does in a conversation under way.
 #[derive(Message, Clone, Debug)]
-pub enum ConversationRequest {
-    Begin {
-        actor: Entity,
-    },
+pub struct ConversationRequest {
+    pub conversation: Entity,
+    pub talk: Talk,
+}
+
+impl ConversationRequest {
+    pub fn new(conversation: Entity, talk: Talk) -> Self {
+        Self { conversation, talk }
+    }
+
+    /// Settle a quoted trade in the conversation it was quoted in.
+    pub fn trade(quote: TradeQuote) -> Self {
+        Self::new(quote.conversation, Talk::Trade(quote))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum Talk {
     Topic {
-        conversation: Entity,
         text: String,
     },
     Reply {
-        conversation: Entity,
         text: String,
     },
     PriceAnswer {
-        conversation: Entity,
         accept: bool,
     },
     Advance {
-        conversation: Entity,
         speech: Entity,
     },
-    Close {
-        conversation: Entity,
-    },
-    Recruit {
-        conversation: Entity,
-    },
+    Close,
+    Recruit,
     EditNotebook {
-        conversation: Entity,
         edit: NotebookEdit,
         text: String,
     },
     Trade(TradeQuote),
     /// Hand the NPC an item from a member's pack or the party's items.
     Give {
-        conversation: Entity,
         item: ItemRef,
     },
     /// Hand the NPC some of the party's gold.
     GiveGold {
-        conversation: Entity,
         amount: u32,
     },
     /// Try to win over an NPC that is not yet friendly.
     Approach {
-        conversation: Entity,
         approach: Approach,
     },
 }
@@ -356,8 +373,8 @@ pub enum Approach {
 fn with_definition<T>(
     world: &mut World,
     actor: Entity,
-    f: impl FnOnce(&mut World, &NpcDefinition, &ItemCatalog) -> Result<T, TradeError>,
-) -> Result<T, TradeError> {
+    f: impl FnOnce(&mut World, &NpcDefinition, &ItemCatalog) -> T,
+) -> T {
     let id = world.get::<super::ActorId>(actor).expect("an NPC actor").npc();
     Catalogs::scope(world, |world, catalogs| f(world, &catalogs.npcs[id], &catalogs.items))
 }
@@ -365,10 +382,13 @@ pub fn party_communication(world: &mut World) -> u32 {
     best_communicator(world).map_or(0, |(_, level)| level)
 }
 fn average_level(world: &mut World) -> u32 {
-    let Some(party) = the_party(world) else { return 1 };
-    let Some(roster) = world.get::<PartyRoster>(party) else { return 1 };
+    let party = the_party(world);
     crate::game::party::average_level(
-        roster.iter().filter_map(|member| world.get::<Character>(member)).map(|c| c.level()),
+        world
+            .get::<PartyRoster>(party)
+            .unwrap()
+            .iter()
+            .map(|member| world.get::<Character>(member).unwrap().level()),
     )
 }
 pub(crate) fn active_body(world: &World, actor: Entity) -> Option<Entity> {
@@ -376,7 +396,7 @@ pub(crate) fn active_body(world: &World, actor: Entity) -> Option<Entity> {
         world
             .get::<crate::game::world::level::LevelOwned>(*body)
             .is_some_and(|parent| world.get::<Level>(parent.0).is_some())
-            && world.get::<Monster>(*body).is_some_and(|m| !m.is_dead())
+            && !world.get::<Monster>(*body).unwrap().is_dead()
     })
 }
 /// What a neutral NPC says first, and its answers to charm, small talk and
@@ -402,7 +422,7 @@ pub fn approach_ready(at: Option<u64>, now: u64) -> bool {
 /// speaker in the open conversation; it never overwrites retained opinion.
 /// Allied party NPCs are not yet represented.
 pub fn disposition(world: &World, actor: Entity) -> i32 {
-    let Some(npc) = world.get::<Npc>(actor) else { return 0 };
+    let npc = world.get::<Npc>(actor).unwrap();
     standing(world, actor, npc.disposition)
 }
 /// [`disposition`] were the NPC's own `disposition` this.
@@ -455,11 +475,10 @@ fn resume(world: &mut World, actor: Entity) {
 /// The member with the best Communication, the first on a tie, and that
 /// level (retail `GetBestPartySkillLevel`).
 fn best_communicator(world: &mut World) -> Option<(Entity, u32)> {
-    let party = the_party(world)?;
-    let roster = world.get::<PartyRoster>(party)?;
+    let party = the_party(world);
     crate::game::party::best_skill(
-        roster.iter().filter_map(|member| {
-            Some((member, world.get::<Character>(member)?, world.get::<Vitals>(member)?))
+        world.get::<PartyRoster>(party).unwrap().iter().map(|member| {
+            (member, world.get::<Character>(member).unwrap(), world.get::<Vitals>(member).unwrap())
         }),
         crate::content::characters::Skill::Communication,
     )
@@ -468,9 +487,11 @@ fn best_communicator(world: &mut World) -> Option<(Entity, u32)> {
 fn practise_communication(world: &mut World, members: &[Entity], usage: u32) {
     world.resource_scope(|world, mut rng: Mut<GameRng>| {
         for &member in members {
-            if let Some(mut c) = world.get_mut::<Character>(member) {
-                c.practise(crate::content::characters::Skill::Communication, usage, &mut rng);
-            }
+            world.get_mut::<Character>(member).unwrap().practise(
+                crate::content::characters::Skill::Communication,
+                usage,
+                &mut rng,
+            );
         }
     });
 }
@@ -514,7 +535,7 @@ fn greet(world: &mut World, actor: Entity) -> u16 {
     greeting
 }
 pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
-    let party = the_party(world).ok_or(TradeError::Unavailable)?;
+    let party = the_party(world);
     if !crate::game::freedom::free_in(world) || crate::game::combat::in_battle(world) {
         return Err(TradeError::Busy);
     }
@@ -528,18 +549,14 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
         .ok()
         .flatten()
         .ok_or(TradeError::Unavailable)?;
-    let party_at = crate::game::party::body::PartyBody::eye_in(world)
-        .map(crate::game::party::body::PartyBody::centre)
-        .filter(|centre| centre.distance(at) <= crate::game::world::items::REACH)
-        .ok_or(TradeError::Unavailable)?;
-    if !available(world, actor) {
+    let party_at = crate::game::party::body::PartyBody::centre(
+        crate::game::party::body::PartyBody::eye_in(world),
+    );
+    if party_at.distance(at) > crate::game::world::items::REACH {
         return Err(TradeError::Unavailable);
     }
-    let id = world.get::<super::ActorId>(actor).ok_or(TradeError::Unavailable)?.npc();
-    let script =
-        world.resource::<NpcAssets>().scripts.get(&id).ok_or(TradeError::MissingContent)?;
-    if !world.resource::<Assets<DialogueScript>>().contains(script) {
-        return Err(TradeError::MissingContent);
+    if !available(world, actor) {
+        return Err(TradeError::Unavailable);
     }
     let def = definition(world, actor);
     // Retail `BeginNpcDialogueInternal` and `OpenNpcDialoguePanel`: an NPC
@@ -548,8 +565,7 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     // topic menu, and a merchant always does business.
     let scripted = def.monster_bound || def.voice_script;
     let band = band(world, actor);
-    let quote =
-        |quote| VecDeque::from([Step::Quote { quote, subquote: 0, paid: false, plan: None }]);
+    let quote = |quote| VecDeque::from([Step::quote(quote)]);
     let conversation = |queue| Conversation {
         actor,
         charms: default(),
@@ -574,8 +590,7 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
         let gated = stock.restock_at.is_some()
             && now.saturating_sub(stock.maintenance_at) >= crate::game::time::DAY_MS
             && def.stock.iter().any(|r| !r.persistent && r.item == super::trade::TEMPLAR_GATED);
-        let templar = gated
-            && fact_named(world, "FACT_TEMPLAR").map_err(|_| TradeError::MissingContent)? != 0;
+        let templar = gated && fact_named(world, "FACT_TEMPLAR").expect("the Templar fact") != 0;
         with_definition(world, actor, |world, def, items| {
             world.resource_scope(|world, mut rng: Mut<GameRng>| {
                 world
@@ -584,7 +599,7 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
                     .stock
                     .maintain(def, items, average, now, templar, &mut rng)
             })
-        })?;
+        });
     }
     // OpenNpcDialoguePanel / MonsterForwardReferencePosition: the accepted
     // speaker faces the party. Physics rotation owns a moving body's facing.
@@ -667,11 +682,8 @@ fn npc_named(world: &World, name: &str) -> Option<Entity> {
     let fixed = fact_named(world, "FACT_RFS81_HAS_BEEN_FIXED").is_ok_and(|value| value != 0);
     world.iter_entities().find_map(|e| {
         let id = e.get::<super::ActorId>()?.npc();
-        let shown = if id == RFS81 && fixed {
-            RFS81_FIXED_NAME
-        } else {
-            catalog.get(id)?.display_name.as_str()
-        };
+        let shown =
+            if id == RFS81 && fixed { RFS81_FIXED_NAME } else { catalog[id].display_name.as_str() };
         shown.eq_ignore_ascii_case(name).then(|| e.id())
     })
 }
@@ -683,7 +695,7 @@ fn hand_over(world: &mut World, entity: Entity, name: &str, quote: u16) {
     let Some(speaker) = npc_named(world, name) else { return };
     let mut c = world.get_mut::<Conversation>(entity).unwrap();
     c.actor = speaker;
-    c.queue.push_front(Step::Quote { quote, subquote: 0, paid: false, plan: None });
+    c.queue.push_front(Step::quote(quote));
 }
 fn block(c: &mut Conversation, quote: u16, entry: Option<usize>, reason: String) {
     c.wait = ConversationWait::Blocked { quote, entry, reason };
@@ -744,9 +756,9 @@ fn plan_quote(world: &World, party: Entity, q: &Quote) -> Result<QuotePlan, (usi
                 // XP is the authored amount for EACH eligible member.
                 let members = world
                     .get::<PartyRoster>(party)
-                    .into_iter()
-                    .flat_map(|roster| roster.iter())
-                    .filter(|&member| world.get::<Vitals>(member).is_some_and(|v| !v.is_dead()))
+                    .unwrap()
+                    .iter()
+                    .filter(|&member| !world.get::<Vitals>(member).unwrap().is_dead())
                     .collect();
                 plan.effects.push(QuoteEffect::Experience { members, amount: *amount });
             }
@@ -756,9 +768,6 @@ fn plan_quote(world: &World, party: Entity, q: &Quote) -> Result<QuotePlan, (usi
             // Retail ignores a faction name it does not know.
             DialogueOp::AdjustFaction { faction: None, .. } => {}
             DialogueOp::GiveItem(item) => {
-                if world.resource::<Catalogs>().items.get(*item).is_none() {
-                    return Err((i, format!("unknown item {}", item.0)));
-                }
                 plan.effects.push(QuoteEffect::GiveItem { party, item: *item });
             }
             DialogueOp::TakeItem(item) => {
@@ -838,7 +847,7 @@ fn drop_gift(
 ) {
     use crate::game::{party::body::PartyBody, world::items};
     let level = world.query_filtered::<Entity, With<Level>>().single(world).ok();
-    let feet = PartyBody::feet_in(world).unwrap_or_default();
+    let feet = PartyBody::feet_in(world);
     match level {
         Some(level) if !crucial => {
             items::lay(&mut world.commands(), level, feet, items::WorldItem::loose(gift, false));
@@ -928,7 +937,7 @@ fn commit_effects(world: &mut World, entity: Entity, effects: Vec<QuoteEffect>) 
             QuoteEffect::GiveItem { party, item } => {
                 let (name, crucial, rest) = Catalogs::scope(world, |world, c| {
                     let catalog = &c.items;
-                    let definition = catalog.get(item).expect("a validated gift has its item");
+                    let definition = &catalog[item];
                     let stack = world.resource_scope(|world, mut ids: Mut<ItemIds>| {
                         let mut rng = world.resource_mut::<GameRng>();
                         make_item(definition, &mut ids, &mut rng, true, true)
@@ -952,10 +961,10 @@ fn commit_effects(world: &mut World, entity: Entity, effects: Vec<QuoteEffect>) 
             QuoteEffect::TakeItem { party, item } => {
                 let source = world
                     .get::<PartyRoster>(party)
-                    .into_iter()
-                    .flat_map(|roster| roster.iter())
+                    .unwrap()
+                    .iter()
                     .find_map(|member| {
-                        let pack = world.get::<Carried>(member)?;
+                        let pack = world.get::<Carried>(member).unwrap();
                         let stack = pack.backpack.iter().flatten().find(|s| s.item == item)?;
                         Some(ItemRef { owner: ItemOwner::Member(member), id: stack.id })
                     })
@@ -1010,7 +1019,7 @@ fn run(world: &mut World, entity: Entity) {
         return;
     }
     let handle = super::script(world, c.actor);
-    let Some(party) = the_party(world) else { return };
+    let party = the_party(world);
     world.resource_scope(|world, scripts: Mut<Assets<DialogueScript>>| {
         run_script(world, entity, scripts.get(handle).unwrap(), party);
     });
@@ -1070,12 +1079,7 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party:
                         (gold - gold.saturating_mul(party_communication(world)) / 500).max(1);
                     let mut c = world.get_mut::<Conversation>(entity).unwrap();
                     c.queue.push_front(Step::Wait(ConversationWait::Price { quote, gold, always }));
-                    c.queue.push_front(Step::Quote {
-                        quote: PRICE_QUOTE,
-                        subquote: 0,
-                        paid: true,
-                        plan: None,
-                    });
+                    c.queue.push_front(Step::said(PRICE_QUOTE));
                     continue;
                 }
                 let plan = match plan.map_or_else(|| plan_quote(world, party, q), Ok) {
@@ -1112,42 +1116,43 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party:
                 // alert chime and no recording; otherwise a few words stand
                 // for something other than a line.
                 let is = |word: &str| text.eq_ignore_ascii_case(word);
-                let voice =
-                    if q.alert {
-                        None
-                    } else if text.is_empty() {
-                        continue;
-                    } else if is("EMPTY") || is("BLANK") {
-                        // The answer to a question it has nothing to say to.
-                        if (NO_ANSWER_QUOTES).contains(&quote) {
-                            let npc = def.source_name.clone();
-                            let mut turn = world.get_resource_or_init::<NoAnswerTurn>();
-                            let second = turn.0;
-                            turn.0 = !second;
-                            let mut c = world.get_mut::<Conversation>(entity).unwrap();
-                            c.transcript.push(TranscriptLine::NoAnswer { npc, second });
-                        }
-                        continue;
-                    } else if is("UNKNOWN") || is("CLASSIFIED") {
-                        let next = if is("CLASSIFIED") {
-                            CLASSIFIED_QUOTE
-                        } else if world.resource_mut::<GameRng>().below(100) < 50 {
-                            UNKNOWN_QUOTES[0]
-                        } else {
-                            UNKNOWN_QUOTES[1]
-                        };
-                        world.get_mut::<Conversation>(entity).unwrap().queue.push_back(
-                            Step::Quote { quote: next, subquote: 0, paid: false, plan: None },
-                        );
-                        continue;
+                let voice = if q.alert {
+                    None
+                } else if text.is_empty() {
+                    continue;
+                } else if is("EMPTY") || is("BLANK") {
+                    // The answer to a question it has nothing to say to.
+                    if (NO_ANSWER_QUOTES).contains(&quote) {
+                        let npc = def.source_name.clone();
+                        let mut turn = world.get_resource_or_init::<NoAnswerTurn>();
+                        let second = turn.0;
+                        turn.0 = !second;
+                        let mut c = world.get_mut::<Conversation>(entity).unwrap();
+                        c.transcript.push(TranscriptLine::NoAnswer { npc, second });
+                    }
+                    continue;
+                } else if is("UNKNOWN") || is("CLASSIFIED") {
+                    let next = if is("CLASSIFIED") {
+                        CLASSIFIED_QUOTE
+                    } else if world.resource_mut::<GameRng>().below(100) < 50 {
+                        UNKNOWN_QUOTES[0]
                     } else {
-                        let suffix = if subquote == 0 {
-                            String::new()
-                        } else {
-                            char::from(b'a' + (subquote - 1) as u8).to_string()
-                        };
-                        Some(format!("{}_{quote:03}{suffix}", def.voice_stem()))
+                        UNKNOWN_QUOTES[1]
                     };
+                    world
+                        .get_mut::<Conversation>(entity)
+                        .unwrap()
+                        .queue
+                        .push_back(Step::quote(next));
+                    continue;
+                } else {
+                    let suffix = if subquote == 0 {
+                        String::new()
+                    } else {
+                        char::from(b'a' + (subquote - 1) as u8).to_string()
+                    };
+                    Some(format!("{}_{quote:03}{suffix}", def.voice_stem()))
+                };
                 // "SOUND" plays its recording without showing a line.
                 let text = if is("SOUND") && !q.alert { String::new() } else { text };
                 let speaker = def.source_name.clone();
@@ -1202,7 +1207,7 @@ fn ask_to_join(world: &mut World, entity: Entity) {
         Err(super::recruit::JoinRefusal::Declines) => DECLINES_TO_JOIN,
     };
     let mut c = world.get_mut::<Conversation>(entity).unwrap();
-    c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None });
+    c.queue.push_back(Step::quote(quote));
     if answer.is_ok() {
         c.queue.extend([Step::Join, Step::End]);
     }
@@ -1228,7 +1233,7 @@ fn topic(world: &mut World, entity: Entity, text: &str) {
         world.resource_mut::<StoryFacts>().remember_topic(TopicCategory::Misc, &cleaned);
         let mut c = world.get_mut::<Conversation>(entity).unwrap();
         c.transcript.push(TranscriptLine::Question(text.to_owned()));
-        c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None });
+        c.queue.push_back(Step::quote(quote));
     } else {
         world.get_mut::<Conversation>(entity).unwrap().report(Outcome::NoTopic);
     }
@@ -1294,7 +1299,7 @@ fn approach_npc(world: &mut World, entity: Entity, approach: Approach) {
     let friendly = band(world, actor) == Band::Friendly;
     let mut c = world.get_mut::<Conversation>(entity).unwrap();
     if let Some(quote) = answer {
-        c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None });
+        c.queue.push_back(Step::quote(quote));
     }
     if !friendly && answer == Some(HOSTILE_QUOTE) {
         c.queue.push_back(Step::End);
@@ -1352,7 +1357,7 @@ pub(crate) fn won_over(world: &mut World, entity: Entity, greeting: bool) {
     let mut c = world.get_mut::<Conversation>(entity).unwrap();
     c.menu = false;
     if let Some(quote) = greeting {
-        c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None });
+        c.queue.push_back(Step::quote(quote));
     }
 }
 /// What a friendly NPC says to an item it has no quote for: it takes it
@@ -1365,13 +1370,13 @@ const REFUSED_GIFT_QUOTE: u16 = 0x11;
 /// ignores an item it has nothing to say about. The item is taken only when
 /// its answer's effects are valid; a content gap keeps it.
 fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeError> {
-    let party = the_party(world).ok_or(TradeError::Unavailable)?;
+    let party = the_party(world);
     let c = world.get::<Conversation>(entity).unwrap();
     if !c.ready() {
         return Err(TradeError::Busy);
     }
     let actor = c.actor;
-    let stack = sale_item(world, TradeSource::Party(item), party)?;
+    let stack = sale_item(world, item, party)?;
     let (offered, count) = (stack.item, stack.count());
     let definition_of = &world.resource::<Catalogs>().items[offered];
     let (crucial, value) = (definition_of.crucial, stack_value(definition_of, count));
@@ -1425,11 +1430,11 @@ fn give(world: &mut World, entity: Entity, item: ItemRef) -> Result<(), TradeErr
 /// The party gives the NPC gold (retail `HandleNpcDialogueItem` with trade
 /// gold): all of it only once the party confirms, as retail asks.
 fn give_gold(world: &mut World, entity: Entity, amount: u32) -> Result<(), TradeError> {
-    let party = the_party(world).ok_or(TradeError::Unavailable)?;
+    let party = the_party(world);
     if !world.get::<Conversation>(entity).unwrap().ready() {
         return Err(TradeError::Busy);
     }
-    let gold = world.get::<PartyInventory>(party).ok_or(TradeError::Unavailable)?.gold;
+    let gold = world.get::<PartyInventory>(party).unwrap().gold;
     if amount == 0 {
         return Err(TradeError::InvalidQuantity);
     }
@@ -1457,15 +1462,10 @@ fn spend_gift(
     let bribe = band(world, actor) != Band::Friendly;
     if bribe && definition(world, actor).trade_pool == 0 {
         let mut c = world.get_mut::<Conversation>(entity).unwrap();
-        c.queue.push_back(Step::Quote {
-            quote: UNBRIBED_QUOTE,
-            subquote: 0,
-            paid: true,
-            plan: None,
-        });
+        c.queue.push_back(Step::said(UNBRIBED_QUOTE));
         return Ok(());
     }
-    let mut inventory = world.get_mut::<PartyInventory>(party).ok_or(TradeError::Unavailable)?;
+    let mut inventory = world.get_mut::<PartyInventory>(party).unwrap();
     inventory.gold = inventory.gold.checked_sub(amount).ok_or(TradeError::Funds)?;
     if bribe {
         debit_trade_pool(world, actor, amount);
@@ -1473,7 +1473,7 @@ fn spend_gift(
     let quote =
         if band(world, actor) == Band::Friendly { ACCEPTED_GIFT_QUOTE } else { UNBRIBED_QUOTE };
     let mut c = world.get_mut::<Conversation>(entity).unwrap();
-    c.queue.push_back(Step::Quote { quote, subquote: 0, paid: true, plan: None });
+    c.queue.push_back(Step::said(quote));
     won_over(world, entity, !all);
     Ok(())
 }
@@ -1509,12 +1509,12 @@ fn reply(world: &mut World, entity: Entity, text: &str) {
             let mut c = world.get_mut::<Conversation>(entity).unwrap();
             c.transcript.push(TranscriptLine::Reply(text.to_owned()));
             c.wait = ConversationWait::Ready;
-            c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None });
+            c.queue.push_back(Step::quote(quote));
         }
     }
 }
 fn answer_price(world: &mut World, entity: Entity, accept: bool) {
-    let Some(party) = the_party(world) else { return };
+    let party = the_party(world);
     let c = world.get::<Conversation>(entity).unwrap();
     if let ConversationWait::GiveAll { gold } = c.wait {
         let mut c = world.get_mut::<Conversation>(entity).unwrap();
@@ -1563,12 +1563,7 @@ fn answer_price(world: &mut World, entity: Entity, accept: bool) {
             let mut c = world.get_mut::<Conversation>(entity).unwrap();
             for op in &line.operations {
                 if let DialogueOp::Decline(quote) = op {
-                    c.queue.push_back(Step::Quote {
-                        quote: *quote,
-                        subquote: 0,
-                        paid: false,
-                        plan: None,
-                    });
+                    c.queue.push_back(Step::quote(*quote));
                 }
             }
         }
@@ -1594,14 +1589,14 @@ pub fn quote_trade(
         return Err(TradeError::Unavailable);
     }
     let actor = c.actor;
-    let party = the_party(world).ok_or(TradeError::Unavailable)?;
+    let party = the_party(world);
     let communication = party_communication(world);
     let def = definition(world, actor);
     let catalog = &world.resource::<Catalogs>().items;
-    let trade = world.get::<Npc>(actor).ok_or(TradeError::Unavailable)?.stock.trades;
+    let trade = world.get::<Npc>(actor).unwrap().stock.trades;
     let gold = match source {
         TradeSource::Stock(lot) => {
-            let stock = &world.get::<Npc>(actor).ok_or(TradeError::Unavailable)?.stock;
+            let stock = &world.get::<Npc>(actor).unwrap().stock;
             trade::purchase_price(
                 stock.lots.iter().find(|l| l.id == lot).ok_or(TradeError::StaleSelection)?,
                 def,
@@ -1610,7 +1605,7 @@ pub fn quote_trade(
                 communication,
             )
         }
-        _ => {
+        TradeSource::Party(source) => {
             let item = sale_item(world, source, party)?;
             trade::validate_sale(def, item, quantity, catalog, communication)
         }
@@ -1619,10 +1614,9 @@ pub fn quote_trade(
 }
 fn sale_item(
     world: &World,
-    source: TradeSource,
+    source: ItemRef,
     party: Entity,
 ) -> Result<&crate::game::inventory::ItemStack, TradeError> {
-    let TradeSource::Party(source) = source else { return Err(TradeError::StaleSelection) };
     match source.owner {
         ItemOwner::Pool => world
             .get::<PartyInventory>(party)
@@ -1631,12 +1625,9 @@ fn sale_item(
             .stacks
             .iter()
             .find(|i| i.id == source.id),
-        ItemOwner::Member(member)
-            if world.get::<PartyMember>(member).is_some_and(|m| m.0 == party) =>
-        {
-            world.get::<Carried>(member).and_then(|c| c.backpack_stack(source.id))
+        ItemOwner::Member(member) => {
+            world.get::<Carried>(member).unwrap().backpack_stack(source.id)
         }
-        _ => None,
     }
     .ok_or(TradeError::StaleSelection)
 }
@@ -1650,18 +1641,16 @@ fn execute_trade(world: &mut World, quote: TradeQuote) -> Result<(), TradeError>
         return Err(TradeError::Unavailable);
     }
     let actor = c.actor;
-    if world.get::<Npc>(actor).is_none_or(|npc| npc.stock.trades != quote.trade) {
+    if world.get::<Npc>(actor).unwrap().stock.trades != quote.trade {
         return Err(TradeError::StaleSelection);
     }
-    let party = the_party(world).ok_or(TradeError::Unavailable)?;
+    let party = the_party(world);
     let communication = party_communication(world);
     with_definition(world, actor, |world, def, catalog| match quote.source {
         TradeSource::Stock(lot) => world.resource_scope(|world, mut ids: Mut<ItemIds>| {
-            let [mut party_entity, mut actor] =
-                world.get_entity_mut([party, actor]).map_err(|_| TradeError::Unavailable)?;
-            let mut inventory =
-                party_entity.get_mut::<PartyInventory>().ok_or(TradeError::Unavailable)?;
-            let mut npc = actor.get_mut::<Npc>().ok_or(TradeError::Unavailable)?;
+            let [mut party_entity, mut actor] = world.get_entity_mut([party, actor]).unwrap();
+            let mut inventory = party_entity.get_mut::<PartyInventory>().unwrap();
+            let mut npc = actor.get_mut::<Npc>().unwrap();
             trade::buy(
                 &mut npc.stock,
                 &mut inventory,
@@ -1675,21 +1664,16 @@ fn execute_trade(world: &mut World, quote: TradeQuote) -> Result<(), TradeError>
             )
         }),
         TradeSource::Party(source) => {
-            let item = sale_item(world, TradeSource::Party(source), party)?;
+            let item = sale_item(world, source, party)?;
             let units = u16::try_from(quote.quantity).map_err(|_| TradeError::InvalidQuantity)?;
-            let gold = world
-                .get::<PartyInventory>(party)
-                .ok_or(TradeError::Unavailable)?
-                .gold
-                .checked_add(quote.gold)
-                .ok_or(TradeError::Overflow)?;
+            let gold = world.get::<PartyInventory>(party).unwrap().gold + quote.gold;
             if trade::validate_sale(def, item, quote.quantity, catalog, communication)?
                 != quote.gold
             {
                 return Err(TradeError::PriceChanged);
             }
             let item = item.item;
-            world.get_mut::<Npc>(actor).unwrap().stock.add(item, quote.quantity, catalog, false)?;
+            world.get_mut::<Npc>(actor).unwrap().stock.add(item, quote.quantity, catalog, false);
             consume_item(world, party, source, units);
             world.get_mut::<PartyInventory>(party).unwrap().gold = gold;
             Ok(())
@@ -1706,97 +1690,84 @@ pub fn update_conversation(world: &mut World) {
         world.resource_mut::<Messages<ConversationRequest>>().clear();
         return;
     }
+    let begins: Vec<_> = world.resource_mut::<Messages<BeginConversation>>().drain().collect();
+    for BeginConversation { actor } in begins {
+        if let Err(e) = begin(world, actor) {
+            warn!("conversation refused: {e:?}");
+        }
+    }
     let requests: Vec<_> = world.resource_mut::<Messages<ConversationRequest>>().drain().collect();
-    for request in requests {
-        if let ConversationRequest::Begin { actor } = request {
-            if let Err(e) = begin(world, actor) {
-                warn!("conversation refused: {e:?}");
-            }
-            continue;
-        }
-        let entity = match &request {
-            ConversationRequest::Topic { conversation, .. }
-            | ConversationRequest::EditNotebook { conversation, .. }
-            | ConversationRequest::Reply { conversation, .. }
-            | ConversationRequest::PriceAnswer { conversation, .. }
-            | ConversationRequest::Recruit { conversation, .. }
-            | ConversationRequest::Advance { conversation, .. }
-            | ConversationRequest::Close { conversation }
-            | ConversationRequest::Give { conversation, .. }
-            | ConversationRequest::GiveGold { conversation, .. }
-            | ConversationRequest::Approach { conversation, .. } => *conversation,
-            ConversationRequest::Trade(q) => q.conversation,
-            _ => unreachable!(),
-        };
+    for ConversationRequest { conversation: entity, talk } in requests {
         // Nothing but its lines' playback reaches a dialogue the party left.
-        if world.get::<Closing>(entity).is_some()
-            && !matches!(request, ConversationRequest::Advance { .. })
-        {
+        if world.get::<Closing>(entity).is_some() && !matches!(talk, Talk::Advance { .. }) {
             continue;
         }
-        if matches!(request, ConversationRequest::Close { .. }) {
-            leave(world, entity);
-            continue;
+        // Leaving needs nothing of the NPC; anything else ends the dialogue
+        // when the NPC, a fight or a camp no longer allows it.
+        if !matches!(talk, Talk::Close) {
+            let in_battle = crate::game::combat::in_battle(world);
+            let Some(c) = world.get::<Conversation>(entity) else { continue };
+            if !available(world, c.actor)
+                || in_battle
+                || world.contains_resource::<crate::game::camp::Camp>()
+            {
+                close_one(world, entity);
+                continue;
+            }
+            world.get_mut::<Conversation>(entity).unwrap().result = None;
         }
-        let in_battle = crate::game::combat::in_battle(world);
-        let Some(c) = world.get::<Conversation>(entity) else { continue };
-        if !available(world, c.actor)
-            || in_battle
-            || world.contains_resource::<crate::game::camp::Camp>()
-        {
-            close_one(world, entity);
-            continue;
-        }
-        world.get_mut::<Conversation>(entity).unwrap().result = None;
-        match request {
-            ConversationRequest::EditNotebook { edit, text, .. } => {
+        let outcome = match talk {
+            Talk::Close => {
+                leave(world, entity);
+                None
+            }
+            Talk::EditNotebook { edit, text } => {
                 let mut facts = world.resource_mut::<StoryFacts>();
                 match edit {
-                    NotebookEdit::Remember => {
-                        facts.remember_topic(TopicCategory::Misc, &text);
-                    }
-                    NotebookEdit::Forget => {
-                        facts.forget_topic(&text);
-                    }
-                }
+                    NotebookEdit::Remember => facts.remember_topic(TopicCategory::Misc, &text),
+                    NotebookEdit::Forget => facts.forget_topic(&text),
+                };
+                None
             }
-            ConversationRequest::Topic { text, .. } => topic(world, entity, &text),
-            ConversationRequest::Reply { text, .. } => reply(world, entity, &text),
-            ConversationRequest::PriceAnswer { accept, .. } => answer_price(world, entity, accept),
-            ConversationRequest::Recruit { .. } => ask_to_join(world, entity),
-            ConversationRequest::Advance { speech, .. } => {
-                if matches!(world.get::<Conversation>(entity).unwrap().wait,ConversationWait::Line{speech:s,..} if s==speech)
+            Talk::Topic { text } => {
+                topic(world, entity, &text);
+                None
+            }
+            Talk::Reply { text } => {
+                reply(world, entity, &text);
+                None
+            }
+            Talk::PriceAnswer { accept } => {
+                answer_price(world, entity, accept);
+                None
+            }
+            Talk::Recruit => {
+                ask_to_join(world, entity);
+                None
+            }
+            Talk::Advance { speech } => {
+                if matches!(world.get::<Conversation>(entity).unwrap().wait, ConversationWait::Line { speech: s, .. } if s == speech)
                 {
                     world.despawn(speech);
-                    let mut c = world.get_mut::<Conversation>(entity).unwrap();
-                    c.wait = ConversationWait::Ready;
+                    world.get_mut::<Conversation>(entity).unwrap().wait = ConversationWait::Ready;
                 }
+                None
             }
-            ConversationRequest::Give { item, .. } => {
-                if let Err(refused) = give(world, entity, item) {
-                    world
-                        .get_mut::<Conversation>(entity)
-                        .unwrap()
-                        .report(Outcome::GiftRefused(refused));
-                }
+            Talk::Give { item } => give(world, entity, item).err().map(Outcome::GiftRefused),
+            Talk::GiveGold { amount } => {
+                give_gold(world, entity, amount).err().map(Outcome::GiftRefused)
             }
-            ConversationRequest::GiveGold { amount, .. } => {
-                if let Err(refused) = give_gold(world, entity, amount) {
-                    world
-                        .get_mut::<Conversation>(entity)
-                        .unwrap()
-                        .report(Outcome::GiftRefused(refused));
-                }
+            Talk::Approach { approach } => {
+                approach_npc(world, entity, approach);
+                None
             }
-            ConversationRequest::Approach { approach, .. } => approach_npc(world, entity, approach),
-            ConversationRequest::Trade(q) => {
-                let outcome = match execute_trade(world, q) {
-                    Ok(()) => Outcome::Traded,
-                    Err(e) => Outcome::TradeRefused(e),
-                };
-                world.get_mut::<Conversation>(entity).unwrap().report(outcome);
-            }
-            _ => {}
+            Talk::Trade(q) => Some(match execute_trade(world, q) {
+                Ok(()) => Outcome::Traded,
+                Err(e) => Outcome::TradeRefused(e),
+            }),
+        };
+        if let Some(outcome) = outcome {
+            world.get_mut::<Conversation>(entity).unwrap().report(outcome);
         }
     }
     let sessions: Vec<_> =
@@ -1826,6 +1797,7 @@ pub fn update_conversation(world: &mut World) {
 mod tests {
     use super::*;
     use crate::game::inventory::ItemRef;
+    use crate::game::party::roster::PartyMember;
     use crate::game::world::population::ScaledBody;
     fn app(script: DialogueScript) -> (App, Entity, Entity) {
         let mut app = App::new();
@@ -1835,6 +1807,7 @@ mod tests {
                 std::time::Duration::from_millis(16),
             ))
             .add_message::<ConversationRequest>()
+            .add_message::<BeginConversation>()
             .add_message::<crate::game::factions::FactionNews>()
             .add_message::<NpcSpeech>()
             .add_message::<crate::game::inventory::ItemNews>()
@@ -1846,7 +1819,11 @@ mod tests {
             .add_observer(end_conversations)
             .add_systems(Update, update_conversation);
         let w = app.world_mut();
-        crate::game::party::roster::test_party(w, &[]);
+        let party = crate::game::party::roster::test_party(w, &[]);
+        w.entity_mut(party).insert((
+            crate::game::party::body::PartyBody::default(),
+            avian3d::prelude::Position::default(),
+        ));
         let mut catalogs = w.resource_mut::<crate::game::data::Catalogs>();
         // The NPC's body is of a species bound to it, as placed NPCs are.
         catalogs.species =
@@ -1865,7 +1842,7 @@ mod tests {
             alternate_description: String::new(),
         }]);
         let script = w.resource_mut::<Assets<DialogueScript>>().add(script);
-        w.insert_resource(NpcAssets { scripts: [(NpcId(0), script)].into() });
+        w.insert_resource(super::super::NpcAssets { scripts: [(NpcId(0), script)].into() });
         let level = w.spawn(Level::test(default())).id();
         let actor = w
             .spawn((
@@ -1900,12 +1877,7 @@ mod tests {
                 learned_topics: default(),
                 menu: false,
                 result: None,
-                queue: VecDeque::from([Step::Quote {
-                    quote: 0,
-                    subquote: 0,
-                    paid: false,
-                    plan: None,
-                }]),
+                queue: VecDeque::from([Step::quote(0)]),
             })
             .id();
         (app, entity, actor)
@@ -1944,7 +1916,7 @@ mod tests {
             }
             let mut c = w.get_mut::<Conversation>(session).unwrap();
             c.queue.clear();
-            w.write_message(ConversationRequest::Recruit { conversation: session });
+            w.write_message(ConversationRequest::new(session, Talk::Recruit));
             app.update();
             let c = app.world().get::<Conversation>(session).unwrap();
             (c.current, c.queue.iter().any(|step| matches!(step, Step::Join)))
@@ -2087,7 +2059,7 @@ mod tests {
                 ],
             });
             let world = app.world_mut();
-            let party = the_party(world).unwrap();
+            let party = the_party(world);
             let members: Vec<_> = (0..4)
                 .map(|index| {
                     let mut character =
@@ -2136,7 +2108,7 @@ mod tests {
             };
             for _ in 0..2 {
                 app.world_mut()
-                    .write_message(ConversationRequest::Advance { conversation: session, speech });
+                    .write_message(ConversationRequest::new(session, Talk::Advance { speech }));
             }
             app.update();
             let world = app.world();
@@ -2216,7 +2188,7 @@ mod tests {
             app.world().get::<Conversation>(session).unwrap().wait
         {
             app.world_mut()
-                .write_message(ConversationRequest::Advance { conversation: session, speech });
+                .write_message(ConversationRequest::new(session, Talk::Advance { speech }));
             app.update();
         }
     }
@@ -2255,7 +2227,7 @@ mod tests {
         });
         with_items(&mut app);
         let member = carrier(&mut app, "Ragnar", 2, 3);
-        let party = the_party(app.world_mut()).unwrap();
+        let party = the_party(app.world_mut());
         let pooled = stack(&mut app, 2, 4);
         app.world_mut().get_mut::<PartyInventory>(party).unwrap().pool.stacks.push(pooled);
         app.update();
@@ -2287,7 +2259,7 @@ mod tests {
         quotes[2].operations = vec![DialogueOp::ItemQuote { item: ItemId(2), keeps: false }];
         let (mut app, session, _) = app(DialogueScript { quotes });
         with_items(&mut app);
-        let party = the_party(app.world_mut()).unwrap();
+        let party = the_party(app.world_mut());
         let mut refs = Vec::new();
         for item in 0..4 {
             let stack = stack(&mut app, item, 2);
@@ -2307,10 +2279,8 @@ mod tests {
                 .map_or(0, |s| s.count())
         };
         for (item, quote, kept) in [(1, 1, 1), (2, 2, 2), (0, 0x10, 1), (3, 0x11, 2)] {
-            app.world_mut().write_message(ConversationRequest::Give {
-                conversation: session,
-                item: refs[item],
-            });
+            app.world_mut()
+                .write_message(ConversationRequest::new(session, Talk::Give { item: refs[item] }));
             app.update();
             assert_eq!(
                 app.world().get::<Conversation>(session).unwrap().current.map(|c| c.0),
@@ -2336,7 +2306,7 @@ mod tests {
             NpcId(catalog.0.len() as u16 - 1)
         };
         let script = world.resource_mut::<Assets<DialogueScript>>().add(script);
-        world.resource_mut::<NpcAssets>().scripts.insert(id, script);
+        world.resource_mut::<super::super::NpcAssets>().scripts.insert(id, script);
         let level = world.query_filtered::<Entity, With<Level>>().single(world).unwrap();
         let actor = world
             .spawn((
@@ -2428,7 +2398,7 @@ mod tests {
                 vec![DialogueOp::CloseAndResume, DialogueOp::GiveGold(5)],
             )],
         });
-        let party = the_party(app.world_mut()).unwrap();
+        let party = the_party(app.world_mut());
         app.update();
         finish_line(&mut app, session);
         assert!(app.world().get::<Conversation>(session).is_none());
@@ -2455,19 +2425,14 @@ mod tests {
         crate::game::party::roster::test_join(app.world_mut(), member);
         let mut c = app.world_mut().get_mut::<Conversation>(session).unwrap();
         c.menu = true;
-        c.queue = VecDeque::from([Step::Quote {
-            quote: NEUTRAL_GREETING,
-            subquote: 0,
-            paid: false,
-            plan: None,
-        }]);
+        c.queue = VecDeque::from([Step::quote(NEUTRAL_GREETING)]);
         app.update();
         finish_line(&mut app, session);
         (app, session, actor)
     }
     fn approach(app: &mut App, session: Entity, approach: Approach) {
         app.world_mut()
-            .write_message(ConversationRequest::Approach { conversation: session, approach });
+            .write_message(ConversationRequest::new(session, Talk::Approach { approach }));
         app.update();
     }
 
@@ -2508,11 +2473,11 @@ mod tests {
     #[test]
     fn gold_bribes_draw_on_the_trade_pool() {
         let (mut app, session, actor) = wary((0, 0), 100);
-        let party = the_party(app.world_mut()).unwrap();
+        let party = the_party(app.world_mut());
         app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 500;
         for (amount, pool, quote) in [(60, 40, UNBRIBED_QUOTE), (60, 100, ACCEPTED_GIFT_QUOTE)] {
             app.world_mut()
-                .write_message(ConversationRequest::GiveGold { conversation: session, amount });
+                .write_message(ConversationRequest::new(session, Talk::GiveGold { amount }));
             app.update();
             assert_eq!(app.world().get::<Npc>(actor).unwrap().trade_pool, pool);
             assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((quote, 0)));
@@ -2525,10 +2490,10 @@ mod tests {
         assert_eq!(c.current, Some((0, 0)));
 
         let (mut app, session, _) = wary((0, 0), 0);
-        let party = the_party(app.world_mut()).unwrap();
+        let party = the_party(app.world_mut());
         app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 500;
         app.world_mut()
-            .write_message(ConversationRequest::GiveGold { conversation: session, amount: 60 });
+            .write_message(ConversationRequest::new(session, Talk::GiveGold { amount: 60 }));
         app.update();
         assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 500);
         assert_eq!(
@@ -2549,15 +2514,21 @@ mod tests {
             if !runs {
                 let script = super::super::script(app.world(), actor);
                 let mut scripts = app.world_mut().resource_mut::<Assets<DialogueScript>>();
-                scripts.get_mut(script).unwrap().quotes[usize::from(ACCEPTED_GIFT_QUOTE)] =
-                    lines(&["Thanks"], vec![DialogueOp::GiveItem(ItemId(9))]);
+                scripts.get_mut(script).unwrap().quotes[usize::from(ACCEPTED_GIFT_QUOTE)] = lines(
+                    &["Thanks"],
+                    vec![DialogueOp::Unsupported {
+                        opcode: 99,
+                        operands: [0; 3],
+                        subentries: vec![],
+                    }],
+                );
             }
             let member = carrier(&mut app, "Ragnar", 1, 1);
             let id = app.world().get::<Carried>(member).unwrap().backpack[0].as_ref().unwrap().id;
-            app.world_mut().write_message(ConversationRequest::Give {
-                conversation: session,
-                item: ItemRef { owner: ItemOwner::Member(member), id },
-            });
+            app.world_mut().write_message(ConversationRequest::new(
+                session,
+                Talk::Give { item: ItemRef { owner: ItemOwner::Member(member), id } },
+            ));
             app.update();
             let npc = app.world().get::<Npc>(actor).unwrap();
             let kept = app.world().get::<Carried>(member).unwrap().backpack[0].is_some();
@@ -2609,10 +2580,10 @@ mod tests {
         finish_line(&mut app, session);
         let c = app.world().get::<Conversation>(session).unwrap();
         assert!(matches!(c.wait, ConversationWait::Options { typed: true, .. }));
-        app.world_mut().write_message(ConversationRequest::Reply {
-            conversation: session,
-            text: "swordfish".into(),
-        });
+        app.world_mut().write_message(ConversationRequest::new(
+            session,
+            Talk::Reply { text: "swordfish".into() },
+        ));
         app.update();
         assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((1, 0)));
     }
@@ -2675,7 +2646,7 @@ mod tests {
         };
         let ask = |app: &mut App, quote: u16| {
             let mut c = app.world_mut().get_mut::<Conversation>(session).unwrap();
-            c.queue.push_back(Step::Quote { quote, subquote: 0, paid: false, plan: None });
+            c.queue.push_back(Step::quote(quote));
             app.update();
         };
         ask(&mut app, 1);
@@ -2703,7 +2674,7 @@ mod tests {
 
     /// Fill the party's items to `rows` full, unmergeable stacks of item 0.
     fn fill_pool(app: &mut App, rows: usize) -> Entity {
-        let party = the_party(app.world_mut()).unwrap();
+        let party = the_party(app.world_mut());
         for _ in 0..rows {
             let full = stack(app, 0, 20);
             app.world_mut().get_mut::<PartyInventory>(party).unwrap().pool.stacks.push(full);
@@ -2794,18 +2765,18 @@ mod tests {
         });
         with_items(&mut app);
         let member = carrier(&mut app, "Ragnar", 2, 1);
-        let party = the_party(app.world_mut()).unwrap();
+        let party = the_party(app.world_mut());
         app.update();
         finish_line(&mut app, session);
         let id = app.world().get::<Carried>(member).unwrap().backpack[0].as_ref().unwrap().id;
-        app.world_mut().write_message(ConversationRequest::Give {
-            conversation: session,
-            item: ItemRef { owner: ItemOwner::Member(member), id },
-        });
+        app.world_mut().write_message(ConversationRequest::new(
+            session,
+            Talk::Give { item: ItemRef { owner: ItemOwner::Member(member), id } },
+        ));
         app.update();
         assert!(app.world().get::<Carried>(member).unwrap().backpack[0].is_none(), "taken");
         assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 0, "not yet");
-        app.world_mut().write_message(ConversationRequest::Close { conversation: session });
+        app.world_mut().write_message(ConversationRequest::new(session, Talk::Close));
         app.update();
         assert!(app.world().get::<Closing>(session).is_some());
         finish_line(&mut app, session);
@@ -2843,14 +2814,14 @@ mod tests {
             });
             with_items(&mut app);
             let member = carrier(&mut app, "Ragnar", 2, 1);
-            let party = the_party(app.world_mut()).unwrap();
+            let party = the_party(app.world_mut());
             app.update();
             finish_line(&mut app, session);
             let id = app.world().get::<Carried>(member).unwrap().backpack[0].as_ref().unwrap().id;
-            app.world_mut().write_message(ConversationRequest::Give {
-                conversation: session,
-                item: ItemRef { owner: ItemOwner::Member(member), id },
-            });
+            app.world_mut().write_message(ConversationRequest::new(
+                session,
+                Talk::Give { item: ItemRef { owner: ItemOwner::Member(member), id } },
+            ));
             app.update();
             assert!(app.world().get::<Carried>(member).unwrap().backpack[0].is_none());
             if travel {
@@ -2914,14 +2885,14 @@ mod tests {
             (0..0x11).map(|i| lines(&[format!("Line {i}").as_str()], vec![])).collect();
         quotes[0x10] = lines(&["Thank you"], vec![]);
         let (mut app, session, _) = app(DialogueScript { quotes });
-        let party = the_party(app.world_mut()).unwrap();
+        let party = the_party(app.world_mut());
         app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 100;
         app.update();
         finish_line(&mut app, session);
         for (amount, left, refused) in [(150, 100, true), (40, 60, false)] {
             finish_line(&mut app, session);
             app.world_mut()
-                .write_message(ConversationRequest::GiveGold { conversation: session, amount });
+                .write_message(ConversationRequest::new(session, Talk::GiveGold { amount }));
             app.update();
             let c = app.world().get::<Conversation>(session).unwrap();
             assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, left);
@@ -2934,14 +2905,12 @@ mod tests {
         // All of it only once the party confirms.
         finish_line(&mut app, session);
         app.world_mut()
-            .write_message(ConversationRequest::GiveGold { conversation: session, amount: 60 });
+            .write_message(ConversationRequest::new(session, Talk::GiveGold { amount: 60 }));
         app.update();
         let c = app.world().get::<Conversation>(session).unwrap();
         assert_eq!(c.wait, ConversationWait::GiveAll { gold: 60 });
-        app.world_mut().write_message(ConversationRequest::PriceAnswer {
-            conversation: session,
-            accept: true,
-        });
+        app.world_mut()
+            .write_message(ConversationRequest::new(session, Talk::PriceAnswer { accept: true }));
         app.update();
         assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 0);
     }
@@ -2967,13 +2936,13 @@ mod tests {
             ],
         });
         with_items(&mut app);
-        let party = the_party(app.world_mut()).unwrap();
+        let party = the_party(app.world_mut());
         let offered = stack(&mut app, 1, 1);
         let item = ItemRef { owner: ItemOwner::Pool, id: offered.id };
         app.world_mut().get_mut::<PartyInventory>(party).unwrap().pool.stacks.push(offered);
         app.update();
         finish_line(&mut app, session);
-        app.world_mut().write_message(ConversationRequest::Give { conversation: session, item });
+        app.world_mut().write_message(ConversationRequest::new(session, Talk::Give { item }));
         app.update();
         let world = app.world();
         assert!(matches!(
@@ -3008,8 +2977,7 @@ mod tests {
         let vitals = Vitals::new(&replacement);
         let replacement = app.world_mut().spawn((replacement, vitals)).id();
         crate::game::party::roster::test_join(app.world_mut(), replacement);
-        app.world_mut()
-            .write_message(ConversationRequest::Advance { conversation: session, speech });
+        app.world_mut().write_message(ConversationRequest::new(session, Talk::Advance { speech }));
         app.update();
         assert_eq!(app.world().get::<Character>(member).unwrap().experience, 100);
         assert_eq!(app.world().get::<Character>(replacement).unwrap().experience, 0);
@@ -3035,11 +3003,10 @@ mod tests {
             });
         }
         let edit = |world: &mut World, conversation, edit, text: &str| {
-            world.write_message(ConversationRequest::EditNotebook {
+            world.write_message(ConversationRequest::new(
                 conversation,
-                edit,
-                text: text.into(),
-            });
+                Talk::EditNotebook { edit, text: text.into() },
+            ));
         };
         for text in [" Ship ", "ship", "   "] {
             edit(app.world_mut(), session, NotebookEdit::Remember, text);
@@ -3098,7 +3065,7 @@ mod tests {
                     }],
                 });
                 let world = app.world_mut();
-                let party = the_party(world).unwrap();
+                let party = the_party(world);
                 world.get_mut::<PartyInventory>(party).unwrap().gold = 100;
                 world.resource_mut::<StoryFacts>().values.insert(FactId(91), initial);
                 {
@@ -3107,10 +3074,10 @@ mod tests {
                     c.wait = ConversationWait::Price { quote: 0, gold: 25, always: false };
                 }
                 let rng = world.resource::<GameRng>().clone();
-                world.write_message(ConversationRequest::PriceAnswer {
-                    conversation: session,
-                    accept: true,
-                });
+                world.write_message(ConversationRequest::new(
+                    session,
+                    Talk::PriceAnswer { accept: true },
+                ));
                 app.update();
                 let world = app.world();
                 let c = world.get::<Conversation>(session).unwrap();
@@ -3165,8 +3132,7 @@ mod tests {
             _ => panic!("first line expected"),
         };
         app.world_mut().resource_mut::<StoryFacts>().values.insert(FactId(91), 0);
-        app.world_mut()
-            .write_message(ConversationRequest::Advance { conversation: session, speech });
+        app.world_mut().write_message(ConversationRequest::new(session, Talk::Advance { speech }));
         app.update();
         let world = app.world();
         assert_eq!(
@@ -3194,7 +3160,7 @@ mod tests {
             }],
         });
         let world = app.world_mut();
-        let party = the_party(world).unwrap();
+        let party = the_party(world);
         world.get_mut::<PartyInventory>(party).unwrap().gold = 100;
         {
             let mut c = world.get_mut::<Conversation>(session).unwrap();
@@ -3210,8 +3176,7 @@ mod tests {
             ConversationWait::Line { speech, .. } => speech,
             _ => panic!("accepted answer must still play"),
         };
-        app.world_mut()
-            .write_message(ConversationRequest::Advance { conversation: session, speech });
+        app.world_mut().write_message(ConversationRequest::new(session, Talk::Advance { speech }));
         app.update();
         let world = app.world();
         let c = world.get::<Conversation>(session).unwrap();
@@ -3283,14 +3248,14 @@ mod tests {
             let line_count = script.quotes[quote as usize].text.len();
             let (mut app, session, _) = app(script);
             let world = app.world_mut();
-            let party = the_party(world).unwrap();
+            let party = the_party(world);
             let profile =
                 Character::new("Recipient", Race::Human, Gender::Male, Profession::Fighter);
             let vitals = Vitals::new(&profile);
             let member = world.spawn((profile, vitals)).id();
             crate::game::party::roster::test_join(world, member);
             world.get_mut::<Conversation>(session).unwrap().queue =
-                VecDeque::from([Step::Quote { quote, subquote: 0, paid: true, plan: None }]);
+                VecDeque::from([Step::said(quote)]);
             app.update();
             for _ in 1..line_count {
                 let speech = match app.world().get::<Conversation>(session).unwrap().wait {
@@ -3298,7 +3263,7 @@ mod tests {
                     _ => panic!("retail reward line expected"),
                 };
                 app.world_mut()
-                    .write_message(ConversationRequest::Advance { conversation: session, speech });
+                    .write_message(ConversationRequest::new(session, Talk::Advance { speech }));
                 app.update();
             }
             let world = app.world();
@@ -3345,7 +3310,7 @@ mod tests {
             };
         }
         app.world_mut()
-            .write_message(ConversationRequest::Reply { conversation: session, text: "NO".into() });
+            .write_message(ConversationRequest::new(session, Talk::Reply { text: "NO".into() }));
         app.update();
         let world = app.world();
         assert_eq!(world.resource::<StoryFacts>().values[&said_arnika], 1);
@@ -3372,9 +3337,9 @@ mod tests {
         facts.set(FactId(91), 1, &catalog, "second".into()).unwrap();
         facts.set(FactId(91), 0, &catalog, "second".into()).unwrap();
         assert_eq!(facts.journal.len(), 2);
-        assert_eq!(facts.journal[0].description(&catalog), Some("Finished"));
+        assert_eq!(facts.journal[0].description(&catalog), "Finished");
         assert_eq!(facts.journal[0].level, "first");
-        assert_eq!(facts.journal[1].description(&catalog), Some("Unfinished"));
+        assert_eq!(facts.journal[1].description(&catalog), "Unfinished");
         assert_eq!(facts.journal[1].level, "second");
         assert_eq!(facts.get(FactId(91), &catalog), Ok(0));
         assert!(facts.set(FactId(999), 1, &catalog, "third".into()).is_err());
@@ -3401,10 +3366,10 @@ mod tests {
         });
         app.update();
         for text in ["SHIP", "ship"] {
-            app.world_mut().write_message(ConversationRequest::Topic {
-                conversation: session,
-                text: text.into(),
-            });
+            app.world_mut().write_message(ConversationRequest::new(
+                session,
+                Talk::Topic { text: text.into() },
+            ));
         }
         app.update();
         let facts = app.world().resource::<StoryFacts>();
@@ -3459,23 +3424,19 @@ mod tests {
         };
         // Time alone never moves the script on, nor another line's advance.
         let unrelated = app.world_mut().spawn_empty().id();
-        app.world_mut().write_message(ConversationRequest::Advance {
-            conversation: session,
-            speech: unrelated,
-        });
+        app.world_mut()
+            .write_message(ConversationRequest::new(session, Talk::Advance { speech: unrelated }));
         for _ in 0..600 {
             app.update();
         }
         let c = app.world().get::<Conversation>(session).unwrap();
         assert_eq!(c.current, Some((0, 0)));
         assert_eq!(c.wait, ConversationWait::Line { speech });
-        app.world_mut()
-            .write_message(ConversationRequest::Advance { conversation: session, speech });
+        app.world_mut().write_message(ConversationRequest::new(session, Talk::Advance { speech }));
         app.update();
         assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((1, 0)));
         // A repeated advance of the line already passed is stale.
-        app.world_mut()
-            .write_message(ConversationRequest::Advance { conversation: session, speech });
+        app.world_mut().write_message(ConversationRequest::new(session, Talk::Advance { speech }));
         app.update();
         assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((1, 0)));
         assert!(matches!(
@@ -3487,15 +3448,13 @@ mod tests {
             .world_mut()
             .spawn(Destination::new(Level::test(default()), default(), Entry::Travel))
             .id();
-        app.world_mut()
-            .write_message(ConversationRequest::Advance { conversation: session, speech });
+        app.world_mut().write_message(ConversationRequest::new(session, Talk::Advance { speech }));
         app.update();
         assert!(app.world().get_entity(session).is_err());
         assert!(app.world().get::<Npc>(actor).is_some());
         app.world_mut().despawn(entering);
         // A delayed request for a closed session is harmless.
-        app.world_mut()
-            .write_message(ConversationRequest::Advance { conversation: session, speech });
+        app.world_mut().write_message(ConversationRequest::new(session, Talk::Advance { speech }));
         app.update();
     }
     #[test]
@@ -3513,50 +3472,46 @@ mod tests {
         quotes[18].text = vec!["Information has a price".into()];
         quotes[20].text = vec!["Insufficient funds".into()];
         let (mut app, session, actor) = app(DialogueScript { quotes });
-        let party = the_party(app.world_mut()).unwrap();
+        let party = the_party(app.world_mut());
         fn advance(app: &mut App, session: Entity) {
             let speech = match app.world().get::<Conversation>(session).unwrap().wait {
                 ConversationWait::Line { speech, .. } => speech,
                 _ => panic!("line expected"),
             };
             app.world_mut()
-                .write_message(ConversationRequest::Advance { conversation: session, speech });
+                .write_message(ConversationRequest::new(session, Talk::Advance { speech }));
             app.update();
         }
         fn ask(app: &mut App, session: Entity) {
-            app.world_mut().write_message(ConversationRequest::Topic {
-                conversation: session,
-                text: "INFO".into(),
-            });
+            app.world_mut().write_message(ConversationRequest::new(
+                session,
+                Talk::Topic { text: "INFO".into() },
+            ));
             app.update();
             advance(app, session);
         }
         app.update();
         advance(&mut app, session);
-        app.world_mut().write_message(ConversationRequest::PriceAnswer {
-            conversation: session,
-            accept: true,
-        });
+        app.world_mut()
+            .write_message(ConversationRequest::new(session, Talk::PriceAnswer { accept: true }));
         app.update();
         assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 0);
         assert!(app.world().get::<Npc>(actor).unwrap().paid_topics.is_empty());
         assert!(app.world().resource::<StoryFacts>().values.is_empty());
         advance(&mut app, session);
         ask(&mut app, session);
-        app.world_mut().write_message(ConversationRequest::PriceAnswer {
-            conversation: session,
-            accept: false,
-        });
+        app.world_mut()
+            .write_message(ConversationRequest::new(session, Talk::PriceAnswer { accept: false }));
         app.update();
         assert!(app.world().get::<Conversation>(session).unwrap().ready());
         assert!(app.world().resource::<StoryFacts>().values.is_empty());
         app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 100;
         ask(&mut app, session);
         for _ in 0..2 {
-            app.world_mut().write_message(ConversationRequest::PriceAnswer {
-                conversation: session,
-                accept: true,
-            });
+            app.world_mut().write_message(ConversationRequest::new(
+                session,
+                Talk::PriceAnswer { accept: true },
+            ));
         }
         app.update();
         assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 75);
@@ -3596,13 +3551,13 @@ mod tests {
                 _ => panic!("line expected"),
             };
             app.world_mut()
-                .write_message(ConversationRequest::Advance { conversation: session, speech });
+                .write_message(ConversationRequest::new(session, Talk::Advance { speech }));
             app.update();
             for _ in 0..2 {
-                app.world_mut().write_message(ConversationRequest::Reply {
-                    conversation: session,
-                    text: word.into(),
-                });
+                app.world_mut().write_message(ConversationRequest::new(
+                    session,
+                    Talk::Reply { text: word.into() },
+                ));
             }
             app.update();
             assert_eq!(
@@ -3638,7 +3593,7 @@ mod tests {
     fn an_npc_without_stock_ownership_cannot_quote_or_settle_a_trade() {
         let (mut app, session, actor) = app(DialogueScript::default());
         let world = app.world_mut();
-        let party = the_party(world).unwrap();
+        let party = the_party(world);
         world.get_mut::<Conversation>(session).unwrap().queue.clear();
         for source in [
             TradeSource::Stock(trade::StockLotId(1)),
@@ -3662,20 +3617,18 @@ mod tests {
         use crate::game::inventory::{EquipSlot, Equipped, ItemStack};
         let (mut app, _, _) = app(DialogueScript::default());
         let world = app.world_mut();
-        let party = the_party(world).unwrap();
+        let party = the_party(world);
         let mut ids = ItemIds::default();
         let item = ItemStack::new(&ItemDefinition::default(), &mut ids, 1, true);
         let mut carried = Carried::default();
         carried.equipment[EquipSlot::Primary] = Some(Equipped::new(item.clone()));
         let member = world.spawn(carried).id();
         world.entity_mut(member).insert(PartyMember(party));
-        let source = TradeSource::Party(ItemRef { owner: ItemOwner::Member(member), id: item.id });
+        let source = ItemRef { owner: ItemOwner::Member(member), id: item.id };
         assert!(matches!(sale_item(world, source, party), Err(TradeError::StaleSelection)));
         world.get_mut::<Carried>(member).unwrap().equipment[EquipSlot::Primary] = None;
         world.get_mut::<Carried>(member).unwrap().backpack[0] = Some(item.clone());
         assert_eq!(sale_item(world, source, party).unwrap().id, item.id);
-        world.entity_mut(member).remove::<PartyMember>();
-        assert!(matches!(sale_item(world, source, party), Err(TradeError::StaleSelection)));
     }
 }
 

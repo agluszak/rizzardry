@@ -161,7 +161,7 @@ fn the_party_rests_eight_hours_and_wakes() {
 fn burz_conversation_trade_and_revisit_keep_one_actor() {
     use crate::game::inventory::{ItemOwner, ItemRef};
     use crate::game::npcs::conversation::{
-        self, Conversation, ConversationRequest, ConversationWait,
+        self, Conversation, ConversationRequest, ConversationWait, Talk,
     };
     use crate::game::npcs::trade::TradeSource;
     use crate::game::npcs::{Npc, NpcBodies};
@@ -185,7 +185,7 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     let body = app.world().get::<NpcBodies>(actor).unwrap()[0];
     let position = app.world().get::<avian3d::prelude::Position>(body).unwrap().0;
     for mut p in app.world_mut().query_filtered::<&mut avian3d::prelude::Position,With<crate::game::party::body::PartyBody>>().iter_mut(app.world_mut()){p.0=position+Vec3::X*2.0;}
-    let party = crate::game::party::roster::the_party(app.world_mut()).unwrap();
+    let party = crate::game::party::roster::the_party(app.world_mut());
     app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 10000;
     let session = conversation::begin(app.world_mut(), actor).unwrap();
     fn finish(app: &mut App, session: Entity) {
@@ -194,10 +194,8 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
             let c = app.world().get::<Conversation>(session).expect("conversation remains open");
             match c.wait {
                 ConversationWait::Line { speech, .. } => {
-                    app.world_mut().write_message(ConversationRequest::Advance {
-                        conversation: session,
-                        speech,
-                    });
+                    app.world_mut()
+                        .write_message(ConversationRequest::new(session, Talk::Advance { speech }));
                 }
                 ConversationWait::Blocked { ref reason, .. } => {
                     panic!("unexpected content gap: {reason}")
@@ -211,20 +209,18 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((121, 0)));
     let c = app.world().get::<Conversation>(session).unwrap();
     let topic = crate::game::npcs::conversation::script(app.world(), c).topic("MONASTERY").unwrap();
-    app.world_mut().write_message(ConversationRequest::Topic {
-        conversation: session,
-        text: "MONASTERY".into(),
-    });
+    app.world_mut()
+        .write_message(ConversationRequest::new(session, Talk::Topic { text: "MONASTERY".into() }));
     finish(&mut app, session);
     let c = app.world().get::<Conversation>(session).unwrap();
     assert!(matches!(c.wait, ConversationWait::Price { .. }));
     app.world_mut()
-        .write_message(ConversationRequest::PriceAnswer { conversation: session, accept: true });
+        .write_message(ConversationRequest::new(session, Talk::PriceAnswer { accept: true }));
     finish(&mut app, session);
     let c = app.world().get::<Conversation>(session).unwrap();
     assert!(matches!(c.wait, ConversationWait::Options { .. }));
     app.world_mut()
-        .write_message(ConversationRequest::Reply { conversation: session, text: "NO".into() });
+        .write_message(ConversationRequest::new(session, Talk::Reply { text: "NO".into() }));
     finish(&mut app, session);
     assert!(app.world().get::<Conversation>(session).unwrap().ready());
     assert!(app.world().get::<Npc>(actor).unwrap().paid_topics.contains(&topic));
@@ -233,8 +229,8 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     let quote =
         conversation::quote_trade(app.world_mut(), session, TradeSource::Stock(lot), 1).unwrap();
     let gold = app.world().get::<PartyInventory>(party).unwrap().gold;
-    app.world_mut().write_message(ConversationRequest::Trade(quote));
-    app.world_mut().write_message(ConversationRequest::Trade(quote));
+    app.world_mut().write_message(ConversationRequest::trade(quote));
+    app.world_mut().write_message(ConversationRequest::trade(quote));
     app.update();
     assert_eq!(
         app.world().get::<PartyInventory>(party).unwrap().gold,
@@ -249,7 +245,7 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
         1,
     )
     .unwrap();
-    app.world_mut().write_message(ConversationRequest::Trade(sale));
+    app.world_mut().write_message(ConversationRequest::trade(sale));
     app.update();
     assert_eq!(
         app.world().get::<PartyInventory>(party).unwrap().gold,
@@ -283,7 +279,7 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     assert!(playing(app.world_mut()).is_some_and(|p| p.ends_with("monastery1.pvl")));
     assert_eq!(app.world().get::<Npc>(actor).unwrap().stock, stock);
 
-    app.world_mut().write_message(ConversationRequest::Close { conversation: session });
+    app.world_mut().write_message(ConversationRequest::new(session, Talk::Close));
     app.update();
     assert!(app.world().get_entity(session).is_err());
     app.world_mut().write_message(Travel { entrance: "MO204".into() });

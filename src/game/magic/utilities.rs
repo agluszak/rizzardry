@@ -18,20 +18,21 @@ pub(crate) fn source_spell(
     caster: Entity,
     source: Source,
 ) -> Result<SpellId, Refusal> {
-    let party = the_party(world).ok_or(Refusal::CannotAct)?;
-    let inventory = world.get::<PartyInventory>(party).ok_or(Refusal::MissingContent)?;
+    let party = the_party(world);
+    let inventory = world.get::<PartyInventory>(party).unwrap();
     let items = &world.resource::<Catalogs>().items;
-    source.spell_id(world.get::<Carried>(caster), inventory, items).ok_or(Refusal::NoItem)
+    source.spell_id(world.get::<Carried>(caster).unwrap(), inventory, items).ok_or(Refusal::NoItem)
 }
 
 /// Search only the current roster and party inventory. Stable stack IDs allow
 /// a target to move between those owners without retargeting a different item.
 fn target(world: &World, party: Entity, id: StackId) -> Option<&ItemStack> {
-    world.get::<PartyInventory>(party)?.find_stack(id).or_else(|| {
+    world.get::<PartyInventory>(party).unwrap().find_stack(id).or_else(|| {
         world
-            .get::<PartyRoster>(party)?
+            .get::<PartyRoster>(party)
+            .unwrap()
             .iter()
-            .find_map(|member| world.get::<Carried>(member)?.find_stack(id))
+            .find_map(|member| world.get::<Carried>(member).unwrap().find_stack(id))
     })
 }
 
@@ -53,7 +54,7 @@ pub(crate) fn identify(
         return Err(Refusal::WrongTime);
     }
     let Aim::Item(target_id) = choice.aim else { return Err(Refusal::NoTarget) };
-    let party = the_party(world).ok_or(Refusal::CannotAct)?;
+    let party = the_party(world);
     let stack = target(world, party, target_id).ok_or(Refusal::NoTarget)?;
     let definition = &world.resource::<Catalogs>().items[stack.item];
     let difficulty = definition.identify_difficulty;
@@ -66,9 +67,8 @@ pub(crate) fn identify(
     }
     let source = if let Source::Spell { spell, power: super::casting::AUTO_POWER } = choice.source {
         let spells = &world.resource::<Catalogs>().spells;
-        let definition = spells.get(spell).ok_or(Refusal::MissingContent)?;
-        let profile =
-            world.get::<crate::game::characters::Character>(caster).ok_or(Refusal::CannotAct)?;
+        let definition = &spells[spell];
+        let profile = world.get::<crate::game::characters::Character>(caster).unwrap();
         let power = (1..=crate::content::spells::MAX_POWER)
             .find(|&power| identifies(super::Strength::of(profile, definition, power), difficulty))
             .unwrap_or(crate::content::spells::MAX_POWER);
@@ -94,7 +94,7 @@ pub(crate) fn identify(
                 .unwrap()
                 .iter()
                 .find(|&member| {
-                    world.get::<Carried>(member).is_some_and(|c| c.find_stack(target_id).is_some())
+                    world.get::<Carried>(member).unwrap().find_stack(target_id).is_some()
                 })
                 .unwrap();
             reveal(world.get_mut::<Carried>(owner).unwrap().find_stack_mut(target_id).unwrap());
@@ -251,7 +251,7 @@ mod tests {
                 (0..100).find(|&seed| (GameRng::seeded(seed).below(100) < 50) == fizzles).unwrap();
             let mut scene = scenario();
             // A utility source pays without the party's formation.
-            let party = the_party(&mut scene.world).unwrap();
+            let party = the_party(&mut scene.world);
             scene.world.entity_mut(party).remove::<crate::game::party::formation::Formation>();
             let caster = scene.members[0];
             scene
@@ -293,7 +293,7 @@ mod tests {
     fn portal_requests_keep_caster_ownership_and_refuse_missing_destinations_without_payment() {
         let mut scene = scenario();
         let caster = scene.members[0];
-        let party = the_party(&mut scene.world).unwrap();
+        let party = the_party(&mut scene.world);
         let before = scene.world.get::<SpellPoints>(caster).unwrap().clone();
         let rng = scene.world.resource::<GameRng>().clone();
         assert!(matches!(

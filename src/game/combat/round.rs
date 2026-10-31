@@ -145,26 +145,26 @@ pub(super) fn accept_round(
     let prepared: Vec<_> = roster
         .iter()
         .filter(|_| !surprised)
-        .filter_map(|member| {
-            let (character, vitals, carried, burden) = members.get(member).ok()?;
+        .map(|member| {
+            let (character, vitals, carried, burden) = members.get(member).unwrap();
             let stats = character.stats(&vitals.enchantments);
             let hands = attack::hands(&stats, carried, items, burden.load);
-            let lightning = orders.get(member).copied().unwrap_or_default() == Order::Attack
+            let lightning = *orders.get(member).unwrap() == Order::Attack
                 && character.has_trait(Trait::LightningStrike)
                 && hands.hands[0].weapon_skill == Skill::Sword
                 && rng.below(100) < u32::from(character.scale_by_profession(12.0) as u8);
-            Some((member, hands, lightning))
+            (member, hands, lightning)
         })
         .collect();
     for (member, hands, lightning) in prepared {
-        let Ok((character, vitals, carried, burden)) = members.get(member) else { continue };
+        let (character, vitals, carried, burden) = members.get(member).unwrap();
         let stats = character.stats(&vitals.enchantments);
         let weapons =
             [EquipSlot::Primary, EquipSlot::Secondary].map(|slot| carried.worn(slot).map(|i| i.id));
         let order = if vitals.conditions.has(Condition::Turncoat) {
             Order::Attack
         } else {
-            orders.get(member).copied().unwrap_or_default()
+            *orders.get(member).unwrap()
         };
         let action = match order {
             Order::Attack => RoundAction::Attack { weapons, berserk: false },
@@ -199,7 +199,7 @@ pub(super) fn accept_round(
         round.party.push(PartyTurn { actor: member, action, phase, hands: turns });
     }
     for &entity in combatants {
-        let Ok((monster, ..)) = monsters.get(entity) else { continue };
+        let (monster, ..) = monsters.get(entity).unwrap();
         let kind = &species[monster.species];
         let (phase, attacks) = if monster.is_dead() {
             (0, 0)
@@ -215,7 +215,7 @@ pub(super) fn accept_round(
         Some(pace) => {
             let latest = roster
                 .iter()
-                .filter_map(|m| members.get(m).ok())
+                .map(|m| members.get(m).unwrap())
                 .filter(|(_, vitals, ..)| !vitals.is_dead())
                 .map(|(c, vitals, _, burden)| {
                     phase(rng, c.stats(&vitals.enchantments).initiative(burden.load))

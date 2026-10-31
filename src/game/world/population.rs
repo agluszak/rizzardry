@@ -156,7 +156,7 @@ impl MonsterBodies {
             .collect();
         let companions: Vec<u32> = encountered
             .iter()
-            .filter_map(|&id| species.kind(id))
+            .map(|&id| &species[id])
             .flat_map(|kind| kind.companions.iter().flatten().map(|&(id, _)| id))
             .collect();
         let mut spawnable: Vec<u32> =
@@ -187,8 +187,7 @@ impl MonsterBodies {
 
 /// The name an actor goes by in the world's inspector.
 fn actor_name(species: &MonsterCatalog, (id, location): (u32, i32)) -> String {
-    let kind = &species[id].name;
-    format!("{kind} #{location}")
+    format!("{} #{location}", species[id].name)
 }
 
 /// Make a monster an actor of its level: standing at its feet and facing
@@ -496,7 +495,7 @@ pub fn populate(
     };
     info!("placed {monster_count} monsters and {} items", lying.len());
     for (item, at) in lying {
-        let name = items.get(item.appearance()).map_or_else(String::new, |d| d.name.clone());
+        let name = items[item.appearance()].name.clone();
         commands.spawn((Name::new(name), item, Transform::from_translation(at), LevelOwned(root)));
     }
 }

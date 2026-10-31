@@ -25,15 +25,15 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
 }
 
 pub(super) fn sync(
-    slider: Option<Single<(Entity, &SliderValue, &SliderRange), With<PoolScroll>>>,
-    party: Option<Single<&PartyInventory>>,
+    slider: Single<(Entity, &SliderValue, &SliderRange), With<PoolScroll>>,
+    party: Single<&PartyInventory>,
     mut commands: Commands,
 ) {
-    let (Some((slider, value, range)), Some(party)) = (slider.as_deref(), party) else { return };
+    let (slider, value, range) = *slider;
     let max = maximum(party.pool.stacks.len()) as f32;
     crate::presentation::retail_controls::set_scroll_maximum(
         &mut commands,
-        *slider,
+        slider,
         value,
         range,
         max,

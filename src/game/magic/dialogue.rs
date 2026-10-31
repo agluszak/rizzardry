@@ -37,12 +37,7 @@ pub(crate) fn cast(
     if choice.aim != Aim::Monster(body) {
         return Err(Refusal::NoTarget);
     }
-    let script = crate::game::npcs::conversation::script(world, conversation);
-    if script.quotes.get(0x16).is_none() || id == SpellId::MINDREAD && script.quotes.len() <= 0x69 {
-        return Err(Refusal::MissingContent);
-    }
-    world.get::<Npc>(actor).ok_or(Refusal::NoTarget)?;
-    let monster = world.get::<Monster>(body).ok_or(Refusal::NoTarget)?;
+    let monster = world.get::<Monster>(body).unwrap();
     let kind = &world.resource::<crate::game::data::Catalogs>().species[monster.species];
     let (level, resistance, notice_chance) = (
         u32::from(kind.level),
@@ -66,7 +61,7 @@ pub(crate) fn cast(
                 reply = MagicalReply::Quote(if saved {
                     0x69
                 } else {
-                    let mut npc = world.get_mut::<Npc>(actor).ok_or(Refusal::NoTarget)?;
+                    let mut npc = world.get_mut::<Npc>(actor).unwrap();
                     let quote = 0x67 + u16::from(npc.mindread_refusals);
                     npc.mindread_refusals = (npc.mindread_refusals + 1).min(2);
                     quote
