@@ -1,351 +1,7 @@
-//! Authored continuation and waits belong to gameplay, not the dialogue view.
-use super::{
-    Npc,
-    trade::{self, TradeError, TradeQuote, TradeSource},
-};
-use crate::content::factions::Faction;
-use crate::content::{items::ItemId, npcs::*};
-use crate::game::data::Catalogs;
-use crate::game::factions::{Band, Factions};
-use crate::game::time::GameClock;
-use crate::game::{
-    characters::{Character, Condition, Vitals},
-    inventory::{Carried, ItemIds, ItemOwner, ItemRef, PartyInventory, make_item},
-    party::{
-        body::PartyBody,
-        roster::{Party, PartyMember, PartyRoster},
-    },
-    rng::GameRng,
-    world::{
-        identify::{GroupMember, MonsterGroup},
-        level::{Destination, Level, LevelOwned},
-        population::Monster,
-    },
-};
-use avian3d::prelude::Position;
-use bevy::prelude::*;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+//! The dialogue interpreter: what the speaker says and does as the party
+//! talks to it.
+use super::*;
 
-/// Engine semantics refer to the database's symbolic keys; script operands and
-/// campaign storage keep the actual decoded identifiers. No Burz record or
-/// fact number is embedded in the interpreter.
-#[derive(Resource, Debug, Default)]
-pub struct StoryFacts {
-    values: BTreeMap<FactId, u8>,
-    pub topics: Vec<(TopicCategory, String)>,
-    pub journal: Vec<JournalEntry>,
-}
-/// A fact transition, retaining the level it happened on and whether the
-/// fact became true, which picks its description (retail `W8JournalEntry`'s
-/// `alternate_text`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct JournalEntry {
-    pub fact: FactId,
-    pub was_true: bool,
-    pub level: String,
-}
-impl JournalEntry {
-    pub fn description<'a>(&self, catalog: &'a FactCatalog) -> &'a str {
-        let fact = &catalog[self.fact];
-        if self.was_true { &fact.alternate_description } else { &fact.description }
-    }
-}
-impl StoryFacts {
-    /// The keyword notebook outlives a conversation. Learning/discussing a
-    /// keyword does not consume it; only the explicit minus button removes it.
-    pub fn remember_topic(&mut self, category: TopicCategory, text: &str) -> bool {
-        let text = text.trim();
-        if text.is_empty() || self.topics.iter().any(|(_, known)| known.eq_ignore_ascii_case(text))
-        {
-            return false;
-        }
-        self.topics.push((category, text.to_owned()));
-        true
-    }
-
-    /// Forget a notebook entry without changing discovered facts or journal history.
-    pub fn forget_topic(&mut self, text: &str) -> bool {
-        let text = text.trim();
-        let before = self.topics.len();
-        self.topics.retain(|(_, known)| !known.eq_ignore_ascii_case(text));
-        self.topics.len() != before
-    }
-
-    /// A fact's value before anything sets it: a new game starts its
-    /// virgin facts true.
-    fn initial(fact: &crate::content::npcs::FactDefinition) -> u8 {
-        u8::from(matches!(
-            fact.symbol.as_str(),
-            "FACT_VIRGIN" | "FACT_QUEST_VIRGIN_1" | "FACT_QUEST_VIRGIN_2" | "FACT_QUEST_VIRGIN_3"
-        ))
-    }
-    pub fn get(&self, id: FactId, catalog: &FactCatalog) -> Result<u8, String> {
-        let fact = catalog.get(id).ok_or_else(|| format!("missing fact definition {id:?}"))?;
-        match fact.symbol.as_str() {
-            // Plain stored facts (retail `EvaluateFact` reads them unchanged).
-            "FACT_VIRGIN"
-            | "FACT_IMPORT"
-            | "FACT_BURZ_SAID130"
-            | "FACT_TEMPLAR"
-            | "FACT_UMISSION_SCUBA_DONE"
-            | "FACT_SEXUS_PAID"
-            | "FACT_TRYNNIE_MADRAS_WILL_JOIN"
-            | "FACT_PEACE_ACHIEVED" => {
-                Ok(self.values.get(&id).copied().unwrap_or(Self::initial(fact)))
-            }
-            name => Err(format!("unported fact predicate {name}")),
-        }
-    }
-    fn can_set(id: FactId, catalog: &FactCatalog) -> bool {
-        catalog
-            .get(id)
-            .is_some_and(|f| matches!(f.symbol.as_str(), "FACT_BURZ_SAID130" | "FACT_TEMPLAR"))
-    }
-    fn set(
-        &mut self,
-        id: FactId,
-        value: u8,
-        catalog: &FactCatalog,
-        level: String,
-    ) -> Result<(), String> {
-        if !Self::can_set(id, catalog) {
-            return Err(format!("unported fact assignment {id:?}"));
-        }
-        let initial = catalog.get(id).map_or(0, Self::initial);
-        let previous = self.values.insert(id, value).unwrap_or(initial);
-        if previous != value {
-            self.journal.push(JournalEntry { fact: id, was_true: value != 0, level });
-        }
-        Ok(())
-    }
-}
-#[derive(Debug)]
-enum Step {
-    Quote {
-        quote: u16,
-        subquote: usize,
-        paid: bool,
-        plan: Option<QuotePlan>,
-    },
-    /// The party is asked for an answer.
-    Wait(ConversationWait),
-    Join,
-    End,
-}
-impl Step {
-    /// A quote from its first line, asking its price first if it has one.
-    fn quote(quote: u16) -> Self {
-        Step::Quote { quote, subquote: 0, paid: false, plan: None }
-    }
-    /// A quote from its first line, said without asking a price.
-    fn said(quote: u16) -> Self {
-        Step::Quote { quote, subquote: 0, paid: true, plan: None }
-    }
-}
-#[derive(Clone, Debug, PartialEq)]
-pub enum ConversationWait {
-    Ready,
-    Line {
-        speech: Entity,
-    },
-    /// The party answers with one of `words`, choosing it, or typing it
-    /// when `typed`.
-    Options {
-        quote: u16,
-        words: Vec<String>,
-        typed: bool,
-    },
-    Price {
-        quote: u16,
-        gold: u32,
-        always: bool,
-    },
-    /// The party is asked whether to give the NPC all its gold (retail
-    /// string 0x7d6), answered as a price is.
-    GiveAll {
-        gold: u32,
-    },
-    Blocked {
-        quote: u16,
-        entry: Option<usize>,
-        reason: String,
-    },
-}
-/// Accepted dialogue history, including the party's input. Presentation chooses
-/// the retail palette without guessing speakers from the text.
-#[derive(Clone, Debug, PartialEq)]
-pub enum TranscriptLine {
-    Npc(String),
-    Question(String),
-    Reply(String),
-    Reward(QuestReward),
-    /// The NPC has nothing to say to the question: retail string 1867, or
-    /// 1868 for the `second`, which every NPC takes in turn.
-    NoAnswer {
-        npc: String,
-        second: bool,
-    },
-}
-/// Committed outcomes, not commands. Presentation supplies retail wording.
-#[derive(Clone, Debug, PartialEq)]
-pub enum QuestReward {
-    Gold {
-        giver: String,
-        amount: u32,
-    },
-    Experience {
-        amount_each: u32,
-    },
-    /// The NPC handed the party this item.
-    Item {
-        name: String,
-    },
-    /// One of an item left this member's pack, or the party's items.
-    Taken {
-        member: Option<String>,
-    },
-}
-#[derive(Component, Debug)]
-pub struct Conversation {
-    pub actor: Entity,
-    /// Temporary effects belong to the affected speakers. Closing the
-    /// conversation clears all of them; handing it over transfers none.
-    charms: BTreeMap<Entity, i8>,
-    pub current: Option<(u16, usize)>,
-    pub wait: ConversationWait,
-    pub transcript: Vec<TranscriptLine>,
-    /// Keywords discovered during this conversation are green. Reopening
-    /// imports the persistent notebook without the transient discovery marks.
-    pub learned_topics: BTreeSet<String>,
-    /// The NPC is not friendly yet: the party sees retail's topic menu
-    /// (charm, small talk, bribe) rather than the dialogue's topics.
-    pub menu: bool,
-    /// What the party's last request came to; presentation owns its
-    /// wording.
-    result: Option<Outcome>,
-    queue: VecDeque<Step>,
-}
-/// What the party's last request came to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Outcome {
-    NoTopic,
-    Traded,
-    TradeRefused(TradeError),
-    GiftRefused(TradeError),
-}
-pub(crate) enum MagicalReply {
-    Unnoticed,
-    Charmed(i8),
-    Quote(u16),
-}
-impl Conversation {
-    pub fn ready(&self) -> bool {
-        self.wait == ConversationWait::Ready && self.queue.is_empty()
-    }
-
-    pub(crate) fn charm(&self) -> i8 {
-        self.charms.get(&self.actor).copied().unwrap_or(0)
-    }
-
-    pub(crate) fn magical_reply(&mut self, reply: MagicalReply) {
-        self.result = None;
-        match reply {
-            MagicalReply::Unnoticed => {}
-            MagicalReply::Charmed(strength) if strength > self.charm() => {
-                self.charms.insert(self.actor, strength);
-                self.transcript.push(TranscriptLine::Npc("Charmed.".into()));
-            }
-            MagicalReply::Charmed(_) => {}
-            MagicalReply::Quote(quote) => self.queue.push_back(Step::quote(quote)),
-        }
-    }
-
-    /// What the last request came to, until the party asks something else.
-    pub fn outcome(&self) -> Option<Outcome> {
-        self.result
-    }
-
-    fn report(&mut self, outcome: Outcome) {
-        self.result = Some(outcome);
-    }
-}
-/// A line said: the words and the voice stem presentation may play. How
-/// long it shows is presentation's to decide.
-#[derive(Component, Debug)]
-pub struct ConversationSpeech {
-    /// The line's recording, if it has one to wait on.
-    pub voice: Option<String>,
-    pub text: String,
-    /// An alert line: the alert chime and the text, without a recording.
-    pub alert: bool,
-}
-/// A party member remarks on the conversation with this character event
-/// (retail `QueueCharacterEvent` for `PickRandomPartySpeaker`); presentation
-/// picks who and plays it.
-#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PartyRemark {
-    pub event: u16,
-}
-/// An explicit edit of the persistent keyword notebook, not a spoken question.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NotebookEdit {
-    Remember,
-    Forget,
-}
-
-/// Start talking to an NPC.
-#[derive(Message, Clone, Copy, Debug)]
-pub struct BeginConversation {
-    pub actor: Entity,
-}
-
-/// What the party does in a conversation under way.
-#[derive(Message, Clone, Debug)]
-pub struct ConversationRequest {
-    pub conversation: Entity,
-    pub talk: Talk,
-}
-
-impl ConversationRequest {
-    pub fn new(conversation: Entity, talk: Talk) -> Self {
-        Self { conversation, talk }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum Talk {
-    Topic {
-        text: String,
-    },
-    Reply {
-        text: String,
-    },
-    PriceAnswer {
-        accept: bool,
-    },
-    Close,
-    Recruit,
-    /// Hand the NPC an item from a member's pack or the party's items.
-    Give {
-        item: ItemRef,
-    },
-    /// Hand the NPC some of the party's gold.
-    GiveGold {
-        amount: u32,
-    },
-    /// Try to win over an NPC that is not yet friendly.
-    Approach {
-        approach: Approach,
-    },
-}
-/// How the party tries to win an NPC over from retail's topic menu.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Approach {
-    Charm,
-    SmallTalk,
-}
-/// Run `f` with the NPC's definition and the item catalog while the world
-/// stays writable; the catalogs are out of the world meanwhile.
 /// What a neutral NPC says first, and its answers to charm, small talk and
 /// bribes that leave it unmoved; what a hostile one says to turn the party
 /// away; and what one won over by charm says.
@@ -424,12 +80,15 @@ fn block(c: &mut Conversation, quote: u16, entry: Option<usize>, reason: String)
 }
 /// The speaker's script, which loaded before the conversation began.
 pub fn script<'w>(world: &'w World, c: &Conversation) -> &'w DialogueScript {
-    world.resource::<Assets<DialogueScript>>().get(super::script(world, c.actor)).unwrap()
+    world
+        .resource::<Assets<DialogueScript>>()
+        .get(crate::game::npcs::script(world, c.actor))
+        .unwrap()
 }
 /// A quote's supported effects and selected control transfer. Planning reads
 /// through preceding assignments, but never changes campaign state or draws RNG.
 #[derive(Debug)]
-struct QuotePlan {
+pub(super) struct QuotePlan {
     effects: Vec<QuoteEffect>,
     following: Option<Continuation>,
 }
@@ -498,8 +157,8 @@ pub struct Dialogue<'w, 's> {
         (
             Entity,
             &'static mut Npc,
-            &'static super::ActorId,
-            Option<&'static super::NpcBodies>,
+            &'static crate::game::npcs::ActorId,
+            Option<&'static crate::game::npcs::NpcBodies>,
             Has<PartyMember>,
         ),
     >,
@@ -529,7 +188,7 @@ pub struct Dialogue<'w, 's> {
     clock: Res<'w, GameClock>,
     turn: ResMut<'w, NoAnswerTurn>,
     scripts: Res<'w, Assets<DialogueScript>>,
-    assets: Res<'w, super::NpcAssets>,
+    assets: Res<'w, crate::game::npcs::NpcAssets>,
     freedom: crate::game::freedom::Freedom<'w, 's>,
     entering: Query<'w, 's, (), With<Destination>>,
     battles: Query<'w, 's, (), With<crate::game::combat::Battle>>,
@@ -539,7 +198,7 @@ pub struct Dialogue<'w, 's> {
     speech: MessageWriter<'w, NpcSpeech>,
     faction_news: MessageWriter<'w, crate::game::factions::FactionNews>,
     item_news: MessageWriter<'w, crate::game::inventory::ItemNews>,
-    joins: MessageWriter<'w, super::recruit::JoinParty>,
+    joins: MessageWriter<'w, crate::game::npcs::recruit::JoinParty>,
     /// Conversations the party has left or that ended in this run, whose
     /// removal is not yet applied.
     left: Local<'s, Vec<Entity>>,
@@ -750,7 +409,10 @@ impl Dialogue<'_, '_> {
             let stock = &self.npc(actor).stock;
             let gated = stock.restock_at.is_some()
                 && now.saturating_sub(stock.maintenance_at) >= crate::game::time::DAY_MS
-                && def.stock.iter().any(|r| !r.persistent && r.item == super::trade::TEMPLAR_GATED);
+                && def
+                    .stock
+                    .iter()
+                    .any(|r| !r.persistent && r.item == crate::game::npcs::trade::TEMPLAR_GATED);
             let templar = gated && self.fact_named("FACT_TEMPLAR").expect("the Templar fact") != 0;
             let (_, mut npc, id, ..) = self.npcs.get_mut(actor).unwrap();
             let content = &self.content;
@@ -1107,7 +769,7 @@ impl Dialogue<'_, '_> {
                 }
                 // The NPC joins the party once its acceptance is said.
                 Step::Join => {
-                    self.joins.write(super::recruit::JoinParty { actor });
+                    self.joins.write(crate::game::npcs::recruit::JoinParty { actor });
                 }
                 Step::Wait(wait) => {
                     self.conversation_mut(entity).wait = wait;
@@ -1251,8 +913,8 @@ impl Dialogue<'_, '_> {
     /// Whether the NPC would join the party now, and if not, why (retail
     /// `RequestNpcJoinParty`'s order: an NPC without a character declines
     /// before the party's room is counted).
-    pub fn joinable(&self, actor: Entity) -> Result<(), super::recruit::JoinRefusal> {
-        use super::recruit::{JoinRefusal, NPC_PLACES};
+    pub fn joinable(&self, actor: Entity) -> Result<(), crate::game::npcs::recruit::JoinRefusal> {
+        use crate::game::npcs::recruit::{JoinRefusal, NPC_PLACES};
         let (_, npc, id, _, member) = self.npcs.get(actor).unwrap();
         let definition = &self.content.npcs[id.npc()];
         if definition.character.is_none() || npc.dead || member {
@@ -1269,7 +931,7 @@ impl Dialogue<'_, '_> {
         let levels: Vec<_> = self.lineup().able().map(|(_, c)| c.level()).collect();
         let average = if levels.is_empty() { 0 } else { crate::game::party::average_level(levels) };
         let fact = |symbol: &str| self.fact_named(symbol).expect("a ported fact");
-        if !super::recruit::willing(id.npc(), definition, region, fact, average) {
+        if !crate::game::npcs::recruit::willing(id.npc(), definition, region, fact, average) {
             return Err(JoinRefusal::Declines);
         }
         Ok(())
@@ -1285,8 +947,8 @@ impl Dialogue<'_, '_> {
         let answer = self.joinable(c.actor);
         let quote = match answer {
             Ok(()) => JOINS,
-            Err(super::recruit::JoinRefusal::NoRoom) => NO_ROOM_TO_JOIN,
-            Err(super::recruit::JoinRefusal::Declines) => DECLINES_TO_JOIN,
+            Err(crate::game::npcs::recruit::JoinRefusal::NoRoom) => NO_ROOM_TO_JOIN,
+            Err(crate::game::npcs::recruit::JoinRefusal::Declines) => DECLINES_TO_JOIN,
         };
         let mut c = self.conversation_mut(entity);
         c.queue.push_back(Step::quote(quote));
@@ -1677,266 +1339,6 @@ pub(crate) fn end_conversations(_: On<Add<Destination>>, mut dialogue: Dialogue)
     }
 }
 
-/// Where an NPC stands in the played level: the body of its that is
-/// there and alive.
-#[derive(bevy::ecs::system::SystemParam)]
-pub struct NpcPresence<'w, 's> {
-    bodies: Query<'w, 's, (&'static Monster, &'static crate::game::world::level::LevelOwned)>,
-    levels: Query<'w, 's, (), With<Level>>,
-}
-
-impl NpcPresence<'_, '_> {
-    pub fn body(&self, bodies: Option<&super::NpcBodies>) -> Option<Entity> {
-        bodies.into_iter().flat_map(|b| b.iter()).find(|&body| {
-            self.bodies
-                .get(body)
-                .is_ok_and(|(monster, owner)| self.levels.contains(owner.0) && !monster.is_dead())
-        })
-    }
-
-    pub fn monster(&self, body: Entity) -> &Monster {
-        self.bodies.get(body).unwrap().0
-    }
-}
-
-/// What a trade reads and changes: the conversation and its NPC, the
-/// NPC's presence and stance, the party's purse, pool and packs, and the
-/// catalogs.
-#[derive(bevy::ecs::system::SystemParam)]
-pub struct Trading<'w, 's> {
-    conversations: Query<'w, 's, (&'static mut Conversation, Has<Closing>)>,
-    npcs: Query<
-        'w,
-        's,
-        (&'static mut Npc, &'static super::ActorId, Option<&'static super::NpcBodies>),
-    >,
-    presence: NpcPresence<'w, 's>,
-    stances: crate::game::world::hostility::Stances<'w, 's>,
-    party: Single<'w, 's, (&'static mut PartyInventory, &'static PartyRoster)>,
-    members: Query<'w, 's, (&'static Character, &'static Vitals)>,
-    packs: Query<'w, 's, &'static mut Carried>,
-    ids: ResMut<'w, ItemIds>,
-    content: If<Res<'w, Catalogs>>,
-    clock: Res<'w, GameClock>,
-    entering: Query<'w, 's, (), With<crate::game::world::level::Destination>>,
-    battles: Query<'w, 's, (), With<crate::game::combat::Battle>>,
-    camp: Option<Res<'w, crate::game::camp::Camp>>,
-}
-
-impl Trading<'_, '_> {
-    /// The NPC stands in the played level, alive and not hostile, and owns
-    /// stock to trade with.
-    fn open_for_trade(&self, actor: Entity) -> bool {
-        let (_, id, bodies) = self.npcs.get(actor).unwrap();
-        let species = &self.content.species;
-        let standing = self.presence.body(bodies).is_some_and(|body| {
-            self.stances.own(body, species, self.clock.ms)
-                != Some(crate::game::world::hostility::Stance::Hostile)
-        });
-        standing && self.content.npcs[id.npc()].owns_stock
-    }
-
-    fn communication(&self) -> u32 {
-        crate::game::party::Lineup::of(self.party.1, |m| self.members.get(m).unwrap())
-            .best(crate::content::characters::Skill::Communication)
-            .map_or(0, |(_, level)| level)
-    }
-
-    fn sale_item(&self, source: ItemRef) -> Result<&crate::game::inventory::ItemStack, TradeError> {
-        match source.owner {
-            ItemOwner::Pool => self.party.0.pool.stacks.iter().find(|i| i.id == source.id),
-            ItemOwner::Member(member) => self.packs.get(member).unwrap().backpack_stack(source.id),
-        }
-        .ok_or(TradeError::StaleSelection)
-    }
-
-    /// What the party would pay or get for `quantity` of a stock lot or one
-    /// of its own items, now.
-    pub fn quote(
-        &self,
-        conversation: Entity,
-        source: TradeSource,
-        quantity: u32,
-    ) -> Result<TradeQuote, TradeError> {
-        if !self.entering.is_empty() || !self.battles.is_empty() {
-            return Err(TradeError::Busy);
-        }
-        let (c, _) =
-            self.conversations.get(conversation).map_err(|_| TradeError::StaleSelection)?;
-        if !c.ready() {
-            return Err(TradeError::Busy);
-        }
-        let actor = c.actor;
-        if !self.open_for_trade(actor) {
-            return Err(TradeError::Unavailable);
-        }
-        let (npc, id, _) = self.npcs.get(actor).unwrap();
-        let def = &self.content.npcs[id.npc()];
-        let catalog = &self.content.items;
-        let communication = self.communication();
-        let gold = match source {
-            TradeSource::Stock(lot) => trade::purchase_price(
-                npc.stock.lots.iter().find(|l| l.id == lot).ok_or(TradeError::StaleSelection)?,
-                def,
-                catalog,
-                quantity,
-                communication,
-            ),
-            TradeSource::Party(source) => {
-                let item = self.sale_item(source)?;
-                trade::validate_sale(def, item, quantity, catalog, communication)
-            }
-        }?;
-        Ok(TradeQuote { conversation, trade: npc.stock.trades, source, quantity, gold })
-    }
-
-    /// Settle a quoted trade, if nothing it was quoted on has changed since.
-    fn settle(&mut self, quote: TradeQuote) -> Result<(), TradeError> {
-        let (c, _) =
-            self.conversations.get(quote.conversation).map_err(|_| TradeError::StaleSelection)?;
-        if !c.ready() {
-            return Err(TradeError::StaleSelection);
-        }
-        let actor = c.actor;
-        if !self.entering.is_empty() || !self.battles.is_empty() || !self.open_for_trade(actor) {
-            return Err(TradeError::Unavailable);
-        }
-        if self.npcs.get(actor).unwrap().0.stock.trades != quote.trade {
-            return Err(TradeError::StaleSelection);
-        }
-        let communication = self.communication();
-        let content = &self.content;
-        let catalog = &content.items;
-        let (mut npc, id, _) = self.npcs.get_mut(actor).unwrap();
-        let def = &content.npcs[id.npc()];
-        match quote.source {
-            TradeSource::Stock(lot) => trade::buy(
-                &mut npc.stock,
-                &mut self.party.0,
-                &mut self.ids,
-                def,
-                catalog,
-                lot,
-                quote.quantity,
-                quote.gold,
-                communication,
-            )?,
-            TradeSource::Party(source) => {
-                let units =
-                    u16::try_from(quote.quantity).map_err(|_| TradeError::InvalidQuantity)?;
-                let item = match source.owner {
-                    ItemOwner::Pool => self.party.0.pool.stacks.iter().find(|i| i.id == source.id),
-                    ItemOwner::Member(member) => {
-                        self.packs.get(member).unwrap().backpack_stack(source.id)
-                    }
-                }
-                .ok_or(TradeError::StaleSelection)?;
-                if trade::validate_sale(def, item, quote.quantity, catalog, communication)?
-                    != quote.gold
-                {
-                    return Err(TradeError::PriceChanged);
-                }
-                npc.stock.add(item.item, quote.quantity, catalog, false);
-                match source.owner {
-                    ItemOwner::Pool => self.party.0.pool.consume_units(source.id, units),
-                    ItemOwner::Member(member) => {
-                        self.packs.get_mut(member).unwrap().consume_backpack_units(source.id, units)
-                    }
-                }
-                self.party.0.gold += quote.gold;
-            }
-        }
-        npc.stock.trades += 1;
-        Ok(())
-    }
-}
-
-/// The party settles a quoted trade.
-#[derive(Message, Clone, Copy, Debug, PartialEq)]
-pub struct TradeRequest(pub TradeQuote);
-
-/// Settle the party's trades and tell its conversation how each went. A
-/// dialogue the party has left takes none, and none happen in a camp.
-pub fn settle_trades(mut requests: MessageReader<TradeRequest>, mut trading: Trading) {
-    for &TradeRequest(quote) in requests.read() {
-        let Ok((_, closing)) = trading.conversations.get(quote.conversation) else { continue };
-        if closing {
-            continue;
-        }
-        let outcome = if trading.camp.is_some() {
-            Outcome::TradeRefused(TradeError::Unavailable)
-        } else {
-            match trading.settle(quote) {
-                Ok(()) => Outcome::Traded,
-                Err(e) => Outcome::TradeRefused(e),
-            }
-        };
-        let (mut c, _) = trading.conversations.get_mut(quote.conversation).unwrap();
-        c.result = None;
-        c.report(outcome);
-    }
-}
-
-/// [`Trading::quote`], for operations that hold the whole world.
-pub fn quote_trade(
-    world: &mut World,
-    conversation: Entity,
-    source: TradeSource,
-    quantity: u32,
-) -> Result<TradeQuote, TradeError> {
-    world
-        .run_system_cached_with(
-            |In((conversation, source, quantity)): In<(Entity, TradeSource, u32)>,
-             trading: Trading| { trading.quote(conversation, source, quantity) },
-            (conversation, source, quantity),
-        )
-        .unwrap()
-}
-/// The systems that carry conversations: lines spoken, conversations
-/// begun, the party's requests answered, then scripts run.
-#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Conversing;
-
-/// The NPC has finished saying a line.
-#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LineSpoken {
-    pub conversation: Entity,
-    pub speech: Entity,
-}
-
-/// The party remembers or forgets a topic in its notebook.
-#[derive(Message, Clone, Debug, PartialEq, Eq)]
-pub struct EditNotebook {
-    pub edit: NotebookEdit,
-    pub text: String,
-}
-
-/// A spoken line gives way to what follows it.
-pub fn finish_lines(
-    mut spoken: MessageReader<LineSpoken>,
-    mut conversations: Query<&mut Conversation>,
-    mut commands: Commands,
-) {
-    for &LineSpoken { conversation, speech } in spoken.read() {
-        let Ok(mut c) = conversations.get_mut(conversation) else { continue };
-        if matches!(c.wait, ConversationWait::Line { speech: s, .. } if s == speech) {
-            commands.entity(speech).despawn();
-            c.wait = ConversationWait::Ready;
-        }
-    }
-}
-
-pub fn edit_notebook(mut edits: MessageReader<EditNotebook>, mut facts: ResMut<StoryFacts>) {
-    for EditNotebook { edit, text } in edits.read() {
-        match edit {
-            NotebookEdit::Remember => facts.remember_topic(TopicCategory::Misc, text),
-            NotebookEdit::Forget => facts.forget_topic(text),
-        };
-    }
-}
-
-/// Whether a conversation may go on: its NPC there to talk and no fight
-/// under way.
 /// Talking to an NPC begins a conversation. An accepted level entry has
 /// ended every dialogue (`end_conversations`); no queued request may alter
 /// the departing campaign.
