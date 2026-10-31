@@ -181,7 +181,8 @@ pub(super) fn enchant(
             turns,
             absorption: 0,
         };
-        let mut apply = |enchantments: &mut crate::game::magic::enchantments::Enchantments, monster: bool| {
+        let mut apply = |enchantments: &mut crate::game::magic::enchantments::Enchantments,
+                         monster: bool| {
             let accepts = if monster {
                 enchantments.monster_accepts(spell.id, strength.power)
             } else {
