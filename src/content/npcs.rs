@@ -53,8 +53,8 @@ pub struct NpcCharacter {
     /// Index into the portrait table.
     pub portrait: usize,
     pub level: u8,
-    pub attributes: enum_map::EnumMap<super::characters::Attribute, u8>,
-    pub skills: enum_map::EnumMap<super::characters::Skill, u8>,
+    pub attributes: enum_map::EnumMap<super::characters::Attribute, u32>,
+    pub skills: enum_map::EnumMap<super::characters::Skill, u32>,
     pub spells: Vec<super::spells::SpellId>,
     /// What it wears, in retail's slot order.
     pub equipment: [Option<ItemId>; 12],

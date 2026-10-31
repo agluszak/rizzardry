@@ -73,7 +73,7 @@ pub(super) fn stance_toward(
 pub(super) fn monster_turn(
     commands: &mut Commands,
     battle: &mut Battle,
-    (index, step): (usize, u8),
+    (index, step): (usize, u32),
     combatants: &[Entity],
     rng: &mut GameRng,
     (members, damage): (&mut Members, &mut MonsterDamage),
@@ -454,7 +454,7 @@ fn carry_out(
 fn strike(
     commands: &mut Commands,
     battle: &mut Battle,
-    (index, step, attacks_left): (usize, u8, u32),
+    (index, step, attacks_left): (usize, u32, u32),
     combatants: &[Entity],
     rng: &mut GameRng,
     (members, damage): (&mut Members, &mut MonsterDamage),

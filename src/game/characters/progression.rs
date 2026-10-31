@@ -79,8 +79,8 @@ pub struct Advancement {
     original: Character,
     known: LearnedSpells,
     profession: Profession,
-    attributes: EnumMap<Attribute, u8>,
-    skills: EnumMap<Skill, u8>,
+    attributes: EnumMap<Attribute, u32>,
+    skills: EnumMap<Skill, u32>,
     spells: BTreeSet<SpellId>,
 }
 /// An [`Advancement`] worked out once ([`Advancement::evaluate`]): a
@@ -89,7 +89,7 @@ pub struct Evaluation {
     baseline: Character,
     pub preview: Character,
     learned: LearnedSpells,
-    attributes_left: u8,
+    attributes_left: u32,
 }
 
 impl Advancement {
@@ -117,7 +117,7 @@ impl Advancement {
         let minimums = profession_row(profession).minimums;
         let deficits: Vec<_> =
             minimums.iter().map(|(a, &n)| n - n.min(self.original.attributes[a])).collect();
-        deficits.iter().all(|&n| n <= 3) && deficits.iter().map(|&n| u16::from(n)).sum::<u16>() <= 6
+        deficits.iter().all(|&n| n <= 3) && deficits.iter().sum::<u32>() <= 6
     }
     pub fn choose_profession(&mut self, profession: Profession) -> bool {
         if !self.eligible_profession(profession) {
@@ -181,19 +181,19 @@ impl Advancement {
             preview,
         }
     }
-    fn attributes_left(&self, preview: &Character) -> u8 {
-        6 - preview.attributes.iter().map(|(a, &n)| n - self.original.attributes[a]).sum::<u8>()
+    fn attributes_left(&self, preview: &Character) -> u32 {
+        6 - preview.attributes.iter().map(|(a, &n)| n - self.original.attributes[a]).sum::<u32>()
     }
-    pub fn attribute_remaining(&self) -> u8 {
+    pub fn attribute_remaining(&self) -> u32 {
         self.attributes_left(&self.preview())
     }
-    pub fn skill_remaining(&self) -> u8 {
-        9 - self.skills.values().sum::<u8>()
+    pub fn skill_remaining(&self) -> u32 {
+        9 - self.skills.values().sum::<u32>()
     }
-    pub fn allocated_attribute(&self, a: Attribute) -> u8 {
+    pub fn allocated_attribute(&self, a: Attribute) -> u32 {
         self.attributes[a]
     }
-    pub fn allocated_skill(&self, s: Skill) -> u8 {
+    pub fn allocated_skill(&self, s: Skill) -> u32 {
         self.skills[s]
     }
     pub fn can_adjust_attribute(&self, a: Attribute, up: bool) -> bool {

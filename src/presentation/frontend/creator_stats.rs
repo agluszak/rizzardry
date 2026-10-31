@@ -605,7 +605,7 @@ pub(super) fn refresh(
                     + EnumSet::<Attribute>::all()
                         .iter()
                         .map(|a| draft.allocated_attribute(a))
-                        .sum::<u8>()
+                        .sum::<u32>()
             ),
             Value::Total(_) => "0/0".into(),
             Value::Summary(i) => match i {
