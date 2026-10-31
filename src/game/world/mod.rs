@@ -104,6 +104,7 @@ impl Plugin for WorldPlugin {
             .add_observer(interaction::end_attempts)
             // Resolve travel intent early; activation owns the later level swap.
             .add_systems(PreUpdate, (level::answer_travel_questions, level::travel).chain())
+            .add_observer(level::replace_travel_question)
             .add_observer(level::suspend_physics_for_entry)
             .add_observer(level::resume_physics_after_entry)
             .add_observer(search::suspend_search)
