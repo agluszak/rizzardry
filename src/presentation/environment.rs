@@ -83,9 +83,9 @@ pub struct LevelAppearance(pub Handle<LevelGeometry>);
 pub struct PreparedAppearance(Handle<LevelGeometry>);
 
 /// Start loading an entry's appearance while gameplay prepares it, so it
-/// is likely ready when the level commits. It never holds or fails the
-/// entry: a level whose looks are late shows them when they arrive, and
-/// one whose looks fail plays on unseen ([`attach_level_visuals`]).
+/// is likely ready when the level commits. It never holds the entry: a
+/// level whose looks are late shows them when they arrive
+/// ([`attach_level_visuals`]).
 pub fn prepare_appearance(
     mut commands: Commands,
     entries: Query<(Entity, &Destination), Without<PreparedAppearance>>,
@@ -181,8 +181,7 @@ pub fn apply_environment(
     }
 }
 
-/// The level's meshes have been attached, or its appearance failed and
-/// none will be.
+/// The level's meshes have been attached.
 #[derive(Component, Debug)]
 pub struct LevelVisuals;
 
@@ -202,8 +201,7 @@ pub fn attach_level_visuals(
     for (root, level, children) in &levels {
         let Some(geometry) = geometry.get(&level.0) else {
             if let Some(LoadState::Failed(error)) = assets.get_load_state(&level.0) {
-                error!("the level's appearance failed to load; it plays unseen: {error}");
-                commands.entity(root).insert(LevelVisuals);
+                panic!("the level's appearance failed to load: {error}");
             }
             continue;
         };
@@ -358,30 +356,6 @@ mod tests {
         app.world_mut().entity_mut(level).insert(LevelAppearance(absent));
         app.update();
         assert!(app.world().get::<DistanceFog>(camera).is_none());
-    }
-
-    /// A level whose looks cannot load plays on unseen; presentation gives
-    /// up on them without touching the level.
-    #[test]
-    fn a_level_whose_appearance_fails_plays_on_unseen() {
-        let mut app = App::new();
-        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-            .init_asset::<LevelGeometry>()
-            .init_resource::<Assets<StandardMaterial>>()
-            .init_resource::<Assets<super::super::lighting::SceneMaterial>>()
-            .insert_resource(super::super::lighting::SceneLights(default()))
-            .add_systems(Update, attach_level_visuals);
-        // No loader takes this file, so its load fails.
-        let handle = app.world().resource::<AssetServer>().load("missing.appearance");
-        let root = app.world_mut().spawn(LevelAppearance(handle)).id();
-        for _ in 0..100 {
-            app.update();
-            if app.world().get::<LevelVisuals>(root).is_some() {
-                break;
-            }
-        }
-        assert!(app.world().get::<LevelVisuals>(root).is_some());
-        assert!(app.world().get::<LevelAppearance>(root).is_some());
     }
 
     #[test]

@@ -872,7 +872,6 @@ fn consume_item(world: &mut World, party: Entity, source: ItemRef, units: u16) {
             world.get_mut::<Carried>(member).unwrap().consume_backpack_units(source.id, units)
         }
     }
-    .unwrap();
 }
 fn commit_quote(world: &mut World, entity: Entity, quote: u16, plan: QuotePlan) {
     commit_effects(world, entity, plan.effects);
@@ -1053,15 +1052,7 @@ fn run_script(world: &mut World, entity: Entity, script: &DialogueScript, party:
                 return;
             }
             Step::Quote { quote, subquote, paid, plan } => {
-                let Some(q) = script.quotes.get(quote as usize) else {
-                    block(
-                        &mut world.get_mut::<Conversation>(entity).unwrap(),
-                        quote,
-                        None,
-                        "missing quote".into(),
-                    );
-                    return;
-                };
+                let q = &script.quotes[quote as usize];
                 if !paid
                     && subquote == 0
                     && let Some((gold, always)) = q.operations.iter().find_map(|op| {

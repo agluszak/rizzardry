@@ -90,7 +90,6 @@ impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(navigation::NavigationPlugin)
             .add_message::<level::LevelReady>()
-            .add_message::<level::LevelEntryFailed>()
             .add_message::<level::Travel>()
             .add_message::<level::TravelAnswer>()
             .add_message::<search::ToggleSearch>()

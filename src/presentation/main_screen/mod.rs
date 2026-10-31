@@ -69,7 +69,12 @@ impl Plugin for MainScreenPlugin {
                         bank::draw_bank,
                         bank::draw_caption,
                         bank::show_round_progress,
-                        magic_view::refresh_magic_view,
+                        (
+                            magic_view::follow_caster,
+                            magic_view::draw_magic_view,
+                            magic_view::commit_magic_choice,
+                        )
+                            .chain(),
                     ),
                 )
                     .chain()

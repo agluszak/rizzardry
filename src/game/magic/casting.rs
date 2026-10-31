@@ -664,7 +664,7 @@ pub fn perform(
                 }
                 if auto {
                     let victim = match choice.aim {
-                        Aim::Member(m) => world.members.get(m).ok(),
+                        Aim::Member(m) => Some(world.members.get(m).unwrap()),
                         Aim::Ahead
                         | Aim::Point(_)
                         | Aim::Monster(_)
@@ -693,10 +693,7 @@ pub fn perform(
                 Some(situation.party_at),
                 super::targeting::Recipients::Opponents(crate::game::world::hostility::own_stance(
                     crate::game::world::hostility::Stance::Friendly,
-                    world
-                        .members
-                        .get(caster)
-                        .is_ok_and(|(_, vitals, ..)| vitals.conditions.has(Condition::Turncoat)),
+                    world.members.get(caster).unwrap().1.conditions.has(Condition::Turncoat),
                 )),
             );
         }

@@ -288,12 +288,12 @@ impl NpcPopulation<'_, '_> {
         catalogs: &Catalogs,
         placements: &[crate::content::level::MonsterPlacement],
         server: &AssetServer,
-    ) -> Result<bool, String> {
+    ) -> bool {
         let species = &catalogs.species;
         let ids: Vec<_> =
             placements.iter().filter_map(|p| species.kind(p.species).and_then(|s| s.npc)).collect();
         if ids.is_empty() {
-            return Ok(true);
+            return true;
         }
         let catalog = &catalogs.npcs;
         let mut ready = true;
@@ -303,12 +303,14 @@ impl NpcPopulation<'_, '_> {
                 self.assets.scripts.entry(id).or_insert_with(|| {
                     server.load(crate::content::paths::retail(&def.script_path()))
                 });
-            if matches!(server.get_load_state(&*script), Some(bevy::asset::LoadState::Failed(_))) {
-                return Err(format!("NPC script failed: {}", def.script_path()));
-            }
+            assert!(
+                !matches!(server.get_load_state(&*script), Some(bevy::asset::LoadState::Failed(_))),
+                "NPC script failed to load: {}",
+                def.script_path()
+            );
             ready &= self.scripts.contains(&*script);
         }
-        Ok(ready)
+        ready
     }
     /// Whether the NPC's world role may stand in a level: not while it
     /// travels with the party, and never once it has died, wherever.

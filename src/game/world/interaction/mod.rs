@@ -739,45 +739,42 @@ pub(crate) fn end_attempts(
     }
 }
 
-/// What the player asks of the attempt under way; each names its attempt,
+/// What the player asks of the attempt under way. It names its attempt,
 /// so one left over from an attempt that has ended changes nothing.
 #[derive(Message, Clone, Debug, PartialEq)]
-pub enum DeviceRequest {
+pub struct DeviceRequest {
+    pub on: Entity,
+    pub act: DeviceAct,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum DeviceAct {
     Pick {
-        on: Entity,
         actor: Entity,
         tumbler: usize,
     },
     Force {
-        on: Entity,
         actor: Entity,
     },
     Inspect {
-        on: Entity,
         actor: Entity,
     },
     Disarm {
-        on: Entity,
         actor: Entity,
         component: usize,
     },
     Spring {
-        on: Entity,
         actor: Option<Entity>,
     },
     /// A spell or item selector opens on the device.
     PrepareMagic {
-        on: Entity,
         actor: Entity,
     },
     Take {
-        on: Entity,
         picks: Vec<(StackId, u16)>,
         to: super::containers::Recipient,
     },
-    Leave {
-        on: Entity,
-    },
+    Leave,
 }
 
 pub(crate) fn plugin(app: &mut App) {
@@ -792,33 +789,33 @@ pub(crate) fn plugin(app: &mut App) {
 pub fn handle_device_requests(world: &mut World) {
     let requests: Vec<_> = world.resource_mut::<Messages<DeviceRequest>>().drain().collect();
     for request in requests {
-        match &request {
-            &DeviceRequest::Pick { on, actor, tumbler } => {
-                report(&request, pick_tumbler(world, on, actor, tumbler))
+        let on = request.on;
+        let refused = match &request.act {
+            &DeviceAct::Pick { actor, tumbler } => why(pick_tumbler(world, on, actor, tumbler)),
+            &DeviceAct::Force { actor } => why(force_lock(world, on, actor)),
+            &DeviceAct::Inspect { actor } => why(inspect_trap(world, on, actor)),
+            &DeviceAct::Disarm { actor, component } => {
+                why(disarm_component(world, on, actor, component))
             }
-            &DeviceRequest::Force { on, actor } => report(&request, force_lock(world, on, actor)),
-            &DeviceRequest::Inspect { on, actor } => {
-                report(&request, inspect_trap(world, on, actor))
+            &DeviceAct::Spring { actor } => why(spring_trap(world, on, actor)),
+            &DeviceAct::PrepareMagic { actor } => why(prepare_device_magic(world, actor, on)),
+            DeviceAct::Take { picks, to } => {
+                why(super::containers::take_from_container(world, on, picks, *to))
             }
-            &DeviceRequest::Disarm { on, actor, component } => {
-                report(&request, disarm_component(world, on, actor, component))
+            DeviceAct::Leave => {
+                leave(world, on);
+                None
             }
-            &DeviceRequest::Spring { on, actor } => report(&request, spring_trap(world, on, actor)),
-            &DeviceRequest::PrepareMagic { on, actor } => {
-                report(&request, prepare_device_magic(world, actor, on))
-            }
-            DeviceRequest::Take { on, picks, to } => {
-                report(&request, super::containers::take_from_container(world, *on, picks, *to))
-            }
-            &DeviceRequest::Leave { on } => leave(world, on),
+        };
+        if let Some(why) = refused {
+            debug!("{request:?} refused: {why}");
         }
     }
 }
 
-fn report<E: std::fmt::Debug>(request: &DeviceRequest, result: Result<(), E>) {
-    if let Err(why) = result {
-        debug!("{request:?} refused: {why:?}");
-    }
+/// Why a request was refused, for the log.
+fn why<E: std::fmt::Debug>(result: Result<(), E>) -> Option<String> {
+    result.err().map(|e| format!("{e:?}"))
 }
 
 #[cfg(test)]

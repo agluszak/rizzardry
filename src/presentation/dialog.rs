@@ -84,13 +84,11 @@ pub fn open_travel_question(add: On<Add<TravelQuestion>>, mut commands: Commands
     });
 }
 
-/// Attach the visuals when ready; a failed asset must not strand the question.
+/// Attach the visuals when ready.
 pub fn show_travel_question(
     mut commands: Commands,
     questions: Query<&TravelQuestion>,
     dialogs: Query<(Entity, &QuestionDialog), Without<DialogBuilt>>,
-    assets: Res<AssetServer>,
-    mut answers: MessageWriter<TravelAnswer>,
     art: Res<DialogArt>,
     sheets: Res<Assets<SpriteSheet>>,
     game_strings: crate::presentation::screen_art::GameStrings,
@@ -98,14 +96,6 @@ pub fn show_travel_question(
     let Ok((dialog, owner)) = dialogs.single() else { return };
     let question_id = owner.0;
     let Ok(question) = questions.get(question_id) else { return };
-    if [&art.ok, &art.cancel, &art.font].into_iter().any(|handle| {
-        matches!(assets.get_load_state(handle), Some(bevy::asset::LoadState::Failed(_)))
-    }) || game_strings.failed(&assets)
-    {
-        warn!("travel confirmation artwork failed; declining travel");
-        answers.write(TravelAnswer { question: question_id, accept: false });
-        return;
-    }
     let (Some(ok), Some(cancel), Some(_font), Some(strings)) =
         (sheets.get(&art.ok), sheets.get(&art.cancel), sheets.get(&art.font), game_strings.table())
     else {
@@ -266,28 +256,5 @@ mod tests {
         assert_eq!(answers.len(), 1);
         assert_eq!(answers[0].question, question);
         assert!(!answers[0].accept);
-    }
-
-    #[test]
-    fn terminal_asset_failure_declines_the_current_question() {
-        let mut app = input_app();
-        // No loader exists for this deliberately invalid asset; wait for the real
-        // async asset pipeline rather than simulating a failed-state flag.
-        let font = app.world().resource::<AssetServer>().load::<SpriteSheet>("missing.invalid");
-        app.world_mut().resource_mut::<DialogArt>().font = font;
-        let question = app.world_mut().spawn(TravelQuestion { entrance: "MO204".into() }).id();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            app.update();
-            let answers: Vec<_> =
-                app.world_mut().resource_mut::<Messages<TravelAnswer>>().drain().collect();
-            if let Some(answer) = answers.first() {
-                assert_eq!(answer.question, question);
-                assert!(!answer.accept);
-                break;
-            }
-            assert!(std::time::Instant::now() < deadline, "asset failure did not resolve travel");
-            std::thread::yield_now();
-        }
     }
 }

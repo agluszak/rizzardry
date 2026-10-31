@@ -67,7 +67,6 @@ impl Plugin for FrontendPlugin {
             .add_systems(
                 Update,
                 (
-                    report_entry_failure,
                     refresh,
                     creator_stats::refresh,
                     creator_skills::refresh,
@@ -110,19 +109,6 @@ fn skip_the_menu(
 ) {
     if !entering.is_empty() {
         next.set(Session::Playing);
-    }
-}
-
-/// The first level could not be prepared: the party stays in creation to
-/// try again.
-fn report_entry_failure(
-    mut failures: MessageReader<crate::game::world::level::LevelEntryFailed>,
-    mut sessions: Query<&mut Creation>,
-) {
-    for failure in failures.read() {
-        for mut session in &mut sessions {
-            session.message = format!("{} could not be loaded.", failure.path);
-        }
     }
 }
 
@@ -1085,7 +1071,6 @@ mod keyboard_tests {
         .init_asset::<Font>()
         .init_state::<Session>()
         .init_state::<crate::presentation::screen::Screen>()
-        .add_message::<crate::game::world::level::LevelEntryFailed>()
         .init_asset::<crate::content::ui::SpriteSheet>()
         .init_asset::<Mesh>()
         .init_asset::<bevy::mesh::skinning::SkinnedMeshInverseBindposes>()

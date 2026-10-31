@@ -919,6 +919,76 @@ fn notices(
     rng.below(100) < chance
 }
 
+/// Every (attack, mode, target) the monster reaches, equally likely:
+/// members, then the other monsters in the fight. A member's Stealth may
+/// keep it out of the monster's eye this time (three quarters of it, in
+/// percent), and one that stayed out of it may learn from it.
+fn reachable_targets(
+    entity: Entity,
+    kind: &Species,
+    rng: &mut GameRng,
+    field: &mut Field,
+    fight: &Fight,
+    news: &mut MessageWriter<CombatNews>,
+) -> Vec<(usize, AttackMode, Victim)> {
+    let (monster, at, walker, ..) = field.monsters.monsters().get(entity).unwrap();
+    let here = feet(at.translation(), walker);
+    let distance = party_distance(fight.party.eye, monster, here);
+    let eye = monster.eye(here);
+    let formation = &**field.formation;
+    let mut unseen = Vec::new();
+    for &member in field.party {
+        let stealth = field.members.get(member).unwrap().0.skill(Skill::Stealth);
+        if rng.below(100) < stealth * 75 / 100 {
+            unseen.push(member);
+        }
+    }
+    let mut candidates = vec![];
+    let mut evaded = Vec::new();
+    for (a, attack) in kind.attacks.iter().enumerate() {
+        for &member in field.party {
+            let (_, vitals, ..) = field.members.get(member).unwrap();
+            if !vitals.is_dead()
+                && (fight.attacks)(Victim::Member(member))
+                && fight.party.reaches(formation, member, at.translation(), attack.reach, distance)
+            {
+                if unseen.contains(&member) {
+                    if !evaded.contains(&member) {
+                        evaded.push(member);
+                    }
+                    continue;
+                }
+                for mode in attack.modes {
+                    candidates.push((a, mode, Victim::Member(member)));
+                }
+            }
+        }
+        for &other in fight.combatants {
+            let (body, other_at, other_walker, ..) = field.monsters.monsters().get(other).unwrap();
+            let there = feet(other_at.translation(), other_walker);
+            if other != entity
+                && !body.is_dead()
+                && field.monsters.active(other)
+                && field.visibility.clear(eye, body_centre(there, body))
+                && (fight.attacks)(Victim::Monster(other))
+                && monster.gap(here, body, there) <= attack.reach.metres()
+            {
+                for mode in attack.modes {
+                    candidates.push((a, mode, Victim::Monster(other)));
+                }
+            }
+        }
+    }
+    for member in evaded {
+        if rng.below(2) == 0
+            && field.members.get_mut(member).unwrap().0.practise(Skill::Stealth, 1, rng)
+        {
+            news.write(CombatNews::Improved { member, skill: Skill::Stealth });
+        }
+    }
+    candidates
+}
+
 /// A monster's attack (retail `StartMonsterAttack` and its swings): one of
 /// its attacks and modes at a member or a fellow monster it may attack and
 /// reaches, all equally likely, its swings each rolled to hit, to penetrate
@@ -935,77 +1005,12 @@ pub(super) fn monster_attacks(
     let entity = turn.actor;
     let species = field.species;
     let difficulty = field.difficulty;
-    let Ok((monster, at, walker, ..)) = field.monsters.monsters().get(entity) else {
-        return false;
-    };
+    let (monster, at, walker, ..) = field.monsters.monsters().get(entity).unwrap();
     let kind = &species[monster.species];
-    let distance = party_distance(fight.party.eye, monster, feet(at.translation(), walker));
     let position = at.translation();
     let eye = monster.eye(feet(position, walker));
-    let formation = &**field.formation;
     let stance = field.monsters.stance(entity, field.now);
-    let here = feet(position, walker);
-    // A member's Stealth may keep it out of the monster's eye this time:
-    // three quarters of it, in percent.
-    let mut unseen = Vec::new();
-    for &member in field.party {
-        let stealth = field.members.get(member).map_or(0, |(c, ..)| c.skill(Skill::Stealth));
-        if rng.below(100) < stealth * 75 / 100 {
-            unseen.push(member);
-        }
-    }
-    // Every (attack, mode, target) that reaches is equally likely: members,
-    // then the other monsters in the fight.
-    let mut candidates = vec![];
-    let mut evaded = Vec::new();
-    for (a, attack) in kind.attacks.iter().enumerate() {
-        for &member in field.party {
-            let (_, vitals, ..) = field.members.get(member).unwrap();
-            if !vitals.is_dead()
-                && (fight.attacks)(Victim::Member(member))
-                && fight.party.reaches(formation, member, position, attack.reach, distance)
-            {
-                if unseen.contains(&member) {
-                    if !evaded.contains(&member) {
-                        evaded.push(member);
-                    }
-                    continue;
-                }
-                for mode in attack.modes {
-                    candidates.push((a, mode, Victim::Member(member)));
-                }
-            }
-        }
-        for &other in fight.combatants {
-            let Ok((body, other_at, other_walker, ..)) = field.monsters.monsters().get(other)
-            else {
-                continue;
-            };
-            let gap = monster.gap(here, body, feet(other_at.translation(), other_walker));
-            if other != entity
-                && !body.is_dead()
-                && field.monsters.active(other)
-                && field
-                    .visibility
-                    .clear(eye, body_centre(feet(other_at.translation(), other_walker), body))
-                && (fight.attacks)(Victim::Monster(other))
-                && gap <= attack.reach.metres()
-            {
-                for mode in attack.modes {
-                    candidates.push((a, mode, Victim::Monster(other)));
-                }
-            }
-        }
-    }
-    // Those who stayed out of its eye may learn from it.
-    for member in evaded {
-        if rng.below(2) == 0
-            && let Ok((mut character, ..)) = field.members.get_mut(member)
-            && character.practise(Skill::Stealth, 1, rng)
-        {
-            news.write(CombatNews::Improved { member, skill: Skill::Stealth });
-        }
-    }
+    let candidates = reachable_targets(entity, kind, rng, field, fight, news);
     let turn_left = turn.attacks_left.saturating_sub(1);
     battle.this_round.monsters[index].end();
     // A wary monster's wait comes first among its choices.
@@ -1033,8 +1038,8 @@ pub(super) fn monster_attacks(
     // A member not facing it may turn in time, or be struck from behind.
     if attack.reach <= Reach::Short
         && let Victim::Member(member) = target
-        && let Ok((character, vitals, ..)) = field.members.get(member)
     {
+        let (character, vitals, ..) = field.members.get(member).unwrap();
         let side = formation::quadrant(fight.party.eye, fight.party.yaw, position);
         let facing = field.formation.facing(member);
         if facing.is_some_and(|f| f != side) {

@@ -582,6 +582,38 @@ pub fn run_encounters(
             })
             .collect(),
     };
+    // A generator's try: forced on a stale
+    // arrival, otherwise when its interval is up; it calls up a group when
+    // the gates admit one.
+    let mut roll = |index: usize,
+                    forced: bool,
+                    state: &EncounterState,
+                    working: &mut Working,
+                    (commands, groups): (
+        &mut Commands,
+        &Query<(Entity, &mut MonsterGroup, Option<&GroupMembers>)>,
+    ),
+                    rng: &mut GameRng| {
+        let generator = &encounters.generators[index];
+        if admits(
+            (generator, &state.generators[index]),
+            encounters,
+            &onlooker,
+            (working, state.limit, now_s),
+            (commands, groups),
+            &obstacles,
+            (forced, blocked, rng),
+        ) && let Some(spawned) = generate(
+            commands,
+            generator,
+            (&onlooker, now_s, night, difficulty),
+            &mut spawning,
+            (&mut configs, rng),
+            &mut unborn,
+        ) {
+            working.add(spawned, now_s);
+        }
+    };
     if let Some(arrival) = state.arrival.take() {
         let elapsed = match arrival {
             Arrival::First => {
@@ -614,25 +646,7 @@ pub fn run_encounters(
                 }
             }
             for index in order {
-                let generator = &encounters.generators[index];
-                if admits(
-                    (generator, &state.generators[index]),
-                    encounters,
-                    &onlooker,
-                    (&mut working, state.limit, now_s),
-                    (&mut commands, &groups),
-                    &obstacles,
-                    (true, blocked, &mut rng),
-                ) && let Some(spawned) = generate(
-                    &mut commands,
-                    generator,
-                    (&onlooker, now_s, night, difficulty),
-                    &mut spawning,
-                    (&mut configs, &mut rng),
-                    &mut unborn,
-                ) {
-                    working.add(spawned, now_s);
-                }
+                roll(index, true, &state, &mut working, (&mut commands, &groups), &mut rng);
             }
             return;
         }
@@ -652,24 +666,7 @@ pub fn run_encounters(
         if state.generators[index].elapsed < state.generators[index].duration {
             continue;
         }
-        if admits(
-            (generator, &state.generators[index]),
-            encounters,
-            &onlooker,
-            (&mut working, state.limit, now_s),
-            (&mut commands, &groups),
-            &obstacles,
-            (false, blocked, &mut rng),
-        ) && let Some(spawned) = generate(
-            &mut commands,
-            generator,
-            (&onlooker, now_s, night, difficulty),
-            &mut spawning,
-            (&mut configs, &mut rng),
-            &mut unborn,
-        ) {
-            working.add(spawned, now_s);
-        }
+        roll(index, false, &state, &mut working, (&mut commands, &groups), &mut rng);
         let duration = jittered(interval(encounters, generator), &mut rng);
         state.generators[index] =
             GeneratorState { elapsed: 0.0, duration, ..state.generators[index] };

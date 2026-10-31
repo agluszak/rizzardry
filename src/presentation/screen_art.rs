@@ -372,12 +372,6 @@ impl GameStrings<'_> {
             || self.tables.as_ref().is_some_and(|t| t.is_changed())
     }
 
-    pub fn failed(&self, assets: &AssetServer) -> bool {
-        self.table.as_ref().is_some_and(|table| {
-            assets.get_load_state(&table.0).is_some_and(|state| state.is_failed())
-        })
-    }
-
     /// The string, trimmed; empty until the table has loaded.
     pub fn get(&self, id: usize) -> &str {
         let table = self.table();

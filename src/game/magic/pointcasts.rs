@@ -90,13 +90,7 @@ pub(crate) fn cast(
         return Err(Refusal::WrongTime);
     }
     let Aim::Point(at) = choice.aim else { return Err(Refusal::NoTarget) };
-    if !at.is_finite() {
-        return Err(Refusal::NoTarget);
-    }
-    let root = world
-        .query_filtered::<Entity, With<Level>>()
-        .single(world)
-        .map_err(|_| Refusal::WrongTime)?;
+    let root = world.query_filtered::<Entity, With<Level>>().single(world).unwrap();
     let battle = world.query_filtered::<Entity, With<Battle>>().single(world).ok();
     let (spell, far) = {
         let spell = world.resource::<Catalogs>().spells[id].clone();
@@ -145,173 +139,183 @@ pub(crate) fn cast(
     )?;
     if report.outcome != Outcome::Fizzled {
         let now = world.resource::<GameClock>().ms;
-        if id == SpellId::HYPNOTIC_LURE {
-            let old: Vec<_> = world.query_filtered::<Entity, With<Lure>>().iter(world).collect();
-            for old in old {
-                world.despawn(old);
-            }
-            let turns =
-                super::effects::duration(&mut world.resource_mut::<GameRng>(), &spell, strength);
-            let lure = world
-                .spawn((
-                    Lure { expires: now + u64::from(turns) * AGING_TICK_MS },
-                    Transform::from_translation(at),
-                    LevelOwned(root),
-                ))
-                .id();
-            let mut order: Vec<_> = world
-                .query::<(Entity, &Monster, &LevelOwned)>()
-                .iter(world)
-                .filter(|(_, monster, owner)| owner.0 == root && !monster.is_dead())
-                .map(|(entity, body, _)| (body.location, entity))
-                .collect();
-            order.sort_unstable();
-            let mut sight = SystemState::<WorldObstacles>::new(world);
-            for (_, entity) in order {
-                if hostility::monster_stance(world, entity) != Stance::Hostile {
-                    continue;
-                }
-                if world
-                    .get::<LureInfluence>(entity)
-                    .is_some_and(|influence| influence.response == LureResponse::Resisted)
-                {
-                    continue;
-                }
-                let body = world.get::<Monster>(entity).unwrap();
-                if !body.can_fight() || body.conditions.has(Condition::Blind) {
-                    continue;
-                }
-                let here = crate::game::world::actor_position(world, entity);
-                if (here - at).abs().max_element() > far {
-                    continue;
-                }
-                let kind = &world.resource::<Catalogs>().species[body.species];
-                if kind.kind == MonsterKind::Undead {
-                    continue;
-                }
-                let resistance = body.resistance(kind, crate::content::characters::Realm::Mental);
-                let chance = super::effects::condition_chance(
-                    u32::from(kind.level),
-                    resistance,
-                    strength.against,
-                    0,
-                );
-                let eye = body.eye(here);
-                let clear = sight.get(world).is_ok_and(|obstacles| obstacles.clear(eye, at));
-                if !clear {
-                    continue;
-                }
-                let response =
-                    if super::effects::save_roll(&mut world.resource_mut::<GameRng>(), chance) {
-                        LureResponse::Resisted
-                    } else {
-                        LureResponse::Controlled
-                    };
-                let group = world
-                    .get::<GroupMember>(entity)
-                    .and_then(|group| world.get::<GroupMembers>(group.0));
-                let affected = if battle.is_none() {
-                    group.map_or_else(|| vec![entity], |members| members.iter().collect())
-                } else {
-                    vec![entity]
-                };
-                for entity in affected {
-                    world.entity_mut(entity).insert(LureInfluence { lure, response });
-                }
-            }
-        } else {
-            let battle = battle.unwrap();
-            let mut weights = weights;
-            if underwater {
-                weights[0] = 0;
-            }
-            let roll = world.resource_mut::<GameRng>().below(weights.iter().sum());
-            let realm = crate::game::rng::weighted(roll, weights).unwrap_or(3);
-            let species_id = tier(strength.power, realm);
-            let locations: Vec<i32> = world
-                .query::<(&Monster, &LevelOwned)>()
-                .iter(world)
-                .filter(|(_, owner)| owner.0 == root)
-                .map(|(body, _)| body.location)
-                .collect();
-            let groups: Vec<i32> = world
-                .query::<(&MonsterGroup, &LevelOwned)>()
-                .iter(world)
-                .filter(|(_, owner)| owner.0 == root)
-                .map(|(group, _)| group.authored)
-                .collect();
-            let ids = population::next_ids(
-                locations,
-                groups,
-                world.get::<Unborn>(root).unwrap_or(&Unborn::default()),
-            );
-            let mut members = world.resource_scope(|world, mut rng: Mut<GameRng>| {
-                let kind = &world.resource::<Catalogs>().species[species_id];
-                let body = world
-                    .get::<MonsterBodies>(root)
-                    .unwrap()
-                    .get(species_id, world.resource::<Assets<MonsterBody>>())
-                    .unwrap();
-                population::roll_group(ids, (species_id, 1), (kind, body), &mut rng)
-            });
-            members[0].feet = at;
-            let stance = if report.outcome == Outcome::Backfired {
-                Stance::Hostile
-            } else {
-                Stance::Friendly
-            };
-            let navigation = LevelNavigation {
-                archipelagos: world
-                    .get::<LevelNavigation>(root)
-                    .map_or_else(Vec::new, |nav| nav.archipelagos.clone()),
-            };
-            let (group, spawned) = Catalogs::scope(world, |world, catalogs| {
-                world.resource_scope(|world, mut configs: Mut<Assets<WalkerMotionConfig>>| {
-                    population::spawn_group(
-                        &mut world.commands(),
-                        root,
-                        members,
-                        (ids.1, Some(SetStance { stance, at: now })),
-                        &catalogs.species,
-                        (&navigation, &mut configs),
-                    )
-                })
-            });
-            world.flush();
-            // The summoning lasts no longer than the fight.
-            world.entity_mut(group).insert(ChildOf(battle));
-            let elemental = spawned[0];
-            world.entity_mut(elemental).insert((
-                Combatant(battle),
-                SummonedBy(caster),
-                ChildOf(battle),
-            ));
-            // Power Cast may add the element's associated buff; use the same slot and duration rules.
-            if strength.boost != 0 && world.resource_mut::<GameRng>().below(100) < strength.boost {
-                let buff = [
-                    SpellId::HASTE,
-                    SpellId::BODY_OF_STONE,
-                    SpellId::MISSILE_SHIELD,
-                    SpellId::ARMORPLATE,
-                ][realm];
-                let turns = world.resource_scope(|world, mut rng: Mut<GameRng>| {
-                    let definition = &world.resource::<Catalogs>().spells[buff];
-                    super::effects::duration(&mut rng, definition, strength)
-                });
-                world.get_mut::<Monster>(elemental).unwrap().enchantments.apply_to_monster(
-                    super::enchantments::Enchantment {
-                        spell: buff,
-                        power: strength.power,
-                        boost: 0,
-                        turns,
-                        absorption: 0,
-                    },
-                );
-            }
+        match battle {
+            Some(battle) if id == SpellId::SUMMON_ELEMENTAL => summon_elemental(
+                world,
+                (caster, battle, root),
+                at,
+                (weights, underwater),
+                (strength, report.outcome == Outcome::Backfired, now),
+            ),
+            _ => lure(world, root, (at, far), (&spell, strength, now), battle.is_some()),
         }
     }
     world.write_message(MagicNews::Done(report));
     Ok(())
+}
+
+/// A Hypnotic Lure stands at `at` in place of any before it. Each hostile
+/// monster able to see it, within the far clip and not undead, may resist;
+/// outside a fight its whole group follows its choice.
+fn lure(
+    world: &mut World,
+    root: Entity,
+    (at, far): (Vec3, f32),
+    (spell, strength, now): (&crate::content::spells::SpellDefinition, super::Strength, u64),
+    fighting: bool,
+) {
+    let old: Vec<_> = world.query_filtered::<Entity, With<Lure>>().iter(world).collect();
+    for old in old {
+        world.despawn(old);
+    }
+    let turns = super::effects::duration(&mut world.resource_mut::<GameRng>(), spell, strength);
+    let lure = world
+        .spawn((
+            Lure { expires: now + u64::from(turns) * AGING_TICK_MS },
+            Transform::from_translation(at),
+            LevelOwned(root),
+        ))
+        .id();
+    let mut order: Vec<_> = world
+        .query::<(Entity, &Monster, &LevelOwned)>()
+        .iter(world)
+        .filter(|(_, monster, owner)| owner.0 == root && !monster.is_dead())
+        .map(|(entity, body, _)| (body.location, entity))
+        .collect();
+    order.sort_unstable();
+    let mut sight = SystemState::<WorldObstacles>::new(world);
+    for (_, entity) in order {
+        if hostility::monster_stance(world, entity) != Stance::Hostile {
+            continue;
+        }
+        if world
+            .get::<LureInfluence>(entity)
+            .is_some_and(|influence| influence.response == LureResponse::Resisted)
+        {
+            continue;
+        }
+        let body = world.get::<Monster>(entity).unwrap();
+        if !body.can_fight() || body.conditions.has(Condition::Blind) {
+            continue;
+        }
+        let here = crate::game::world::actor_position(world, entity);
+        if (here - at).abs().max_element() > far {
+            continue;
+        }
+        let kind = &world.resource::<Catalogs>().species[body.species];
+        if kind.kind == MonsterKind::Undead {
+            continue;
+        }
+        let resistance = body.resistance(kind, crate::content::characters::Realm::Mental);
+        let chance = super::effects::condition_chance(
+            u32::from(kind.level),
+            resistance,
+            strength.against,
+            0,
+        );
+        let eye = body.eye(here);
+        let clear = sight.get(world).unwrap().clear(eye, at);
+        if !clear {
+            continue;
+        }
+        let response = if super::effects::save_roll(&mut world.resource_mut::<GameRng>(), chance) {
+            LureResponse::Resisted
+        } else {
+            LureResponse::Controlled
+        };
+        let group =
+            world.get::<GroupMember>(entity).and_then(|group| world.get::<GroupMembers>(group.0));
+        let affected = if !fighting {
+            group.map_or_else(|| vec![entity], |members| members.iter().collect())
+        } else {
+            vec![entity]
+        };
+        for entity in affected {
+            world.entity_mut(entity).insert(LureInfluence { lure, response });
+        }
+    }
+}
+
+/// An elemental answers the summoner: its element weighted by the
+/// summoner's realm skills (none of fire under water), its tier by the
+/// power, friendly unless the summoning backfired. It joins the fight and
+/// lasts no longer; Power Cast may add its element's buff.
+fn summon_elemental(
+    world: &mut World,
+    (caster, battle, root): (Entity, Entity, Entity),
+    at: Vec3,
+    (mut weights, underwater): ([u32; 4], bool),
+    (strength, backfired, now): (super::Strength, bool, u64),
+) {
+    if underwater {
+        weights[0] = 0;
+    }
+    let roll = world.resource_mut::<GameRng>().below(weights.iter().sum());
+    let realm = crate::game::rng::weighted(roll, weights).unwrap_or(3);
+    let species_id = tier(strength.power, realm);
+    let locations: Vec<i32> = world
+        .query::<(&Monster, &LevelOwned)>()
+        .iter(world)
+        .filter(|(_, owner)| owner.0 == root)
+        .map(|(body, _)| body.location)
+        .collect();
+    let groups: Vec<i32> = world
+        .query::<(&MonsterGroup, &LevelOwned)>()
+        .iter(world)
+        .filter(|(_, owner)| owner.0 == root)
+        .map(|(group, _)| group.authored)
+        .collect();
+    let ids = population::next_ids(locations, groups, world.get::<Unborn>(root).unwrap());
+    let mut members = world.resource_scope(|world, mut rng: Mut<GameRng>| {
+        let kind = &world.resource::<Catalogs>().species[species_id];
+        let body = world
+            .get::<MonsterBodies>(root)
+            .unwrap()
+            .get(species_id, world.resource::<Assets<MonsterBody>>())
+            .unwrap();
+        population::roll_group(ids, (species_id, 1), (kind, body), &mut rng)
+    });
+    members[0].feet = at;
+    let stance = if backfired { Stance::Hostile } else { Stance::Friendly };
+    let navigation = LevelNavigation {
+        archipelagos: world.get::<LevelNavigation>(root).unwrap().archipelagos.clone(),
+    };
+    let (group, spawned) = Catalogs::scope(world, |world, catalogs| {
+        world.resource_scope(|world, mut configs: Mut<Assets<WalkerMotionConfig>>| {
+            population::spawn_group(
+                &mut world.commands(),
+                root,
+                members,
+                (ids.1, Some(SetStance { stance, at: now })),
+                &catalogs.species,
+                (&navigation, &mut configs),
+            )
+        })
+    });
+    world.flush();
+    // The summoning lasts no longer than the fight.
+    world.entity_mut(group).insert(ChildOf(battle));
+    let elemental = spawned[0];
+    world.entity_mut(elemental).insert((Combatant(battle), SummonedBy(caster), ChildOf(battle)));
+    // Power Cast may add the element's associated buff; use the same slot and duration rules.
+    if strength.boost != 0 && world.resource_mut::<GameRng>().below(100) < strength.boost {
+        let buff =
+            [SpellId::HASTE, SpellId::BODY_OF_STONE, SpellId::MISSILE_SHIELD, SpellId::ARMORPLATE]
+                [realm];
+        let turns = world.resource_scope(|world, mut rng: Mut<GameRng>| {
+            let definition = &world.resource::<Catalogs>().spells[buff];
+            super::effects::duration(&mut rng, definition, strength)
+        });
+        world.get_mut::<Monster>(elemental).unwrap().enchantments.apply_to_monster(
+            super::enchantments::Enchantment {
+                spell: buff,
+                power: strength.power,
+                boost: 0,
+                turns,
+                absorption: 0,
+            },
+        );
+    }
 }
 
 /// Lures last their turns, then go, and with them their hold.

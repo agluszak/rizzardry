@@ -173,7 +173,10 @@ fn open_panel(
                   mut requests: MessageWriter<DeviceRequest>| {
                 if key.input.state.is_pressed() && key.input.logical_key == Key::Escape {
                     key.propagate(false);
-                    requests.write(DeviceRequest::Leave { on: attempt });
+                    requests.write(DeviceRequest {
+                        on: attempt,
+                        act: crate::game::world::interaction::DeviceAct::Leave,
+                    });
                 }
             },
         )
@@ -566,26 +569,41 @@ fn press(
         }
         Control::Tumbler(tumbler) => {
             if let Some(actor) = actor {
-                requests.write(DeviceRequest::Pick { on, actor, tumbler });
+                requests.write(DeviceRequest {
+                    on,
+                    act: crate::game::world::interaction::DeviceAct::Pick { actor, tumbler },
+                });
             }
         }
         Control::Force => {
             if let Some(actor) = actor {
-                requests.write(DeviceRequest::Force { on, actor });
+                requests.write(DeviceRequest {
+                    on,
+                    act: crate::game::world::interaction::DeviceAct::Force { actor },
+                });
             }
         }
         Control::Inspect => {
             if let Some(actor) = actor {
-                requests.write(DeviceRequest::Inspect { on, actor });
+                requests.write(DeviceRequest {
+                    on,
+                    act: crate::game::world::interaction::DeviceAct::Inspect { actor },
+                });
             }
         }
         Control::Component(component) => {
             if let Some(actor) = actor {
-                requests.write(DeviceRequest::Disarm { on, actor, component });
+                requests.write(DeviceRequest {
+                    on,
+                    act: crate::game::world::interaction::DeviceAct::Disarm { actor, component },
+                });
             }
         }
         Control::Spring => {
-            requests.write(DeviceRequest::Spring { on, actor });
+            requests.write(DeviceRequest {
+                on,
+                act: crate::game::world::interaction::DeviceAct::Spring { actor },
+            });
         }
         Control::PreviousTrap => panel.guess = (panel.guess + TRAP_TYPES - 1) % TRAP_TYPES,
         Control::NextTrap => panel.guess = (panel.guess + 1) % TRAP_TYPES,
@@ -631,10 +649,16 @@ fn press(
                 },
             };
             let picks = std::mem::take(&mut panel.chosen);
-            requests.write(DeviceRequest::Take { on, picks, to });
+            requests.write(DeviceRequest {
+                on,
+                act: crate::game::world::interaction::DeviceAct::Take { picks, to },
+            });
         }
         Control::Leave => {
-            requests.write(DeviceRequest::Leave { on });
+            requests.write(DeviceRequest {
+                on,
+                act: crate::game::world::interaction::DeviceAct::Leave,
+            });
         }
     }
 }

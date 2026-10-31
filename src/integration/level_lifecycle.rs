@@ -15,8 +15,7 @@ use crate::game::party::roster::Party;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::Stance;
 use crate::game::world::level::{
-    Destination, Entry, Level, LevelEntryFailed, LevelMemory, LevelOwned, LevelReady, Travel,
-    activate_level, travel,
+    Destination, Entry, Level, LevelMemory, LevelOwned, LevelReady, Travel, activate_level, travel,
 };
 use crate::game::world::population::{Monster, MonsterBodies};
 use crate::game::world::triggers::PendingPartyMove;
@@ -41,7 +40,6 @@ fn app() -> App {
         .init_resource::<ItemIds>()
         .init_resource::<GameRng>()
         .add_message::<LevelReady>()
-        .add_message::<LevelEntryFailed>()
         .add_message::<Travel>()
         .add_systems(PreUpdate, travel)
         .add_systems(Update, activate_level);
@@ -147,12 +145,6 @@ fn party_entities(app: &mut App) -> Vec<Entity> {
 
 fn is_played(app: &App, level: Entity) -> bool {
     app.world().get::<Level>(level).is_some()
-}
-
-/// The entry was discarded and its failure announced.
-fn failed(app: &App, destination: Entity) -> bool {
-    app.world().get_entity(destination).is_err()
-        && !app.world().resource::<Messages<LevelEntryFailed>>().is_empty()
 }
 
 fn floor() -> CollisionMesh {
@@ -271,31 +263,15 @@ fn a_new_party_is_complete_when_its_first_level_is_ready() {
     assert_eq!(app.world().resource::<Seen>().0, [(true, true, true, true)]);
 }
 
+/// A prop the party walks through is built without collision.
 #[test]
-fn a_level_without_collision_fails_and_places_no_party() {
-    let mut app = app();
-    with_data(&mut app);
-    let root = spawn_level(&mut app, CollisionMesh::default());
-
-    app.update();
-
-    assert!(failed(&app, root));
-    assert!(app.world().get::<Collider>(root).is_none());
-    assert!(app.world().resource::<Messages<LevelReady>>().is_empty());
-    assert!(party_entities(&mut app).is_empty());
-}
-
-/// A solid prop whose collision cannot be built fails the destination
-/// before the level being left or the party changes; one the party walks
-/// through is built without it.
-#[test]
-fn a_solid_prop_without_collision_fails_entry_and_keeps_the_source() {
+fn a_walk_through_prop_without_collision_is_entered() {
     use crate::content::level::{PropModel, PropModelPart};
-    let (mut app, first_level) = playing();
+    let (mut app, _) = playing();
     let party = party_entities(&mut app);
-    let prop = |collidable| PropModel {
+    let prop = PropModel {
         name: "broken".into(),
-        collidable,
+        collidable: false,
         face_camera: false,
         frames_per_second: 10.0,
         parts: vec![PropModelPart {
@@ -307,7 +283,7 @@ fn a_solid_prop_without_collision_fails_entry_and_keeps_the_source() {
         slots: vec![],
         trigger: None,
     };
-    let enter = |app: &mut App, collidable: bool| {
+    let enter = |app: &mut App| {
         let level = test_level(app, floor());
         let mut definition = app
             .world()
@@ -315,19 +291,14 @@ fn a_solid_prop_without_collision_fails_entry_and_keeps_the_source() {
             .get(&level.definition)
             .unwrap()
             .clone();
-        definition.props = vec![prop(collidable)];
+        definition.props = vec![prop];
         app.world_mut()
             .resource_mut::<Assets<LevelDefinition>>()
             .insert(&level.definition, definition)
             .unwrap();
         app.world_mut().spawn(Destination::new(level, default(), Entry::Travel)).id()
     };
-    let destination = enter(&mut app, true);
-    app.update();
-    assert!(failed(&app, destination));
-    assert!(is_played(&app, first_level));
-    assert_eq!(party_entities(&mut app), party);
-    let destination = enter(&mut app, false);
+    let destination = enter(&mut app);
     app.update();
     assert!(is_played(&app, destination));
     assert_eq!(party_entities(&mut app), party);
@@ -339,7 +310,7 @@ fn a_level_waits_for_the_shared_databases() {
     let root = spawn_level(&mut app, floor());
 
     app.update();
-    assert!(!is_played(&app, root) && !failed(&app, root));
+    assert!(!is_played(&app, root));
     assert!(party_entities(&mut app).is_empty());
 
     with_data(&mut app);
@@ -363,30 +334,6 @@ fn the_party_survives_level_replacement_without_duplication() {
 
     assert!(is_played(&app, second_level));
     assert_eq!(party_entities(&mut app), party);
-}
-
-#[test]
-fn a_destination_that_cannot_load_leaves_the_party_where_it_was() {
-    let (mut app, first_level) = playing();
-    let party = party_entities(&mut app)[0];
-
-    // MO2's files are not there to load here: the destination fails.
-    app.world_mut().write_message(Travel { entrance: "MO204".into() });
-    app.world_mut().run_schedule(PreUpdate);
-    assert!(is_played(&app, first_level));
-    assert!(app.world().get::<RigidBodyDisabled>(party).is_none());
-    assert!(app.world().resource::<LevelMemory>().is_empty(), "no snapshot before departure");
-    for _ in 0..20 {
-        app.update();
-    }
-
-    assert!(is_played(&app, first_level), "the source remains playable");
-    assert!(app.world().get::<RigidBodyDisabled>(party).is_none());
-    assert!(
-        app.world().resource::<LevelMemory>().is_empty(),
-        "failure never creates a dormant record"
-    );
-    assert_eq!(party_entities(&mut app), vec![party]);
 }
 
 fn monsters(app: &mut App) -> Vec<Monster> {
@@ -502,7 +449,7 @@ fn a_level_waits_for_body_metadata_and_sizes_monsters_without_render_assets() {
     let root = spawn_level(&mut app, floor());
 
     app.update();
-    assert!(!is_played(&app, root) && !failed(&app, root));
+    assert!(!is_played(&app, root));
 
     let body = MonsterBody { fight_radius: 0.5, scale: 2.0, movement_rate: 1.5, ..default() };
     app.world_mut().resource_mut::<Assets<MonsterBody>>().insert(&loading, body).unwrap();
@@ -727,21 +674,6 @@ fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
         app.world().get::<Position>(party).unwrap().0,
         Vec3::new(9.0, 4.0, 2.0) - Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE
     );
-}
-
-#[test]
-fn failed_navigation_is_a_failed_destination_not_degraded_activation() {
-    let (mut app, source) = playing();
-    let mut next = test_level(&mut app, floor());
-    next.navmeshes.push(app.world().resource::<AssetServer>().load("missing.navmesh"));
-    let destination = app.world_mut().spawn(Destination::new(next, default(), Entry::Travel)).id();
-    update_until(&mut app, "the destination failing", |world| {
-        world.get_entity(destination).is_err()
-    });
-    assert!(failed(&app, destination));
-    assert!(is_played(&app, source));
-    assert!(!is_played(&app, destination));
-    assert!(app.world().resource::<LevelMemory>().is_empty());
 }
 
 #[test]
