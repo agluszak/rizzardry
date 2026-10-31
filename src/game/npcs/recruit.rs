@@ -377,14 +377,15 @@ pub struct JoinParty {
     pub actor: Entity,
 }
 
-/// NPCs that accepted join, if they still would.
+/// NPCs that accepted join, if they still would. The dialogue that asks
+/// them also says they join, so the request is read inside the set.
 pub fn join_party(
-    mut joins: MessageReader<JoinParty>,
-    mut recruiting: ParamSet<(super::conversation::Dialogue, Recruits)>,
+    mut recruiting: ParamSet<(MessageReader<JoinParty>, super::conversation::Dialogue, Recruits)>,
 ) {
-    for &JoinParty { actor } in joins.read() {
-        match recruiting.p0().joinable(actor) {
-            Ok(()) => recruiting.p1().join(actor),
+    let joins: Vec<_> = recruiting.p0().read().map(|join| join.actor).collect();
+    for actor in joins {
+        match recruiting.p1().joinable(actor) {
+            Ok(()) => recruiting.p2().join(actor),
             Err(refusal) => warn!("NPC did not join after all: {refusal:?}"),
         }
     }
