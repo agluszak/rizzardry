@@ -427,8 +427,8 @@ fn read_item(index: usize, record: &[u8], strings: &[String]) -> Result<ItemDefi
     bytes.take(3)?; // not established
     let weapon_skill = u8::try_from(bytes.i8()?).ok().and_then(|s| Skill::try_from(s).ok());
     let reach = reach(bytes.u8()?);
-    let damage_bonus = bytes.i8()?;
-    let hit_bonus = bytes.i8()?;
+    let damage_bonus = i32::from(bytes.i8()?);
+    let hit_bonus = i32::from(bytes.i8()?);
     let damage = dice(&mut bytes)?;
     let attack_modes = EnumSet::from_repr_truncated(bytes.u16()?);
     let chances = bytes.array::<16>()?.map(|chance| chance as u32);
@@ -442,7 +442,7 @@ fn read_item(index: usize, record: &[u8], strings: &[String]) -> Result<ItemDefi
             LoadError::Invalid(format!("item {index}: unknown slaying category {kind}"))
         })?),
     };
-    let armor_class_bonus = bytes.i8()?;
+    let armor_class_bonus = i32::from(bytes.i8()?);
     let (spell, power) = (bytes.u8()?, u32::from(bytes.u8()?));
     bytes.u8()?; // not established
     let spell = (spell != 0

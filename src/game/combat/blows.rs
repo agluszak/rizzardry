@@ -851,7 +851,13 @@ fn iron_skin(
 /// other hand while it has attacks, unless it has fewer and less
 /// initiative; spread over the rest of the round, and a switch costs the
 /// difference in the hands' initiative.
-fn next_hand(battle: &mut Battle, index: usize, step: u8, turns: HandTurns, hands: &attack::Hands) {
+fn next_hand(
+    battle: &mut Battle,
+    index: usize,
+    step: u32,
+    turns: HandTurns,
+    hands: &attack::Hands,
+) {
     let current = turns.current;
     let other = 1 - current;
     let (now, then) = (turns.left[current], turns.left[other]);
@@ -865,9 +871,9 @@ fn next_hand(battle: &mut Battle, index: usize, step: u8, turns: HandTurns, hand
     let phase = if left == 0 {
         None
     } else if chosen == current || then <= now {
-        Some(u32::from(step) + (100 - u32::from(step)) / (left + 1))
+        Some(step + (100 - step) / (left + 1))
     } else {
-        Some(u32::from(step))
+        Some(step)
     };
     let work = &mut battle.this_round.party[index];
     work.hands = turns;
@@ -876,7 +882,7 @@ fn next_hand(battle: &mut Battle, index: usize, step: u8, turns: HandTurns, hand
             let phase = phase as i32
                 + if chosen != current { initiative(current) - initiative(chosen) } else { 0 };
             work.hands.current = chosen;
-            work.phase = phase.clamp(i32::from(step), 100) as u8;
+            work.phase = phase.clamp(step as i32, 100) as u32;
         }
         None => work.end(),
     }

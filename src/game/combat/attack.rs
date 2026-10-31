@@ -222,7 +222,7 @@ pub struct Hand {
     pub to_hit: i32,
     /// The sheet's "To Damage (%)": strength.
     pub damage_percent: i32,
-    /// The weapon's initiative byte (retail `damage_bonus`).
+    /// The weapon's initiative bonus (retail `damage_bonus`).
     pub initiative: i32,
     /// What its blows may do besides damage: a fist's knockout chance, or
     /// the weapon's effects with its ammunition's.
@@ -445,7 +445,7 @@ pub fn hands(
             0 => 1 + u32::from(score > 49) + u32::from(score > 99),
             _ => 1 + u32::from(score > 74),
         };
-        hand.initiative = d.map_or(combined / 10, |d| i32::from(d.damage_bonus));
+        hand.initiative = d.map_or(combined / 10, |d| d.damage_bonus);
         // Retail reads the initiative its previous pass left, which is this.
         let score =
             (speed + hand.initiative * 10 + dual_penalty + physical + load_penalty + combined) / 3;
@@ -456,11 +456,11 @@ pub fn hands(
         let mut strength_divisor = 1;
         let mut strength_helps = true;
         if let Some(d) = d {
-            hand.to_hit = i32::from(d.hit_bonus);
+            hand.to_hit = d.hit_bonus;
             if holds[other] == Holds::Ammunition
                 && let Some(o) = definition(other)
             {
-                hand.to_hit += i32::from(o.hit_bonus);
+                hand.to_hit += o.hit_bonus;
             }
             if is_launcher(d.kind) {
                 hand.damage_percent += d.damage.base * 10;
@@ -592,9 +592,9 @@ pub fn armour(
         EquipSlot::Secondary,
     ] {
         if let Some(d) = definition(slot) {
-            total += i32::from(d.armor_class_bonus);
+            total += d.armor_class_bonus;
             if d.class == EquipClass::Shield {
-                let bonus = i32::from(d.armor_class_bonus);
+                let bonus = d.armor_class_bonus;
                 let skill = c.skill(Skill::Shield) as i32;
                 let skill = if defending {
                     (skill / 15).min(bonus * 3 / 2)
@@ -608,7 +608,7 @@ pub fn armour(
     }
     let by_location = EnumMap::from_fn(|part| {
         let worn = definition(armour_slot(part));
-        total + worn.map_or(0, |d: &ItemDefinition| i32::from(d.armor_class_bonus))
+        total + worn.map_or(0, |d: &ItemDefinition| d.armor_class_bonus)
     });
     Armour { total, by_location, speed, shield }
 }
@@ -1132,9 +1132,9 @@ pub fn strikes(at: Vec3, aimed: Vec3, radius: f32, half_height: f32) -> bool {
 
 /// When an actor acts in the round, 1 (first) to 100: a d4 plus its
 /// initiative, highest first.
-pub fn phase(rng: &mut GameRng, initiative: i32) -> u8 {
+pub fn phase(rng: &mut GameRng, initiative: i32) -> u32 {
     let v = rng.below(4) as i32 + initiative;
-    (90 - v.clamp(-10, 89)) as u8
+    (90 - v.clamp(-10, 89)) as u32
 }
 
 /// The character's initiative before the roll, weapon included.

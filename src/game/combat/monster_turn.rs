@@ -539,7 +539,7 @@ fn strike(
     if let Some((budget, goal)) = budget {
         let work = &mut battle.this_round.monsters[index];
         work.moved = true;
-        work.phase = (u32::from(step) * 2).min(100) as u8;
+        work.phase = (step * 2).min(100);
         work.attacks_left = attacks_left;
         commands.entity(monster).insert(approach::CombatMove {
             budget: budget.metres,

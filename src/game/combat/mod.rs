@@ -198,7 +198,7 @@ enum RoundPhase {
     #[default]
     Waiting,
     Accepted,
-    Executing(u8),
+    Executing(u32),
 }
 
 impl Battle {
@@ -637,12 +637,12 @@ pub fn run_battle(
 
 /// When the remaining attacks of a turn come: spread over the rest of the
 /// round, or none.
-fn next_phase(step: u8, attacks_left: u32) -> u8 {
+fn next_phase(step: u32, attacks_left: u32) -> u32 {
     if attacks_left == 0 {
         return 0;
     }
-    let next = u32::from(step) + (100 - u32::from(step)) / (attacks_left + 1);
-    if next > 100 { 0 } else { next as u8 }
+    let next = step + (100 - step) / (attacks_left + 1);
+    if next > 100 { 0 } else { next }
 }
 
 /// What casting in a fight needs beside the fight itself.

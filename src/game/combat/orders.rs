@@ -55,7 +55,7 @@ pub(super) enum PartyMove {
     #[default]
     None,
     /// Waiting for its phase; members do not act before it.
-    Pending { pace: PartyPace, phase: u8 },
+    Pending { pace: PartyPace, phase: u32 },
     /// Under way: metres allowed and covered (retail `GetPartyMovementSpeed`:
     /// 10000 units walking, 15000 running).
     Moving { pace: PartyPace, budget: f32, moved: f32, last: Option<Vec3> },
