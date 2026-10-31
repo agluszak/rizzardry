@@ -251,7 +251,7 @@ fn profession_row(profession: Profession) -> ProfessionRow {
     let (minimums, hp_factor, experience, bonus_skill, skills, physical): (
         [u8; 7],
         f32,
-        u32,
+        _,
         Skill,
         &'static [Skill],
         i32,
