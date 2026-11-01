@@ -683,7 +683,7 @@ impl<'a> Defence<'a> {
                 fatigue: monster_fatigue(monster),
                 max_hp: monster.max_hp,
                 armour: monster.enchantments.armour(),
-                reduction: monster.enchantments.damage_reduction() as i32,
+                reduction: monster.enchantments.damage_reduction(),
             },
             ssdi: species_ssdi(species, &monster.enchantments),
             moving: advancing,

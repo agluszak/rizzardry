@@ -842,7 +842,7 @@ impl CharacterStats<'_> {
         if self.skill_available(Skill::IronSkin) {
             reduction += (self.skill(Skill::IronSkin) >> 2) as i32 + 5;
         }
-        reduction += self.enchantments.map_or(0, |e| e.damage_reduction() as i32);
+        reduction += self.enchantments.map_or(0, |e| e.damage_reduction());
         reduction.min(100)
     }
     pub fn attribute(&self, attribute: Attribute) -> u32 {
