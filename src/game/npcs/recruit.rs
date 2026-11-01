@@ -94,9 +94,10 @@ fn willing(world: &mut World, id: NpcId, definition: &NpcDefinition) -> bool {
     }
     if definition.min_party_level > 0 {
         // Retail counts no able member as an average of nothing.
-        let lineup = crate::game::party::Lineup::in_world(world);
-        let levels: Vec<_> = lineup.able().map(|(_, c)| c.level()).collect();
-        let average = if levels.is_empty() { 0 } else { crate::game::party::average_level(levels) };
+        let mut levels =
+            crate::game::party::able_in_world(world).map(|(_, c)| c.level()).peekable();
+        let average =
+            if levels.peek().is_none() { 0 } else { crate::game::party::average_level(levels) };
         if average < u32::from(definition.min_party_level) {
             return false;
         }

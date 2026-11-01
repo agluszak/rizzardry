@@ -407,15 +407,12 @@ pub enum CombatNews {
     PartyStops,
 }
 
-/// Whether the party is fighting, for operations that hold the whole world.
-/// The party's lineup as the fight's member query reads it.
-fn lineup<'a>(roster: &PartyRoster, members: &'a Members) -> crate::game::party::Lineup<'a> {
-    crate::game::party::Lineup::of(roster, |m| {
-        let (character, vitals, ..) = members.get(m).unwrap();
-        (character, vitals)
-    })
+/// Whether any party member still lives.
+fn anyone_alive(roster: &PartyRoster, members: &Members) -> bool {
+    roster.iter().any(|m| !members.get(m).unwrap().1.is_dead())
 }
 
+/// Whether the party is fighting, for operations that hold the whole world.
 pub fn in_battle(world: &mut World) -> bool {
     world.query_filtered::<(), With<Battle>>().iter(world).next().is_some()
 }
@@ -426,13 +423,13 @@ pub fn settle_defeat(
     mut commands: Commands,
     battle: Option<Single<(Entity, Option<&Combatants>), With<Battle>>>,
     roster: Single<&PartyRoster>,
-    members: Query<(&Character, &Vitals)>,
+    members: Query<&Vitals>,
     mut news: MessageWriter<CombatNews>,
     mut effects: Single<&mut crate::game::magic::enchantments::PartyEffects>,
     mut monsters: Query<&mut Monster>,
 ) {
     let Some((battle, combatants)) = battle.map(Single::into_inner) else { return };
-    if !crate::game::party::Lineup::of(&roster, |m| members.get(m).unwrap()).anyone_alive() {
+    if roster.iter().all(|m| members.get(m).unwrap().is_dead()) {
         // What lasts a fight ends on the party and on those in it, as when
         // the party wins.
         effects.0.end_combat();

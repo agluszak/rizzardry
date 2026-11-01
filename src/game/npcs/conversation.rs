@@ -455,11 +455,18 @@ fn resume(world: &mut World, actor: Entity) {
         world.get_mut::<Npc>(actor).unwrap().disposition = 0x19;
     }
 }
-/// The member with the best Communication, the first on a tie, and that
-/// level (retail `GetBestPartySkillLevel`).
+/// The member with the best Communication among those who can act, the first
+/// on a tie, and that level (retail `GetBestPartySkillLevel`:
+/// `hp_current != 0 && highest_condition < TURNCOAT`).
 fn best_communicator(world: &World) -> Option<(Entity, u32)> {
-    crate::game::party::Lineup::in_world(world)
-        .best(crate::content::characters::Skill::Communication)
+    let mut best: Option<(Entity, u32)> = None;
+    for (member, character, vitals) in crate::game::party::members_in_world(world) {
+        let level = character.skill(crate::content::characters::Skill::Communication);
+        if vitals.can_act() && best.is_none_or(|(_, best)| level > best) {
+            best = Some((member, level));
+        }
+    }
+    best
 }
 /// Practise `members`' Communication `usage` times.
 fn practise_communication(world: &mut World, members: &[Entity], usage: u32) {
@@ -507,8 +514,7 @@ fn greet(world: &mut World, actor: Entity) -> u16 {
     let def = definition(world, actor);
     let greeting = entry_quote(def, world.get::<Npc>(actor).unwrap());
     if greeting == 0 && !def.monster_bound && !def.voice_script && !def.merchant {
-        let members: Vec<_> =
-            crate::game::party::Lineup::in_world(world).able().map(|(m, _)| m).collect();
+        let members: Vec<_> = crate::game::party::able_in_world(world).map(|(m, _)| m).collect();
         practise_communication(world, &members, 0xf);
     }
     greeting
@@ -562,7 +568,9 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     let menu = !scripted && !def.merchant && band == Band::Neutral;
     let greeting = if menu { NEUTRAL_GREETING } else { greet(world, actor) };
     let now = world.resource::<GameClock>().ms;
-    let average = crate::game::party::Lineup::in_world(world).average_level();
+    let average = crate::game::party::average_level(
+        crate::game::party::members_in_world(world).map(|(_, c, _)| c.level()),
+    );
     let def = definition(world, actor);
     if def.owns_stock {
         let stock = &world.get::<Npc>(actor).unwrap().stock;
@@ -1236,7 +1244,7 @@ fn approach_npc(world: &mut World, entity: Entity, approach: Approach) {
     let mut delta = scale + level as i32 * (scale.abs() / 5) / 100;
     if approach == Approach::Charm && delta > 0 {
         let average = crate::game::party::average_level(
-            crate::game::party::Lineup::in_world(world).able().map(|(_, c)| c.level()),
+            crate::game::party::able_in_world(world).map(|(_, c)| c.level()),
         );
         let own = active_body(world, actor)
             .and_then(|body| world.get::<Monster>(body))

@@ -132,13 +132,14 @@ pub fn force_camp(
     camp: Option<Res<Camp>>,
     battle: Option<Single<&Battle>>,
     roster: Single<&PartyRoster>,
-    members: Query<(&crate::game::characters::Character, &Vitals)>,
+    members: Query<&Vitals>,
     mut news: MessageWriter<CampNews>,
 ) {
-    let lineup = crate::game::party::Lineup::of(&roster, |m| members.get(m).unwrap());
-    let anyone_alive = lineup.anyone_alive();
-    let anyone_able = lineup.members().any(|(_, _, v)| v.can_act());
-    if camp.is_some() || battle.is_some() || !anyone_alive || anyone_able {
+    if camp.is_some() || battle.is_some() {
+        return;
+    }
+    let members = || roster.iter().map(|m| members.get(m).unwrap());
+    if members().all(Vitals::is_dead) || members().any(Vitals::can_act) {
         return;
     }
     commands.insert_resource(Camp::UntilAble);

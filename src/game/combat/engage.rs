@@ -52,8 +52,8 @@ pub(super) struct PartySight<'w, 's> {
 }
 
 impl PartySight<'_, '_> {
-    fn lineup(&self) -> crate::game::party::Lineup<'_> {
-        crate::game::party::Lineup::of(&self.roster, |m| self.members.get(m).unwrap())
+    fn anyone_alive(&self) -> bool {
+        self.roster.iter().any(|m| !self.members.get(m).unwrap().1.is_dead())
     }
 
     /// Monsters' sight of the party and the level it is played on.
@@ -63,7 +63,9 @@ impl PartySight<'_, '_> {
                 eye: PartyBody::eye(self.party.0),
                 concealment: self.effects.0.concealment(),
                 far: self.level.view_distance()?,
-                lowest_level: self.lineup().lowest_level(),
+                lowest_level: crate::game::party::lowest_level(
+                    self.roster.iter().map(|m| self.members.get(m).unwrap()),
+                ),
                 obstacles: &self.obstacles,
             },
             self.level.entity()?,
@@ -154,7 +156,7 @@ pub(super) fn engage(
         .filter_map(|&hostility::Provocation(m)| Some(monsters.get(m).ok()?.4?.0))
         .collect();
     let running = !battles.is_empty();
-    if !running && !party.lineup().anyone_alive() {
+    if !running && !party.anyone_alive() {
         return;
     }
     let Some((sight, root)) = party.sight() else { return };
