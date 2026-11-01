@@ -231,10 +231,8 @@ impl Advancement {
     pub fn learned(&self) -> LearnedSpells {
         let mut known = self.known.clone();
         known.0.extend(self.spells.iter().copied());
-        if self.spells.contains(&SpellId::RETURN_TO_PORTAL)
-            || self.spells.contains(&SpellId::SET_PORTAL)
-        {
-            known.0.extend([SpellId::RETURN_TO_PORTAL, SpellId::SET_PORTAL]);
+        if self.spells.contains(&SpellId::SET_PORTAL) {
+            known.0.extend([SpellId::RETURN_TO_PORTAL]);
         }
         known
     }
@@ -269,18 +267,7 @@ impl Advancement {
         true
     }
     pub fn selected_spell(&self, id: SpellId) -> bool {
-        self.spells.contains(&id)
-            || (matches!(
-                id,
-                crate::content::spells::SpellId::RETURN_TO_PORTAL
-                    | crate::content::spells::SpellId::SET_PORTAL
-            ) && self.spells.iter().any(|s| {
-                matches!(
-                    *s,
-                    crate::content::spells::SpellId::RETURN_TO_PORTAL
-                        | crate::content::spells::SpellId::SET_PORTAL
-                )
-            }))
+        self.spells.contains(&selection_key(id))
     }
     pub fn can_learn(&self, id: SpellId, catalog: &SpellCatalog) -> bool {
         self.learnable(&self.evaluate(), id, catalog)
@@ -290,46 +277,37 @@ impl Advancement {
         !self.known.0.contains(&id)
             && catalog.get(id).is_some_and(|s| magic::can_learn(&draft.baseline, s))
     }
-    fn remaining_picks(&self, catalog: &SpellCatalog) -> Option<SpellPicks> {
-        let c = self.baseline();
+    fn remaining_picks(&self, draft: &Evaluation, catalog: &SpellCatalog) -> Option<SpellPicks> {
+        let c = &draft.baseline;
         let mut picks = c.spell_picks.clone();
         for &id in &self.spells {
-            if !self.can_learn(id, catalog) || !picks.spend(&c, catalog.get(id)?.books) {
+            if !self.learnable(draft, id, catalog) || !picks.spend(c, catalog.get(id)?.books) {
                 return None;
             }
         }
         Some(picks)
     }
     pub fn spell_remaining(&self, catalog: &SpellCatalog) -> u32 {
-        self.remaining_picks(catalog).map_or(0, |p| p.available(&self.baseline()))
+        let draft = self.evaluate();
+        self.remaining_picks(&draft, catalog).map_or(0, |p| p.available(&draft.baseline))
     }
     pub fn toggle_spell(&mut self, id: SpellId, catalog: &SpellCatalog) -> bool {
-        // Retail charges the linked portal pair at Set Portal (75) in spell order.
-        let id = if id == SpellId::RETURN_TO_PORTAL { SpellId::SET_PORTAL } else { id };
-        if self.selected_spell(id) {
-            self.spells.remove(&id);
-            if matches!(
-                id,
-                crate::content::spells::SpellId::RETURN_TO_PORTAL
-                    | crate::content::spells::SpellId::SET_PORTAL
-            ) {
-                self.spells.remove(&SpellId::RETURN_TO_PORTAL);
-                self.spells.remove(&SpellId::SET_PORTAL);
-            }
-        } else {
-            if !self.can_learn(id, catalog) {
+        let id = selection_key(id);
+        // The spell selection does not enter the baseline or the preview.
+        let draft = self.evaluate();
+        if !self.spells.remove(&id) {
+            if !self.learnable(&draft, id, catalog) {
                 return false;
             }
             self.spells.insert(id);
-            if self.remaining_picks(catalog).is_none() {
+            if self.remaining_picks(&draft, catalog).is_none() {
                 self.spells.remove(&id);
                 return false;
             }
         }
-        let c = self.preview();
         let learned = self.learned();
         for s in EnumSet::<Skill>::all() {
-            if !magic::skill_available(&c, &learned, catalog, s) {
+            if !magic::skill_available(&draft.preview, &learned, catalog, s) {
                 self.skills[s] = 0;
             }
         }
@@ -339,25 +317,31 @@ impl Advancement {
         if !self.eligible_profession(self.profession) {
             return Err("This profession is unavailable.");
         }
-        if EnumSet::<Attribute>::all().iter().any(|a| self.can_adjust_attribute(a, true)) {
+        let draft = self.evaluate();
+        if EnumSet::<Attribute>::all().iter().any(|a| self.attribute_adjustable(&draft, a, true)) {
             return Err("Allocate the remaining attribute points.");
         }
-        if EnumSet::<Skill>::all().iter().any(|s| self.can_adjust_skill(s, true, catalog)) {
+        if EnumSet::<Skill>::all().iter().any(|s| self.skill_adjustable(&draft, s, true, catalog)) {
             return Err("Allocate the remaining skill points.");
         }
-        let mut c = self.preview();
-        let learned = self.learned();
-        if self
-            .skills
-            .iter()
-            .any(|(s, &n)| n > 0 && !magic::skill_available(&c, &learned, catalog, s))
-        {
+        if self.skills.iter().any(|(s, &n)| {
+            n > 0 && !magic::skill_available(&draft.preview, &draft.learned, catalog, s)
+        }) {
             return Err("Refund training in unavailable skills.");
         }
-        c.spell_picks =
-            self.remaining_picks(catalog).ok_or("The spell selection is no longer valid.")?;
-        Ok((c, self.learned()))
+        let picks = self
+            .remaining_picks(&draft, catalog)
+            .ok_or("The spell selection is no longer valid.")?;
+        let Evaluation { mut preview, learned, .. } = draft;
+        preview.spell_picks = picks;
+        Ok((preview, learned))
     }
+}
+
+/// The spell a selection holds it under: retail charges the linked portal pair
+/// at Set Portal (75) in spell order.
+fn selection_key(id: SpellId) -> SpellId {
+    if id == SpellId::RETURN_TO_PORTAL { SpellId::SET_PORTAL } else { id }
 }
 
 #[derive(bevy::ecs::system::SystemParam)]
