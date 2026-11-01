@@ -83,11 +83,7 @@ impl LevelState {
     }
 
     fn set_variable(&mut self, name: &VariableName, value: bool) {
-        if let Some(stored) = self.variables.get_mut(name) {
-            *stored = value;
-        } else {
-            self.variables.insert(name.clone(), value);
-        }
+        self.variables.insert(name.clone(), value);
     }
 }
 
@@ -175,27 +171,28 @@ pub enum PartyMove {
 #[derive(Component, Clone, Debug)]
 pub struct PendingPartyMove(pub PartyMove);
 
+/// One device's parts.
+#[derive(bevy::ecs::query::QueryData)]
+#[query_data(mutable)]
+struct DeviceParts {
+    device: &'static Device,
+    owner: &'static LevelOwned,
+    trigger: &'static mut TriggerState,
+    door: Option<&'static mut DoorState>,
+    dial: Option<&'static mut DialState>,
+    motion: Option<&'static mut PropMotion>,
+    prop: Option<&'static Prop>,
+    bell: Option<&'static BellButton>,
+    busy: Has<super::interaction::DeviceAttempt>,
+}
+
 /// Everything running a device may touch: the devices' own state, their
 /// level's variables, lights and emitters, the party, the dice and the
 /// clock. The trigger interpreter runs over it; the level's geometry is
 /// passed beside it, borrowed for the whole run.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct Devices<'w, 's> {
-    devices: Query<
-        'w,
-        's,
-        (
-            &'static Device,
-            &'static LevelOwned,
-            &'static mut TriggerState,
-            Option<&'static mut DoorState>,
-            Option<&'static mut DialState>,
-            Option<&'static mut PropMotion>,
-            Option<&'static Prop>,
-            Option<&'static BellButton>,
-            Has<super::interaction::DeviceAttempt>,
-        ),
-    >,
+    devices: Query<'w, 's, DeviceParts>,
     guards: Query<'w, 's, &'static mut Guarded>,
     containers: Query<'w, 's, &'static mut Container>,
     fountains: Query<'w, 's, &'static mut FountainState>,
@@ -284,7 +281,7 @@ impl Devices<'_, '_> {
         geometry: &'g LevelDefinition,
         entity: Entity,
     ) -> &'g TriggerDefinition {
-        &geometry.triggers[self.devices.get(entity).unwrap().0.definition]
+        &geometry.triggers[self.devices.get(entity).unwrap().device.definition]
     }
 
     fn request_move(&mut self, level: Entity, wanted: PartyMove) {
@@ -304,7 +301,7 @@ impl Devices<'_, '_> {
         if player && !self.freedom.free() {
             return false;
         }
-        let level = self.devices.get(entity).unwrap().1.0;
+        let level = self.devices.get(entity).unwrap().owner.0;
         let geometry = self.geometry(geometry, level);
         let definition = self.definition(geometry, entity);
         if player
@@ -325,13 +322,17 @@ impl Devices<'_, '_> {
     /// The device's lock or trap is overcome: it is unlocked and runs
     /// (retail `CompleteItemInteraction` then `Run`).
     pub fn open(&mut self, geometry: &Assets<LevelDefinition>, device: Entity) {
+        self.overcome(device);
+        self.activate(geometry, device, false);
+    }
+
+    /// The device's lock, and any guard, is gone; this run may use it.
+    fn overcome(&mut self, device: Entity) {
         self.commands.entity(device).remove::<Guarded>();
         self.overcome.push(device);
-        if let Some(mut door) = self.devices.get_mut(device).unwrap().3 {
+        if let Some(mut door) = self.devices.get_mut(device).unwrap().door {
             door.locked = false;
         }
-        self.activate(geometry, device, false);
-        self.overcome.clear();
     }
 
     /// Reach uses the current gameplay geometry, independent of the last
@@ -339,7 +340,7 @@ impl Devices<'_, '_> {
     /// The player uses only props.
     fn player_distance(&self, geometry: &LevelDefinition, entity: Entity) -> f32 {
         let eye = crate::game::party::body::PartyBody::eye(self.party.0);
-        let prop = self.devices.get(entity).unwrap().6.unwrap();
+        let prop = self.devices.get(entity).unwrap().prop.unwrap();
         let centre = geometry.props[prop.definition].centre();
         self.children
             .get(entity)
@@ -354,7 +355,7 @@ impl Devices<'_, '_> {
     }
 
     fn usable(&self, entity: Entity, definition: &TriggerDefinition) -> bool {
-        let state = &self.devices.get(entity).unwrap().2;
+        let state = self.devices.get(entity).unwrap().trigger;
         definition.usable && state.on && !(definition.once && state.fired)
     }
 
@@ -372,7 +373,8 @@ impl Devices<'_, '_> {
         level: Entity,
         definition: &'a TriggerDefinition,
     ) -> Option<Selected<'a>> {
-        let (_, _, state, door, _, motion, ..) = self.devices.get(entity).unwrap();
+        let parts = self.devices.get(entity).unwrap();
+        let (state, door, motion) = (parts.trigger, parts.door, parts.motion);
         let variables = &self.levels.get(level).unwrap().1;
         let running = state.awaits_animation && motion.is_some_and(|m| m.frame != m.target);
         if !state.on
@@ -414,8 +416,8 @@ impl Devices<'_, '_> {
     /// Whether a device this one runs, or one those run, is mid-animation.
     fn links_moving(&self, entity: Entity, depth: usize) -> bool {
         depth <= MAX_DEPTH
-            && self.devices.get(entity).unwrap().0.recipients.iter().any(|&recipient| {
-                self.devices.get(recipient).unwrap().5.is_some_and(|m| m.frame != m.target)
+            && self.devices.get(entity).unwrap().device.recipients.iter().any(|&recipient| {
+                self.devices.get(recipient).unwrap().motion.is_some_and(|m| m.frame != m.target)
                     || self.links_moving(recipient, depth + 1)
             })
     }
@@ -427,7 +429,7 @@ impl Devices<'_, '_> {
         definition: &TriggerDefinition,
     ) -> Option<Vec3> {
         definition.place.or_else(|| {
-            let prop = self.devices.get(entity).unwrap().6?;
+            let prop = self.devices.get(entity).unwrap().prop?;
             geometry.props.get(prop.definition).map(PropModel::centre)
         })
     }
@@ -455,7 +457,7 @@ impl Devices<'_, '_> {
         depth: usize,
         source: i32,
     ) {
-        let recipients = self.devices.get(entity).unwrap().0.recipients.clone();
+        let recipients = self.devices.get(entity).unwrap().device.recipients.clone();
         for recipient in recipients {
             self.execute(geometry, recipient, depth + 1, source);
         }
@@ -594,9 +596,9 @@ impl Devices<'_, '_> {
         depth: usize,
         source: i32,
     ) -> Ran {
-        let (device, owner, ..) = self.devices.get(entity).unwrap();
-        let level = owner.0;
-        let definition = &geometry.triggers[device.definition];
+        let parts = self.devices.get(entity).unwrap();
+        let level = parts.owner.0;
+        let definition = &geometry.triggers[parts.device.definition];
         if depth > MAX_DEPTH {
             warn!("trigger {} recurses too deeply", definition.name);
             return Ran::Declined;
@@ -625,12 +627,10 @@ impl Devices<'_, '_> {
                     });
                     return Ran::Answered;
                 }
-                let (_, _, mut state, door, ..) = self.devices.get_mut(entity).unwrap();
                 if keyed {
-                    door.unwrap().locked = false;
-                    self.commands.entity(entity).remove::<Guarded>();
-                    self.overcome.push(entity);
+                    self.overcome(entity);
                 }
+                let mut state = self.devices.get_mut(entity).unwrap().trigger;
                 if let Some(next) = next
                     && state.use_alternate != next
                 {
@@ -641,28 +641,25 @@ impl Devices<'_, '_> {
         };
         // A level callback runs once the action is selected, before it
         // executes (retail `Trigger::Run`).
-        if let Some(&BellButton { dial }) = self.devices.get(entity).unwrap().7 {
+        if let Some(&BellButton { dial }) = self.devices.get(entity).unwrap().bell {
             let [mut button, mut ring] = self.devices.get_many_mut([entity, dial]).unwrap();
-            let position = ring.4.as_ref().unwrap().position;
-            let outcome = super::scripts::ring_bell(position, &mut button.2, &mut ring.2);
+            let position = ring.dial.as_ref().unwrap().position;
+            let outcome =
+                super::scripts::ring_bell(position, &mut button.trigger, &mut ring.trigger);
             self.effects.write(outcome);
         }
         let changes_state = !matches!(chosen.action, TriggerAction::Dial);
         // The prop the device moves, as its level authored it.
-        let model = self
-            .devices
-            .get(entity)
-            .unwrap()
-            .6
-            .and_then(|prop| geometry.props.get(prop.definition));
+        let prop = self.devices.get(entity).unwrap().prop;
+        let model = prop.and_then(|prop| geometry.props.get(prop.definition));
         match &chosen.action {
             TriggerAction::Nothing => {}
             TriggerAction::NoRuntimeAction => return Ran::Declined,
             action @ (TriggerAction::OpenDoor | TriggerAction::ToggleDoor) => {
                 let Some(model) = model else { return Ran::Declined };
-                let (_, _, mut trigger, door, _, motion, ..) =
-                    self.devices.get_mut(entity).unwrap();
-                let (Some(mut door), Some(mut motion)) = (door, motion) else {
+                let parts = self.devices.get_mut(entity).unwrap();
+                let mut trigger = parts.trigger;
+                let (Some(mut door), Some(mut motion)) = (parts.door, parts.motion) else {
                     return Ran::Declined;
                 };
                 if door.locked {
@@ -678,7 +675,8 @@ impl Devices<'_, '_> {
                 trigger.awaits_animation = true;
             }
             TriggerAction::Animate(animation) => {
-                let Some(model) = model.filter(|_| self.devices.get(entity).unwrap().5.is_some())
+                let Some(model) =
+                    model.filter(|_| self.devices.get(entity).unwrap().motion.is_some())
                 else {
                     return Ran::Declined;
                 };
@@ -698,13 +696,12 @@ impl Devices<'_, '_> {
                         }
                     }
                 }
-                let (_, _, mut trigger, door, _, motion, ..) =
-                    self.devices.get_mut(entity).unwrap();
-                PropMotion::activate(motion.unwrap(), model, *animation);
-                if let Some(mut door) = door {
+                let mut parts = self.devices.get_mut(entity).unwrap();
+                PropMotion::activate(parts.motion.unwrap(), model, *animation);
+                if let Some(mut door) = parts.door {
                     door.open = !door.open;
                 }
-                trigger.awaits_animation = true;
+                parts.trigger.awaits_animation = true;
             }
             TriggerAction::Sound => {
                 self.play_authored_sound(geometry, entity, definition);
@@ -715,7 +712,7 @@ impl Devices<'_, '_> {
                 return Ran::Answered;
             }
             TriggerAction::Relay(source) => {
-                if self.devices.get(entity).unwrap().0.recipients.is_empty() {
+                if self.devices.get(entity).unwrap().device.recipients.is_empty() {
                     return Ran::Declined;
                 }
                 self.execute_links(geometry, entity, depth, *source);
@@ -754,12 +751,12 @@ impl Devices<'_, '_> {
                 }
             }
             TriggerAction::SetDevices(change) => {
-                let recipients = self.devices.get(entity).unwrap().0.recipients.clone();
+                let recipients = self.devices.get(entity).unwrap().device.recipients.clone();
                 if recipients.is_empty() {
                     return Ran::Declined;
                 }
                 for recipient in recipients {
-                    let mut state = self.devices.get_mut(recipient).unwrap().2;
+                    let mut state = self.devices.get_mut(recipient).unwrap().trigger;
                     let on = change.apply(state.on);
                     if state.on != on {
                         state.on = on;
@@ -803,8 +800,8 @@ impl Devices<'_, '_> {
             }
             TriggerAction::Dial => {
                 let Some(model) = model else { return Ran::Declined };
-                let (_, _, _, _, dial, motion, ..) = self.devices.get_mut(entity).unwrap();
-                let (Some(mut dial), Some(mut motion)) = (dial, motion) else {
+                let parts = self.devices.get_mut(entity).unwrap();
+                let (Some(mut dial), Some(mut motion)) = (parts.dial, parts.motion) else {
                     return Ran::Declined;
                 };
                 let old = dial.position;
@@ -845,7 +842,7 @@ impl Devices<'_, '_> {
             let source = level_definition.messages.clone();
             self.effects.write(TriggerEffect::Message { source, id: message });
         }
-        let mut state = self.devices.get_mut(entity).unwrap().2;
+        let mut state = self.devices.get_mut(entity).unwrap().trigger;
         if !state.fired {
             state.fired = true;
         }
@@ -856,8 +853,8 @@ impl Devices<'_, '_> {
     /// the contents are drawn once, their gold goes to the party, a lone
     /// item to the hand, and several are looked through.
     fn use_container(&mut self, entity: Entity) -> ContainerUse {
-        let (_, _, _, _, _, motion, _, _, busy) = self.devices.get(entity).unwrap();
-        let shut = motion.unwrap().target <= 0.0;
+        let parts = self.devices.get(entity).unwrap();
+        let (shut, busy) = (parts.motion.unwrap().target <= 0.0, parts.busy);
         let mut container = self.containers.get_mut(entity).unwrap();
         let (_, inventory, roster, _) = &mut *self.party;
         if let Some(held) = inventory.hand.held.take() {

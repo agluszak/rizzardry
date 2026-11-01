@@ -102,21 +102,34 @@ pub fn within_radius(species: &Species, nearest: f32) -> bool {
         && matches!(species.disposition, Disposition::HostileWithin(radius) if nearest <= radius)
 }
 
-/// A monster's own stance now: its group's set stance while it holds
-/// ([`stance`]), swapped by the monster's own Turncoat ([`own_stance`]).
-/// Every reader of a monster's side goes through this.
-pub fn monster_own(
-    monster: &Monster,
-    set: Option<SetStance>,
-    species: &Species,
-    factions: &Factions,
-    now: u64,
-    fighting: bool,
-) -> Stance {
-    own_stance(
-        stance(set, species, factions, now, fighting),
-        monster.conditions.has(Condition::Turncoat),
-    )
+/// What a monster's stance reads besides the factions, for params that hold
+/// [`Factions`] themselves.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct Sides<'w, 's> {
+    monsters: Query<
+        'w,
+        's,
+        (&'static Monster, Option<&'static GroupMember>, Has<crate::game::combat::Combatant>),
+    >,
+    groups: Query<'w, 's, &'static MonsterGroup>,
+}
+
+impl Sides<'_, '_> {
+    /// A monster's own stance now: its group's ([`stance`]; one outside any
+    /// group by its species' default), swapped by its own Turncoat (retail's
+    /// per-monster `ubDisposition`).
+    pub fn own(
+        &self,
+        monster: Entity,
+        species: &MonsterCatalog,
+        factions: &Factions,
+        now: u64,
+    ) -> Option<Stance> {
+        let (body, member, fighting) = self.monsters.get(monster).ok()?;
+        let set = member.and_then(|m| self.groups.get(m.0).ok()).and_then(|g| g.set);
+        let group = stance(set, &species[body.species], factions, now, fighting);
+        Some(own_stance(group, body.conditions.has(Condition::Turncoat)))
+    }
 }
 
 /// Monsters' stances now, through their groups, for systems that only
@@ -124,32 +137,14 @@ pub fn monster_own(
 /// fight holds the clock itself.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct Stances<'w, 's> {
-    monsters: Query<
-        'w,
-        's,
-        (&'static Monster, Option<&'static GroupMember>, Has<crate::game::combat::Combatant>),
-    >,
-    groups: Query<'w, 's, &'static MonsterGroup>,
+    sides: Sides<'w, 's>,
     factions: Res<'w, Factions>,
 }
 
 impl Stances<'_, '_> {
-    /// A monster's group's stance now; one outside any group by its
-    /// species' default.
-    pub fn group(&self, monster: Entity, species: &MonsterCatalog, now: u64) -> Option<Stance> {
-        let (body, member, fighting) = self.monsters.get(monster).ok()?;
-        let kind = &species[body.species];
-        let set = member.and_then(|m| self.groups.get(m.0).ok()).and_then(|g| g.set);
-        Some(stance(set, kind, &self.factions, now, fighting))
-    }
-
-    /// A monster's own stance now: its group's, swapped by its own Turncoat
-    /// (retail's per-monster `ubDisposition`).
+    /// [`Sides::own`].
     pub fn own(&self, monster: Entity, species: &MonsterCatalog, now: u64) -> Option<Stance> {
-        let group = self.group(monster, species, now)?;
-        let (body, ..) = self.monsters.get(monster).ok()?;
-        let turncoat = body.conditions.has(Condition::Turncoat);
-        Some(own_stance(group, turncoat))
+        self.sides.own(monster, species, &self.factions, now)
     }
 }
 

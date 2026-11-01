@@ -209,8 +209,16 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     }
     finish(&mut app, session);
     assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((121, 0)));
-    let c = app.world().get::<Conversation>(session).unwrap();
-    let topic = crate::game::npcs::conversation::script(app.world(), c).topic("MONASTERY").unwrap();
+    let script = |app: &App| {
+        let scripts = app.world().resource::<crate::game::npcs::NpcAssets>();
+        let scripts = &scripts.scripts[&burz_id];
+        app.world()
+            .resource::<Assets<crate::content::npcs::DialogueScript>>()
+            .get(scripts)
+            .unwrap()
+            .clone()
+    };
+    let topic = script(&app).topic("MONASTERY").unwrap();
     app.world_mut()
         .write_message(ConversationRequest::new(session, Talk::Topic { text: "MONASTERY".into() }));
     finish(&mut app, session);
@@ -228,8 +236,7 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     assert!(app.world().get::<Npc>(actor).unwrap().paid_topics.contains(&topic));
     let lot =
         app.world().get::<Npc>(actor).unwrap().stock.lots.iter().find(|l| l.units > 0).unwrap().id;
-    let quote =
-        conversation::quote_trade(app.world_mut(), session, TradeSource::Stock(lot), 1).unwrap();
+    let quote = super::quote(&mut app, session, TradeSource::Stock(lot));
     let gold = app.world().get::<PartyInventory>(party).unwrap().gold;
     app.world_mut().write_message(ConversationRequest::trade(quote));
     app.world_mut().write_message(ConversationRequest::trade(quote));
@@ -240,13 +247,8 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
         "duplicate confirmation settles once"
     );
     let bought = app.world().get::<PartyInventory>(party).unwrap().pool.stacks[0].id;
-    let sale = conversation::quote_trade(
-        app.world_mut(),
-        session,
-        TradeSource::Party(ItemRef { owner: ItemOwner::Pool, id: bought }),
-        1,
-    )
-    .unwrap();
+    let source = TradeSource::Party(ItemRef { owner: ItemOwner::Pool, id: bought });
+    let sale = super::quote(&mut app, session, source);
     app.world_mut().write_message(ConversationRequest::trade(sale));
     app.update();
     assert_eq!(
@@ -255,7 +257,7 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     );
     let c = app.world().get::<Conversation>(session).unwrap();
     let current = c.current.unwrap().0;
-    let fact = crate::game::npcs::conversation::script(app.world(), c).quotes[current as usize]
+    let fact = script(&app).quotes[current as usize]
         .operations
         .iter()
         .find_map(|op| match op {

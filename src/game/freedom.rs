@@ -47,8 +47,12 @@ impl Freedom<'_, '_> {
         !self.travelling() && !self.fighting()
     }
 
+    pub fn camping(&self) -> bool {
+        self.camp.is_some()
+    }
+
     pub fn free(&self) -> bool {
-        self.unoccupied() && self.camp.is_none()
+        self.unoccupied() && !self.camping()
     }
 
     /// Entering no level and held by no travel question or conversation:

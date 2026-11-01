@@ -25,13 +25,6 @@ pub(crate) fn catalog(world: &World) -> &NpcCatalog {
     &world.resource::<Catalogs>().npcs
 }
 
-/// An NPC actor's dialogue script, loaded before the level that placed it
-/// was entered.
-pub(crate) fn script(world: &World, actor: Entity) -> AssetId<DialogueScript> {
-    let id = world.get::<ActorId>(actor).expect("an NPC actor").npc();
-    world.resource::<NpcAssets>().scripts[&id].id()
-}
-
 #[derive(Component, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ActorId {
     Named(NpcId),

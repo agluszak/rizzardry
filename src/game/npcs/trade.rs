@@ -253,25 +253,19 @@ pub fn purchase_price(
     }
     price(def, item, quantity, true, true, communication)
 }
-/// Check the complete delivery against insertion capacity, then commit directly.
+/// Check the complete delivery against insertion capacity, then commit
+/// directly. `cost` is the lot's price now.
 pub fn buy(
     stock: &mut MerchantStock,
     party: &mut PartyInventory,
     ids: &mut ItemIds,
-    def: &NpcDefinition,
     catalog: &ItemCatalog,
     lot: StockLotId,
     quantity: u32,
-    quoted: u32,
-    communication: u32,
+    cost: u32,
 ) -> Result<(), TradeError> {
     let row = stock.lots.iter().position(|l| l.id == lot).ok_or(TradeError::StaleSelection)?;
-    let source = &stock.lots[row];
-    let cost = purchase_price(source, def, catalog, quantity, communication)?;
-    let item = &catalog[source.item];
-    if cost != quoted {
-        return Err(TradeError::PriceChanged);
-    }
+    let item = &catalog[stock.lots[row].item];
     if cost > party.gold {
         return Err(TradeError::Funds);
     }

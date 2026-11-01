@@ -100,22 +100,6 @@ pub fn members_in_world(
     roster.iter().map(|m| (m, world.get(m).unwrap(), world.get(m).unwrap()))
 }
 
-/// The member with the best Communication among those who can act, the first
-/// on a tie, and that level (retail `GetBestPartySkillLevel`:
-/// `hp_current != 0 && highest_condition < TURNCOAT`).
-pub fn best_communicator<'a>(
-    members: impl Iterator<Item = (Entity, &'a Character, &'a crate::game::characters::Vitals)>,
-) -> Option<(Entity, u32)> {
-    let mut best: Option<(Entity, u32)> = None;
-    for (member, character, vitals) in members {
-        let level = character.skill(crate::content::characters::Skill::Communication);
-        if vitals.can_act() && best.is_none_or(|(_, best)| level > best) {
-            best = Some((member, level));
-        }
-    }
-    best
-}
-
 /// The members awake and well enough to fight: the population retail's NPC
 /// rules work with (`hp_current != 0 && highest_condition < ASLEEP`, as in
 /// `CanNpcJoinParty`, the charm and dialogue practice).

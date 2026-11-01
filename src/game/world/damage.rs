@@ -88,8 +88,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
             })
             .unwrap_or(entity)
     }
-    /// A monster's own stance now ([`super::hostility::monster_own`]): its
-    /// group's, swapped by its own Turncoat.
+    /// A monster's own stance now: its group's, swapped by its own Turncoat.
     pub fn stance(&self, entity: Entity, now: u64) -> super::hostility::Stance {
         let turncoat =
             self.monsters.get(entity).is_ok_and(|(m, ..)| m.conditions.has(Condition::Turncoat));

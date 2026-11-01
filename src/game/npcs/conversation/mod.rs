@@ -17,7 +17,6 @@ use crate::game::{
     },
     rng::GameRng,
     world::{
-        identify::{GroupMember, MonsterGroup},
         level::{Destination, Level, LevelOwned},
         population::Monster,
     },
@@ -228,9 +227,9 @@ pub struct Conversation {
     /// The NPC is not friendly yet: the party sees retail's topic menu
     /// (charm, small talk, bribe) rather than the dialogue's topics.
     pub menu: bool,
-    /// What the party's last request came to; presentation owns its
-    /// wording.
-    result: Option<Outcome>,
+    /// What the party's last request came to, until it asks something else;
+    /// presentation owns its wording.
+    pub result: Option<Outcome>,
     queue: VecDeque<Step>,
     /// The party has left: it takes no more requests, though its end is
     /// deferred.
@@ -268,15 +267,6 @@ impl Conversation {
             }
             Some(MagicalReply::Quote(quote)) => self.queue.push_back(Step::quote(quote)),
         }
-    }
-
-    /// What the last request came to, until the party asks something else.
-    pub fn outcome(&self) -> Option<Outcome> {
-        self.result
-    }
-
-    fn report(&mut self, outcome: Outcome) {
-        self.result = Some(outcome);
     }
 }
 /// A line said: the words and the voice stem presentation may play. How
