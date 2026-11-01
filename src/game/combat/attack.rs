@@ -418,7 +418,7 @@ pub fn hands(
         }
         let other = 1 - index;
         let combat_skill = if ranged { Skill::RangedCombat } else { Skill::CloseCombat };
-        let mut score = (c.skill(combat_skill) as i32 + c.skill(skill) as i32 * 2) * 2 / 3;
+        let mut score = ((c.skill(combat_skill) + c.skill(skill) * 2) * 2 / 3) as i32;
         let mut divisor = 20;
         if holds[other] == Holds::Weapon && in_play[other] {
             score += c.skill(weapon_skill(other).unwrap_or(Skill::MartialArts)) as i32 >> 1;

@@ -301,7 +301,7 @@ pub fn force_chance(
     if !vitals.can_act() || vitals.stamina < FORCE_STAMINA || strength <= FORCE_STRENGTH {
         return None;
     }
-    let divisor = (setting as i32 - 1 + tumblers as i32).clamp(2, 8);
+    let divisor = (setting as usize + tumblers - 1).clamp(2, 8);
     Some((strength - FORCE_STRENGTH) >> (divisor - 2))
 }
 
@@ -686,12 +686,8 @@ pub fn cast_device(
     } else {
         let trap = disarming(world, on).unwrap();
         let (kind, difficulty) = (trap.trap, trap.difficulty);
-        let chance = if outcome == Outcome::Backfired {
-            0
-        } else {
-            power as i32 * 5 + 50 - i32::from(difficulty) * 6
-        };
-        if (rng(world).below(100) as i32) < chance {
+        let roll = rng(world).below(100) + u32::from(difficulty) * 6;
+        if outcome != Outcome::Backfired && roll < power * 5 + 50 {
             world.write_message(LockNews::Disarmed { trap: kind });
             complete(world, on);
         } else {
