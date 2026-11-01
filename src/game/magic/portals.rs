@@ -10,14 +10,18 @@ use avian3d::prelude::{LinearVelocity, Position};
 use bevy::prelude::*;
 
 /// A historical location, not another authority for the party's current pose.
-/// Remains on the caster across travel and recasting replaces it.
-#[derive(Component, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct Portal {
     pub level: String,
     pub eye: Vec3,
     pub yaw: f32,
     pub pitch: f32,
 }
+
+/// The location a caster last saved. Remains across travel; recasting
+/// replaces it.
+#[derive(Component, Clone, Debug, Default)]
+pub struct SavedPortal(Option<Portal>);
 
 pub(crate) fn spell(id: SpellId) -> bool {
     matches!(id, SpellId::SET_PORTAL | SpellId::RETURN_TO_PORTAL)
@@ -39,7 +43,7 @@ pub(crate) fn cast_portals(
         Option<&mut LinearVelocity>,
         &mut PartyMovement,
     )>,
-    portals: Query<&Portal>,
+    mut portals: Query<&mut SavedPortal>,
     assets: Res<AssetServer>,
     mut casting: ParamSet<(
         super::casting::Payment,
@@ -49,22 +53,22 @@ pub(crate) fn cast_portals(
     mut commands: Commands,
 ) {
     let (root, level) = *level;
+    let mut leaving = false;
     for &super::utilities::UtilityCast { caster, choice, spell } in casts.read() {
         if !self::spell(spell) {
             continue;
         }
-        if !battles.is_empty() || !freedom.unoccupied() {
+        if leaving || !battles.is_empty() || !freedom.unoccupied() {
             news.write(MagicNews::Refused { caster, refusal: Refusal::WrongTime });
             continue;
         }
         let saved = if spell == SpellId::RETURN_TO_PORTAL {
-            match portals.get(caster) {
-                Ok(portal) => Some(portal.clone()),
-                Err(_) => {
-                    news.write(MagicNews::Refused { caster, refusal: Refusal::NoTarget });
-                    continue;
-                }
+            let portal = portals.get(caster).unwrap().0.clone();
+            if portal.is_none() {
+                news.write(MagicNews::Refused { caster, refusal: Refusal::NoTarget });
+                continue;
             }
+            portal
         } else {
             None
         };
@@ -92,7 +96,7 @@ pub(crate) fn cast_portals(
             let (body, at, transform, velocity, movement) = &mut *party;
             match saved {
                 None => {
-                    commands.entity(caster).insert(Portal {
+                    portals.get_mut(caster).unwrap().0 = Some(Portal {
                         level: level.path.clone(),
                         eye: PartyBody::eye(at),
                         yaw: body.yaw,
@@ -102,6 +106,7 @@ pub(crate) fn cast_portals(
                 Some(portal) => {
                     if let Some(destination) = destination {
                         commands.spawn(destination);
+                        leaving = true;
                     } else {
                         body.stand(at, transform, portal.eye, portal.yaw);
                         body.pitch = portal.pitch;

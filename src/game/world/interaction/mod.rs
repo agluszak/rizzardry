@@ -103,6 +103,13 @@ impl Guarded {
 #[require(Name::new("Device attempt"))]
 pub struct DeviceInteraction {
     pub work: Work,
+    ending: Option<Ending>,
+}
+
+impl From<Work> for DeviceInteraction {
+    fn from(work: Work) -> Self {
+        Self { work, ending: None }
+    }
 }
 
 /// The device an attempt works on.
@@ -337,8 +344,6 @@ pub struct DeviceWork<'w, 's> {
     difficulty: Res<'w, Difficulty>,
     rng: ResMut<'w, GameRng>,
     news: MessageWriter<'w, LockNews>,
-    sprung: MessageWriter<'w, TrapSprung>,
-    opened: MessageWriter<'w, DeviceOpened>,
     entering: Query<'w, 's, (), With<super::level::Destination>>,
     battles: Query<'w, 's, (), With<Battle>>,
 }
@@ -360,7 +365,21 @@ impl DeviceWork<'_, '_> {
     /// The attempt's work, if it is still under way.
     fn work(&mut self, on: Entity) -> Result<(Mut<'_, Work>, Entity), Unable> {
         let (interaction, device) = self.attempts.get_mut(on).map_err(|_| Unable::NotNow)?;
+        if interaction.ending.is_some() {
+            return Err(Unable::NotNow);
+        }
         Ok((interaction.map_unchanged(|i| &mut i.work), device.0))
+    }
+
+    fn leave(&mut self, on: Entity) -> Result<(), Unable> {
+        self.work(on)?;
+        self.end(on, Ending::Left);
+        Ok(())
+    }
+
+    /// Decide how the attempt ends. Nothing later can change it.
+    fn end(&mut self, on: Entity, ending: Ending) {
+        self.attempts.get_mut(on).unwrap().0.ending = Some(ending);
     }
 
     /// The trap under way, if the device still stands guarded and its
@@ -432,7 +451,7 @@ impl DeviceWork<'_, '_> {
         *self.work(on)?.0 = Work::Picking(picking);
         if open {
             self.news.write(LockNews::Picked);
-            self.opened.write(DeviceOpened { on });
+            self.end(on, Ending::Overcome);
         }
         Ok(())
     }
@@ -449,7 +468,7 @@ impl DeviceWork<'_, '_> {
         vitals.spend_stamina(FORCE_STAMINA);
         if self.rng.below(100) < chance {
             self.news.write(LockNews::Forced { member: actor });
-            self.opened.write(DeviceOpened { on });
+            self.end(on, Ending::Overcome);
         } else {
             self.news.write(LockNews::NotForced { member: actor });
         }
@@ -464,7 +483,7 @@ impl DeviceWork<'_, '_> {
         let skill = self.worker(actor)?.ok_or(Unable::Unskilled)?;
         let setting = *self.difficulty;
         if self.rng.below(100) >= trap.inspection_chance(Some(skill), setting) {
-            self.sprung.write(TrapSprung { on, selected: Some(actor) });
+            self.end(on, Ending::Sprung { selected: Some(actor) });
             return Ok(());
         }
         self.practise(actor);
@@ -499,7 +518,7 @@ impl DeviceWork<'_, '_> {
         let chance = trap.disarm_chance(Some(skill), *self.difficulty);
         let components = TRAP_COMPONENTS[usize::from(trap.trap)];
         if !components[component] || self.rng.below(100) >= chance {
-            self.sprung.write(TrapSprung { on, selected: Some(actor) });
+            self.end(on, Ending::Sprung { selected: Some(actor) });
             return Ok(());
         }
         let (mut work, _) = self.work(on)?;
@@ -511,7 +530,7 @@ impl DeviceWork<'_, '_> {
         self.news.write(LockNews::ComponentDisarmed { member: actor, component });
         if done {
             self.news.write(LockNews::Disarmed { trap: kind });
-            self.opened.write(DeviceOpened { on });
+            self.end(on, Ending::Overcome);
         }
         Ok(())
     }
@@ -537,27 +556,27 @@ impl DeviceWork<'_, '_> {
     }
 }
 
-/// A trap goes off on the attempt under way, at the member who set it off,
-/// if any.
-#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TrapSprung {
-    pub on: Entity,
-    pub selected: Option<Entity>,
+/// How an attempt ended, decided at once and settled by [`settle_attempts`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ending {
+    Left,
+    /// The lock or trap is overcome.
+    Overcome,
+    /// The trap goes off, at the member who set it off, if any.
+    Sprung {
+        selected: Option<Entity>,
+    },
 }
 
-/// The lock or trap is overcome.
+/// The device's lock or trap is overcome and its attempt gone: it runs.
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeviceOpened {
-    pub on: Entity,
+    device: Entity,
 }
 
 /// Carry out the player's device requests in order. A refused request
 /// changes nothing: retail offers only the controls that can work.
-pub fn work_devices(
-    mut requests: MessageReader<DeviceRequest>,
-    mut work: DeviceWork,
-    mut commands: Commands,
-) {
+pub fn work_devices(mut requests: MessageReader<DeviceRequest>, mut work: DeviceWork) {
     for request in requests.read() {
         let on = request.on;
         let result = match request.act {
@@ -565,16 +584,11 @@ pub fn work_devices(
             DeviceAct::Force { actor } => work.force(on, actor),
             DeviceAct::Inspect { actor } => work.inspect(on, actor),
             DeviceAct::Disarm { actor, component } => work.disarm(on, actor, component),
-            DeviceAct::Spring { actor } => work.trap(on).map(|_| {
-                work.sprung.write(TrapSprung { on, selected: actor });
-            }),
-            DeviceAct::PrepareMagic { actor } => work.prepare_magic(on, actor),
-            DeviceAct::Leave => {
-                if work.attempts.contains(on) {
-                    commands.entity(on).despawn();
-                }
-                Ok(())
+            DeviceAct::Spring { actor } => {
+                work.trap(on).map(|_| work.end(on, Ending::Sprung { selected: actor }))
             }
+            DeviceAct::PrepareMagic { actor } => work.prepare_magic(on, actor),
+            DeviceAct::Leave => work.leave(on),
         };
         if let Err(why) = result {
             debug!("{request:?} refused: {why:?}");
@@ -582,43 +596,46 @@ pub fn work_devices(
     }
 }
 
-/// A sprung trap discharges its spell at the party (retail picks victims
-/// at random, keeping the member who set it off). One it destroys opens the
-/// device; otherwise the party leaves it as it is.
-pub fn spring_traps(
-    mut sprung: MessageReader<TrapSprung>,
-    attempts: Query<&DeviceInteraction>,
+/// Settle the attempts that have ended (retail `CompleteItemInteraction`).
+/// A sprung trap discharges its spell at the party, picking victims at
+/// random but keeping the member who set it off; one it destroys opens the
+/// device, like a lock or trap overcome.
+pub fn settle_attempts(
+    attempts: Query<(Entity, &DeviceInteraction, &AttemptOn)>,
     mut discharge: crate::game::magic::traps::Discharge,
     mut news: MessageWriter<LockNews>,
     mut opened: MessageWriter<DeviceOpened>,
     mut commands: Commands,
 ) {
-    for &TrapSprung { on, selected } in sprung.read() {
-        let Ok(DeviceInteraction { work: Work::Disarming(trap) }) = attempts.get(on) else {
-            continue;
+    for (on, interaction, &AttemptOn(device)) in &attempts {
+        let Some(ending) = interaction.ending else { continue };
+        commands.entity(on).despawn();
+        let overcome = match ending {
+            Ending::Left => false,
+            Ending::Overcome => true,
+            Ending::Sprung { selected } => {
+                let Work::Disarming(trap) = &interaction.work else {
+                    unreachable!("only a trap springs")
+                };
+                let destroyed = discharge.fire(trap.trap, trap.difficulty, selected);
+                news.write(LockNews::Sprung { trap: trap.trap, destroyed });
+                destroyed
+            }
         };
-        let destroyed = discharge.fire(trap.trap, trap.difficulty, selected);
-        news.write(LockNews::Sprung { trap: trap.trap, destroyed });
-        if destroyed {
-            opened.write(DeviceOpened { on });
-        } else {
-            commands.entity(on).despawn();
+        if overcome {
+            opened.write(DeviceOpened { device });
         }
     }
 }
 
-/// The lock or trap is overcome: the interaction ends and the device runs
-/// (retail `CompleteItemInteraction` then `Run`).
+/// Run the devices overcome, now their attempts are gone (retail
+/// `CompleteItemInteraction` then `Run`).
 pub fn open_devices(
     mut opened: MessageReader<DeviceOpened>,
-    attempts: Query<&AttemptOn>,
     mut devices: super::triggers::Devices,
     geometry: Res<Assets<crate::content::level::LevelDefinition>>,
-    mut commands: Commands,
 ) {
-    for &DeviceOpened { on } in opened.read() {
-        let Ok(&AttemptOn(device)) = attempts.get(on) else { continue };
-        commands.entity(on).despawn();
+    for &DeviceOpened { device } in opened.read() {
         devices.open(&geometry, device);
     }
 }
@@ -715,7 +732,7 @@ impl DeviceWork<'_, '_> {
         self.news.write(LockNews::Tumbler { dropped });
         if done {
             self.news.write(LockNews::Picked);
-            self.opened.write(DeviceOpened { on });
+            self.end(on, Ending::Overcome);
         }
     }
 
@@ -739,9 +756,9 @@ impl DeviceWork<'_, '_> {
                 let roll = self.rng.below(100) + u32::from(difficulty) * 6;
                 if !backfired && roll < power * 5 + 50 {
                     self.news.write(LockNews::Disarmed { trap: kind });
-                    self.opened.write(DeviceOpened { on });
+                    self.end(on, Ending::Overcome);
                 } else {
-                    self.sprung.write(TrapSprung { on, selected: Some(actor) });
+                    self.end(on, Ending::Sprung { selected: Some(actor) });
                 }
             }
         }
@@ -830,7 +847,6 @@ pub enum DeviceAct {
 
 pub(crate) fn plugin(app: &mut App) {
     app.add_message::<DeviceRequest>()
-        .add_message::<TrapSprung>()
         .add_message::<DeviceOpened>()
         .add_message::<DeviceCast>()
         .add_message::<super::containers::TakeFromContainer>()
@@ -839,7 +855,7 @@ pub(crate) fn plugin(app: &mut App) {
             (
                 work_devices,
                 cast_at_devices,
-                spring_traps,
+                settle_attempts,
                 open_devices,
                 super::containers::take_from_containers,
             )
@@ -847,4 +863,41 @@ pub(crate) fn plugin(app: &mut App) {
                 .after(GameplaySet::Burden)
                 .before(GameplaySet::Combat),
         );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Once an attempt's end is decided, later requests in the same update
+    /// neither cancel nor repeat it.
+    #[test]
+    fn a_decided_ending_stands() {
+        let mut app = App::new();
+        app.add_message::<DeviceRequest>()
+            .add_message::<LockNews>()
+            .init_resource::<Difficulty>()
+            .init_resource::<GameRng>()
+            .add_systems(Update, work_devices);
+        let device = app.world_mut().spawn(Guarded::default()).id();
+        let trap = Disarming {
+            difficulty: 1,
+            trap: (0..TRAP_TYPES as u8)
+                .find(|&trap| crate::game::magic::traps::validate(trap).is_ok())
+                .unwrap(),
+            disarmed: [false; COMPONENTS],
+            divine_power: 0,
+            observations: Vec::new(),
+        };
+        let on = app
+            .world_mut()
+            .spawn((DeviceInteraction::from(Work::Disarming(trap)), AttemptOn(device)))
+            .id();
+        for act in [DeviceAct::Spring { actor: None }, DeviceAct::Leave] {
+            app.world_mut().write_message(DeviceRequest { on, act });
+        }
+        app.update();
+        let ending = app.world().get::<DeviceInteraction>(on).unwrap().ending;
+        assert_eq!(ending, Some(Ending::Sprung { selected: None }));
+    }
 }

@@ -100,7 +100,7 @@ pub fn take_from_containers(
     let mut closed = Vec::new();
     for TakeFromContainer { on, picks, to } in requests.read() {
         let device = match attempts.get(*on) {
-            Ok((DeviceInteraction { work: Work::Looting }, AttemptOn(device))) => *device,
+            Ok((DeviceInteraction { work: Work::Looting, .. }, AttemptOn(device))) => *device,
             _ => continue,
         };
         if !occupied.is_empty() || picks.is_empty() || closed.contains(on) {

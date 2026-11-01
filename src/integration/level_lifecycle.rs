@@ -851,6 +851,17 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
             app.update();
             assert_eq!(purse(&app), 10_000 - quote.gold + sale.gold);
             assert!(app.world().get::<PartyInventory>(party).unwrap().pool.stacks.is_empty());
+            // A confirmation counts if it came before leaving, not after.
+            let quote =
+                conversation::quote_trade(app.world_mut(), session, TradeSource::Stock(lot), 1)
+                    .unwrap();
+            let gold = purse(&app);
+            app.world_mut().write_message(ConversationRequest::trade(quote));
+            app.world_mut().write_message(ConversationRequest::new(session, Talk::Close));
+            app.world_mut().write_message(ConversationRequest::trade(quote));
+            app.update();
+            assert_eq!(purse(&app), gold - quote.gold);
+            assert!(app.world().get_entity(session).is_err());
         }
         app.world_mut().write_message(ConversationRequest::new(session, Talk::Close));
         app.update();

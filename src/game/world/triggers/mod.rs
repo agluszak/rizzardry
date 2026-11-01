@@ -581,7 +581,7 @@ impl Devices<'_, '_> {
             &mut self.locks,
         );
         self.commands.spawn((
-            super::interaction::DeviceInteraction { work },
+            super::interaction::DeviceInteraction::from(work),
             super::interaction::AttemptOn(device),
         ));
     }
@@ -687,7 +687,7 @@ impl Devices<'_, '_> {
                         ContainerUse::Toggle => {}
                         ContainerUse::Look { open } => {
                             self.commands.spawn((
-                                super::interaction::DeviceInteraction { work: Work::Looting },
+                                super::interaction::DeviceInteraction::from(Work::Looting),
                                 super::interaction::AttemptOn(entity),
                             ));
                             if open {

@@ -264,8 +264,12 @@ fn lure(
         .collect();
     order.sort_unstable_by_key(|(_, body, ..)| body.location);
     let species = &payment.content.species;
+    // A resisting monster's group resists at once, as retail's
+    // `SetMonsterGroupControlState`: its other members roll no save.
+    let mut resisted = bevy::platform::collections::HashSet::new();
     for (entity, body, _, influence, group, position, transform) in order {
         if crowd.stances.own(entity, species, now) != Some(Stance::Hostile)
+            || resisted.contains(&entity)
             || influence.is_some_and(|influence| influence.response == LureResponse::Resisted)
             || !body.can_fight()
             || body.conditions.has(Condition::Blind)
@@ -302,6 +306,9 @@ fn lure(
         };
         for entity in affected {
             commands.entity(entity).insert(LureInfluence { lure, response });
+            if response == LureResponse::Resisted {
+                resisted.insert(entity);
+            }
         }
     }
 }
