@@ -483,9 +483,9 @@ fn load_band(weight: u32, capacity: u32) -> Load {
 }
 
 /// A pool's value once its maximum moves from `old` to `new`: it moves by
-/// as much, within 0 and the new maximum.
+/// as much, stopping at 0.
 pub fn resized(current: u32, old: u32, new: u32) -> u32 {
-    (current as i64 + new as i64 - old as i64).clamp(0, new as i64) as u32
+    (current + new).max(old) - old
 }
 
 /// What a lethal blow to a member needs, should she cheat death: the fight
