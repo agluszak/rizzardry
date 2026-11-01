@@ -29,9 +29,10 @@ use super::screen_art::{BitmapText, visible_if};
 use crate::content::level::TRAP_TYPES;
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, Vitals};
+use crate::game::inventory::ItemOwner;
 use crate::game::inventory::StackId;
 use crate::game::party::roster::PartyRoster;
-use crate::game::world::containers::{Container, Recipient};
+use crate::game::world::containers::Container;
 use crate::game::world::interaction::{
     self, AttemptOn, COMPONENTS, DeviceInteraction, DeviceRequest, Observation, TRAP_COMPONENTS,
     Work,
@@ -630,9 +631,9 @@ fn press(
         }
         Control::TakeToParty | Control::TakeToMember => {
             let to = match control {
-                Control::TakeToParty => Recipient::Party,
+                Control::TakeToParty => ItemOwner::Pool,
                 _ => match actor {
-                    Some(actor) => Recipient::Member(actor),
+                    Some(actor) => ItemOwner::Member(actor),
                     None => return,
                 },
             };

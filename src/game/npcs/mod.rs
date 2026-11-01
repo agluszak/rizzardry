@@ -313,12 +313,10 @@ impl Plugin for NpcPlugin {
             .init_resource::<conversation::NoAnswerTurn>()
             .add_message::<conversation::ConversationRequest>()
             .add_message::<conversation::BeginConversation>()
-            .add_message::<conversation::WonOver>()
             .add_message::<conversation::LineSpoken>()
             .add_message::<conversation::EditNotebook>()
             .add_message::<conversation::PartyRemark>()
             .add_message::<conversation::NpcSpeech>()
-            .add_message::<recruit::JoinParty>()
             .add_message::<crate::game::inventory::ItemNews>()
             .add_observer(conversation::end_conversations)
             .add_systems(
@@ -328,9 +326,7 @@ impl Plugin for NpcPlugin {
                     conversation::edit_notebook,
                     conversation::begin_conversations,
                     conversation::answer_requests,
-                    conversation::win_over,
                     conversation::run_conversations,
-                    recruit::join_party,
                 )
                     .chain()
                     .in_set(conversation::Conversing)

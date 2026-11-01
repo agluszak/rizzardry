@@ -217,7 +217,7 @@ impl Recruits<'_, '_> {
     /// its character (made the first time), the conditions its world body
     /// had, and takes an NPC place; its world body goes dormant. Whether it
     /// would join is the caller's to have asked.
-    fn join(&mut self, actor: Entity) {
+    pub(super) fn join(&mut self, actor: Entity) {
         let party = self.party.0;
         let (_, id, bodies, _, character, ..) = self.actors.get(actor).unwrap();
         // The NPC's world body that stands in a played level.
@@ -368,26 +368,6 @@ impl Recruits<'_, '_> {
         let (level, ..) = self.levels.single().unwrap();
         let feet = PartyBody::feet(self.party.4);
         crate::game::world::items::drop_loot(&mut self.commands, level, feet, left, items);
-    }
-}
-
-/// An NPC that accepted the party's offer joins it.
-#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct JoinParty {
-    pub actor: Entity,
-}
-
-/// NPCs that accepted join, if they still would. The dialogue that asks
-/// them also says they join, so the request is read inside the set.
-pub fn join_party(
-    mut recruiting: ParamSet<(MessageReader<JoinParty>, super::conversation::Dialogue, Recruits)>,
-) {
-    let joins: Vec<_> = recruiting.p0().read().map(|join| join.actor).collect();
-    for actor in joins {
-        match recruiting.p1().joinable(actor) {
-            Ok(()) => recruiting.p2().join(actor),
-            Err(refusal) => warn!("NPC did not join after all: {refusal:?}"),
-        }
     }
 }
 

@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use super::interaction::{AttemptOn, DeviceInteraction, Work};
 use crate::game::data::Catalogs;
 use crate::game::inventory::{
-    Carried, ItemIds, ItemNews, ItemStack, PartyInventory, StackId, make_item,
+    Carried, ItemIds, ItemNews, ItemOwner, ItemStack, PartyInventory, StackId, make_item,
 };
 use crate::game::loot::roll_loot;
 use crate::game::rng::GameRng;
@@ -61,20 +61,12 @@ pub(crate) fn draw_loot(
     contents.gold += gold;
 }
 
-/// Where taken items go.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Recipient {
-    /// The party's shared pool.
-    Party,
-    Member(Entity),
-}
-
 /// The player takes the chosen stacks from the container being looted.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub struct TakeFromContainer {
     pub on: Entity,
     pub picks: Vec<(StackId, u16)>,
-    pub to: Recipient,
+    pub to: ItemOwner,
 }
 
 /// Take the chosen stacks, each whole or `amount` of it, in the container's
@@ -97,29 +89,31 @@ pub fn take_from_containers(
     occupied: Query<(), Or<(With<super::level::Destination>, With<crate::game::combat::Battle>)>>,
     (mut news, mut commands): (MessageWriter<ItemNews>, Commands),
 ) {
-    let mut closed = Vec::new();
     for TakeFromContainer { on, picks, to } in requests.read() {
         let device = match attempts.get(*on) {
             Ok((DeviceInteraction { work: Work::Looting, .. }, AttemptOn(device))) => *device,
             _ => continue,
         };
-        if !occupied.is_empty() || picks.is_empty() || closed.contains(on) {
+        if !occupied.is_empty() || picks.is_empty() {
             continue;
         }
-        if let Recipient::Member(member) = *to
+        if let ItemOwner::Member(member) = *to
             && !members.get(member).unwrap().1.can_act()
         {
             continue;
         }
         let catalog = &content.items;
         let items = &mut containers.get_mut(device).unwrap().into_inner().contents.items;
+        if items.is_empty() {
+            continue;
+        }
         let mut refused = false;
         for &(id, amount) in picks {
             let Some(index) = items.iter().position(|s| s.id == id) else { continue };
             let name = items[index].display_name(&catalog[items[index].item], false);
             let mut receive = |part: ItemStack| match *to {
-                Recipient::Party => party.pool.receive(part, catalog),
-                Recipient::Member(member) => {
+                ItemOwner::Pool => party.pool.receive(part, catalog),
+                ItemOwner::Member(member) => {
                     members.get_mut(member).unwrap().2.into_inner().receive(part, catalog)
                 }
             };
@@ -137,8 +131,8 @@ pub fn take_from_containers(
             };
             if moved > 0 {
                 let member = match *to {
-                    Recipient::Party => None,
-                    Recipient::Member(member) => Some(members.get(member).unwrap().0.name.clone()),
+                    ItemOwner::Pool => None,
+                    ItemOwner::Member(member) => Some(members.get(member).unwrap().0.name.clone()),
                 };
                 news.write(ItemNews::Takes { member, item: name });
             }
@@ -150,7 +144,6 @@ pub fn take_from_containers(
         // Stop looking through the container once it is empty.
         if items.is_empty() {
             commands.entity(*on).despawn();
-            closed.push(*on);
         }
     }
 }

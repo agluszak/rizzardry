@@ -8,7 +8,7 @@ use crate::{
     content::{characters::Realm, spells::SpellId},
     game::npcs::{
         Npc, NpcBodies,
-        conversation::{Conversation, MagicalReply, NpcPresence, WonOver},
+        conversation::{Conversation, MagicalReply, NpcPresence},
     },
 };
 use bevy::prelude::*;
@@ -22,19 +22,18 @@ pub(crate) fn spell(id: SpellId) -> bool {
 /// past what charmed it before, which may win it over.
 pub(crate) fn cast_at_speakers(
     mut casts: MessageReader<super::utilities::UtilityCast>,
-    mut conversations: Query<(Entity, &mut Conversation)>,
+    mut conversations: Query<&mut Conversation>,
     mut npcs: Query<(&mut Npc, Option<&NpcBodies>)>,
     presence: NpcPresence,
     mut payment: super::casting::Payment,
     mut news: MessageWriter<MagicNews>,
-    mut won: MessageWriter<WonOver>,
 ) {
     for &super::utilities::UtilityCast { caster, choice, spell: id } in casts.read() {
         if !spell(id) {
             continue;
         }
         let mut cast = || {
-            let Ok((entity, mut conversation)) = conversations.single_mut() else {
+            let Ok(mut conversation) = conversations.single_mut() else {
                 return Err(Refusal::WrongTime);
             };
             if !conversation.ready() {
@@ -55,12 +54,12 @@ pub(crate) fn cast_at_speakers(
             let (mut report, strength) =
                 payment.pay(caster, choice.source, UseContext::Conversation)?;
             let rng = &mut payment.rng;
-            let mut reply = MagicalReply::Unnoticed;
+            let mut reply = None;
             match report.outcome {
                 Outcome::Fizzled => {}
                 Outcome::Backfired => {
                     if rng.below(100) < notice_chance {
-                        reply = MagicalReply::Quote(0x16);
+                        reply = Some(MagicalReply::Quote(0x16));
                     }
                 }
                 Outcome::Cast => {
@@ -68,13 +67,13 @@ pub(crate) fn cast_at_speakers(
                         super::effects::condition_chance(level, resistance, strength.against, 0);
                     let saved = super::effects::save_roll(rng, chance);
                     if id == SpellId::MINDREAD {
-                        reply = MagicalReply::Quote(if saved {
+                        reply = Some(MagicalReply::Quote(if saved {
                             0x69
                         } else {
                             let quote = 0x67 + u16::from(npc.mindread_refusals);
                             npc.mindread_refusals = (npc.mindread_refusals + 1).min(2);
                             quote
-                        });
+                        }));
                     } else if saved {
                         report
                             .effects
@@ -90,16 +89,12 @@ pub(crate) fn cast_at_speakers(
                             strength.against,
                         );
                         if amount > conversation.charm() {
-                            reply = MagicalReply::Charmed(amount);
+                            reply = Some(MagicalReply::Charmed(amount));
                         }
                     }
                 }
             }
-            let charmed = matches!(reply, MagicalReply::Charmed(_));
             conversation.magical_reply(reply);
-            if charmed {
-                won.write(WonOver { conversation: entity, greeting: true });
-            }
             Ok(report)
         };
         let cast = cast();

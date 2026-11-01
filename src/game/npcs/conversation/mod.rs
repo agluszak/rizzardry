@@ -136,6 +136,8 @@ enum Step {
     /// The party is asked for an answer.
     Wait(ConversationWait),
     Join,
+    /// The NPC is charmed and may turn from its topic menu to its dialogue.
+    WonOver,
     End,
 }
 impl Step {
@@ -243,7 +245,6 @@ pub enum Outcome {
     GiftRefused(TradeError),
 }
 pub(crate) enum MagicalReply {
-    Unnoticed,
     Charmed(u32),
     Quote(u16),
 }
@@ -256,16 +257,16 @@ impl Conversation {
         self.charms.get(&self.actor).copied().unwrap_or(0)
     }
 
-    pub(crate) fn magical_reply(&mut self, reply: MagicalReply) {
+    pub(crate) fn magical_reply(&mut self, reply: Option<MagicalReply>) {
         self.result = None;
         match reply {
-            MagicalReply::Unnoticed => {}
-            MagicalReply::Charmed(strength) if strength > self.charm() => {
+            None => {}
+            Some(MagicalReply::Charmed(strength)) => {
                 self.charms.insert(self.actor, strength);
                 self.transcript.push(TranscriptLine::Npc("Charmed.".into()));
+                self.queue.push_back(Step::WonOver);
             }
-            MagicalReply::Charmed(_) => {}
-            MagicalReply::Quote(quote) => self.queue.push_back(Step::quote(quote)),
+            Some(MagicalReply::Quote(quote)) => self.queue.push_back(Step::quote(quote)),
         }
     }
 

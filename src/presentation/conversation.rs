@@ -235,7 +235,6 @@ pub struct ConversationViewPlugin;
 impl Plugin for ConversationViewPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(speech::plugin)
-            .add_message::<quantity::Requote>()
             .add_observer(activate_choice)
             .add_observer(activate_trade)
             .add_observer(activate_topic)

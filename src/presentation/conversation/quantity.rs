@@ -30,12 +30,12 @@ pub(super) enum Control {
     Adjust(i32),
 }
 
-/// The party asks to change a draft's count to `n`; the input already
-/// shows it.
-#[derive(Message, Clone, Copy)]
-pub(super) struct Requote {
-    panel: Entity,
-    n: u32,
+/// What the units a draft leaves behind would fetch.
+fn price_of_rest(trading: &Trading, q: &TradeQuote, maximum: u32, n: u32) -> Option<u32> {
+    if maximum == n {
+        return Some(0);
+    }
+    trading.quote(q.conversation, q.source, maximum - n).ok().map(|rest| rest.gold)
 }
 
 /// What editing a draft reads and changes: the drafts, their count inputs,
@@ -59,14 +59,7 @@ impl Drafting<'_, '_> {
             return;
         }
         let Ok(quote) = self.trading.quote(q.conversation, q.source, n) else { return };
-        let remaining = if max == n {
-            0
-        } else {
-            let Ok(remaining) = self.trading.quote(q.conversation, q.source, max - n) else {
-                return;
-            };
-            remaining.gold
-        };
+        let Some(remaining) = price_of_rest(&self.trading, &q, max, n) else { return };
         let (mut draft, _) = self.drafts.get_mut(panel).unwrap();
         draft.quote = quote;
         draft.remaining_price = remaining;
@@ -137,14 +130,7 @@ pub(super) fn open(
     if maximum < 2 || item.class == EquipClass::Ammunition {
         return;
     }
-    let remaining_price = if maximum == q.quantity {
-        0
-    } else {
-        let Ok(remaining) = trading.quote(q.conversation, q.source, maximum - q.quantity) else {
-            return;
-        };
-        remaining.gold
-    };
+    let Some(remaining_price) = price_of_rest(&trading, &q, maximum, q.quantity) else { return };
     let overlay = commands
         .spawn((
             absolute(Vec2::ZERO, Vec2::new(640., 480.)),
@@ -314,15 +300,25 @@ fn build(
 }
 
 /// Counts the party types are quoted.
-pub(super) fn requote(mut requests: MessageReader<Requote>, mut drafting: Drafting) {
-    for &Requote { panel, n } in requests.read() {
-        drafting.change(panel, n, false);
+pub(super) fn requote(mut drafting: Drafting) {
+    let mut typed = Vec::new();
+    for (input, owner) in &mut drafting.counts {
+        if input.is_changed()
+            && !input.is_composing()
+            && let Ok(n) = input.value().to_string().parse::<u32>()
+        {
+            typed.push((owner.parent(), n));
+        }
+    }
+    for (panel, n) in typed {
+        if drafting.drafts.get(panel).is_ok_and(|(draft, _)| draft.quote.quantity != n) {
+            drafting.change(panel, n, false);
+        }
     }
 }
 
 pub(super) fn sync(
     mut commands: Commands,
-    mut requotes: MessageWriter<Requote>,
     drafts: Query<(Entity, &Draft, &ChildOf)>,
     sessions: Query<&Conversation>,
     inputs: Query<(Ref<EditableText>, &ChildOf), With<Count>>,
@@ -333,20 +329,9 @@ pub(super) fn sync(
         Or<(With<Remaining>, With<Price>, With<RemainingPrice>, With<Weight>)>,
     >,
 ) {
-    for (panel, d, parent) in &drafts {
+    for (_, d, parent) in &drafts {
         if !sessions.get(d.quote.conversation).is_ok_and(Conversation::ready) {
             commands.entity(parent.parent()).despawn();
-            continue;
-        }
-        for (input, owner) in &inputs {
-            if owner.parent() == panel
-                && input.is_changed()
-                && !input.is_composing()
-                && let Ok(n) = input.value().to_string().parse::<u32>()
-                && n != d.quote.quantity
-            {
-                requotes.write(Requote { panel, n });
-            }
         }
     }
     for (button, parent, kind, disabled) in &buttons {

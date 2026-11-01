@@ -134,12 +134,6 @@ fn stack_value(item: &crate::content::items::ItemDefinition, count: u16) -> u32 
 const NO_TRADE_KIND: i32 = 20;
 const ALWAYS_TAKEN: ItemId = ItemId(0x29f);
 const LEAST_BRIBE: u32 = 300;
-/// An NPC is won over by charm or a bribe.
-#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WonOver {
-    pub conversation: Entity,
-    pub greeting: bool,
-}
 /// What a friendly NPC says to an item it has no quote for: it takes it
 /// gladly, or turns down one the party may not give away.
 const ACCEPTED_GIFT_QUOTE: u16 = 0x10;
@@ -196,7 +190,6 @@ pub struct Dialogue<'w, 's> {
     speech: MessageWriter<'w, NpcSpeech>,
     faction_news: MessageWriter<'w, crate::game::factions::FactionNews>,
     item_news: MessageWriter<'w, crate::game::inventory::ItemNews>,
-    joins: MessageWriter<'w, crate::game::npcs::recruit::JoinParty>,
 }
 
 impl Dialogue<'_, '_> {
@@ -769,8 +762,10 @@ impl Dialogue<'_, '_> {
                 }
                 // The NPC joins the party once its acceptance is said.
                 Step::Join => {
-                    self.joins.write(crate::game::npcs::recruit::JoinParty { actor });
+                    self.conversation_mut(entity).queue.push_front(Step::Join);
+                    return;
                 }
+                Step::WonOver => self.won_over(entity, true),
                 Step::Wait(wait) => {
                     self.conversation_mut(entity).wait = wait;
                     return;
@@ -1285,6 +1280,13 @@ impl Dialogue<'_, '_> {
         self.conversation_mut(entity).wait = ConversationWait::Ready;
     }
 
+    /// The NPC due to join now its acceptance is said.
+    fn take_join(&mut self, entity: Entity) -> Option<Entity> {
+        let mut c = self.conversation_mut(entity);
+        c.queue.pop_front_if(|step| matches!(step, Step::Join))?;
+        Some(c.actor)
+    }
+
     /// Answer one of the party's requests, and report what came of it.
     fn answer(&mut self, entity: Entity, talk: Talk) {
         let outcome = match talk {
@@ -1391,26 +1393,28 @@ pub fn answer_requests(
     }
 }
 
-/// An NPC won over by charm or a bribe turns from its topic menu to its
-/// dialogue.
-pub fn win_over(mut won: MessageReader<WonOver>, mut dialogue: Dialogue) {
-    for &WonOver { conversation, greeting } in won.read() {
-        if dialogue.conversations.contains(conversation) {
-            dialogue.won_over(conversation, greeting);
-        }
-    }
-}
-
 /// Run each conversation's script as far as it goes, and close those that
 /// are done: ended, left with nothing more to say, or no longer possible.
-pub fn run_conversations(mut dialogue: Dialogue) {
+pub fn run_conversations(mut sides: ParamSet<(Dialogue, crate::game::npcs::recruit::Recruits)>) {
+    let dialogue = sides.p0();
     let sessions: Vec<_> = dialogue.conversations.iter().map(|(entity, ..)| entity).collect();
     for entity in sessions {
+        let mut dialogue = sides.p0();
         if !dialogue.still_open(entity) {
             dialogue.close(entity);
             continue;
         }
         dialogue.run(entity);
+        // The NPC joins the party once its acceptance is said, if it still
+        // would.
+        if let Some(actor) = dialogue.take_join(entity) {
+            match dialogue.joinable(actor) {
+                Ok(()) => sides.p1().join(actor),
+                Err(refusal) => warn!("NPC did not join after all: {refusal:?}"),
+            }
+            sides.p0().run(entity);
+        }
+        let dialogue = &mut sides.p0();
         let (_, c, closing) = dialogue.conversations.get(entity).unwrap();
         let left = closing
             && match c.wait {
