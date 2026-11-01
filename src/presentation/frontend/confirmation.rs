@@ -11,25 +11,21 @@ use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button, ModalDialog};
 use bevy_enhanced_input::prelude::*;
 
-#[derive(Clone)]
 enum Purpose {
     Delete { candidate: u32, name: String },
     KeepSpells,
 }
 
-#[derive(Component, Clone)]
+#[derive(Component)]
 pub(super) struct ConfirmDialog {
     purpose: Purpose,
 }
 #[derive(Component)]
-pub(super) struct QuestionText {
-    purpose: Purpose,
-    line: usize,
-}
-#[derive(Component)]
 pub(super) struct ConfirmationButton(usize);
+/// The dialog's panel, with the font of its question.
 #[derive(Component)]
-pub(super) struct Panel;
+pub(super) struct Panel(Handle<SpriteSheet>);
+/// On a panel whose question has been laid out.
 #[derive(Component)]
 pub(super) struct Measured;
 #[derive(Event)]
@@ -83,27 +79,16 @@ fn open_dialog(
         ]
         on(|event: On<Start<Accept>>, mut commands: Commands| { commands.trigger(Answer { dialog: event.context, accepted: true }); })
         on(|event: On<Start<Cancel>>, mut commands: Commands| { commands.trigger(Answer { dialog: event.context, accepted: false }); })
-    }).insert((ConfirmDialog { purpose: purpose.clone() }, restore, DespawnOnExit(Session::Creation))).id();
+    }).insert((ConfirmDialog { purpose }, restore, DespawnOnExit(Session::Creation))).id();
     let panel = commands
         .spawn((
-            Panel,
+            Panel(assets.load("retail://data/fonts/wiz_text_font.sti")),
             Node { width: px(210), height: px(100), overflow: Overflow::clip(), ..default() },
             Pickable::IGNORE,
             ChildOf(dialog),
         ))
         .id();
     spawn_dialog_frame(commands, assets, panel, true);
-    for line in 0..3 {
-        commands.spawn((
-            QuestionText { purpose: purpose.clone(), line },
-            BitmapText::centred(
-                assets.load("retail://data/fonts/wiz_text_font.sti"),
-                Vec2::new(4., 20. + line as f32 * 11.),
-                202.,
-            ),
-            ChildOf(panel),
-        ));
-    }
     let sheet: Handle<SpriteSheet> = assets.load("retail://data/dialogs/dialogconfirmation.sti");
     for (x, frame, accepted) in [(68., 0, true), (117., 4, false)] {
         let button = commands
@@ -166,18 +151,22 @@ pub(super) fn resolve(
     commands.entity(answer.dialog).despawn();
 }
 
+/// Word the question once its font and strings are there, each line centred
+/// on its own, and size the panel around it.
 pub(super) fn show_text(
     mut commands: Commands,
     game_strings: crate::presentation::screen_art::GameStrings,
     sheets: Res<Assets<SpriteSheet>>,
-    mut texts: Query<(Entity, &QuestionText, &mut BitmapText), Without<Measured>>,
-    mut panels: Query<&mut Node, (With<Panel>, Without<ConfirmationButton>)>,
-    mut buttons: Query<(&ConfirmationButton, &mut Picture), Without<Panel>>,
+    dialogs: Query<&ConfirmDialog>,
+    mut panels: Query<
+        (Entity, &Panel, &ChildOf, &mut Node),
+        (Without<Measured>, Without<ConfirmationButton>),
+    >,
+    mut buttons: Query<(&ConfirmationButton, &ChildOf, &mut Picture), Without<Panel>>,
 ) {
-    let mut size = None;
-    for (entity, question, mut text) in &mut texts {
-        let Some(table) = game_strings.table() else { continue };
-        let message = match &question.purpose {
+    for (entity, Panel(font), dialog, mut node) in &mut panels {
+        let (Some(table), Some(sheet)) = (game_strings.table(), sheets.get(font)) else { continue };
+        let message = match &dialogs.get(dialog.parent()).unwrap().purpose {
             Purpose::Delete { name, .. } => format!(
                 "{} {} {}?",
                 table.get(0x6d4).unwrap_or("Erase"),
@@ -189,48 +178,30 @@ pub(super) fn show_text(
                 .unwrap_or("You still have some spell picks. Save them and proceed?")
                 .to_owned(),
         };
-        if let Some(font) = sheets.get(&text.font) {
-            let lines =
-                crate::presentation::notices::wrap(&message, 220, |line| font.text_width(line));
-            let value = lines.get(question.line).cloned().unwrap_or_default();
-            if text.value != value {
-                text.value = value;
-            }
-            let width = lines.iter().map(|line| font.text_width(line)).max().unwrap_or(0) as f32;
-            let width = (width * 1.25).max(170.).floor();
-            let height = font.text_image("A").height() as f32;
-            let text_height = height * lines.len() as f32;
-            let panel_height = (text_height + 63.).max(text_height * 7.);
-            text.width = width;
-            text.at = Vec2::new(
-                0.,
-                ((panel_height - 33. - text_height) / 2.).floor() + question.line as f32 * height,
-            );
-            size = Some((width, panel_height));
-            commands.entity(entity).insert(Measured);
+        let lines = crate::presentation::notices::wrap(&message, 220, |l| sheet.text_width(l));
+        let width = lines.iter().map(|line| sheet.text_width(line)).max().unwrap_or(0) as f32;
+        let width = (width * 1.25).max(170.).floor();
+        let line_height = sheet.line_height();
+        let text_height = line_height * lines.len() as f32;
+        let height = (text_height + 63.).max(text_height * 7.);
+        let top = ((height - 33. - text_height) / 2.).floor();
+        for (line, value) in lines.into_iter().enumerate() {
+            let at = Vec2::new(0., top + line as f32 * line_height);
+            let text = BitmapText { value, ..BitmapText::centred(font.clone(), at, width) };
+            commands.spawn((text, ChildOf(entity)));
         }
-    }
-    if let Some((width, height)) = size {
-        for mut panel in &mut panels {
-            if panel.width != px(width) {
-                panel.width = px(width);
-            }
-            if panel.height != px(height) {
-                panel.height = px(height);
+        node.width = px(width);
+        node.height = px(height);
+        for (button, panel, mut picture) in &mut buttons {
+            if panel.parent() == entity {
+                let left = if button.0 == 0 {
+                    ((width - 75.) / 2.).floor()
+                } else {
+                    ((width + 25.) / 2.).floor()
+                };
+                picture.at = Vec2::new(left, height - 24. - 15.);
             }
         }
-    }
-    for (button, mut picture) in &mut buttons {
-        if let Some((width, height)) = size {
-            let left = if button.0 == 0 {
-                ((width - 75.) / 2.).floor()
-            } else {
-                ((width + 25.) / 2.).floor()
-            };
-            let top = height - 24. - 15.;
-            if picture.at != Vec2::new(left, top) {
-                picture.at = Vec2::new(left, top);
-            }
-        }
+        commands.entity(entity).insert(Measured);
     }
 }

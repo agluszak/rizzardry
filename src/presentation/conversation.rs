@@ -42,7 +42,7 @@ struct ConversationView(pub Entity);
 struct ConversationViews(Vec<Entity>);
 #[derive(Component, Default)]
 struct DialogueState {
-    offer: Option<Result<TradeQuote, trade::TradeError>>,
+    selection: Option<Selection>,
     mode: Mode,
     pool: bool,
     category: Option<TopicCategory>,
@@ -52,13 +52,34 @@ struct DialogueState {
 }
 impl DialogueState {
     fn quote(&self) -> Option<TradeQuote> {
-        self.offer?.ok()
+        match self.selection? {
+            Selection::Priced(quote) => Some(quote),
+            Selection::Gift(_) | Selection::Refused(_) => None,
+        }
     }
 
     fn set_mode(&mut self, mode: Mode) {
         if self.mode != mode {
             self.mode = mode;
-            self.offer = None;
+            self.selection = None;
+        }
+    }
+}
+/// The item picked in the trade layout, not yet committed.
+#[derive(Clone, Copy)]
+enum Selection {
+    /// One of the item, to give: a gift has no price.
+    Gift(ItemRef),
+    Priced(TradeQuote),
+    /// The trade the pick asked for is unavailable.
+    Refused(trade::TradeError),
+}
+impl Selection {
+    fn source(self) -> Option<TradeSource> {
+        match self {
+            Selection::Gift(item) => Some(TradeSource::Party(item)),
+            Selection::Priced(quote) => Some(quote.source),
+            Selection::Refused(_) => None,
         }
     }
 }
@@ -248,13 +269,18 @@ struct TopicRows;
 
 fn select(world: &mut World, view: Entity, source: TradeSource, quantity: u32) {
     let session = world.get::<ConversationView>(view).unwrap().0;
-    // A gift has no price: one of the item is chosen as it is.
-    let result = if world.get::<DialogueState>(view).unwrap().mode == Mode::Give {
-        Ok(TradeQuote { conversation: session, trade: 0, source, quantity: 1, gold: 0 })
-    } else {
-        quote_trade(world, session, source, quantity)
+    let selection = match source {
+        TradeSource::Party(item)
+            if world.get::<DialogueState>(view).unwrap().mode == Mode::Give =>
+        {
+            Selection::Gift(item)
+        }
+        source => match quote_trade(world, session, source, quantity) {
+            Ok(quote) => Selection::Priced(quote),
+            Err(error) => Selection::Refused(error),
+        },
     };
-    world.get_mut::<DialogueState>(view).unwrap().offer = Some(result);
+    world.get_mut::<DialogueState>(view).unwrap().selection = Some(selection);
 }
 /// The dialogue view of the open conversation.
 #[derive(bevy::ecs::system::SystemParam)]

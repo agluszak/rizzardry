@@ -143,17 +143,17 @@ fn rarity_class(rarity: f32) -> u8 {
     }
 }
 
-/// Which of a table's entries suit now, the chosen one first (retail
+/// Which of a table's entries comes now, chosen among those that suit (retail
 /// `SelectEncounterCandidates`): a rarity class is drawn; entries of that
 /// class, within half the party's level of a challenge and scaled less
 /// common the further off, at a fitting time of day; failing any, any
 /// entry of the class at a fitting time.
-fn candidates(
+fn choose_entry(
     table: &EncounterTable,
     party_level: f32,
     night: bool,
     rng: &mut GameRng,
-) -> Vec<usize> {
+) -> Option<usize> {
     let drawn = match rng.below(100) {
         0..=3 => 3,
         4..=10 => 7,
@@ -187,11 +187,11 @@ fn candidates(
             .map(|(i, _)| i)
             .collect();
     }
-    if candidates.len() > 1 {
-        let chosen = candidates.remove(rng.below(candidates.len() as u32) as usize);
-        candidates.insert(0, chosen);
+    match candidates[..] {
+        [] => None,
+        [only] => Some(only),
+        _ => Some(candidates[rng.below(candidates.len() as u32) as usize]),
     }
-    candidates
 }
 
 /// How many come, the group dice leaned on by how strong they are for the
@@ -320,8 +320,7 @@ fn generate(
     unborn: &mut Unborn,
 ) -> Option<(i32, Vec<Vec3>)> {
     let table = generator.table.as_ref().filter(|_| !generator.disabled)?;
-    let candidates = candidates(table, party.level, night, rng);
-    let &chosen = candidates.first()?;
+    let chosen = choose_entry(table, party.level, night, rng)?;
     let id = table.entries[chosen].species;
     let kind = &spawning.species[id];
     let companions: Vec<u32> = kind

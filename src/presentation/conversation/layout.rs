@@ -303,7 +303,7 @@ fn build_actions(world: &mut World, group: Entity, root: Entity, trade: bool) {
                 edit_state(world, e, root, move |state| {
                     if state.pool != pool {
                         state.pool = pool;
-                        state.offer = None;
+                        state.selection = None;
                     }
                 });
             }
@@ -357,7 +357,7 @@ fn build_actions(world: &mut World, group: Entity, root: Entity, trade: bool) {
                                     if state.usability == Some(party) { None } else { Some(party) }
                             }
                         }
-                        state.offer = None;
+                        state.selection = None;
                     }
                 });
         }
@@ -450,27 +450,26 @@ fn build_offer(world: &mut World, group: Entity, root: Entity, canvas: Entity) {
               roots: Query<&ConversationView>,
               gold: Query<&EditableText, With<GiftGold>>,
               mut requests: MessageWriter<ConversationRequest>| {
-            let Ok(mut state) = states.get_mut(root) else { return };
+            let (Ok(mut state), Ok(view)) = (states.get_mut(root), roots.get(root)) else {
+                return;
+            };
             let amount = gold.get(gift_gold).map_or(0, gift_amount);
-            if state.mode == Mode::Give
-                && state.quote().is_none()
-                && amount > 0
-                && let Ok(view) = roots.get(root)
-            {
-                requests.write(ConversationRequest::new(view.0, Talk::GiveGold { amount }));
-                state.set_mode(Mode::Talk);
-            } else if let Some(q) = state.quote()
-                && roots.get(root).is_ok_and(|v| v.0 == q.conversation)
-            {
-                if state.mode != Mode::Give {
-                    requests.write(ConversationRequest::trade(q));
+            match state.selection {
+                Some(Selection::Priced(quote)) => {
+                    requests.write(ConversationRequest::trade(quote));
                     // The trade settles the selection.
-                    state.offer = None;
-                } else if let TradeSource::Party(item) = q.source {
-                    requests.write(ConversationRequest::new(q.conversation, Talk::Give { item }));
+                    state.selection = None;
+                }
+                Some(Selection::Gift(item)) => {
+                    requests.write(ConversationRequest::new(view.0, Talk::Give { item }));
                     // Retail returns to the transcript for the answer.
                     state.set_mode(Mode::Talk);
                 }
+                _ if state.mode == Mode::Give && amount > 0 => {
+                    requests.write(ConversationRequest::new(view.0, Talk::GiveGold { amount }));
+                    state.set_mode(Mode::Talk);
+                }
+                _ => {}
             }
         },
     );
@@ -621,7 +620,7 @@ pub(super) fn build(world: &mut World, session: Entity) -> Entity {
         .spawn((
             ConversationView(session),
             DialogueState {
-                offer: None,
+                selection: None,
                 mode: Mode::Talk,
                 pool: true,
                 category: None,

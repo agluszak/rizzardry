@@ -150,7 +150,7 @@ pub fn finish_round(
         &mut magic,
         &staying,
     );
-    if !lineup(roster, &members).anyone_alive() {
+    if !anyone_alive(roster, &members) {
         return;
     }
     if over {
@@ -203,7 +203,7 @@ pub(super) fn end_round(
     );
     // Poison may have killed the last of the party as the time passed: that
     // is their defeat, which `settle_defeat` reports, not a victory.
-    if !lineup(roster, members).anyone_alive() {
+    if !anyone_alive(roster, members) {
         return false;
     }
     rest_defenders(battle, roster, members, rng);

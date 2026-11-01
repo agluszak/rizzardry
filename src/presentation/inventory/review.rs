@@ -368,19 +368,16 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
             .into_iter()
             .enumerate()
     {
-        let entity = commands
-            .spawn((
-                Picture {
-                    sheet: art.skills_icons.clone(),
-                    frame,
-                    at: Vec2::new(x - 22.0, y - 3.0),
-                    bounds: None,
-                },
-                CategoryIcon(i),
-                ChildOf(skills),
-            ))
-            .id();
-        let _ = entity;
+        commands.spawn((
+            Picture {
+                sheet: art.skills_icons.clone(),
+                frame,
+                at: Vec2::new(x - 22.0, y - 3.0),
+                bounds: None,
+            },
+            CategoryIcon(i),
+            ChildOf(skills),
+        ));
     }
     for skill in EnumSet::<Skill>::all() {
         let row = commands

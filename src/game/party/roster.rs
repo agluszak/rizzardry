@@ -60,30 +60,6 @@ pub fn test_party(world: &mut World, members: &[Entity]) -> Entity {
     party
 }
 
-/// Add `member` to the end of the party and seat them; for tests.
-#[cfg(test)]
-pub fn test_join(world: &mut World, member: Entity) {
-    let party = the_party(world);
-    world.entity_mut(member).insert(PartyMember(party));
-    world.get_mut::<super::formation::Formation>(party).unwrap().seat(member);
-}
-
-/// Put the party's members in `order`; for tests.
-#[cfg(test)]
-pub fn test_reorder(world: &mut World, order: &[Entity]) {
-    let party = the_party(world);
-    for &member in order {
-        world.entity_mut(member).remove::<PartyMember>().insert(PartyMember(party));
-    }
-}
-
-/// End a membership without transferring its formation seat to whoever
-/// follows in roster order. The character entity remains.
-pub fn leave(commands: &mut Commands, member: Entity, formation: &mut super::formation::Formation) {
-    commands.entity(member).remove::<PartyMember>();
-    formation.unseat(member);
-}
-
 /// Someone joining a new party, as party creation (or a party file) makes
 /// them.
 #[derive(Clone, Debug, Deserialize)]

@@ -25,6 +25,18 @@ impl ScreenshotAndExit {
     }
 }
 
+/// Ask for the automap until it has opened once.
+pub fn open_automap(
+    screen: Res<State<crate::presentation::screen::Screen>>,
+    mut opened: Local<bool>,
+    mut open: MessageWriter<crate::presentation::automap::OpenAutomap>,
+) {
+    *opened |= *screen.get() == crate::presentation::screen::Screen::Automap;
+    if !*opened {
+        open.write(crate::presentation::automap::OpenAutomap);
+    }
+}
+
 pub fn screenshot_and_exit(
     mut commands: Commands,
     time: Res<Time>,

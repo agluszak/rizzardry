@@ -62,7 +62,7 @@ pub struct MonsterDamage<'w, 's> {
     /// The NPCs whose world roles are among the monsters.
     npcs: (
         Query<'w, 's, &'static crate::game::npcs::NpcBody>,
-        Query<'w, 's, &'static mut crate::game::npcs::Npc>,
+        Query<'w, 's, (&'static mut crate::game::npcs::Npc, &'static crate::game::npcs::ActorId)>,
     ),
     commands: Commands<'w, 's>,
     content: If<Res<'w, crate::game::data::Catalogs>>,
@@ -294,9 +294,9 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         }
         let npc = self.npcs.0.get(target).ok().and_then(|body| self.npcs.1.get_mut(body.0).ok());
         let (found, gold) = match npc {
-            Some(mut npc) => {
+            Some((mut npc, id)) => {
                 npc.dead = true;
-                npc.possessions.give_up(catalog, rng)
+                crate::game::loot::npc_loot(&catalogs.npcs[id.npc()], tables, catalog, rng)
             }
             None => crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng),
         };

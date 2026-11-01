@@ -67,6 +67,7 @@ pub(super) fn open_info(
     sheets: Res<Assets<SpriteSheet>>,
     strings: crate::presentation::screen_art::GameStrings,
     mut commands: Commands,
+    tabs: Option<Single<&SelectedTab, With<super::review::PageTabs>>>,
     mut focus: Option<ResMut<InputFocus>>,
 ) {
     if click.button != PointerButton::Secondary || !existing.is_empty() {
@@ -140,6 +141,7 @@ pub(super) fn open_info(
     // The first two labels share a line (the differently coloured prefix).
     let count = entries.len().saturating_sub(1);
     let maximum = count.saturating_sub((185.0 / line_height).floor() as usize);
+    let restore = crate::presentation::retail_controls::RestoreFocus(tabs.and_then(|tabs| tabs.0));
     let root = commands.spawn_scene(bsn! {
         InfoDialog { line_height: {line_height} }
         ContextPriority::<InfoDialog>::new(2)
@@ -148,7 +150,7 @@ pub(super) fn open_info(
             -- Action::<BlockInventoryKey>::new() ActionSettings { consume_input: true } Bindings [ Binding(KeyCode::KeyI) ]
         ]
         on(close_keyboard)
-    }).insert((absolute(Vec2::ZERO, Vec2::new(640.0, 480.0)), GlobalZIndex(20), TabGroup::modal(), ModalDialog, Pickable::default(), ChildOf(target.root))).observe(crate::presentation::retail_controls::scroll_wheel).observe(dismiss_right).id();
+    }).insert((restore, absolute(Vec2::ZERO, Vec2::new(640.0, 480.0)), GlobalZIndex(20), TabGroup::modal(), ModalDialog, Pickable::default(), ChildOf(target.root))).observe(crate::presentation::retail_controls::scroll_wheel).observe(dismiss_right).id();
     image(&mut commands, root, art.info_dialog.clone(), 0, Vec2::new(156.0, 105.0));
     text(
         &mut commands,
@@ -210,15 +212,9 @@ pub(super) fn open_info(
             absolute(at, Vec2::splat(30.0)),
             ChildOf(root),
         ))
-        .observe(
-            move |_: On<Activate>,
-                  mut commands: Commands,
-                  selected: Option<Single<&SelectedTab, With<super::review::PageTabs>>>,
-                  mut focus: Option<ResMut<InputFocus>>| {
-                restore_focus(selected, focus.as_deref_mut());
-                commands.entity(root).despawn();
-            },
-        )
+        .observe(move |_: On<Activate>, mut commands: Commands| {
+            commands.entity(root).despawn();
+        })
         .id();
     if let Some(focus) = focus.as_mut() {
         focus.set(close_button, FocusCause::Navigated);
@@ -265,34 +261,15 @@ pub(super) fn update_scroll(
     }
 }
 
-fn restore_focus(
-    selected: Option<Single<&SelectedTab, With<super::review::PageTabs>>>,
-    focus: Option<&mut InputFocus>,
-) {
-    if let (Some(selected), Some(focus)) = (selected, focus)
-        && let Some(entity) = selected.0
-    {
-        focus.set(entity, FocusCause::Navigated);
-    }
-}
-fn close_keyboard(
-    event: On<Start<Close>>,
-    mut commands: Commands,
-    selected: Option<Single<&SelectedTab, With<super::review::PageTabs>>>,
-    mut focus: Option<ResMut<InputFocus>>,
-) {
-    restore_focus(selected, focus.as_deref_mut());
+fn close_keyboard(event: On<Start<Close>>, mut commands: Commands) {
     commands.entity(event.context).despawn();
 }
 fn dismiss_right(
     event: On<PointerClick>,
     dialog: Single<Entity, With<InfoDialog>>,
     mut commands: Commands,
-    selected: Option<Single<&SelectedTab, With<super::review::PageTabs>>>,
-    mut focus: Option<ResMut<InputFocus>>,
 ) {
     if event.button == PointerButton::Secondary {
-        restore_focus(selected, focus.as_deref_mut());
         commands.entity(*dialog).despawn();
     }
 }

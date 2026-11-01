@@ -205,7 +205,6 @@ const NO_STRENGTH: [ItemKind; 5] = [
 /// `W8HandAttack`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hand {
-    pub holds: Holds,
     /// The hand can attack.
     pub in_play: bool,
     pub weapon_skill: Skill,
@@ -243,7 +242,6 @@ pub struct Hand {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hands {
     pub hands: [Hand; 2],
-    pub dual_wielding: bool,
 }
 
 impl Hands {
@@ -367,7 +365,6 @@ pub fn hands(
         let paired = d.is_some_and(|d| is_launcher(d.kind)) && in_play[index];
         let ammunition = if paired { definition(1 - index) } else { None };
         let mut hand = Hand {
-            holds: holds[index],
             in_play: in_play[index],
             weapon_skill: skill,
             ranged,
@@ -503,7 +500,7 @@ pub fn hands(
         }
         hand
     };
-    Hands { hands: [hand(0), hand(1)], dual_wielding }
+    Hands { hands: [hand(0), hand(1)] }
 }
 
 /// The main hand's numbers, as the character sheet shows them.
@@ -1282,12 +1279,12 @@ mod tests {
         let mut carried = Carried::default();
         wield(&mut carried, EquipSlot::Primary, &sword, 1);
         let alone = hands(&fighter.base_stats(), &carried, &catalog, Load::None);
-        assert!(alone.hands[0].in_play && !alone.dual_wielding);
+        assert!(alone.hands[0].in_play && !alone.hands[1].in_play);
         // An empty off hand beside a weapon does not punch.
         assert!(!alone.hands[1].in_play);
         wield(&mut carried, EquipSlot::Secondary, &dagger, 1);
         let both = hands(&fighter.base_stats(), &carried, &catalog, Load::None);
-        assert!(both.dual_wielding && both.hands[1].in_play);
+        assert!(both.hands[0].in_play && both.hands[1].in_play);
         assert_eq!(both.hands[1].weapon_skill, Skill::Dagger);
         // Each hand pays −10 per hand number and a quarter of the Dual
         // Weapons it lacks: (−10 − 15)/3 and (−20 − 15)/3 off the rating.

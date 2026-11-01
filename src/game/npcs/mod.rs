@@ -2,7 +2,6 @@
 pub mod conversation;
 pub mod recruit;
 pub mod trade;
-use crate::content::items::ItemId;
 use crate::content::npcs::*;
 use crate::game::GameplaySet;
 use crate::game::data::Catalogs;
@@ -89,52 +88,11 @@ pub struct Npc {
     /// waits half a day before the party may try again.
     pub charmed_at: Option<u64>,
     pub small_talk_at: Option<u64>,
-    pub possessions: Possessions,
     /// Killed (retail `W8NpcState::spawned`): the NPC never comes back to
     /// the world, and story facts read its death from here.
     pub dead: bool,
 }
 
-/// What an NPC carries on its person, apart from any stock it trades
-/// (retail `InitializeNpcItemTable`): its item table's entries with their
-/// weights, how many of the weighted ones it gives up, and its purse.
-#[derive(Clone, Debug, Default)]
-pub struct Possessions {
-    pub items: Vec<(ItemId, u8)>,
-    pub count: crate::content::items::Dice,
-    pub gold: u32,
-}
-
-impl Possessions {
-    pub fn of(definition: &NpcDefinition, tables: &crate::content::items::LootTables) -> Self {
-        let table = definition.item_table.and_then(|id| tables.0.get(usize::from(id)));
-        Self {
-            items: table.map_or_else(Vec::new, |table| table.entries.clone()),
-            count: table.map_or_else(default, |table| table.item_count),
-            gold: definition.gold,
-        }
-    }
-
-    /// Everything the NPC leaves when it dies (retail `DropMonsterLoot`'s
-    /// NPC branch): every item of weight 0, then as many weighted draws as
-    /// its count rolls, and its purse. It keeps nothing.
-    pub fn give_up(
-        &mut self,
-        catalog: &crate::content::items::ItemCatalog,
-        rng: &mut GameRng,
-    ) -> (Vec<ItemId>, u32) {
-        let table = crate::content::items::LootTable {
-            name: String::new(),
-            entries: std::mem::take(&mut self.items),
-            level_scaled: false,
-            item_count: self.count,
-            gold: default(),
-        };
-        let wanted = rng.roll(self.count);
-        let items = crate::game::loot::table_items(&table, catalog, 0, wanted, rng);
-        (items, std::mem::take(&mut self.gold))
-    }
-}
 #[derive(Resource, Default)]
 pub struct NpcAssets {
     pub scripts: HashMap<NpcId, Handle<DialogueScript>>,
@@ -173,8 +131,6 @@ pub struct NpcPopulation<'w, 's> {
 /// An NPC's placement as a level's population meets it.
 pub struct Placing<'a> {
     pub placed: &'a crate::content::level::MonsterPlacement,
-    /// The item tables an NPC's possessions come from.
-    pub tables: &'a crate::content::items::LootTables,
     pub id: NpcId,
     /// The level's map, which identifies the placement.
     pub map: &'a str,
@@ -187,7 +143,7 @@ impl NpcPopulation<'_, '_> {
     pub fn place(
         &mut self,
         commands: &mut Commands,
-        Placing { placed, tables, id, map, average }: Placing,
+        Placing { placed, id, map, average }: Placing,
         catalogs: &Catalogs,
         placed_actors: &mut std::collections::HashSet<ActorId>,
         rng: &mut GameRng,
@@ -234,7 +190,6 @@ impl NpcPopulation<'_, '_> {
                     trade_pool: definition.trade_pool,
                     charmed_at: None,
                     small_talk_at: None,
-                    possessions: Possessions::of(definition, tables),
                     dead: false,
                 },
             ))

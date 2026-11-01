@@ -73,20 +73,19 @@ const SEXUS: NpcId = NpcId(0x4f);
 /// offer the service of the region the party is in; its authored terms
 /// hold; and the party's living, able members average at least its minimum
 /// level.
-fn willing(world: &mut World, id: NpcId, definition: &NpcDefinition) -> bool {
-    let level = world.query::<&Level>().single(world).unwrap();
+fn willing(world: &World, id: NpcId, definition: &NpcDefinition) -> bool {
+    let level = world.try_query::<&Level>().unwrap().single(world).unwrap();
     let band = crate::content::levels::LevelInfo::for_path(&level.path).map_or(0, |info| info.band);
     if offers_service(definition, band) {
         return false;
     }
-    let fact = |world: &mut World, symbol: &str| {
-        super::conversation::fact_named(world, symbol).expect("a ported fact")
-    };
+    let fact =
+        |symbol: &str| super::conversation::fact_named(world, symbol).expect("a ported fact");
     let terms = match id {
-        GLUMPH => fact(world, "FACT_UMISSION_SCUBA_DONE") == 0,
-        SEXUS => fact(world, "FACT_SEXUS_PAID") != 0,
-        MADRAS => fact(world, "FACT_TRYNNIE_MADRAS_WILL_JOIN") != 0,
-        DRAZIC | RODAN => fact(world, "FACT_PEACE_ACHIEVED") == 0,
+        GLUMPH => fact("FACT_UMISSION_SCUBA_DONE") == 0,
+        SEXUS => fact("FACT_SEXUS_PAID") != 0,
+        MADRAS => fact("FACT_TRYNNIE_MADRAS_WILL_JOIN") != 0,
+        DRAZIC | RODAN => fact("FACT_PEACE_ACHIEVED") == 0,
         _ => true,
     };
     if !terms {
@@ -94,9 +93,10 @@ fn willing(world: &mut World, id: NpcId, definition: &NpcDefinition) -> bool {
     }
     if definition.min_party_level > 0 {
         // Retail counts no able member as an average of nothing.
-        let lineup = crate::game::party::Lineup::in_world(world);
-        let levels: Vec<_> = lineup.able().map(|(_, c)| c.level()).collect();
-        let average = if levels.is_empty() { 0 } else { crate::game::party::average_level(levels) };
+        let mut levels =
+            crate::game::party::able_in_world(world).map(|(_, c)| c.level()).peekable();
+        let average =
+            if levels.peek().is_none() { 0 } else { crate::game::party::average_level(levels) };
         if average < u32::from(definition.min_party_level) {
             return false;
         }
@@ -108,19 +108,20 @@ fn willing(world: &mut World, id: NpcId, definition: &NpcDefinition) -> bool {
 /// `RequestNpcJoinParty`'s order: an NPC without a character declines
 /// before the party's room is counted).
 pub fn joinable(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
+    let party = the_party(world);
+    let world = &*world;
     let id = world.get::<super::ActorId>(actor).unwrap().npc();
-    let definition = super::definition(world, actor).clone();
+    let definition = super::definition(world, actor);
     let gone = world.get::<Npc>(actor).unwrap().dead;
     if definition.character.is_none() || gone || world.get::<PartyMember>(actor).is_some() {
         return Err(JoinRefusal::Declines);
     }
-    let party = the_party(world);
     let roster = world.get::<PartyRoster>(party).unwrap();
     let npcs = roster.iter().filter(|&m| world.get::<Npc>(m).is_some()).count();
     if npcs >= NPC_PLACES {
         return Err(JoinRefusal::NoRoom);
     }
-    if !willing(world, id, &definition) {
+    if !willing(world, id, definition) {
         return Err(JoinRefusal::Declines);
     }
     Ok(())
