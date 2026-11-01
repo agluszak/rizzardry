@@ -48,46 +48,23 @@ enum Decision<'a> {
     },
 }
 
-/// How the acting monster stands toward everyone in the fight: each
-/// monster by its own allegiance, each member by whether they have turned.
-struct Sides {
+/// How a monster of allegiance `mine`, held as it began to act, stands toward
+/// someone in the fight: another monster by its own allegiance now, a member
+/// by whether they have turned.
+pub(super) fn stance_toward(
     mine: hostility::Allegiance,
-    allegiances: Vec<(Entity, hostility::Allegiance)>,
-    turncoats: Vec<Entity>,
-}
-
-impl Sides {
-    fn of(
-        monster: Entity,
-        combatants: &[Entity],
-        (members, damage): (&Members, &MonsterDamage),
-        roster: &PartyRoster,
-        now: u64,
-        species: &MonsterCatalog,
-    ) -> Self {
-        let allegiances: Vec<_> = combatants
-            .iter()
-            .map(|&entity| (entity, allegiance(entity, damage, now, species)))
-            .collect();
-        let mine = allegiances.iter().find(|&&(e, _)| e == monster).unwrap().1;
-        let turncoats = roster
-            .iter()
-            .filter(|&m| members.get(m).unwrap().1.conditions.has(Condition::Turncoat))
-            .collect();
-        Self { mine, allegiances, turncoats }
-    }
-
-    fn toward(&self, victim: Victim) -> Stance {
-        match victim {
-            Victim::Member(member) => {
-                hostility::toward_member(self.mine.stance, self.turncoats.contains(&member))
-            }
-            Victim::Monster(other) => self
-                .allegiances
-                .iter()
-                .find(|&&(e, _)| e == other)
-                .map_or(Stance::Neutral, |&(_, theirs)| hostility::between(self.mine, theirs)),
+    victim: Victim,
+    members: &Members,
+    damage: &MonsterDamage,
+    now: u64,
+    species: &MonsterCatalog,
+) -> Stance {
+    match victim {
+        Victim::Member(member) => {
+            let (_, vitals, ..) = members.get(member).unwrap();
+            hostility::toward_member(mine.stance, vitals.conditions.has(Condition::Turncoat))
         }
+        Victim::Monster(other) => hostility::between(mine, allegiance(other, damage, now, species)),
     }
 }
 
@@ -110,21 +87,14 @@ pub(super) fn monster_turn(
         battle.this_round.monsters[index].end();
         return false;
     }
-    let sides = Sides::of(
-        monster,
-        combatants,
-        (members, damage),
-        &magic.context.roster,
-        party.now,
-        species,
-    );
+    let mine = allegiance(monster, damage, party.now, species);
     let turn = battle.this_round.monsters[index];
     let kind = &species[damage.monsters().get(monster).unwrap().0.species];
     // A monster decides as its round's action begins, not again between
     // its attacks.
     let (mut decision, interrupted) =
         if turn.attacks_left == u32::from(kind.attacks_per_round) && !turn.moved {
-            decide(battle, index, combatants, rng, (members, damage), party, magic, species, &sides)
+            decide(battle, index, combatants, rng, (members, damage), party, magic, species, mine)
         } else {
             (Decision::Fight { waits: false }, None)
         };
@@ -187,7 +157,7 @@ pub(super) fn monster_turn(
                 party,
                 magic,
                 species,
-                (&sides, waits),
+                (mine, waits),
                 news,
             );
             true
@@ -206,17 +176,17 @@ fn decide<'a>(
     party: &PartyView,
     magic: &BattleMagic,
     species: &'a MonsterCatalog,
-    sides: &Sides,
+    mine: hostility::Allegiance,
 ) -> (Decision<'a>, Option<Interrupt>) {
     let monster = battle.this_round.monsters[index].actor;
-    let toward = |victim: Victim| sides.toward(victim);
+    let toward = |victim: Victim| stance_toward(mine, victim, members, damage, party.now, species);
     let (body, at, walker, ..) = damage.monsters().get(monster).unwrap();
     let kind = &species[body.species];
     let mut decision = Decision::Fight { waits: false };
     let feet = feet(at.translation(), walker);
     let nearest = party_distance(party.eye, body, feet);
     let mut fleeing = battle.fleeing.contains(&monster);
-    let conduct = conduct::decide(rng, body, kind, sides.mine.stance, &mut fleeing, nearest);
+    let conduct = conduct::decide(rng, body, kind, mine.stance, &mut fleeing, nearest);
     battle.fleeing.retain(|&m| m != monster);
     if fleeing {
         battle.fleeing.push(monster);
@@ -242,7 +212,7 @@ fn decide<'a>(
     } else if special.chance != 0
         && !closes_in
         && let Some(special_kind) = special.kind
-        && special_ready(body, kind, cooling, Some((nearest, sides.mine.stance)))
+        && special_ready(body, kind, cooling, Some((nearest, mine.stance)))
         && let Some(aim) = if special_kind.summons().is_some() {
             // A summoning aims at the summoner's own spot (retail
             // `AimFleeingMonster`); it needs no one in sight.
@@ -491,36 +461,42 @@ fn strike(
     party: &PartyView,
     magic: &mut BattleMagic,
     species: &MonsterCatalog,
-    (sides, waits): (&Sides, bool),
+    (mine, waits): (hostility::Allegiance, bool),
     news: &mut MessageWriter<CombatNews>,
 ) {
     let monster = battle.this_round.monsters[index].actor;
     let BattleMagic { context, points, moving, .. } = magic;
     let wanted =
         if battle.this_round.monsters[index].berserk { Stance::Friendly } else { Stance::Hostile };
-    let may_attack = |victim: Victim| sides.toward(victim) == wanted;
     let mut fight = blows::Fight {
         combatants,
         party,
         armours: party_armours(battle, members, context),
         moving,
         points,
-        attacks: &may_attack,
         waits,
     };
     let idle = context.resolve(party.now, members, damage, |field| {
-        blows::monster_attacks(battle, index, rng, field, &mut fight, news)
+        blows::monster_attacks(battle, index, rng, field, &mut fight, (mine, wanted), news)
     });
     if !idle || battle.this_round.monsters[index].moved {
         return;
     }
     let (body, here, walker, ..) = damage.monsters().get(monster).unwrap();
-    let budget = if sides.mine.stance == Stance::Friendly {
+    let budget = if mine.stance == Stance::Friendly {
         let target = combatants
             .iter()
             .filter_map(|&entity| {
                 let (other, at, ..) = damage.monsters().get(entity).unwrap();
-                (entity != monster && !other.is_dead() && may_attack(Victim::Monster(entity)))
+                let foe = stance_toward(
+                    mine,
+                    Victim::Monster(entity),
+                    members,
+                    damage,
+                    party.now,
+                    species,
+                );
+                (entity != monster && !other.is_dead() && foe == wanted)
                     .then_some((here.translation().distance_squared(at.translation()), entity))
             })
             .min_by(|a, b| a.0.total_cmp(&b.0))
@@ -530,7 +506,7 @@ fn strike(
             let metres = approach::move_metres(body, &species[body.species], charge);
             (approach::MoveBudget { metres, charge }, approach::MoveGoal::Attack(target))
         })
-    } else if sides.mine.stance == Stance::Hostile {
+    } else if mine.stance == Stance::Hostile {
         approach::move_budget(body, here.translation(), walker, party.eye, species)
             .map(|budget| (budget, approach::MoveGoal::Party))
     } else {

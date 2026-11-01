@@ -23,7 +23,7 @@ use crate::game::magic::{LearnedSpells, SpellPoints};
 use crate::game::party::body;
 use crate::game::party::formation::{self, Row};
 use crate::game::rng::GameRng;
-use crate::game::world::hostility::Stance;
+use crate::game::world::hostility::{self, Stance};
 use crate::game::world::navigation::feet;
 
 /// What a blow needs of the fight besides the field it changes.
@@ -35,10 +35,6 @@ pub(super) struct Fight<'a, 'w, 's> {
     /// Monsters advancing this round, which drop their guard.
     pub moving: &'a Query<'w, 's, (), With<super::approach::CombatMove>>,
     pub points: &'a mut Query<'w, 's, (&'static LearnedSpells, &'static mut SpellPoints)>,
-    /// Whom the acting monster may attack (retail `BuildMonsterActionQueue`'s
-    /// `MonsterVsCharDisposition` and `MonsterHostility` tests); members
-    /// act on their own orders.
-    pub attacks: &'a dyn Fn(Victim) -> bool,
     /// The acting monster may hold back instead, as one more choice beside
     /// its attacks (a wary monster's wait).
     pub waits: bool,
@@ -919,18 +915,34 @@ fn notices(
     rng.below(100) < chance
 }
 
-/// Every (attack, mode, target) the monster reaches, equally likely:
-/// members, then the other monsters in the fight. A member's Stealth may
-/// keep it out of the monster's eye this time (three quarters of it, in
-/// percent), and one that stayed out of it may learn from it.
+/// Every (attack, mode, target) the monster reaches and may attack, equally
+/// likely: members, then the other monsters in the fight. Those it may attack
+/// are whom it stands `wanted` toward, from allegiance `mine` (retail
+/// `BuildMonsterActionQueue`'s `MonsterVsCharDisposition` and
+/// `MonsterHostility` tests). A member's Stealth may keep it out of the
+/// monster's eye this time (three quarters of it, in percent), and one that
+/// stayed out of it may learn from it.
 fn reachable_targets(
     entity: Entity,
     kind: &Species,
     rng: &mut GameRng,
     field: &mut Field,
     fight: &Fight,
+    (mine, wanted): (hostility::Allegiance, Stance),
     news: &mut MessageWriter<CombatNews>,
 ) -> Vec<(usize, AttackMode, Victim)> {
+    let (now, species) = (field.now, field.species);
+    let attacks = |victim: Victim, field: &Field| {
+        let stance = super::monster_turn::stance_toward(
+            mine,
+            victim,
+            field.members,
+            field.monsters,
+            now,
+            species,
+        );
+        stance == wanted
+    };
     let (monster, at, walker, ..) = field.monsters.monsters().get(entity).unwrap();
     let here = feet(at.translation(), walker);
     let distance = party_distance(fight.party.eye, monster, here);
@@ -949,7 +961,7 @@ fn reachable_targets(
         for &member in field.party {
             let (_, vitals, ..) = field.members.get(member).unwrap();
             if !vitals.is_dead()
-                && (fight.attacks)(Victim::Member(member))
+                && attacks(Victim::Member(member), field)
                 && fight.party.reaches(formation, member, at.translation(), attack.reach, distance)
             {
                 if unseen.contains(&member) {
@@ -970,7 +982,7 @@ fn reachable_targets(
                 && !body.is_dead()
                 && field.monsters.active(other)
                 && field.visibility.clear(eye, body_centre(there, body))
-                && (fight.attacks)(Victim::Monster(other))
+                && attacks(Victim::Monster(other), field)
                 && monster.gap(here, body, there) <= attack.reach.metres()
             {
                 for mode in attack.modes {
@@ -999,6 +1011,7 @@ pub(super) fn monster_attacks(
     rng: &mut GameRng,
     field: &mut Field,
     fight: &mut Fight,
+    attackers_side: (hostility::Allegiance, Stance),
     news: &mut MessageWriter<CombatNews>,
 ) -> bool {
     let turn = battle.this_round.monsters[index];
@@ -1010,7 +1023,7 @@ pub(super) fn monster_attacks(
     let position = at.translation();
     let eye = monster.eye(feet(position, walker));
     let stance = field.monsters.stance(entity, field.now);
-    let candidates = reachable_targets(entity, kind, rng, field, fight, news);
+    let candidates = reachable_targets(entity, kind, rng, field, fight, attackers_side, news);
     let turn_left = turn.attacks_left.saturating_sub(1);
     battle.this_round.monsters[index].end();
     // A wary monster's wait comes first among its choices.

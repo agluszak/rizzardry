@@ -92,7 +92,6 @@ pub(super) fn party_turn(
                 armours: party_armours(battle, members, context),
                 moving,
                 points,
-                attacks: &|_| false,
                 waits: false,
             };
             context.resolve(party.now, members, damage, |field| {
