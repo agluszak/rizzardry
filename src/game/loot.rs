@@ -2,6 +2,7 @@
 
 use super::rng::GameRng;
 use crate::content::items::{ItemCatalog, ItemId, LootTable, LootTables};
+use crate::content::npcs::NpcDefinition;
 use crate::content::species::{Drop, Species};
 
 /// Party levels and item values a level-scaled table draws from (Whizzardry
@@ -26,36 +27,37 @@ pub fn roll_loot(
     rng: &mut GameRng,
 ) -> (Vec<ItemId>, u32) {
     let wanted = rng.roll(table.item_count);
-    (table_items(table, catalog, party_level, wanted, rng), rng.roll(table.gold))
+    let scaled_for = table.level_scaled.then_some(party_level);
+    (table_items(&table.entries, catalog, scaled_for, wanted, rng), rng.roll(table.gold))
 }
 
-/// Up to `wanted` items from a table (retail `GenerateItemsFromTable`).
-/// Items of weight 0 always drop; then draws pick a random remaining entry
-/// and keep it when a roll below the total weight is at most its weight. As
-/// in retail, the total is not reduced as entries are taken.
-pub fn table_items(
-    table: &LootTable,
+/// Up to `wanted` items from a table's entries (retail
+/// `GenerateItemsFromTable`). Items of weight 0 always drop; then draws pick
+/// a random remaining entry and keep it when a roll below the total weight is
+/// at most its weight. As in retail, the total is not reduced as entries are
+/// taken. `scaled_for` is the party level a level-scaled draw fits items to.
+fn table_items(
+    entries: &[(ItemId, u8)],
     catalog: &ItemCatalog,
-    party_level: u32,
+    scaled_for: Option<u32>,
     wanted: u32,
     rng: &mut GameRng,
 ) -> Vec<ItemId> {
     let mut items: Vec<ItemId> =
-        table.entries.iter().filter(|(_, w)| *w == 0).map(|(item, _)| *item).collect();
-    let fits = |item: ItemId| {
+        entries.iter().filter(|(_, w)| *w == 0).map(|(item, _)| *item).collect();
+    let fits = |item: ItemId, party_level: u32| {
         let value = catalog[item].value;
         LEVEL_SCALE
             .iter()
             .any(|&(level, low, high)| level <= party_level && low <= value && value < high)
     };
-    let mut candidates: Vec<(ItemId, u8)> = table
-        .entries
+    let mut candidates: Vec<(ItemId, u8)> = entries
         .iter()
-        .filter(|(item, weight)| *weight != 0 && (!table.level_scaled || fits(*item)))
+        .filter(|(item, weight)| *weight != 0 && scaled_for.is_none_or(|level| fits(*item, level)))
         .copied()
         .collect();
-    if table.level_scaled && candidates.len() < wanted as usize {
-        candidates = table.entries.clone();
+    if scaled_for.is_some() && candidates.len() < wanted as usize {
+        candidates = entries.to_vec();
     }
     let total: u32 = candidates.iter().map(|(_, w)| u32::from(*w)).sum();
     let mut taken = 0;
@@ -91,7 +93,8 @@ pub fn monster_loot(
                 Drop::Item(item) => items.push(item),
                 Drop::Table(table) => {
                     if let Some(table) = tables.0.get(usize::from(table)) {
-                        items.extend(table_items(table, catalog, party_level, rolls, rng));
+                        let scaled_for = table.level_scaled.then_some(party_level);
+                        items.extend(table_items(&table.entries, catalog, scaled_for, rolls, rng));
                     }
                 }
                 Drop::Nothing => {}
@@ -99,6 +102,21 @@ pub fn monster_loot(
         }
     }
     (items, rng.roll(species.gold))
+}
+
+/// Everything an NPC leaves when it dies (retail `DropMonsterLoot`'s NPC
+/// branch and `InitializeNpcItemTable`): every item of weight 0, then as many
+/// weighted draws as its table's count rolls, unscaled, and its purse.
+pub fn npc_loot(
+    definition: &NpcDefinition,
+    tables: &LootTables,
+    catalog: &ItemCatalog,
+    rng: &mut GameRng,
+) -> (Vec<ItemId>, u32) {
+    let table = definition.item_table.and_then(|id| tables.0.get(usize::from(id)));
+    let wanted = table.map_or(0, |table| rng.roll(table.item_count));
+    let entries = table.map_or(&[][..], |table| &table.entries);
+    (table_items(entries, catalog, None, wanted, rng), definition.gold)
 }
 
 #[cfg(test)]

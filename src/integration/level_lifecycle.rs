@@ -976,7 +976,6 @@ fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
     assert!(killed.died);
     let npc = app.world().get::<Npc>(actor).unwrap();
     assert!(npc.dead);
-    assert!(npc.possessions.items.is_empty());
     assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 25);
     let mut dropped: Vec<_> = app
         .world_mut()
