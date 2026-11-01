@@ -84,6 +84,10 @@ pub struct Options {
     /// Combine with --start and --screenshot for reproducible UI captures.
     #[arg(long)]
     pub talk_to: Option<String>,
+    /// Developer: open the automap through its normal request after entering.
+    /// Combine with --screenshot for UI captures.
+    #[arg(long)]
+    pub open_automap: bool,
     /// Developer: draw the navmesh, agent paths and avoidance.
     #[arg(long)]
     pub nav_debug: bool,
@@ -253,6 +257,13 @@ pub fn build(options: &Options) -> Result<App, String> {
         let after = options.screenshot_after.unwrap_or(2.0);
         app.insert_resource(ScreenshotAndExit::new(path, after))
             .add_systems(Update, screenshot_and_exit);
+    }
+    if options.open_automap {
+        app.add_systems(
+            Update,
+            crate::dev::open_automap
+                .run_if(any_with_component::<crate::game::party::body::PartyBody>),
+        );
     }
     if let Some(name) = options.talk_to.clone() {
         app.insert_resource(crate::dev::TalkTo(name)).add_systems(
