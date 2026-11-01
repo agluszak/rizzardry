@@ -295,9 +295,24 @@ pub enum Effect {
     },
 }
 
+/// What a spell did when it landed: its effects and the skills practice
+/// raised on the way.
+#[derive(Debug, Default)]
+pub struct Landed {
+    pub effects: Vec<Effect>,
+    pub improved: Vec<(Entity, Skill)>,
+}
+
+impl Landed {
+    pub(crate) fn add(&mut self, more: Landed) {
+        self.effects.extend(more.effects);
+        self.improved.extend(more.improved);
+    }
+}
+
 /// What resolving an action needs and changes: the members and monsters
 /// it acts on, the party's shared effects, items, purse and formation, the
-/// rule catalogs, the played level and the fight under way.
+/// rule catalogs, the played level, the fight under way and the dice.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct Field<'w, 's> {
     pub members: Members<'w, 's>,
@@ -317,9 +332,8 @@ pub struct Field<'w, 's> {
     pub visibility: crate::game::world::obstacles::WorldObstacles<'w, 's>,
     /// Missiles leave in launch order, so equal arrivals land in it too.
     pub flight_order: ResMut<'w, super::casting::FlightOrder>,
-    /// Skills that improved while resolving an action, for its notices.
-    pub improved: Local<'s, Vec<(Entity, Skill)>>,
-    level: Single<
+    pub rng: ResMut<'w, GameRng>,
+    pub(super) level: Single<
         'w,
         's,
         (Entity, Option<&'static crate::game::world::triggers::LevelState>),
@@ -351,11 +365,6 @@ impl<'w> Field<'w, '_> {
 
     pub fn difficulty(&self) -> Difficulty {
         *self.difficulty
-    }
-
-    /// The level being played, which spell missiles belong to.
-    pub fn level(&self) -> Entity {
-        self.level.0
     }
 
     /// Whether the level is under water, where fire fails.
@@ -454,13 +463,14 @@ pub fn resolve(
     spell: &SpellDefinition,
     strength: Strength,
     victims: &[Victim],
-    rng: &mut GameRng,
     world: &mut Field,
-) -> Vec<Effect> {
+) -> Landed {
     if victims.is_empty() {
-        return Vec::new();
+        return Landed::default();
     }
-    let (Some(kind), Some(realm)) = (kind(spell.id), spell.realm) else { return Vec::new() };
+    let (Some(kind), Some(realm)) = (kind(spell.id), spell.realm) else {
+        return Landed::default();
+    };
     let kind = if backfired && super::enchantments::personal(spell.id) {
         if spell.id == SpellId::DRACON_BREATH {
             Kind::Inflict(Condition::Nauseated, 100)
@@ -469,27 +479,29 @@ pub fn resolve(
         } else if spell.id == SpellId::RAZOR_CLOAK {
             Kind::Damage
         } else {
-            return Vec::new();
+            return Landed::default();
         }
     } else {
         kind
     };
     let mut effects = Vec::new();
-    let mut each = |f: &mut dyn FnMut(Victim, &mut GameRng, &mut Field) -> Option<Effect>| {
+    let mut improved = Vec::new();
+    let mut each = |f: &mut dyn FnMut(Victim, &mut Field) -> Option<Effect>| {
         for &victim in victims {
-            if let Some(effect) = f(victim, rng, world) {
+            if let Some(effect) = f(victim, world) {
                 effects.push(effect);
             }
         }
     };
     match kind {
-        Kind::Purify => effects = purify(spell, strength, victims, rng, world),
-        Kind::Enchant => effects = enchant(spell, strength, victims, rng, world),
+        Kind::Purify => effects = purify(spell, strength, victims, world),
+        Kind::Enchant => effects = enchant(spell, strength, victims, world),
         Kind::GoldLoss => {
             if victims.iter().any(|v| matches!(v, Victim::Member(_))) {
                 // Retail's second roll when the first is below 100 is intentional.
-                let first = magnitude(rng, spell.dice, strength);
-                let percent = if first < 100 { magnitude(rng, spell.dice, strength) } else { 100 };
+                let first = magnitude(&mut world.rng, spell.dice, strength);
+                let percent =
+                    if first < 100 { magnitude(&mut world.rng, spell.dice, strength) } else { 100 };
                 let inventory = &mut world.inventory;
                 // Malformed/modded percentages cannot wrap the unsigned purse.
                 let lost = (u64::from(inventory.gold) * u64::from(percent.min(100)) / 100) as u32;
@@ -497,7 +509,7 @@ pub fn resolve(
                 effects.push(Effect::GoldLost { amount: lost });
             }
         }
-        Kind::DestroyConsumables => effects = destroy_consumables(strength, victims, rng, world),
+        Kind::DestroyConsumables => effects = destroy_consumables(strength, victims, world),
         Kind::DrainMagic => {
             if victims.iter().any(|v| matches!(v, Victim::Member(_))) {
                 let base = strength.power * 50;
@@ -507,7 +519,7 @@ pub fn resolve(
                     if !world.members.get(member).unwrap().1.is_dead() {
                         let maximum = world.mana_maximum(member);
                         let (_, mut pool) = world.points.get_mut(member).unwrap();
-                        let amount = pool.drain(amount, &maximum, rng);
+                        let amount = pool.drain(amount, &maximum, &mut world.rng);
                         effects.push(Effect::Drained { victim: Victim::Member(member), amount });
                     }
                 }
@@ -515,14 +527,14 @@ pub fn resolve(
                 world.enchantments.0.0.retain(|e| super::enchantments::combat_only(e.spell));
             }
         }
-        Kind::RestoreMagic => each(&mut |v, rng, world| {
+        Kind::RestoreMagic => each(&mut |v, world| {
             let Victim::Member(member) = v else { return None };
             let (_, vitals, ..) = world.members.get(member).unwrap();
             if vitals.is_dead() {
                 return None;
             }
             // Retail rolls even when every realm is already full.
-            let amount = magnitude(rng, spell.dice, strength);
+            let amount = magnitude(&mut world.rng, spell.dice, strength);
             let (_, mut pool) = world.points.get_mut(member).unwrap();
             let amount = pool.restore_evenly(amount);
             Some(if amount == 0 {
@@ -533,53 +545,54 @@ pub fn resolve(
         }),
         Kind::RestoreHealth => {
             // Separate passes preserve retail target and RNG order.
-            each(&mut |v, rng, world| {
-                let amount = restore(rng, world, v, Pool::Health, spell.dice, strength)?;
+            each(&mut |v, world| {
+                let amount = restore(world, v, Pool::Health, spell.dice, strength)?;
                 Some(Effect::Healed { victim: v, amount })
             });
             let dice = spell.dice.map(|dice| Dice { count: dice.count * 2, ..dice });
-            each(&mut |v, rng, world| {
-                let amount = restore(rng, world, v, Pool::Stamina, dice, strength)?;
+            each(&mut |v, world| {
+                let amount = restore(world, v, Pool::Stamina, dice, strength)?;
                 Some(Effect::Refreshed { victim: v, amount })
             });
         }
-        Kind::Damage => each(&mut |v, rng, world| {
-            let rolled = magnitude(rng, spell.dice, strength);
-            damage(rng, world, v, realm, rolled, strength.against)
+        Kind::Damage => each(&mut |v, world| {
+            let rolled = magnitude(&mut world.rng, spell.dice, strength);
+            damage(world, v, realm, rolled, strength.against)
         }),
-        Kind::DamageUndead { banish } => each(&mut |v, rng, world| {
+        Kind::DamageUndead { banish } => each(&mut |v, world| {
             let Victim::Monster(m) = v else { return None };
             let (body, ..) = world.monsters.monsters().get(m).unwrap();
             let kind = world.species()[body.species].kind;
             if !(UNDEAD_KINDS.contains(&kind) || (banish && kind == BANISHED_KIND)) {
                 return Some(Effect::Nothing { victim: v });
             }
-            let rolled = magnitude(rng, spell.dice, strength);
-            damage(rng, world, v, realm, rolled, strength.against)
+            let rolled = magnitude(&mut world.rng, spell.dice, strength);
+            damage(world, v, realm, rolled, strength.against)
         }),
         Kind::Heal | Kind::Stamina | Kind::Restoration => {
-            each(&mut |v, rng, world| restore_victim(kind, spell, strength, v, rng, world))
+            each(&mut |v, world| restore_victim(kind, spell, strength, v, world))
         }
-        Kind::Inflict(condition, chance) => each(&mut |v, rng, world| {
-            attack(rng, world, spell, v, realm, condition, chance, strength)
+        Kind::Inflict(condition, chance) => each(&mut |v, world| {
+            attack(world, spell, v, realm, condition, chance, strength, &mut improved)
         }),
         Kind::DamageThen(..) | Kind::NoxiousFumes => {
-            each(&mut |v, rng, world| {
-                let rolled = magnitude(rng, spell.dice, strength);
-                damage(rng, world, v, realm, rolled, strength.against)
+            each(&mut |v, world| {
+                let rolled = magnitude(&mut world.rng, spell.dice, strength);
+                damage(world, v, realm, rolled, strength.against)
             });
             let attacks = match kind {
                 Kind::DamageThen(condition, chance) => vec![(condition, chance)],
                 _ => vec![(Condition::Nauseated, 90), (Condition::Unconscious, 25)],
             };
             for (condition, chance) in attacks {
-                each(&mut |v, rng, world| {
-                    attack(rng, world, spell, v, realm, condition, chance, strength)
+                each(&mut |v, world| {
+                    attack(world, spell, v, realm, condition, chance, strength, &mut improved)
                 });
             }
         }
-        Kind::Fear { second } => each(&mut |v, rng, world| {
-            let landed = attack(rng, world, spell, v, realm, Condition::Afraid, 100, strength);
+        Kind::Fear { second } => each(&mut |v, world| {
+            let landed =
+                attack(world, spell, v, realm, Condition::Afraid, 100, strength, &mut improved);
             let again = matches!(
                 (v, second),
                 (Victim::Member(_), Condition::Unconscious)
@@ -587,12 +600,11 @@ pub fn resolve(
             );
             if matches!(landed, Some(Effect::Inflicted { .. })) && again {
                 let half = Strength { against: strength.against / 2, ..strength };
-                attack(rng, world, spell, v, realm, second, 100, half);
+                attack(world, spell, v, realm, second, 100, half, &mut improved);
             }
             landed
         }),
-        Kind::Pandemonium => each(&mut |v, rng, world| match attack(
-            rng,
+        Kind::Pandemonium => each(&mut |v, world| match attack(
             world,
             spell,
             v,
@@ -600,11 +612,18 @@ pub fn resolve(
             Condition::Insane,
             100,
             strength,
+            &mut improved,
         ) {
             Some(Effect::Resisted { .. }) => {
                 let target = target(world, v, realm, Some(Condition::Afraid));
-                let rounds = duration(rng, spell, strength);
-                let rounds = resist(rng, rounds, target.resistance, target.level, strength.against);
+                let rounds = duration(&mut world.rng, spell, strength);
+                let rounds = resist(
+                    &mut world.rng,
+                    rounds,
+                    target.resistance,
+                    target.level,
+                    strength.against,
+                );
                 if rounds == 0 || target.immune {
                     return Some(Effect::Resisted { victim: v });
                 }
@@ -614,41 +633,50 @@ pub fn resolve(
             }
             other => other,
         }),
-        Kind::Slay => each(&mut |v, rng, world| slay(rng, world, spell, v, realm, strength)),
-        Kind::Affliction => each(&mut |v, rng, world| {
-            let roll = rng.below(100);
+        Kind::Slay => each(&mut |v, world| slay(world, spell, v, realm, strength, &mut improved)),
+        Kind::Affliction => each(&mut |v, world| {
+            let roll = world.rng.below(100);
             if roll >= 50 {
-                let rolled = magnitude(rng, spell.dice, strength);
-                return damage(rng, world, v, realm, rolled, strength.against);
+                let rolled = magnitude(&mut world.rng, spell.dice, strength);
+                return damage(world, v, realm, rolled, strength.against);
             }
             let pick = crate::game::rng::weighted(roll, AFFLICTIONS.iter().map(|&(_, w)| w))
                 .and_then(|index| AFFLICTIONS[index].0);
             match pick {
-                Some(condition) => attack(rng, world, spell, v, realm, condition, 100, strength),
-                None => slay(rng, world, spell, v, realm, strength),
+                Some(condition) => {
+                    attack(world, spell, v, realm, condition, 100, strength, &mut improved)
+                }
+                None => slay(world, spell, v, realm, strength, &mut improved),
             }
         }),
-        Kind::Vortex => each(&mut |v, rng, world| {
+        Kind::Vortex => each(&mut |v, world| {
             match v {
                 Victim::Monster(_) => {
-                    let rolled = magnitude(rng, spell.dice, strength);
-                    damage(rng, world, v, realm, rolled, strength.against)
+                    let rolled = magnitude(&mut world.rng, spell.dice, strength);
+                    damage(world, v, realm, rolled, strength.against)
                 }
                 // Members take the plain roll, without the cast's boost.
                 Victim::Member(_) => {
-                    let rolled = magnitude(rng, spell.dice, Strength { boost: 0, ..strength });
+                    let rolled =
+                        magnitude(&mut world.rng, spell.dice, Strength { boost: 0, ..strength });
                     let target = target(world, v, realm, None);
                     if target.dead {
                         return None;
                     }
-                    match resist(rng, rolled, target.resistance, target.level, strength.against) {
+                    match resist(
+                        &mut world.rng,
+                        rolled,
+                        target.resistance,
+                        target.level,
+                        strength.against,
+                    ) {
                         0 => Some(Effect::Resisted { victim: v }),
-                        amount => sap(rng, world, v, amount),
+                        amount => sap(world, v, amount),
                     }
                 }
             }
         }),
-        Kind::Renewal => each(&mut |v, rng, world| {
+        Kind::Renewal => each(&mut |v, world| {
             let lifted = match v {
                 Victim::Member(m) => {
                     let (mut character, mut vitals, ..) = world.members.get_mut(m).unwrap();
@@ -656,7 +684,8 @@ pub fn resolve(
                 }
                 Victim::Monster(m) => {
                     let conditions = &mut *world.monsters.conditions_mut(m);
-                    !cure(rng, conditions, &[Condition::Drained], strength, true).is_empty()
+                    !cure(&mut world.rng, conditions, &[Condition::Drained], strength, true)
+                        .is_empty()
                 }
             };
             Some(if lifted {
@@ -665,26 +694,30 @@ pub fn resolve(
                 Effect::Nothing { victim: v }
             })
         }),
-        Kind::Cure(conditions) => each(&mut |v, rng, world| {
+        Kind::Cure(conditions) => each(&mut |v, world| {
             let lifted = match v {
                 Victim::Member(m) => {
                     let (_, mut vitals, ..) = world.members.get_mut(m).unwrap();
                     // Taking rounds off a poison weakens it as aging does.
                     if conditions.contains(&Condition::Poisoned) {
-                        vitals.weaken_poison(cure_rounds(strength), rng);
+                        vitals.weaken_poison(cure_rounds(strength), &mut world.rng);
                     }
-                    cure(rng, &mut vitals.conditions, conditions, strength, false)
+                    cure(&mut world.rng, &mut vitals.conditions, conditions, strength, false)
                 }
-                Victim::Monster(m) => {
-                    cure(rng, &mut world.monsters.conditions_mut(m), conditions, strength, false)
-                }
+                Victim::Monster(m) => cure(
+                    &mut world.rng,
+                    &mut world.monsters.conditions_mut(m),
+                    conditions,
+                    strength,
+                    false,
+                ),
             };
             Some(match lifted.first() {
                 Some(&condition) => Effect::Cured { victim: v, condition },
                 None => Effect::Nothing { victim: v },
             })
         }),
-        Kind::Resurrect => each(&mut |v, _, world| {
+        Kind::Resurrect => each(&mut |v, world| {
             let Victim::Member(member) = v else { return None };
             let (character, mut vitals, ..) = world.members.get_mut(member).unwrap();
             if !vitals.is_dead() {
@@ -703,13 +736,13 @@ pub fn resolve(
         }),
         Kind::Lifesteal | Kind::MightToMagic => {
             let mut drained = 0;
-            each(&mut |v, rng, world| {
+            each(&mut |v, world| {
                 let target = target(world, v, realm, None);
                 if target.dead {
                     return None;
                 }
-                let rolled = magnitude(rng, spell.dice, strength);
-                let effect = damage(rng, world, v, realm, rolled, strength.against)?;
+                let rolled = magnitude(&mut world.rng, spell.dice, strength);
+                let effect = damage(world, v, realm, rolled, strength.against)?;
                 if let Effect::Damaged { outcome, .. } = effect {
                     drained += outcome.damage;
                 }
@@ -721,14 +754,12 @@ pub fn resolve(
                 } else {
                     world.monsters.restore_magic(entity, drained / 2);
                 }
-                return effects;
-            }
-            if origin.is_none() {
-                return effects;
             }
             // Retail chooses once after every target has been drained. Do not
             // heal a different member after each hit or round each share separately.
-            if let Some(member) = neediest(world, kind == Kind::Lifesteal) {
+            if let Some(Victim::Member(_)) = origin
+                && let Some(member) = neediest(world, kind == Kind::Lifesteal)
+            {
                 let (c, mut v, ..) = world.members.get_mut(member).unwrap();
                 if kind == Kind::Lifesteal {
                     let maximum = c.stats(&v.enchantments).max_hp();
@@ -746,7 +777,7 @@ pub fn resolve(
             }
         }
     }
-    effects
+    Landed { effects, improved }
 }
 
 /// Whether anything the spell did counts as affecting a victim, which is

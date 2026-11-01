@@ -1,20 +1,18 @@
 //! Point effects commit source payment and their actual scene actors together.
 use super::{
-    Outcome,
+    Field, Outcome,
     casting::{Aim, MagicChoice, MagicNews, Refusal, UseContext},
 };
 use crate::{
     content::{characters::Skill, monster::MonsterBody, species::MonsterKind, spells::SpellId},
     game::{
         characters::Condition,
-        combat::{Battle, Combatant},
+        combat::Combatant,
         time::{AGING_TICK_MS, GameClock},
         world::{
-            hostility::{self, SetStance, Stance},
-            identify::{GroupMember, GroupMembers, MonsterGroup},
+            hostility::{SetStance, Stance},
             level::{Level, LevelOwned},
             navigation::{LevelNavigation, WalkerMotionConfig},
-            obstacles::WorldObstacles,
             population::{self, Monster, MonsterBodies, Unborn},
         },
     },
@@ -75,115 +73,70 @@ fn tier(power: u32, realm: usize) -> u32 {
 /// level ([`MonsterBodies::for_level`]).
 pub const ELEMENTALS: std::ops::RangeInclusive<u32> = 21..=48;
 
-/// What a point cast reads of the level it lands in.
+/// What a point cast needs beside the field: whether the party is free, the
+/// level it lands in and the lures and summons already standing.
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct Ground<'w, 's> {
+    freedom: crate::game::freedom::Freedom<'w, 's>,
     level: Single<
         'w,
         's,
-        (
-            Entity,
-            &'static Level,
-            &'static crate::game::world::triggers::LevelState,
-            &'static Unborn,
-            &'static MonsterBodies,
-            &'static LevelNavigation,
-        ),
+        (Entity, &'static Level, &'static Unborn, &'static MonsterBodies, &'static LevelNavigation),
     >,
     definitions: Res<'w, Assets<crate::content::level::LevelDefinition>>,
     bodies: Res<'w, Assets<MonsterBody>>,
     configs: ResMut<'w, Assets<WalkerMotionConfig>>,
-    sight: WorldObstacles<'w, 's>,
     party: Single<
         'w,
         's,
         &'static avian3d::prelude::Position,
         With<crate::game::party::body::PartyBody>,
     >,
-}
-
-/// The monsters a point cast may move or join.
-#[derive(bevy::ecs::system::SystemParam)]
-pub(crate) struct Crowd<'w, 's> {
-    monsters: Query<
-        'w,
-        's,
-        (
-            Entity,
-            &'static Monster,
-            &'static LevelOwned,
-            Option<&'static LureInfluence>,
-            Option<&'static GroupMember>,
-            Option<&'static avian3d::prelude::Position>,
-            Option<&'static Transform>,
-        ),
-    >,
-    members: Query<'w, 's, &'static GroupMembers>,
-    groups: Query<'w, 's, (&'static MonsterGroup, &'static LevelOwned)>,
     summons: Query<'w, 's, &'static Elementals>,
     lures: Query<'w, 's, Entity, With<Lure>>,
-    stances: hostility::Stances<'w, 's>,
 }
 
-/// Hypnotic Lure and Summon Elemental land where the caster points, in
-/// sight and reach. A summoning refused in a fight leaves the caster
-/// defending (retail `ExecuteCharacterAction`), the turn spent.
+/// Hypnotic Lure and Summon Elemental out of a fight: one lands where the
+/// caster points; the other is refused.
 pub(crate) fn cast_at_points(
     mut casts: MessageReader<super::utilities::UtilityCast>,
-    freedom: crate::game::freedom::Freedom,
-    mut battle: Option<Single<(Entity, &mut Battle)>>,
     mut ground: Ground,
-    crowd: Crowd,
-    mut payment: super::casting::Payment,
-    mut news: MessageWriter<MagicNews>,
-    clock: Res<GameClock>,
+    mut field: Field,
     mut commands: Commands,
 ) {
     for &super::utilities::UtilityCast { caster, choice, spell: id } in casts.read() {
         if !spell(id) {
             continue;
         }
-        let fight = battle.as_ref().map(|battle| battle.0);
-        let result = point_cast(
-            (caster, choice, id, fight),
-            &freedom,
-            &mut ground,
-            &crowd,
-            &mut payment,
-            (clock.ms, &mut commands),
-        );
-        match result {
-            Ok(report) => {
-                news.write(MagicNews::Done(report));
-            }
-            Err(refusal) => {
-                if let Some(battle) = battle.as_mut() {
-                    battle.1.falls_back_to_defending(caster);
-                }
-                news.write(MagicNews::Refused { caster, refusal });
-            }
-        }
+        let cast = point_cast(caster, choice, id, &mut ground, &mut field, &mut commands);
+        field.news.write(match cast {
+            Ok(report) => MagicNews::Done(report),
+            Err(refusal) => MagicNews::Refused { caster, refusal },
+        });
     }
 }
 
-fn point_cast(
-    (caster, choice, id, battle): (Entity, MagicChoice, SpellId, Option<Entity>),
-    freedom: &crate::game::freedom::Freedom,
+/// Land a point spell now, in sight and reach of the party, paying for it
+/// from the source. In a fight the caller answers a refusal.
+pub(crate) fn point_cast(
+    caster: Entity,
+    choice: MagicChoice,
+    id: SpellId,
     ground: &mut Ground,
-    crowd: &Crowd,
-    payment: &mut super::casting::Payment,
-    (now, commands): (u64, &mut Commands),
+    field: &mut Field,
+    commands: &mut Commands,
 ) -> Result<super::casting::Report, Refusal> {
-    if !freedom.free() {
+    if !ground.freedom.free() {
         return Err(Refusal::WrongTime);
     }
     let Aim::Point(at) = choice.aim else { return Err(Refusal::NoTarget) };
-    let (root, level, state, ..) = *ground.level;
-    let spell = payment.content.spells[id].clone();
+    let battle = field.fight();
+    let (root, level, ..) = *ground.level;
+    let spell = &field.spells()[id];
     let far = ground.definitions.get(&level.definition).unwrap().view_distance();
     let eye = crate::game::party::body::PartyBody::eye(&ground.party);
     if eye.distance(at) > spell.reach.metres() + crate::content::EYE_HEIGHT
-        || !ground.sight.clear(eye, at)
+        || !field.visibility.clear(eye, at)
     {
         return Err(Refusal::NoTarget);
     }
@@ -191,41 +144,37 @@ fn point_cast(
         if battle.is_none() {
             return Err(Refusal::WrongTime);
         }
-        if crowd.summons.get(caster).is_ok_and(|summons| {
-            summons.iter().any(|entity| !crowd.monsters.get(entity).unwrap().1.is_dead())
+        if ground.summons.get(caster).is_ok_and(|summons| {
+            summons.iter().any(|entity| !field.monsters.monsters().get(entity).unwrap().0.is_dead())
         }) {
             return Err(Refusal::NoTarget);
         }
     }
-    let underwater = state.camera_sway;
     let weights = if id == SpellId::SUMMON_ELEMENTAL {
-        let profile = payment.members.get(caster).unwrap().0;
+        let profile = field.members.get(caster).unwrap().0;
         [Skill::FireMagic, Skill::WaterMagic, Skill::AirMagic, Skill::EarthMagic]
             .map(|skill| profile.skill(skill) + 20)
     } else {
         [0; 4]
     };
-    let (report, strength) = payment.pay(
+    let (report, strength) = field.pay(
         caster,
         choice.source,
         if battle.is_some() { UseContext::Combat } else { UseContext::World },
     )?;
     if report.outcome != Outcome::Fizzled {
+        let backfired = report.outcome == Outcome::Backfired;
         match battle {
             Some(battle) if id == SpellId::SUMMON_ELEMENTAL => summon_elemental(
                 (caster, battle, root),
                 at,
-                (weights, underwater),
-                (strength, report.outcome == Outcome::Backfired, now),
-                (ground, crowd, payment, commands),
+                weights,
+                (strength, backfired),
+                ground,
+                field,
+                commands,
             ),
-            _ => lure(
-                root,
-                (at, far),
-                (&spell, strength, now),
-                battle.is_some(),
-                (ground, crowd, payment, commands),
-            ),
+            _ => lure(root, (at, far), (spell, strength), ground, field, commands),
         }
     }
     Ok(report)
@@ -237,19 +186,16 @@ fn point_cast(
 fn lure(
     root: Entity,
     (at, far): (Vec3, f32),
-    (spell, strength, now): (&crate::content::spells::SpellDefinition, super::Strength, u64),
-    fighting: bool,
-    (ground, crowd, payment, commands): (
-        &Ground,
-        &Crowd,
-        &mut super::casting::Payment,
-        &mut Commands,
-    ),
+    (spell, strength): (&crate::content::spells::SpellDefinition, super::Strength),
+    ground: &Ground,
+    field: &mut Field,
+    commands: &mut Commands,
 ) {
-    for old in &crowd.lures {
+    for old in &ground.lures {
         commands.entity(old).despawn();
     }
-    let turns = super::effects::duration(&mut payment.rng, spell, strength);
+    let (now, species, fighting) = (field.now(), field.species(), field.fight().is_some());
+    let turns = super::effects::duration(&mut field.rng, spell, strength);
     let lure = commands
         .spawn((
             Lure { expires: now + u64::from(turns) * AGING_TICK_MS },
@@ -257,26 +203,29 @@ fn lure(
             LevelOwned(root),
         ))
         .id();
-    let mut order: Vec<_> = crowd
+    let mut order: Vec<_> = field
         .monsters
+        .monsters()
         .iter()
-        .filter(|(_, monster, owner, ..)| owner.0 == root && !monster.is_dead())
+        .filter(|(monster, _, _, owner, _)| owner.0 == root && !monster.is_dead())
         .collect();
-    order.sort_unstable_by_key(|(_, body, ..)| body.location);
-    let species = &payment.content.species;
+    order.sort_unstable_by_key(|(body, ..)| body.location);
     // A resisting monster's group resists at once, as retail's
     // `SetMonsterGroupControlState`: its other members roll no save.
     let mut resisted = bevy::platform::collections::HashSet::new();
-    for (entity, body, _, influence, group, position, transform) in order {
-        if crowd.stances.own(entity, species, now) != Some(Stance::Hostile)
+    for (body, pose, _, _, entity) in order {
+        if field.monsters.stance(entity, now) != Stance::Hostile
             || resisted.contains(&entity)
-            || influence.is_some_and(|influence| influence.response == LureResponse::Resisted)
+            || field
+                .monsters
+                .lure(entity)
+                .is_some_and(|hold| hold.response == LureResponse::Resisted)
             || !body.can_fight()
             || body.conditions.has(Condition::Blind)
         {
             continue;
         }
-        let here = position.map_or_else(|| transform.unwrap().translation, |position| position.0);
+        let here = pose.translation();
         if (here - at).abs().max_element() > far {
             continue;
         }
@@ -291,19 +240,15 @@ fn lure(
             strength.against,
             0,
         );
-        if !ground.sight.clear(body.eye(here), at) {
+        if !field.visibility.clear(body.eye(here), at) {
             continue;
         }
-        let response = if super::effects::save_roll(&mut payment.rng, chance) {
+        let response = if super::effects::save_roll(&mut field.rng, chance) {
             LureResponse::Resisted
         } else {
             LureResponse::Controlled
         };
-        let group = group.and_then(|group| crowd.members.get(group.0).ok());
-        let affected = match group {
-            Some(members) if !fighting => members.iter().collect(),
-            _ => vec![entity],
-        };
+        let affected = if fighting { vec![entity] } else { field.monsters.group(entity) };
         for entity in affected {
             commands.entity(entity).insert(LureInfluence { lure, response });
             if response == LureResponse::Resisted {
@@ -320,32 +265,28 @@ fn lure(
 fn summon_elemental(
     (caster, battle, root): (Entity, Entity, Entity),
     at: Vec3,
-    (mut weights, underwater): ([u32; 4], bool),
-    (strength, backfired, now): (super::Strength, bool, u64),
-    (ground, crowd, payment, commands): (
-        &mut Ground,
-        &Crowd,
-        &mut super::casting::Payment,
-        &mut Commands,
-    ),
+    mut weights: [u32; 4],
+    (strength, backfired): (super::Strength, bool),
+    ground: &mut Ground,
+    field: &mut Field,
+    commands: &mut Commands,
 ) {
-    if underwater {
+    if field.underwater() {
         weights[0] = 0;
     }
-    let rng = &mut payment.rng;
+    let (now, catalogs) = (field.now(), field.catalogs());
+    let rng = &mut field.rng;
     let roll = rng.below(weights.iter().sum());
     let realm = crate::game::rng::weighted(roll, weights).unwrap_or(3);
     let species_id = tier(strength.power, realm);
-    let (_, _, _, unborn, bodies, navigation) = *ground.level;
-    let locations = crowd
+    let (_, _, unborn, bodies, navigation) = *ground.level;
+    let locations = field
         .monsters
+        .monsters()
         .iter()
-        .filter(|(_, _, owner, ..)| owner.0 == root)
-        .map(|(_, body, ..)| body.location);
-    let groups =
-        crowd.groups.iter().filter(|(_, owner)| owner.0 == root).map(|(group, _)| group.authored);
-    let ids = population::next_ids(locations, groups, unborn);
-    let catalogs = &payment.content;
+        .filter(|(_, _, _, owner, _)| owner.0 == root)
+        .map(|(body, ..)| body.location);
+    let ids = population::next_ids(locations, field.monsters.authored_groups(root), unborn);
     let body = bodies.get(species_id, &ground.bodies).unwrap();
     let mut members =
         population::roll_group(ids, (species_id, 1), (&catalogs.species[species_id], body), rng);

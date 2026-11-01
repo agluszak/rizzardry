@@ -1,7 +1,6 @@
 //! Utility targets are validated before the shared cast/payment operation.
 use super::casting::{Aim, MagicChoice, MagicNews, Refusal, Source, UseContext};
 use crate::content::spells::SpellId;
-use crate::game::party::roster::PartyRoster;
 use bevy::prelude::*;
 
 pub(crate) fn spell(id: SpellId) -> bool {
@@ -31,9 +30,7 @@ fn identifies(strength: super::Strength, difficulty: u8) -> bool {
 pub(crate) fn identify_items(
     mut casts: MessageReader<UtilityCast>,
     freedom: crate::game::freedom::Freedom,
-    roster: Single<&PartyRoster>,
-    mut payment: super::casting::Payment,
-    mut news: MessageWriter<MagicNews>,
+    mut field: super::Field,
 ) {
     for &UtilityCast { caster, choice, spell } in casts.read() {
         if spell != SpellId::IDENTIFY_ITEM {
@@ -42,9 +39,9 @@ pub(crate) fn identify_items(
         let identified = if !freedom.unoccupied() || freedom.fighting() {
             Err(Refusal::WrongTime)
         } else {
-            identify(&roster, &mut payment, caster, choice)
+            identify(&mut field, caster, choice)
         };
-        news.write(match identified {
+        field.news.write(match identified {
             Ok(report) => MagicNews::Done(report),
             Err(refusal) => MagicNews::Refused { caster, refusal },
         });
@@ -52,8 +49,7 @@ pub(crate) fn identify_items(
 }
 
 fn identify(
-    roster: &PartyRoster,
-    payment: &mut super::casting::Payment,
+    field: &mut super::Field,
     caster: Entity,
     choice: MagicChoice,
 ) -> Result<super::casting::Report, Refusal> {
@@ -61,15 +57,14 @@ fn identify(
     // Search only the current roster and party inventory. Stable stack IDs
     // allow a target to move between those owners without retargeting a
     // different item.
-    let target = |payment: &super::casting::Payment| {
-        payment.inventory.find_stack(target_id).cloned().or_else(|| {
-            roster
-                .iter()
-                .find_map(|m| payment.members.get(m).unwrap().2.find_stack(target_id).cloned())
+    let stack = field
+        .inventory
+        .find_stack(target_id)
+        .or_else(|| {
+            field.party.iter().find_map(|m| field.members.get(m).unwrap().2.find_stack(target_id))
         })
-    };
-    let stack = target(payment).ok_or(Refusal::NoTarget)?;
-    let difficulty = payment.content.items[stack.item].identify_difficulty;
+        .ok_or(Refusal::NoTarget)?;
+    let difficulty = field.items()[stack.item].identify_difficulty;
     // The source cannot consume its own target and then silently identify a
     // replacement. A fully known stack likewise needs no paid attempt.
     if matches!(choice.source, Source::Item(s) | Source::PoolItem(s) if s == target_id)
@@ -78,8 +73,8 @@ fn identify(
         return Err(Refusal::NoTarget);
     }
     let source = if let Source::Spell { spell, power: super::casting::AUTO_POWER } = choice.source {
-        let definition = &payment.content.spells[spell];
-        let profile = payment.members.get(caster).unwrap().0;
+        let definition = &field.spells()[spell];
+        let profile = field.members.get(caster).unwrap().0;
         let power = (1..=crate::content::spells::MAX_POWER)
             .find(|&power| identifies(super::Strength::of(profile, definition, power), difficulty))
             .unwrap_or(crate::content::spells::MAX_POWER);
@@ -87,16 +82,17 @@ fn identify(
     } else {
         choice.source
     };
-    let (report, strength) = payment.pay(caster, source, UseContext::World)?;
+    let (report, strength) = field.pay(caster, source, UseContext::World)?;
     if report.outcome == super::Outcome::Cast && identifies(strength, difficulty) {
-        let stack = match payment.inventory.find_stack_mut(target_id) {
+        let stack = match field.inventory.find_stack_mut(target_id) {
             Some(stack) => stack,
             None => {
-                let owner = roster
+                let owner = field
+                    .party
                     .iter()
-                    .find(|&m| payment.members.get(m).unwrap().2.find_stack(target_id).is_some())
+                    .find(|&m| field.members.get(m).unwrap().2.find_stack(target_id).is_some())
                     .unwrap();
-                payment
+                field
                     .members
                     .get_mut(owner)
                     .unwrap()

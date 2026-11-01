@@ -93,19 +93,6 @@ pub(super) fn willing(
     terms && average >= u32::from(definition.min_party_level)
 }
 
-/// [`super::conversation::Dialogue::joinable`], for operations that hold
-/// the whole world.
-pub fn joinable(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
-    world
-        .run_system_cached_with(
-            |In(actor): In<Entity>, dialogue: super::conversation::Dialogue| {
-                dialogue.joinable(actor)
-            },
-            actor,
-        )
-        .unwrap()
-}
-
 /// The character an NPC brings the first time it joins (retail
 /// `InitializeNpcCharacter`): the template's identity, attributes, skills
 /// and level, with the experience that level took; the spells it lists
@@ -217,7 +204,7 @@ impl Recruits<'_, '_> {
     /// its character (made the first time), the conditions its world body
     /// had, and takes an NPC place; its world body goes dormant. Whether it
     /// would join is the caller's to have asked.
-    pub(super) fn join(&mut self, actor: Entity) {
+    pub fn join(&mut self, actor: Entity) {
         let party = self.party.0;
         let (_, id, bodies, _, character, ..) = self.actors.get(actor).unwrap();
         // The NPC's world body that stands in a played level.
@@ -262,7 +249,7 @@ impl Recruits<'_, '_> {
     /// beside the party with the conditions it has, at a fresh roll of its
     /// species' health; and it gives the party every item it neither wants
     /// nor has cursed on.
-    fn dismiss(&mut self, actor: Entity) -> bool {
+    pub fn dismiss(&mut self, actor: Entity) -> bool {
         let party = self.party.0;
         let Ok((_, id, bodies, member, character, vitals, carried)) = self.actors.get(actor) else {
             return false;
@@ -369,23 +356,6 @@ impl Recruits<'_, '_> {
         let feet = PartyBody::feet(self.party.4);
         crate::game::world::items::drop_loot(&mut self.commands, level, feet, left, items);
     }
-}
-
-/// [`Recruits::join`] once the NPC would join, for operations that hold the
-/// whole world.
-pub fn join(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
-    joinable(world, actor)?;
-    world
-        .run_system_cached_with(|In(actor): In<Entity>, mut r: Recruits| r.join(actor), actor)
-        .unwrap();
-    Ok(())
-}
-
-/// [`Recruits::dismiss`], for operations that hold the whole world.
-pub fn dismiss(world: &mut World, actor: Entity) -> bool {
-    world
-        .run_system_cached_with(|In(actor): In<Entity>, mut r: Recruits| r.dismiss(actor), actor)
-        .unwrap()
 }
 
 /// A member NPC that dies leaves the party at once (retail

@@ -45,7 +45,8 @@ pub struct MonsterDamage<'w, 's> {
     summoned: Query<'w, 's, (), With<crate::game::magic::pointcasts::SummonedBy>>,
     lures: Query<'w, 's, &'static crate::game::magic::pointcasts::LureInfluence>,
     combatants: Query<'w, 's, (), With<crate::game::combat::Combatant>>,
-    groups: Query<'w, 's, &'static mut super::identify::MonsterGroup>,
+    groups:
+        Query<'w, 's, (&'static mut super::identify::MonsterGroup, Option<&'static LevelOwned>)>,
     group_members: Query<'w, 's, &'static super::identify::GroupMembers>,
     motion: Query<
         'w,
@@ -107,7 +108,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
             .get(entity)
             .ok()
             .and_then(|member| self.groups.get(member.0).ok())
-            .and_then(|group| group.set);
+            .and_then(|(group, _)| group.set);
         hostility::stance(set, kind, &self.factions, now, self.combatants.contains(entity))
     }
 
@@ -121,7 +122,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         }
         let kind = &self.content.species[body.species];
         if let Ok(member) = self.membership.get(entity)
-            && let Ok(mut group) = self.groups.get_mut(member.0)
+            && let Ok((mut group, _)) = self.groups.get_mut(member.0)
             && hostility::stance(group.set, kind, &self.factions, now, true) != Stance::Hostile
         {
             group.set = Some(SetStance { stance: Stance::Hostile, at: now });
@@ -156,6 +157,32 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         let (mut body, ..) = self.monsters.get_mut(entity).unwrap();
         body.spell_points += amount as i32;
     }
+    /// The body of an NPC's that stands alive in the played level.
+    pub fn npc_body(&self, bodies: Option<&crate::game::npcs::NpcBodies>) -> Option<Entity> {
+        bodies.into_iter().flat_map(|b| b.iter()).find(|&body| {
+            self.monsters.get(body).is_ok_and(|(monster, _, _, owner, _)| {
+                self.levels.contains(owner.0) && !monster.is_dead()
+            })
+        })
+    }
+
+    pub fn npc_mut(&mut self, npc: Entity) -> Mut<'_, crate::game::npcs::Npc> {
+        self.npcs.1.get_mut(npc).unwrap().0
+    }
+
+    /// The lure holding a monster, if one does.
+    pub fn lure(&self, monster: Entity) -> Option<&crate::game::magic::pointcasts::LureInfluence> {
+        self.lures.get(monster).ok()
+    }
+
+    /// The authored ids of a level's groups.
+    pub fn authored_groups(&self, level: Entity) -> impl Iterator<Item = i32> {
+        self.groups
+            .iter()
+            .filter(move |(_, owner)| owner.is_some_and(|owner| owner.0 == level))
+            .map(|(group, _)| group.authored)
+    }
+
     /// The monsters, to look at.
     pub fn monsters(&self) -> &MonsterQuery<'w, 's> {
         &self.monsters

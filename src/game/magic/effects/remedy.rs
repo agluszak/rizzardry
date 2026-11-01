@@ -51,14 +51,13 @@ pub(super) fn purify(
     spell: &SpellDefinition,
     strength: Strength,
     victims: &[Victim],
-    rng: &mut GameRng,
     world: &mut Field,
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
     let catalog = world.spells();
     // Purify rolls from power alone, rather than its authored duration.
     let base = strength.power + 1;
-    let amount = match rng.below(4) {
+    let amount = match world.rng.below(4) {
         0 if base > 1 => base + 1,
         1 if base < 3 => base + 1,
         _ => base,
@@ -98,7 +97,6 @@ pub(super) fn restore_victim(
     spell: &SpellDefinition,
     strength: Strength,
     v: Victim,
-    rng: &mut GameRng,
     world: &mut Field,
 ) -> Option<Effect> {
     let dead = match v {
@@ -111,12 +109,12 @@ pub(super) fn restore_victim(
     let dice = if kind == Kind::Restoration { Some(RESTORATION_DICE) } else { spell.dice };
     let mut effect = Effect::Nothing { victim: v };
     if kind != Kind::Stamina
-        && let Some(amount) = restore(rng, world, v, Pool::Health, dice, strength)
+        && let Some(amount) = restore(world, v, Pool::Health, dice, strength)
     {
         effect = Effect::Healed { victim: v, amount };
     }
     if kind != Kind::Heal
-        && let Some(amount) = restore(rng, world, v, Pool::Stamina, dice, strength)
+        && let Some(amount) = restore(world, v, Pool::Stamina, dice, strength)
         && kind == Kind::Stamina
     {
         effect = Effect::Refreshed { victim: v, amount };
@@ -143,11 +141,11 @@ pub(super) fn restore_victim(
         let lifted = match v {
             Victim::Member(member) => {
                 let (_, mut vitals, ..) = world.members.get_mut(member).unwrap();
-                cure(rng, &mut vitals.conditions, &all, strength, true)
+                cure(&mut world.rng, &mut vitals.conditions, &all, strength, true)
             }
             Victim::Monster(entity) => {
                 let mut conditions = world.monsters.conditions_mut(entity);
-                cure(rng, &mut conditions, &all, strength, true)
+                cure(&mut world.rng, &mut conditions, &all, strength, true)
             }
         };
         if matches!(effect, Effect::Nothing { .. })
@@ -165,10 +163,9 @@ pub(super) fn enchant(
     spell: &SpellDefinition,
     strength: Strength,
     victims: &[Victim],
-    rng: &mut GameRng,
     world: &mut Field,
 ) -> Vec<Effect> {
-    let turns = duration(rng, spell, strength);
+    let turns = duration(&mut world.rng, spell, strength);
     let mut effects = Vec::new();
     let mut party_applied = false;
     for &victim in victims {
@@ -191,7 +188,7 @@ pub(super) fn enchant(
                 return false;
             }
             let absorption = if spell.id == SpellId::GUARDIAN_ANGEL {
-                let rolled = spell.dice.map_or(0, |dice| rng.roll(dice)) * strength.power;
+                let rolled = spell.dice.map_or(0, |dice| world.rng.roll(dice)) * strength.power;
                 rolled + rolled * strength.boost / 100
             } else {
                 0
@@ -292,7 +289,6 @@ pub(super) enum Pool {
 /// maximum: the amount, or `None` (nothing rolled) when the actor lacks
 /// none or cannot be restored.
 pub(super) fn restore(
-    rng: &mut GameRng,
     world: &mut Field,
     victim: Victim,
     pool: Pool,
@@ -326,7 +322,7 @@ pub(super) fn restore(
     if missing == 0 {
         return None;
     }
-    let amount = magnitude(rng, dice, strength).min(missing);
+    let amount = magnitude(&mut world.rng, dice, strength).min(missing);
     match victim {
         Victim::Member(member) => {
             let (_, mut vitals, ..) = world.members.get_mut(member).unwrap();

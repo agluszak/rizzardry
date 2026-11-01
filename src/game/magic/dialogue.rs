@@ -7,8 +7,8 @@ use super::{
 use crate::{
     content::{characters::Realm, spells::SpellId},
     game::npcs::{
-        Npc, NpcBodies,
-        conversation::{Conversation, MagicalReply, NpcPresence},
+        NpcBodies,
+        conversation::{Conversation, MagicalReply},
     },
 };
 use bevy::prelude::*;
@@ -23,10 +23,8 @@ pub(crate) fn spell(id: SpellId) -> bool {
 pub(crate) fn cast_at_speakers(
     mut casts: MessageReader<super::utilities::UtilityCast>,
     mut conversations: Query<&mut Conversation>,
-    mut npcs: Query<(&mut Npc, Option<&NpcBodies>)>,
-    presence: NpcPresence,
-    mut payment: super::casting::Payment,
-    mut news: MessageWriter<MagicNews>,
+    bodies: Query<Option<&NpcBodies>>,
+    mut field: super::Field,
 ) {
     for &super::utilities::UtilityCast { caster, choice, spell: id } in casts.read() {
         if !spell(id) {
@@ -39,21 +37,22 @@ pub(crate) fn cast_at_speakers(
             if !conversation.ready() {
                 return Err(Refusal::WrongTime);
             }
-            let (mut npc, bodies) = npcs.get_mut(conversation.actor).unwrap();
-            let body = presence.body(bodies).ok_or(Refusal::NoTarget)?;
+            let actor = conversation.actor;
+            let body =
+                field.monsters.npc_body(bodies.get(actor).unwrap()).ok_or(Refusal::NoTarget)?;
             if choice.aim != Aim::Monster(body) {
                 return Err(Refusal::NoTarget);
             }
-            let monster = presence.monster(body);
-            let kind = &payment.content.species[monster.species];
+            let monster = field.monsters.monsters().get(body).unwrap().0;
+            let kind = &field.species()[monster.species];
             let (level, resistance, notice_chance) = (
                 u32::from(kind.level),
                 monster.resistance(kind, Realm::Mental),
                 (u32::from(kind.attributes.senses) + u32::from(kind.attributes.intelligence)) / 2,
             );
             let (mut report, strength) =
-                payment.pay(caster, choice.source, UseContext::Conversation)?;
-            let rng = &mut payment.rng;
+                field.pay(caster, choice.source, UseContext::Conversation)?;
+            let rng = &mut field.rng;
             let mut reply = None;
             match report.outcome {
                 Outcome::Fizzled => {}
@@ -70,6 +69,7 @@ pub(crate) fn cast_at_speakers(
                         reply = Some(MagicalReply::Quote(if saved {
                             0x69
                         } else {
+                            let mut npc = field.monsters.npc_mut(actor);
                             let quote = 0x67 + u16::from(npc.mindread_refusals);
                             npc.mindread_refusals = (npc.mindread_refusals + 1).min(2);
                             quote
@@ -98,7 +98,7 @@ pub(crate) fn cast_at_speakers(
             Ok(report)
         };
         let cast = cast();
-        news.write(match cast {
+        field.news.write(match cast {
             Ok(report) => MagicNews::Done(report),
             Err(refusal) => MagicNews::Refused { caster, refusal },
         });
