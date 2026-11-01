@@ -67,12 +67,6 @@ impl SpriteSheet {
         }
         ui_image(width, height, rgba)
     }
-
-    /// Draw a line of text with this sheet as a font.
-    pub fn text_image(&self, text: &str) -> Image {
-        let (width, height, rgba) = render_text(&self.frames, text);
-        ui_image(width, height, rgba)
-    }
 }
 
 /// One image of a sheet (a retail `.sti` frame), as RGBA8 rows. A sheet's frames are drawn at their
