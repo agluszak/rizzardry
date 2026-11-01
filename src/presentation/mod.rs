@@ -192,7 +192,6 @@ impl Plugin for PresentationPlugin {
                 camp::show_camp,
                 (
                     automap::request_automap,
-                    automap::build_automap.run_if(any_with_component::<automap::Automap>),
                     automap::sync_note_input,
                     automap::draw_note_input,
                     (
