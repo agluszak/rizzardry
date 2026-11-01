@@ -577,7 +577,7 @@ pub fn run_battle(
                     let effect = vitals.enchantments.get(crate::content::spells::SpellId::HASTE)?;
                     Some(sum + effect.scaled(effect.power * 10))
                 })
-                .map_or(0.0, |sum| (sum / roster.len().max(1) as u32) as f32 * 0.2);
+                .map_or(0.0, |sum| (sum / roster.len() as u32) as f32 * 0.2);
             battle.party_move = PartyMove::Moving {
                 pace,
                 budget: pace.combat_budget() + haste,

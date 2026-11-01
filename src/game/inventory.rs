@@ -161,7 +161,7 @@ impl ItemStack {
             QuantityKind::Stack => from.count(),
             _ => from.remaining_uses.unwrap_or(0),
         };
-        let maximum = definition.initial_quantity.maximum().min(u32::from(u16::MAX)) as u16;
+        let maximum = definition.initial_quantity.maximum() as u16;
         // An overfull item has no room; loading never increases it further.
         let moved = available.min(maximum.max(uses) - uses);
         self.remaining_uses = Some(uses + moved);
@@ -201,7 +201,7 @@ pub fn make_item(
     } else {
         rng.roll(definition.initial_quantity)
     };
-    ItemStack::new(definition, ids, amount.min(u32::from(u8::MAX)) as u16, identify)
+    ItemStack::new(definition, ids, amount as u16, identify)
 }
 
 /// Apply absorption in the container's policy order. Empty placement is separate.

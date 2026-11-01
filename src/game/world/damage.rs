@@ -136,7 +136,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         }
         let before = body.hp;
         body.hp = (body.hp + amount).min(body.max_hp);
-        body.hp.max(before) - before
+        body.hp - before
     }
     /// Restoring stamina wakes exhaustion, but leaves a timed knockout alone.
     pub fn restore_stamina(&mut self, entity: Entity, amount: u32) -> u32 {

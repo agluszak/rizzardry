@@ -1647,7 +1647,7 @@ fn execute_trade(world: &mut World, quote: TradeQuote) -> Result<(), TradeError>
         }),
         TradeSource::Party(source) => {
             let item = sale_item(world, source, party)?;
-            let units = u16::try_from(quote.quantity).map_err(|_| TradeError::InvalidQuantity)?;
+            let units = quote.quantity as u16;
             let gold = world.get::<PartyInventory>(party).unwrap().gold + quote.gold;
             if trade::validate_sale(def, item, quote.quantity, catalog, communication)?
                 != quote.gold

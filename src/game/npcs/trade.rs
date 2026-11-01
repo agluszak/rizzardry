@@ -145,7 +145,7 @@ impl MerchantStock {
                 for _ in 0..count {
                     rng.below(100);
                 }
-                lot.units -= count.min(lot.units);
+                lot.units -= count;
             }
             self.replenish(def, catalog, level, false, templar, rng);
             self.lots.retain(|l| l.units > 0);
@@ -290,7 +290,7 @@ pub fn buy(
         } else if item.quantity == QuantityKind::None {
             1
         } else {
-            item.initial_quantity.maximum().min(255) as u16
+            item.initial_quantity.maximum() as u16
         };
         let delivered = ItemStack::new(item, ids, amount, true);
         let _ = party.pool.receive(delivered, catalog);

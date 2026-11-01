@@ -1777,7 +1777,7 @@ fn neediest(
                 return None;
             }
             let percent = if health {
-                i64::from(v.hp * 100 / c.stats(&v.enchantments).max_hp().max(1))
+                i64::from(v.hp * 100 / c.stats(&v.enchantments).max_hp())
             } else {
                 let (learned, pool) = points.get(m).unwrap();
                 let maxima = world.mana_maximum(m, learned);
@@ -1845,7 +1845,7 @@ fn restore(
             }
         }
     };
-    let missing = maximum - current.min(maximum);
+    let missing = maximum - current;
     if missing == 0 {
         return None;
     }

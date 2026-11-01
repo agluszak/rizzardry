@@ -443,7 +443,7 @@ fn admits(
             .active
             .iter()
             .filter(|&&(_, spawned, at)| {
-                (now_s - spawned.min(now_s)) as f32 > lingers
+                (now_s - spawned) as f32 > lingers
                     && at.is_none_or(|at| at.distance(party.feet) > RETIRED_BEYOND)
             })
             .map(|&(leader, ..)| leader)

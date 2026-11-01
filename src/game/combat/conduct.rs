@@ -37,7 +37,7 @@ fn flee_chance(
     fleeing: bool,
     nearest: f32,
 ) -> (u32, bool) {
-    let health = monster.hp * 100 / monster.max_hp.max(1);
+    let health = monster.hp * 100 / monster.max_hp;
     if kind.npc.is_some() && stance != Stance::Hostile && health <= 33 {
         return (100, fleeing);
     }

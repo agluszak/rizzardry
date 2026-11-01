@@ -193,7 +193,7 @@ pub fn rest(stamina: &mut u32, conditions: &mut Conditions, amount: u32, maximum
     let before = *stamina;
     *stamina = (*stamina + amount).min(maximum);
     conditions.come_round(*stamina);
-    (*stamina).max(before) - before
+    *stamina - before
 }
 
 /// How long a condition lasts.
@@ -551,7 +551,7 @@ pub struct Character {
 #[derive(Component, Clone, Debug, Default, PartialEq, Eq)]
 pub struct MonsterKnowledge {
     /// How many of each species the actor has seen, capped at 255.
-    pub seen: std::collections::HashMap<u32, u8>,
+    pub seen: std::collections::HashMap<u32, u32>,
 }
 
 impl Character {

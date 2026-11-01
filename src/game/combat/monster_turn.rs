@@ -315,7 +315,7 @@ fn decide<'a>(
                         && !o.is_dead()
                         && near(other, reach)
                         && species[o.species].level > kind.level
-                        && o.hp * 100 / o.max_hp.max(1) < 40
+                        && o.hp * 100 / o.max_hp < 40
                 })
                 .collect()
         } else {

@@ -91,7 +91,7 @@ impl SpellPoints {
     }
 
     pub fn available(&self, realm: Realm, maximum: &EnumMap<Realm, u32>) -> u32 {
-        self.current(realm, maximum).clamp(0, i64::from(u32::MAX)) as u32
+        self.current(realm, maximum).max(0) as u32
     }
 
     pub fn drain_realm(&mut self, realm: Realm, amount: u32, maximum: &EnumMap<Realm, u32>) -> u32 {
@@ -374,7 +374,7 @@ const CAST_THRESHOLDS: [u32; 17] =
 pub(crate) fn spell_failure(skill: u32, spell: &SpellDefinition, power: u32) -> u32 {
     let band = (spell.cost / 2 + spell.level).min(16) as usize;
     let need = CAST_THRESHOLDS[band] * power / 7;
-    if skill < need { ((need - skill) * 70 / need.max(1)).min(100) } else { 0 }
+    if skill < need { (need - skill) * 70 / need } else { 0 }
 }
 
 /// The percent chance a learned cast fails (retail `ExecuteCharacterSpellCast`),
