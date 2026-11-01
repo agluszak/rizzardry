@@ -397,7 +397,6 @@ fn carry_out(
 ) {
     let monster = battle.this_round.monsters[index].actor;
     let BattleMagic { field, .. } = magic;
-    field.improved.clear();
     match plan {
         Plan::Spell { spell, power, aim, scene, caster } => {
             let (report, flights) =
@@ -414,15 +413,20 @@ fn carry_out(
             if let Some(species) = kind.summons() {
                 summons.write(summon::Summon { summoner: monster, species });
             }
+            let mut improved = Vec::new();
             let effects = crate::game::magic::effects::special_attack(
                 crate::game::magic::effects::special(kind),
                 breather,
                 &victims,
                 rng,
                 field,
+                &mut improved,
             );
             if !effects.is_empty() {
                 news.write(CombatNews::Effects(effects));
+            }
+            for (member, skill) in improved {
+                news.write(CombatNews::Improved { member, skill });
             }
             battle.cooldowns.retain(|&(m, _)| m != monster);
             battle.cooldowns.push((monster, cooldown));
@@ -453,7 +457,6 @@ fn strike(
         if battle.this_round.monsters[index].berserk { Stance::Friendly } else { Stance::Hostile };
     let mut fight =
         blows::Fight { combatants, party, armours: party_armours(battle, field), moving, waits };
-    field.improved.clear();
     let idle = blows::monster_attacks(battle, index, rng, field, &mut fight, (mine, wanted), news);
     if !idle || battle.this_round.monsters[index].moved {
         return;

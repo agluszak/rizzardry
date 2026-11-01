@@ -62,13 +62,13 @@ pub struct LightActivation {
 }
 impl LightActivation {
     pub fn light_enabled(&self, name: &str, initial: bool) -> bool {
-        self.lights.get(&name.to_uppercase()).copied().unwrap_or(initial)
+        self.lights.get(name).copied().unwrap_or(initial)
     }
 }
 
 impl LevelState {
     pub fn ambient_sound_enabled(&self, name: &str) -> bool {
-        self.ambient_sounds.get(&name.to_uppercase()).copied().unwrap_or(true)
+        self.ambient_sounds.get(name).copied().unwrap_or(true)
     }
     /// Rebase walk-in detection after teleporting, without firing destination
     /// triggers or treating an unobserved level as already visited.
@@ -727,7 +727,7 @@ impl Devices<'_, '_> {
                 let mut lights = self.levels.get_mut(level).unwrap().2;
                 for (name, initial) in sources {
                     let enabled = lights.light_enabled(name, *initial);
-                    lights.lights.insert(name.to_uppercase(), change.apply(enabled));
+                    lights.lights.insert(name.clone(), change.apply(enabled));
                 }
             }
             TriggerAction::Particles { sources, change } => {
@@ -750,7 +750,7 @@ impl Devices<'_, '_> {
                 let mut state = self.levels.get_mut(level).unwrap().1;
                 for name in names {
                     let enabled = state.ambient_sound_enabled(name);
-                    state.ambient_sounds.insert(name.to_uppercase(), change.apply(enabled));
+                    state.ambient_sounds.insert(name.clone(), change.apply(enabled));
                 }
             }
             TriggerAction::SetDevices(change) => {

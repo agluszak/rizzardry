@@ -93,17 +93,59 @@ pub(super) fn willing(
     terms && average >= u32::from(definition.min_party_level)
 }
 
-/// [`super::conversation::Dialogue::joinable`], for operations that hold
-/// the whole world.
+/// Recruitment eligibility, shared by dialogue and the final join transaction.
+/// Check the NPC before capacity, then its authored regional and story terms.
+pub(super) fn eligible(
+    id: NpcId,
+    npc: &Npc,
+    definition: &NpcDefinition,
+    member: bool,
+    npc_count: usize,
+    region: u8,
+    levels: impl Iterator<Item = u8>,
+    fact: impl Fn(&str) -> u8,
+) -> Result<(), JoinRefusal> {
+    if definition.character.is_none() || npc.dead || member {
+        return Err(JoinRefusal::Declines);
+    }
+    if npc_count >= NPC_PLACES {
+        return Err(JoinRefusal::NoRoom);
+    }
+    let mut levels = levels.peekable();
+    let average =
+        if levels.peek().is_none() { 0 } else { crate::game::party::average_level(levels) };
+    if willing(id, definition, region, fact, average) { Ok(()) } else { Err(JoinRefusal::Declines) }
+}
+
+/// Revalidate against current campaign facts immediately before joining.
 pub fn joinable(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
-    world
-        .run_system_cached_with(
-            |In(actor): In<Entity>, dialogue: super::conversation::Dialogue| {
-                dialogue.joinable(actor)
-            },
-            actor,
-        )
-        .unwrap()
+    let party = crate::game::party::roster::the_party(world);
+    let region = {
+        let level = world.query::<&Level>().single(world).unwrap();
+        crate::content::levels::LevelInfo::for_path(&level.path).map_or(0, |info| info.band)
+    };
+    let roster = world.get::<PartyRoster>(party).unwrap();
+    let content = world.resource::<Catalogs>();
+    let id = world.get::<super::ActorId>(actor).unwrap().npc();
+    eligible(
+        id,
+        world.get::<Npc>(actor).unwrap(),
+        &content.npcs[id],
+        roster.contains(&actor),
+        roster.iter().filter(|&m| world.get::<Npc>(m).is_some()).count(),
+        region,
+        roster
+            .iter()
+            .filter(|&m| world.get::<Vitals>(m).unwrap().can_fight())
+            .map(|m| world.get::<Character>(m).unwrap().level()),
+        |symbol| {
+            let fact = content.facts.0.iter().find(|f| f.symbol == symbol).expect("a ported fact");
+            world
+                .resource::<super::conversation::StoryFacts>()
+                .get(fact.id, &content.facts)
+                .expect("a ported fact")
+        },
+    )
 }
 
 /// The character an NPC brings the first time it joins (retail

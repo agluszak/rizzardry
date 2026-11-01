@@ -25,6 +25,7 @@ pub(super) fn execute(
     situation: &Situation,
     rng: &mut GameRng,
     world: &mut Field,
+    improved: &mut Vec<(Entity, crate::content::characters::Skill)>,
 ) -> Result<Vec<Effect>, Refusal> {
     let spells = world.spells();
     let (profile, vitals, ..) = world.members.get(actor).unwrap();
@@ -43,8 +44,14 @@ pub(super) fn execute(
     let maximum = profile.stats(&vitals.enchantments).max_stamina();
     let breather =
         effects::Breather { level: profile.level(), stamina: vitals.stamina, max_stamina: maximum };
-    let effects =
-        effects::special_attack(effects::CHARACTER_BREATH, breather, &victims, rng, world);
+    let effects = effects::special_attack(
+        effects::CHARACTER_BREATH,
+        breather,
+        &victims,
+        rng,
+        world,
+        improved,
+    );
     world.members.get_mut(actor).unwrap().1.spend_stamina(maximum / 5);
     Ok(effects)
 }

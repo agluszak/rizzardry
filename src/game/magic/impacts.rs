@@ -126,10 +126,11 @@ pub(crate) fn resolve(
     rng: &mut GameRng,
     world: &mut Field,
     flights: &mut Vec<SpellInFlight>,
+    improved: &mut Vec<(Entity, crate::content::characters::Skill)>,
 ) -> Vec<Effect> {
     let spells = world.spells();
     let mut landed =
-        effects::resolve(origin.actor(), backfired, spell, strength, victims, rng, world);
+        effects::resolve(origin.actor(), backfired, spell, strength, victims, rng, world, improved);
     let Some(finish) = finish else { return landed };
     // The strongest surviving charge pays once, after all original impacts.
     if !backfired && !finish.reflected && spell.aimed_at_enemies() {
@@ -300,6 +301,7 @@ pub(crate) fn resolve(
                     rng,
                     world,
                     flights,
+                    improved,
                 ));
             }
         }
@@ -348,6 +350,7 @@ pub(crate) fn resolve(
                 rng,
                 world,
                 flights,
+                improved,
             ));
         }
     }

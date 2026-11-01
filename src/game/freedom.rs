@@ -66,13 +66,3 @@ impl Freedom<'_, '_> {
             && self.interaction.is_empty()
     }
 }
-
-/// Run condition: the party may move, use, take and rest.
-pub fn party_free(freedom: Freedom) -> bool {
-    freedom.free()
-}
-
-/// Run condition: free but perhaps camping ([`Freedom::unoccupied`]).
-pub fn unoccupied(freedom: Freedom) -> bool {
-    freedom.unoccupied()
-}

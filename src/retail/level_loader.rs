@@ -230,7 +230,7 @@ fn ambient_sound(name: &str, sound: &AmbientSound) -> AmbientSoundModel {
     let volume = |v: i32| or(v, 127).clamp(0, 127) as f32 / 127.0;
     let seconds = |ms: i32| ms.max(0) as f32 / 1000.0;
     AmbientSoundModel {
-        name: name.into(),
+        name: name.to_uppercase(),
         path: sound_path(&sound.wave),
         position: retail_position(sound.position),
         radius: sound.radius / UNITS_PER_METRE,

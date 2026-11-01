@@ -310,3 +310,90 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     assert_eq!(app.world().get::<Conversation>(reopened).unwrap().current, Some((1, 0)));
     assert!(app.world().get::<Conversation>(reopened).unwrap().ready());
 }
+
+#[test]
+#[ignore = "requires a retail installation"]
+fn weapon_saves_and_cloud_pulses_keep_their_skill_improvements() {
+    use crate::content::characters::{Attribute, Skill};
+    use crate::content::items::{AttackEffect, AttackEffects};
+    use crate::content::spells::SpellId;
+    use crate::game::characters::Vitals;
+    use crate::game::magic::effects::{self, Field, Victim};
+    use crate::game::magic::enchantments::Enchantment;
+    use crate::game::rng::GameRng;
+    use bevy::ecs::system::RunSystemOnce;
+
+    let mut app = game(&["--seed", "42"]);
+    app.world_mut()
+        .run_system_once(|mut field: Field| {
+            let member = field.party.iter().next().unwrap();
+            let victim = Victim::Member(member);
+            let mut rng = GameRng::seeded(42);
+            let mut attack = AttackEffects::default();
+            let mut improved = Vec::new();
+            let before = rng.clone();
+            assert!(
+                effects::blow(&mut rng, &mut field, victim, &attack, 1, true, &mut improved)
+                    .is_empty()
+            );
+            assert_eq!(rng, before, "empty secondary slots draw no RNG");
+            attack.chances[AttackEffect::Sleep] = 100;
+            for cloud in [false, true] {
+                if cloud {
+                    field.enchantments.0.apply(Enchantment {
+                        spell: SpellId::DEATH_CLOUD,
+                        power: 1,
+                        boost: 0,
+                        turns: 2,
+                        absorption: 0,
+                    });
+                }
+                let mut noticed = false;
+                for _ in 0..64 {
+                    let (mut character, mut vitals, ..) = field.members.get_mut(member).unwrap();
+                    character.attributes[Attribute::Piety] = 125;
+                    character.skill_points[Skill::IronWill] = 0;
+                    character.skill_practice[Skill::IronWill] = 7;
+                    *vitals = Vitals::new(&character);
+                    if cloud {
+                        let pulses = effects::pulse_clouds(&[], Vec3::ZERO, &mut rng, &mut field);
+                        assert_eq!(pulses.len(), 1);
+                        let (spell, _, output) = pulses.into_iter().next().unwrap();
+                        assert_eq!(spell, SpellId::DEATH_CLOUD);
+                        improved = output;
+                    } else {
+                        improved.clear();
+                        effects::blow(
+                            &mut rng,
+                            &mut field,
+                            victim,
+                            &attack,
+                            1,
+                            true,
+                            &mut improved,
+                        );
+                    }
+                    let gained = field.members.get(member).unwrap().0.skill_points[Skill::IronWill];
+                    assert_eq!(
+                        improved.len(),
+                        gained as usize,
+                        "every improvement belongs to this action"
+                    );
+                    if gained != 0 {
+                        assert_eq!(improved, [(member, Skill::IronWill)]);
+                        noticed = true;
+                        break;
+                    }
+                }
+                assert!(noticed, "the seeded action exercised Iron Will improvement");
+            }
+            field.members.get_mut(member).unwrap().1.hp = 0;
+            let before = rng.clone();
+            assert!(
+                effects::blow(&mut rng, &mut field, victim, &attack, 1, true, &mut improved)
+                    .is_empty()
+            );
+            assert_eq!(rng, before, "a dead victim stops before the nonzero effect's RNG draw");
+        })
+        .unwrap();
+}

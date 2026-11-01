@@ -76,10 +76,10 @@ impl Discharge<'_, '_> {
             }
         }
         let victims: Vec<_> = targets.into_iter().map(Victim::Member).collect();
-        field.improved.clear();
         let strength = Strength::at(0, spell, power, 0);
-        let effects = effects::resolve(None, false, spell, strength, &victims, rng, field);
-        let improved = std::mem::take(&mut *field.improved);
+        let mut improved = Vec::new();
+        let effects =
+            effects::resolve(None, false, spell, strength, &victims, rng, field, &mut improved);
         field.news.write(MagicNews::Triggered { spell: spell.id, effects, improved });
         destroyed
     }

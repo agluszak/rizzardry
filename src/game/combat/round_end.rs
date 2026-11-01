@@ -260,12 +260,11 @@ pub(super) fn pass_round(
     }
     // AdvanceTimedEffects applies offensive slots after personal aging and
     // before expiring the slots. Their final remaining turn still pulses.
-    field.improved.clear();
     let reports = crate::game::magic::effects::pulse_clouds(combatants, party_eye, rng, field);
-    for (spell, effects) in reports {
+    for (spell, effects, improved) in reports {
         battle.credit_kills(&effects, news);
         battle.this_round.attacked |= crate::game::magic::effects::affected(&effects);
-        field.news.write(casting::MagicNews::Triggered { spell, effects, improved: vec![] });
+        field.news.write(casting::MagicNews::Triggered { spell, effects, improved });
     }
     field.enchantments.0.age(ticks.aging);
     for &entity in combatants {

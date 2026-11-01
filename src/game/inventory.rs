@@ -610,67 +610,49 @@ pub enum Refusal {
     NoRoom,
 }
 
-/// Which equipment slots an item may go in, given what the hands hold
-/// (retail `GetItemEquipSlotMask`).
-pub fn allowed_slots(
+/// Whether an item fits this slot, accounting for the other hand and slots
+/// vacated by the proposed move (retail `GetItemEquipSlotMask`).
+pub fn fits_slot(
     definition: &ItemDefinition,
+    slot: EquipSlot,
     carried: &Carried,
     catalog: &ItemCatalog,
     vacating: &[EquipSlot],
-) -> Vec<EquipSlot> {
+) -> bool {
     use EquipClass::*;
-    // What is worn, but for the slot being emptied for this item.
-    let worn = |slot: EquipSlot| carried.worn(slot).filter(|_| !vacating.contains(&slot));
-    let empty = |slot: EquipSlot| worn(slot).is_none();
-    // A main hand also counts as free for the off hand when its weapon is
-    // one-handed.
-    let main_free = |slot: EquipSlot| worn(slot).is_none_or(|i| !catalog[i.item].two_handed);
+    let worn = |slot| carried.worn(slot).filter(|_| !vacating.contains(&slot));
+    let main_free = |slot| worn(slot).is_none_or(|i| !catalog[i.item].two_handed);
     match definition.class {
-        ShortWeapon | ExtendedWeapon | ThrownWeapon | RangedWeapon
-            if definition.weapon_skill.is_none() =>
-        {
-            vec![]
-        }
-        ShortWeapon | ExtendedWeapon | ThrownWeapon | RangedWeapon if definition.two_handed => {
-            let mut slots = vec![];
-            if empty(EquipSlot::Secondary) {
-                slots.push(EquipSlot::Primary);
-            }
-            if empty(EquipSlot::AlternateSecondary) {
-                slots.push(EquipSlot::AlternatePrimary);
-            }
-            slots
-        }
         ShortWeapon | ExtendedWeapon | ThrownWeapon | RangedWeapon => {
-            let mut slots = vec![EquipSlot::Primary, EquipSlot::AlternatePrimary];
-            if definition.off_hand {
-                if main_free(EquipSlot::Primary) {
-                    slots.push(EquipSlot::Secondary);
+            if definition.weapon_skill.is_none() {
+                return false;
+            }
+            match slot {
+                EquipSlot::Primary | EquipSlot::AlternatePrimary => {
+                    !definition.two_handed || worn(slot.partner().unwrap()).is_none()
                 }
-                if main_free(EquipSlot::AlternatePrimary) {
-                    slots.push(EquipSlot::AlternateSecondary);
+                EquipSlot::Secondary | EquipSlot::AlternateSecondary => {
+                    !definition.two_handed
+                        && definition.off_hand
+                        && main_free(slot.partner().unwrap())
                 }
+                _ => false,
             }
-            slots
         }
-        Ammunition | Shield => {
-            let mut slots = vec![];
-            if main_free(EquipSlot::Primary) {
-                slots.push(EquipSlot::Secondary);
+        Ammunition | Shield => match slot {
+            EquipSlot::Secondary | EquipSlot::AlternateSecondary => {
+                main_free(slot.partner().unwrap())
             }
-            if main_free(EquipSlot::AlternatePrimary) {
-                slots.push(EquipSlot::AlternateSecondary);
-            }
-            slots
-        }
-        Torso => vec![EquipSlot::Torso],
-        Legs => vec![EquipSlot::Legs],
-        Head => vec![EquipSlot::Head],
-        Hands => vec![EquipSlot::Hands],
-        Feet => vec![EquipSlot::Feet],
-        Cloak => vec![EquipSlot::Cloak],
-        Misc => vec![EquipSlot::Misc1, EquipSlot::Misc2],
-        _ => vec![],
+            _ => false,
+        },
+        Torso => slot == EquipSlot::Torso,
+        Legs => slot == EquipSlot::Legs,
+        Head => slot == EquipSlot::Head,
+        Hands => slot == EquipSlot::Hands,
+        Feet => slot == EquipSlot::Feet,
+        Cloak => slot == EquipSlot::Cloak,
+        Misc => matches!(slot, EquipSlot::Misc1 | EquipSlot::Misc2),
+        _ => false,
     }
 }
 
@@ -798,7 +780,7 @@ pub fn place_at_creation(
     let d = &catalog[item.item];
     if member.can_use(d)
         && let Some(slot) = creation_slot(d, carried, catalog, member)
-        && allowed_slots(d, carried, catalog, &[]).contains(&slot)
+        && fits_slot(d, slot, carried, catalog, &[])
     {
         match &mut carried.equipment[slot] {
             None => {
@@ -1068,8 +1050,7 @@ impl PartyInventory {
             });
             if let Some(partner) = displaced {
                 carried.check_removal(Slot::Equipment(partner), catalog, vitals.is_dead())?;
-                if !allowed_slots(definition, carried, catalog, &[equip, partner]).contains(&equip)
-                {
+                if !fits_slot(definition, equip, carried, catalog, &[equip, partner]) {
                     return Err(Refusal::DoesNotFit);
                 }
                 let displaced = carried.worn(partner).unwrap();
@@ -1099,7 +1080,7 @@ impl PartyInventory {
                 self.hand.held = current;
                 return Ok(());
             }
-            if !allowed_slots(definition, carried, catalog, &[equip]).contains(&equip) {
+            if !fits_slot(definition, equip, carried, catalog, &[equip]) {
                 return Err(Refusal::DoesNotFit);
             }
         }

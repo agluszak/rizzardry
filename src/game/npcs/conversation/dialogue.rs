@@ -192,7 +192,7 @@ pub struct Dialogue<'w, 's> {
     item_news: MessageWriter<'w, crate::game::inventory::ItemNews>,
 }
 
-impl Dialogue<'_, '_> {
+impl<'w> Dialogue<'w, '_> {
     fn conversation(&self, entity: Entity) -> &Conversation {
         self.conversations.get(entity).unwrap().1
     }
@@ -214,9 +214,9 @@ impl Dialogue<'_, '_> {
     }
 
     /// The speaker's script, which loaded before the conversation began.
-    fn script(&self, actor: Entity) -> &DialogueScript {
+    fn script(&self, actor: Entity) -> &'w DialogueScript {
         let id = self.npcs.get(actor).unwrap().2.npc();
-        self.scripts.get(&self.assets.scripts[&id]).unwrap()
+        Res::into_inner(Res::clone(&self.scripts)).get(&self.assets.scripts[&id]).unwrap()
     }
 
     fn best_communicator(&self) -> Option<(Entity, u32)> {
@@ -771,7 +771,7 @@ impl Dialogue<'_, '_> {
                     return;
                 }
                 Step::Quote { quote, subquote, paid, plan } => {
-                    let q = self.script(actor).quotes[quote as usize].clone();
+                    let q = &self.script(actor).quotes[quote as usize];
                     if !paid
                         && subquote == 0
                         && let Some((gold, always)) = q.operations.iter().find_map(|op| {
@@ -795,7 +795,7 @@ impl Dialogue<'_, '_> {
                         c.queue.push_front(Step::said(PRICE_QUOTE));
                         continue;
                     }
-                    let plan = match plan.map_or_else(|| self.plan_quote(&q), Ok) {
+                    let plan = match plan.map_or_else(|| self.plan_quote(q), Ok) {
                         Ok(plan) => plan,
                         Err((entry, reason)) => {
                             let mut c = self.conversation_mut(entity);
@@ -822,7 +822,7 @@ impl Dialogue<'_, '_> {
                             plan: Some(plan),
                         })
                     }
-                    if self.say(entity, actor, (&q, quote, subquote)) {
+                    if self.say(entity, actor, (q, quote, subquote)) {
                         return;
                     }
                 }
@@ -909,28 +909,20 @@ impl Dialogue<'_, '_> {
     /// `RequestNpcJoinParty`'s order: an NPC without a character declines
     /// before the party's room is counted).
     pub fn joinable(&self, actor: Entity) -> Result<(), crate::game::npcs::recruit::JoinRefusal> {
-        use crate::game::npcs::recruit::{JoinRefusal, NPC_PLACES};
-        let (_, npc, id, _, member) = self.npcs.get(actor).unwrap();
-        let definition = &self.content.npcs[id.npc()];
-        if definition.character.is_none() || npc.dead || member {
-            return Err(JoinRefusal::Declines);
-        }
-        let npcs = self.party.1.iter().filter(|&m| self.npcs.contains(m)).count();
-        if npcs >= NPC_PLACES {
-            return Err(JoinRefusal::NoRoom);
-        }
+        let (_, npc, id, _, _) = self.npcs.get(actor).unwrap();
         let (_, level) = self.levels.single().unwrap();
         let region =
             crate::content::levels::LevelInfo::for_path(&level.path).map_or(0, |info| info.band);
-        // Retail counts no able member as an average of nothing.
-        let mut levels = self.able().map(|(_, c)| c.level()).peekable();
-        let average =
-            if levels.peek().is_none() { 0 } else { crate::game::party::average_level(levels) };
-        let fact = |symbol: &str| self.fact_named(symbol).expect("a ported fact");
-        if !crate::game::npcs::recruit::willing(id.npc(), definition, region, fact, average) {
-            return Err(JoinRefusal::Declines);
-        }
-        Ok(())
+        crate::game::npcs::recruit::eligible(
+            id.npc(),
+            npc,
+            &self.content.npcs[id.npc()],
+            self.party.1.contains(&actor),
+            self.party.1.iter().filter(|&m| self.npcs.contains(m)).count(),
+            region,
+            self.able().map(|(_, c)| c.level()),
+            |symbol| self.fact_named(symbol).expect("a ported fact"),
+        )
     }
 
     /// The party asks the NPC to join. It answers from its script, and
@@ -1244,14 +1236,14 @@ impl Dialogue<'_, '_> {
         }
         let ConversationWait::Price { quote, gold, always } = c.wait else { return };
         let actor = c.actor;
-        let Some(line) = self.script(actor).quotes.get(usize::from(quote)).cloned() else {
+        let Some(line) = self.script(actor).quotes.get(usize::from(quote)) else {
             return;
         };
         if accept {
             let (next, plan) = if self.party.0.gold < gold {
                 (TOO_POOR_QUOTE, None)
             } else {
-                let plan = match self.plan_quote(&line) {
+                let plan = match self.plan_quote(line) {
                     Ok(plan) => plan,
                     Err((entry, reason)) => {
                         block(&mut self.conversation_mut(entity), quote, Some(entry), reason);

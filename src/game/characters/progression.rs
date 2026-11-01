@@ -402,22 +402,26 @@ impl Progression<'_, '_> {
         // Stage only inventory work that can fail. Full destinations preserve all owners.
         let mut inventory =
             self.inventory.single_mut().map_err(|_| "The party inventory is unavailable.")?;
-        let mut equipment = carried.clone();
-        let mut pool = inventory.pool.clone();
-        for slot in EnumSet::<crate::game::inventory::EquipSlot>::all() {
-            if let Some(worn) = &equipment.equipment[slot] {
-                let definition = &items[worn.stack.item];
-                if !next.can_use(definition) {
-                    let stack = equipment.equipment[slot].take().unwrap().stack;
-                    if equipment
-                        .receive(stack, items)
-                        .and_then(|s| pool.receive(s, items))
-                        .is_some()
-                    {
-                        return Err("Make room for equipment this profession cannot wear.");
+        if carried.equipment.values().flatten().any(|worn| !next.can_use(&items[worn.stack.item])) {
+            let mut equipment = carried.clone();
+            let mut pool = inventory.pool.clone();
+            for slot in EnumSet::<crate::game::inventory::EquipSlot>::all() {
+                if let Some(worn) = &equipment.equipment[slot] {
+                    let definition = &items[worn.stack.item];
+                    if !next.can_use(definition) {
+                        let stack = equipment.equipment[slot].take().unwrap().stack;
+                        if equipment
+                            .receive(stack, items)
+                            .and_then(|s| pool.receive(s, items))
+                            .is_some()
+                        {
+                            return Err("Make room for equipment this profession cannot wear.");
+                        }
                     }
                 }
             }
+            *carried = equipment;
+            inventory.pool = pool;
         }
         // Preserve deficits, conditions and recovery fractions; advancement is not a full heal.
         // The spells on the member count for both maxima.
@@ -429,8 +433,6 @@ impl Progression<'_, '_> {
         (v.hp, v.stamina) = (hp, stamina);
         *c = next;
         *known = learned;
-        *carried = equipment;
-        inventory.pool = pool;
         // A Gadgeteer's omnigun follows the committed level.
         let character = c.clone();
         let roster = self.roster.single().map_err(|_| "The party is unavailable.")?;

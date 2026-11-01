@@ -317,8 +317,6 @@ pub struct Field<'w, 's> {
     pub visibility: crate::game::world::obstacles::WorldObstacles<'w, 's>,
     /// Missiles leave in launch order, so equal arrivals land in it too.
     pub flight_order: ResMut<'w, super::casting::FlightOrder>,
-    /// Skills that improved while resolving an action, for its notices.
-    pub improved: Local<'s, Vec<(Entity, Skill)>>,
     level: Single<
         'w,
         's,
@@ -456,6 +454,7 @@ pub fn resolve(
     victims: &[Victim],
     rng: &mut GameRng,
     world: &mut Field,
+    improved: &mut Vec<(Entity, Skill)>,
 ) -> Vec<Effect> {
     if victims.is_empty() {
         return Vec::new();
@@ -561,7 +560,7 @@ pub fn resolve(
             each(&mut |v, rng, world| restore_victim(kind, spell, strength, v, rng, world))
         }
         Kind::Inflict(condition, chance) => each(&mut |v, rng, world| {
-            attack(rng, world, spell, v, realm, condition, chance, strength)
+            attack(rng, world, spell, v, realm, condition, chance, strength, improved)
         }),
         Kind::DamageThen(..) | Kind::NoxiousFumes => {
             each(&mut |v, rng, world| {
@@ -574,12 +573,13 @@ pub fn resolve(
             };
             for (condition, chance) in attacks {
                 each(&mut |v, rng, world| {
-                    attack(rng, world, spell, v, realm, condition, chance, strength)
+                    attack(rng, world, spell, v, realm, condition, chance, strength, improved)
                 });
             }
         }
         Kind::Fear { second } => each(&mut |v, rng, world| {
-            let landed = attack(rng, world, spell, v, realm, Condition::Afraid, 100, strength);
+            let landed =
+                attack(rng, world, spell, v, realm, Condition::Afraid, 100, strength, improved);
             let again = matches!(
                 (v, second),
                 (Victim::Member(_), Condition::Unconscious)
@@ -587,7 +587,7 @@ pub fn resolve(
             );
             if matches!(landed, Some(Effect::Inflicted { .. })) && again {
                 let half = Strength { against: strength.against / 2, ..strength };
-                attack(rng, world, spell, v, realm, second, 100, half);
+                attack(rng, world, spell, v, realm, second, 100, half, improved);
             }
             landed
         }),
@@ -600,6 +600,7 @@ pub fn resolve(
             Condition::Insane,
             100,
             strength,
+            improved,
         ) {
             Some(Effect::Resisted { .. }) => {
                 let target = target(world, v, realm, Some(Condition::Afraid));
@@ -614,7 +615,9 @@ pub fn resolve(
             }
             other => other,
         }),
-        Kind::Slay => each(&mut |v, rng, world| slay(rng, world, spell, v, realm, strength)),
+        Kind::Slay => {
+            each(&mut |v, rng, world| slay(rng, world, spell, v, realm, strength, improved))
+        }
         Kind::Affliction => each(&mut |v, rng, world| {
             let roll = rng.below(100);
             if roll >= 50 {
@@ -624,8 +627,10 @@ pub fn resolve(
             let pick = crate::game::rng::weighted(roll, AFFLICTIONS.iter().map(|&(_, w)| w))
                 .and_then(|index| AFFLICTIONS[index].0);
             match pick {
-                Some(condition) => attack(rng, world, spell, v, realm, condition, 100, strength),
-                None => slay(rng, world, spell, v, realm, strength),
+                Some(condition) => {
+                    attack(rng, world, spell, v, realm, condition, 100, strength, improved)
+                }
+                None => slay(rng, world, spell, v, realm, strength, improved),
             }
         }),
         Kind::Vortex => each(&mut |v, rng, world| {
@@ -704,8 +709,7 @@ pub fn resolve(
         Kind::Lifesteal | Kind::MightToMagic => {
             let mut drained = 0;
             each(&mut |v, rng, world| {
-                let target = target(world, v, realm, None);
-                if target.dead {
+                if dead(world, v) {
                     return None;
                 }
                 let rolled = magnitude(rng, spell.dice, strength);
