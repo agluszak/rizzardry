@@ -196,7 +196,7 @@ fn razor_backlash(
     );
     let amount = match attacker {
         Victim::Member(member) => {
-            Some(member_defence(battle, field, fight, member).1.reduce(rolled as i32))
+            Some(member_defence(battle, field, fight, member).reduce(rolled as i32))
         }
         Victim::Monster(monster) => {
             monster_defence(field, fight, monster).map(|defence| defence.reduce(rolled as i32))
@@ -234,7 +234,7 @@ fn member_defence(
     field: &Field,
     fight: &Fight,
     member: Entity,
-) -> (Character, Defence<'static>) {
+) -> Defence<'static> {
     let (character, vitals, ..) = field.members.get(member).unwrap();
     let armour = fight.armour(member);
     let running = battle.this_round.pace == Some(PartyPace::Run);
@@ -244,7 +244,7 @@ fn member_defence(
         .iter()
         .any(|p| p.actor == member && matches!(p.action, RoundAction::Defend));
     let stats = character.stats(&vitals.enchantments);
-    (character.clone(), Defence::member(&stats, armour, running, defending))
+    Defence::member(&stats, armour, running, defending)
 }
 
 fn monster_defence<'a>(
@@ -272,8 +272,9 @@ fn victim_defence<'a>(
     match victim {
         Victim::Monster(entity) => Some((monster_defence(field, fight, entity)?, None)),
         Victim::Member(entity) => {
-            let (profile, defence) = member_defence(battle, field, fight, entity);
-            Some((defence, Some((entity, profile))))
+            let defence = member_defence(battle, field, fight, entity);
+            let (profile, ..) = field.members.get(entity).unwrap();
+            Some((defence, Some((entity, profile.clone()))))
         }
     }
 }
@@ -566,7 +567,7 @@ pub(super) fn member_attacks(
         return;
     };
     turns.current = current;
-    let hand = hands.hands[current].clone();
+    let hand = &hands.hands[current];
     battle.this_round.attacked = true;
     // Retail draws the attack's mode, then its swings.
     let mode = if berserk { AttackMode::Berserk } else { attack::choose_mode(rng, hand.modes) };
@@ -617,17 +618,17 @@ pub(super) fn member_attacks(
         let stats = character.stats(&vitals.enchantments);
         let Some((aimed_at, _)) = victim_defence(battle, field, fight, target) else { break };
         let aim =
-            attack::member_aim(&stats, &vitals, &hand, mode, surprise, Some(&aimed_at), difficulty);
+            attack::member_aim(&stats, &vitals, hand, mode, surprise, Some(&aimed_at), difficulty);
         let delivery = if hand.reach >= Reach::Long {
             Delivery::Shot {
                 from: fight.party.eye,
                 blind: vitals.conditions.has(Condition::Blind),
-                through: attack::sure_penetration(&stats, &hand),
+                through: attack::sure_penetration(&stats, hand),
             }
         } else {
             Delivery::Swing {
-                bystanders: member_bystanders(field, fight, member, &hand, target.entity()),
-                odds: attack::member_aim(&stats, &vitals, &hand, mode, surprise, None, difficulty),
+                bystanders: member_bystanders(field, fight, member, hand, target.entity()),
+                odds: attack::member_aim(&stats, &vitals, hand, mode, surprise, None, difficulty),
             }
         };
         let Ok(landing) = land(rng, field, fight, (target, aim), delivery, &mut surprise) else {
@@ -688,7 +689,7 @@ pub(super) fn member_attacks(
         // Arrows, bolts and stones are shot away, thrown weapons thrown,
         // and guns spend their shots.
         // A hand with nothing left to fire is done for the round.
-        if (hand.paired || hand.ranged) && !spend_shot(&mut carried, items, current, &hand) {
+        if (hand.paired || hand.ranged) && !spend_shot(&mut carried, items, current, hand) {
             left = 0;
             turns.left[current] = 0;
         }
@@ -1056,8 +1057,7 @@ pub(super) fn monster_attacks(
         let side = formation::quadrant(fight.party.eye, fight.party.yaw, position);
         let facing = field.formation.facing(member);
         if facing.is_some_and(|f| f != side) {
-            let (character, vitals) = (character.clone(), vitals.clone());
-            if notices(battle, member, &character, &vitals, rng) {
+            if notices(battle, member, character, vitals, rng) {
                 field.formation.turn(member, side);
             } else {
                 surprise.unaware = facing.is_some_and(|f| f.opposite() == Some(side));

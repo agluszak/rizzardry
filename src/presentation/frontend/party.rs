@@ -24,26 +24,25 @@ pub(super) struct ToggleLabel;
 #[derive(Component)]
 pub(super) struct PartyMessage;
 #[derive(Component)]
-pub(super) struct RowBackground(u32);
+pub(super) struct RowBackground;
 #[derive(Component)]
 pub(super) struct SelectedDetail;
 #[derive(Component)]
 pub(super) struct SlotFrame {
-    candidate: u32,
     highlight: bool,
 }
 #[derive(Component)]
 pub(super) enum Portrait {
-    Candidate(u32),
-    Member(u32),
+    Candidate,
+    Member,
     Selected,
 }
 #[derive(Component)]
 pub(super) enum Label {
-    CandidateName(u32),
-    CandidateClass(u32),
-    CandidateRace(u32),
-    Member(u32),
+    CandidateName,
+    CandidateClass,
+    CandidateRace,
+    Member,
     Joined,
     Summary(u8),
 }
@@ -260,7 +259,7 @@ pub(super) fn sync_views(
                 .id();
             if joined {
                 let portrait = picture(&mut commands, root, default(), 0, Vec2::ZERO);
-                commands.entity(portrait).insert(Portrait::Member(id));
+                commands.entity(portrait).insert(Portrait::Member);
                 let frame = picture(
                     &mut commands,
                     root,
@@ -268,7 +267,7 @@ pub(super) fn sync_views(
                     0,
                     Vec2::new(-13., -11.),
                 );
-                commands.entity(frame).insert(SlotFrame { candidate: id, highlight: false });
+                commands.entity(frame).insert(SlotFrame { highlight: false });
                 let frame = picture(
                     &mut commands,
                     root,
@@ -276,7 +275,7 @@ pub(super) fn sync_views(
                     1,
                     Vec2::ZERO,
                 );
-                commands.entity(frame).insert(SlotFrame { candidate: id, highlight: true });
+                commands.entity(frame).insert(SlotFrame { highlight: true });
                 let name = label(
                     &mut commands,
                     root,
@@ -285,17 +284,17 @@ pub(super) fn sync_views(
                     Vec2::new(-10., 79.),
                     110.,
                 );
-                commands.entity(name).insert(Label::Member(id));
+                commands.entity(name).insert(Label::Member);
             } else {
                 let background =
                     picture(&mut commands, root, load("party generation/listboxes"), 0, Vec2::ZERO);
-                commands.entity(background).insert(RowBackground(id));
+                commands.entity(background).insert(RowBackground);
                 let portrait = picture(&mut commands, root, default(), 0, Vec2::new(2., 2.));
-                commands.entity(portrait).insert(Portrait::Candidate(id));
+                commands.entity(portrait).insert(Portrait::Candidate);
                 for (kind, y) in [
-                    (Label::CandidateName(id), 3.),
-                    (Label::CandidateClass(id), 14.),
-                    (Label::CandidateRace(id), 25.),
+                    (Label::CandidateName, 3.),
+                    (Label::CandidateClass, 14.),
+                    (Label::CandidateRace, 25.),
                 ] {
                     let text = label(
                         &mut commands,
@@ -317,17 +316,24 @@ pub(super) fn refresh(
     assets: Res<AssetServer>,
     mut commands: Commands,
     controls: Query<(Entity, &Action, Has<InteractionDisabled>), With<Control>>,
-    mut portraits: Query<(&Portrait, &mut Picture, &mut Visibility), Without<RowBackground>>,
-    mut rows: Query<(&RowBackground, &mut Picture, &mut Visibility), Without<Portrait>>,
+    views: Query<&CandidateView>,
+    mut portraits: Query<
+        (&Portrait, &ChildOf, &mut Picture, &mut Visibility),
+        Without<RowBackground>,
+    >,
+    mut rows: Query<
+        (&ChildOf, &mut Picture, &mut Visibility),
+        (With<RowBackground>, Without<Portrait>),
+    >,
     mut details: Query<
         &mut Visibility,
         (With<SelectedDetail>, Without<Portrait>, Without<RowBackground>, Without<SlotFrame>),
     >,
     mut frames: Query<
-        (&SlotFrame, &mut Visibility),
+        (&SlotFrame, &ChildOf, &mut Visibility),
         (Without<Portrait>, Without<RowBackground>, Without<SelectedDetail>),
     >,
-    mut labels: Query<(&Label, &mut BitmapText), Without<PartyMessage>>,
+    mut labels: Query<(&Label, &ChildOf, &mut BitmapText), Without<PartyMessage>>,
     mut messages: Query<&mut BitmapText, (With<PartyMessage>, Without<Label>)>,
     mut toggles: Query<&Children, With<ToggleLabel>>,
     mut toggle_text: Query<&mut BitmapText, (Without<Label>, Without<PartyMessage>)>,
@@ -351,17 +357,20 @@ pub(super) fn refresh(
         };
         set_enabled(&mut commands, entity, enabled, disabled);
     }
-    for (portrait, mut picture, mut visible) in &mut portraits {
+    // A view's parts show whichever candidate it was made for.
+    let shown = |part: &ChildOf| views.get(part.parent()).ok().map(|view| view.id);
+    let draft_of = |part: &ChildOf| shown(part).and_then(|id| candidate(&session, id));
+    for (portrait, part, mut picture, mut visible) in &mut portraits {
         let draft = match portrait {
-            Portrait::Candidate(id) | Portrait::Member(id) => candidate(&session, *id),
+            Portrait::Candidate | Portrait::Member => draft_of(part),
             Portrait::Selected => session.selected.and_then(|id| candidate(&session, id)),
         };
         visible.set_if_neq(visible_if(draft.is_some()));
         if let Some(draft) = draft {
             use crate::content::paths::{PortraitSize, portrait as path};
             let size = match portrait {
-                Portrait::Candidate(_) => PortraitSize::Small,
-                Portrait::Member(_) => PortraitSize::Medium,
+                Portrait::Candidate => PortraitSize::Small,
+                Portrait::Member => PortraitSize::Medium,
                 Portrait::Selected => PortraitSize::Large,
             };
             crate::presentation::screen_art::show_sheet(
@@ -371,8 +380,8 @@ pub(super) fn refresh(
             );
         }
     }
-    for (row, mut picture, mut visible) in &mut rows {
-        let id = candidate(&session, row.0).map(|_| row.0);
+    for (part, mut picture, mut visible) in &mut rows {
+        let id = shown(part).filter(|&id| candidate(&session, id).is_some());
         visible.set_if_neq(visible_if(id.is_some()));
         let frame = usize::from(id.is_some() && id == session.selected);
         if picture.frame != frame {
@@ -382,8 +391,8 @@ pub(super) fn refresh(
     for mut visible in &mut details {
         visible.set_if_neq(visible_if(session.selected.is_some()));
     }
-    for (frame, mut visible) in &mut frames {
-        let id = session.party.contains(&frame.candidate).then_some(frame.candidate);
+    for (frame, part, mut visible) in &mut frames {
+        let id = shown(part).filter(|id| session.party.contains(id));
         let shown = id.is_some() && (!frame.highlight || id == session.selected);
         visible.set_if_neq(visible_if(shown));
     }
@@ -397,17 +406,13 @@ pub(super) fn refresh(
         let gender = strings.get(GENDER_NAMES + gender as usize);
         format!("{gender} {}", strings.get(RACE_NAMES + race as usize))
     };
-    for (field, mut text) in &mut labels {
+    for (field, part, mut text) in &mut labels {
         let value = match field {
-            Label::CandidateName(id) | Label::Member(id) => {
-                candidate(&session, *id).map(|draft| draft.display_name().to_owned())
+            Label::CandidateName | Label::Member => {
+                draft_of(part).map(|draft| draft.display_name().to_owned())
             }
-            Label::CandidateClass(id) => {
-                candidate(&session, *id).map(|draft| level_1(draft.profession()))
-            }
-            Label::CandidateRace(id) => {
-                candidate(&session, *id).map(|draft| kind(draft.gender(), draft.race()))
-            }
+            Label::CandidateClass => draft_of(part).map(|draft| level_1(draft.profession())),
+            Label::CandidateRace => draft_of(part).map(|draft| kind(draft.gender(), draft.race())),
             Label::Joined => session
                 .selected
                 .filter(|id| session.party.contains(id))

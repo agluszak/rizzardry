@@ -269,9 +269,6 @@ impl Advancement {
     pub fn selected_spell(&self, id: SpellId) -> bool {
         self.spells.contains(&selection_key(id))
     }
-    pub fn can_learn(&self, id: SpellId, catalog: &SpellCatalog) -> bool {
-        self.learnable(&self.evaluate(), id, catalog)
-    }
     pub fn learnable(&self, draft: &Evaluation, id: SpellId, catalog: &SpellCatalog) -> bool {
         // Retail excludes this draft's magic-skill allocations from spell eligibility.
         !self.known.0.contains(&id)

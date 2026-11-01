@@ -582,7 +582,7 @@ pub fn run_battle(
                 pace,
                 budget: pace.combat_budget() + haste,
                 moved: 0.0,
-                last: Some(position.0),
+                last: position.0,
             };
             news.write(CombatNews::PartyMoves);
             return;

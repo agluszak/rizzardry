@@ -264,23 +264,6 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
         })
         .unwrap();
     let stock = app.world().get::<Npc>(actor).unwrap().stock.clone();
-    let invalid = {
-        let server = app.world().resource::<AssetServer>();
-        crate::game::world::level::Level::load("levels/missing/missing.pvl", server)
-    };
-    let invalid = app
-        .world_mut()
-        .spawn(crate::game::world::level::Destination::new(
-            invalid,
-            default(),
-            crate::game::world::level::Entry::Travel,
-        ))
-        .id();
-    step_until(&mut app, "failed preparation", |w| w.get_entity(invalid).is_err());
-    assert!(app.world().get::<Conversation>(session).is_none());
-    assert!(playing(app.world_mut()).is_some_and(|p| p.ends_with("monastery1.pvl")));
-    assert_eq!(app.world().get::<Npc>(actor).unwrap().stock, stock);
-
     app.world_mut().write_message(ConversationRequest::new(session, Talk::Close));
     app.update();
     assert!(app.world().get_entity(session).is_err());

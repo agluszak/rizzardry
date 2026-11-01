@@ -123,11 +123,8 @@ pub fn text_width(font: &[Frame], text: &str) -> u32 {
 
 /// Draw text with a font sheet into an RGBA8 image, left to right with no
 /// kerning: each glyph advances by its width plus x offset, and a line is as
-/// tall as `A`. Unknown characters draw as `?`.
-pub fn render_text(font: &[Frame], text: &str) -> (u32, u32, Vec<u8>) {
-    render_text_spaced(font, text, 0)
-}
-fn render_text_spaced(font: &[Frame], text: &str, spacing: u32) -> (u32, u32, Vec<u8>) {
+/// tall as `A`, `spacing` apart. Unknown characters draw as `?`.
+pub(crate) fn render_text_spaced(font: &[Frame], text: &str, spacing: u32) -> (u32, u32, Vec<u8>) {
     let glyph =
         |c: char| glyph_index(c).filter(|&i| i < font.len()).or(glyph_index('?')).map(|i| &font[i]);
     let advance = |g: &Frame| (g.width as i32 + g.offset[0] as i32).max(0) as u32;
@@ -262,7 +259,7 @@ mod bitmap_layout_tests {
     fn paragraphs_and_wrapped_words_have_real_pixel_height() {
         let font = vec![Frame { offset: [0, 0], width: 2, height: 3, rgba: vec![255; 24] }; 150];
         assert_eq!(wrap_text(&font, "AB CD\n\nABCDEF", 6), "AB\nCD\n\nABC\nDEF");
-        let (width, height, pixels) = render_text(&font, "AB\r\nC");
+        let (width, height, pixels) = render_text_spaced(&font, "AB\r\nC", 0);
         assert_eq!((width, height), (4, 6));
         assert_eq!(&pixels[(4 * 3 * 4)..(4 * 3 * 4 + 4)], &[255; 4]);
         assert_eq!(&pixels[(4 * 3 * 4 + 8)..(4 * 3 * 4 + 12)], &[0; 4]);

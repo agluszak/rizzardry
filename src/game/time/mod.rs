@@ -143,7 +143,8 @@ pub(crate) fn pass_time(
     // Each aging pass settles conditions before its recognition rolls. Do not
     // collapse passes across fixed steps or inspect the final conditions for all
     // of them: a blindness duration may expire partway through this interval.
-    for pass in 0..=ticks.aging {
+    // Pass 0 is the stamina-only one, which no stamina ticks leave nothing to do.
+    for pass in u32::from(ticks.stamina == 0)..=ticks.aging {
         let ticks = if pass == 0 {
             Ticks { stamina: ticks.stamina, aging: 0 }
         } else {
