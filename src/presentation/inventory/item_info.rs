@@ -177,9 +177,9 @@ pub(super) fn refresh(
             text.palette = palette;
         }
     }
-    let progress = character.experience.saturating_sub(character.experience_previous_goal) as f32
-        / character.experience_goal().saturating_sub(character.experience_previous_goal).max(1)
-            as f32;
+    let progress = (character.experience.max(character.experience_previous_goal)
+        - character.experience_previous_goal) as f32
+        / (character.experience_goal() - character.experience_previous_goal).max(1) as f32;
     for mut bar in &mut bars {
         bar.set_if_neq(PictureCrop::horizontal(0.0, (103.0 * progress.clamp(0.0, 1.0)).floor()));
     }

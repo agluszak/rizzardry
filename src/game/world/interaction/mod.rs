@@ -36,7 +36,7 @@ use crate::game::time::GameClock;
 pub const COMPONENTS: usize = 8;
 
 /// Each trap type's own grade (retail `g_trap_difficulty`).
-pub(crate) const TRAP_GRADE: [i32; TRAP_TYPES] = [1, 1, 2, 2, 3, 3, 3, 4, 5, 5, 5, 6, 6, 7, 7];
+pub(crate) const TRAP_GRADE: [u32; TRAP_TYPES] = [1, 1, 2, 2, 3, 3, 3, 4, 5, 5, 5, 6, 6, 7, 7];
 
 /// Which components each trap type is built from (retail `g_table1`).
 pub const TRAP_COMPONENTS: [[bool; COMPONENTS]; TRAP_TYPES] = {
@@ -186,22 +186,18 @@ pub struct Disarming {
     pub difficulty: u8,
     pub trap: u8,
     pub disarmed: [bool; COMPONENTS],
-    pub divine_power: u8,
+    pub divine_power: u32,
     /// What each member's inspection made of each component.
     pub observations: Vec<(Entity, [Observation; COMPONENTS])>,
 }
 
 impl Disarming {
     pub fn inspection_chance(&self, skill: Option<u32>, difficulty: Difficulty) -> u32 {
-        trap_chance(
-            skill.map(|s| s + u32::from(self.divine_power) * 6),
-            self.difficulty,
-            difficulty,
-        ) as u32
+        trap_chance(skill.map(|s| s + self.divine_power * 6), self.difficulty, difficulty) as u32
     }
     pub fn disarm_chance(&self, skill: Option<u32>, difficulty: Difficulty) -> u32 {
         let chance = trap_chance(
-            skill.map(|s| s + u32::from(self.divine_power.div_ceil(2)) * 6),
+            skill.map(|s| s + self.divine_power.div_ceil(2) * 6),
             self.difficulty,
             difficulty,
         ) as u32;
@@ -305,7 +301,7 @@ pub fn force_chance(
     if !vitals.can_act() || vitals.stamina < FORCE_STAMINA || strength <= FORCE_STRENGTH {
         return None;
     }
-    let divisor = (setting as i32 - 1 + tumblers as i32).clamp(2, 8);
+    let divisor = (setting as usize + tumblers - 1).clamp(2, 8);
     Some((strength - FORCE_STRENGTH) >> (divisor - 2))
 }
 
@@ -328,7 +324,7 @@ pub(crate) fn confront(world: &mut World, device: Entity, lock: Lock) {
         Lock::Trap { difficulty, .. } => {
             let now = world.resource::<GameClock>().ms;
             let mut guarded = world.get_mut::<Guarded>(device).unwrap();
-            let remark = guarded.faced_at.is_none_or(|at| now.saturating_sub(at) > REMARK_AGAIN_MS);
+            let remark = guarded.faced_at.is_none_or(|at| now - at > REMARK_AGAIN_MS);
             guarded.faced_at = Some(now);
             let trap = match guarded.trap {
                 Some(trap) => trap,
@@ -355,7 +351,7 @@ pub(crate) fn confront(world: &mut World, device: Entity, lock: Lock) {
 /// Retail `SelectTrapType`: draw types until one's grade lies within four
 /// below the authored grade (at least 1).
 fn roll_trap(difficulty: u8, rng: &mut GameRng) -> u8 {
-    let budget = i32::from(difficulty).max(1);
+    let budget = u32::from(difficulty).max(1);
     loop {
         let trap = rng.below(TRAP_TYPES as u32) as usize;
         if TRAP_GRADE[trap] <= budget && TRAP_GRADE[trap] + 4 >= budget {
@@ -411,7 +407,8 @@ pub fn pick_tumbler(
         }
         picking.picker = Some(actor);
     }
-    let chance = (skill as i32 + 5 - 5 * *world.resource::<Difficulty>() as i32).max(0) as u32;
+    let penalty = 5 * *world.resource::<Difficulty>() as u32;
+    let chance = (skill + 5).max(penalty) - penalty;
     let mut dropped = false;
     for held in &mut picking.tumblers {
         if *held == Tumbler::Held(actor) && chance <= rng(world).below(100) {
@@ -615,7 +612,7 @@ pub fn prepare_device_magic(world: &mut World, actor: Entity, on: Entity) -> Res
 /// Per mille that Knock-Knock moves each tumbler it reaches, by power.
 const KNOCK_CHANCE: [u32; 8] = [0, 344, 459, 516, 550, 573, 589, 602];
 
-fn knock(world: &mut World, on: Entity, actor: Entity, power: u8, backfire: bool) {
+fn knock(world: &mut World, on: Entity, actor: Entity, power: u32, backfire: bool) {
     let (done, dropped) = world.resource_scope(|world, mut rng: Mut<GameRng>| {
         let mut work = work_mut(world, on);
         let Work::Picking(picking) = &mut *work else { unreachable!() };
@@ -626,8 +623,8 @@ fn knock(world: &mut World, on: Entity, actor: Entity, power: u8, backfire: bool
             order.swap(a, b);
         }
         let mut dropped = false;
-        for index in order.into_iter().take(usize::from(power) + 1) {
-            if rng.below(1000) < KNOCK_CHANCE[usize::from(power)] {
+        for index in order.into_iter().take(power as usize + 1) {
+            if rng.below(1000) < KNOCK_CHANCE[power as usize] {
                 let pin = &mut picking.tumblers[index];
                 if backfire {
                     dropped |= pin.raised();
@@ -682,8 +679,7 @@ pub fn cast_device(
     if outcome == Outcome::Fizzled {
         return Ok(());
     }
-    let power =
-        (u32::from(strength.power) + u32::from(strength.power) * strength.boost / 100).min(7) as u8;
+    let power = (strength.power + strength.power * strength.boost / 100).min(7);
     if spell == SpellId::DIVINE_TRAP {
         disarming_mut(world, on).divine_power = power;
     } else if context == UseContext::Lock {
@@ -691,12 +687,8 @@ pub fn cast_device(
     } else {
         let trap = disarming(world, on).unwrap();
         let (kind, difficulty) = (trap.trap, trap.difficulty);
-        let chance = if outcome == Outcome::Backfired {
-            0
-        } else {
-            i32::from(power) * 5 + 50 - i32::from(difficulty) * 6
-        };
-        if (rng(world).below(100) as i32) < chance {
+        let roll = rng(world).below(100) + u32::from(difficulty) * 6;
+        if outcome != Outcome::Backfired && roll < power * 5 + 50 {
             world.write_message(LockNews::Disarmed { trap: kind });
             complete(world, on);
         } else {

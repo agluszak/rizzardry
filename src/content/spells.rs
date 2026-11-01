@@ -140,11 +140,11 @@ impl SpellId {
 
 /// The highest power a caster may choose; retail's "8" means the highest
 /// affordable one and is resolved before casting.
-pub const MAX_POWER: u8 = 7;
+pub const MAX_POWER: u32 = 7;
 
 /// The four spellbooks (retail mask bits: Wizardry 1, Divinity 2, Alchemy
 /// 4, Psionics 8).
-#[derive(Debug, EnumSetType)]
+#[derive(Debug, EnumSetType, enum_map::Enum)]
 #[enumset(repr = "u8")]
 pub enum Spellbook {
     Wizardry,
@@ -202,7 +202,7 @@ pub struct SpellDefinition {
     pub realm: Option<Realm>,
     /// 1 to 7; a caster needs a caster level of at least
     /// [`min_caster_level`] for it.
-    pub level: u8,
+    pub level: u32,
     /// Spell points per power level.
     pub cost: u32,
     pub books: EnumSet<Spellbook>,
@@ -242,8 +242,8 @@ impl SpellDefinition {
     }
 
     /// Spell points a cast at `power` costs.
-    pub fn cost_at(&self, power: u8) -> u32 {
-        self.cost * u32::from(power)
+    pub fn cost_at(&self, power: u32) -> u32 {
+        self.cost * power
     }
 
     /// Retail `CanSpellBackfire` (`Spells.cpp:1483-1531`): spells aimed at
@@ -276,7 +276,7 @@ impl SpellDefinition {
 }
 
 /// The caster level a spell level needs (retail `Spells.cpp`).
-pub fn min_caster_level(spell_level: u8) -> i32 {
+pub fn min_caster_level(spell_level: u32) -> i32 {
     match spell_level {
         0 | 1 => 1,
         2 => 3,
@@ -308,7 +308,7 @@ impl std::ops::Index<SpellId> for SpellCatalog {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ItemSpell {
     pub spell: SpellId,
-    pub power: u8,
+    pub power: u32,
 }
 
 /// Localized spell effect and description text, loaded independently of rules.

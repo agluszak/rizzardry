@@ -254,7 +254,7 @@ pub(super) fn choose(
 /// while its budget covers the next level's need within 9/70, back one,
 /// then a quarter of the time one less (not below 2) and a quarter one
 /// more.
-pub(super) fn power(rng: &mut GameRng, budget: u32, spell: &SpellDefinition) -> u8 {
+pub(super) fn power(rng: &mut GameRng, budget: u32, spell: &SpellDefinition) -> u32 {
     let mut power = 1;
     loop {
         if crate::game::magic::spell_failure(budget, spell, power) >= 9 {
@@ -281,7 +281,7 @@ pub(super) fn power(rng: &mut GameRng, budget: u32, spell: &SpellDefinition) -> 
 /// caster, and a wider one on the caster's own side.
 fn victims(
     spell: &SpellDefinition,
-    power: u8,
+    power: u32,
     aim: SpellAim,
     scene: &Scene,
     backfired: bool,
@@ -321,7 +321,7 @@ fn victims(
             field,
             centre,
             origin,
-            spell.radius + spell.radius_per_power * f32::from(power),
+            spell.radius + spell.radius_per_power * power as f32,
             Some(party_eye),
             crate::game::magic::targeting::Recipients::Opponents(source),
         );
@@ -369,7 +369,7 @@ fn victims(
 /// its power was chosen by) the failure chance, and the spell lands at
 /// once.
 pub(super) fn cast(
-    (spell, power, aim): (&SpellDefinition, u8, SpellAim),
+    (spell, power, aim): (&SpellDefinition, u32, SpellAim),
     (kind, budget): (&Species, u32),
     scene: &Scene,
     rng: &mut GameRng,
@@ -525,9 +525,9 @@ mod tests {
     fn the_budget_sets_the_power() {
         let blast = spell(SpellId::ENERGY_BLAST.0, Targeting::Enemy);
         let mut rng = GameRng::seeded(1);
-        let low: Vec<u8> = (0..20).map(|_| power(&mut rng, 0, &blast)).collect();
+        let low: Vec<u32> = (0..20).map(|_| power(&mut rng, 0, &blast)).collect();
         assert!(low.iter().all(|&p| p <= 2), "{low:?}");
-        let high: Vec<u8> = (0..20).map(|_| power(&mut rng, 500, &blast)).collect();
+        let high: Vec<u32> = (0..20).map(|_| power(&mut rng, 500, &blast)).collect();
         assert!(high.iter().all(|&p| p >= 6), "{high:?}");
     }
 }

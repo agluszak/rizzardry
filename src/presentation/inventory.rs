@@ -1280,7 +1280,7 @@ impl Plugin for InventoryPlugin {
 }
 
 /// Gold with thousands separated by commas.
-fn format_gold(gold: u32) -> String {
+fn format_gold(gold: impl std::fmt::Display) -> String {
     let digits = gold.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {

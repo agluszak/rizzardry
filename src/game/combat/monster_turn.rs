@@ -15,7 +15,7 @@ use hostility::Stance;
 enum Plan<'a> {
     Spell {
         spell: crate::content::spells::SpellDefinition,
-        power: u8,
+        power: u32,
         aim: monster_spells::SpellAim,
         scene: monster_spells::Scene,
         caster: (&'a Species, u32),
@@ -73,7 +73,7 @@ pub(super) fn stance_toward(
 pub(super) fn monster_turn(
     commands: &mut Commands,
     battle: &mut Battle,
-    (index, step): (usize, u8),
+    (index, step): (usize, u32),
     combatants: &[Entity],
     rng: &mut GameRng,
     (members, damage): (&mut Members, &mut MonsterDamage),
@@ -315,7 +315,7 @@ fn decide<'a>(
                         && !o.is_dead()
                         && near(other, reach)
                         && species[o.species].level > kind.level
-                        && o.hp * 100 / o.max_hp.max(1) < 40
+                        && o.hp * 100 / o.max_hp < 40
                 })
                 .collect()
         } else {
@@ -454,7 +454,7 @@ fn carry_out(
 fn strike(
     commands: &mut Commands,
     battle: &mut Battle,
-    (index, step, attacks_left): (usize, u8, u32),
+    (index, step, attacks_left): (usize, u32, u32),
     combatants: &[Entity],
     rng: &mut GameRng,
     (members, damage): (&mut Members, &mut MonsterDamage),
@@ -515,7 +515,7 @@ fn strike(
     if let Some((budget, goal)) = budget {
         let work = &mut battle.this_round.monsters[index];
         work.moved = true;
-        work.phase = (u32::from(step) * 2).min(100) as u8;
+        work.phase = (step * 2).min(100);
         work.attacks_left = attacks_left;
         commands.entity(monster).insert(approach::CombatMove {
             budget: budget.metres,

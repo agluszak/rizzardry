@@ -363,12 +363,9 @@ fn sync_loot_rows(
         commands.entity(list).replace_children(&ordered);
         if let (Some(at), Some(focus)) = (lost_focus_at, focus.as_mut()) {
             // The stack that now stands where the focused one stood, if any.
-            let survivor = stacks
-                .get(at.min(stacks.len().saturating_sub(1)))
-                .filter(|_| !stacks.is_empty())
-                .and_then(|&id| {
-                    controls.iter().find(|(_, c)| **c == Control::Row(id)).map(|(e, _)| e)
-                });
+            let survivor = stacks.get(at).or_else(|| stacks.last()).and_then(|&id| {
+                controls.iter().find(|(_, c)| **c == Control::Row(id)).map(|(e, _)| e)
+            });
             let fallback = controls.iter().find(|(_, c)| **c == Control::All).map(|(e, _)| e);
             if let Some(target) = survivor.or(fallback) {
                 focus.set(target, bevy::input_focus::FocusCause::Navigated);
@@ -406,7 +403,7 @@ fn draw_device_panel(
     };
     let catalog = &content.items;
     let stacks = containers.get(on.0).map_or(&[][..], |c| &c.contents.items[..]);
-    let percent = |value: Option<i64>| value.map_or("-".to_owned(), |v| format!("{v}%"));
+    let percent = |value: Option<u32>| value.map_or("-".to_owned(), |v| format!("{v}%"));
 
     let text = |role: Caption| -> String {
         match (role, &interaction.work) {
@@ -419,18 +416,12 @@ fn draw_device_panel(
                 let force = member.and_then(|(_, (c, v))| {
                     interaction::force_chance(c, v, picking.tumblers.len(), *difficulty)
                 });
-                format!(
-                    "{name}: Locks & Traps {}, Force {}",
-                    percent(skill.map(i64::from)),
-                    percent(force.map(i64::from))
-                )
+                format!("{name}: Locks & Traps {}, Force {}", percent(skill), percent(force))
             }
             (Caption::Status, Work::Disarming(disarming)) => format!(
                 "{name}: Inspect {} / Disarm {}",
-                percent(
-                    skill.map(|s| i64::from(disarming.inspection_chance(Some(s), *difficulty)))
-                ),
-                percent(skill.map(|s| i64::from(disarming.disarm_chance(Some(s), *difficulty))))
+                percent(skill.map(|s| disarming.inspection_chance(Some(s), *difficulty))),
+                percent(skill.map(|s| disarming.disarm_chance(Some(s), *difficulty)))
             ),
             (Caption::Status, Work::Looting) => name.clone(),
             (Caption::Guess, _) => trap_name(panel.guess),
@@ -618,18 +609,14 @@ fn press(
         Control::Less(id) | Control::More(id) => {
             let all = count(id);
             let step = |amount: u16| match control {
-                Control::Less(_) => amount.saturating_sub(1).max(1),
+                Control::Less(_) => amount.max(2) - 1,
                 _ => (amount + 1).min(all),
             };
             match panel.chosen.iter_mut().find(|(c, _)| *c == id) {
                 Some((_, amount)) => *amount = step(*amount),
                 None => panel.chosen.push((
                     id,
-                    if matches!(control, Control::Less(_)) {
-                        all.saturating_sub(1).max(1)
-                    } else {
-                        1
-                    },
+                    if matches!(control, Control::Less(_)) { all.max(2) - 1 } else { 1 },
                 )),
             }
         }

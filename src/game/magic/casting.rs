@@ -28,7 +28,7 @@ use crate::game::rng::GameRng;
 /// The power that asks the caster to choose it: as much as the victim needs
 /// (retail "Auto Calibrate"), or, outside a fight, as much and as often as
 /// it takes (retail "Auto Recast").
-pub const AUTO_POWER: u8 = MAX_POWER + 1;
+pub const AUTO_POWER: u32 = MAX_POWER + 1;
 
 /// How fast spell missiles fly: retail's `energy_blast.mls` velocity of 30,
 /// advanced per two-millisecond step (`Missile.cpp`), comes to 15 m/s.
@@ -39,7 +39,7 @@ pub(crate) const MISSILE_SPEED: f32 = 15.0;
 pub enum Source {
     /// A learned spell at the chosen power, or [`AUTO_POWER`]; it is
     /// clamped to what the caster can afford when it runs.
-    Spell { spell: SpellId, power: u8 },
+    Spell { spell: SpellId, power: u32 },
     /// A stack the actor carries, identified, not reserved.
     Item(StackId),
     /// A shared-pool stack; payment never silently changes owners.
@@ -139,7 +139,7 @@ pub enum MagicNews {
 pub struct Report {
     pub caster: Entity,
     pub spell: SpellId,
-    pub power: u8,
+    pub power: u32,
     /// The item it came from, already spent.
     pub item: Option<String>,
     pub outcome: Outcome,
@@ -380,7 +380,7 @@ fn item_failure(
     character: &Character,
     definition: &ItemDefinition,
     spell: &SpellDefinition,
-    power: u8,
+    power: u32,
     identified: bool,
     difficulty: Difficulty,
 ) -> (u32, bool) {
@@ -391,7 +391,7 @@ fn item_failure(
         UseType::Thrown => failure = failure * 8 / 10,
         UseType::Charged | UseType::Scroll => failure = failure * 9 / 10,
         UseType::Instrument | UseType::Gadget => {
-            let shortfall = u32::from(spell.level) * 15;
+            let shortfall = spell.level * 15;
             if level < shortfall {
                 failure += (shortfall - level) / 3;
             }
@@ -403,9 +403,9 @@ fn item_failure(
             let adjust = min_caster_level(spell.level)
                 - i32::from(character.profession_levels[profession])
                 - 1
-                + i32::from(power);
+                + power as i32;
             if adjust > 0 {
-                failure += u32::from(spell.level) * adjust as u32;
+                failure += spell.level * adjust as u32;
             }
         }
         _ => {}
@@ -429,7 +429,7 @@ fn item_strength(
     character: &Character,
     definition: &ItemDefinition,
     spell: &SpellDefinition,
-    power: u8,
+    power: u32,
 ) -> Strength {
     let figure = match definition.use_type {
         UseType::Instrument => u32::from(character.profession_levels[Profession::Bard]),
@@ -447,20 +447,20 @@ fn auto_power(
     character: &Character,
     spell: &SpellDefinition,
     victim: Option<(&Character, &Vitals)>,
-    affordable: u8,
-) -> u8 {
+    affordable: u32,
+) -> u32 {
     let fail = |p| super::fail_chance(character, spell, p);
     let Some((profile, vitals)) = victim else { return 1 };
     let power = if effects::restores(spell.id) {
         let missing = if spell.id == SpellId::STAMINA {
-            profile.stats(&vitals.enchantments).max_stamina().saturating_sub(vitals.stamina)
+            profile.stats(&vitals.enchantments).max_stamina() as f32 - vitals.stamina as f32
         } else {
-            profile.stats(&vitals.enchantments).max_hp().saturating_sub(vitals.hp)
-        } as f32;
-        let average = |p: u8| {
+            profile.stats(&vitals.enchantments).max_hp() as f32 - vitals.hp as f32
+        }
+        .max(0.0);
+        let average = |p: u32| {
             spell.dice.map_or(0.0, |d| {
-                f32::from(d.count) * f32::from(p) * (f32::from(d.sides) + 1.0) / 2.0
-                    + f32::from(d.base)
+                d.count as f32 * p as f32 * (d.sides as f32 + 1.0) / 2.0 + d.base as f32
             })
         };
         if missing == 0.0 {
@@ -469,7 +469,7 @@ fn auto_power(
             (1..=MAX_POWER)
                 .find_map(|p| {
                     if fail(p) > 10 {
-                        Some(p.saturating_sub(1).max(1))
+                        Some((p - 1).max(1))
                     } else {
                         (missing < average(p)).then_some(p)
                     }
@@ -481,7 +481,7 @@ fn auto_power(
             .conditions
             .iter()
             .filter_map(|&(_, lasting)| match lasting {
-                Lasting::Rounds(t) => Some(u32::from(t)),
+                Lasting::Rounds(t) => Some(t),
                 Lasting::Indefinite => None,
             })
             .max();
@@ -489,9 +489,9 @@ fn auto_power(
             None => 1,
             Some(turns) => (1..=affordable.max(1))
                 .map(|p| {
-                    let square = u32::from(p).pow(2);
+                    let square = p.pow(2);
                     let per = (square - fail(p) * square / 100).max(1);
-                    (spell.cost * turns.div_ceil(per) * u32::from(p), p)
+                    (spell.cost * turns.div_ceil(per) * p, p)
                 })
                 .min()
                 .map_or(1, |(_, p)| p),
@@ -510,7 +510,7 @@ struct ItemUse<'d> {
 
 struct Prepared<'a> {
     spell: &'a SpellDefinition,
-    power: u8,
+    power: u32,
     item: Option<ItemUse<'a>>,
     forced_self: bool,
 }
@@ -689,7 +689,7 @@ pub fn perform(
                 world,
                 centre,
                 centre,
-                spell.radius + spell.radius_per_power * f32::from(cast_power),
+                spell.radius + spell.radius_per_power * cast_power as f32,
                 Some(situation.party_at),
                 super::targeting::Recipients::Opponents(crate::game::world::hostility::own_stance(
                     crate::game::world::hostility::Stance::Friendly,
@@ -846,7 +846,7 @@ pub fn perform(
         let (_, vitals, ..) = world.members.get(caster).unwrap();
         let (learned, pool) = points.get(caster).unwrap();
         let maximum = world.mana_maximum(caster, learned);
-        if vitals.stamina <= u32::from(spell.level)
+        if vitals.stamina <= spell.level
             || pool.available(spell.realm.unwrap(), &maximum) < spell.cost
             || outcome != Outcome::Fizzled
                 && (!repeat || effects::all_restored(spell.id, &victims, world.members))
@@ -941,7 +941,7 @@ fn attempt(
     character: &Character,
     item: Option<&ItemUse>,
     spell: &SpellDefinition,
-    power: u8,
+    power: u32,
     difficulty: Difficulty,
 ) -> (u32, bool, Strength) {
     match item {
@@ -966,7 +966,7 @@ fn play(
     spell: &SpellDefinition,
     rng: &mut GameRng,
     members: &mut crate::game::party::Members,
-) -> Result<u8, Refusal> {
+) -> Result<u32, Refusal> {
     let (mut profile, mut vitals, ..) = members.get_mut(caster).unwrap();
     let mut power = MAX_POWER;
     while power > 0
@@ -974,12 +974,10 @@ fn play(
     {
         power -= 1;
     }
-    let mut chance = u32::from(power) * 7;
-    while power > 0 && chance > rng.below(100) {
+    while power > 0 && power * 7 > rng.below(100) {
         power -= 1;
-        chance = chance.saturating_sub(7);
     }
-    vitals.spend_stamina(u32::from(spell.level) * 8 + 20);
+    vitals.spend_stamina(spell.level * 8 + 20);
     if power == 0 {
         // The refusal carries the practice, since no report follows it.
         let improved =
@@ -994,7 +992,7 @@ fn play(
 fn pay(
     caster: Entity,
     spell: &SpellDefinition,
-    power: u8,
+    power: u32,
     item: Option<&ItemUse>,
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
     rng: &mut GameRng,
@@ -1040,7 +1038,7 @@ fn pay(
 fn practise(
     caster: Entity,
     spell: &SpellDefinition,
-    power: u8,
+    power: u32,
     item: Option<&ItemUse>,
     rng: &mut GameRng,
     members: &mut crate::game::party::Members,
@@ -1049,7 +1047,7 @@ fn practise(
     let mut improved = Vec::new();
     let practice: Vec<(Skill, u32)> = match item {
         None => {
-            let index = u32::from(spell.level) + u32::from(power);
+            let index = spell.level + power;
             let mut practice = vec![(super::best_book(&character, spell), (index + 2) >> 2)];
             if let Some(realm) = spell.realm {
                 practice.push((realm.skill(), index));
@@ -1063,7 +1061,7 @@ fn practise(
             .definition
             .use_type
             .skill()
-            .map(|skill| vec![(skill, u32::from(spell.level) + u32::from(power) / 2)])
+            .map(|skill| vec![(skill, spell.level + power / 2)])
             .unwrap_or_default(),
     };
     for (skill, usage) in practice {
@@ -1113,7 +1111,7 @@ pub fn usable_stack(
 /// the game resolves, the moment for it and no silence.
 pub fn castable(
     spell: &SpellDefinition,
-    affordable: u8,
+    affordable: u32,
     context: UseContext,
     silenced: bool,
 ) -> bool {

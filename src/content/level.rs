@@ -363,7 +363,12 @@ pub struct PropModel {
 impl PropModel {
     /// The highest path key of any part.
     pub fn last_frame(&self) -> usize {
-        self.parts.iter().map(|p| p.keys.len().saturating_sub(1)).max().unwrap_or(0)
+        self.parts
+            .iter()
+            .filter(|p| !p.keys.is_empty())
+            .map(|p| p.keys.len() - 1)
+            .max()
+            .unwrap_or(0)
     }
 
     /// The middle of its parts at rest, where its sounds play.

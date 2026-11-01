@@ -8,7 +8,7 @@ use bevy::ui_widgets::{SliderRange, SliderValue};
 pub(super) struct PoolScroll;
 
 fn maximum(items: usize) -> usize {
-    items.saturating_sub(POOL_CELLS).div_ceil(2)
+    (items.max(POOL_CELLS) - POOL_CELLS).div_ceil(2)
 }
 
 pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -> Entity {

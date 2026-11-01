@@ -74,7 +74,7 @@ impl TextLog {
     pub fn select(&mut self, channel: usize) {
         self.selected = channel;
         if channel == DIALOG {
-            self.scroll_to(self.channels[channel].len().saturating_sub(VISIBLE_LINES));
+            self.scroll_to(self.channels[channel].len().max(VISIBLE_LINES) - VISIBLE_LINES);
         }
     }
 
@@ -102,14 +102,14 @@ impl TextLog {
 
     /// Map the pointer's retail track position to the selected channel's line.
     pub fn scroll_thumb(&mut self, position: u32) {
-        let range = self.channels[self.selected].len().saturating_sub(SCROLL_WINDOW);
+        let range = self.channels[self.selected].len().max(SCROLL_WINDOW) - SCROLL_WINDOW;
         self.scroll_to(range * position.min(46) as usize / 47);
     }
 
     /// Retail `ScrollTextBoxUp`.
     pub fn scroll_up(&mut self, lines: usize) {
         let first = &mut self.scroll[self.selected];
-        *first = first.saturating_sub(lines);
+        *first -= lines.min(*first);
     }
 
     /// Retail `ScrollTextBoxDown`: no further than the scroll window from
@@ -133,7 +133,7 @@ impl TextLog {
     /// End: the last line, less the scroll window (retail
     /// `ScrollDialogueTextBoxToLine`).
     pub fn scroll_to_end(&mut self) {
-        self.scroll_to(self.channels[self.selected].len().saturating_sub(SCROLL_WINDOW));
+        self.scroll_to(self.channels[self.selected].len().max(SCROLL_WINDOW) - SCROLL_WINDOW);
     }
 
     /// Del empties the shown channel (retail `ResetEditorStatusLine`).
@@ -153,7 +153,7 @@ impl TextLog {
             let first = &mut self.scroll[channel];
             if lines.len() == MAX_LINES {
                 lines.remove(0);
-                *first = first.saturating_sub(1);
+                *first -= (*first).min(1);
             }
             lines.push(line);
             // Each new line brings the last seven into view, unless the box

@@ -29,9 +29,10 @@ pub fn read_cycle(data: &[u8]) -> Result<MonsterCycle, DecodeError> {
     if bytes.u8()? != 0 {
         for _ in 0..bytes.i32()?.max(0) {
             let version = bytes.u8()? as usize;
-            let size = *PARTICLE_RECORD
-                .get(version.wrapping_sub(1))
-                .ok_or_else(|| bytes.invalid("unknown particle version"))?;
+            if !(1..=PARTICLE_RECORD.len()).contains(&version) {
+                return Err(bytes.invalid("unknown particle version"));
+            }
+            let size = PARTICLE_RECORD[version - 1];
             bytes.take(size)?;
         }
     }

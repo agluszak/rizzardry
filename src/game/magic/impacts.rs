@@ -228,7 +228,7 @@ pub(crate) fn resolve(
                     world,
                     origin.ground(world, party_at),
                     old_position,
-                    spell.radius + spell.radius_per_power * f32::from(strength.power.min(power)),
+                    spell.radius + spell.radius_per_power * strength.power.min(power) as f32,
                     Some(party_at),
                     origin.recipients(world, true),
                 ),
@@ -331,7 +331,7 @@ pub(crate) fn resolve(
                 world,
                 centre,
                 centre,
-                explosion.radius + explosion.radius_per_power * f32::from(strength.power),
+                explosion.radius + explosion.radius_per_power * strength.power as f32,
                 Some(party_at),
                 origin.recipients(world, backfired),
             );
