@@ -89,7 +89,7 @@ pub(super) fn sync_transcript(
                 Some("retail://data/fonts/palettered.sti"),
             ));
         }
-        if let Some(outcome) = c.outcome() {
+        if let Some(outcome) = c.result {
             let text = match outcome {
                 Outcome::NoTopic => "No supported topic matches that input.".into(),
                 Outcome::Traded => "Trade complete.".into(),

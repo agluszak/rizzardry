@@ -29,9 +29,10 @@ use super::screen_art::{BitmapText, visible_if};
 use crate::content::level::TRAP_TYPES;
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, Vitals};
+use crate::game::inventory::ItemOwner;
 use crate::game::inventory::StackId;
 use crate::game::party::roster::PartyRoster;
-use crate::game::world::containers::{Container, Recipient};
+use crate::game::world::containers::Container;
 use crate::game::world::interaction::{
     self, AttemptOn, COMPONENTS, DeviceInteraction, DeviceRequest, Observation, TRAP_COMPONENTS,
     Work,
@@ -531,6 +532,7 @@ fn press(
     roster: Single<&PartyRoster>,
     mut commands: Commands,
     mut requests: MessageWriter<DeviceRequest>,
+    mut takes: MessageWriter<crate::game::world::containers::TakeFromContainer>,
 ) {
     let (Ok(&control), Ok((&PanelOf(on), mut panel))) =
         (controls.get(click.entity), panels.single_mut())
@@ -629,17 +631,14 @@ fn press(
         }
         Control::TakeToParty | Control::TakeToMember => {
             let to = match control {
-                Control::TakeToParty => Recipient::Party,
+                Control::TakeToParty => ItemOwner::Pool,
                 _ => match actor {
-                    Some(actor) => Recipient::Member(actor),
+                    Some(actor) => ItemOwner::Member(actor),
                     None => return,
                 },
             };
             let picks = std::mem::take(&mut panel.chosen);
-            requests.write(DeviceRequest {
-                on,
-                act: crate::game::world::interaction::DeviceAct::Take { picks, to },
-            });
+            takes.write(crate::game::world::containers::TakeFromContainer { on, picks, to });
         }
         Control::Leave => {
             requests.write(DeviceRequest {

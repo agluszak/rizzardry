@@ -1,14 +1,14 @@
 //! Finalization is accepted work on the last-arriving missile of a cast.
 //! It runs after every original hit, once, and retains the original aim.
 use super::{
-    LearnedSpells, SpellPoints, Strength,
+    Strength,
     casting::{self, Aim, SpellInFlight},
-    effects::{self, Effect, Field, Victim},
+    effects::{self, Effect, Field, Landed, Victim},
     targeting::{self, Recipients},
 };
 use crate::{
     content::spells::{SpellDefinition, SpellId, Targeting},
-    game::{rng::GameRng, world::hostility::Stance},
+    game::world::hostility::Stance,
 };
 use bevy::prelude::*;
 
@@ -70,7 +70,7 @@ impl Origin {
                     Stance::Friendly
                 }
             }
-            Some(Victim::Monster(entity)) => world.monsters.stance(entity, world.now),
+            Some(Victim::Monster(entity)) => world.monsters.stance(entity, world.now()),
             None => return Recipients::Everyone,
         };
         Recipients::Opponents(if reversed {
@@ -93,7 +93,7 @@ impl Origin {
                 .monsters()
                 .get(entity)
                 .ok()
-                .map(|(body, ..)| &world.species[body.species])
+                .map(|(body, ..)| &world.species()[body.species])
                 .map_or(0, |kind| u32::from(kind.level)),
             None => 0,
         }
@@ -123,21 +123,18 @@ pub(crate) fn resolve(
     victims: &[Victim],
     finish: Option<&Finalization>,
     party_at: Vec3,
-    rng: &mut GameRng,
     world: &mut Field,
-    points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
     flights: &mut Vec<SpellInFlight>,
-) -> Vec<Effect> {
-    let spells = world.spells;
-    let mut landed =
-        effects::resolve(origin.actor(), backfired, spell, strength, victims, rng, world, points);
+) -> Landed {
+    let spells = world.spells();
+    let mut landed = effects::resolve(origin.actor(), backfired, spell, strength, victims, world);
     let Some(finish) = finish else { return landed };
     // The strongest surviving charge pays once, after all original impacts.
     if !backfired && !finish.reflected && spell.aimed_at_enemies() {
         let mut order = finish.victims.clone();
         order.sort_by_key(|victim| match *victim {
             Victim::Member(entity) => {
-                (0, world.party.iter().position(|&member| member == entity).unwrap())
+                (0, world.party.iter().position(|member| member == entity).unwrap())
             }
             Victim::Monster(entity) => {
                 (1, world.monsters.monsters().get(entity).unwrap().0.location as usize)
@@ -179,7 +176,7 @@ pub(crate) fn resolve(
                     world.monsters.enchantments_mut(entity).spend_charge(SpellId::EYE_FOR_AN_EYE);
                 }
             }
-            landed.push(Effect::Reflected { victim: charged });
+            landed.effects.push(Effect::Reflected { victim: charged });
             let original = origin.owner();
             let old_position = origin.position(world, party_at);
             let source = match spell.targeting {
@@ -203,7 +200,6 @@ pub(crate) fn resolve(
                         world
                             .party
                             .iter()
-                            .copied()
                             .find(|&actor| world.members.get(actor).unwrap().1.can_fight())
                             .unwrap_or(caster),
                     )),
@@ -215,7 +211,6 @@ pub(crate) fn resolve(
                     Some(Victim::Member(_)) => world
                         .party
                         .iter()
-                        .copied()
                         .filter(|&entity| !world.members.get(entity).unwrap().1.is_dead())
                         .map(Victim::Member)
                         .collect(),
@@ -291,7 +286,7 @@ pub(crate) fn resolve(
                 }
                 attach(&mut flights[start..], finish);
             } else {
-                landed.extend(resolve(
+                landed.add(resolve(
                     caster,
                     source,
                     false,
@@ -300,9 +295,7 @@ pub(crate) fn resolve(
                     &victims,
                     Some(&finish),
                     party_at,
-                    rng,
                     world,
-                    points,
                     flights,
                 ));
             }
@@ -340,7 +333,7 @@ pub(crate) fn resolve(
                 victims: victims.clone(),
                 reflected: finish.reflected,
             };
-            landed.extend(resolve(
+            landed.add(resolve(
                 caster,
                 origin,
                 false,
@@ -349,9 +342,7 @@ pub(crate) fn resolve(
                 &victims,
                 Some(&finish),
                 party_at,
-                rng,
                 world,
-                points,
                 flights,
             ));
         }

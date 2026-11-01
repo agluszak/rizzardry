@@ -16,7 +16,7 @@ use crate::content::spells::{
 use crate::game::characters::Condition;
 use crate::game::magic::casting::Report;
 use crate::game::magic::effects::{self, Field, Standing, Victim};
-use crate::game::magic::{LearnedSpells, Outcome, SpellPoints, Strength};
+use crate::game::magic::{Outcome, Strength};
 use crate::game::party::body::PartyBody;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::Stance;
@@ -306,7 +306,7 @@ fn victims(
         } else {
             (scene.party_at, party_eye)
         };
-        let side = field.monsters.stance(scene.caster, field.now);
+        let side = field.monsters.stance(scene.caster, field.now());
         let source = if backfired {
             match side {
                 crate::game::world::hostility::Stance::Hostile => {
@@ -372,16 +372,15 @@ pub(super) fn cast(
     (spell, power, aim): (&SpellDefinition, u32, SpellAim),
     (kind, budget): (&Species, u32),
     scene: &Scene,
-    rng: &mut GameRng,
     field: &mut Field,
-    points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
 ) -> (Report, Vec<crate::game::magic::casting::SpellInFlight>) {
     let strength = Strength::at(u32::from(kind.level), spell, power, 0);
     let failure = crate::game::magic::spell_failure(budget, spell, power);
-    let outcome = crate::game::magic::roll(rng, failure, spell, false, field.underwater);
+    let underwater = field.underwater();
+    let outcome = crate::game::magic::roll(&mut field.rng, failure, spell, false, underwater);
     let mut flights = Vec::new();
-    let effects = match outcome {
-        Outcome::Fizzled => Vec::new(),
+    let landed = match outcome {
+        Outcome::Fizzled => Default::default(),
         _ => {
             let backfired = outcome == Outcome::Backfired;
             let victims = victims(spell, power, aim, scene, backfired, field);
@@ -412,9 +411,7 @@ pub(super) fn cast(
                 &victims,
                 Some(&finish),
                 PartyBody::eye_above(scene.party_at),
-                rng,
                 field,
-                points,
                 &mut flights,
             )
         }
@@ -426,8 +423,8 @@ pub(super) fn cast(
             power,
             item: None,
             outcome,
-            effects,
-            improved: std::mem::take(&mut field.improved),
+            effects: landed.effects,
+            improved: landed.improved,
             repeats: 0,
         },
         flights,

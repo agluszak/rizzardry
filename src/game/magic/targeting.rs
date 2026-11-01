@@ -26,7 +26,7 @@ pub(crate) fn radius(
     party_at: Option<Vec3>,
     recipients: Recipients,
 ) -> Vec<Victim> {
-    let obstacles = world.visibility;
+    let obstacles = &world.visibility;
     if radius <= 0.0 {
         return vec![];
     }
@@ -40,7 +40,6 @@ pub(crate) fn radius(
             world
                 .party
                 .iter()
-                .copied()
                 .filter(|&member| {
                     world.members.get(member).is_ok_and(|(_, v, ..)| {
                         !v.is_dead()
@@ -59,7 +58,7 @@ pub(crate) fn radius(
         .iter()
         .filter_map(|(body, at, _, _, entity)| {
             (world.monsters.targetable(entity)
-                && recipients.admits(world.monsters.stance(entity, world.now))
+                && recipients.admits(world.monsters.stance(entity, world.now()))
                 && at.translation().distance(centre) - body.body.radius <= radius
                 && clear(at.translation()))
             .then_some((body.location, entity))

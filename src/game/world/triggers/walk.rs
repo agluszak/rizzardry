@@ -5,12 +5,9 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 
-use super::{
-    Device, LevelState, PendingPartyMove, PositionedDevices, damage_party, execute, usable,
-};
+use super::{Devices, PendingPartyMove, PositionedDevices};
 use crate::content::items::Dice;
 use crate::content::level::{LevelDefinition, TriggerDefinition};
-use crate::game::world::level::Level;
 
 fn contains(definition: &TriggerDefinition, eye: Vec3) -> bool {
     (definition.range.0..definition.range.1).contains(&eye.distance(definition.place.unwrap()))
@@ -43,38 +40,38 @@ impl ActiveDamageZone {
 }
 
 /// One authored-order pass: linked effects are visible to every later device
-/// in this same step, including newly started or reset hazards.
-pub(crate) fn walk(In(sample): In<Option<(Entity, Vec3, Duration)>>, world: &mut World) {
+/// in this same step, including newly started or reset hazards. Walking in
+/// runs nothing once a device has asked to move the party.
+pub(crate) fn walk(
+    In(sample): In<Option<(Entity, Vec3, Duration)>>,
+    mut devices: Devices,
+    levels: Query<(&PositionedDevices, Has<PendingPartyMove>)>,
+    mut zones: Query<&mut ActiveDamageZone>,
+    assets: Res<Assets<LevelDefinition>>,
+    mut commands: Commands,
+) {
     let Some((level, eye, elapsed)) = sample else { return };
-    let handle = world.get::<Level>(level).unwrap().definition.clone();
-    world.resource_scope(|world, geometry: Mut<Assets<LevelDefinition>>| {
-        let geometry = geometry.get(&handle).unwrap();
-        let count = world.get::<PositionedDevices>(level).unwrap().0.len();
-        let Some(mut state) = world.get_mut::<LevelState>(level) else { return };
-        let previous_eye = state.previous_eye;
-        if previous_eye != Some(eye) {
-            state.previous_eye = Some(eye);
-        }
-        for index in 0..count {
-            let entity = world.get::<PositionedDevices>(level).unwrap().0[index];
-            let definition = &geometry.triggers[world.get::<Device>(entity).unwrap().definition];
-            let inside = contains(definition, eye);
-            match world.get_mut::<ActiveDamageZone>(entity).map(|mut z| z.step(inside, elapsed)) {
-                Some(None) => {
-                    world.entity_mut(entity).remove::<ActiveDamageZone>();
+    let geometry = devices.geometry(&assets, level);
+    let previous_eye = devices.levels.get_mut(level).unwrap().1.previous_eye.replace(eye);
+    let (positioned, pending) = levels.get(level).unwrap();
+    *devices.moved = pending;
+    for &entity in &positioned.0 {
+        let definition = devices.definition(geometry, entity);
+        let inside = contains(definition, eye);
+        if let Ok(mut zone) = zones.get_mut(entity) {
+            match zone.step(inside, elapsed) {
+                None => {
+                    commands.entity(entity).remove::<ActiveDamageZone>();
                 }
-                Some(Some(true)) => {
-                    // A party-less world has nobody to hurt.
-                    let _ = world.run_system_cached_with(damage_party, DAMAGE_ZONE_DICE);
-                }
-                _ => {}
-            }
-            if entered(definition, eye, previous_eye)
-                && world.get::<PendingPartyMove>(level).is_none()
-                && usable(world, entity, definition)
-            {
-                execute(world, geometry, entity, 0, -1);
+                Some(true) => devices.damage_party(DAMAGE_ZONE_DICE),
+                Some(false) => {}
             }
         }
-    });
+        if entered(definition, eye, previous_eye)
+            && !*devices.moved
+            && devices.usable(entity, definition)
+        {
+            devices.execute(geometry, entity, 0, -1);
+        }
+    }
 }

@@ -41,7 +41,10 @@ fn a_fighter_and_a_crab_trade_blows() {
         let item = make_item(catalog.get(ItemId(id)).unwrap(), &mut ids, &mut rng, true, true);
         assert!(place_at_creation(&mut carried, item, &catalog, &fighter).is_none());
     }
-    let hand = primary_hand(&fighter.base_stats(), &carried, &catalog, Load::None);
+    let stats = fighter.base_stats();
+    let weapons = Weapons::of(&carried, &catalog);
+    let vitals = Vitals::new(&fighter);
+    let hero = Attacker::member(&stats, &vitals, &weapons.hands[0].unwrap(), Load::None, 0);
     let armour = armour(&fighter.base_stats(), &carried, &catalog, Load::None, false);
     let body = Monster {
         location: 0,
@@ -57,10 +60,7 @@ fn a_fighter_and_a_crab_trade_blows() {
     };
     // Each side's aim lands somewhere a roll of 1-100 sometimes beats and
     // sometimes does not.
-    let ours = member_aim(
-        &fighter.base_stats(),
-        &Vitals::new(&fighter),
-        &hand,
+    let ours = hero.aim(
         AttackMode::Swing,
         Surprise::default(),
         Some(&Defence::monster(crab, &body, false)),
@@ -69,12 +69,11 @@ fn a_fighter_and_a_crab_trade_blows() {
     assert!((6..=95).contains(&ours), "the fighter sometimes hits and sometimes misses: {ours}");
     let attack = &crab.attacks[0];
     let mode = choose_mode(&mut rng, attack.modes);
-    let theirs = monster_aim(
-        (crab, &body, crate::game::world::hostility::Stance::Hostile),
-        attack,
+    let stance = crate::game::world::hostility::Stance::Hostile;
+    let theirs = Attacker::monster((crab, &body, stance), attack).aim(
         mode,
         Surprise::default(),
-        Some(&Defence::member(&fighter.base_stats(), armour, false, false)),
+        Some(&Defence::member(&stats, armour, false, false)),
         Difficulty::Normal,
     );
     assert!(theirs > 5, "the crab sometimes hits: {theirs}");

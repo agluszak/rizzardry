@@ -1,28 +1,25 @@
 //! A member's accepted turn: blows, a breath or a cast.
 
 use super::*;
+use crate::game::magic::pointcasts;
 
 /// The party's armour as this round's blows meet it: the spells on each
 /// member and the party's, and whether they defend (retail
 /// `CalcArmorClasses`).
-pub(super) fn party_armours(
-    battle: &Battle,
-    members: &Members,
-    context: &MagicContext,
-) -> Vec<(Entity, Armour)> {
-    let items = &context.content.items;
-    context
-        .roster
+pub(super) fn party_armours(battle: &Battle, field: &Field) -> Vec<(Entity, Armour)> {
+    let items = field.items();
+    field
+        .party
         .iter()
         .map(|member| {
-            let (character, vitals, carried, burden) = members.get(member).unwrap();
+            let (character, vitals, carried, burden) = field.members.get(member).unwrap();
             let armour = attack::enchanted_armour(
                 &character.stats(&vitals.enchantments),
                 carried,
                 items,
                 burden.load,
                 battle.defends(member),
-                (&vitals.enchantments, Some(&context.enchantments.0)),
+                (&vitals.enchantments, Some(&field.enchantments.0)),
             );
             (member, armour)
         })
@@ -36,16 +33,14 @@ pub(super) fn party_turn(
     battle: &mut Battle,
     index: usize,
     combatants: &[Entity],
-    rng: &mut GameRng,
-    (members, damage): (&mut Members, &mut MonsterDamage),
     party: &PartyView,
     magic: &mut BattleMagic,
     news: &mut MessageWriter<CombatNews>,
 ) -> bool {
     let work = battle.this_round.party[index];
     let member = work.actor;
-    let able_now = magic.context.roster.contains(&member)
-        && members.get(member).is_ok_and(|(_, vitals, carried, ..)| {
+    let able_now = magic.field.party.contains(&member)
+        && magic.field.members.get(member).is_ok_and(|(_, vitals, carried, ..)| {
             vitals.can_fight()
                 && match work.action {
                     // The weapons accepted, or nothing where one was used up.
@@ -67,36 +62,22 @@ pub(super) fn party_turn(
     match work.action {
         RoundAction::Breathe(target) => {
             battle.this_round.party[index].end();
-            breathe(battle, index, target, combatants, rng, (members, damage), party, magic, news);
+            breathe(battle, index, target, combatants, party, magic, news);
         }
         RoundAction::Magic(choice) => {
             battle.this_round.party[index].end();
-            cast(
-                commands,
-                battle,
-                index,
-                choice,
-                combatants,
-                rng,
-                (members, damage),
-                party,
-                magic,
-                news,
-            );
+            cast(commands, battle, index, choice, combatants, party, magic, news);
         }
         RoundAction::Attack { .. } => {
-            let BattleMagic { context, points, moving, .. } = magic;
+            let BattleMagic { field, moving, .. } = magic;
             let mut fight = blows::Fight {
                 combatants,
                 party,
-                armours: party_armours(battle, members, context),
+                armours: party_armours(battle, field),
                 moving,
-                points,
                 waits: false,
             };
-            context.resolve(party.now, members, damage, |field| {
-                blows::member_attacks(battle, index, rng, field, &mut fight, news);
-            });
+            blows::member_attacks(battle, index, field, &mut fight, news);
         }
         // Defending takes no turn.
         RoundAction::Defend => {
@@ -114,17 +95,14 @@ pub(super) fn breathe(
     index: usize,
     target: Entity,
     combatants: &[Entity],
-    rng: &mut GameRng,
-    (members, damage): (&mut Members, &mut MonsterDamage),
     party: &PartyView,
     magic: &mut BattleMagic,
     news: &mut MessageWriter<CombatNews>,
 ) {
     let member = battle.this_round.party[index].actor;
-    let result =
-        member_acts(combatants, (members, damage), party, magic, |situation, field, points| {
-            breath::execute(member, target, situation, rng, field, points)
-        });
+    let result = member_acts(combatants, party, magic, |situation, field| {
+        breath::execute(member, target, situation, field)
+    });
     match result {
         Ok(effects) => {
             battle.this_round.attacked = true;
@@ -137,50 +115,50 @@ pub(super) fn breathe(
 }
 
 /// A member casts or uses an item. A refused action falls back to
-/// defending (retail `ExecuteCharacterAction`), its turn spent; a point
-/// cast needs the whole world and settles once this step is done.
+/// defending (retail `ExecuteCharacterAction`), its turn spent.
 pub(super) fn cast(
     commands: &mut Commands,
     battle: &mut Battle,
     index: usize,
     choice: MagicChoice,
     combatants: &[Entity],
-    rng: &mut GameRng,
-    (members, damage): (&mut Members, &mut MonsterDamage),
     party: &PartyView,
     magic: &mut BattleMagic,
     news: &mut MessageWriter<CombatNews>,
 ) {
     let member = battle.this_round.party[index].actor;
-    let point_cast = choice
+    let field = &magic.field;
+    let point_spell = choice
         .source
-        .spell_id(
-            members.get(member).unwrap().2,
-            &magic.context.inventory,
-            &magic.context.content.items,
-        )
-        .is_some_and(crate::game::magic::pointcasts::spell);
-    if point_cast {
-        commands.queue(move |world: &mut World| {
-            if crate::game::magic::execute_in_world(world, member, choice).is_err() {
-                let mut battle = world.query::<&mut Battle>().single_mut(world).unwrap();
-                let work = battle.this_round.party.iter_mut().find(|w| w.actor == member).unwrap();
-                work.action = RoundAction::Defend;
+        .spell_id(field.members.get(member).unwrap().2, &field.inventory, field.items())
+        .filter(|&id| pointcasts::spell(id));
+    if let Some(spell) = point_spell {
+        let BattleMagic { field, ground, .. } = magic;
+        match pointcasts::point_cast(member, choice, spell, ground, field, commands) {
+            Ok(report) => {
+                field.news.write(MagicNews::Done(report));
             }
-        });
+            Err(refusal) => {
+                battle.this_round.party[index].action = RoundAction::Defend;
+                field.news.write(MagicNews::Refused { caster: member, refusal });
+            }
+        }
         return;
     }
-    match member_casts(combatants, member, choice, rng, members, damage, party, magic) {
+    let cast = member_acts(combatants, party, magic, |situation, field| {
+        casting::perform(member, choice, situation, field)
+    });
+    match cast {
         Ok((report, flights)) => {
             battle.this_round.attacked = true;
             battle.credit_kills(&report.effects, news);
-            let level = magic.context.level();
-            magic.context.flight_order.launch(commands, flights, level);
-            magic.context.news.write(MagicNews::Done(report));
+            let field = &mut magic.field;
+            field.launch(commands, flights);
+            field.news.write(MagicNews::Done(report));
         }
         Err(refusal) => {
             battle.this_round.party[index].action = RoundAction::Defend;
-            magic.context.news.write(MagicNews::Refused { caster: member, refusal });
+            magic.field.news.write(MagicNews::Refused { caster: member, refusal });
         }
     }
 }
@@ -211,39 +189,21 @@ pub(super) fn visible_monsters(
         .collect()
 }
 
-/// A member casts or uses an item at their initiative.
-pub(super) fn member_casts(
-    combatants: &[Entity],
-    member: Entity,
-    choice: MagicChoice,
-    rng: &mut GameRng,
-    members: &mut Members,
-    damage: &mut MonsterDamage,
-    party: &PartyView,
-    magic: &mut BattleMagic,
-) -> Result<(casting::Report, Vec<casting::SpellInFlight>), casting::Refusal> {
-    member_acts(combatants, (members, damage), party, magic, |situation, field, points| {
-        casting::perform(member, choice, situation, points, rng, field)
-    })
-}
-
 /// A member's magic or breath at their initiative, in the fight as it
 /// stands now: the monsters it may aim at are in the fight, targetable,
 /// and in the party's sight, with their groups (retail
 /// `CharacterActionReachesTarget`).
 pub(super) fn member_acts<R>(
     combatants: &[Entity],
-    (members, damage): (&mut Members, &mut MonsterDamage),
     party: &PartyView,
     magic: &mut BattleMagic,
     act: impl FnOnce(
         &casting::Situation,
         &mut crate::game::magic::effects::Field,
-        &mut Query<(&LearnedSpells, &mut SpellPoints)>,
     ) -> Result<R, casting::Refusal>,
 ) -> Result<R, casting::Refusal> {
-    let BattleMagic { context, points, groups, group_members, .. } = magic;
-    let candidates = visible_monsters(combatants, damage, &context.visibility, party.eye);
+    let BattleMagic { field, groups, group_members, .. } = magic;
+    let candidates = visible_monsters(combatants, &field.monsters, &field.visibility, party.eye);
     let group_of = |monster: Entity| -> Vec<Entity> {
         let group = groups.get(monster).ok().map(|group| group.0);
         match group.and_then(|g| group_members.get(g).ok()) {
@@ -251,15 +211,14 @@ pub(super) fn member_acts<R>(
             None => vec![monster],
         }
     };
-    context.resolve(party.now, members, damage, |field| {
-        let situation = casting::Situation {
-            context: casting::UseContext::Combat,
-            party: field.party,
-            party_at: party.eye,
-            facing: crate::game::party::body::heading(party.yaw),
-            monsters: &candidates,
-            group_of: &group_of,
-        };
-        act(&situation, field, points)
-    })
+    let roster: Vec<Entity> = field.party.iter().collect();
+    let situation = casting::Situation {
+        context: casting::UseContext::Combat,
+        party: &roster,
+        party_at: party.eye,
+        facing: crate::game::party::body::heading(party.yaw),
+        monsters: &candidates,
+        group_of: &group_of,
+    };
+    act(&situation, field)
 }

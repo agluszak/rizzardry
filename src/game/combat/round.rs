@@ -146,17 +146,16 @@ pub(super) fn accept_round(
         .iter()
         .filter(|_| !surprised)
         .map(|member| {
-            let (character, vitals, carried, burden) = members.get(member).unwrap();
-            let stats = character.stats(&vitals.enchantments);
-            let hands = attack::hands(&stats, carried, items, burden.load);
+            let (character, _, carried, _) = members.get(member).unwrap();
+            let held = attack::Weapons::of(carried, items);
             let lightning = *orders.get(member).unwrap() == Order::Attack
                 && character.has_trait(Trait::LightningStrike)
-                && hands.hands[0].weapon_skill == Skill::Sword
+                && held.skill(0) == Skill::Sword
                 && rng.below(100) < u32::from(character.scale_by_profession(12.0) as u8);
-            (member, hands, lightning)
+            (member, held, lightning)
         })
         .collect();
-    for (member, hands, lightning) in prepared {
+    for (member, held, lightning) in prepared {
         let (character, vitals, carried, burden) = members.get(member).unwrap();
         let stats = character.stats(&vitals.enchantments);
         let weapons =
@@ -170,7 +169,7 @@ pub(super) fn accept_round(
             Order::Attack => RoundAction::Attack { weapons, berserk: false },
             // One who can no longer berserk attacks as usual.
             Order::Berserk => {
-                RoundAction::Attack { weapons, berserk: blows::can_berserk(character, &hands) }
+                RoundAction::Attack { weapons, berserk: blows::can_berserk(character, &held) }
             }
             Order::Defend => RoundAction::Defend,
             Order::Magic(choice) => RoundAction::Magic(choice),
@@ -180,17 +179,18 @@ pub(super) fn accept_round(
         let phase = match action {
             // The hand with the most attacks opens, its weapon's initiative
             // counting (retail `AssignCombatPhases`).
-            RoundAction::Attack { .. } if vitals.can_fight() => match hands.choose() {
-                Some(hand) => {
-                    turns.current = hand;
-                    turns.left =
-                        hands.hands.each_ref().map(|h| if h.in_play { h.attacks } else { 0 });
-                    let initiative =
-                        attack::character_initiative(&stats, &hands.hands[hand], burden.load);
-                    phase(rng, initiative)
+            RoundAction::Attack { .. } if vitals.can_fight() => {
+                let load = burden.load;
+                match held.opening_hand(&stats, load) {
+                    Some(hand) => {
+                        turns.current = hand;
+                        turns.left = held.hands.map(|w| w.map_or(0, |w| w.attacks(&stats, load)));
+                        let bonus = held.hands[hand].unwrap().initiative(&stats);
+                        phase(rng, stats.initiative(load) + bonus)
+                    }
+                    None => 0,
                 }
-                None => 0,
-            },
+            }
             RoundAction::Magic(_) | RoundAction::Breathe(_) if vitals.can_fight() => {
                 phase(rng, stats.initiative(burden.load))
             }

@@ -66,3 +66,23 @@ impl Plugin for GamePlugin {
             });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// Every gameplay system's parameters can run together: a conflicting
+    /// access only shows when its schedule first runs.
+    #[test]
+    fn every_system_initializes() {
+        use bevy::prelude::*;
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default(), bevy::state::app::StatesPlugin))
+            .add_plugins(super::GamePlugin);
+        app.finish();
+        app.cleanup();
+        let world = app.world_mut();
+        let mut schedules = world.remove_resource::<Schedules>().unwrap();
+        for (_, schedule) in schedules.iter_mut() {
+            schedule.initialize(world).unwrap();
+        }
+    }
+}

@@ -6,11 +6,6 @@
 //! falls within the target's body. Retail flies the shot and can hit
 //! whatever else it meets on the way.
 
-use bevy::math::Vec3Swizzles;
-use bevy::prelude::Vec3;
-use enum_map::EnumMap;
-use enumset::EnumSet;
-
 use crate::content::characters::{Attribute, BodyPart, Skill, Trait};
 use crate::content::items::{
     AttackEffect, AttackEffects, AttackMode, Dice, EquipClass, ItemCatalog, ItemDefinition,
@@ -25,6 +20,15 @@ use crate::game::inventory::{Carried, EquipSlot};
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::Stance;
 use crate::game::world::population::Monster;
+use bevy::math::Vec3Swizzles;
+use bevy::prelude::Vec3;
+use enum_map::EnumMap;
+use enumset::EnumSet;
+
+mod armour;
+mod hands;
+pub use armour::*;
+pub use hands::*;
 
 /// The to-hit term of a mode (retail `AttackModeMod` for the aim).
 fn mode_to_hit(mode: AttackMode) -> i32 {
@@ -90,40 +94,12 @@ pub fn swing_stamina(
     cost * if berserk { 2 } else { 1 } * if diseased { 2 } else { 1 }
 }
 
-/// The equipment slot whose armour covers a character's hit location.
-fn armour_slot(part: BodyPart) -> EquipSlot {
-    match part {
-        BodyPart::Head => EquipSlot::Head,
-        BodyPart::Body => EquipSlot::Torso,
-        BodyPart::Leg => EquipSlot::Legs,
-        BodyPart::Hand => EquipSlot::Hands,
-        BodyPart::Foot => EquipSlot::Feet,
-    }
-}
-
 /// A monster's body, its fallback location.
 const MONSTER_BODY: usize = 3;
+
 /// Where blows from the party land on one of its own (retail
 /// `gubLocalACPercent`): head, body, legs, hands, feet.
 const MEMBER_LOCATIONS: [u8; 5] = [15, 40, 30, 10, 5];
-
-/// Where a blow lands, by cumulative percentages against one `below(100)`
-/// draw; anything past them hits `fallback`.
-fn location<L: Copy>(
-    rng: &mut GameRng,
-    chances: impl IntoIterator<Item = (L, u8)>,
-    fallback: L,
-) -> L {
-    let roll = rng.below(100);
-    let mut total = 0;
-    for (location, chance) in chances {
-        total += u32::from(chance);
-        if roll < total {
-            return location;
-        }
-    }
-    fallback
-}
 
 /// Senses + speed + dexterity + intelligence, which the attribute term
 /// compares.
@@ -167,31 +143,6 @@ fn monster_fatigue(monster: &Monster) -> i32 {
     fatigue_penalty(100 - monster.stamina * 100 / monster.max_stamina.max(1))
 }
 
-/// What a hand holds (retail `SetHandType`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Holds {
-    #[default]
-    Nothing,
-    Weapon,
-    Shield,
-    Ammunition,
-    /// Anything else, which cannot strike.
-    Other,
-}
-
-/// The weapons that need ammunition from the other hand (retail
-/// `ItemHasSingledOutGenericName`): longbow, crossbow, sling, greatbow and
-/// omnigun.
-fn is_launcher(kind: ItemKind) -> bool {
-    matches!(
-        kind,
-        ItemKind::LONGBOW
-            | ItemKind::CROSSBOW
-            | ItemKind::SLING
-            | ItemKind::GREATBOW
-            | ItemKind::OMNIGUN
-    )
-}
 /// Throwing weapons and guns that strength does not help.
 const NO_STRENGTH: [ItemKind; 5] = [
     ItemKind::POWER_GLOVE,
@@ -200,415 +151,6 @@ const NO_STRENGTH: [ItemKind; 5] = [
     ItemKind::OMNIGUN,
     ItemKind::ROCKET_LAUNCHER,
 ];
-
-/// One hand's attack, as the character sheet works it out (retail
-/// `W8HandAttack`).
-#[derive(Clone, Debug, PartialEq)]
-pub struct Hand {
-    /// The hand can attack.
-    pub in_play: bool,
-    pub weapon_skill: Skill,
-    /// Its blows are ranged combat, not close combat.
-    pub ranged: bool,
-    pub reach: Reach,
-    pub dice: Dice,
-    /// The ways it strikes; one is chosen per attack.
-    pub modes: EnumSet<AttackMode>,
-    pub attacks: u32,
-    pub swings: u32,
-    pub attack_rating: i32,
-    /// The sheet's "To Hit": weapon, strength, dexterity and senses.
-    pub to_hit: i32,
-    /// The sheet's "To Damage (%)": strength.
-    pub damage_percent: i32,
-    /// The weapon's initiative bonus (retail `damage_bonus`).
-    pub initiative: i32,
-    /// What its blows may do besides damage: a fist's knockout chance, or
-    /// the weapon's effects with its ammunition's.
-    pub effects: AttackEffects,
-    /// The monster kinds its weapon and ammunition slay.
-    pub slays: [Option<crate::content::species::MonsterKind>; 2],
-    /// Swings the weapon adds to each attack.
-    pub extra_swings: i32,
-    /// It shoots ammunition from the other hand.
-    pub paired: bool,
-    /// What swinging it weighs, for its stamina.
-    pub weight: Option<u16>,
-    /// The weapon's retail kind.
-    pub kind: Option<ItemKind>,
-}
-
-/// A member's two hands (retail `CalcAttacks`).
-#[derive(Clone, Debug, PartialEq)]
-pub struct Hands {
-    pub hands: [Hand; 2],
-}
-
-impl Hands {
-    /// The hand an attack opens with (retail `ChooseCharacterAttackHand`):
-    /// the one with the most attacks, then the bigger initiative.
-    pub fn choose(&self) -> Option<usize> {
-        let mut best = None;
-        for (index, hand) in self.hands.iter().enumerate() {
-            let better = match best {
-                None => hand.attacks > 0,
-                Some(b) => {
-                    let b: &Hand = &self.hands[b];
-                    b.attacks < hand.attacks
-                        || (hand.attacks == b.attacks && hand.initiative > b.initiative)
-                }
-            };
-            if hand.in_play && better {
-                best = Some(index);
-            }
-        }
-        best
-    }
-}
-
-/// Unarmed damage by Martial Arts level / 11 (retail
-/// `g_unarmed_damage_dice`), with 2 more in the main hand.
-fn unarmed_dice(martial_arts: u32) -> Dice {
-    const DICE: [(i32, i32, i32); 12] = [
-        (0, 1, 2),
-        (0, 1, 3),
-        (0, 2, 2),
-        (0, 2, 3),
-        (0, 2, 4),
-        (0, 3, 3),
-        (1, 3, 3),
-        (2, 3, 3),
-        (0, 3, 5),
-        (0, 4, 4),
-        (2, 4, 4),
-        (4, 4, 4),
-    ];
-    let (base, count, sides) = DICE[(martial_arts as usize / 11).min(11)];
-    Dice { base, count, sides }
-}
-
-/// Both hands' numbers (retail `CalcAttacks`). An empty hand fights with
-/// Martial Arts; an off hand attacks only beside a main hand of the same
-/// kind (close or ranged), and never with a shield or ammunition.
-pub fn hands(
-    c: &CharacterStats<'_>,
-    carried: &Carried,
-    catalog: &ItemCatalog,
-    load: Load,
-) -> Hands {
-    const SLOTS: [EquipSlot; 2] = [EquipSlot::Primary, EquipSlot::Secondary];
-    let worn = SLOTS.map(|slot| carried.worn(slot).map(|s| (s, &catalog[s.item])));
-    let definition = |hand: usize| worn[hand].map(|(_, d)| d);
-    let holds = |hand: usize| match definition(hand) {
-        None => Holds::Nothing,
-        Some(d) => match d.class {
-            EquipClass::ShortWeapon | EquipClass::ExtendedWeapon | EquipClass::RangedWeapon => {
-                Holds::Weapon
-            }
-            EquipClass::ThrownWeapon
-                if hand == 1 && definition(0).is_some_and(|p| p.kind == ItemKind::OMNIGUN) =>
-            {
-                Holds::Ammunition
-            }
-            EquipClass::ThrownWeapon => Holds::Weapon,
-            EquipClass::Ammunition => Holds::Ammunition,
-            EquipClass::Shield => Holds::Shield,
-            _ => Holds::Other,
-        },
-    };
-    let holds = [holds(0), holds(1)];
-    let weapon_skill =
-        |hand: usize| definition(hand).map_or(Some(Skill::MartialArts), |d| d.weapon_skill);
-    // Which combat skill each hand fights with: close, ranged, or none.
-    let combat = |hand: usize| -> Option<bool> {
-        match weapon_skill(hand)? {
-            skill if skill as usize <= Skill::Shield as usize || skill == Skill::MartialArts => {
-                Some(false)
-            }
-            Skill::ModernWeapon | Skill::Bow | Skill::ThrowingAndSling => Some(true),
-            _ => None,
-        }
-    };
-    let ranged = [combat(0), combat(1)];
-    // A ranged hand cannot attack with a launcher lacking its ammunition,
-    // or a gun out of shots; it keeps its combat skill all the same.
-    let loaded = |hand: usize| {
-        let Some((stack, d)) = worn[hand] else { return true };
-        let other = definition(1 - hand);
-        (!is_launcher(d.kind) || other.is_some_and(|o| crate::game::inventory::partners(d, o)))
-            && !(d.quantity == QuantityKind::Shots && stack.remaining_uses() == Some(0))
-    };
-    let mut in_play = [0, 1].map(|hand| match ranged[hand] {
-        None => false,
-        Some(false) => true,
-        Some(true) => loaded(hand),
-    });
-    if ranged[0] != ranged[1]
-        || matches!(holds[1], Holds::Shield | Holds::Ammunition)
-        || definition(0).is_some_and(|d| d.kind == ItemKind::OMNIGUN)
-        || (holds[1] == Holds::Nothing && holds[0] != Holds::Nothing)
-    {
-        in_play[1] = false;
-    }
-    let dual_wielding = holds == [Holds::Weapon, Holds::Weapon] && in_play[0] && in_play[1];
-
-    let physical = c.physical_levels();
-    let dual = c.skill(Skill::DualWeapons) as i32;
-    let [strength, dexterity, speed, senses] =
-        [Attribute::Strength, Attribute::Dexterity, Attribute::Speed, Attribute::Senses]
-            .map(|a| c.attribute(a) as i32);
-    let hand = |index: usize| -> Hand {
-        let skill = weapon_skill(index).unwrap_or(Skill::MartialArts);
-        let ranged = ranged[index] == Some(true);
-        let d = definition(index);
-        // A launcher takes its damage, effects and slaying from what it shoots.
-        let paired = d.is_some_and(|d| is_launcher(d.kind)) && in_play[index];
-        let ammunition = if paired { definition(1 - index) } else { None };
-        let mut hand = Hand {
-            in_play: in_play[index],
-            weapon_skill: skill,
-            ranged,
-            reach: if matches!(holds[index], Holds::Weapon | Holds::Ammunition) {
-                d.map_or(Reach::Touch, |d| d.reach)
-            } else {
-                Reach::Touch
-            },
-            dice: Dice::default(),
-            modes: EnumSet::empty(),
-            attacks: 0,
-            swings: 0,
-            attack_rating: 0,
-            to_hit: 0,
-            damage_percent: 0,
-            initiative: 0,
-            effects: AttackEffects::default(),
-            slays: [d.and_then(|d| d.slays), ammunition.and_then(|a| a.slays)],
-            extra_swings: d.map_or(0, |d| d.extra_swings),
-            paired,
-            weight: d.map(|d| d.weight),
-            kind: d.map(|d| d.kind),
-        };
-        // What it strikes with, which a punch, a kick or the shot a launcher
-        // looses reads from a hand that cannot attack itself.
-        match d {
-            Some(d) => {
-                hand.dice = ammunition.unwrap_or(d).damage;
-                hand.modes = d.attack_modes;
-                hand.effects = ammunition.map_or(d.effects, |a| d.effects.with(&a.effects));
-            }
-            None => {
-                let martial_arts = c.skill(skill);
-                // An empty hand punches, and kicks too past Martial Arts 4.
-                hand.modes = if martial_arts > 4 {
-                    AttackMode::Punch | AttackMode::Kick
-                } else {
-                    EnumSet::only(AttackMode::Punch)
-                };
-                hand.dice = unarmed_dice(martial_arts);
-                if index == 0 {
-                    hand.dice.base += 2;
-                }
-                if strength > 49 {
-                    hand.effects.chances[AttackEffect::KnockOut] = ((strength - 50) / 5) as u32;
-                }
-            }
-        }
-        if !hand.in_play {
-            return hand;
-        }
-        let other = 1 - index;
-        let combat_skill = if ranged { Skill::RangedCombat } else { Skill::CloseCombat };
-        let mut score = ((c.skill(combat_skill) + c.skill(skill) * 2) * 2 / 3) as i32;
-        let mut divisor = 20;
-        if holds[other] == Holds::Weapon && in_play[other] {
-            score += c.skill(weapon_skill(other).unwrap_or(Skill::MartialArts)) as i32 >> 1;
-            divisor = 25;
-        }
-        if dual_wielding {
-            score += dual;
-            divisor += 10;
-        }
-        let combined = score * 10 / divisor;
-        // Modern weapons feel load half as much.
-        let modern = skill == Skill::ModernWeapon;
-        let halved = |penalty: i32| if modern { penalty / 2 } else { penalty };
-        let load_penalty = halved(-load.attack_penalty());
-        let dual_penalty =
-            if dual_wielding { -10 * (index as i32 + 1) - (100 - dual) / 4 } else { 0 };
-        hand.attack_rating = (dual_penalty + dexterity / 2 + combined * 2 + physical) / 3 + 60;
-        let score = ((speed + dexterity) >> 1) + dual_penalty + physical + load_penalty + combined;
-        let score = score / 3;
-        hand.attacks = match index {
-            0 => 1 + u32::from(score > 49) + u32::from(score > 99),
-            _ => 1 + u32::from(score > 74),
-        };
-        hand.initiative = d.map_or(combined / 10, |d| d.damage_bonus);
-        // Retail reads the initiative its previous pass left, which is this.
-        let score =
-            (speed + hand.initiative * 10 + dual_penalty + physical + load_penalty + combined) / 3;
-        hand.swings = 1 + u32::from(score > 66) + u32::from(score > 99);
-        if definition(0).is_some_and(|d| d.kind == ItemKind::ROCKET_LAUNCHER) {
-            hand.swings = 1;
-        }
-        let mut strength_divisor = 1;
-        let mut strength_helps = true;
-        if let Some(d) = d {
-            hand.to_hit = d.hit_bonus;
-            if holds[other] == Holds::Ammunition
-                && let Some(o) = definition(other)
-            {
-                hand.to_hit += o.hit_bonus;
-            }
-            if is_launcher(d.kind) {
-                hand.damage_percent += d.damage.base * 10;
-            }
-            // Weapons only thrown, lashed or shot.
-            if d.attack_modes.is_subset(AttackMode::Throw | AttackMode::Lash | AttackMode::Shoot) {
-                if NO_STRENGTH.contains(&d.kind) {
-                    strength_helps = false;
-                } else {
-                    strength_divisor = 2;
-                }
-            }
-        }
-        if strength_helps {
-            if strength < 50 {
-                hand.to_hit -= (50 - strength) / (strength_divisor * 10);
-                hand.damage_percent -= (50 - strength) / strength_divisor;
-            } else if strength > 50 {
-                strength_divisor *= index as i32 + 1;
-                hand.to_hit += (strength - 50) / (strength_divisor * 10);
-                hand.damage_percent += (strength * 2 - 100) / strength_divisor;
-            }
-        }
-        hand.to_hit += (dexterity - 50) / 10;
-        if senses < 30 {
-            hand.to_hit -= (30 - senses) / 10;
-        } else if senses > 70 {
-            hand.to_hit += (senses - 70) / 10;
-        }
-        let mut load_penalty = -load.penalty();
-        if index == 1 {
-            load_penalty = load_penalty * 3 / 2;
-        }
-        hand.to_hit += halved(load_penalty);
-        if ranged && c.skill_available(Skill::EagleEye) {
-            hand.to_hit += c.skill(Skill::EagleEye) as i32 / 20 + 1;
-        }
-        if !ranged && c.skill_available(Skill::PowerStrike) {
-            hand.to_hit += c.skill(Skill::PowerStrike) as i32 / 20 + 1;
-        }
-        hand
-    };
-    Hands { hands: [hand(0), hand(1)] }
-}
-
-/// The main hand's numbers, as the character sheet shows them.
-pub fn primary_hand(
-    c: &CharacterStats<'_>,
-    carried: &Carried,
-    catalog: &ItemCatalog,
-    load: Load,
-) -> Hand {
-    let [primary, _] = hands(c, carried, catalog, load).hands;
-    primary
-}
-
-/// A member's total and per-location armour, without skills or conditions.
-/// Calculated from current inputs, never stored on the member.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Armour {
-    pub total: i32,
-    pub by_location: EnumMap<BodyPart, i32>,
-    /// What speed adds, which a blow from behind gets past.
-    pub speed: i32,
-    /// What a shield and the skill to use it add, likewise.
-    pub shield: i32,
-}
-
-impl Armour {
-    /// Hit-location-weighted average displayed on the character portrait.
-    pub fn average(&self) -> i32 {
-        let weight = |part| match part {
-            BodyPart::Head => 15,
-            BodyPart::Body => 40,
-            BodyPart::Leg => 30,
-            BodyPart::Hand => 10,
-            BodyPart::Foot => 5,
-        };
-        let total: i32 = self.by_location.iter().map(|(part, value)| value * weight(part)).sum();
-        (total as f32 / 100.0).round() as i32
-    }
-}
-
-/// A member's armour with the spells on them and, for a party member, the
-/// party's protections.
-pub fn enchanted_armour(
-    c: &crate::game::characters::CharacterStats<'_>,
-    carried: &Carried,
-    catalog: &ItemCatalog,
-    load: Load,
-    defending: bool,
-    (personal, party): (
-        &crate::game::magic::enchantments::Enchantments,
-        Option<&crate::game::magic::enchantments::Enchantments>,
-    ),
-) -> Armour {
-    let mut armour = armour(c, carried, catalog, load, defending);
-    let bonus = personal.armour() + party.map_or(0, |party| party.armour());
-    armour.total += bonus;
-    for (_, value) in armour.by_location.iter_mut() {
-        *value += bonus;
-    }
-    armour
-}
-
-/// A character's armour (retail `CalcArmorClasses`). Defending adds 2
-/// everywhere and lets Shield skill count for more.
-pub fn armour(
-    c: &crate::game::characters::CharacterStats<'_>,
-    carried: &Carried,
-    catalog: &ItemCatalog,
-    load: Load,
-    defending: bool,
-) -> Armour {
-    let definition = |slot| carried.worn(slot).map(|i| &catalog[i.item]);
-    let speed = c.attribute(Attribute::Speed);
-    let speed = i32::from(speed > 79) + i32::from(speed > 89)
-        - i32::from(speed < 20)
-        - i32::from(speed < 10);
-    let mut total = i32::from(c.race == Race::Faerie) * 2 + speed - load.armour_penalty()
-        + if defending { 2 } else { 0 };
-    let mut shield = 0;
-    // Shields and magic items worn in the misc, cloak and hand slots.
-    for slot in [
-        EquipSlot::Misc1,
-        EquipSlot::Misc2,
-        EquipSlot::Cloak,
-        EquipSlot::Primary,
-        EquipSlot::Secondary,
-    ] {
-        if let Some(d) = definition(slot) {
-            total += d.armor_class_bonus;
-            if d.class == EquipClass::Shield {
-                let bonus = d.armor_class_bonus;
-                let skill = c.skill(Skill::Shield) as i32;
-                let skill = if defending {
-                    (skill / 15).min(bonus * 3 / 2)
-                } else {
-                    (skill / 25).min(bonus)
-                };
-                total += skill;
-                shield += bonus + skill;
-            }
-        }
-    }
-    let by_location = EnumMap::from_fn(|part| {
-        let worn = definition(armour_slot(part));
-        total + worn.map_or(0, |d: &ItemDefinition| d.armor_class_bonus)
-    });
-    Armour { total, by_location, speed, shield }
-}
 
 /// How a blow catches its target (retail `unaware` and `natural_attack`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -793,101 +335,126 @@ impl<'a> Defence<'a> {
     }
 }
 
-/// A member's aim with one hand (retail `GetTargetAttackAttributes`):
-/// against `target`'s defences, or with none for the odds of a fumble.
-#[allow(clippy::too_many_arguments)]
-pub fn member_aim(
-    c: &CharacterStats<'_>,
-    vitals: &Vitals,
-    hand: &Hand,
-    mode: AttackMode,
-    surprise: Surprise,
-    target: Option<&Defence>,
-    difficulty: Difficulty,
-) -> i32 {
-    let mut fatigue = character_fatigue(c, vitals);
-    if hand.weapon_skill == Skill::ModernWeapon {
-        fatigue >>= 1;
-    }
-    let mut score = hand.attack_rating
-        + hand.to_hit * 5
-        + mode_to_hit(mode)
-        + 10 * i32::from(surprise.unaware)
-        + 10 * i32::from(surprise.natural)
-        - fatigue;
-    if let Some(target) = target {
-        score -= target.armour_class(mode, surprise) * 5;
-        score += (character_ssdi(c) - target.ssdi) / 10;
-    }
-    if vitals.conditions.has(Condition::Blind) && score > 10 {
-        score = if c.has_trait(Trait::EffectiveWhileBlind) {
-            c.scale_by_profession((score - 10) as f32) as i32 + 10
-        } else {
-            10
-        };
-    }
-    difficulty.for_character(score, vitals.conditions.has(Condition::Turncoat))
+/// Who a blow comes from, for what the two sides do differently.
+#[derive(Clone, Copy)]
+enum Side<'a> {
+    Member { stats: &'a CharacterStats<'a>, turncoat: bool },
+    Monster { stance: Stance },
 }
 
-/// A member's chance to get through armour where the blow landed (retail
-/// `GetTargetHitAttackAttributes`).
-pub fn member_penetration(
-    c: &CharacterStats<'_>,
-    vitals: &Vitals,
-    hand: &Hand,
-    mode: AttackMode,
-    surprise: Surprise,
-    (target, at): (&Defence, Location),
-    difficulty: Difficulty,
-) -> i32 {
-    let mut score = hand.attack_rating + hand.to_hit * 5 + mode_penetration(mode);
-    if hand.weapon_skill != Skill::ModernWeapon {
-        score -= character_fatigue(c, vitals);
-    }
-    score -= target.armour_at(mode, surprise, at) * 5;
-    score += (character_ssdi(c) - target.ssdi) / 10;
-    difficulty.for_character(score, vitals.conditions.has(Condition::Turncoat))
+/// One side's numbers behind a blow; aim and penetration are the same sums
+/// for both.
+#[derive(Clone, Copy)]
+pub struct Attacker<'a> {
+    side: Side<'a>,
+    score: i32,
+    /// What fatigue takes off its aim, and off its penetration. Modern
+    /// weapons and the attacks that tire little halve the first; modern
+    /// weapons escape the second, and only attacks that tire little feel it.
+    fatigue: (i32, i32),
+    ssdi: i32,
+    blind: bool,
 }
 
-/// A monster's aim with one attack (retail `GetMonsterAttackScore`).
-pub fn monster_aim(
-    (species, monster, stance): (&Species, &Monster, Stance),
-    attack: &MonsterAttack,
-    mode: AttackMode,
-    surprise: Surprise,
-    target: Option<&Defence>,
-    difficulty: Difficulty,
-) -> i32 {
-    let mut fatigue = monster_fatigue(monster);
-    if attack.tires_little() {
-        fatigue >>= 1;
+impl<'a> Attacker<'a> {
+    /// Retail `GetTargetAttackAttributes`, `GetTargetHitAttackAttributes`.
+    pub fn member(
+        stats: &'a CharacterStats<'a>,
+        vitals: &Vitals,
+        weapon: &Wielded<'_>,
+        load: Load,
+        blessing: i32,
+    ) -> Self {
+        let tired = character_fatigue(stats, vitals);
+        let modern = weapon.skill == Skill::ModernWeapon;
+        Self {
+            side: Side::Member { stats, turncoat: vitals.conditions.has(Condition::Turncoat) },
+            score: weapon.score(stats, load, blessing),
+            fatigue: if modern { (tired >> 1, 0) } else { (tired, tired) },
+            ssdi: character_ssdi(stats),
+            blind: vitals.conditions.has(Condition::Blind),
+        }
     }
-    let mut score = i32::from(attack.score)
-        + 5 * monster.enchantments.hit_bonus()
-        + mode_to_hit(mode)
-        + 10 * i32::from(surprise.unaware)
-        + 10 * i32::from(surprise.natural)
-        - fatigue;
-    if let Some(target) = target {
-        score -= target.armour_class(mode, surprise) * 5;
-        score += (species_ssdi(species, &monster.enchantments) - target.ssdi) / 10;
+
+    /// Retail `GetMonsterAttackScore`, `ContinueMonsterAttack`.
+    pub fn monster(
+        (species, monster, stance): (&Species, &Monster, Stance),
+        attack: &MonsterAttack,
+    ) -> Self {
+        let tired = monster_fatigue(monster);
+        Self {
+            side: Side::Monster { stance },
+            score: i32::from(attack.score) + 5 * monster.enchantments.hit_bonus(),
+            fatigue: if attack.tires_little() { (tired >> 1, tired) } else { (tired, 0) },
+            ssdi: species_ssdi(species, &monster.enchantments),
+            blind: monster.conditions.has(Condition::Blind),
+        }
     }
-    if monster.conditions.has(Condition::Blind) && score > 10 {
-        score = 10;
+
+    fn judged(&self, score: i32, difficulty: Difficulty) -> i32 {
+        match self.side {
+            Side::Member { turncoat, .. } => difficulty.for_character(score, turncoat),
+            Side::Monster { stance } => difficulty.for_monster(score, stance),
+        }
     }
-    difficulty.for_monster(score, stance)
+
+    /// The chance to strike `target`, or with none the odds of a fumble.
+    pub fn aim(
+        &self,
+        mode: AttackMode,
+        surprise: Surprise,
+        target: Option<&Defence>,
+        difficulty: Difficulty,
+    ) -> i32 {
+        let surprised = 10 * i32::from(surprise.unaware) + 10 * i32::from(surprise.natural);
+        let mut score = self.score + mode_to_hit(mode) + surprised - self.fatigue.0;
+        if let Some(target) = target {
+            score -= target.armour_class(mode, surprise) * 5;
+            score += (self.ssdi - target.ssdi) / 10;
+        }
+        if self.blind && score > 10 {
+            score = match self.side {
+                Side::Member { stats, .. } if stats.has_trait(Trait::EffectiveWhileBlind) => {
+                    stats.scale_by_profession((score - 10) as f32) as i32 + 10
+                }
+                _ => 10,
+            };
+        }
+        self.judged(score, difficulty)
+    }
+
+    /// The chance to get through armour where the blow landed.
+    pub fn penetration(
+        &self,
+        mode: AttackMode,
+        surprise: Surprise,
+        (target, at): (&Defence, Location),
+        difficulty: Difficulty,
+    ) -> i32 {
+        let score = self.score + mode_penetration(mode)
+            - self.fatigue.1
+            - target.armour_at(mode, surprise, at) * 5
+            + (self.ssdi - target.ssdi) / 10;
+        self.judged(score, difficulty)
+    }
 }
 
 /// How well a member presses a blow past a guard (retail
 /// `GetCharacterProtectionScore`): Speed, less fatigue (halved with a
 /// modern weapon), with the first hand's to-hit and rating when it is in
 /// play, and the member's own to-hit bonus.
-pub fn member_protection(c: &CharacterStats<'_>, vitals: &Vitals, hand: &Hand) -> i32 {
+pub fn member_protection(
+    c: &CharacterStats<'_>,
+    vitals: &Vitals,
+    weapons: &Weapons<'_>,
+    load: Load,
+    blessing: i32,
+) -> i32 {
     let mut fatigue = character_fatigue(c, vitals);
-    if hand.weapon_skill == Skill::ModernWeapon {
+    if weapons.skill(0) == Skill::ModernWeapon {
         fatigue >>= 1;
     }
-    let armed = if hand.in_play { hand.to_hit * 5 + hand.attack_rating } else { 0 };
+    let armed = weapons.hands[0].map_or(0, |weapon| weapon.score(c, load, blessing));
     c.attribute(crate::content::characters::Attribute::Speed) as i32 - fatigue
         + armed
         + vitals.enchantments.hit_bonus() * 5
@@ -906,26 +473,6 @@ pub fn monster_protection(species: &Species, monster: &Monster) -> i32 {
     i32::from(species.attributes.speed) - fatigue
         + first.map_or(0, |a| i32::from(a.score))
         + monster.enchantments.hit_bonus() * 5
-}
-
-/// A monster's chance to get through armour (retail `ContinueMonsterAttack`).
-/// Retail takes fatigue off only the attacks that tire little, in full.
-pub fn monster_penetration(
-    (species, monster, stance): (&Species, &Monster, Stance),
-    attack: &MonsterAttack,
-    mode: AttackMode,
-    surprise: Surprise,
-    (target, at): (&Defence, Location),
-    difficulty: Difficulty,
-) -> i32 {
-    let mut score =
-        i32::from(attack.score) + 5 * monster.enchantments.hit_bonus() + mode_penetration(mode);
-    if attack.tires_little() {
-        score -= monster_fatigue(monster);
-    }
-    score -= target.armour_at(mode, surprise, at) * 5;
-    score += (species_ssdi(species, &monster.enchantments) - target.ssdi) / 10;
-    difficulty.for_monster(score, stance)
 }
 
 /// The chance a swing goes astray onto someone else in reach (retail
@@ -1017,8 +564,8 @@ pub fn roll_dice(rng: &mut GameRng, dice: Dice, count: u32) -> u32 {
 /// A member's damage from rolled dice (retail `ResolveCharacterAttackDamage`):
 /// raised by the hand's damage percent, at least 1, then cut by the
 /// target's reduction.
-pub fn member_damage(hand: &Hand, rolled: u32, target: &Defence) -> u32 {
-    let damage = (((100 + hand.damage_percent) * rolled as i32 + 50) / 100).max(1);
+pub fn member_damage(percent: i32, rolled: u32, target: &Defence) -> u32 {
+    let damage = (((100 + percent) * rolled as i32 + 50) / 100).max(1);
     target.reduce(damage)
 }
 
@@ -1038,14 +585,13 @@ pub fn effect_power(level: u32) -> u32 {
 /// `ResolveCharacterAttack`): Critical Strike for close combat, Ranged
 /// Combat for a Ranger's bows and slings, Critical Strike for a Ninja's
 /// throws; a point per 25 skill and a chance at one more.
-pub fn critical_chance(rng: &mut GameRng, c: &CharacterStats<'_>, hand: &Hand) -> u32 {
-    let skill = if !hand.ranged {
+pub fn critical_chance(rng: &mut GameRng, c: &CharacterStats<'_>, weapon: &Wielded<'_>) -> u32 {
+    let skill = weapon.skill;
+    let skill = if !weapon.ranged {
         c.skill(Skill::CriticalStrike)
-    } else if matches!(hand.weapon_skill, Skill::ModernWeapon | Skill::Bow)
-        || (hand.weapon_skill == Skill::ThrowingAndSling && hand.kind == Some(ItemKind::SLING))
-    {
+    } else if matches!(skill, Skill::ModernWeapon | Skill::Bow) || weapon.sling() {
         if c.has_trait(Trait::RangedCriticals) { c.skill(Skill::RangedCombat) } else { 0 }
-    } else if hand.weapon_skill == Skill::ThrowingAndSling && c.has_trait(Trait::ThrownCriticals) {
+    } else if skill == Skill::ThrowingAndSling && c.has_trait(Trait::ThrownCriticals) {
         c.skill(Skill::CriticalStrike)
     } else {
         0
@@ -1063,11 +609,10 @@ pub fn critical_chance(rng: &mut GameRng, c: &CharacterStats<'_>, hand: &Hand) -
 /// A Ninja's thrown weapons always get through armour when they strike
 /// (retail `W8_TRAIT_THROWN_CRITICALS` for ranged thrown weapons other than
 /// slings).
-pub fn sure_penetration(c: &CharacterStats<'_>, hand: &Hand) -> bool {
+pub fn sure_penetration(c: &CharacterStats<'_>, weapon: &Wielded<'_>) -> bool {
     c.has_trait(Trait::ThrownCriticals)
-        && hand.ranged
-        && hand.weapon_skill == Skill::ThrowingAndSling
-        && hand.kind != Some(ItemKind::SLING)
+        && weapon.skill == Skill::ThrowingAndSling
+        && !weapon.sling()
 }
 
 /// The world units in a metre (retail's 500).
@@ -1134,15 +679,6 @@ pub fn phase(rng: &mut GameRng, initiative: i32) -> u32 {
     (90 - v.clamp(-10, 89)) as u32
 }
 
-/// The character's initiative before the roll, weapon included.
-pub fn character_initiative(
-    c: &crate::game::characters::CharacterStats<'_>,
-    hand: &Hand,
-    load: Load,
-) -> i32 {
-    c.initiative(load) + hand.initiative
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1152,17 +688,6 @@ mod tests {
     fn wield(carried: &mut Carried, slot: EquipSlot, definition: &ItemDefinition, count: u16) {
         let stack = ItemStack::new(definition, &mut ItemIds::default(), count, true);
         carried.equipment[slot] = Some(Equipped::new(stack));
-    }
-
-    fn weapon(id: u16, class: EquipClass, skill: Skill) -> ItemDefinition {
-        ItemDefinition {
-            id: crate::content::items::ItemId(id),
-            class,
-            weapon_skill: Some(skill),
-            damage: Dice { base: 0, count: 1, sides: 6 },
-            attack_modes: EnumSet::only(AttackMode::Swing),
-            ..ItemDefinition::default()
-        }
     }
 
     #[test]
@@ -1267,75 +792,6 @@ mod tests {
             assert!(phase(&mut rng, -50) == 100);
             assert!((87..=90).contains(&phase(&mut rng, 0)));
         }
-    }
-
-    #[test]
-    fn two_weapons_each_attack_with_their_dual_wielding_penalty() {
-        let sword = weapon(0, EquipClass::ShortWeapon, Skill::Sword);
-        let dagger = weapon(1, EquipClass::ShortWeapon, Skill::Dagger);
-        let catalog = ItemCatalog(vec![sword.clone(), dagger.clone()]);
-        let mut fighter = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
-        fighter.skill_points[Skill::DualWeapons] = 40;
-        let mut carried = Carried::default();
-        wield(&mut carried, EquipSlot::Primary, &sword, 1);
-        let alone = hands(&fighter.base_stats(), &carried, &catalog, Load::None);
-        assert!(alone.hands[0].in_play && !alone.hands[1].in_play);
-        // An empty off hand beside a weapon does not punch.
-        assert!(!alone.hands[1].in_play);
-        wield(&mut carried, EquipSlot::Secondary, &dagger, 1);
-        let both = hands(&fighter.base_stats(), &carried, &catalog, Load::None);
-        assert!(both.hands[0].in_play && both.hands[1].in_play);
-        assert_eq!(both.hands[1].weapon_skill, Skill::Dagger);
-        // Each hand pays −10 per hand number and a quarter of the Dual
-        // Weapons it lacks: (−10 − 15)/3 and (−20 − 15)/3 off the rating.
-        let rating = |h: &Hand| h.attack_rating;
-        assert!(rating(&both.hands[0]) > rating(&both.hands[1]));
-        assert_eq!(both.choose(), Some(0));
-    }
-
-    #[test]
-    fn a_shield_or_a_mismatched_weapon_keeps_the_off_hand_out() {
-        let sword = weapon(0, EquipClass::ShortWeapon, Skill::Sword);
-        let shield = ItemDefinition {
-            id: crate::content::items::ItemId(1),
-            class: EquipClass::Shield,
-            ..ItemDefinition::default()
-        };
-        let mut bow = weapon(2, EquipClass::RangedWeapon, Skill::Bow);
-        bow.kind = ItemKind::LONGBOW;
-        bow.reach = Reach::Long;
-        bow.damage = Dice { base: 2, count: 1, sides: 4 };
-        let mut arrows = weapon(3, EquipClass::Ammunition, Skill::Bow);
-        arrows.kind = ItemKind::ARROW;
-        arrows.damage = Dice { base: 0, count: 1, sides: 8 };
-        arrows.effects.chances[AttackEffect::Poison] = 10;
-        let catalog = ItemCatalog(vec![sword.clone(), shield.clone(), bow.clone(), arrows.clone()]);
-        let ranger = Character::new("A", Race::Human, Gender::Male, Profession::Ranger);
-        let mut carried = Carried::default();
-        wield(&mut carried, EquipSlot::Primary, &sword, 1);
-        wield(&mut carried, EquipSlot::Secondary, &shield, 1);
-        assert!(!hands(&ranger.base_stats(), &carried, &catalog, Load::None).hands[1].in_play);
-        // A bow without arrows cannot shoot; with them it shoots theirs.
-        let mut carried = Carried::default();
-        wield(&mut carried, EquipSlot::Primary, &bow, 1);
-        assert!(!hands(&ranger.base_stats(), &carried, &catalog, Load::None).hands[0].in_play);
-        wield(&mut carried, EquipSlot::Secondary, &arrows, 20);
-        let [bow_hand, arrow_hand] =
-            hands(&ranger.base_stats(), &carried, &catalog, Load::None).hands;
-        assert!(bow_hand.in_play && bow_hand.paired && bow_hand.ranged);
-        assert!(!arrow_hand.in_play);
-        // The bow pierces by the arrows' own modes.
-        assert_eq!(arrow_hand.modes, arrows.attack_modes);
-        assert_eq!(bow_hand.dice, arrows.damage);
-        assert_eq!(bow_hand.effects.chances[AttackEffect::Poison], 10);
-        // The bow's own base is a damage bonus: +20%, with strength's.
-        let strength = ranger.base_stats().attribute(Attribute::Strength) as i32;
-        let from_strength = match strength {
-            ..50 => -(50 - strength),
-            50 => 0,
-            _ => 2 * strength - 100,
-        };
-        assert_eq!(bow_hand.damage_percent, 20 + from_strength);
     }
 
     #[test]

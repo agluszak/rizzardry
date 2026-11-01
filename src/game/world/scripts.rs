@@ -2,10 +2,9 @@
 //! in level data.
 
 use crate::content::level::LevelDefinition;
-use bevy::ecs::world::EntityMut;
 use bevy::prelude::*;
 
-use super::triggers::{DialState, TriggerEffect, TriggerState};
+use super::triggers::{TriggerEffect, TriggerState};
 
 /// The level whose special behaviour applies.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -55,11 +54,14 @@ const LAST_BELL: usize = 2;
 
 /// The puzzle changes only its button and dial; playback interprets the
 /// outcome (retail `Monastery2BellButton`).
-pub(crate) fn ring_bell(mut button: EntityMut, mut dial: EntityMut) -> TriggerEffect {
-    let position = dial.get::<DialState>().unwrap().position;
+pub(crate) fn ring_bell(
+    position: usize,
+    button: &mut TriggerState,
+    dial: &mut TriggerState,
+) -> TriggerEffect {
     if position == LAST_BELL {
-        dial.get_mut::<TriggerState>().unwrap().on = false;
-        button.get_mut::<TriggerState>().unwrap().on = false;
+        dial.on = false;
+        button.on = false;
     }
     TriggerEffect::BellRang(position + 1)
 }

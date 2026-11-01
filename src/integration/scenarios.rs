@@ -209,8 +209,16 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     }
     finish(&mut app, session);
     assert_eq!(app.world().get::<Conversation>(session).unwrap().current, Some((121, 0)));
-    let c = app.world().get::<Conversation>(session).unwrap();
-    let topic = crate::game::npcs::conversation::script(app.world(), c).topic("MONASTERY").unwrap();
+    let script = |app: &App| {
+        let scripts = app.world().resource::<crate::game::npcs::NpcAssets>();
+        let scripts = &scripts.scripts[&burz_id];
+        app.world()
+            .resource::<Assets<crate::content::npcs::DialogueScript>>()
+            .get(scripts)
+            .unwrap()
+            .clone()
+    };
+    let topic = script(&app).topic("MONASTERY").unwrap();
     app.world_mut()
         .write_message(ConversationRequest::new(session, Talk::Topic { text: "MONASTERY".into() }));
     finish(&mut app, session);
@@ -228,8 +236,7 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     assert!(app.world().get::<Npc>(actor).unwrap().paid_topics.contains(&topic));
     let lot =
         app.world().get::<Npc>(actor).unwrap().stock.lots.iter().find(|l| l.units > 0).unwrap().id;
-    let quote =
-        conversation::quote_trade(app.world_mut(), session, TradeSource::Stock(lot), 1).unwrap();
+    let quote = super::quote(&mut app, session, TradeSource::Stock(lot));
     let gold = app.world().get::<PartyInventory>(party).unwrap().gold;
     app.world_mut().write_message(ConversationRequest::trade(quote));
     app.world_mut().write_message(ConversationRequest::trade(quote));
@@ -240,13 +247,8 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
         "duplicate confirmation settles once"
     );
     let bought = app.world().get::<PartyInventory>(party).unwrap().pool.stacks[0].id;
-    let sale = conversation::quote_trade(
-        app.world_mut(),
-        session,
-        TradeSource::Party(ItemRef { owner: ItemOwner::Pool, id: bought }),
-        1,
-    )
-    .unwrap();
+    let source = TradeSource::Party(ItemRef { owner: ItemOwner::Pool, id: bought });
+    let sale = super::quote(&mut app, session, source);
     app.world_mut().write_message(ConversationRequest::trade(sale));
     app.update();
     assert_eq!(
@@ -255,7 +257,7 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     );
     let c = app.world().get::<Conversation>(session).unwrap();
     let current = c.current.unwrap().0;
-    let fact = crate::game::npcs::conversation::script(app.world(), c).quotes[current as usize]
+    let fact = script(&app).quotes[current as usize]
         .operations
         .iter()
         .find_map(|op| match op {
@@ -309,4 +311,37 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     // The retained NPC uses its repeat greeting, not the first meeting branch.
     assert_eq!(app.world().get::<Conversation>(reopened).unwrap().current, Some((1, 0)));
     assert!(app.world().get::<Conversation>(reopened).unwrap().ready());
+}
+
+/// A point cast in a fight settles on its caster's turn: it is paid for, or
+/// refused and the caster defends instead.
+#[test]
+#[ignore = "requires a retail installation"]
+fn a_point_cast_in_a_fight_settles_on_its_turn() {
+    use crate::content::spells::SpellId;
+    use crate::game::magic::casting::{Aim, MagicChoice, Source};
+    use crate::game::magic::{LearnedSpells, SpellPoints};
+    use crate::game::party::Order;
+    use crate::game::party::body::PartyBody;
+    use crate::game::party::roster::PartyRoster;
+
+    let mut app = game(&["--continuous", "--seed", "9", "--start=69.5,10,-24", "--yaw", "0"]);
+    step_until(&mut app, "the Monastery becoming active", |w| playing(w).is_some());
+    step_until(&mut app, "a fight with the slimes", |w| fighting(w));
+    let world = app.world_mut();
+    let member = world.query::<&PartyRoster>().single(world).unwrap().iter().next().unwrap();
+    let (position, body) =
+        world.query::<(&avian3d::prelude::Position, &PartyBody)>().single(world).unwrap();
+    let at = PartyBody::eye(position) + body.forward();
+    let spell = SpellId::HYPNOTIC_LURE;
+    world.get_mut::<LearnedSpells>(member).unwrap().0.insert(spell);
+    *world.get_mut::<Order>(member).unwrap() = Order::Magic(MagicChoice {
+        source: Source::Spell { spell, power: 1 },
+        aim: Aim::Point(at),
+    });
+    assert!(!world.get::<SpellPoints>(member).unwrap().short());
+    step_until(&mut app, "the cast settling", |w| {
+        w.get::<SpellPoints>(member).unwrap().short()
+            || w.try_query::<&Battle>().unwrap().iter(w).any(|battle| battle.defends(member))
+    });
 }

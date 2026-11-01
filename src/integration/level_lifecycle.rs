@@ -194,16 +194,24 @@ fn update_until(app: &mut App, what: &str, done: impl Fn(&World) -> bool) {
 
 #[test]
 fn travel_dialogs_end_with_their_question_without_a_cleanup_system() {
-    use crate::game::world::level::{TravelAnswer, answer_travel_questions, ask_travel};
+    use crate::game::world::level::{
+        LevelOwned, TravelAnswer, TravelQuestion, answer_travel_questions, replace_travel_question,
+    };
     use crate::presentation::dialog::QuestionDialog;
 
     let mut app = app();
-    app.add_message::<TravelAnswer>().add_systems(Update, answer_travel_questions);
+    app.add_message::<TravelAnswer>()
+        .add_systems(Update, answer_travel_questions)
+        .add_observer(replace_travel_question);
+    let ask = |app: &mut App, level, entrance: &str| {
+        let question = TravelQuestion { entrance: entrance.into() };
+        app.world_mut().spawn((question, LevelOwned(level))).id()
+    };
     let level = test_level(&mut app, floor());
     let level = app.world_mut().spawn(level).id();
-    let old = ask_travel(app.world_mut(), level, "first".into()).unwrap();
+    let old = ask(&mut app, level, "first");
     let old_dialog = app.world_mut().spawn(QuestionDialog(old)).id();
-    let current = ask_travel(app.world_mut(), level, "second".into()).unwrap();
+    let current = ask(&mut app, level, "second");
     assert!(app.world().get_entity(old_dialog).is_err());
 
     let dialog = app.world_mut().spawn(QuestionDialog(current)).id();
@@ -214,7 +222,7 @@ fn travel_dialogs_end_with_their_question_without_a_cleanup_system() {
     app.update();
     assert!(app.world().get_entity(dialog).is_err());
 
-    let question = ask_travel(app.world_mut(), level, "third".into()).unwrap();
+    let question = ask(&mut app, level, "third");
     let dialog = app.world_mut().spawn(QuestionDialog(question)).id();
     app.world_mut().despawn(level);
     assert!(app.world().get_entity(dialog).is_err(), "leaving ends the pending view");
@@ -824,9 +832,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
             let purse = |app: &App| app.world().get::<PartyInventory>(party).unwrap().gold;
             app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 10_000;
             let lot = app.world().get::<Npc>(actor).unwrap().stock.lots[0].id;
-            let quote =
-                conversation::quote_trade(app.world_mut(), session, TradeSource::Stock(lot), 1)
-                    .unwrap();
+            let quote = super::quote(&mut app, session, TradeSource::Stock(lot));
             // A confirmation buys once, however often it arrives.
             app.world_mut().write_message(ConversationRequest::trade(quote));
             app.world_mut().write_message(ConversationRequest::trade(quote));
@@ -837,12 +843,21 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
             assert_eq!(app.world().get::<Npc>(actor).unwrap().stock.lots[0].units, 1);
             let bought = app.world().get::<PartyInventory>(party).unwrap().pool.stacks[0].id;
             let source = TradeSource::Party(ItemRef { owner: ItemOwner::Pool, id: bought });
-            let sale = conversation::quote_trade(app.world_mut(), session, source, 1).unwrap();
+            let sale = super::quote(&mut app, session, source);
             app.world_mut().write_message(ConversationRequest::trade(sale));
             app.world_mut().write_message(ConversationRequest::trade(sale));
             app.update();
             assert_eq!(purse(&app), 10_000 - quote.gold + sale.gold);
             assert!(app.world().get::<PartyInventory>(party).unwrap().pool.stacks.is_empty());
+            // A confirmation counts if it came before leaving, not after.
+            let quote = super::quote(&mut app, session, TradeSource::Stock(lot));
+            let gold = purse(&app);
+            app.world_mut().write_message(ConversationRequest::trade(quote));
+            app.world_mut().write_message(ConversationRequest::new(session, Talk::Close));
+            app.world_mut().write_message(ConversationRequest::trade(quote));
+            app.update();
+            assert_eq!(purse(&app), gold - quote.gold);
+            assert!(app.world().get_entity(session).is_err());
         }
         app.world_mut().write_message(ConversationRequest::new(session, Talk::Close));
         app.update();
@@ -952,7 +967,7 @@ fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
     let script = app
         .world_mut()
         .resource_mut::<Assets<DialogueScript>>()
-        .add(DialogueScript { quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }] });
+        .add(DialogueScript { quotes: vec![Quote { text: vec!["Yes".into()], ..default() }; 14] });
     {
         let mut catalogs = app.world_mut().resource_mut::<Catalogs>();
         catalogs.npcs = catalog;
@@ -964,6 +979,9 @@ fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
     assert!(is_played(&app, source));
     let actor = app.world_mut().query::<(Entity, &Npc)>().single(app.world()).unwrap().0;
     let body = app.world().get::<NpcBodies>(actor).unwrap()[0];
+    let at = app.world().get::<Transform>(body).unwrap().translation;
+    let walker = party_entities(&mut app)[0];
+    app.world_mut().get_mut::<avian3d::prelude::Position>(walker).unwrap().0 = at + Vec3::X;
     let party =
         app.world_mut().query_filtered::<Entity, With<Party>>().single(app.world()).unwrap();
     let strike = move |damage: MonsterDamage,
@@ -1006,11 +1024,10 @@ fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
 }
 
 /// An NPC that joins brings its character and belongings and leaves its
-/// body dormant; dismissed, it stands where it left and keeps what it wants;
-/// it rejoins as itself; dying in the party, it leaves for good. Never a
-/// second NPC, and never a body in the world while it travels with the party.
+/// body dormant; dying in the party, it leaves for good. Never a second NPC,
+/// and never a body in the world while it travels with the party.
 #[test]
-fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
+fn a_recruited_npc_joins_travels_and_dies_as_one() {
     use crate::content::characters::{Attribute, Skill};
     use crate::content::items::ItemId;
     use crate::content::npcs::{
@@ -1018,8 +1035,10 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     };
     use crate::game::characters::{Condition, Lasting, Vitals};
     use crate::game::inventory::{Carried, EquipSlot, PartyInventory};
-    use crate::game::npcs::recruit::{self, JoinRefusal};
-    use crate::game::npcs::{Npc, NpcAssets, NpcBodies, NpcWorldRole};
+    use crate::game::npcs::conversation::{
+        self, Conversation, ConversationRequest, ConversationWait, LineSpoken, Talk,
+    };
+    use crate::game::npcs::{Npc, NpcAssets, NpcBodies};
     use crate::game::party::roster::{PartyMember, PartyRoster};
     use crate::game::world::level::LevelOwned;
     use bevy::ecs::entity_disabling::Disabled;
@@ -1054,7 +1073,7 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     let script = app
         .world_mut()
         .resource_mut::<Assets<DialogueScript>>()
-        .add(DialogueScript { quotes: vec![Quote { text: vec!["Greeting".into()], ..default() }] });
+        .add(DialogueScript { quotes: vec![Quote { text: vec!["Yes".into()], ..default() }; 14] });
     {
         let mut catalogs = app.world_mut().resource_mut::<Catalogs>();
         catalogs.npcs = catalog;
@@ -1066,28 +1085,42 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     assert!(is_played(&app, source));
     let actor = app.world_mut().query::<(Entity, &Npc)>().single(app.world()).unwrap().0;
     let body = app.world().get::<NpcBodies>(actor).unwrap()[0];
+    let at = app.world().get::<Transform>(body).unwrap().translation;
+    let walker = party_entities(&mut app)[0];
+    app.world_mut().get_mut::<avian3d::prelude::Position>(walker).unwrap().0 = at + Vec3::X;
     let party =
         app.world_mut().query_filtered::<Entity, With<Party>>().single(app.world()).unwrap();
     let afraid = (Condition::Afraid, Lasting::Rounds(3));
     app.world_mut().get_mut::<Monster>(body).unwrap().conditions.inflict(afraid.0, afraid.1);
     let members = |app: &App| app.world().get::<PartyRoster>(party).unwrap().len();
 
-    // Joining.
-    recruit::join(app.world_mut(), actor).unwrap();
+    // Joining: asked in conversation, it joins once its acceptance is said.
+    let session = conversation::begin(app.world_mut(), actor).unwrap();
+    let say_lines = |app: &mut App| {
+        app.update();
+        while let Some(ConversationWait::Line { speech }) =
+            app.world().get::<Conversation>(session).map(|c| c.wait.clone())
+        {
+            app.world_mut().write_message(LineSpoken { conversation: session, speech });
+            app.update();
+        }
+    };
+    say_lines(&mut app);
+    app.world_mut().write_message(ConversationRequest::new(session, Talk::Recruit));
+    say_lines(&mut app);
+    assert!(app.world().get_entity(session).is_err(), "joining ends the conversation");
     assert_eq!(members(&app), 2);
     assert_eq!(app.world().get::<PartyMember>(actor).unwrap().0, party);
     let character = app.world().get::<Character>(actor).unwrap();
     assert_eq!((character.level(), character.profession_levels[Profession::Fighter]), (3, 3));
     assert_eq!(character.experience, character.experience_previous_goal);
     assert_eq!(character.experience, 2000, "level three has passed both Fighter thresholds");
-    let experience = character.experience;
     let carried = app.world().get::<Carried>(actor).unwrap();
     assert_eq!(carried.equipment[EquipSlot::Primary].as_ref().unwrap().stack.item, ItemId(5));
     assert_eq!(carried.backpack[0].as_ref().unwrap().item, ItemId(6));
     assert_eq!(app.world().get::<Vitals>(actor).unwrap().conditions, [afraid].into());
     assert!(app.world().get::<Disabled>(body).is_some());
     assert!(app.world().get::<LevelOwned>(body).is_none());
-    assert_eq!(recruit::joinable(app.world_mut(), actor), Err(JoinRefusal::Declines));
 
     // Revisiting its map while it travels with the party leaves its body dormant.
     let mut away = test_level(&mut app, floor());
@@ -1098,7 +1131,6 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
         .unwrap()
         .monsters
         .clear();
-    let away_path = away.path.clone();
     let away = app.world_mut().spawn(Destination::new(away, default(), Entry::Travel)).id();
     app.update();
     assert!(is_played(&app, away));
@@ -1109,69 +1141,6 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
     assert_eq!(members(&app), 2);
 
-    // Leaving, on another map: it stands there, keeps what it wants and
-    // gives the party the rest.
-    let mut elsewhere = test_level(&mut app, floor());
-    elsewhere.path = away_path.clone();
-    app.world_mut()
-        .resource_mut::<Assets<LevelDefinition>>()
-        .get_mut(&elsewhere.definition)
-        .unwrap()
-        .monsters
-        .clear();
-    let elsewhere =
-        app.world_mut().spawn(Destination::new(elsewhere, default(), Entry::Travel)).id();
-    app.update();
-    assert!(is_played(&app, elsewhere));
-    assert!(recruit::dismiss(app.world_mut(), actor));
-    assert_eq!(members(&app), 1);
-    assert!(app.world().get::<PartyMember>(actor).is_none());
-    assert!(app.world().get::<Disabled>(body).is_none());
-    assert_eq!(app.world().get::<LevelOwned>(body).unwrap().0, elsewhere);
-    assert_eq!(app.world().get::<NpcWorldRole>(body).unwrap().map, away_path);
-    let monster = app.world().get::<Monster>(body).unwrap();
-    assert!(monster.hp > 0);
-    assert_eq!(monster.conditions, [afraid].into());
-    let pool: Vec<_> = app
-        .world()
-        .get::<PartyInventory>(party)
-        .unwrap()
-        .pool
-        .stacks
-        .iter()
-        .map(|stack| stack.item)
-        .collect();
-    assert!(pool.contains(&ItemId(6)) && !pool.contains(&ItemId(5)), "{pool:?}");
-    let carried = app.world().get::<Carried>(actor).unwrap();
-    assert!(carried.equipment[EquipSlot::Primary].is_some());
-    assert!(carried.backpack[0].is_none());
-
-    // Its authored map no longer places it; the map it left on keeps it.
-    let home = spawn_level(&mut app, floor());
-    app.update();
-    assert!(is_played(&app, home));
-    assert!(app.world().get::<Disabled>(body).is_some());
-    let mut again = test_level(&mut app, floor());
-    again.path = away_path.clone();
-    app.world_mut()
-        .resource_mut::<Assets<LevelDefinition>>()
-        .get_mut(&again.definition)
-        .unwrap()
-        .monsters
-        .clear();
-    let again = app.world_mut().spawn(Destination::new(again, default(), Entry::Travel)).id();
-    app.update();
-    assert!(is_played(&app, again));
-    assert!(app.world().get::<Disabled>(body).is_none());
-    assert_eq!(app.world().get::<LevelOwned>(body).unwrap().0, again);
-    assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
-
-    // Rejoining: the same character, not a fresh one.
-    recruit::join(app.world_mut(), actor).unwrap();
-    assert_eq!(members(&app), 2);
-    assert_eq!(app.world().get::<Character>(actor).unwrap().experience, experience);
-    assert!(app.world().get::<Carried>(actor).unwrap().backpack[0].is_none());
-
     // Death and accepted travel share a frame: settle before retiring the source level.
     app.world_mut().get_mut::<Vitals>(actor).unwrap().hp = 0;
     let destination = spawn_level(&mut app, floor());
@@ -1181,25 +1150,12 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     assert!(app.world().get::<Npc>(actor).unwrap().dead);
     let pool = &app.world().get::<PartyInventory>(party).unwrap().pool.stacks;
     assert!(pool.iter().any(|stack| stack.item == ItemId(5)));
-    assert!(!recruit::dismiss(app.world_mut(), actor));
     assert!(app.world().get::<Disabled>(body).is_some());
     assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
-    // Neither its authored map nor the map its body last stood on raises it.
+    // Its authored map does not raise it.
     let home = spawn_level(&mut app, floor());
     app.update();
     assert!(is_played(&app, home));
-    assert!(app.world().get::<Disabled>(body).is_some());
-    let mut last = test_level(&mut app, floor());
-    last.path = away_path;
-    app.world_mut()
-        .resource_mut::<Assets<LevelDefinition>>()
-        .get_mut(&last.definition)
-        .unwrap()
-        .monsters
-        .clear();
-    let last = app.world_mut().spawn(Destination::new(last, default(), Entry::Travel)).id();
-    app.update();
-    assert!(is_played(&app, last));
     assert!(app.world().get::<Disabled>(body).is_some(), "the dead stay out of the world");
     assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
 }

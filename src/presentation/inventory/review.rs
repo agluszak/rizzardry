@@ -5,7 +5,7 @@ use crate::content::characters::{Attribute, Skill};
 use crate::content::items::EquipClass;
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::Character;
-use crate::game::combat::attack::character_initiative;
+use crate::game::combat::attack::Weapons;
 use crate::game::data::Catalogs;
 use crate::game::inventory::EquipSlot;
 use crate::game::magic::LearnedSpells;
@@ -492,8 +492,10 @@ pub(super) fn refresh(
 ) {
     let view = characters.get(screen.member).unwrap();
     let load = view.load();
-    let hand = view.hand(&content.items);
     let CharacterViewItem { profile, vitals, carried, .. } = view;
+    let stats = profile.stats(&vitals.enchantments);
+    let weapons = Weapons::of(carried, &content.items);
+    let main = weapons.hands[0];
     let armour_view = info.as_ref().is_some_and(|info| info.armour);
     let effect_filter = info.as_ref().map_or(EffectFilter::All, |info| info.filter);
     let show_items = info.as_ref().is_some_and(|info| info.items);
@@ -680,22 +682,23 @@ pub(super) fn refresh(
                 } else {
                     match index {
                         1 => {
-                            let min = hand.dice.base + hand.dice.count;
-                            let max = hand.dice.base + hand.dice.count * hand.dice.sides;
-                            let scale = 100 + hand.damage_percent;
+                            let dice = weapons.strike(&stats, 0).dice;
+                            let min = dice.base + dice.count;
+                            let max = dice.base + dice.count * dice.sides;
+                            let scale = 100 + main.map_or(0, |w| w.damage_percent(&stats));
                             format!(
                                 "{}-{}",
                                 ((min * scale + 50) / 100).max(1),
                                 ((max * scale + 50) / 100).max(1)
                             )
                         }
-                        3 => hand.attacks.to_string(),
-                        4 => hand.swings.to_string(),
-                        5 => format!("{:+}", hand.to_hit),
-                        7 => format!("{:+}%", hand.damage_percent),
+                        3 => main.map_or(0, |w| w.attacks(&stats, load)).to_string(),
+                        4 => main.map_or(0, |w| w.swings(&stats, load)).to_string(),
+                        5 => format!("{:+}", main.map_or(0, |w| w.to_hit(&stats, load))),
+                        7 => format!("{:+}%", main.map_or(0, |w| w.damage_percent(&stats))),
                         8 => {
-                            character_initiative(&profile.stats(&vitals.enchantments), &hand, load)
-                                .to_string()
+                            let bonus = main.map_or(0, |w| w.initiative(&stats));
+                            (stats.initiative(load) + bonus).to_string()
                         }
                         _ => String::new(),
                     }
