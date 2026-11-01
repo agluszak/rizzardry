@@ -335,104 +335,126 @@ impl<'a> Defence<'a> {
     }
 }
 
-/// What both sides' aims share (retail `GetAttackScore`,
-/// `GetMonsterAttackScore`): the attacker's score less fatigue, the mode and
-/// surprise, then the target's armour and the gap in size.
-fn aim_score(
-    (score, fatigue, ssdi): (i32, i32, i32),
-    mode: AttackMode,
-    surprise: Surprise,
-    target: Option<&Defence>,
-) -> i32 {
-    let surprised = 10 * i32::from(surprise.unaware) + 10 * i32::from(surprise.natural);
-    let aimed = score + mode_to_hit(mode) + surprised - fatigue;
-    target.map_or(aimed, |target| {
-        aimed - target.armour_class(mode, surprise) * 5 + (ssdi - target.ssdi) / 10
-    })
+/// Who a blow comes from, for what the two sides do differently.
+#[derive(Clone, Copy)]
+enum Side<'a> {
+    Member { stats: &'a CharacterStats<'a>, turncoat: bool },
+    Monster { stance: Stance },
 }
 
-/// A member's aim with one hand (retail `GetTargetAttackAttributes`):
-/// against `target`'s defences, or with none for the odds of a fumble.
-pub fn member_aim(
-    fighter: &Fighter<'_>,
-    vitals: &Vitals,
-    hand: usize,
-    mode: AttackMode,
-    surprise: Surprise,
-    target: Option<&Defence>,
-    difficulty: Difficulty,
-) -> i32 {
-    let c = fighter.stats;
-    let mut fatigue = character_fatigue(c, vitals);
-    if fighter.grip.weapon_skill(hand) == Skill::ModernWeapon {
-        fatigue >>= 1;
-    }
-    let attacker = (fighter.score(hand), fatigue, character_ssdi(c));
-    let mut score = aim_score(attacker, mode, surprise, target);
-    if vitals.conditions.has(Condition::Blind) && score > 10 {
-        score = if c.has_trait(Trait::EffectiveWhileBlind) {
-            c.scale_by_profession((score - 10) as f32) as i32 + 10
-        } else {
-            10
-        };
-    }
-    difficulty.for_character(score, vitals.conditions.has(Condition::Turncoat))
+/// One side's numbers behind a blow; aim and penetration are the same sums
+/// for both.
+#[derive(Clone, Copy)]
+pub struct Attacker<'a> {
+    side: Side<'a>,
+    score: i32,
+    /// What fatigue takes off its aim, and off its penetration. Modern
+    /// weapons and the attacks that tire little halve the first; modern
+    /// weapons escape the second, and only attacks that tire little feel it.
+    fatigue: (i32, i32),
+    ssdi: i32,
+    blind: bool,
 }
 
-/// A member's chance to get through armour where the blow landed (retail
-/// `GetTargetHitAttackAttributes`).
-pub fn member_penetration(
-    fighter: &Fighter<'_>,
-    vitals: &Vitals,
-    hand: usize,
-    mode: AttackMode,
-    surprise: Surprise,
-    (target, at): (&Defence, Location),
-    difficulty: Difficulty,
-) -> i32 {
-    let c = fighter.stats;
-    let mut score = fighter.score(hand) + mode_penetration(mode);
-    if fighter.grip.weapon_skill(hand) != Skill::ModernWeapon {
-        score -= character_fatigue(c, vitals);
+impl<'a> Attacker<'a> {
+    /// Retail `GetTargetAttackAttributes`, `GetTargetHitAttackAttributes`.
+    pub fn member(
+        stats: &'a CharacterStats<'a>,
+        vitals: &Vitals,
+        weapon: &Wielded<'_>,
+        load: Load,
+        blessing: i32,
+    ) -> Self {
+        let tired = character_fatigue(stats, vitals);
+        let modern = weapon.skill == Skill::ModernWeapon;
+        Self {
+            side: Side::Member { stats, turncoat: vitals.conditions.has(Condition::Turncoat) },
+            score: weapon.score(stats, load, blessing),
+            fatigue: if modern { (tired >> 1, 0) } else { (tired, tired) },
+            ssdi: character_ssdi(stats),
+            blind: vitals.conditions.has(Condition::Blind),
+        }
     }
-    score -= target.armour_at(mode, surprise, at) * 5;
-    score += (character_ssdi(c) - target.ssdi) / 10;
-    difficulty.for_character(score, vitals.conditions.has(Condition::Turncoat))
-}
 
-/// A monster's aim with one attack (retail `GetMonsterAttackScore`).
-pub fn monster_aim(
-    (species, monster, stance): (&Species, &Monster, Stance),
-    attack: &MonsterAttack,
-    mode: AttackMode,
-    surprise: Surprise,
-    target: Option<&Defence>,
-    difficulty: Difficulty,
-) -> i32 {
-    let mut fatigue = monster_fatigue(monster);
-    if attack.tires_little() {
-        fatigue >>= 1;
+    /// Retail `GetMonsterAttackScore`, `ContinueMonsterAttack`.
+    pub fn monster(
+        (species, monster, stance): (&Species, &Monster, Stance),
+        attack: &MonsterAttack,
+    ) -> Self {
+        let tired = monster_fatigue(monster);
+        Self {
+            side: Side::Monster { stance },
+            score: i32::from(attack.score) + 5 * monster.enchantments.hit_bonus(),
+            fatigue: if attack.tires_little() { (tired >> 1, tired) } else { (tired, 0) },
+            ssdi: species_ssdi(species, &monster.enchantments),
+            blind: monster.conditions.has(Condition::Blind),
+        }
     }
-    let base = i32::from(attack.score) + 5 * monster.enchantments.hit_bonus();
-    let ssdi = species_ssdi(species, &monster.enchantments);
-    let mut score = aim_score((base, fatigue, ssdi), mode, surprise, target);
-    if monster.conditions.has(Condition::Blind) && score > 10 {
-        score = 10;
+
+    fn judged(&self, score: i32, difficulty: Difficulty) -> i32 {
+        match self.side {
+            Side::Member { turncoat, .. } => difficulty.for_character(score, turncoat),
+            Side::Monster { stance } => difficulty.for_monster(score, stance),
+        }
     }
-    difficulty.for_monster(score, stance)
+
+    /// The chance to strike `target`, or with none the odds of a fumble.
+    pub fn aim(
+        &self,
+        mode: AttackMode,
+        surprise: Surprise,
+        target: Option<&Defence>,
+        difficulty: Difficulty,
+    ) -> i32 {
+        let surprised = 10 * i32::from(surprise.unaware) + 10 * i32::from(surprise.natural);
+        let mut score = self.score + mode_to_hit(mode) + surprised - self.fatigue.0;
+        if let Some(target) = target {
+            score -= target.armour_class(mode, surprise) * 5;
+            score += (self.ssdi - target.ssdi) / 10;
+        }
+        if self.blind && score > 10 {
+            score = match self.side {
+                Side::Member { stats, .. } if stats.has_trait(Trait::EffectiveWhileBlind) => {
+                    stats.scale_by_profession((score - 10) as f32) as i32 + 10
+                }
+                _ => 10,
+            };
+        }
+        self.judged(score, difficulty)
+    }
+
+    /// The chance to get through armour where the blow landed.
+    pub fn penetration(
+        &self,
+        mode: AttackMode,
+        surprise: Surprise,
+        (target, at): (&Defence, Location),
+        difficulty: Difficulty,
+    ) -> i32 {
+        let score = self.score + mode_penetration(mode)
+            - self.fatigue.1
+            - target.armour_at(mode, surprise, at) * 5
+            + (self.ssdi - target.ssdi) / 10;
+        self.judged(score, difficulty)
+    }
 }
 
 /// How well a member presses a blow past a guard (retail
 /// `GetCharacterProtectionScore`): Speed, less fatigue (halved with a
 /// modern weapon), with the first hand's to-hit and rating when it is in
 /// play, and the member's own to-hit bonus.
-pub fn member_protection(fighter: &Fighter<'_>, vitals: &Vitals) -> i32 {
-    let c = fighter.stats;
+pub fn member_protection(
+    c: &CharacterStats<'_>,
+    vitals: &Vitals,
+    weapons: &Weapons<'_>,
+    load: Load,
+    blessing: i32,
+) -> i32 {
     let mut fatigue = character_fatigue(c, vitals);
-    if fighter.grip.weapon_skill(0) == Skill::ModernWeapon {
+    if weapons.skill(0) == Skill::ModernWeapon {
         fatigue >>= 1;
     }
-    let armed = if fighter.grip.in_play(0) { fighter.score(0) } else { 0 };
+    let armed = weapons.hands[0].map_or(0, |weapon| weapon.score(c, load, blessing));
     c.attribute(crate::content::characters::Attribute::Speed) as i32 - fatigue
         + armed
         + vitals.enchantments.hit_bonus() * 5
@@ -451,26 +473,6 @@ pub fn monster_protection(species: &Species, monster: &Monster) -> i32 {
     i32::from(species.attributes.speed) - fatigue
         + first.map_or(0, |a| i32::from(a.score))
         + monster.enchantments.hit_bonus() * 5
-}
-
-/// A monster's chance to get through armour (retail `ContinueMonsterAttack`).
-/// Retail takes fatigue off only the attacks that tire little, in full.
-pub fn monster_penetration(
-    (species, monster, stance): (&Species, &Monster, Stance),
-    attack: &MonsterAttack,
-    mode: AttackMode,
-    surprise: Surprise,
-    (target, at): (&Defence, Location),
-    difficulty: Difficulty,
-) -> i32 {
-    let mut score =
-        i32::from(attack.score) + 5 * monster.enchantments.hit_bonus() + mode_penetration(mode);
-    if attack.tires_little() {
-        score -= monster_fatigue(monster);
-    }
-    score -= target.armour_at(mode, surprise, at) * 5;
-    score += (species_ssdi(species, &monster.enchantments) - target.ssdi) / 10;
-    difficulty.for_monster(score, stance)
 }
 
 /// The chance a swing goes astray onto someone else in reach (retail
@@ -583,12 +585,11 @@ pub fn effect_power(level: u32) -> u32 {
 /// `ResolveCharacterAttack`): Critical Strike for close combat, Ranged
 /// Combat for a Ranger's bows and slings, Critical Strike for a Ninja's
 /// throws; a point per 25 skill and a chance at one more.
-pub fn critical_chance(rng: &mut GameRng, fighter: &Fighter<'_>, hand: usize) -> u32 {
-    let (c, grip) = (fighter.stats, fighter.grip);
-    let skill = grip.weapon_skill(hand);
-    let skill = if !grip.ranged(hand) {
+pub fn critical_chance(rng: &mut GameRng, c: &CharacterStats<'_>, weapon: &Wielded<'_>) -> u32 {
+    let skill = weapon.skill;
+    let skill = if !weapon.ranged {
         c.skill(Skill::CriticalStrike)
-    } else if matches!(skill, Skill::ModernWeapon | Skill::Bow) || grip.sling(hand) {
+    } else if matches!(skill, Skill::ModernWeapon | Skill::Bow) || weapon.sling() {
         if c.has_trait(Trait::RangedCriticals) { c.skill(Skill::RangedCombat) } else { 0 }
     } else if skill == Skill::ThrowingAndSling && c.has_trait(Trait::ThrownCriticals) {
         c.skill(Skill::CriticalStrike)
@@ -608,11 +609,10 @@ pub fn critical_chance(rng: &mut GameRng, fighter: &Fighter<'_>, hand: usize) ->
 /// A Ninja's thrown weapons always get through armour when they strike
 /// (retail `W8_TRAIT_THROWN_CRITICALS` for ranged thrown weapons other than
 /// slings).
-pub fn sure_penetration(fighter: &Fighter<'_>, hand: usize) -> bool {
-    let grip = fighter.grip;
-    fighter.stats.has_trait(Trait::ThrownCriticals)
-        && grip.weapon_skill(hand) == Skill::ThrowingAndSling
-        && !grip.sling(hand)
+pub fn sure_penetration(c: &CharacterStats<'_>, weapon: &Wielded<'_>) -> bool {
+    c.has_trait(Trait::ThrownCriticals)
+        && weapon.skill == Skill::ThrowingAndSling
+        && !weapon.sling()
 }
 
 /// The world units in a metre (retail's 500).

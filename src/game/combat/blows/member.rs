@@ -36,10 +36,14 @@ pub(super) fn member_bystanders(
 
 /// A Berserk order needs the trait, a hand that can attack and a main hand
 /// for close quarters (retail `CanCharacterBerserk`).
-pub(in crate::game::combat) fn can_berserk(character: &Character, grip: &attack::Grip<'_>) -> bool {
+pub(in crate::game::combat) fn can_berserk(
+    character: &Character,
+    weapons: &attack::Weapons<'_>,
+) -> bool {
+    let [main, off] = weapons.hands;
     character.has_trait(Trait::Berserk)
-        && (grip.in_play(0) || grip.in_play(1))
-        && (!grip.in_play(0) || grip.reach(0) <= Reach::Short)
+        && (main.is_some() || off.is_some())
+        && main.is_none_or(|main| main.reach <= Reach::Short)
 }
 
 /// Retail `ChooseMonsterTarget`: among the monsters a hand reaches, the
@@ -142,11 +146,11 @@ pub(in crate::game::combat) fn member_attacks(
     let (character, load) = (character.clone(), burden.load);
     let controlled = vitals.conditions.has(Condition::Turncoat);
     let slowed = vitals.conditions.has(Condition::Slowed);
-    let grip = attack::Grip::of(carried, items);
+    let weapons = attack::Weapons::of(carried, items);
     let stats = character.stats(&vitals.enchantments);
-    let fighter = attack::Fighter::new(&stats, &grip, load);
-    let initiative = [fighter.initiative(0), fighter.initiative(1)];
-    let most_swings = [fighter.swings(0), fighter.swings(1)];
+    let initiative = weapons.hands.map(|w| w.map_or(0, |w| w.initiative(&stats)));
+    let most_swings = weapons.hands.map(|w| w.map_or(0, |w| w.swings(&stats, load)));
+    let modes = weapons.hands.map(|w| w.map(|w| w.strike(&stats).modes));
     // The party's blessings guide every hand.
     let blessing = field.enchantments.hit_bonus();
     let mut turns = work.hands;
@@ -156,41 +160,39 @@ pub(in crate::game::combat) fn member_attacks(
     // `ComputeCharacterActionPhase`).
     let mut due = None;
     for current in [turns.current, 1 - turns.current] {
-        let target = (grip.in_play(current) && turns.left[current] > 0)
-            .then(|| member_target(member, grip.reach(current), field, fight, rng))
-            .flatten();
-        match target {
-            Some(target) => {
-                due = Some((current, target));
+        let weapon = weapons.hands[current].filter(|_| turns.left[current] > 0);
+        let target = weapon.and_then(|w| member_target(member, w.reach, field, fight, rng));
+        match weapon.zip(target) {
+            Some((weapon, target)) => {
+                due = Some((current, weapon, target));
                 break;
             }
             None => turns.left[current] = 0,
         }
     }
-    let Some((current, target)) = due else {
+    let Some((current, weapon, target)) = due else {
         battle.this_round.party[index].end();
         return;
     };
     turns.current = current;
-    let hand = current;
-    let reach = grip.reach(hand);
+    let reach = weapon.reach;
     battle.this_round.attacked = true;
     // Retail draws the attack's mode, then its swings.
     let mode = if berserk {
         AttackMode::Berserk
     } else {
-        attack::choose_mode(rng, fighter.strike(hand).modes)
+        attack::choose_mode(rng, modes[current].unwrap())
     };
     turns.left[current] -= 1;
-    let mut swings = rng.below(most_swings[hand]) + 1;
+    let mut swings = rng.below(most_swings[current]) + 1;
     // A Rogue's sword or dagger at arm's length strikes where it hurts.
     let backstab = character.has_trait(Trait::Backstab)
         && reach <= Reach::Touch
-        && matches!(grip.weapon_skill(hand), Skill::Sword | Skill::Dagger);
-    swings = (swings as i32 + grip.extra_swings(hand)).max(1) as u32;
+        && matches!(weapon.skill, Skill::Sword | Skill::Dagger);
+    swings = (swings as i32 + weapon.extra_swings()).max(1) as u32;
     // A Samurai's Lightning Strike, readied as the round began.
     if turns.lightning && current == 0 {
-        if grip.weapon_skill(0) == Skill::Sword && !slowed {
+        if weapons.skill(0) == Skill::Sword && !slowed {
             let level = u32::from(character.profession_levels[character.profession]);
             swings += if rng.below(11) + level < 20 { 3 } else { 4 };
         }
@@ -226,22 +228,19 @@ pub(in crate::game::combat) fn member_attacks(
             break;
         }
         let stats = character.stats(&vitals.enchantments);
-        let fighter = attack::Fighter::new(&stats, &grip, load).blessed(blessing);
+        let attacker = attack::Attacker::member(&stats, &vitals, &weapon, load, blessing);
         let Some((aimed_at, _)) = victim_defence(battle, field, fight, target) else { break };
-        let aim_at = |target| {
-            attack::member_aim(&fighter, &vitals, hand, mode, surprise, target, difficulty)
-        };
-        let aim = aim_at(Some(&aimed_at));
+        let aim = attacker.aim(mode, surprise, Some(&aimed_at), difficulty);
         let delivery = if reach >= Reach::Long {
             Delivery::Shot {
                 from: fight.party.eye,
                 blind: vitals.conditions.has(Condition::Blind),
-                through: attack::sure_penetration(&fighter, hand),
+                through: attack::sure_penetration(&stats, &weapon),
             }
         } else {
             Delivery::Swing {
                 bystanders: member_bystanders(field, fight, member, reach, target.entity()),
-                odds: aim_at(None),
+                odds: attacker.aim(mode, surprise, None, difficulty),
             }
         };
         let Ok(landing) = land(rng, field, fight, (target, aim), delivery, &mut surprise) else {
@@ -251,13 +250,13 @@ pub(in crate::game::combat) fn member_attacks(
             if landing.fumbled {
                 news.write(CombatNews::Fumble { attacker: member, victim: landing.victim });
             }
-            let pressing = attack::member_protection(&fighter, &vitals);
+            let pressing = attack::member_protection(&stats, &vitals, &weapons, load, blessing);
             landing.victim =
                 intercept(battle, rng, field, (pressing, &mut surprise), landing.victim, news);
             let dealt = member_blow(
                 battle,
-                (member, &fighter, &vitals),
-                (hand, mode),
+                (member, &stats, &attacker),
+                (&weapons, current, mode),
                 (surprise, aim, backstab_chance),
                 landing,
                 (rng, field, fight),
@@ -289,7 +288,7 @@ pub(in crate::game::combat) fn member_attacks(
         }
         // Every swing tires, twice as much in a berserk fury.
         let (_, mut vitals, mut carried, _) = field.members.get_mut(member).unwrap();
-        let weight = grip.weight(hand);
+        let weight = weapon.weight();
         let cost = attack::swing_stamina(
             rng,
             mode,
@@ -302,8 +301,8 @@ pub(in crate::game::combat) fn member_attacks(
         // Arrows, bolts and stones are shot away, thrown weapons thrown,
         // and guns spend their shots.
         // A hand with nothing left to fire is done for the round.
-        let paired = grip.paired(hand);
-        if (paired || grip.ranged(hand)) && !spend_shot(&mut carried, items, current, paired) {
+        let paired = weapon.launcher();
+        if (paired || weapon.ranged) && !spend_shot(&mut carried, items, current, paired) {
             left = 0;
             turns.left[current] = 0;
         }
@@ -342,15 +341,19 @@ pub(super) fn spend_shot(
 /// dodged.
 pub(super) fn member_blow(
     battle: &Battle,
-    (attacker, fighter, vitals): (Entity, &attack::Fighter<'_>, &Vitals),
-    (hand, mode): (usize, AttackMode),
+    (attacker, character, blows): (
+        Entity,
+        &crate::game::characters::CharacterStats<'_>,
+        &attack::Attacker<'_>,
+    ),
+    (weapons, current, mode): (&attack::Weapons<'_>, usize, AttackMode),
     (surprise, aim, backstab): (Surprise, i32, i32),
     landing: Landing,
     (rng, field, fight): (&mut GameRng, &mut Field, &mut Fight),
     tally: &mut Tally,
 ) -> Option<u32> {
-    let (character, grip) = (fighter.stats, fighter.grip);
-    let strike = fighter.strike(hand);
+    let weapon = weapons.hands[current].unwrap();
+    let strike = weapon.strike(character);
     let difficulty = field.difficulty();
     let (struck, victim_character) = victim_defence(battle, field, fight, landing.victim)?;
     let at = struck.locate(rng, None);
@@ -358,20 +361,12 @@ pub(super) fn member_blow(
         return None;
     }
     // A launcher pierces by what it shoots.
-    let piercing = if grip.paired(hand) {
-        attack::choose_mode(rng, fighter.strike(1 - hand).modes)
+    let piercing = if weapon.launcher() {
+        attack::choose_mode(rng, weapons.strike(character, 1 - current).modes)
     } else {
         mode
     };
-    let through = attack::member_penetration(
-        fighter,
-        vitals,
-        hand,
-        piercing,
-        surprise,
-        (&struck, at),
-        difficulty,
-    );
+    let through = blows.penetration(piercing, surprise, (&struck, at), difficulty);
     if !landing.through && through < landing.roll as i32 {
         return Some(0);
     }
@@ -385,15 +380,15 @@ pub(super) fn member_blow(
     {
         return Some(0);
     }
-    let slaying = struck.species().map_or(0, |kind| grip.slays(hand, kind.kind));
+    let slaying = struck.species().map_or(0, |kind| weapon.slays(kind.kind));
     let count = attack::dice_count(rng, mode, &struck, surprise, backstab, slaying);
     let dice = match mode {
-        AttackMode::Punch => fighter.strike(1).dice,
-        AttackMode::Kick => fighter.strike(0).dice,
+        AttackMode::Punch => weapons.strike(character, 1).dice,
+        AttackMode::Kick => weapons.strike(character, 0).dice,
         _ => strike.dice,
     };
     let rolled = attack::roll_dice(rng, dice, count);
-    let mut damage = attack::member_damage(fighter.damage_percent(hand), rolled, &struck);
+    let mut damage = attack::member_damage(weapon.damage_percent(character), rolled, &struck);
     if let Some((victim, c)) = &victim_character {
         iron_skin(rng, field, *victim, c, tally);
     }
@@ -409,7 +404,7 @@ pub(super) fn member_blow(
         let mut blow = strike.effects;
         if !landing.fumbled {
             let kill = &mut blow.chances[AttackEffect::Kill];
-            *kill = (*kill + attack::critical_chance(rng, fighter, hand)).min(100);
+            *kill = (*kill + attack::critical_chance(rng, character, &weapon)).min(100);
             if character.has_trait(Trait::Knockout) {
                 let knockout = &mut blow.chances[AttackEffect::KnockOut];
                 *knockout = (*knockout + character.scale_by_profession(5.0) as u32).min(100);
@@ -427,7 +422,7 @@ pub(super) fn member_blow(
         && dealt > 0
         && let Ok((mut trained, ..)) = field.members.get_mut(attacker)
     {
-        let skills: &[Skill] = if !grip.ranged(hand) {
+        let skills: &[Skill] = if !weapon.ranged {
             &[Skill::CriticalStrike, Skill::PowerStrike]
         } else if trained.has_trait(Trait::ThrownCriticals) {
             &[Skill::EagleEye, Skill::CriticalStrike]

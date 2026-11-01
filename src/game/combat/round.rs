@@ -147,15 +147,15 @@ pub(super) fn accept_round(
         .filter(|_| !surprised)
         .map(|member| {
             let (character, _, carried, _) = members.get(member).unwrap();
-            let grip = attack::Grip::of(carried, items);
+            let held = attack::Weapons::of(carried, items);
             let lightning = *orders.get(member).unwrap() == Order::Attack
                 && character.has_trait(Trait::LightningStrike)
-                && grip.weapon_skill(0) == Skill::Sword
+                && held.skill(0) == Skill::Sword
                 && rng.below(100) < u32::from(character.scale_by_profession(12.0) as u8);
-            (member, grip, lightning)
+            (member, held, lightning)
         })
         .collect();
-    for (member, grip, lightning) in prepared {
+    for (member, held, lightning) in prepared {
         let (character, vitals, carried, burden) = members.get(member).unwrap();
         let stats = character.stats(&vitals.enchantments);
         let weapons =
@@ -169,7 +169,7 @@ pub(super) fn accept_round(
             Order::Attack => RoundAction::Attack { weapons, berserk: false },
             // One who can no longer berserk attacks as usual.
             Order::Berserk => {
-                RoundAction::Attack { weapons, berserk: blows::can_berserk(character, &grip) }
+                RoundAction::Attack { weapons, berserk: blows::can_berserk(character, &held) }
             }
             Order::Defend => RoundAction::Defend,
             Order::Magic(choice) => RoundAction::Magic(choice),
@@ -180,12 +180,13 @@ pub(super) fn accept_round(
             // The hand with the most attacks opens, its weapon's initiative
             // counting (retail `AssignCombatPhases`).
             RoundAction::Attack { .. } if vitals.can_fight() => {
-                let fighter = attack::Fighter::new(&stats, &grip, burden.load);
-                match fighter.opening_hand() {
+                let load = burden.load;
+                match held.opening_hand(&stats, load) {
                     Some(hand) => {
                         turns.current = hand;
-                        turns.left = [fighter.attacks(0), fighter.attacks(1)];
-                        phase(rng, fighter.round_initiative(hand))
+                        turns.left = held.hands.map(|w| w.map_or(0, |w| w.attacks(&stats, load)));
+                        let bonus = held.hands[hand].unwrap().initiative(&stats);
+                        phase(rng, stats.initiative(load) + bonus)
                     }
                     None => 0,
                 }

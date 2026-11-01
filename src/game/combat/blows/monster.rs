@@ -239,14 +239,8 @@ pub(in crate::game::combat) fn monster_attacks(
             break;
         }
         let Some((aimed_at, _)) = victim_defence(battle, field, fight, target) else { break };
-        let aim = attack::monster_aim(
-            (kind, &monster, stance),
-            attack,
-            mode,
-            surprise,
-            Some(&aimed_at),
-            difficulty,
-        );
+        let blows = attack::Attacker::monster((kind, &monster, stance), attack);
+        let aim = blows.aim(mode, surprise, Some(&aimed_at), difficulty);
         let delivery = if attack.reach >= Reach::Long {
             Delivery::Shot {
                 from: eye,
@@ -256,14 +250,7 @@ pub(in crate::game::combat) fn monster_attacks(
         } else {
             Delivery::Swing {
                 bystanders: monster_bystanders(field, fight, entity, attack.reach, target.entity()),
-                odds: attack::monster_aim(
-                    (kind, &monster, stance),
-                    attack,
-                    mode,
-                    surprise,
-                    None,
-                    difficulty,
-                ),
+                odds: blows.aim(mode, surprise, None, difficulty),
             }
         };
         let Ok(landing) = land(rng, field, fight, (target, aim), delivery, &mut surprise) else {
@@ -288,14 +275,7 @@ pub(in crate::game::combat) fn monster_attacks(
         if matches!(landing.victim, Victim::Member(_)) && field.enchantments.deflects(mode, rng) {
             continue;
         }
-        let through = attack::monster_penetration(
-            (kind, &monster, stance),
-            attack,
-            mode,
-            surprise,
-            (&struck, at),
-            difficulty,
-        );
+        let through = blows.penetration(mode, surprise, (&struck, at), difficulty);
         let dealt = if landing.through || through >= landing.roll as i32 {
             let count = attack::dice_count(rng, mode, &struck, surprise, backstab, 0);
             let rolled = attack::roll_dice(rng, attack.damage, count);
