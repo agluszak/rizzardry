@@ -6,7 +6,7 @@
 //! Retail's voices on a miss, a kill or a fumble draw from the same random
 //! numbers as the rules; here they draw nothing.
 
-use super::attack::{self, Aim, Defence, Hand, Surprise};
+use super::attack::{self, Aim, Defence, Surprise};
 use super::round::HandTurns;
 use super::{
     Announcement, Armour, Battle, CombatNews, PartyPace, PartyView, RoundAction, RoundPhase,
@@ -14,7 +14,7 @@ use super::{
 use crate::content::characters::{Skill, Trait};
 use crate::content::items::{AttackEffect, AttackMode};
 use crate::content::species::{Reach, Species};
-use crate::game::characters::{Character, CharacterStats, Condition, Vitals};
+use crate::game::characters::{Character, Condition, Vitals};
 use crate::game::magic::effects::{self, Effect, Field, Victim};
 use crate::game::party::body;
 use crate::game::party::formation::{self, Row};
