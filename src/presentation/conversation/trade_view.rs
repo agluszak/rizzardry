@@ -110,13 +110,15 @@ pub(super) fn sync_trade_rows(
                 }
             }
         }
-        let quote = state
-            .quote()
-            .filter(|q| q.conversation == session && rows.iter().any(|r| r.source == q.source));
-        let selected = quote.and_then(|q| rows.iter().find(|r| r.source == q.source));
+        let selection = state.selection.filter(|chosen| {
+            chosen.source().is_some_and(|source| rows.iter().any(|r| r.source == source))
+        });
+        let selected = selection
+            .and_then(Selection::source)
+            .and_then(|source| rows.iter().find(|r| r.source == source));
         let item = selected.map(|r| r.item);
         let units = selected.map_or(0, |r| r.units);
-        let offer = if let Some(Err(error)) = state.offer {
+        let offer = if let Some(Selection::Refused(error)) = state.selection {
             format!("Trade unavailable: {error:?}")
         } else if let Some(item) = item {
             item.name.clone()
@@ -132,15 +134,12 @@ pub(super) fn sync_trade_rows(
         }
         for (entity, count) in &captions {
             if let Ok(mut text) = texts.get_mut(entity) {
-                let value = quote.map_or_else(String::new, |q| {
-                    if count {
-                        if units > 1 { q.quantity.to_string() } else { String::new() }
-                    } else if state.mode == Mode::Give {
-                        String::new()
-                    } else {
-                        format!("{}g", q.gold)
-                    }
-                });
+                let value = match selection {
+                    Some(Selection::Priced(q)) if count && units > 1 => q.quantity.to_string(),
+                    Some(Selection::Priced(q)) if !count => format!("{}g", q.gold),
+                    Some(Selection::Gift(_)) if count && units > 1 => "1".into(),
+                    _ => String::new(),
+                };
                 if text.value != value {
                     text.value = value;
                 }
@@ -150,7 +149,7 @@ pub(super) fn sync_trade_rows(
             set_enabled(
                 &mut commands,
                 entity,
-                state.mode != Mode::Give
+                matches!(selection, Some(Selection::Priced(_)))
                     && units > 1
                     && item.is_some_and(|d| d.class != EquipClass::Ammunition),
                 disabled,
@@ -158,12 +157,12 @@ pub(super) fn sync_trade_rows(
         }
         let mut gold_typed = false;
         for (text, mut node) in &mut gifts {
-            let shown = state.mode == Mode::Give && quote.is_none();
+            let shown = state.mode == Mode::Give && selection.is_none();
             crate::presentation::screen_art::display_if(&mut node, shown);
             gold_typed = shown && gift_amount(text) > 0;
         }
         for (entity, disabled) in &controls {
-            set_enabled(&mut commands, entity, quote.is_some() || gold_typed, disabled);
+            set_enabled(&mut commands, entity, selection.is_some() || gold_typed, disabled);
         }
         for (mut picture, mut visibility) in &mut previews {
             visibility.set_if_neq(if item.is_some() {
