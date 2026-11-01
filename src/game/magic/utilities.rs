@@ -31,7 +31,6 @@ fn identifies(strength: super::Strength, difficulty: u8) -> bool {
 pub(crate) fn identify_items(
     mut casts: MessageReader<UtilityCast>,
     freedom: crate::game::freedom::Freedom,
-    battles: Query<(), With<crate::game::combat::Battle>>,
     roster: Single<&PartyRoster>,
     mut payment: super::casting::Payment,
     mut news: MessageWriter<MagicNews>,
@@ -40,7 +39,7 @@ pub(crate) fn identify_items(
         if spell != SpellId::IDENTIFY_ITEM {
             continue;
         }
-        let identified = if !freedom.unoccupied() || !battles.is_empty() {
+        let identified = if !freedom.unoccupied() || freedom.fighting() {
             Err(Refusal::WrongTime)
         } else {
             identify(&roster, &mut payment, caster, choice)

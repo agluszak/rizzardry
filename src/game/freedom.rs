@@ -30,9 +30,23 @@ pub struct Freedom<'w, 's> {
     questions: Query<'w, 's, (), With<TravelQuestion>>,
     flights: Query<'w, 's, (), With<crate::game::party::walk_in::PathFlight>>,
     interaction: Query<'w, 's, (), With<crate::game::world::interaction::DeviceInteraction>>,
+    battles: Query<'w, 's, (), With<crate::game::combat::Battle>>,
 }
 
 impl Freedom<'_, '_> {
+    pub fn travelling(&self) -> bool {
+        !self.entering.is_empty()
+    }
+
+    pub fn fighting(&self) -> bool {
+        !self.battles.is_empty()
+    }
+
+    /// Neither travelling nor fighting: what work on the world needs.
+    pub fn peaceful(&self) -> bool {
+        !self.travelling() && !self.fighting()
+    }
+
     pub fn free(&self) -> bool {
         self.unoccupied() && self.camp.is_none()
     }

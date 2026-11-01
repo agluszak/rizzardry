@@ -34,7 +34,6 @@ pub(crate) fn spell(id: SpellId) -> bool {
 pub(crate) fn cast_portals(
     mut casts: MessageReader<super::utilities::UtilityCast>,
     freedom: crate::game::freedom::Freedom,
-    battles: Query<(), With<crate::game::combat::Battle>>,
     level: Single<(Entity, &Level)>,
     mut party: Single<(
         &mut PartyBody,
@@ -58,7 +57,7 @@ pub(crate) fn cast_portals(
         if !self::spell(spell) {
             continue;
         }
-        if leaving || !battles.is_empty() || !freedom.unoccupied() {
+        if leaving || freedom.fighting() || !freedom.unoccupied() {
             news.write(MagicNews::Refused { caster, refusal: Refusal::WrongTime });
             continue;
         }

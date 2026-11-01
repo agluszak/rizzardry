@@ -568,7 +568,7 @@ impl Devices<'_, '_> {
         if !self.attempts.is_empty() {
             return;
         }
-        if !self.battles.is_empty() {
+        if self.freedom.fighting() {
             self.locks.write(super::interaction::LockNews::NotInCombat);
             return;
         }

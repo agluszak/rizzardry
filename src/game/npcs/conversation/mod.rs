@@ -230,6 +230,9 @@ pub struct Conversation {
     /// wording.
     result: Option<Outcome>,
     queue: VecDeque<Step>,
+    /// The party has left: it takes no more requests, though its end is
+    /// deferred.
+    left: bool,
 }
 /// What the party's last request came to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

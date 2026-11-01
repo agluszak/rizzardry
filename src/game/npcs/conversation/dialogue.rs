@@ -190,8 +190,6 @@ pub struct Dialogue<'w, 's> {
     scripts: Res<'w, Assets<DialogueScript>>,
     assets: Res<'w, crate::game::npcs::NpcAssets>,
     freedom: crate::game::freedom::Freedom<'w, 's>,
-    entering: Query<'w, 's, (), With<Destination>>,
-    battles: Query<'w, 's, (), With<crate::game::combat::Battle>>,
     camp: Option<Res<'w, crate::game::camp::Camp>>,
     commands: Commands<'w, 's>,
     remarks: MessageWriter<'w, PartyRemark>,
@@ -199,9 +197,6 @@ pub struct Dialogue<'w, 's> {
     faction_news: MessageWriter<'w, crate::game::factions::FactionNews>,
     item_news: MessageWriter<'w, crate::game::inventory::ItemNews>,
     joins: MessageWriter<'w, crate::game::npcs::recruit::JoinParty>,
-    /// Conversations the party has left or that ended in this run, whose
-    /// removal is not yet applied.
-    left: Local<'s, Vec<Entity>>,
 }
 
 impl Dialogue<'_, '_> {
@@ -350,7 +345,7 @@ impl Dialogue<'_, '_> {
     /// fight has begun.
     fn still_open(&self, entity: Entity) -> bool {
         self.conversations.get(entity).is_ok_and(|(_, c, _)| self.available(c.actor))
-            && self.battles.is_empty()
+            && !self.freedom.fighting()
     }
 
     /// What the NPC says to open its dialogue; meeting it for the first
@@ -369,7 +364,7 @@ impl Dialogue<'_, '_> {
     /// The party begins talking to the NPC, if it is free, the NPC is
     /// within reach and willing to talk at all.
     pub fn begin(&mut self, actor: Entity) -> Result<Entity, TradeError> {
-        if !self.freedom.free() || !self.battles.is_empty() || self.party.0.hand.held.is_some() {
+        if !self.freedom.free() || self.freedom.fighting() || self.party.0.hand.held.is_some() {
             return Err(TradeError::Busy);
         }
         let body = self.active_body(actor).ok_or(TradeError::Unavailable)?;
@@ -398,6 +393,7 @@ impl Dialogue<'_, '_> {
             menu: false,
             result: None,
             queue,
+            left: false,
         };
         if !scripted && !merchant && band == Band::Hostile {
             return Ok(self.commands.spawn((conversation(quote(HOSTILE_QUOTE)), Closing)).id());
@@ -455,7 +451,7 @@ impl Dialogue<'_, '_> {
             self.commit_effects(entity, plan.effects);
         }
         self.commands.entity(entity).despawn();
-        self.left.push(entity);
+        self.conversation_mut(entity).left = true;
     }
 
     /// The party leaves the dialogue: at once, or once its queued lines
@@ -469,7 +465,7 @@ impl Dialogue<'_, '_> {
         } else {
             self.commands.entity(entity).despawn();
         }
-        self.left.push(entity);
+        self.conversation_mut(entity).left = true;
     }
 
     /// The NPC a script names by its display name (retail
@@ -1350,7 +1346,7 @@ pub(crate) fn end_conversations(_: On<Add<Destination>>, mut dialogue: Dialogue)
 /// ended every dialogue (`end_conversations`); no queued request may alter
 /// the departing campaign.
 pub fn begin_conversations(mut begins: MessageReader<BeginConversation>, mut dialogue: Dialogue) {
-    if !dialogue.entering.is_empty() {
+    if dialogue.freedom.travelling() {
         begins.clear();
         return;
     }
@@ -1371,16 +1367,14 @@ pub fn answer_requests(
     mut requests: MessageReader<ConversationRequest>,
     mut sides: ParamSet<(Dialogue, super::Trading)>,
 ) {
-    let mut dialogue = sides.p0();
-    dialogue.left.clear();
-    if !dialogue.entering.is_empty() {
+    if sides.p0().freedom.travelling() {
         requests.clear();
         return;
     }
     for ConversationRequest { conversation: entity, talk } in requests.read().cloned() {
         let mut dialogue = sides.p0();
-        let Ok((_, _, closing)) = dialogue.conversations.get(entity) else { continue };
-        if closing || dialogue.left.contains(&entity) {
+        let Ok((_, c, closing)) = dialogue.conversations.get(entity) else { continue };
+        if closing || c.left {
             continue;
         }
         if !matches!(talk, Talk::Close) {
@@ -1410,7 +1404,6 @@ pub fn win_over(mut won: MessageReader<WonOver>, mut dialogue: Dialogue) {
 /// Run each conversation's script as far as it goes, and close those that
 /// are done: ended, left with nothing more to say, or no longer possible.
 pub fn run_conversations(mut dialogue: Dialogue) {
-    dialogue.left.clear();
     let sessions: Vec<_> = dialogue.conversations.iter().map(|(entity, ..)| entity).collect();
     for entity in sessions {
         if !dialogue.still_open(entity) {

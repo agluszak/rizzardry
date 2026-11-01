@@ -46,8 +46,7 @@ pub struct Trading<'w, 's> {
     ids: ResMut<'w, ItemIds>,
     content: If<Res<'w, Catalogs>>,
     clock: Res<'w, GameClock>,
-    entering: Query<'w, 's, (), With<crate::game::world::level::Destination>>,
-    battles: Query<'w, 's, (), With<crate::game::combat::Battle>>,
+    freedom: crate::game::freedom::Freedom<'w, 's>,
 }
 
 impl Trading<'_, '_> {
@@ -113,7 +112,7 @@ impl Trading<'_, '_> {
         source: TradeSource,
         quantity: u32,
     ) -> Result<TradeQuote, TradeError> {
-        if !self.entering.is_empty() || !self.battles.is_empty() {
+        if !self.freedom.peaceful() {
             return Err(TradeError::Busy);
         }
         let c = self.conversations.get(conversation).map_err(|_| TradeError::StaleSelection)?;
@@ -161,7 +160,7 @@ impl Trading<'_, '_> {
             return Err(TradeError::StaleSelection);
         }
         let actor = c.actor;
-        if !self.entering.is_empty() || !self.battles.is_empty() || !self.open_for_trade(actor) {
+        if !self.freedom.peaceful() || !self.open_for_trade(actor) {
             return Err(TradeError::Unavailable);
         }
         if self.npcs.get(actor).unwrap().0.stock.trades != quote.trade {

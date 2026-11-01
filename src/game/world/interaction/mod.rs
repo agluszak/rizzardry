@@ -344,15 +344,14 @@ pub struct DeviceWork<'w, 's> {
     difficulty: Res<'w, Difficulty>,
     rng: ResMut<'w, GameRng>,
     news: MessageWriter<'w, LockNews>,
-    entering: Query<'w, 's, (), With<super::level::Destination>>,
-    battles: Query<'w, 's, (), With<Battle>>,
+    freedom: crate::game::freedom::Freedom<'w, 's>,
 }
 
 impl DeviceWork<'_, '_> {
     /// The member's Locks & Traps level, when the party is free to work and
     /// the member able.
     fn worker(&self, actor: Entity) -> Result<Option<u32>, Unable> {
-        if !self.entering.is_empty() || !self.battles.is_empty() {
+        if !self.freedom.peaceful() {
             return Err(Unable::NotNow);
         }
         let (character, vitals) = self.members.get(actor).unwrap();
@@ -385,7 +384,7 @@ impl DeviceWork<'_, '_> {
     /// The trap under way, if the device still stands guarded and its
     /// discharge can be resolved.
     fn trap(&mut self, on: Entity) -> Result<Disarming, Unable> {
-        if !self.entering.is_empty() || !self.battles.is_empty() {
+        if !self.freedom.peaceful() {
             return Err(Unable::NotNow);
         }
         let (work, device) = self.work(on)?;
@@ -680,10 +679,7 @@ impl DeviceWork<'_, '_> {
         actor: Entity,
     ) -> Result<Option<(u8, u8)>, crate::game::magic::casting::Refusal> {
         use crate::game::magic::casting::Refusal;
-        if !self.entering.is_empty()
-            || !self.battles.is_empty()
-            || !self.members.get(actor).unwrap().1.can_act()
-        {
+        if !self.freedom.peaceful() || !self.members.get(actor).unwrap().1.can_act() {
             return Err(Refusal::CannotAct);
         }
         let (work, device) = self.work(on).map_err(|_| Refusal::NoTarget)?;
