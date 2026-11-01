@@ -130,7 +130,6 @@ pub fn special_attack(
     victims: &[Victim],
     rng: &mut GameRng,
     world: &mut Field,
-    improved: &mut Vec<(Entity, Skill)>,
 ) -> Vec<Effect> {
     if definition.summons {
         return Vec::new();
@@ -160,16 +159,7 @@ pub fn special_attack(
                     if condition == Condition::Poisoned {
                         rng.below(if monster { 2 } else { bound });
                     }
-                    afflict(
-                        rng,
-                        world,
-                        victim,
-                        (Some(condition), 0),
-                        realm,
-                        against,
-                        Some(rounds),
-                        improved,
-                    )
+                    afflict(rng, world, victim, (Some(condition), 0), realm, against, Some(rounds))
                 }
                 SpecialEffect::Harm => {
                     let rolled = three(rng, bound) / 3 + 1;
@@ -231,7 +221,7 @@ pub(crate) fn pulse_clouds(
     party_eye: Vec3,
     rng: &mut GameRng,
     world: &mut Field,
-) -> Vec<(SpellId, Vec<Effect>, Vec<(Entity, Skill)>)> {
+) -> Vec<(SpellId, Vec<Effect>)> {
     let spells = world.spells();
     let mut reports = Vec::new();
     let party: Vec<_> = world.party.iter().map(Victim::Member).collect();
@@ -254,7 +244,6 @@ pub(crate) fn pulse_clouds(
             let strength = Strength::at(0, spell, effect.power, effect.boost);
             let victims = actor.map_or_else(|| party.clone(), |a| vec![Victim::Monster(a)]);
             let mut landed = Vec::new();
-            let mut improved = Vec::new();
             for victim in victims {
                 if dead(world, victim) {
                     continue;
@@ -270,19 +259,11 @@ pub(crate) fn pulse_clouds(
                         Victim::Member(_) => false,
                     };
                     let target = target(world, victim, realm, None);
-                    let result = if immune
-                        || saves(
-                            rng,
-                            world,
-                            victim,
-                            &target,
-                            DEATH_SAVE,
-                            strength.against,
-                            &mut improved,
-                        ) {
+                    let result = if immune {
                         Some(Effect::Resisted { victim })
                     } else {
-                        kill(rng, world, victim)
+                        saves(rng, world, victim, &target, DEATH_SAVE, strength.against)
+                            .or_else(|| kill(rng, world, victim))
                     };
                     landed.extend(result);
                 } else {
@@ -335,18 +316,21 @@ pub(crate) fn pulse_clouds(
                             [Condition::Nauseated, Condition::Poisoned, Condition::Unconscious]
                         {
                             let target = target(world, victim, realm, Some(condition));
-                            if target.immune
-                                || saves(
+                            let saved = if target.immune {
+                                Some(Effect::Resisted { victim })
+                            } else {
+                                saves(
                                     rng,
                                     world,
                                     victim,
                                     &target,
                                     CONDITION_SAVE[condition as usize + 1],
                                     strength.against,
-                                    &mut improved,
                                 )
-                                || shrugs(world, victim, condition, false)
-                            {
+                            };
+                            if let Some(saved) = saved {
+                                landed.push(saved);
+                            } else if shrugs(world, victim, condition, false) {
                                 landed.push(Effect::Resisted { victim });
                             } else if inflict_on(world, victim, (condition, 0), lasting).is_some() {
                                 landed.push(Effect::Inflicted { victim, condition });
@@ -355,7 +339,7 @@ pub(crate) fn pulse_clouds(
                     }
                 }
             }
-            reports.push((id, landed, improved));
+            reports.push((id, landed));
         }
         // Ring of Fire follows the party and samples current nearby actors on
         // every pulse, including actors that entered its radius after casting.
@@ -384,7 +368,7 @@ pub(crate) fn pulse_clouds(
                 );
                 landed.extend(damage(rng, world, victim, realm, amount, effect.power * 3));
             }
-            reports.push((spell.id, landed, Vec::new()));
+            reports.push((spell.id, landed));
         }
     }
     reports

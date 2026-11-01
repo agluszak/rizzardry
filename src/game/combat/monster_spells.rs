@@ -379,7 +379,7 @@ pub(super) fn cast(
     let failure = crate::game::magic::spell_failure(budget, spell, power);
     let outcome = crate::game::magic::roll(rng, failure, spell, false, field.underwater());
     let mut flights = Vec::new();
-    let mut improved = Vec::new();
+
     let effects = match outcome {
         Outcome::Fizzled => Vec::new(),
         _ => {
@@ -415,7 +415,6 @@ pub(super) fn cast(
                 rng,
                 field,
                 &mut flights,
-                &mut improved,
             )
         }
     };
@@ -427,7 +426,6 @@ pub(super) fn cast(
             item: None,
             outcome,
             effects,
-            improved,
             repeats: 0,
         },
         flights,

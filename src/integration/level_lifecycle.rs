@@ -1037,7 +1037,8 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     };
     use crate::game::characters::{Condition, Lasting, Vitals};
     use crate::game::inventory::{Carried, EquipSlot, PartyInventory};
-    use crate::game::npcs::recruit::{self, JoinRefusal};
+    use crate::game::npcs::conversation::Dialogue;
+    use crate::game::npcs::recruit::{JoinRefusal, Recruits};
     use crate::game::npcs::{Npc, NpcAssets, NpcBodies, NpcWorldRole};
     use crate::game::party::roster::{PartyMember, PartyRoster};
     use crate::game::world::level::LevelOwned;
@@ -1091,8 +1092,13 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     app.world_mut().get_mut::<Monster>(body).unwrap().conditions.inflict(afraid.0, afraid.1);
     let members = |app: &App| app.world().get::<PartyRoster>(party).unwrap().len();
 
+    let dismiss = |In(actor): In<Entity>, mut r: Recruits| r.dismiss(actor);
     // Joining.
-    recruit::join(app.world_mut(), actor).unwrap();
+    let join = |In(actor): In<Entity>, mut sides: ParamSet<(Dialogue, Recruits)>| {
+        sides.p0().joinable(actor).unwrap();
+        sides.p1().join(actor);
+    };
+    app.world_mut().run_system_cached_with(join, actor).unwrap();
     assert_eq!(members(&app), 2);
     assert_eq!(app.world().get::<PartyMember>(actor).unwrap().0, party);
     let character = app.world().get::<Character>(actor).unwrap();
@@ -1106,7 +1112,12 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     assert_eq!(app.world().get::<Vitals>(actor).unwrap().conditions, [afraid].into());
     assert!(app.world().get::<Disabled>(body).is_some());
     assert!(app.world().get::<LevelOwned>(body).is_none());
-    assert_eq!(recruit::joinable(app.world_mut(), actor), Err(JoinRefusal::Declines));
+    assert_eq!(
+        app.world_mut()
+            .run_system_cached_with(|In(actor): In<Entity>, d: Dialogue| d.joinable(actor), actor)
+            .unwrap(),
+        Err(JoinRefusal::Declines)
+    );
 
     // Revisiting its map while it travels with the party leaves its body dormant.
     let mut away = test_level(&mut app, floor());
@@ -1142,7 +1153,7 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
         app.world_mut().spawn(Destination::new(elsewhere, default(), Entry::Travel)).id();
     app.update();
     assert!(is_played(&app, elsewhere));
-    assert!(recruit::dismiss(app.world_mut(), actor));
+    assert!(app.world_mut().run_system_cached_with(dismiss, actor).unwrap());
     assert_eq!(members(&app), 1);
     assert!(app.world().get::<PartyMember>(actor).is_none());
     assert!(app.world().get::<Disabled>(body).is_none());
@@ -1186,7 +1197,7 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
 
     // Rejoining: the same character, not a fresh one.
-    recruit::join(app.world_mut(), actor).unwrap();
+    app.world_mut().run_system_cached_with(join, actor).unwrap();
     assert_eq!(members(&app), 2);
     assert_eq!(app.world().get::<Character>(actor).unwrap().experience, experience);
     assert!(app.world().get::<Carried>(actor).unwrap().backpack[0].is_none());
@@ -1200,7 +1211,7 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     assert!(app.world().get::<Npc>(actor).unwrap().dead);
     let pool = &app.world().get::<PartyInventory>(party).unwrap().pool.stacks;
     assert!(pool.iter().any(|stack| stack.item == ItemId(5)));
-    assert!(!recruit::dismiss(app.world_mut(), actor));
+    assert!(!app.world_mut().run_system_cached_with(dismiss, actor).unwrap());
     assert!(app.world().get::<Disabled>(body).is_some());
     assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
     // Neither its authored map nor the map its body last stood on raises it.

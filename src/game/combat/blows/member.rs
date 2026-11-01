@@ -411,8 +411,7 @@ pub(super) fn member_blow(
             }
         }
         let power = attack::effect_power(u32::from(character.level()));
-        let landed =
-            effects::blow(rng, field, landing.victim, &blow, power, false, &mut tally.improved);
+        let landed = effects::blow(rng, field, landing.victim, &blow, power, false);
         for effect in &landed {
             tally.struck(Some(*effect), true);
         }
@@ -432,7 +431,7 @@ pub(super) fn member_blow(
         };
         for &skill in skills {
             if trained.skill_available(skill) && trained.practise(skill, 1, rng) {
-                tally.improved.push((attacker, skill));
+                tally.effects.push(Effect::Improved { member: attacker, skill });
             }
         }
     }

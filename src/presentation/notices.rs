@@ -300,10 +300,14 @@ fn improves(
 
 /// What a spell or a blow did to someone. Retail's own strings for these
 /// are not mapped yet; the wording is plain.
-fn effect_line(names: &super::names::ActorNames, effect: crate::game::magic::Effect) -> String {
+fn effect_line(
+    names: &super::names::ActorNames,
+    effect: crate::game::magic::Effect,
+) -> Option<String> {
     use crate::game::magic::{Effect, Victim};
     let victim = |victim: Victim| names.name(victim.entity()).unwrap_or_default();
-    match effect {
+    Some(match effect {
+        Effect::Improved { .. } => return None,
         Effect::Purified { victim: v } => format!("The air around {} clears.", victim(v)),
         Effect::Enchanted { victim: v, .. } => format!("{} is enchanted.", victim(v)),
         Effect::Healed { victim: v, amount } => {
@@ -331,10 +335,27 @@ fn effect_line(names: &super::names::ActorNames, effect: crate::game::magic::Eff
         }
         Effect::Tired { victim: v, amount } => format!("{} loses {amount} stamina.", victim(v)),
         Effect::Raised { victim: v } => format!("{} lives again!", victim(v)),
-        Effect::Resisted { victim: v } => format!("{} resists.", victim(v)),
+        Effect::Resisted { victim: v } | Effect::Saved { victim: v, .. } => {
+            format!("{} resists.", victim(v))
+        }
         Effect::Reflected { victim: v } => format!("{} reflects the spell.", victim(v)),
         Effect::Nothing { victim: v } => format!("{} is unaffected.", victim(v)),
-    }
+    })
+}
+
+fn effect_lines(
+    names: &super::names::ActorNames,
+    string: &impl Fn(usize) -> String,
+    effects: &[crate::game::magic::Effect],
+) -> Vec<String> {
+    let mut lines: Vec<_> = effects.iter().filter_map(|&e| effect_line(names, e)).collect();
+    lines.extend(
+        effects
+            .iter()
+            .filter_map(|e| e.improvement())
+            .map(|(member, skill)| improves(names, string, member, skill)),
+    );
+    lines
 }
 
 /// What a cast or an item use tells the player. Retail's own strings for
@@ -348,8 +369,6 @@ fn magic_lines(
     use crate::game::magic::Outcome;
     use crate::game::magic::casting::{MagicNews, Refusal};
     let name = |entity| names.name(entity).unwrap_or_default();
-    let improves = |member, skill| improves(names, string, member, skill);
-    let effect_line = |effect| effect_line(names, effect);
     match news {
         MagicNews::Refused { caster, refusal } => {
             let why = match refusal {
@@ -371,11 +390,8 @@ fn magic_lines(
             }
             lines
         }
-        MagicNews::Triggered { effects, improved, .. }
-        | MagicNews::Landed { effects, improved, .. } => {
-            let mut lines: Vec<_> = effects.iter().map(|&e| effect_line(e)).collect();
-            lines.extend(improved.iter().map(|&(member, skill)| improves(member, skill)));
-            lines
+        MagicNews::Triggered { effects, .. } | MagicNews::Landed { effects, .. } => {
+            effect_lines(names, string, effects)
         }
         MagicNews::Done(report) => {
             let spell = &spells[report.spell].name;
@@ -388,10 +404,7 @@ fn magic_lines(
                 Outcome::Backfired => lines.push("The spell backfires!".into()),
                 Outcome::Cast => {}
             }
-            lines.extend(report.effects.iter().map(|&e| effect_line(e)));
-            for &(member, skill) in &report.improved {
-                lines.push(improves(member, skill));
-            }
+            lines.extend(effect_lines(names, string, &report.effects));
             lines
         }
     }
@@ -756,9 +769,7 @@ fn post_combat(
                     _ => vec![],
                 }
             }
-            CombatNews::Effects(effects) => {
-                effects.iter().map(|&effect| effect_line(&names, effect)).collect()
-            }
+            CombatNews::Effects(effects) => effect_lines(&names, &string, effects),
             CombatNews::Improved { member, skill } => {
                 vec![improves(&names, &string, *member, *skill)]
             }

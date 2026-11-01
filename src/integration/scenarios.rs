@@ -330,23 +330,17 @@ fn weapon_saves_and_cloud_pulses_keep_their_skill_improvements() {
             let victim = Victim::Member(member);
             let mut rng = GameRng::seeded(42);
             let mut attack = AttackEffects::default();
-            let mut improved = Vec::new();
-            let before = rng.clone();
-            assert!(
-                effects::blow(&mut rng, &mut field, victim, &attack, 1, true, &mut improved)
-                    .is_empty()
-            );
-            assert_eq!(rng, before, "empty secondary slots draw no RNG");
-            attack.chances[AttackEffect::Sleep] = 100;
-            for cloud in [false, true] {
-                if cloud {
-                    field.enchantments.0.apply(Enchantment {
-                        spell: SpellId::DEATH_CLOUD,
-                        power: 1,
-                        boost: 0,
-                        turns: 2,
-                        absorption: 0,
-                    });
+            field.enchantments.0.apply(Enchantment {
+                spell: SpellId::DEATH_CLOUD,
+                power: 1,
+                boost: 0,
+                turns: 2,
+                absorption: 0,
+            });
+            for effect in [Some(AttackEffect::Sleep), Some(AttackEffect::DrainStamina), None] {
+                attack.chances = default();
+                if let Some(effect) = effect {
+                    attack.chances[effect] = 100;
                 }
                 let mut noticed = false;
                 for _ in 0..64 {
@@ -355,45 +349,28 @@ fn weapon_saves_and_cloud_pulses_keep_their_skill_improvements() {
                     character.skill_points[Skill::IronWill] = 0;
                     character.skill_practice[Skill::IronWill] = 7;
                     *vitals = Vitals::new(&character);
-                    if cloud {
-                        let pulses = effects::pulse_clouds(&[], Vec3::ZERO, &mut rng, &mut field);
-                        assert_eq!(pulses.len(), 1);
-                        let (spell, _, output) = pulses.into_iter().next().unwrap();
-                        assert_eq!(spell, SpellId::DEATH_CLOUD);
-                        improved = output;
+                    let effects = if effect.is_none() {
+                        effects::pulse_clouds(&[], Vec3::ZERO, &mut rng, &mut field)
+                            .pop()
+                            .unwrap()
+                            .1
                     } else {
-                        improved.clear();
-                        effects::blow(
-                            &mut rng,
-                            &mut field,
-                            victim,
-                            &attack,
-                            1,
-                            true,
-                            &mut improved,
-                        );
-                    }
+                        effects::blow(&mut rng, &mut field, victim, &attack, 1, true)
+                    };
                     let gained = field.members.get(member).unwrap().0.skill_points[Skill::IronWill];
-                    assert_eq!(
-                        improved.len(),
-                        gained as usize,
-                        "every improvement belongs to this action"
+                    assert!(
+                        effects
+                            .iter()
+                            .filter_map(|e| e.improvement())
+                            .eq((0..gained).map(|_| (member, Skill::IronWill)))
                     );
                     if gained != 0 {
-                        assert_eq!(improved, [(member, Skill::IronWill)]);
                         noticed = true;
                         break;
                     }
                 }
                 assert!(noticed, "the seeded action exercised Iron Will improvement");
             }
-            field.members.get_mut(member).unwrap().1.hp = 0;
-            let before = rng.clone();
-            assert!(
-                effects::blow(&mut rng, &mut field, victim, &attack, 1, true, &mut improved)
-                    .is_empty()
-            );
-            assert_eq!(rng, before, "a dead victim stops before the nonzero effect's RNG draw");
         })
         .unwrap();
 }

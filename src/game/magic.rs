@@ -636,7 +636,6 @@ pub fn deliver_spells(
             commands.entity(entity).despawn();
         }
         let mut secondary = Vec::new();
-        let mut improved = Vec::new();
 
         let spell = &field.spells()[flight.spell];
         let effects = impacts::resolve(
@@ -651,7 +650,6 @@ pub fn deliver_spells(
             &mut rng,
             &mut field,
             &mut secondary,
-            &mut improved,
         );
         if let Some(battle) = battle.as_mut() {
             battle.credit_kills(&effects, &mut combat_news);
@@ -660,7 +658,6 @@ pub fn deliver_spells(
             caster: flight.caster,
             spell: flight.spell,
             effects,
-            improved,
         });
         for mut reflection in secondary {
             field.flight_order.stamp(&mut reflection);

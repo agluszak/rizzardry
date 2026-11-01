@@ -124,7 +124,6 @@ struct Tally {
     kills: Vec<(Entity, u32)>,
     deaths: Vec<Entity>,
     effects: Vec<Effect>,
-    improved: Vec<(Entity, Skill)>,
 }
 
 impl Tally {
@@ -154,9 +153,6 @@ impl Tally {
         effects.retain(|e| !matches!(e, Effect::Damaged { .. }));
         if !effects.is_empty() {
             news.write(CombatNews::Effects(effects));
-        }
-        for (member, skill) in self.improved {
-            news.write(CombatNews::Improved { member, skill });
         }
         for (monster, experience) in self.kills {
             battle.credit_kill(monster, experience, news);
@@ -376,6 +372,6 @@ fn iron_skin(
         && let Ok((mut c, ..)) = field.members.get_mut(member)
         && c.practise(Skill::IronSkin, 1, rng)
     {
-        tally.improved.push((member, Skill::IronSkin));
+        tally.effects.push(Effect::Improved { member, skill: Skill::IronSkin });
     }
 }

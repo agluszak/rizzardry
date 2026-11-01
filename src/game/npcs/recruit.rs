@@ -53,45 +53,12 @@ const SERVICES: [(u8, u32); 14] = [
     (6, 0x2000),
 ];
 
-/// Whether the NPC offers the service of the region `band` (retail
-/// `NpcOffersService`).
-fn offers_service(definition: &NpcDefinition, band: u8) -> bool {
-    SERVICES
-        .iter()
-        .find(|&&(region, _)| region == band)
-        .is_some_and(|&(_, flag)| definition.services & flag != 0)
-}
-
 /// Retail's NPCs with authored joining terms (`W8NpcId`).
 const DRAZIC: NpcId = NpcId(0x10);
 const RODAN: NpcId = NpcId(0x11);
 const GLUMPH: NpcId = NpcId(0x2b);
 const MADRAS: NpcId = NpcId(0x4a);
 const SEXUS: NpcId = NpcId(0x4f);
-
-/// Whether the NPC would join now (retail `CanNpcJoinParty`): it does not
-/// offer the service of the party's `region`; its authored terms hold, by
-/// the story's facts; and the party's living, able members average at least
-/// its minimum level.
-pub(super) fn willing(
-    id: NpcId,
-    definition: &NpcDefinition,
-    region: u8,
-    fact: impl Fn(&str) -> u8,
-    average: u32,
-) -> bool {
-    if offers_service(definition, region) {
-        return false;
-    }
-    let terms = match id {
-        GLUMPH => fact("FACT_UMISSION_SCUBA_DONE") == 0,
-        SEXUS => fact("FACT_SEXUS_PAID") != 0,
-        MADRAS => fact("FACT_TRYNNIE_MADRAS_WILL_JOIN") != 0,
-        DRAZIC | RODAN => fact("FACT_PEACE_ACHIEVED") == 0,
-        _ => true,
-    };
-    terms && average >= u32::from(definition.min_party_level)
-}
 
 /// Recruitment eligibility, shared by dialogue and the final join transaction.
 /// Check the NPC before capacity, then its authored regional and story terms.
@@ -114,38 +81,21 @@ pub(super) fn eligible(
     let mut levels = levels.peekable();
     let average =
         if levels.peek().is_none() { 0 } else { crate::game::party::average_level(levels) };
-    if willing(id, definition, region, fact, average) { Ok(()) } else { Err(JoinRefusal::Declines) }
-}
-
-/// Revalidate against current campaign facts immediately before joining.
-pub fn joinable(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
-    let party = crate::game::party::roster::the_party(world);
-    let region = {
-        let level = world.query::<&Level>().single(world).unwrap();
-        crate::content::levels::LevelInfo::for_path(&level.path).map_or(0, |info| info.band)
+    if SERVICES.iter().any(|&(band, flag)| band == region && definition.services & flag != 0) {
+        return Err(JoinRefusal::Declines);
+    }
+    let terms = match id {
+        GLUMPH => fact("FACT_UMISSION_SCUBA_DONE") == 0,
+        SEXUS => fact("FACT_SEXUS_PAID") != 0,
+        MADRAS => fact("FACT_TRYNNIE_MADRAS_WILL_JOIN") != 0,
+        DRAZIC | RODAN => fact("FACT_PEACE_ACHIEVED") == 0,
+        _ => true,
     };
-    let roster = world.get::<PartyRoster>(party).unwrap();
-    let content = world.resource::<Catalogs>();
-    let id = world.get::<super::ActorId>(actor).unwrap().npc();
-    eligible(
-        id,
-        world.get::<Npc>(actor).unwrap(),
-        &content.npcs[id],
-        roster.contains(&actor),
-        roster.iter().filter(|&m| world.get::<Npc>(m).is_some()).count(),
-        region,
-        roster
-            .iter()
-            .filter(|&m| world.get::<Vitals>(m).unwrap().can_fight())
-            .map(|m| world.get::<Character>(m).unwrap().level()),
-        |symbol| {
-            let fact = content.facts.0.iter().find(|f| f.symbol == symbol).expect("a ported fact");
-            world
-                .resource::<super::conversation::StoryFacts>()
-                .get(fact.id, &content.facts)
-                .expect("a ported fact")
-        },
-    )
+    if terms && average >= u32::from(definition.min_party_level) {
+        Ok(())
+    } else {
+        Err(JoinRefusal::Declines)
+    }
 }
 
 /// The character an NPC brings the first time it joins (retail
@@ -259,7 +209,7 @@ impl Recruits<'_, '_> {
     /// its character (made the first time), the conditions its world body
     /// had, and takes an NPC place; its world body goes dormant. Whether it
     /// would join is the caller's to have asked.
-    pub(super) fn join(&mut self, actor: Entity) {
+    pub(crate) fn join(&mut self, actor: Entity) {
         let party = self.party.0;
         let (_, id, bodies, _, character, ..) = self.actors.get(actor).unwrap();
         // The NPC's world body that stands in a played level.
@@ -304,7 +254,7 @@ impl Recruits<'_, '_> {
     /// beside the party with the conditions it has, at a fresh roll of its
     /// species' health; and it gives the party every item it neither wants
     /// nor has cursed on.
-    fn dismiss(&mut self, actor: Entity) -> bool {
+    pub fn dismiss(&mut self, actor: Entity) -> bool {
         let party = self.party.0;
         let Ok((_, id, bodies, member, character, vitals, carried)) = self.actors.get(actor) else {
             return false;
@@ -411,23 +361,6 @@ impl Recruits<'_, '_> {
         let feet = PartyBody::feet(self.party.4);
         crate::game::world::items::drop_loot(&mut self.commands, level, feet, left, items);
     }
-}
-
-/// [`Recruits::join`] once the NPC would join, for operations that hold the
-/// whole world.
-pub fn join(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
-    joinable(world, actor)?;
-    world
-        .run_system_cached_with(|In(actor): In<Entity>, mut r: Recruits| r.join(actor), actor)
-        .unwrap();
-    Ok(())
-}
-
-/// [`Recruits::dismiss`], for operations that hold the whole world.
-pub fn dismiss(world: &mut World, actor: Entity) -> bool {
-    world
-        .run_system_cached_with(|In(actor): In<Entity>, mut r: Recruits| r.dismiss(actor), actor)
-        .unwrap()
 }
 
 /// A member NPC that dies leaves the party at once (retail

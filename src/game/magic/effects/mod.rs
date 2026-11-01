@@ -234,6 +234,15 @@ impl Victim {
 /// What a spell did to one victim.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Effect {
+    Improved {
+        member: Entity,
+        skill: Skill,
+    },
+    /// A successful save may also train Iron Will.
+    Saved {
+        victim: Victim,
+        improved: bool,
+    },
     Purified {
         victim: Victim,
     },
@@ -293,6 +302,18 @@ pub enum Effect {
     Nothing {
         victim: Victim,
     },
+}
+
+impl Effect {
+    pub fn improvement(&self) -> Option<(Entity, Skill)> {
+        match *self {
+            Self::Improved { member, skill } => Some((member, skill)),
+            Self::Saved { victim: Victim::Member(member), improved: true } => {
+                Some((member, Skill::IronWill))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// What resolving an action needs and changes: the members and monsters
@@ -454,7 +475,6 @@ pub fn resolve(
     victims: &[Victim],
     rng: &mut GameRng,
     world: &mut Field,
-    improved: &mut Vec<(Entity, Skill)>,
 ) -> Vec<Effect> {
     if victims.is_empty() {
         return Vec::new();
@@ -560,7 +580,7 @@ pub fn resolve(
             each(&mut |v, rng, world| restore_victim(kind, spell, strength, v, rng, world))
         }
         Kind::Inflict(condition, chance) => each(&mut |v, rng, world| {
-            attack(rng, world, spell, v, realm, condition, chance, strength, improved)
+            attack(rng, world, spell, v, realm, condition, chance, strength)
         }),
         Kind::DamageThen(..) | Kind::NoxiousFumes => {
             each(&mut |v, rng, world| {
@@ -573,51 +593,59 @@ pub fn resolve(
             };
             for (condition, chance) in attacks {
                 each(&mut |v, rng, world| {
-                    attack(rng, world, spell, v, realm, condition, chance, strength, improved)
+                    attack(rng, world, spell, v, realm, condition, chance, strength)
                 });
             }
         }
-        Kind::Fear { second } => each(&mut |v, rng, world| {
-            let landed =
-                attack(rng, world, spell, v, realm, Condition::Afraid, 100, strength, improved);
-            let again = matches!(
-                (v, second),
-                (Victim::Member(_), Condition::Unconscious)
-                    | (Victim::Monster(_), Condition::Afraid)
-            );
-            if matches!(landed, Some(Effect::Inflicted { .. })) && again {
-                let half = Strength { against: strength.against / 2, ..strength };
-                attack(rng, world, spell, v, realm, second, 100, half, improved);
-            }
-            landed
-        }),
-        Kind::Pandemonium => each(&mut |v, rng, world| match attack(
-            rng,
-            world,
-            spell,
-            v,
-            realm,
-            Condition::Insane,
-            100,
-            strength,
-            improved,
-        ) {
-            Some(Effect::Resisted { .. }) => {
-                let target = target(world, v, realm, Some(Condition::Afraid));
-                let rounds = duration(rng, spell, strength);
-                let rounds = resist(rng, rounds, target.resistance, target.level, strength.against);
-                if rounds == 0 || target.immune {
-                    return Some(Effect::Resisted { victim: v });
+        Kind::Fear { second } => {
+            for &v in victims {
+                let landed = attack(rng, world, spell, v, realm, Condition::Afraid, 100, strength);
+                let again = matches!(
+                    (v, second),
+                    (Victim::Member(_), Condition::Unconscious)
+                        | (Victim::Monster(_), Condition::Afraid)
+                );
+                if matches!(landed, Some(Effect::Inflicted { .. })) && again {
+                    let half = Strength { against: strength.against / 2, ..strength };
+                    if let Some((member, skill)) =
+                        attack(rng, world, spell, v, realm, second, 100, half)
+                            .and_then(|e| e.improvement())
+                    {
+                        effects.push(Effect::Improved { member, skill });
+                    }
                 }
-                let lasting = Lasting::Rounds(rounds.max(2));
-                inflict_on(world, v, (Condition::Afraid, 0), lasting)?;
-                Some(Effect::Inflicted { victim: v, condition: Condition::Afraid })
+                effects.extend(landed);
             }
-            other => other,
-        }),
-        Kind::Slay => {
-            each(&mut |v, rng, world| slay(rng, world, spell, v, realm, strength, improved))
         }
+        Kind::Pandemonium => {
+            for &v in victims {
+                let landed = attack(rng, world, spell, v, realm, Condition::Insane, 100, strength);
+                if matches!(landed, Some(Effect::Resisted { .. } | Effect::Saved { .. })) {
+                    if let Some((member, skill)) = landed.and_then(|e| e.improvement()) {
+                        effects.push(Effect::Improved { member, skill });
+                    }
+                    let target = target(world, v, realm, Some(Condition::Afraid));
+                    let rounds = duration(rng, spell, strength);
+                    let rounds =
+                        resist(rng, rounds, target.resistance, target.level, strength.against);
+                    if rounds == 0 || target.immune {
+                        effects.push(Effect::Resisted { victim: v });
+                    } else if inflict_on(
+                        world,
+                        v,
+                        (Condition::Afraid, 0),
+                        Lasting::Rounds(rounds.max(2)),
+                    )
+                    .is_some()
+                    {
+                        effects.push(Effect::Inflicted { victim: v, condition: Condition::Afraid });
+                    }
+                } else {
+                    effects.extend(landed);
+                }
+            }
+        }
+        Kind::Slay => each(&mut |v, rng, world| slay(rng, world, spell, v, realm, strength)),
         Kind::Affliction => each(&mut |v, rng, world| {
             let roll = rng.below(100);
             if roll >= 50 {
@@ -627,10 +655,8 @@ pub fn resolve(
             let pick = crate::game::rng::weighted(roll, AFFLICTIONS.iter().map(|&(_, w)| w))
                 .and_then(|index| AFFLICTIONS[index].0);
             match pick {
-                Some(condition) => {
-                    attack(rng, world, spell, v, realm, condition, 100, strength, improved)
-                }
-                None => slay(rng, world, spell, v, realm, strength, improved),
+                Some(condition) => attack(rng, world, spell, v, realm, condition, 100, strength),
+                None => slay(rng, world, spell, v, realm, strength),
             }
         }),
         Kind::Vortex => each(&mut |v, rng, world| {
@@ -756,5 +782,5 @@ pub fn resolve(
 /// Whether anything the spell did counts as affecting a victim, which is
 /// what practice needs (retail `SpellAffectedTarget`).
 pub fn affected(effects: &[Effect]) -> bool {
-    effects.iter().any(|e| !matches!(e, Effect::Nothing { .. }))
+    effects.iter().any(|e| !matches!(e, Effect::Nothing { .. } | Effect::Improved { .. }))
 }

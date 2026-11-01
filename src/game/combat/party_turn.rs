@@ -101,9 +101,9 @@ pub(super) fn breathe(
     news: &mut MessageWriter<CombatNews>,
 ) {
     let member = battle.this_round.party[index].actor;
-    let mut improved = Vec::new();
+
     let result = member_acts(combatants, party, magic, |situation, field| {
-        breath::execute(member, target, situation, rng, field, &mut improved)
+        breath::execute(member, target, situation, rng, field)
     });
     match result {
         Ok(effects) => {
@@ -111,9 +111,6 @@ pub(super) fn breathe(
             news.write(CombatNews::Breathed { actor: member });
             battle.credit_kills(&effects, news);
             news.write(CombatNews::Effects(effects));
-            for (member, skill) in improved {
-                news.write(CombatNews::Improved { member, skill });
-            }
         }
         Err(_) => battle.this_round.party[index].action = RoundAction::Defend,
     }

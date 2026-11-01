@@ -119,14 +119,12 @@ pub enum MagicNews {
     Triggered {
         spell: SpellId,
         effects: Vec<Effect>,
-        improved: Vec<(Entity, Skill)>,
     },
     /// A missile reached its victims, with the skills its impact improved.
     Landed {
         caster: Entity,
         spell: SpellId,
         effects: Vec<Effect>,
-        improved: Vec<(Entity, Skill)>,
     },
     Refused {
         caster: Entity,
@@ -145,8 +143,6 @@ pub struct Report {
     pub outcome: Outcome,
     /// What landed at once; missiles land later as [`MagicNews::Landed`].
     pub effects: Vec<Effect>,
-    /// Skills practice raised, by whom.
-    pub improved: Vec<(Entity, Skill)>,
     /// Casts repeated after the first: an auto cast trying again.
     pub repeats: u32,
 }
@@ -645,7 +641,6 @@ pub fn perform(
         item: None,
         outcome: Outcome::Fizzled,
         effects: Vec::new(),
-        improved: Vec::new(),
         repeats: 0,
     };
     let mut flights = Vec::new();
@@ -813,12 +808,13 @@ pub fn perform(
                 rng,
                 world,
                 &mut flights,
-                &mut report.improved,
             )
         };
         // Practice follows what the cast did; a missile on its way counts.
-        if outcome != Outcome::Fizzled && (flies || effects::affected(&landed)) {
-            report.improved.extend(practise(
+        let affected = effects::affected(&landed);
+        report.effects.extend(landed);
+        if outcome != Outcome::Fizzled && (flies || affected) {
+            report.effects.extend(practise(
                 caster,
                 spell,
                 cast_power,
@@ -836,7 +832,6 @@ pub fn perform(
                 report.outcome = outcome;
             }
         }
-        report.effects.extend(landed);
         // An auto cast tries again while it fizzles, and auto recast goes on
         // until its victim is whole, while stamina and points last.
         if !auto || report.repeats >= 50 {
@@ -920,12 +915,11 @@ impl Payment<'_, '_> {
             item: None,
             outcome,
             effects: Vec::new(),
-            improved: Vec::new(),
             repeats: 0,
         };
         pay(caster, spell, power, item.as_ref(), points, rng, members, inventory, &mut report);
         // Retail considers these utility spells affected even on a fizzle.
-        report.improved.extend(practise(caster, spell, power, item.as_ref(), rng, members));
+        report.effects.extend(practise(caster, spell, power, item.as_ref(), rng, members));
         Ok((report, strength))
     }
 }
@@ -1038,7 +1032,7 @@ fn practise(
     item: Option<&ItemUse>,
     rng: &mut GameRng,
     members: &mut crate::game::party::Members,
-) -> Vec<(Entity, Skill)> {
+) -> Vec<Effect> {
     let (mut character, ..) = members.get_mut(caster).unwrap();
     let mut improved = Vec::new();
     let practice: Vec<(Skill, u32)> = match item {
@@ -1062,7 +1056,7 @@ fn practise(
     };
     for (skill, usage) in practice {
         if character.practise(skill, usage, rng) {
-            improved.push((caster, skill));
+            improved.push(Effect::Improved { member: caster, skill });
         }
     }
     improved

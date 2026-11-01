@@ -413,20 +413,16 @@ fn carry_out(
             if let Some(species) = kind.summons() {
                 summons.write(summon::Summon { summoner: monster, species });
             }
-            let mut improved = Vec::new();
+
             let effects = crate::game::magic::effects::special_attack(
                 crate::game::magic::effects::special(kind),
                 breather,
                 &victims,
                 rng,
                 field,
-                &mut improved,
             );
             if !effects.is_empty() {
                 news.write(CombatNews::Effects(effects));
-            }
-            for (member, skill) in improved {
-                news.write(CombatNews::Improved { member, skill });
             }
             battle.cooldowns.retain(|&(m, _)| m != monster);
             battle.cooldowns.push((monster, cooldown));

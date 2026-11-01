@@ -402,22 +402,20 @@ impl Progression<'_, '_> {
         // Stage only inventory work that can fail. Full destinations preserve all owners.
         let mut inventory =
             self.inventory.single_mut().map_err(|_| "The party inventory is unavailable.")?;
-        if carried.equipment.values().flatten().any(|worn| !next.can_use(&items[worn.stack.item])) {
+        let mut incompatible = carried
+            .equipment
+            .iter()
+            .filter_map(|(slot, worn)| {
+                worn.as_ref().filter(|w| !next.can_use(&items[w.stack.item])).map(|_| slot)
+            })
+            .peekable();
+        if incompatible.peek().is_some() {
             let mut equipment = carried.clone();
             let mut pool = inventory.pool.clone();
-            for slot in EnumSet::<crate::game::inventory::EquipSlot>::all() {
-                if let Some(worn) = &equipment.equipment[slot] {
-                    let definition = &items[worn.stack.item];
-                    if !next.can_use(definition) {
-                        let stack = equipment.equipment[slot].take().unwrap().stack;
-                        if equipment
-                            .receive(stack, items)
-                            .and_then(|s| pool.receive(s, items))
-                            .is_some()
-                        {
-                            return Err("Make room for equipment this profession cannot wear.");
-                        }
-                    }
+            for slot in incompatible {
+                let stack = equipment.equipment[slot].take().unwrap().stack;
+                if equipment.receive(stack, items).and_then(|s| pool.receive(s, items)).is_some() {
+                    return Err("Make room for equipment this profession cannot wear.");
                 }
             }
             *carried = equipment;

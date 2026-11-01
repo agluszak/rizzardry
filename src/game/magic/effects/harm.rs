@@ -131,22 +131,23 @@ pub(super) fn saves(
     target: &Target,
     base: i32,
     against: u32,
-    improved: &mut Vec<(Entity, Skill)>,
-) -> bool {
+) -> Option<Effect> {
     let chance = condition_chance(target.level, target.resistance, against, base);
     let chance = match target.side {
         Some(side) => world.difficulty().for_monster(chance, side),
         None => world.difficulty().for_character(chance, target.turncoat),
     };
     let saved = save_roll(rng, chance);
-    if saved
-        && let Victim::Member(member) = victim
-        && let Ok((mut character, ..)) = world.members.get_mut(member)
-        && character.practise(Skill::IronWill, 2, rng)
-    {
-        improved.push((member, Skill::IronWill));
+    if !saved {
+        return None;
     }
-    saved
+    let improved = match victim {
+        Victim::Member(member) => {
+            world.members.get_mut(member).unwrap().0.practise(Skill::IronWill, 2, rng)
+        }
+        Victim::Monster(_) => false,
+    };
+    Some(Effect::Saved { victim, improved })
 }
 
 /// Damage one victim by an already rolled magnitude, less resistance.
@@ -305,7 +306,6 @@ pub(super) fn attack(
     condition: Condition,
     chance: u32,
     strength: Strength,
-    improved: &mut Vec<(Entity, Skill)>,
 ) -> Option<Effect> {
     if rng.below(100) >= chance {
         return None;
@@ -315,16 +315,7 @@ pub(super) fn attack(
         return None;
     }
     let rounds = duration(rng, spell, strength);
-    afflict(
-        rng,
-        world,
-        victim,
-        (Some(condition), 0),
-        realm,
-        strength.against,
-        Some(rounds),
-        improved,
-    )
+    afflict(rng, world, victim, (Some(condition), 0), realm, strength.against, Some(rounds))
 }
 
 /// Retail `ResolveAttackOnTarget`: a condition, or death when `condition` is
@@ -340,7 +331,6 @@ pub(super) fn afflict(
     realm: Realm,
     against: u32,
     rounds: Option<u32>,
-    improved: &mut Vec<(Entity, Skill)>,
 ) -> Option<Effect> {
     let target = target(world, victim, realm, condition);
     if target.dead {
@@ -359,8 +349,8 @@ pub(super) fn afflict(
         return Some(Effect::Resisted { victim });
     }
     let base = condition.map_or(DEATH_SAVE, |c| CONDITION_SAVE[c as usize + 1]);
-    if saves(rng, world, victim, &target, base, against, improved) {
-        return Some(Effect::Resisted { victim });
+    if let Some(saved) = saves(rng, world, victim, &target, base, against) {
+        return Some(saved);
     }
     if condition.is_some_and(|condition| shrugs(world, victim, condition, rounds.is_none())) {
         return Some(Effect::Resisted { victim });
@@ -429,7 +419,6 @@ pub fn blow(
     effects: &crate::content::items::AttackEffects,
     power: u32,
     by_monster: bool,
-    improved: &mut Vec<(Entity, Skill)>,
 ) -> Vec<Effect> {
     use crate::content::items::AttackEffect as E;
     let mut landed = Vec::new();
@@ -446,7 +435,7 @@ pub fn blow(
         let count = power / 3 + 1;
         let rounds = blow_roll(rng, count, 2, 1).clamp(1, 12);
         let mut afflicts = |rng: &mut GameRng, condition, realm, rounds| {
-            afflict(rng, world, victim, (condition, 0), realm, power, rounds, improved)
+            afflict(rng, world, victim, (condition, 0), realm, power, rounds)
         };
         let member = matches!(victim, Victim::Member(_));
         let outcome = match effect {
@@ -464,7 +453,6 @@ pub fn blow(
                     Realm::Water,
                     power,
                     Some(rounds),
-                    improved,
                 )
             }
             E::Hex => afflicts(rng, Some(Condition::Hexed), Realm::Divine, Some(rounds)),
@@ -479,55 +467,46 @@ pub fn blow(
                 afflicts(rng, Some(Condition::Turncoat), Realm::Divine, Some(rounds))
             }
             E::Possess => None,
-            E::DrainHealth if member => {
-                drain(rng, world, victim, Realm::Earth, power, (count, 2, 0), improved)
-                    .and_then(|amount| sap(rng, world, victim, amount))
-            }
-            E::DrainHealth => None,
-            E::DrainStamina => {
-                drain(rng, world, victim, Realm::Water, power, (count * 2, 5, count * 3), improved)
-                    .map(|amount| tire(world, victim, amount))
-            }
-            E::DrainSpellPoints => match victim {
-                Victim::Member(member) => {
-                    drain(rng, world, victim, Realm::Divine, power, (count, 6, count), improved)
-                        .map(|amount| {
-                            let maximum = world.mana_maximum(member);
-                            let (_, mut pool) = world.points.get_mut(member).unwrap();
-                            let amount = pool.drain(amount, &maximum, rng);
-                            Effect::Drained { victim, amount }
-                        })
+            E::DrainHealth | E::DrainSpellPoints if !member => None,
+            E::DrainHealth | E::DrainStamina | E::DrainSpellPoints => {
+                let (realm, dice) = match effect {
+                    E::DrainHealth => (Realm::Earth, (count, 2, 0)),
+                    E::DrainStamina => (Realm::Water, (count * 2, 5, count * 3)),
+                    _ => (Realm::Divine, (count, 6, count)),
+                };
+                let target = target(world, victim, realm, None);
+                if let Some(saved) = saves(rng, world, victim, &target, 0, power) {
+                    // Draining reports practice from a save, but no resisted notice.
+                    landed.extend(
+                        saved
+                            .improvement()
+                            .map(|(member, skill)| Effect::Improved { member, skill }),
+                    );
+                    continue;
                 }
-                Victim::Monster(_) => None,
-            },
+                let rolled = blow_roll(rng, dice.0, dice.1, dice.2);
+                let amount = resist(rng, rolled, target.resistance, target.level, power);
+                if amount == 0 {
+                    continue;
+                }
+                match effect {
+                    E::DrainHealth => sap(rng, world, victim, amount),
+                    E::DrainStamina => Some(tire(world, victim, amount)),
+                    _ => {
+                        let maximum = world.mana_maximum(victim.entity());
+                        let (_, mut pool) = world.points.get_mut(victim.entity()).unwrap();
+                        let amount = pool.drain(amount, &maximum, rng);
+                        Some(Effect::Drained { victim, amount })
+                    }
+                }
+            }
+
             E::Nauseate => afflicts(rng, Some(Condition::Nauseated), Realm::Air, Some(rounds)),
             E::Insane => afflicts(rng, Some(Condition::Insane), Realm::Mental, Some(rounds)),
         };
         landed.extend(outcome);
     }
     landed
-}
-
-/// A blow's drain: the victim's save, then `dice` (count, sides, base),
-/// one more, cut by resistance. `None` when nothing is left to take.
-pub(super) fn drain(
-    rng: &mut GameRng,
-    world: &mut Field,
-    victim: Victim,
-    realm: Realm,
-    power: u32,
-    (count, sides, base): (u32, i32, u32),
-    improved: &mut Vec<(Entity, Skill)>,
-) -> Option<u32> {
-    let target = target(world, victim, realm, None);
-    if target.dead {
-        return None;
-    }
-    if saves(rng, world, victim, &target, 0, power, improved) {
-        return None;
-    }
-    let amount = blow_roll(rng, count, sides, base);
-    Some(resist(rng, amount, target.resistance, target.level, power)).filter(|&a| a != 0)
 }
 
 /// Death spells: a failed save kills, unless resistance cuts the attempt's
@@ -539,16 +518,16 @@ pub(super) fn slay(
     victim: Victim,
     realm: Realm,
     strength: Strength,
-    improved: &mut Vec<(Entity, Skill)>,
 ) -> Option<Effect> {
     let target = target(world, victim, realm, None);
     if target.dead {
         return None;
     }
     let rounds = duration(rng, spell, strength);
-    if saves(rng, world, victim, &target, DEATH_SAVE, strength.against, improved)
-        || resist(rng, rounds, target.resistance, target.level, strength.against) == 0
-    {
+    if let Some(saved) = saves(rng, world, victim, &target, DEATH_SAVE, strength.against) {
+        return Some(saved);
+    }
+    if resist(rng, rounds, target.resistance, target.level, strength.against) == 0 {
         return Some(Effect::Resisted { victim });
     }
     kill(rng, world, victim)
