@@ -77,7 +77,6 @@ pub(super) fn party_turn(
                 moving,
                 waits: false,
             };
-            field.improved.clear();
             blows::member_attacks(battle, index, rng, field, &mut fight, news);
         }
         // Defending takes no turn.
@@ -102,8 +101,9 @@ pub(super) fn breathe(
     news: &mut MessageWriter<CombatNews>,
 ) {
     let member = battle.this_round.party[index].actor;
+    let mut improved = Vec::new();
     let result = member_acts(combatants, party, magic, |situation, field| {
-        breath::execute(member, target, situation, rng, field)
+        breath::execute(member, target, situation, rng, field, &mut improved)
     });
     match result {
         Ok(effects) => {
@@ -111,6 +111,9 @@ pub(super) fn breathe(
             news.write(CombatNews::Breathed { actor: member });
             battle.credit_kills(&effects, news);
             news.write(CombatNews::Effects(effects));
+            for (member, skill) in improved {
+                news.write(CombatNews::Improved { member, skill });
+            }
         }
         Err(_) => battle.this_round.party[index].action = RoundAction::Defend,
     }
@@ -231,6 +234,5 @@ pub(super) fn member_acts<R>(
         monsters: &candidates,
         group_of: &group_of,
     };
-    field.improved.clear();
     act(&situation, field)
 }

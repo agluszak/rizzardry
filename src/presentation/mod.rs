@@ -105,7 +105,6 @@ impl Plugin for PresentationPlugin {
         .add_observer(automap::close_ended_map)
         .add_systems(Startup, controls::spawn_exploration_controls)
         .add_systems(PreUpdate, controls::read_controls.after(EnhancedInputSystems::Apply))
-        .add_message::<voice::SpeechFinished>()
         .add_message::<party_voice::SpokenRemark>()
         .add_message::<automap::OpenAutomap>()
         .init_resource::<effects::CameraShake>()
@@ -236,7 +235,6 @@ impl Plugin for PresentationPlugin {
                     .after(GameplaySet::LevelActivation),
                 effects::shake_camera.after(party_view::aim_camera),
                 sky::orbit_sun_and_moon,
-                voice::finish_speech,
                 (
                     monsters::request_monster_visuals,
                     monsters::build_monster_instances,

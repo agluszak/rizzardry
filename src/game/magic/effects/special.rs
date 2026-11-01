@@ -118,20 +118,6 @@ pub(super) fn three(rng: &mut GameRng, bound: u32) -> u32 {
     rng.below(bound) + rng.below(bound) + rng.below(bound)
 }
 
-/// What resistance leaves of `amount` on a victim, or nothing for one dead
-/// or gone (retail `ApplyEffectAndAnnounce`).
-pub(super) fn resisted(
-    rng: &mut GameRng,
-    world: &Field,
-    victim: Victim,
-    realm: Realm,
-    amount: u32,
-    against: u32,
-) -> Option<u32> {
-    let target = target(world, victim, realm, None);
-    (!target.dead).then(|| resist(rng, amount, target.resistance, target.level, against))
-}
-
 /// A monster's special attack (a breath, a gaze) landing on its victims
 /// (retail `ResolveMonsterGroupAttack`). Its strength follows its level and
 /// how fresh it is; each victim may escape each of its two effects (the
@@ -144,6 +130,7 @@ pub fn special_attack(
     victims: &[Victim],
     rng: &mut GameRng,
     world: &mut Field,
+    improved: &mut Vec<(Entity, Skill)>,
 ) -> Vec<Effect> {
     if definition.summons {
         return Vec::new();
@@ -173,7 +160,16 @@ pub fn special_attack(
                     if condition == Condition::Poisoned {
                         rng.below(if monster { 2 } else { bound });
                     }
-                    afflict(rng, world, victim, (Some(condition), 0), realm, against, Some(rounds))
+                    afflict(
+                        rng,
+                        world,
+                        victim,
+                        (Some(condition), 0),
+                        realm,
+                        against,
+                        Some(rounds),
+                        improved,
+                    )
                 }
                 SpecialEffect::Harm => {
                     let rolled = three(rng, bound) / 3 + 1;
@@ -181,7 +177,7 @@ pub fn special_attack(
                 }
                 SpecialEffect::Drain => {
                     let rolled = three(rng, bound) / if monster { 6 } else { 3 } + 1;
-                    match resisted(rng, world, victim, realm, rolled, against) {
+                    match resisted_magnitude(rng, world, victim, realm, rolled, against) {
                         None => None,
                         Some(0) => Some(Effect::Resisted { victim }),
                         Some(amount) => match victim {
@@ -206,7 +202,7 @@ pub fn special_attack(
                 }
                 SpecialEffect::Tire => {
                     let rolled = three(rng, bound) + u32::from(!monster);
-                    match resisted(rng, world, victim, realm, rolled, against) {
+                    match resisted_magnitude(rng, world, victim, realm, rolled, against) {
                         None => None,
                         Some(0) => Some(Effect::Resisted { victim }),
                         Some(amount) => Some(tire(world, victim, amount)),
@@ -217,11 +213,7 @@ pub fn special_attack(
                     if definition.resisted {
                         damage(rng, world, victim, realm, rolled, against)
                     } else {
-                        if target(world, victim, realm, None).dead {
-                            None
-                        } else {
-                            hurt(rng, world, victim, rolled)
-                        }
+                        if dead(world, victim) { None } else { hurt(rng, world, victim, rolled) }
                     }
                 }
             };
@@ -239,7 +231,7 @@ pub(crate) fn pulse_clouds(
     party_eye: Vec3,
     rng: &mut GameRng,
     world: &mut Field,
-) -> Vec<(SpellId, Vec<Effect>)> {
+) -> Vec<(SpellId, Vec<Effect>, Vec<(Entity, Skill)>)> {
     let spells = world.spells();
     let mut reports = Vec::new();
     let party: Vec<_> = world.party.iter().map(Victim::Member).collect();
@@ -262,8 +254,9 @@ pub(crate) fn pulse_clouds(
             let strength = Strength::at(0, spell, effect.power, effect.boost);
             let victims = actor.map_or_else(|| party.clone(), |a| vec![Victim::Monster(a)]);
             let mut landed = Vec::new();
+            let mut improved = Vec::new();
             for victim in victims {
-                if target(world, victim, realm, None).dead {
+                if dead(world, victim) {
                     continue;
                 }
                 if id == SpellId::DEATH_CLOUD {
@@ -278,8 +271,15 @@ pub(crate) fn pulse_clouds(
                     };
                     let target = target(world, victim, realm, None);
                     let result = if immune
-                        || saves(rng, world, victim, &target, DEATH_SAVE, strength.against)
-                    {
+                        || saves(
+                            rng,
+                            world,
+                            victim,
+                            &target,
+                            DEATH_SAVE,
+                            strength.against,
+                            &mut improved,
+                        ) {
                         Some(Effect::Resisted { victim })
                     } else {
                         kill(rng, world, victim)
@@ -343,6 +343,7 @@ pub(crate) fn pulse_clouds(
                                     &target,
                                     CONDITION_SAVE[condition as usize + 1],
                                     strength.against,
+                                    &mut improved,
                                 )
                                 || shrugs(world, victim, condition, false)
                             {
@@ -354,7 +355,7 @@ pub(crate) fn pulse_clouds(
                     }
                 }
             }
-            reports.push((id, landed));
+            reports.push((id, landed, improved));
         }
         // Ring of Fire follows the party and samples current nearby actors on
         // every pulse, including actors that entered its radius after casting.
@@ -383,7 +384,7 @@ pub(crate) fn pulse_clouds(
                 );
                 landed.extend(damage(rng, world, victim, realm, amount, effect.power * 3));
             }
-            reports.push((spell.id, landed));
+            reports.push((spell.id, landed, Vec::new()));
         }
     }
     reports

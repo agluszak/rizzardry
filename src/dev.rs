@@ -120,19 +120,26 @@ pub fn say_line(
     assets: Res<AssetServer>,
     mut say: ResMut<SayLine>,
     party: Query<(), With<PartyBody>>,
-    mut finished: MessageReader<crate::presentation::voice::SpeechFinished>,
+    sinks: Query<&bevy::audio::AudioSink>,
 ) {
     if say.started.is_none() && !party.is_empty() {
-        let speech = crate::presentation::voice::speak(&mut commands, &assets, &say.line);
+        let speech = commands
+            .spawn((
+                crate::presentation::voice::Speech,
+                AudioPlayer::new(assets.load(crate::presentation::voice::voice_path(&say.line))),
+                bevy::audio::PlaybackSettings::ONCE,
+            ))
+            .id();
         say.started = Some((speech, Stopwatch::new()));
         info!("speaking {}", say.line);
     }
     let Some((speech, played)) = &mut say.started else { return };
     played.tick(time.delta());
-    for done in finished.read() {
-        if *speech == done.speech {
-            info!("finished {} after {:.2} s", done.line, played.elapsed_secs());
-        }
+    if sinks.get(*speech).is_ok_and(bevy::audio::AudioSinkPlayback::empty) {
+        let elapsed = played.elapsed_secs();
+        commands.entity(*speech).despawn();
+        info!("finished {} after {:.2} s", say.line, elapsed);
+        commands.remove_resource::<SayLine>();
     }
 }
 

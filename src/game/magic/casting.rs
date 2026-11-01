@@ -813,11 +813,12 @@ pub fn perform(
                 rng,
                 world,
                 &mut flights,
+                &mut report.improved,
             )
         };
         // Practice follows what the cast did; a missile on its way counts.
         if outcome != Outcome::Fizzled && (flies || effects::affected(&landed)) {
-            world.improved.extend(practise(
+            report.improved.extend(practise(
                 caster,
                 spell,
                 cast_power,
@@ -852,7 +853,6 @@ pub fn perform(
             break;
         }
     }
-    report.improved = std::mem::take(&mut world.improved);
     Ok((report, flights))
 }
 
@@ -877,11 +877,6 @@ pub struct Payment<'w, 's> {
 }
 
 impl Payment<'_, '_> {
-    /// The spell the caster's source casts.
-    pub fn spell_of(&self, caster: Entity, source: Source) -> Option<SpellId> {
-        source.spell_id(self.members.get(caster).unwrap().2, &self.inventory, &self.content.items)
-    }
-
     /// Cast from the source: roll, pay whatever the roll and practise. The
     /// caller validates its target first and applies the consequence.
     pub fn pay(

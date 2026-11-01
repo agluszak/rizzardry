@@ -60,6 +60,13 @@ pub(super) struct Target {
     pub(super) dead: bool,
 }
 
+pub(super) fn dead(world: &Field, victim: Victim) -> bool {
+    match victim {
+        Victim::Member(e) => world.members.get(e).unwrap().1.is_dead(),
+        Victim::Monster(e) => world.monsters.monsters().get(e).unwrap().0.is_dead(),
+    }
+}
+
 pub(super) fn target(
     world: &Field,
     victim: Victim,
@@ -124,6 +131,7 @@ pub(super) fn saves(
     target: &Target,
     base: i32,
     against: u32,
+    improved: &mut Vec<(Entity, Skill)>,
 ) -> bool {
     let chance = condition_chance(target.level, target.resistance, against, base);
     let chance = match target.side {
@@ -136,7 +144,7 @@ pub(super) fn saves(
         && let Ok((mut character, ..)) = world.members.get_mut(member)
         && character.practise(Skill::IronWill, 2, rng)
     {
-        world.improved.push((member, Skill::IronWill));
+        improved.push((member, Skill::IronWill));
     }
     saved
 }
@@ -297,16 +305,26 @@ pub(super) fn attack(
     condition: Condition,
     chance: u32,
     strength: Strength,
+    improved: &mut Vec<(Entity, Skill)>,
 ) -> Option<Effect> {
     if rng.below(100) >= chance {
         return None;
     }
     // A victim that died or left is not attacked at all.
-    if target(world, victim, realm, Some(condition)).dead {
+    if dead(world, victim) {
         return None;
     }
     let rounds = duration(rng, spell, strength);
-    afflict(rng, world, victim, (Some(condition), 0), realm, strength.against, Some(rounds))
+    afflict(
+        rng,
+        world,
+        victim,
+        (Some(condition), 0),
+        realm,
+        strength.against,
+        Some(rounds),
+        improved,
+    )
 }
 
 /// Retail `ResolveAttackOnTarget`: a condition, or death when `condition` is
@@ -322,6 +340,7 @@ pub(super) fn afflict(
     realm: Realm,
     against: u32,
     rounds: Option<u32>,
+    improved: &mut Vec<(Entity, Skill)>,
 ) -> Option<Effect> {
     let target = target(world, victim, realm, condition);
     if target.dead {
@@ -340,7 +359,7 @@ pub(super) fn afflict(
         return Some(Effect::Resisted { victim });
     }
     let base = condition.map_or(DEATH_SAVE, |c| CONDITION_SAVE[c as usize + 1]);
-    if saves(rng, world, victim, &target, base, against) {
+    if saves(rng, world, victim, &target, base, against, improved) {
         return Some(Effect::Resisted { victim });
     }
     if condition.is_some_and(|condition| shrugs(world, victim, condition, rounds.is_none())) {
@@ -410,20 +429,24 @@ pub fn blow(
     effects: &crate::content::items::AttackEffects,
     power: u32,
     by_monster: bool,
+    improved: &mut Vec<(Entity, Skill)>,
 ) -> Vec<Effect> {
     use crate::content::items::AttackEffect as E;
     let mut landed = Vec::new();
     for (effect, &chance) in &effects.chances {
-        if target(world, victim, Realm::Fire, None).dead {
+        if chance == 0 {
+            continue;
+        }
+        if dead(world, victim) {
             break;
         }
-        if chance == 0 || rng.below(100) >= chance {
+        if rng.below(100) >= chance {
             continue;
         }
         let count = power / 3 + 1;
         let rounds = blow_roll(rng, count, 2, 1).clamp(1, 12);
         let mut afflicts = |rng: &mut GameRng, condition, realm, rounds| {
-            afflict(rng, world, victim, (condition, 0), realm, power, rounds)
+            afflict(rng, world, victim, (condition, 0), realm, power, rounds, improved)
         };
         let member = matches!(victim, Victim::Member(_));
         let outcome = match effect {
@@ -441,6 +464,7 @@ pub fn blow(
                     Realm::Water,
                     power,
                     Some(rounds),
+                    improved,
                 )
             }
             E::Hex => afflicts(rng, Some(Condition::Hexed), Realm::Divine, Some(rounds)),
@@ -456,24 +480,23 @@ pub fn blow(
             }
             E::Possess => None,
             E::DrainHealth if member => {
-                drain(rng, world, victim, Realm::Earth, power, (count, 2, 0))
+                drain(rng, world, victim, Realm::Earth, power, (count, 2, 0), improved)
                     .and_then(|amount| sap(rng, world, victim, amount))
             }
             E::DrainHealth => None,
             E::DrainStamina => {
-                drain(rng, world, victim, Realm::Water, power, (count * 2, 5, count * 3))
+                drain(rng, world, victim, Realm::Water, power, (count * 2, 5, count * 3), improved)
                     .map(|amount| tire(world, victim, amount))
             }
             E::DrainSpellPoints => match victim {
                 Victim::Member(member) => {
-                    drain(rng, world, victim, Realm::Divine, power, (count, 6, count)).map(
-                        |amount| {
+                    drain(rng, world, victim, Realm::Divine, power, (count, 6, count), improved)
+                        .map(|amount| {
                             let maximum = world.mana_maximum(member);
                             let (_, mut pool) = world.points.get_mut(member).unwrap();
                             let amount = pool.drain(amount, &maximum, rng);
                             Effect::Drained { victim, amount }
-                        },
-                    )
+                        })
                 }
                 Victim::Monster(_) => None,
             },
@@ -494,12 +517,13 @@ pub(super) fn drain(
     realm: Realm,
     power: u32,
     (count, sides, base): (u32, i32, u32),
+    improved: &mut Vec<(Entity, Skill)>,
 ) -> Option<u32> {
     let target = target(world, victim, realm, None);
     if target.dead {
         return None;
     }
-    if saves(rng, world, victim, &target, 0, power) {
+    if saves(rng, world, victim, &target, 0, power, improved) {
         return None;
     }
     let amount = blow_roll(rng, count, sides, base);
@@ -515,13 +539,14 @@ pub(super) fn slay(
     victim: Victim,
     realm: Realm,
     strength: Strength,
+    improved: &mut Vec<(Entity, Skill)>,
 ) -> Option<Effect> {
     let target = target(world, victim, realm, None);
     if target.dead {
         return None;
     }
     let rounds = duration(rng, spell, strength);
-    if saves(rng, world, victim, &target, DEATH_SAVE, strength.against)
+    if saves(rng, world, victim, &target, DEATH_SAVE, strength.against, improved)
         || resist(rng, rounds, target.resistance, target.level, strength.against) == 0
     {
         return Some(Effect::Resisted { victim });

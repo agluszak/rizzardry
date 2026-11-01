@@ -584,7 +584,6 @@ pub fn accept_magic(
             monsters: &[],
             group_of: &|m| vec![m],
         };
-        field.improved.clear();
         let performed = casting::perform(caster, choice, &situation, &mut rng, &mut field);
         let news = match performed {
             Ok((report, flights)) => {
@@ -637,7 +636,8 @@ pub fn deliver_spells(
             commands.entity(entity).despawn();
         }
         let mut secondary = Vec::new();
-        field.improved.clear();
+        let mut improved = Vec::new();
+
         let spell = &field.spells()[flight.spell];
         let effects = impacts::resolve(
             flight.caster,
@@ -651,8 +651,8 @@ pub fn deliver_spells(
             &mut rng,
             &mut field,
             &mut secondary,
+            &mut improved,
         );
-        let improved = std::mem::take(&mut *field.improved);
         if let Some(battle) = battle.as_mut() {
             battle.credit_kills(&effects, &mut combat_news);
         }

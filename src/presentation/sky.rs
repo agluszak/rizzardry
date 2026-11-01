@@ -207,27 +207,15 @@ pub fn build_sky(
                         ChildOf(part_entity),
                     ));
                     if cloud {
-                        // Clouds share retail's animated cloud material; keep
-                        // each one's texture.
-                        let texture = materials
-                            .get(&mesh.surface.material)
-                            .and_then(|m| m.base_color_texture.clone());
-                        let material = materials.add(StandardMaterial {
-                            base_color_texture: texture,
-                            unlit: true,
-                            double_sided: true,
-                            cull_mode: None,
-                            alpha_mode: AlphaMode::Blend,
-                            ..default()
-                        });
-                        entity.insert((
-                            MeshMaterial3d(material),
-                            mesh.surface.animation.clone(),
-                            Cloud,
-                        ));
-                    } else {
-                        entity.insert(mesh.surface.render());
+                        if let Some(mut material) = materials.get_mut(&mesh.surface.material) {
+                            material.unlit = true;
+                            material.double_sided = true;
+                            material.cull_mode = None;
+                            material.alpha_mode = AlphaMode::Blend;
+                        }
+                        entity.insert(Cloud);
                     }
+                    entity.insert(mesh.surface.render());
                 }
             }
         }

@@ -34,7 +34,6 @@ pub struct Emission {
 #[require(Visibility)]
 pub struct Particle {
     pub born: Duration,
-    integrated: Duration,
     pub velocity: Vec3,
     pub flutter_angle: f32,
 }
@@ -111,6 +110,7 @@ fn move_particles(
     mut commands: Commands,
 ) {
     let eye = party.single().ok().map(PartyBody::eye);
+    let elapsed = time.delta_secs();
     for (entity, emitter, mut particle, mut transform) in &mut particles {
         let Ok((owner, emitter)) = emitters.get(emitter.parent()) else { continue };
         let Some(config) = config(&definitions, owner, emitter) else {
@@ -122,8 +122,6 @@ fn move_particles(
             commands.entity(entity).despawn();
             continue;
         }
-        let elapsed = (time.elapsed() - particle.integrated).as_secs_f32();
-        particle.integrated = time.elapsed();
         particle.velocity += config.acceleration * elapsed;
         let next = transform.translation + particle.velocity * elapsed;
         let blocked = config.stops_at_scenery && !obstacles.clear(transform.translation, next);
@@ -249,7 +247,6 @@ fn emit_particles(
                 .spawn((
                     Particle {
                         born,
-                        integrated: now,
                         velocity,
                         flutter_angle: rng.random::<f32>() * std::f32::consts::TAU,
                     },
