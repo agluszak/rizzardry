@@ -1,6 +1,7 @@
 //! A monster's attack: whom it may reach, its announcement and its swings
 //! (retail `AnnounceMonsterAttack`, `ContinueMonsterAttack`).
 use super::*;
+use crate::game::rng::GameRng;
 
 /// Who a monster's swing could go astray onto (retail
 /// `BuildMonsterTargetList`): the members its attack reaches but the one
@@ -85,7 +86,6 @@ pub(super) fn notices(
 pub(super) fn reachable_targets(
     entity: Entity,
     kind: &Species,
-    rng: &mut GameRng,
     field: &mut Field,
     fight: &Fight,
     (mine, wanted): (hostility::Allegiance, Stance),
@@ -110,7 +110,7 @@ pub(super) fn reachable_targets(
     let mut unseen = Vec::new();
     for member in field.party.iter() {
         let stealth = field.members.get(member).unwrap().0.skill(Skill::Stealth);
-        if rng.below(100) < stealth * 75 / 100 {
+        if field.rng.below(100) < stealth * 75 / 100 {
             unseen.push(member);
         }
     }
@@ -151,8 +151,8 @@ pub(super) fn reachable_targets(
         }
     }
     for member in evaded {
-        if rng.below(2) == 0
-            && field.members.get_mut(member).unwrap().0.practise(Skill::Stealth, 1, rng)
+        if field.rng.below(2) == 0
+            && field.members.get_mut(member).unwrap().0.practise(Skill::Stealth, 1, &mut field.rng)
         {
             news.write(CombatNews::Improved { member, skill: Skill::Stealth });
         }
@@ -167,7 +167,6 @@ pub(super) fn reachable_targets(
 pub(in crate::game::combat) fn monster_attacks(
     battle: &mut Battle,
     index: usize,
-    rng: &mut GameRng,
     field: &mut Field,
     fight: &mut Fight,
     attackers_side: (hostility::Allegiance, Stance),
@@ -182,7 +181,7 @@ pub(in crate::game::combat) fn monster_attacks(
     let position = at.translation();
     let eye = monster.eye(feet(position, walker));
     let stance = field.monsters.stance(entity, field.now());
-    let candidates = reachable_targets(entity, kind, rng, field, fight, attackers_side, news);
+    let candidates = reachable_targets(entity, kind, field, fight, attackers_side, news);
     let turn_left = turn.attacks_left.max(1) - 1;
     battle.this_round.monsters[index].end();
     // A wary monster's wait comes first among its choices.
@@ -190,7 +189,7 @@ pub(in crate::game::combat) fn monster_attacks(
     if candidates.len() + waits == 0 {
         return true;
     }
-    let chosen = rng.below((candidates.len() + waits) as u32) as usize;
+    let chosen = field.rng.below((candidates.len() + waits) as u32) as usize;
     if chosen < waits {
         battle.this_round.monsters[index].waited = true;
         return false;
@@ -199,8 +198,8 @@ pub(in crate::game::combat) fn monster_attacks(
     let (a, mode, target) = candidates[chosen - waits];
     let attack = &kind.attacks[a];
     // Retail draws for the mode again, from just the one chosen.
-    let mode = attack::choose_mode(rng, enumset::EnumSet::only(mode));
-    let swings = rng.below(u32::from(kind.swings_per_round.max(1))) + 1;
+    let mode = attack::choose_mode(&mut field.rng, enumset::EnumSet::only(mode));
+    let swings = field.rng.below(u32::from(kind.swings_per_round.max(1))) + 1;
     // A natural ambusher strikes from hiding at arm's length.
     let mut surprise = Surprise {
         unaware: false,
@@ -215,7 +214,7 @@ pub(in crate::game::combat) fn monster_attacks(
         let side = formation::quadrant(fight.party.eye, fight.party.yaw, position);
         let facing = field.formation.facing(member);
         if facing.is_some_and(|f| f != side) {
-            if notices(battle, member, character, vitals, rng) {
+            if notices(battle, member, character, vitals, &mut field.rng) {
                 field.formation.turn(member, side);
             } else {
                 surprise.unaware = facing.is_some_and(|f| f.opposite() == Some(side));
@@ -253,7 +252,7 @@ pub(in crate::game::combat) fn monster_attacks(
                 odds: blows.aim(mode, surprise, None, difficulty),
             }
         };
-        let Ok(landing) = land(rng, field, fight, (target, aim), delivery, &mut surprise) else {
+        let Ok(landing) = land(field, fight, (target, aim), delivery, &mut surprise) else {
             break;
         };
         let Some(mut landing) = landing else { continue };
@@ -261,40 +260,40 @@ pub(in crate::game::combat) fn monster_attacks(
             news.write(CombatNews::Fumble { attacker: entity, victim: landing.victim });
         }
         let pressing = attack::monster_protection(kind, &monster);
-        landing.victim =
-            intercept(battle, rng, field, (pressing, &mut surprise), landing.victim, news);
+        landing.victim = intercept(battle, field, (pressing, &mut surprise), landing.victim, news);
         let Some((struck, victim_character)) = victim_defence(battle, field, fight, landing.victim)
         else {
             continue;
         };
-        let at = struck.locate(rng, victim_character.as_ref().map(|_| kind));
+        let at = struck.locate(&mut field.rng, victim_character.as_ref().map(|_| kind));
         if !landing.sure && aim < landing.roll as i32 {
             continue;
         }
         // The party's Missile Shield turns aside what is shot or thrown.
-        if matches!(landing.victim, Victim::Member(_)) && field.enchantments.deflects(mode, rng) {
+        if matches!(landing.victim, Victim::Member(_))
+            && field.enchantments.deflects(mode, &mut field.rng)
+        {
             continue;
         }
         let through = blows.penetration(mode, surprise, (&struck, at), difficulty);
         let dealt = if landing.through || through >= landing.roll as i32 {
-            let count = attack::dice_count(rng, mode, &struck, surprise, backstab, 0);
-            let rolled = attack::roll_dice(rng, attack.damage, count);
+            let count = attack::dice_count(&mut field.rng, mode, &struck, surprise, backstab, 0);
+            let rolled = attack::roll_dice(&mut field.rng, attack.damage, count);
             let mut damage = attack::monster_damage(rolled, &struck);
             if let Some((victim, c)) = &victim_character {
-                iron_skin(rng, field, *victim, c, &mut tally);
+                iron_skin(field, *victim, c, &mut tally);
             }
             if damage > 0 && landing.fumbled {
                 damage = struck.fumble_cap(damage);
             }
             let dealt = if damage > 0 {
-                tally.struck(effects::hurt(rng, field, landing.victim, damage), false)
+                tally.struck(effects::hurt(field, landing.victim, damage), false)
             } else {
                 0
             };
             if dealt > 0 {
                 let power = attack::effect_power(u32::from(kind.level));
-                let landed =
-                    effects::blow(rng, field, landing.victim, &attack.effects, power, true);
+                let landed = effects::blow(field, landing.victim, &attack.effects, power, true);
                 for effect in &landed {
                     tally.struck(Some(*effect), false);
                 }
@@ -306,7 +305,6 @@ pub(in crate::game::combat) fn monster_attacks(
         };
         if attack.reach < Reach::Long {
             razor_backlash(
-                rng,
                 field,
                 fight,
                 battle,

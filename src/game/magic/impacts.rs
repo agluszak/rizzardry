@@ -3,12 +3,12 @@
 use super::{
     Strength,
     casting::{self, Aim, SpellInFlight},
-    effects::{self, Effect, Field, Victim},
+    effects::{self, Effect, Field, Landed, Victim},
     targeting::{self, Recipients},
 };
 use crate::{
     content::spells::{SpellDefinition, SpellId, Targeting},
-    game::{rng::GameRng, world::hostility::Stance},
+    game::world::hostility::Stance,
 };
 use bevy::prelude::*;
 
@@ -123,13 +123,11 @@ pub(crate) fn resolve(
     victims: &[Victim],
     finish: Option<&Finalization>,
     party_at: Vec3,
-    rng: &mut GameRng,
     world: &mut Field,
     flights: &mut Vec<SpellInFlight>,
-) -> Vec<Effect> {
+) -> Landed {
     let spells = world.spells();
-    let mut landed =
-        effects::resolve(origin.actor(), backfired, spell, strength, victims, rng, world);
+    let mut landed = effects::resolve(origin.actor(), backfired, spell, strength, victims, world);
     let Some(finish) = finish else { return landed };
     // The strongest surviving charge pays once, after all original impacts.
     if !backfired && !finish.reflected && spell.aimed_at_enemies() {
@@ -178,7 +176,7 @@ pub(crate) fn resolve(
                     world.monsters.enchantments_mut(entity).spend_charge(SpellId::EYE_FOR_AN_EYE);
                 }
             }
-            landed.push(Effect::Reflected { victim: charged });
+            landed.effects.push(Effect::Reflected { victim: charged });
             let original = origin.owner();
             let old_position = origin.position(world, party_at);
             let source = match spell.targeting {
@@ -288,7 +286,7 @@ pub(crate) fn resolve(
                 }
                 attach(&mut flights[start..], finish);
             } else {
-                landed.extend(resolve(
+                landed.add(resolve(
                     caster,
                     source,
                     false,
@@ -297,7 +295,6 @@ pub(crate) fn resolve(
                     &victims,
                     Some(&finish),
                     party_at,
-                    rng,
                     world,
                     flights,
                 ));
@@ -336,7 +333,7 @@ pub(crate) fn resolve(
                 victims: victims.clone(),
                 reflected: finish.reflected,
             };
-            landed.extend(resolve(
+            landed.add(resolve(
                 caster,
                 origin,
                 false,
@@ -345,7 +342,6 @@ pub(crate) fn resolve(
                 &victims,
                 Some(&finish),
                 party_at,
-                rng,
                 world,
                 flights,
             ));

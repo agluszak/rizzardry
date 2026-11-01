@@ -12,18 +12,16 @@
 
 use bevy::prelude::*;
 
-use super::effects::{self, Effect, Field, Victim};
-use super::{LearnedSpells, Outcome, SpellPoints, Strength};
+use super::effects::{self, Effect, Field, Landed, Victim};
+use super::{Outcome, Strength};
 use crate::content::characters::Skill;
 use crate::content::items::{ItemCatalog, ItemDefinition, UseType};
 use crate::content::spells::{
-    MAX_POWER, PowerChoice, SpellCatalog, SpellDefinition, SpellId, Targeting, Usable,
-    min_caster_level,
+    MAX_POWER, PowerChoice, SpellDefinition, SpellId, Targeting, Usable, min_caster_level,
 };
 use crate::game::characters::{Character, Condition, Lasting, Profession, Vitals};
 use crate::game::difficulty::Difficulty;
 use crate::game::inventory::{Carried, PartyInventory, StackId};
-use crate::game::rng::GameRng;
 
 /// The power that asks the caster to choose it: as much as the victim needs
 /// (retail "Auto Calibrate"), or, outside a fight, as much and as often as
@@ -178,12 +176,6 @@ impl FlightOrder {
         if flight.launched == 0 {
             self.0 += 1;
             flight.launched = self.0;
-        }
-    }
-    pub fn launch(&mut self, commands: &mut Commands, flights: Vec<SpellInFlight>, level: Entity) {
-        for mut flight in flights {
-            self.stamp(&mut flight);
-            commands.spawn((flight, crate::game::world::level::LevelOwned(level)));
         }
     }
 }
@@ -522,101 +514,91 @@ pub fn can_activate(character: &Character, item: &ItemDefinition, worn: bool) ->
         && (character.can_use(item) || consumed_by_anyone(item))
 }
 
-fn prepare_source<'a>(
-    caster: Entity,
-    source: Source,
-    in_combat: bool,
-    (spells, items): (&'a SpellCatalog, &'a ItemCatalog),
-    members: &super::Members,
-    points: &Query<(&LearnedSpells, &mut SpellPoints)>,
-    inventory: &PartyInventory,
-) -> Result<Prepared<'a>, Refusal> {
-    let (profile, vitals, carried, ..) = members.get(caster).unwrap();
-    if !vitals.can_fight() {
-        return Err(Refusal::CannotAct);
+impl<'w> Field<'w, '_> {
+    /// The source as it stands now, refused if it cannot be used.
+    fn prepare(
+        &self,
+        caster: Entity,
+        source: Source,
+        in_combat: bool,
+    ) -> Result<Prepared<'w>, Refusal> {
+        let (spells, items) = (self.spells(), self.items());
+        let (profile, vitals, carried, ..) = self.members.get(caster).unwrap();
+        if !vitals.can_fight() {
+            return Err(Refusal::CannotAct);
+        }
+        // What the source is, before anything is spent.
+        let (spell, power, item, forced_self) = match source {
+            Source::Spell { spell, power } => {
+                if power == 0 {
+                    return Err(Refusal::CannotUse);
+                }
+                if vitals.conditions.has(Condition::Silenced) {
+                    return Err(Refusal::Silenced);
+                }
+                let (learned, _) = self.points.get(caster).unwrap();
+                if !learned.0.contains(&spell) {
+                    return Err(Refusal::NotLearned);
+                }
+                let definition = &spells[spell];
+                if self.affordable(caster, definition) == 0 {
+                    return Err(Refusal::NoSpellPoints);
+                }
+                (definition, power.min(AUTO_POWER), None, false)
+            }
+            Source::Item(id) | Source::PoolItem(id) => {
+                let from_pool = matches!(source, Source::PoolItem(_));
+                let stack = if from_pool {
+                    self.inventory.pool.stacks.iter().find(|s| s.id == id)
+                } else {
+                    carried.find_stack(id)
+                }
+                .ok_or(Refusal::NoItem)?;
+                let definition = &items[stack.item];
+                let cast = definition.spell.ok_or(Refusal::CannotUse)?;
+                if cast.power == 0
+                    && !matches!(definition.use_type, UseType::Instrument | UseType::Gadget)
+                {
+                    return Err(Refusal::CannotUse);
+                }
+                let worn = !from_pool && carried.active_equipment().any(|(_, e)| e.stack.id == id);
+                if !can_activate(profile, definition, worn) {
+                    return Err(Refusal::CannotUse);
+                }
+                if stack.remaining_uses() == Some(0) {
+                    return Err(Refusal::NoCharges);
+                }
+                if definition.use_type == UseType::Instrument
+                    && vitals.conditions.has(Condition::Silenced)
+                {
+                    return Err(Refusal::Silenced);
+                }
+                let spell = &spells[cast.spell];
+                // Drinking in combat is always done by the drinker (retail
+                // `UseItem` aims potions at their user).
+                let forced = in_combat && consumed_by_anyone(definition);
+                (
+                    spell,
+                    cast.power,
+                    Some(ItemUse { id, definition, identified: stack.identified, from_pool }),
+                    forced,
+                )
+            }
+        };
+        Ok(Prepared { spell, power, item, forced_self })
     }
-    // What the source is, before anything is spent.
-    let (spell, power, item, forced_self) = match source {
-        Source::Spell { spell, power } => {
-            if power == 0 {
-                return Err(Refusal::CannotUse);
-            }
-            if vitals.conditions.has(Condition::Silenced) {
-                return Err(Refusal::Silenced);
-            }
-            let (learned, pool) = points.get(caster).unwrap();
-            if !learned.0.contains(&spell) {
-                return Err(Refusal::NotLearned);
-            }
-            let definition = &spells[spell];
-            let maximum = profile.stats(&vitals.enchantments).max_points(learned, spells);
-            if pool.affordable_power(definition, &maximum) == 0 {
-                return Err(Refusal::NoSpellPoints);
-            }
-            (definition, power.min(AUTO_POWER), None, false)
-        }
-        Source::Item(id) | Source::PoolItem(id) => {
-            let from_pool = matches!(source, Source::PoolItem(_));
-            let stack = if from_pool {
-                inventory.pool.stacks.iter().find(|s| s.id == id)
-            } else {
-                carried.find_stack(id)
-            }
-            .ok_or(Refusal::NoItem)?;
-            let definition = &items[stack.item];
-            let cast = definition.spell.ok_or(Refusal::CannotUse)?;
-            if cast.power == 0
-                && !matches!(definition.use_type, UseType::Instrument | UseType::Gadget)
-            {
-                return Err(Refusal::CannotUse);
-            }
-            let worn = !from_pool && carried.active_equipment().any(|(_, e)| e.stack.id == id);
-            if !can_activate(profile, definition, worn) {
-                return Err(Refusal::CannotUse);
-            }
-            if stack.remaining_uses() == Some(0) {
-                return Err(Refusal::NoCharges);
-            }
-            if definition.use_type == UseType::Instrument
-                && vitals.conditions.has(Condition::Silenced)
-            {
-                return Err(Refusal::Silenced);
-            }
-            let spell = &spells[cast.spell];
-            // Drinking in combat is always done by the drinker (retail
-            // `UseItem` aims potions at their user).
-            let forced = in_combat && consumed_by_anyone(definition);
-            (
-                spell,
-                cast.power,
-                Some(ItemUse { id, definition, identified: stack.identified, from_pool }),
-                forced,
-            )
-        }
-    };
-    Ok(Prepared { spell, power, item, forced_self })
 }
 
 /// Cast or use as `caster`, now: revalidate, capture victims, roll, pay and
 /// resolve. Nothing is spent on refusal. Missiles are returned to be flown.
-#[allow(clippy::too_many_arguments)]
 pub fn perform(
     caster: Entity,
     choice: MagicChoice,
     situation: &Situation,
-    rng: &mut GameRng,
     world: &mut Field,
 ) -> Result<(Report, Vec<SpellInFlight>), Refusal> {
-    let spells = world.spells();
-    let Prepared { spell, power, item, forced_self } = prepare_source(
-        caster,
-        choice.source,
-        situation.in_combat(),
-        (spells, world.items()),
-        &world.members,
-        &world.points,
-        &world.inventory,
-    )?;
+    let Prepared { spell, power, item, forced_self } =
+        world.prepare(caster, choice.source, situation.in_combat())?;
     if !effects::modelled(spell.id) {
         return Err(Refusal::Unsupported);
     }
@@ -632,17 +614,12 @@ pub fn perform(
     // Instruments can pay fatigue while finding power, so validate the target
     // first. Radius changes may widen victims but cannot rescue an invalid aim.
     let (captured, landing) = capture(caster, spell, choice.aim, situation, forced_self)?;
-    let power = match &item {
-        Some(use_) if matches!(use_.definition.use_type, UseType::Instrument | UseType::Gadget) => {
-            play(caster, use_, spell, rng, &mut world.members)?
-        }
-        _ => power,
-    };
+    let power = world.play(caster, item.as_ref(), spell, power)?;
     let mut report = Report {
         caster,
         spell: spell.id,
         power: 0,
-        item: None,
+        item: item.as_ref().map(|use_| use_.definition.name.clone()),
         outcome: Outcome::Fizzled,
         effects: Vec::new(),
         improved: Vec::new(),
@@ -655,20 +632,14 @@ pub fn perform(
         let cast_power = match &item {
             Some(_) => power,
             None => {
-                let (_, pool) = world.points.get(caster).unwrap();
-                let maximum = world.mana_maximum(caster);
-                let affordable = pool.affordable_power(spell, &maximum);
+                let affordable = world.affordable(caster, spell);
                 if affordable == 0 {
                     break;
                 }
                 if auto {
                     let victim = match choice.aim {
                         Aim::Member(m) => Some(world.members.get(m).unwrap()),
-                        Aim::Ahead
-                        | Aim::Point(_)
-                        | Aim::Monster(_)
-                        | Aim::Device(_)
-                        | Aim::Item(_) => None,
+                        _ => None,
                     };
                     auto_power(
                         world.members.get(caster).unwrap().0,
@@ -706,25 +677,7 @@ pub fn perform(
             }
         }
         // Accepted: roll, then pay whatever the roll.
-        let (chance, quiet, strength) = attempt(
-            world.members.get(caster).unwrap().0,
-            item.as_ref(),
-            spell,
-            cast_power,
-            world.difficulty(),
-        );
-        let outcome = super::roll(rng, chance, spell, quiet, world.underwater());
-        pay(
-            caster,
-            spell,
-            cast_power,
-            item.as_ref(),
-            &mut world.points,
-            rng,
-            &mut world.members,
-            &mut world.inventory,
-            &mut report,
-        );
+        let (outcome, strength) = world.attempt(caster, spell, cast_power, item.as_ref());
         let victims = match outcome {
             Outcome::Cast => victims,
             Outcome::Backfired => backfire_victims(caster, spell, situation),
@@ -799,7 +752,7 @@ pub fn perform(
                 }
             }
             super::impacts::attach(&mut flights[first_flight..], finish);
-            Vec::new()
+            Landed::default()
         } else {
             super::impacts::resolve(
                 caster,
@@ -810,21 +763,14 @@ pub fn perform(
                 &victims,
                 Some(&finish),
                 situation.party_at,
-                rng,
                 world,
                 &mut flights,
             )
         };
         // Practice follows what the cast did; a missile on its way counts.
-        if outcome != Outcome::Fizzled && (flies || effects::affected(&landed)) {
-            world.improved.extend(practise(
-                caster,
-                spell,
-                cast_power,
-                item.as_ref(),
-                rng,
-                &mut world.members,
-            ));
+        report.improved.extend(landed.improved);
+        if outcome != Outcome::Fizzled && (flies || effects::affected(&landed.effects)) {
+            report.improved.extend(world.practise(caster, spell, cast_power, item.as_ref()));
         }
         if first {
             report.power = cast_power;
@@ -835,7 +781,7 @@ pub fn perform(
                 report.outcome = outcome;
             }
         }
-        report.effects.extend(landed);
+        report.effects.extend(landed.effects);
         // An auto cast tries again while it fizzles, and auto recast goes on
         // until its victim is whole, while stamina and points last.
         if !auto || report.repeats >= 50 {
@@ -852,34 +798,23 @@ pub fn perform(
             break;
         }
     }
-    report.improved = std::mem::take(&mut world.improved);
     Ok((report, flights))
 }
 
-/// What paying for a utility or device cast from its source needs: the
-/// caster and the party's members, their spell points, the party's items,
-/// the catalogs, the setting and the dice.
-#[derive(bevy::ecs::system::SystemParam)]
-pub struct Payment<'w, 's> {
-    pub members: crate::game::party::Members<'w, 's>,
-    points: Query<'w, 's, (&'static LearnedSpells, &'static mut SpellPoints)>,
-    pub inventory: Single<'w, 's, &'static mut PartyInventory>,
-    roster: Single<'w, 's, &'static crate::game::party::roster::PartyRoster>,
-    pub content: Res<'w, crate::game::data::Catalogs>,
-    difficulty: Res<'w, Difficulty>,
-    levels: Query<
-        'w,
-        's,
-        &'static crate::game::world::triggers::LevelState,
-        With<crate::game::world::level::Level>,
-    >,
-    pub rng: ResMut<'w, GameRng>,
-}
+impl Field<'_, '_> {
+    /// Send missiles on their way, owned by the level being played.
+    pub fn launch(&mut self, commands: &mut Commands, flights: Vec<SpellInFlight>) {
+        let level = self.level.0;
+        for mut flight in flights {
+            self.flight_order.stamp(&mut flight);
+            commands.spawn((flight, crate::game::world::level::LevelOwned(level)));
+        }
+    }
 
-impl Payment<'_, '_> {
-    /// The spell the caster's source casts.
-    pub fn spell_of(&self, caster: Entity, source: Source) -> Option<SpellId> {
-        source.spell_id(self.members.get(caster).unwrap().2, &self.inventory, &self.content.items)
+    /// The most power the caster's points pay for now.
+    fn affordable(&self, caster: Entity, spell: &SpellDefinition) -> u32 {
+        let (_, pool) = self.points.get(caster).unwrap();
+        pool.affordable_power(spell, &self.mana_maximum(caster))
     }
 
     /// Cast from the source: roll, pay whatever the roll and practise. The
@@ -890,187 +825,171 @@ impl Payment<'_, '_> {
         source: Source,
         context: UseContext,
     ) -> Result<(Report, Strength), Refusal> {
-        let Self { members, points, inventory, roster, content, difficulty, levels, rng } = self;
-        if !roster.contains(&caster) {
+        if !self.party.contains(&caster) {
             return Err(Refusal::CannotAct);
         }
-        let (spells, items) = (&content.spells, &content.items);
-        let underwater = levels.single().is_ok_and(|state| state.camera_sway);
-        let Prepared { spell, power, item, .. } =
-            prepare_source(caster, source, false, (spells, items), members, points, inventory)?;
+        let Prepared { spell, power, item, .. } = self.prepare(caster, source, false)?;
         if !usable_now(spell, context) {
             return Err(Refusal::WrongTime);
         }
-        let power = match &item {
-            Some(use_)
-                if matches!(use_.definition.use_type, UseType::Instrument | UseType::Gadget) =>
-            {
-                play(caster, use_, spell, rng, members)?
-            }
-            Some(_) => power,
-            None => {
-                let (learned, pool) = points.get(caster).unwrap();
-                let (character, vitals, ..) = members.get(caster).unwrap();
-                let maximum = character.stats(&vitals.enchantments).max_points(learned, spells);
-                power.min(MAX_POWER).min(pool.affordable_power(spell, &maximum))
-            }
-        };
-        let (chance, quiet, strength) =
-            attempt(members.get(caster).unwrap().0, item.as_ref(), spell, power, **difficulty);
-        let outcome = super::roll(rng, chance, spell, quiet, underwater);
-        let mut report = Report {
+        let item = item.as_ref();
+        let mut power = self.play(caster, item, spell, power)?;
+        if item.is_none() {
+            power = power.min(self.affordable(caster, spell));
+        }
+        let (outcome, strength) = self.attempt(caster, spell, power, item);
+        // Retail considers these utility spells affected even on a fizzle.
+        let report = Report {
             caster,
             spell: spell.id,
             power,
-            item: None,
+            item: item.map(|use_| use_.definition.name.clone()),
             outcome,
             effects: Vec::new(),
-            improved: Vec::new(),
+            improved: self.practise(caster, spell, power, item),
             repeats: 0,
         };
-        pay(caster, spell, power, item.as_ref(), points, rng, members, inventory, &mut report);
-        // Retail considers these utility spells affected even on a fizzle.
-        report.improved.extend(practise(caster, spell, power, item.as_ref(), rng, members));
         Ok((report, strength))
     }
-}
 
-/// An attempt at `power`: its failure chance, whether it is quiet (a
-/// thrown item), and the strength it casts with, from a learned spell or an
-/// item.
-fn attempt(
-    character: &Character,
-    item: Option<&ItemUse>,
-    spell: &SpellDefinition,
-    power: u32,
-    difficulty: Difficulty,
-) -> (u32, bool, Strength) {
-    match item {
-        Some(use_) => {
-            let (chance, quiet) =
-                item_failure(character, use_.definition, spell, power, use_.identified, difficulty);
-            (chance, quiet, item_strength(character, use_.definition, spell, power))
-        }
-        None => (
-            difficulty.scale_by_pace(super::fail_chance(character, spell, power), 0),
-            false,
-            Strength::of(character, spell, power),
-        ),
-    }
-}
-
-/// Instruments and gadgets find the power their player can manage, paying
-/// their fatigue whether or not they can (retail `UseItem`).
-fn play(
-    caster: Entity,
-    use_: &ItemUse,
-    spell: &SpellDefinition,
-    rng: &mut GameRng,
-    members: &mut crate::game::party::Members,
-) -> Result<u32, Refusal> {
-    let (mut profile, mut vitals, ..) = members.get_mut(caster).unwrap();
-    let mut power = MAX_POWER;
-    while power > 0
-        && item_failure(&profile, use_.definition, spell, power, true, Difficulty::Normal).0 > 15
-    {
-        power -= 1;
-    }
-    while power > 0 && power * 7 > rng.below(100) {
-        power -= 1;
-    }
-    vitals.spend_stamina(spell.level * 8 + 20);
-    if power == 0 {
-        // The refusal carries the practice, since no report follows it.
-        let improved =
-            use_.definition.use_type.skill().filter(|&skill| profile.practise(skill, 1, rng));
-        return Err(Refusal::PlayedBadly { improved });
-    }
-    Ok(power)
-}
-
-/// Pay for one accepted attempt: points or a use, then fatigue.
-#[allow(clippy::too_many_arguments)]
-fn pay(
-    caster: Entity,
-    spell: &SpellDefinition,
-    power: u32,
-    item: Option<&ItemUse>,
-    points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
-    rng: &mut GameRng,
-    members: &mut crate::game::party::Members,
-    inventory: &mut PartyInventory,
-    report: &mut Report,
-) {
-    let (_, mut vitals, mut carried, burden) = members.get_mut(caster).unwrap();
-    let fatigue = match item {
-        None => {
-            let (_, mut pool) = points.get_mut(caster).unwrap();
-            let realm = spell.realm.expect("a cast spell has a realm");
-            pool.spend(realm, spell.cost_at(power));
-            super::cast_fatigue(spell, power)
-        }
-        Some(use_) => {
-            if use_.from_pool {
-                inventory.pool.consume_use(use_.id, use_.definition);
-            } else {
-                carried.consume_use(use_.id, use_.definition, use_.definition.keeps_empty());
+    /// One accepted attempt at `power`: roll, then pay whatever the roll,
+    /// points or a use, then fatigue.
+    fn attempt(
+        &mut self,
+        caster: Entity,
+        spell: &SpellDefinition,
+        power: u32,
+        item: Option<&ItemUse>,
+    ) -> (Outcome, Strength) {
+        let underwater = self.underwater();
+        let difficulty = self.difficulty();
+        let character = self.members.get(caster).unwrap().0;
+        let (chance, quiet, strength) = match item {
+            Some(use_) => {
+                let (chance, quiet) = item_failure(
+                    character,
+                    use_.definition,
+                    spell,
+                    power,
+                    use_.identified,
+                    difficulty,
+                );
+                (chance, quiet, item_strength(character, use_.definition, spell, power))
             }
-            report.item = Some(use_.definition.name.clone());
-            match use_.definition.use_type {
-                UseType::Thrown => 10,
-                // Already paid when the instrument or gadget was played.
-                UseType::Instrument | UseType::Gadget => 0,
-                _ => {
-                    let base = rng.below(2) + 1;
-                    if vitals.conditions.has(Condition::Diseased) { base * 2 } else { base }
+            None => (
+                difficulty.scale_by_pace(super::fail_chance(character, spell, power), 0),
+                false,
+                Strength::of(character, spell, power),
+            ),
+        };
+        let outcome = super::roll(&mut self.rng, chance, spell, quiet, underwater);
+        let (_, mut vitals, mut carried, burden) = self.members.get_mut(caster).unwrap();
+        let fatigue = match item {
+            None => {
+                let (_, mut pool) = self.points.get_mut(caster).unwrap();
+                let realm = spell.realm.expect("a cast spell has a realm");
+                pool.spend(realm, spell.cost_at(power));
+                spell.level + power
+            }
+            Some(use_) => {
+                if use_.from_pool {
+                    self.inventory.pool.consume_use(use_.id, use_.definition);
+                } else {
+                    carried.consume_use(use_.id, use_.definition, use_.definition.keeps_empty());
+                }
+                match use_.definition.use_type {
+                    UseType::Thrown => 10,
+                    // Already paid when the instrument or gadget was played.
+                    UseType::Instrument | UseType::Gadget => 0,
+                    _ => {
+                        let base = self.rng.below(2) + 1;
+                        if vitals.conditions.has(Condition::Diseased) { base * 2 } else { base }
+                    }
                 }
             }
-        }
-    };
-    // Action fatigue weighs more under load (retail `FatigueCharacter`).
-    let slowed = vitals.conditions.has(Condition::Slowed);
-    let hasted = vitals.enchantments.has(crate::content::spells::SpellId::HASTE);
-    vitals.spend_stamina(burden.load.scale_fatigue(fatigue, slowed, hasted));
-}
-
-/// Practice from a cast that did something (retail `Magic.cpp:2682-2692`,
-/// `PC Item.cpp:3792-3796`): a learned spell trains its book, its realm and
-/// Power Cast; an item its use's skill.
-fn practise(
-    caster: Entity,
-    spell: &SpellDefinition,
-    power: u32,
-    item: Option<&ItemUse>,
-    rng: &mut GameRng,
-    members: &mut crate::game::party::Members,
-) -> Vec<(Entity, Skill)> {
-    let (mut character, ..) = members.get_mut(caster).unwrap();
-    let mut improved = Vec::new();
-    let practice: Vec<(Skill, u32)> = match item {
-        None => {
-            let index = spell.level + power;
-            let mut practice = vec![(super::best_book(&character, spell), (index + 2) >> 2)];
-            if let Some(realm) = spell.realm {
-                practice.push((realm.skill(), index));
-            }
-            if character.skill_available(Skill::PowerCast) {
-                practice.push((Skill::PowerCast, (index + 2) >> 2));
-            }
-            practice
-        }
-        Some(use_) => use_
-            .definition
-            .use_type
-            .skill()
-            .map(|skill| vec![(skill, spell.level + power / 2)])
-            .unwrap_or_default(),
-    };
-    for (skill, usage) in practice {
-        if character.practise(skill, usage, rng) {
-            improved.push((caster, skill));
-        }
+        };
+        // Action fatigue weighs more under load (retail `FatigueCharacter`).
+        let slowed = vitals.conditions.has(Condition::Slowed);
+        let hasted = vitals.enchantments.has(SpellId::HASTE);
+        vitals.spend_stamina(burden.load.scale_fatigue(fatigue, slowed, hasted));
+        (outcome, strength)
     }
-    improved
+
+    /// Instruments and gadgets find the power their player can manage, paying
+    /// their fatigue whether or not they can (retail `UseItem`); any other
+    /// source keeps its `power`.
+    fn play(
+        &mut self,
+        caster: Entity,
+        item: Option<&ItemUse>,
+        spell: &SpellDefinition,
+        power: u32,
+    ) -> Result<u32, Refusal> {
+        let Some(use_) = item.filter(|use_| {
+            matches!(use_.definition.use_type, UseType::Instrument | UseType::Gadget)
+        }) else {
+            return Ok(power);
+        };
+        let (mut profile, mut vitals, ..) = self.members.get_mut(caster).unwrap();
+        let mut power = MAX_POWER;
+        while power > 0
+            && item_failure(&profile, use_.definition, spell, power, true, Difficulty::Normal).0
+                > 15
+        {
+            power -= 1;
+        }
+        while power > 0 && power * 7 > self.rng.below(100) {
+            power -= 1;
+        }
+        vitals.spend_stamina(spell.level * 8 + 20);
+        if power == 0 {
+            // The refusal carries the practice, since no report follows it.
+            let improved = use_
+                .definition
+                .use_type
+                .skill()
+                .filter(|&skill| profile.practise(skill, 1, &mut self.rng));
+            return Err(Refusal::PlayedBadly { improved });
+        }
+        Ok(power)
+    }
+
+    /// Practice from a cast that did something (retail `Magic.cpp:2682-2692`,
+    /// `PC Item.cpp:3792-3796`): a learned spell trains its book, its realm and
+    /// Power Cast; an item its use's skill.
+    fn practise(
+        &mut self,
+        caster: Entity,
+        spell: &SpellDefinition,
+        power: u32,
+        item: Option<&ItemUse>,
+    ) -> Vec<(Entity, Skill)> {
+        let (mut character, ..) = self.members.get_mut(caster).unwrap();
+        let practice: Vec<(Skill, u32)> = match item {
+            None => {
+                let index = spell.level + power;
+                let mut practice = vec![(super::best_book(&character, spell), (index + 2) >> 2)];
+                if let Some(realm) = spell.realm {
+                    practice.push((realm.skill(), index));
+                }
+                if character.skill_available(Skill::PowerCast) {
+                    practice.push((Skill::PowerCast, (index + 2) >> 2));
+                }
+                practice
+            }
+            Some(use_) => use_
+                .definition
+                .use_type
+                .skill()
+                .map(|skill| vec![(skill, spell.level + power / 2)])
+                .unwrap_or_default(),
+        };
+        practice
+            .into_iter()
+            .filter(|&(skill, usage)| character.practise(skill, usage, &mut self.rng))
+            .map(|(skill, _)| (caster, skill))
+            .collect()
+    }
 }
 
 /// The spells and items an actor could use: what menus offer. Execution

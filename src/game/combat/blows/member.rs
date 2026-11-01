@@ -94,9 +94,8 @@ pub(in crate::game::combat) fn melee_target<'a>(
 pub(super) fn member_target(
     member: Entity,
     reach: Reach,
-    field: &Field,
+    field: &mut Field,
     fight: &Fight,
-    rng: &mut GameRng,
 ) -> Option<Victim> {
     if field
         .members
@@ -117,7 +116,8 @@ pub(super) fn member_target(
         if let Some((target, _)) = melee_target(member, reach, field, fight) {
             targets.push(Victim::Monster(target));
         }
-        return (!targets.is_empty()).then(|| targets[rng.below(targets.len() as u32) as usize]);
+        return (!targets.is_empty())
+            .then(|| targets[field.rng.below(targets.len() as u32) as usize]);
     }
     melee_target(member, reach, field, fight).map(|(entity, _)| Victim::Monster(entity))
 }
@@ -129,7 +129,6 @@ pub(super) fn member_target(
 pub(in crate::game::combat) fn member_attacks(
     battle: &mut Battle,
     index: usize,
-    rng: &mut GameRng,
     field: &mut Field,
     fight: &mut Fight,
     news: &mut MessageWriter<CombatNews>,
@@ -161,7 +160,7 @@ pub(in crate::game::combat) fn member_attacks(
     let mut due = None;
     for current in [turns.current, 1 - turns.current] {
         let weapon = weapons.hands[current].filter(|_| turns.left[current] > 0);
-        let target = weapon.and_then(|w| member_target(member, w.reach, field, fight, rng));
+        let target = weapon.and_then(|w| member_target(member, w.reach, field, fight));
         match weapon.zip(target) {
             Some((weapon, target)) => {
                 due = Some((current, weapon, target));
@@ -181,10 +180,10 @@ pub(in crate::game::combat) fn member_attacks(
     let mode = if berserk {
         AttackMode::Berserk
     } else {
-        attack::choose_mode(rng, modes[current].unwrap())
+        attack::choose_mode(&mut field.rng, modes[current].unwrap())
     };
     turns.left[current] -= 1;
-    let mut swings = rng.below(most_swings[current]) + 1;
+    let mut swings = field.rng.below(most_swings[current]) + 1;
     // A Rogue's sword or dagger at arm's length strikes where it hurts.
     let backstab = character.has_trait(Trait::Backstab)
         && reach <= Reach::Touch
@@ -194,7 +193,7 @@ pub(in crate::game::combat) fn member_attacks(
     if turns.lightning && current == 0 {
         if weapons.skill(0) == Skill::Sword && !slowed {
             let level = u32::from(character.profession_levels[character.profession]);
-            swings += if rng.below(11) + level < 20 { 3 } else { 4 };
+            swings += if field.rng.below(11) + level < 20 { 3 } else { 4 };
         }
         turns.lightning = false;
     }
@@ -243,7 +242,7 @@ pub(in crate::game::combat) fn member_attacks(
                 odds: attacker.aim(mode, surprise, None, difficulty),
             }
         };
-        let Ok(landing) = land(rng, field, fight, (target, aim), delivery, &mut surprise) else {
+        let Ok(landing) = land(field, fight, (target, aim), delivery, &mut surprise) else {
             break;
         };
         if let Some(mut landing) = landing {
@@ -252,19 +251,18 @@ pub(in crate::game::combat) fn member_attacks(
             }
             let pressing = attack::member_protection(&stats, &vitals, &weapons, load, blessing);
             landing.victim =
-                intercept(battle, rng, field, (pressing, &mut surprise), landing.victim, news);
+                intercept(battle, field, (pressing, &mut surprise), landing.victim, news);
             let dealt = member_blow(
                 battle,
                 (member, &stats, &attacker),
                 (&weapons, current, mode),
                 (surprise, aim, backstab_chance),
                 landing,
-                (rng, field, fight),
+                (field, fight),
                 &mut tally,
             );
             if dealt.is_some() && reach < Reach::Long {
                 razor_backlash(
-                    rng,
                     field,
                     fight,
                     battle,
@@ -290,7 +288,7 @@ pub(in crate::game::combat) fn member_attacks(
         let (_, mut vitals, mut carried, _) = field.members.get_mut(member).unwrap();
         let weight = weapon.weight();
         let cost = attack::swing_stamina(
-            rng,
+            &mut field.rng,
             mode,
             weight,
             berserk,
@@ -349,20 +347,20 @@ pub(super) fn member_blow(
     (weapons, current, mode): (&attack::Weapons<'_>, usize, AttackMode),
     (surprise, aim, backstab): (Surprise, i32, i32),
     landing: Landing,
-    (rng, field, fight): (&mut GameRng, &mut Field, &mut Fight),
+    (field, fight): (&mut Field, &mut Fight),
     tally: &mut Tally,
 ) -> Option<u32> {
     let weapon = weapons.hands[current].unwrap();
     let strike = weapon.strike(character);
     let difficulty = field.difficulty();
     let (struck, victim_character) = victim_defence(battle, field, fight, landing.victim)?;
-    let at = struck.locate(rng, None);
+    let at = struck.locate(&mut field.rng, None);
     if !landing.sure && aim < landing.roll as i32 {
         return None;
     }
     // A launcher pierces by what it shoots.
     let piercing = if weapon.launcher() {
-        attack::choose_mode(rng, weapons.strike(character, 1 - current).modes)
+        attack::choose_mode(&mut field.rng, weapons.strike(character, 1 - current).modes)
     } else {
         mode
     };
@@ -376,21 +374,21 @@ pub(super) fn member_blow(
             .monsters
             .monsters()
             .get(monster)
-            .is_ok_and(|(m, ..)| m.enchantments.deflects(mode, rng))
+            .is_ok_and(|(m, ..)| m.enchantments.deflects(mode, &mut field.rng))
     {
         return Some(0);
     }
     let slaying = struck.species().map_or(0, |kind| weapon.slays(kind.kind));
-    let count = attack::dice_count(rng, mode, &struck, surprise, backstab, slaying);
+    let count = attack::dice_count(&mut field.rng, mode, &struck, surprise, backstab, slaying);
     let dice = match mode {
         AttackMode::Punch => weapons.strike(character, 1).dice,
         AttackMode::Kick => weapons.strike(character, 0).dice,
         _ => strike.dice,
     };
-    let rolled = attack::roll_dice(rng, dice, count);
+    let rolled = attack::roll_dice(&mut field.rng, dice, count);
     let mut damage = attack::member_damage(weapon.damage_percent(character), rolled, &struck);
     if let Some((victim, c)) = &victim_character {
-        iron_skin(rng, field, *victim, c, tally);
+        iron_skin(field, *victim, c, tally);
     }
     if damage == 0 {
         return Some(0);
@@ -398,20 +396,20 @@ pub(super) fn member_blow(
     if landing.fumbled {
         damage = struck.fumble_cap(damage);
     }
-    let struck = effects::hurt(rng, field, landing.victim, damage);
+    let struck = effects::hurt(field, landing.victim, damage);
     let dealt = tally.struck(struck, true);
     if dealt > 0 {
         let mut blow = strike.effects;
         if !landing.fumbled {
             let kill = &mut blow.chances[AttackEffect::Kill];
-            *kill = (*kill + attack::critical_chance(rng, character, &weapon)).min(100);
+            *kill = (*kill + attack::critical_chance(&mut field.rng, character, &weapon)).min(100);
             if character.has_trait(Trait::Knockout) {
                 let knockout = &mut blow.chances[AttackEffect::KnockOut];
                 *knockout = (*knockout + character.scale_by_profession(5.0) as u32).min(100);
             }
         }
         let power = attack::effect_power(u32::from(character.level()));
-        let landed = effects::blow(rng, field, landing.victim, &blow, power, false);
+        let landed = effects::blow(field, landing.victim, &blow, power, false);
         for effect in &landed {
             tally.struck(Some(*effect), true);
         }
@@ -430,7 +428,7 @@ pub(super) fn member_blow(
             &[Skill::EagleEye]
         };
         for &skill in skills {
-            if trained.skill_available(skill) && trained.practise(skill, 1, rng) {
+            if trained.skill_available(skill) && trained.practise(skill, 1, &mut field.rng) {
                 tally.improved.push((attacker, skill));
             }
         }

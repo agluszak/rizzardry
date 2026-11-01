@@ -601,7 +601,7 @@ pub fn work_devices(mut requests: MessageReader<DeviceRequest>, mut work: Device
 /// device, like a lock or trap overcome.
 pub fn settle_attempts(
     attempts: Query<(Entity, &DeviceInteraction, &AttemptOn)>,
-    mut discharge: crate::game::magic::traps::Discharge,
+    mut field: crate::game::magic::Field,
     mut news: MessageWriter<LockNews>,
     mut opened: MessageWriter<DeviceOpened>,
     mut commands: Commands,
@@ -616,7 +616,12 @@ pub fn settle_attempts(
                 let Work::Disarming(trap) = &interaction.work else {
                     unreachable!("only a trap springs")
                 };
-                let destroyed = discharge.fire(trap.trap, trap.difficulty, selected);
+                let destroyed = crate::game::magic::traps::fire(
+                    &mut field,
+                    trap.trap,
+                    trap.difficulty,
+                    selected,
+                );
                 news.write(LockNews::Sprung { trap: trap.trap, destroyed });
                 destroyed
             }
@@ -766,8 +771,7 @@ impl DeviceWork<'_, '_> {
 /// as the party's own work.
 pub(crate) fn cast_at_devices(
     mut casts: MessageReader<DeviceCast>,
-    mut casting: ParamSet<(DeviceWork, crate::game::magic::casting::Payment)>,
-    mut news: MessageWriter<crate::game::magic::casting::MagicNews>,
+    mut casting: ParamSet<(DeviceWork, crate::game::magic::Field)>,
 ) {
     use crate::game::magic::{
         Outcome,
@@ -781,12 +785,12 @@ pub(crate) fn cast_at_devices(
         let ((report, strength), trap) = match paid {
             Ok(paid) => paid,
             Err(refusal) => {
-                news.write(MagicNews::Refused { caster, refusal });
+                casting.p1().news.write(MagicNews::Refused { caster, refusal });
                 continue;
             }
         };
         let (outcome, spell) = (report.outcome, report.spell);
-        news.write(MagicNews::Done(report));
+        casting.p1().news.write(MagicNews::Done(report));
         if outcome == Outcome::Fizzled {
             continue;
         }

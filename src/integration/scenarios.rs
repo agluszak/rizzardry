@@ -312,3 +312,36 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     assert_eq!(app.world().get::<Conversation>(reopened).unwrap().current, Some((1, 0)));
     assert!(app.world().get::<Conversation>(reopened).unwrap().ready());
 }
+
+/// A point cast in a fight settles on its caster's turn: it is paid for, or
+/// refused and the caster defends instead.
+#[test]
+#[ignore = "requires a retail installation"]
+fn a_point_cast_in_a_fight_settles_on_its_turn() {
+    use crate::content::spells::SpellId;
+    use crate::game::magic::casting::{Aim, MagicChoice, Source};
+    use crate::game::magic::{LearnedSpells, SpellPoints};
+    use crate::game::party::Order;
+    use crate::game::party::body::PartyBody;
+    use crate::game::party::roster::PartyRoster;
+
+    let mut app = game(&["--continuous", "--seed", "9", "--start=69.5,10,-24", "--yaw", "0"]);
+    step_until(&mut app, "the Monastery becoming active", |w| playing(w).is_some());
+    step_until(&mut app, "a fight with the slimes", |w| fighting(w));
+    let world = app.world_mut();
+    let member = world.query::<&PartyRoster>().single(world).unwrap().iter().next().unwrap();
+    let (position, body) =
+        world.query::<(&avian3d::prelude::Position, &PartyBody)>().single(world).unwrap();
+    let at = PartyBody::eye(position) + body.forward();
+    let spell = SpellId::HYPNOTIC_LURE;
+    world.get_mut::<LearnedSpells>(member).unwrap().0.insert(spell);
+    *world.get_mut::<Order>(member).unwrap() = Order::Magic(MagicChoice {
+        source: Source::Spell { spell, power: 1 },
+        aim: Aim::Point(at),
+    });
+    assert!(!world.get::<SpellPoints>(member).unwrap().short());
+    step_until(&mut app, "the cast settling", |w| {
+        w.get::<SpellPoints>(member).unwrap().short()
+            || w.try_query::<&Battle>().unwrap().iter(w).any(|battle| battle.defends(member))
+    });
+}

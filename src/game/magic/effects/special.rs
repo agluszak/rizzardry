@@ -121,15 +121,14 @@ pub(super) fn three(rng: &mut GameRng, bound: u32) -> u32 {
 /// What resistance leaves of `amount` on a victim, or nothing for one dead
 /// or gone (retail `ApplyEffectAndAnnounce`).
 pub(super) fn resisted(
-    rng: &mut GameRng,
-    world: &Field,
+    world: &mut Field,
     victim: Victim,
     realm: Realm,
     amount: u32,
     against: u32,
 ) -> Option<u32> {
     let target = target(world, victim, realm, None);
-    (!target.dead).then(|| resist(rng, amount, target.resistance, target.level, against))
+    (!target.dead).then(|| resist(&mut world.rng, amount, target.resistance, target.level, against))
 }
 
 /// A monster's special attack (a breath, a gaze) landing on its victims
@@ -142,9 +141,10 @@ pub fn special_attack(
     definition: SpecialDefinition,
     breather: Breather,
     victims: &[Victim],
-    rng: &mut GameRng,
     world: &mut Field,
 ) -> Vec<Effect> {
+    // Practice from a special attack goes unreported.
+    let improved = &mut Vec::new();
     if definition.summons {
         return Vec::new();
     }
@@ -164,24 +164,33 @@ pub fn special_attack(
     for &victim in ordered {
         let monster = matches!(victim, Victim::Monster(_));
         for (slot, effect) in definition.effects.iter().enumerate() {
-            let escapes = if slot == 0 { rng.below(100) <= 9 } else { rng.below(100) <= 49 };
+            let escapes =
+                if slot == 0 { world.rng.below(100) <= 9 } else { world.rng.below(100) <= 49 };
             let Some(effect) = effect.filter(|_| !escapes) else { continue };
             let landed = match effect {
                 SpecialEffect::Inflict(condition) => {
-                    let rounds = if monster { (bound / 3).max(1) } else { rng.below(bound) };
+                    let rounds = if monster { (bound / 3).max(1) } else { world.rng.below(bound) };
                     // Retail rolls a poison's strength, which is not kept.
                     if condition == Condition::Poisoned {
-                        rng.below(if monster { 2 } else { bound });
+                        world.rng.below(if monster { 2 } else { bound });
                     }
-                    afflict(rng, world, victim, (Some(condition), 0), realm, against, Some(rounds))
+                    afflict(
+                        world,
+                        victim,
+                        (Some(condition), 0),
+                        realm,
+                        against,
+                        Some(rounds),
+                        improved,
+                    )
                 }
                 SpecialEffect::Harm => {
-                    let rolled = three(rng, bound) / 3 + 1;
-                    damage(rng, world, victim, realm, rolled, against)
+                    let rolled = three(&mut world.rng, bound) / 3 + 1;
+                    damage(world, victim, realm, rolled, against)
                 }
                 SpecialEffect::Drain => {
-                    let rolled = three(rng, bound) / if monster { 6 } else { 3 } + 1;
-                    match resisted(rng, world, victim, realm, rolled, against) {
+                    let rolled = three(&mut world.rng, bound) / if monster { 6 } else { 3 } + 1;
+                    match resisted(world, victim, realm, rolled, against) {
                         None => None,
                         Some(0) => Some(Effect::Resisted { victim }),
                         Some(amount) => match victim {
@@ -205,22 +214,22 @@ pub fn special_attack(
                     }
                 }
                 SpecialEffect::Tire => {
-                    let rolled = three(rng, bound) + u32::from(!monster);
-                    match resisted(rng, world, victim, realm, rolled, against) {
+                    let rolled = three(&mut world.rng, bound) + u32::from(!monster);
+                    match resisted(world, victim, realm, rolled, against) {
                         None => None,
                         Some(0) => Some(Effect::Resisted { victim }),
                         Some(amount) => Some(tire(world, victim, amount)),
                     }
                 }
                 SpecialEffect::Wound => {
-                    let rolled = three(rng, bound) / 3 + 1;
+                    let rolled = three(&mut world.rng, bound) / 3 + 1;
                     if definition.resisted {
-                        damage(rng, world, victim, realm, rolled, against)
+                        damage(world, victim, realm, rolled, against)
                     } else {
                         if target(world, victim, realm, None).dead {
                             None
                         } else {
-                            hurt(rng, world, victim, rolled)
+                            hurt(world, victim, rolled)
                         }
                     }
                 }
@@ -237,9 +246,10 @@ pub fn special_attack(
 pub(crate) fn pulse_clouds(
     combatants: &[Entity],
     party_eye: Vec3,
-    rng: &mut GameRng,
     world: &mut Field,
 ) -> Vec<(SpellId, Vec<Effect>)> {
+    // Practice from a cloud goes unreported.
+    let improved = &mut Vec::new();
     let spells = world.spells();
     let mut reports = Vec::new();
     let party: Vec<_> = world.party.iter().map(Victim::Member).collect();
@@ -278,24 +288,24 @@ pub(crate) fn pulse_clouds(
                     };
                     let target = target(world, victim, realm, None);
                     let result = if immune
-                        || saves(rng, world, victim, &target, DEATH_SAVE, strength.against)
+                        || saves(world, victim, &target, DEATH_SAVE, strength.against, improved)
                     {
                         Some(Effect::Resisted { victim })
                     } else {
-                        kill(rng, world, victim)
+                        kill(world, victim)
                     };
                     landed.extend(result);
                 } else {
-                    let amount = magnitude(rng, spell.dice, strength);
+                    let amount = magnitude(&mut world.rng, spell.dice, strength);
                     let Some(amount) =
-                        resisted_magnitude(rng, world, victim, realm, amount, strength.against)
+                        resisted_magnitude(world, victim, realm, amount, strength.against)
                     else {
                         continue;
                     };
                     let hit = if amount == 0 {
                         Some(Effect::Resisted { victim })
                     } else {
-                        hurt(rng, world, victim, amount)
+                        hurt(world, victim, amount)
                     };
                     if id == SpellId::DRAINING_CLOUD && amount > 0 {
                         match victim {
@@ -318,9 +328,9 @@ pub(crate) fn pulse_clouds(
                         if victim_stats.dead {
                             continue;
                         }
-                        let turns = duration(rng, spell, strength);
+                        let turns = duration(&mut world.rng, spell, strength);
                         let turns = resist(
-                            rng,
+                            &mut world.rng,
                             turns,
                             victim_stats.resistance,
                             victim_stats.level,
@@ -337,12 +347,12 @@ pub(crate) fn pulse_clouds(
                             let target = target(world, victim, realm, Some(condition));
                             if target.immune
                                 || saves(
-                                    rng,
                                     world,
                                     victim,
                                     &target,
                                     CONDITION_SAVE[condition as usize + 1],
                                     strength.against,
+                                    improved,
                                 )
                                 || shrugs(world, victim, condition, false)
                             {
@@ -377,11 +387,11 @@ pub(crate) fn pulse_clouds(
             let mut landed = Vec::new();
             for victim in victims {
                 let amount = magnitude(
-                    rng,
+                    &mut world.rng,
                     spell.dice,
                     Strength { power: effect.power, boost: 0, against: effect.power * 3 },
                 );
-                landed.extend(damage(rng, world, victim, realm, amount, effect.power * 3));
+                landed.extend(damage(world, victim, realm, amount, effect.power * 3));
             }
             reports.push((spell.id, landed));
         }

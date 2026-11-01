@@ -202,13 +202,6 @@ enum RoundPhase {
 }
 
 impl Battle {
-    /// A member whose action was refused defends instead (retail
-    /// `ExecuteCharacterAction`), the turn spent.
-    pub fn falls_back_to_defending(&mut self, member: Entity) {
-        let work = self.this_round.party.iter_mut().find(|work| work.actor == member).unwrap();
-        work.action = RoundAction::Defend;
-    }
-
     /// A round is accepted or running, including its pacing delay.
     pub fn executing(&self) -> bool {
         self.phase != RoundPhase::Waiting
@@ -541,7 +534,6 @@ pub fn begin_round(
 pub fn run_battle(
     mut commands: Commands,
     battle: Option<Single<(Entity, &mut Battle, Option<&Combatants>)>>,
-    mut rng: ResMut<GameRng>,
     clock: Res<GameClock>,
     party_body: Query<(&Position, &PartyBody)>,
     (roster, content, level): (Single<&PartyRoster>, If<Res<Catalogs>>, PlayedLevel),
@@ -598,7 +590,6 @@ pub fn run_battle(
                 &mut battle,
                 index,
                 combatants,
-                &mut rng,
                 &party,
                 &mut magic,
                 &mut news,
@@ -615,7 +606,6 @@ pub fn run_battle(
                 &mut battle,
                 (index, step),
                 combatants,
-                &mut rng,
                 &party,
                 &mut magic,
                 species,
@@ -645,6 +635,7 @@ fn next_phase(step: u32, attacks_left: u32) -> u32 {
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct BattleMagic<'w, 's> {
     field: Field<'w, 's>,
+    ground: crate::game::magic::pointcasts::Ground<'w, 's>,
     groups: Query<'w, 's, &'static GroupMember>,
     group_members: Query<'w, 's, &'static GroupMembers>,
     /// Missiles still on their way hold the fight's next action, as do

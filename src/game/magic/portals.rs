@@ -35,20 +35,22 @@ pub(crate) fn cast_portals(
     mut casts: MessageReader<super::utilities::UtilityCast>,
     freedom: crate::game::freedom::Freedom,
     level: Single<(Entity, &Level)>,
-    mut party: Single<(
-        &mut PartyBody,
-        &mut Position,
-        &mut Transform,
-        Option<&mut LinearVelocity>,
-        &mut PartyMovement,
-    )>,
     mut portals: Query<&mut SavedPortal>,
     assets: Res<AssetServer>,
+    // The field's sight reads every collider's position.
     mut casting: ParamSet<(
-        super::casting::Payment,
-        Query<&mut crate::game::world::triggers::LevelState>,
+        super::Field,
+        (
+            Single<(
+                &mut PartyBody,
+                &mut Position,
+                &mut Transform,
+                Option<&mut LinearVelocity>,
+                &mut PartyMovement,
+            )>,
+            Query<&mut crate::game::world::triggers::LevelState>,
+        ),
     )>,
-    mut news: MessageWriter<MagicNews>,
     mut commands: Commands,
 ) {
     let (root, level) = *level;
@@ -58,13 +60,13 @@ pub(crate) fn cast_portals(
             continue;
         }
         if leaving || freedom.fighting() || !freedom.unoccupied() {
-            news.write(MagicNews::Refused { caster, refusal: Refusal::WrongTime });
+            casting.p0().news.write(MagicNews::Refused { caster, refusal: Refusal::WrongTime });
             continue;
         }
         let saved = if spell == SpellId::RETURN_TO_PORTAL {
             let portal = portals.get(caster).unwrap().0.clone();
             if portal.is_none() {
-                news.write(MagicNews::Refused { caster, refusal: Refusal::NoTarget });
+                casting.p0().news.write(MagicNews::Refused { caster, refusal: Refusal::NoTarget });
                 continue;
             }
             portal
@@ -87,11 +89,12 @@ pub(crate) fn cast_portals(
         let report = match casting.p0().pay(caster, choice.source, UseContext::World) {
             Ok((report, _)) => report,
             Err(refusal) => {
-                news.write(MagicNews::Refused { caster, refusal });
+                casting.p0().news.write(MagicNews::Refused { caster, refusal });
                 continue;
             }
         };
         if report.outcome == Outcome::Cast {
+            let (mut party, mut states) = casting.p1();
             let (body, at, transform, velocity, movement) = &mut *party;
             match saved {
                 None => {
@@ -112,12 +115,12 @@ pub(crate) fn cast_portals(
                         if let Some(velocity) = velocity {
                             velocity.0 = Vec3::ZERO;
                         }
-                        casting.p1().get_mut(root).unwrap().arrive(portal.eye);
+                        states.get_mut(root).unwrap().arrive(portal.eye);
                     }
                     **movement = default();
                 }
             }
         }
-        news.write(MagicNews::Done(report));
+        casting.p0().news.write(MagicNews::Done(report));
     }
 }

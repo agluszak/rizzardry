@@ -118,50 +118,48 @@ pub(in crate::game::magic) fn save_roll(rng: &mut GameRng, chance: i32) -> bool 
 /// strength)·3 + base + resistance`, scaled by difficulty, within 5..95. A
 /// party member who saves practises Iron Will.
 pub(super) fn saves(
-    rng: &mut GameRng,
     world: &mut Field,
     victim: Victim,
     target: &Target,
     base: i32,
     against: u32,
+    improved: &mut Vec<(Entity, Skill)>,
 ) -> bool {
     let chance = condition_chance(target.level, target.resistance, against, base);
     let chance = match target.side {
         Some(side) => world.difficulty().for_monster(chance, side),
         None => world.difficulty().for_character(chance, target.turncoat),
     };
-    let saved = save_roll(rng, chance);
+    let saved = save_roll(&mut world.rng, chance);
     if saved
         && let Victim::Member(member) = victim
         && let Ok((mut character, ..)) = world.members.get_mut(member)
-        && character.practise(Skill::IronWill, 2, rng)
+        && character.practise(Skill::IronWill, 2, &mut world.rng)
     {
-        world.improved.push((member, Skill::IronWill));
+        improved.push((member, Skill::IronWill));
     }
     saved
 }
 
 /// Damage one victim by an already rolled magnitude, less resistance.
 pub(super) fn damage(
-    rng: &mut GameRng,
     world: &mut Field,
     victim: Victim,
     realm: Realm,
     rolled: u32,
     against: u32,
 ) -> Option<Effect> {
-    let amount = resisted_magnitude(rng, world, victim, realm, rolled, against)?;
+    let amount = resisted_magnitude(world, victim, realm, rolled, against)?;
     if amount == 0 {
         return Some(Effect::Resisted { victim });
     }
-    hurt(rng, world, victim, amount)
+    hurt(world, victim, amount)
 }
 
 /// The post-resistance magnitude remains a transaction input, independent
 /// of absorption, overkill and the HP outcome.
 pub(super) fn resisted_magnitude(
-    rng: &mut GameRng,
-    world: &Field,
+    world: &mut Field,
     victim: Victim,
     realm: Realm,
     rolled: u32,
@@ -171,22 +169,17 @@ pub(super) fn resisted_magnitude(
     if target.dead {
         return None;
     }
-    Some(resist(rng, rolled, target.resistance, target.level, against))
+    Some(resist(&mut world.rng, rolled, target.resistance, target.level, against))
 }
 
 /// Drain a member's health for good ([`Vitals::drain_health`]): nothing wakes
 /// them. A monster has no lasting maximum to lose and is hurt as by any
 /// damage.
-pub(super) fn sap(
-    rng: &mut GameRng,
-    world: &mut Field,
-    victim: Victim,
-    amount: u32,
-) -> Option<Effect> {
+pub(super) fn sap(world: &mut Field, victim: Victim, amount: u32) -> Option<Effect> {
     let Victim::Member(member) = victim else { return None };
     let fight = world.fight();
     let (mut character, mut vitals, ..) = world.members.get_mut(member).unwrap();
-    let mut fate = Fate { fight, rng };
+    let mut fate = Fate { fight, rng: &mut world.rng };
     let lost = crate::game::party::drain_member(
         member,
         (&mut character, &mut vitals),
@@ -212,7 +205,7 @@ pub(super) fn tire(world: &mut Field, victim: Victim, amount: u32) -> Effect {
 }
 
 /// Take `amount` health from a victim; a member who survives may wake.
-pub fn hurt(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -> Option<Effect> {
+pub fn hurt(world: &mut Field, victim: Victim, amount: u32) -> Option<Effect> {
     match victim {
         Victim::Monster(monster) => {
             let outcome = world.monsters.apply(
@@ -220,14 +213,14 @@ pub fn hurt(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -
                 amount,
                 (world.party_level(), world.now()),
                 &mut world.inventory,
-                rng,
+                &mut world.rng,
             );
             Some(Effect::Damaged { victim, outcome })
         }
         Victim::Member(member) => {
             let fight = world.fight();
             let (character, mut vitals, ..) = world.members.get_mut(member).unwrap();
-            let mut fate = Fate { fight, rng: &mut *rng };
+            let mut fate = Fate { fight, rng: &mut world.rng };
             let lost = crate::game::party::damage_member(
                 member,
                 (&character, &mut vitals),
@@ -237,7 +230,7 @@ pub fn hurt(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -
             );
             if lost > 0 && !vitals.is_dead() {
                 let senses = character.stats(&vitals.enchantments).attribute(Attribute::Senses);
-                vitals.conditions.wake_on_hit(senses, rng);
+                vitals.conditions.wake_on_hit(senses, &mut world.rng);
             }
             let outcome = DamageOutcome { damage: lost, died: vitals.is_dead(), experience: 0 };
             Some(Effect::Damaged { victim, outcome })
@@ -287,9 +280,7 @@ pub(super) fn inflict_on(
 
 /// Retail `InflictConditionAttack` on one victim: the chance, a fresh
 /// duration, then [`afflict`].
-#[allow(clippy::too_many_arguments)]
 pub(super) fn attack(
-    rng: &mut GameRng,
     world: &mut Field,
     spell: &SpellDefinition,
     victim: Victim,
@@ -297,16 +288,17 @@ pub(super) fn attack(
     condition: Condition,
     chance: u32,
     strength: Strength,
+    improved: &mut Vec<(Entity, Skill)>,
 ) -> Option<Effect> {
-    if rng.below(100) >= chance {
+    if world.rng.below(100) >= chance {
         return None;
     }
     // A victim that died or left is not attacked at all.
     if target(world, victim, realm, Some(condition)).dead {
         return None;
     }
-    let rounds = duration(rng, spell, strength);
-    afflict(rng, world, victim, (Some(condition), 0), realm, strength.against, Some(rounds))
+    let rounds = duration(&mut world.rng, spell, strength);
+    afflict(world, victim, (Some(condition), 0), realm, strength.against, Some(rounds), improved)
 }
 
 /// Retail `ResolveAttackOnTarget`: a condition, or death when `condition` is
@@ -315,13 +307,13 @@ pub(super) fn attack(
 /// (retail `InflictConditionOnTarget`). `rounds` of `None` lasts until
 /// lifted.
 pub(super) fn afflict(
-    rng: &mut GameRng,
     world: &mut Field,
     victim: Victim,
     (condition, argument): (Option<Condition>, u32),
     realm: Realm,
     against: u32,
     rounds: Option<u32>,
+    improved: &mut Vec<(Entity, Skill)>,
 ) -> Option<Effect> {
     let target = target(world, victim, realm, condition);
     if target.dead {
@@ -340,20 +332,20 @@ pub(super) fn afflict(
         return Some(Effect::Resisted { victim });
     }
     let base = condition.map_or(DEATH_SAVE, |c| CONDITION_SAVE[c as usize + 1]);
-    if saves(rng, world, victim, &target, base, against) {
+    if saves(world, victim, &target, base, against, improved) {
         return Some(Effect::Resisted { victim });
     }
     if condition.is_some_and(|condition| shrugs(world, victim, condition, rounds.is_none())) {
         return Some(Effect::Resisted { victim });
     }
     let lasting = rounds.unwrap_or(INDEFINITE);
-    let lasting = match resist(rng, lasting, target.resistance, target.level, against) {
+    let lasting = match resist(&mut world.rng, lasting, target.resistance, target.level, against) {
         0 => return Some(Effect::Resisted { victim }),
         _ if rounds.is_none() => Lasting::Indefinite,
         1 => Lasting::Rounds(2),
         rounds => Lasting::Rounds(rounds),
     };
-    let Some(condition) = condition else { return kill(rng, world, victim) };
+    let Some(condition) = condition else { return kill(world, victim) };
     inflict_on(world, victim, (condition, argument), lasting)?;
     Some(Effect::Inflicted { victim, condition })
 }
@@ -404,81 +396,82 @@ pub(super) fn blow_roll(rng: &mut GameRng, count: u32, sides: i32, base: u32) ->
 /// it in turn until the victim dies; `power` is the attacker's effect
 /// strength, and only a monster swallows or possesses.
 pub fn blow(
-    rng: &mut GameRng,
     world: &mut Field,
     victim: Victim,
     effects: &crate::content::items::AttackEffects,
     power: u32,
     by_monster: bool,
 ) -> Vec<Effect> {
+    // Practice from a blow goes unreported.
+    let improved = &mut Vec::new();
     use crate::content::items::AttackEffect as E;
     let mut landed = Vec::new();
     for (effect, &chance) in &effects.chances {
         if target(world, victim, Realm::Fire, None).dead {
             break;
         }
-        if chance == 0 || rng.below(100) >= chance {
+        if chance == 0 || world.rng.below(100) >= chance {
             continue;
         }
         let count = power / 3 + 1;
-        let rounds = blow_roll(rng, count, 2, 1).clamp(1, 12);
-        let mut afflicts = |rng: &mut GameRng, condition, realm, rounds| {
-            afflict(rng, world, victim, (condition, 0), realm, power, rounds)
+        let rounds = blow_roll(&mut world.rng, count, 2, 1).clamp(1, 12);
+        let mut afflicts = |condition, realm, rounds| {
+            afflict(world, victim, (condition, 0), realm, power, rounds, improved)
         };
         let member = matches!(victim, Victim::Member(_));
         let outcome = match effect {
-            E::Sleep => afflicts(rng, Some(Condition::Asleep), Realm::Air, Some(rounds)),
-            E::Paralyze => afflicts(rng, Some(Condition::Paralyzed), Realm::Water, Some(rounds)),
+            E::Sleep => afflicts(Some(Condition::Asleep), Realm::Air, Some(rounds)),
+            E::Paralyze => afflicts(Some(Condition::Paralyzed), Realm::Water, Some(rounds)),
             // A poison bites at the weapon's strength (retail
             // `ApplyEffectConditions` passes its magnitude base).
             E::Poison => {
-                let rounds = blow_roll(rng, count * 3, 2, effects.strength);
+                let rounds = blow_roll(&mut world.rng, count * 3, 2, effects.strength);
                 afflict(
-                    rng,
                     world,
                     victim,
                     (Some(Condition::Poisoned), effects.strength),
                     Realm::Water,
                     power,
                     Some(rounds),
+                    improved,
                 )
             }
-            E::Hex => afflicts(rng, Some(Condition::Hexed), Realm::Divine, Some(rounds)),
-            E::Disease => afflicts(rng, Some(Condition::Diseased), Realm::Water, None),
-            E::Kill => afflicts(rng, None, Realm::Divine, None),
-            E::KnockOut => afflicts(rng, Some(Condition::Unconscious), Realm::Earth, Some(rounds)),
-            E::Blind => afflicts(rng, Some(Condition::Blind), Realm::Fire, Some(rounds)),
-            E::Frighten => afflicts(rng, Some(Condition::Afraid), Realm::Mental, Some(rounds)),
+            E::Hex => afflicts(Some(Condition::Hexed), Realm::Divine, Some(rounds)),
+            E::Disease => afflicts(Some(Condition::Diseased), Realm::Water, None),
+            E::Kill => afflicts(None, Realm::Divine, None),
+            E::KnockOut => afflicts(Some(Condition::Unconscious), Realm::Earth, Some(rounds)),
+            E::Blind => afflicts(Some(Condition::Blind), Realm::Fire, Some(rounds)),
+            E::Frighten => afflicts(Some(Condition::Afraid), Realm::Mental, Some(rounds)),
             // Being swallowed (retail Missing) is not modelled.
             E::Swallow => None,
             E::Possess if by_monster && member => {
-                afflicts(rng, Some(Condition::Turncoat), Realm::Divine, Some(rounds))
+                afflicts(Some(Condition::Turncoat), Realm::Divine, Some(rounds))
             }
             E::Possess => None,
             E::DrainHealth if member => {
-                drain(rng, world, victim, Realm::Earth, power, (count, 2, 0))
-                    .and_then(|amount| sap(rng, world, victim, amount))
+                drain(world, victim, Realm::Earth, power, (count, 2, 0), improved)
+                    .and_then(|amount| sap(world, victim, amount))
             }
             E::DrainHealth => None,
             E::DrainStamina => {
-                drain(rng, world, victim, Realm::Water, power, (count * 2, 5, count * 3))
+                drain(world, victim, Realm::Water, power, (count * 2, 5, count * 3), improved)
                     .map(|amount| tire(world, victim, amount))
             }
             E::DrainSpellPoints => match victim {
                 Victim::Member(member) => {
-                    drain(rng, world, victim, Realm::Divine, power, (count, 6, count)).map(
+                    drain(world, victim, Realm::Divine, power, (count, 6, count), improved).map(
                         |amount| {
                             let maximum = world.mana_maximum(member);
                             let (_, mut pool) = world.points.get_mut(member).unwrap();
-                            let amount = pool.drain(amount, &maximum, rng);
+                            let amount = pool.drain(amount, &maximum, &mut world.rng);
                             Effect::Drained { victim, amount }
                         },
                     )
                 }
                 Victim::Monster(_) => None,
             },
-            E::Nauseate => afflicts(rng, Some(Condition::Nauseated), Realm::Air, Some(rounds)),
-            E::Insane => afflicts(rng, Some(Condition::Insane), Realm::Mental, Some(rounds)),
+            E::Nauseate => afflicts(Some(Condition::Nauseated), Realm::Air, Some(rounds)),
+            E::Insane => afflicts(Some(Condition::Insane), Realm::Mental, Some(rounds)),
         };
         landed.extend(outcome);
     }
@@ -488,67 +481,67 @@ pub fn blow(
 /// A blow's drain: the victim's save, then `dice` (count, sides, base),
 /// one more, cut by resistance. `None` when nothing is left to take.
 pub(super) fn drain(
-    rng: &mut GameRng,
     world: &mut Field,
     victim: Victim,
     realm: Realm,
     power: u32,
     (count, sides, base): (u32, i32, u32),
+    improved: &mut Vec<(Entity, Skill)>,
 ) -> Option<u32> {
     let target = target(world, victim, realm, None);
     if target.dead {
         return None;
     }
-    if saves(rng, world, victim, &target, 0, power) {
+    if saves(world, victim, &target, 0, power, improved) {
         return None;
     }
-    let amount = blow_roll(rng, count, sides, base);
-    Some(resist(rng, amount, target.resistance, target.level, power)).filter(|&a| a != 0)
+    let amount = blow_roll(&mut world.rng, count, sides, base);
+    Some(resist(&mut world.rng, amount, target.resistance, target.level, power)).filter(|&a| a != 0)
 }
 
 /// Death spells: a failed save kills, unless resistance cuts the attempt's
 /// duration to nothing (retail `InflictConditionOnTarget` for Dead).
 pub(super) fn slay(
-    rng: &mut GameRng,
     world: &mut Field,
     spell: &SpellDefinition,
     victim: Victim,
     realm: Realm,
     strength: Strength,
+    improved: &mut Vec<(Entity, Skill)>,
 ) -> Option<Effect> {
     let target = target(world, victim, realm, None);
     if target.dead {
         return None;
     }
-    let rounds = duration(rng, spell, strength);
-    if saves(rng, world, victim, &target, DEATH_SAVE, strength.against)
-        || resist(rng, rounds, target.resistance, target.level, strength.against) == 0
+    let rounds = duration(&mut world.rng, spell, strength);
+    if saves(world, victim, &target, DEATH_SAVE, strength.against, improved)
+        || resist(&mut world.rng, rounds, target.resistance, target.level, strength.against) == 0
     {
         return Some(Effect::Resisted { victim });
     }
-    kill(rng, world, victim)
+    kill(world, victim)
 }
 
 /// Death bypasses absorption, while retaining the common death/loot transaction.
-pub(super) fn kill(rng: &mut GameRng, world: &mut Field, victim: Victim) -> Option<Effect> {
+pub(super) fn kill(world: &mut Field, victim: Victim) -> Option<Effect> {
     // A failed death save inflicts Dead; it is not absorbable damage.
-    let Victim::Monster(monster) = victim else { return perish(rng, world, victim) };
+    let Victim::Monster(monster) = victim else { return perish(world, victim) };
     let hp = world.monsters.monsters().get(monster).unwrap().0.hp;
     world
         .monsters
         .enchantments_mut(monster)
         .0
         .retain(|e| e.spell != crate::content::spells::SpellId::GUARDIAN_ANGEL);
-    hurt(rng, world, victim, hp)
+    hurt(world, victim, hp)
 }
 
 /// Death inflicted on a member outright ([`crate::game::party::kill_member`]):
 /// no damage first, so nothing absorbs or tires, but death may be cheated.
-pub(super) fn perish(rng: &mut GameRng, world: &mut Field, victim: Victim) -> Option<Effect> {
+pub(super) fn perish(world: &mut Field, victim: Victim) -> Option<Effect> {
     let Victim::Member(member) = victim else { return None };
     let fight = world.fight();
     let (character, mut vitals, ..) = world.members.get_mut(member).unwrap();
-    let mut fate = Fate { fight, rng };
+    let mut fate = Fate { fight, rng: &mut world.rng };
     let lost = crate::game::party::kill_member(
         member,
         (&character, &mut vitals),
@@ -577,7 +570,6 @@ pub(super) const AFFLICTIONS: [(Option<Condition>, u32); 9] = [
 pub(super) fn destroy_consumables(
     strength: Strength,
     victims: &[Victim],
-    rng: &mut GameRng,
     world: &mut Field,
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
@@ -590,17 +582,17 @@ pub(super) fn destroy_consumables(
         // Retail visits all twelve equipped slots, including alternate hands.
         for (_, slot) in &mut carried.equipment {
             if let Some(equipped) = slot.take() {
-                *slot = burn_stack(equipped.stack, items, chance, rng, &mut totals).map(|stack| {
-                    crate::game::inventory::Equipped {
+                *slot = burn_stack(equipped.stack, items, chance, &mut world.rng, &mut totals).map(
+                    |stack| crate::game::inventory::Equipped {
                         stack,
                         curse_released: equipped.curse_released,
-                    }
-                });
+                    },
+                );
             }
         }
         for slot in &mut carried.backpack {
             if let Some(stack) = slot.take() {
-                *slot = burn_stack(stack, items, chance, rng, &mut totals);
+                *slot = burn_stack(stack, items, chance, &mut world.rng, &mut totals);
             }
         }
     }
@@ -608,7 +600,7 @@ pub(super) fn destroy_consumables(
         let pool = &mut world.inventory.pool.stacks;
         *pool = std::mem::take(pool)
             .into_iter()
-            .filter_map(|stack| burn_stack(stack, items, chance, rng, &mut totals))
+            .filter_map(|stack| burn_stack(stack, items, chance, &mut world.rng, &mut totals))
             .collect();
     }
     for (class, amount) in

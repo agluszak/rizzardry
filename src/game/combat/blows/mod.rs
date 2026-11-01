@@ -18,7 +18,6 @@ use crate::game::characters::{Character, Condition, Vitals};
 use crate::game::magic::effects::{self, Effect, Field, Victim};
 use crate::game::party::body;
 use crate::game::party::formation::{self, Row};
-use crate::game::rng::GameRng;
 use crate::game::world::hostility::{self, Stance};
 use crate::game::world::navigation::feet;
 use crate::game::world::perception::party_distance;
@@ -61,8 +60,7 @@ enum Delivery {
 /// reaches, misses, or fumbles onto a bystander, which spends its surprise.
 /// An error when the target has no body to aim at.
 fn land(
-    rng: &mut GameRng,
-    field: &Field,
+    field: &mut Field,
     fight: &Fight,
     (target, aim): (Victim, i32),
     delivery: Delivery,
@@ -71,10 +69,10 @@ fn land(
     match delivery {
         Delivery::Shot { from, blind, through } => {
             let (centre, radius, half) = victim_body(field, fight, target).ok_or(())?;
-            let shot = attack::scatter(rng, from, centre, aim, blind);
+            let shot = attack::scatter(&mut field.rng, from, centre, aim, blind);
             Ok(attack::strikes(centre, shot, radius, half).then(|| Landing {
                 victim: target,
-                roll: rng.below(100) + 1,
+                roll: field.rng.below(100) + 1,
                 sure: true,
                 through,
                 fumbled: false,
@@ -82,7 +80,7 @@ fn land(
         }
         Delivery::Swing { bystanders, odds } => {
             let fumble = attack::fumble_chance(bystanders.len(), odds);
-            Ok(match attack::swing(rng, bystanders.len(), fumble) {
+            Ok(match attack::swing(&mut field.rng, bystanders.len(), fumble) {
                 Aim::Missed => None,
                 Aim::Reaches { roll, sure } => {
                     Some(Landing { victim: target, roll, sure, through: sure, fumbled: false })
@@ -170,7 +168,6 @@ impl Tally {
 /// A connecting close-range blow triggers the defender's charge even when
 /// armour stopped its damage. It cannot recursively trigger another cloak.
 fn razor_backlash(
-    rng: &mut GameRng,
     field: &mut Field,
     fight: &Fight,
     battle: &Battle,
@@ -191,9 +188,10 @@ fn razor_backlash(
         }
     };
     let Some(charge) = charge else { return };
+    let dice = field.spells()[SpellId::RAZOR_CLOAK].dice;
     let rolled = effects::magnitude(
-        rng,
-        field.spells()[SpellId::RAZOR_CLOAK].dice,
+        &mut field.rng,
+        dice,
         crate::game::magic::Strength { power: charge.power, boost: 0, against: 0 },
     );
     let amount = match attacker {
@@ -205,7 +203,7 @@ fn razor_backlash(
         }
     };
     let Some(amount) = amount else { return };
-    let result = effects::hurt(rng, field, attacker, amount);
+    let result = effects::hurt(field, attacker, amount);
     let damage = tally.struck(result, matches!(defender, Victim::Member(_)));
     news.write(CombatNews::Result {
         attacker: defender.entity(),
@@ -309,7 +307,6 @@ fn victim_body(field: &Field, fight: &Fight, victim: Victim) -> Option<(Vec3, f3
 /// takes the blow, tiring by 2 to 4.
 fn intercept(
     battle: &mut Battle,
-    rng: &mut GameRng,
     field: &mut Field,
     (attacker, surprise): (i32, &mut Surprise),
     victim: Victim,
@@ -345,18 +342,18 @@ fn intercept(
     let mut stepping = Vec::new();
     for (i, guarding) in able {
         let chance = (guarding - pressing + 50).clamp(5, 95) as u32;
-        if rng.below(100) < chance {
+        if field.rng.below(100) < chance {
             stepping.push(i);
         }
     }
     if stepping.is_empty() {
         return victim;
     }
-    let chosen = stepping[rng.below(stepping.len() as u32) as usize];
+    let chosen = stepping[field.rng.below(stepping.len() as u32) as usize];
     let guard = &mut battle.this_round.guards[chosen];
     guard.interceptions += 1;
     let guard = guard.guard;
-    let tired = rng.below(3) + 2;
+    let tired = field.rng.below(3) + 2;
     field.monsters.fatigue(guard, tired);
     *surprise = Surprise::default();
     news.write(CombatNews::Intercepts { guard, ward });
@@ -365,16 +362,10 @@ fn intercept(
 
 /// A member struck practises Iron Skin as their reduction is worked out
 /// (retail `ApplyCharacterDamageReduction`).
-fn iron_skin(
-    rng: &mut GameRng,
-    field: &mut Field,
-    member: Entity,
-    character: &Character,
-    tally: &mut Tally,
-) {
+fn iron_skin(field: &mut Field, member: Entity, character: &Character, tally: &mut Tally) {
     if character.skill_available(Skill::IronSkin)
         && let Ok((mut c, ..)) = field.members.get_mut(member)
-        && c.practise(Skill::IronSkin, 1, rng)
+        && c.practise(Skill::IronSkin, 1, &mut field.rng)
     {
         tally.improved.push((member, Skill::IronSkin));
     }

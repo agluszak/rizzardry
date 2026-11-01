@@ -19,8 +19,6 @@ pub(crate) mod utilities;
 
 pub use effects::{Effect, Field, Victim};
 
-use crate::game::party::Members;
-
 use std::collections::BTreeSet;
 
 use bevy::prelude::*;
@@ -467,11 +465,6 @@ pub fn roll(
     if rolled < backfire { Outcome::Backfired } else { Outcome::Fizzled }
 }
 
-/// Retail fatigue for a learned cast: the spell's level plus its power.
-fn cast_fatigue(spell: &SpellDefinition, power: u32) -> u32 {
-    spell.level + power
-}
-
 pub struct MagicPlugin;
 
 impl Plugin for MagicPlugin {
@@ -519,7 +512,6 @@ pub fn accept_magic(
     interaction: Query<(), With<crate::game::world::interaction::DeviceInteraction>>,
     mut orders: Query<&mut crate::game::party::Order>,
     mut field: Field,
-    mut rng: ResMut<GameRng>,
     party: Single<(&avian3d::prelude::Position, &PartyBody)>,
     mut commands: Commands,
     (mut utility, mut device): (
@@ -584,12 +576,10 @@ pub fn accept_magic(
             monsters: &[],
             group_of: &|m| vec![m],
         };
-        field.improved.clear();
-        let performed = casting::perform(caster, choice, &situation, &mut rng, &mut field);
+        let performed = casting::perform(caster, choice, &situation, &mut field);
         let news = match performed {
             Ok((report, flights)) => {
-                let level = field.level();
-                field.flight_order.launch(&mut commands, flights, level);
+                field.launch(&mut commands, flights);
                 casting::MagicNews::Done(report)
             }
             Err(refusal) => casting::MagicNews::Refused { caster, refusal },
@@ -606,7 +596,6 @@ pub fn deliver_spells(
     time: Res<Time<Fixed>>,
     mut flights: Query<(Entity, &mut casting::SpellInFlight)>,
     mut field: Field,
-    mut rng: ResMut<GameRng>,
     mut battle: Option<Single<&mut Battle>>,
     mut combat_news: MessageWriter<crate::game::combat::CombatNews>,
     mut commands: Commands,
@@ -637,9 +626,8 @@ pub fn deliver_spells(
             commands.entity(entity).despawn();
         }
         let mut secondary = Vec::new();
-        field.improved.clear();
         let spell = &field.spells()[flight.spell];
-        let effects = impacts::resolve(
+        let landed = impacts::resolve(
             flight.caster,
             flight.origin,
             false,
@@ -648,19 +636,17 @@ pub fn deliver_spells(
             &flight.victims,
             flight.finish.as_ref(),
             party_at,
-            &mut rng,
             &mut field,
             &mut secondary,
         );
-        let improved = std::mem::take(&mut *field.improved);
         if let Some(battle) = battle.as_mut() {
-            battle.credit_kills(&effects, &mut combat_news);
+            battle.credit_kills(&landed.effects, &mut combat_news);
         }
         field.news.write(casting::MagicNews::Landed {
             caster: flight.caster,
             spell: flight.spell,
-            effects,
-            improved,
+            effects: landed.effects,
+            improved: landed.improved,
         });
         for mut reflection in secondary {
             field.flight_order.stamp(&mut reflection);
@@ -669,8 +655,7 @@ pub fn deliver_spells(
                 due.push((arrival, reflection.launched, None, reflection));
             } else {
                 reflection.arrives.tick(time.delta() - at);
-                let level = field.level();
-                field.flight_order.launch(&mut commands, vec![reflection], level);
+                field.launch(&mut commands, vec![reflection]);
             }
         }
     }
