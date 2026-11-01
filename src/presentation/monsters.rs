@@ -13,7 +13,7 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::time::Stopwatch;
 
-use avian3d::prelude::{SpatialQuery, SpatialQueryFilter};
+use avian3d::prelude::{LinearVelocity, SpatialQuery, SpatialQueryFilter};
 
 use super::environment::LevelAppearance;
 use crate::content::level::LevelGeometry;
@@ -23,25 +23,13 @@ use crate::game::world::navigation::Walker;
 use crate::game::world::population::Monster;
 use crate::presentation::screen_art::visible_if;
 
+/// The cycle a dying monster plays.
+const DIE: &str = "DIE";
+
 /// Seconds into its first cycle a monster starts at. Retail starts each
 /// idle at a random frame; here it varies by location.
 fn first_phase(monster: &Monster) -> f32 {
     (monster.location.unsigned_abs() % 97) as f32 * 0.37
-}
-
-/// The cycle an actor should play. Gameplay sets it; a different request
-/// restarts playback, an identical one continues it.
-#[derive(Component, Debug, Clone, PartialEq)]
-pub struct CycleRequest {
-    pub cycle: String,
-    /// Play once and hold the last frame (attacks, death), rather than loop.
-    pub once: bool,
-}
-
-impl CycleRequest {
-    pub fn looping(cycle: &str) -> Self {
-        CycleRequest { cycle: cycle.to_owned(), once: false }
-    }
 }
 
 /// Optional visual content retained while its model loads and plays. It is
@@ -58,7 +46,7 @@ pub fn remove_monster_visuals(
     if actors.contains(removed.entity) {
         commands
             .entity(removed.entity)
-            .try_remove::<(MonsterVisual, MonsterPlayback, MonsterLight, CycleRequest)>();
+            .try_remove::<(MonsterVisual, MonsterPlayback, MonsterLight)>();
     }
 }
 
@@ -80,7 +68,7 @@ pub fn request_monster_visuals(
 #[derive(Component, Debug)]
 pub struct MonsterPlayback {
     /// The cycle shown, and how long it has played.
-    playing: Option<(CycleRequest, Stopwatch)>,
+    playing: Option<(&'static str, Stopwatch)>,
 }
 
 /// The lighting of one actor's built model, independent of its playback: a
@@ -165,42 +153,44 @@ pub fn build_monster_instances(
     }
 }
 
-/// A monster that dies plays its death once and stays on its last frame.
-pub fn show_deaths(
-    mut commands: Commands,
-    monsters: Query<(Entity, &Monster, Option<&CycleRequest>), Changed<Monster>>,
-) {
-    for (entity, monster, request) in &monsters {
-        if monster.is_dead() && request.is_none_or(|r| r.cycle != "DIE") {
-            commands.entity(entity).insert(CycleRequest { cycle: "DIE".into(), once: true });
-        }
+/// The cycle an actor should be playing: its death, which plays once and stays
+/// on its last frame; otherwise WALK while moving and IDLE when still.
+fn wanted_cycle(monster: &Monster, velocity: Option<&LinearVelocity>) -> &'static str {
+    if monster.is_dead() {
+        DIE
+    } else if velocity.is_some_and(|v| v.0.with_y(0.0).length() > 0.3) {
+        "WALK"
+    } else {
+        "IDLE"
     }
 }
 
-/// Show each actor's requested cycle at its current frame.
+/// Show each actor's wanted cycle at its current frame. A different cycle
+/// restarts playback; the same one continues it.
 pub fn animate_monsters(
     time: Res<Time<Virtual>>,
     mut actors: Query<(
         &Monster,
         &MonsterVisual,
         &mut MonsterPlayback,
-        Option<&CycleRequest>,
+        Option<&LinearVelocity>,
         &Children,
     )>,
     models: Res<Assets<MonsterModel>>,
     roots: Query<&Children, With<ModelRoot>>,
     mut cycles: Query<(&ModelCycle, &mut MorphWeights, &mut Visibility)>,
 ) {
-    for (monster, visual, mut playback, request, children) in &mut actors {
+    for (monster, visual, mut playback, velocity, children) in &mut actors {
         let Some(model) = models.get(&visual.0) else { continue };
-        let request = request.cloned().unwrap_or_else(|| CycleRequest::looping("IDLE"));
-        let current = playback.playing.as_ref().is_some_and(|(playing, _)| *playing == request);
-        let name = if model.cycles.contains_key(&request.cycle) { &request.cycle } else { "IDLE" };
+        let wanted = wanted_cycle(monster, velocity);
+        let once = wanted == DIE;
+        let current = playback.playing.as_ref().is_some_and(|(playing, _)| *playing == wanted);
+        let name = if model.cycles.contains_key(wanted) { wanted } else { "IDLE" };
         let Some(cycle) = model.cycles.get(name) else { continue };
         // The previous tick already applied a completed one-shot's final pose.
         // Derive this from its clock rather than storing another completion flag.
         if current
-            && request.once
+            && once
             && playback.playing.as_ref().is_some_and(|(_, played)| {
                 played.elapsed_secs() * cycle.frames_per_second >= cycle.frame_count as f32 - 1.0
             })
@@ -213,12 +203,12 @@ pub fn animate_monsters(
             if playback.playing.is_none() {
                 played.set_elapsed(Duration::from_secs_f32(first_phase(monster)));
             }
-            playback.playing = Some((request.clone(), played));
+            playback.playing = Some((wanted, played));
         }
         let Some((_, played)) = &mut playback.playing else { continue };
         let frames = cycle.frame_count as f32;
         let elapsed = played.tick(time.delta()).elapsed_secs() * cycle.frames_per_second;
-        let frame = if request.once { elapsed.min(frames - 1.0) } else { elapsed % frames };
+        let frame = if once { elapsed.min(frames - 1.0) } else { elapsed % frames };
         for root in roots.iter_many(children).matched() {
             for child in root.iter() {
                 let Ok((cycle_name, mut weights, mut visibility)) = cycles.get_mut(child) else {
@@ -317,24 +307,4 @@ pub fn sunlit(
             )
             .is_none()
     })
-}
-
-/// Walkers play WALK while moving and IDLE when still.
-pub fn choose_walker_cycles(
-    mut commands: Commands,
-    walkers: Query<
-        (Entity, &avian3d::prelude::LinearVelocity, Option<&CycleRequest>),
-        With<Monster>,
-    >,
-) {
-    for (entity, velocity, current) in &walkers {
-        // A death or another play-once cycle is not interrupted.
-        if current.is_some_and(|c| c.once) {
-            continue;
-        }
-        let cycle = if velocity.0.with_y(0.0).length() > 0.3 { "WALK" } else { "IDLE" };
-        if current.is_none_or(|c| c.cycle != cycle) {
-            commands.entity(entity).insert(CycleRequest::looping(cycle));
-        }
-    }
 }
