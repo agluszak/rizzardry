@@ -36,7 +36,7 @@ use crate::game::time::GameClock;
 pub const COMPONENTS: usize = 8;
 
 /// Each trap type's own grade (retail `g_trap_difficulty`).
-pub(crate) const TRAP_GRADE: [i32; TRAP_TYPES] = [1, 1, 2, 2, 3, 3, 3, 4, 5, 5, 5, 6, 6, 7, 7];
+pub(crate) const TRAP_GRADE: [u32; TRAP_TYPES] = [1, 1, 2, 2, 3, 3, 3, 4, 5, 5, 5, 6, 6, 7, 7];
 
 /// Which components each trap type is built from (retail `g_table1`).
 pub const TRAP_COMPONENTS: [[bool; COMPONENTS]; TRAP_TYPES] = {
@@ -351,7 +351,7 @@ pub(crate) fn confront(world: &mut World, device: Entity, lock: Lock) {
 /// Retail `SelectTrapType`: draw types until one's grade lies within four
 /// below the authored grade (at least 1).
 fn roll_trap(difficulty: u8, rng: &mut GameRng) -> u8 {
-    let budget = i32::from(difficulty).max(1);
+    let budget = u32::from(difficulty).max(1);
     loop {
         let trap = rng.below(TRAP_TYPES as u32) as usize;
         if TRAP_GRADE[trap] <= budget && TRAP_GRADE[trap] + 4 >= budget {
@@ -407,7 +407,8 @@ pub fn pick_tumbler(
         }
         picking.picker = Some(actor);
     }
-    let chance = (skill as i32 + 5 - 5 * *world.resource::<Difficulty>() as i32).max(0) as u32;
+    let penalty = 5 * *world.resource::<Difficulty>() as u32;
+    let chance = (skill + 5).max(penalty) - penalty;
     let mut dropped = false;
     for held in &mut picking.tumblers {
         if *held == Tumbler::Held(actor) && chance <= rng(world).below(100) {

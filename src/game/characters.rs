@@ -452,7 +452,7 @@ impl Load {
             } else {
                 0
             };
-        (amount as i32 + percent * amount as i32 / 100).max(0) as u32
+        (amount as i32 + percent * amount as i32 / 100) as u32
     }
 
     /// How much more walking tires (retail `HandlePartyMovement`).
@@ -864,7 +864,7 @@ impl CharacterStats<'_> {
                 vitality * profession_row(profession).hp_factor * levels as f32
             })
             .sum();
-        (total.round() as i64 - self.hp_drained as i64).max(1) as u32
+        (total.round() as u32).max(self.hp_drained + 1) - self.hp_drained
     }
     /// `round((STR + PIE + VIT) / 3 × (0.1·level + 2))`.
     pub fn max_stamina(&self) -> u32 {
@@ -872,9 +872,8 @@ impl CharacterStats<'_> {
             .map(|a| self.attribute(a))
             .iter()
             .sum::<u32>() as f32;
-        ((sum / 3.0 * (0.1 * self.level() as f32 + 2.0)).round() as i64
-            - self.stamina_drained as i64)
-            .max(0) as u32
+        let total = (sum / 3.0 * (0.1 * self.level() as f32 + 2.0)).round() as u32;
+        total.max(self.stamina_drained) - self.stamina_drained
     }
     /// Tenths of a pound: `(VIT + 2·STR) × 12`, × 8 for a Faerie.
     pub fn capacity(&self) -> u32 {
@@ -1075,9 +1074,10 @@ impl Vitals {
         if rounds >= 7 {
             return false;
         }
-        let stint = (rounds as i32 + 7 - profile.scale_by_profession(5.0) as i32).max(0);
+        let shortened = profile.scale_by_profession(5.0) as u32;
+        let stint = (rounds + 7).max(shortened) - shortened;
         if stint > 0 {
-            self.inflict(Condition::Unconscious, Lasting::Rounds(stint as u32));
+            self.inflict(Condition::Unconscious, Lasting::Rounds(stint));
         }
         let maximum = self.maxima(profile).0;
         self.hp = match fate.fight {

@@ -69,9 +69,8 @@ pub(crate) fn discharge(
                         let difficulty = u32::from(difficulty.clamp(1, 7));
                         let destroyed = rng.below(2) == 0;
                         let mut count = difficulty - rng.below(difficulty / 2);
-                        let extra = (difficulty as i32
-                            - crate::game::world::interaction::TRAP_GRADE[trap as usize])
-                            .max(0) as u32;
+                        let grade = crate::game::world::interaction::TRAP_GRADE[trap as usize];
+                        let extra = difficulty.max(grade) - grade;
                         let power = (extra + 4).min(7);
                         if extra > 3 {
                             count += rng.below(extra - 3);

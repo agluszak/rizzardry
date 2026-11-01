@@ -929,7 +929,7 @@ pub fn distribute_burden(
 pub fn pool_shares(pool_weight: u32, members: &[Option<(u32, u32)>]) -> Vec<u32> {
     let mut shares = vec![0; members.len()];
     let free = |own: u32, capacity: u32, share: u32| {
-        (capacity as i32 - own as i32 - share as i32) as f32 * 100.0 / capacity as f32
+        (capacity as f32 - (own + share) as f32) * 100.0 / capacity as f32
     };
     for _ in 0..pool_weight / 2 {
         let best = members

@@ -403,7 +403,7 @@ fn draw_device_panel(
     };
     let catalog = &content.items;
     let stacks = containers.get(on.0).map_or(&[][..], |c| &c.contents.items[..]);
-    let percent = |value: Option<i64>| value.map_or("-".to_owned(), |v| format!("{v}%"));
+    let percent = |value: Option<u32>| value.map_or("-".to_owned(), |v| format!("{v}%"));
 
     let text = |role: Caption| -> String {
         match (role, &interaction.work) {
@@ -416,18 +416,12 @@ fn draw_device_panel(
                 let force = member.and_then(|(_, (c, v))| {
                     interaction::force_chance(c, v, picking.tumblers.len(), *difficulty)
                 });
-                format!(
-                    "{name}: Locks & Traps {}, Force {}",
-                    percent(skill.map(i64::from)),
-                    percent(force.map(i64::from))
-                )
+                format!("{name}: Locks & Traps {}, Force {}", percent(skill), percent(force))
             }
             (Caption::Status, Work::Disarming(disarming)) => format!(
                 "{name}: Inspect {} / Disarm {}",
-                percent(
-                    skill.map(|s| i64::from(disarming.inspection_chance(Some(s), *difficulty)))
-                ),
-                percent(skill.map(|s| i64::from(disarming.disarm_chance(Some(s), *difficulty))))
+                percent(skill.map(|s| disarming.inspection_chance(Some(s), *difficulty))),
+                percent(skill.map(|s| disarming.disarm_chance(Some(s), *difficulty)))
             ),
             (Caption::Status, Work::Looting) => name.clone(),
             (Caption::Guess, _) => trap_name(panel.guess),

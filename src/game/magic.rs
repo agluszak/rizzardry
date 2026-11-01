@@ -81,13 +81,13 @@ pub fn skill_available(
 /// Default means no spending: full mana at the actor's live capacity.
 #[derive(Component, Clone, Debug, Default, PartialEq)]
 pub struct SpellPoints {
-    spent: EnumMap<Realm, i64>,
+    spent: EnumMap<Realm, i32>,
     pub fraction: EnumMap<Realm, f32>,
 }
 
 impl SpellPoints {
-    pub fn current(&self, realm: Realm, maximum: &EnumMap<Realm, u32>) -> i64 {
-        i64::from(maximum[realm]) - self.spent[realm]
+    pub fn current(&self, realm: Realm, maximum: &EnumMap<Realm, u32>) -> i32 {
+        i32::from(maximum[realm]) - self.spent[realm]
     }
 
     pub fn available(&self, realm: Realm, maximum: &EnumMap<Realm, u32>) -> u32 {
@@ -102,7 +102,7 @@ impl SpellPoints {
 
     /// Record spending after the caller has checked what is available.
     pub fn spend(&mut self, realm: Realm, amount: u32) {
-        self.spent[realm] += i64::from(amount);
+        self.spent[realm] += i32::from(amount);
     }
 
     /// Drain randomly chosen realms, at most fifty draws (retail
@@ -173,7 +173,7 @@ impl SpellPoints {
             self.fraction[realm] += ticks as f32 * (0.65 * max as f32 + 20.0) / 240.0 * scale;
             let whole = self.fraction[realm].trunc();
             self.fraction[realm] -= whole;
-            self.spent[realm] = (self.spent[realm] - whole as i64).max(0);
+            self.spent[realm] = (self.spent[realm] - whole as i32).max(0);
             if self.spent[realm] == 0 {
                 self.fraction[realm] = 0.0;
             }
@@ -762,14 +762,14 @@ fn test_maximum(world: &World, member: Entity) -> EnumMap<Realm, u32> {
 }
 
 #[cfg(test)]
-pub(crate) fn test_set_points(world: &mut World, member: Entity, realm: Realm, current: i64) {
+pub(crate) fn test_set_points(world: &mut World, member: Entity, realm: Realm, current: i32) {
     let maximum = test_maximum(world, member);
     world.get_mut::<SpellPoints>(member).unwrap().spent[realm] =
-        i64::from(maximum[realm]) - current;
+        i32::from(maximum[realm]) - current;
 }
 
 #[cfg(test)]
-pub(crate) fn test_points(world: &World, member: Entity, realm: Realm) -> i64 {
+pub(crate) fn test_points(world: &World, member: Entity, realm: Realm) -> i32 {
     world.get::<SpellPoints>(member).unwrap().current(realm, &test_maximum(world, member))
 }
 
@@ -965,7 +965,7 @@ mod tests {
         maximum[Realm::Fire] = 10;
         maximum[Realm::Water] = 5;
         maximum[Realm::Air] = 3;
-        let mut points = SpellPoints { spent: maximum.map(|_, max| i64::from(max)), ..default() };
+        let mut points = SpellPoints { spent: maximum.map(|_, max| i32::from(max)), ..default() };
         points.fraction[Realm::Fire] = 0.75;
         assert_eq!(points.restore_evenly(8), 8);
         // Five go to Fire; then the equal deficits share, in realm order.
@@ -1193,7 +1193,7 @@ mod tests {
     fn points_recover_by_retail_rate_and_never_beyond_the_maximum() {
         let mut maximum = EnumMap::default();
         maximum[Realm::Divine] = 20;
-        let mut points = SpellPoints { spent: maximum.map(|_, max| i64::from(max)), ..default() };
+        let mut points = SpellPoints { spent: maximum.map(|_, max| i32::from(max)), ..default() };
         // (0.65·20 + 20)/240 = 0.1375 a tick at half rate: 0.06875.
         points.recover(100, recovery_scale(0.0), &maximum);
         assert_eq!(points.current(Realm::Divine, &maximum), 6);

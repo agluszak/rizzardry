@@ -1537,8 +1537,7 @@ fn purify(
             slots.0.retain_mut(|slot| {
                 if super::enchantments::OFFENSIVE.contains(&slot.spell) {
                     let cloud = &catalog[slot.spell];
-                    let removed =
-                        (amount as i64 + spell.level as i64 - cloud.level as i64).max(0) as u32;
+                    let removed = (amount + spell.level).max(cloud.level) - cloud.level;
                     slot.turns -= removed.min(slot.turns);
                 }
                 slot.turns > 0
@@ -1777,7 +1776,7 @@ fn neediest(
                 return None;
             }
             let percent = if health {
-                i64::from(v.hp * 100 / c.stats(&v.enchantments).max_hp())
+                v.hp * 100 / c.stats(&v.enchantments).max_hp()
             } else {
                 let (learned, pool) = points.get(m).unwrap();
                 let maxima = world.mana_maximum(m, learned);
@@ -1785,12 +1784,8 @@ fn neediest(
                 if maximum == 0 {
                     return None;
                 }
-                maxima
-                    .iter()
-                    .map(|(realm, _)| i64::from(pool.available(realm, &maxima)))
-                    .sum::<i64>()
-                    * 100
-                    / i64::from(maximum)
+                maxima.iter().map(|(realm, _)| pool.available(realm, &maxima)).sum::<u32>() * 100
+                    / maximum
             };
             (percent < 100).then_some((m, percent))
         })

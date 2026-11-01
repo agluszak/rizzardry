@@ -935,8 +935,8 @@ pub fn fumble_chance(bystanders: usize, aim: i32) -> u32 {
     if aim >= 100 {
         return 0;
     }
-    let chance = (f64::from(100 - aim).powi(3) * 1e-5 + 0.5) as i64;
-    (bystanders as i64 * chance * 10 / 100).clamp(0, 100) as u32
+    let chance = (f64::from(100 - aim).powi(3) * 1e-5 + 0.5) as u32;
+    (bystanders as u32 * chance * 10 / 100).min(100)
 }
 
 /// One swing's to-hit roll and what decides it (retail: 5 or under always
