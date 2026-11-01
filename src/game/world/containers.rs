@@ -156,29 +156,23 @@ pub fn take_from_container(
                 let index = items.iter().position(|s| s.id == id).unwrap();
                 let definition = &catalog[items[index].item];
                 let name = items[index].display_name(definition, false);
-                let mut receive = |part: ItemStack| {
-                    let part_id = part.id;
-                    match to {
-                        Recipient::Party => {
-                            let pool = &mut world
-                                .get_mut::<PartyInventory>(party)
-                                .unwrap()
-                                .into_inner()
-                                .pool;
-                            let rest = pool.receive(part, catalog);
-                            (rest, pool.stacks.iter().any(|s| s.id == part_id))
-                        }
-                        Recipient::Member(member) => {
-                            let carried = world.get_mut::<Carried>(member).unwrap().into_inner();
-                            let rest = carried.receive(part, catalog);
-                            (rest, carried.find_stack(part_id).is_some())
-                        }
-                    }
+                let mut receive = |part: ItemStack| match to {
+                    Recipient::Party => world
+                        .get_mut::<PartyInventory>(party)
+                        .unwrap()
+                        .into_inner()
+                        .pool
+                        .receive(part, catalog),
+                    Recipient::Member(member) => world
+                        .get_mut::<Carried>(member)
+                        .unwrap()
+                        .into_inner()
+                        .receive(part, catalog),
                 };
                 let moved = if amount == items[index].count() {
                     let whole = items.remove(index);
                     let units = whole.count();
-                    let (rest, _) = receive(whole);
+                    let rest = receive(whole);
                     let left = rest.as_ref().map_or(0, ItemStack::count);
                     if let Some(rest) = rest {
                         items.insert(index, rest);
