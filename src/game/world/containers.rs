@@ -115,7 +115,7 @@ pub fn take_from_containers(
         let items = &mut containers.get_mut(device).unwrap().into_inner().contents.items;
         let mut refused = false;
         for &(id, amount) in picks {
-            let index = items.iter().position(|s| s.id == id).unwrap();
+            let Some(index) = items.iter().position(|s| s.id == id) else { continue };
             let name = items[index].display_name(&catalog[items[index].item], false);
             let mut receive = |part: ItemStack| match *to {
                 Recipient::Party => party.pool.receive(part, catalog),

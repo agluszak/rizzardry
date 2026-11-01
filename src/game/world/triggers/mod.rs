@@ -315,6 +315,7 @@ impl Devices<'_, '_> {
             return false;
         }
         let ran = self.execute(geometry, entity, 0, -1);
+        self.overcome.clear();
         if player && ran == Ran::Declined {
             self.effects.write(TriggerEffect::NothingHappened);
         }
@@ -628,6 +629,7 @@ impl Devices<'_, '_> {
                 if keyed {
                     door.unwrap().locked = false;
                     self.commands.entity(entity).remove::<Guarded>();
+                    self.overcome.push(entity);
                 }
                 if let Some(next) = next
                     && state.use_alternate != next
