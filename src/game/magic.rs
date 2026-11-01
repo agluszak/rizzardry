@@ -87,7 +87,7 @@ pub struct SpellPoints {
 
 impl SpellPoints {
     pub fn current(&self, realm: Realm, maximum: &EnumMap<Realm, u32>) -> i32 {
-        i32::from(maximum[realm]) - self.spent[realm]
+        maximum[realm] as i32 - self.spent[realm]
     }
 
     pub fn available(&self, realm: Realm, maximum: &EnumMap<Realm, u32>) -> u32 {
@@ -102,7 +102,7 @@ impl SpellPoints {
 
     /// Record spending after the caller has checked what is available.
     pub fn spend(&mut self, realm: Realm, amount: u32) {
-        self.spent[realm] += i32::from(amount);
+        self.spent[realm] += amount as i32;
     }
 
     /// Drain randomly chosen realms, at most fifty draws (retail
@@ -764,8 +764,7 @@ fn test_maximum(world: &World, member: Entity) -> EnumMap<Realm, u32> {
 #[cfg(test)]
 pub(crate) fn test_set_points(world: &mut World, member: Entity, realm: Realm, current: i32) {
     let maximum = test_maximum(world, member);
-    world.get_mut::<SpellPoints>(member).unwrap().spent[realm] =
-        i32::from(maximum[realm]) - current;
+    world.get_mut::<SpellPoints>(member).unwrap().spent[realm] = maximum[realm] as i32 - current;
 }
 
 #[cfg(test)]
@@ -965,7 +964,7 @@ mod tests {
         maximum[Realm::Fire] = 10;
         maximum[Realm::Water] = 5;
         maximum[Realm::Air] = 3;
-        let mut points = SpellPoints { spent: maximum.map(|_, max| i32::from(max)), ..default() };
+        let mut points = SpellPoints { spent: maximum.map(|_, max| max as i32), ..default() };
         points.fraction[Realm::Fire] = 0.75;
         assert_eq!(points.restore_evenly(8), 8);
         // Five go to Fire; then the equal deficits share, in realm order.
@@ -1193,7 +1192,7 @@ mod tests {
     fn points_recover_by_retail_rate_and_never_beyond_the_maximum() {
         let mut maximum = EnumMap::default();
         maximum[Realm::Divine] = 20;
-        let mut points = SpellPoints { spent: maximum.map(|_, max| i32::from(max)), ..default() };
+        let mut points = SpellPoints { spent: maximum.map(|_, max| max as i32), ..default() };
         // (0.65·20 + 20)/240 = 0.1375 a tick at half rate: 0.06875.
         points.recover(100, recovery_scale(0.0), &maximum);
         assert_eq!(points.current(Realm::Divine, &maximum), 6);
