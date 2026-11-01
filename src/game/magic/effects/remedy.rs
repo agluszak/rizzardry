@@ -10,7 +10,7 @@ pub(in crate::game::magic) fn restores(spell: SpellId) -> bool {
 
 /// The rounds a cure takes off a timed condition: `power²`, boosted.
 pub(super) fn cure_rounds(strength: Strength) -> u32 {
-    let per = u32::from(strength.power).pow(2);
+    let per = strength.power.pow(2);
     per + per * strength.boost / 100
 }
 
@@ -30,12 +30,12 @@ pub(super) fn cure(
         let Some(lasting) = conditions.lasting_mut(condition) else { continue };
         let gone = match lasting {
             _ if forced => true,
-            Lasting::Rounds(left) if u32::from(*left) <= per => true,
+            Lasting::Rounds(left) if *left <= per => true,
             Lasting::Rounds(left) => {
-                *left -= per as u16;
+                *left -= per;
                 false
             }
-            Lasting::Indefinite => rng.below(100) < u32::from(strength.power) * 15,
+            Lasting::Indefinite => rng.below(100) < strength.power * 15,
         };
         if gone {
             conditions.lift(condition);
@@ -57,7 +57,7 @@ pub(super) fn purify(
     let mut effects = Vec::new();
     let catalog = world.spells();
     // Purify rolls from power alone, rather than its authored duration.
-    let base = u32::from(strength.power) + 1;
+    let base = strength.power + 1;
     let amount = match rng.below(4) {
         0 if base > 1 => base + 1,
         1 if base < 3 => base + 1,
@@ -70,9 +70,8 @@ pub(super) fn purify(
             slots.0.retain_mut(|slot| {
                 if crate::game::magic::enchantments::OFFENSIVE.contains(&slot.spell) {
                     let cloud = &catalog[slot.spell];
-                    let removed =
-                        (amount + u32::from(spell.level)).saturating_sub(u32::from(cloud.level));
-                    slot.turns = slot.turns.saturating_sub(removed);
+                    let removed = (amount + spell.level).max(cloud.level) - cloud.level;
+                    slot.turns -= removed.min(slot.turns);
                 }
                 slot.turns > 0
             });
@@ -192,8 +191,7 @@ pub(super) fn enchant(
                 return false;
             }
             let absorption = if spell.id == SpellId::GUARDIAN_ANGEL {
-                let rolled =
-                    spell.dice.map_or(0, |dice| rng.roll(dice)) * u32::from(strength.power);
+                let rolled = spell.dice.map_or(0, |dice| rng.roll(dice)) * strength.power;
                 rolled + rolled * strength.boost / 100
             } else {
                 0
@@ -260,7 +258,7 @@ pub(super) fn neediest(world: &Field, health: bool) -> Option<Entity> {
                 return None;
             }
             let percent = if health {
-                i64::from(v.hp * 100 / c.stats(&v.enchantments).max_hp().max(1))
+                v.hp * 100 / c.stats(&v.enchantments).max_hp()
             } else {
                 let (_learned, pool) = world.points.get(m).unwrap();
                 let maxima = world.mana_maximum(m);
@@ -268,12 +266,8 @@ pub(super) fn neediest(world: &Field, health: bool) -> Option<Entity> {
                 if maximum == 0 {
                     return None;
                 }
-                maxima
-                    .iter()
-                    .map(|(realm, _)| i64::from(pool.available(realm, &maxima)))
-                    .sum::<i64>()
-                    * 100
-                    / i64::from(maximum)
+                maxima.iter().map(|(realm, _)| pool.available(realm, &maxima)).sum::<u32>() * 100
+                    / maximum
             };
             (percent < 100).then_some((m, percent))
         })
@@ -328,7 +322,7 @@ pub(super) fn restore(
             }
         }
     };
-    let missing = maximum.saturating_sub(current);
+    let missing = maximum - current;
     if missing == 0 {
         return None;
     }

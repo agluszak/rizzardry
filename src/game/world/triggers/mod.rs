@@ -532,7 +532,7 @@ impl Devices<'_, '_> {
                     // PointCastSpell: zero does not cast, values above seven
                     // use power one (the retail temple fountain authors
                     // fifteen).
-                    let power = if fountain.amount > 7 { 1 } else { fountain.amount as u8 };
+                    let power = if fountain.amount > 7 { 1 } else { fountain.amount };
                     if power > 0 {
                         let amount = crate::game::magic::effects::magnitude(
                             &mut self.rng,

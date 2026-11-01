@@ -43,6 +43,7 @@ Developer options:
   after entering, then exit; with `--headless`, rendered offscreen.
 - `--talk-to <name>`: open a nearby NPC conversation through normal gameplay validation.
   Combine with `--start` and `--screenshot`; it does not bypass distance or payment checks.
+- `--open-automap`: open the automap through its normal request. Combine with `--screenshot`.
 - `--say <line>`: speak a retail voice line, e.g. `npc_aletheides_000`.
 - `--nav-debug`: draw the navmeshes, paths and avoidance.
 - `--overhead <metres>`: view the party from straight above.

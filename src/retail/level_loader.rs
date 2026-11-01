@@ -469,9 +469,9 @@ fn decode_action(
         action::RANDOM_TELEPORT => super::links::random_arrivals(sections, item)
             .map_or(TriggerAction::Unsupported(code), TriggerAction::RandomTeleport),
         action::HURT_PARTY => TriggerAction::HurtParty(Dice {
-            count: or(first, 1) as u8,
-            sides: or(second, 6) as u8,
-            base: or(third, 2) as i16,
+            count: or(first, 1).max(0),
+            sides: or(second, 6).max(1),
+            base: or(third, 2),
         }),
         action::DAMAGE_ZONE => TriggerAction::DamageZone,
         action::STAMINA_FOUNTAIN

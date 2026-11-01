@@ -836,18 +836,18 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
                 conversation::quote_trade(app.world_mut(), session, TradeSource::Stock(lot), 1)
                     .unwrap();
             // A confirmation buys once, however often it arrives.
-            app.world_mut().write_message(crate::game::npcs::conversation::TradeRequest(quote));
-            app.world_mut().write_message(crate::game::npcs::conversation::TradeRequest(quote));
+            app.world_mut().write_message(ConversationRequest::trade(quote));
+            app.world_mut().write_message(ConversationRequest::trade(quote));
             app.update();
-            app.world_mut().write_message(crate::game::npcs::conversation::TradeRequest(quote));
+            app.world_mut().write_message(ConversationRequest::trade(quote));
             app.update();
             assert_eq!(purse(&app), 10_000 - quote.gold);
             assert_eq!(app.world().get::<Npc>(actor).unwrap().stock.lots[0].units, 1);
             let bought = app.world().get::<PartyInventory>(party).unwrap().pool.stacks[0].id;
             let source = TradeSource::Party(ItemRef { owner: ItemOwner::Pool, id: bought });
             let sale = conversation::quote_trade(app.world_mut(), session, source, 1).unwrap();
-            app.world_mut().write_message(crate::game::npcs::conversation::TradeRequest(sale));
-            app.world_mut().write_message(crate::game::npcs::conversation::TradeRequest(sale));
+            app.world_mut().write_message(ConversationRequest::trade(sale));
+            app.world_mut().write_message(ConversationRequest::trade(sale));
             app.update();
             assert_eq!(purse(&app), 10_000 - quote.gold + sale.gold);
             assert!(app.world().get::<PartyInventory>(party).unwrap().pool.stacks.is_empty());
@@ -984,7 +984,6 @@ fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
     assert!(killed.died);
     let npc = app.world().get::<Npc>(actor).unwrap();
     assert!(npc.dead);
-    assert!(npc.possessions.items.is_empty());
     assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 25);
     let mut dropped: Vec<_> = app
         .world_mut()

@@ -63,7 +63,7 @@ pub fn recognition(
     level: u8,
 ) -> i32 {
     let seen = knowledge.seen.get(&species).copied().unwrap_or(0);
-    (i32::from(seen) - i32::from(level)) * 3
+    (seen as i32 - i32::from(level)) * 3
         + member.attribute(Attribute::Intelligence) as i32 / 10
         + member.skill(Skill::Mythology) as i32
 }
@@ -221,7 +221,7 @@ impl GroupRecognition<'_, '_> {
                         continue;
                     }
                     let seen = knowledge.seen.entry(species_id).or_default();
-                    *seen = seen.saturating_add(count.min(255) as u8);
+                    *seen += count as u32;
                 }
             }
         }

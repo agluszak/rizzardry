@@ -28,7 +28,7 @@ impl NpcPresence<'_, '_> {
 /// catalogs.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct Trading<'w, 's> {
-    conversations: Query<'w, 's, (&'static mut Conversation, Has<Closing>)>,
+    conversations: Query<'w, 's, &'static mut Conversation>,
     npcs: Query<
         'w,
         's,
@@ -48,7 +48,6 @@ pub struct Trading<'w, 's> {
     clock: Res<'w, GameClock>,
     entering: Query<'w, 's, (), With<crate::game::world::level::Destination>>,
     battles: Query<'w, 's, (), With<crate::game::combat::Battle>>,
-    camp: Option<Res<'w, crate::game::camp::Camp>>,
 }
 
 impl Trading<'_, '_> {
@@ -65,9 +64,11 @@ impl Trading<'_, '_> {
     }
 
     fn communication(&self) -> u32 {
-        crate::game::party::Lineup::of(self.party.1, |m| self.members.get(m).unwrap())
-            .best(crate::content::characters::Skill::Communication)
-            .map_or(0, |(_, level)| level)
+        crate::game::party::best_communicator(self.party.1.iter().map(|member| {
+            let (character, vitals) = self.members.get(member).unwrap();
+            (member, character, vitals)
+        }))
+        .map_or(0, |(_, level)| level)
     }
 
     fn sale_item(&self, source: ItemRef) -> Result<&crate::game::inventory::ItemStack, TradeError> {
@@ -80,7 +81,7 @@ impl Trading<'_, '_> {
 
     /// Whether the conversation stands ready for the party to trade in.
     pub fn ready(&self, conversation: Entity) -> bool {
-        self.conversations.get(conversation).is_ok_and(|(c, _)| c.ready())
+        self.conversations.get(conversation).is_ok_and(|c| c.ready())
     }
 
     /// The party's gold.
@@ -90,7 +91,7 @@ impl Trading<'_, '_> {
 
     /// The item a quote is of and how many of it there are to trade.
     pub fn units(&self, quote: &TradeQuote) -> Option<(ItemId, u32)> {
-        let (c, _) = self.conversations.get(quote.conversation).ok()?;
+        let c = self.conversations.get(quote.conversation).ok()?;
         match quote.source {
             TradeSource::Stock(id) => {
                 let stock = &self.npcs.get(c.actor).ok()?.0.stock;
@@ -115,8 +116,7 @@ impl Trading<'_, '_> {
         if !self.entering.is_empty() || !self.battles.is_empty() {
             return Err(TradeError::Busy);
         }
-        let (c, _) =
-            self.conversations.get(conversation).map_err(|_| TradeError::StaleSelection)?;
+        let c = self.conversations.get(conversation).map_err(|_| TradeError::StaleSelection)?;
         if !c.ready() {
             return Err(TradeError::Busy);
         }
@@ -145,8 +145,17 @@ impl Trading<'_, '_> {
     }
 
     /// Settle a quoted trade, if nothing it was quoted on has changed since.
+    /// Settle a trade and tell its conversation how it went.
+    pub(super) fn answer(&mut self, quote: TradeQuote) {
+        let outcome = match self.settle(quote) {
+            Ok(()) => Outcome::Traded,
+            Err(e) => Outcome::TradeRefused(e),
+        };
+        self.conversations.get_mut(quote.conversation).unwrap().report(outcome);
+    }
+
     fn settle(&mut self, quote: TradeQuote) -> Result<(), TradeError> {
-        let (c, _) =
+        let c =
             self.conversations.get(quote.conversation).map_err(|_| TradeError::StaleSelection)?;
         if !c.ready() {
             return Err(TradeError::StaleSelection);
@@ -176,8 +185,7 @@ impl Trading<'_, '_> {
                 communication,
             )?,
             TradeSource::Party(source) => {
-                let units =
-                    u16::try_from(quote.quantity).map_err(|_| TradeError::InvalidQuantity)?;
+                let units = quote.quantity as u16;
                 let item = match source.owner {
                     ItemOwner::Pool => self.party.0.pool.stacks.iter().find(|i| i.id == source.id),
                     ItemOwner::Member(member) => {
@@ -202,32 +210,6 @@ impl Trading<'_, '_> {
         }
         npc.stock.trades += 1;
         Ok(())
-    }
-}
-
-/// The party settles a quoted trade.
-#[derive(Message, Clone, Copy, Debug, PartialEq)]
-pub struct TradeRequest(pub TradeQuote);
-
-/// Settle the party's trades and tell its conversation how each went. A
-/// dialogue the party has left takes none, and none happen in a camp.
-pub fn settle_trades(mut requests: MessageReader<TradeRequest>, mut trading: Trading) {
-    for &TradeRequest(quote) in requests.read() {
-        let Ok((_, closing)) = trading.conversations.get(quote.conversation) else { continue };
-        if closing {
-            continue;
-        }
-        let outcome = if trading.camp.is_some() {
-            Outcome::TradeRefused(TradeError::Unavailable)
-        } else {
-            match trading.settle(quote) {
-                Ok(()) => Outcome::Traded,
-                Err(e) => Outcome::TradeRefused(e),
-            }
-        };
-        let (mut c, _) = trading.conversations.get_mut(quote.conversation).unwrap();
-        c.result = None;
-        c.report(outcome);
     }
 }
 

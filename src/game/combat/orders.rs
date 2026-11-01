@@ -55,10 +55,10 @@ pub(super) enum PartyMove {
     #[default]
     None,
     /// Waiting for its phase; members do not act before it.
-    Pending { pace: PartyPace, phase: u8 },
+    Pending { pace: PartyPace, phase: u32 },
     /// Under way: metres allowed and covered (retail `GetPartyMovementSpeed`:
     /// 10000 units walking, 15000 running).
-    Moving { pace: PartyPace, budget: f32, moved: f32, last: Option<Vec3> },
+    Moving { pace: PartyPace, budget: f32, moved: f32, last: Vec3 },
 }
 
 /// Start the next round (Enter, or the round button).
@@ -109,10 +109,8 @@ pub fn track_party_move(
         let PartyMove::Moving { budget, moved, last, .. } = &mut battle.party_move else {
             return;
         };
-        if let Some(last) = *last {
-            *moved += last.with_y(0.0).distance(position.0.with_y(0.0));
-        }
-        *last = Some(position.0);
+        *moved += last.with_y(0.0).distance(position.0.with_y(0.0));
+        *last = position.0;
         *moved >= *budget
     };
     if spent {
@@ -157,7 +155,7 @@ pub(super) fn finish_party_move(battle: &mut Battle, rng: &mut GameRng, members:
     if pace == PartyPace::Run {
         spent *= 1.5;
     }
-    let keep = 100u32.saturating_sub(spent as u32);
+    let keep = 100 - (spent as u32).min(100);
     for work in &mut battle.this_round.party {
         if work.phase == 0 {
             continue;

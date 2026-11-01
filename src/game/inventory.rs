@@ -39,12 +39,8 @@ pub struct ItemIds {
 }
 impl ItemIds {
     pub fn allocate(&mut self) -> StackId {
-        self.next = self.next.checked_add(1).expect("stack identity exhausted");
+        self.next += 1;
         StackId(self.next)
-    }
-    /// The identity the next allocation will return.
-    fn upcoming(&self) -> StackId {
-        StackId(self.next.checked_add(1).expect("stack identity exhausted"))
     }
 }
 
@@ -102,35 +98,31 @@ impl ItemStack {
             name.to_owned()
         }
     }
-    /// Offer a proper part of this stack to a receiver, which returns what it
-    /// refuses and whether it kept the part as a stack of its own. Refused
-    /// units come back here, so a refusal changes nothing; only a part kept
-    /// as its own stack takes an identity from `ids`. Returns the units moved.
+    /// Offer a proper part of this stack, under a new identity, to a receiver,
+    /// which returns what it refuses. Refused units come back here, so a
+    /// refusal changes no stack; the identity may go unused. Returns the units
+    /// moved.
     pub fn give_part(
         &mut self,
         amount: u16,
         ids: &mut ItemIds,
-        receive: impl FnOnce(ItemStack) -> (Option<ItemStack>, bool),
+        receive: impl FnOnce(ItemStack) -> Option<ItemStack>,
     ) -> u16 {
         if amount == 0 || amount >= self.count() {
             return 0;
         }
         let mut part = self.clone();
-        part.id = ids.upcoming();
+        part.id = ids.allocate();
         part.count = NonZeroU16::new(amount).unwrap();
         self.count = NonZeroU16::new(self.count() - amount).unwrap();
-        let (rest, kept) = receive(part);
-        if kept {
-            ids.allocate();
-        }
-        let refused = rest.map_or(0, |rest| rest.count());
+        let refused = receive(part).map_or(0, |rest| rest.count());
         self.count = NonZeroU16::new(self.count() + refused).unwrap();
         amount - refused
     }
     /// Consume up to `amount` physical units, retaining the remainder's identity
     /// and metadata. Callers that settle payment validate the exact quantity first.
     pub(crate) fn remove_units(mut self, amount: u16) -> Option<Self> {
-        self.count = NonZeroU16::new(self.count().saturating_sub(amount))?;
+        self.count = NonZeroU16::new(self.count() - amount.min(self.count()))?;
         Some(self)
     }
     /// Units of this definition that can join the stack without changing its metadata.
@@ -138,8 +130,9 @@ impl ItemStack {
         if self.item == definition.id
             && self.identified == identified
             && definition.quantity == QuantityKind::Stack
+            && self.count() < u16::from(definition.stack_limit)
         {
-            u16::from(definition.stack_limit).saturating_sub(self.count())
+            u16::from(definition.stack_limit) - self.count()
         } else {
             0
         }
@@ -168,9 +161,9 @@ impl ItemStack {
             QuantityKind::Stack => from.count(),
             _ => from.remaining_uses.unwrap_or(0),
         };
-        let maximum = definition.initial_quantity.maximum().min(u32::from(u16::MAX)) as u16;
-        // Retail's unsigned room wraps for an overfull item, taking everything.
-        let moved = maximum.checked_sub(uses).map_or(available, |room| room.min(available));
+        let maximum = definition.initial_quantity.maximum() as u16;
+        // An overfull item has no room; loading never increases it further.
+        let moved = available.min(maximum.max(uses) - uses);
         self.remaining_uses = Some(uses + moved);
         let mut rest = Some(from);
         for _ in 0..moved {
@@ -181,7 +174,7 @@ impl ItemStack {
     /// Consumption owns its input: exhausted physical stacks never survive as values.
     pub fn consume_use(mut self, definition: &ItemDefinition, keep_empty: bool) -> Option<Self> {
         if let Some(uses) = &mut self.remaining_uses {
-            *uses = uses.saturating_sub(1);
+            *uses -= (*uses).min(1);
             if *uses == 0 && !keep_empty {
                 return None;
             }
@@ -208,7 +201,7 @@ pub fn make_item(
     } else {
         rng.roll(definition.initial_quantity)
     };
-    ItemStack::new(definition, ids, amount.min(u32::from(u8::MAX)) as u16, identify)
+    ItemStack::new(definition, ids, amount as u16, identify)
 }
 
 /// Apply absorption in the container's policy order. Empty placement is separate.
@@ -465,7 +458,7 @@ impl ItemPool {
             1
         };
         self.stacks.iter().map(|s| u32::from(s.room_for(definition, identified))).sum::<u32>()
-            + POOL_LIMIT.saturating_sub(self.stacks.len()) as u32 * per_row
+            + (POOL_LIMIT - self.stacks.len()) as u32 * per_row
     }
 
     fn position(&self, position: PoolPosition) -> Result<usize, Refusal> {
@@ -711,8 +704,8 @@ pub(crate) struct Identified {
 
 /// One member's go at identifying an item of this difficulty (retail
 /// `TryIdentifyItemFor`): someone alive and sane manages it when a sixth of
-/// their Artifacts reaches it. Retail compares signed bytes, so a
-/// difficulty past 127 is always managed.
+/// their Artifacts reaches it. Higher difficulty never becomes easier
+/// by overflowing a signed byte.
 pub(crate) fn identify_attempt(
     character: &Character,
     vitals: &Vitals,
@@ -721,15 +714,13 @@ pub(crate) fn identify_attempt(
     if !vitals.lucid() {
         return None;
     }
-    let strength = (character.skill(Skill::Artifacts) / 6) as i8;
-    if difficulty as i8 > strength {
+    let strength = character.skill(Skill::Artifacts) / 6;
+    let difficulty = difficulty as u32;
+    if difficulty > strength {
         return None;
     }
-    let margin = i32::from(strength) - i32::from(difficulty);
-    Some(Identified {
-        binding: difficulty.wrapping_add(3) as i8 <= strength,
-        practises: (0..3).contains(&margin),
-    })
+    let margin = strength - difficulty;
+    Some(Identified { binding: margin >= 3, practises: (0..3).contains(&margin) })
 }
 
 /// Guns and what loads them (retail `g_compatible_partner_pairs`).
@@ -938,7 +929,7 @@ pub fn distribute_burden(
 pub fn pool_shares(pool_weight: u32, members: &[Option<(u32, u32)>]) -> Vec<u32> {
     let mut shares = vec![0; members.len()];
     let free = |own: u32, capacity: u32, share: u32| {
-        (capacity as i32 - own as i32 - share as i32) as f32 * 100.0 / capacity as f32
+        (capacity as f32 - (own + share) as f32) * 100.0 / capacity as f32
     };
     for _ in 0..pool_weight / 2 {
         let best = members

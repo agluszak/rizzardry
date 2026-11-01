@@ -29,8 +29,8 @@ pub struct CharacterDraft {
     race: Race,
     gender: Gender,
     profession: Profession,
-    attributes: EnumMap<Attribute, u8>,
-    skills: EnumMap<Skill, u8>,
+    attributes: EnumMap<Attribute, u32>,
+    skills: EnumMap<Skill, u32>,
     learned_spells: EnumMap<Realm, Vec<SpellId>>,
     last_spell: Option<SpellId>,
 }
@@ -118,25 +118,25 @@ impl CharacterDraft {
         Ok(())
     }
 
-    pub fn budget(race: Race, gender: Gender, profession: Profession) -> Result<u8, &'static str> {
+    pub fn budget(race: Race, gender: Gender, profession: Profession) -> Result<u32, &'static str> {
         let base = race_attributes(race).ok_or("Choose a playable race.")?;
         if profession == Profession::Valkyrie && gender != Gender::Female {
             return Err("Valkyries must be female.");
         }
-        let required: u16 = profession_row(profession)
+        let required: u32 = profession_row(profession)
             .minimums
             .iter()
-            .map(|(a, &minimum)| u16::from(minimum.saturating_sub(base[a])))
+            .map(|(a, &minimum)| minimum - minimum.min(base[a]))
             .sum();
-        60u16
-            .checked_sub(required)
-            .map(|n| n as u8)
-            .ok_or("This race cannot meet the profession's requirements.")
+        if required > 60 {
+            return Err("This race cannot meet the profession's requirements.");
+        }
+        Ok(60 - required)
     }
 
-    pub fn attribute_remaining(&self) -> u8 {
+    pub fn attribute_remaining(&self) -> u32 {
         Self::budget(self.race, self.gender, self.profession).unwrap()
-            - self.attributes.values().copied().sum::<u8>()
+            - self.attributes.values().copied().sum::<u32>()
     }
     /// The books first spells come from: the profession's, for those who
     /// pick any (retail `FinalizeSpellPointPool`: none below caster level 1,
@@ -153,7 +153,7 @@ impl CharacterDraft {
     }
 
     pub fn spell_remaining(&self) -> usize {
-        self.spell_points_total().saturating_sub(self.learned_spells.values().map(Vec::len).sum())
+        self.spell_points_total() - self.learned_spells.values().map(Vec::len).sum::<usize>()
     }
 
     /// The accepted selection, shared with the live LearnedSpells component.
@@ -206,8 +206,7 @@ impl CharacterDraft {
         // Allocations in a realm cease to be valid when its last spell is removed.
         for realm in EnumSet::<Realm>::all() {
             if self.learned_spells[realm].is_empty() {
-                let skill = Skill::try_from(Skill::FireMagic as u8 + realm as u8).unwrap();
-                self.skills[skill] = 0;
+                self.skills[realm.skill()] = 0;
             }
         }
         true
@@ -217,26 +216,25 @@ impl CharacterDraft {
         self.learned_spells = EnumMap::default();
         self.last_spell = None;
         for realm in EnumSet::<Realm>::all() {
-            let skill = Skill::try_from(Skill::FireMagic as u8 + realm as u8).unwrap();
-            self.skills[skill] = 0;
+            self.skills[realm.skill()] = 0;
         }
     }
 
-    pub fn skill_remaining(&self) -> u8 {
-        15 - self.skills.values().copied().sum::<u8>()
+    pub fn skill_remaining(&self) -> u32 {
+        15 - self.skills.values().copied().sum::<u32>()
     }
 
     /// Points explicitly assigned on the creation screen, after minimums.
-    pub fn allocated_attribute(&self, attribute: Attribute) -> u8 {
+    pub fn allocated_attribute(&self, attribute: Attribute) -> u32 {
         self.attributes[attribute]
     }
 
-    pub fn allocated_skill(&self, skill: Skill) -> u8 {
+    pub fn allocated_skill(&self, skill: Skill) -> u32 {
         self.skills[skill]
     }
 
     /// Retail's per-attribute ceiling after profession requirements are paid.
-    pub fn attribute_step_limit(&self) -> u8 {
+    pub fn attribute_step_limit(&self) -> u32 {
         let budget = Self::budget(self.race, self.gender, self.profession).unwrap();
         budget.div_ceil(3).max(3).min(budget)
     }
@@ -311,7 +309,7 @@ impl CharacterDraft {
         character.full_name = self.name.trim().to_owned();
         character.personality = self.personality;
         character.voice = self.voice;
-        character.spell_picks.grant(self.profession, self.spell_remaining() as u16);
+        character.spell_picks.grant(self.profession, self.spell_remaining());
         character.portrait.clone_from(&self.portrait);
         for a in EnumSet::<Attribute>::all() {
             character.attributes[a] += self.attributes[a];

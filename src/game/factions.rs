@@ -109,7 +109,7 @@ impl Factions {
         if index <= PARTY as usize || index >= self.scores.len() {
             return None;
         }
-        self.offences[index] = self.offences[index].saturating_add(1).min(250);
+        self.offences[index] = (self.offences[index] + 1).min(250);
         if (faction == MOOK || faction == RATTKIN_MAFIA || HIGARDI.contains(&faction))
             && self.band(faction) != Band::Hostile
         {

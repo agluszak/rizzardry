@@ -198,7 +198,7 @@ enum RoundPhase {
     #[default]
     Waiting,
     Accepted,
-    Executing(u8),
+    Executing(u32),
 }
 
 impl Battle {
@@ -273,7 +273,7 @@ impl Battle {
         match self.phase {
             RoundPhase::Waiting => None,
             RoundPhase::Accepted => Some(0.0),
-            RoundPhase::Executing(step) => Some(f32::from(step.min(100)) / 100.0),
+            RoundPhase::Executing(step) => Some(step.min(100) as f32 / 100.0),
         }
     }
 }
@@ -414,13 +414,9 @@ pub enum CombatNews {
     PartyStops,
 }
 
-/// Whether the party is fighting, for operations that hold the whole world.
-/// The party's lineup as the fight's member query reads it.
-fn lineup<'a>(roster: &PartyRoster, members: &'a Members) -> crate::game::party::Lineup<'a> {
-    crate::game::party::Lineup::of(roster, |m| {
-        let (character, vitals, ..) = members.get(m).unwrap();
-        (character, vitals)
-    })
+/// Whether any party member still lives.
+fn anyone_alive(roster: &PartyRoster, members: &Members) -> bool {
+    roster.iter().any(|m| !members.get(m).unwrap().1.is_dead())
 }
 
 /// Terminal state is settled independently of whose action dealt the damage.
@@ -429,13 +425,13 @@ pub fn settle_defeat(
     mut commands: Commands,
     battle: Option<Single<(Entity, Option<&Combatants>), With<Battle>>>,
     roster: Single<&PartyRoster>,
-    members: Query<(&Character, &Vitals)>,
+    members: Query<&Vitals>,
     mut news: MessageWriter<CombatNews>,
     mut effects: Single<&mut crate::game::magic::enchantments::PartyEffects>,
     mut monsters: Query<&mut Monster>,
 ) {
     let Some((battle, combatants)) = battle.map(Single::into_inner) else { return };
-    if !crate::game::party::Lineup::of(&roster, |m| members.get(m).unwrap()).anyone_alive() {
+    if roster.iter().all(|m| members.get(m).unwrap().is_dead()) {
         // What lasts a fight ends on the party and on those in it, as when
         // the party wins.
         effects.0.end_combat();
@@ -580,14 +576,14 @@ pub fn run_battle(
                 .try_fold(0, |sum, member| {
                     let (_, vitals, ..) = magic.field.members.get(member).unwrap();
                     let effect = vitals.enchantments.get(crate::content::spells::SpellId::HASTE)?;
-                    Some(sum + effect.scaled(u32::from(effect.power) * 10))
+                    Some(sum + effect.scaled(effect.power * 10))
                 })
-                .map_or(0.0, |sum| (sum / roster.len().max(1) as u32) as f32 * 0.2);
+                .map_or(0.0, |sum| (sum / roster.len() as u32) as f32 * 0.2);
             battle.party_move = PartyMove::Moving {
                 pace,
                 budget: pace.combat_budget() + haste,
                 moved: 0.0,
-                last: Some(position.0),
+                last: position.0,
             };
             news.write(CombatNews::PartyMoves);
             return;
@@ -637,12 +633,12 @@ pub fn run_battle(
 
 /// When the remaining attacks of a turn come: spread over the rest of the
 /// round, or none.
-fn next_phase(step: u8, attacks_left: u32) -> u8 {
+fn next_phase(step: u32, attacks_left: u32) -> u32 {
     if attacks_left == 0 {
         return 0;
     }
-    let next = u32::from(step) + (100 - u32::from(step)) / (attacks_left + 1);
-    if next > 100 { 0 } else { next as u8 }
+    let next = step + (100 - step) / (attacks_left + 1);
+    if next > 100 { 0 } else { next }
 }
 
 /// What casting in a fight needs beside the fight itself.

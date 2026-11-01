@@ -75,7 +75,7 @@ impl SlfArchive {
             return Err(SlfError::Counts { entries, used });
         }
         let table_size = entries as u64 * ENTRY_SIZE;
-        if table_size > size.saturating_sub(HEADER_SIZE) {
+        if table_size > size - HEADER_SIZE {
             return Err(SlfError::DirectoryBounds);
         }
         let table_start = size - table_size;

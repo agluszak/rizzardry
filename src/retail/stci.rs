@@ -144,7 +144,7 @@ mod tests {
         let font = files.read("data/fonts/wiz_text_font.sti").unwrap().unwrap();
         let font = read_stci(&font).unwrap();
         assert_eq!(font.len(), 154);
-        let (_, height, _) = crate::content::ui::render_text(&font, "Arnika");
+        let (_, height, _) = crate::content::ui::render_text_spaced(&font, "Arnika", 0);
         assert_eq!(height, 11);
     }
 }

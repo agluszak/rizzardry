@@ -29,7 +29,7 @@ use crate::game::automap::{CommitNote, MapNote, MapNotes, NoteDraft};
 use crate::game::party::body::PartyBody;
 use crate::game::world::level::{Level, PlayedLevel};
 use crate::presentation::screen_art::visible_if;
-use crate::presentation::screen_art::{SCREEN, absolute, centred, screen};
+use crate::presentation::screen_art::{absolute, centred, screen};
 
 const VIEWPORT_AT: Vec2 = Vec2::new(12.0, 32.0);
 const VIEWPORT: Vec2 = Vec2::new(456.0, 436.0);
@@ -280,8 +280,12 @@ pub fn request_automap(
     }
 }
 
+/// Open the map: its root owns its controls immediately, and the renderer
+/// resolves their artwork as it arrives.
 pub fn enter_automap(
     mut commands: Commands,
+    art: Res<AutomapArt>,
+    mut images: ResMut<Assets<Image>>,
     party: Query<&Transform, With<PartyBody>>,
     played: PlayedLevel,
     mut next: ResMut<NextState<Screen>>,
@@ -292,13 +296,17 @@ pub fn enter_automap(
     };
     let collision = played.definition();
     let layers = collision.map_or(&[][..], |g| g.map_layers.as_slice());
-    let mut map = Automap::new(
-        collision.map(|g| &g.collision),
-        layers,
-        PartyBody::feet(&avian3d::prelude::Position(party.translation)),
-    );
+    let feet = PartyBody::feet(&avian3d::prelude::Position(party.translation));
+    let mut map = Automap::new(collision.map(|g| &g.collision), layers, feet);
     map.level = level;
-    commands.spawn_scene(bsn! {
+    let plan = collision
+        .map(|level| images.add(floor_plan(&level.collision, &level.map_layers, &map)))
+        .map(|plan| {
+            let node = absolute(Vec2::ZERO, VIEWPORT);
+            bsn! { FloorPlan ImageNode { image: {plan} } node Pickable::IGNORE }
+        });
+    let marker = absolute(map.project(feet.xz()) - MARKER / 2.0, Vec2::splat(MARKER));
+    let root = commands.spawn_scene(bsn! {
         #Automap
         @centred()
         AutomapScreen
@@ -322,11 +330,9 @@ pub fn enter_automap(
                 map.centre_on(point);
             }
         })
-    }).insert((map, DespawnOnExit(Screen::Automap)));
+    }).insert((map, DespawnOnExit(Screen::Automap))).id();
+    spawn_controls(&mut commands, root, &art, plan, marker);
 }
-
-#[derive(Component)]
-pub struct AutomapBuilt;
 
 /// Typing focus changes input routing, independently of simulation activity.
 pub fn route_map_keys(
@@ -341,52 +347,15 @@ pub fn route_map_keys(
     }
 }
 
-/// Open the map when asked (Tab, the radar) while the party is in the
-/// world, once its art has loaded.
-pub fn build_automap(
-    mut commands: Commands,
-    art: Res<AutomapArt>,
-    sheets: Res<Assets<SpriteSheet>>,
-    mut images: ResMut<Assets<Image>>,
-    party: Query<&Transform, With<PartyBody>>,
-    levels: PlayedLevel,
-    roots: Query<(Entity, &Automap), Without<AutomapBuilt>>,
+/// The map's art, viewport and buttons under its root.
+fn spawn_controls(
+    commands: &mut Commands,
+    root: Entity,
+    art: &AutomapArt,
+    plan: Option<impl Scene>,
+    marker: Node,
 ) {
-    let Ok((root, automap)) = roots.single() else { return };
-    let Ok(party) = party.single() else { return };
-    let (
-        Some(border),
-        Some(note_buttons),
-        Some(exit_button),
-        Some(zoom_buttons),
-        Some(movement_buttons),
-        Some(layer_buttons),
-    ) = (
-        sheets.get(&art.border),
-        sheets.get(&art.note_buttons),
-        sheets.get(&art.exit_button),
-        sheets.get(&art.zoom_buttons),
-        sheets.get(&art.movement_buttons),
-        sheets.get(&art.layer_buttons),
-    )
-    else {
-        // The art is still loading; build once it has.
-        return;
-    };
-    let feet = PartyBody::feet(&avian3d::prelude::Position(party.translation));
-    let collision = levels.of(automap.level);
-    let plan = collision
-        .map(|level| images.add(floor_plan(&level.collision, &level.map_layers, automap)))
-        .map(|plan| {
-            let node = absolute(Vec2::ZERO, VIEWPORT);
-            bsn! { FloorPlan ImageNode { image: {plan} } node Pickable::IGNORE }
-        });
-    let button = |sheet: &SpriteSheet,
-                  handle: &Handle<SpriteSheet>,
-                  base: usize,
-                  at: Vec2,
-                  action| {
-        let _ = sheet;
+    let button = |handle: &Handle<SpriteSheet>, base: usize, at: Vec2, action| {
         bsn! {
             @crate::presentation::retail_controls::image_button(handle.clone(), at, ControlSkin::new(base, base+1, base+2, base+2, base+3))
             template(move |_| Ok(SheetButton { action }))
@@ -398,44 +367,31 @@ pub fn build_automap(
     let (layer, notes, zoom, moves) =
         (&art.layer_buttons, &art.note_buttons, &art.zoom_buttons, &art.movement_buttons);
     let buttons = vec![
-        button(layer_buttons, layer, 0, Vec2::new(490.0, 164.0), ButtonAction::LayerPrevious),
-        button(layer_buttons, layer, 4, Vec2::new(591.0, 164.0), ButtonAction::LayerNext),
-        button(note_buttons, notes, 0, Vec2::new(490.0, 70.0), add),
-        button(note_buttons, notes, 4, Vec2::new(541.0, 70.0), erase),
-        button(zoom_buttons, zoom, 0, Vec2::new(490.0, 124.0), ButtonAction::ZoomIn),
-        button(zoom_buttons, zoom, 4, Vec2::new(541.0, 124.0), ButtonAction::ZoomOut),
-        button(zoom_buttons, zoom, 8, Vec2::new(591.0, 124.0), ButtonAction::Reset),
-        button(
-            movement_buttons,
-            moves,
-            0,
-            Vec2::new(540.0, 218.0),
-            ButtonAction::Pan(IVec2::NEG_Y),
-        ),
-        button(movement_buttons, moves, 4, Vec2::new(540.0, 326.0), ButtonAction::Pan(IVec2::Y)),
-        button(
-            movement_buttons,
-            moves,
-            8,
-            Vec2::new(486.0, 272.0),
-            ButtonAction::Pan(IVec2::NEG_X),
-        ),
-        button(movement_buttons, moves, 12, Vec2::new(594.0, 272.0), ButtonAction::Pan(IVec2::X)),
-        button(movement_buttons, moves, 16, Vec2::new(540.0, 272.0), ButtonAction::CentreParty),
-        button(exit_button, &art.exit_button, 0, Vec2::new(588.0, 441.0), ButtonAction::Exit),
+        button(layer, 0, Vec2::new(490.0, 164.0), ButtonAction::LayerPrevious),
+        button(layer, 4, Vec2::new(591.0, 164.0), ButtonAction::LayerNext),
+        button(notes, 0, Vec2::new(490.0, 70.0), add),
+        button(notes, 4, Vec2::new(541.0, 70.0), erase),
+        button(zoom, 0, Vec2::new(490.0, 124.0), ButtonAction::ZoomIn),
+        button(zoom, 4, Vec2::new(541.0, 124.0), ButtonAction::ZoomOut),
+        button(zoom, 8, Vec2::new(591.0, 124.0), ButtonAction::Reset),
+        button(moves, 0, Vec2::new(540.0, 218.0), ButtonAction::Pan(IVec2::NEG_Y)),
+        button(moves, 4, Vec2::new(540.0, 326.0), ButtonAction::Pan(IVec2::Y)),
+        button(moves, 8, Vec2::new(486.0, 272.0), ButtonAction::Pan(IVec2::NEG_X)),
+        button(moves, 12, Vec2::new(594.0, 272.0), ButtonAction::Pan(IVec2::X)),
+        button(moves, 16, Vec2::new(540.0, 272.0), ButtonAction::CentreParty),
+        button(&art.exit_button, 0, Vec2::new(588.0, 441.0), ButtonAction::Exit),
     ];
-    let marker = absolute(automap.project(feet.xz()) - MARKER / 2.0, Vec2::splat(MARKER));
     let marker_image = art.party_marker.clone();
-    let frame = border.images[0].clone();
-    let (whole, map_area) = (absolute(Vec2::ZERO, SCREEN), absolute(VIEWPORT_AT, VIEWPORT));
+    let frame = crate::presentation::screen_art::picture(art.border.clone(), 0, Vec2::ZERO);
+    let map_area = absolute(VIEWPORT_AT, VIEWPORT);
     let notes_layer = absolute(Vec2::ZERO, VIEWPORT);
     let label_font = art.font.clone();
-    commands.entity(root).insert(AutomapBuilt).queue_spawn_related_scenes::<Children>(vec![bsn! {
+    commands.entity(root).queue_spawn_related_scenes::<Children>(vec![bsn! {
     @screen()
     Children [
         // The frame goes underneath: its map area is opaque black,
         // and the map is drawn on it.
-        ImageNode { image: {frame} } whole Pickable::IGNORE
+        @{frame}
         --
         MapViewport
         Hovered
@@ -459,7 +415,7 @@ fn floor_plan(collision: &CollisionMesh, layers: &[f32], automap: &Automap) -> I
     let (width, height) = (VIEWPORT.x as usize, VIEWPORT.y as usize);
     let mut rgba = vec![0u8; width * height * 4];
     let mut depth = vec![f32::NEG_INFINITY; width * height];
-    let ceiling = automap.layer.checked_sub(1).map_or(f32::INFINITY, |layer| layers[layer]);
+    let ceiling = if automap.layer == 0 { f32::INFINITY } else { layers[automap.layer - 1] };
     let (min_height, max_height) = collision
         .vertices
         .iter()
@@ -546,7 +502,7 @@ fn press_button(
                 automap.centre_on(party.translation.xz());
             }
         }
-        ButtonAction::LayerPrevious => automap.layer = automap.layer.saturating_sub(1),
+        ButtonAction::LayerPrevious => automap.layer -= automap.layer.min(1),
         ButtonAction::LayerNext => {
             if let Some(level) = levels.of(automap.level) {
                 automap.layer = (automap.layer + 1).min(level.map_layers.len());

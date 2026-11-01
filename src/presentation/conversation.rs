@@ -42,7 +42,7 @@ struct ConversationView(pub Entity);
 struct ConversationViews(Vec<Entity>);
 #[derive(Component, Default)]
 struct DialogueState {
-    offer: Option<Result<TradeQuote, trade::TradeError>>,
+    selection: Option<Selection>,
     mode: Mode,
     pool: bool,
     category: Option<TopicCategory>,
@@ -52,13 +52,34 @@ struct DialogueState {
 }
 impl DialogueState {
     fn quote(&self) -> Option<TradeQuote> {
-        self.offer?.ok()
+        match self.selection? {
+            Selection::Priced(quote) => Some(quote),
+            Selection::Gift(_) | Selection::Refused(_) => None,
+        }
     }
 
     fn set_mode(&mut self, mode: Mode) {
         if self.mode != mode {
             self.mode = mode;
-            self.offer = None;
+            self.selection = None;
+        }
+    }
+}
+/// The item picked in the trade layout, not yet committed.
+#[derive(Clone, Copy)]
+enum Selection {
+    /// One of the item, to give: a gift has no price.
+    Gift(ItemRef),
+    Priced(TradeQuote),
+    /// The trade the pick asked for is unavailable.
+    Refused(trade::TradeError),
+}
+impl Selection {
+    fn source(self) -> Option<TradeSource> {
+        match self {
+            Selection::Gift(item) => Some(TradeSource::Party(item)),
+            Selection::Priced(quote) => Some(quote.source),
+            Selection::Refused(_) => None,
         }
     }
 }
@@ -262,12 +283,14 @@ fn select(
     source: TradeSource,
     quantity: u32,
 ) {
-    let result = if state.mode == Mode::Give {
-        Ok(TradeQuote { conversation: session, trade: 0, source, quantity: 1, gold: 0 })
-    } else {
-        trading.quote(session, source, quantity)
+    let selection = match source {
+        TradeSource::Party(item) if state.mode == Mode::Give => Selection::Gift(item),
+        source => match trading.quote(session, source, quantity) {
+            Ok(quote) => Selection::Priced(quote),
+            Err(error) => Selection::Refused(error),
+        },
     };
-    state.offer = Some(result);
+    state.selection = Some(selection);
 }
 /// The dialogue view of the open conversation.
 #[derive(bevy::ecs::system::SystemParam)]
@@ -851,11 +874,11 @@ fn sync_bubble_geometry(
             (5, Vec2::new(0., height as f32 - 16.)),
             (7, Vec2::new(width as f32 - 16., height as f32 - 16.)),
         ];
-        for x in (16..width.saturating_sub(16)).step_by(16) {
+        for x in (16..width.max(16) - 16).step_by(16) {
             parts.push((1, Vec2::new(x as f32, 0.)));
             parts.push((6, Vec2::new(x as f32, height as f32 - 16.)));
         }
-        for y in (16..height.saturating_sub(16)).step_by(16) {
+        for y in (16..height.max(16) - 16).step_by(16) {
             parts.push((3, Vec2::new(0., y as f32)));
             parts.push((4, Vec2::new(width as f32 - 8., y as f32)));
         }
@@ -914,7 +937,7 @@ fn sync_topic_geometry(
         }
         let mut parts =
             vec![(2, Vec2::new(0., height as f32 - 18.)), (4, Vec2::new(0., -(margin as f32)))];
-        for y in (0..height.saturating_sub(line)).step_by(line as usize) {
+        for y in (0..height.max(line) - line).step_by(line as usize) {
             parts.push((3, Vec2::new(0., y as f32)));
         }
         for (frame, at) in parts {

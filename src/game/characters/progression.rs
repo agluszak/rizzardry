@@ -12,41 +12,41 @@ use std::collections::BTreeSet;
 /// are unrestricted, matching skill_costs and magic_bonus_pool in retail.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SpellPicks {
-    books: [u16; 4],
-    general: u16,
+    books: EnumMap<Spellbook, usize>,
+    general: usize,
 }
 impl SpellPicks {
-    pub fn total(&self) -> u32 {
-        self.books.iter().map(|&n| u32::from(n)).sum::<u32>() + u32::from(self.general)
+    pub fn total(&self) -> usize {
+        self.books.values().sum::<usize>() + self.general
     }
-    pub(super) fn grant(&mut self, profession: Profession, amount: u16) {
+    pub(super) fn grant(&mut self, profession: Profession, amount: usize) {
         if profession == Profession::Bishop {
-            self.general = self.general.saturating_add(amount);
+            self.general += amount;
         } else if let Some(book) = magic::profession_books(profession).iter().next() {
-            self.books[book as usize] = self.books[book as usize].saturating_add(amount);
+            self.books[book] += amount;
         }
     }
-    fn available(&self, c: &Character) -> u32 {
+    fn available(&self, c: &Character) -> usize {
         if magic::caster_level(c, c.profession) < 1 {
             return 0;
         }
-        u32::from(self.general)
+        self.general
             + magic::profession_books(c.profession)
                 .iter()
-                .map(|book| u32::from(self.books[book as usize]))
-                .sum::<u32>()
+                .map(|book| self.books[book])
+                .sum::<usize>()
     }
     fn spend(&mut self, c: &Character, books: EnumSet<Spellbook>) -> bool {
         let active = magic::profession_books(c.profession);
-        if let Some(book) = (active & books).iter().find(|&b| self.books[b as usize] > 0) {
-            self.books[book as usize] -= 1;
+        if let Some(book) = (active & books).iter().find(|&b| self.books[b] > 0) {
+            self.books[book] -= 1;
         } else if self.general > 0 {
             self.general -= 1;
         } else if c.profession == Profession::Bishop {
-            let Some(book) = active.iter().find(|&b| self.books[b as usize] > 0) else {
+            let Some(book) = active.iter().find(|&b| self.books[b] > 0) else {
                 return false;
             };
-            self.books[book as usize] -= 1;
+            self.books[book] -= 1;
         } else {
             return false;
         }
@@ -56,14 +56,14 @@ impl SpellPicks {
 
 /// CalcXPGoal adds the current profession's increment to the threshold
 /// actually passed; switching profession never reprices previous levels.
-pub(super) fn experience_increment(profession: Profession, level: u8) -> u32 {
+pub(super) fn experience_increment(profession: Profession, level: u8) -> u64 {
     let weight = profession_row(profession).experience;
     if level == 1 {
         return weight;
     }
-    let mut value = weight << (u32::from(level.min(10)) - 2);
+    let mut value = weight << (level.min(10) - 2);
     for _ in 10..level {
-        value = (u64::from(value) * 12 / 10).min(u64::from(u32::MAX)) as u32;
+        value = value * 12 / 10;
     }
     value
 }
@@ -79,8 +79,8 @@ pub struct Advancement {
     original: Character,
     known: LearnedSpells,
     profession: Profession,
-    attributes: EnumMap<Attribute, u8>,
-    skills: EnumMap<Skill, u8>,
+    attributes: EnumMap<Attribute, u32>,
+    skills: EnumMap<Skill, u32>,
     spells: BTreeSet<SpellId>,
 }
 /// An [`Advancement`] worked out once ([`Advancement::evaluate`]): a
@@ -89,7 +89,7 @@ pub struct Evaluation {
     baseline: Character,
     pub preview: Character,
     learned: LearnedSpells,
-    attributes_left: u8,
+    attributes_left: u32,
 }
 
 impl Advancement {
@@ -116,8 +116,8 @@ impl Advancement {
         }
         let minimums = profession_row(profession).minimums;
         let deficits: Vec<_> =
-            minimums.iter().map(|(a, &n)| n.saturating_sub(self.original.attributes[a])).collect();
-        deficits.iter().all(|&n| n <= 3) && deficits.iter().map(|&n| u16::from(n)).sum::<u16>() <= 6
+            minimums.iter().map(|(a, &n)| n - n.min(self.original.attributes[a])).collect();
+        deficits.iter().all(|&n| n <= 3) && deficits.iter().sum::<u32>() <= 6
     }
     pub fn choose_profession(&mut self, profession: Profession) -> bool {
         if !self.eligible_profession(profession) {
@@ -181,19 +181,19 @@ impl Advancement {
             preview,
         }
     }
-    fn attributes_left(&self, preview: &Character) -> u8 {
-        6 - preview.attributes.iter().map(|(a, &n)| n - self.original.attributes[a]).sum::<u8>()
+    fn attributes_left(&self, preview: &Character) -> u32 {
+        6 - preview.attributes.iter().map(|(a, &n)| n - self.original.attributes[a]).sum::<u32>()
     }
-    pub fn attribute_remaining(&self) -> u8 {
+    pub fn attribute_remaining(&self) -> u32 {
         self.attributes_left(&self.preview())
     }
-    pub fn skill_remaining(&self) -> u8 {
-        9 - self.skills.values().sum::<u8>()
+    pub fn skill_remaining(&self) -> u32 {
+        9 - self.skills.values().sum::<u32>()
     }
-    pub fn allocated_attribute(&self, a: Attribute) -> u8 {
+    pub fn allocated_attribute(&self, a: Attribute) -> u32 {
         self.attributes[a]
     }
-    pub fn allocated_skill(&self, s: Skill) -> u8 {
+    pub fn allocated_skill(&self, s: Skill) -> u32 {
         self.skills[s]
     }
     pub fn can_adjust_attribute(&self, a: Attribute, up: bool) -> bool {
@@ -231,10 +231,8 @@ impl Advancement {
     pub fn learned(&self) -> LearnedSpells {
         let mut known = self.known.clone();
         known.0.extend(self.spells.iter().copied());
-        if self.spells.contains(&SpellId::RETURN_TO_PORTAL)
-            || self.spells.contains(&SpellId::SET_PORTAL)
-        {
-            known.0.extend([SpellId::RETURN_TO_PORTAL, SpellId::SET_PORTAL]);
+        if self.spells.contains(&SpellId::SET_PORTAL) {
+            known.0.extend([SpellId::RETURN_TO_PORTAL]);
         }
         known
     }
@@ -269,67 +267,44 @@ impl Advancement {
         true
     }
     pub fn selected_spell(&self, id: SpellId) -> bool {
-        self.spells.contains(&id)
-            || (matches!(
-                id,
-                crate::content::spells::SpellId::RETURN_TO_PORTAL
-                    | crate::content::spells::SpellId::SET_PORTAL
-            ) && self.spells.iter().any(|s| {
-                matches!(
-                    *s,
-                    crate::content::spells::SpellId::RETURN_TO_PORTAL
-                        | crate::content::spells::SpellId::SET_PORTAL
-                )
-            }))
-    }
-    pub fn can_learn(&self, id: SpellId, catalog: &SpellCatalog) -> bool {
-        self.learnable(&self.evaluate(), id, catalog)
+        self.spells.contains(&selection_key(id))
     }
     pub fn learnable(&self, draft: &Evaluation, id: SpellId, catalog: &SpellCatalog) -> bool {
         // Retail excludes this draft's magic-skill allocations from spell eligibility.
         !self.known.0.contains(&id)
             && catalog.get(id).is_some_and(|s| magic::can_learn(&draft.baseline, s))
     }
-    fn remaining_picks(&self, catalog: &SpellCatalog) -> Option<SpellPicks> {
-        let c = self.baseline();
+    fn remaining_picks(&self, draft: &Evaluation, catalog: &SpellCatalog) -> Option<SpellPicks> {
+        let c = &draft.baseline;
         let mut picks = c.spell_picks.clone();
         for &id in &self.spells {
-            if !self.can_learn(id, catalog) || !picks.spend(&c, catalog.get(id)?.books) {
+            if !self.learnable(draft, id, catalog) || !picks.spend(c, catalog.get(id)?.books) {
                 return None;
             }
         }
         Some(picks)
     }
-    pub fn spell_remaining(&self, catalog: &SpellCatalog) -> u32 {
-        self.remaining_picks(catalog).map_or(0, |p| p.available(&self.baseline()))
+    pub fn spell_remaining(&self, catalog: &SpellCatalog) -> usize {
+        let draft = self.evaluate();
+        self.remaining_picks(&draft, catalog).map_or(0, |p| p.available(&draft.baseline))
     }
     pub fn toggle_spell(&mut self, id: SpellId, catalog: &SpellCatalog) -> bool {
-        // Retail charges the linked portal pair at Set Portal (75) in spell order.
-        let id = if id == SpellId::RETURN_TO_PORTAL { SpellId::SET_PORTAL } else { id };
-        if self.selected_spell(id) {
-            self.spells.remove(&id);
-            if matches!(
-                id,
-                crate::content::spells::SpellId::RETURN_TO_PORTAL
-                    | crate::content::spells::SpellId::SET_PORTAL
-            ) {
-                self.spells.remove(&SpellId::RETURN_TO_PORTAL);
-                self.spells.remove(&SpellId::SET_PORTAL);
-            }
-        } else {
-            if !self.can_learn(id, catalog) {
+        let id = selection_key(id);
+        // The spell selection does not enter the baseline or the preview.
+        let draft = self.evaluate();
+        if !self.spells.remove(&id) {
+            if !self.learnable(&draft, id, catalog) {
                 return false;
             }
             self.spells.insert(id);
-            if self.remaining_picks(catalog).is_none() {
+            if self.remaining_picks(&draft, catalog).is_none() {
                 self.spells.remove(&id);
                 return false;
             }
         }
-        let c = self.preview();
         let learned = self.learned();
         for s in EnumSet::<Skill>::all() {
-            if !magic::skill_available(&c, &learned, catalog, s) {
+            if !magic::skill_available(&draft.preview, &learned, catalog, s) {
                 self.skills[s] = 0;
             }
         }
@@ -339,25 +314,31 @@ impl Advancement {
         if !self.eligible_profession(self.profession) {
             return Err("This profession is unavailable.");
         }
-        if EnumSet::<Attribute>::all().iter().any(|a| self.can_adjust_attribute(a, true)) {
+        let draft = self.evaluate();
+        if EnumSet::<Attribute>::all().iter().any(|a| self.attribute_adjustable(&draft, a, true)) {
             return Err("Allocate the remaining attribute points.");
         }
-        if EnumSet::<Skill>::all().iter().any(|s| self.can_adjust_skill(s, true, catalog)) {
+        if EnumSet::<Skill>::all().iter().any(|s| self.skill_adjustable(&draft, s, true, catalog)) {
             return Err("Allocate the remaining skill points.");
         }
-        let mut c = self.preview();
-        let learned = self.learned();
-        if self
-            .skills
-            .iter()
-            .any(|(s, &n)| n > 0 && !magic::skill_available(&c, &learned, catalog, s))
-        {
+        if self.skills.iter().any(|(s, &n)| {
+            n > 0 && !magic::skill_available(&draft.preview, &draft.learned, catalog, s)
+        }) {
             return Err("Refund training in unavailable skills.");
         }
-        c.spell_picks =
-            self.remaining_picks(catalog).ok_or("The spell selection is no longer valid.")?;
-        Ok((c, self.learned()))
+        let picks = self
+            .remaining_picks(&draft, catalog)
+            .ok_or("The spell selection is no longer valid.")?;
+        let Evaluation { mut preview, learned, .. } = draft;
+        preview.spell_picks = picks;
+        Ok((preview, learned))
     }
+}
+
+/// The spell a selection holds it under: retail charges the linked portal pair
+/// at Set Portal (75) in spell order.
+fn selection_key(id: SpellId) -> SpellId {
+    if id == SpellId::RETURN_TO_PORTAL { SpellId::SET_PORTAL } else { id }
 }
 
 #[derive(bevy::ecs::system::SystemParam)]

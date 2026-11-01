@@ -405,7 +405,7 @@ impl Field<'_, '_> {
 /// dice count times power, then raised by the boost percent.
 pub(crate) fn magnitude(rng: &mut GameRng, dice: Option<Dice>, strength: Strength) -> u32 {
     let Some(dice) = dice else { return 0 };
-    let count = (u32::from(dice.count) * u32::from(strength.power)).min(255) as u8;
+    let count = dice.count * strength.power as i32;
     let rolled = rng.roll(Dice { count, ..dice });
     rolled + rolled * strength.boost / 100
 }
@@ -432,7 +432,7 @@ pub(super) fn resist(
 
 /// Rounds a condition spell inflicts (retail `RollEffectDuration`).
 pub(super) fn duration(rng: &mut GameRng, spell: &SpellDefinition, strength: Strength) -> u32 {
-    let base = spell.duration_per_power * i32::from(strength.power) + spell.duration_base;
+    let base = spell.duration_per_power * strength.power as i32 + spell.duration_base;
     if base == 9999 {
         return 9999;
     }
@@ -500,7 +500,7 @@ pub fn resolve(
         Kind::DestroyConsumables => effects = destroy_consumables(strength, victims, rng, world),
         Kind::DrainMagic => {
             if victims.iter().any(|v| matches!(v, Victim::Member(_))) {
-                let base = u32::from(strength.power) * 50;
+                let base = strength.power * 50;
                 let amount = base + base * strength.boost / 100;
                 // Anti-Magic drains the whole living party, not only captured victims.
                 for member in world.party.iter() {
@@ -537,7 +537,7 @@ pub fn resolve(
                 let amount = restore(rng, world, v, Pool::Health, spell.dice, strength)?;
                 Some(Effect::Healed { victim: v, amount })
             });
-            let dice = spell.dice.map(|dice| Dice { count: dice.count.saturating_mul(2), ..dice });
+            let dice = spell.dice.map(|dice| Dice { count: dice.count * 2, ..dice });
             each(&mut |v, rng, world| {
                 let amount = restore(rng, world, v, Pool::Stamina, dice, strength)?;
                 Some(Effect::Refreshed { victim: v, amount })
@@ -608,7 +608,7 @@ pub fn resolve(
                 if rounds == 0 || target.immune {
                     return Some(Effect::Resisted { victim: v });
                 }
-                let lasting = Lasting::Rounds(rounds.max(2).min(u32::from(u16::MAX)) as u16);
+                let lasting = Lasting::Rounds(rounds.max(2));
                 inflict_on(world, v, (Condition::Afraid, 0), lasting)?;
                 Some(Effect::Inflicted { victim: v, condition: Condition::Afraid })
             }

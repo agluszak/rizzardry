@@ -105,9 +105,9 @@ pub fn armour(
         EquipSlot::Secondary,
     ] {
         if let Some(d) = definition(slot) {
-            total += i32::from(d.armor_class_bonus);
+            total += d.armor_class_bonus;
             if d.class == EquipClass::Shield {
-                let bonus = i32::from(d.armor_class_bonus);
+                let bonus = d.armor_class_bonus;
                 let skill = c.skill(Skill::Shield) as i32;
                 let skill = if defending {
                     (skill / 15).min(bonus * 3 / 2)
@@ -121,7 +121,7 @@ pub fn armour(
     }
     let by_location = EnumMap::from_fn(|part| {
         let worn = definition(armour_slot(part));
-        total + worn.map_or(0, |d: &ItemDefinition| i32::from(d.armor_class_bonus))
+        total + worn.map_or(0, |d: &ItemDefinition| d.armor_class_bonus)
     });
     Armour { total, by_location, speed, shield }
 }

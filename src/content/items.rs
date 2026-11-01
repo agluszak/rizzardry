@@ -24,9 +24,9 @@ impl ItemId {
 /// `count` d `sides` + `base`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Dice {
-    pub count: u8,
-    pub sides: u8,
-    pub base: i16,
+    pub count: i32,
+    pub sides: i32,
+    pub base: i32,
 }
 
 /// Ammunition is valued by the bundle of this many (retail
@@ -146,18 +146,17 @@ pub enum AttackEffect {
 /// ammunition and a monster's attack all carry).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AttackEffects {
-    pub chances: EnumMap<AttackEffect, u8>,
-    pub strength: u8,
+    pub chances: EnumMap<AttackEffect, u32>,
+    pub strength: u32,
 }
 
 impl AttackEffects {
-    /// A weapon's effects with its ammunition's, byte by byte as retail
-    /// sums them.
+    /// Combine weapon and ammunition effects; chances stop at certainty.
     pub fn with(mut self, other: &AttackEffects) -> Self {
         for (effect, chance) in &mut self.chances {
-            *chance = chance.wrapping_add(other.chances[effect]);
+            *chance = (*chance + other.chances[effect]).min(100);
         }
-        self.strength = self.strength.wrapping_add(other.strength);
+        self.strength += other.strength;
         self
     }
 }
@@ -247,9 +246,9 @@ pub struct ItemDefinition {
     pub extra_swings: i32,
     /// Thrown, it is not used up.
     pub never_depletes: bool,
-    pub damage_bonus: i8,
-    pub hit_bonus: i8,
-    pub armor_class_bonus: i8,
+    pub damage_bonus: i32,
+    pub hit_bonus: i32,
+    pub armor_class_bonus: i32,
     /// The spell it casts when used, at its own power.
     pub spell: Option<super::spells::ItemSpell>,
     /// How it is used, which decides the skill its spell is cast with.

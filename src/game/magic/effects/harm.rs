@@ -351,7 +351,7 @@ pub(super) fn afflict(
         0 => return Some(Effect::Resisted { victim }),
         _ if rounds.is_none() => Lasting::Indefinite,
         1 => Lasting::Rounds(2),
-        rounds => Lasting::Rounds(rounds.min(u32::from(u16::MAX)) as u16),
+        rounds => Lasting::Rounds(rounds),
     };
     let Some(condition) = condition else { return kill(rng, world, victim) };
     inflict_on(world, victim, (condition, argument), lasting)?;
@@ -391,11 +391,11 @@ pub(super) const INDEFINITE: u32 = 9999;
 /// Rounds, or an amount, a blow's effect rolls (retail `RollEffectDuration`
 /// on an empty definition, then `count`d2 + `base` and one more when that
 /// came to under two).
-pub(super) fn blow_roll(rng: &mut GameRng, count: u32, sides: u8, base: u32) -> u32 {
+pub(super) fn blow_roll(rng: &mut GameRng, count: u32, sides: i32, base: u32) -> u32 {
     if rng.below(4) == 1 {
         return 2;
     }
-    let dice = Dice { count: count.min(255) as u8, sides, base: base.min(i16::MAX as u32) as i16 };
+    let dice = Dice { count: count as i32, sides, base: base as i32 };
     rng.roll(dice) + 1
 }
 
@@ -417,7 +417,7 @@ pub fn blow(
         if target(world, victim, Realm::Fire, None).dead {
             break;
         }
-        if chance == 0 || rng.below(100) >= u32::from(chance) {
+        if chance == 0 || rng.below(100) >= chance {
             continue;
         }
         let count = power / 3 + 1;
@@ -432,12 +432,12 @@ pub fn blow(
             // A poison bites at the weapon's strength (retail
             // `ApplyEffectConditions` passes its magnitude base).
             E::Poison => {
-                let rounds = blow_roll(rng, count * 3, 2, u32::from(effects.strength));
+                let rounds = blow_roll(rng, count * 3, 2, effects.strength);
                 afflict(
                     rng,
                     world,
                     victim,
-                    (Some(Condition::Poisoned), u32::from(effects.strength)),
+                    (Some(Condition::Poisoned), effects.strength),
                     Realm::Water,
                     power,
                     Some(rounds),
@@ -493,7 +493,7 @@ pub(super) fn drain(
     victim: Victim,
     realm: Realm,
     power: u32,
-    (count, sides, base): (u32, u8, u32),
+    (count, sides, base): (u32, i32, u32),
 ) -> Option<u32> {
     let target = target(world, victim, realm, None);
     if target.dead {
@@ -582,7 +582,7 @@ pub(super) fn destroy_consumables(
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
     let mut totals = [0; 3];
-    let chance = u32::from(strength.power) * 10;
+    let chance = strength.power * 10;
     let items = world.items();
     for &victim in victims {
         let Victim::Member(member) = victim else { continue };

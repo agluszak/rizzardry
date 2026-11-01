@@ -216,7 +216,7 @@ pub struct Conversation {
     pub actor: Entity,
     /// Temporary effects belong to the affected speakers. Closing the
     /// conversation clears all of them; handing it over transfers none.
-    charms: BTreeMap<Entity, i8>,
+    charms: BTreeMap<Entity, u32>,
     pub current: Option<(u16, usize)>,
     pub wait: ConversationWait,
     pub transcript: Vec<TranscriptLine>,
@@ -241,7 +241,7 @@ pub enum Outcome {
 }
 pub(crate) enum MagicalReply {
     Unnoticed,
-    Charmed(i8),
+    Charmed(u32),
     Quote(u16),
 }
 impl Conversation {
@@ -249,7 +249,7 @@ impl Conversation {
         self.wait == ConversationWait::Ready && self.queue.is_empty()
     }
 
-    pub(crate) fn charm(&self) -> i8 {
+    pub(crate) fn charm(&self) -> u32 {
         self.charms.get(&self.actor).copied().unwrap_or(0)
     }
 
@@ -316,10 +316,16 @@ impl ConversationRequest {
     pub fn new(conversation: Entity, talk: Talk) -> Self {
         Self { conversation, talk }
     }
+
+    /// Settle a quoted trade in the conversation it was quoted in.
+    pub fn trade(quote: TradeQuote) -> Self {
+        Self::new(quote.conversation, Talk::Trade(quote))
+    }
 }
 
 #[derive(Clone, Debug)]
 pub enum Talk {
+    Trade(TradeQuote),
     Topic {
         text: String,
     },

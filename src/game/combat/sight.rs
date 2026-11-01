@@ -191,7 +191,10 @@ impl PartyView {
             eye: self.eye,
             concealment,
             far: self.far,
-            lowest_level: lineup(roster, members).lowest_level(),
+            lowest_level: crate::game::party::lowest_level(roster.iter().map(|m| {
+                let (character, vitals, ..) = members.get(m).unwrap();
+                (character, vitals)
+            })),
             obstacles,
         }
     }

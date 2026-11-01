@@ -80,7 +80,7 @@ pub(crate) fn cast_at_speakers(
                             .effects
                             .push(super::Effect::Resisted { victim: super::Victim::Monster(body) });
                     } else {
-                        let amount = u32::from(strength.power) * 7;
+                        let amount = strength.power * 7;
                         let amount = amount + amount * strength.boost / 100;
                         let amount = super::effects::resist(
                             rng,
@@ -88,7 +88,7 @@ pub(crate) fn cast_at_speakers(
                             resistance.min(100),
                             level,
                             strength.against,
-                        ) as u8 as i8;
+                        );
                         if amount > conversation.charm() {
                             reply = MagicalReply::Charmed(amount);
                         }

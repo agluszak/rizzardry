@@ -32,7 +32,6 @@ pub(super) fn is_launcher(kind: ItemKind) -> bool {
 /// `W8HandAttack`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hand {
-    pub holds: Holds,
     /// The hand can attack.
     pub in_play: bool,
     pub weapon_skill: Skill,
@@ -49,7 +48,7 @@ pub struct Hand {
     pub to_hit: i32,
     /// The sheet's "To Damage (%)": strength.
     pub damage_percent: i32,
-    /// The weapon's initiative byte (retail `damage_bonus`).
+    /// The weapon's initiative bonus (retail `damage_bonus`).
     pub initiative: i32,
     /// What its blows may do besides damage: a fist's knockout chance, or
     /// the weapon's effects with its ammunition's.
@@ -70,7 +69,6 @@ pub struct Hand {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hands {
     pub hands: [Hand; 2],
-    pub dual_wielding: bool,
 }
 
 impl Hands {
@@ -98,7 +96,7 @@ impl Hands {
 /// Unarmed damage by Martial Arts level / 11 (retail
 /// `g_unarmed_damage_dice`), with 2 more in the main hand.
 pub(super) fn unarmed_dice(martial_arts: u32) -> Dice {
-    const DICE: [(i16, u8, u8); 12] = [
+    const DICE: [(i32, i32, i32); 12] = [
         (0, 1, 2),
         (0, 1, 3),
         (0, 2, 2),
@@ -194,7 +192,6 @@ pub fn hands(
         let paired = d.is_some_and(|d| is_launcher(d.kind)) && in_play[index];
         let ammunition = if paired { definition(1 - index) } else { None };
         let mut hand = Hand {
-            holds: holds[index],
             in_play: in_play[index],
             weapon_skill: skill,
             ranged,
@@ -239,7 +236,7 @@ pub fn hands(
                     hand.dice.base += 2;
                 }
                 if strength > 49 {
-                    hand.effects.chances[AttackEffect::KnockOut] = ((strength - 50) / 5) as u8;
+                    hand.effects.chances[AttackEffect::KnockOut] = ((strength - 50) / 5) as u32;
                 }
             }
         }
@@ -248,7 +245,7 @@ pub fn hands(
         }
         let other = 1 - index;
         let combat_skill = if ranged { Skill::RangedCombat } else { Skill::CloseCombat };
-        let mut score = (c.skill(combat_skill) as i32 + c.skill(skill) as i32 * 2) * 2 / 3;
+        let mut score = ((c.skill(combat_skill) + c.skill(skill) * 2) * 2 / 3) as i32;
         let mut divisor = 20;
         if holds[other] == Holds::Weapon && in_play[other] {
             score += c.skill(weapon_skill(other).unwrap_or(Skill::MartialArts)) as i32 >> 1;
@@ -272,7 +269,7 @@ pub fn hands(
             0 => 1 + u32::from(score > 49) + u32::from(score > 99),
             _ => 1 + u32::from(score > 74),
         };
-        hand.initiative = d.map_or(combined / 10, |d| i32::from(d.damage_bonus));
+        hand.initiative = d.map_or(combined / 10, |d| d.damage_bonus);
         // Retail reads the initiative its previous pass left, which is this.
         let score =
             (speed + hand.initiative * 10 + dual_penalty + physical + load_penalty + combined) / 3;
@@ -283,14 +280,14 @@ pub fn hands(
         let mut strength_divisor = 1;
         let mut strength_helps = true;
         if let Some(d) = d {
-            hand.to_hit = i32::from(d.hit_bonus);
+            hand.to_hit = d.hit_bonus;
             if holds[other] == Holds::Ammunition
                 && let Some(o) = definition(other)
             {
-                hand.to_hit += i32::from(o.hit_bonus);
+                hand.to_hit += o.hit_bonus;
             }
             if is_launcher(d.kind) {
-                hand.damage_percent += i32::from(d.damage.base) * 10;
+                hand.damage_percent += d.damage.base * 10;
             }
             // Weapons only thrown, lashed or shot.
             if d.attack_modes.is_subset(AttackMode::Throw | AttackMode::Lash | AttackMode::Shoot) {
@@ -330,7 +327,7 @@ pub fn hands(
         }
         hand
     };
-    Hands { hands: [hand(0), hand(1)], dual_wielding }
+    Hands { hands: [hand(0), hand(1)] }
 }
 
 /// The main hand's numbers, as the character sheet shows them.

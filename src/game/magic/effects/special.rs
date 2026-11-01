@@ -329,7 +329,7 @@ pub(crate) fn pulse_clouds(
                         if turns == 0 {
                             continue;
                         }
-                        let lasting = Lasting::Rounds(turns.max(2).min(u32::from(u16::MAX)) as u16);
+                        let lasting = Lasting::Rounds(turns.max(2));
                         // One duration reduction, followed by three separate saves.
                         for condition in
                             [Condition::Nauseated, Condition::Poisoned, Condition::Unconscious]
@@ -379,20 +379,9 @@ pub(crate) fn pulse_clouds(
                 let amount = magnitude(
                     rng,
                     spell.dice,
-                    Strength {
-                        power: effect.power,
-                        boost: 0,
-                        against: u32::from(effect.power) * 3,
-                    },
+                    Strength { power: effect.power, boost: 0, against: effect.power * 3 },
                 );
-                landed.extend(damage(
-                    rng,
-                    world,
-                    victim,
-                    realm,
-                    amount,
-                    u32::from(effect.power) * 3,
-                ));
+                landed.extend(damage(rng, world, victim, realm, amount, effect.power * 3));
             }
             reports.push((spell.id, landed));
         }

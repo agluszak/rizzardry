@@ -19,7 +19,7 @@ use crate::game::magic::effects::{self, Effect, Field, Victim};
 use crate::game::party::body;
 use crate::game::party::formation::{self, Row};
 use crate::game::rng::GameRng;
-use crate::game::world::hostility::Stance;
+use crate::game::world::hostility::{self, Stance};
 use crate::game::world::navigation::feet;
 use crate::game::world::perception::party_distance;
 use bevy::prelude::*;
@@ -37,10 +37,6 @@ pub(super) struct Fight<'a, 'w, 's> {
     pub armours: Vec<(Entity, Armour)>,
     /// Monsters advancing this round, which drop their guard.
     pub moving: &'a Query<'w, 's, (), With<super::approach::CombatMove>>,
-    /// Whom the acting monster may attack (retail `BuildMonsterActionQueue`'s
-    /// `MonsterVsCharDisposition` and `MonsterHostility` tests); members
-    /// act on their own orders.
-    pub attacks: &'a dyn Fn(Victim) -> bool,
     /// The acting monster may hold back instead, as one more choice beside
     /// its attacks (a wary monster's wait).
     pub waits: bool,
@@ -202,7 +198,7 @@ fn razor_backlash(
     );
     let amount = match attacker {
         Victim::Member(member) => {
-            Some(member_defence(battle, field, fight, member).1.reduce(rolled as i32))
+            Some(member_defence(battle, field, fight, member).reduce(rolled as i32))
         }
         Victim::Monster(monster) => {
             monster_defence(field, fight, monster).map(|defence| defence.reduce(rolled as i32))
@@ -240,7 +236,7 @@ fn member_defence(
     field: &Field,
     fight: &Fight,
     member: Entity,
-) -> (Character, Defence<'static>) {
+) -> Defence<'static> {
     let (character, vitals, ..) = field.members.get(member).unwrap();
     let armour = fight.armour(member);
     let running = battle.this_round.pace == Some(PartyPace::Run);
@@ -250,7 +246,7 @@ fn member_defence(
         .iter()
         .any(|p| p.actor == member && matches!(p.action, RoundAction::Defend));
     let stats = character.stats(&vitals.enchantments);
-    (character.clone(), Defence::member(&stats, armour, running, defending))
+    Defence::member(&stats, armour, running, defending)
 }
 
 fn monster_defence<'a>(
@@ -278,8 +274,9 @@ fn victim_defence<'a>(
     match victim {
         Victim::Monster(entity) => Some((monster_defence(field, fight, entity)?, None)),
         Victim::Member(entity) => {
-            let (profile, defence) = member_defence(battle, field, fight, entity);
-            Some((defence, Some((entity, profile))))
+            let defence = member_defence(battle, field, fight, entity);
+            let (profile, ..) = field.members.get(entity).unwrap();
+            Some((defence, Some((entity, profile.clone()))))
         }
     }
 }

@@ -341,7 +341,7 @@ fn build_actions(ui: &mut Ui, group: Entity, root: Entity, trade: bool) {
                 edit_state(ui, e, root, move |state| {
                     if state.pool != pool {
                         state.pool = pool;
-                        state.offer = None;
+                        state.selection = None;
                     }
                 });
             }
@@ -379,7 +379,7 @@ fn build_actions(ui: &mut Ui, group: Entity, root: Entity, trade: bool) {
                         if state.usability == Some(party) { None } else { Some(party) }
                 }
             }
-            state.offer = None;
+            state.selection = None;
         });
     }
     let back = ui.sprite_button(left, "npc_buttons", 0, Vec2::new(114., 71.));
@@ -425,29 +425,27 @@ fn build_offer(ui: &mut Ui, group: Entity, root: Entity, canvas: Entity) {
               mut states: Query<&mut DialogueState>,
               roots: Query<&ConversationView>,
               gold: Query<&EditableText, With<GiftGold>>,
-              mut requests: MessageWriter<ConversationRequest>,
-              mut trades: MessageWriter<crate::game::npcs::conversation::TradeRequest>| {
-            let Ok(mut state) = states.get_mut(root) else { return };
+              mut requests: MessageWriter<ConversationRequest>| {
+            let (Ok(mut state), Ok(view)) = (states.get_mut(root), roots.get(root)) else {
+                return;
+            };
             let amount = gold.get(gift_gold).map_or(0, gift_amount);
-            if state.mode == Mode::Give
-                && state.quote().is_none()
-                && amount > 0
-                && let Ok(view) = roots.get(root)
-            {
-                requests.write(ConversationRequest::new(view.0, Talk::GiveGold { amount }));
-                state.set_mode(Mode::Talk);
-            } else if let Some(q) = state.quote()
-                && roots.get(root).is_ok_and(|v| v.0 == q.conversation)
-            {
-                if state.mode != Mode::Give {
-                    trades.write(crate::game::npcs::conversation::TradeRequest(q));
+            match state.selection {
+                Some(Selection::Priced(quote)) => {
+                    requests.write(ConversationRequest::trade(quote));
                     // The trade settles the selection.
-                    state.offer = None;
-                } else if let TradeSource::Party(item) = q.source {
-                    requests.write(ConversationRequest::new(q.conversation, Talk::Give { item }));
+                    state.selection = None;
+                }
+                Some(Selection::Gift(item)) => {
+                    requests.write(ConversationRequest::new(view.0, Talk::Give { item }));
                     // Retail returns to the transcript for the answer.
                     state.set_mode(Mode::Talk);
                 }
+                _ if state.mode == Mode::Give && amount > 0 => {
+                    requests.write(ConversationRequest::new(view.0, Talk::GiveGold { amount }));
+                    state.set_mode(Mode::Talk);
+                }
+                _ => {}
             }
         },
     );
@@ -544,7 +542,7 @@ pub(super) fn build(ui: &mut Ui, strings: Option<&TextTable>, session: Entity) -
         .spawn((
             ConversationView(session),
             DialogueState {
-                offer: None,
+                selection: None,
                 mode: Mode::Talk,
                 pool: true,
                 category: None,

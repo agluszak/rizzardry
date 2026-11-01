@@ -368,19 +368,16 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
             .into_iter()
             .enumerate()
     {
-        let entity = commands
-            .spawn((
-                Picture {
-                    sheet: art.skills_icons.clone(),
-                    frame,
-                    at: Vec2::new(x - 22.0, y - 3.0),
-                    bounds: None,
-                },
-                CategoryIcon(i),
-                ChildOf(skills),
-            ))
-            .id();
-        let _ = entity;
+        commands.spawn((
+            Picture {
+                sheet: art.skills_icons.clone(),
+                frame,
+                at: Vec2::new(x - 22.0, y - 3.0),
+                bounds: None,
+            },
+            CategoryIcon(i),
+            ChildOf(skills),
+        ));
     }
     for skill in EnumSet::<Skill>::all() {
         let row = commands
@@ -601,7 +598,7 @@ pub(super) fn refresh(
             effects.push((String::new(), false));
         }
     }
-    let maximum = effects.len().saturating_sub(17);
+    let maximum = effects.len().max(17) - 17;
     let offset = slider.as_deref().map_or(0, |(_, value, _)| (value.0 as usize).min(maximum));
     if let Some((entity, value, range)) = slider.as_deref() {
         crate::presentation::retail_controls::set_scroll_maximum(
@@ -683,9 +680,8 @@ pub(super) fn refresh(
                 } else {
                     match index {
                         1 => {
-                            let min = i32::from(hand.dice.base) + i32::from(hand.dice.count);
-                            let max = i32::from(hand.dice.base)
-                                + i32::from(hand.dice.count) * i32::from(hand.dice.sides);
+                            let min = hand.dice.base + hand.dice.count;
+                            let max = hand.dice.base + hand.dice.count * hand.dice.sides;
                             let scale = 100 + hand.damage_percent;
                             format!(
                                 "{}-{}",
@@ -774,12 +770,11 @@ pub(super) fn layout_skills(
             Bar::Attribute(attribute) => {
                 (0.0, profile.base_stats().attribute(attribute).min(125) as f32)
             }
-            Bar::SkillBase(skill) => (
-                0.0,
-                u32::from(profile.skill_points[skill]).min(profile.skill(skill)).min(125) as f32,
-            ),
+            Bar::SkillBase(skill) => {
+                (0.0, profile.skill_points[skill].min(profile.skill(skill)).min(125) as f32)
+            }
             Bar::SkillBonus(skill) => (
-                u32::from(profile.skill_points[skill]).min(profile.skill(skill)).min(125) as f32,
+                profile.skill_points[skill].min(profile.skill(skill)).min(125) as f32,
                 profile.skill(skill).min(125) as f32,
             ),
         };

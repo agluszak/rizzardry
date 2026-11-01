@@ -1,9 +1,11 @@
 //! Retail party assembly: the candidate list and the ordered party are separate.
 use super::{Action, CharacterDraft, Creation, Page, absolute};
-use crate::content::ui::SpriteSheet;
+use crate::content::paths::{PortraitSize, portrait as path};
+use crate::content::ui::{GENDER_NAMES, PROFESSION_NAMES, RACE_NAMES, SpriteSheet};
+use crate::game::characters::{Character, Gender, Profession, Race};
 use crate::presentation::retail_controls::{ControlSkin, FocusHighlight, FocusRing, set_enabled};
 use crate::presentation::screen_art::visible_if;
-use crate::presentation::screen_art::{BitmapText, Picture, spawn_picture as picture};
+use crate::presentation::screen_art::{BitmapText, GameStrings, Picture, spawn_picture as picture};
 use bevy::input_focus::tab_navigation::TabIndex;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
@@ -19,33 +21,24 @@ pub(super) struct CandidateView {
 }
 #[derive(Component)]
 pub(super) struct AssemblyPage;
+/// The selected candidate's portrait, details and summary, shown together.
 #[derive(Component)]
-pub(super) struct ToggleLabel;
+pub(super) struct SelectedPanel;
 #[derive(Component)]
-pub(super) struct PartyMessage;
+pub(super) struct SelectedPortrait;
+/// A row's background, lit while its candidate is selected.
 #[derive(Component)]
-pub(super) struct RowBackground(u32);
+pub(super) struct RowBackground;
+/// A party slot's highlight, shown while its member is selected.
 #[derive(Component)]
-pub(super) struct SelectedDetail;
+pub(super) struct Highlight;
+/// The page's text that follows the session.
 #[derive(Component)]
-pub(super) struct SlotFrame {
-    candidate: u32,
-    highlight: bool,
-}
-#[derive(Component)]
-pub(super) enum Portrait {
-    Candidate(u32),
-    Member(u32),
-    Selected,
-}
-#[derive(Component)]
-pub(super) enum Label {
-    CandidateName(u32),
-    CandidateClass(u32),
-    CandidateRace(u32),
-    Member(u32),
+pub(super) enum SessionText {
+    Message,
+    Toggle,
     Joined,
-    Summary(u8),
+    Summary(usize),
 }
 
 fn label(
@@ -125,40 +118,52 @@ pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer)
     ));
     picture(commands, page, scroll.clone(), 3, Vec2::new(489., 49.));
     picture(commands, page, scroll, 11, Vec2::new(489., 283.));
-    let portrait = picture(commands, page, Handle::default(), 0, Vec2::new(133., 48.));
-    commands.entity(portrait).insert((Portrait::Selected, Visibility::Hidden));
+    let panel = commands
+        .spawn((
+            SelectedPanel,
+            absolute(Vec2::ZERO, Vec2::new(640., 480.)),
+            Pickable::IGNORE,
+            Visibility::Hidden,
+            ChildOf(page),
+        ))
+        .id();
+    let portrait = picture(commands, panel, Handle::default(), 0, Vec2::new(133., 48.));
+    commands.entity(portrait).insert(SelectedPortrait);
     let joined =
-        label(commands, page, load("fonts/opt_title_font"), "", Vec2::new(133., 166.), 180.);
-    commands.entity(joined).insert(Label::Joined);
-    let detail = picture(commands, page, detail, 0, Vec2::new(127., 197.));
-    commands.entity(detail).insert((SelectedDetail, Visibility::Hidden));
-    for (index, at, width) in [
-        (0, Vec2::new(132., 214.), 190.),
-        (1, Vec2::new(132., 240.), 190.),
-        (2, Vec2::new(132., 254.), 190.),
-        (3, Vec2::new(150., 295.), 0.),
-        (4, Vec2::new(150., 309.), 0.),
-        (5, Vec2::new(150., 323.), 0.),
-        (6, Vec2::new(150., 337.), 0.),
-        (7, Vec2::new(150., 351.), 0.),
-        (8, Vec2::new(150., 365.), 0.),
-        (9, Vec2::new(150., 379.), 0.),
-        (10, Vec2::new(227., 295.), 0.),
-        (11, Vec2::new(227., 309.), 0.),
-        (12, Vec2::new(227., 323.), 0.),
-        (13, Vec2::new(227., 337.), 0.),
-    ] {
-        let summary = label(commands, page, small.clone(), "", at, width);
-        commands.entity(summary).insert(Label::Summary(index));
+        label(commands, panel, load("fonts/opt_title_font"), "", Vec2::new(133., 166.), 180.);
+    commands.entity(joined).insert(SessionText::Joined);
+    picture(commands, panel, detail, 0, Vec2::new(127., 197.));
+    for (index, (at, width)) in [
+        (Vec2::new(132., 214.), 190.),
+        (Vec2::new(132., 240.), 190.),
+        (Vec2::new(132., 254.), 190.),
+        (Vec2::new(150., 295.), 0.),
+        (Vec2::new(150., 309.), 0.),
+        (Vec2::new(150., 323.), 0.),
+        (Vec2::new(150., 337.), 0.),
+        (Vec2::new(150., 351.), 0.),
+        (Vec2::new(150., 365.), 0.),
+        (Vec2::new(150., 379.), 0.),
+        (Vec2::new(227., 295.), 0.),
+        (Vec2::new(227., 323.), 0.),
+        (Vec2::new(227., 337.), 0.),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let summary = label(commands, panel, small.clone(), "", at, width);
+        commands.entity(summary).insert(SessionText::Summary(index));
     }
     let message = label(commands, page, small, "", Vec2::new(132., 421.), 230.);
-    commands.entity(message).insert(PartyMessage);
+    commands.entity(message).insert(SessionText::Message);
     for (y, text, action) in [
         (311., "Create Character", Some(Action::Add)),
-        (337., "Add to Party", Some(Action::ToggleCandidate)),
+        (337., "", Some(Action::ToggleCandidate)),
         (363., "Delete Character", Some(Action::DeleteCandidate)),
         (389., "Review Character", None),
     ] {
+        let size = Vec2::new(186., 24.);
+        let toggles = matches!(action, Some(Action::ToggleCandidate));
         let button = action_button(
             commands,
             page,
@@ -166,12 +171,13 @@ pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer)
             font.clone(),
             Vec2::new(325., y),
             0,
-            Vec2::new(186., 24.),
+            size,
             text,
             action,
         );
-        if y == 337. {
-            commands.entity(button).insert(ToggleLabel);
+        if toggles {
+            let label = label(commands, button, font.clone(), "", Vec2::new(0., 7.), size.x);
+            commands.entity(label).insert(SessionText::Toggle);
         }
     }
     action_button(
@@ -202,16 +208,72 @@ fn candidate(session: &Creation, id: u32) -> Option<&CharacterDraft> {
     session.candidates.iter().find_map(|(candidate, draft)| (*candidate == id).then_some(draft))
 }
 
-/// Candidate IDs are stable across deletion and party reordering. Controls keep
-/// those IDs for their entire lifetime; only their positions change.
+/// "Level 1 Fighter", as a candidate's description reads.
+fn profession_line(strings: &GameStrings, profession: Profession) -> String {
+    format!("Level 1 {}", strings.get(PROFESSION_NAMES + profession as usize))
+}
+
+/// "Male Human", as a candidate's description reads.
+fn kind_line(strings: &GameStrings, gender: Gender, race: Race) -> String {
+    let gender = strings.get(GENDER_NAMES + gender as usize);
+    format!("{gender} {}", strings.get(RACE_NAMES + race as usize))
+}
+
+/// A joined member's portrait, frames and name.
+fn spawn_member_parts(
+    commands: &mut Commands,
+    root: Entity,
+    draft: &CharacterDraft,
+    assets: &AssetServer,
+) {
+    let load = |path: &str| assets.load(crate::content::paths::sheet(path));
+    let portrait = assets.load(path(PortraitSize::Medium, &draft.portrait));
+    picture(commands, root, portrait, 0, Vec2::ZERO);
+    let border = load("party generation/portraitborder");
+    picture(commands, root, border, 0, Vec2::new(-13., -11.));
+    let highlight = load("party generation/portraithighlight");
+    let highlight = picture(commands, root, highlight, 1, Vec2::ZERO);
+    commands.entity(highlight).insert((Highlight, Visibility::Hidden));
+    let font = load("fonts/wiz_text_font");
+    label(commands, root, font, draft.display_name(), Vec2::new(-10., 79.), 110.);
+}
+
+/// A candidate's list row: its portrait and description.
+fn spawn_row_parts(
+    commands: &mut Commands,
+    root: Entity,
+    draft: &CharacterDraft,
+    assets: &AssetServer,
+    strings: &GameStrings,
+) {
+    let load = |path: &str| assets.load(crate::content::paths::sheet(path));
+    let background = picture(commands, root, load("party generation/listboxes"), 0, Vec2::ZERO);
+    commands.entity(background).insert(RowBackground);
+    let portrait = assets.load(path(PortraitSize::Small, &draft.portrait));
+    picture(commands, root, portrait, 0, Vec2::new(2., 2.));
+    for (text, y) in [
+        (draft.display_name().to_owned(), 3.),
+        (profession_line(strings, draft.profession()), 14.),
+        (kind_line(strings, draft.gender(), draft.race()), 25.),
+    ] {
+        label(commands, root, load("fonts/wiz_text_font"), &text, Vec2::new(53., y), 0.);
+    }
+}
+
+/// Candidate IDs are stable across deletion and party reordering, and a
+/// candidate does not change once admitted: a view is made for one candidate
+/// and written once. Only its position changes.
 pub(super) fn sync_views(
     mut commands: Commands,
     session: Option<Single<&Creation>>,
     page: Query<Entity, With<AssemblyPage>>,
     mut views: Query<(Entity, &CandidateView, &mut Node)>,
     assets: Res<AssetServer>,
+    strings: GameStrings,
 ) {
-    let (Some(session), Ok(page)) = (session, page.single()) else { return };
+    let (Some(session), Ok(page), Some(_)) = (session, page.single(), strings.table()) else {
+        return;
+    };
     for (entity, view, _) in &views {
         if candidate(&session, view.id).is_none()
             || (view.joined && !session.party.contains(&view.id))
@@ -219,7 +281,6 @@ pub(super) fn sync_views(
             commands.entity(entity).despawn();
         }
     }
-    let load = |path: &str| assets.load(crate::content::paths::sheet(path));
     for joined in [false, true] {
         let ids: Vec<_> = if joined {
             session.party.clone()
@@ -243,6 +304,7 @@ pub(super) fn sync_views(
                 }
                 continue;
             }
+            let Some(draft) = candidate(&session, id) else { continue };
             let root = commands
                 .spawn((
                     Control,
@@ -259,84 +321,24 @@ pub(super) fn sync_views(
                 ))
                 .id();
             if joined {
-                let portrait = picture(&mut commands, root, default(), 0, Vec2::ZERO);
-                commands.entity(portrait).insert(Portrait::Member(id));
-                let frame = picture(
-                    &mut commands,
-                    root,
-                    load("party generation/portraitborder"),
-                    0,
-                    Vec2::new(-13., -11.),
-                );
-                commands.entity(frame).insert(SlotFrame { candidate: id, highlight: false });
-                let frame = picture(
-                    &mut commands,
-                    root,
-                    load("party generation/portraithighlight"),
-                    1,
-                    Vec2::ZERO,
-                );
-                commands.entity(frame).insert(SlotFrame { candidate: id, highlight: true });
-                let name = label(
-                    &mut commands,
-                    root,
-                    load("fonts/wiz_text_font"),
-                    "",
-                    Vec2::new(-10., 79.),
-                    110.,
-                );
-                commands.entity(name).insert(Label::Member(id));
+                spawn_member_parts(&mut commands, root, draft, &assets);
             } else {
-                let background =
-                    picture(&mut commands, root, load("party generation/listboxes"), 0, Vec2::ZERO);
-                commands.entity(background).insert(RowBackground(id));
-                let portrait = picture(&mut commands, root, default(), 0, Vec2::new(2., 2.));
-                commands.entity(portrait).insert(Portrait::Candidate(id));
-                for (kind, y) in [
-                    (Label::CandidateName(id), 3.),
-                    (Label::CandidateClass(id), 14.),
-                    (Label::CandidateRace(id), 25.),
-                ] {
-                    let text = label(
-                        &mut commands,
-                        root,
-                        load("fonts/wiz_text_font"),
-                        "",
-                        Vec2::new(53., y),
-                        0.,
-                    );
-                    commands.entity(text).insert(kind);
-                }
+                spawn_row_parts(&mut commands, root, draft, &assets, &strings);
             }
         }
     }
 }
 
-pub(super) fn refresh(
-    session: Single<Ref<Creation>>,
-    assets: Res<AssetServer>,
-    mut commands: Commands,
+/// Whether the page's views have something new to show.
+pub(super) fn outdated(session: Option<Single<Ref<Creation>>>, strings: GameStrings) -> bool {
+    strings.is_changed() || session.is_some_and(|session| session.is_changed())
+}
+
+pub(super) fn refresh_controls(
+    session: Single<&Creation>,
     controls: Query<(Entity, &Action, Has<InteractionDisabled>), With<Control>>,
-    mut portraits: Query<(&Portrait, &mut Picture, &mut Visibility), Without<RowBackground>>,
-    mut rows: Query<(&RowBackground, &mut Picture, &mut Visibility), Without<Portrait>>,
-    mut details: Query<
-        &mut Visibility,
-        (With<SelectedDetail>, Without<Portrait>, Without<RowBackground>, Without<SlotFrame>),
-    >,
-    mut frames: Query<
-        (&SlotFrame, &mut Visibility),
-        (Without<Portrait>, Without<RowBackground>, Without<SelectedDetail>),
-    >,
-    mut labels: Query<(&Label, &mut BitmapText), Without<PartyMessage>>,
-    mut messages: Query<&mut BitmapText, (With<PartyMessage>, Without<Label>)>,
-    mut toggles: Query<&Children, With<ToggleLabel>>,
-    mut toggle_text: Query<&mut BitmapText, (Without<Label>, Without<PartyMessage>)>,
-    strings: crate::presentation::screen_art::GameStrings,
-    added: Query<(), Or<(Added<Control>, Added<Label>, Added<RowBackground>, Added<SlotFrame>)>>,
+    mut commands: Commands,
 ) {
-    if !session.is_changed() && !strings.is_changed() && added.is_empty() {
-        return;
-    }
     for (entity, action, disabled) in &controls {
         let enabled = match *action {
             Action::Add => session.candidates.len() < 6,
@@ -351,110 +353,82 @@ pub(super) fn refresh(
         };
         set_enabled(&mut commands, entity, enabled, disabled);
     }
-    for (portrait, mut picture, mut visible) in &mut portraits {
-        let draft = match portrait {
-            Portrait::Candidate(id) | Portrait::Member(id) => candidate(&session, *id),
-            Portrait::Selected => session.selected.and_then(|id| candidate(&session, id)),
-        };
-        visible.set_if_neq(visible_if(draft.is_some()));
-        if let Some(draft) = draft {
-            use crate::content::paths::{PortraitSize, portrait as path};
-            let size = match portrait {
-                Portrait::Candidate(_) => PortraitSize::Small,
-                Portrait::Member(_) => PortraitSize::Medium,
-                Portrait::Selected => PortraitSize::Large,
-            };
-            crate::presentation::screen_art::show_sheet(
-                &mut picture,
-                &assets,
-                path(size, &draft.portrait),
-            );
-        }
-    }
-    for (row, mut picture, mut visible) in &mut rows {
-        let id = candidate(&session, row.0).map(|_| row.0);
-        visible.set_if_neq(visible_if(id.is_some()));
-        let frame = usize::from(id.is_some() && id == session.selected);
+}
+
+/// Mark the selected candidate's list row and party slot.
+pub(super) fn refresh_selection_marks(
+    session: Single<&Creation>,
+    views: Query<&CandidateView>,
+    mut rows: Query<(&ChildOf, &mut Picture), With<RowBackground>>,
+    mut highlights: Query<(&ChildOf, &mut Visibility), With<Highlight>>,
+) {
+    let selected = |part: &ChildOf| {
+        views.get(part.parent()).is_ok_and(|view| session.selected == Some(view.id))
+    };
+    for (part, mut picture) in &mut rows {
+        let frame = usize::from(selected(part));
         if picture.frame != frame {
             picture.frame = frame;
         }
     }
-    for mut visible in &mut details {
-        visible.set_if_neq(visible_if(session.selected.is_some()));
+    for (part, mut visibility) in &mut highlights {
+        visibility.set_if_neq(visible_if(selected(part)));
     }
-    for (frame, mut visible) in &mut frames {
-        let id = session.party.contains(&frame.candidate).then_some(frame.candidate);
-        let shown = id.is_some() && (!frame.highlight || id == session.selected);
-        visible.set_if_neq(visible_if(shown));
+}
+
+/// What the summary panel says of a candidate, line by line.
+fn summary_lines(profile: &Character, strings: &GameStrings) -> [String; 13] {
+    use crate::content::characters::Attribute::*;
+    let stats = profile.base_stats();
+    [
+        profile.name.clone(),
+        profession_line(strings, profile.profession),
+        kind_line(strings, profile.gender, profile.race),
+        format!("Str: {}", stats.attribute(Strength)),
+        format!("Int: {}", stats.attribute(Intelligence)),
+        format!("Pie: {}", stats.attribute(Piety)),
+        format!("Vit: {}", stats.attribute(Vitality)),
+        format!("Dex: {}", stats.attribute(Dexterity)),
+        format!("Spd: {}", stats.attribute(Speed)),
+        format!("Sen: {}", stats.attribute(Senses)),
+        format!("HP: {}", stats.max_hp()),
+        format!("Stam: {}", stats.max_stamina()),
+        format!("Carry: {}", stats.capacity() / 10),
+    ]
+}
+
+/// Show the selected candidate and the session's messages.
+pub(super) fn refresh_selected(
+    session: Single<&Creation>,
+    assets: Res<AssetServer>,
+    strings: GameStrings,
+    mut panels: Query<&mut Visibility, With<SelectedPanel>>,
+    mut portraits: Query<&mut Picture, With<SelectedPortrait>>,
+    mut texts: Query<(&SessionText, &mut BitmapText)>,
+) {
+    let selected = session.selected.and_then(|id| candidate(&session, id));
+    for mut visibility in &mut panels {
+        visibility.set_if_neq(visible_if(selected.is_some()));
     }
-    let preview =
-        session.selected.and_then(|id| candidate(&session, id)).map(CharacterDraft::preview);
-    use crate::content::ui::{GENDER_NAMES, PROFESSION_NAMES, RACE_NAMES};
-    let level_1 = |profession: crate::game::characters::Profession| {
-        format!("Level 1 {}", strings.get(PROFESSION_NAMES + profession as usize))
-    };
-    let kind = |gender: crate::game::characters::Gender, race: crate::game::characters::Race| {
-        let gender = strings.get(GENDER_NAMES + gender as usize);
-        format!("{gender} {}", strings.get(RACE_NAMES + race as usize))
-    };
-    for (field, mut text) in &mut labels {
-        let value = match field {
-            Label::CandidateName(id) | Label::Member(id) => {
-                candidate(&session, *id).map(|draft| draft.display_name().to_owned())
-            }
-            Label::CandidateClass(id) => {
-                candidate(&session, *id).map(|draft| level_1(draft.profession()))
-            }
-            Label::CandidateRace(id) => {
-                candidate(&session, *id).map(|draft| kind(draft.gender(), draft.race()))
-            }
-            Label::Joined => session
-                .selected
-                .filter(|id| session.party.contains(id))
-                .map(|_| "Joined".to_owned()),
-            Label::Summary(line) => preview.as_ref().map(|profile| {
-                use crate::content::characters::Attribute::*;
-                match line {
-                    0 => profile.name.clone(),
-                    1 => level_1(profile.profession),
-                    2 => kind(profile.gender, profile.race),
-                    3 => format!("Str: {}", profile.base_stats().attribute(Strength)),
-                    4 => format!("Int: {}", profile.base_stats().attribute(Intelligence)),
-                    5 => format!("Pie: {}", profile.base_stats().attribute(Piety)),
-                    6 => format!("Vit: {}", profile.base_stats().attribute(Vitality)),
-                    7 => format!("Dex: {}", profile.base_stats().attribute(Dexterity)),
-                    8 => format!("Spd: {}", profile.base_stats().attribute(Speed)),
-                    9 => format!("Sen: {}", profile.base_stats().attribute(Senses)),
-                    10 => format!("HP: {}", profile.base_stats().max_hp()),
-                    11 => String::new(),
-                    12 => format!("Stam: {}", profile.base_stats().max_stamina()),
-                    13 => format!("Carry: {}", profile.base_stats().capacity() / 10),
-                    _ => String::new(),
-                }
-            }),
+    if let Some(draft) = selected {
+        for mut picture in &mut portraits {
+            let portrait = path(PortraitSize::Large, &draft.portrait);
+            crate::presentation::screen_art::show_sheet(&mut picture, &assets, portrait);
         }
-        .unwrap_or_default();
+    }
+    let joined = session.selected.is_some_and(|id| session.party.contains(&id));
+    let summary = selected.map(|draft| summary_lines(&draft.preview(), &strings));
+    for (kind, mut text) in &mut texts {
+        let value = match kind {
+            SessionText::Message => session.message.as_str(),
+            SessionText::Toggle if joined => "Remove from Party",
+            SessionText::Toggle => "Add to Party",
+            SessionText::Joined if joined => "Joined",
+            SessionText::Joined => "",
+            SessionText::Summary(line) => summary.as_ref().map_or("", |lines| &lines[*line]),
+        };
         if text.value != value {
-            text.value = value;
-        }
-    }
-    for mut message in &mut messages {
-        if message.value != session.message {
-            message.value.clone_from(&session.message);
-        }
-    }
-    for children in &mut toggles {
-        for child in children.iter() {
-            if let Ok(mut text) = toggle_text.get_mut(child) {
-                let value = if session.selected.is_some_and(|id| session.party.contains(&id)) {
-                    "Remove from Party"
-                } else {
-                    "Add to Party"
-                };
-                if text.value != value {
-                    text.value = value.into();
-                }
-            }
+            text.value = value.to_owned();
         }
     }
 }

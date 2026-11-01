@@ -75,18 +75,33 @@ pub(super) fn notices(
     rng.below(100) < chance
 }
 
-/// Every (attack, mode, target) the monster reaches, equally likely:
-/// members, then the other monsters in the fight. A member's Stealth may
-/// keep it out of the monster's eye this time (three quarters of it, in
-/// percent), and one that stayed out of it may learn from it.
+/// Every (attack, mode, target) the monster reaches and may attack, equally
+/// likely: members, then the other monsters in the fight. Those it may attack
+/// are whom it stands `wanted` toward, from allegiance `mine` (retail
+/// `BuildMonsterActionQueue`'s `MonsterVsCharDisposition` and
+/// `MonsterHostility` tests). A member's Stealth may keep it out of the
+/// monster's eye this time (three quarters of it, in percent), and one that
+/// stayed out of it may learn from it.
 pub(super) fn reachable_targets(
     entity: Entity,
     kind: &Species,
     rng: &mut GameRng,
     field: &mut Field,
     fight: &Fight,
+    (mine, wanted): (hostility::Allegiance, Stance),
     news: &mut MessageWriter<CombatNews>,
 ) -> Vec<(usize, AttackMode, Victim)> {
+    let (now, species) = (field.now(), field.species());
+    let attacks = |victim: Victim, field: &Field| {
+        crate::game::combat::monster_turn::stance_toward(
+            mine,
+            victim,
+            &field.members,
+            &field.monsters,
+            now,
+            species,
+        ) == wanted
+    };
     let (monster, at, walker, ..) = field.monsters.monsters().get(entity).unwrap();
     let here = feet(at.translation(), walker);
     let distance = party_distance(fight.party.eye, monster, here);
@@ -105,7 +120,7 @@ pub(super) fn reachable_targets(
         for member in field.party.iter() {
             let (_, vitals, ..) = field.members.get(member).unwrap();
             if !vitals.is_dead()
-                && (fight.attacks)(Victim::Member(member))
+                && attacks(Victim::Member(member), field)
                 && fight.party.reaches(formation, member, at.translation(), attack.reach, distance)
             {
                 if unseen.contains(&member) {
@@ -126,7 +141,7 @@ pub(super) fn reachable_targets(
                 && !body.is_dead()
                 && field.monsters.active(other)
                 && field.visibility.clear(eye, body_centre(there, body))
-                && (fight.attacks)(Victim::Monster(other))
+                && attacks(Victim::Monster(other), field)
                 && monster.gap(here, body, there) <= attack.reach.metres()
             {
                 for mode in attack.modes {
@@ -155,6 +170,7 @@ pub(in crate::game::combat) fn monster_attacks(
     rng: &mut GameRng,
     field: &mut Field,
     fight: &mut Fight,
+    attackers_side: (hostility::Allegiance, Stance),
     news: &mut MessageWriter<CombatNews>,
 ) -> bool {
     let turn = battle.this_round.monsters[index];
@@ -166,8 +182,8 @@ pub(in crate::game::combat) fn monster_attacks(
     let position = at.translation();
     let eye = monster.eye(feet(position, walker));
     let stance = field.monsters.stance(entity, field.now());
-    let candidates = reachable_targets(entity, kind, rng, field, fight, news);
-    let turn_left = turn.attacks_left.saturating_sub(1);
+    let candidates = reachable_targets(entity, kind, rng, field, fight, attackers_side, news);
+    let turn_left = turn.attacks_left.max(1) - 1;
     battle.this_round.monsters[index].end();
     // A wary monster's wait comes first among its choices.
     let waits = usize::from(fight.waits);
@@ -199,8 +215,7 @@ pub(in crate::game::combat) fn monster_attacks(
         let side = formation::quadrant(fight.party.eye, fight.party.yaw, position);
         let facing = field.formation.facing(member);
         if facing.is_some_and(|f| f != side) {
-            let (character, vitals) = (character.clone(), vitals.clone());
-            if notices(battle, member, &character, &vitals, rng) {
+            if notices(battle, member, character, vitals, rng) {
                 field.formation.turn(member, side);
             } else {
                 surprise.unaware = facing.is_some_and(|f| f.opposite() == Some(side));

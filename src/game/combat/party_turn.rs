@@ -75,7 +75,6 @@ pub(super) fn party_turn(
                 party,
                 armours: party_armours(battle, field),
                 moving,
-                attacks: &|_| false,
                 waits: false,
             };
             field.improved.clear();

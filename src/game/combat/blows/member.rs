@@ -172,7 +172,7 @@ pub(in crate::game::combat) fn member_attacks(
         return;
     };
     turns.current = current;
-    let hand = hands.hands[current].clone();
+    let hand = &hands.hands[current];
     battle.this_round.attacked = true;
     // Retail draws the attack's mode, then its swings.
     let mode = if berserk { AttackMode::Berserk } else { attack::choose_mode(rng, hand.modes) };
@@ -223,17 +223,17 @@ pub(in crate::game::combat) fn member_attacks(
         let stats = character.stats(&vitals.enchantments);
         let Some((aimed_at, _)) = victim_defence(battle, field, fight, target) else { break };
         let aim =
-            attack::member_aim(&stats, &vitals, &hand, mode, surprise, Some(&aimed_at), difficulty);
+            attack::member_aim(&stats, &vitals, hand, mode, surprise, Some(&aimed_at), difficulty);
         let delivery = if hand.reach >= Reach::Long {
             Delivery::Shot {
                 from: fight.party.eye,
                 blind: vitals.conditions.has(Condition::Blind),
-                through: attack::sure_penetration(&stats, &hand),
+                through: attack::sure_penetration(&stats, hand),
             }
         } else {
             Delivery::Swing {
-                bystanders: member_bystanders(field, fight, member, &hand, target.entity()),
-                odds: attack::member_aim(&stats, &vitals, &hand, mode, surprise, None, difficulty),
+                bystanders: member_bystanders(field, fight, member, hand, target.entity()),
+                odds: attack::member_aim(&stats, &vitals, hand, mode, surprise, None, difficulty),
             }
         };
         let Ok(landing) = land(rng, field, fight, (target, aim), delivery, &mut surprise) else {
@@ -294,7 +294,7 @@ pub(in crate::game::combat) fn member_attacks(
         // Arrows, bolts and stones are shot away, thrown weapons thrown,
         // and guns spend their shots.
         // A hand with nothing left to fire is done for the round.
-        if (hand.paired || hand.ranged) && !spend_shot(&mut carried, items, current, &hand) {
+        if (hand.paired || hand.ranged) && !spend_shot(&mut carried, items, current, hand) {
             left = 0;
             turns.left[current] = 0;
         }
@@ -398,10 +398,10 @@ pub(super) fn member_blow(
         let mut blow = hand.effects;
         if !landing.fumbled {
             let kill = &mut blow.chances[AttackEffect::Kill];
-            *kill = kill.wrapping_add(attack::critical_chance(rng, character, hand));
+            *kill = (*kill + attack::critical_chance(rng, character, hand)).min(100);
             if character.has_trait(Trait::Knockout) {
                 let knockout = &mut blow.chances[AttackEffect::KnockOut];
-                *knockout = knockout.wrapping_add(character.scale_by_profession(5.0) as u8);
+                *knockout = (*knockout + character.scale_by_profession(5.0) as u32).min(100);
             }
         }
         let power = attack::effect_power(u32::from(character.level()));
@@ -439,7 +439,7 @@ pub(super) fn member_blow(
 pub(super) fn next_hand(
     battle: &mut Battle,
     index: usize,
-    step: u8,
+    step: u32,
     turns: HandTurns,
     hands: &attack::Hands,
 ) {
@@ -456,9 +456,9 @@ pub(super) fn next_hand(
     let phase = if left == 0 {
         None
     } else if chosen == current || then <= now {
-        Some(u32::from(step) + (100 - u32::from(step)) / (left + 1))
+        Some(step + (100 - step) / (left + 1))
     } else {
-        Some(u32::from(step))
+        Some(step)
     };
     let work = &mut battle.this_round.party[index];
     work.hands = turns;
@@ -467,7 +467,7 @@ pub(super) fn next_hand(
             let phase = phase as i32
                 + if chosen != current { initiative(current) - initiative(chosen) } else { 0 };
             work.hands.current = chosen;
-            work.phase = phase.clamp(i32::from(step), 100) as u8;
+            work.phase = phase.clamp(step as i32, 100) as u32;
         }
         None => work.end(),
     }

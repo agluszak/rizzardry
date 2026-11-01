@@ -33,7 +33,7 @@ use crate::game::rng::GameRng;
 pub const COMPONENTS: usize = 8;
 
 /// Each trap type's own grade (retail `g_trap_difficulty`).
-pub(crate) const TRAP_GRADE: [i32; TRAP_TYPES] = [1, 1, 2, 2, 3, 3, 3, 4, 5, 5, 5, 6, 6, 7, 7];
+pub(crate) const TRAP_GRADE: [u32; TRAP_TYPES] = [1, 1, 2, 2, 3, 3, 3, 4, 5, 5, 5, 6, 6, 7, 7];
 
 /// Which components each trap type is built from (retail `g_table1`).
 pub const TRAP_COMPONENTS: [[bool; COMPONENTS]; TRAP_TYPES] = {
@@ -165,22 +165,18 @@ pub struct Disarming {
     pub difficulty: u8,
     pub trap: u8,
     pub disarmed: [bool; COMPONENTS],
-    pub divine_power: u8,
+    pub divine_power: u32,
     /// What each member's inspection made of each component.
     pub observations: Vec<(Entity, [Observation; COMPONENTS])>,
 }
 
 impl Disarming {
     pub fn inspection_chance(&self, skill: Option<u32>, difficulty: Difficulty) -> u32 {
-        trap_chance(
-            skill.map(|s| s + u32::from(self.divine_power) * 6),
-            self.difficulty,
-            difficulty,
-        ) as u32
+        trap_chance(skill.map(|s| s + self.divine_power * 6), self.difficulty, difficulty) as u32
     }
     pub fn disarm_chance(&self, skill: Option<u32>, difficulty: Difficulty) -> u32 {
         let chance = trap_chance(
-            skill.map(|s| s + u32::from(self.divine_power.div_ceil(2)) * 6),
+            skill.map(|s| s + self.divine_power.div_ceil(2) * 6),
             self.difficulty,
             difficulty,
         ) as u32;
@@ -284,7 +280,7 @@ pub fn force_chance(
     if !vitals.can_act() || vitals.stamina < FORCE_STAMINA || strength <= FORCE_STRENGTH {
         return None;
     }
-    let divisor = (setting as i32 - 1 + tumblers as i32).clamp(2, 8);
+    let divisor = (setting as usize + tumblers - 1).clamp(2, 8);
     Some((strength - FORCE_STRENGTH) >> (divisor - 2))
 }
 
@@ -304,7 +300,7 @@ pub(crate) fn face(
             Work::Picking(Picking::new(difficulty))
         }
         Lock::Trap { difficulty, .. } => {
-            let remark = guarded.faced_at.is_none_or(|at| now.saturating_sub(at) > REMARK_AGAIN_MS);
+            let remark = guarded.faced_at.is_none_or(|at| now - at > REMARK_AGAIN_MS);
             guarded.faced_at = Some(now);
             let trap = *guarded.trap.get_or_insert_with(|| roll_trap(difficulty, rng));
             news.write(LockNews::Trapped { remark });
@@ -322,7 +318,7 @@ pub(crate) fn face(
 /// Retail `SelectTrapType`: draw types until one's grade lies within four
 /// below the authored grade (at least 1).
 fn roll_trap(difficulty: u8, rng: &mut GameRng) -> u8 {
-    let budget = i32::from(difficulty).max(1);
+    let budget = u32::from(difficulty).max(1);
     loop {
         let trap = rng.below(TRAP_TYPES as u32) as usize;
         if TRAP_GRADE[trap] <= budget && TRAP_GRADE[trap] + 4 >= budget {
@@ -398,7 +394,8 @@ impl DeviceWork<'_, '_> {
     /// when all are up the lock opens.
     fn pick(&mut self, on: Entity, actor: Entity, tumbler: usize) -> Result<(), Unable> {
         let skill = self.worker(actor)?.ok_or(Unable::Unskilled)?;
-        let chance = (skill as i32 + 5 - 5 * *self.difficulty as i32).max(0) as u32;
+        let penalty = 5 * *self.difficulty as u32;
+        let chance = (skill + 5).max(penalty) - penalty;
         let (mut work, device) = self.work(on)?;
         let Work::Picking(picking) = &mut *work else { return Err(Unable::NotNow) };
         if picking.tumblers.get(tumbler).is_none_or(|pin| pin.raised()) {
@@ -692,7 +689,7 @@ impl DeviceWork<'_, '_> {
 
     /// Knock-Knock lifts tumblers at random, or drops them when it
     /// backfires.
-    fn knock(&mut self, on: Entity, actor: Entity, power: u8, backfire: bool) {
+    fn knock(&mut self, on: Entity, actor: Entity, power: u32, backfire: bool) {
         let (mut interaction, _) = self.attempts.get_mut(on).unwrap();
         let Work::Picking(picking) = &mut interaction.work else { unreachable!("a lock's spell") };
         let rng = &mut self.rng;
@@ -703,8 +700,8 @@ impl DeviceWork<'_, '_> {
             order.swap(a, b);
         }
         let mut dropped = false;
-        for index in order.into_iter().take(usize::from(power) + 1) {
-            if rng.below(1000) < KNOCK_CHANCE[usize::from(power)] {
+        for index in order.into_iter().take(power as usize + 1) {
+            if rng.below(1000) < KNOCK_CHANCE[power as usize] {
                 let pin = &mut picking.tumblers[index];
                 if backfire {
                     dropped |= pin.raised();
@@ -728,7 +725,7 @@ impl DeviceWork<'_, '_> {
     fn spell_lands(
         &mut self,
         (on, actor): (Entity, Entity),
-        (spell, power, backfired): (SpellId, u8, bool),
+        (spell, power, backfired): (SpellId, u32, bool),
         trap: Option<(u8, u8)>,
     ) {
         match trap {
@@ -739,12 +736,8 @@ impl DeviceWork<'_, '_> {
                 trap.divine_power = power;
             }
             Some((kind, difficulty)) => {
-                let chance = if backfired {
-                    0
-                } else {
-                    i32::from(power) * 5 + 50 - i32::from(difficulty) * 6
-                };
-                if (self.rng.below(100) as i32) < chance {
+                let roll = self.rng.below(100) + u32::from(difficulty) * 6;
+                if !backfired && roll < power * 5 + 50 {
                     self.news.write(LockNews::Disarmed { trap: kind });
                     self.opened.write(DeviceOpened { on });
                 } else {
@@ -784,8 +777,7 @@ pub(crate) fn cast_at_devices(
         if outcome == Outcome::Fizzled {
             continue;
         }
-        let power = (u32::from(strength.power) + u32::from(strength.power) * strength.boost / 100)
-            .min(7) as u8;
+        let power = (strength.power + strength.power * strength.boost / 100).min(7);
         casting.p0().spell_lands((on, caster), (spell, power, outcome == Outcome::Backfired), trap);
     }
 }

@@ -16,7 +16,7 @@ const HOSTILE_QUOTE: u16 = 0x18;
 const APPROACH_COOLDOWN_MS: u64 = 0xa8c0 * 1000;
 /// Whether an approach made at `at` may be tried again at `now`.
 pub fn approach_ready(at: Option<u64>, now: u64) -> bool {
-    at.is_none_or(|at| now.saturating_sub(at) > APPROACH_COOLDOWN_MS)
+    at.is_none_or(|at| now - at > APPROACH_COOLDOWN_MS)
 }
 /// Retail `GetNpcDispositionBand`: hostile under 0x21, friendly from 0x42.
 fn band_of(disposition: i32) -> Band {
@@ -231,17 +231,19 @@ impl Dialogue<'_, '_> {
         self.scripts.get(&self.assets.scripts[&id]).unwrap()
     }
 
-    fn lineup(&self) -> crate::game::party::Lineup<'_> {
-        crate::game::party::Lineup::of(self.party.1, |member| {
+    fn best_communicator(&self) -> Option<(Entity, u32)> {
+        crate::game::party::best_communicator(self.party.1.iter().map(|member| {
             let (character, vitals, _) = self.members.get(member).unwrap();
-            (character, vitals)
-        })
+            (member, character, vitals)
+        }))
     }
 
-    /// The member with the best Communication, the first on a tie, and that
-    /// level (retail `GetBestPartySkillLevel`).
-    fn best_communicator(&self) -> Option<(Entity, u32)> {
-        self.lineup().best(crate::content::characters::Skill::Communication)
+    /// The members awake and well enough to fight.
+    fn able(&self) -> impl Iterator<Item = (Entity, &Character)> {
+        self.party.1.iter().filter_map(|member| {
+            let (character, vitals, _) = self.members.get(member).unwrap();
+            vitals.can_fight().then_some((member, character))
+        })
     }
 
     fn communication(&self) -> u32 {
@@ -286,7 +288,7 @@ impl Dialogue<'_, '_> {
             .iter()
             .find_map(|(_, c, _)| c.charms.get(&actor).copied())
             .unwrap_or(0);
-        let own = if turned { 100 } else { i32::from(disposition.wrapping_add(charm as u8)) };
+        let own = if turned { 100 } else { (disposition as u32 + charm).min(100) as i32 };
         let def = self.definition(actor);
         let faction = i32::from(def.faction);
         if def.faction != 0 && (def.monster_bound || self.factions.band(faction) == Band::Hostile) {
@@ -358,7 +360,7 @@ impl Dialogue<'_, '_> {
         let def = self.definition(actor);
         let greeting = entry_quote(def, self.npc(actor));
         if greeting == 0 && !def.monster_bound && !def.voice_script && !def.merchant {
-            let members: Vec<_> = self.lineup().able().map(|(m, _)| m).collect();
+            let members: Vec<_> = self.able().map(|(m, _)| m).collect();
             self.practise_communication(&members, 0xf);
         }
         greeting
@@ -403,12 +405,14 @@ impl Dialogue<'_, '_> {
         let menu = !scripted && !merchant && band == Band::Neutral;
         let greeting = if menu { NEUTRAL_GREETING } else { self.greet(actor) };
         let now = self.clock.ms;
-        let average = self.lineup().average_level();
+        let average = crate::game::party::average_level(
+            self.party.1.iter().map(|member| self.members.get(member).unwrap().0.level()),
+        );
         let def = self.definition(actor);
         if def.owns_stock {
             let stock = &self.npc(actor).stock;
             let gated = stock.restock_at.is_some()
-                && now.saturating_sub(stock.maintenance_at) >= crate::game::time::DAY_MS
+                && now - stock.maintenance_at >= crate::game::time::DAY_MS
                 && def
                     .stock
                     .iter()
@@ -678,7 +682,7 @@ impl Dialogue<'_, '_> {
                 QuoteEffect::Mention(category, text) => self.learn_topic(entity, category, &text),
                 QuoteEffect::Gold(amount) => {
                     let purse = &mut self.party.0.gold;
-                    *purse = purse.wrapping_add(amount);
+                    *purse += amount;
                     let actor = self.conversation(entity).actor;
                     let giver = self.definition(actor).source_name.clone();
                     self.reward(entity, QuestReward::Gold { giver, amount });
@@ -788,9 +792,9 @@ impl Dialogue<'_, '_> {
                         })
                         && (always || !self.npc(actor).paid_topics.contains(&quote))
                     {
-                        let charm = self.conversation(entity).charm().max(0) as u32;
-                        let gold = gold - gold.saturating_mul(charm) / 100;
-                        let gold = (gold - gold.saturating_mul(self.communication()) / 500).max(1);
+                        let charm = self.conversation(entity).charm();
+                        let gold = gold - gold * charm.min(100) / 100;
+                        let gold = (gold - gold * self.communication().min(500) / 500).max(1);
                         let mut c = self.conversation_mut(entity);
                         c.queue.push_front(Step::Wait(ConversationWait::Price {
                             quote,
@@ -928,8 +932,9 @@ impl Dialogue<'_, '_> {
         let region =
             crate::content::levels::LevelInfo::for_path(&level.path).map_or(0, |info| info.band);
         // Retail counts no able member as an average of nothing.
-        let levels: Vec<_> = self.lineup().able().map(|(_, c)| c.level()).collect();
-        let average = if levels.is_empty() { 0 } else { crate::game::party::average_level(levels) };
+        let mut levels = self.able().map(|(_, c)| c.level()).peekable();
+        let average =
+            if levels.peek().is_none() { 0 } else { crate::game::party::average_level(levels) };
         let fact = |symbol: &str| self.fact_named(symbol).expect("a ported fact");
         if !crate::game::npcs::recruit::willing(id.npc(), definition, region, fact, average) {
             return Err(JoinRefusal::Declines);
@@ -1011,8 +1016,7 @@ impl Dialogue<'_, '_> {
         let Some((speaker, level)) = self.best_communicator() else { return };
         let mut delta = scale + level as i32 * (scale.abs() / 5) / 100;
         if approach == Approach::Charm && delta > 0 {
-            let average =
-                crate::game::party::average_level(self.lineup().able().map(|(_, c)| c.level()));
+            let average = crate::game::party::average_level(self.able().map(|(_, c)| c.level()));
             let own = self
                 .active_body(actor)
                 .map(|body| &self.content.species[self.bodies.get(body).unwrap().0.species])
@@ -1065,11 +1069,11 @@ impl Dialogue<'_, '_> {
     /// debited, without debiting it.
     fn debited(&self, actor: Entity, price: u32) -> (u16, u8) {
         let level = self.communication();
-        let adjusted = price.wrapping_add(level * ((price & 0xffff) / 5) / 100);
+        let adjusted = price as u64 + price as u64 * level as u64 / 500;
         let refill = self.definition(actor).trade_pool;
         let cold = self.band(actor) != Band::Friendly;
         let npc = self.npc(actor);
-        match npc.trade_pool.saturating_sub(adjusted as u16) {
+        match (npc.trade_pool as u64 - adjusted.min(npc.trade_pool as u64)) as u16 {
             0 if cold => (refill, 0x4b),
             0 => (refill, npc.disposition),
             pool => (pool, npc.disposition),
@@ -1188,8 +1192,10 @@ impl Dialogue<'_, '_> {
             self.conversation_mut(entity).queue.push_back(Step::said(UNBRIBED_QUOTE));
             return Ok(());
         }
-        let purse = &mut self.party.0.gold;
-        *purse = purse.checked_sub(amount).ok_or(TradeError::Funds)?;
+        if amount > self.party.0.gold {
+            return Err(TradeError::Funds);
+        }
+        self.party.0.gold -= amount;
         if bribe {
             self.debit_trade_pool(actor, amount);
         }
@@ -1286,6 +1292,7 @@ impl Dialogue<'_, '_> {
     /// Answer one of the party's requests, and report what came of it.
     fn answer(&mut self, entity: Entity, talk: Talk) {
         let outcome = match talk {
+            Talk::Trade(_) => unreachable!("trades settle over Trading"),
             Talk::Close => {
                 self.leave(entity);
                 None
@@ -1360,13 +1367,18 @@ pub fn begin_conversations(mut begins: MessageReader<BeginConversation>, mut dia
 /// Answer the party's requests in a conversation. A dialogue the party has
 /// left takes none; anything but leaving ends a dialogue whose NPC, a
 /// fight or a camp no longer allows it.
-pub fn answer_requests(mut requests: MessageReader<ConversationRequest>, mut dialogue: Dialogue) {
+pub fn answer_requests(
+    mut requests: MessageReader<ConversationRequest>,
+    mut sides: ParamSet<(Dialogue, super::Trading)>,
+) {
+    let mut dialogue = sides.p0();
     dialogue.left.clear();
     if !dialogue.entering.is_empty() {
         requests.clear();
         return;
     }
     for ConversationRequest { conversation: entity, talk } in requests.read().cloned() {
+        let mut dialogue = sides.p0();
         let Ok((_, _, closing)) = dialogue.conversations.get(entity) else { continue };
         if closing || dialogue.left.contains(&entity) {
             continue;
@@ -1378,7 +1390,10 @@ pub fn answer_requests(mut requests: MessageReader<ConversationRequest>, mut dia
             }
             dialogue.conversation_mut(entity).result = None;
         }
-        dialogue.answer(entity, talk);
+        match talk {
+            Talk::Trade(quote) => sides.p1().answer(quote),
+            talk => dialogue.answer(entity, talk),
+        }
     }
 }
 

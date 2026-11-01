@@ -192,7 +192,6 @@ impl Plugin for PresentationPlugin {
                 camp::show_camp,
                 (
                     automap::request_automap,
-                    automap::build_automap.run_if(any_with_component::<automap::Automap>),
                     automap::sync_note_input,
                     automap::draw_note_input,
                     (
@@ -239,8 +238,6 @@ impl Plugin for PresentationPlugin {
                 sky::orbit_sun_and_moon,
                 voice::finish_speech,
                 (
-                    monsters::choose_walker_cycles,
-                    monsters::show_deaths,
                     monsters::request_monster_visuals,
                     monsters::build_monster_instances,
                     monsters::animate_monsters,

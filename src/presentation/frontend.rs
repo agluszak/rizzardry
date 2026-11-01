@@ -79,7 +79,12 @@ impl Plugin for FrontendPlugin {
                     creator_identity::play_summary_voice,
                     show_editor,
                     party::sync_views,
-                    party::refresh,
+                    (
+                        party::refresh_controls,
+                        party::refresh_selection_marks,
+                        party::refresh_selected,
+                    )
+                        .run_if(party::outdated),
                     paint_menu,
                     party::paint_labels,
                     confirmation::show_text,

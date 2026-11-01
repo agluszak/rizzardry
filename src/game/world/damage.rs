@@ -62,7 +62,7 @@ pub struct MonsterDamage<'w, 's> {
     /// The NPCs whose world roles are among the monsters.
     npcs: (
         Query<'w, 's, &'static crate::game::npcs::NpcBody>,
-        Query<'w, 's, &'static mut crate::game::npcs::Npc>,
+        Query<'w, 's, (&'static mut crate::game::npcs::Npc, &'static crate::game::npcs::ActorId)>,
     ),
     commands: Commands<'w, 's>,
     content: If<Res<'w, crate::game::data::Catalogs>>,
@@ -135,8 +135,8 @@ impl<'w, 's> MonsterDamage<'w, 's> {
             return 0;
         }
         let before = body.hp;
-        body.hp = body.hp.saturating_add(amount).min(body.max_hp);
-        body.hp.saturating_sub(before)
+        body.hp = (body.hp + amount).min(body.max_hp);
+        body.hp - before
     }
     /// Restoring stamina wakes exhaustion, but leaves a timed knockout alone.
     pub fn restore_stamina(&mut self, entity: Entity, amount: u32) -> u32 {
@@ -154,7 +154,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     }
     pub fn restore_magic(&mut self, entity: Entity, amount: u32) {
         let (mut body, ..) = self.monsters.get_mut(entity).unwrap();
-        body.spell_points = body.spell_points.saturating_add(amount.min(i32::MAX as u32) as i32);
+        body.spell_points += amount as i32;
     }
     /// The monsters, to look at.
     pub fn monsters(&self) -> &MonsterQuery<'w, 's> {
@@ -192,7 +192,7 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         let (mut monster, ..) = self.monsters.get_mut(entity).unwrap();
         let kind = &self.content.species[monster.species];
         let lost = monster.spell_budget(kind).min(amount);
-        monster.spell_points = monster.spell_points.saturating_sub(lost as i32);
+        monster.spell_points -= lost as i32;
         lost
     }
 
@@ -294,9 +294,9 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         }
         let npc = self.npcs.0.get(target).ok().and_then(|body| self.npcs.1.get_mut(body.0).ok());
         let (found, gold) = match npc {
-            Some(mut npc) => {
+            Some((mut npc, id)) => {
                 npc.dead = true;
-                npc.possessions.give_up(catalog, rng)
+                crate::game::loot::npc_loot(&catalogs.npcs[id.npc()], tables, catalog, rng)
             }
             None => crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng),
         };

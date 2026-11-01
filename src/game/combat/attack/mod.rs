@@ -225,7 +225,7 @@ impl<'a> Defence<'a> {
                 fatigue: monster_fatigue(monster),
                 max_hp: monster.max_hp,
                 armour: monster.enchantments.armour(),
-                reduction: monster.enchantments.damage_reduction() as i32,
+                reduction: monster.enchantments.damage_reduction(),
             },
             ssdi: species_ssdi(species, &monster.enchantments),
             moving: advancing,
@@ -477,8 +477,8 @@ pub fn fumble_chance(bystanders: usize, aim: i32) -> u32 {
     if aim >= 100 {
         return 0;
     }
-    let chance = (f64::from(100 - aim).powi(3) * 1e-5 + 0.5) as i64;
-    (bystanders as i64 * chance * 10 / 100).clamp(0, 100) as u32
+    let chance = (f64::from(100 - aim).powi(3) * 1e-5 + 0.5) as u32;
+    (bystanders as u32 * chance * 10 / 100).min(100)
 }
 
 /// One swing's to-hit roll and what decides it (retail: 5 or under always
@@ -580,7 +580,7 @@ pub fn effect_power(level: u32) -> u32 {
 /// `ResolveCharacterAttack`): Critical Strike for close combat, Ranged
 /// Combat for a Ranger's bows and slings, Critical Strike for a Ninja's
 /// throws; a point per 25 skill and a chance at one more.
-pub fn critical_chance(rng: &mut GameRng, c: &CharacterStats<'_>, hand: &Hand) -> u8 {
+pub fn critical_chance(rng: &mut GameRng, c: &CharacterStats<'_>, hand: &Hand) -> u32 {
     let skill = if !hand.ranged {
         c.skill(Skill::CriticalStrike)
     } else if matches!(hand.weapon_skill, Skill::ModernWeapon | Skill::Bow)
@@ -599,7 +599,7 @@ pub fn critical_chance(rng: &mut GameRng, c: &CharacterStats<'_>, hand: &Hand) -
     if skill % 25 != 0 && rng.below(25) < skill % 25 {
         bonus += 1;
     }
-    bonus as u8
+    bonus
 }
 
 /// A Ninja's thrown weapons always get through armour when they strike
@@ -671,9 +671,9 @@ pub fn strikes(at: Vec3, aimed: Vec3, radius: f32, half_height: f32) -> bool {
 
 /// When an actor acts in the round, 1 (first) to 100: a d4 plus its
 /// initiative, highest first.
-pub fn phase(rng: &mut GameRng, initiative: i32) -> u8 {
+pub fn phase(rng: &mut GameRng, initiative: i32) -> u32 {
     let v = rng.below(4) as i32 + initiative;
-    (90 - v.clamp(-10, 89)) as u8
+    (90 - v.clamp(-10, 89)) as u32
 }
 
 #[cfg(test)]
@@ -812,12 +812,12 @@ mod tests {
         let mut carried = Carried::default();
         wield(&mut carried, EquipSlot::Primary, &sword, 1);
         let alone = hands(&fighter.base_stats(), &carried, &catalog, Load::None);
-        assert!(alone.hands[0].in_play && !alone.dual_wielding);
+        assert!(alone.hands[0].in_play && !alone.hands[1].in_play);
         // An empty off hand beside a weapon does not punch.
         assert!(!alone.hands[1].in_play);
         wield(&mut carried, EquipSlot::Secondary, &dagger, 1);
         let both = hands(&fighter.base_stats(), &carried, &catalog, Load::None);
-        assert!(both.dual_wielding && both.hands[1].in_play);
+        assert!(both.hands[0].in_play && both.hands[1].in_play);
         assert_eq!(both.hands[1].weapon_skill, Skill::Dagger);
         // Each hand pays −10 per hand number and a quarter of the Dual
         // Weapons it lacks: (−10 − 15)/3 and (−20 − 15)/3 off the rating.

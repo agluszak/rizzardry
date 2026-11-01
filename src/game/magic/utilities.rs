@@ -22,7 +22,7 @@ pub struct UtilityCast {
 /// Whether an identify at `strength` reveals an item this hard (retail
 /// `ApplyIdentifyAttempt`: power × 3, raised by Power Cast).
 fn identifies(strength: super::Strength, difficulty: u8) -> bool {
-    let score = u32::from(strength.power) * 3;
+    let score = strength.power * 3;
     score + score * strength.boost / 100 >= u32::from(difficulty)
 }
 

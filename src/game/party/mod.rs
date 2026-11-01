@@ -89,80 +89,51 @@ pub type Members<'w, 's> = Query<
     ),
 >;
 
-/// The party's members in roster order, with their characters and vitals:
-/// what the party-wide rules read (who is alive, its levels, its best at a
-/// skill), however the caller reaches the members.
-pub struct Lineup<'a>(Vec<(Entity, &'a Character, &'a crate::game::characters::Vitals)>);
+/// The party's members in roster order, for operations that hold the whole
+/// world.
+pub fn members_in_world(
+    world: &World,
+) -> impl Iterator<Item = (Entity, &Character, &crate::game::characters::Vitals)> {
+    let party =
+        world.try_query_filtered::<Entity, With<roster::Party>>().unwrap().single(world).unwrap();
+    let roster = world.get::<roster::PartyRoster>(party).unwrap();
+    roster.iter().map(|m| (m, world.get(m).unwrap(), world.get(m).unwrap()))
+}
 
-impl<'a> Lineup<'a> {
-    pub fn of(
-        roster: &roster::PartyRoster,
-        member: impl Fn(Entity) -> (&'a Character, &'a crate::game::characters::Vitals),
-    ) -> Self {
-        Self(
-            roster
-                .iter()
-                .map(|m| {
-                    let (character, vitals) = member(m);
-                    (m, character, vitals)
-                })
-                .collect(),
-        )
-    }
-
-    /// The party, for operations that hold the whole world.
-    pub fn in_world(world: &'a World) -> Self {
-        let party = world
-            .try_query_filtered::<Entity, With<roster::Party>>()
-            .unwrap()
-            .single(world)
-            .unwrap();
-        let roster = world.get::<roster::PartyRoster>(party).unwrap();
-        Self::of(roster, |m| (world.get(m).unwrap(), world.get(m).unwrap()))
-    }
-
-    pub fn members(
-        &self,
-    ) -> impl Iterator<Item = (Entity, &'a Character, &'a crate::game::characters::Vitals)> + '_
-    {
-        self.0.iter().copied()
-    }
-
-    pub fn anyone_alive(&self) -> bool {
-        self.0.iter().any(|(_, _, vitals)| !vitals.is_dead())
-    }
-
-    /// The members awake and well enough to fight: the population retail's
-    /// NPC rules work with (`hp_current != 0 && highest_condition <
-    /// ASLEEP`, as in `CanNpcJoinParty`, the charm and dialogue practice).
-    pub fn able(&self) -> impl Iterator<Item = (Entity, &'a Character)> + '_ {
-        self.0.iter().filter(|(_, _, v)| v.can_fight()).map(|&(m, c, _)| (m, c))
-    }
-
-    /// The lowest level among those who can fight, which weakens monsters'
-    /// sight from behind.
-    pub fn lowest_level(&self) -> i32 {
-        self.able().map(|(_, c)| i32::from(c.level())).min().unwrap_or(0)
-    }
-
-    /// The party's average level over every member, dead or alive.
-    pub fn average_level(&self) -> u32 {
-        average_level(self.0.iter().map(|(_, c, _)| c.level()))
-    }
-
-    /// The best level of a skill among the members who can act, the first on
-    /// a tie, with whose it is (retail `GetBestPartySkillLevel`:
-    /// `hp_current != 0 && highest_condition < TURNCOAT`).
-    pub fn best(&self, skill: crate::content::characters::Skill) -> Option<(Entity, u32)> {
-        let mut best: Option<(Entity, u32)> = None;
-        for &(member, character, vitals) in &self.0 {
-            let level = character.skill(skill);
-            if vitals.can_act() && best.is_none_or(|(_, best)| level > best) {
-                best = Some((member, level));
-            }
+/// The member with the best Communication among those who can act, the first
+/// on a tie, and that level (retail `GetBestPartySkillLevel`:
+/// `hp_current != 0 && highest_condition < TURNCOAT`).
+pub fn best_communicator<'a>(
+    members: impl Iterator<Item = (Entity, &'a Character, &'a crate::game::characters::Vitals)>,
+) -> Option<(Entity, u32)> {
+    let mut best: Option<(Entity, u32)> = None;
+    for (member, character, vitals) in members {
+        let level = character.skill(crate::content::characters::Skill::Communication);
+        if vitals.can_act() && best.is_none_or(|(_, best)| level > best) {
+            best = Some((member, level));
         }
-        best
     }
+    best
+}
+
+/// The members awake and well enough to fight: the population retail's NPC
+/// rules work with (`hp_current != 0 && highest_condition < ASLEEP`, as in
+/// `CanNpcJoinParty`, the charm and dialogue practice).
+pub fn able_in_world(world: &World) -> impl Iterator<Item = (Entity, &Character)> {
+    members_in_world(world).filter(|(_, _, v)| v.can_fight()).map(|(m, c, _)| (m, c))
+}
+
+/// The lowest level among those who can fight, which weakens monsters' sight
+/// from behind.
+pub fn lowest_level<'a>(
+    members: impl IntoIterator<Item = (&'a Character, &'a crate::game::characters::Vitals)>,
+) -> i32 {
+    members
+        .into_iter()
+        .filter(|(_, v)| v.can_fight())
+        .map(|(c, _)| i32::from(c.level()))
+        .min()
+        .unwrap_or(0)
 }
 
 /// The mean of these levels, fractions kept, one when there are none
@@ -199,7 +170,7 @@ pub fn averaged_places<T>(members: impl IntoIterator<Item = (T, bool)>) -> Vec<T
 pub fn average_level(levels: impl IntoIterator<Item = u8>) -> u32 {
     let (sum, count) =
         levels.into_iter().fold((0, 0), |(sum, count), level| (sum + u32::from(level), count + 1));
-    sum.checked_div(count).unwrap_or(1)
+    sum.max(1) / count.max(1)
 }
 
 /// Actual damage to an actor, after its gameplay consequences have settled.
@@ -245,7 +216,7 @@ pub fn kill_member(
     if vitals.is_dead() && formation.row_of(member).is_some() {
         formation.update_seat(member, true);
     }
-    let lost = hp.saturating_sub(vitals.hp);
+    let lost = hp.max(vitals.hp) - vitals.hp;
     if lost > 0 {
         damage.write(DamageApplied { member, amount: lost, died: vitals.is_dead() });
     }

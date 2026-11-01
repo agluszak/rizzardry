@@ -41,7 +41,7 @@ impl Monster {
     /// `MonsterCastsSpell`): its species' budget and what has been done to
     /// it, never below nothing.
     pub fn spell_budget(&self, kind: &crate::content::species::Species) -> u32 {
-        self.spell_points.saturating_add(kind.magic.budget).max(0) as u32
+        (self.spell_points + kind.magic.budget).max(0) as u32
     }
 
     /// Its resistance to a realm: its species' and its enchantments', at most
@@ -397,7 +397,7 @@ pub fn populate(
     ids: &mut ItemIds,
     rng: &mut GameRng,
 ) {
-    let (species, items, tables) = (&catalogs.species, &catalogs.items, &catalogs.loot);
+    let (species, items) = (&catalogs.species, &catalogs.items);
     let (remembered_monsters, remembered_items, groups, encounters) = match remembered {
         Some(record) => (
             Some((record.monsters, record.unborn)),
@@ -453,7 +453,7 @@ pub fn populate(
         let kind = &species[placed.species];
         let Some(id) = kind.npc else { continue };
         let body = handles.get(placed.species, bodies).unwrap();
-        let place = crate::game::npcs::Placing { placed, tables, id, map, average };
+        let place = crate::game::npcs::Placing { placed, id, map, average };
         let Some(actor) = npcs.place(commands, place, catalogs, &mut placed_actors, rng, |rng| {
             KeptMonster::placed(placed, kind, body, rng)
         }) else {
