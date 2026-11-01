@@ -267,8 +267,7 @@ impl Dialogue<'_, '_> {
     /// The conversation goes on: its speaker is still there to talk and no
     /// fight has begun.
     fn still_open(&self, entity: Entity) -> bool {
-        self.conversations.get(entity).is_ok_and(|(_, c)| self.available(c.actor))
-            && !self.freedom.fighting()
+        self.available(self.conversation(entity).actor) && !self.freedom.fighting()
     }
 
     /// What the NPC says to open its dialogue; meeting it for the first
@@ -362,8 +361,8 @@ impl Dialogue<'_, '_> {
     /// way, a paid answer or an accepted hand-in among them, so their effects
     /// commit as it ends; only their lines are lost.
     fn close(&mut self, entity: Entity) {
-        let Ok((_, mut c)) = self.conversations.get_mut(entity) else { return };
-        let plans: Vec<_> = c
+        let plans: Vec<_> = self
+            .conversation_mut(entity)
             .queue
             .drain(..)
             .filter_map(|step| match step {
@@ -407,17 +406,6 @@ impl Dialogue<'_, '_> {
         })
     }
 
-    /// Another NPC takes over the conversation and says `quote` of its own
-    /// script (retail `ProcessNpcQuoteEntry` for a response naming a
-    /// speaker). Retail finds the NPC by display name among those it knows;
-    /// when none answers to it, the conversation simply waits for the party.
-    fn hand_over(&mut self, entity: Entity, name: &str, quote: u16) {
-        let Some(speaker) = self.npc_named(name) else { return };
-        let mut c = self.conversation_mut(entity);
-        c.actor = speaker;
-        c.queue.push_front(Step::quote(quote));
-    }
-
     fn plan_quote(&self, q: &Quote) -> Result<QuotePlan, (usize, String)> {
         let catalog = &self.content.facts;
         let mut writes = BTreeMap::new();
@@ -449,8 +437,6 @@ impl Dialogue<'_, '_> {
                 DialogueOp::AdjustFaction { faction: Some(faction), delta } => {
                     plan.effects.push(QuoteEffect::Faction { faction: *faction, delta: *delta });
                 }
-                // Retail ignores a faction name it does not know.
-                DialogueOp::AdjustFaction { faction: None, .. } => {}
                 DialogueOp::GiveItem(item) => plan.effects.push(QuoteEffect::GiveItem(*item)),
                 DialogueOp::TakeItem(item) => plan.effects.push(QuoteEffect::TakeItem(*item)),
                 DialogueOp::Conditional { facts, response } => {
@@ -490,10 +476,6 @@ impl Dialogue<'_, '_> {
                     plan.following = Some(Continuation::End);
                     break;
                 }
-                // Retail `DismissNpcFromParty` acts only on an NPC in the party,
-                // and none can join it yet (#117). For any other NPC the action
-                // only locks and releases the world cursor.
-                DialogueOp::LeaveParty { .. } => {}
                 // An NPC no one answers to is left alone, as in retail.
                 DialogueOp::AdjustDisposition { npc, delta } => {
                     if let Some(npc) = self.npc_named(npc) {
@@ -508,11 +490,14 @@ impl Dialogue<'_, '_> {
                 DialogueOp::MonsterScriptLabel(Some(label)) => {
                     return Err((i, format!("unported monster script label {label}")));
                 }
-                DialogueOp::MonsterScriptLabel(None) => {}
                 DialogueOp::Mention { category, text } => {
                     plan.effects.push(QuoteEffect::Mention(*category, text.clone()))
                 }
                 DialogueOp::Close => plan.following = Some(Continuation::End),
+                // Retail ignores a faction name it does not know. Retail
+                // `DismissNpcFromParty` is not ported: an NPC in the party
+                // stays, and for any other the action only locks and releases
+                // the world cursor.
                 _ => {}
             }
         }
@@ -560,8 +545,15 @@ impl Dialogue<'_, '_> {
         self.commit_effects(entity, plan.effects);
         let Some(following) = plan.following else { return };
         let next = match following {
+            // Another NPC takes over the conversation and says its own quote
+            // (retail `ProcessNpcQuoteEntry`). When none answers to the name,
+            // the conversation simply waits for the party.
             Continuation::Quote(Response::Speaker { npc, quote }) => {
-                return self.hand_over(entity, &npc, quote);
+                let Some(speaker) = self.npc_named(&npc) else { return };
+                let mut c = self.conversation_mut(entity);
+                c.actor = speaker;
+                c.queue.push_front(Step::quote(quote));
+                return;
             }
             Continuation::Quote(Response::Fixed(quote)) => Step::quote(quote),
             Continuation::Quote(Response::Random { first, last }) => {
@@ -581,9 +573,7 @@ impl Dialogue<'_, '_> {
                 QuoteEffect::SetFact(id, value) => {
                     let level =
                         self.levels.single().map_or_else(|_| String::new(), |l| l.1.path.clone());
-                    self.story
-                        .set(id, value, &self.content.facts, level)
-                        .expect("planned fact assignment");
+                    self.story.set(id, value, &self.content.facts, level);
                 }
                 QuoteEffect::Mention(category, text) => self.learn_topic(entity, category, &text),
                 QuoteEffect::Gold(amount) => {
@@ -910,16 +900,11 @@ impl Dialogue<'_, '_> {
         let c = self.conversation(entity);
         let actor = c.actor;
         let now = self.clock.ms;
-        let npc = self.npc(actor);
-        let at = match approach {
-            Approach::Charm => npc.charmed_at,
-            Approach::SmallTalk => npc.small_talk_at,
+        let (npc, def) = (self.npc(actor), self.definition(actor));
+        let (at, scale, usage) = match approach {
+            Approach::Charm => (npc.charmed_at, i32::from(def.charm_scale), 5),
+            Approach::SmallTalk => (npc.small_talk_at, i32::from(def.talk_scale), 8),
         };
-        let def = self.definition(actor);
-        let scale = i32::from(match approach {
-            Approach::Charm => def.charm_scale,
-            Approach::SmallTalk => def.talk_scale,
-        });
         if !c.ready() || !c.menu || !approach_ready(at, now) {
             return;
         }
@@ -936,16 +921,10 @@ impl Dialogue<'_, '_> {
         let mut npc = self.npc_mut(actor);
         // Retail narrows the change to a signed byte.
         shift_disposition(&mut npc, delta as i8);
-        let usage = match approach {
-            Approach::Charm => {
-                npc.charmed_at = Some(now);
-                5
-            }
-            Approach::SmallTalk => {
-                npc.small_talk_at = Some(now);
-                8
-            }
-        };
+        match approach {
+            Approach::Charm => npc.charmed_at = Some(now),
+            Approach::SmallTalk => npc.small_talk_at = Some(now),
+        }
         self.practise_communication(&[speaker], usage);
         let band = self.band(actor);
         let answer = match (band, approach) {

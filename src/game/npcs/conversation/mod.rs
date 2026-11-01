@@ -106,22 +106,13 @@ impl StoryFacts {
             .get(id)
             .is_some_and(|f| matches!(f.symbol.as_str(), "FACT_BURZ_SAID130" | "FACT_TEMPLAR"))
     }
-    fn set(
-        &mut self,
-        id: FactId,
-        value: u8,
-        catalog: &FactCatalog,
-        level: String,
-    ) -> Result<(), String> {
-        if !Self::can_set(id, catalog) {
-            return Err(format!("unported fact assignment {id:?}"));
-        }
+    /// Assign a fact [`Self::can_set`] allows.
+    fn set(&mut self, id: FactId, value: u8, catalog: &FactCatalog, level: String) {
         let initial = catalog.get(id).map_or(0, Self::initial);
         let previous = self.values.insert(id, value).unwrap_or(initial);
         if previous != value {
             self.journal.push(JournalEntry { fact: id, was_true: value != 0, level });
         }
-        Ok(())
     }
 }
 #[derive(Debug)]
