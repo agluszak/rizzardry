@@ -31,6 +31,7 @@ pub struct Emission {
 
 /// One particle of an emitter, its child.
 #[derive(Component, Debug)]
+#[require(Visibility)]
 pub struct Particle {
     pub born: Duration,
     integrated: Duration,
@@ -44,6 +45,8 @@ struct ParticleSprite;
 struct ParticleMesh(Handle<Mesh>);
 pub(super) fn plugin(app: &mut App) {
     let mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(Rectangle::new(1.0, 1.0));
+    // Sprites inherit visibility through their particle from the emitter.
+    app.register_required_components::<Emitter, Visibility>();
     app.insert_resource(ParticleMesh(mesh)).add_observer(track_emission).add_systems(
         Update,
         (
