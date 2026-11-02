@@ -15,8 +15,8 @@ use crate::content::spells::{
 };
 use crate::game::characters::Condition;
 use crate::game::magic::casting::Report;
-use crate::game::magic::effects::{self, Field, Victim};
-use crate::game::magic::{LearnedSpells, Outcome, SpellPoints, Strength};
+use crate::game::magic::effects::Field;
+use crate::game::magic::{Outcome, Strength};
 use crate::game::party::body::PartyBody;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::Stance;
@@ -86,10 +86,10 @@ fn in_cone(from: Vec3, toward: Vec3, reach: f32, at: Vec3, distance: f32) -> boo
 /// Whom a cone aimed at `toward` catches, whatever their side (retail
 /// `PopulateSpellTargetMarkers`): the party when its point lies in it, and
 /// the other monsters in it.
-pub(super) fn cone_victims(scene: &Scene, toward: Vec3, reach: f32) -> Vec<Victim> {
+pub(super) fn cone_victims(scene: &Scene, toward: Vec3, reach: f32) -> Vec<Entity> {
     let mut victims = Vec::new();
     if in_cone(scene.from, toward, reach, scene.party_at, scene.party) {
-        victims.extend(scene.members.iter().map(|m| Victim::Member(m.entity)));
+        victims.extend(scene.members.iter().map(|m| m.entity));
     }
     victims.extend(
         scene
@@ -98,7 +98,7 @@ pub(super) fn cone_victims(scene: &Scene, toward: Vec3, reach: f32) -> Vec<Victi
             .filter(|m| {
                 m.entity != scene.caster && in_cone(scene.from, toward, reach, m.at, m.from_caster)
             })
-            .map(|m| Victim::Monster(m.entity)),
+            .map(|m| m.entity),
     );
     victims
 }
@@ -125,7 +125,7 @@ fn castable(
 ) -> bool {
     let silenced = caster.conditions.has(Condition::Silenced);
     spell.monsters_cast
-        && effects::modelled(spell.id)
+        && crate::game::hits::spells::modelled(spell.id)
         && !matches!(
             spell.targeting,
             Targeting::Party | Targeting::Point | Targeting::Item | Targeting::LockOrTrap
@@ -143,7 +143,9 @@ fn castable(
 /// to feel them; retail's group spells ask nothing of the members' side.
 pub(super) fn aims(spell: &SpellDefinition, scene: &Scene) -> Vec<SpellAim> {
     let reach = spell.reach.metres();
-    let worth = |vitals: &crate::game::characters::Vitals| effects::worthwhile(spell.id, vitals);
+    let worth = |vitals: &crate::game::characters::Vitals| {
+        crate::game::hits::spells::worthwhile(spell.id, vitals)
+    };
     let party_reached = scene.sees_party && scene.party <= reach;
     let monsters = |stance: Stance| {
         scene
@@ -279,7 +281,7 @@ fn victims(
     scene: &Scene,
     backfired: bool,
     field: &Field,
-) -> Vec<Victim> {
+) -> Vec<Entity> {
     if spell.targeting == Targeting::Radius {
         let target = if backfired {
             Some(scene.caster)
@@ -316,19 +318,19 @@ fn victims(
             origin,
             spell.radius + spell.radius_per_power * power as f32,
             Some(party_eye),
-            crate::game::magic::targeting::Recipients::Opponents(source),
+            crate::game::hits::reach::Recipients::Opponents(source),
         );
     }
     if backfired {
         return match spell.targeting {
             Targeting::Caster | Targeting::Ally | Targeting::Enemy => {
-                vec![Victim::Monster(scene.caster)]
+                vec![scene.caster]
             }
             _ => scene
                 .monsters
                 .iter()
                 .filter(|m| m.stance == Stance::Friendly)
-                .map(|m| Victim::Monster(m.entity))
+                .map(|m| m.entity)
                 .collect(),
         };
     }
@@ -341,19 +343,19 @@ fn victims(
                 .members
                 .iter()
                 .filter(|m| party_reached && m.stance == Stance::Hostile)
-                .map(|m| Victim::Member(m.entity))
+                .map(|m| m.entity)
                 .chain(
                     scene
                         .monsters
                         .iter()
                         .filter(|m| m.stance == Stance::Hostile && m.from_caster <= reach)
-                        .map(|m| Victim::Monster(m.entity)),
+                        .map(|m| m.entity),
                 )
                 .collect()
         }
-        (_, SpellAim::Party) => scene.members.iter().map(|m| Victim::Member(m.entity)).collect(),
-        (_, SpellAim::Monster(monster)) => vec![Victim::Monster(monster)],
-        (_, SpellAim::Member(member)) => vec![Victim::Member(member)],
+        (_, SpellAim::Party) => scene.members.iter().map(|m| m.entity).collect(),
+        (_, SpellAim::Monster(monster)) => vec![monster],
+        (_, SpellAim::Member(member)) => vec![member],
     }
 }
 
@@ -362,19 +364,21 @@ fn victims(
 /// its power was chosen by) the failure chance, and the spell lands at
 /// once.
 pub(super) fn cast(
+    commands: &mut Commands,
     (spell, power, aim): (&SpellDefinition, u32, SpellAim),
     (kind, budget): (&Species, u32),
     scene: &Scene,
     rng: &mut GameRng,
     field: &mut Field,
-    points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
-) -> (Report, Vec<crate::game::magic::casting::SpellInFlight>) {
+) -> Vec<crate::game::magic::casting::SpellInFlight> {
     let strength = Strength::at(u32::from(kind.level), spell, power, 0);
     let failure = crate::game::magic::spell_failure(budget, spell, power);
     let outcome = crate::game::magic::roll(rng, failure, spell, false, field.underwater);
     let mut flights = Vec::new();
-    let effects = match outcome {
-        Outcome::Fizzled => Vec::new(),
+    let deed = commands.spawn_empty().id();
+    let mut effects = Vec::new();
+    match outcome {
+        Outcome::Fizzled => {}
         _ => {
             let backfired = outcome == Outcome::Backfired;
             let victims = victims(spell, power, aim, scene, backfired, field);
@@ -382,12 +386,10 @@ pub(super) fn cast(
                 SpellAim::Monster(entity) => crate::game::magic::casting::Aim::Monster(entity),
                 SpellAim::Member(entity) => crate::game::magic::casting::Aim::Member(entity),
                 SpellAim::Party | SpellAim::Foes => match victims.first() {
-                    Some(Victim::Member(entity)) => {
-                        crate::game::magic::casting::Aim::Member(*entity)
+                    Some(&entity) if field.members.contains(entity) => {
+                        crate::game::magic::casting::Aim::Member(entity)
                     }
-                    Some(Victim::Monster(entity)) => {
-                        crate::game::magic::casting::Aim::Monster(*entity)
-                    }
+                    Some(&entity) => crate::game::magic::casting::Aim::Monster(entity),
                     None => crate::game::magic::casting::Aim::Monster(scene.caster),
                 },
             };
@@ -396,35 +398,34 @@ pub(super) fn cast(
                 victims: victims.clone(),
                 reflected: false,
             };
-            crate::game::magic::impacts::resolve(
-                scene.caster,
-                crate::game::magic::casting::Origin::Actor(Victim::Monster(scene.caster)),
-                backfired,
-                spell,
-                strength,
+            crate::game::magic::impacts::land(
+                commands,
+                (deed, &mut effects),
+                (scene.caster, crate::game::magic::casting::Origin::Actor(scene.caster), backfired),
+                (spell, strength),
                 &victims,
                 Some(&finish),
                 PartyBody::eye_above(scene.party_at),
-                rng,
                 field,
-                points,
                 &mut flights,
-            )
+            );
         }
+    }
+    let report = Report {
+        caster: scene.caster,
+        spell: spell.id,
+        power,
+        item: None,
+        outcome,
+        effects: Vec::new(),
+        improved: Vec::new(),
     };
-    (
-        Report {
-            caster: scene.caster,
-            spell: spell.id,
-            power,
-            item: None,
-            outcome,
-            effects,
-            improved: std::mem::take(&mut field.improved),
-            repeats: 0,
-        },
-        flights,
-    )
+    commands.entity(deed).insert(crate::game::hits::Deed {
+        act: crate::game::hits::Act::Cast(report),
+        effects,
+        improved: Vec::new(),
+    });
+    flights
 }
 
 #[cfg(test)]

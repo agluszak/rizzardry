@@ -56,8 +56,10 @@ pub(crate) fn cast(
             }
         }
         Outcome::Cast => {
-            let chance = super::effects::condition_chance(level, resistance, strength.against, 0);
-            let saved = super::effects::save_roll(&mut world.resource_mut::<GameRng>(), chance);
+            let chance =
+                crate::game::hits::body::condition_chance(level, resistance, strength.against, 0);
+            let saved =
+                crate::game::hits::body::save_roll(&mut world.resource_mut::<GameRng>(), chance);
             if id == SpellId::MINDREAD {
                 reply = MagicalReply::Quote(if saved {
                     0x69
@@ -68,13 +70,11 @@ pub(crate) fn cast(
                     quote
                 });
             } else if saved {
-                report
-                    .effects
-                    .push(super::Effect::Resisted { victim: super::Victim::Monster(body) });
+                report.effects.push(crate::game::hits::Effect::Resisted { victim: body });
             } else {
                 let amount = strength.power * 7;
                 let amount = amount + amount * strength.boost / 100;
-                let amount = super::effects::resist(
+                let amount = crate::game::hits::body::resist(
                     &mut world.resource_mut::<GameRng>(),
                     amount,
                     resistance.min(100),

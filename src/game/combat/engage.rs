@@ -184,11 +184,9 @@ pub(super) fn engage(
         let reaches = kind.attacks.iter().any(|a| distance <= a.reach.metres());
         let close = kind.attacks.iter().map(|a| a.reach).max().is_some_and(|r| r <= Reach::Short);
         let party_at = PartyBody::feet_below(sight.eye);
-        let toward = |victim: crate::game::magic::effects::Victim| {
-            let turncoat = party
-                .members
-                .get(victim.entity())
-                .is_ok_and(|(_, v)| v.conditions.has(Condition::Turncoat));
+        let toward = |victim: Entity| {
+            let turncoat =
+                party.members.get(victim).is_ok_and(|(_, v)| v.conditions.has(Condition::Turncoat));
             hostility::toward_member(hostility::Stance::Hostile, turncoat)
         };
         let scene = monster_spells::Scene {

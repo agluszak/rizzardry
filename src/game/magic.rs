@@ -17,7 +17,7 @@ pub(crate) mod targeting;
 pub(crate) mod traps;
 pub(crate) mod utilities;
 
-pub use effects::{Effect, Field, Victim};
+pub use effects::Field;
 
 use crate::game::party::Members;
 
@@ -496,6 +496,14 @@ impl Plugin for MagicPlugin {
             );
         // Missiles fly on the fixed step, ahead of the fight's step there
         // (see `CombatPlugin`).
+        // A cast's practice and an auto recast follow its landing.
+        let follow_ups = || {
+            (casting::practise_casts, casting::recast)
+                .in_set(crate::game::hits::Resolution)
+                .after(crate::game::hits::spells::boil_blood)
+                .before(crate::game::hits::report_deeds)
+        };
+        app.add_systems(Update, follow_ups()).add_systems(FixedUpdate, follow_ups());
     }
 }
 
@@ -657,31 +665,34 @@ pub fn accept_magic(
                 monsters: &[],
                 group_of: &|m| vec![m],
             };
-            casting::perform(caster, choice, &situation, &mut points, &mut rng, field)
+            casting::perform(
+                &mut commands,
+                caster,
+                choice,
+                &situation,
+                &mut points,
+                &mut rng,
+                field,
+            )
         });
-        context.news.write(match performed {
-            Ok((report, flights)) => {
-                context.flight_order.launch(&mut commands, flights, level);
-                casting::MagicNews::Done(report)
+        match performed {
+            Ok(flights) => context.flight_order.launch(&mut commands, flights, level),
+            Err(refusal) => {
+                context.news.write(casting::MagicNews::Refused { caster, refusal });
             }
-            Err(refusal) => casting::MagicNews::Refused { caster, refusal },
-        });
+        }
     }
 }
 
-/// Fly spell missiles and resolve them on arrival (retail
+/// Fly spell missiles and land them on arrival (retail
 /// `ResolveSpellMissileHit`): on the victims captured at the cast; one that
-/// died meanwhile is missed. Kills in a fight count for it.
+/// died meanwhile is missed. Each impact is a deed of its own.
 pub fn deliver_spells(
-    mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
     party: Single<&avian3d::prelude::Position, With<PartyBody>>,
     time: Res<Time<Fixed>>,
     mut flights: Query<(Entity, &mut casting::SpellInFlight)>,
     (mut members, mut monsters): (Members, MonsterDamage),
     mut context: MagicContext,
-    mut rng: ResMut<GameRng>,
-    mut battle: Option<Single<&mut Battle>>,
-    mut combat_news: MessageWriter<crate::game::combat::CombatNews>,
     mut commands: Commands,
     clock: Res<GameClock>,
 ) {
@@ -711,32 +722,26 @@ pub fn deliver_spells(
             commands.entity(entity).despawn();
         }
         let mut secondary = Vec::new();
-        let (effects, improved) = context.resolve(clock.ms, &mut members, &mut monsters, |field| {
+        let deed = commands.spawn_empty().id();
+        let mut effects = Vec::new();
+        context.resolve(clock.ms, &mut members, &mut monsters, |field| {
             let spell = &field.spells[flight.spell];
-            let effects = impacts::resolve(
-                flight.caster,
-                flight.origin,
-                false,
-                spell,
-                flight.strength,
+            impacts::land(
+                &mut commands,
+                (deed, &mut effects),
+                (flight.caster, flight.origin, false),
+                (spell, flight.strength),
                 &flight.victims,
                 flight.finish.as_ref(),
                 party_at,
-                &mut rng,
                 field,
-                &mut points,
                 &mut secondary,
             );
-            (effects, std::mem::take(&mut field.improved))
         });
-        if let Some(battle) = battle.as_mut() {
-            battle.credit_kills(&effects, &mut combat_news);
-        }
-        context.news.write(casting::MagicNews::Landed {
-            caster: flight.caster,
-            spell: flight.spell,
+        commands.entity(deed).insert(crate::game::hits::Deed {
+            act: crate::game::hits::Act::Missile { caster: flight.caster, spell: flight.spell },
             effects,
-            improved,
+            improved: Vec::new(),
         });
         for mut reflection in secondary {
             context.flight_order.stamp(&mut reflection);
@@ -839,7 +844,9 @@ mod tests {
             .add_message::<MagicRequest>()
             .add_message::<casting::MagicNews>()
             .add_message::<crate::game::world::hostility::Provocation>()
-            .add_systems(Update, accept_magic);
+            .add_message::<crate::game::combat::CombatNews>()
+            .add_plugins(crate::game::hits::HitsPlugin)
+            .add_systems(Update, accept_magic.before(crate::game::hits::Resolution));
         let potion = ItemDefinition {
             id: ItemId(0),
             name: "Potion of Light Heal".into(),
@@ -1014,7 +1021,9 @@ mod tests {
                 .add_message::<MagicRequest>()
                 .add_message::<MagicNews>()
                 .add_message::<crate::game::world::hostility::Provocation>()
-                .add_systems(Update, accept_magic);
+                .add_message::<crate::game::combat::CombatNews>()
+                .add_plugins(crate::game::hits::HitsPlugin)
+                .add_systems(Update, accept_magic.before(crate::game::hits::Resolution));
             let definition = ItemDefinition {
                 id: ItemId(0),
                 class: EquipClass::Potion,

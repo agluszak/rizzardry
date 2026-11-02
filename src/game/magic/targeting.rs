@@ -1,22 +1,9 @@
 //! Radius eligibility and visibility are one operation shared by casts,
 //! secondary explosions and moving auras, separate from damage application.
-use super::{Field, Victim};
+use super::Field;
+use crate::game::hits::reach::Recipients;
 use crate::game::world::hostility::Stance;
 use bevy::prelude::*;
-
-#[derive(Clone, Copy)]
-pub(crate) enum Recipients {
-    Opponents(Stance),
-    Everyone,
-}
-impl Recipients {
-    fn admits(self, side: Stance) -> bool {
-        match self {
-            Self::Opponents(source) => source.opposes(side),
-            Self::Everyone => true,
-        }
-    }
-}
 
 pub(crate) fn radius(
     world: &Field,
@@ -25,7 +12,7 @@ pub(crate) fn radius(
     radius: f32,
     party_at: Option<Vec3>,
     recipients: Recipients,
-) -> Vec<Victim> {
+) -> Vec<Entity> {
     let obstacles = world.visibility;
     if radius <= 0.0 {
         return vec![];
@@ -36,22 +23,15 @@ pub(crate) fn radius(
         let centre_of_party = crate::game::party::body::PartyBody::centre(eye);
         centre_of_party.distance(centre) <= radius && clear(eye)
     }) {
-        victims.extend(
-            world
-                .party
-                .iter()
-                .copied()
-                .filter(|&member| {
-                    world.members.get(member).is_ok_and(|(_, v, ..)| {
-                        !v.is_dead()
-                            && recipients.admits(crate::game::world::hostility::own_stance(
-                                Stance::Friendly,
-                                v.conditions.has(crate::game::characters::Condition::Turncoat),
-                            ))
-                    })
-                })
-                .map(Victim::Member),
-        );
+        victims.extend(world.party.iter().copied().filter(|&member| {
+            world.members.get(member).is_ok_and(|(_, v, ..)| {
+                !v.is_dead()
+                    && recipients.admits(crate::game::world::hostility::own_stance(
+                        Stance::Friendly,
+                        v.conditions.has(crate::game::characters::Condition::Turncoat),
+                    ))
+            })
+        }));
     }
     let mut found: Vec<_> = world
         .monsters
@@ -66,6 +46,6 @@ pub(crate) fn radius(
         })
         .collect();
     found.sort_unstable();
-    victims.extend(found.into_iter().map(|(_, entity)| Victim::Monster(entity)));
+    victims.extend(found.into_iter().map(|(_, entity)| entity));
     victims
 }

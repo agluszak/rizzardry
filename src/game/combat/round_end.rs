@@ -139,6 +139,7 @@ pub fn finish_round(
         species,
     );
     let over = end_round(
+        &mut commands,
         (entity, &mut battle),
         combatants,
         &mut clock,
@@ -179,6 +180,7 @@ pub fn finish_round(
 /// Returns whether the fight is over: no hostile is left or nobody could
 /// attack for two rounds.
 pub(super) fn end_round(
+    commands: &mut Commands,
     (fight, battle): (Entity, &mut Battle),
     combatants: &[Entity],
     clock: &mut GameClock,
@@ -192,6 +194,7 @@ pub(super) fn end_round(
     staying: &[Entity],
 ) -> bool {
     pass_round(
+        commands,
         (fight, battle),
         combatants,
         clock,
@@ -199,7 +202,6 @@ pub(super) fn end_round(
         roster,
         (members, damage),
         party_eye,
-        news,
         magic,
     );
     // Poison may have killed the last of the party as the time passed: that
@@ -221,6 +223,7 @@ pub(super) fn end_round(
 /// `AdvanceCombatRound`, `AdvanceTimedEffects`). A round takes one aging
 /// tick.
 pub(super) fn pass_round(
+    commands: &mut Commands,
     (fight, battle): (Entity, &mut Battle),
     combatants: &[Entity],
     clock: &mut GameClock,
@@ -228,7 +231,6 @@ pub(super) fn pass_round(
     roster: &PartyRoster,
     (members, damage): (&mut Members, &mut MonsterDamage),
     party_eye: Vec3,
-    news: &mut MessageWriter<CombatNews>,
     magic: &mut BattleMagic,
 ) {
     let ticks = clock.advance(crate::game::time::AGING_TICK_MS);
@@ -277,24 +279,9 @@ pub(super) fn pass_round(
     }
     // AdvanceTimedEffects applies offensive slots after personal aging and
     // before expiring the slots. Their final remaining turn still pulses.
-    let reports = magic.context.resolve(clock.ms, members, damage, |field| {
-        crate::game::magic::effects::pulse_clouds(
-            combatants,
-            party_eye,
-            rng,
-            field,
-            &mut magic.points,
-        )
+    magic.context.resolve(clock.ms, members, damage, |field| {
+        pulse_clouds(commands, combatants, party_eye, field);
     });
-    for (spell, effects) in reports {
-        battle.credit_kills(&effects, news);
-        battle.this_round.attacked |= crate::game::magic::effects::affected(&effects);
-        magic.context.news.write(casting::MagicNews::Triggered {
-            spell,
-            effects,
-            improved: vec![],
-        });
-    }
     magic.context.enchantments.0.age(ticks.aging);
     for &entity in combatants {
         damage.vitals_mut(entity).enchantments.age(ticks.aging);
@@ -377,4 +364,59 @@ pub(super) fn award_victory(
     } else {
         CombatNews::Over
     });
+}
+
+/// Pulse the offensive clouds (retail `AdvanceTimedEffects`): each of the
+/// party's on its living members, each monster's own on it, and Ring of
+/// Fire on the monsters close around the party, sampled anew each pulse.
+/// Each cloud's pulse is a deed with no caster.
+fn pulse_clouds(
+    commands: &mut Commands,
+    combatants: &[Entity],
+    party_eye: Vec3,
+    field: &mut crate::game::magic::effects::Field,
+) {
+    use crate::content::spells::SpellId;
+    use crate::game::hits::specials::CloudHit;
+    use crate::game::hits::{Act, Deed, HitOf, Strikes};
+    use crate::game::magic::Strength;
+    let pulse = |commands: &mut Commands, spell: SpellId, strength, victims: &[Entity]| {
+        let deed = commands.spawn(Deed::new(Act::Triggered { spell })).id();
+        for &victim in victims {
+            commands.spawn((CloudHit { spell, strength }, Strikes(victim), HitOf(deed)));
+        }
+    };
+    let actors = std::iter::once(None).chain(combatants.iter().copied().map(Some));
+    for actor in actors {
+        for id in crate::game::magic::enchantments::OFFENSIVE {
+            let effect = match actor {
+                None => field.enchantments.get(id).copied(),
+                Some(actor) => Some(field.vitals(actor))
+                    .filter(|vitals| !vitals.is_dead())
+                    .and_then(|vitals| vitals.enchantments.get(id).copied()),
+            };
+            let Some(effect) = effect else { continue };
+            let spell = &field.spells[id];
+            let strength = Strength::at(0, spell, effect.power, effect.boost);
+            let victims = actor.map_or_else(|| field.party.to_vec(), |actor| vec![actor]);
+            pulse(commands, id, strength, &victims);
+        }
+    }
+    // Ring of Fire follows the party and samples current nearby actors on
+    // every pulse, including actors that entered its radius after casting.
+    if let Some(effect) = field.enchantments.get(SpellId::RING_OF_FIRE).copied() {
+        let centre = crate::game::party::body::PartyBody::centre(party_eye);
+        let reach =
+            crate::game::party::body::RADIUS + crate::content::species::Reach::Short.metres();
+        let victims = crate::game::magic::targeting::radius(
+            field,
+            centre,
+            centre,
+            reach,
+            None,
+            crate::game::hits::reach::Recipients::Opponents(hostility::Stance::Friendly),
+        );
+        let strength = Strength { power: effect.power, boost: 0, against: effect.power * 3 };
+        pulse(commands, SpellId::RING_OF_FIRE, strength, &victims);
+    }
 }

@@ -67,22 +67,21 @@ pub(super) fn party_turn(
     match work.action {
         RoundAction::Breathe(target) => {
             battle.this_round.party[index].end();
-            breathe(battle, index, target, combatants, rng, (members, damage), party, magic, news);
-        }
-        RoundAction::Magic(choice) => {
-            battle.this_round.party[index].end();
-            cast(
+            breathe(
                 commands,
                 battle,
                 index,
-                choice,
+                target,
                 combatants,
-                rng,
                 (members, damage),
                 party,
                 magic,
                 news,
             );
+        }
+        RoundAction::Magic(choice) => {
+            battle.this_round.party[index].end();
+            cast(commands, battle, index, choice, combatants, rng, (members, damage), party, magic);
         }
         RoundAction::Attack { .. } => {
             let BattleMagic { context, points, moving, .. } = magic;
@@ -110,27 +109,24 @@ pub(super) fn party_turn(
 /// A member breathes at their chosen target; a breath that cannot be made
 /// falls back to defending.
 pub(super) fn breathe(
+    commands: &mut Commands,
     battle: &mut Battle,
     index: usize,
     target: Entity,
     combatants: &[Entity],
-    rng: &mut GameRng,
     (members, damage): (&mut Members, &mut MonsterDamage),
     party: &PartyView,
     magic: &mut BattleMagic,
     news: &mut MessageWriter<CombatNews>,
 ) {
     let member = battle.this_round.party[index].actor;
-    let result =
-        member_acts(combatants, (members, damage), party, magic, |situation, field, points| {
-            breath::execute(member, target, situation, rng, field, points)
-        });
+    let result = member_acts(combatants, (members, damage), party, magic, |situation, field, _| {
+        breath::execute(commands, member, target, situation, field)
+    });
     match result {
-        Ok(effects) => {
+        Ok(()) => {
             battle.this_round.attacked = true;
             news.write(CombatNews::Breathed { actor: member });
-            battle.credit_kills(&effects, news);
-            news.write(CombatNews::Effects(effects));
         }
         Err(_) => battle.this_round.party[index].action = RoundAction::Defend,
     }
@@ -149,7 +145,6 @@ pub(super) fn cast(
     (members, damage): (&mut Members, &mut MonsterDamage),
     party: &PartyView,
     magic: &mut BattleMagic,
-    news: &mut MessageWriter<CombatNews>,
 ) {
     let member = battle.this_round.party[index].actor;
     let point_cast = choice
@@ -170,13 +165,11 @@ pub(super) fn cast(
         });
         return;
     }
-    match member_casts(combatants, member, choice, rng, members, damage, party, magic) {
-        Ok((report, flights)) => {
+    match member_casts(commands, combatants, member, choice, rng, members, damage, party, magic) {
+        Ok(flights) => {
             battle.this_round.attacked = true;
-            battle.credit_kills(&report.effects, news);
             let level = magic.context.level();
             magic.context.flight_order.launch(commands, flights, level);
-            magic.context.news.write(MagicNews::Done(report));
         }
         Err(refusal) => {
             battle.this_round.party[index].action = RoundAction::Defend;
@@ -213,6 +206,7 @@ pub(super) fn visible_monsters(
 
 /// A member casts or uses an item at their initiative.
 pub(super) fn member_casts(
+    commands: &mut Commands,
     combatants: &[Entity],
     member: Entity,
     choice: MagicChoice,
@@ -221,9 +215,9 @@ pub(super) fn member_casts(
     damage: &mut MonsterDamage,
     party: &PartyView,
     magic: &mut BattleMagic,
-) -> Result<(casting::Report, Vec<casting::SpellInFlight>), casting::Refusal> {
+) -> Result<Vec<casting::SpellInFlight>, casting::Refusal> {
     member_acts(combatants, (members, damage), party, magic, |situation, field, points| {
-        casting::perform(member, choice, situation, points, rng, field)
+        casting::perform(commands, member, choice, situation, points, rng, field)
     })
 }
 

@@ -8,7 +8,6 @@
 //! it advances (or charges when hurt) and acts again later in the round.
 
 use super::*;
-use crate::game::magic::effects::Victim;
 use hostility::Stance;
 
 /// What a monster settled on doing with its action besides striking.
@@ -23,8 +22,10 @@ enum Plan<'a> {
     Special {
         kind: crate::content::species::SpecialAttackKind,
         cooldown: u8,
-        breather: crate::game::magic::effects::Breather,
-        victims: Vec<Victim>,
+        /// Its maker's level and stamina as it decided, which its strength
+        /// follows.
+        breather: (u8, crate::game::characters::Pool),
+        victims: Vec<Entity>,
     },
 }
 
@@ -53,18 +54,17 @@ enum Decision<'a> {
 /// by whether they have turned.
 pub(super) fn stance_toward(
     mine: hostility::Allegiance,
-    victim: Victim,
+    victim: Entity,
     members: &Members,
     damage: &MonsterDamage,
     now: u64,
     species: &MonsterCatalog,
 ) -> Stance {
-    match victim {
-        Victim::Member(member) => {
-            let (_, vitals, ..) = members.get(member).unwrap();
+    match members.get(victim) {
+        Ok((_, vitals, ..)) => {
             hostility::toward_member(mine.stance, vitals.conditions.has(Condition::Turncoat))
         }
-        Victim::Monster(other) => hostility::between(mine, allegiance(other, damage, now, species)),
+        Err(_) => hostility::between(mine, allegiance(victim, damage, now, species)),
     }
 }
 
@@ -179,7 +179,7 @@ fn decide<'a>(
     mine: hostility::Allegiance,
 ) -> (Decision<'a>, Option<Interrupt>) {
     let monster = battle.this_round.monsters[index].actor;
-    let toward = |victim: Victim| stance_toward(mine, victim, members, damage, party.now, species);
+    let toward = |victim: Entity| stance_toward(mine, victim, members, damage, party.now, species);
     let (body, at, walker, .., vitals) = damage.monsters().get(monster).unwrap();
     let kind = &species[body.species];
     let mut decision = Decision::Fight { waits: false };
@@ -252,11 +252,7 @@ fn decide<'a>(
             }
             None => Vec::new(),
         };
-        let breather = crate::game::magic::effects::Breather {
-            level: kind.level,
-            stamina: vitals.stamina.current,
-            max_stamina: vitals.stamina.max,
-        };
+        let breather = (kind.level, vitals.stamina);
         decision = Decision::Plan(Box::new(Plan::Special {
             kind: special_kind,
             cooldown: special.cooldown,
@@ -311,7 +307,7 @@ fn decide<'a>(
                 .filter(|&other| {
                     let (o, .., o_vitals) = damage.monsters().get(other).unwrap();
                     other != monster
-                        && toward(Victim::Monster(other)) == Stance::Friendly
+                        && toward(other) == Stance::Friendly
                         && !o_vitals.is_dead()
                         && near(other, reach)
                         && species[o.species].level > kind.level
@@ -339,11 +335,9 @@ fn decide<'a>(
     };
     let strikes_friend = kind.attacks.iter().any(|attack| {
         let reach = attack.reach.metres();
-        (nearest <= reach && roster.iter().any(|m| toward(Victim::Member(m)) == Stance::Friendly))
+        (nearest <= reach && roster.iter().any(|m| toward(m) == Stance::Friendly))
             || combatants.iter().any(|&other| {
-                other != monster
-                    && toward(Victim::Monster(other)) == Stance::Friendly
-                    && near(other, reach)
+                other != monster && toward(other) == Stance::Friendly && near(other, reach)
             })
     });
     let berserk = battle.this_round.monsters[index].berserk;
@@ -409,16 +403,14 @@ fn carry_out(
     (news, summons): (&mut MessageWriter<CombatNews>, &mut MessageWriter<summon::Summon>),
 ) {
     let monster = battle.this_round.monsters[index].actor;
-    let BattleMagic { context, points, .. } = magic;
+    let BattleMagic { context, .. } = magic;
     match plan {
         Plan::Spell { spell, power, aim, scene, caster } => {
-            let (report, flights) = context.resolve(party.now, members, damage, |field| {
-                monster_spells::cast((&spell, power, aim), caster, &scene, rng, field, points)
+            let flights = context.resolve(party.now, members, damage, |field| {
+                monster_spells::cast(commands, (&spell, power, aim), caster, &scene, rng, field)
             });
-            battle.credit_kills(&report.effects, news);
             let level = context.level();
             context.flight_order.launch(commands, flights, level);
-            context.news.write(crate::game::magic::casting::MagicNews::Done(report));
         }
         Plan::Special { kind, cooldown, breather, victims } => {
             battle.this_round.monsters[index].special = true;
@@ -427,22 +419,13 @@ fn carry_out(
             if let Some(species) = kind.summons() {
                 summons.write(summon::Summon { summoner: monster, species });
             }
-            let effects = context.resolve(party.now, members, damage, |field| {
-                crate::game::magic::effects::special_attack(
-                    crate::game::magic::effects::special(kind),
-                    breather,
-                    &victims,
-                    rng,
-                    field,
-                    points,
-                )
-            });
-            if !effects.is_empty() {
-                news.write(CombatNews::Effects(effects));
-            }
+            let deed =
+                commands.spawn(crate::game::hits::Deed::new(crate::game::hits::Act::Fight)).id();
+            let definition = crate::game::hits::specials::special(kind);
+            crate::game::hits::specials::breathe(commands, deed, definition, breather, &victims);
             battle.cooldowns.retain(|&(m, _)| m != monster);
             battle.cooldowns.push((monster, cooldown));
-            damage.vitals_mut(monster).tire(breather.max_stamina / 10);
+            damage.vitals_mut(monster).tire(breather.1.max / 10);
         }
     }
 }
@@ -488,14 +471,7 @@ fn strike(
             .iter()
             .filter_map(|&entity| {
                 let (_, at, .., other) = damage.monsters().get(entity).unwrap();
-                let foe = stance_toward(
-                    mine,
-                    Victim::Monster(entity),
-                    members,
-                    damage,
-                    party.now,
-                    species,
-                );
+                let foe = stance_toward(mine, entity, members, damage, party.now, species);
                 (entity != monster && !other.is_dead() && foe == wanted)
                     .then_some((here.translation().distance_squared(at.translation()), entity))
             })

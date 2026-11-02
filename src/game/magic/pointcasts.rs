@@ -170,7 +170,8 @@ fn lure(
     for old in old {
         world.despawn(old);
     }
-    let turns = super::effects::duration(&mut world.resource_mut::<GameRng>(), spell, strength);
+    let turns =
+        crate::game::hits::spells::duration(&mut world.resource_mut::<GameRng>(), spell, strength);
     let lure = world
         .spawn((
             Lure { expires: now + u64::from(turns) * AGING_TICK_MS },
@@ -214,7 +215,7 @@ fn lure(
             vitals,
             crate::content::characters::Realm::Mental,
         );
-        let chance = super::effects::condition_chance(
+        let chance = crate::game::hits::body::condition_chance(
             u32::from(kind.level),
             resistance,
             strength.against,
@@ -225,11 +226,12 @@ fn lure(
         if !clear {
             continue;
         }
-        let response = if super::effects::save_roll(&mut world.resource_mut::<GameRng>(), chance) {
-            LureResponse::Resisted
-        } else {
-            LureResponse::Controlled
-        };
+        let response =
+            if crate::game::hits::body::save_roll(&mut world.resource_mut::<GameRng>(), chance) {
+                LureResponse::Resisted
+            } else {
+                LureResponse::Controlled
+            };
         let group =
             world.get::<GroupMember>(entity).and_then(|group| world.get::<GroupMembers>(group.0));
         let affected = if !fighting {
@@ -311,7 +313,7 @@ fn summon_elemental(
                 [realm];
         let turns = world.resource_scope(|world, mut rng: Mut<GameRng>| {
             let definition = &world.resource::<Catalogs>().spells[buff];
-            super::effects::duration(&mut rng, definition, strength)
+            crate::game::hits::spells::duration(&mut rng, definition, strength)
         });
         world
             .get_mut::<crate::game::characters::Vitals>(elemental)

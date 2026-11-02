@@ -18,7 +18,8 @@ use crate::content::characters::{Skill, Trait};
 use crate::content::items::{AttackEffect, AttackMode};
 use crate::content::species::{Reach, Species};
 use crate::game::characters::{Character, CharacterStats, Condition, Vitals};
-use crate::game::magic::effects::{self, Effect, Field, Victim};
+use crate::game::hits::Effect;
+use crate::game::magic::effects::{self, Field};
 use crate::game::magic::{LearnedSpells, SpellPoints};
 use crate::game::party::body;
 use crate::game::party::formation::{self, Row};
@@ -51,7 +52,7 @@ impl Fight<'_, '_, '_> {
 /// `bystanders` it may fumble onto at the `odds` it has.
 enum Delivery {
     Shot { from: Vec3, blind: bool, through: bool },
-    Swing { bystanders: Vec<Victim>, odds: i32 },
+    Swing { bystanders: Vec<Entity>, odds: i32 },
 }
 
 /// Where an attack aimed at `target` lands, if anywhere: a shot scatters
@@ -62,7 +63,7 @@ fn land(
     rng: &mut GameRng,
     field: &Field,
     fight: &Fight,
-    (target, aim): (Victim, i32),
+    (target, aim): (Entity, i32),
     delivery: Delivery,
     surprise: &mut Surprise,
 ) -> Result<Option<Landing>, ()> {
@@ -103,7 +104,7 @@ fn land(
 /// Whoever a swing landed on, and how.
 #[derive(Clone, Copy)]
 struct Landing {
-    victim: Victim,
+    victim: Entity,
     roll: u32,
     /// It struck whatever its aim: a roll of 5 or under, a fumble or a
     /// missile that flew true.
@@ -126,14 +127,20 @@ struct Tally {
 }
 
 impl Tally {
-    fn struck(&mut self, struck: Option<Effect>, by_party: bool) -> u32 {
+    /// Count a blow's damage; a kill by the party of a monster (one with
+    /// experience to give) is credited, any other death announced.
+    fn struck(
+        &mut self,
+        struck: Option<Effect>,
+        by_party: bool,
+        members: &crate::game::party::Members,
+    ) -> u32 {
         let Some(Effect::Damaged { victim, outcome }) = struck else { return 0 };
         if outcome.died {
-            match victim {
-                Victim::Monster(monster) if by_party => {
-                    self.kills.push((monster, outcome.experience));
-                }
-                Victim::Monster(e) | Victim::Member(e) => self.deaths.push(e),
+            if by_party && !members.contains(victim) {
+                self.kills.push((victim, outcome.experience));
+            } else {
+                self.deaths.push(victim);
             }
         }
         outcome.damage
@@ -172,36 +179,29 @@ fn razor_backlash(
     field: &mut Field,
     fight: &Fight,
     battle: &Battle,
-    defender: Victim,
-    attacker: Victim,
+    defender: Entity,
+    attacker: Entity,
     tally: &mut Tally,
     news: &mut MessageWriter<CombatNews>,
 ) {
     use crate::content::spells::SpellId;
     let charge = field.vitals_mut(defender).enchantments.spend_charge(SpellId::RAZOR_CLOAK);
     let Some(charge) = charge else { return };
-    let rolled = effects::magnitude(
+    let rolled = crate::game::hits::spells::magnitude(
         rng,
         field.spells[SpellId::RAZOR_CLOAK].dice,
         crate::game::magic::Strength { power: charge.power, boost: 0, against: 0 },
     );
-    let amount = match attacker {
-        Victim::Member(member) => {
-            Some(member_defence(battle, field, fight, member).reduce(rolled as i32))
-        }
-        Victim::Monster(monster) => {
-            monster_defence(field, fight, monster).map(|defence| defence.reduce(rolled as i32))
-        }
+    let defence = if field.members.contains(attacker) {
+        Some(member_defence(battle, field, fight, attacker))
+    } else {
+        monster_defence(field, fight, attacker)
     };
-    let Some(amount) = amount else { return };
+    let Some(amount) = defence.map(|defence| defence.reduce(rolled as i32)) else { return };
     let result = effects::hurt(rng, field, attacker, amount);
-    let damage = tally.struck(result, matches!(defender, Victim::Member(_)));
-    news.write(CombatNews::Result {
-        attacker: defender.entity(),
-        target: attacker.entity(),
-        hits: 1,
-        damage,
-    });
+    let by_party = field.members.contains(defender);
+    let damage = tally.struck(result, by_party, field.members);
+    news.write(CombatNews::Result { attacker: defender, target: attacker, hits: 1, damage });
 }
 
 /// Where a monster is struck: the middle of its body.
@@ -258,34 +258,28 @@ fn victim_defence<'a>(
     battle: &Battle,
     field: &Field<'a, '_, '_, '_, '_, '_, '_>,
     fight: &Fight,
-    victim: Victim,
+    victim: Entity,
 ) -> Option<(Defence<'a>, Option<(Entity, Character)>)> {
-    match victim {
-        Victim::Monster(entity) => Some((monster_defence(field, fight, entity)?, None)),
-        Victim::Member(entity) => {
-            let defence = member_defence(battle, field, fight, entity);
-            let (profile, ..) = field.members.get(entity).unwrap();
-            Some((defence, Some((entity, profile.clone()))))
+    match field.members.get(victim) {
+        Ok((profile, ..)) => {
+            let profile = profile.clone();
+            let defence = member_defence(battle, field, fight, victim);
+            Some((defence, Some((victim, profile))))
         }
+        Err(_) => Some((monster_defence(field, fight, victim)?, None)),
     }
 }
-fn victim_body(field: &Field, fight: &Fight, victim: Victim) -> Option<(Vec3, f32, f32)> {
-    match victim {
-        Victim::Member(_) => {
-            if field.vitals(victim).is_dead() {
-                return None;
-            }
-            Some((body::PartyBody::centre(fight.party.eye), body::RADIUS, body::RADIUS))
-        }
-        Victim::Monster(entity) => {
-            let (monster, at, walker, ..) = field.monsters.monsters().get(entity).unwrap();
-            Some((
-                body_centre(feet(at.translation(), walker), monster),
-                monster.body.radius,
-                monster.body.eye_height * 0.5,
-            ))
-        }
+fn victim_body(field: &Field, fight: &Fight, victim: Entity) -> Option<(Vec3, f32, f32)> {
+    if let Ok((monster, at, walker, ..)) = field.monsters.monsters().get(victim) {
+        return Some((
+            body_centre(feet(at.translation(), walker), monster),
+            monster.body.radius,
+            monster.body.eye_height * 0.5,
+        ));
     }
+    // The party's members share its body.
+    (!field.vitals(victim).is_dead())
+        .then(|| (body::PartyBody::centre(fight.party.eye), body::RADIUS, body::RADIUS))
 }
 
 /// A guard may take a blow that lands on its ward (retail
@@ -300,10 +294,13 @@ fn intercept(
     rng: &mut GameRng,
     field: &mut Field,
     (attacker, surprise): (i32, &mut Surprise),
-    victim: Victim,
+    victim: Entity,
     news: &mut MessageWriter<CombatNews>,
-) -> Victim {
-    let Victim::Monster(ward) = victim else { return victim };
+) -> Entity {
+    if field.members.contains(victim) {
+        return victim;
+    }
+    let ward = victim;
     let species = field.species;
     let monsters = field.monsters.monsters();
     let able: Vec<(usize, i32)> = battle
@@ -348,7 +345,7 @@ fn intercept(
     field.monsters.vitals_mut(guard).tire(tired);
     *surprise = Surprise::default();
     news.write(CombatNews::Intercepts { guard, ward });
-    Victim::Monster(guard)
+    guard
 }
 
 /// Who a member's swing could go astray onto (retail
@@ -360,14 +357,14 @@ fn member_bystanders(
     member: Entity,
     hand: &Hand,
     target: Entity,
-) -> Vec<Victim> {
+) -> Vec<Entity> {
     let formation = &**field.formation;
-    let mut bystanders: Vec<Victim> = field
+    let mut bystanders: Vec<Entity> = field
         .party
         .iter()
         .filter(|&&m| field.members.get(m).is_ok_and(|(_, v, ..)| !v.is_dead()))
         .filter(|&&m| m == member || hand.reach > Reach::Touch || !formation.screens(member, m))
-        .map(|&m| Victim::Member(m))
+        .copied()
         .collect();
     for &entity in fight.combatants {
         let (monster, at, walker, .., vitals) = field.monsters.monsters().get(entity).unwrap();
@@ -377,7 +374,7 @@ fn member_bystanders(
             && field.monsters.active(entity)
             && fight.party.reaches(formation, member, at.translation(), hand.reach, distance)
         {
-            bystanders.push(Victim::Monster(entity));
+            bystanders.push(entity);
         }
     }
     bystanders
@@ -392,19 +389,19 @@ fn monster_bystanders(
     attacker: Entity,
     reach: Reach,
     target: Entity,
-) -> Vec<Victim> {
+) -> Vec<Entity> {
     let monsters = field.monsters.monsters();
     let (monster, at, walker, ..) = monsters.get(attacker).unwrap();
     let here = feet(at.translation(), walker);
     let distance = party_distance(fight.party.eye, monster, here);
     let formation = &**field.formation;
-    let mut bystanders: Vec<Victim> = field
+    let mut bystanders: Vec<Entity> = field
         .party
         .iter()
         .filter(|&&m| m != target)
         .filter(|&&m| field.members.get(m).is_ok_and(|(_, v, ..)| !v.is_dead()))
         .filter(|&&m| fight.party.reaches(formation, m, at.translation(), reach, distance))
-        .map(|&m| Victim::Member(m))
+        .copied()
         .collect();
     for &entity in fight.combatants {
         let (other, other_at, other_walker, .., vitals) = monsters.get(entity).unwrap();
@@ -413,7 +410,7 @@ fn monster_bystanders(
         }
         let gap = monster.gap(here, other, feet(other_at.translation(), other_walker));
         if entity != target && (entity == attacker || gap <= reach.metres()) {
-            bystanders.push(Victim::Monster(entity));
+            bystanders.push(entity);
         }
     }
     bystanders
@@ -479,7 +476,7 @@ fn member_target(
     field: &Field,
     fight: &Fight,
     rng: &mut GameRng,
-) -> Option<Victim> {
+) -> Option<Entity> {
     if field
         .members
         .get(member)
@@ -495,14 +492,13 @@ fn member_target(
                         !vitals.is_dead() && !vitals.conditions.has(Condition::Turncoat)
                     })
             })
-            .map(Victim::Member)
             .collect();
         if let Some((target, _)) = melee_target(member, hand, field, fight) {
-            targets.push(Victim::Monster(target));
+            targets.push(target);
         }
         return (!targets.is_empty()).then(|| targets[rng.below(targets.len() as u32) as usize]);
     }
-    melee_target(member, hand, field, fight).map(|(entity, _)| Victim::Monster(entity))
+    melee_target(member, hand, field, fight).map(|(entity, _)| entity)
 }
 
 /// One of a member's attacks with the hand due (retail
@@ -579,21 +575,20 @@ pub(super) fn member_attacks(
     }
     let mut surprise = Surprise { unaware: false, natural: backstab };
     if hand.reach <= Reach::Short
-        && let Victim::Monster(target) = target
         && let Ok((_, at, ..)) = field.monsters.monsters().get(target)
     {
         surprise.unaware = back_to_party(at.forward(), at.translation(), fight.party.eye);
     }
     news.write(CombatNews::Attack {
         attacker: member,
-        target: target.entity(),
+        target,
         how: Announcement::Mode(mode),
         swings,
         surprise,
     });
     // Attacking a monster provokes its group, whatever the blows do
     // (retail `MakeTargetGroupHostile` as the action starts).
-    if !controlled && let Victim::Monster(target) = target {
+    if !controlled && !field.members.contains(target) {
         field.provoke(target);
     }
     let backstab_chance = character.scale_by_profession(100.0) as i32;
@@ -618,7 +613,7 @@ pub(super) fn member_attacks(
             }
         } else {
             Delivery::Swing {
-                bystanders: member_bystanders(field, fight, member, hand, target.entity()),
+                bystanders: member_bystanders(field, fight, member, hand, target),
                 odds: attack::member_aim(&stats, &vitals, hand, mode, surprise, None, difficulty),
             }
         };
@@ -642,21 +637,12 @@ pub(super) fn member_attacks(
                 &mut tally,
             );
             if dealt.is_some() && hand.reach < Reach::Long {
-                razor_backlash(
-                    rng,
-                    field,
-                    fight,
-                    battle,
-                    landing.victim,
-                    Victim::Member(member),
-                    &mut tally,
-                    news,
-                );
+                razor_backlash(rng, field, fight, battle, landing.victim, member, &mut tally, news);
             }
             if landing.fumbled {
                 news.write(CombatNews::Result {
                     attacker: member,
-                    target: landing.victim.entity(),
+                    target: landing.victim,
                     hits: 1,
                     damage: dealt.unwrap_or(0),
                 });
@@ -685,7 +671,7 @@ pub(super) fn member_attacks(
             turns.left[current] = 0;
         }
     }
-    tally.report(battle, (member, target.entity()), news);
+    tally.report(battle, (member, target), news);
     next_hand(battle, index, step, turns, &hands);
 }
 
@@ -749,12 +735,11 @@ fn member_blow(
         return Some(0);
     }
     // Missile Shield turns aside what is shot or thrown.
-    if let Victim::Monster(monster) = landing.victim
-        && field
-            .monsters
-            .monsters()
-            .get(monster)
-            .is_ok_and(|(.., vitals)| vitals.enchantments.deflects(mode, rng))
+    if field
+        .monsters
+        .monsters()
+        .get(landing.victim)
+        .is_ok_and(|(.., vitals)| vitals.enchantments.deflects(mode, rng))
     {
         return Some(0);
     }
@@ -779,7 +764,7 @@ fn member_blow(
         damage = struck.fumble_cap(damage);
     }
     let struck = effects::hurt(rng, field, landing.victim, damage);
-    let dealt = tally.struck(struck, true);
+    let dealt = tally.struck(struck, true, field.members);
     if dealt > 0 {
         let mut blow = hand.effects;
         if !landing.fumbled {
@@ -793,7 +778,7 @@ fn member_blow(
         let power = attack::effect_power(u32::from(character.level()));
         let landed = effects::blow(rng, field, fight.points, landing.victim, &blow, power, false);
         for effect in &landed {
-            tally.struck(Some(*effect), true);
+            tally.struck(Some(*effect), true, field.members);
         }
         tally.effects.extend(landed);
     }
@@ -928,9 +913,9 @@ fn reachable_targets(
     fight: &Fight,
     (mine, wanted): (hostility::Allegiance, Stance),
     news: &mut MessageWriter<CombatNews>,
-) -> Vec<(usize, AttackMode, Victim)> {
+) -> Vec<(usize, AttackMode, Entity)> {
     let (now, species) = (field.now, field.species);
-    let attacks = |victim: Victim, field: &Field| {
+    let attacks = |victim: Entity, field: &Field| {
         let stance = super::monster_turn::stance_toward(
             mine,
             victim,
@@ -959,7 +944,7 @@ fn reachable_targets(
         for &member in field.party {
             let (_, vitals, ..) = field.members.get(member).unwrap();
             if !vitals.is_dead()
-                && attacks(Victim::Member(member), field)
+                && attacks(member, field)
                 && fight.party.reaches(formation, member, at.translation(), attack.reach, distance)
             {
                 if unseen.contains(&member) {
@@ -969,7 +954,7 @@ fn reachable_targets(
                     continue;
                 }
                 for mode in attack.modes {
-                    candidates.push((a, mode, Victim::Member(member)));
+                    candidates.push((a, mode, member));
                 }
             }
         }
@@ -981,11 +966,11 @@ fn reachable_targets(
                 && !vitals.is_dead()
                 && field.monsters.active(other)
                 && field.visibility.clear(eye, body_centre(there, body))
-                && attacks(Victim::Monster(other), field)
+                && attacks(other, field)
                 && monster.gap(here, body, there) <= attack.reach.metres()
             {
                 for mode in attack.modes {
-                    candidates.push((a, mode, Victim::Monster(other)));
+                    candidates.push((a, mode, other));
                 }
             }
         }
@@ -1049,9 +1034,9 @@ pub(super) fn monster_attacks(
     };
     // A member not facing it may turn in time, or be struck from behind.
     if attack.reach <= Reach::Short
-        && let Victim::Member(member) = target
+        && let Ok((character, vitals, ..)) = field.members.get(target)
     {
-        let (character, vitals, ..) = field.members.get(member).unwrap();
+        let member = target;
         let side = formation::quadrant(fight.party.eye, fight.party.yaw, position);
         let facing = field.formation.facing(member);
         if facing.is_some_and(|f| f != side) {
@@ -1064,7 +1049,7 @@ pub(super) fn monster_attacks(
     }
     news.write(CombatNews::Attack {
         attacker: entity,
-        target: target.entity(),
+        target,
         how: Announcement::Monster { word: attack.word, mode, named: attack.named() },
         swings,
         surprise,
@@ -1095,7 +1080,7 @@ pub(super) fn monster_attacks(
             }
         } else {
             Delivery::Swing {
-                bystanders: monster_bystanders(field, fight, entity, attack.reach, target.entity()),
+                bystanders: monster_bystanders(field, fight, entity, attack.reach, target),
                 odds: attack::monster_aim(
                     (kind, &vitals, stance),
                     attack,
@@ -1125,7 +1110,7 @@ pub(super) fn monster_attacks(
             continue;
         }
         // The party's Missile Shield turns aside what is shot or thrown.
-        if matches!(landing.victim, Victim::Member(_)) && field.enchantments.deflects(mode, rng) {
+        if field.members.contains(landing.victim) && field.enchantments.deflects(mode, rng) {
             continue;
         }
         let through = attack::monster_penetration(
@@ -1147,7 +1132,8 @@ pub(super) fn monster_attacks(
                 damage = struck.fumble_cap(damage);
             }
             let dealt = if damage > 0 {
-                tally.struck(effects::hurt(rng, field, landing.victim, damage), false)
+                let struck = effects::hurt(rng, field, landing.victim, damage);
+                tally.struck(struck, false, field.members)
             } else {
                 0
             };
@@ -1163,7 +1149,7 @@ pub(super) fn monster_attacks(
                     true,
                 );
                 for effect in &landed {
-                    tally.struck(Some(*effect), false);
+                    tally.struck(Some(*effect), false, field.members);
                 }
                 tally.effects.extend(landed);
             }
@@ -1172,21 +1158,12 @@ pub(super) fn monster_attacks(
             0
         };
         if attack.reach < Reach::Long {
-            razor_backlash(
-                rng,
-                field,
-                fight,
-                battle,
-                landing.victim,
-                Victim::Monster(entity),
-                &mut tally,
-                news,
-            );
+            razor_backlash(rng, field, fight, battle, landing.victim, entity, &mut tally, news);
         }
         if landing.fumbled {
             news.write(CombatNews::Result {
                 attacker: entity,
-                target: landing.victim.entity(),
+                target: landing.victim,
                 hits: 1,
                 damage: dealt,
             });
@@ -1195,7 +1172,7 @@ pub(super) fn monster_attacks(
             tally.damage += dealt;
         }
     }
-    tally.report(battle, (entity, target.entity()), news);
+    tally.report(battle, (entity, target), news);
     let work = &mut battle.this_round.monsters[index];
     work.phase = super::next_phase(turn.phase, turn_left);
     work.attacks_left = turn_left;

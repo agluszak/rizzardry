@@ -8,6 +8,7 @@ pub mod data;
 pub mod difficulty;
 pub mod factions;
 pub mod freedom;
+pub mod hits;
 pub mod inventory;
 pub mod loot;
 pub mod magic;
@@ -57,6 +58,7 @@ impl Plugin for GamePlugin {
                 combat::CombatPlugin,
                 magic::MagicPlugin,
                 inventory::plugin,
+                hits::HitsPlugin,
             ))
             // Navmeshes: retail serves a level's collision, navigation bakes
             // it on request and caches the result.

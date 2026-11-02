@@ -193,6 +193,12 @@ pub fn own_stance(group: Stance, turncoat: bool) -> Stance {
     }
 }
 
+/// A member's stance toward the party: on its side, against it under
+/// Turncoat, by the same rule as a monster's.
+pub fn member_stance(turncoat: bool) -> Stance {
+    own_stance(Stance::Friendly, turncoat)
+}
+
 /// How a monster stands toward a member: as it stands toward the party,
 /// hostile and friendly swapped for a member under Turncoat (retail
 /// `MonsterVsCharDisposition`).

@@ -12,7 +12,7 @@
 
 use bevy::prelude::*;
 
-use super::effects::{self, Effect, Field, Victim};
+use super::effects::{self, Field};
 use super::{LearnedSpells, Outcome, SpellPoints, Strength};
 use crate::content::characters::Skill;
 use crate::content::items::{ItemCatalog, ItemDefinition, UseType};
@@ -22,6 +22,7 @@ use crate::content::spells::{
 };
 use crate::game::characters::{Character, Condition, Lasting, Profession, Vitals};
 use crate::game::difficulty::Difficulty;
+use crate::game::hits::{Act, Deed, Effect};
 use crate::game::inventory::{Carried, PartyInventory, StackId};
 use crate::game::rng::GameRng;
 
@@ -147,8 +148,25 @@ pub struct Report {
     pub effects: Vec<Effect>,
     /// Skills practice raised, by whom.
     pub improved: Vec<(Entity, Skill)>,
-    /// Casts repeated after the first: an auto cast trying again.
-    pub repeats: u32,
+}
+
+/// A cast's practice, owed once its deed has landed: its caster practises
+/// these skills if the cast affected anyone (retail `SpellAffectedTarget`),
+/// or whatever came of it once a missile is on its way.
+#[derive(Component, Debug)]
+pub struct Practice {
+    pub caster: Entity,
+    pub skills: Vec<(Skill, u32)>,
+    pub sure: bool,
+}
+
+/// An auto recast (retail's "repeat" power): once it has landed, its caster
+/// casts again while its victims are not whole and stamina and points last.
+#[derive(Component, Debug)]
+pub struct Recast {
+    pub caster: Entity,
+    pub choice: MagicChoice,
+    pub victims: Vec<Entity>,
 }
 
 pub use super::impacts::{Finalization, Origin};
@@ -161,7 +179,7 @@ pub struct SpellInFlight {
     pub caster: Entity,
     pub spell: SpellId,
     pub strength: Strength,
-    pub victims: Vec<Victim>,
+    pub victims: Vec<Entity>,
     pub arrives: Timer,
     /// Its place in the order flights were launched ([`FlightOrder`]).
     pub launched: u64,
@@ -211,7 +229,7 @@ pub enum UseContext {
 /// Whether the game can resolve a spell: its effect is modelled, or it is
 /// one of the device spells the device interaction resolves.
 pub fn resolvable(spell: SpellId) -> bool {
-    effects::modelled(spell)
+    crate::game::hits::spells::modelled(spell)
         || super::utilities::spell(spell)
         || matches!(spell, SpellId::DIVINE_TRAP | SpellId::KNOCK_KNOCK)
 }
@@ -263,8 +281,8 @@ impl Situation<'_> {
         self.monsters.iter().find(|c| c.entity == entity)
     }
 
-    fn party_victims(&self) -> Vec<Victim> {
-        self.party.iter().map(|&m| Victim::Member(m)).collect()
+    fn party_victims(&self) -> Vec<Entity> {
+        self.party.to_vec()
     }
 }
 
@@ -290,9 +308,9 @@ pub(crate) fn capture(
     aim: Aim,
     situation: &Situation,
     forced_self: bool,
-) -> Result<(Vec<Victim>, Option<Vec3>), Refusal> {
+) -> Result<(Vec<Entity>, Option<Vec3>), Refusal> {
     if forced_self {
-        return Ok((vec![Victim::Member(caster)], None));
+        return Ok((vec![caster], None));
     }
     let aimed = || match aim {
         Aim::Monster(m) => situation.candidate(m, spell).copied().ok_or(Refusal::NoTarget),
@@ -301,24 +319,22 @@ pub(crate) fn capture(
     };
     let reach = spell.reach.metres();
     Ok(match spell.targeting {
-        Targeting::Caster => (vec![Victim::Member(caster)], None),
+        Targeting::Caster => (vec![caster], None),
         Targeting::Ally => match aim {
-            Aim::Member(member) if situation.party.contains(&member) => {
-                (vec![Victim::Member(member)], None)
-            }
+            Aim::Member(member) if situation.party.contains(&member) => (vec![member], None),
             _ => return Err(Refusal::NoTarget),
         },
         Targeting::Party => (situation.party_victims(), None),
         Targeting::Enemy => {
             let target = aimed()?;
-            (vec![Victim::Monster(target.entity)], Some(target.at))
+            (vec![target.entity], Some(target.at))
         }
         Targeting::EnemyGroup => {
             let first = aimed()?;
-            let mut victims = vec![Victim::Monster(first.entity)];
+            let mut victims = vec![first.entity];
             for mate in (situation.group_of)(first.entity) {
                 if mate != first.entity && situation.candidate(mate, spell).is_some() {
-                    victims.push(Victim::Monster(mate));
+                    victims.push(mate);
                 }
             }
             (victims, Some(first.at))
@@ -328,7 +344,7 @@ pub(crate) fn capture(
                 .monsters
                 .iter()
                 .filter(|c| c.distance <= reach)
-                .map(|c| Victim::Monster(c.entity))
+                .map(|c| c.entity)
                 .collect();
             if victims.is_empty() {
                 return Err(Refusal::NoTarget);
@@ -343,7 +359,7 @@ pub(crate) fn capture(
                 .monsters
                 .iter()
                 .filter(|c| c.distance <= reach && in_cone(toward, c.at - situation.party_at))
-                .map(|c| Victim::Monster(c.entity))
+                .map(|c| c.entity)
                 .collect();
             (victims, Some(target.at))
         }
@@ -361,9 +377,9 @@ pub(crate) fn capture(
 /// Whom a backfire turns on (retail `PrepareSpellTarget`): a spell aimed at
 /// one victim turns on its caster; a group, cone, blast or all-enemies spell
 /// on the whole party.
-fn backfire_victims(caster: Entity, spell: &SpellDefinition, situation: &Situation) -> Vec<Victim> {
+fn backfire_victims(caster: Entity, spell: &SpellDefinition, situation: &Situation) -> Vec<Entity> {
     match spell.targeting {
-        Targeting::Caster | Targeting::Ally | Targeting::Enemy => vec![Victim::Member(caster)],
+        Targeting::Caster | Targeting::Ally | Targeting::Enemy => vec![caster],
         _ => situation.party_victims(),
     }
 }
@@ -451,7 +467,7 @@ fn auto_power(
 ) -> u32 {
     let fail = |p| super::fail_chance(character, spell, p);
     let Some(vitals) = victim else { return 1 };
-    let power = if effects::restores(spell.id) {
+    let power = if crate::game::hits::spells::restores(spell.id) {
         let pool = if spell.id == SpellId::STAMINA { vitals.stamina } else { vitals.health };
         let missing = (pool.max as f32 - pool.current as f32).max(0.0);
         let average = |p: u32| {
@@ -597,13 +613,14 @@ fn prepare_source<'a>(
 /// resolve. Nothing is spent on refusal. Missiles are returned to be flown.
 #[allow(clippy::too_many_arguments)]
 pub fn perform(
+    commands: &mut Commands,
     caster: Entity,
     choice: MagicChoice,
     situation: &Situation,
     points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
     rng: &mut GameRng,
     world: &mut Field,
-) -> Result<(Report, Vec<SpellInFlight>), Refusal> {
+) -> Result<Vec<SpellInFlight>, Refusal> {
     let spells = world.spells;
     let Prepared { spell, power, item, forced_self } = prepare_source(
         caster,
@@ -614,7 +631,7 @@ pub fn perform(
         points,
         world.inventory,
     )?;
-    if !effects::modelled(spell.id) {
+    if !crate::game::hits::spells::modelled(spell.id) {
         return Err(Refusal::Unsupported);
     }
     if !usable_now(spell, situation.context) {
@@ -643,7 +660,6 @@ pub fn perform(
         outcome: Outcome::Fizzled,
         effects: Vec::new(),
         improved: Vec::new(),
-        repeats: 0,
     };
     let mut flights = Vec::new();
     loop {
@@ -660,7 +676,7 @@ pub fn perform(
                 }
                 if auto {
                     let victim = match choice.aim {
-                        Aim::Member(m) => Some(world.vitals(Victim::Member(m))),
+                        Aim::Member(m) => Some(world.vitals(m)),
                         Aim::Ahead
                         | Aim::Point(_)
                         | Aim::Monster(_)
@@ -682,18 +698,20 @@ pub fn perform(
                 centre,
                 spell.radius + spell.radius_per_power * cast_power as f32,
                 Some(situation.party_at),
-                super::targeting::Recipients::Opponents(crate::game::world::hostility::own_stance(
-                    crate::game::world::hostility::Stance::Friendly,
-                    world.members.get(caster).unwrap().1.conditions.has(Condition::Turncoat),
-                )),
+                crate::game::hits::reach::Recipients::Opponents(
+                    crate::game::world::hostility::own_stance(
+                        crate::game::world::hostility::Stance::Friendly,
+                        world.members.get(caster).unwrap().1.conditions.has(Condition::Turncoat),
+                    ),
+                ),
             );
         }
         // A spell aimed at enemies provokes those it is cast at, whatever
         // the roll (retail `MakeTargetGroupHostile` as the action starts).
         if first && spell.aimed_at_enemies() {
             for victim in &victims {
-                if let Victim::Monster(monster) = *victim {
-                    world.provoke(monster);
+                if !world.members.contains(*victim) {
+                    world.provoke(*victim);
                 }
             }
         }
@@ -728,24 +746,21 @@ pub fn perform(
         let origin = if outcome == Outcome::Backfired {
             match spell.targeting {
                 Targeting::Enemy | Targeting::Ally => match choice.aim {
-                    Aim::Monster(entity) => Origin::Actor(Victim::Monster(entity)),
-                    Aim::Member(entity) => Origin::Actor(Victim::Member(entity)),
-                    _ => Origin::Actor(Victim::Member(caster)),
+                    Aim::Monster(entity) => Origin::Actor(entity),
+                    Aim::Member(entity) => Origin::Actor(entity),
+                    _ => Origin::Actor(caster),
                 },
                 Targeting::EnemyGroup => match choice.aim {
-                    Aim::Monster(entity) => {
-                        Origin::Actor(Victim::Monster(world.monsters.leader(entity)))
-                    }
-                    _ => Origin::Actor(Victim::Member(caster)),
+                    Aim::Monster(entity) => Origin::Actor(world.monsters.leader(entity)),
+                    _ => Origin::Actor(caster),
                 },
-                Targeting::Radius | Targeting::Cone => Origin::Point {
-                    at: landing.unwrap_or(situation.party_at),
-                    owner: Some(Victim::Member(caster)),
-                },
-                _ => Origin::Actor(Victim::Member(caster)),
+                Targeting::Radius | Targeting::Cone => {
+                    Origin::Point { at: landing.unwrap_or(situation.party_at), owner: Some(caster) }
+                }
+                _ => Origin::Actor(caster),
             }
         } else {
-            Origin::Actor(Victim::Member(caster))
+            Origin::Actor(caster)
         };
         let strength = if outcome == Outcome::Backfired {
             Strength::at(origin.figure(world, spell), spell, strength.power, strength.boost)
@@ -759,10 +774,28 @@ pub fn perform(
             victims: victims.clone(),
             reflected: false,
         };
-        let first_flight = flights.len();
-        let landed = if flies {
+        report.power = cast_power;
+        report.outcome = outcome;
+        if outcome == Outcome::Fizzled {
+            // An auto cast tries again while it fizzles, while stamina and
+            // points last.
+            let (_, vitals, ..) = world.members.get(caster).unwrap();
+            let (learned, pool) = points.get(caster).unwrap();
+            let maximum = world.mana_maximum(caster, learned);
+            if auto
+                && vitals.stamina.current > spell.level
+                && pool.available(spell.realm.unwrap(), &maximum) >= spell.cost
+            {
+                continue;
+            }
+            commands.spawn(Deed::new(Act::Cast(report)));
+            return Ok(flights);
+        }
+        let deed = commands.spawn_empty().id();
+        let mut effects = Vec::new();
+        if flies {
             // One missile to where a burst lands, else one to each victim.
-            let flight = |victims: Vec<Victim>, to: Vec3| SpellInFlight {
+            let flight = |victims: Vec<Entity>, to: Vec3| SpellInFlight {
                 origin,
                 finish: None,
                 caster,
@@ -779,74 +812,42 @@ pub fn perform(
                 flights.push(flight(victims.clone(), landing.unwrap_or(situation.party_at)));
             } else {
                 for &victim in &victims {
-                    let to = match victim {
-                        Victim::Monster(m) => situation
-                            .monsters
-                            .iter()
-                            .find(|c| c.entity == m)
-                            .map_or(situation.party_at, |c| c.at),
-                        Victim::Member(_) => situation.party_at,
-                    };
+                    let to = situation
+                        .monsters
+                        .iter()
+                        .find(|c| c.entity == victim)
+                        .map_or(situation.party_at, |c| c.at);
                     flights.push(flight(vec![victim], to));
                 }
             }
-            super::impacts::attach(&mut flights[first_flight..], finish);
-            Vec::new()
+            super::impacts::attach(&mut flights, finish);
         } else {
-            super::impacts::resolve(
-                caster,
-                origin,
-                outcome == Outcome::Backfired,
-                spell,
-                strength,
+            super::impacts::land(
+                commands,
+                (deed, &mut effects),
+                (caster, origin, outcome == Outcome::Backfired),
+                (spell, strength),
                 &victims,
                 Some(&finish),
                 situation.party_at,
-                rng,
                 world,
-                &mut *points,
                 &mut flights,
-            )
-        };
-        // Practice follows what the cast did; a missile on its way counts.
-        if outcome != Outcome::Fizzled && (flies || effects::affected(&landed)) {
-            world.improved.extend(practise(
-                caster,
-                spell,
-                cast_power,
-                item.as_ref(),
-                rng,
-                world.members,
-            ));
+            );
         }
-        if first {
-            report.power = cast_power;
-            report.outcome = outcome;
-        } else {
-            report.repeats += 1;
-            if outcome != Outcome::Fizzled {
-                report.outcome = outcome;
-            }
+        let skills =
+            practice(world.members.get(caster).unwrap().0, spell, cast_power, item.as_ref());
+        let mut entity = commands.entity(deed);
+        entity.insert((
+            Deed { act: Act::Cast(report), effects, improved: Vec::new() },
+            Practice { caster, skills, sure: flies },
+        ));
+        if repeat {
+            entity.insert(Recast { caster, choice, victims });
         }
-        report.effects.extend(landed);
-        // An auto cast tries again while it fizzles, and auto recast goes on
-        // until its victim is whole, while stamina and points last.
-        if !auto || report.repeats >= 50 {
-            break;
-        }
-        let (_, vitals, ..) = world.members.get(caster).unwrap();
-        let (learned, pool) = points.get(caster).unwrap();
-        let maximum = world.mana_maximum(caster, learned);
-        if vitals.stamina.current <= spell.level
-            || pool.available(spell.realm.unwrap(), &maximum) < spell.cost
-            || outcome != Outcome::Fizzled
-                && (!repeat || effects::all_restored(spell.id, &victims, world.members))
-        {
-            break;
-        }
+        return Ok(flights);
     }
-    report.improved = std::mem::take(&mut world.improved);
-    Ok((report, flights))
+    commands.spawn(Deed::new(Act::Cast(report)));
+    Ok(flights)
 }
 
 /// Execute the source side of a utility or device cast. The exclusive caller
@@ -907,7 +908,6 @@ fn perform_utility(
         outcome,
         effects: Vec::new(),
         improved: Vec::new(),
-        repeats: 0,
     };
     pay(
         caster,
@@ -921,7 +921,9 @@ fn perform_utility(
         &mut report,
     );
     // Retail considers these utility spells affected even on a fizzle.
-    report.improved.extend(practise(caster, spell, power, item.as_ref(), &mut rng, &mut members));
+    let skills = practice(members.get(caster).unwrap().0, spell, power, item.as_ref());
+    let (mut character, ..) = members.get_mut(caster).unwrap();
+    report.improved.extend(practise((caster, &mut character), &skills, &mut rng));
     Ok((report, strength))
 }
 
@@ -1026,20 +1028,16 @@ fn pay(
 /// Practice from a cast that did something (retail `Magic.cpp:2682-2692`,
 /// `PC Item.cpp:3792-3796`): a learned spell trains its book, its realm and
 /// Power Cast; an item its use's skill.
-fn practise(
-    caster: Entity,
+fn practice(
+    character: &Character,
     spell: &SpellDefinition,
     power: u32,
     item: Option<&ItemUse>,
-    rng: &mut GameRng,
-    members: &mut crate::game::party::Members,
-) -> Vec<(Entity, Skill)> {
-    let (mut character, ..) = members.get_mut(caster).unwrap();
-    let mut improved = Vec::new();
-    let practice: Vec<(Skill, u32)> = match item {
+) -> Vec<(Skill, u32)> {
+    match item {
         None => {
             let index = spell.level + power;
-            let mut practice = vec![(super::best_book(&character, spell), (index + 2) >> 2)];
+            let mut practice = vec![(super::best_book(character, spell), (index + 2) >> 2)];
             if let Some(realm) = spell.realm {
                 practice.push((realm.skill(), index));
             }
@@ -1054,13 +1052,60 @@ fn practise(
             .skill()
             .map(|skill| vec![(skill, spell.level + power / 2)])
             .unwrap_or_default(),
-    };
-    for (skill, usage) in practice {
-        if character.practise(skill, usage, rng) {
-            improved.push((caster, skill));
+    }
+}
+
+/// Practise a cast's skills; the ones that improved.
+fn practise(
+    (caster, character): (Entity, &mut Character),
+    skills: &[(Skill, u32)],
+    rng: &mut GameRng,
+) -> Vec<(Entity, Skill)> {
+    skills
+        .iter()
+        .filter(|&&(skill, usage)| character.practise(skill, usage, rng))
+        .map(|&(skill, _)| (caster, skill))
+        .collect()
+}
+
+/// Settle each landed cast's practice ([`Practice`]).
+pub fn practise_casts(
+    mut deeds: Query<(&mut Deed, &Practice), Without<crate::game::hits::DeedHits>>,
+    mut characters: Query<&mut Character>,
+    mut rng: ResMut<GameRng>,
+) {
+    for (mut deed, practice) in &mut deeds {
+        if !practice.sure && !crate::game::hits::affected(&deed.effects) {
+            continue;
+        }
+        let Ok(mut character) = characters.get_mut(practice.caster) else { continue };
+        let improved = practise((practice.caster, &mut character), &practice.skills, &mut rng);
+        deed.improved.extend(improved);
+    }
+}
+
+/// Recast each landed auto recast whose victims are not yet whole, while
+/// its caster's stamina and points last.
+pub fn recast(
+    deeds: Query<&Recast, Without<crate::game::hits::DeedHits>>,
+    members: crate::game::party::Members,
+    points: Query<(&LearnedSpells, &SpellPoints)>,
+    content: If<Res<crate::game::data::Catalogs>>,
+    mut requests: MessageWriter<super::MagicRequest>,
+) {
+    for recast in &deeds {
+        let Source::Spell { spell, .. } = recast.choice.source else { continue };
+        let spell = &content.spells[spell];
+        let (character, vitals, ..) = members.get(recast.caster).unwrap();
+        let (learned, pool) = points.get(recast.caster).unwrap();
+        let maximum = character.stats(&vitals.enchantments).max_points(learned, &content.spells);
+        if vitals.stamina.current > spell.level
+            && pool.available(spell.realm.unwrap(), &maximum) >= spell.cost
+            && !effects::all_restored(spell.id, &recast.victims, &members)
+        {
+            requests.write(super::MagicRequest { caster: recast.caster, choice: recast.choice });
         }
     }
-    improved
 }
 
 /// The spells and items an actor could use: what menus offer. Execution

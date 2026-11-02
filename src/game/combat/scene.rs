@@ -17,7 +17,7 @@ pub(super) fn special_ready(
 ) -> bool {
     let silenced = vitals.conditions.has(Condition::Silenced);
     kind.special.kind.is_some_and(|special| {
-        let definition = crate::game::magic::effects::special(special);
+        let definition = crate::game::hits::specials::special(special);
         let summons = special.summons().is_none()
             || fighting.is_some_and(|(nearest, stance)| {
                 nearest <= Reach::Long.metres() && stance != hostility::Stance::Friendly
@@ -34,14 +34,14 @@ pub(super) fn special_ready(
 pub(super) fn member_in_scene(
     (member, vitals): (Entity, &Vitals),
     (party_at, party): (Vec3, f32),
-    toward: &dyn Fn(crate::game::magic::effects::Victim) -> hostility::Stance,
+    toward: &dyn Fn(Entity) -> hostility::Stance,
 ) -> monster_spells::Someone {
     monster_spells::Someone {
         entity: member,
         at: party_at,
         from_caster: party,
         vitals: vitals.clone(),
-        stance: toward(crate::game::magic::effects::Victim::Member(member)),
+        stance: toward(member),
     }
 }
 
@@ -67,9 +67,8 @@ pub(super) fn spell_scene<'a>(
     ),
     monsters: &MonsterQuery,
     sight: &Sight,
-    toward: &dyn Fn(crate::game::magic::effects::Victim) -> hostility::Stance,
+    toward: &dyn Fn(Entity) -> hostility::Stance,
 ) -> monster_spells::Scene {
-    use crate::game::magic::effects::Victim;
     let party_eye = sight.eye;
     let party_at = PartyBody::feet_below(party_eye);
     let (body, at, walker, .., caster_vitals) = monsters.get(caster).unwrap();
@@ -108,7 +107,7 @@ pub(super) fn spell_scene<'a>(
                     stance: if entity == caster {
                         hostility::Stance::Friendly
                     } else {
-                        toward(Victim::Monster(entity))
+                        toward(entity)
                     },
                 })
             })

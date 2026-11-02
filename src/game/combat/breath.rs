@@ -1,15 +1,14 @@
 //! The racial or spell-granted breath action shares aim capture and damage
 //! with casting; it spends stamina, never spell points or casting practice.
+use crate::game::hits::{Act, Deed, specials};
 use crate::{
     content::{characters::Trait, spells::SpellId},
     game::{
         characters::{Character, Vitals},
         magic::{
-            LearnedSpells, SpellPoints,
             casting::{self, Aim, Refusal, Situation},
-            effects::{self, Effect, Field},
+            effects::Field,
         },
-        rng::GameRng,
     },
 };
 use bevy::prelude::*;
@@ -20,14 +19,15 @@ pub fn available(profile: &Character, vitals: &Vitals) -> bool {
         && vitals.stamina.current >= vitals.stamina.max / 5
 }
 
+/// Breathe at `target` and those beside it in the cone: a deed whose
+/// effects the fight reports once they have landed.
 pub(super) fn execute(
+    commands: &mut Commands,
     actor: Entity,
     target: Entity,
     situation: &Situation,
-    rng: &mut GameRng,
     world: &mut Field,
-    points: &mut Query<(&LearnedSpells, &mut SpellPoints)>,
-) -> Result<Vec<Effect>, Refusal> {
+) -> Result<(), Refusal> {
     let spells = world.spells;
     let (profile, vitals, ..) = world.members.get(actor).unwrap();
     if !available(profile, vitals) {
@@ -35,21 +35,15 @@ pub(super) fn execute(
     }
     let cone = &spells[SpellId::SPECIAL_ATTACK_CONE];
     let (mut victims, _) = casting::capture(actor, cone, Aim::Monster(target), situation, false)?;
-    victims.retain(|victim| match *victim {
-        effects::Victim::Monster(entity) => world.monsters.targetable(entity),
-        _ => false,
-    });
+    victims.retain(|&victim| world.monsters.targetable(victim));
     if victims.is_empty() {
         return Err(Refusal::NoTarget);
     }
+    let deed = commands.spawn(Deed::new(Act::Fight)).id();
+    let breather = (profile.level(), vitals.stamina);
+    specials::breathe(commands, deed, specials::CHARACTER_BREATH, breather, &victims);
+    let mut vitals = world.members.get_mut(actor).unwrap().1;
     let maximum = vitals.stamina.max;
-    let breather = effects::Breather {
-        level: profile.level(),
-        stamina: vitals.stamina.current,
-        max_stamina: maximum,
-    };
-    let effects =
-        effects::special_attack(effects::CHARACTER_BREATH, breather, &victims, rng, world, points);
-    world.members.get_mut(actor).unwrap().1.tire(maximum / 5);
-    Ok(effects)
+    vitals.tire(maximum / 5);
+    Ok(())
 }

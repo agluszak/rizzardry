@@ -41,9 +41,10 @@ use crate::content::species::AttackWord;
 
 use crate::content::species::{MonsterCatalog, Reach, Species};
 use crate::game::characters::{Character, Condition, Vitals};
+use crate::game::hits::Effect;
 use crate::game::inventory::EquipSlot;
 use crate::game::magic::casting::{self, MagicChoice, MagicNews};
-use crate::game::magic::{Effect, LearnedSpells, MagicContext, SpellPoints, Victim};
+use crate::game::magic::{LearnedSpells, MagicContext, SpellPoints};
 use crate::game::party::Members;
 use crate::game::party::Order;
 use crate::game::party::body::PartyBody;
@@ -247,19 +248,28 @@ impl Battle {
     /// Credit and announce the kills a spell's effects made, whether it
     /// landed at once or as a missile: the one place spell kills are counted.
     /// A member it killed is announced as one a monster's blow kills is.
-    pub fn credit_kills(&mut self, effects: &[Effect], news: &mut MessageWriter<CombatNews>) {
+    pub fn credit_kills(
+        &mut self,
+        effects: &[Effect],
+        members: &Query<(), With<crate::game::characters::Character>>,
+        news: &mut MessageWriter<CombatNews>,
+    ) {
         for effect in effects {
             let Effect::Damaged { victim, outcome, .. } = *effect else { continue };
             if !outcome.died {
                 continue;
             }
-            match victim {
-                Victim::Monster(target) => self.credit_kill(target, outcome.experience, news),
-                Victim::Member(member) => {
-                    news.write(CombatNews::Killed { actor: member });
-                }
+            if members.contains(victim) {
+                news.write(CombatNews::Killed { actor: victim });
+            } else {
+                self.credit_kill(victim, outcome.experience, news);
             }
         }
+    }
+
+    /// Something in this round counts as an attack, keeping the fight going.
+    pub fn attacked(&mut self, attacked: bool) {
+        self.this_round.attacked |= attacked;
     }
 
     /// How far through the round its play is, 0 to 1, while a round is
@@ -346,7 +356,7 @@ pub enum CombatNews {
     /// `AnnounceAccidentalStrike`).
     Fumble {
         attacker: Entity,
-        victim: Victim,
+        victim: Entity,
     },
     /// What blows did besides damage.
     Effects(Vec<Effect>),

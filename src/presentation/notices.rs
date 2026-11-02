@@ -300,9 +300,9 @@ fn improves(
 
 /// What a spell or a blow did to someone. Retail's own strings for these
 /// are not mapped yet; the wording is plain.
-fn effect_line(names: &super::names::ActorNames, effect: crate::game::magic::Effect) -> String {
-    use crate::game::magic::{Effect, Victim};
-    let victim = |victim: Victim| names.name(victim.entity()).unwrap_or_default();
+fn effect_line(names: &super::names::ActorNames, effect: crate::game::hits::Effect) -> String {
+    use crate::game::hits::Effect;
+    let victim = |victim: Entity| names.name(victim).unwrap_or_default();
     match effect {
         Effect::Purified { victim: v } => format!("The air around {} clears.", victim(v)),
         Effect::Enchanted { victim: v, .. } => format!("{} is enchanted.", victim(v)),
@@ -749,7 +749,7 @@ fn post_combat(
             }
             // Retail `AnnounceAccidentalStrike`'s own words.
             CombatNews::Fumble { attacker, victim } => {
-                match (names.name(*attacker), names.name(victim.entity())) {
+                match (names.name(*attacker), names.name(*victim)) {
                     (Some(attacker), Some(victim)) => {
                         vec![format!("{attacker} accidentally strikes {victim}")]
                     }
