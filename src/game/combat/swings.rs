@@ -31,8 +31,11 @@ use crate::game::characters::{Character, Condition};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::factions::Factions;
-use crate::game::hits::body::{self, Body, BodyItem, wound};
-use crate::game::hits::{Effect, HitOf, Strikes};
+use crate::game::hits::body::{Body, BodyItem, BodyReadOnlyItem, wound};
+use crate::game::hits::prototypes::{Definitions, Uses, WeaponEffects};
+use crate::game::hits::spells::reach;
+use crate::game::hits::{Act, Deed, Effect, HitOf, Strikes};
+use crate::game::magic::Strength;
 use crate::game::magic::enchantments::{Enchantments, PartyEffects};
 use crate::game::party::DamageApplied;
 use crate::game::party::body::{self as party_body, PartyBody};
@@ -214,8 +217,16 @@ pub(super) struct Swings;
 
 /// Run the swing stages until every attack under way is over.
 pub(super) fn run_swings(world: &mut World) {
+    let mut passes = 0;
     while world.query_filtered::<(), With<Attack>>().iter(world).next().is_some() {
+        passes += 1;
+        if passes > 64 {
+            error!("attacks left unsettled after {passes} passes");
+            break;
+        }
         world.run_schedule(Swings);
+        // What a blow did besides its damage lands before the next swing.
+        crate::game::hits::run_hits(world);
     }
 }
 
@@ -316,7 +327,7 @@ fn back_to_party(forward: Vec3, at: Vec3, party_eye: Vec3) -> bool {
 }
 
 /// A monster in play: alive, in the played level.
-fn in_play(body: &BodyItem, place: &PlaceItem, levels: &Query<(), With<Level>>) -> bool {
+fn in_play(body: &BodyReadOnlyItem, place: &PlaceItem, levels: &Query<(), With<Level>>) -> bool {
     !body.is_dead() && levels.contains(place.owner.0)
 }
 
@@ -325,7 +336,7 @@ fn in_play(body: &BodyItem, place: &PlaceItem, levels: &Query<(), With<Level>>) 
 /// the party runs. A monster's: its species, fatigue and spells, its guard
 /// dropped while it advances. None for a monster dead or gone.
 fn blow_defence<'s>(
-    body: &BodyItem,
+    body: &BodyReadOnlyItem,
     footing: &FootingItem,
     (running, levels): (bool, &Query<(), With<Level>>),
     (items, party, species): (&ItemCatalog, &Enchantments, &'s MonsterCatalog),
@@ -347,12 +358,12 @@ fn blow_defence<'s>(
     let monster = body.monster.as_ref()?;
     let in_play = footing.owner.is_some_and(|owner| levels.contains(owner.0));
     (in_play && !body.is_dead())
-        .then(|| Defence::monster(&species[monster.species], &body.vitals, footing.advancing))
+        .then(|| Defence::monster(&species[monster.species], body.vitals, footing.advancing))
 }
 
 /// A monster's allegiance now: its species, faction, side and Turncoat.
-fn allegiance(
-    body: &BodyItem,
+pub(super) fn allegiance(
+    body: &BodyReadOnlyItem,
     species: &MonsterCatalog,
     sides: (&Query<&MonsterGroup>, &Factions, u64),
 ) -> Option<Allegiance> {
@@ -367,9 +378,9 @@ fn allegiance(
 
 /// How a monster of allegiance `mine` stands toward a body: a fellow
 /// monster by both allegiances, a member by whether they have turned.
-fn toward(
+pub(super) fn toward(
     mine: Allegiance,
-    body: &BodyItem,
+    body: &BodyReadOnlyItem,
     species: &MonsterCatalog,
     sides: (&Query<&MonsterGroup>, &Factions, u64),
 ) -> Stance {
@@ -385,7 +396,7 @@ fn toward(
 /// blows then do (retail `MakeTargetGroupHostile` as the action starts). A
 /// dead monster or one under Turncoat provokes nobody.
 fn provoke(
-    body: &BodyItem,
+    body: &BodyReadOnlyItem,
     species: &MonsterCatalog,
     (groups, factions, now): (&mut Query<&mut MonsterGroup>, &Factions, u64),
 ) -> bool {
@@ -422,7 +433,7 @@ fn member_target(
     let monster = combatants
         .iter()
         .filter_map(|&entity| {
-            let body = bodies.get_mut(entity).ok()?;
+            let body = bodies.get(entity).ok()?;
             let place = places.get(entity).ok()?;
             let monster = body.monster.as_ref()?;
             let kind = &species[monster.species];
@@ -453,7 +464,7 @@ fn member_target(
         .copied()
         .filter(|&other| {
             other != member
-                && bodies.get_mut(other).is_ok_and(|body| {
+                && bodies.get(other).is_ok_and(|body| {
                     !body.is_dead() && !body.vitals.conditions.has(Condition::Turncoat)
                 })
         })
@@ -494,13 +505,13 @@ pub(super) fn member_attacks(
     let (items, species, now) = (&content.items, &content.species, clock.ms);
     let (stand, roster) = (Stand::of(*stand), roster.iter().collect::<Vec<_>>());
     let rng = &mut *rng;
-    let attacker = bodies.get_mut(member).unwrap();
-    let character = attacker.character.as_deref().unwrap().clone();
+    let attacker = bodies.get(member).unwrap();
+    let character = attacker.character.unwrap().clone();
     let turned = attacker.vitals.conditions.has(Condition::Turncoat);
     let slowed = attacker.vitals.conditions.has(Condition::Slowed);
     let mut hands = attack::hands(
         &character.stats(&attacker.vitals.enchantments),
-        attacker.carried.as_deref().unwrap(),
+        attacker.carried.unwrap(),
         items,
         attacker.burden.unwrap().load,
     );
@@ -580,9 +591,7 @@ pub(super) fn member_attacks(
         swings,
         surprise,
     });
-    if !turned
-        && provoke(&bodies.get_mut(target).unwrap(), species, (&mut groups, &factions, now))
-    {
+    if !turned && provoke(&bodies.get(target).unwrap(), species, (&mut groups, &factions, now)) {
         provocations.write(Provocation(target));
     }
     let ammunition = hand.paired.then(|| hands.hands[1 - side].modes);
@@ -616,8 +625,8 @@ fn reachable_targets(
     sides: (&Query<&MonsterGroup>, &Factions, u64),
     news: &mut MessageWriter<CombatNews>,
 ) -> Vec<(usize, AttackMode, Entity)> {
-    let me = bodies.get_mut(entity).unwrap();
-    let monster = me.monster.as_deref().unwrap().clone();
+    let me = bodies.get(entity).unwrap();
+    let monster = me.monster.unwrap().clone();
     let kind = &species[monster.species];
     let place = places.get(entity).unwrap();
     let (here, at) = (place.feet(), place.translation());
@@ -625,7 +634,7 @@ fn reachable_targets(
     let eye = monster.eye(here);
     let mut unseen = Vec::new();
     for &member in roster {
-        let body = bodies.get_mut(member).unwrap();
+        let body = bodies.get(member).unwrap();
         let stealth = body.character.as_ref().unwrap().skill(Skill::Stealth);
         if rng.below(100) < stealth * 75 / 100 {
             unseen.push(member);
@@ -635,7 +644,7 @@ fn reachable_targets(
     let mut evaded = Vec::new();
     for (a, attack) in kind.attacks.iter().enumerate() {
         for &member in roster {
-            let body = bodies.get_mut(member).unwrap();
+            let body = bodies.get(member).unwrap();
             if body.is_dead()
                 || toward(mine, &body, species, sides) != wanted
                 || !stand.reaches(formation, member, at, attack.reach, reach_of_party)
@@ -651,10 +660,10 @@ fn reachable_targets(
             candidates.extend(attack.modes.iter().map(|mode| (a, mode, member)));
         }
         for &other in combatants {
-            let (Ok(body), Ok(there)) = (bodies.get_mut(other), places.get(other)) else {
+            let (Ok(body), Ok(there)) = (bodies.get(other), places.get(other)) else {
                 continue;
             };
-            let theirs = body.monster.as_deref().unwrap();
+            let theirs = body.monster.unwrap();
             let feet = there.feet();
             if other != entity
                 && in_play(&body, &there, levels)
@@ -679,7 +688,12 @@ fn reachable_targets(
 /// (retail `CharacterNoticesAttacker`): only one awake, unblinded and
 /// defending; the first time each round always, then by senses, 25 harder
 /// each time.
-fn notices(body: &BodyItem, defending: bool, attempts: &mut u32, rng: &mut GameRng) -> bool {
+fn notices(
+    body: &BodyReadOnlyItem,
+    defending: bool,
+    attempts: &mut u32,
+    rng: &mut GameRng,
+) -> bool {
     let vitals = &body.vitals;
     let alert = !vitals.is_dead()
         && vitals.stamina.current > 0
@@ -693,12 +707,9 @@ fn notices(body: &BodyItem, defending: bool, attempts: &mut u32, rng: &mut GameR
         return true;
     }
     // Retail compares unsigned: once senses fall short, noticing is certain.
-    let senses = body
-        .character
-        .as_ref()
-        .unwrap()
-        .stats(&vitals.enchantments)
-        .attribute(Attribute::Senses) as i32;
+    let senses =
+        body.character.as_ref().unwrap().stats(&vitals.enchantments).attribute(Attribute::Senses)
+            as i32;
     let chance = (senses - *attempts as i32 * 25) as u32;
     *attempts += 1;
     rng.below(100) < chance
@@ -717,7 +728,11 @@ pub(super) fn monster_attacks(
     battle: Single<(&mut Battle, Option<&Combatants>)>,
     (party_turns, mut spotted): (Query<&PartyTurn>, Query<&mut Spotted>),
     mut bodies: Query<Body>,
-    (places, levels, obstacles): (Query<Place, With<Monster>>, Query<(), With<Level>>, WorldObstacles),
+    (places, levels, obstacles): (
+        Query<Place, With<Monster>>,
+        Query<(), With<Level>>,
+        WorldObstacles,
+    ),
     (stand, roster, mut formation): (
         Single<(&Position, &PartyBody)>,
         Single<&PartyRoster>,
@@ -740,8 +755,15 @@ pub(super) fn monster_attacks(
     };
     let mut fighters = fighters;
     for (monster, fights, mut turn) in &mut fighters {
-        commands.entity(monster).remove::<Fights>();
-        let me = bodies.get_mut(monster).unwrap();
+        // Fighting is its action: it holds the fight for the action's pause.
+        commands.entity(monster).remove::<(
+            Fights,
+            super::monster_turn::Decided,
+            super::monster_turn::Resumes,
+            Acting,
+        )>();
+        battle.wait = Timer::from_seconds(super::ACTION_SECONDS, TimerMode::Once);
+        let me = bodies.get(monster).unwrap();
         let mine = allegiance(&me, species, sides).unwrap();
         let kind = &species[me.monster.as_ref().unwrap().species];
         let wanted = if turn.berserk { Stance::Friendly } else { Stance::Hostile };
@@ -796,7 +818,7 @@ pub(super) fn monster_attacks(
         // A member not facing it may turn in time, or be struck from behind.
         let position = places.get(monster).unwrap().translation();
         if attack.reach <= Reach::Short
-            && let Ok(body) = bodies.get_mut(target)
+            && let Ok(body) = bodies.get(target)
             && body.character.is_some()
         {
             let side = formation::quadrant(stand.eye, stand.yaw, position);
@@ -856,7 +878,7 @@ fn close_in(
         let target = combatants
             .iter()
             .filter_map(|&entity| {
-                let body = bodies.get_mut(entity).ok()?;
+                let body = bodies.get(entity).ok()?;
                 let at = places.get(entity).ok()?.translation();
                 (entity != monster
                     && !body.is_dead()
@@ -865,17 +887,17 @@ fn close_in(
             })
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .map(|(_, entity)| entity);
-        let me = bodies.get_mut(monster).unwrap();
+        let me = bodies.get(monster).unwrap();
         target.filter(|_| walks).map(|target| {
             let charge = me.vitals.charges();
             let kind = &species[me.monster.as_ref().unwrap().species];
-            let metres = approach::move_metres(&me.vitals, kind, charge);
+            let metres = approach::move_metres(me.vitals, kind, charge);
             (approach::MoveBudget { metres, charge }, approach::MoveGoal::Attack(target))
         })
     } else if mine.stance == Stance::Hostile {
-        let me = bodies.get_mut(monster).unwrap();
+        let me = bodies.get(monster).unwrap();
         approach::move_budget(
-            (me.monster.as_ref().unwrap(), &me.vitals),
+            (me.monster.as_ref().unwrap(), me.vitals),
             here,
             place.walker,
             stand.eye,
@@ -901,7 +923,11 @@ fn swing_members(
     mut commands: Commands,
     mut attacks: Query<(Entity, &mut Attack, &Wielding, &AttackBy, Option<&AimsAt>)>,
     mut bodies: Query<Body>,
-    (footings, places, levels): (Query<Footing>, Query<Place, With<Monster>>, Query<(), With<Level>>),
+    (footings, places, levels): (
+        Query<Footing>,
+        Query<Place, With<Monster>>,
+        Query<(), With<Level>>,
+    ),
     battle: Single<(&Battle, Option<&Combatants>)>,
     (stand, roster, formation, party): (
         Single<(&Position, &PartyBody)>,
@@ -923,11 +949,10 @@ fn swing_members(
         if attack.over {
             continue;
         }
-        let attacker = bodies.get_mut(member).unwrap();
-        let (character, vitals) =
-            (attacker.character.as_deref().unwrap().clone(), attacker.vitals.clone());
+        let attacker = bodies.get(member).unwrap();
+        let (character, vitals) = (attacker.character.unwrap().clone(), attacker.vitals.clone());
         let aimed_at = aims.map(|aims| aims.0).and_then(|target| {
-            let body = bodies.get_mut(target).ok()?;
+            let body = bodies.get(target).ok()?;
             let footing = footings.get(target).ok()?;
             blow_defence(&body, &footing, (running, &levels), (items, &party.0, species))
                 .map(|defence| (target, defence))
@@ -952,13 +977,13 @@ fn swing_members(
             // hand reaches, and the monsters it reaches but the one aimed at.
             let mut bystanders: Vec<Entity> = roster
                 .iter()
-                .filter(|&m| bodies.get_mut(m).is_ok_and(|b| !b.is_dead()))
+                .filter(|&m| bodies.get(m).is_ok_and(|b| !b.is_dead()))
                 .filter(|&m| {
                     m == member || hand.reach > Reach::Touch || !formation.screens(member, m)
                 })
                 .collect();
             for &entity in combatants {
-                let (Ok(body), Ok(place)) = (bodies.get_mut(entity), places.get(entity)) else {
+                let (Ok(body), Ok(place)) = (bodies.get(entity), places.get(entity)) else {
                     continue;
                 };
                 let distance = distance(stand.eye, body.monster.as_ref().unwrap(), place.feet());
@@ -982,7 +1007,13 @@ fn swing_members(
             &mut attack.surprise,
             (stand.eye, &mut bodies, &places),
         );
-        settle_landing(&mut commands, (attack_entity, &mut attack, member), landed, (aim, close), &mut news);
+        settle_landing(
+            &mut commands,
+            (attack_entity, &mut attack, member),
+            landed,
+            (aim, close),
+            &mut news,
+        );
     }
 }
 
@@ -1026,7 +1057,11 @@ fn swing_monsters(
     mut commands: Commands,
     mut attacks: Query<(Entity, &mut Attack, &Striking, &AttackBy, Option<&AimsAt>)>,
     mut bodies: Query<Body>,
-    (footings, places, levels): (Query<Footing>, Query<Place, With<Monster>>, Query<(), With<Level>>),
+    (footings, places, levels): (
+        Query<Footing>,
+        Query<Place, With<Monster>>,
+        Query<(), With<Level>>,
+    ),
     battle: Single<(&Battle, Option<&Combatants>)>,
     (stand, roster, formation, party): (
         Single<(&Position, &PartyBody)>,
@@ -1048,13 +1083,12 @@ fn swing_monsters(
         if attack.over {
             continue;
         }
-        let attacker = bodies.get_mut(entity).unwrap();
-        let (monster, vitals) =
-            (attacker.monster.as_deref().unwrap().clone(), attacker.vitals.clone());
+        let attacker = bodies.get(entity).unwrap();
+        let (monster, vitals) = (attacker.monster.unwrap().clone(), attacker.vitals.clone());
         let kind = &species[monster.species];
         let swung = &kind.attacks[striking.attack];
         let aimed_at = aims.map(|aims| aims.0).and_then(|target| {
-            let body = bodies.get_mut(target).ok()?;
+            let body = bodies.get(target).ok()?;
             let footing = footings.get(target).ok()?;
             blow_defence(&body, &footing, (running, &levels), (items, &party.0, species))
                 .map(|defence| (target, defence))
@@ -1083,11 +1117,11 @@ fn swing_monsters(
             let mut bystanders: Vec<Entity> = roster
                 .iter()
                 .filter(|&m| m != target)
-                .filter(|&m| bodies.get_mut(m).is_ok_and(|b| !b.is_dead()))
+                .filter(|&m| bodies.get(m).is_ok_and(|b| !b.is_dead()))
                 .filter(|&m| stand.reaches(&formation, m, at, swung.reach, reach_of_party))
                 .collect();
             for &other in combatants {
-                let (Ok(body), Ok(there)) = (bodies.get_mut(other), places.get(other)) else {
+                let (Ok(body), Ok(there)) = (bodies.get(other), places.get(other)) else {
                     continue;
                 };
                 if other == target || !in_play(&body, &there, &levels) {
@@ -1111,7 +1145,13 @@ fn swing_monsters(
             &mut attack.surprise,
             (stand.eye, &mut bodies, &places),
         );
-        settle_landing(&mut commands, (attack_entity, &mut attack, entity), landed, (aim, close), &mut news);
+        settle_landing(
+            &mut commands,
+            (attack_entity, &mut attack, entity),
+            landed,
+            (aim, close),
+            &mut news,
+        );
     }
 }
 
@@ -1141,35 +1181,35 @@ fn intercept_swings(
         let (mut attack, by) = attacks.get_mut(hit_of.0).unwrap();
         // The attacker's protection: a member's with their main hand, a
         // monster's by its species.
-        let attacker = bodies.get_mut(by.0).unwrap();
+        let attacker = bodies.get(by.0).unwrap();
         let pressing = match (&attacker.character, &attacker.monster) {
             (Some(character), _) => {
                 let stats = character.stats(&attacker.vitals.enchantments);
                 let hands = attack::hands(
                     &stats,
-                    attacker.carried.as_deref().unwrap(),
+                    attacker.carried.unwrap(),
                     items,
                     attacker.burden.unwrap().load,
                 );
-                attack::member_protection(&stats, &attacker.vitals, &hands.hands[0])
+                attack::member_protection(&stats, attacker.vitals, &hands.hands[0])
             }
             (None, Some(monster)) => {
-                attack::monster_protection(&species[monster.species], &attacker.vitals)
+                attack::monster_protection(&species[monster.species], attacker.vitals)
             }
             (None, None) => continue,
         };
         let surprise = attack.surprise;
         let pressing =
             pressing + 10 * i32::from(surprise.unaware) + 10 * i32::from(surprise.natural);
-        let Some((ward_monster, ward_feet)) = bodies.get_mut(ward).ok().and_then(|body| {
+        let Some((ward_monster, ward_feet)) = bodies.get(ward).ok().and_then(|body| {
             (!body.is_dead()).then_some(())?;
-            Some((body.monster.as_deref()?.clone(), places.get(ward).ok()?.feet()))
+            Some((body.monster?.clone(), places.get(ward).ok()?.feet()))
         }) else {
             continue;
         };
         let mut stepping = Vec::new();
         for &guard in guarding.entities() {
-            let (Ok(body), Ok(place)) = (bodies.get_mut(guard), places.get(guard)) else {
+            let (Ok(body), Ok(place)) = (bodies.get(guard), places.get(guard)) else {
                 continue;
             };
             let monster = body.monster.as_ref().unwrap();
@@ -1183,7 +1223,7 @@ fn intercept_swings(
             {
                 continue;
             }
-            let guarding = attack::monster_protection(kind, &body.vitals);
+            let guarding = attack::monster_protection(kind, body.vitals);
             let chance = (guarding - pressing + 50).clamp(5, 95) as u32;
             if rng.below(100) < chance {
                 stepping.push(guard);
@@ -1227,12 +1267,12 @@ fn pierce_member_swings(
     let rng = &mut *rng;
     for (swing_entity, strikes, hit_of, swing) in &swings {
         let Ok((mut attack, wielding, by)) = attacks.get_mut(hit_of.0) else { continue };
-        let (victim, hand, mode, surprise) = (strikes.0, &wielding.hand, attack.mode, attack.surprise);
-        let attacker = bodies.get_mut(by.0).unwrap();
-        let (character, vitals) =
-            (attacker.character.as_deref().unwrap().clone(), attacker.vitals.clone());
+        let (victim, hand, mode, surprise) =
+            (strikes.0, &wielding.hand, attack.mode, attack.surprise);
+        let attacker = bodies.get(by.0).unwrap();
+        let (character, vitals) = (attacker.character.unwrap().clone(), attacker.vitals.clone());
         let stats = character.stats(&vitals.enchantments);
-        let struck = bodies.get_mut(victim).ok().and_then(|body| {
+        let struck = bodies.get(victim).ok().and_then(|body| {
             let footing = footings.get(victim).ok()?;
             blow_defence(&body, &footing, (running, &levels), (items, &party.0, species))
         });
@@ -1244,12 +1284,18 @@ fn pierce_member_swings(
         else {
             // Dodged; a fumble still reports its blow.
             if swing.fumbled {
-                news.write(CombatNews::Result { attacker: by.0, target: victim, hits: 1, damage: 0 });
+                news.write(CombatNews::Result {
+                    attacker: by.0,
+                    target: victim,
+                    hits: 1,
+                    damage: 0,
+                });
             }
             commands.entity(swing_entity).despawn();
             continue;
         };
-        let glancing = Blow { damage: 0, effects: AttackEffects::default(), power: 0, by_monster: false };
+        let glancing =
+            Blow { damage: 0, effects: AttackEffects::default(), power: 0, by_monster: false };
         // A launcher pierces by what it shoots.
         let piercing = wielding.ammunition.map_or(mode, |modes| attack::choose_mode(rng, modes));
         let through = attack::member_penetration(
@@ -1321,13 +1367,12 @@ fn pierce_monster_swings(
     for (swing_entity, strikes, hit_of, swing) in &swings {
         let Ok((mut attack, striking, by)) = attacks.get_mut(hit_of.0) else { continue };
         let (victim, mode, surprise) = (strikes.0, attack.mode, attack.surprise);
-        let attacker = bodies.get_mut(by.0).unwrap();
-        let (monster, vitals) =
-            (attacker.monster.as_deref().unwrap().clone(), attacker.vitals.clone());
+        let attacker = bodies.get(by.0).unwrap();
+        let (monster, vitals) = (attacker.monster.unwrap().clone(), attacker.vitals.clone());
         let kind = &species[monster.species];
         let swung = &kind.attacks[striking.attack];
         let me = (kind, &vitals, striking.stance);
-        let Some((struck, member)) = bodies.get_mut(victim).ok().and_then(|body| {
+        let Some((struck, member)) = bodies.get(victim).ok().and_then(|body| {
             let footing = footings.get(victim).ok()?;
             blow_defence(&body, &footing, (running, &levels), (items, &party.0, species))
                 .map(|defence| (defence, body.character.is_some()))
@@ -1375,17 +1420,12 @@ fn land_blows(
     mut attacks: Query<(&mut Attack, &AttackBy)>,
     mut bodies: Query<Body>,
     members: Query<(), With<Character>>,
-    (fight, party, groups): (Single<Entity, With<Battle>>, Single<&PartyEffects>, Query<&MonsterGroup>),
-    (content, difficulty, factions, clock): (
-        If<Res<Catalogs>>,
-        Res<Difficulty>,
-        Res<Factions>,
-        Res<GameClock>,
-    ),
+    fight: Single<Entity, With<Battle>>,
+    (content, definitions): (If<Res<Catalogs>>, Res<Definitions>),
     mut rng: ResMut<GameRng>,
     mut notices: MessageWriter<DamageApplied>,
 ) {
-    let (items, species, spells) = (&content.items, &content.species, &content.spells);
+    let species = &content.species;
     let (fight, rng) = (Some(*fight), &mut *rng);
     for (hit, strikes, hit_of, blow) in &blows {
         let (mut attack, by) = attacks.get_mut(hit_of.0).unwrap();
@@ -1395,26 +1435,24 @@ fn land_blows(
         let dealt = if blow.damage == 0 {
             0
         } else {
-            let hurt = wound(&mut victim, blow.damage, rng, (species, fight), (&mut commands, &mut notices));
-            attack.struck(&hurt, by_party, monster)
-        };
-        if dealt > 0 {
-            let defence = |body: &BodyItem, realm| {
-                body.defence(realm, (items, species, &party.0), (&groups, &factions, clock.ms))
-            };
-            let landed = blow_effects(
-                rng,
+            let hurt = wound(
                 &mut victim,
-                (&blow.effects, blow.power, blow.by_monster),
-                &defence,
-                (species, spells, *difficulty, fight),
-                &mut attack.improved,
+                blow.damage,
+                rng,
+                (species, fight),
                 (&mut commands, &mut notices),
             );
-            for effect in &landed {
-                attack.struck(effect, by_party, monster);
-            }
-            attack.effects.extend(landed);
+            attack.struck(&hurt, by_party, monster)
+        };
+        // What the weapon does besides, once it drew blood, at the
+        // attacker's effect power: an act of its own.
+        if dealt > 0 {
+            let strength = Strength { power: blow.power, against: blow.power, boost: 0 };
+            let weapon = WeaponEffects { effects: blow.effects, by_monster: blow.by_monster };
+            let act = commands
+                .spawn((Deed::new(Act::Fight), Uses(definitions.blow()), strength, weapon))
+                .id();
+            reach(&mut commands, act, &[(strikes.0, None)]);
         }
         commands.entity(hit).insert(Dealt(dealt));
     }
@@ -1459,7 +1497,11 @@ fn razor_cloaks(
     blows: Query<(&Strikes, &HitOf, &Swing), With<Dealt>>,
     mut attacks: Query<(&mut Attack, &AttackBy)>,
     mut bodies: Query<Body>,
-    (footings, levels, members): (Query<Footing>, Query<(), With<Level>>, Query<(), With<Character>>),
+    (footings, levels, members): (
+        Query<Footing>,
+        Query<(), With<Level>>,
+        Query<(), With<Character>>,
+    ),
     (fight, battle, party): (Single<Entity, With<Battle>>, Single<&Battle>, Single<&PartyEffects>),
     content: If<Res<Catalogs>>,
     mut rng: ResMut<GameRng>,
@@ -1478,19 +1520,20 @@ fn razor_cloaks(
         let Some(charge) = defending.vitals.enchantments.spend_charge(SpellId::RAZOR_CLOAK) else {
             continue;
         };
-        let rolled = crate::game::hits::spells::magnitude(
+        let rolled = crate::game::hits::prototypes::magnitude(
             rng,
             spells[SpellId::RAZOR_CLOAK].dice,
             crate::game::magic::Strength { power: charge.power, boost: 0, against: 0 },
         );
         let attacker = by.0;
-        let mut struck = bodies.get_mut(attacker).unwrap();
         let footing = footings.get(attacker).unwrap();
-        let Some(amount) = blow_defence(&struck, &footing, (running, &levels), (items, &party.0, species))
-            .map(|defence| defence.reduce(rolled as i32))
-        else {
+        let defence = bodies.get(attacker).ok().and_then(|struck| {
+            blow_defence(&struck, &footing, (running, &levels), (items, &party.0, species))
+        });
+        let Some(amount) = defence.map(|defence| defence.reduce(rolled as i32)) else {
             continue;
         };
+        let mut struck = bodies.get_mut(attacker).unwrap();
         let monster = struck.monster.is_some();
         let hurt =
             wound(&mut struck, amount, rng, (species, Some(*fight)), (&mut commands, &mut notices));
@@ -1685,7 +1728,7 @@ fn struck_body(
     bodies: &mut Query<Body>,
     places: &Query<Place, With<Monster>>,
 ) -> Option<(Vec3, f32, f32)> {
-    let body = bodies.get_mut(victim).ok()?;
+    let body = bodies.get(victim).ok()?;
     if let (Some(monster), Ok(place)) = (&body.monster, places.get(victim)) {
         return Some((
             body_centre(place.feet(), monster),
@@ -1742,7 +1785,6 @@ fn land(
     }
 }
 
-
 /// Spend what a ranged swing used (retail `ResolveCharacterAttack`'s
 /// tail): the ammunition a launcher shot, a thrown weapon unless it never
 /// runs out, or a gun's shot. Returns whether the hand can go on.
@@ -1776,159 +1818,3 @@ pub(super) fn can_berserk(character: &Character, hands: &attack::Hands) -> bool 
         && (main.in_play || off.in_play)
         && (!main.in_play || main.reach <= Reach::Short)
 }
-
-
-/// Rounds, or an amount, a blow's effect rolls (retail `RollEffectDuration`
-/// on an empty definition, then `count`d2 + `base` and one more when that
-/// came to under two).
-fn blow_roll(rng: &mut GameRng, count: u32, sides: i32, base: u32) -> u32 {
-    if rng.below(4) == 1 {
-        return 2;
-    }
-    let dice = crate::content::items::Dice { count: count as i32, sides, base: base as i32 };
-    rng.roll(dice) + 1
-}
-
-/// Retail `ApplyEffectConditions`: what a weapon or a monster's blow that
-/// drew blood does besides its damage. Each effect with a chance rolls for
-/// it in turn until the victim dies; `power` is the attacker's effect
-/// strength, and only a monster swallows or possesses.
-#[allow(clippy::too_many_arguments)]
-fn blow_effects(
-    rng: &mut GameRng,
-    body: &mut BodyItem,
-    (effects, power, by_monster): (&AttackEffects, u32, bool),
-    defence: &dyn Fn(&BodyItem, crate::content::characters::Realm) -> body::Defence,
-    (species, spells, difficulty, fight): (
-        &MonsterCatalog,
-        &crate::content::spells::SpellCatalog,
-        Difficulty,
-        Option<Entity>,
-    ),
-    improved: &mut Vec<(Entity, Skill)>,
-    (commands, notices): (&mut Commands, &mut MessageWriter<DamageApplied>),
-) -> Vec<Effect> {
-    use crate::content::characters::Realm;
-    use crate::content::items::AttackEffect as E;
-    use crate::game::hits::spells::afflict;
-    let victim = body.entity;
-    let member = body.character.is_some();
-    let mut landed = Vec::new();
-    for (effect, &chance) in &effects.chances {
-        if body.is_dead() {
-            break;
-        }
-        if chance == 0 || rng.below(100) >= chance {
-            continue;
-        }
-        let count = power / 3 + 1;
-        let rounds = blow_roll(rng, count, 2, 1).clamp(1, 12);
-        let ruling = (species, difficulty, fight);
-        let mut afflicts = |rng: &mut GameRng,
-                            body: &mut BodyItem,
-                            condition,
-                            realm,
-                            rounds,
-                            poison,
-                            improved: &mut Vec<(Entity, Skill)>| {
-            let defence = defence(body, realm);
-            afflict(
-                rng,
-                body,
-                &defence,
-                (condition, poison),
-                (rounds, power),
-                ruling,
-                improved,
-                (&mut *commands, &mut *notices),
-            )
-        };
-        // A blow's drain: the victim's save, then `dice` (count, sides,
-        // base), one more, cut by resistance; nothing when none is left.
-        let drain = |rng: &mut GameRng,
-                     body: &mut BodyItem,
-                     realm,
-                     (count, sides, base),
-                     improved: &mut Vec<(Entity, Skill)>| {
-            let defence = defence(body, realm);
-            let (saved, practised) = body.saves(rng, &defence, (0, power), difficulty);
-            improved.extend(practised.map(|skill| (victim, skill)));
-            if saved {
-                return None;
-            }
-            let amount = blow_roll(rng, count, sides, base);
-            Some(body::resist(rng, amount, defence.resistance, defence.level, power))
-                .filter(|&amount| amount != 0)
-        };
-        let outcome = match effect {
-            E::Sleep => {
-                afflicts(rng, body, Some(Condition::Asleep), Realm::Air, Some(rounds), 0, improved)
-            }
-            E::Paralyze => {
-                afflicts(rng, body, Some(Condition::Paralyzed), Realm::Water, Some(rounds), 0, improved)
-            }
-            // A poison bites at the weapon's strength (retail
-            // `ApplyEffectConditions` passes its magnitude base).
-            E::Poison => {
-                let rounds = blow_roll(rng, count * 3, 2, effects.strength);
-                let poison = effects.strength;
-                afflicts(rng, body, Some(Condition::Poisoned), Realm::Water, Some(rounds), poison, improved)
-            }
-            E::Hex => afflicts(rng, body, Some(Condition::Hexed), Realm::Divine, Some(rounds), 0, improved),
-            E::Disease => afflicts(rng, body, Some(Condition::Diseased), Realm::Water, None, 0, improved),
-            E::Kill => afflicts(rng, body, None, Realm::Divine, None, 0, improved),
-            E::KnockOut => {
-                afflicts(rng, body, Some(Condition::Unconscious), Realm::Earth, Some(rounds), 0, improved)
-            }
-            E::Blind => afflicts(rng, body, Some(Condition::Blind), Realm::Fire, Some(rounds), 0, improved),
-            E::Frighten => {
-                afflicts(rng, body, Some(Condition::Afraid), Realm::Mental, Some(rounds), 0, improved)
-            }
-            // Being swallowed (retail Missing) is not modelled.
-            E::Swallow => None,
-            E::Possess if by_monster && member => {
-                afflicts(rng, body, Some(Condition::Turncoat), Realm::Divine, Some(rounds), 0, improved)
-            }
-            E::Possess => None,
-            E::DrainHealth if member => {
-                drain(rng, body, Realm::Earth, (count, 2, 0), improved).map(|amount| {
-                    let lost = body.sap(amount, rng, fight).unwrap();
-                    if lost > 0 {
-                        notices.write(DamageApplied {
-                            member: victim,
-                            amount: lost,
-                            died: body.is_dead(),
-                        });
-                    }
-                    Effect::Damaged {
-                        victim,
-                        outcome: crate::game::world::damage::DamageOutcome {
-                            damage: lost,
-                            died: body.is_dead(),
-                            experience: 0,
-                        },
-                    }
-                })
-            }
-            E::DrainHealth => None,
-            E::DrainStamina => drain(rng, body, Realm::Water, (count * 2, 5, count * 3), improved)
-                .map(|amount| Effect::Tired { victim, amount: body.vitals.tire(amount) }),
-            E::DrainSpellPoints if member => {
-                drain(rng, body, Realm::Divine, (count, 6, count), improved).map(|amount| {
-                    let amount = body.drain_magic(amount, rng, (spells, species));
-                    Effect::Drained { victim, amount }
-                })
-            }
-            E::DrainSpellPoints => None,
-            E::Nauseate => {
-                afflicts(rng, body, Some(Condition::Nauseated), Realm::Air, Some(rounds), 0, improved)
-            }
-            E::Insane => {
-                afflicts(rng, body, Some(Condition::Insane), Realm::Mental, Some(rounds), 0, improved)
-            }
-        };
-        landed.extend(outcome);
-    }
-    landed
-}
-

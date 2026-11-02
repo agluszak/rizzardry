@@ -1,11 +1,14 @@
-//! What lands on bodies. An act (a cast, a missile's impact, a cloud's
-//! pulse, a trap) is a [`Deed`] entity; each body it reaches gets a hit
-//! entity that [`Strikes`] it and is a [`HitOf`] the deed. The stage
-//! systems in [`Resolution`] act on the hits and the bodies' components,
-//! gather what they did on the deed, and [`report_deeds`] turns each
-//! finished deed into news.
+//! What lands on bodies. An act (a cast, a missile's impact, a breath, a
+//! cloud's pulse, a trap, a blow) is an entity with a [`Deed`] recording
+//! what it did; each effect it has on a body is an entity that [`Strikes`]
+//! that body and is a [`HitOf`] the act ([`effects`]). The [`Hits`] stages
+//! settle the effects on the bodies' components, then what follows once an
+//! act's effects have all landed, and [`report_deeds`] turns each finished
+//! act into news.
 
 pub mod body;
+pub mod effects;
+pub mod prototypes;
 pub mod reach;
 pub mod specials;
 pub mod spells;
@@ -19,7 +22,7 @@ use crate::game::characters::Condition;
 use crate::game::magic::casting::{MagicNews, Report};
 use crate::game::world::damage::DamageOutcome;
 
-pub use body::{Body, BodyItem};
+pub use body::{Body, BodyItem, BodyReadOnlyItem};
 
 /// What a spell did to one victim.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -140,40 +143,93 @@ impl Deed {
     }
 }
 
-/// The stages that land hits, in order, then the deeds' reports. They run
-/// wherever deeds are made: on the frame for magic outside a fight, on the
-/// fixed step within one.
+/// Where acts land and are reported: [`run_hits`]. It runs wherever acts
+/// are made: on the frame for magic outside a fight, on the fixed step
+/// within one.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Resolution;
+
+/// The stages that settle effects, in order, then what follows once an
+/// act's effects have all landed, then the acts' reports.
+#[derive(bevy::ecs::schedule::ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Hits;
+
+/// Run the hit stages until no effect is left to settle but missiles still
+/// on their way: an effect waiting on the one before it, or what a landed
+/// act set off (a reflection, a burst), is settled within the same step.
+pub fn run_hits(world: &mut World) {
+    world.run_schedule(Hits);
+    let mut passes = 1;
+    while world
+        .query_filtered::<(), (With<HitOf>, Without<effects::InFlight>)>()
+        .iter(world)
+        .next()
+        .is_some()
+    {
+        passes += 1;
+        if passes > 64 {
+            error!("effects left unsettled after {passes} passes");
+            break;
+        }
+        world.run_schedule(Hits);
+    }
+}
 
 pub struct HitsPlugin;
 
 impl Plugin for HitsPlugin {
     fn build(&self, app: &mut App) {
-        let stages = || {
+        use effects::*;
+        use prototypes::{Definitions, define, instantiate, pick, roll};
+        app.add_systems(
+            PreUpdate,
+            define
+                .run_if(resource_exists::<crate::game::data::Catalogs>)
+                .run_if(not(resource_exists::<Definitions>)),
+        )
+        .add_systems(
+            Hits,
             (
-                spells::land_spells,
-                specials::land_specials,
-                specials::land_clouds,
-                spells::drain_life,
-                spells::boil_blood,
+                (instantiate, pick, roll, roll_chances, immunities, saves, resist).chain(),
+                (
+                    harm,
+                    sap,
+                    afflict,
+                    slay,
+                    tire,
+                    drain_magic,
+                    drain_realm,
+                    heal,
+                    refresh,
+                    replenish,
+                    cure,
+                    renew,
+                    raise,
+                    purify,
+                    enchant,
+                    burn,
+                    lose_gold,
+                    dispel,
+                )
+                    .chain(),
+                release_followers,
+                (spells::drain_life, spells::burst_blood, spells::reflect_spells).chain(),
                 report_deeds,
             )
-                .chain()
-                .in_set(Resolution)
-        };
-        app.add_systems(Update, stages())
-            .add_systems(FixedUpdate, stages())
-            // Outside a fight deeds land on the frame, once magic is accepted;
-            // in one, on the step, once the round's actors and clouds have
-            // made theirs and before its deaths and defeat are settled.
-            .configure_sets(Update, Resolution.after(crate::game::GameplaySet::Combat))
-            .configure_sets(
-                FixedUpdate,
-                Resolution
-                    .after(crate::game::combat::finish_round)
-                    .before(crate::game::combat::summon::summon),
-            );
+                .chain(),
+        )
+        .add_systems(Update, run_hits.in_set(Resolution))
+        .add_systems(FixedUpdate, (fly, run_hits).chain().in_set(Resolution))
+        // Outside a fight acts land on the frame, once magic is accepted; in
+        // one, on the step, once the round's actors and clouds have made
+        // theirs and before its deaths and defeat are settled.
+        .configure_sets(Update, Resolution.after(crate::game::GameplaySet::Combat))
+        .configure_sets(
+            FixedUpdate,
+            Resolution
+                .after(crate::game::combat::end_round)
+                .before(crate::game::combat::summon::summon),
+        );
     }
 }
 

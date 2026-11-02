@@ -102,12 +102,49 @@ impl Sight<'_, '_, '_> {
         penalty: i32,
         concealment: u32,
     ) -> bool {
-        let eye = monster.eye(feet(at.translation(), walker));
+        let feet = feet(at.translation(), walker);
+        self.sees_along(
+            (monster, vitals, kind),
+            (feet, at.forward()),
+            (target, distance),
+            (penalty, concealment),
+        )
+    }
+
+    /// Whether a monster standing at `feet` and facing `forward` sees
+    /// another (retail `CanMonsterSeeMonster`), from plain values.
+    pub(super) fn sees_from(
+        &self,
+        (monster, vitals, kind): (&Monster, &Vitals, &Species),
+        (feet, forward): (Vec3, Vec3),
+        (target, target_feet, target_kind): (&Monster, Vec3, &Species),
+    ) -> bool {
+        let distance = monster.gap(feet, target, target_feet);
+        let eye = target.eye(target_feet);
+        self.sees_along(
+            (monster, vitals, kind),
+            (feet, forward),
+            (eye, distance),
+            (i32::from(target_kind.level), 0),
+        )
+    }
+
+    /// Whether a monster that can still fight sees `target` `distance`
+    /// away: within the far clip, not blinded, a clear line from its eyes,
+    /// and its sight threshold covering the distance.
+    fn sees_along(
+        &self,
+        (monster, vitals, kind): (&Monster, &Vitals, &Species),
+        (feet, forward): (Vec3, Vec3),
+        (target, distance): (Vec3, f32),
+        (penalty, concealment): (i32, u32),
+    ) -> bool {
+        let eye = monster.eye(feet);
         if !vitals.can_fight() || distance > self.far || blinded(kind, vitals) {
             return false;
         }
         let clear = self.obstacles.clear(eye, target);
-        let forward = at.forward().with_y(0.0);
+        let forward = forward.with_y(0.0);
         let angle = forward.angle_between((target - eye).with_y(0.0));
         let senses = i32::from(kind.attributes.senses);
         let bonus = if kind.level_sight { (u32::from(kind.level) * 5).min(125) } else { 0 };
@@ -163,49 +200,4 @@ pub(super) fn reinforces(members: &[(Seen, bool)], hostiles: &[Seen]) -> bool {
                 },
             )
         })
-}
-
-/// Where the party stands and faces, and its formation, as reach needs them.
-pub(super) struct PartyView {
-    pub(super) eye: Vec3,
-    pub(super) yaw: f32,
-    /// The level's far clip, which bounds monsters' sight.
-    pub(super) far: f32,
-    /// The game time the round's actions happen at.
-    pub(super) now: u64,
-}
-
-impl PartyView {
-    pub(super) fn new(
-        (position, body): (&Position, &PartyBody),
-        level: &PlayedLevel,
-        now: u64,
-    ) -> Self {
-        Self {
-            eye: PartyBody::eye(position),
-            yaw: body.yaw,
-            far: level.view_distance().unwrap_or(0.0),
-            now,
-        }
-    }
-
-    /// How monsters see the party now.
-    pub(super) fn sight<'a, 'w, 's>(
-        &self,
-        members: &Members,
-        roster: &PartyRoster,
-        obstacles: &'a WorldObstacles<'w, 's>,
-        concealment: u32,
-    ) -> Sight<'a, 'w, 's> {
-        Sight {
-            eye: self.eye,
-            concealment,
-            far: self.far,
-            lowest_level: crate::game::party::lowest_level(roster.iter().map(|m| {
-                let (character, vitals, ..) = members.get(m).unwrap();
-                (character, vitals)
-            })),
-            obstacles,
-        }
-    }
 }

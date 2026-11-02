@@ -323,8 +323,7 @@ pub fn draw_party(
         let mut hand_x = None;
         let image = |path: &str, frame| (crate::content::paths::retail(path), frame);
         if let Some(view) = actor {
-            let armour = view.armour(catalog, party_effects.as_deref().copied(),
-            );
+            let armour = view.armour(catalog, party_effects.as_deref().copied());
             let CharacterViewItem { profile, vitals, carried, .. } = view;
             let dead = vitals.is_dead();
             let worn = |slot| carried.worn(slot).map(|i| &catalog[i.item]);

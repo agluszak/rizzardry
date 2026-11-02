@@ -584,7 +584,7 @@ fn offers<'a>(
     points: &SpellPoints,
     maximum: &enum_map::EnumMap<Realm, u32>,
     spells: &'a SpellCatalog,
-    items: &ItemCatalog,
+    (items, definitions): (&ItemCatalog, &crate::game::hits::prototypes::Definitions),
     context: UseContext,
     pool: &PartyInventory,
     silenced: bool,
@@ -595,12 +595,12 @@ fn offers<'a>(
                 .stacks
                 .iter()
                 .filter_map(|stack| {
-                    let spell = usable_stack(character, stack, items, false)?;
+                    let spell = usable_stack(character, stack, (items, definitions), false)?;
                     Some((Source::PoolItem(stack.id), stack, spell))
                 })
                 .collect()
         } else {
-            usable_items(character, carried, items)
+            usable_items(character, carried, (items, definitions))
                 .into_iter()
                 .filter_map(|(id, spell)| Some((Source::Item(id), carried.find_stack(id)?, spell)))
                 .collect()
@@ -647,7 +647,7 @@ fn offers<'a>(
                 spell: s,
                 label: format!("{} {}", glyph(s.targeting), s.name),
                 cost: s.cost.to_string(),
-                available: castable(s, affordable, context, silenced),
+                available: castable(s, affordable, context, silenced, definitions),
                 silenced,
             }
         })
@@ -740,6 +740,7 @@ pub(super) fn draw_magic_view(
         Single<&PartyInventory>,
     ),
     content: If<Res<Catalogs>>,
+    definitions: Res<crate::game::hits::prototypes::Definitions>,
     conversations: Query<&crate::game::npcs::conversation::Conversation>,
     (art, assets, strings): (
         Res<MagicViewArt>,
@@ -834,7 +835,7 @@ pub(super) fn draw_magic_view(
         points,
         &mana_maximum,
         spells,
-        items,
+        (items, &definitions),
         context,
         &pool,
         silenced,
@@ -974,6 +975,7 @@ pub(super) fn commit_magic_choice(
     carried: Query<&Carried>,
     pool: Single<&PartyInventory>,
     content: If<Res<Catalogs>>,
+    _definitions: Res<crate::game::hits::prototypes::Definitions>,
     (conversations, speakers, monsters, party): (
         Query<&crate::game::npcs::conversation::Conversation>,
         Query<&crate::game::npcs::NpcBody>,
@@ -1082,6 +1084,7 @@ fn choose_row(
         Single<&PartyInventory>,
     ),
     content: If<Res<Catalogs>>,
+    definitions: Res<crate::game::hits::prototypes::Definitions>,
     conversations: Query<&crate::game::npcs::conversation::Conversation>,
 ) {
     let (Ok(row), Ok((mut view, casts_at, conversation_target))) =
@@ -1102,7 +1105,7 @@ fn choose_row(
         points,
         &mana_maximum,
         spells,
-        items,
+        (items, &definitions),
         match context(
             casts_at.map(|c| c.0),
             conversation_target.map(|r| r.0),

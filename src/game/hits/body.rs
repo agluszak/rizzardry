@@ -10,7 +10,7 @@ use bevy::prelude::*;
 use crate::content::characters::{Attribute, Realm, Skill, Trait};
 use crate::content::items::ItemCatalog;
 use crate::content::species::{MonsterCatalog, MonsterKind};
-use crate::content::spells::SpellCatalog;
+use crate::content::spells::{SpellCatalog, SpellDefinition};
 use crate::game::characters::{Character, Condition, Conditions, Fate, Lasting, Vitals};
 use crate::game::combat::Combatant;
 use crate::game::difficulty::Difficulty;
@@ -19,9 +19,14 @@ use crate::game::inventory::Carried;
 use crate::game::magic::enchantments::Enchantments;
 use crate::game::magic::pointcasts::LureInfluence;
 use crate::game::magic::{LearnedSpells, SpellPoints};
+use crate::game::party::body::PartyBody;
+use crate::game::party::roster::PartyMember;
 use crate::game::rng::GameRng;
+use crate::game::world::ActorPose;
 use crate::game::world::hostility::{self, Stance};
 use crate::game::world::identify::{GroupMember, MonsterGroup};
+use crate::game::world::level::{Level, LevelOwned};
+use crate::game::world::navigation::{Walker, feet};
 use crate::game::world::population::Monster;
 
 /// Whatever a hit may read or change of the body it lands on.
@@ -40,6 +45,12 @@ pub struct Body {
     pub lure: Option<&'static LureInfluence>,
     pub summoned: Has<crate::game::magic::pointcasts::SummonedBy>,
     pub goal: Option<&'static mut bevy_landmass::AgentTarget3d>,
+    /// A member stands where its party does; anything else at its own pose,
+    /// walking as it walks, in the level it belongs to.
+    pub member_of: Option<&'static PartyMember>,
+    pub pose: Option<ActorPose>,
+    pub walker: Option<&'static Walker>,
+    pub level: Option<&'static LevelOwned>,
 }
 
 /// Retail's marker for a condition without end (`W8_CONDITION_INDEFINITE`),
@@ -105,9 +116,86 @@ pub struct Defence {
     pub side: Stance,
 }
 
-impl BodyItem<'_, '_> {
+/// The rules that read a body: where it stands, what it is, which side
+/// it is on. Systems read bodies with `Query::get`, any number at once.
+impl BodyReadOnlyItem<'_, '_> {
     pub fn is_dead(&self) -> bool {
         self.vitals.is_dead()
+    }
+
+    /// Where it stands: below the party's eye for a member, at its own pose
+    /// for anything else.
+    pub fn feet(&self, party_eye: Vec3) -> Vec3 {
+        match (&self.member_of, &self.pose) {
+            (None, Some(pose)) => feet(pose.translation(), self.walker),
+            _ => PartyBody::feet_below(party_eye),
+        }
+    }
+
+    /// Where it looks from: the party's eye for a member, a monster's eyes.
+    pub fn eye(&self, party_eye: Vec3) -> Vec3 {
+        match (&self.member_of, &self.monster) {
+            (None, Some(monster)) if self.pose.is_some() => monster.eye(self.feet(party_eye)),
+            _ => party_eye,
+        }
+    }
+
+    /// Where a blow or a missile strikes it: a monster's middle, the
+    /// party's centre for a member.
+    pub fn centre(&self, party_eye: Vec3) -> Vec3 {
+        match (&self.member_of, &self.monster) {
+            (None, Some(monster)) if self.pose.is_some() => {
+                self.feet(party_eye) + Vec3::Y * monster.body.eye_height * 0.5
+            }
+            _ => PartyBody::centre(party_eye),
+        }
+    }
+
+    /// A monster in the level being played.
+    pub fn in_play(&self, levels: &Query<(), With<Level>>) -> bool {
+        self.monster.is_some() && self.level.is_some_and(|level| levels.contains(level.0))
+    }
+
+    /// A monster magic may take as a target or victim: in play, alive, and
+    /// of a species not kept out of targeting.
+    pub fn targetable(&self, levels: &Query<(), With<Level>>, species: &MonsterCatalog) -> bool {
+        self.in_play(levels)
+            && !self.is_dead()
+            && self.monster.as_ref().is_some_and(|m| !species[m.species].untargetable)
+    }
+
+    /// What a spell's strength from it grows from: a member's caster level
+    /// in the spell's books, a monster's species' level.
+    pub fn figure(&self, spell: &SpellDefinition, species: &MonsterCatalog) -> u32 {
+        match (&self.character, &self.monster) {
+            (Some(character), _) => {
+                crate::game::magic::total_caster_level(character, spell.books).max(0) as u32
+            }
+            (None, Some(monster)) => u32::from(species[monster.species].level),
+            (None, None) => 0,
+        }
+    }
+
+    /// The party acts against it: a monster's group turns hostile, whatever
+    /// the blows or spells then do (retail `MakeTargetGroupHostile` as the
+    /// action starts). A dead monster or one under Turncoat provokes nobody.
+    pub fn provoke(
+        &self,
+        species: &MonsterCatalog,
+        (groups, factions, now): (&mut Query<&mut MonsterGroup>, &Factions, u64),
+    ) -> bool {
+        let Some(monster) = &self.monster else { return false };
+        if self.is_dead() || self.vitals.conditions.has(Condition::Turncoat) {
+            return false;
+        }
+        let kind = &species[monster.species];
+        if let Some(member) = self.group
+            && let Ok(mut group) = groups.get_mut(member.0)
+            && hostility::stance(group.set, kind, factions, now, true) != Stance::Hostile
+        {
+            group.set = Some(hostility::SetStance { stance: Stance::Hostile, at: now });
+        }
+        true
     }
 
     /// The level saves and resistance weigh: a member's, or a monster's
@@ -139,7 +227,7 @@ impl BodyItem<'_, '_> {
             }
             (_, _, Some(monster)) => crate::game::world::population::resistance(
                 &species[monster.species],
-                &self.vitals,
+                self.vitals,
                 realm,
             ),
             _ => 0,
@@ -206,6 +294,20 @@ impl BodyItem<'_, '_> {
             }
             _ => false,
         }
+    }
+
+    /// A member's spell point maxima, by realm.
+    pub fn mana_maximum(&self, spells: &SpellCatalog) -> Option<enum_map::EnumMap<Realm, u32>> {
+        let character = self.character.as_ref()?;
+        let (learned, _) = self.magic.as_ref()?;
+        Some(character.stats(&self.vitals.enchantments).max_points(learned, spells))
+    }
+}
+
+/// The rules that change a body.
+impl BodyItem<'_, '_> {
+    pub fn is_dead(&self) -> bool {
+        self.vitals.is_dead()
     }
 
     /// Whether it saves (retail `TargetResistsCondition`), scaled by
@@ -310,13 +412,6 @@ impl BodyItem<'_, '_> {
         true
     }
 
-    /// A member's spell point maxima, by realm.
-    pub fn mana_maximum(&self, spells: &SpellCatalog) -> Option<enum_map::EnumMap<Realm, u32>> {
-        let character = self.character.as_ref()?;
-        let (learned, _) = self.magic.as_ref()?;
-        Some(character.stats(&self.vitals.enchantments).max_points(learned, spells))
-    }
-
     /// Drain spell points: a member's pool by the share retail takes, a
     /// monster's budget directly. What was taken.
     pub fn drain_magic(
@@ -325,7 +420,13 @@ impl BodyItem<'_, '_> {
         rng: &mut GameRng,
         (spells, species): (&SpellCatalog, &MonsterCatalog),
     ) -> u32 {
-        if let Some(maximum) = self.mana_maximum(spells) {
+        let maximum = match (&self.character, &self.magic) {
+            (Some(character), Some((learned, _))) => {
+                Some(character.stats(&self.vitals.enchantments).max_points(learned, spells))
+            }
+            _ => None,
+        };
+        if let Some(maximum) = maximum {
             let (_, pool) = self.magic.as_mut().unwrap();
             return pool.drain(amount, &maximum, rng);
         }

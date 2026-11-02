@@ -7,8 +7,8 @@ pub mod attack;
 pub mod breath;
 mod conduct;
 mod engage;
+mod member_turn;
 mod orders;
-mod party_turn;
 mod round_end;
 mod scene;
 mod sight;
@@ -17,15 +17,14 @@ use crate::game::GameplaySet;
 use crate::game::data::Catalogs;
 pub use conduct::Interrupt;
 pub use orders::*;
-use party_turn::*;
-pub use round_end::finish_round;
+pub use round_end::{RoundEnding, end_round, judge_round};
 use scene::*;
 use sight::*;
 mod monster_spells;
 mod monster_turn;
 mod round;
 pub use round::PartyTurn;
-use round::{Acting, Fleeing, Guarding, MonsterTurn, RoundAction, SpecialCooldown, accept_round};
+use round::{Acting, MonsterTurn, RoundAction, accept_round};
 pub mod summon;
 
 use crate::game::world::level::LevelOwned;
@@ -43,17 +42,14 @@ use crate::content::species::AttackWord;
 use crate::content::species::{MonsterCatalog, Reach, Species};
 use crate::game::characters::{Character, Condition, Vitals};
 use crate::game::hits::Effect;
-use crate::game::inventory::EquipSlot;
-use crate::game::magic::casting::{self, MagicChoice, MagicNews};
-use crate::game::magic::{LearnedSpells, MagicContext, SpellPoints};
+use crate::game::magic::casting::{self};
 use crate::game::party::Members;
 use crate::game::party::Order;
 use crate::game::party::body::PartyBody;
-use crate::game::party::recovery;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
-use crate::game::world::damage::{MonsterDamage, MonsterQuery};
+use crate::game::world::damage::MonsterDamage;
 use crate::game::world::hostility;
 use crate::game::world::identify::{GroupMember, GroupMembers, GroupRecognition, MonsterGroup};
 use crate::game::world::population::{Monster, blinded};
@@ -75,7 +71,6 @@ impl Plugin for CombatPlugin {
             .add_message::<GiveOrder>()
             .add_message::<engage::Engaged>()
             .init_resource::<CombatSettings>()
-            .init_resource::<casting::FlightOrder>()
             .add_observer(approach::end_move)
             .add_observer(approach::stop_walking)
             .add_systems(
@@ -104,21 +99,63 @@ impl Plugin for CombatPlugin {
             .add_systems(
                 FixedUpdate,
                 (
-                    crate::game::magic::deliver_spells,
-                    crate::game::characters::settle_deaths,
-                    settle_defeat,
-                    begin_round,
-                    call_actor,
-                    party_acts,
-                    swings::member_attacks,
-                    monster_acts,
-                    swings::monster_attacks,
-                    swings::run_swings,
-                    finish_round,
-                    summon::summon,
-                    // and again after the round's damage.
-                    crate::game::characters::settle_deaths,
-                    settle_defeat,
+                    (
+                        crate::game::characters::settle_deaths,
+                        settle_defeat,
+                        begin_round,
+                        call_actor,
+                    )
+                        .chain(),
+                    // The member whose initiative came acts,
+                    (
+                        member_turn::member_turns,
+                        swings::member_attacks,
+                        member_turn::start_member_cast,
+                        member_turn::start_breath,
+                    )
+                        .chain(),
+                    // or the monster decides and acts;
+                    (
+                        monster_turn::begin_monster_turns,
+                        monster_turn::decide_conduct,
+                        monster_turn::decide_special,
+                        monster_turn::decide_spell,
+                        monster_turn::withdraw_if_helpless,
+                        monster_turn::decide_guard,
+                        monster_turn::default_fight,
+                        monster_turn::interrupt,
+                        monster_turn::retreat,
+                        monster_turn::protect,
+                        monster_turn::start_special,
+                        monster_turn::start_monster_cast,
+                        swings::monster_attacks,
+                    )
+                        .chain(),
+                    // its blows and casts settle within the step,
+                    (swings::run_swings, casting::run_casts, member_turn::defend_instead).chain(),
+                    // and once everyone has acted the round ends.
+                    (
+                        judge_round,
+                        round_end::leave_fight,
+                        round_end::rest_waiters,
+                        round_end::cool_specials,
+                        round_end::age_conditions,
+                        round_end::recover_members,
+                        round_end::pulse_clouds,
+                        round_end::age_enchantments,
+                        round_end::rest_defenders,
+                        round_end::judge_victory,
+                        round_end::look_again,
+                        end_round,
+                    )
+                        .chain(),
+                    (
+                        summon::summon,
+                        // and again after the round's damage.
+                        crate::game::characters::settle_deaths,
+                        settle_defeat,
+                    )
+                        .chain(),
                 )
                     .chain()
                     .in_set(GameplaySet::Combat)
@@ -411,11 +448,6 @@ pub enum CombatNews {
     PartyStops,
 }
 
-/// Whether any party member still lives.
-fn anyone_alive(roster: &PartyRoster, members: &Members) -> bool {
-    roster.iter().any(|m| !members.get(m).unwrap().1.is_dead())
-}
-
 /// Whether the party is fighting, for operations that hold the whole world.
 pub fn in_battle(world: &mut World) -> bool {
     world.query_filtered::<(), With<Battle>>().iter(world).next().is_some()
@@ -448,22 +480,6 @@ pub fn settle_defeat(
     }
 }
 
-/// A combatant's current allegiance, shared by target choice and engagement.
-fn allegiance(
-    entity: Entity,
-    damage: &MonsterDamage,
-    now: u64,
-    species: &MonsterCatalog,
-) -> hostility::Allegiance {
-    let (body, .., vitals) = damage.monsters().get(entity).unwrap();
-    hostility::Allegiance {
-        species: body.species,
-        stance: damage.stance(entity, now),
-        faction: species[body.species].faction,
-        turncoat: vitals.conditions.has(Condition::Turncoat),
-    }
-}
-
 /// Start the round the player asks for, or in a continuous fight the next
 /// one once the last action's pause is over and nothing is in flight
 /// (retail `UpdateCombat`, `BeginCombatExecution`). Choosing the party's
@@ -478,7 +494,7 @@ pub fn begin_round(
     mut turns: Query<&mut PartyTurn>,
     content: If<Res<Catalogs>>,
     (in_flight, moving): (
-        Query<(), With<casting::SpellInFlight>>,
+        Query<(), With<crate::game::hits::effects::InFlight>>,
         Query<(), With<approach::CombatMove>>,
     ),
     mut news: MessageWriter<CombatNews>,
@@ -552,7 +568,7 @@ fn call_actor(
     vitals: Query<&Vitals>,
     (party_turns, monster_turns): (Query<&PartyTurn>, Query<&MonsterTurn>),
     (in_flight, moving, acting): (
-        Query<(), With<casting::SpellInFlight>>,
+        Query<(), With<crate::game::hits::effects::InFlight>>,
         Query<(), With<approach::CombatMove>>,
         Query<(), With<Acting>>,
     ),
@@ -619,81 +635,6 @@ fn call_actor(
     }
 }
 
-/// The acting member takes their turn. One who acted holds the fight for
-/// the action's pause.
-fn party_acts(
-    mut commands: Commands,
-    actor: Option<Single<Entity, (With<Acting>, With<PartyTurn>)>>,
-    battle: Single<(&mut Battle, Option<&Combatants>)>,
-    mut rng: ResMut<GameRng>,
-    clock: Res<GameClock>,
-    (mut members, mut damage): (Members, MonsterDamage),
-    party_body: Single<(&Position, &PartyBody)>,
-    level: PlayedLevel,
-    mut magic: BattleMagic,
-    mut news: MessageWriter<CombatNews>,
-) {
-    let Some(member) = actor.map(|actor| *actor) else { return };
-    let (mut battle, combatants) = battle.into_inner();
-    let combatants = combatants.map_or(&[][..], Combatants::entities);
-    let party = PartyView::new(*party_body, &level, clock.ms);
-    let acted = party_turn(
-        &mut commands,
-        &mut battle,
-        member,
-        combatants,
-        &mut rng,
-        (&mut members, &mut damage),
-        &party,
-        &mut magic,
-        &mut news,
-    );
-    // An attack still standing is the attack systems' to make.
-    let turn = magic.party_turns.get(member).unwrap();
-    if !(matches!(turn.action, RoundAction::Attack { .. }) && turn.phase != 0) {
-        commands.entity(member).remove::<Acting>();
-    }
-    if acted {
-        battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
-    }
-}
-
-/// The acting monster takes its turn. One that acted holds the fight for
-/// the action's pause.
-fn monster_acts(
-    mut commands: Commands,
-    actor: Option<Single<Entity, (With<Acting>, With<MonsterTurn>)>>,
-    battle: Single<(&mut Battle, Option<&Combatants>)>,
-    mut rng: ResMut<GameRng>,
-    clock: Res<GameClock>,
-    (mut members, mut damage): (Members, MonsterDamage),
-    party_body: Single<(&Position, &PartyBody)>,
-    (content, level): (If<Res<Catalogs>>, PlayedLevel),
-    mut magic: BattleMagic,
-    (mut news, mut summons): (MessageWriter<CombatNews>, MessageWriter<summon::Summon>),
-) {
-    let Some(monster) = actor.map(|actor| *actor) else { return };
-    commands.entity(monster).remove::<Acting>();
-    let (mut battle, combatants) = battle.into_inner();
-    let combatants = combatants.map_or(&[][..], Combatants::entities);
-    let party = PartyView::new(*party_body, &level, clock.ms);
-    let acted = monster_turn::monster_turn(
-        &mut commands,
-        &mut battle,
-        monster,
-        combatants,
-        &mut rng,
-        (&mut members, &mut damage),
-        &party,
-        &mut magic,
-        &content.species,
-        (&mut news, &mut summons),
-    );
-    if acted {
-        battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
-    }
-}
-
 /// When the remaining attacks of a turn come: spread over the rest of the
 /// round, or none.
 fn next_phase(step: u32, attacks_left: u32) -> u32 {
@@ -702,29 +643,4 @@ fn next_phase(step: u32, attacks_left: u32) -> u32 {
     }
     let next = step + (100 - step) / (attacks_left + 1);
     if next > 100 { 0 } else { next }
-}
-
-/// What casting in a fight needs beside the fight itself.
-#[derive(bevy::ecs::system::SystemParam)]
-pub struct BattleMagic<'w, 's> {
-    context: MagicContext<'w, 's>,
-    points: Query<'w, 's, (&'static LearnedSpells, &'static mut SpellPoints)>,
-    groups: Query<'w, 's, &'static GroupMember>,
-    group_members: Query<'w, 's, &'static GroupMembers>,
-    /// Missiles still on their way hold the fight's next action, as do
-    /// monsters still advancing.
-    in_flight: Query<'w, 's, (), With<casting::SpellInFlight>>,
-    moving: Query<'w, 's, (), With<approach::CombatMove>>,
-    party_turns: Query<'w, 's, &'static mut PartyTurn>,
-    monster_turns: Query<'w, 's, &'static mut MonsterTurn>,
-    fleeing: Query<'w, 's, (), With<Fleeing>>,
-    cooldowns: Query<'w, 's, &'static mut SpecialCooldown>,
-}
-
-impl BattleMagic<'_, '_> {
-    /// Whether the fight waits on missiles still flying or monsters still
-    /// walking.
-    fn busy(&self) -> bool {
-        !self.in_flight.is_empty() || !self.moving.is_empty()
-    }
 }

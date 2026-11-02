@@ -29,14 +29,7 @@ pub(super) struct MonsterTurn {
 }
 impl MonsterTurn {
     fn new(phase: u32, attacks_left: u32) -> Self {
-        Self {
-            phase,
-            attacks_left,
-            moved: false,
-            special: false,
-            berserk: false,
-            waited: false,
-        }
+        Self { phase, attacks_left, moved: false, special: false, berserk: false, waited: false }
     }
 
     pub(super) fn end(&mut self) {
@@ -222,9 +215,10 @@ pub(super) fn accept_round(
         let action = match order {
             Order::Attack => RoundAction::Attack { weapons, berserk: false },
             // One who can no longer berserk attacks as usual.
-            Order::Berserk => {
-                RoundAction::Attack { weapons, berserk: super::swings::can_berserk(character, &hands) }
-            }
+            Order::Berserk => RoundAction::Attack {
+                weapons,
+                berserk: super::swings::can_berserk(character, &hands),
+            },
             Order::Defend => RoundAction::Defend,
             Order::Magic(choice) => RoundAction::Magic(choice),
             Order::Breathe(target) => RoundAction::Breathe(target),

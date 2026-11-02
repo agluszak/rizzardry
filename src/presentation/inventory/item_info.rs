@@ -139,8 +139,7 @@ pub(super) fn refresh(
 ) {
     let view = members.get(screen.member).unwrap();
     let load = view.load();
-    let armour = view.armour(&content.items, party_effects.as_deref().copied(),
-    );
+    let armour = view.armour(&content.items, party_effects.as_deref().copied());
     let CharacterViewItem { profile: character, vitals, burden, .. } = view;
 
     let weight = burden.weight;

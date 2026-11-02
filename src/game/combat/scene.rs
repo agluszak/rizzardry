@@ -45,72 +45,61 @@ pub(super) fn member_in_scene(
     }
 }
 
-/// The party's members in roster order, as a scene reads them.
-pub(super) fn party_of<'a>(
-    members: &'a Members,
-    roster: &'a PartyRoster,
-) -> impl Iterator<Item = (Entity, &'a Character, &'a Vitals)> {
-    roster.iter().map(|member| {
-        let (character, vitals, ..) = members.get(member).unwrap();
-        (member, character, vitals)
-    })
-}
-
 /// The fight as a monster about to cast or breathe sees it: the living
-/// party and the living monsters in the fight it has a clear line to, where
-/// each stands, what each lacks, and how it stands toward each (`toward`).
-pub(super) fn spell_scene<'a>(
-    (caster, kind): (Entity, &Species),
-    (combatants, party_members): (
-        &[Entity],
-        impl Iterator<Item = (Entity, &'a Character, &'a Vitals)>,
-    ),
-    monsters: &MonsterQuery,
-    sight: &Sight,
-    toward: &dyn Fn(Entity) -> hostility::Stance,
+/// party at the party's point, and the living monsters in the fight it has
+/// a clear line to, itself among them standing friendly to itself, with
+/// how it stands toward each.
+pub(super) fn scene(
+    caster: Entity,
+    (combatants, roster): (&[Entity], &PartyRoster),
+    bodies: &mut Query<crate::game::hits::Body>,
+    (sight, species): (&Sight, &MonsterCatalog),
+    toward: &dyn Fn(&crate::game::hits::BodyReadOnlyItem) -> hostility::Stance,
 ) -> monster_spells::Scene {
     let party_eye = sight.eye;
     let party_at = PartyBody::feet_below(party_eye);
-    let (body, at, walker, .., caster_vitals) = monsters.get(caster).unwrap();
-    let feet_at = feet(at.translation(), walker);
-    let eye = body.eye(feet_at);
-    let party = party_distance(party_eye, body, feet_at);
-    // A fellow is in reach of its spell only along a clear line, as the
-    // party is only where the caster sees it.
-    let clear = |to: Vec3| sight.obstacles.clear(eye, to);
-    monster_spells::Scene {
-        caster,
-        from: feet_at,
-        party_at,
-        party,
-        sees_party: sight.sees((body, caster_vitals), &at, walker, kind),
-        members: party_members
-            .filter(|(_, _, vitals)| !vitals.is_dead())
-            .map(|(member, _, vitals)| member_in_scene((member, vitals), (party_at, party), toward))
-            .collect(),
-        monsters: combatants
-            .iter()
-            .filter_map(|&entity| {
-                let (other, at, walker, .., vitals) = monsters.get(entity).ok()?;
-                if vitals.is_dead() {
-                    return None;
-                }
-                let at = feet(at.translation(), walker);
-                if entity != caster && !clear(other.eye(at)) {
-                    return None;
-                }
-                Some(monster_spells::Someone {
-                    entity,
-                    at,
-                    from_caster: body.gap(feet_at, other, at),
-                    vitals: vitals.clone(),
-                    stance: if entity == caster {
-                        hostility::Stance::Friendly
-                    } else {
-                        toward(entity)
-                    },
-                })
+    let me = bodies.get(caster).unwrap();
+    let body = me.monster.unwrap().clone();
+    let feet_at = me.feet(party_eye);
+    let eye = me.eye(party_eye);
+    let party = party_distance(party_eye, &body, feet_at);
+    let sees_party = me.pose.as_ref().is_some_and(|pose| {
+        sight.sees((&body, me.vitals), pose, me.walker, &species[body.species])
+    });
+    let members = roster
+        .iter()
+        .filter_map(|member| {
+            let body = bodies.get(member).ok()?;
+            (!body.is_dead()).then(|| monster_spells::Someone {
+                entity: member,
+                at: party_at,
+                from_caster: party,
+                vitals: body.vitals.clone(),
+                stance: toward(&body),
             })
-            .collect(),
-    }
+        })
+        .collect();
+    let monsters = combatants
+        .iter()
+        .filter_map(|&entity| {
+            let other = bodies.get(entity).ok()?;
+            let them = other.monster?;
+            if other.is_dead() {
+                return None;
+            }
+            let at = other.feet(party_eye);
+            // A fellow is in reach of its spell only along a clear line.
+            if entity != caster && !sight.obstacles.clear(eye, them.eye(at)) {
+                return None;
+            }
+            Some(monster_spells::Someone {
+                entity,
+                at,
+                from_caster: body.gap(feet_at, them, at),
+                vitals: other.vitals.clone(),
+                stance: if entity == caster { hostility::Stance::Friendly } else { toward(&other) },
+            })
+        })
+        .collect();
+    monster_spells::Scene { caster, from: feet_at, party_at, members, monsters, party, sees_party }
 }

@@ -212,7 +212,7 @@ fn drink_fountain(
                 // power one (the retail temple fountain authors fifteen).
                 let power = if fountain.amount > 7 { 1 } else { fountain.amount };
                 if power > 0 {
-                    let amount = crate::game::hits::spells::magnitude(
+                    let amount = crate::game::hits::prototypes::magnitude(
                         &mut rng,
                         restoration.unwrap().dice,
                         crate::game::magic::Strength { power, ..default() },

@@ -776,8 +776,7 @@ fn draw_header_hands(
 ) {
     let catalog = &content.items;
     let view = members.get(screen.member).unwrap();
-    let armour = view.armour(catalog, party_effects.as_deref().copied(),
-    );
+    let armour = view.armour(catalog, party_effects.as_deref().copied());
     let profile = view.profile;
     let carried = view.carried;
     let two_handed = carried

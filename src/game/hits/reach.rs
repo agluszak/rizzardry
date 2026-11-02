@@ -7,12 +7,10 @@ use super::Body;
 use crate::content::species::MonsterCatalog;
 use crate::game::factions::Factions;
 use crate::game::party::roster::PartyRoster;
-use crate::game::world::ActorPose;
 use crate::game::world::hostility::Stance;
 use crate::game::world::identify::MonsterGroup;
-use crate::game::world::level::{Level, LevelOwned};
+use crate::game::world::level::Level;
 use crate::game::world::obstacles::WorldObstacles;
-use crate::game::world::population::Monster;
 
 /// Whom a burst may take: those standing against its source's side, or
 /// anyone when it has no source.
@@ -29,18 +27,25 @@ impl Recipients {
             Self::Everyone => true,
         }
     }
+
+    /// The other side's: a spell turned back on its source.
+    pub fn reversed(self) -> Self {
+        match self {
+            Self::Opponents(Stance::Hostile) => Self::Opponents(Stance::Friendly),
+            Self::Opponents(Stance::Friendly) => Self::Opponents(Stance::Hostile),
+            other => other,
+        }
+    }
 }
 
 /// The living bodies within `radius` of `centre` that `origin` has a clear
 /// line to: the party's members, when the party stands within it, then the
 /// targetable monsters in their placement order.
-#[allow(clippy::too_many_arguments)]
 pub fn radius(
     (centre, origin, radius): (Vec3, Vec3, f32),
     recipients: Recipients,
     party: Option<(Vec3, &PartyRoster)>,
     bodies: &mut Query<Body>,
-    monsters: &Query<(Entity, ActorPose, &LevelOwned), With<Monster>>,
     levels: &Query<(), With<Level>>,
     (species, sides): (&MonsterCatalog, (&Query<&MonsterGroup>, &Factions, u64)),
     obstacles: &WorldObstacles,
@@ -55,24 +60,23 @@ pub fn radius(
         && clear(eye)
     {
         for member in roster.iter() {
-            let body = bodies.get_mut(member).unwrap();
+            let body = bodies.get(member).unwrap();
             if !body.is_dead() && recipients.admits(body.side(species, sides)) {
                 victims.push(member);
             }
         }
     }
-    let mut found: Vec<_> = monsters
+    let mut found: Vec<_> = bodies
         .iter()
-        .filter(|(_, _, owner)| levels.contains(owner.0))
-        .filter_map(|(entity, at, _)| {
-            let body = bodies.get_mut(entity).ok()?;
+        .filter_map(|body| {
             let monster = body.monster.as_ref()?;
-            (!body.is_dead()
-                && !species[monster.species].untargetable
+            let at = body.pose.as_ref()?.translation();
+            (body.member_of.is_none()
+                && body.targetable(levels, species)
                 && recipients.admits(body.side(species, sides))
-                && at.translation().distance(centre) - monster.body.radius <= radius
-                && clear(at.translation()))
-            .then_some((monster.location, entity))
+                && at.distance(centre) - monster.body.radius <= radius
+                && clear(at))
+            .then_some((monster.location, body.entity))
         })
         .collect();
     found.sort_unstable();
