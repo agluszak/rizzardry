@@ -178,16 +178,7 @@ fn razor_backlash(
     news: &mut MessageWriter<CombatNews>,
 ) {
     use crate::content::spells::SpellId;
-    let charge = match defender {
-        Victim::Member(member) => field
-            .members
-            .get_mut(member)
-            .ok()
-            .and_then(|(_, mut v, ..)| v.enchantments.spend_charge(SpellId::RAZOR_CLOAK)),
-        Victim::Monster(monster) => {
-            field.monsters.enchantments_mut(monster).spend_charge(SpellId::RAZOR_CLOAK)
-        }
-    };
+    let charge = field.vitals_mut(defender).enchantments.spend_charge(SpellId::RAZOR_CLOAK);
     let Some(charge) = charge else { return };
     let rolled = effects::magnitude(
         rng,
@@ -253,12 +244,12 @@ fn monster_defence<'a>(
     monster: Entity,
 ) -> Option<Defence<'a>> {
     let species = field.species;
-    let (body, ..) = field.monsters.monsters().get(monster).ok()?;
-    if body.is_dead() || !field.monsters.active(monster) {
+    let (body, .., vitals) = field.monsters.monsters().get(monster).ok()?;
+    if vitals.is_dead() || !field.monsters.active(monster) {
         return None;
     }
     let kind = &species[body.species];
-    Some(Defence::monster(kind, body, fight.moving.contains(monster)))
+    Some(Defence::monster(kind, vitals, fight.moving.contains(monster)))
 }
 
 /// Both sorts of actor use the same defence and body rules, whether aimed
@@ -280,8 +271,8 @@ fn victim_defence<'a>(
 }
 fn victim_body(field: &Field, fight: &Fight, victim: Victim) -> Option<(Vec3, f32, f32)> {
     match victim {
-        Victim::Member(entity) => {
-            if !field.members.get(entity).is_ok_and(|(_, vitals, ..)| !vitals.is_dead()) {
+        Victim::Member(_) => {
+            if field.vitals(victim).is_dead() {
                 return None;
             }
             Some((body::PartyBody::centre(fight.party.eye), body::RADIUS, body::RADIUS))
@@ -322,8 +313,8 @@ fn intercept(
         .enumerate()
         .filter(|(_, g)| g.ward == ward)
         .filter_map(|(i, g)| {
-            let (body, at, walker, ..) = monsters.get(g.guard).ok()?;
-            let (ward_body, ward_at, ward_walker, ..) = monsters.get(ward).ok()?;
+            let (body, at, walker, .., guard) = monsters.get(g.guard).ok()?;
+            let (ward_body, ward_at, ward_walker, .., warded) = monsters.get(ward).ok()?;
             let kind = &species[body.species];
             let first = kind.attacks.first()?;
             let gap = body.gap(
@@ -331,11 +322,11 @@ fn intercept(
                 ward_body,
                 feet(ward_at.translation(), ward_walker),
             );
-            (body.can_guard()
-                && !ward_body.is_dead()
+            (guard.can_guard()
+                && !warded.is_dead()
                 && gap <= first.reach.metres()
                 && g.interceptions < u32::from(kind.attacks_per_round))
-            .then(|| (i, attack::monster_protection(kind, body)))
+            .then(|| (i, attack::monster_protection(kind, guard)))
         })
         .collect();
     let pressing = attacker + 10 * i32::from(surprise.unaware) + 10 * i32::from(surprise.natural);
@@ -354,7 +345,7 @@ fn intercept(
     guard.interceptions += 1;
     let guard = guard.guard;
     let tired = rng.below(3) + 2;
-    field.monsters.fatigue(guard, tired);
+    field.monsters.vitals_mut(guard).tire(tired);
     *surprise = Surprise::default();
     news.write(CombatNews::Intercepts { guard, ward });
     Victim::Monster(guard)
@@ -379,10 +370,10 @@ fn member_bystanders(
         .map(|&m| Victim::Member(m))
         .collect();
     for &entity in fight.combatants {
-        let (monster, at, walker, ..) = field.monsters.monsters().get(entity).unwrap();
+        let (monster, at, walker, .., vitals) = field.monsters.monsters().get(entity).unwrap();
         let distance = party_distance(fight.party.eye, monster, feet(at.translation(), walker));
         if entity != target
-            && !monster.is_dead()
+            && !vitals.is_dead()
             && field.monsters.active(entity)
             && fight.party.reaches(formation, member, at.translation(), hand.reach, distance)
         {
@@ -416,8 +407,8 @@ fn monster_bystanders(
         .map(|&m| Victim::Member(m))
         .collect();
     for &entity in fight.combatants {
-        let (other, other_at, other_walker, ..) = monsters.get(entity).unwrap();
-        if entity == target || other.is_dead() || !field.monsters.active(entity) {
+        let (other, other_at, other_walker, .., vitals) = monsters.get(entity).unwrap();
+        if entity == target || vitals.is_dead() || !field.monsters.active(entity) {
             continue;
         }
         let gap = monster.gap(here, other, feet(other_at.translation(), other_walker));
@@ -452,7 +443,7 @@ pub(super) fn melee_target<'a>(
         .combatants
         .iter()
         .filter_map(|&entity| {
-            let (monster, at, walker, ..) = field.monsters.monsters().get(entity).ok()?;
+            let (monster, at, walker, .., vitals) = field.monsters.monsters().get(entity).ok()?;
             let kind = &species[monster.species];
             if kind.npc.is_some() {
                 return None;
@@ -466,12 +457,12 @@ pub(super) fn melee_target<'a>(
             let wanted = if turned { Stance::Friendly } else { Stance::Hostile };
             if (turned && side != wanted || !turned && side == Stance::Friendly)
                 || !field.monsters.active(entity)
-                || monster.is_dead()
+                || vitals.is_dead()
                 || !fight.party.reaches(formation, member, at.translation(), hand.reach, distance)
             {
                 return None;
             }
-            let worst = monster.conditions.worst();
+            let worst = vitals.conditions.worst();
             let side = formation::quadrant(fight.party.eye, fight.party.yaw, at.translation());
             let in_reach = !kind.attacks.is_empty()
                 && (side == Row::Rear
@@ -685,7 +676,7 @@ pub(super) fn member_attacks(
             vitals.conditions.has(Condition::Diseased),
         );
         let hasted = vitals.enchantments.has(crate::content::spells::SpellId::HASTE);
-        vitals.spend_stamina(load.scale_fatigue(cost, slowed, hasted));
+        vitals.tire(load.scale_fatigue(cost, slowed, hasted));
         // Arrows, bolts and stones are shot away, thrown weapons thrown,
         // and guns spend their shots.
         // A hand with nothing left to fire is done for the round.
@@ -763,7 +754,7 @@ fn member_blow(
             .monsters
             .monsters()
             .get(monster)
-            .is_ok_and(|(m, ..)| m.enchantments.deflects(mode, rng))
+            .is_ok_and(|(.., vitals)| vitals.enchantments.deflects(mode, rng))
     {
         return Some(0);
     }
@@ -897,7 +888,7 @@ fn notices(
     rng: &mut GameRng,
 ) -> bool {
     let alert = !vitals.is_dead()
-        && vitals.stamina > 0
+        && vitals.stamina.current > 0
         && vitals.conditions.worst().is_none_or(|c| c < Condition::Webbed)
         && !vitals.conditions.has(Condition::Blind);
     let defending = battle
@@ -983,10 +974,11 @@ fn reachable_targets(
             }
         }
         for &other in fight.combatants {
-            let (body, other_at, other_walker, ..) = field.monsters.monsters().get(other).unwrap();
+            let (body, other_at, other_walker, .., vitals) =
+                field.monsters.monsters().get(other).unwrap();
             let there = feet(other_at.translation(), other_walker);
             if other != entity
-                && !body.is_dead()
+                && !vitals.is_dead()
                 && field.monsters.active(other)
                 && field.visibility.clear(eye, body_centre(there, body))
                 && attacks(Victim::Monster(other), field)
@@ -1080,15 +1072,15 @@ pub(super) fn monster_attacks(
     let backstab = crate::game::characters::scale_by_level(kind.level, 100.0) as i32;
     let mut tally = Tally::default();
     for _ in 0..swings {
-        let (monster, ..) = field.monsters.monsters().get(entity).unwrap();
-        let monster = monster.clone();
+        let (.., vitals) = field.monsters.monsters().get(entity).unwrap();
+        let vitals = vitals.clone();
         // A fumble may incapacitate the attacker between its swings.
-        if !monster.can_fight() {
+        if !vitals.can_fight() {
             break;
         }
         let Some((aimed_at, _)) = victim_defence(battle, field, fight, target) else { break };
         let aim = attack::monster_aim(
-            (kind, &monster, stance),
+            (kind, &vitals, stance),
             attack,
             mode,
             surprise,
@@ -1098,14 +1090,14 @@ pub(super) fn monster_attacks(
         let delivery = if attack.reach >= Reach::Long {
             Delivery::Shot {
                 from: eye,
-                blind: monster.conditions.has(Condition::Blind),
+                blind: vitals.conditions.has(Condition::Blind),
                 through: false,
             }
         } else {
             Delivery::Swing {
                 bystanders: monster_bystanders(field, fight, entity, attack.reach, target.entity()),
                 odds: attack::monster_aim(
-                    (kind, &monster, stance),
+                    (kind, &vitals, stance),
                     attack,
                     mode,
                     surprise,
@@ -1121,7 +1113,7 @@ pub(super) fn monster_attacks(
         if landing.fumbled {
             news.write(CombatNews::Fumble { attacker: entity, victim: landing.victim });
         }
-        let pressing = attack::monster_protection(kind, &monster);
+        let pressing = attack::monster_protection(kind, &vitals);
         landing.victim =
             intercept(battle, rng, field, (pressing, &mut surprise), landing.victim, news);
         let Some((struck, victim_character)) = victim_defence(battle, field, fight, landing.victim)
@@ -1137,7 +1129,7 @@ pub(super) fn monster_attacks(
             continue;
         }
         let through = attack::monster_penetration(
-            (kind, &monster, stance),
+            (kind, &vitals, stance),
             attack,
             mode,
             surprise,

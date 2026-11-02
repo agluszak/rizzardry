@@ -977,7 +977,10 @@ pub(super) fn commit_magic_choice(
     (conversations, speakers, monsters, party): (
         Query<&crate::game::npcs::conversation::Conversation>,
         Query<&crate::game::npcs::NpcBody>,
-        Query<(Entity, &crate::game::world::population::Monster, crate::game::world::ActorPose)>,
+        Query<
+            (Entity, &crate::game::characters::Vitals, crate::game::world::ActorPose),
+            With<crate::game::world::population::Monster>,
+        >,
         Query<(&avian3d::prelude::Position, &PartyBody)>,
     ),
     mut requests: MessageWriter<MagicRequest>,
@@ -1002,8 +1005,8 @@ pub(super) fn commit_magic_choice(
     let Some(power) = power else { return };
     let aim = if let Some(relation) = conversation_target {
         let Ok(conversation) = conversations.get(relation.0) else { return };
-        let Some((body, _, _)) = monsters.iter().find(|(entity, monster, _)| {
-            !monster.is_dead()
+        let Some((body, _, _)) = monsters.iter().find(|(entity, vitals, _)| {
+            !vitals.is_dead()
                 && speakers.get(*entity).is_ok_and(|binding| binding.0 == conversation.actor)
         }) else {
             return;

@@ -421,12 +421,7 @@ impl Progression<'_, '_> {
         }
         // Preserve deficits, conditions and recovery fractions; advancement is not a full heal.
         // The spells on the member count for both maxima.
-        let (old, new) = (c.stats(&v.enchantments), next.stats(&v.enchantments));
-        let (hp, stamina) = (
-            resized(v.hp, old.max_hp(), new.max_hp()),
-            resized(v.stamina, old.max_stamina(), new.max_stamina()),
-        );
-        (v.hp, v.stamina) = (hp, stamina);
+        v.follow_maxima(&next, None);
         *c = next;
         *known = learned;
         *carried = equipment;

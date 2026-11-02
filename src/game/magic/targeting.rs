@@ -57,7 +57,7 @@ pub(crate) fn radius(
         .monsters
         .monsters()
         .iter()
-        .filter_map(|(body, at, _, _, entity)| {
+        .filter_map(|(body, at, _, _, entity, _)| {
             (world.monsters.targetable(entity)
                 && recipients.admits(world.monsters.stance(entity, world.now))
                 && at.translation().distance(centre) - body.body.radius <= radius

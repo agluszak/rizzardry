@@ -114,7 +114,7 @@ pub(crate) fn pass_time(
     mut affected: ParamSet<(
         Query<(&mut Character, &mut Vitals)>,
         GroupRecognition,
-        Query<&mut crate::game::world::population::Monster>,
+        Query<&mut Vitals, With<crate::game::world::population::Monster>>,
     )>,
     mut enchantments: Single<&mut crate::game::magic::enchantments::PartyEffects>,
     mut clock: ResMut<GameClock>,

@@ -20,14 +20,14 @@ impl Sight<'_, '_, '_> {
     /// geometry, and its sight threshold covering the distance.
     pub(super) fn sees(
         &self,
-        monster: &Monster,
+        (monster, vitals): (&Monster, &Vitals),
         at: &ActorPoseItem,
         walker: Option<&Walker>,
         kind: &Species,
     ) -> bool {
         let distance = party_distance(self.eye, monster, feet(at.translation(), walker));
         self.sees_point(
-            (monster, at, walker, kind),
+            ((monster, vitals), at, walker, kind),
             self.eye,
             distance,
             self.lowest_level,
@@ -39,14 +39,19 @@ impl Sight<'_, '_, '_> {
     pub(super) fn seen(
         &self,
         entity: Entity,
-        (monster, at, walker, kind): (&Monster, &ActorPoseItem, Option<&Walker>, &Species),
+        ((monster, vitals), at, walker, kind): (
+            (&Monster, &Vitals),
+            &ActorPoseItem,
+            Option<&Walker>,
+            &Species,
+        ),
     ) -> Seen {
         let at_feet = feet(at.translation(), walker);
         Seen {
             entity,
             at: at_feet,
             from_party: party_distance(self.eye, monster, at_feet),
-            sees: self.sees(monster, at, walker, kind),
+            sees: self.sees((monster, vitals), at, walker, kind),
             in_view: self.in_view(monster, at, walker),
         }
     }
@@ -72,11 +77,11 @@ impl Sight<'_, '_, '_> {
     /// the same rule, weakened from behind by the other's level.
     pub(super) fn sees_monster(
         &self,
-        observer: (&Monster, &ActorPoseItem, Option<&Walker>, &Species),
+        observer: ((&Monster, &Vitals), &ActorPoseItem, Option<&Walker>, &Species),
         target: (&Monster, &ActorPoseItem, Option<&Walker>, &Species),
     ) -> bool {
         let (body, at, walker, kind) = target;
-        let (from, ..) = observer;
+        let ((from, _), ..) = observer;
         let target_feet = feet(at.translation(), walker);
         let observer_feet = feet(observer.1.translation(), observer.2);
         let distance = from.gap(observer_feet, body, target_feet);
@@ -86,14 +91,19 @@ impl Sight<'_, '_, '_> {
 
     pub(super) fn sees_point(
         &self,
-        (monster, at, walker, kind): (&Monster, &ActorPoseItem, Option<&Walker>, &Species),
+        ((monster, vitals), at, walker, kind): (
+            (&Monster, &Vitals),
+            &ActorPoseItem,
+            Option<&Walker>,
+            &Species,
+        ),
         target: Vec3,
         distance: f32,
         penalty: i32,
         concealment: u32,
     ) -> bool {
         let eye = monster.eye(feet(at.translation(), walker));
-        if !monster.can_fight() || distance > self.far || monster.blinded(kind) {
+        if !vitals.can_fight() || distance > self.far || blinded(kind, vitals) {
             return false;
         }
         let clear = self.obstacles.clear(eye, target);

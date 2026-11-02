@@ -95,11 +95,7 @@ pub fn elapse(
     let mut sickness = None;
     let (stamina, health) = pace.scales();
     if ticks.stamina > 0 {
-        member.recover_stamina(
-            ticks.stamina,
-            stamina,
-            profile.stats(&member.enchantments).max_stamina(),
-        );
+        member.recover_stamina(ticks.stamina, stamina);
     }
     if ticks.aging > 0 {
         let still = matches!(pace, Pace::Still | Pace::Camping);
@@ -112,11 +108,12 @@ pub fn elapse(
             let maximum = profile.stats(&member.enchantments).max_points(known, spells);
             pool.recover(ticks.aging, recovery_scale(pace.health_scale()), &maximum);
         }
-        member.recover_health(ticks.aging, health, profile.stats(&member.enchantments).max_hp());
+        member.recover_health(ticks.aging, health);
         member.age_conditions(ticks.aging, fate.rng);
-        let stats = profile.stats(&member.enchantments);
-        member.hp = member.hp.min(stats.max_hp());
-        member.stamina = member.stamina.min(stats.max_stamina());
+        // Spells that run out take what they raised the maxima by.
+        member.sync_maxima(profile);
+        member.health.current = member.health.current.min(member.health.max);
+        member.stamina.current = member.stamina.current.min(member.stamina.max);
     }
     sickness
 }
@@ -158,10 +155,10 @@ mod tests {
     fn a_combat_round_ages_conditions_but_recovers_nothing() {
         let mut profile = Character::new("Brute", Race::Human, Gender::Male, Profession::Fighter);
         let mut fighter = Vitals::new(&profile);
-        fighter.hp -= 5;
-        fighter.stamina -= 5;
+        fighter.health.current -= 5;
+        fighter.stamina.current -= 5;
         fighter.inflict(Condition::Afraid, Lasting::Rounds(1));
-        let (hp, stamina) = (fighter.hp, fighter.stamina);
+        let (hp, stamina) = (fighter.health.current, fighter.stamina.current);
         elapse(
             &mut profile,
             &mut fighter,
@@ -170,7 +167,7 @@ mod tests {
             &mut calm(&mut GameRng::default()),
             None,
         );
-        assert_eq!((fighter.hp, fighter.stamina), (hp, stamina));
+        assert_eq!((fighter.health.current, fighter.stamina.current), (hp, stamina));
         assert!(!fighter.conditions.has(Condition::Afraid));
         // Standing still for two hours heals.
         elapse(
@@ -181,7 +178,7 @@ mod tests {
             &mut calm(&mut GameRng::default()),
             None,
         );
-        assert!(fighter.hp > hp && fighter.stamina > stamina);
+        assert!(fighter.health.current > hp && fighter.stamina.current > stamina);
     }
 
     /// A poison bites at its strength each aging tick, half again on the
@@ -194,7 +191,7 @@ mod tests {
         assert!(!walking.poison(Lasting::Rounds(10), 0), "no strength, no poisoning");
         assert!(walking.poison(Lasting::Rounds(10), 4));
         let mut still = walking.clone();
-        let hp = walking.hp;
+        let hp = walking.health.current;
         let mut rng = GameRng::default();
         elapse(
             &mut profile,
@@ -212,8 +209,8 @@ mod tests {
             &mut calm(&mut rng),
             None,
         );
-        assert_eq!(walking.hp, hp - 6, "four, half again on the move");
-        assert_eq!(still.hp, hp - 4);
+        assert_eq!(walking.health.current, hp - 6, "four, half again on the move");
+        assert_eq!(still.health.current, hp - 4);
         // A tenth of the course gone takes a tenth of the strength, which
         // rounds to nothing here but a roll's chance of one.
         assert!(still.poison == 4 || still.poison == 3);
@@ -270,7 +267,7 @@ mod tests {
                 Some(Sickness::Health(loss)) => {
                     assert!((1..=4).contains(&loss));
                     assert_eq!(sick.base_stats().max_hp(), max_hp - loss);
-                    assert_eq!(member.hp, max_hp - loss);
+                    assert_eq!(member.health.current, max_hp - loss);
                     seen.insert(2);
                 }
                 Some(Sickness::Stamina(loss)) => {
@@ -306,8 +303,8 @@ mod tests {
                 let mut member = Vitals::new(&profile);
                 member.inflict(Condition::Diseased, Lasting::Indefinite);
                 let max_hp = profile.base_stats().max_hp();
-                member.hp = if dying { 1 } else { max_hp - 20 };
-                let hp = member.hp;
+                member.health.current = if dying { 1 } else { max_hp - 20 };
+                let hp = member.health.current;
                 let struck =
                     member.sicken(&mut profile, 10_000, &mut calm(&mut GameRng::seeded(seed)));
                 if struck != Some(Sickness::Weakened(Attribute::Vitality)) {
@@ -319,7 +316,7 @@ mod tests {
                     assert!(member.is_dead(), "too little health left to lose");
                     dying_seen = true;
                 } else {
-                    assert_eq!(member.hp, hp - lowered);
+                    assert_eq!(member.health.current, hp - lowered);
                     wounded_seen = true;
                 }
             }
@@ -337,11 +334,14 @@ mod tests {
         let (max_hp, max_stamina) =
             (profile.base_stats().max_hp(), profile.base_stats().max_stamina());
         assert_eq!(member.drain_health(&mut profile, 3, &mut calm(&mut GameRng::default())), 3);
-        assert_eq!((profile.base_stats().max_hp(), member.hp), (max_hp - 3, max_hp - 3));
-        assert_eq!(member.stamina, max_stamina - 2, "two thirds of it tires");
+        assert_eq!(
+            (profile.base_stats().max_hp(), member.health.current),
+            (max_hp - 3, max_hp - 3)
+        );
+        assert_eq!(member.stamina.current, max_stamina - 2, "two thirds of it tires");
         assert!(member.conditions.has(Condition::Drained));
         profile.stamina_drained = 4;
-        member.stamina = member.stamina.min(profile.base_stats().max_stamina());
+        member.stamina.current = member.stamina.current.min(profile.base_stats().max_stamina());
         // Recovery heals only up to the lowered maximum.
         elapse(
             &mut profile,
@@ -351,14 +351,15 @@ mod tests {
             &mut calm(&mut GameRng::default()),
             None,
         );
-        assert_eq!(member.hp, max_hp - 3);
-        let stamina = member.stamina;
+        assert_eq!(member.health.current, max_hp - 3);
+        let stamina = member.stamina.current;
         assert!(member.lift_drain(&mut profile));
-        assert_eq!((profile.base_stats().max_hp(), member.hp), (max_hp, max_hp));
-        assert_eq!(member.stamina, stamina + 4);
+        assert_eq!((profile.base_stats().max_hp(), member.health.current), (max_hp, max_hp));
+        assert_eq!(member.stamina.current, stamina + 4);
         assert!(!member.lift_drain(&mut profile), "nothing left to lift");
         // Draining the last of it kills, and the dead stay Drained.
-        let mut doomed = Vitals { hp: 2, ..Vitals::new(&profile) };
+        let mut doomed = Vitals::new(&profile);
+        doomed.health.current = 2;
         assert_eq!(doomed.drain_health(&mut profile, 5, &mut calm(&mut GameRng::default())), 2);
         assert!(doomed.is_dead() && doomed.conditions.has(Condition::Drained));
     }

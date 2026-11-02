@@ -17,7 +17,7 @@ use bevy::prelude::*;
 pub fn available(profile: &Character, vitals: &Vitals) -> bool {
     vitals.can_fight()
         && (profile.has_trait(Trait::Breathe) || vitals.enchantments.has(SpellId::DRACON_BREATH))
-        && vitals.stamina >= profile.stats(&vitals.enchantments).max_stamina() / 5
+        && vitals.stamina.current >= vitals.stamina.max / 5
 }
 
 pub(super) fn execute(
@@ -42,11 +42,14 @@ pub(super) fn execute(
     if victims.is_empty() {
         return Err(Refusal::NoTarget);
     }
-    let maximum = profile.stats(&vitals.enchantments).max_stamina();
-    let breather =
-        effects::Breather { level: profile.level(), stamina: vitals.stamina, max_stamina: maximum };
+    let maximum = vitals.stamina.max;
+    let breather = effects::Breather {
+        level: profile.level(),
+        stamina: vitals.stamina.current,
+        max_stamina: maximum,
+    };
     let effects =
         effects::special_attack(effects::CHARACTER_BREATH, breather, &victims, rng, world, points);
-    world.members.get_mut(actor).unwrap().1.spend_stamina(maximum / 5);
+    world.members.get_mut(actor).unwrap().1.tire(maximum / 5);
     Ok(effects)
 }

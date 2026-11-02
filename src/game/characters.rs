@@ -176,26 +176,6 @@ impl FromIterator<(Condition, Lasting)> for Conditions {
     }
 }
 
-/// Spend stamina, a party member's or a monster's; spent, it is exhausted
-/// (retail `FatigueCharacter`, `FatigueMonster`). What it took.
-pub fn tire(stamina: &mut u32, conditions: &mut Conditions, amount: u32) -> u32 {
-    let taken = amount.min(*stamina);
-    *stamina -= taken;
-    if taken > 0 && *stamina == 0 {
-        conditions.exhaust();
-    }
-    taken
-}
-
-/// Give stamina back up to `maximum`; the exhausted come round once it is
-/// above 9. What it gave.
-pub fn rest(stamina: &mut u32, conditions: &mut Conditions, amount: u32, maximum: u32) -> u32 {
-    let before = *stamina;
-    *stamina = (*stamina + amount).min(maximum);
-    conditions.come_round(*stamina);
-    *stamina - before
-}
-
 /// How long a condition lasts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lasting {
@@ -898,42 +878,67 @@ impl CharacterStats<'_> {
     }
 }
 
-/// Health, fatigue and conditions change independently of identity, training
-/// and recognition. Recruitment initializes these from the actual profile.
+/// Health or stamina: what is left and the most there can be.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pool {
+    pub current: u32,
+    pub max: u32,
+}
+
+impl Pool {
+    pub fn full(max: u32) -> Self {
+        Self { current: max, max }
+    }
+
+    /// The share spent, in percent.
+    pub fn spent_percent(&self) -> u32 {
+        100 - self.current * 100 / self.max.max(1)
+    }
+
+    /// Move to a new maximum, the pool moving by as much and stopping at 0
+    /// (retail `RecalculateCharacterHitPoints`,
+    /// `RecalculateCharacterStamina`).
+    fn follow(&mut self, max: u32) {
+        self.current = resized(self.current, self.max, max);
+        self.max = max;
+    }
+}
+
+/// The body of a party member or a monster: health, stamina, conditions
+/// and the spells on it, which damage, rest, magic and death change
+/// together. A monster's maxima were rolled when it was made; a member's
+/// follow their stats ([`Vitals::sync_maxima`]).
 #[derive(Component, Clone, Debug, Default, PartialEq)]
 pub struct Vitals {
-    pub enchantments: crate::game::magic::enchantments::Enchantments,
-    pub hp: u32,
-    pub stamina: u32,
+    pub health: Pool,
+    pub stamina: Pool,
     pub conditions: Conditions,
-    /// Recovery not yet whole points; retail keeps these between ticks.
-    pub hp_fraction: f32,
-    pub stamina_fraction: f32,
-    /// The fight in which the member last cheated death, which only the
+    pub enchantments: crate::game::magic::enchantments::Enchantments,
+    /// The fight in which a Valkyrie last cheated death, which only the
     /// first time in a fight does at full strength.
     pub cheated_death_in: Option<Entity>,
-    /// How hard a poison bites while the member is Poisoned (retail
+    /// How hard a poison bites a member while Poisoned (retail
     /// `condition_argument`): damage each aging tick, wearing off as the
     /// poison runs its course. It means nothing otherwise.
     pub poison: u32,
+    /// What a member has regained towards whole points.
+    pub regeneration: Regeneration,
 }
 
 impl Vitals {
+    /// A member as their profile makes them, rested and well.
     pub fn new(profile: &Character) -> Self {
-        Self {
-            hp: profile.base_stats().max_hp(),
-            stamina: profile.base_stats().max_stamina(),
-            ..default()
-        }
+        let stats = profile.base_stats();
+        Self::full(stats.max_hp(), stats.max_stamina())
     }
 
-    /// The share of stamina spent, in percent.
-    pub fn stamina_spent(&self, maximum: u32) -> u32 {
-        100 - self.stamina * 100 / maximum.max(1)
+    /// Full health and stamina at these maxima.
+    pub fn full(health: u32, stamina: u32) -> Self {
+        Self { health: Pool::full(health), stamina: Pool::full(stamina), ..default() }
     }
 
     pub fn is_dead(&self) -> bool {
-        self.hp == 0
+        self.health.current == 0
     }
 
     /// Alive and nothing worse than blind: able to act outside a combat
@@ -953,6 +958,18 @@ impl Vitals {
     /// a combat action (retail `highest_condition < ASLEEP`).
     pub fn can_fight(&self) -> bool {
         !self.is_dead() && self.conditions.below(Condition::Asleep)
+    }
+
+    /// Alive and nothing worse than insane: able to guard a fellow
+    /// (retail bodyguards, `highest_condition < BLIND`).
+    pub fn can_guard(&self) -> bool {
+        !self.is_dead() && self.conditions.below(Condition::Blind)
+    }
+
+    /// Hurt enough for a monster to charge rather than walk up (retail
+    /// `SetUpMonsterTurn`: at 95% of its health or less).
+    pub fn charges(&self) -> bool {
+        self.health.current * 100 <= self.health.max * 95
     }
 
     /// Inflict a condition, keeping the longer duration if already afflicted.
@@ -1022,36 +1039,36 @@ impl Vitals {
         if still { damage } else { damage + damage / 2 }
     }
 
-    /// Take damage (retail `ApplyDamageToCharacter`): two thirds of it also
-    /// drain stamina, and health reaching 0 is death unless death is cheated.
-    /// The dead take none. Returns the health lost, all of it when death is
-    /// cheated. Guardian Angel absorbs before fatigue. The caller handles
-    /// waking.
+    /// Damage a member (retail `ApplyDamageToCharacter`): two thirds of it
+    /// also drain stamina, and health reaching 0 is death unless death is
+    /// cheated. The dead take none. Returns the health lost, all of it when
+    /// death is cheated. Guardian Angel absorbs before fatigue. The caller
+    /// handles waking.
     pub fn damage(&mut self, profile: &Character, amount: u32, fate: &mut Fate) -> u32 {
         if self.is_dead() {
             return 0;
         }
         let amount = self.enchantments.absorb(amount);
-        self.spend_stamina(amount * 2 / 3);
-        let hp = self.hp;
+        self.tire(amount * 2 / 3);
+        let hp = self.health.current;
         if amount >= hp && self.cheats_death(profile, fate) {
             return hp;
         }
-        self.hp -= amount.min(hp);
+        self.health.current -= amount.min(hp);
         if self.is_dead() {
             self.die();
         }
-        hp - self.hp
+        hp - self.health.current
     }
 
-    /// Die outright, as death effects inflict it (retail
+    /// A member dies outright, as death effects inflict it (retail
     /// `SetCharacterCondition` with Dead): no damage, absorption or fatigue
     /// comes first, but death may still be cheated. Whether death took.
     pub fn perish(&mut self, profile: &Character, fate: &mut Fate) -> bool {
         if self.is_dead() || self.cheats_death(profile, fate) {
             return false;
         }
-        self.hp = 0;
+        self.health.current = 0;
         self.die();
         true
     }
@@ -1079,15 +1096,18 @@ impl Vitals {
         if stint > 0 {
             self.inflict(Condition::Unconscious, Lasting::Rounds(stint));
         }
-        let maximum = self.maxima(profile).0;
-        self.hp = match fate.fight {
+        let maximum = self.health.max;
+        self.health.current = match fate.fight {
             Some(fight) if self.cheated_death_in != Some(fight) => {
                 self.cheated_death_in = Some(fight);
                 let share =
                     fate.rng.below(profile.scale_by_profession(maximum as f32 * 0.5) as u32);
                 (share + 50) * maximum / 100
             }
-            _ => fate.rng.below(profile.scale_by_profession(self.hp as f32) as u32) + 1,
+            _ => {
+                let had = self.health.current as f32;
+                fate.rng.below(profile.scale_by_profession(had) as u32) + 1
+            }
         };
         true
     }
@@ -1095,70 +1115,79 @@ impl Vitals {
     fn die(&mut self) {
         self.enchantments.0.clear();
         self.conditions.lift_all();
-        self.stamina = 0;
+        self.stamina.current = 0;
     }
 
-    /// Drain health for good (retail `DamageCharacter`, which draining blows,
-    /// breaths and Vampiric Vortex use): two thirds of it tires, the maximum
-    /// loses it until Drained is lifted, and present health falls with the
-    /// maximum; none left is death. Guardian Angel does not stop it. Returns
-    /// the health lost.
+    /// Drain a member's health for good (retail `DamageCharacter`, which
+    /// draining blows, breaths and Vampiric Vortex use): two thirds of it
+    /// tires, the maximum loses it until Drained is lifted, and present
+    /// health falls with the maximum; none left is death. Guardian Angel
+    /// does not stop it. Returns the health lost.
     pub fn drain_health(&mut self, profile: &mut Character, amount: u32, fate: &mut Fate) -> u32 {
         if self.is_dead() || amount == 0 {
             return 0;
         }
-        self.spend_stamina(amount * 2 / 3);
-        let (hp, before) = (self.hp, self.maxima(profile));
+        self.tire(amount * 2 / 3);
+        let hp = self.health.current;
         profile.hp_drained += amount;
-        self.resize(profile, before, Some(fate));
-        let lost = hp.max(self.hp) - self.hp;
+        self.follow_maxima(profile, Some(fate));
+        let lost = hp.max(self.health.current) - self.health.current;
         if !self.conditions.has(Condition::Drained) {
             self.inflict(Condition::Drained, Lasting::Indefinite);
         }
         lost
     }
 
-    /// Lift Drained (retail `RemoveCharacterCondition`): the maxima get back
-    /// what draining and disease took, and the pools rise with them. Whether
-    /// it was there to lift.
+    /// Lift Drained from a member (retail `RemoveCharacterCondition`): the
+    /// maxima get back what draining and disease took, and the pools rise
+    /// with them. Whether it was there to lift.
     pub fn lift_drain(&mut self, profile: &mut Character) -> bool {
         if !self.conditions.has(Condition::Drained) {
             return false;
         }
         self.conditions.lift(Condition::Drained);
-        let before = self.maxima(profile);
         profile.hp_drained = 0;
         profile.stamina_drained = 0;
-        self.resize(profile, before, None);
+        self.follow_maxima(profile, None);
         true
     }
 
-    /// The member's health and stamina maxima, their spells counted.
-    pub fn maxima(&self, profile: &Character) -> (u32, u32) {
+    /// The member's maxima as their profile and spells make them now.
+    fn maxima_of(&self, profile: &Character) -> (u32, u32) {
         let stats = profile.stats(&self.enchantments);
         (stats.max_hp(), stats.max_stamina())
     }
 
-    /// Carry the maxima's move from `before` to the profile's present ones
+    /// Keep a member's maxima to their stats, leaving health and stamina as
+    /// they are. Whatever changes a member's profile or spells keeps them
+    /// so; [`sync_member_maxima`] catches the rest before gameplay reads them.
+    pub fn sync_maxima(&mut self, profile: &Character) {
+        let (health, stamina) = self.maxima_of(profile);
+        self.health.max = health;
+        self.stamina.max = stamina;
+    }
+
+    /// Carry the move of a member's maxima to their profile's present ones
     /// into health and stamina (retail `RecalculateCharacterHitPoints`,
     /// `RecalculateCharacterStamina`); health run out is death, unless death
-    /// is cheated where `fate` is given.
-    pub fn resize(&mut self, profile: &Character, before: (u32, u32), fate: Option<&mut Fate>) {
+    /// is cheated where `fate` is given. The dead only keep their maxima.
+    pub fn follow_maxima(&mut self, profile: &Character, fate: Option<&mut Fate>) {
         if self.is_dead() {
+            self.sync_maxima(profile);
             return;
         }
-        let after = self.maxima(profile);
-        self.hp = resized(self.hp, before.0, after.0);
-        self.stamina = resized(self.stamina, before.1, after.1);
+        let (health, stamina) = self.maxima_of(profile);
+        self.health.follow(health);
+        self.stamina.follow(stamina);
         if self.is_dead() && !fate.is_some_and(|fate| self.cheats_death(profile, fate)) {
             self.die();
         }
     }
 
-    /// What disease does as `minutes` pass (retail `GameTurnsPassedChar`):
-    /// a roll under the minutes out of ten times Vitality strikes one of four
-    /// ways. Retail draws its condition from five but names a sixth,
-    /// Paralyzed, that the draw never reaches.
+    /// What disease does to a member as `minutes` pass (retail
+    /// `GameTurnsPassedChar`): a roll under the minutes out of ten times
+    /// Vitality strikes one of four ways. Retail draws its condition from
+    /// five but names a sixth, Paralyzed, that the draw never reaches.
     pub fn sicken(
         &mut self,
         profile: &mut Character,
@@ -1193,84 +1222,119 @@ impl Vitals {
                 }
                 // The maxima follow the attribute, and the pools with them
                 // (retail `ApplyAttributeChange`).
-                let before = self.maxima(profile);
                 profile.attributes[attribute] -= 1;
-                self.resize(profile, before, Some(fate));
+                self.follow_maxima(profile, Some(fate));
                 Some(Sickness::Weakened(attribute))
             }
             2 => {
-                if profile.stats(&self.enchantments).max_hp() < 5 {
+                if self.health.max < 5 {
                     return None;
                 }
                 let loss = rng.below(4) + 1;
                 profile.hp_drained += loss;
-                if self.hp > 1 {
-                    self.hp -= loss.min(self.hp - 1);
+                self.sync_maxima(profile);
+                if self.health.current > 1 {
+                    self.health.current -= loss.min(self.health.current - 1);
                 }
                 Some(Sickness::Health(loss))
             }
             _ => {
-                if profile.stats(&self.enchantments).max_stamina() < 5 {
+                if self.stamina.max < 5 {
                     return None;
                 }
                 let loss = rng.below(4) + 1;
                 profile.stamina_drained += loss;
-                if self.stamina > 1 {
-                    self.stamina -= loss.min(self.stamina - 1);
+                self.sync_maxima(profile);
+                if self.stamina.current > 1 {
+                    self.stamina.current -= loss.min(self.stamina.current - 1);
                 }
                 Some(Sickness::Stamina(loss))
             }
         }
     }
 
-    /// Spend stamina; running out knocks the member unconscious until it
-    /// comes back.
-    pub fn spend_stamina(&mut self, amount: u32) {
-        if !self.is_dead() {
-            tire(&mut self.stamina, &mut self.conditions, amount);
+    /// Spend stamina (retail `FatigueCharacter`, `FatigueMonster`); spent,
+    /// the body is exhausted. The dead spend none. What it took.
+    pub fn tire(&mut self, amount: u32) -> u32 {
+        if self.is_dead() {
+            return 0;
         }
+        let taken = amount.min(self.stamina.current);
+        self.stamina.current -= taken;
+        if taken > 0 && self.stamina.current == 0 {
+            self.conditions.exhaust();
+        }
+        taken
     }
 
-    /// Restore stamina up to its maximum; an exhausted member comes round
-    /// once it is above 9.
-    pub fn restore_stamina(&mut self, amount: u32, maximum: u32) {
-        if !self.is_dead() {
-            rest(&mut self.stamina, &mut self.conditions, amount, maximum);
+    /// Give stamina back up to its maximum; the exhausted come round once
+    /// it is above 9. The dead get none. What it gave.
+    pub fn rest(&mut self, amount: u32) -> u32 {
+        if self.is_dead() {
+            return 0;
         }
+        let before = self.stamina.current;
+        self.stamina.current = (before + amount).min(self.stamina.max);
+        self.conditions.come_round(self.stamina.current);
+        self.stamina.current - before
     }
 
-    /// Heal up to the maximum. Healing does not raise the dead.
-    pub fn heal(&mut self, amount: u32, maximum: u32) {
-        if !self.is_dead() {
-            self.hp = (self.hp + amount).min(maximum);
+    /// Heal up to the maximum. Healing does not raise the dead. What it gave.
+    pub fn heal(&mut self, amount: u32) -> u32 {
+        if self.is_dead() {
+            return 0;
+        }
+        let before = self.health.current;
+        self.health.current = (before + amount).min(self.health.max);
+        self.health.current - before
+    }
+}
+
+/// Keep members' maxima to their stats ([`Vitals::sync_maxima`]) once their
+/// profile or spells have changed, before gameplay reads them.
+pub fn sync_member_maxima(
+    mut members: Query<(&Character, &mut Vitals), Or<(Changed<Character>, Changed<Vitals>)>>,
+) {
+    for (profile, mut vitals) in &mut members {
+        let (health, stamina) = vitals.maxima_of(profile);
+        if (vitals.health.max, vitals.stamina.max) != (health, stamina) {
+            (vitals.health.max, vitals.stamina.max) = (health, stamina);
         }
     }
+}
 
+/// What a member regains of health and stamina in parts not yet whole
+/// points; retail keeps these between ticks.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Regeneration {
+    pub health: f32,
+    pub stamina: f32,
+}
+
+impl Vitals {
     /// Passive stamina recovery over `ticks` 1.4-second stamina ticks, at
     /// `(0.9·max + 20)/240` per tick times `scale` (retail
     /// `RegenCharacterStamina`).
-    pub fn recover_stamina(&mut self, ticks: u32, scale: f32, maximum: u32) {
-        let dead = self.is_dead();
-        if let Some(whole) =
-            regenerate(dead, self.stamina, &mut self.stamina_fraction, ticks, scale, maximum, 0.9)
-        {
-            self.restore_stamina(whole, maximum);
-            if self.stamina >= maximum {
-                self.stamina_fraction = 0.0;
+    pub fn recover_stamina(&mut self, ticks: u32, scale: f32) {
+        let (dead, pool) = (self.is_dead(), self.stamina);
+        let fraction = &mut self.regeneration.stamina;
+        if let Some(whole) = regenerate(dead, pool, fraction, ticks, scale, 0.9) {
+            self.rest(whole);
+            if self.stamina.current >= self.stamina.max {
+                self.regeneration.stamina = 0.0;
             }
         }
     }
 
     /// Passive healing over `ticks` 120-second aging ticks, at
     /// `(0.4·max + 20)/240` per tick times `scale` (retail aging).
-    pub fn recover_health(&mut self, ticks: u32, scale: f32, maximum: u32) {
-        let dead = self.is_dead();
-        if let Some(whole) =
-            regenerate(dead, self.hp, &mut self.hp_fraction, ticks, scale, maximum, 0.4)
-        {
-            self.heal(whole, maximum);
-            if self.hp >= maximum {
-                self.hp_fraction = 0.0;
+    pub fn recover_health(&mut self, ticks: u32, scale: f32) {
+        let (dead, pool) = (self.is_dead(), self.health);
+        let fraction = &mut self.regeneration.health;
+        if let Some(whole) = regenerate(dead, pool, fraction, ticks, scale, 0.4) {
+            self.heal(whole);
+            if self.health.current >= self.health.max {
+                self.regeneration.health = 0.0;
             }
         }
     }
@@ -1281,18 +1345,17 @@ impl Vitals {
 /// with the fraction dropped, for the dead, at no rate, or when full.
 fn regenerate(
     dead: bool,
-    value: u32,
+    pool: Pool,
     fraction: &mut f32,
     ticks: u32,
     scale: f32,
-    max: u32,
     factor: f32,
 ) -> Option<u32> {
-    if dead || scale <= 0.0 || value >= max {
+    if dead || scale <= 0.0 || pool.current >= pool.max {
         *fraction = 0.0;
         return None;
     }
-    *fraction += ticks as f32 * (factor * max as f32 + 20.0) / 240.0 * scale;
+    *fraction += ticks as f32 * (factor * pool.max as f32 + 20.0) / 240.0 * scale;
     let whole = fraction.trunc();
     *fraction -= whole;
     Some(whole as u32)
@@ -1412,28 +1475,31 @@ mod tests {
         // A blow just past her health: one heavy enough to exhaust her
         // knocks her out for good first, and that she does not cheat.
         let mut struck = |vitals: &mut Vitals, fight| {
-            let hp = vitals.hp;
+            let hp = vitals.health.current;
             let lost = vitals.damage(&valkyrie, hp + 1, &mut Fate { fight, rng: &mut rng });
             assert_eq!(lost, hp, "the blow takes what she had");
         };
         // Outside a fight: a roll of the health she had, at least one, and
         // a stint out cold (level one scales five down to three).
-        let mut member = Vitals { hp: 4, ..Vitals::new(&valkyrie) };
+        let mut member = Vitals::new(&valkyrie);
+        member.health.current = 4;
         struck(&mut member, None);
-        assert!((1..=4).contains(&member.hp), "{}", member.hp);
+        assert!((1..=4).contains(&member.health.current), "{}", member.health.current);
         assert_eq!(member.conditions.lasting(Condition::Unconscious), Some(Lasting::Rounds(4)));
         // The first time in a fight, half her maximum or more; the second
         // time in the same fight only the small roll; a new fight, half again.
         let mut member = Vitals::new(&valkyrie);
         struck(&mut member, Some(fight));
-        assert!(member.hp >= maximum / 2 && member.hp <= maximum, "{}", member.hp);
+        let hp = member.health.current;
+        assert!(hp >= maximum / 2 && hp <= maximum, "{hp}");
         member.conditions.lift(Condition::Unconscious);
-        let hp = member.hp;
+        let hp = member.health.current;
         struck(&mut member, Some(fight));
-        assert!(member.hp <= hp, "only a roll of what she had: {} of {hp}", member.hp);
+        let now = member.health.current;
+        assert!(now <= hp, "only a roll of what she had: {now} of {hp}");
         member.conditions.lift(Condition::Unconscious);
         struck(&mut member, Some(other));
-        assert!(member.hp >= maximum / 2, "{}", member.hp);
+        assert!(member.health.current >= maximum / 2, "{}", member.health.current);
         // Long out cold, she dies; so does anyone without the trait.
         let mut member = Vitals::new(&valkyrie);
         member.inflict(Condition::Unconscious, Lasting::Rounds(7));
@@ -1448,7 +1514,8 @@ mod tests {
         assert!(member.is_dead());
         // Draining her to nothing is cheated too.
         let mut drained = valkyrie.clone();
-        let mut member = Vitals { hp: 2, ..Vitals::new(&drained) };
+        let mut member = Vitals::new(&drained);
+        member.health.current = 2;
         member.drain_health(&mut drained, 5, &mut Fate { fight: None, rng: &mut rng });
         assert!(!member.is_dead() && member.conditions.has(Condition::Drained));
     }
@@ -1460,18 +1527,18 @@ mod tests {
         let mut rng = crate::game::rng::GameRng::default();
         let mut fate = Fate { fight: None, rng: &mut rng };
         assert_eq!(fighter.damage(&profile, 6, &mut fate), 6);
-        assert_eq!((fighter.hp, fighter.stamina), (12, 101));
-        fighter.spend_stamina(200);
+        assert_eq!((fighter.health.current, fighter.stamina.current), (12, 101));
+        fighter.tire(200);
         assert!(fighter.conditions.has(Condition::Unconscious));
-        fighter.restore_stamina(9, profile.base_stats().max_stamina());
+        fighter.rest(9);
         assert!(fighter.conditions.has(Condition::Unconscious), "not above 9 yet");
-        fighter.restore_stamina(1, profile.base_stats().max_stamina());
+        fighter.rest(1);
         assert!(!fighter.conditions.has(Condition::Unconscious));
         assert_eq!(fighter.damage(&profile, 100, &mut fate), 12);
         assert!(fighter.is_dead());
-        assert!(fighter.conditions.is_empty() && fighter.stamina == 0);
+        assert!(fighter.conditions.is_empty() && fighter.stamina.current == 0);
         assert_eq!(fighter.damage(&profile, 5, &mut fate), 0);
-        fighter.heal(10, profile.base_stats().max_hp());
+        fighter.heal(10);
         assert!(fighter.is_dead(), "healing does not raise the dead");
     }
 
@@ -1479,22 +1546,22 @@ mod tests {
     fn rest_recovers_stamina_quickly_and_health_slowly() {
         let profile = Character::new("Ragnar", Race::Human, Gender::Male, Profession::Fighter);
         let mut fighter = Vitals::new(&profile);
-        fighter.hp = 1;
-        fighter.stamina = 0;
+        fighter.health.current = 1;
+        fighter.stamina.current = 0;
         fighter.inflict(Condition::Unconscious, Lasting::Indefinite);
         // (0.9 × 105 + 20) / 240 × 0.5 ≈ 0.24 a tick: 10 above 9 after 42.
-        fighter.recover_stamina(41, 0.5, profile.base_stats().max_stamina());
+        fighter.recover_stamina(41, 0.5);
         assert!(fighter.conditions.has(Condition::Unconscious));
-        fighter.recover_stamina(1, 0.5, profile.base_stats().max_stamina());
-        assert_eq!(fighter.stamina, 10);
+        fighter.recover_stamina(1, 0.5);
+        assert_eq!(fighter.stamina.current, 10);
         assert!(!fighter.conditions.has(Condition::Unconscious));
         // (0.4 × 18 + 20) / 240 × 0.5 ≈ 0.057 a tick.
-        fighter.recover_health(17, 0.5, profile.base_stats().max_hp());
-        assert_eq!(fighter.hp, 1);
-        fighter.recover_health(1, 0.5, profile.base_stats().max_hp());
-        assert_eq!(fighter.hp, 2);
-        fighter.recover_health(1, 0.0, profile.base_stats().max_hp());
-        assert_eq!(fighter.hp_fraction, 0.0, "no recovery clears the fraction");
+        fighter.recover_health(17, 0.5);
+        assert_eq!(fighter.health.current, 1);
+        fighter.recover_health(1, 0.5);
+        assert_eq!(fighter.health.current, 2);
+        fighter.recover_health(1, 0.0);
+        assert_eq!(fighter.regeneration.health, 0.0, "no recovery clears the fraction");
     }
 
     #[test]

@@ -35,13 +35,13 @@ pub fn hover(
     time: Res<Time>,
     selection: Res<super::selection::WorldSelection>,
     items: Query<&WorldItem>,
-    monsters: Query<&Monster>,
+    monsters: Query<&crate::game::characters::Vitals, With<Monster>>,
     mut hovered: ResMut<Hover>,
 ) {
     let under = selection.hit.and_then(|hit| {
         let wanted = match (items.get(hit.entity), monsters.get(hit.entity)) {
             (Ok(item), _) => hit.distance < REACH && !item.hidden,
-            (_, Ok(monster)) => !monster.is_dead(),
+            (_, Ok(vitals)) => !vitals.is_dead(),
             _ => false,
         };
         wanted.then_some(hit.entity)
@@ -68,7 +68,7 @@ pub fn show_tooltip(
     hovered: Res<Hover>,
     (items, monsters, groups, memberships, roster, members): (
         Query<&WorldItem>,
-        Query<&Monster>,
+        Query<(&Monster, &crate::game::characters::Vitals)>,
         Query<&MonsterGroup>,
         Query<&GroupMember>,
         Single<&PartyRoster>,
@@ -103,7 +103,7 @@ pub fn show_tooltip(
             // "Bullets (Unidentified) (16)".
             let catalog = &content.items;
             item.display_name(&catalog[item.appearance()], true)
-        } else if let Ok(monster) = monsters.get(entity) {
+        } else if let Ok((monster, vitals)) = monsters.get(entity) {
             // "Crustacean (?/12)" (retail `SetCombatSelection`).
             let catalog = &content.species;
             let kind = &catalog[monster.species];
@@ -114,7 +114,7 @@ pub fn show_tooltip(
                 .is_some_and(|g| g.identified);
             let party: Vec<(&Character, &Vitals, bool)> =
                 members.iter_many(roster.iter()).matched().collect();
-            let health = health_known(&party, monster.hp, monster.max_hp, kind.display_level);
+            let health = health_known(&party, vitals.health, kind.display_level);
             format!("{} ({health})", kind.shown_name(identified, 1))
         } else {
             return None;

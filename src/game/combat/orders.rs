@@ -173,6 +173,6 @@ pub(super) fn finish_party_move(battle: &mut Battle, rng: &mut GameRng, members:
         }
         let disease = if vitals.conditions.has(Condition::Diseased) { 1.5 } else { 1.0 };
         let cost = moved * pace.stamina_per_metre() * burden.load.movement_factor() * disease;
-        vitals.spend_stamina(cost.round() as u32);
+        vitals.tire(cost.round() as u32);
     }
 }

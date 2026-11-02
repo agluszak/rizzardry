@@ -18,17 +18,12 @@ use crate::game::rng::GameRng;
 use crate::game::world::items::{WorldItem, placed_item};
 
 /// A monster in the level: which one (its level-unique location id), what
-/// it is, its body, and its health and stamina.
+/// it is and its body. Its health, stamina, conditions and spells are its
+/// [`Vitals`](crate::game::characters::Vitals).
 #[derive(Component, Clone, Debug)]
 pub struct Monster {
-    pub enchantments: crate::game::magic::enchantments::Enchantments,
     pub location: i32,
     pub species: u32,
-    pub hp: u32,
-    pub max_hp: u32,
-    pub stamina: u32,
-    pub max_stamina: u32,
-    pub conditions: crate::game::characters::Conditions,
     pub body: ScaledBody,
     /// What has been done to its spell budget since it was met: drained
     /// away, or raised by Might to Magic (retail `spell_points`, zero at
@@ -44,36 +39,6 @@ impl Monster {
         (self.spell_points + kind.magic.budget).max(0) as u32
     }
 
-    /// Its resistance to a realm: its species' and its enchantments', at most
-    /// 100.
-    pub fn resistance(
-        &self,
-        kind: &crate::content::species::Species,
-        realm: crate::content::characters::Realm,
-    ) -> i32 {
-        (i32::from(kind.resistances[realm]) + self.enchantments.resistance(realm)).min(100)
-    }
-
-    pub fn is_dead(&self) -> bool {
-        self.hp == 0
-    }
-
-    pub fn can_fight(&self) -> bool {
-        !self.is_dead() && self.conditions.below(Condition::Asleep)
-    }
-
-    /// Alive and nothing worse than insane: able to guard a fellow
-    /// (retail bodyguards, `highest_condition < BLIND`).
-    pub fn can_guard(&self) -> bool {
-        !self.is_dead() && self.conditions.below(Condition::Blind)
-    }
-
-    /// Blindness takes its sight; a Monk fights on without it.
-    pub fn blinded(&self, kind: &crate::content::species::Species) -> bool {
-        self.conditions.has(Condition::Blind)
-            && kind.kind != crate::content::species::MonsterKind::Monk
-    }
-
     /// Its eyes, over its feet at `feet`.
     pub fn eye(&self, feet: Vec3) -> Vec3 {
         feet + Vec3::Y * self.body.eye_height
@@ -85,12 +50,25 @@ impl Monster {
     pub fn gap(&self, feet: Vec3, other: &Monster, other_feet: Vec3) -> f32 {
         (feet.distance(other_feet) - self.body.radius - other.body.radius).max(0.0)
     }
+}
 
-    /// Hurt enough to charge rather than walk up (retail `SetUpMonsterTurn`:
-    /// at 95% of its health or less).
-    pub fn charges(&self) -> bool {
-        self.hp * 100 <= self.max_hp * 95
-    }
+/// A monster's resistance to a realm: its species' and its spells', at most
+/// 100.
+pub fn resistance(
+    kind: &crate::content::species::Species,
+    vitals: &crate::game::characters::Vitals,
+    realm: crate::content::characters::Realm,
+) -> i32 {
+    (i32::from(kind.resistances[realm]) + vitals.enchantments.resistance(realm)).min(100)
+}
+
+/// Blindness takes a monster's sight; a Monk fights on without it.
+pub fn blinded(
+    kind: &crate::content::species::Species,
+    vitals: &crate::game::characters::Vitals,
+) -> bool {
+    vitals.conditions.has(Condition::Blind)
+        && kind.kind != crate::content::species::MonsterKind::Monk
 }
 
 /// A monster's effective gameplay body at the size it was rolled.
@@ -292,7 +270,7 @@ fn spawn_member(
 ) -> Entity {
     let name = actor_name(species, (kept.monster.species, kept.monster.location));
     let body = kept.monster.body;
-    let mut entity = commands.spawn((Name::new(name), kept.monster));
+    let mut entity = commands.spawn((Name::new(name), kept.monster, kept.vitals));
     embody(&mut entity, root, (kept.feet, kept.yaw, body), Some(group), (navigation, configs));
     entity.id()
 }
@@ -438,12 +416,12 @@ pub fn populate(
         .collect();
     let mut actors = Vec::new();
     for kept in monsters {
-        if kept.monster.is_dead() {
+        if kept.vitals.is_dead() {
             continue;
         }
         let body = kept.monster.body;
         let name = actor_name(species, (kept.monster.species, kept.monster.location));
-        let entity = commands.spawn((Name::new(name), kept.monster)).id();
+        let entity = commands.spawn((Name::new(name), kept.monster, kept.vitals)).id();
         actors.push((entity, kept.feet, kept.yaw, body, kept.group));
     }
     let average = npcs.average_level();

@@ -35,6 +35,7 @@ type MonsterSight<'w, 's> = Query<
         Option<&'static Walker>,
         Option<&'static GroupMember>,
         Has<Combatant>,
+        &'static Vitals,
     ),
 >;
 type Groups<'w, 's> =
@@ -87,22 +88,19 @@ pub(super) fn alert_factions(
     let Some((sight, root)) = party.sight() else { return };
     let now = clock.ms;
     let living = |membership: &GroupMembers| {
-        membership
-            .iter()
-            .find(|&m| monsters.get(m).is_ok_and(|(_, monster, ..)| !monster.is_dead()))
+        membership.iter().find(|&m| monsters.get(m).is_ok_and(|(.., vitals)| !vitals.is_dead()))
     };
     let view = |monster: Entity| {
-        monsters
-            .get(monster)
-            .ok()
-            .map(|(_, body, at, walker, ..)| (body, at, walker, &catalog[body.species]))
+        monsters.get(monster).ok().map(|(_, body, at, walker, .., vitals)| {
+            (body, at, walker, &catalog[body.species], vitals)
+        })
     };
     // Fighting hostile groups by their leaders, and their factions.
     let alerting: Vec<(Entity, i32, Entity)> = groups
         .iter()
         .filter_map(|(entity, group, membership, owner)| {
             let leader = living(membership).filter(|_| owner.0 == root)?;
-            let (_, body, .., fighting) = monsters.get(leader).ok()?;
+            let (_, body, .., fighting, _) = monsters.get(leader).ok()?;
             let kind = &catalog[body.species];
             (fighting
                 && kind.faction != crate::game::factions::UNALIGNED
@@ -123,7 +121,7 @@ pub(super) fn alert_factions(
                 && faction == observer.3.faction
                 && view(target).is_some_and(|target| {
                     sight.sees_monster(
-                        (observer.0, &observer.1, observer.2, observer.3),
+                        ((observer.0, observer.4), &observer.1, observer.2, observer.3),
                         (target.0, &target.1, target.2, target.3),
                     )
                 })
@@ -167,8 +165,8 @@ pub(super) fn engage(
         group
             .iter()
             .filter(|&member| {
-                monsters.get(member).is_ok_and(|(_, monster, ..)| {
-                    !monster.is_dead() && catalog[monster.species].npc.is_none()
+                monsters.get(member).is_ok_and(|(_, monster, .., vitals)| {
+                    !vitals.is_dead() && catalog[monster.species].npc.is_none()
                 })
             })
             .collect()
@@ -178,11 +176,11 @@ pub(super) fn engage(
     // reaches, or its best attack is close and it can walk up, or it can
     // cast or breathe at the party.
     let look = |fighter: Entity| -> Option<(f32, bool, bool)> {
-        let (_, monster, at, walker, ..) = monsters.get(fighter).ok()?;
+        let (_, monster, at, walker, .., vitals) = monsters.get(fighter).ok()?;
         let kind = &catalog[monster.species];
         let at_feet = feet(at.translation(), walker);
         let distance = party_distance(sight.eye, monster, at_feet);
-        let sees = sight.sees(monster, &at, walker, kind);
+        let sees = sight.sees((monster, vitals), &at, walker, kind);
         let reaches = kind.attacks.iter().any(|a| distance <= a.reach.metres());
         let close = kind.attacks.iter().map(|a| a.reach).max().is_some_and(|r| r <= Reach::Short);
         let party_at = PartyBody::feet_below(sight.eye);
@@ -202,25 +200,25 @@ pub(super) fn engage(
                 .iter()
                 .map(|m| (m, party.members.get(m).unwrap()))
                 .filter(|(_, (_, v))| !v.is_dead())
-                .map(|(m, (c, v))| member_in_scene((m, c, v), (party_at, distance), &toward))
+                .map(|(m, (_, v))| member_in_scene((m, v), (party_at, distance), &toward))
                 .collect(),
             monsters: Vec::new(),
             party: distance,
             sees_party: sees,
         };
-        let casts = monster_spells::casts_at_foes(monster, kind, spells, &scene);
+        let casts = monster_spells::casts_at_foes(vitals, kind, spells, &scene);
         let breathes = kind.special.chance != 0
-            && special_ready(monster, kind, false, None)
+            && special_ready(vitals, kind, false, None)
             && spells
                 .get(crate::content::spells::SpellId::SPECIAL_ATTACK_CONE)
                 .is_some_and(|cone| !monster_spells::aims(cone, &scene).is_empty());
-        let acts = monster.can_fight()
+        let acts = vitals.can_fight()
             && (reaches || (close && monster.body.speed > 0.0) || casts || breathes);
         Some((distance, sees, acts))
     };
     let seen = |member: Entity| -> Option<Seen> {
-        let (_, monster, at, walker, ..) = monsters.get(member).ok()?;
-        Some(sight.seen(member, (monster, &at, walker, &catalog[monster.species])))
+        let (_, monster, at, walker, .., vitals) = monsters.get(member).ok()?;
+        Some(sight.seen(member, ((monster, vitals), &at, walker, &catalog[monster.species])))
     };
     // How far a monster is from the party.
     let nearest_of = |member: Entity| {
@@ -243,10 +241,10 @@ pub(super) fn engage(
     let hostiles: Vec<Seen> = if running {
         monsters
             .iter()
-            .filter(|&(_, monster, .., group, fighting)| {
+            .filter(|&(_, monster, .., group, fighting, vitals)| {
                 let set = group.and_then(|g| groups.get(g.0).ok()).and_then(|(_, g, ..)| g.set);
                 fighting
-                    && !monster.is_dead()
+                    && !vitals.is_dead()
                     && hostility::stance(set, &catalog[monster.species], &factions, now, true)
                         == hostility::Stance::Hostile
             })
@@ -266,8 +264,8 @@ pub(super) fn engage(
     units.extend(
         monsters
             .iter()
-            .filter(|(_, monster, .., group, _)| {
-                group.is_none() && !monster.is_dead() && catalog[monster.species].npc.is_none()
+            .filter(|(_, monster, .., group, _, vitals)| {
+                group.is_none() && !vitals.is_dead() && catalog[monster.species].npc.is_none()
             })
             .map(|(entity, ..)| (i32::MAX, None, vec![entity])),
     );
@@ -374,11 +372,11 @@ pub(super) fn open_battle(
         crate::game::world::perception::View { eye: sight.eye, forward, far: sight.far, searching };
     let members = || party.members.iter_many(party.roster.iter()).matched();
     let seen = joined.iter().any(|&entity| {
-        let (_, monster, at, walker, ..) = monsters.get(entity).unwrap();
+        let (_, monster, at, walker, .., vitals) = monsters.get(entity).unwrap();
         view.sees(
             members(),
             shadow_hound,
-            monster,
+            (monster, vitals),
             &catalog[monster.species],
             feet(at.translation(), walker),
             false,

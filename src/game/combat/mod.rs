@@ -55,7 +55,7 @@ use crate::game::time::GameClock;
 use crate::game::world::damage::{MonsterDamage, MonsterQuery};
 use crate::game::world::hostility;
 use crate::game::world::identify::{GroupMember, GroupMembers, GroupRecognition, MonsterGroup};
-use crate::game::world::population::Monster;
+use crate::game::world::population::{Monster, blinded};
 use attack::Armour;
 use bevy::ecs::relationship::RelationshipTarget;
 
@@ -423,19 +423,18 @@ pub fn settle_defeat(
     mut commands: Commands,
     battle: Option<Single<(Entity, Option<&Combatants>), With<Battle>>>,
     roster: Single<&PartyRoster>,
-    members: Query<&Vitals>,
     mut news: MessageWriter<CombatNews>,
     mut effects: Single<&mut crate::game::magic::enchantments::PartyEffects>,
-    mut monsters: Query<&mut Monster>,
+    mut bodies: Query<&mut Vitals>,
 ) {
     let Some((battle, combatants)) = battle.map(Single::into_inner) else { return };
-    if roster.iter().all(|m| members.get(m).unwrap().is_dead()) {
+    if roster.iter().all(|m| bodies.get(m).unwrap().is_dead()) {
         // What lasts a fight ends on the party and on those in it, as when
         // the party wins.
         effects.0.end_combat();
         let combatants = combatants.map_or(&[][..], Combatants::entities);
         for &monster in combatants {
-            if let Ok(mut monster) = monsters.get_mut(monster) {
+            if let Ok(mut monster) = bodies.get_mut(monster) {
                 monster.enchantments.end_combat();
             }
         }
@@ -452,12 +451,12 @@ fn allegiance(
     now: u64,
     species: &MonsterCatalog,
 ) -> hostility::Allegiance {
-    let (body, ..) = damage.monsters().get(entity).unwrap();
+    let (body, .., vitals) = damage.monsters().get(entity).unwrap();
     hostility::Allegiance {
         species: body.species,
         stance: damage.stance(entity, now),
         faction: species[body.species].faction,
-        turncoat: body.conditions.has(Condition::Turncoat),
+        turncoat: vitals.conditions.has(Condition::Turncoat),
     }
 }
 

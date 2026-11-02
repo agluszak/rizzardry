@@ -62,8 +62,8 @@ fn playing(world: &mut World) -> Option<String> {
 }
 
 fn monsters(world: &mut World) -> (usize, usize) {
-    let mut query = world.query::<&Monster>();
-    let all: Vec<&Monster> = query.iter(world).collect();
+    let mut query = world.query_filtered::<&crate::game::characters::Vitals, With<Monster>>();
+    let all: Vec<&crate::game::characters::Vitals> = query.iter(world).collect();
     (all.len(), all.iter().filter(|m| m.is_dead()).count())
 }
 

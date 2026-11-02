@@ -83,7 +83,7 @@ pub(super) fn monster_turn(
     (news, summons): (&mut MessageWriter<CombatNews>, &mut MessageWriter<summon::Summon>),
 ) -> bool {
     let monster = battle.this_round.monsters[index].actor;
-    if !combatants.contains(&monster) || !damage.monsters().get(monster).unwrap().0.can_fight() {
+    if !combatants.contains(&monster) || !damage.monsters().get(monster).unwrap().5.can_fight() {
         battle.this_round.monsters[index].end();
         return false;
     }
@@ -114,7 +114,7 @@ pub(super) fn monster_turn(
         }
         Some(interrupt) => {
             if interrupt == Interrupt::Freed {
-                damage.conditions_mut(monster).lift(Condition::Webbed);
+                damage.vitals_mut(monster).conditions.lift(Condition::Webbed);
             }
             news.write(CombatNews::Interrupted { monster, interrupt });
             battle.this_round.monsters[index].end();
@@ -180,13 +180,13 @@ fn decide<'a>(
 ) -> (Decision<'a>, Option<Interrupt>) {
     let monster = battle.this_round.monsters[index].actor;
     let toward = |victim: Victim| stance_toward(mine, victim, members, damage, party.now, species);
-    let (body, at, walker, ..) = damage.monsters().get(monster).unwrap();
+    let (body, at, walker, .., vitals) = damage.monsters().get(monster).unwrap();
     let kind = &species[body.species];
     let mut decision = Decision::Fight { waits: false };
     let feet = feet(at.translation(), walker);
     let nearest = party_distance(party.eye, body, feet);
     let mut fleeing = battle.fleeing.contains(&monster);
-    let conduct = conduct::decide(rng, body, kind, mine.stance, &mut fleeing, nearest);
+    let conduct = conduct::decide(rng, (body, vitals), kind, mine.stance, &mut fleeing, nearest);
     battle.fleeing.retain(|&m| m != monster);
     if fleeing {
         battle.fleeing.push(monster);
@@ -212,7 +212,7 @@ fn decide<'a>(
     } else if special.chance != 0
         && !closes_in
         && let Some(special_kind) = special.kind
-        && special_ready(body, kind, cooling, Some((nearest, mine.stance)))
+        && special_ready(vitals, kind, cooling, Some((nearest, mine.stance)))
         && let Some(aim) = if special_kind.summons().is_some() {
             // A summoning aims at the summoner's own spot (retail
             // `AimFleeingMonster`); it needs no one in sight.
@@ -254,8 +254,8 @@ fn decide<'a>(
         };
         let breather = crate::game::magic::effects::Breather {
             level: kind.level,
-            stamina: body.stamina,
-            max_stamina: body.max_stamina,
+            stamina: vitals.stamina.current,
+            max_stamina: vitals.stamina.max,
         };
         decision = Decision::Plan(Box::new(Plan::Special {
             kind: special_kind,
@@ -274,7 +274,7 @@ fn decide<'a>(
             &toward,
         );
         if let Some(plan) =
-            monster_spells::choose(rng, body, kind, chance, spells, &scene).map(|(id, aim)| {
+            monster_spells::choose(rng, vitals, kind, chance, spells, &scene).map(|(id, aim)| {
                 let spell = spells[id].clone();
                 let budget = body.spell_budget(kind);
                 let power = monster_spells::power(rng, budget, &spell);
@@ -287,7 +287,7 @@ fn decide<'a>(
     // One that can strike nobody, having no attack or, blind, nobody
     // in reach, withdraws (retail `UpdateMonsterAI`'s
     // `RETURN_TO_START`); a Monk fights blind.
-    let blind = body.blinded(kind);
+    let blind = crate::game::world::population::blinded(kind, vitals);
     if matches!(decision, Decision::Fight { .. })
         && (kind.attacks.is_empty() || (blind && !reaches))
     {
@@ -302,20 +302,20 @@ fn decide<'a>(
     // guard a stronger fellow in trouble; a wary one may hold back.
     if matches!(decision, Decision::Fight { .. }) && reaches {
         let intelligence = u32::from(kind.attributes.intelligence);
-        let able = kind.temper.bodyguard && body.can_guard() && !kind.attacks.is_empty();
+        let able = kind.temper.bodyguard && vitals.can_guard() && !kind.attacks.is_empty();
         let wards: Vec<Entity> = if able && rng.below(100) < intelligence {
             let reach = kind.attacks[0].reach.metres();
             combatants
                 .iter()
                 .copied()
                 .filter(|&other| {
-                    let (o, ..) = damage.monsters().get(other).unwrap();
+                    let (o, .., o_vitals) = damage.monsters().get(other).unwrap();
                     other != monster
                         && toward(Victim::Monster(other)) == Stance::Friendly
-                        && !o.is_dead()
+                        && !o_vitals.is_dead()
                         && near(other, reach)
                         && species[o.species].level > kind.level
-                        && o.hp * 100 / o.max_hp < 40
+                        && o_vitals.health.current * 100 / o_vitals.health.max < 40
                 })
                 .collect()
         } else {
@@ -349,7 +349,7 @@ fn decide<'a>(
     let berserk = battle.this_round.monsters[index].berserk;
     let fleeing_now = matches!(decision, Decision::Move { conduct: conduct::Conduct::Flee, .. });
     let interrupted =
-        conduct::interrupt(rng, body, kind, (fleeing_now, strikes_friend, berserk, against_foes));
+        conduct::interrupt(rng, vitals, kind, (fleeing_now, strikes_friend, berserk, against_foes));
     (decision, interrupted)
 }
 
@@ -372,13 +372,13 @@ fn retreat(
     if conduct == conduct::Conduct::Hold {
         return false;
     }
-    let (body, at, walker, ..) = damage.monsters().get(monster).unwrap();
+    let (body, at, walker, .., vitals) = damage.monsters().get(monster).unwrap();
     if !walker.is_some_and(|w| w.speed > 0.0) || work.moved {
         work.waited = true;
         return true;
     }
     work.moved = true;
-    let metres = approach::move_metres(body, &species[body.species], false);
+    let metres = approach::move_metres(vitals, &species[body.species], false);
     let away = approach::away_from(feet(at.translation(), walker), party.eye, metres);
     commands.entity(monster).insert(approach::CombatMove {
         budget: metres,
@@ -442,7 +442,7 @@ fn carry_out(
             }
             battle.cooldowns.retain(|&(m, _)| m != monster);
             battle.cooldowns.push((monster, cooldown));
-            damage.fatigue(monster, breather.max_stamina / 10);
+            damage.vitals_mut(monster).tire(breather.max_stamina / 10);
         }
     }
 }
@@ -482,12 +482,12 @@ fn strike(
     if !idle || battle.this_round.monsters[index].moved {
         return;
     }
-    let (body, here, walker, ..) = damage.monsters().get(monster).unwrap();
+    let (body, here, walker, .., vitals) = damage.monsters().get(monster).unwrap();
     let budget = if mine.stance == Stance::Friendly {
         let target = combatants
             .iter()
             .filter_map(|&entity| {
-                let (other, at, ..) = damage.monsters().get(entity).unwrap();
+                let (_, at, .., other) = damage.monsters().get(entity).unwrap();
                 let foe = stance_toward(
                     mine,
                     Victim::Monster(entity),
@@ -502,12 +502,12 @@ fn strike(
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .map(|(_, entity)| entity);
         target.filter(|_| walker.is_some_and(|walker| walker.speed > 0.0)).map(|target| {
-            let charge = body.charges();
-            let metres = approach::move_metres(body, &species[body.species], charge);
+            let charge = vitals.charges();
+            let metres = approach::move_metres(vitals, &species[body.species], charge);
             (approach::MoveBudget { metres, charge }, approach::MoveGoal::Attack(target))
         })
     } else if mine.stance == Stance::Hostile {
-        approach::move_budget(body, here.translation(), walker, party.eye, species)
+        approach::move_budget((body, vitals), here.translation(), walker, party.eye, species)
             .map(|budget| (budget, approach::MoveGoal::Party))
     } else {
         None

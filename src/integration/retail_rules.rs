@@ -8,7 +8,6 @@ use crate::game::difficulty::Difficulty;
 use crate::game::inventory::{Carried, EquipSlot, ItemIds, make_item, place_at_creation};
 use crate::game::party::roster::starting_items;
 use crate::game::rng::GameRng;
-use crate::game::world::population::{Monster, ScaledBody};
 use crate::retail::files::RetailFiles;
 
 fn retail_files() -> RetailFiles {
@@ -43,18 +42,7 @@ fn a_fighter_and_a_crab_trade_blows() {
     }
     let hand = primary_hand(&fighter.base_stats(), &carried, &catalog, Load::None);
     let armour = armour(&fighter.base_stats(), &carried, &catalog, Load::None, false);
-    let body = Monster {
-        location: 0,
-        species: 0,
-        hp: 10,
-        max_hp: 10,
-        stamina: 10,
-        max_stamina: 10,
-        conditions: Default::default(),
-        enchantments: Default::default(),
-        spell_points: 0,
-        body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
-    };
+    let body = Vitals::full(10, 10);
     // Each side's aim lands somewhere a roll of 1-100 sometimes beats and
     // sometimes does not.
     let ours = member_aim(

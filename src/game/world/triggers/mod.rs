@@ -167,7 +167,6 @@ fn drink_fountain(
     clock: Res<GameClock>,
     roster: Single<&PartyRoster>,
     mut members: Query<(
-        &Character,
         &mut Vitals,
         Option<(&crate::game::magic::LearnedSpells, &mut crate::game::magic::SpellPoints)>,
     )>,
@@ -196,15 +195,14 @@ fn drink_fountain(
             state.refills_at = fountain.refills_after.map(|after| now + after);
         }
     }
-    for (profile, mut member, points) in members.iter_many_unique_mut(roster.iter()).matched() {
+    for (mut member, points) in members.iter_many_unique_mut(roster.iter()).matched() {
         if member.is_dead()
             || match fountain.restores {
                 Restores::Restoration => false,
                 Restores::Magic => points.is_none(),
-                Restores::Health => member.hp >= profile.stats(&member.enchantments).max_hp(),
+                Restores::Health => member.health.current >= member.health.max,
                 Restores::Stamina => {
-                    member.stamina >= profile.stats(&member.enchantments).max_stamina()
-                        && !member.conditions.exhausted()
+                    member.stamina.current >= member.stamina.max && !member.conditions.exhausted()
                 }
             }
         {
@@ -221,8 +219,7 @@ fn drink_fountain(
                         restoration.unwrap().dice,
                         crate::game::magic::Strength { power, ..default() },
                     );
-                    let maximum = profile.stats(&member.enchantments).max_hp();
-                    member.heal(amount, maximum);
+                    member.heal(amount);
                 }
                 member.conditions.lift_all();
             }
@@ -231,12 +228,10 @@ fn drink_fountain(
                 points.restore_evenly(fountain.amount);
             }
             Restores::Health => {
-                let maximum = profile.stats(&member.enchantments).max_hp();
-                member.heal(fountain.amount, maximum)
+                member.heal(fountain.amount);
             }
             Restores::Stamina => {
-                let maximum = profile.stats(&member.enchantments).max_stamina();
-                member.restore_stamina(fountain.amount, maximum)
+                member.rest(fountain.amount);
             }
         }
     }

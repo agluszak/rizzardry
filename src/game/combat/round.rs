@@ -199,9 +199,9 @@ pub(super) fn accept_round(
         round.party.push(PartyTurn { actor: member, action, phase, hands: turns });
     }
     for &entity in combatants {
-        let (monster, ..) = monsters.get(entity).unwrap();
+        let (monster, .., vitals) = monsters.get(entity).unwrap();
         let kind = &species[monster.species];
-        let (phase, attacks) = if monster.is_dead() {
+        let (phase, attacks) = if vitals.is_dead() {
             (0, 0)
         } else {
             (phase(rng, i32::from(kind.initiative)), u32::from(kind.attacks_per_round))

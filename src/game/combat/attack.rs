@@ -24,7 +24,6 @@ use crate::game::difficulty::Difficulty;
 use crate::game::inventory::{Carried, EquipSlot};
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::Stance;
-use crate::game::world::population::Monster;
 
 /// The to-hit term of a mode (retail `AttackModeMod` for the aim).
 fn mode_to_hit(mode: AttackMode) -> i32 {
@@ -159,12 +158,9 @@ fn fatigue_penalty(spent: u32) -> i32 {
     }
 }
 
-fn character_fatigue(c: &CharacterStats<'_>, vitals: &Vitals) -> i32 {
-    fatigue_penalty(vitals.stamina_spent(c.max_stamina()))
-}
-
-fn monster_fatigue(monster: &Monster) -> i32 {
-    fatigue_penalty(100 - monster.stamina * 100 / monster.max_stamina.max(1))
+/// What fatigue takes off a member's or a monster's aim and armour.
+fn fatigue(vitals: &Vitals) -> i32 {
+    fatigue_penalty(vitals.stamina.spent_percent())
 }
 
 /// What a hand holds (retail `SetHandType`).
@@ -676,16 +672,16 @@ impl<'a> Defence<'a> {
         }
     }
 
-    pub fn monster(species: &'a Species, monster: &Monster, advancing: bool) -> Self {
+    pub fn monster(species: &'a Species, vitals: &Vitals, advancing: bool) -> Self {
         Defence {
             defender: Defender::Monster {
                 species,
-                fatigue: monster_fatigue(monster),
-                max_hp: monster.max_hp,
-                armour: monster.enchantments.armour(),
-                reduction: monster.enchantments.damage_reduction(),
+                fatigue: fatigue(vitals),
+                max_hp: vitals.health.max,
+                armour: vitals.enchantments.armour(),
+                reduction: vitals.enchantments.damage_reduction(),
             },
-            ssdi: species_ssdi(species, &monster.enchantments),
+            ssdi: species_ssdi(species, &vitals.enchantments),
             moving: advancing,
             defending: false,
         }
@@ -805,7 +801,7 @@ pub fn member_aim(
     target: Option<&Defence>,
     difficulty: Difficulty,
 ) -> i32 {
-    let mut fatigue = character_fatigue(c, vitals);
+    let mut fatigue = fatigue(vitals);
     if hand.weapon_skill == Skill::ModernWeapon {
         fatigue >>= 1;
     }
@@ -842,7 +838,7 @@ pub fn member_penetration(
 ) -> i32 {
     let mut score = hand.attack_rating + hand.to_hit * 5 + mode_penetration(mode);
     if hand.weapon_skill != Skill::ModernWeapon {
-        score -= character_fatigue(c, vitals);
+        score -= fatigue(vitals);
     }
     score -= target.armour_at(mode, surprise, at) * 5;
     score += (character_ssdi(c) - target.ssdi) / 10;
@@ -851,28 +847,28 @@ pub fn member_penetration(
 
 /// A monster's aim with one attack (retail `GetMonsterAttackScore`).
 pub fn monster_aim(
-    (species, monster, stance): (&Species, &Monster, Stance),
+    (species, vitals, stance): (&Species, &Vitals, Stance),
     attack: &MonsterAttack,
     mode: AttackMode,
     surprise: Surprise,
     target: Option<&Defence>,
     difficulty: Difficulty,
 ) -> i32 {
-    let mut fatigue = monster_fatigue(monster);
+    let mut fatigue = fatigue(vitals);
     if attack.tires_little() {
         fatigue >>= 1;
     }
     let mut score = i32::from(attack.score)
-        + 5 * monster.enchantments.hit_bonus()
+        + 5 * vitals.enchantments.hit_bonus()
         + mode_to_hit(mode)
         + 10 * i32::from(surprise.unaware)
         + 10 * i32::from(surprise.natural)
         - fatigue;
     if let Some(target) = target {
         score -= target.armour_class(mode, surprise) * 5;
-        score += (species_ssdi(species, &monster.enchantments) - target.ssdi) / 10;
+        score += (species_ssdi(species, &vitals.enchantments) - target.ssdi) / 10;
     }
-    if monster.conditions.has(Condition::Blind) && score > 10 {
+    if vitals.conditions.has(Condition::Blind) && score > 10 {
         score = 10;
     }
     difficulty.for_monster(score, stance)
@@ -883,7 +879,7 @@ pub fn monster_aim(
 /// modern weapon), with the first hand's to-hit and rating when it is in
 /// play, and the member's own to-hit bonus.
 pub fn member_protection(c: &CharacterStats<'_>, vitals: &Vitals, hand: &Hand) -> i32 {
-    let mut fatigue = character_fatigue(c, vitals);
+    let mut fatigue = fatigue(vitals);
     if hand.weapon_skill == Skill::ModernWeapon {
         fatigue >>= 1;
     }
@@ -897,21 +893,21 @@ pub fn member_protection(c: &CharacterStats<'_>, vitals: &Vitals, hand: &Hand) -
 /// `GetMonsterProtectionScore`): Speed, less fatigue (halved for the
 /// weapons that tire little), with its first attack's score and its to-hit
 /// bonus.
-pub fn monster_protection(species: &Species, monster: &Monster) -> i32 {
+pub fn monster_protection(species: &Species, vitals: &Vitals) -> i32 {
     let first = species.attacks.first();
-    let mut fatigue = monster_fatigue(monster);
+    let mut fatigue = fatigue(vitals);
     if first.is_some_and(MonsterAttack::tires_little) {
         fatigue >>= 1;
     }
     i32::from(species.attributes.speed) - fatigue
         + first.map_or(0, |a| i32::from(a.score))
-        + monster.enchantments.hit_bonus() * 5
+        + vitals.enchantments.hit_bonus() * 5
 }
 
 /// A monster's chance to get through armour (retail `ContinueMonsterAttack`).
 /// Retail takes fatigue off only the attacks that tire little, in full.
 pub fn monster_penetration(
-    (species, monster, stance): (&Species, &Monster, Stance),
+    (species, vitals, stance): (&Species, &Vitals, Stance),
     attack: &MonsterAttack,
     mode: AttackMode,
     surprise: Surprise,
@@ -919,12 +915,12 @@ pub fn monster_penetration(
     difficulty: Difficulty,
 ) -> i32 {
     let mut score =
-        i32::from(attack.score) + 5 * monster.enchantments.hit_bonus() + mode_penetration(mode);
+        i32::from(attack.score) + 5 * vitals.enchantments.hit_bonus() + mode_penetration(mode);
     if attack.tires_little() {
-        score -= monster_fatigue(monster);
+        score -= fatigue(vitals);
     }
     score -= target.armour_at(mode, surprise, at) * 5;
-    score += (species_ssdi(species, &monster.enchantments) - target.ssdi) / 10;
+    score += (species_ssdi(species, &vitals.enchantments) - target.ssdi) / 10;
     difficulty.for_monster(score, stance)
 }
 

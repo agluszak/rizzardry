@@ -882,7 +882,7 @@ mod tests {
         });
         let profile = Character::new("Drinker", Race::Human, Gender::Male, Profession::Fighter);
         let mut vitals = Vitals::new(&profile);
-        vitals.hp = 1;
+        vitals.health.current = 1;
         let mut carried = Carried::default();
         carried.backpack[0] = Some(potions);
         carried.equipment[EquipSlot::Misc1] = Some(Equipped::new(charged));
@@ -901,14 +901,14 @@ mod tests {
             news.extend(app.world_mut().resource_mut::<Messages<MagicNews>>().drain());
             news.last().cloned()
         };
-        let hp = |app: &App| app.world().get::<Vitals>(member).unwrap().hp;
+        let hp = |app: &App| app.world().get::<Vitals>(member).unwrap().health.current;
         let backpack = |app: &App| app.world().get::<Carried>(member).unwrap().backpack[0].clone();
         assert!(matches!(request(&mut app, Source::Item(potion_id)), Some(MagicNews::Done(_))));
         assert_eq!(backpack(&app).unwrap().count(), 1);
         let before = hp(&app);
         assert!(before > 1, "4d4 heals at power 1");
         // Hurt again, and drink the last one: it is gone, and it heals.
-        app.world_mut().get_mut::<Vitals>(member).unwrap().hp = 1;
+        app.world_mut().get_mut::<Vitals>(member).unwrap().health.current = 1;
         assert!(matches!(request(&mut app, Source::Item(potion_id)), Some(MagicNews::Done(_))));
         assert!(backpack(&app).is_none(), "the last dose is used up");
         assert!(hp(&app) > 1, "the effect outlives the potion");
@@ -1061,8 +1061,8 @@ mod tests {
             let user = world.spawn((Vitals::new(&user), user, carried)).id();
             let ally = Character::new("Ally", Race::Human, Gender::Male, Profession::Priest);
             let mut vitals = Vitals::new(&ally);
-            vitals.hp = 1;
-            vitals.stamina = 1;
+            vitals.health.current = 1;
+            vitals.stamina.current = 1;
             vitals.inflict(Condition::Asleep, Lasting::Rounds(8));
             vitals.inflict(Condition::Unconscious, Lasting::Rounds(8));
             vitals.poison(Lasting::Rounds(20), 10);
@@ -1096,9 +1096,9 @@ mod tests {
                 1
             );
             let user_after = world.get::<Vitals>(user).unwrap();
-            assert_eq!(user_after.hp, user_before.hp);
+            assert_eq!(user_after.health.current, user_before.health.current);
             assert_eq!(user_after.conditions, user_before.conditions);
-            let fatigue = user_before.stamina - user_after.stamina;
+            let fatigue = user_before.stamina.current - user_after.stamina.current;
             if id == SpellId::SMELLING_SALTS {
                 assert_eq!(fatigue, 10);
             } else {
@@ -1118,11 +1118,11 @@ mod tests {
                     );
                     let profile = world.get::<Character>(ally).unwrap().clone();
                     let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
-                    let stamina = vitals.stamina;
+                    let stamina = vitals.stamina.current;
                     let mut rng = GameRng::default();
                     let mut fate = crate::game::characters::Fate { fight: None, rng: &mut rng };
                     assert_eq!(vitals.damage(&profile, 4, &mut fate), 0);
-                    assert_eq!(vitals.stamina, stamina, "absorbed damage does not fatigue");
+                    assert_eq!(vitals.stamina.current, stamina, "absorbed damage does not fatigue");
                     assert_eq!(vitals.damage(&profile, 2, &mut fate), 1);
                     assert!(vitals.is_dead());
                     assert!(vitals.enchantments.0.is_empty());
@@ -1142,12 +1142,15 @@ mod tests {
                     assert!(vitals.enchantments.get(id).is_none());
                 }
                 SpellId::RESTORE_HEALTH => {
-                    assert_eq!(vitals.hp, 5, "power four heals 4d1");
-                    assert_eq!(vitals.stamina, 9, "stamina rolls twice the dice, independently");
+                    assert_eq!(vitals.health.current, 5, "power four heals 4d1");
+                    assert_eq!(
+                        vitals.stamina.current, 9,
+                        "stamina rolls twice the dice, independently"
+                    );
                 }
                 SpellId::RESTORE_MAGIC => {
                     assert!(test_points(world, ally, Realm::Divine) > 0);
-                    assert_eq!((vitals.hp, vitals.stamina), (1, 1));
+                    assert_eq!((vitals.health.current, vitals.stamina.current), (1, 1));
                 }
                 SpellId::SMELLING_SALTS => {
                     assert!(

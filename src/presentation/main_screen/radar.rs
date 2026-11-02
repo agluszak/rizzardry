@@ -187,7 +187,7 @@ pub fn update_radar(
     members: Query<(&crate::game::characters::Character, &crate::game::characters::Vitals)>,
     monsters: Query<(
         Entity,
-        &crate::game::world::population::Monster,
+        (&crate::game::world::population::Monster, &crate::game::characters::Vitals),
         crate::game::world::ActorPose,
         Option<&crate::game::world::navigation::Walker>,
         Has<crate::game::combat::Combatant>,
@@ -260,7 +260,7 @@ pub fn update_radar(
         effects.is_some_and(|effects| effects.0.has(crate::content::spells::SpellId::SHADOW_HOUND));
     for (entity, monster, at, walker, in_combat, owner) in &monsters {
         let Some(roster) = roster else { continue };
-        let species = &catalog[monster.species];
+        let species = &catalog[monster.0.species];
         let feet = crate::game::world::navigation::feet(at.translation(), walker);
         if !levels.contains(owner.0) || !view.in_range(monster, feet) {
             continue;

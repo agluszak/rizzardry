@@ -154,8 +154,8 @@ pub(super) fn refresh(
         let (value, palette) = match *kind {
             Value::Experience => (format_gold(character.experience), None),
             Value::Goal => (format_gold(character.experience_goal()), None),
-            Value::HitPoints => (format!("{}/{}", vitals.hp, stats.max_hp()), None),
-            Value::Stamina => (format!("{}/{}", vitals.stamina, stats.max_stamina()), None),
+            Value::HitPoints => (format!("{}/{}", vitals.health.current, vitals.health.max), None),
+            Value::Stamina => (format!("{}/{}", vitals.stamina.current, vitals.stamina.max), None),
             Value::Load => {
                 let palette = match load {
                     Load::None => None,

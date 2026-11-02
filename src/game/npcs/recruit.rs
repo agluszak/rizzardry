@@ -212,8 +212,7 @@ pub fn join(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
         ));
     }
     if let Some(body) = standing_body(world, actor) {
-        let conditions =
-            world.get::<Monster>(body).map(|m| m.conditions.clone()).unwrap_or_default();
+        let conditions = world.get::<Vitals>(body).unwrap().conditions.clone();
         world.get_mut::<Vitals>(actor).unwrap().conditions = conditions;
         let at = world
             .query::<(crate::game::world::ActorPose, Option<&crate::game::world::navigation::Walker>)>()
@@ -331,7 +330,7 @@ fn stand_beside_party(
         + Quat::from_rotation_y(yaw + std::f32::consts::FRAC_PI_4) * Vec3::NEG_Z * 2.0;
     let (conditions, stamina) = {
         let vitals = world.get::<Vitals>(actor).unwrap();
-        (vitals.conditions.clone(), vitals.stamina)
+        (vitals.conditions.clone(), vitals.stamina.current)
     };
     let stamina_max = world.get::<Character>(actor).unwrap().base_stats().max_stamina();
     let species = world.get::<Monster>(body).unwrap().species;
@@ -340,14 +339,12 @@ fn stand_beside_party(
         (rng.roll(kind.hit_points).max(1), rng.roll(kind.stamina))
     });
     {
-        let mut monster = world.get_mut::<Monster>(body).unwrap();
-        monster.hp = max_hp;
-        monster.max_hp = max_hp;
-        monster.max_stamina = max_stamina;
-        monster.stamina = max_stamina;
+        let mut monster = world.get_mut::<Vitals>(body).unwrap();
+        monster.health = crate::game::characters::Pool::full(max_hp);
+        monster.stamina = crate::game::characters::Pool::full(max_stamina);
         // An NPC out cold stays as spent as it was.
         if conditions.exhausted() {
-            monster.stamina = stamina.min(stamina_max);
+            monster.stamina.current = stamina.min(stamina_max);
         }
         monster.conditions = conditions;
     }

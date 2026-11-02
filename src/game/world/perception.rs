@@ -44,8 +44,8 @@ pub fn in_view(
 }
 
 impl View {
-    pub fn in_range(self, monster: &Monster, feet: Vec3) -> bool {
-        !monster.is_dead() && party_distance(self.eye, monster, feet) <= self.far
+    pub fn in_range(self, (monster, vitals): (&Monster, &Vitals), feet: Vec3) -> bool {
+        !vitals.is_dead() && party_distance(self.eye, monster, feet) <= self.far
     }
     /// Retail party-side sight. Shadow Hound supplies the full-range override,
     /// while blindness, the target's concealment and solid scenery still apply.
@@ -53,13 +53,13 @@ impl View {
         self,
         mut members: impl Iterator<Item = (&'a Character, &'a Vitals)>,
         shadow_hound: bool,
-        monster: &Monster,
+        (monster, body): (&Monster, &Vitals),
         species: &Species,
         feet: Vec3,
         in_combat: bool,
         obstacles: &WorldObstacles,
     ) -> bool {
-        if monster.is_dead() || !in_view((self.eye, self.far), monster, feet, obstacles) {
+        if body.is_dead() || !in_view((self.eye, self.far), monster, feet, obstacles) {
             return false;
         }
         let distance = party_distance(self.eye, monster, feet);

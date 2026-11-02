@@ -256,7 +256,7 @@ fn breathe(
     battle: Query<&crate::game::combat::Combatants>,
     monsters: Query<(
         Entity,
-        &crate::game::world::population::Monster,
+        (&crate::game::world::population::Monster, &crate::game::characters::Vitals),
         crate::game::world::ActorPose,
     )>,
     content: If<Res<crate::game::data::Catalogs>>,
@@ -276,8 +276,8 @@ fn breathe(
         monsters
             .iter_many(combatants.entities().iter().copied())
             .matched()
-            .filter(|(_, monster, _)| !monster.is_dead())
-            .map(|(entity, monster, at)| {
+            .filter(|(_, (_, vitals), _)| !vitals.is_dead())
+            .map(|(entity, (monster, _), at)| {
                 (
                     entity,
                     at.translation(),

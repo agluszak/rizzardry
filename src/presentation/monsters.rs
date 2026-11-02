@@ -155,8 +155,11 @@ pub fn build_monster_instances(
 
 /// The cycle an actor should be playing: its death, which plays once and stays
 /// on its last frame; otherwise WALK while moving and IDLE when still.
-fn wanted_cycle(monster: &Monster, velocity: Option<&LinearVelocity>) -> &'static str {
-    if monster.is_dead() {
+fn wanted_cycle(
+    vitals: &crate::game::characters::Vitals,
+    velocity: Option<&LinearVelocity>,
+) -> &'static str {
+    if vitals.is_dead() {
         DIE
     } else if velocity.is_some_and(|v| v.0.with_y(0.0).length() > 0.3) {
         "WALK"
@@ -170,7 +173,7 @@ fn wanted_cycle(monster: &Monster, velocity: Option<&LinearVelocity>) -> &'stati
 pub fn animate_monsters(
     time: Res<Time<Virtual>>,
     mut actors: Query<(
-        &Monster,
+        (&Monster, &crate::game::characters::Vitals),
         &MonsterVisual,
         &mut MonsterPlayback,
         Option<&LinearVelocity>,
@@ -180,9 +183,9 @@ pub fn animate_monsters(
     roots: Query<&Children, With<ModelRoot>>,
     mut cycles: Query<(&ModelCycle, &mut MorphWeights, &mut Visibility)>,
 ) {
-    for (monster, visual, mut playback, velocity, children) in &mut actors {
+    for ((monster, vitals), visual, mut playback, velocity, children) in &mut actors {
         let Some(model) = models.get(&visual.0) else { continue };
-        let wanted = wanted_cycle(monster, velocity);
+        let wanted = wanted_cycle(vitals, velocity);
         let once = wanted == DIE;
         let current = playback.playing.as_ref().is_some_and(|(playing, _)| *playing == wanted);
         let name = if model.cycles.contains_key(wanted) { wanted } else { "IDLE" };

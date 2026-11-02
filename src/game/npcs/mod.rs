@@ -110,7 +110,7 @@ pub struct NpcPopulation<'w, 's> {
         (
             Entity,
             &'static mut NpcWorldRole,
-            &'static Monster,
+            (&'static Monster, &'static crate::game::characters::Vitals),
             ActorPose,
             Option<&'static Walker>,
             Option<&'static LevelOwned>,
@@ -161,8 +161,8 @@ impl NpcPopulation<'_, '_> {
                 return None;
             }
             let entity = *bodies.first()?;
-            let (_, role, monster, pose, walker, ..) = self.roles.get(entity).ok()?;
-            if role.map != map || monster.is_dead() {
+            let (_, role, (monster, vitals), pose, walker, ..) = self.roles.get(entity).ok()?;
+            if role.map != map || vitals.is_dead() {
                 return None;
             }
             commands.entity(entity).remove::<Disabled>();
@@ -201,6 +201,7 @@ impl NpcPopulation<'_, '_> {
                 NpcBody(actor),
                 NpcWorldRole { map: map.into(), group: kept.group },
                 kept.monster,
+                kept.vitals,
             ))
             .id();
         Some((entity, kept.feet, kept.yaw, body, kept.group))
@@ -263,8 +264,10 @@ impl NpcPopulation<'_, '_> {
                 continue;
             }
             let Some(&entity) = bodies.first() else { continue };
-            let Ok((_, role, monster, pose, walker, ..)) = self.roles.get(entity) else { continue };
-            if role.map != map || monster.is_dead() {
+            let Ok((_, role, (monster, vitals), pose, walker, ..)) = self.roles.get(entity) else {
+                continue;
+            };
+            if role.map != map || vitals.is_dead() {
                 continue;
             }
             placed_actors.insert(key.clone());

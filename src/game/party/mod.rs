@@ -46,10 +46,13 @@ impl Plugin for PartyPlugin {
         .add_message::<DamageApplied>()
         .add_systems(
             Update,
-            (body::look_around
-                .after(GameplaySet::LevelActivation)
-                .before(GameplaySet::Combat)
-                .run_if(level_active),),
+            (
+                crate::game::characters::sync_member_maxima.before(GameplaySet::LevelActivation),
+                body::look_around
+                    .after(GameplaySet::LevelActivation)
+                    .before(GameplaySet::Combat)
+                    .run_if(level_active),
+            ),
         )
         // Tnua and Avian step on the fixed timestep; movement input feeds
         // them on the same step.
@@ -195,12 +198,12 @@ pub fn kill_member(
     fate: &mut crate::game::characters::Fate,
     damage: &mut MessageWriter<DamageApplied>,
 ) -> u32 {
-    let hp = vitals.hp;
+    let hp = vitals.health.current;
     vitals.perish(profile, fate);
     if vitals.is_dead() && formation.row_of(member).is_some() {
         formation.update_seat(member, true);
     }
-    let lost = hp.max(vitals.hp) - vitals.hp;
+    let lost = hp.max(vitals.health.current) - vitals.health.current;
     if lost > 0 {
         damage.write(DamageApplied { member, amount: lost, died: vitals.is_dead() });
     }
@@ -251,7 +254,7 @@ mod tests {
     fn damage_reports_actual_loss_and_death_even_when_healing_follows() {
         let mut world = World::new();
         world.init_resource::<Messages<DamageApplied>>();
-        let first = world.spawn(Vitals { hp: 10, stamina: 20, ..default() }).id();
+        let first = world.spawn(Vitals::full(10, 20)).id();
         roster::test_party(&mut world, &[first]);
         let mut operation = SystemState::<(
             Query<&mut Vitals>,
@@ -286,7 +289,7 @@ mod tests {
                 ),
                 0
             );
-            assert_eq!(vitals.stamina, 20, "Guardian Angel absorbs before fatigue");
+            assert_eq!(vitals.stamina.current, 20, "Guardian Angel absorbs before fatigue");
             assert!(formation.row_of(first).is_some());
             assert_eq!(
                 damage_member(
@@ -298,7 +301,7 @@ mod tests {
                 ),
                 3
             );
-            vitals.heal(3, 10);
+            vitals.heal(3);
         }
         let reported: Vec<_> = world.resource_mut::<Messages<DamageApplied>>().drain().collect();
         assert_eq!(reported, [DamageApplied { member: first, amount: 3, died: false }]);

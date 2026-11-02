@@ -23,12 +23,12 @@ pub(super) fn leave_fight(
     let group_of = |monster: Entity| membership.get(monster).ok().map(|m| m.0);
     let stance_of = |monster: Entity| Some(damage.group_stance(monster, now));
     let seen = |monster: Entity| -> Option<(Seen, bool)> {
-        let (body, at, walker, ..) = monsters.get(monster).ok()?;
+        let (body, at, walker, .., vitals) = monsters.get(monster).ok()?;
         let kind = &species[body.species];
-        if body.is_dead() {
+        if vitals.is_dead() {
             return None;
         }
-        Some((sight.seen(monster, (body, &at, walker, kind)), kind.temper.camouflaged))
+        Some((sight.seen(monster, ((body, vitals), &at, walker, kind)), kind.temper.camouflaged))
     };
     let hostiles: Vec<Seen> = combatants
         .iter()
@@ -60,16 +60,17 @@ pub(super) fn leave_fight(
             }
             Some(Stance::Friendly) => fellows.iter().any(|(fellow, _)| {
                 let mine = allegiance(fellow.entity, damage, now, species);
-                let (body, at, walker, ..) = monsters.get(fellow.entity).unwrap();
+                let (body, at, walker, .., vitals) = monsters.get(fellow.entity).unwrap();
                 let kind = &species[body.species];
                 combatants.iter().any(|&enemy| {
                     let theirs = allegiance(enemy, damage, now, species);
-                    let (target, target_at, target_walker, ..) = monsters.get(enemy).unwrap();
+                    let (target, target_at, target_walker, .., target_vitals) =
+                        monsters.get(enemy).unwrap();
                     let target_kind = &species[target.species];
-                    !target.is_dead()
+                    !target_vitals.is_dead()
                         && hostility::between(mine, theirs) == Stance::Hostile
                         && sight.sees_monster(
-                            (body, &at, walker, kind),
+                            ((body, vitals), &at, walker, kind),
                             (target, &target_at, target_walker, target_kind),
                         )
                 })
@@ -155,7 +156,7 @@ pub fn finish_round(
     }
     if over {
         for &actor in combatants {
-            damage.enchantments_mut(actor).end_combat();
+            damage.vitals_mut(actor).enchantments.end_combat();
         }
     }
     // Recognition is a required part of this round, before the next
@@ -234,16 +235,16 @@ pub(super) fn pass_round(
     // A monster that waited, or lies asleep or knocked out, gets its
     // breath back (retail `AdvanceCombatRound`).
     for &entity in combatants {
-        let (monster, ..) = damage.monsters().get(entity).unwrap();
+        let mut vitals = damage.vitals_mut(entity);
         let resting =
             battle.this_round.monsters.iter().any(|turn| turn.actor == entity && turn.waited)
-                || monster
+                || vitals
                     .conditions
                     .iter()
                     .any(|&(c, _)| matches!(c, Condition::Asleep | Condition::Unconscious));
         if resting {
-            let maximum = monster.max_stamina;
-            damage.restore_stamina(entity, recovery::rest_roll(maximum, rng));
+            let maximum = vitals.stamina.max;
+            vitals.rest(recovery::rest_roll(maximum, rng));
         }
     }
     // A special attack cools down over the rounds the monster does not
@@ -256,9 +257,9 @@ pub(super) fn pass_round(
         }
     }
     for &entity in combatants {
-        let mut conditions = damage.conditions_mut(entity);
-        if conditions.any_timed() {
-            conditions.age(ticks.aging);
+        let mut vitals = damage.vitals_mut(entity);
+        if vitals.conditions.any_timed() {
+            vitals.conditions.age(ticks.aging);
         }
     }
     for actor in roster.iter() {
@@ -296,7 +297,7 @@ pub(super) fn pass_round(
     }
     magic.context.enchantments.0.age(ticks.aging);
     for &entity in combatants {
-        damage.enchantments_mut(entity).age(ticks.aging);
+        damage.vitals_mut(entity).enchantments.age(ticks.aging);
     }
     battle.phase = RoundPhase::Waiting;
 }
@@ -323,10 +324,10 @@ pub(super) fn rest_defenders(
         if vitals.is_dead() || !resting {
             continue;
         }
-        let maximum = character.stats(&vitals.enchantments).max_stamina();
+        let maximum = vitals.stamina.max;
         let gained = recovery::combat_rest_amount(&character, recovery::rest_roll(maximum, rng));
-        if vitals.stamina < maximum || vitals.conditions.exhausted() {
-            vitals.restore_stamina(gained, maximum);
+        if vitals.stamina.current < maximum || vitals.conditions.exhausted() {
+            vitals.rest(gained);
         }
     }
 }
@@ -343,13 +344,13 @@ pub(super) fn fight_over(
 ) -> bool {
     let monsters = damage.monsters();
     let approaching = combatants.iter().any(|&entity| {
-        let (monster, at, walker, ..) = monsters.get(entity).unwrap();
-        approach::needs_approach(monster, at.translation(), walker, party_eye, species)
+        let (monster, at, walker, .., vitals) = monsters.get(entity).unwrap();
+        approach::needs_approach((monster, vitals), at.translation(), walker, party_eye, species)
     });
     let active = battle.this_round.attacked || approaching;
     battle.passive_rounds = if active { 0 } else { battle.passive_rounds + 1 };
     let hostiles_left = staying.iter().any(|&e| {
-        damage.stance(e, now) == hostility::Stance::Hostile && !monsters.get(e).unwrap().0.is_dead()
+        damage.stance(e, now) == hostility::Stance::Hostile && !monsters.get(e).unwrap().5.is_dead()
     });
     !hostiles_left || battle.passive_rounds >= PASSIVE_ROUNDS
 }

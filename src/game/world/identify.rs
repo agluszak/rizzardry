@@ -75,8 +75,7 @@ pub fn recognition(
 /// party is in roster order, each member with whether it is a recruited NPC.
 pub fn health_known(
     party: &[(&Character, &Vitals, bool)],
-    hp: u32,
-    max_hp: u32,
+    health: crate::game::characters::Pool,
     display_level: u8,
 ) -> String {
     // The best Mythology among those who can act (retail
@@ -98,8 +97,8 @@ pub fn health_known(
     } else {
         mythology
     };
-    let current = if knowledge >= 10 { hp.to_string() } else { "?".to_owned() };
-    let most = if knowledge > 4 { max_hp.to_string() } else { "?".to_owned() };
+    let current = if knowledge >= 10 { health.current.to_string() } else { "?".to_owned() };
+    let most = if knowledge > 4 { health.max.to_string() } else { "?".to_owned() };
     format!("{current}/{most}")
 }
 
@@ -112,8 +111,15 @@ pub struct GroupRecognition<'w, 's> {
         's,
         (Entity, &'static mut MonsterGroup, Option<&'static GroupMembers>, &'static LevelOwned),
     >,
-    monsters:
-        Query<'w, 's, (&'static Monster, ActorPose, Option<&'static super::navigation::Walker>)>,
+    monsters: Query<
+        'w,
+        's,
+        (
+            (&'static Monster, &'static Vitals),
+            ActorPose,
+            Option<&'static super::navigation::Walker>,
+        ),
+    >,
     level: PlayedLevel<'w, 's>,
     roster: Single<'w, 's, &'static PartyRoster>,
     members: Query<'w, 's, (&'static Character, &'static Vitals, &'static mut MonsterKnowledge)>,
@@ -159,8 +165,8 @@ impl GroupRecognition<'_, '_> {
             }
             let (mut species_id, mut count, mut in_view) = (None, 0usize, false);
             for member in membership.iter() {
-                let (monster, at, walker) = monsters.get(member).unwrap();
-                if monster.is_dead() || combatants.is_some_and(|c| !c.contains(&member)) {
+                let ((monster, vitals), at, walker) = monsters.get(member).unwrap();
+                if vitals.is_dead() || combatants.is_some_and(|c| !c.contains(&member)) {
                     continue;
                 }
                 species_id.get_or_insert(monster.species);
@@ -172,7 +178,7 @@ impl GroupRecognition<'_, '_> {
                         .matched()
                         .map(|(profile, vitals, _)| (profile, vitals)),
                     shadow_hound,
-                    monster,
+                    (monster, vitals),
                     species,
                     super::navigation::feet(at.translation(), walker),
                     combatants.is_some(),

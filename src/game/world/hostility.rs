@@ -107,7 +107,7 @@ pub fn within_radius(species: &Species, nearest: f32) -> bool {
 /// ([`stance`]), swapped by the monster's own Turncoat ([`own_stance`]).
 /// Every reader of a monster's side goes through this.
 pub fn monster_own(
-    monster: &Monster,
+    vitals: &crate::game::characters::Vitals,
     set: Option<SetStance>,
     species: &Species,
     factions: &Factions,
@@ -116,7 +116,7 @@ pub fn monster_own(
 ) -> Stance {
     own_stance(
         stance(set, species, factions, now, fighting),
-        monster.conditions.has(Condition::Turncoat),
+        vitals.conditions.has(Condition::Turncoat),
     )
 }
 
@@ -135,7 +135,7 @@ pub fn monster_stance(world: &World, monster: Entity) -> Stance {
         .and_then(|group| group.set);
     let fighting = world.get::<crate::game::combat::Combatant>(monster).is_some();
     let now = world.resource::<GameClock>().ms;
-    let body = world.get::<Monster>(monster).unwrap();
+    let body = world.get::<crate::game::characters::Vitals>(monster).unwrap();
     monster_own(body, set, species, world.resource::<Factions>(), now, fighting)
 }
 
@@ -147,7 +147,12 @@ pub struct Stances<'w, 's> {
     monsters: Query<
         'w,
         's,
-        (&'static Monster, Option<&'static GroupMember>, Has<crate::game::combat::Combatant>),
+        (
+            &'static Monster,
+            Option<&'static GroupMember>,
+            Has<crate::game::combat::Combatant>,
+            &'static crate::game::characters::Vitals,
+        ),
     >,
     groups: Query<'w, 's, &'static MonsterGroup>,
     factions: Res<'w, Factions>,
@@ -157,7 +162,7 @@ impl Stances<'_, '_> {
     /// A monster's group's stance now; one outside any group by its
     /// species' default.
     pub fn group(&self, monster: Entity, species: &MonsterCatalog, now: u64) -> Option<Stance> {
-        let (body, member, fighting) = self.monsters.get(monster).ok()?;
+        let (body, member, fighting, _) = self.monsters.get(monster).ok()?;
         let kind = &species[body.species];
         let set = member.and_then(|m| self.groups.get(m.0).ok()).and_then(|g| g.set);
         Some(stance(set, kind, &self.factions, now, fighting))
@@ -167,8 +172,8 @@ impl Stances<'_, '_> {
     /// (retail's per-monster `ubDisposition`).
     pub fn own(&self, monster: Entity, species: &MonsterCatalog, now: u64) -> Option<Stance> {
         let group = self.group(monster, species, now)?;
-        let (body, ..) = self.monsters.get(monster).ok()?;
-        let turncoat = body.conditions.has(Condition::Turncoat);
+        let (.., vitals) = self.monsters.get(monster).ok()?;
+        let turncoat = vitals.conditions.has(Condition::Turncoat);
         Some(own_stance(group, turncoat))
     }
 }

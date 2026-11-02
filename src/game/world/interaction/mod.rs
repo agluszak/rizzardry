@@ -298,7 +298,7 @@ pub fn force_chance(
     setting: Difficulty,
 ) -> Option<u32> {
     let strength = character.stats(&vitals.enchantments).attribute(Attribute::Strength);
-    if !vitals.can_act() || vitals.stamina < FORCE_STAMINA || strength <= FORCE_STRENGTH {
+    if !vitals.can_act() || vitals.stamina.current < FORCE_STAMINA || strength <= FORCE_STRENGTH {
         return None;
     }
     let divisor = (setting as usize + tumblers - 1).clamp(2, 8);
@@ -445,7 +445,7 @@ pub fn force_lock(world: &mut World, on: Entity, actor: Entity) -> Result<(), Un
     let setting = *world.resource::<Difficulty>();
     let (character, vitals) = member(world, actor)?;
     let chance = force_chance(character, vitals, tumblers, setting).ok_or(Unable::TooWeak)?;
-    world.get_mut::<Vitals>(actor).unwrap().spend_stamina(FORCE_STAMINA);
+    world.get_mut::<Vitals>(actor).unwrap().tire(FORCE_STAMINA);
     if rng(world).below(100) < chance {
         world.write_message(LockNews::Forced { member: actor });
         complete(world, on);

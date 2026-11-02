@@ -446,18 +446,14 @@ fn item_strength(
 fn auto_power(
     character: &Character,
     spell: &SpellDefinition,
-    victim: Option<(&Character, &Vitals)>,
+    victim: Option<&Vitals>,
     affordable: u32,
 ) -> u32 {
     let fail = |p| super::fail_chance(character, spell, p);
-    let Some((profile, vitals)) = victim else { return 1 };
+    let Some(vitals) = victim else { return 1 };
     let power = if effects::restores(spell.id) {
-        let missing = if spell.id == SpellId::STAMINA {
-            profile.stats(&vitals.enchantments).max_stamina() as f32 - vitals.stamina as f32
-        } else {
-            profile.stats(&vitals.enchantments).max_hp() as f32 - vitals.hp as f32
-        }
-        .max(0.0);
+        let pool = if spell.id == SpellId::STAMINA { vitals.stamina } else { vitals.health };
+        let missing = (pool.max as f32 - pool.current as f32).max(0.0);
         let average = |p: u32| {
             spell.dice.map_or(0.0, |d| {
                 d.count as f32 * p as f32 * (d.sides as f32 + 1.0) / 2.0 + d.base as f32
@@ -664,19 +660,14 @@ pub fn perform(
                 }
                 if auto {
                     let victim = match choice.aim {
-                        Aim::Member(m) => Some(world.members.get(m).unwrap()),
+                        Aim::Member(m) => Some(world.vitals(Victim::Member(m))),
                         Aim::Ahead
                         | Aim::Point(_)
                         | Aim::Monster(_)
                         | Aim::Device(_)
                         | Aim::Item(_) => None,
                     };
-                    auto_power(
-                        world.members.get(caster).unwrap().0,
-                        spell,
-                        victim.map(|(c, v, ..)| (c, v)),
-                        affordable,
-                    )
+                    auto_power(world.members.get(caster).unwrap().0, spell, victim, affordable)
                 } else {
                     power.min(affordable)
                 }
@@ -846,7 +837,7 @@ pub fn perform(
         let (_, vitals, ..) = world.members.get(caster).unwrap();
         let (learned, pool) = points.get(caster).unwrap();
         let maximum = world.mana_maximum(caster, learned);
-        if vitals.stamina <= spell.level
+        if vitals.stamina.current <= spell.level
             || pool.available(spell.realm.unwrap(), &maximum) < spell.cost
             || outcome != Outcome::Fizzled
                 && (!repeat || effects::all_restored(spell.id, &victims, world.members))
@@ -977,7 +968,7 @@ fn play(
     while power > 0 && power * 7 > rng.below(100) {
         power -= 1;
     }
-    vitals.spend_stamina(spell.level * 8 + 20);
+    vitals.tire(spell.level * 8 + 20);
     if power == 0 {
         // The refusal carries the practice, since no report follows it.
         let improved =
@@ -1029,7 +1020,7 @@ fn pay(
     // Action fatigue weighs more under load (retail `FatigueCharacter`).
     let slowed = vitals.conditions.has(Condition::Slowed);
     let hasted = vitals.enchantments.has(crate::content::spells::SpellId::HASTE);
-    vitals.spend_stamina(burden.load.scale_fatigue(fatigue, slowed, hasted));
+    vitals.tire(burden.load.scale_fatigue(fatigue, slowed, hasted));
 }
 
 /// Practice from a cast that did something (retail `Magic.cpp:2682-2692`,

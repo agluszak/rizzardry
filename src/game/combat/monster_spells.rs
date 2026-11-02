@@ -15,12 +15,11 @@ use crate::content::spells::{
 };
 use crate::game::characters::Condition;
 use crate::game::magic::casting::Report;
-use crate::game::magic::effects::{self, Field, Standing, Victim};
+use crate::game::magic::effects::{self, Field, Victim};
 use crate::game::magic::{LearnedSpells, Outcome, SpellPoints, Strength};
 use crate::game::party::body::PartyBody;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::Stance;
-use crate::game::world::population::Monster;
 
 /// How much each of the ten slots weighs in the choice (retail
 /// `g_spell_cast_weights`).
@@ -52,7 +51,7 @@ pub(super) struct Someone {
     /// How far they are from the caster, beyond both bodies.
     pub from_caster: f32,
     /// What they lack.
-    pub standing: Standing,
+    pub vitals: crate::game::characters::Vitals,
     /// How the caster stands toward them (retail
     /// `MonsterVsCharDisposition`, `MonsterHostility`).
     pub stance: Stance,
@@ -116,20 +115,14 @@ pub(super) fn aimed_at(scene: &Scene, aim: SpellAim) -> Vec3 {
     }
 }
 
-/// A monster's standing, as a spell on it would find it.
-pub(super) fn monster_standing(monster: &Monster) -> Standing {
-    Standing {
-        hurt: monster.hp < monster.max_hp,
-        tired: monster.stamina < monster.max_stamina,
-        conditions: monster.conditions.clone(),
-        enchantments: monster.enchantments.clone(),
-    }
-}
-
 /// Whether the monster may cast the spell at all (retail
 /// `IsSpellUsableByMonster`): monsters may cast it, its effect is modelled
 /// here, its aim is one a monster takes, and a silence does not stop it.
-fn castable(spell: &SpellDefinition, caster: &Monster, kind: &Species) -> bool {
+fn castable(
+    spell: &SpellDefinition,
+    caster: &crate::game::characters::Vitals,
+    kind: &Species,
+) -> bool {
     let silenced = caster.conditions.has(Condition::Silenced);
     spell.monsters_cast
         && effects::modelled(spell.id)
@@ -150,24 +143,24 @@ fn castable(spell: &SpellDefinition, caster: &Monster, kind: &Species) -> bool {
 /// to feel them; retail's group spells ask nothing of the members' side.
 pub(super) fn aims(spell: &SpellDefinition, scene: &Scene) -> Vec<SpellAim> {
     let reach = spell.reach.metres();
-    let worth = |standing: &Standing| effects::worthwhile(spell.id, standing);
+    let worth = |vitals: &crate::game::characters::Vitals| effects::worthwhile(spell.id, vitals);
     let party_reached = scene.sees_party && scene.party <= reach;
     let monsters = |stance: Stance| {
         scene
             .monsters
             .iter()
-            .filter(move |m| m.stance == stance && m.from_caster <= reach && worth(&m.standing))
+            .filter(move |m| m.stance == stance && m.from_caster <= reach && worth(&m.vitals))
             .map(|m| SpellAim::Monster(m.entity))
     };
     let members = |stance: Stance| {
         scene
             .members
             .iter()
-            .filter(move |m| party_reached && m.stance == stance && worth(&m.standing))
+            .filter(move |m| party_reached && m.stance == stance && worth(&m.vitals))
             .map(|m| SpellAim::Member(m.entity))
     };
     let half = || {
-        let valid = scene.members.iter().filter(|m| worth(&m.standing)).count();
+        let valid = scene.members.iter().filter(|m| worth(&m.vitals)).count();
         party_reached && valid != 0 && scene.members.len().div_ceil(2) <= valid
     };
     let hostile_members = scene.members.iter().filter(|m| m.stance == Stance::Hostile).count();
@@ -175,7 +168,7 @@ pub(super) fn aims(spell: &SpellDefinition, scene: &Scene) -> Vec<SpellAim> {
         Targeting::Caster => scene
             .monsters
             .iter()
-            .find(|m| m.entity == scene.caster && worth(&m.standing))
+            .find(|m| m.entity == scene.caster && worth(&m.vitals))
             .map(|_| vec![SpellAim::Monster(scene.caster)])
             .unwrap_or_default(),
         Targeting::Ally => monsters(Stance::Friendly).chain(members(Stance::Friendly)).collect(),
@@ -200,7 +193,7 @@ pub(super) fn aims(spell: &SpellDefinition, scene: &Scene) -> Vec<SpellAim> {
 /// spell test): it casts at all, and one of its spells aimed at enemies is
 /// castable with an aim.
 pub(super) fn casts_at_foes(
-    caster: &Monster,
+    caster: &crate::game::characters::Vitals,
     kind: &Species,
     spells: &SpellCatalog,
     scene: &Scene,
@@ -219,7 +212,7 @@ pub(super) fn casts_at_foes(
 /// at one of that spell's aims at random.
 pub(super) fn choose(
     rng: &mut GameRng,
-    caster: &Monster,
+    caster: &crate::game::characters::Vitals,
     kind: &Species,
     chance: u32,
     spells: &SpellCatalog,
@@ -456,7 +449,11 @@ mod tests {
             entity,
             at: Vec3::ZERO,
             from_caster: if stance == Stance::Friendly { 0.0 } else { 10.0 },
-            standing: Standing { hurt, ..Default::default() },
+            vitals: {
+                let mut vitals = crate::game::characters::Vitals::full(10, 10);
+                vitals.health.current -= u32::from(hurt);
+                vitals
+            },
             stance,
         }
     }
@@ -486,7 +483,7 @@ mod tests {
         let mut spells = [None; 10];
         spells[0] = Some(SpellId::HEAL_WOUNDS);
         let kind = Species { magic: MonsterMagic { chance: 50, spells, budget: 50 }, ..default() };
-        let monster = super::super::conduct::tests::monster(100);
+        let (_, monster) = super::super::conduct::tests::monster(100);
         let mut rng = GameRng::seeded(3);
         assert_eq!(
             choose(&mut rng, &monster, &kind, 100, &catalog, &scene(caster, false)),

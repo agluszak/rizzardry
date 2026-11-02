@@ -13,7 +13,7 @@ use super::items::drop_loot;
 use super::level::Level;
 use super::navigation::{Walker, feet};
 use super::population::Monster;
-use crate::game::characters::Condition;
+use crate::game::characters::{Condition, Vitals};
 use crate::game::inventory::{ItemIds, PartyInventory, make_item};
 use crate::game::rng::GameRng;
 
@@ -21,7 +21,15 @@ use crate::game::rng::GameRng;
 pub type MonsterQuery<'w, 's> = Query<
     'w,
     's,
-    (&'static mut Monster, ActorPose, Option<&'static Walker>, &'static LevelOwned, Entity),
+    (
+        &'static mut Monster,
+        ActorPose,
+        Option<&'static Walker>,
+        &'static LevelOwned,
+        Entity,
+        &'static mut Vitals,
+    ),
+    Without<crate::game::characters::Character>,
 >;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -91,8 +99,10 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     /// A monster's own stance now ([`super::hostility::monster_own`]): its
     /// group's, swapped by its own Turncoat.
     pub fn stance(&self, entity: Entity, now: u64) -> super::hostility::Stance {
-        let turncoat =
-            self.monsters.get(entity).is_ok_and(|(m, ..)| m.conditions.has(Condition::Turncoat));
+        let turncoat = self
+            .monsters
+            .get(entity)
+            .is_ok_and(|(.., vitals)| vitals.conditions.has(Condition::Turncoat));
         super::hostility::own_stance(self.group_stance(entity, now), turncoat)
     }
 
@@ -115,8 +125,8 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     /// The later notification can start a fight even when this hit kills it.
     pub fn provoke(&mut self, entity: Entity, now: u64) -> bool {
         use super::hostility::{self, SetStance, Stance};
-        let (body, ..) = self.monsters.get(entity).unwrap();
-        if body.is_dead() || body.conditions.has(Condition::Turncoat) {
+        let (body, .., vitals) = self.monsters.get(entity).unwrap();
+        if vitals.is_dead() || vitals.conditions.has(Condition::Turncoat) {
             return false;
         }
         let kind = &self.content.species[body.species];
@@ -129,29 +139,6 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         true
     }
 
-    pub fn restore_health(&mut self, entity: Entity, amount: u32) -> u32 {
-        let (mut body, ..) = self.monsters.get_mut(entity).unwrap();
-        if body.is_dead() {
-            return 0;
-        }
-        let before = body.hp;
-        body.hp = (body.hp + amount).min(body.max_hp);
-        body.hp - before
-    }
-    /// Restoring stamina wakes exhaustion, but leaves a timed knockout alone.
-    pub fn restore_stamina(&mut self, entity: Entity, amount: u32) -> u32 {
-        let (mut body, ..) = self.monsters.get_mut(entity).unwrap();
-        if body.is_dead() {
-            return 0;
-        }
-        let body = &mut *body;
-        crate::game::characters::rest(
-            &mut body.stamina,
-            &mut body.conditions,
-            amount,
-            body.max_stamina,
-        )
-    }
     pub fn restore_magic(&mut self, entity: Entity, amount: u32) {
         let (mut body, ..) = self.monsters.get_mut(entity).unwrap();
         body.spell_points += amount as i32;
@@ -161,29 +148,9 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         &self.monsters
     }
 
-    /// A monster's conditions, to inflict, cure or age.
-    pub fn conditions_mut(
-        &mut self,
-        monster: Entity,
-    ) -> Mut<'_, crate::game::characters::Conditions> {
-        self.monster_mut(monster).map_unchanged(|monster| &mut monster.conditions)
-    }
-
-    /// A monster's body, for what changes its conditions and enchantments
-    /// together.
-    pub fn monster_mut(&mut self, monster: Entity) -> Mut<'_, Monster> {
-        self.monsters.get_mut(monster).unwrap().0
-    }
-
-    /// Tire a monster (retail `FatigueMonster`); spent, it drops
-    /// unconscious. Returns the stamina taken.
-    pub fn fatigue(&mut self, monster: Entity, amount: u32) -> u32 {
-        let (mut monster, ..) = self.monsters.get_mut(monster).unwrap();
-        if monster.is_dead() {
-            return 0;
-        }
-        let monster = &mut *monster;
-        crate::game::characters::tire(&mut monster.stamina, &mut monster.conditions, amount)
+    /// A monster's body, which magic and blows change.
+    pub fn vitals_mut(&mut self, monster: Entity) -> Mut<'_, Vitals> {
+        self.monsters.get_mut(monster).unwrap().5
     }
 
     /// Drain the current effective spell budget; only the change belongs to
@@ -196,15 +163,8 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         lost
     }
 
-    pub fn enchantments_mut(
-        &mut self,
-        entity: Entity,
-    ) -> Mut<'_, crate::game::magic::enchantments::Enchantments> {
-        self.monster_mut(entity).map_unchanged(|m| &mut m.enchantments)
-    }
-
     pub fn active(&self, target: Entity) -> bool {
-        self.monsters.get(target).is_ok_and(|(_, _, _, owner, _)| self.levels.contains(owner.0))
+        self.monsters.get(target).is_ok_and(|(_, _, _, owner, ..)| self.levels.contains(owner.0))
     }
 
     /// Whether magic may take a monster as a target or victim: in play,
@@ -213,8 +173,8 @@ impl<'w, 's> MonsterDamage<'w, 's> {
     /// `CollectMonstersWithinRadius`).
     pub fn targetable(&self, target: Entity) -> bool {
         self.active(target)
-            && self.monsters.get(target).is_ok_and(|(body, ..)| {
-                !body.is_dead() && !self.content.species[body.species].untargetable
+            && self.monsters.get(target).is_ok_and(|(body, .., vitals)| {
+                !vitals.is_dead() && !self.content.species[body.species].untargetable
             })
     }
 
@@ -228,23 +188,23 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         purse: &mut PartyInventory,
         rng: &mut GameRng,
     ) -> DamageOutcome {
-        let (mut monster, at, walker, owner, _) = self.monsters.get_mut(target).unwrap();
+        let (monster, at, walker, owner, _, mut vitals) = self.monsters.get_mut(target).unwrap();
         let level = owner.0;
         let catalogs = &self.content;
         let (catalog, tables) = (&catalogs.items, &catalogs.loot);
         let kind = &catalogs.species[monster.species];
         let (ids, factions, faction_news) =
             (&mut *self.ids, &mut *self.factions, &mut self.faction_news);
-        if monster.is_dead() || amount == 0 {
+        if vitals.is_dead() || amount == 0 {
             return DamageOutcome::default();
         }
-        let amount = monster.enchantments.absorb(amount);
+        let amount = vitals.enchantments.absorb(amount);
         if amount == 0 {
             return DamageOutcome::default();
         }
         let position = feet(at.translation(), walker);
-        let lost = amount.min(monster.hp);
-        monster.hp -= lost;
+        let lost = amount.min(vitals.health.current);
+        vitals.health.current -= lost;
         if lost > 0
             && let Ok(influence) = self.lures.get(target)
         {
@@ -259,11 +219,11 @@ impl<'w, 's> MonsterDamage<'w, 's> {
                 *goal = AgentTarget3d::None;
             }
         }
-        if !monster.is_dead() {
-            monster.conditions.wake_on_hit(u32::from(kind.attributes.senses), rng);
+        if !vitals.is_dead() {
+            vitals.conditions.wake_on_hit(u32::from(kind.attributes.senses), rng);
             return DamageOutcome { damage: lost, ..default() };
         }
-        monster.enchantments.0.clear();
+        vitals.enchantments.0.clear();
         // Stop autonomous work, not the body's geometry or vertical physics.
         // Structural removal is applied with this operation's loot commands,
         // before any following movement consumer can run.

@@ -602,7 +602,12 @@ fn entry_suspends_gameplay_and_departure_captures_the_source_at_commit() {
 
     // What the source holds at the commit is what is remembered.
     let world = app.world_mut();
-    world.query::<&mut Monster>().single_mut(world).unwrap().hp = 0;
+    world
+        .query_filtered::<&mut crate::game::characters::Vitals, With<Monster>>()
+        .single_mut(world)
+        .unwrap()
+        .health
+        .current = 0;
     world
         .resource_mut::<Assets<LevelDefinition>>()
         .insert(&loading, LevelDefinition { collision: floor(), ..default() })
@@ -662,7 +667,7 @@ fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
     // snapshot would resurrect this monster at the commit boundary.
     let monster =
         app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
-    app.world_mut().get_mut::<Monster>(monster).unwrap().hp = 0;
+    app.world_mut().get_mut::<crate::game::characters::Vitals>(monster).unwrap().health.current = 0;
     app.world_mut().resource_mut::<Assets<LevelDefinition>>().insert(&loading, geometry).unwrap();
     app.update();
     assert!(is_played(&app, destination));
@@ -793,9 +798,8 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
         npc.stock.lots[0].units = 2;
     }
     {
-        let mut body = app.world_mut().get_mut::<Monster>(body).unwrap();
-        body.hp = 4;
-        body.max_hp = 9;
+        let mut body = app.world_mut().get_mut::<crate::game::characters::Vitals>(body).unwrap();
+        body.health = crate::game::characters::Pool { current: 4, max: 9 };
     }
     // A merchant re-enters at authored quote zero even after its greeting was remembered.
     use crate::game::npcs::conversation::{self, Conversation, ConversationRequest, Talk};
@@ -863,7 +867,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert_eq!(app.world().get::<LevelOwned>(body).unwrap().0, replacement);
     assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(body).is_none());
     assert!(app.world().get::<Collider>(body).is_some());
-    assert_eq!(app.world().get::<Monster>(body).unwrap().hp, 4);
+    assert_eq!(app.world().get::<crate::game::characters::Vitals>(body).unwrap().health.current, 4);
     assert_eq!(app.world().get::<Npc>(actor).unwrap().stock, stock);
     let source = replacement;
     app.world_mut()
@@ -884,7 +888,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert!(app.world().get::<Monster>(actor).is_none());
     assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(body).is_some());
     assert_eq!(app.world().get::<NpcBodies>(actor).unwrap()[0], body);
-    assert_eq!(app.world().get::<Monster>(body).unwrap().hp, 4);
+    assert_eq!(app.world().get::<crate::game::characters::Vitals>(body).unwrap().health.current, 4);
     assert!(app.world().get::<Collider>(body).is_none());
     assert!(app.world().get::<avian3d::prelude::RigidBody>(body).is_none());
     assert!(
@@ -901,7 +905,10 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert_eq!(app.world().get::<LevelOwned>(returned_body).unwrap().0, back);
     assert!(app.world().get::<Collider>(returned_body).is_some());
     assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(returned_body).is_none());
-    assert_eq!(app.world().get::<Monster>(returned_body).unwrap().hp, 4);
+    assert_eq!(
+        app.world().get::<crate::game::characters::Vitals>(returned_body).unwrap().health.current,
+        4
+    );
     let group =
         app.world().get::<crate::game::world::identify::GroupMember>(returned_body).unwrap().0;
     assert_eq!(
@@ -1069,7 +1076,11 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     let party =
         app.world_mut().query_filtered::<Entity, With<Party>>().single(app.world()).unwrap();
     let afraid = (Condition::Afraid, Lasting::Rounds(3));
-    app.world_mut().get_mut::<Monster>(body).unwrap().conditions.inflict(afraid.0, afraid.1);
+    app.world_mut()
+        .get_mut::<crate::game::characters::Vitals>(body)
+        .unwrap()
+        .conditions
+        .inflict(afraid.0, afraid.1);
     let members = |app: &App| app.world().get::<PartyRoster>(party).unwrap().len();
 
     // Joining.
@@ -1129,8 +1140,8 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     assert!(app.world().get::<Disabled>(body).is_none());
     assert_eq!(app.world().get::<LevelOwned>(body).unwrap().0, elsewhere);
     assert_eq!(app.world().get::<NpcWorldRole>(body).unwrap().map, away_path);
-    let monster = app.world().get::<Monster>(body).unwrap();
-    assert!(monster.hp > 0);
+    let monster = app.world().get::<crate::game::characters::Vitals>(body).unwrap();
+    assert!(monster.health.current > 0);
     assert_eq!(monster.conditions, [afraid].into());
     let pool: Vec<_> = app
         .world()
@@ -1173,7 +1184,7 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     assert!(app.world().get::<Carried>(actor).unwrap().backpack[0].is_none());
 
     // Death and accepted travel share a frame: settle before retiring the source level.
-    app.world_mut().get_mut::<Vitals>(actor).unwrap().hp = 0;
+    app.world_mut().get_mut::<Vitals>(actor).unwrap().health.current = 0;
     let destination = spawn_level(&mut app, floor());
     app.update();
     assert!(is_played(&app, destination));

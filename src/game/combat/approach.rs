@@ -17,6 +17,7 @@ use bevy_landmass::prelude::*;
 use super::Combatant;
 use crate::content::species::{MonsterCatalog, Reach, Species};
 use crate::game::characters::Condition;
+use crate::game::characters::Vitals;
 use crate::game::party::body::PartyBody;
 use crate::game::world::navigation::Walker;
 use crate::game::world::population::Monster;
@@ -45,14 +46,14 @@ pub enum MoveGoal {
 /// Whether this living walker still needs to close to attack range. Combat's
 /// passive-round decision and navigation use the same current actor state.
 pub(super) fn needs_approach(
-    monster: &Monster,
+    (monster, vitals): (&Monster, &Vitals),
     origin: Vec3,
     walker: Option<&Walker>,
     party_eye: Vec3,
     species: &MonsterCatalog,
 ) -> bool {
     let Some(walker) = walker else { return false };
-    if monster.is_dead() || walker.speed <= 0.0 {
+    if vitals.is_dead() || walker.speed <= 0.0 {
         return false;
     }
     let kind = &species[monster.species];
@@ -72,31 +73,31 @@ pub(super) struct MoveBudget {
 /// `combat_move_range` × 20 metres, half again when charging (hurt, at 95%
 /// health or less), halved when slowed (retail `StepMonsterCombatAction`).
 pub(super) fn move_budget(
-    monster: &Monster,
+    (monster, vitals): (&Monster, &Vitals),
     origin: Vec3,
     walker: Option<&Walker>,
     party_eye: Vec3,
     species: &MonsterCatalog,
 ) -> Option<MoveBudget> {
-    if !needs_approach(monster, origin, walker, party_eye, species) {
+    if !needs_approach((monster, vitals), origin, walker, party_eye, species) {
         return None;
     }
     let kind = &species[monster.species];
-    let charge = monster.charges();
-    Some(MoveBudget { metres: move_metres(monster, kind, charge), charge })
+    let charge = vitals.charges();
+    Some(MoveBudget { metres: move_metres(vitals, kind, charge), charge })
 }
 
 /// How far a monster moves in one combat action (retail
 /// `SetUpMonsterTurn`): its move range, half again when charging, raised
 /// by Haste or halved when slowed.
-pub(super) fn move_metres(monster: &Monster, kind: &Species, charge: bool) -> f32 {
+pub(super) fn move_metres(vitals: &Vitals, kind: &Species, charge: bool) -> f32 {
     let mut budget = kind.combat_move_range * METRES_PER_MOVE_RANGE;
     if charge {
         budget *= 1.5;
     }
-    if let Some(haste) = monster.enchantments.get(crate::content::spells::SpellId::HASTE) {
+    if let Some(haste) = vitals.enchantments.get(crate::content::spells::SpellId::HASTE) {
         budget += kind.combat_move_range * METRES_PER_MOVE_RANGE * haste.power as f32 * 0.1;
-    } else if monster.conditions.has(Condition::Slowed) {
+    } else if vitals.conditions.has(Condition::Slowed) {
         budget *= 0.5;
     }
     budget
@@ -120,40 +121,57 @@ pub(super) const METRES_PER_MOVE_RANGE: f32 = 20.0;
 pub fn steer_moves(
     mut commands: Commands,
     party: Query<(Entity, &Position), With<PartyBody>>,
-    mut walkers: Query<(Entity, &Monster, ActorPose, &Walker, &mut AgentTarget3d, &CombatMove)>,
+    mut walkers: Query<(
+        Entity,
+        (&Monster, &Vitals),
+        ActorPose,
+        &Walker,
+        &mut AgentTarget3d,
+        &CombatMove,
+    )>,
     content: If<Res<crate::game::data::Catalogs>>,
-    targets: Query<(&Monster, ActorPose, Option<&Walker>)>,
+    targets: Query<(&Monster, &Vitals, ActorPose, Option<&Walker>)>,
 ) {
     let catalog = &content.species;
     let Ok((party, party_at)) = party.single() else { return };
     let party_eye = PartyBody::eye(party_at);
-    for (entity, monster, at, walker, mut target, movement) in &mut walkers {
+    for (entity, (monster, vitals), at, walker, mut target, movement) in &mut walkers {
         let (needs_move, heading) = match movement.goal {
             MoveGoal::Retreat(point) => (true, AgentTarget3d::Point(point)),
             MoveGoal::Party => (
-                needs_approach(monster, at.translation(), Some(walker), party_eye, catalog),
+                needs_approach(
+                    (monster, vitals),
+                    at.translation(),
+                    Some(walker),
+                    party_eye,
+                    catalog,
+                ),
                 AgentTarget3d::Entity(party),
             ),
             MoveGoal::Attack(entity) => {
-                let needed = targets.get(entity).is_ok_and(|(target, target_at, target_walker)| {
-                    let here = crate::game::world::navigation::feet(at.translation(), Some(walker));
-                    let there = crate::game::world::navigation::feet(
-                        target_at.translation(),
-                        target_walker,
-                    );
-                    let reach = catalog[monster.species]
-                        .attacks
-                        .iter()
-                        .map(|a| a.reach)
-                        .max()
-                        .unwrap_or(Reach::Touch)
-                        .metres();
-                    !target.is_dead() && monster.gap(here, target, there) > reach - REACH_MARGIN
-                });
+                let needed = targets.get(entity).is_ok_and(
+                    |(target, target_vitals, target_at, target_walker)| {
+                        let here =
+                            crate::game::world::navigation::feet(at.translation(), Some(walker));
+                        let there = crate::game::world::navigation::feet(
+                            target_at.translation(),
+                            target_walker,
+                        );
+                        let reach = catalog[monster.species]
+                            .attacks
+                            .iter()
+                            .map(|a| a.reach)
+                            .max()
+                            .unwrap_or(Reach::Touch)
+                            .metres();
+                        !target_vitals.is_dead()
+                            && monster.gap(here, target, there) > reach - REACH_MARGIN
+                    },
+                );
                 (needed, AgentTarget3d::Entity(entity))
             }
         };
-        let continues = monster.can_fight() && movement.moved < movement.budget && needs_move;
+        let continues = vitals.can_fight() && movement.moved < movement.budget && needs_move;
         let heading = if !continues {
             commands.entity(entity).remove::<CombatMove>();
             AgentTarget3d::None

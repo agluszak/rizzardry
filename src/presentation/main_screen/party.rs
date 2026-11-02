@@ -365,13 +365,13 @@ pub fn draw_party(
                     shown = !dead;
                     let amount = if matches!(part.kind, Part::HealthEmpty) {
                         crate::presentation::screen_art::vital_fill(
-                            vitals.hp,
-                            profile.stats(&vitals.enchantments).max_hp(),
+                            vitals.health.current,
+                            vitals.health.max,
                         )
                     } else {
                         crate::presentation::screen_art::vital_fill(
-                            vitals.stamina,
-                            profile.stats(&vitals.enchantments).max_stamina(),
+                            vitals.stamina.current,
+                            vitals.stamina.max,
                         )
                     };
                     let height = px(45 - amount);
@@ -414,7 +414,7 @@ pub fn draw_party(
                 Part::Name => value = Some(profile.name.clone()),
                 Part::HitPoints => {
                     shown = !dead;
-                    value = Some(vitals.hp.to_string());
+                    value = Some(vitals.health.current.to_string());
                 }
                 Part::Condition | Part::Enchantment => {
                     let plug = if slot.is_multiple_of(2) { "leftplug" } else { "rightplug" };

@@ -716,18 +716,16 @@ fn profession_title(profile: &Character) -> usize {
 
 fn draw_vitals(
     screen: Single<&InventoryScreen>,
-    members: Query<(&Character, &Vitals)>,
+    members: Query<&Vitals>,
     mut art: Query<(&VitalArt, Option<&VitalShade>, Option<&mut Node>, &mut Visibility)>,
 ) {
-    let (profile, vitals) = members.get(screen.member).unwrap();
+    let vitals = members.get(screen.member).unwrap();
     for (_, shade, node, mut visibility) in &mut art {
         visibility.set_if_neq(visible_if(!vitals.is_dead()));
         if let (Some(shade), Some(mut node)) = (shade, node) {
             let (current, maximum) = match shade {
-                VitalShade::Health => (vitals.hp, profile.stats(&vitals.enchantments).max_hp()),
-                VitalShade::Stamina => {
-                    (vitals.stamina, profile.stats(&vitals.enchantments).max_stamina())
-                }
+                VitalShade::Health => (vitals.health.current, vitals.health.max),
+                VitalShade::Stamina => (vitals.stamina.current, vitals.stamina.max),
             };
             let filled = super::screen_art::vital_fill(current, maximum);
             let height = px((45 - filled) as f32);

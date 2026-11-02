@@ -145,19 +145,9 @@ pub(crate) fn resolve(
         });
         let mut best = None;
         for victim in order {
-            let effect = match victim {
-                Victim::Member(entity) => {
-                    let (_, v, ..) = world.members.get(entity).unwrap();
-                    v.enchantments.get(SpellId::EYE_FOR_AN_EYE).filter(|_| !v.is_dead()).copied()
-                }
-                Victim::Monster(entity) => {
-                    let (body, ..) = world.monsters.monsters().get(entity).unwrap();
-                    body.enchantments
-                        .get(SpellId::EYE_FOR_AN_EYE)
-                        .filter(|_| !body.is_dead())
-                        .copied()
-                }
-            };
+            let v = world.vitals(victim);
+            let effect =
+                v.enchantments.get(SpellId::EYE_FOR_AN_EYE).filter(|_| !v.is_dead()).copied();
             if let Some(effect) = effect
                 && effect.power > best.map_or(0, |(_, power)| power)
             {
@@ -165,20 +155,7 @@ pub(crate) fn resolve(
             }
         }
         if let Some((charged, power)) = best {
-            match charged {
-                Victim::Member(entity) => {
-                    world
-                        .members
-                        .get_mut(entity)
-                        .unwrap()
-                        .1
-                        .enchantments
-                        .spend_charge(SpellId::EYE_FOR_AN_EYE);
-                }
-                Victim::Monster(entity) => {
-                    world.monsters.enchantments_mut(entity).spend_charge(SpellId::EYE_FOR_AN_EYE);
-                }
-            }
+            world.vitals_mut(charged).enchantments.spend_charge(SpellId::EYE_FOR_AN_EYE);
             landed.push(Effect::Reflected { victim: charged });
             let original = origin.owner();
             let old_position = origin.position(world, party_at);
@@ -311,12 +288,7 @@ pub(crate) fn resolve(
     if spell.id == SpellId::BOILING_BLOOD {
         let explosion = &spells[SpellId::BOILING_BLOOD_EXPLOSION];
         for &victim in &finish.victims {
-            let dead = match victim {
-                Victim::Member(entity) => world.members.get(entity).unwrap().1.is_dead(),
-                Victim::Monster(entity) => {
-                    world.monsters.monsters().get(entity).unwrap().0.is_dead()
-                }
-            };
+            let dead = world.vitals(victim).is_dead();
             if !dead {
                 continue;
             }

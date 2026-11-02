@@ -38,10 +38,11 @@ pub(crate) fn cast(
         return Err(Refusal::NoTarget);
     }
     let monster = world.get::<Monster>(body).unwrap();
+    let vitals = world.get::<crate::game::characters::Vitals>(body).unwrap();
     let kind = &world.resource::<crate::game::data::Catalogs>().species[monster.species];
     let (level, resistance, notice_chance) = (
         u32::from(kind.level),
-        monster.resistance(kind, Realm::Mental),
+        crate::game::world::population::resistance(kind, vitals, Realm::Mental),
         (u32::from(kind.attributes.senses) + u32::from(kind.attributes.intelligence)) / 2,
     );
     let (mut report, strength) =

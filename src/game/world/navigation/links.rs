@@ -155,7 +155,7 @@ pub fn use_reached_links(
             &ReachedAnimationLink3d,
             &super::Walker,
             &bevy_landmass::prelude::AgentTarget3d,
-            Option<&crate::game::world::population::Monster>,
+            Option<&crate::game::characters::Vitals>,
         ),
         (Without<UsingAnimationLink>, Without<Crossing>),
     >,
@@ -195,7 +195,7 @@ pub fn finish_crossings(
         &Crossing,
         crate::game::world::ActorPose,
         &super::Walker,
-        Option<&crate::game::world::population::Monster>,
+        Option<&crate::game::characters::Vitals>,
     )>,
 ) {
     for (entity, crossing, pose, walker, monster) in &walkers {

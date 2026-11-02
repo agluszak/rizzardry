@@ -10,12 +10,12 @@ use super::*;
 /// in one it needs the party within long reach and the summoner not on its
 /// side. Any other kind also needs an aim, which its caller finds.
 pub(super) fn special_ready(
-    monster: &Monster,
+    vitals: &Vitals,
     kind: &Species,
     cooling: bool,
     fighting: Option<(f32, hostility::Stance)>,
 ) -> bool {
-    let silenced = monster.conditions.has(Condition::Silenced);
+    let silenced = vitals.conditions.has(Condition::Silenced);
     kind.special.kind.is_some_and(|special| {
         let definition = crate::game::magic::effects::special(special);
         let summons = special.summons().is_none()
@@ -23,7 +23,7 @@ pub(super) fn special_ready(
                 nearest <= Reach::Long.metres() && stance != hostility::Stance::Friendly
             });
         !cooling
-            && monster.stamina >= monster.max_stamina / 10
+            && vitals.stamina.current >= vitals.stamina.max / 10
             && !(silenced && definition.silenced)
             && summons
     })
@@ -32,21 +32,15 @@ pub(super) fn special_ready(
 /// A member as a casting monster sees them, at the party's point
 /// `party` away.
 pub(super) fn member_in_scene(
-    (member, character, vitals): (Entity, &Character, &Vitals),
+    (member, vitals): (Entity, &Vitals),
     (party_at, party): (Vec3, f32),
     toward: &dyn Fn(crate::game::magic::effects::Victim) -> hostility::Stance,
 ) -> monster_spells::Someone {
-    let stats = character.stats(&vitals.enchantments);
     monster_spells::Someone {
         entity: member,
         at: party_at,
         from_caster: party,
-        standing: crate::game::magic::effects::Standing {
-            hurt: vitals.hp < stats.max_hp(),
-            tired: vitals.stamina < stats.max_stamina(),
-            conditions: vitals.conditions.clone(),
-            enchantments: vitals.enchantments.clone(),
-        },
+        vitals: vitals.clone(),
         stance: toward(crate::game::magic::effects::Victim::Member(member)),
     }
 }
@@ -78,7 +72,7 @@ pub(super) fn spell_scene<'a>(
     use crate::game::magic::effects::Victim;
     let party_eye = sight.eye;
     let party_at = PartyBody::feet_below(party_eye);
-    let (body, at, walker, ..) = monsters.get(caster).unwrap();
+    let (body, at, walker, .., caster_vitals) = monsters.get(caster).unwrap();
     let feet_at = feet(at.translation(), walker);
     let eye = body.eye(feet_at);
     let party = party_distance(party_eye, body, feet_at);
@@ -90,18 +84,16 @@ pub(super) fn spell_scene<'a>(
         from: feet_at,
         party_at,
         party,
-        sees_party: sight.sees(body, &at, walker, kind),
+        sees_party: sight.sees((body, caster_vitals), &at, walker, kind),
         members: party_members
             .filter(|(_, _, vitals)| !vitals.is_dead())
-            .map(|(member, character, vitals)| {
-                member_in_scene((member, character, vitals), (party_at, party), toward)
-            })
+            .map(|(member, _, vitals)| member_in_scene((member, vitals), (party_at, party), toward))
             .collect(),
         monsters: combatants
             .iter()
             .filter_map(|&entity| {
-                let (other, at, walker, ..) = monsters.get(entity).ok()?;
-                if other.is_dead() {
+                let (other, at, walker, .., vitals) = monsters.get(entity).ok()?;
+                if vitals.is_dead() {
                     return None;
                 }
                 let at = feet(at.translation(), walker);
@@ -112,7 +104,7 @@ pub(super) fn spell_scene<'a>(
                     entity,
                     at,
                     from_caster: body.gap(feet_at, other, at),
-                    standing: monster_spells::monster_standing(other),
+                    vitals: vitals.clone(),
                     stance: if entity == caster {
                         hostility::Stance::Friendly
                     } else {
