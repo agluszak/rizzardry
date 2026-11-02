@@ -340,12 +340,6 @@ impl Plugin for NpcPlugin {
                     .in_set(conversation::Conversing)
                     .after(GameplaySet::Combat),
             )
-            .add_systems(Update, recruit::settle_npc_members.before(GameplaySet::LevelActivation))
-            .add_systems(
-                FixedUpdate,
-                recruit::settle_npc_members
-                    .after(GameplaySet::Combat)
-                    .run_if(crate::game::world::level::level_active),
-            );
+            .add_observer(recruit::npc_member_falls);
     }
 }

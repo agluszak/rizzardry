@@ -211,6 +211,31 @@ pub fn quadrant(from: Vec3, yaw: f32, to: Vec3) -> Row {
     }
 }
 
+/// A member who dies gives up their seat, remembering its row (retail
+/// `UpdateFormationSlotState`).
+pub fn vacate_seat(
+    death: On<Add<crate::game::characters::Dead>>,
+    mut formations: Query<&mut Formation>,
+) {
+    let Ok(mut formation) = formations.single_mut() else { return };
+    if formation.row_of(death.entity).is_some() {
+        formation.update_seat(death.entity, true);
+    }
+}
+
+/// A member raised from the dead returns to their row when it has room, or
+/// is seated like a joiner.
+pub fn retake_seat(
+    life: On<Remove<crate::game::characters::Dead>>,
+    members: Query<(), With<super::roster::PartyMember>>,
+    mut formations: Query<&mut Formation>,
+) {
+    let Ok(mut formation) = formations.single_mut() else { return };
+    if members.contains(life.entity) {
+        formation.update_seat(life.entity, false);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

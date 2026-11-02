@@ -103,12 +103,14 @@ impl Plugin for CombatPlugin {
                 FixedUpdate,
                 (
                     crate::game::magic::deliver_spells,
+                    crate::game::characters::settle_deaths,
                     settle_defeat,
                     begin_round,
                     run_battle,
                     finish_round,
                     summon::summon,
                     // and again after the round's damage.
+                    crate::game::characters::settle_deaths,
                     settle_defeat,
                 )
                     .chain()

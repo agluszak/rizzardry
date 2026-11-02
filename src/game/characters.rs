@@ -1290,6 +1290,31 @@ impl Vitals {
     }
 }
 
+/// A body whose health has run out, a party member's or a monster's. What
+/// death brings about (a monster's loot, a member giving up their seat, an
+/// NPC member leaving) follows its addition, wherever the blow came from.
+#[derive(Component, Debug)]
+pub struct Dead;
+
+/// Mark the bodies whose health ran out as [`Dead`], and the raised as alive
+/// again. Death is settled here, once, for every way a body can be hurt.
+pub fn settle_deaths(
+    mut commands: Commands,
+    bodies: Query<(Entity, &Vitals, Has<Dead>), Changed<Vitals>>,
+) {
+    for (body, vitals, marked) in &bodies {
+        match (vitals.is_dead(), marked) {
+            (true, false) => {
+                commands.entity(body).insert(Dead);
+            }
+            (false, true) => {
+                commands.entity(body).remove::<Dead>();
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Keep members' maxima to their stats ([`Vitals::sync_maxima`]) once their
 /// profile or spells have changed, before gameplay reads them.
 pub fn sync_member_maxima(

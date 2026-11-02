@@ -136,7 +136,6 @@ fn damage_party(
     roster: Single<&PartyRoster>,
     mut members: Query<(&Character, &mut Vitals)>,
     mut rng: ResMut<GameRng>,
-    mut formation: Single<&mut crate::game::party::formation::Formation>,
     mut damage: MessageWriter<DamageApplied>,
     fight: Option<Single<Entity, With<crate::game::combat::Battle>>>,
 ) {
@@ -152,7 +151,6 @@ fn damage_party(
             crate::game::party::damage_member(
                 entity,
                 (profile, &mut member),
-                &mut formation,
                 (rolled, &mut fate),
                 &mut damage,
             );

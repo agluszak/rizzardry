@@ -799,7 +799,6 @@ fn sap(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -> Opt
     let lost = crate::game::party::drain_member(
         member,
         (&mut character, &mut vitals),
-        world.formation,
         (amount, &mut fate),
         world.party_damage,
     );
@@ -816,13 +815,7 @@ fn tire(world: &mut Field, victim: Victim, amount: u32) -> Effect {
 pub fn hurt(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -> Option<Effect> {
     match victim {
         Victim::Monster(monster) => {
-            let outcome = world.monsters.apply(
-                monster,
-                amount,
-                (world.party_level, world.now),
-                world.inventory,
-                rng,
-            );
+            let outcome = world.monsters.apply(monster, amount, rng);
             Some(Effect::Damaged { victim, outcome })
         }
         Victim::Member(member) => {
@@ -831,7 +824,6 @@ pub fn hurt(rng: &mut GameRng, world: &mut Field, victim: Victim, amount: u32) -
             let lost = crate::game::party::damage_member(
                 member,
                 (&character, &mut vitals),
-                world.formation,
                 (amount, &mut fate),
                 world.party_damage,
             );
@@ -1130,7 +1122,6 @@ fn perish(rng: &mut GameRng, world: &mut Field, victim: Victim) -> Option<Effect
     let lost = crate::game::party::kill_member(
         member,
         (&character, &mut vitals),
-        world.formation,
         &mut fate,
         world.party_damage,
     );
@@ -1435,7 +1426,6 @@ pub fn resolve(
                 (stats.attribute(Attribute::Piety) + stats.attribute(Attribute::Vitality)) >> 2;
             vitals.health.current = (vitals.health.max * share / 100).max(1);
             vitals.stamina.current = (vitals.stamina.max * share / 100).max(1);
-            world.formation.update_seat(member, false);
             Some(Effect::Raised { victim: v })
         }),
         Kind::Lifesteal | Kind::MightToMagic => {

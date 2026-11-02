@@ -35,6 +35,8 @@ fn app() -> App {
         .init_resource::<Assets<crate::game::world::navigation::WalkerMotionConfig>>()
         .init_resource::<LevelMemory>()
         .add_observer(give_bodies)
+        .add_observer(crate::game::world::damage::monster_died)
+        .add_systems(Update, crate::game::characters::settle_deaths.before(activate_level))
         .init_resource::<crate::game::factions::Factions>()
         .add_message::<crate::game::factions::FactionNews>()
         .init_resource::<ItemIds>()
@@ -522,15 +524,14 @@ fn direct_damage_settles_death_once() {
     let world = app.world_mut();
     let target = world.query_filtered::<Entity, With<Monster>>().single(world).unwrap();
     let hit = |world: &mut World| {
-        world
-            .run_system_once(
-                move |mut damage: MonsterDamage,
-                      mut purse: Single<&mut crate::game::inventory::PartyInventory>,
-                      mut rng: ResMut<GameRng>| {
-                    damage.apply(target, 10, (1, 0), &mut purse, &mut rng)
-                },
-            )
-            .unwrap()
+        let outcome = world
+            .run_system_once(move |mut damage: MonsterDamage, mut rng: ResMut<GameRng>| {
+                damage.apply(target, 10, &mut rng)
+            })
+            .unwrap();
+        // Death settles its consequences.
+        world.run_system_once(crate::game::characters::settle_deaths).unwrap();
+        outcome
     };
     use crate::game::world::navigation::{Walker, WalkerMotion, links::Crossing};
     use avian3d::prelude::{LinearVelocity, Position};
@@ -973,13 +974,11 @@ fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
     let body = app.world().get::<NpcBodies>(actor).unwrap()[0];
     let party =
         app.world_mut().query_filtered::<Entity, With<Party>>().single(app.world()).unwrap();
-    let strike = move |damage: MonsterDamage,
-                       mut purses: Query<&mut PartyInventory>,
-                       mut rng: ResMut<GameRng>| {
-        let mut damage = damage;
-        damage.apply(body, 1000, (1, 0), &mut purses.get_mut(party).unwrap(), &mut rng)
+    let strike = move |mut damage: MonsterDamage, mut rng: ResMut<GameRng>| {
+        damage.apply(body, 1000, &mut rng)
     };
     let killed = app.world_mut().run_system_once(strike).unwrap();
+    app.world_mut().run_system_once(crate::game::characters::settle_deaths).unwrap();
     assert!(killed.died);
     let npc = app.world().get::<Npc>(actor).unwrap();
     assert!(npc.dead);

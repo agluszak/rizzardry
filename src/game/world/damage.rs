@@ -40,12 +40,8 @@ pub struct DamageOutcome {
     pub experience: u32,
 }
 
-/// Monsters in play, changed only through its operations. [`apply`] is
-/// synchronous over the actual target and its owning level: it creates loot
-/// and transfers gold before returning a death outcome. Calling it again on
-/// the corpse produces no second reward or drop.
-///
-/// [`apply`]: MonsterDamage::apply
+/// Monsters in play, changed only through its operations. Hurting a corpse
+/// does nothing.
 #[derive(SystemParam)]
 pub struct MonsterDamage<'w, 's> {
     monsters: MonsterQuery<'w, 's>,
@@ -67,16 +63,9 @@ pub struct MonsterDamage<'w, 's> {
         ),
     >,
     levels: Query<'w, 's, (), With<Level>>,
-    /// The NPCs whose world roles are among the monsters.
-    npcs: (
-        Query<'w, 's, &'static crate::game::npcs::NpcBody>,
-        Query<'w, 's, (&'static mut crate::game::npcs::Npc, &'static crate::game::npcs::ActorId)>,
-    ),
     commands: Commands<'w, 's>,
     content: If<Res<'w, crate::game::data::Catalogs>>,
-    ids: ResMut<'w, ItemIds>,
-    factions: ResMut<'w, crate::game::factions::Factions>,
-    faction_news: MessageWriter<'w, crate::game::factions::FactionNews>,
+    factions: Res<'w, crate::game::factions::Factions>,
 }
 
 impl<'w, 's> MonsterDamage<'w, 's> {
@@ -178,23 +167,11 @@ impl<'w, 's> MonsterDamage<'w, 's> {
             })
     }
 
-    /// Hurt a monster at game time `now`; a kill drops its loot, pays its
-    /// gold into the party's purse and counts against its faction then.
-    pub fn apply(
-        &mut self,
-        target: Entity,
-        amount: u32,
-        (party_level, now): (u32, u64),
-        purse: &mut PartyInventory,
-        rng: &mut GameRng,
-    ) -> DamageOutcome {
-        let (monster, at, walker, owner, _, mut vitals) = self.monsters.get_mut(target).unwrap();
-        let level = owner.0;
-        let catalogs = &self.content;
-        let (catalog, tables) = (&catalogs.items, &catalogs.loot);
-        let kind = &catalogs.species[monster.species];
-        let (ids, factions, faction_news) =
-            (&mut *self.ids, &mut *self.factions, &mut self.faction_news);
+    /// Hurt a monster. What its death brings about follows when it is
+    /// marked [`Dead`](crate::game::characters::Dead) ([`monster_died`]).
+    pub fn apply(&mut self, target: Entity, amount: u32, rng: &mut GameRng) -> DamageOutcome {
+        let (monster, _, _, _, _, mut vitals) = self.monsters.get_mut(target).unwrap();
+        let kind = &self.content.species[monster.species];
         if vitals.is_dead() || amount == 0 {
             return DamageOutcome::default();
         }
@@ -202,7 +179,6 @@ impl<'w, 's> MonsterDamage<'w, 's> {
         if amount == 0 {
             return DamageOutcome::default();
         }
-        let position = feet(at.translation(), walker);
         let lost = amount.min(vitals.health.current);
         vitals.health.current -= lost;
         if lost > 0
@@ -224,48 +200,101 @@ impl<'w, 's> MonsterDamage<'w, 's> {
             return DamageOutcome { damage: lost, ..default() };
         }
         vitals.enchantments.0.clear();
-        // Stop autonomous work, not the body's geometry or vertical physics.
-        // Structural removal is applied with this operation's loot commands,
-        // before any following movement consumer can run.
-        let (targeting, controller, motor, velocity, navigation_velocity) =
-            self.motion.get_mut(target).unwrap();
-        if let Some(mut targeting) = targeting {
-            *targeting = AgentTarget3d::None;
+        let summoned = self.summoned.contains(target);
+        DamageOutcome {
+            damage: lost,
+            died: true,
+            experience: if summoned { 0 } else { kind.experience },
         }
-        if let Some(mut controller) = controller {
-            controller.basis = default();
-        }
-        if let Some(mut motor) = motor {
-            *motor = default();
-        }
-        if let Some(mut velocity) = velocity {
-            velocity.0 = Vec3::Y * velocity.y;
-        }
-        if let Some(mut velocity) = navigation_velocity {
-            velocity.velocity = Vec3::ZERO;
-        }
-        self.commands.entity(target).remove_with_requires::<Crossing>();
-        if self.summoned.contains(target) {
-            return DamageOutcome { damage: lost, died: true, experience: 0 };
-        }
-        // The kill counts against its faction (retail `RecordFactionOffense`).
-        if let Some(news) = factions.record_offence(kind.faction, kind.npc.is_some(), now) {
-            faction_news.write(news);
-        }
-        let npc = self.npcs.0.get(target).ok().and_then(|body| self.npcs.1.get_mut(body.0).ok());
-        let (found, gold) = match npc {
-            Some((mut npc, id)) => {
-                npc.dead = true;
-                crate::game::loot::npc_loot(&catalogs.npcs[id.npc()], tables, catalog, rng)
-            }
-            None => crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng),
-        };
-        if gold > 0 {
-            purse.gold += gold;
-        }
-        let items =
-            found.into_iter().map(|id| make_item(&catalog[id], ids, rng, false, false)).collect();
-        drop_loot(&mut self.commands, level, position, items, catalog);
-        DamageOutcome { damage: lost, died: true, experience: kind.experience }
     }
+}
+
+/// A monster has died: its autonomous work stops, and unless it was
+/// summoned its death counts against its faction (retail
+/// `RecordFactionOffense`), an NPC's body leaves the NPC dead for good, and
+/// it drops its loot and pays its gold into the party's purse.
+#[allow(clippy::too_many_arguments)]
+pub fn monster_died(
+    death: On<Add<crate::game::characters::Dead>>,
+    mut commands: Commands,
+    monsters: Query<(
+        &Monster,
+        ActorPose,
+        Option<&Walker>,
+        &LevelOwned,
+        Has<crate::game::magic::pointcasts::SummonedBy>,
+    )>,
+    mut motion: Query<(
+        Option<&mut AgentTarget3d>,
+        Option<&mut TnuaController<WalkerMotion>>,
+        Option<&mut TnuaMotor>,
+        Option<&mut LinearVelocity>,
+        Option<&mut Velocity3d>,
+    )>,
+    (bodies, mut npcs): (
+        Query<&crate::game::npcs::NpcBody>,
+        Query<(&mut crate::game::npcs::Npc, &crate::game::npcs::ActorId)>,
+    ),
+    (mut purse, roster, characters): (
+        Single<&mut PartyInventory>,
+        Single<&crate::game::party::roster::PartyRoster>,
+        Query<&crate::game::characters::Character>,
+    ),
+    content: If<Res<crate::game::data::Catalogs>>,
+    (mut ids, mut rng, mut factions, clock): (
+        ResMut<ItemIds>,
+        ResMut<GameRng>,
+        ResMut<crate::game::factions::Factions>,
+        Res<crate::game::time::GameClock>,
+    ),
+    mut faction_news: MessageWriter<crate::game::factions::FactionNews>,
+) {
+    let target = death.entity;
+    let Ok((monster, at, walker, owner, summoned)) = monsters.get(target) else { return };
+    // Stop autonomous work, not the body's geometry or vertical physics.
+    let (targeting, controller, motor, velocity, navigation_velocity) =
+        motion.get_mut(target).unwrap();
+    if let Some(mut targeting) = targeting {
+        *targeting = AgentTarget3d::None;
+    }
+    if let Some(mut controller) = controller {
+        controller.basis = default();
+    }
+    if let Some(mut motor) = motor {
+        *motor = default();
+    }
+    if let Some(mut velocity) = velocity {
+        velocity.0 = Vec3::Y * velocity.y;
+    }
+    if let Some(mut velocity) = navigation_velocity {
+        velocity.velocity = Vec3::ZERO;
+    }
+    commands.entity(target).remove_with_requires::<Crossing>();
+    if summoned {
+        return;
+    }
+    let (catalog, tables) = (&content.items, &content.loot);
+    let kind = &content.species[monster.species];
+    if let Some(news) = factions.record_offence(kind.faction, kind.npc.is_some(), clock.ms) {
+        faction_news.write(news);
+    }
+    let rng = &mut *rng;
+    let npc = bodies.get(target).ok().and_then(|body| npcs.get_mut(body.0).ok());
+    let (found, gold) = match npc {
+        Some((mut npc, id)) => {
+            npc.dead = true;
+            crate::game::loot::npc_loot(&content.npcs[id.npc()], tables, catalog, rng)
+        }
+        None => {
+            let party_level = crate::game::party::average_level(
+                roster.iter().map(|member| characters.get(member).unwrap().level()),
+            );
+            crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng)
+        }
+    };
+    purse.gold += gold;
+    let items =
+        found.into_iter().map(|id| make_item(&catalog[id], &mut ids, rng, false, false)).collect();
+    let position = feet(at.translation(), walker);
+    drop_loot(&mut commands, owner.0, position, items, catalog);
 }

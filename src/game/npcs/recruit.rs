@@ -17,7 +17,7 @@ use crate::game::inventory::{Carried, EquipSlot, Equipped, ItemIds, ItemStack, P
 use crate::game::magic::{LearnedSpells, SpellPoints};
 use crate::game::party::body::PartyBody;
 use crate::game::party::formation::Formation;
-use crate::game::party::roster::{Party, PartyMember, PartyRoster, the_party};
+use crate::game::party::roster::{PartyMember, PartyRoster, the_party};
 use crate::game::rng::GameRng;
 use crate::game::world::level::{Level, LevelOwned};
 use crate::game::world::population::Monster;
@@ -388,25 +388,18 @@ fn stand_beside_party(
 /// A member NPC that dies leaves the party at once (retail
 /// `UpdateNpcPartyMember`): its items go to the party, it is dead for good
 /// (retail `spawned`), and it never stands in the world again.
-pub fn settle_npc_members(world: &mut World) {
-    // Before a campaign begins there is no party to settle.
-    let Ok(party) = world.query_filtered::<Entity, With<Party>>().single(world) else { return };
-    let fallen: Vec<Entity> = world
-        .get::<PartyRoster>(party)
-        .unwrap()
-        .iter()
-        .filter(|&member| {
-            world.get::<Npc>(member).is_some() && world.get::<Vitals>(member).unwrap().is_dead()
-        })
-        .collect();
-    if fallen.is_empty() {
-        return;
-    }
-    let level = played_level(world);
-    for member in fallen {
+pub fn npc_member_falls(
+    death: On<Add<crate::game::characters::Dead>>,
+    members: Query<&PartyMember, With<Npc>>,
+    mut commands: Commands,
+) {
+    let member = death.entity;
+    let Ok(&PartyMember(party)) = members.get(member) else { return };
+    commands.queue(move |world: &mut World| {
+        let level = played_level(world);
         world.entity_mut(member).remove::<PartyMember>();
         world.get_mut::<Formation>(party).unwrap().unseat(member);
         world.get_mut::<Npc>(member).unwrap().dead = true;
         hand_over(world, member, level, |_| false);
-    }
+    });
 }
