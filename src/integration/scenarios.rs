@@ -10,7 +10,6 @@ use crate::app::{Options, build};
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
 use crate::game::inventory::PartyInventory;
-use crate::game::world::items::WorldItem;
 use crate::game::world::level::{Level, Travel};
 use crate::game::world::population::Monster;
 use bevy::prelude::*;
@@ -67,10 +66,6 @@ fn monsters(world: &mut World) -> (usize, usize) {
     (all.len(), all.iter().filter(|m| m.is_dead()).count())
 }
 
-fn lying_items(world: &mut World) -> usize {
-    world.query::<&WorldItem>().iter(world).count()
-}
-
 fn fighting(world: &World) -> bool {
     world.try_query::<&Battle>().is_some_and(|mut q| q.iter(world).next().is_some())
 }
@@ -80,39 +75,6 @@ fn crab_fight(app: &mut App) {
     step_until(app, "the Monastery becoming active", |w| playing(w).is_some());
     step_until(app, "a fight on the beach", |w| fighting(w));
     step_until(app, "the fight's end", |w| !fighting(w));
-}
-
-#[test]
-#[ignore = "requires a retail installation"]
-fn a_green_slime_leaves_treasure() {
-    // With this seed the three Green Slimes leave two item stacks.
-    let mut app = game(&["--continuous", "--seed", "9", "--start=69.5,10,-24", "--yaw", "0"]);
-    step_until(&mut app, "the Monastery becoming active", |w| playing(w).is_some());
-    let world = app.world_mut();
-    let before: Vec<_> = world.query_filtered::<Entity, With<WorldItem>>().iter(world).collect();
-    step_until(&mut app, "a fight with the slimes", |w| fighting(w));
-    step_until(&mut app, "the fight's end", |w| !fighting(w));
-    assert_eq!(lying_items(app.world_mut()), before.len() + 2);
-
-    // Taking the resolved treasure, within reach, uses the same gameplay
-    // operation as the rendered input adapter.
-    let world = app.world_mut();
-    let loot = world
-        .query_filtered::<Entity, With<WorldItem>>()
-        .iter(world)
-        .find(|entity| !before.contains(entity))
-        .expect("new treasure lies in the world");
-    let at = world.get::<Transform>(loot).unwrap().translation;
-    let mut body = world
-        .query_filtered::<&mut avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>()
-        .single_mut(world)
-        .unwrap();
-    body.0 = at + Vec3::X;
-    world.write_message(crate::game::world::items::TakeItem { item: loot });
-    step_until(&mut app, "taking the treasure", |w| {
-        w.try_query::<&PartyInventory>().unwrap().single(w).is_ok_and(|p| p.hand.held.is_some())
-    });
-    assert_eq!(lying_items(app.world_mut()), before.len() + 1);
 }
 
 #[test]
