@@ -648,7 +648,8 @@ fn check_item(
 fn check_moment(
     mut commands: Commands,
     casts: Query<(Entity, &Cast, &Chosen), (Without<Refused>, Without<Target>)>,
-    (content, definitions): (If<Res<Catalogs>>, Res<Definitions>),
+    content: If<Res<Catalogs>>,
+    definitions: Res<Definitions>,
 ) {
     for (cast, &Cast { spell, context }, chosen) in &casts {
         let definition = &content.spells[spell];
@@ -747,7 +748,8 @@ fn aim_party(
 /// equals.
 fn aimed(
     monsters: &[Candidate],
-    (eye, facing): (Vec3, Vec3),
+    eye: Vec3,
+    facing: Vec3,
     aim: Aim,
     spell: &SpellDefinition,
 ) -> Option<Candidate> {
@@ -771,7 +773,6 @@ fn aimed(
 
 /// An enemy spell lands on the monster aimed at; a blast is aimed at where
 /// it stands, its victims taken once its power is known ([`aim_blast`]).
-#[allow(clippy::too_many_arguments)]
 fn aim_enemy(
     mut commands: Commands,
     casts: Query<(Entity, &Cast, &CastBy, &Chosen), (Without<Refused>, Without<Target>)>,
@@ -790,7 +791,7 @@ fn aim_enemy(
         if !matches!(spell.targeting, Targeting::Enemy | Targeting::Radius) {
             continue;
         }
-        match aimed(&monsters, (eye, stand.1.forward()), chosen.0.aim, spell) {
+        match aimed(&monsters, eye, stand.1.forward(), chosen.0.aim, spell) {
             Some(target) => {
                 if spell.targeting == Targeting::Enemy {
                     reach(&mut commands, cast, &[(target.entity, None)]);
@@ -806,18 +807,15 @@ fn aim_enemy(
 
 /// A group spell lands on the monster aimed at and those of its group the
 /// spell reaches.
-#[allow(clippy::too_many_arguments)]
 fn aim_group(
     mut commands: Commands,
     casts: Query<(Entity, &Cast, &CastBy, &Chosen), (Without<Refused>, Without<Target>)>,
     mut bodies: Query<Body>,
     stand: Single<(&Position, &PartyBody)>,
     fight: Option<Single<&crate::game::combat::Combatants>>,
-    (levels, memberships, groups): (
-        Query<(), With<Level>>,
-        Query<&GroupMember>,
-        Query<&GroupMembers>,
-    ),
+    levels: Query<(), With<Level>>,
+    memberships: Query<&GroupMember>,
+    groups: Query<&GroupMembers>,
     obstacles: WorldObstacles,
     content: If<Res<Catalogs>>,
 ) {
@@ -828,7 +826,7 @@ fn aim_group(
         aiming(&casts, &content.spells, Targeting::EnemyGroup)
     {
         let spell = &content.spells[spell];
-        let Some(first) = aimed(&monsters, (eye, stand.1.forward()), chosen.0.aim, spell) else {
+        let Some(first) = aimed(&monsters, eye, stand.1.forward(), chosen.0.aim, spell) else {
             commands.entity(cast).insert(Refused(Refusal::NoTarget));
             continue;
         };
@@ -848,7 +846,6 @@ fn aim_group(
 }
 
 /// An all-enemies spell lands on every monster it reaches.
-#[allow(clippy::too_many_arguments)]
 fn aim_all(
     mut commands: Commands,
     casts: Query<(Entity, &Cast, &CastBy, &Chosen), (Without<Refused>, Without<Target>)>,
@@ -878,7 +875,6 @@ fn aim_all(
 
 /// A cone fans out from the party toward the monster aimed at, over every
 /// monster within its reach and arcs.
-#[allow(clippy::too_many_arguments)]
 fn aim_cone(
     mut commands: Commands,
     casts: Query<(Entity, &Cast, &CastBy, &Chosen), (Without<Refused>, Without<Target>)>,
@@ -894,7 +890,7 @@ fn aim_cone(
     let monsters = candidates(eye, combatants, &mut bodies, &levels, &content.species, &obstacles);
     for (cast, _, chosen, &Cast { spell, .. }) in aiming(&casts, &content.spells, Targeting::Cone) {
         let spell = &content.spells[spell];
-        let Some(target) = aimed(&monsters, (eye, stand.1.forward()), chosen.0.aim, spell) else {
+        let Some(target) = aimed(&monsters, eye, stand.1.forward(), chosen.0.aim, spell) else {
             commands.entity(cast).insert(Refused(Refusal::NoTarget));
             continue;
         };
@@ -973,14 +969,15 @@ fn refuse(
 /// The power a member's cast goes off at: an item's own; a learned spell's
 /// chosen power, or for an auto cast what its victim needs, within what the
 /// caster can afford now.
-#[allow(clippy::too_many_arguments)]
 fn choose_power(
     mut commands: Commands,
     casts: Query<(Entity, &Cast, &CastBy, &Chosen), (With<Target>, Without<Power>)>,
     bodies: Query<Body>,
     inventory: Single<&PartyInventory>,
-    (content, definitions): (If<Res<Catalogs>>, Res<Definitions>),
-    (effects, restoring): (Query<&Effects>, Query<(), Or<(With<Heal>, With<Refresh>)>>),
+    content: If<Res<Catalogs>>,
+    definitions: Res<Definitions>,
+    effects: Query<&Effects>,
+    restoring: Query<(), Or<(With<Heal>, With<Refresh>)>>,
 ) {
     for (cast, &Cast { spell, .. }, by, chosen) in &casts {
         let spell = &content.spells[spell];
@@ -1023,7 +1020,6 @@ fn choose_power(
 
 /// A blast takes whoever stands within its radius of where it lands, the
 /// party too if it is that close, but those on its caster's side.
-#[allow(clippy::too_many_arguments)]
 fn aim_blast(
     mut commands: Commands,
     casts: Query<
@@ -1032,26 +1028,25 @@ fn aim_blast(
     >,
     mut bodies: Query<Body>,
     party: Single<(&Position, &PartyRoster), With<PartyBody>>,
-    (levels, groups): (Query<(), With<Level>>, Query<&MonsterGroup>),
+    levels: Query<(), With<Level>>,
     obstacles: WorldObstacles,
     content: If<Res<Catalogs>>,
-    (factions, clock): (Res<Factions>, Res<GameClock>),
 ) {
     let (position, roster) = *party;
     let eye = PartyBody::eye(position);
     for (cast, &Cast { spell, .. }, by, target, power) in &casts {
         let spell = &content.spells[spell];
         let (Targeting::Radius, Some(centre)) = (spell.targeting, target.0) else { continue };
-        let caster_side = bodies.get(by.0).map_or(Stance::Friendly, |body| {
-            body.side(&content.species, (&groups, &factions, clock.ms))
-        });
+        let caster_side = bodies.get(by.0).map_or(Stance::Friendly, |body| body.side.0);
         let victims: Vec<_> = crate::game::hits::reach::radius(
-            (centre, centre, spell.radius + spell.radius_per_power * power.0 as f32),
+            centre,
+            centre,
+            spell.radius + spell.radius_per_power * power.0 as f32,
             Recipients::Opponents(caster_side),
             Some((eye, roster)),
             &mut bodies,
             &levels,
-            (&content.species, (&groups, &factions, clock.ms)),
+            &content.species,
             &obstacles,
         )
         .into_iter()
@@ -1064,14 +1059,14 @@ fn aim_blast(
 /// A spell aimed at enemies provokes those it is cast at, whatever the roll
 /// (retail `MakeTargetGroupHostile` as the action starts); a retry provokes
 /// nobody again.
-#[allow(clippy::too_many_arguments)]
 fn provoke(
     casts: Query<(&Cast, &DeedHits), (With<Chosen>, With<Power>, Without<Rolled>, Without<Retry>)>,
     reaches: Query<&Strikes, With<Reach>>,
     bodies: Query<Body>,
     mut groups: Query<&mut MonsterGroup>,
     content: If<Res<Catalogs>>,
-    (factions, clock): (Res<Factions>, Res<GameClock>),
+    factions: Res<Factions>,
+    clock: Res<GameClock>,
     mut provocations: MessageWriter<Provocation>,
 ) {
     for (&Cast { spell, .. }, hits) in &casts {
@@ -1080,7 +1075,7 @@ fn provoke(
         }
         for strikes in reaches.iter_many(hits.iter()).matched() {
             if let Ok(body) = bodies.get(strikes.0)
-                && body.provoke(&content.species, (&mut groups, &factions, clock.ms))
+                && body.provoke(&content.species, &mut groups, &factions, clock.ms)
             {
                 provocations.write(Provocation(strikes.0));
             }
@@ -1091,14 +1086,14 @@ fn provoke(
 /// A member's cast is rolled (retail `ExecuteCharacterSpellCast`,
 /// `CastItemSpell`): its failure chance and strength by the caster's skill
 /// or the item, and the cast's record begun.
-#[allow(clippy::too_many_arguments)]
 fn roll_member_casts(
     mut commands: Commands,
     casts: Query<(Entity, &Cast, &CastBy, &Chosen, &Power), (Without<Rolled>, Without<Refused>)>,
     bodies: Query<(&Character, &Carried)>,
     inventory: Single<&PartyInventory>,
     states: Query<&crate::game::world::triggers::LevelState, With<Level>>,
-    (content, difficulty): (If<Res<Catalogs>>, Res<Difficulty>),
+    content: If<Res<Catalogs>>,
+    difficulty: Res<Difficulty>,
     mut rng: ResMut<GameRng>,
 ) {
     let underwater = states.single().is_ok_and(|state| state.camera_sway);
@@ -1226,7 +1221,6 @@ fn pay_items(
 
 /// A fizzled cast does nothing; its record stays to be reported. An auto
 /// cast tries again while stamina and points last.
-#[allow(clippy::too_many_arguments)]
 fn fizzle(
     mut commands: Commands,
     casts: Query<(Entity, &Cast, &CastBy, Option<&Chosen>, &Rolled, Option<&DeedHits>)>,
@@ -1277,7 +1271,6 @@ fn eye_of(body: Entity, bodies: &mut Query<Body>, party_eye: Vec3) -> Vec3 {
 /// spell aimed at one victim on its caster, a wider one on the whole party.
 /// It comes from whom it was aimed at, or where it was to land, and is as
 /// strong as they are.
-#[allow(clippy::too_many_arguments)]
 fn backfire(
     mut commands: Commands,
     mut casts: Query<(
@@ -1291,7 +1284,8 @@ fn backfire(
         Option<&DeedHits>,
     )>,
     mut bodies: Query<Body>,
-    (memberships, groups): (Query<&GroupMember>, Query<&GroupMembers>),
+    memberships: Query<&GroupMember>,
+    groups: Query<&GroupMembers>,
     party: Single<(&Position, &PartyRoster), With<PartyBody>>,
     content: If<Res<Catalogs>>,
 ) {
@@ -1316,7 +1310,7 @@ fn backfire(
             }
             (Targeting::EnemyGroup, Aim::Monster(entity)) => {
                 let leader =
-                    crate::game::hits::spells::leader(entity, &mut bodies, (&memberships, &groups));
+                    crate::game::hits::spells::leader(entity, &mut bodies, &memberships, &groups);
                 (leader, eye_of(leader, &mut bodies, eye))
             }
             (Targeting::Radius | Targeting::Cone, _) => (caster, target.0.unwrap_or(eye)),
@@ -1345,21 +1339,18 @@ fn backfire(
 /// A monster's backfire turns on its side: a spell aimed at one victim on
 /// itself, a blast on its side around it, any other on the fight's monsters
 /// standing with it.
-#[allow(clippy::too_many_arguments)]
 fn backfire_monster(
     mut commands: Commands,
     casts: Query<(Entity, &Cast, &CastBy, &Power, &Rolled, Option<&DeedHits>), With<MonsterBudget>>,
     mut bodies: Query<Body>,
     fight: Option<Single<&crate::game::combat::Combatants>>,
     party: Single<(&Position, &PartyRoster), With<PartyBody>>,
-    (levels, groups): (Query<(), With<Level>>, Query<&MonsterGroup>),
+    levels: Query<(), With<Level>>,
     obstacles: WorldObstacles,
     content: If<Res<Catalogs>>,
-    (factions, clock): (Res<Factions>, Res<GameClock>),
 ) {
     let (position, roster) = *party;
     let eye = PartyBody::eye(position);
-    let sides = (&groups, &*factions, clock.ms);
     let combatants = fight.as_deref().map_or(&[][..], |fight| fight.entities());
     for (cast, &Cast { spell, .. }, by, power, rolled, hits) in &casts {
         if rolled.0 != Outcome::Backfired {
@@ -1372,26 +1363,26 @@ fn backfire_monster(
         let caster = by.0;
         let (side, centre, from) = {
             let body = bodies.get(caster).unwrap();
-            (body.side(&content.species, sides), body.feet(eye), body.eye(eye))
+            (body.side.0, body.feet(eye), body.eye(eye))
         };
         let victims: Vec<Entity> = match spell.targeting {
             Targeting::Caster | Targeting::Ally | Targeting::Enemy => vec![caster],
             Targeting::Radius => crate::game::hits::reach::radius(
-                (centre, from, spell.radius + spell.radius_per_power * power.0 as f32),
+                centre,
+                from,
+                spell.radius + spell.radius_per_power * power.0 as f32,
                 Recipients::Opponents(side).reversed(),
                 Some((eye, roster)),
                 &mut bodies,
                 &levels,
-                (&content.species, sides),
+                &content.species,
                 &obstacles,
             ),
             _ => combatants
                 .iter()
                 .copied()
                 .filter(|&other| {
-                    bodies.get(other).is_ok_and(|body| {
-                        !body.is_dead() && body.side(&content.species, sides) == side
-                    })
+                    bodies.get(other).is_ok_and(|body| !body.is_dead() && body.side.0 == side)
                 })
                 .collect(),
         };
@@ -1442,7 +1433,6 @@ fn launch(
 /// for an auto recast, the next cast once it has landed. A missile cast is
 /// reported as it leaves; its impacts when they land. In a fight it counts
 /// as an attack.
-#[allow(clippy::too_many_arguments)]
 fn release(
     mut commands: Commands,
     mut casts: Query<(
@@ -1454,7 +1444,9 @@ fn release(
     reaches: Query<&Strikes, With<Reach>>,
     mut bodies: Query<Body>,
     party: Single<&Position, With<PartyBody>>,
-    (content, definitions, leeches): (If<Res<Catalogs>>, Res<Definitions>, Query<&Leeches>),
+    content: If<Res<Catalogs>>,
+    definitions: Res<Definitions>,
+    leeches: Query<&Leeches>,
     mut battle: Option<Single<&mut crate::game::combat::Battle>>,
     mut news: MessageWriter<MagicNews>,
 ) {
@@ -1543,7 +1535,6 @@ pub(crate) fn cast_source(
 
 /// A utility or device cast's source, revalidated, rolled and paid at once:
 /// retail counts these as having done something even when they fizzle.
-#[allow(clippy::too_many_arguments)]
 fn perform_utility(
     In((caster, source, context)): In<(Entity, Source, UseContext)>,
     mut bodies: Query<Body>,
@@ -1616,7 +1607,7 @@ fn perform_utility(
     let skills = practice(&character, spell, power, item.map(|item| item.definition));
     let character = body.character.as_mut().unwrap();
     let mut report = report;
-    report.improved.extend(practise((caster, character), &skills, &mut rng));
+    report.improved.extend(practise(caster, character, &skills, &mut rng));
     Ok((report, strength))
 }
 
@@ -1675,7 +1666,8 @@ fn practice(
 
 /// Practise a cast's skills; the ones that improved.
 fn practise(
-    (caster, character): (Entity, &mut Character),
+    caster: Entity,
+    character: &mut Character,
     skills: &[(Skill, u32)],
     rng: &mut GameRng,
 ) -> Vec<(Entity, Skill)> {
@@ -1697,7 +1689,7 @@ pub fn practise_casts(
             continue;
         }
         let Ok(mut character) = characters.get_mut(practice.caster) else { continue };
-        let improved = practise((practice.caster, &mut character), &practice.skills, &mut rng);
+        let improved = practise(practice.caster, &mut character, &practice.skills, &mut rng);
         deed.improved.extend(improved);
     }
 }
@@ -1745,14 +1737,15 @@ pub fn recast(
 pub fn usable_items(
     character: &Character,
     carried: &Carried,
-    (items, definitions): (&crate::content::items::ItemCatalog, &Definitions),
+    items: &crate::content::items::ItemCatalog,
+    definitions: &Definitions,
 ) -> Vec<(StackId, SpellId)> {
     carried
         .stacks()
         .filter_map(|stack| {
             let worn =
                 carried.active_equipment().any(|(_, equipped)| equipped.stack.id == stack.id);
-            Some((stack.id, usable_stack(character, stack, (items, definitions), worn)?))
+            Some((stack.id, usable_stack(character, stack, items, definitions, worn)?))
         })
         .collect()
 }
@@ -1763,7 +1756,8 @@ pub fn usable_items(
 pub fn usable_stack(
     character: &Character,
     stack: &crate::game::inventory::ItemStack,
-    (items, definitions): (&crate::content::items::ItemCatalog, &Definitions),
+    items: &crate::content::items::ItemCatalog,
+    definitions: &Definitions,
     worn: bool,
 ) -> Option<SpellId> {
     let definition = &items[stack.item];

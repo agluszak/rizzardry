@@ -55,7 +55,8 @@ fn flee_chance(
 /// earlier round; it is updated. `nearest` is how far the party is.
 pub(super) fn decide(
     rng: &mut GameRng,
-    (monster, vitals): (&Monster, &Vitals),
+    monster: &Monster,
+    vitals: &Vitals,
     kind: &Species,
     stance: Stance,
     fleeing: &mut bool,
@@ -126,7 +127,10 @@ pub(super) fn interrupt(
     rng: &mut GameRng,
     vitals: &Vitals,
     kind: &Species,
-    (fleeing, strikes_friend, berserk, against_foes): (bool, bool, bool, bool),
+    fleeing: bool,
+    strikes_friend: bool,
+    berserk: bool,
+    against_foes: bool,
 ) -> Option<Interrupt> {
     use crate::game::characters::Condition;
     let has = |condition| vitals.conditions.has(condition);
@@ -192,17 +196,17 @@ pub(super) mod tests {
         let (_, mut webbed) = monster(100);
         webbed.conditions.inflict(Condition::Webbed, Lasting::Rounds(3));
         assert_eq!(
-            interrupt(&mut rng, &webbed, &kind, (false, false, false, true)),
+            interrupt(&mut rng, &webbed, &kind, false, false, false, true),
             Some(Interrupt::Webbed)
         );
-        assert_eq!(interrupt(&mut rng, &monster(100).1, &kind, (false, false, false, true)), None);
+        assert_eq!(interrupt(&mut rng, &monster(100).1, &kind, false, false, false, true), None);
         let (_, mut turned) = monster(100);
         turned.conditions.inflict(Condition::Turncoat, Lasting::Rounds(3));
         assert_eq!(
-            interrupt(&mut rng, &turned, &kind, (false, false, false, true)),
+            interrupt(&mut rng, &turned, &kind, false, false, false, true),
             Some(Interrupt::Turncoat)
         );
-        assert_eq!(interrupt(&mut rng, &turned, &kind, (false, false, false, false)), None);
+        assert_eq!(interrupt(&mut rng, &turned, &kind, false, false, false, false), None);
     }
 
     /// A craven species without its own chance always runs, and keeps
@@ -218,7 +222,8 @@ pub(super) mod tests {
         assert_eq!(
             decide(
                 &mut rng,
-                (&monster(100).0, &monster(100).1),
+                &monster(100).0,
+                &monster(100).1,
                 &steady,
                 hostile,
                 &mut fleeing,
@@ -229,7 +234,8 @@ pub(super) mod tests {
         assert_eq!(
             decide(
                 &mut rng,
-                (&monster(100).0, &monster(100).1),
+                &monster(100).0,
+                &monster(100).1,
                 &craven,
                 hostile,
                 &mut fleeing,
@@ -240,26 +246,12 @@ pub(super) mod tests {
         assert!(fleeing);
         let brave = Species { temper: Temper { flee_chance: 0, ..default() }, ..default() };
         assert_eq!(
-            decide(
-                &mut rng,
-                (&monster(100).0, &monster(100).1),
-                &brave,
-                hostile,
-                &mut fleeing,
-                10.0
-            ),
+            decide(&mut rng, &monster(100).0, &monster(100).1, &brave, hostile, &mut fleeing, 10.0),
             Conduct::Flee,
             "a flight goes on"
         );
         assert_eq!(
-            decide(
-                &mut rng,
-                (&monster(100).0, &monster(100).1),
-                &brave,
-                hostile,
-                &mut fleeing,
-                3.0
-            ),
+            decide(&mut rng, &monster(100).0, &monster(100).1, &brave, hostile, &mut fleeing, 3.0),
             Conduct::Fight,
             "cornered"
         );
@@ -268,7 +260,8 @@ pub(super) mod tests {
         assert_eq!(
             decide(
                 &mut rng,
-                (&monster(100).0, &monster(100).1),
+                &monster(100).0,
+                &monster(100).1,
                 &steady,
                 neutral,
                 &mut fleeing,
@@ -280,7 +273,8 @@ pub(super) mod tests {
         assert_eq!(
             decide(
                 &mut rng,
-                (&monster(100).0, &monster(100).1),
+                &monster(100).0,
+                &monster(100).1,
                 &hidden,
                 neutral,
                 &mut fleeing,
@@ -290,11 +284,11 @@ pub(super) mod tests {
         );
         let npc = Species { npc: Some(crate::content::npcs::NpcId(1)), ..default() };
         assert_eq!(
-            decide(&mut rng, (&monster(30).0, &monster(30).1), &npc, neutral, &mut fleeing, 10.0),
+            decide(&mut rng, &monster(30).0, &monster(30).1, &npc, neutral, &mut fleeing, 10.0),
             Conduct::Flee
         );
         assert_eq!(
-            decide(&mut rng, (&monster(30).0, &monster(30).1), &npc, hostile, &mut false, 10.0),
+            decide(&mut rng, &monster(30).0, &monster(30).1, &npc, hostile, &mut false, 10.0),
             Conduct::Fight
         );
     }

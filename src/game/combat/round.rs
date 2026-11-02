@@ -177,7 +177,8 @@ pub(super) fn accept_round(
     members: &Members,
     orders: &Query<&Order>,
     monsters: &MonsterQuery,
-    (items, species): (&ItemCatalog, &MonsterCatalog),
+    items: &ItemCatalog,
+    species: &MonsterCatalog,
     rng: &mut GameRng,
 ) {
     use crate::content::characters::{Skill, Trait};

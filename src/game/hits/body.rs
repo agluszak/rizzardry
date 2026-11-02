@@ -23,7 +23,7 @@ use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyMember;
 use crate::game::rng::GameRng;
 use crate::game::world::ActorPose;
-use crate::game::world::hostility::{self, Stance};
+use crate::game::world::hostility::{self, Side, Stance};
 use crate::game::world::identify::{GroupMember, MonsterGroup};
 use crate::game::world::level::{Level, LevelOwned};
 use crate::game::world::navigation::{Walker, feet};
@@ -51,6 +51,8 @@ pub struct Body {
     pub pose: Option<ActorPose>,
     pub walker: Option<&'static Walker>,
     pub level: Option<&'static LevelOwned>,
+    /// Which side it is on toward the party now.
+    pub side: &'static Side,
 }
 
 /// Retail's marker for a condition without end (`W8_CONDITION_INDEFINITE`),
@@ -182,7 +184,9 @@ impl BodyReadOnlyItem<'_, '_> {
     pub fn provoke(
         &self,
         species: &MonsterCatalog,
-        (groups, factions, now): (&mut Query<&mut MonsterGroup>, &Factions, u64),
+        groups: &mut Query<&mut MonsterGroup>,
+        factions: &Factions,
+        now: u64,
     ) -> bool {
         let Some(monster) = &self.monster else { return false };
         if self.is_dead() || self.vitals.conditions.has(Condition::Turncoat) {
@@ -213,7 +217,9 @@ impl BodyReadOnlyItem<'_, '_> {
     pub fn resistance(
         &self,
         realm: Realm,
-        (items, species, party): (&ItemCatalog, &MonsterCatalog, &Enchantments),
+        items: &ItemCatalog,
+        species: &MonsterCatalog,
+        party: &Enchantments,
     ) -> i32 {
         match (&self.character, &self.carried, &self.monster) {
             (Some(character), Some(carried), _) => {
@@ -234,34 +240,17 @@ impl BodyReadOnlyItem<'_, '_> {
         }
     }
 
-    /// Its stance toward the party at `now`: a member's side is the party's,
-    /// a monster's its group's, and Turncoat swaps either.
-    pub fn side(
-        &self,
-        species: &MonsterCatalog,
-        (groups, factions, now): (&Query<&MonsterGroup>, &Factions, u64),
-    ) -> Stance {
-        let own = match &self.monster {
-            Some(monster) => {
-                let set =
-                    self.group.and_then(|member| groups.get(member.0).ok()).and_then(|g| g.set);
-                hostility::stance(set, &species[monster.species], factions, now, self.fighting)
-            }
-            None => Stance::Friendly,
-        };
-        hostility::own_stance(own, self.vitals.conditions.has(Condition::Turncoat))
-    }
-
     pub fn defence(
         &self,
         realm: Realm,
-        (items, species, party): (&ItemCatalog, &MonsterCatalog, &Enchantments),
-        sides: (&Query<&MonsterGroup>, &Factions, u64),
+        items: &ItemCatalog,
+        species: &MonsterCatalog,
+        party: &Enchantments,
     ) -> Defence {
         Defence {
             level: self.level(species),
-            resistance: self.resistance(realm, (items, species, party)),
-            side: self.side(species, sides),
+            resistance: self.resistance(realm, items, species, party),
+            side: self.side.0,
         }
     }
 
@@ -317,7 +306,8 @@ impl BodyItem<'_, '_> {
         &mut self,
         rng: &mut GameRng,
         defence: &Defence,
-        (base, against): (i32, u32),
+        base: i32,
+        against: u32,
         difficulty: Difficulty,
     ) -> (bool, Option<Skill>) {
         let chance = condition_chance(defence.level, defence.resistance, against, base);
@@ -337,7 +327,8 @@ impl BodyItem<'_, '_> {
         &mut self,
         amount: u32,
         rng: &mut GameRng,
-        (species, fight): (&MonsterCatalog, Option<Entity>),
+        species: &MonsterCatalog,
+        fight: Option<Entity>,
     ) -> u32 {
         if let Some(character) = &self.character {
             let lost = self.vitals.damage(character, amount, &mut Fate { fight, rng: &mut *rng });
@@ -380,7 +371,8 @@ impl BodyItem<'_, '_> {
     pub fn slay(
         &mut self,
         rng: &mut GameRng,
-        (species, fight): (&MonsterCatalog, Option<Entity>),
+        species: &MonsterCatalog,
+        fight: Option<Entity>,
     ) -> u32 {
         let had = self.vitals.health.current;
         if let Some(character) = &self.character {
@@ -391,14 +383,15 @@ impl BodyItem<'_, '_> {
             .enchantments
             .0
             .retain(|e| e.spell != crate::content::spells::SpellId::GUARDIAN_ANGEL);
-        self.hurt(had, rng, (species, fight))
+        self.hurt(had, rng, species, fight)
     }
 
     /// Give it a condition for `lasting`. Only a member's poison bites by a
     /// strength; one standing neutral cannot be turned. Whether it took.
     pub fn inflict(
         &mut self,
-        (condition, poison): (Condition, u32),
+        condition: Condition,
+        poison: u32,
         lasting: Lasting,
         side: Stance,
     ) -> bool {
@@ -418,7 +411,8 @@ impl BodyItem<'_, '_> {
         &mut self,
         amount: u32,
         rng: &mut GameRng,
-        (spells, species): (&SpellCatalog, &MonsterCatalog),
+        spells: &SpellCatalog,
+        species: &MonsterCatalog,
     ) -> u32 {
         let maximum = match (&self.character, &self.magic) {
             (Some(character), Some((learned, _))) => {
@@ -445,10 +439,12 @@ pub fn wound(
     body: &mut BodyItem,
     amount: u32,
     rng: &mut GameRng,
-    (species, fight): (&MonsterCatalog, Option<Entity>),
-    (commands, notices): (&mut Commands, &mut MessageWriter<crate::game::party::DamageApplied>),
+    species: &MonsterCatalog,
+    fight: Option<Entity>,
+    commands: &mut Commands,
+    notices: &mut MessageWriter<crate::game::party::DamageApplied>,
 ) -> super::Effect {
-    let lost = body.hurt(amount, rng, (species, fight));
+    let lost = body.hurt(amount, rng, species, fight);
     let died = body.is_dead() && lost > 0;
     if body.character.is_some() && lost > 0 {
         notices.write(crate::game::party::DamageApplied {

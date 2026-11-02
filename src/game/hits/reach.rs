@@ -5,10 +5,8 @@ use bevy::prelude::*;
 
 use super::Body;
 use crate::content::species::MonsterCatalog;
-use crate::game::factions::Factions;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::hostility::Stance;
-use crate::game::world::identify::MonsterGroup;
 use crate::game::world::level::Level;
 use crate::game::world::obstacles::WorldObstacles;
 
@@ -42,12 +40,14 @@ impl Recipients {
 /// line to: the party's members, when the party stands within it, then the
 /// targetable monsters in their placement order.
 pub fn radius(
-    (centre, origin, radius): (Vec3, Vec3, f32),
+    centre: Vec3,
+    origin: Vec3,
+    radius: f32,
     recipients: Recipients,
     party: Option<(Vec3, &PartyRoster)>,
     bodies: &mut Query<Body>,
     levels: &Query<(), With<Level>>,
-    (species, sides): (&MonsterCatalog, (&Query<&MonsterGroup>, &Factions, u64)),
+    species: &MonsterCatalog,
     obstacles: &WorldObstacles,
 ) -> Vec<Entity> {
     if radius <= 0.0 {
@@ -61,7 +61,7 @@ pub fn radius(
     {
         for member in roster.iter() {
             let body = bodies.get(member).unwrap();
-            if !body.is_dead() && recipients.admits(body.side(species, sides)) {
+            if !body.is_dead() && recipients.admits(body.side.0) {
                 victims.push(member);
             }
         }
@@ -73,7 +73,7 @@ pub fn radius(
             let at = body.pose.as_ref()?.translation();
             (body.member_of.is_none()
                 && body.targetable(levels, species)
-                && recipients.admits(body.side(species, sides))
+                && recipients.admits(body.side.0)
                 && at.distance(centre) - monster.body.radius <= radius
                 && clear(at))
             .then_some((monster.location, body.entity))

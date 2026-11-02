@@ -595,12 +595,12 @@ fn offers<'a>(
                 .stacks
                 .iter()
                 .filter_map(|stack| {
-                    let spell = usable_stack(character, stack, (items, definitions), false)?;
+                    let spell = usable_stack(character, stack, items, definitions, false)?;
                     Some((Source::PoolItem(stack.id), stack, spell))
                 })
                 .collect()
         } else {
-            usable_items(character, carried, (items, definitions))
+            usable_items(character, carried, items, definitions)
                 .into_iter()
                 .filter_map(|(id, spell)| Some((Source::Item(id), carried.find_stack(id)?, spell)))
                 .collect()

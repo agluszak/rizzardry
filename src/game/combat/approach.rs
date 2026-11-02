@@ -46,7 +46,8 @@ pub enum MoveGoal {
 /// Whether this living walker still needs to close to attack range. Combat's
 /// passive-round decision and navigation use the same current actor state.
 pub(super) fn needs_approach(
-    (monster, vitals): (&Monster, &Vitals),
+    monster: &Monster,
+    vitals: &Vitals,
     origin: Vec3,
     walker: Option<&Walker>,
     party_eye: Vec3,
@@ -73,13 +74,14 @@ pub(super) struct MoveBudget {
 /// `combat_move_range` × 20 metres, half again when charging (hurt, at 95%
 /// health or less), halved when slowed (retail `StepMonsterCombatAction`).
 pub(super) fn move_budget(
-    (monster, vitals): (&Monster, &Vitals),
+    monster: &Monster,
+    vitals: &Vitals,
     origin: Vec3,
     walker: Option<&Walker>,
     party_eye: Vec3,
     species: &MonsterCatalog,
 ) -> Option<MoveBudget> {
-    if !needs_approach((monster, vitals), origin, walker, party_eye, species) {
+    if !needs_approach(monster, vitals, origin, walker, party_eye, species) {
         return None;
     }
     let kind = &species[monster.species];
@@ -139,13 +141,7 @@ pub fn steer_moves(
         let (needs_move, heading) = match movement.goal {
             MoveGoal::Retreat(point) => (true, AgentTarget3d::Point(point)),
             MoveGoal::Party => (
-                needs_approach(
-                    (monster, vitals),
-                    at.translation(),
-                    Some(walker),
-                    party_eye,
-                    catalog,
-                ),
+                needs_approach(monster, vitals, at.translation(), Some(walker), party_eye, catalog),
                 AgentTarget3d::Entity(party),
             ),
             MoveGoal::Attack(entity) => {

@@ -71,6 +71,14 @@ impl Plugin for CombatPlugin {
             .add_message::<GiveOrder>()
             .add_message::<engage::Engaged>()
             .init_resource::<CombatSettings>()
+            // Every body's side is judged at the start of the frame, before
+            // magic is accepted and cast, and again on each fight step.
+            .add_systems(
+                Update,
+                hostility::judge_sides
+                    .after(GameplaySet::Burden)
+                    .before(crate::game::magic::accept_magic),
+            )
             .add_observer(approach::end_move)
             .add_observer(approach::stop_walking)
             .add_systems(
@@ -100,6 +108,7 @@ impl Plugin for CombatPlugin {
                 FixedUpdate,
                 (
                     (
+                        hostility::judge_sides,
                         crate::game::characters::settle_deaths,
                         settle_defeat,
                         begin_round,
@@ -489,16 +498,18 @@ pub fn begin_round(
     time: Res<Time>,
     battle: Option<Single<(&mut Battle, Option<&Combatants>)>>,
     mut rng: ResMut<GameRng>,
-    (mut members, damage): (Members, MonsterDamage),
-    (roster, orders, settings): (Single<&PartyRoster>, Query<&Order>, Res<CombatSettings>),
+    mut members: Members,
+    damage: MonsterDamage,
+    roster: Single<&PartyRoster>,
+    orders: Query<&Order>,
+    settings: Res<CombatSettings>,
     mut turns: Query<&mut PartyTurn>,
     content: If<Res<Catalogs>>,
-    (in_flight, moving): (
-        Query<(), With<crate::game::hits::effects::InFlight>>,
-        Query<(), With<approach::CombatMove>>,
-    ),
+    in_flight: Query<(), With<crate::game::hits::effects::InFlight>>,
+    moving: Query<(), With<approach::CombatMove>>,
     mut news: MessageWriter<CombatNews>,
-    (mut starts, mut moves): (MessageReader<StartRound>, MessageReader<CyclePartyMove>),
+    mut starts: MessageReader<StartRound>,
+    mut moves: MessageReader<CyclePartyMove>,
 ) {
     let Some((mut battle, combatants)) = battle.map(Single::into_inner) else {
         starts.clear();
@@ -519,7 +530,7 @@ pub fn begin_round(
     // Starting the round while the party moves ends its move (retail
     // `MGSKeyboard.cpp:568-573`).
     if start && matches!(battle.party_move, PartyMove::Moving { .. }) {
-        finish_party_move(&mut battle, &mut rng, (&roster, &mut members, &mut turns));
+        finish_party_move(&mut battle, &mut rng, &roster, &mut members, &mut turns);
         news.write(CombatNews::PartyStops);
     }
     let (items, species) = (&content.items, &content.species);
@@ -533,7 +544,8 @@ pub fn begin_round(
             &members,
             &orders,
             damage.monsters(),
-            (items, species),
+            items,
+            species,
             rng,
         )
     };
@@ -564,14 +576,14 @@ pub fn begin_round(
 fn call_actor(
     mut commands: Commands,
     battle: Option<Single<(&mut Battle, Option<&Combatants>)>>,
-    (roster, party_body): (Single<&PartyRoster>, Single<&Position, With<PartyBody>>),
+    roster: Single<&PartyRoster>,
+    party_body: Single<&Position, With<PartyBody>>,
     vitals: Query<&Vitals>,
-    (party_turns, monster_turns): (Query<&PartyTurn>, Query<&MonsterTurn>),
-    (in_flight, moving, acting): (
-        Query<(), With<crate::game::hits::effects::InFlight>>,
-        Query<(), With<approach::CombatMove>>,
-        Query<(), With<Acting>>,
-    ),
+    party_turns: Query<&PartyTurn>,
+    monster_turns: Query<&MonsterTurn>,
+    in_flight: Query<(), With<crate::game::hits::effects::InFlight>>,
+    moving: Query<(), With<approach::CombatMove>>,
+    acting: Query<(), With<Acting>>,
     mut news: MessageWriter<CombatNews>,
 ) {
     let Some((mut battle, combatants)) = battle.map(Single::into_inner) else { return };

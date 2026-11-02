@@ -28,15 +28,12 @@ use crate::content::spells::SpellId;
 use crate::game::characters::{Condition, Lasting};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
-use crate::game::factions::Factions;
 use crate::game::inventory::PartyInventory;
 use crate::game::magic::Strength;
 use crate::game::magic::enchantments::{Enchantment, Enchantments, PartyEffects};
 use crate::game::party::DamageApplied;
 use crate::game::rng::GameRng;
-use crate::game::time::GameClock;
 use crate::game::world::damage::DamageOutcome;
-use crate::game::world::identify::MonsterGroup;
 
 /// A missile still on its way.
 #[derive(Component, Debug)]
@@ -287,10 +284,11 @@ pub fn immunities(
 fn defence(
     body: &BodyReadOnlyItem,
     realm: Realm,
-    (items, species, party): (&ItemCatalog, &MonsterCatalog, &Enchantments),
-    sides: (&Query<&MonsterGroup>, &Factions, u64),
+    items: &ItemCatalog,
+    species: &MonsterCatalog,
+    party: &Enchantments,
 ) -> body::Defence {
-    body.defence(realm, (items, species, party), sides)
+    body.defence(realm, items, species, party)
 }
 
 /// The strength an effect is saved against and resisted at: its act's,
@@ -302,7 +300,6 @@ fn against(strengths: &Query<&Strength>, act: Entity, half: bool) -> u32 {
 
 /// A living body may save against an effect outright (retail
 /// `TargetResistsCondition`); a member who saves practises Iron Will.
-#[allow(clippy::too_many_arguments)]
 pub fn saves(
     mut commands: Commands,
     effects: Query<
@@ -310,10 +307,11 @@ pub fn saves(
         (Without<InFlight>, Without<Follows>, Without<Outcome>),
     >,
     mut bodies: Query<Body>,
-    (mut acts, strengths): (Query<&mut Deed>, Query<&Strength>),
-    (party, groups): (Single<&PartyEffects>, Query<&MonsterGroup>),
+    mut acts: Query<&mut Deed>,
+    strengths: Query<&Strength>,
+    party: Single<&PartyEffects>,
     content: If<Res<Catalogs>>,
-    (difficulty, factions, clock): (Res<Difficulty>, Res<Factions>, Res<GameClock>),
+    difficulty: Res<Difficulty>,
     mut rng: ResMut<GameRng>,
 ) {
     let catalogs = (&content.items, &content.species, &party.0);
@@ -323,9 +321,9 @@ pub fn saves(
         if body.is_dead() {
             continue;
         }
-        let defence = defence(&body, resist.realm, catalogs, (&groups, &factions, clock.ms));
+        let defence = defence(&body, resist.realm, catalogs.0, catalogs.1, catalogs.2);
         let mut body = bodies.get_mut(strikes.0).unwrap();
-        let (saved, practised) = body.saves(&mut rng, &defence, (save.0, against), *difficulty);
+        let (saved, practised) = body.saves(&mut rng, &defence, save.0, against, *difficulty);
         if let Ok(mut deed) = acts.get_mut(hit_of.0) {
             deed.improved.extend(practised.map(|skill| (strikes.0, skill)));
         }
@@ -338,7 +336,6 @@ pub fn saves(
 
 /// A living body's resistance cuts an effect's magnitude; nothing is left
 /// of one cut to nothing.
-#[allow(clippy::too_many_arguments)]
 pub fn resist(
     mut commands: Commands,
     mut effects: Query<
@@ -346,10 +343,10 @@ pub fn resist(
         (Without<InFlight>, Without<Follows>, Without<Outcome>),
     >,
     bodies: Query<Body>,
-    (mut acts, strengths): (Query<&mut Deed>, Query<&Strength>),
-    (party, groups): (Single<&PartyEffects>, Query<&MonsterGroup>),
+    mut acts: Query<&mut Deed>,
+    strengths: Query<&Strength>,
+    party: Single<&PartyEffects>,
     content: If<Res<Catalogs>>,
-    (factions, clock): (Res<Factions>, Res<GameClock>),
     mut rng: ResMut<GameRng>,
 ) {
     let catalogs = (&content.items, &content.species, &party.0);
@@ -359,7 +356,7 @@ pub fn resist(
         if body.is_dead() {
             continue;
         }
-        let defence = defence(&body, resist.realm, catalogs, (&groups, &factions, clock.ms));
+        let defence = defence(&body, resist.realm, catalogs.0, catalogs.1, catalogs.2);
         magnitude.0 =
             body::resist(&mut rng, magnitude.0, defence.resistance, defence.level, against);
         if magnitude.0 == 0 {
@@ -370,7 +367,6 @@ pub fn resist(
 }
 
 /// Damage wounds a living body; a drain's act counts what it took.
-#[allow(clippy::too_many_arguments)]
 pub fn harm(
     mut commands: Commands,
     effects: Query<
@@ -395,8 +391,10 @@ pub fn harm(
             &mut body,
             magnitude.0,
             &mut rng,
-            (&content.species, fight),
-            (&mut commands, &mut notices),
+            &content.species,
+            fight,
+            &mut commands,
+            &mut notices,
         );
         if let Ok((mut deed, drains)) = acts.get_mut(hit_of.0) {
             if let (Effect::Damaged { outcome, .. }, Some(mut drains)) = (hurt, drains) {
@@ -430,7 +428,6 @@ fn slain(
 }
 
 /// A living member loses health for good; nothing wakes them.
-#[allow(clippy::too_many_arguments)]
 pub fn sap(
     mut commands: Commands,
     effects: Query<
@@ -460,7 +457,6 @@ pub fn sap(
 
 /// A condition takes hold of a living body, unless its nature shrugs it off;
 /// death slays it (retail `InflictConditionOnTarget`).
-#[allow(clippy::too_many_arguments)]
 pub fn afflict(
     mut commands: Commands,
     effects: Query<
@@ -469,9 +465,7 @@ pub fn afflict(
     >,
     mut bodies: Query<Body>,
     mut acts: Query<&mut Deed>,
-    groups: Query<&MonsterGroup>,
     content: If<Res<Catalogs>>,
-    (factions, clock): (Res<Factions>, Res<GameClock>),
     fight: Query<Entity, With<crate::game::combat::Battle>>,
     mut rng: ResMut<GameRng>,
     mut notices: MessageWriter<DamageApplied>,
@@ -482,14 +476,14 @@ pub fn afflict(
         let Ok(read) = bodies.get(victim) else { continue };
         let shrugs =
             afflict.condition.is_some_and(|c| saveable && read.shrugs(c, afflict.indefinite));
-        let side = read.side(species, (&groups, &factions, clock.ms));
+        let side = read.side.0;
         let mut body = bodies.get_mut(victim).unwrap();
         if body.is_dead() {
             commands.entity(effect).insert(Outcome::Missed);
             continue;
         }
         let Some(condition) = afflict.condition else {
-            let lost = body.slay(&mut rng, (species, fight));
+            let lost = body.slay(&mut rng, species, fight);
             record(&mut acts, hit_of.0, slain(&body, lost, species, &mut notices));
             commands.entity(effect).insert(Outcome::Landed);
             continue;
@@ -505,7 +499,7 @@ pub fn afflict(
             1 => Lasting::Rounds(2),
             rounds => Lasting::Rounds(rounds),
         };
-        if body.inflict((condition, afflict.poison), lasting, side) {
+        if body.inflict(condition, afflict.poison, lasting, side) {
             record(&mut acts, hit_of.0, Effect::Inflicted { victim, condition });
             commands.entity(effect).insert(Outcome::Landed);
         } else {
@@ -516,7 +510,6 @@ pub fn afflict(
 
 /// A death spell slays a living body (retail `InflictConditionOnTarget` for
 /// Dead).
-#[allow(clippy::too_many_arguments)]
 pub fn slay(
     mut commands: Commands,
     effects: Query<
@@ -537,7 +530,7 @@ pub fn slay(
             commands.entity(effect).insert(Outcome::Missed);
             continue;
         }
-        let lost = body.slay(&mut rng, (species, fight));
+        let lost = body.slay(&mut rng, species, fight);
         record(&mut acts, hit_of.0, slain(&body, lost, species, &mut notices));
         commands.entity(effect).insert(Outcome::Landed);
     }
@@ -567,7 +560,6 @@ pub fn tire(
 
 /// A living body loses spell points: a member by the share retail takes, a
 /// monster from its budget.
-#[allow(clippy::too_many_arguments)]
 pub fn drain_magic(
     mut commands: Commands,
     effects: Query<
@@ -586,11 +578,8 @@ pub fn drain_magic(
             for member in roster.iter() {
                 let mut body = bodies.get_mut(member).unwrap();
                 if !body.is_dead() {
-                    let amount = body.drain_magic(
-                        magnitude.0,
-                        &mut rng,
-                        (&content.spells, &content.species),
-                    );
+                    let amount =
+                        body.drain_magic(magnitude.0, &mut rng, &content.spells, &content.species);
                     record(&mut acts, hit_of.0, Effect::Drained { victim: member, amount });
                 }
             }
@@ -602,7 +591,7 @@ pub fn drain_magic(
             commands.entity(effect).insert(Outcome::Missed);
             continue;
         }
-        let amount = body.drain_magic(magnitude.0, &mut rng, (&content.spells, &content.species));
+        let amount = body.drain_magic(magnitude.0, &mut rng, &content.spells, &content.species);
         record(&mut acts, hit_of.0, Effect::Drained { victim: strikes.0, amount });
         commands.entity(effect).insert(Outcome::Landed);
     }
@@ -731,7 +720,8 @@ pub fn cure(
         (Without<InFlight>, Without<Follows>, Without<Outcome>),
     >,
     mut bodies: Query<Body>,
-    (mut acts, strengths): (Query<&mut Deed>, Query<&Strength>),
+    mut acts: Query<&mut Deed>,
+    strengths: Query<&Strength>,
     mut rng: ResMut<GameRng>,
 ) {
     for (effect, strikes, hit_of, cure) in &effects {
@@ -760,7 +750,8 @@ pub fn renew(
         (With<Renew>, Without<InFlight>, Without<Follows>, Without<Outcome>),
     >,
     mut bodies: Query<Body>,
-    (mut acts, strengths): (Query<&mut Deed>, Query<&Strength>),
+    mut acts: Query<&mut Deed>,
+    strengths: Query<&Strength>,
     mut rng: ResMut<GameRng>,
 ) {
     for (effect, strikes, hit_of) in &effects {
@@ -870,7 +861,8 @@ pub fn enchant(
         (Without<InFlight>, Without<Follows>, Without<Outcome>),
     >,
     mut bodies: Query<Body>,
-    (mut acts, strengths): (Query<&mut Deed>, Query<&Strength>),
+    mut acts: Query<&mut Deed>,
+    strengths: Query<&Strength>,
     mut party: Single<&mut PartyEffects>,
     content: If<Res<Catalogs>>,
     mut rng: ResMut<GameRng>,

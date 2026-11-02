@@ -30,7 +30,8 @@ impl CharacterViewItem<'_, '_> {
             catalog,
             self.load(),
             self.turn.is_some_and(|turn| turn.defends()),
-            (&self.vitals.enchantments, party.filter(|_| self.member.is_some()).map(|p| &p.0)),
+            &self.vitals.enchantments,
+            party.filter(|_| self.member.is_some()).map(|p| &p.0),
         )
     }
 

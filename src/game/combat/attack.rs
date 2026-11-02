@@ -545,10 +545,8 @@ pub fn enchanted_armour(
     catalog: &ItemCatalog,
     load: Load,
     defending: bool,
-    (personal, party): (
-        &crate::game::magic::enchantments::Enchantments,
-        Option<&crate::game::magic::enchantments::Enchantments>,
-    ),
+    personal: &crate::game::magic::enchantments::Enchantments,
+    party: Option<&crate::game::magic::enchantments::Enchantments>,
 ) -> Armour {
     let mut armour = armour(c, carried, catalog, load, defending);
     let bonus = personal.armour() + party.map_or(0, |party| party.armour());
@@ -791,7 +789,6 @@ impl<'a> Defence<'a> {
 
 /// A member's aim with one hand (retail `GetTargetAttackAttributes`):
 /// against `target`'s defences, or with none for the odds of a fumble.
-#[allow(clippy::too_many_arguments)]
 pub fn member_aim(
     c: &CharacterStats<'_>,
     vitals: &Vitals,
@@ -836,7 +833,8 @@ pub fn member_penetration(
     hand: &Hand,
     mode: AttackMode,
     surprise: Surprise,
-    (target, at): (&Defence, Location),
+    target: &Defence,
+    at: Location,
     difficulty: Difficulty,
 ) -> i32 {
     let mut score = hand.attack_rating + hand.to_hit * 5 + mode_penetration(mode);
@@ -853,7 +851,9 @@ pub fn member_penetration(
 
 /// A monster's aim with one attack (retail `GetMonsterAttackScore`).
 pub fn monster_aim(
-    (species, vitals, stance): (&Species, &Vitals, Stance),
+    species: &Species,
+    vitals: &Vitals,
+    stance: Stance,
     attack: &MonsterAttack,
     mode: AttackMode,
     surprise: Surprise,
@@ -913,11 +913,14 @@ pub fn monster_protection(species: &Species, vitals: &Vitals) -> i32 {
 /// A monster's chance to get through armour (retail `ContinueMonsterAttack`).
 /// Retail takes fatigue off only the attacks that tire little, in full.
 pub fn monster_penetration(
-    (species, vitals, stance): (&Species, &Vitals, Stance),
+    species: &Species,
+    vitals: &Vitals,
+    stance: Stance,
     attack: &MonsterAttack,
     mode: AttackMode,
     surprise: Surprise,
-    (target, at): (&Defence, Location),
+    target: &Defence,
+    at: Location,
     difficulty: Difficulty,
 ) -> i32 {
     let mut score =

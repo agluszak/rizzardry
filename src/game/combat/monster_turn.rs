@@ -20,7 +20,6 @@ use super::{ACTION_SECONDS, Battle, CombatNews, Combatants, approach, conduct, s
 use crate::content::spells::SpellId;
 use crate::game::characters::Condition;
 use crate::game::data::Catalogs;
-use crate::game::factions::Factions;
 use crate::game::hits::prototypes::{Definitions, Effects, Purpose, Uses};
 use crate::game::hits::spells::reach;
 use crate::game::hits::{Act, Body, BodyReadOnlyItem, Deed};
@@ -30,9 +29,7 @@ use crate::game::magic::enchantments::PartyEffects;
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
-use crate::game::time::GameClock;
 use crate::game::world::hostility::Stance;
-use crate::game::world::identify::MonsterGroup;
 use crate::game::world::level::{Level, PlayedLevel};
 use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::perception::party_distance;
@@ -120,15 +117,12 @@ pub(super) fn begin_monster_turns(
 /// Run, withdraw or hold back, as it stands and fares (retail
 /// `UpdateMonsterAI`'s flight test); a flight begun goes on in later rounds
 /// while the party stays off.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn decide_conduct(
     mut commands: Commands,
     actors: Query<(Entity, Has<Fleeing>), (With<Acting>, With<MonsterTurn>, Without<Decided>)>,
     bodies: Query<Body>,
     stand: Single<&Position, With<PartyBody>>,
-    groups: Query<&MonsterGroup>,
     content: If<Res<Catalogs>>,
-    (factions, clock): (Res<Factions>, Res<GameClock>),
     mut rng: ResMut<GameRng>,
 ) {
     let eye = PartyBody::eye(*stand);
@@ -136,11 +130,12 @@ pub(super) fn decide_conduct(
         let body = bodies.get(monster).unwrap();
         let kind = &content.species[body.monster.as_ref().unwrap().species];
         let (nearest, _) = bearing(&body, eye, &content.species);
-        let side = body.side(&content.species, (&groups, &factions, clock.ms));
+        let side = body.side.0;
         let mut fleeing = was_fleeing;
         let conduct = conduct::decide(
             &mut rng,
-            (body.monster.as_ref().unwrap(), body.vitals),
+            body.monster.as_ref().unwrap(),
+            body.vitals,
             kind,
             side,
             &mut fleeing,
@@ -163,33 +158,27 @@ pub(super) fn decide_conduct(
 }
 
 /// The fight as a monster about to breathe or cast sees it.
-#[allow(clippy::too_many_arguments)]
 fn sees(
     monster: Entity,
     bodies: &mut Query<Body>,
-    (combatants, roster): (&[Entity], &PartyRoster),
-    (eye, far, concealment): (Vec3, f32, u32),
+    combatants: &[Entity],
+    roster: &PartyRoster,
+    eye: Vec3,
+    far: f32,
+    concealment: u32,
     obstacles: &WorldObstacles,
     species: &crate::content::species::MonsterCatalog,
-    sides: (&Query<&MonsterGroup>, &Factions, u64),
 ) -> Scene {
-    let members: Vec<_> = roster
-        .iter()
-        .filter_map(|member| {
-            let body = bodies.get(member).ok()?;
-            Some((body.character?.clone(), body.vitals.clone()))
-        })
-        .collect();
-    let sight = Sight {
-        eye,
-        far,
-        lowest_level: crate::game::party::lowest_level(members.iter().map(|(c, v)| (c, v))),
-        concealment,
-        obstacles,
-    };
-    let mine = allegiance(&bodies.get(monster).unwrap(), species, sides).unwrap();
-    scene(monster, (combatants, roster), bodies, (&sight, species), &|body: &BodyReadOnlyItem| {
-        toward(mine, body, species, sides)
+    let lowest_level = crate::game::party::lowest_level(
+        roster
+            .iter()
+            .filter_map(|member| bodies.get(member).ok())
+            .filter_map(|body| Some((body.character?, body.vitals))),
+    );
+    let sight = Sight { eye, far, lowest_level, concealment, obstacles };
+    let mine = allegiance(&bodies.get(monster).unwrap(), species).unwrap();
+    scene(monster, combatants, roster, bodies, &sight, species, &|body: &BodyReadOnlyItem| {
+        toward(mine, body, species)
     })
 }
 
@@ -199,26 +188,25 @@ fn sees(
 /// instead. A breath is aimed at one of its aims at random (retail
 /// `AimMonsterAtSpellTarget`) and catches whoever stands in its cone; a
 /// summoning needs no one in sight.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn decide_special(
     mut commands: Commands,
     actors: Query<Entity, (With<Acting>, With<MonsterTurn>, Without<Decided>)>,
     mut bodies: Query<Body>,
     cooldowns: Query<&SpecialCooldown>,
-    (fight, stand, roster): (
-        Single<Option<&Combatants>, With<Battle>>,
-        Single<&Position, With<PartyBody>>,
-        Single<&PartyRoster>,
-    ),
-    (party, level, obstacles): (Single<&PartyEffects>, PlayedLevel, WorldObstacles),
-    (groups, effects, purposes): (Query<&MonsterGroup>, Query<&Effects>, Query<Purpose>),
-    (content, definitions): (If<Res<Catalogs>>, Res<Definitions>),
-    (factions, clock): (Res<Factions>, Res<GameClock>),
+    fight: Single<Option<&Combatants>, With<Battle>>,
+    stand: Single<&Position, With<PartyBody>>,
+    roster: Single<&PartyRoster>,
+    party: Single<&PartyEffects>,
+    level: PlayedLevel,
+    obstacles: WorldObstacles,
+    effects: Query<&Effects>,
+    purposes: Query<Purpose>,
+    content: If<Res<Catalogs>>,
+    definitions: Res<Definitions>,
     mut rng: ResMut<GameRng>,
 ) {
     let combatants = fight.map_or(&[][..], Combatants::entities);
     let eye = PartyBody::eye(*stand);
-    let sides = (&groups, &*factions, clock.ms);
     let craft = (&*definitions, &effects, &purposes);
     let far = level.view_distance().unwrap_or(0.0);
     for monster in &actors {
@@ -226,7 +214,7 @@ pub(super) fn decide_special(
         let kind = &content.species[body.monster.as_ref().unwrap().species];
         let (nearest, reaches) = bearing(&body, eye, &content.species);
         let closes_in = !kind.temper.prefers_range && !kind.attacks.is_empty() && !reaches;
-        let side = body.side(&content.species, sides);
+        let side = body.side.0;
         let cooling = cooldowns.get(monster).is_ok_and(|cooldown| cooldown.0 > 0);
         let special = kind.special;
         let Some(special_kind) = special.kind else { continue };
@@ -244,11 +232,13 @@ pub(super) fn decide_special(
             let scene = sees(
                 monster,
                 &mut bodies,
-                (combatants, &roster),
-                (eye, far, party.0.concealment()),
+                combatants,
+                &roster,
+                eye,
+                far,
+                party.0.concealment(),
                 &obstacles,
                 &content.species,
-                sides,
             );
             let aims = monster_spells::aims(cone, &scene, craft);
             (!aims.is_empty()).then(|| {
@@ -261,7 +251,7 @@ pub(super) fn decide_special(
         if rng.below(100) >= if reaches { u32::from(special.chance) } else { 100 } {
             continue;
         }
-        let strength = crate::game::hits::specials::strength(breather);
+        let strength = crate::game::hits::specials::strength(breather.0, breather.1);
         commands.entity(monster).insert((
             Breathes { kind: special_kind, cooldown: special.cooldown, strength, victims },
             Decided,
@@ -272,25 +262,24 @@ pub(super) fn decide_special(
 /// A monster that casts may cast (retail `UpdateMonsterAI`'s spell
 /// branch): always if it cannot strike the party, else at its chance; one
 /// that would close in to strike does that instead.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn decide_spell(
     mut commands: Commands,
     actors: Query<Entity, (With<Acting>, With<MonsterTurn>, Without<Decided>)>,
     mut bodies: Query<Body>,
-    (fight, stand, roster): (
-        Single<Option<&Combatants>, With<Battle>>,
-        Single<&Position, With<PartyBody>>,
-        Single<&PartyRoster>,
-    ),
-    (party, level, obstacles): (Single<&PartyEffects>, PlayedLevel, WorldObstacles),
-    (groups, effects, purposes): (Query<&MonsterGroup>, Query<&Effects>, Query<Purpose>),
-    (content, definitions): (If<Res<Catalogs>>, Res<Definitions>),
-    (factions, clock): (Res<Factions>, Res<GameClock>),
+    fight: Single<Option<&Combatants>, With<Battle>>,
+    stand: Single<&Position, With<PartyBody>>,
+    roster: Single<&PartyRoster>,
+    party: Single<&PartyEffects>,
+    level: PlayedLevel,
+    obstacles: WorldObstacles,
+    effects: Query<&Effects>,
+    purposes: Query<Purpose>,
+    content: If<Res<Catalogs>>,
+    definitions: Res<Definitions>,
     mut rng: ResMut<GameRng>,
 ) {
     let combatants = fight.map_or(&[][..], Combatants::entities);
     let eye = PartyBody::eye(*stand);
-    let sides = (&groups, &*factions, clock.ms);
     let craft = (&*definitions, &effects, &purposes);
     let far = level.view_distance().unwrap_or(0.0);
     for monster in &actors {
@@ -307,11 +296,13 @@ pub(super) fn decide_spell(
         let scene = sees(
             monster,
             &mut bodies,
-            (combatants, &roster),
-            (eye, far, party.0.concealment()),
+            combatants,
+            &roster,
+            eye,
+            far,
+            party.0.concealment(),
             &obstacles,
             &content.species,
-            sides,
         );
         let Some((spell, aim)) =
             monster_spells::choose(&mut rng, &vitals, kind, chance, &content.spells, &scene, craft)
@@ -350,20 +341,18 @@ pub(super) fn withdraw_if_helpless(
 /// A bodyguard with someone in reach, as clever as it is, may guard a
 /// stronger fellow in its reach in trouble (retail
 /// `BuildMonsterActionQueue`); a wary one may hold back instead.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn decide_guard(
     mut commands: Commands,
     actors: Query<Entity, (With<Acting>, With<MonsterTurn>, Without<Decided>)>,
     bodies: Query<Body>,
-    (fight, stand): (Single<Option<&Combatants>, With<Battle>>, Single<&Position, With<PartyBody>>),
-    groups: Query<&MonsterGroup>,
+    fight: Single<Option<&Combatants>, With<Battle>>,
+    stand: Single<&Position, With<PartyBody>>,
     content: If<Res<Catalogs>>,
-    (factions, clock): (Res<Factions>, Res<GameClock>),
     mut rng: ResMut<GameRng>,
 ) {
     let combatants = fight.map_or(&[][..], Combatants::entities);
     let eye = PartyBody::eye(*stand);
-    let (species, sides) = (&content.species, (&groups, &*factions, clock.ms));
+    let species = &content.species;
     for monster in &actors {
         let body = bodies.get(monster).unwrap();
         let me = body.monster.unwrap().clone();
@@ -373,7 +362,7 @@ pub(super) fn decide_guard(
             continue;
         }
         let (feet, can_guard) = (body.feet(eye), body.vitals.can_guard());
-        let mine = allegiance(&body, species, sides).unwrap();
+        let mine = allegiance(&body, species).unwrap();
         let intelligence = u32::from(kind.attributes.intelligence);
         let able = kind.temper.bodyguard && can_guard && !kind.attacks.is_empty();
         let wards: Vec<Entity> = if able && rng.below(100) < intelligence {
@@ -385,7 +374,7 @@ pub(super) fn decide_guard(
                     other != monster
                         && bodies.get(other).is_ok_and(|o| {
                             let fellow = o.monster.as_ref().unwrap();
-                            toward(mine, &o, species, sides) == Stance::Friendly
+                            toward(mine, &o, species) == Stance::Friendly
                                 && !o.is_dead()
                                 && me.gap(feet, fellow, o.feet(eye)) <= reach
                                 && species[fellow.species].level > kind.level
@@ -418,7 +407,6 @@ pub(super) fn default_fight(
 /// A monster's conditions as its action begins (retail
 /// `GetConditionInterrupt`): insanity may turn it on its friends this round,
 /// fear send it running unannounced, or another condition take its action.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn interrupt(
     mut commands: Commands,
     mut actors: Query<
@@ -430,14 +418,10 @@ pub(super) fn interrupt(
         (With<Acting>, With<Decided>, Without<Resumes>),
     >,
     mut bodies: Query<Body>,
-    (fight, stand, roster): (
-        Single<(&mut Battle, Option<&Combatants>)>,
-        Single<&Position, With<PartyBody>>,
-        Single<&PartyRoster>,
-    ),
-    groups: Query<&MonsterGroup>,
+    fight: Single<(&mut Battle, Option<&Combatants>)>,
+    stand: Single<&Position, With<PartyBody>>,
+    roster: Single<&PartyRoster>,
     content: If<Res<Catalogs>>,
-    (factions, clock): (Res<Factions>, Res<GameClock>),
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<CombatNews>,
 ) {
@@ -445,20 +429,20 @@ pub(super) fn interrupt(
     let (mut battle, combatants) = fight.into_inner();
     let combatants = combatants.map_or(&[][..], Combatants::entities);
     let eye = PartyBody::eye(*stand);
-    let (species, sides) = (&content.species, (&groups, &*factions, clock.ms));
+    let species = &content.species;
     for (monster, mut turn, (retreats, casts, breathes, fights)) in &mut actors {
         let body = bodies.get(monster).unwrap();
         let me = body.monster.unwrap().clone();
         let kind = &species[me.species];
         let (nearest, _) = bearing(&body, eye, species);
         let (feet, vitals) = (body.feet(eye), body.vitals.clone());
-        let mine = allegiance(&body, species, sides).unwrap();
+        let mine = allegiance(&body, species).unwrap();
         let against_foes = match casts {
             Some(cast) => content.spells[cast.spell].aimed_at_enemies(),
             None => breathes || fights,
         };
         let friendly_member = roster.iter().any(|member| {
-            bodies.get(member).is_ok_and(|b| toward(mine, &b, species, sides) == Stance::Friendly)
+            bodies.get(member).is_ok_and(|b| toward(mine, &b, species) == Stance::Friendly)
         });
         let strikes_friend = kind.attacks.iter().any(|attack| {
             let reach = attack.reach.metres();
@@ -466,7 +450,7 @@ pub(super) fn interrupt(
                 || combatants.iter().any(|&other| {
                     other != monster
                         && bodies.get(other).is_ok_and(|o| {
-                            toward(mine, &o, species, sides) == Stance::Friendly
+                            toward(mine, &o, species) == Stance::Friendly
                                 && me.gap(feet, o.monster.as_ref().unwrap(), o.feet(eye)) <= reach
                         })
                 })
@@ -476,7 +460,10 @@ pub(super) fn interrupt(
             &mut rng,
             &vitals,
             kind,
-            (fleeing, strikes_friend, turn.berserk, against_foes),
+            fleeing,
+            strikes_friend,
+            turn.berserk,
+            against_foes,
         );
         let mut entity = commands.entity(monster);
         match interrupted {
@@ -519,7 +506,6 @@ fn done(commands: &mut Commands, monster: Entity, battle: Option<&mut Battle>) {
 
 /// Run, withdraw or hold back: one that cannot walk, or has moved this
 /// round, waits instead (retail falls back on `WAIT` when the move fails).
-#[allow(clippy::too_many_arguments)]
 pub(super) fn retreat(
     mut commands: Commands,
     mut actors: Query<(Entity, &Retreats, &mut MonsterTurn)>,
@@ -583,7 +569,8 @@ pub(super) fn start_special(
     mut bodies: Query<Body>,
     mut battle: Single<&mut Battle>,
     definitions: Res<Definitions>,
-    (mut news, mut summons): (MessageWriter<CombatNews>, MessageWriter<summon::Summon>),
+    mut news: MessageWriter<CombatNews>,
+    mut summons: MessageWriter<summon::Summon>,
 ) {
     for (monster, breathes, mut turn) in &mut actors {
         turn.end();
@@ -609,21 +596,18 @@ pub(super) fn start_special(
 /// Cast the spell chosen (retail `MonsterCastsSpell`): a cast reaching whom
 /// its aim takes, as the monster saw the fight; a blast whoever stands
 /// within its radius of where it bursts. The cast stages roll it.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn start_monster_cast(
     mut commands: Commands,
     mut actors: Query<(Entity, &CastsSpell, &mut MonsterTurn)>,
     mut bodies: Query<Body>,
     mut battle: Single<&mut Battle>,
     party: Single<(&Position, &PartyRoster), With<PartyBody>>,
-    (levels, groups): (Query<(), With<Level>>, Query<&MonsterGroup>),
+    levels: Query<(), With<Level>>,
     obstacles: WorldObstacles,
     content: If<Res<Catalogs>>,
-    (factions, clock): (Res<Factions>, Res<GameClock>),
 ) {
     let (position, roster) = *party;
     let eye = PartyBody::eye(position);
-    let sides = (&groups, &*factions, clock.ms);
     for (monster, cast, mut turn) in &mut actors {
         turn.end();
         battle.attacked(true);
@@ -639,14 +623,16 @@ pub(super) fn start_monster_cast(
                     },
                     _ => (PartyBody::feet_below(eye), eye),
                 };
-                let side = bodies.get(monster).unwrap().side(&content.species, sides);
+                let side = bodies.get(monster).unwrap().side.0;
                 crate::game::hits::reach::radius(
-                    (centre, origin, spell.radius + spell.radius_per_power * cast.power as f32),
+                    centre,
+                    origin,
+                    spell.radius + spell.radius_per_power * cast.power as f32,
                     crate::game::hits::reach::Recipients::Opponents(side),
                     Some((eye, roster)),
                     &mut bodies,
                     &levels,
-                    (&content.species, sides),
+                    &content.species,
                     &obstacles,
                 )
             }

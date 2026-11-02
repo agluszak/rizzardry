@@ -111,9 +111,7 @@ pub const CHARACTER_BREATH: SpecialDefinition = SpecialDefinition {
 /// stamina it has left: `against` for saves and resistance, `power` the
 /// bound its rolls stay under. Retail's doubling of a fifth-entry effect
 /// reads the table's first rows, which never hold one.
-pub fn strength(
-    (level, stamina): (u8, crate::game::characters::Pool),
-) -> crate::game::magic::Strength {
+pub fn strength(level: u8, stamina: crate::game::characters::Pool) -> crate::game::magic::Strength {
     let level = u32::from(level);
     let fresh = |extra: u32| {
         (stamina.current * (level + level.min(15) + extra) / stamina.max.max(1)).max(1)

@@ -142,17 +142,16 @@ pub(super) fn alert_factions(
 pub(super) fn engage(
     battles: Query<(), With<Battle>>,
     monsters: MonsterSight,
-    (mut groups, factions): (Groups, Res<crate::game::factions::Factions>),
+    mut groups: Groups,
+    factions: Res<crate::game::factions::Factions>,
     mut provocations: MessageReader<hostility::Provocation>,
     clock: Res<GameClock>,
     content: If<Res<Catalogs>>,
     party: PartySight,
     mut engaged: MessageWriter<Engaged>,
-    (definitions, effects, purposes): (
-        Res<crate::game::hits::prototypes::Definitions>,
-        Query<&crate::game::hits::prototypes::Effects>,
-        Query<crate::game::hits::prototypes::Purpose>,
-    ),
+    definitions: Res<crate::game::hits::prototypes::Definitions>,
+    effects: Query<&crate::game::hits::prototypes::Effects>,
+    purposes: Query<crate::game::hits::prototypes::Purpose>,
 ) {
     let craft = (&*definitions, &effects, &purposes);
     let provoked: Vec<Entity> = provocations
@@ -186,7 +185,7 @@ pub(super) fn engage(
         let kind = &catalog[monster.species];
         let at_feet = feet(at.translation(), walker);
         let distance = party_distance(sight.eye, monster, at_feet);
-        let sees = sight.sees((monster, vitals), &at, walker, kind);
+        let sees = sight.sees(monster, vitals, &at, walker, kind);
         let reaches = kind.attacks.iter().any(|a| distance <= a.reach.metres());
         let close = kind.attacks.iter().map(|a| a.reach).max().is_some_and(|r| r <= Reach::Short);
         let party_at = PartyBody::feet_below(sight.eye);
@@ -204,7 +203,7 @@ pub(super) fn engage(
                 .iter()
                 .map(|m| (m, party.members.get(m).unwrap()))
                 .filter(|(_, (_, v))| !v.is_dead())
-                .map(|(m, (_, v))| member_in_scene((m, v), (party_at, distance), &toward))
+                .map(|(m, (_, v))| member_in_scene(m, v, party_at, distance, &toward))
                 .collect(),
             monsters: Vec::new(),
             party: distance,
@@ -346,11 +345,9 @@ pub(super) fn open_battle(
     mut commands: Commands,
     mut engaged: MessageReader<Engaged>,
     battles: Query<Entity, With<Battle>>,
-    (camp, search, movement): (
-        Option<Res<crate::game::camp::Camp>>,
-        Res<crate::game::world::search::Search>,
-        Single<&crate::game::party::body::PartyMovement>,
-    ),
+    camp: Option<Res<crate::game::camp::Camp>>,
+    search: Res<crate::game::world::search::Search>,
+    movement: Single<&crate::game::party::body::PartyMovement>,
     mut camp_news: MessageWriter<crate::game::camp::CampNews>,
     monsters: MonsterSight,
     content: If<Res<Catalogs>>,

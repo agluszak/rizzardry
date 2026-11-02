@@ -32,8 +32,10 @@ pub(super) fn special_ready(
 /// A member as a casting monster sees them, at the party's point
 /// `party` away.
 pub(super) fn member_in_scene(
-    (member, vitals): (Entity, &Vitals),
-    (party_at, party): (Vec3, f32),
+    member: Entity,
+    vitals: &Vitals,
+    party_at: Vec3,
+    party: f32,
     toward: &dyn Fn(Entity) -> hostility::Stance,
 ) -> monster_spells::Someone {
     monster_spells::Someone {
@@ -51,9 +53,11 @@ pub(super) fn member_in_scene(
 /// how it stands toward each.
 pub(super) fn scene(
     caster: Entity,
-    (combatants, roster): (&[Entity], &PartyRoster),
+    combatants: &[Entity],
+    roster: &PartyRoster,
     bodies: &mut Query<crate::game::hits::Body>,
-    (sight, species): (&Sight, &MonsterCatalog),
+    sight: &Sight,
+    species: &MonsterCatalog,
     toward: &dyn Fn(&crate::game::hits::BodyReadOnlyItem) -> hostility::Stance,
 ) -> monster_spells::Scene {
     let party_eye = sight.eye;
@@ -63,9 +67,10 @@ pub(super) fn scene(
     let feet_at = me.feet(party_eye);
     let eye = me.eye(party_eye);
     let party = party_distance(party_eye, &body, feet_at);
-    let sees_party = me.pose.as_ref().is_some_and(|pose| {
-        sight.sees((&body, me.vitals), pose, me.walker, &species[body.species])
-    });
+    let sees_party = me
+        .pose
+        .as_ref()
+        .is_some_and(|pose| sight.sees(&body, me.vitals, pose, me.walker, &species[body.species]));
     let members = roster
         .iter()
         .filter_map(|member| {

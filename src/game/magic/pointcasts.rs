@@ -172,7 +172,8 @@ fn lure(
     }
     let turns = crate::game::hits::prototypes::duration(
         &mut world.resource_mut::<GameRng>(),
-        (spell.duration_base, spell.duration_per_power),
+        spell.duration_base,
+        spell.duration_per_power,
         strength,
     );
     let lure = world
@@ -318,7 +319,8 @@ fn summon_elemental(
             let definition = &world.resource::<Catalogs>().spells[buff];
             crate::game::hits::prototypes::duration(
                 &mut rng,
-                (definition.duration_base, definition.duration_per_power),
+                definition.duration_base,
+                definition.duration_per_power,
                 strength,
             )
         });

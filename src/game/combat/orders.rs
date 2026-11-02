@@ -100,7 +100,9 @@ pub fn track_party_move(
     battle: Option<Single<&mut Battle>>,
     party: Query<&Position, With<PartyBody>>,
     mut rng: ResMut<GameRng>,
-    (roster, mut members, mut turns): (Single<&PartyRoster>, Members, Query<&mut PartyTurn>),
+    roster: Single<&PartyRoster>,
+    mut members: Members,
+    mut turns: Query<&mut PartyTurn>,
     mut news: MessageWriter<CombatNews>,
 ) {
     let Some(mut battle) = battle else { return };
@@ -114,7 +116,7 @@ pub fn track_party_move(
         *moved >= *budget
     };
     if spent {
-        finish_party_move(&mut battle, &mut rng, (&roster, &mut members, &mut turns));
+        finish_party_move(&mut battle, &mut rng, &roster, &mut members, &mut turns);
         news.write(CombatNews::PartyStops);
     }
 }
@@ -147,7 +149,9 @@ impl PartyPace {
 pub(super) fn finish_party_move(
     battle: &mut Battle,
     rng: &mut GameRng,
-    (roster, members, turns): (&PartyRoster, &mut Members, &mut Query<&mut PartyTurn>),
+    roster: &PartyRoster,
+    members: &mut Members,
+    turns: &mut Query<&mut PartyTurn>,
 ) {
     let PartyMove::Moving { pace, budget, moved, .. } = battle.party_move else { return };
     let step = match battle.phase {

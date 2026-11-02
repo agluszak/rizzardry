@@ -180,7 +180,7 @@ pub(super) fn aims(
 ) -> Vec<SpellAim> {
     let reach = spell.reach.metres();
     let worth = |vitals: &crate::game::characters::Vitals| {
-        crate::game::hits::prototypes::worthwhile(craft, spell.id, vitals)
+        crate::game::hits::prototypes::worthwhile(craft.0, craft.1, craft.2, spell.id, vitals)
     };
     let party_reached = scene.sees_party && scene.party <= reach;
     let monsters = |stance: Stance| {

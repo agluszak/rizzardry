@@ -814,7 +814,7 @@ pub fn magnitude(rng: &mut GameRng, dice: Option<Dice>, strength: Strength) -> u
 }
 
 /// Retail `RollEffectDuration`: a condition spell's rounds.
-pub fn duration(rng: &mut GameRng, (base, per_power): (i32, i32), strength: Strength) -> u32 {
+pub fn duration(rng: &mut GameRng, base: i32, per_power: i32, strength: Strength) -> u32 {
     let base = per_power * strength.power as i32 + base;
     if base == INDEFINITE as i32 {
         return INDEFINITE;
@@ -859,7 +859,7 @@ pub fn roll(
                 let strength = if plain { Strength { boost: 0, ..strength } } else { strength };
                 magnitude(rng, dice, strength) / over
             }
-            Roll::Duration { base, per_power } => duration(rng, (base, per_power), strength),
+            Roll::Duration { base, per_power } => duration(rng, base, per_power, strength),
             Roll::Purify => {
                 let base = strength.power + 1;
                 let amount = match rng.below(4) {
@@ -915,7 +915,9 @@ pub struct Purpose {
 /// cures only what they cure, and no condition or enchantment it already
 /// has; a spell that does none of these always would.
 pub fn worthwhile(
-    (definitions, effects, purposes): (&Definitions, &Query<&Effects>, &Query<Purpose>),
+    definitions: &Definitions,
+    effects: &Query<&Effects>,
+    purposes: &Query<Purpose>,
     spell: SpellId,
     victim: &crate::game::characters::Vitals,
 ) -> bool {

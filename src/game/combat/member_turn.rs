@@ -110,7 +110,6 @@ pub(super) fn defend_instead(mut news: MessageReader<MagicNews>, mut turns: Quer
 /// and whoever stands beside it in the cone (retail special-attack entry
 /// 30), costing a fifth of their stamina. One who cannot breathe, or has
 /// nobody in the cone, defends instead.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn start_breath(
     mut commands: Commands,
     mut actors: Query<(Entity, &mut PartyTurn), With<Acting>>,
@@ -119,7 +118,8 @@ pub(super) fn start_breath(
     stand: Single<&Position, With<PartyBody>>,
     levels: Query<(), With<Level>>,
     obstacles: WorldObstacles,
-    (content, definitions): (If<Res<Catalogs>>, Res<Definitions>),
+    content: If<Res<Catalogs>>,
+    definitions: Res<Definitions>,
     mut news: MessageWriter<CombatNews>,
 ) {
     let (mut battle, combatants) = battle.into_inner();
@@ -134,7 +134,7 @@ pub(super) fn start_breath(
         let character = breather.character.unwrap();
         let able = super::breath::available(character, breather.vitals);
         let strength =
-            crate::game::hits::specials::strength((character.level(), breather.vitals.stamina));
+            crate::game::hits::specials::strength(character.level(), breather.vitals.stamina);
         let cone = &content.spells[SpellId::SPECIAL_ATTACK_CONE];
         let monsters =
             candidates(eye, combatants, &mut bodies, &levels, &content.species, &obstacles);

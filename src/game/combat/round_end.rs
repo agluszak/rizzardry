@@ -82,24 +82,23 @@ pub fn judge_round(
 /// its members sees an enemy; a hostile group unless a living member sees
 /// the party. When no hostile group is left engaged, everyone leaves. One
 /// outside any group stays while hostile groups fight on.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn leave_fight(
     mut commands: Commands,
     fight: Single<&Combatants, With<RoundEnding>>,
     mut bodies: Query<Body>,
     memberships: Query<&GroupMember>,
-    (stand, roster, party, level): (
-        Single<&Position, With<PartyBody>>,
-        Single<&PartyRoster>,
-        Single<&PartyEffects>,
-        PlayedLevel,
-    ),
-    (groups, obstacles): (Query<&MonsterGroup>, WorldObstacles),
+    stand: Single<&Position, With<PartyBody>>,
+    roster: Single<&PartyRoster>,
+    party: Single<&PartyEffects>,
+    level: PlayedLevel,
+    groups: Query<&MonsterGroup>,
+    obstacles: WorldObstacles,
     content: If<Res<Catalogs>>,
-    (factions, clock): (Res<Factions>, Res<GameClock>),
+    factions: Res<Factions>,
+    clock: Res<GameClock>,
 ) {
     let combatants = fight.entities();
-    let (species, sides) = (&content.species, (&groups, &*factions, clock.ms));
+    let species = &content.species;
     let members: Vec<_> = roster
         .iter()
         .filter_map(|member| {
@@ -164,7 +163,7 @@ pub(super) fn leave_fight(
             }
             Some(Stance::Friendly) => fellows.iter().any(|(fellow, _)| {
                 let observer = bodies.get(fellow.entity).unwrap();
-                let mine = allegiance(&observer, species, sides).unwrap();
+                let mine = allegiance(&observer, species).unwrap();
                 let watcher = observer.monster.unwrap().clone();
                 let vitals = observer.vitals.clone();
                 let feet = observer.feet(sight.eye);
@@ -173,11 +172,16 @@ pub(super) fn leave_fight(
                     bodies.get(enemy).is_ok_and(|target| {
                         let them = target.monster.as_ref().unwrap();
                         !target.is_dead()
-                            && toward(mine, &target, species, sides) == Stance::Hostile
+                            && toward(mine, &target, species) == Stance::Hostile
                             && sight.sees_from(
-                                (&watcher, &vitals, &species[watcher.species]),
-                                (feet, forward),
-                                (them, target.feet(sight.eye), &species[them.species]),
+                                &watcher,
+                                &vitals,
+                                &species[watcher.species],
+                                feet,
+                                forward,
+                                them,
+                                target.feet(sight.eye),
+                                &species[them.species],
                             )
                     })
                 })
@@ -283,15 +287,15 @@ pub(super) fn recover_members(
 /// pulses): the party's on its living members, each monster's own on it,
 /// and Ring of Fire on the monsters close around the party, sampled anew
 /// each pulse. Each pulse is an act with no caster.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn pulse_clouds(
     mut commands: Commands,
     fight: Single<&Combatants, With<RoundEnding>>,
     mut bodies: Query<Body>,
     party: Single<(&Position, &PartyRoster, &PartyEffects)>,
-    (levels, groups, obstacles): (Query<(), With<Level>>, Query<&MonsterGroup>, WorldObstacles),
-    (content, definitions): (If<Res<Catalogs>>, Res<Definitions>),
-    (factions, clock): (Res<Factions>, Res<GameClock>),
+    levels: Query<(), With<Level>>,
+    obstacles: WorldObstacles,
+    content: If<Res<Catalogs>>,
+    definitions: Res<Definitions>,
 ) {
     let (position, roster, effects) = *party;
     let eye = PartyBody::eye(position);
@@ -330,12 +334,14 @@ pub(super) fn pulse_clouds(
         let reach_of =
             crate::game::party::body::RADIUS + crate::content::species::Reach::Short.metres();
         let victims = radius(
-            (centre, centre, reach_of),
+            centre,
+            centre,
+            reach_of,
             Recipients::Opponents(Stance::Friendly),
             None,
             &mut bodies,
             &levels,
-            (&content.species, (&groups, &factions, clock.ms)),
+            &content.species,
             &obstacles,
         );
         let strength = Strength { power: effect.power, boost: 0, against: effect.power * 3 };
@@ -391,16 +397,14 @@ pub(super) fn rest_defenders(
 /// closed in for two rounds; the living, the unconscious included, share
 /// its experience. Poison may have killed the last of the party as the
 /// round passed: that is their defeat, not a victory.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn judge_victory(
     mut commands: Commands,
     fight: Single<(Entity, &mut Battle, &Combatants), With<RoundEnding>>,
     mut bodies: Query<Body>,
     leaving: Query<(), With<Leaves>>,
-    (stand, roster): (Single<&Position, With<PartyBody>>, Single<&PartyRoster>),
-    groups: Query<&MonsterGroup>,
+    stand: Single<&Position, With<PartyBody>>,
+    roster: Single<&PartyRoster>,
     content: If<Res<Catalogs>>,
-    (factions, clock): (Res<Factions>, Res<GameClock>),
     mut news: MessageWriter<CombatNews>,
 ) {
     let (fight, mut battle, combatants) = fight.into_inner();
@@ -416,7 +420,8 @@ pub(super) fn judge_victory(
             let monster = body.monster.as_ref().unwrap();
             let pose = body.pose.as_ref().unwrap();
             approach::needs_approach(
-                (monster, body.vitals),
+                monster,
+                body.vitals,
                 pose.translation(),
                 body.walker,
                 eye,
@@ -428,10 +433,9 @@ pub(super) fn judge_victory(
     battle.passive_rounds = if active { 0 } else { battle.passive_rounds + 1 };
     let hostiles_left = combatants.entities().iter().any(|&entity| {
         !leaving.contains(entity)
-            && bodies.get(entity).is_ok_and(|body| {
-                !body.is_dead()
-                    && body.side(species, (&groups, &factions, clock.ms)) == Stance::Hostile
-            })
+            && bodies
+                .get(entity)
+                .is_ok_and(|body| !body.is_dead() && body.side.0 == Stance::Hostile)
     });
     if hostiles_left && battle.passive_rounds < PASSIVE_ROUNDS {
         return;

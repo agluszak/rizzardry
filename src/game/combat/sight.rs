@@ -20,7 +20,8 @@ impl Sight<'_, '_, '_> {
     /// geometry, and its sight threshold covering the distance.
     pub(super) fn sees(
         &self,
-        (monster, vitals): (&Monster, &Vitals),
+        monster: &Monster,
+        vitals: &Vitals,
         at: &ActorPoseItem,
         walker: Option<&Walker>,
         kind: &Species,
@@ -51,7 +52,7 @@ impl Sight<'_, '_, '_> {
             entity,
             at: at_feet,
             from_party: party_distance(self.eye, monster, at_feet),
-            sees: self.sees((monster, vitals), at, walker, kind),
+            sees: self.sees(monster, vitals, at, walker, kind),
             in_view: self.in_view(monster, at, walker),
         }
     }
@@ -104,10 +105,15 @@ impl Sight<'_, '_, '_> {
     ) -> bool {
         let feet = feet(at.translation(), walker);
         self.sees_along(
-            (monster, vitals, kind),
-            (feet, at.forward()),
-            (target, distance),
-            (penalty, concealment),
+            monster,
+            vitals,
+            kind,
+            feet,
+            at.forward(),
+            target,
+            distance,
+            penalty,
+            concealment,
         )
     }
 
@@ -115,17 +121,27 @@ impl Sight<'_, '_, '_> {
     /// another (retail `CanMonsterSeeMonster`), from plain values.
     pub(super) fn sees_from(
         &self,
-        (monster, vitals, kind): (&Monster, &Vitals, &Species),
-        (feet, forward): (Vec3, Vec3),
-        (target, target_feet, target_kind): (&Monster, Vec3, &Species),
+        monster: &Monster,
+        vitals: &Vitals,
+        kind: &Species,
+        feet: Vec3,
+        forward: Vec3,
+        target: &Monster,
+        target_feet: Vec3,
+        target_kind: &Species,
     ) -> bool {
         let distance = monster.gap(feet, target, target_feet);
         let eye = target.eye(target_feet);
         self.sees_along(
-            (monster, vitals, kind),
-            (feet, forward),
-            (eye, distance),
-            (i32::from(target_kind.level), 0),
+            monster,
+            vitals,
+            kind,
+            feet,
+            forward,
+            eye,
+            distance,
+            i32::from(target_kind.level),
+            0,
         )
     }
 
@@ -134,10 +150,15 @@ impl Sight<'_, '_, '_> {
     /// and its sight threshold covering the distance.
     fn sees_along(
         &self,
-        (monster, vitals, kind): (&Monster, &Vitals, &Species),
-        (feet, forward): (Vec3, Vec3),
-        (target, distance): (Vec3, f32),
-        (penalty, concealment): (i32, u32),
+        monster: &Monster,
+        vitals: &Vitals,
+        kind: &Species,
+        feet: Vec3,
+        forward: Vec3,
+        target: Vec3,
+        distance: f32,
+        penalty: i32,
+        concealment: u32,
     ) -> bool {
         let eye = monster.eye(feet);
         if !vitals.can_fight() || distance > self.far || blinded(kind, vitals) {

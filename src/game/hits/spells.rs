@@ -10,14 +10,12 @@ use super::reach::Recipients;
 use super::{Body, BodyReadOnlyItem, Deed, DeedHits, Effect, HitOf, Strikes};
 use crate::content::spells::{SpellId, Targeting};
 use crate::game::data::Catalogs;
-use crate::game::factions::Factions;
 use crate::game::hits::effects::InFlight;
 use crate::game::magic::Strength;
 use crate::game::magic::casting::{Aim, MISSILE_SPEED, in_cone};
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
-use crate::game::time::GameClock;
-use crate::game::world::identify::{GroupMember, GroupMembers, MonsterGroup};
+use crate::game::world::identify::{GroupMember, GroupMembers};
 use crate::game::world::level::Level;
 use crate::game::world::obstacles::WorldObstacles;
 
@@ -123,21 +121,19 @@ pub fn drain_life(
 /// bursts where it fell, at the cast's power, from the spell's owner
 /// (retail's Boiling Blood explosion): an act of its own, reaching whoever
 /// stands within its radius.
-#[allow(clippy::too_many_arguments)]
 pub fn burst_blood(
     mut commands: Commands,
     acts: Query<(&Spell, &Strength), (With<Deed>, Without<DeedHits>)>,
     mut bodies: Query<Body>,
     levels: Query<(), With<Level>>,
     party: Single<(&Position, &PartyRoster), With<PartyBody>>,
-    groups: Query<&MonsterGroup>,
-    (content, definitions): (If<Res<Catalogs>>, Res<Definitions>),
-    (factions, clock, obstacles): (Res<Factions>, Res<GameClock>, WorldObstacles),
+    content: If<Res<Catalogs>>,
+    definitions: Res<Definitions>,
+    obstacles: WorldObstacles,
 ) {
     let (species, explosion) =
         (&content.species, &content.spells[SpellId::BOILING_BLOOD_EXPLOSION]);
     let Some(uses) = definitions.spell(explosion.id) else { return };
-    let sides = (&groups, &*factions, clock.ms);
     let (position, roster) = *party;
     let eye = PartyBody::eye(position);
     for (spell, strength) in &acts {
@@ -146,7 +142,7 @@ pub fn burst_blood(
         }
         let owner = spell.owner.and_then(|owner| bodies.get(owner).ok());
         let figure = owner.as_ref().map_or(0, |owner| owner.figure(explosion, species));
-        let recipients = match owner.map(|owner| owner.side(species, sides)) {
+        let recipients = match owner.map(|owner| owner.side.0) {
             Some(side) if spell.backfired => Recipients::Opponents(side).reversed(),
             Some(side) => Recipients::Opponents(side),
             None => Recipients::Everyone,
@@ -160,12 +156,14 @@ pub fn burst_blood(
             }
             let centre = body.feet(eye);
             let victims: Vec<_> = super::reach::radius(
-                (centre, centre, radius),
+                centre,
+                centre,
+                radius,
                 recipients,
                 Some((eye, roster)),
                 &mut bodies,
                 &levels,
-                (species, sides),
+                species,
                 &obstacles,
             )
             .into_iter()
@@ -186,7 +184,8 @@ pub fn burst_blood(
 /// A monster's group, itself when it has none.
 fn group_of(
     entity: Entity,
-    (memberships, groups): (&Query<&GroupMember>, &Query<&GroupMembers>),
+    memberships: &Query<&GroupMember>,
+    groups: &Query<&GroupMembers>,
 ) -> Vec<Entity> {
     memberships
         .get(entity)
@@ -200,9 +199,10 @@ fn group_of(
 pub fn leader(
     entity: Entity,
     bodies: &mut Query<Body>,
-    groups: (&Query<&GroupMember>, &Query<&GroupMembers>),
+    memberships: &Query<&GroupMember>,
+    groups: &Query<&GroupMembers>,
 ) -> Entity {
-    group_of(entity, groups)
+    group_of(entity, memberships, groups)
         .into_iter()
         .min_by_key(|&member| {
             bodies
@@ -221,27 +221,23 @@ pub fn leader(
 /// on the owner's side, a blast, cone or all-enemies spell on whoever of
 /// that side stands where it went off. The reflection is an act of its
 /// own, flying back if the spell is a missile, and is not turned back again.
-#[allow(clippy::too_many_arguments)]
 pub fn reflect_spells(
     mut commands: Commands,
     mut acts: Query<(&Spell, &Strength, &mut Deed), Without<DeedHits>>,
     mut bodies: Query<Body>,
     levels: Query<(), With<Level>>,
-    (memberships, group_members, groups): (
-        Query<&GroupMember>,
-        Query<&GroupMembers>,
-        Query<&MonsterGroup>,
-    ),
+    memberships: Query<&GroupMember>,
+    group_members: Query<&GroupMembers>,
     party: Single<(&Position, &PartyRoster), With<PartyBody>>,
-    (content, definitions): (If<Res<Catalogs>>, Res<Definitions>),
-    (factions, clock, obstacles): (Res<Factions>, Res<GameClock>, WorldObstacles),
+    content: If<Res<Catalogs>>,
+    definitions: Res<Definitions>,
+    obstacles: WorldObstacles,
 ) {
     let (species, spells) = (&content.species, &content.spells);
-    let sides = (&groups, &*factions, clock.ms);
     let (position, roster) = *party;
     let eye = PartyBody::eye(position);
     let party: Vec<Entity> = roster.iter().collect();
-    let groups = (&memberships, &group_members);
+
     for (cast, &strength, mut deed) in &mut acts {
         let spell = &spells[cast.id];
         let Some(uses) = definitions.spell(cast.id) else { continue };
@@ -285,7 +281,7 @@ pub fn reflect_spells(
             (Targeting::Radius | Targeting::Cone, Aim::Point(at)) => (owner, at),
             (Targeting::Radius | Targeting::Cone | Targeting::AllEnemies, _) => (owner, cast.from),
             (Targeting::EnemyGroup, Aim::Monster(entity)) => {
-                let leader = leader(entity, &mut bodies, groups);
+                let leader = leader(entity, &mut bodies, &memberships, &group_members);
                 (Some(leader), eye_of(leader, &mut bodies))
             }
             (_, Aim::Monster(entity)) => (Some(entity), eye_of(entity, &mut bodies)),
@@ -299,17 +295,19 @@ pub fn reflect_spells(
             }
         };
         let recipients = match owner.and_then(|owner| bodies.get(owner).ok()) {
-            Some(body) => Recipients::Opponents(body.side(species, sides)).reversed(),
+            Some(body) => Recipients::Opponents(body.side.0).reversed(),
             None => Recipients::Everyone,
         };
         let within = |(centre, origin, radius): (Vec3, Vec3, f32), bodies: &mut Query<Body>| {
             super::reach::radius(
-                (centre, origin, radius),
+                centre,
+                origin,
+                radius,
                 recipients,
                 Some((eye, roster)),
                 bodies,
                 &levels,
-                (species, sides),
+                species,
                 &obstacles,
             )
         };
@@ -321,7 +319,7 @@ pub fn reflect_spells(
                     .copied()
                     .filter(|&member| bodies.get(member).is_ok_and(|b| !b.is_dead()))
                     .collect(),
-                Some(owner) => group_of(owner, groups),
+                Some(owner) => group_of(owner, &memberships, &group_members),
                 None => vec![],
             },
             Targeting::Radius => {

@@ -533,7 +533,6 @@ pub(crate) fn execute_in_world(
 
 /// Accept magic requests (retail `ChooseAction`): in combat only record the
 /// choice; outside it, cast now.
-#[allow(clippy::too_many_arguments)]
 pub fn accept_magic(
     mut commands: Commands,
     mut requests: MessageReader<MagicRequest>,

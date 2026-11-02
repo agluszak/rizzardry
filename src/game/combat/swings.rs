@@ -105,7 +105,8 @@ impl Attack {
     fn report(
         &mut self,
         battle: &mut Battle,
-        (attacker, target): (Entity, Option<Entity>),
+        attacker: Entity,
+        target: Option<Entity>,
         news: &mut MessageWriter<CombatNews>,
     ) {
         if let Some(target) = target {
@@ -287,7 +288,7 @@ pub(super) struct Stand {
 }
 
 impl Stand {
-    pub(super) fn of((position, body): (&Position, &PartyBody)) -> Self {
+    pub(super) fn of(position: &Position, body: &PartyBody) -> Self {
         Self { eye: PartyBody::eye(position), yaw: body.yaw }
     }
 
@@ -338,8 +339,11 @@ fn in_play(body: &BodyReadOnlyItem, place: &PlaceItem, levels: &Query<(), With<L
 fn blow_defence<'s>(
     body: &BodyReadOnlyItem,
     footing: &FootingItem,
-    (running, levels): (bool, &Query<(), With<Level>>),
-    (items, party, species): (&ItemCatalog, &Enchantments, &'s MonsterCatalog),
+    running: bool,
+    levels: &Query<(), With<Level>>,
+    items: &ItemCatalog,
+    party: &Enchantments,
+    species: &'s MonsterCatalog,
 ) -> Option<Defence<'s>> {
     if let Some(character) = &body.character {
         let (carried, burden) = (body.carried.as_ref()?, body.burden?);
@@ -351,7 +355,8 @@ fn blow_defence<'s>(
             items,
             burden.load,
             defending,
-            (&body.vitals.enchantments, Some(party)),
+            &body.vitals.enchantments,
+            Some(party),
         );
         return Some(Defence::member(&stats, armour, running, defending));
     }
@@ -362,15 +367,11 @@ fn blow_defence<'s>(
 }
 
 /// A monster's allegiance now: its species, faction, side and Turncoat.
-pub(super) fn allegiance(
-    body: &BodyReadOnlyItem,
-    species: &MonsterCatalog,
-    sides: (&Query<&MonsterGroup>, &Factions, u64),
-) -> Option<Allegiance> {
+pub(super) fn allegiance(body: &BodyReadOnlyItem, species: &MonsterCatalog) -> Option<Allegiance> {
     let monster = body.monster.as_ref()?;
     Some(Allegiance {
         species: monster.species,
-        stance: body.side(species, sides),
+        stance: body.side.0,
         faction: species[monster.species].faction,
         turncoat: body.vitals.conditions.has(Condition::Turncoat),
     })
@@ -382,9 +383,8 @@ pub(super) fn toward(
     mine: Allegiance,
     body: &BodyReadOnlyItem,
     species: &MonsterCatalog,
-    sides: (&Query<&MonsterGroup>, &Factions, u64),
 ) -> Stance {
-    match allegiance(body, species, sides) {
+    match allegiance(body, species) {
         Some(theirs) => hostility::between(mine, theirs),
         None => {
             hostility::toward_member(mine.stance, body.vitals.conditions.has(Condition::Turncoat))
@@ -398,7 +398,9 @@ pub(super) fn toward(
 fn provoke(
     body: &BodyReadOnlyItem,
     species: &MonsterCatalog,
-    (groups, factions, now): (&mut Query<&mut MonsterGroup>, &Factions, u64),
+    groups: &mut Query<&mut MonsterGroup>,
+    factions: &Factions,
+    now: u64,
 ) -> bool {
     let Some(monster) = &body.monster else { return false };
     if body.is_dead() || body.vitals.conditions.has(Condition::Turncoat) {
@@ -419,16 +421,19 @@ fn provoke(
 /// then those "in reach" of the party, then the nearest; ties keep the
 /// fight's order. A member turned on the party picks at random among their
 /// fellows and that monster.
-#[allow(clippy::too_many_arguments)]
 fn member_target(
     rng: &mut GameRng,
-    (member, hand, turned): (Entity, &Hand, bool),
-    (combatants, roster): (&[Entity], &[Entity]),
+    member: Entity,
+    hand: &Hand,
+    turned: bool,
+    combatants: &[Entity],
+    roster: &[Entity],
     bodies: &mut Query<Body>,
-    (places, levels): (&Query<Place, With<Monster>>, &Query<(), With<Level>>),
-    (stand, formation): (Stand, &Formation),
+    places: &Query<Place, With<Monster>>,
+    levels: &Query<(), With<Level>>,
+    stand: Stand,
+    formation: &Formation,
     species: &MonsterCatalog,
-    sides: (&Query<&MonsterGroup>, &Factions, u64),
 ) -> Option<Entity> {
     let monster = combatants
         .iter()
@@ -438,7 +443,7 @@ fn member_target(
             let monster = body.monster.as_ref()?;
             let kind = &species[monster.species];
             let distance = distance(stand.eye, monster, place.feet());
-            let side = body.side(species, sides);
+            let side = body.side.0;
             let opposed = if turned { side == Stance::Friendly } else { side != Stance::Friendly };
             if kind.npc.is_some()
                 || !opposed
@@ -479,7 +484,6 @@ fn member_target(
 /// Lightning Strike and a Rogue's backstab, the announcement, and the
 /// target's group provoked. A member whose hands reach nobody is done for
 /// the round.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn member_attacks(
     mut commands: Commands,
     actor: Option<Single<(Entity, &mut PartyTurn), With<Acting>>>,
@@ -503,7 +507,7 @@ pub(super) fn member_attacks(
     let (mut battle, combatants) = battle.into_inner();
     let combatants = combatants.map_or(&[][..], Combatants::entities);
     let (items, species, now) = (&content.items, &content.species, clock.ms);
-    let (stand, roster) = (Stand::of(*stand), roster.iter().collect::<Vec<_>>());
+    let (stand, roster) = (Stand::of(stand.0, stand.1), roster.iter().collect::<Vec<_>>());
     let rng = &mut *rng;
     let attacker = bodies.get(member).unwrap();
     let character = attacker.character.unwrap().clone();
@@ -529,13 +533,17 @@ pub(super) fn member_attacks(
             .then(|| {
                 member_target(
                     rng,
-                    (member, hand, turned),
-                    (combatants, &roster),
+                    member,
+                    hand,
+                    turned,
+                    combatants,
+                    &roster,
                     &mut bodies,
-                    (&places, &levels),
-                    (stand, &formation),
+                    &places,
+                    &levels,
+                    stand,
+                    &formation,
                     species,
-                    (&groups.as_readonly(), &factions, now),
                 )
             })
             .flatten();
@@ -591,7 +599,7 @@ pub(super) fn member_attacks(
         swings,
         surprise,
     });
-    if !turned && provoke(&bodies.get(target).unwrap(), species, (&mut groups, &factions, now)) {
+    if !turned && provoke(&bodies.get(target).unwrap(), species, &mut groups, &factions, now) {
         provocations.write(Provocation(target));
     }
     let ammunition = hand.paired.then(|| hands.hands[1 - side].modes);
@@ -609,20 +617,20 @@ pub(super) fn member_attacks(
 /// `MonsterVsCharDisposition` and `MonsterHostility` tests). A member's
 /// Stealth may keep them out of its eye this time (three quarters of it, in
 /// percent), and one that stayed out of it may learn from it.
-#[allow(clippy::too_many_arguments)]
 fn reachable_targets(
     rng: &mut GameRng,
-    (entity, (mine, wanted)): (Entity, (Allegiance, Stance)),
-    (combatants, roster): (&[Entity], &[Entity]),
+    entity: Entity,
+    mine: Allegiance,
+    wanted: Stance,
+    combatants: &[Entity],
+    roster: &[Entity],
     bodies: &mut Query<Body>,
-    (places, levels, obstacles): (
-        &Query<Place, With<Monster>>,
-        &Query<(), With<Level>>,
-        &WorldObstacles,
-    ),
-    (stand, formation): (Stand, &Formation),
+    places: &Query<Place, With<Monster>>,
+    levels: &Query<(), With<Level>>,
+    obstacles: &WorldObstacles,
+    stand: Stand,
+    formation: &Formation,
     species: &MonsterCatalog,
-    sides: (&Query<&MonsterGroup>, &Factions, u64),
     news: &mut MessageWriter<CombatNews>,
 ) -> Vec<(usize, AttackMode, Entity)> {
     let me = bodies.get(entity).unwrap();
@@ -646,7 +654,7 @@ fn reachable_targets(
         for &member in roster {
             let body = bodies.get(member).unwrap();
             if body.is_dead()
-                || toward(mine, &body, species, sides) != wanted
+                || toward(mine, &body, species) != wanted
                 || !stand.reaches(formation, member, at, attack.reach, reach_of_party)
             {
                 continue;
@@ -668,7 +676,7 @@ fn reachable_targets(
             if other != entity
                 && in_play(&body, &there, levels)
                 && obstacles.clear(eye, body_centre(feet, theirs))
-                && toward(mine, &body, species, sides) == wanted
+                && toward(mine, &body, species) == wanted
                 && monster.gap(here, theirs, feet) <= attack.reach.metres()
             {
                 candidates.extend(attack.modes.iter().map(|mode| (a, mode, other)));
@@ -721,7 +729,6 @@ fn notices(
 /// turn in time, or be struck from behind. With nobody to attack it closes
 /// in on a foe (a friendly monster on the nearest monster it may attack, a
 /// hostile one on the party) and acts again later in the round.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn monster_attacks(
     mut commands: Commands,
     fighters: Query<(Entity, &Fights, &mut MonsterTurn)>,
@@ -746,8 +753,8 @@ pub(super) fn monster_attacks(
     let (mut battle, combatants) = battle.into_inner();
     let combatants = combatants.map_or(&[][..], Combatants::entities);
     let (species, now) = (&content.species, clock.ms);
-    let (stand, roster) = (Stand::of(*stand), roster.iter().collect::<Vec<_>>());
-    let sides = (&groups, &*factions, now);
+    let (stand, roster) = (Stand::of(stand.0, stand.1), roster.iter().collect::<Vec<_>>());
+    let _sides = (&groups, &*factions, now);
     let rng = &mut *rng;
     let step = match battle.phase {
         RoundPhase::Executing(step) => step,
@@ -764,18 +771,23 @@ pub(super) fn monster_attacks(
         )>();
         battle.wait = Timer::from_seconds(super::ACTION_SECONDS, TimerMode::Once);
         let me = bodies.get(monster).unwrap();
-        let mine = allegiance(&me, species, sides).unwrap();
+        let mine = allegiance(&me, species).unwrap();
         let kind = &species[me.monster.as_ref().unwrap().species];
         let wanted = if turn.berserk { Stance::Friendly } else { Stance::Hostile };
         let candidates = reachable_targets(
             rng,
-            (monster, (mine, wanted)),
-            (combatants, &roster),
+            monster,
+            mine,
+            wanted,
+            combatants,
+            &roster,
             &mut bodies,
-            (&places, &levels, &obstacles),
-            (stand, &formation),
+            &places,
+            &levels,
+            &obstacles,
+            stand,
+            &formation,
             species,
-            sides,
             &mut news,
         );
         let (phase, attacks_left) = (turn.phase, turn.attacks_left);
@@ -786,14 +798,17 @@ pub(super) fn monster_attacks(
             if !turn.moved {
                 close_in(
                     &mut commands,
-                    (monster, &mut turn, step, attacks_left),
-                    (mine, wanted),
+                    monster,
+                    &mut turn,
+                    step,
+                    attacks_left,
+                    mine,
+                    wanted,
                     combatants,
                     &mut bodies,
                     &places,
                     stand,
                     species,
-                    sides,
                     &mut news,
                 );
             }
@@ -858,17 +873,19 @@ pub(super) fn monster_attacks(
 /// the nearest monster it may attack (charging when hurt), a hostile one on
 /// the party; a neutral one, or one that cannot walk, stays. One that moves
 /// acts again later in the round with the attacks it had.
-#[allow(clippy::too_many_arguments)]
 fn close_in(
     commands: &mut Commands,
-    (monster, turn, step, attacks_left): (Entity, &mut MonsterTurn, u32, u32),
-    (mine, wanted): (Allegiance, Stance),
+    monster: Entity,
+    turn: &mut MonsterTurn,
+    step: u32,
+    attacks_left: u32,
+    mine: Allegiance,
+    wanted: Stance,
     combatants: &[Entity],
     bodies: &mut Query<Body>,
     places: &Query<Place, With<Monster>>,
     stand: Stand,
     species: &MonsterCatalog,
-    sides: (&Query<&MonsterGroup>, &Factions, u64),
     news: &mut MessageWriter<CombatNews>,
 ) {
     let place = places.get(monster).unwrap();
@@ -880,9 +897,7 @@ fn close_in(
             .filter_map(|&entity| {
                 let body = bodies.get(entity).ok()?;
                 let at = places.get(entity).ok()?.translation();
-                (entity != monster
-                    && !body.is_dead()
-                    && toward(mine, &body, species, sides) == wanted)
+                (entity != monster && !body.is_dead() && toward(mine, &body, species) == wanted)
                     .then_some((here.distance_squared(at), entity))
             })
             .min_by(|a, b| a.0.total_cmp(&b.0))
@@ -897,7 +912,8 @@ fn close_in(
     } else if mine.stance == Stance::Hostile {
         let me = bodies.get(monster).unwrap();
         approach::move_budget(
-            (me.monster.as_ref().unwrap(), me.vitals),
+            me.monster.as_ref().unwrap(),
+            me.vitals,
             here,
             place.walker,
             stand.eye,
@@ -918,24 +934,20 @@ fn close_in(
 /// Each member's next swing: the attacker still able and the target still
 /// there, its aim, and where it lands; a swing that lands becomes a hit on
 /// whoever it struck. One that cannot go on ends the attack.
-#[allow(clippy::too_many_arguments)]
 fn swing_members(
     mut commands: Commands,
     mut attacks: Query<(Entity, &mut Attack, &Wielding, &AttackBy, Option<&AimsAt>)>,
     mut bodies: Query<Body>,
-    (footings, places, levels): (
-        Query<Footing>,
-        Query<Place, With<Monster>>,
-        Query<(), With<Level>>,
-    ),
+    footings: Query<Footing>,
+    places: Query<Place, With<Monster>>,
+    levels: Query<(), With<Level>>,
     battle: Single<(&Battle, Option<&Combatants>)>,
-    (stand, roster, formation, party): (
-        Single<(&Position, &PartyBody)>,
-        Single<&PartyRoster>,
-        Single<&Formation>,
-        Single<&PartyEffects>,
-    ),
-    (content, difficulty): (If<Res<Catalogs>>, Res<Difficulty>),
+    stand: Single<(&Position, &PartyBody)>,
+    roster: Single<&PartyRoster>,
+    formation: Single<&Formation>,
+    party: Single<&PartyEffects>,
+    content: If<Res<Catalogs>>,
+    difficulty: Res<Difficulty>,
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<CombatNews>,
 ) {
@@ -943,7 +955,7 @@ fn swing_members(
     let combatants = combatants.map_or(&[][..], Combatants::entities);
     let (items, species, difficulty) = (&content.items, &content.species, *difficulty);
     let running = battle.pace == Some(PartyPace::Run);
-    let stand = Stand::of(*stand);
+    let stand = Stand::of(stand.0, stand.1);
     for (attack_entity, mut attack, wielding, by, aims) in &mut attacks {
         let member = by.0;
         if attack.over {
@@ -954,7 +966,7 @@ fn swing_members(
         let aimed_at = aims.map(|aims| aims.0).and_then(|target| {
             let body = bodies.get(target).ok()?;
             let footing = footings.get(target).ok()?;
-            blow_defence(&body, &footing, (running, &levels), (items, &party.0, species))
+            blow_defence(&body, &footing, running, &levels, items, &party.0, species)
                 .map(|defence| (target, defence))
         });
         let (true, Some((target, aimed_at))) = (vitals.can_fight(), aimed_at) else {
@@ -1002,16 +1014,22 @@ fn swing_members(
         let close = hand.reach < Reach::Long;
         let landed = land(
             &mut rng,
-            (target, aim),
+            target,
+            aim,
             delivery,
             &mut attack.surprise,
-            (stand.eye, &mut bodies, &places),
+            stand.eye,
+            &mut bodies,
+            &places,
         );
         settle_landing(
             &mut commands,
-            (attack_entity, &mut attack, member),
+            attack_entity,
+            &mut attack,
+            member,
             landed,
-            (aim, close),
+            aim,
+            close,
             &mut news,
         );
     }
@@ -1021,9 +1039,12 @@ fn swing_members(
 /// nothing, and a swing that landed becomes a hit on its victim.
 fn settle_landing(
     commands: &mut Commands,
-    (attack_entity, attack, attacker): (Entity, &mut Attack, Entity),
+    attack_entity: Entity,
+    attack: &mut Attack,
+    attacker: Entity,
     landed: Result<Option<Landing>, ()>,
-    (aim, close): (i32, bool),
+    aim: i32,
+    close: bool,
     news: &mut MessageWriter<CombatNews>,
 ) {
     match landed {
@@ -1052,24 +1073,20 @@ fn settle_landing(
 /// Each monster's next swing, as a member's: the attacker able and the
 /// target there, its aim, and where it lands (retail
 /// `ContinueMonsterAttack`). A fumble may stop it between swings.
-#[allow(clippy::too_many_arguments)]
 fn swing_monsters(
     mut commands: Commands,
     mut attacks: Query<(Entity, &mut Attack, &Striking, &AttackBy, Option<&AimsAt>)>,
     mut bodies: Query<Body>,
-    (footings, places, levels): (
-        Query<Footing>,
-        Query<Place, With<Monster>>,
-        Query<(), With<Level>>,
-    ),
+    footings: Query<Footing>,
+    places: Query<Place, With<Monster>>,
+    levels: Query<(), With<Level>>,
     battle: Single<(&Battle, Option<&Combatants>)>,
-    (stand, roster, formation, party): (
-        Single<(&Position, &PartyBody)>,
-        Single<&PartyRoster>,
-        Single<&Formation>,
-        Single<&PartyEffects>,
-    ),
-    (content, difficulty): (If<Res<Catalogs>>, Res<Difficulty>),
+    stand: Single<(&Position, &PartyBody)>,
+    roster: Single<&PartyRoster>,
+    formation: Single<&Formation>,
+    party: Single<&PartyEffects>,
+    content: If<Res<Catalogs>>,
+    difficulty: Res<Difficulty>,
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<CombatNews>,
 ) {
@@ -1077,7 +1094,7 @@ fn swing_monsters(
     let combatants = combatants.map_or(&[][..], Combatants::entities);
     let (items, species, difficulty) = (&content.items, &content.species, *difficulty);
     let running = battle.pace == Some(PartyPace::Run);
-    let stand = Stand::of(*stand);
+    let stand = Stand::of(stand.0, stand.1);
     for (attack_entity, mut attack, striking, by, aims) in &mut attacks {
         let entity = by.0;
         if attack.over {
@@ -1090,7 +1107,7 @@ fn swing_monsters(
         let aimed_at = aims.map(|aims| aims.0).and_then(|target| {
             let body = bodies.get(target).ok()?;
             let footing = footings.get(target).ok()?;
-            blow_defence(&body, &footing, (running, &levels), (items, &party.0, species))
+            blow_defence(&body, &footing, running, &levels, items, &party.0, species)
                 .map(|defence| (target, defence))
         });
         let (true, Some((target, aimed_at))) = (vitals.can_fight(), aimed_at) else {
@@ -1099,7 +1116,16 @@ fn swing_monsters(
         };
         let (mode, surprise) = (attack.mode, attack.surprise);
         let me = (kind, &vitals, striking.stance);
-        let aim = attack::monster_aim(me, swung, mode, surprise, Some(&aimed_at), difficulty);
+        let aim = attack::monster_aim(
+            me.0,
+            me.1,
+            me.2,
+            swung,
+            mode,
+            surprise,
+            Some(&aimed_at),
+            difficulty,
+        );
         let place = places.get(entity).unwrap();
         let here = place.feet();
         let delivery = if swung.reach >= Reach::Long {
@@ -1134,22 +1160,30 @@ fn swing_monsters(
             }
             Delivery::Swing {
                 bystanders,
-                odds: attack::monster_aim(me, swung, mode, surprise, None, difficulty),
+                odds: attack::monster_aim(
+                    me.0, me.1, me.2, swung, mode, surprise, None, difficulty,
+                ),
             }
         };
         let close = swung.reach < Reach::Long;
         let landed = land(
             &mut rng,
-            (target, aim),
+            target,
+            aim,
             delivery,
             &mut attack.surprise,
-            (stand.eye, &mut bodies, &places),
+            stand.eye,
+            &mut bodies,
+            &places,
         );
         settle_landing(
             &mut commands,
-            (attack_entity, &mut attack, entity),
+            attack_entity,
+            &mut attack,
+            entity,
             landed,
-            (aim, close),
+            aim,
+            close,
             &mut news,
         );
     }
@@ -1162,14 +1196,14 @@ fn swing_monsters(
 /// the attacker's, raised for an unaware or natural strike, within 5 and 95
 /// percent; one that succeeds, picked at random, takes the blow, tiring by
 /// 2 to 4, and the attack's surprise is spent.
-#[allow(clippy::too_many_arguments)]
 fn intercept_swings(
     mut commands: Commands,
     swings: Query<(Entity, &Strikes, &HitOf), With<Swing>>,
     mut attacks: Query<(&mut Attack, &AttackBy)>,
     mut bodies: Query<Body>,
     places: Query<Place, With<Monster>>,
-    (guards, mut interceptions): (Query<&Guards>, Query<&mut Interceptions>),
+    guards: Query<&Guards>,
+    mut interceptions: Query<&mut Interceptions>,
     content: If<Res<Catalogs>>,
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<CombatNews>,
@@ -1249,16 +1283,17 @@ fn intercept_swings(
 /// more, cut by the victim's reduction, a fumble's capped. Struck members
 /// practise Iron Skin; a blow's chance to kill rises with the attacker's
 /// critical strike, and a Monk's to knock out.
-#[allow(clippy::too_many_arguments)]
 fn pierce_member_swings(
     mut commands: Commands,
     swings: Query<(Entity, &Strikes, &HitOf, &Swing)>,
     mut attacks: Query<(&mut Attack, &Wielding, &AttackBy)>,
     mut bodies: Query<Body>,
-    (footings, levels): (Query<Footing>, Query<(), With<Level>>),
+    footings: Query<Footing>,
+    levels: Query<(), With<Level>>,
     battle: Single<&Battle>,
     party: Single<&PartyEffects>,
-    (content, difficulty): (If<Res<Catalogs>>, Res<Difficulty>),
+    content: If<Res<Catalogs>>,
+    difficulty: Res<Difficulty>,
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<CombatNews>,
 ) {
@@ -1274,7 +1309,7 @@ fn pierce_member_swings(
         let stats = character.stats(&vitals.enchantments);
         let struck = bodies.get(victim).ok().and_then(|body| {
             let footing = footings.get(victim).ok()?;
-            blow_defence(&body, &footing, (running, &levels), (items, &party.0, species))
+            blow_defence(&body, &footing, running, &levels, items, &party.0, species)
         });
         let located = struck.map(|struck| {
             let at = struck.locate(rng, None);
@@ -1299,13 +1334,7 @@ fn pierce_member_swings(
         // A launcher pierces by what it shoots.
         let piercing = wielding.ammunition.map_or(mode, |modes| attack::choose_mode(rng, modes));
         let through = attack::member_penetration(
-            &stats,
-            &vitals,
-            hand,
-            piercing,
-            surprise,
-            (&struck, at),
-            difficulty,
+            &stats, &vitals, hand, piercing, surprise, &struck, at, difficulty,
         );
         let mut body = bodies.get_mut(victim).unwrap();
         // Missile Shield turns aside what is shot or thrown.
@@ -1349,16 +1378,17 @@ fn pierce_member_swings(
 /// the party's Missile Shield deflects it; glancing when it cannot pierce
 /// the armour where it struck; otherwise its attack's dice, cut by the
 /// victim's reduction, a fumble's capped.
-#[allow(clippy::too_many_arguments)]
 fn pierce_monster_swings(
     mut commands: Commands,
     swings: Query<(Entity, &Strikes, &HitOf, &Swing)>,
     mut attacks: Query<(&mut Attack, &Striking, &AttackBy)>,
     mut bodies: Query<Body>,
-    (footings, levels): (Query<Footing>, Query<(), With<Level>>),
+    footings: Query<Footing>,
+    levels: Query<(), With<Level>>,
     battle: Single<&Battle>,
     party: Single<&PartyEffects>,
-    (content, difficulty): (If<Res<Catalogs>>, Res<Difficulty>),
+    content: If<Res<Catalogs>>,
+    difficulty: Res<Difficulty>,
     mut rng: ResMut<GameRng>,
 ) {
     let (items, species, difficulty) = (&content.items, &content.species, *difficulty);
@@ -1374,7 +1404,7 @@ fn pierce_monster_swings(
         let me = (kind, &vitals, striking.stance);
         let Some((struck, member)) = bodies.get(victim).ok().and_then(|body| {
             let footing = footings.get(victim).ok()?;
-            blow_defence(&body, &footing, (running, &levels), (items, &party.0, species))
+            blow_defence(&body, &footing, running, &levels, items, &party.0, species)
                 .map(|defence| (defence, body.character.is_some()))
         }) else {
             commands.entity(swing_entity).despawn();
@@ -1387,8 +1417,9 @@ fn pierce_monster_swings(
             commands.entity(swing_entity).despawn();
             continue;
         }
-        let through =
-            attack::monster_penetration(me, swung, mode, surprise, (&struck, at), difficulty);
+        let through = attack::monster_penetration(
+            me.0, me.1, me.2, swung, mode, surprise, &struck, at, difficulty,
+        );
         let mut damage = 0;
         if swing.through || through >= swing.roll as i32 {
             let backstab = crate::game::characters::scale_by_level(kind.level, 100.0) as i32;
@@ -1413,7 +1444,6 @@ fn pierce_monster_swings(
 /// Each blow lands: its damage wounds its victim, and one that drew blood
 /// does what its weapon or attack does besides. What it did is gathered on
 /// its attack.
-#[allow(clippy::too_many_arguments)]
 fn land_blows(
     mut commands: Commands,
     blows: Query<(Entity, &Strikes, &HitOf, &Blow)>,
@@ -1421,7 +1451,8 @@ fn land_blows(
     mut bodies: Query<Body>,
     members: Query<(), With<Character>>,
     fight: Single<Entity, With<Battle>>,
-    (content, definitions): (If<Res<Catalogs>>, Res<Definitions>),
+    content: If<Res<Catalogs>>,
+    definitions: Res<Definitions>,
     mut rng: ResMut<GameRng>,
     mut notices: MessageWriter<DamageApplied>,
 ) {
@@ -1435,13 +1466,8 @@ fn land_blows(
         let dealt = if blow.damage == 0 {
             0
         } else {
-            let hurt = wound(
-                &mut victim,
-                blow.damage,
-                rng,
-                (species, fight),
-                (&mut commands, &mut notices),
-            );
+            let hurt =
+                wound(&mut victim, blow.damage, rng, species, fight, &mut commands, &mut notices);
             attack.struck(&hurt, by_party, monster)
         };
         // What the weapon does besides, once it drew blood, at the
@@ -1491,21 +1517,21 @@ fn train_strikes(
 /// A close blow that connected, even for nothing, sets off the victim's
 /// Razor Cloak: one charge strikes the attacker back, reduced by the
 /// attacker's own defence.
-#[allow(clippy::too_many_arguments)]
 fn razor_cloaks(
     mut commands: Commands,
     blows: Query<(&Strikes, &HitOf, &Swing), With<Dealt>>,
     mut attacks: Query<(&mut Attack, &AttackBy)>,
     mut bodies: Query<Body>,
-    (footings, levels, members): (
-        Query<Footing>,
-        Query<(), With<Level>>,
-        Query<(), With<Character>>,
-    ),
-    (fight, battle, party): (Single<Entity, With<Battle>>, Single<&Battle>, Single<&PartyEffects>),
+    footings: Query<Footing>,
+    levels: Query<(), With<Level>>,
+    members: Query<(), With<Character>>,
+    fight: Single<Entity, With<Battle>>,
+    battle: Single<&Battle>,
+    party: Single<&PartyEffects>,
     content: If<Res<Catalogs>>,
     mut rng: ResMut<GameRng>,
-    (mut notices, mut news): (MessageWriter<DamageApplied>, MessageWriter<CombatNews>),
+    mut notices: MessageWriter<DamageApplied>,
+    mut news: MessageWriter<CombatNews>,
 ) {
     use crate::content::spells::SpellId;
     let (items, species, spells) = (&content.items, &content.species, &content.spells);
@@ -1528,7 +1554,7 @@ fn razor_cloaks(
         let attacker = by.0;
         let footing = footings.get(attacker).unwrap();
         let defence = bodies.get(attacker).ok().and_then(|struck| {
-            blow_defence(&struck, &footing, (running, &levels), (items, &party.0, species))
+            blow_defence(&struck, &footing, running, &levels, items, &party.0, species)
         });
         let Some(amount) = defence.map(|defence| defence.reduce(rolled as i32)) else {
             continue;
@@ -1536,7 +1562,7 @@ fn razor_cloaks(
         let mut struck = bodies.get_mut(attacker).unwrap();
         let monster = struck.monster.is_some();
         let hurt =
-            wound(&mut struck, amount, rng, (species, Some(*fight)), (&mut commands, &mut notices));
+            wound(&mut struck, amount, rng, species, Some(*fight), &mut commands, &mut notices);
         let damage = attack.struck(&hurt, members.contains(defender), monster);
         news.write(CombatNews::Result { attacker: defender, target: attacker, hits: 1, damage });
     }
@@ -1572,7 +1598,6 @@ fn count_blows(
 /// with nothing left to fire is done for the round. An attack whose swings
 /// are spent or that can go no further reports, and the member's next hand
 /// and its phase follow.
-#[allow(clippy::too_many_arguments)]
 fn spend_member_swings(
     mut commands: Commands,
     mut attacks: Query<(Entity, &mut Attack, &Wielding, &AttackBy, Option<&AimsAt>)>,
@@ -1612,7 +1637,7 @@ fn spend_member_swings(
         if !attack.over {
             continue;
         }
-        attack.report(&mut battle, (member, aims.map(|aims| aims.0)), &mut news);
+        attack.report(&mut battle, member, aims.map(|aims| aims.0), &mut news);
         commands.entity(attack_entity).despawn();
         // The hand due next, by the hands as they are now.
         let character = body.character.as_ref().unwrap();
@@ -1648,7 +1673,7 @@ fn spend_monster_swings(
         if !attack.over {
             continue;
         }
-        attack.report(&mut battle, (by.0, aims.map(|aims| aims.0)), &mut news);
+        attack.report(&mut battle, by.0, aims.map(|aims| aims.0), &mut news);
         commands.entity(attack_entity).despawn();
         let mut turn = turns.get_mut(by.0).unwrap();
         turn.phase = super::next_phase(striking.phase, striking.attacks_left);
@@ -1746,10 +1771,13 @@ fn struck_body(
 /// An error when the target has no body to aim at.
 fn land(
     rng: &mut GameRng,
-    (target, aim): (Entity, i32),
+    target: Entity,
+    aim: i32,
     delivery: Delivery,
     surprise: &mut Surprise,
-    (eye, bodies, places): (Vec3, &mut Query<Body>, &Query<Place, With<Monster>>),
+    eye: Vec3,
+    bodies: &mut Query<Body>,
+    places: &Query<Place, With<Monster>>,
 ) -> Result<Option<Landing>, ()> {
     match delivery {
         Delivery::Shot { from, blind, through } => {

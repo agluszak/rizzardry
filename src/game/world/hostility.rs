@@ -103,6 +103,43 @@ pub fn within_radius(species: &Species, nearest: f32) -> bool {
         && matches!(species.disposition, Disposition::HostileWithin(radius) if nearest <= radius)
 }
 
+/// Which side a body is on toward the party now: a member the party's, a
+/// monster its group's while the group's set stance holds ([`stance`]),
+/// either swapped by its own Turncoat ([`own_stance`]).
+///
+/// Derived, so that every rule reads one fact instead of the group, the
+/// factions and the clock. [`judge_sides`] produces it from those sources
+/// at the start of each frame and fixed step, for every body; rules may
+/// trust it until the next. A body spawned in between reads it as neutral
+/// until then.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Side(pub Stance);
+
+/// Judge every body's side from its group, the factions and the clock.
+pub fn judge_sides(
+    mut bodies: Query<(
+        &mut Side,
+        &crate::game::characters::Vitals,
+        Option<&Monster>,
+        Option<&GroupMember>,
+        Has<crate::game::combat::Combatant>,
+    )>,
+    groups: Query<&MonsterGroup>,
+    content: If<Res<crate::game::data::Catalogs>>,
+    (factions, clock): (Res<Factions>, Res<GameClock>),
+) {
+    for (mut side, vitals, monster, member, fighting) in &mut bodies {
+        let own = match monster {
+            Some(monster) => {
+                let set = member.and_then(|member| groups.get(member.0).ok()).and_then(|g| g.set);
+                stance(set, &content.species[monster.species], &factions, clock.ms, fighting)
+            }
+            None => Stance::Friendly,
+        };
+        side.set_if_neq(Side(own_stance(own, vitals.conditions.has(Condition::Turncoat))));
+    }
+}
+
 /// A monster's own stance now: its group's set stance while it holds
 /// ([`stance`]), swapped by the monster's own Turncoat ([`own_stance`]).
 /// Every reader of a monster's side goes through this.
