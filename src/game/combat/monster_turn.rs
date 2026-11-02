@@ -20,7 +20,7 @@ use super::{ACTION_SECONDS, Battle, CombatNews, Combatants, approach, conduct, s
 use crate::content::spells::SpellId;
 use crate::game::characters::Condition;
 use crate::game::data::Catalogs;
-use crate::game::hits::prototypes::{Definitions, Effects, Purpose, Uses};
+use crate::game::hits::prototypes::{Definitions, Uses};
 use crate::game::hits::spells::reach;
 use crate::game::hits::{Act, Body, BodyReadOnlyItem, Deed};
 use crate::game::magic::Strength;
@@ -199,15 +199,12 @@ pub(super) fn decide_special(
     party: Single<&PartyEffects>,
     level: PlayedLevel,
     obstacles: WorldObstacles,
-    effects: Query<&Effects>,
-    purposes: Query<Purpose>,
     content: If<Res<Catalogs>>,
     definitions: Res<Definitions>,
     mut rng: ResMut<GameRng>,
 ) {
     let combatants = fight.map_or(&[][..], Combatants::entities);
     let eye = PartyBody::eye(*stand);
-    let craft = (&*definitions, &effects, &purposes);
     let far = level.view_distance().unwrap_or(0.0);
     for monster in &actors {
         let body = bodies.get(monster).unwrap();
@@ -240,7 +237,7 @@ pub(super) fn decide_special(
                 &obstacles,
                 &content.species,
             );
-            let aims = monster_spells::aims(cone, &scene, craft);
+            let aims = monster_spells::aims(cone, &scene, &definitions);
             (!aims.is_empty()).then(|| {
                 let aim = aims[rng.below(aims.len() as u32) as usize];
                 let toward = monster_spells::aimed_at(&scene, aim);
@@ -272,15 +269,12 @@ pub(super) fn decide_spell(
     party: Single<&PartyEffects>,
     level: PlayedLevel,
     obstacles: WorldObstacles,
-    effects: Query<&Effects>,
-    purposes: Query<Purpose>,
     content: If<Res<Catalogs>>,
     definitions: Res<Definitions>,
     mut rng: ResMut<GameRng>,
 ) {
     let combatants = fight.map_or(&[][..], Combatants::entities);
     let eye = PartyBody::eye(*stand);
-    let craft = (&*definitions, &effects, &purposes);
     let far = level.view_distance().unwrap_or(0.0);
     for monster in &actors {
         let body = bodies.get(monster).unwrap();
@@ -304,9 +298,15 @@ pub(super) fn decide_spell(
             &obstacles,
             &content.species,
         );
-        let Some((spell, aim)) =
-            monster_spells::choose(&mut rng, &vitals, kind, chance, &content.spells, &scene, craft)
-        else {
+        let Some((spell, aim)) = monster_spells::choose(
+            &mut rng,
+            &vitals,
+            kind,
+            chance,
+            &content.spells,
+            &scene,
+            &definitions,
+        ) else {
             continue;
         };
         let budget = caster.spell_budget(kind);

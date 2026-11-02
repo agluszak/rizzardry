@@ -181,6 +181,8 @@ pub struct Definitions {
     specials: HashMap<SpecialAttackKind, Entity>,
     breath: Entity,
     blow: Entity,
+    /// What each spell's effects are for.
+    purposes: HashMap<SpellId, Vec<Purpose>>,
 }
 
 impl Definitions {
@@ -214,19 +216,19 @@ impl Definitions {
 }
 
 /// Spawns one definition's prototypes, in order.
-struct Definer<'a, 'w, 's> {
-    commands: &'a mut Commands<'w, 's>,
+struct Definer<'a> {
+    world: &'a mut World,
     definition: Entity,
 }
 
-impl Definer<'_, '_, '_> {
-    fn new<'a, 'w, 's>(commands: &'a mut Commands<'w, 's>) -> Definer<'a, 'w, 's> {
-        let definition = commands.spawn(Definition).id();
-        Definer { commands, definition }
+impl Definer<'_> {
+    fn new(world: &mut World) -> Definer<'_> {
+        let definition = world.spawn(Definition).id();
+        Definer { world, definition }
     }
 
     fn effect(&mut self, effect: impl Bundle) -> &mut Self {
-        self.commands.spawn((EffectOf(self.definition), effect));
+        self.world.spawn((EffectOf(self.definition), effect));
         self
     }
 }
@@ -282,7 +284,7 @@ fn define_spell(d: &mut Definer, spell: &SpellDefinition) -> Option<()> {
         S::LIFESTEAL | S::MIGHT_TO_MAGIC => {
             d.effect(harm);
             let lifesteal = spell.id == S::LIFESTEAL;
-            d.commands.entity(d.definition).insert(Leeches { lifesteal });
+            d.world.entity_mut(d.definition).insert(Leeches { lifesteal });
         }
         S::EYE_FOR_AN_EYE
         | S::DRACON_BREATH
@@ -661,47 +663,85 @@ fn define_blow(d: &mut Definer) {
         .effect(condition(Some(Insane), Realm::Mental, A::Insane));
 }
 
-/// Decode the definitions once content has loaded.
-pub fn define(mut commands: Commands, content: If<Res<Catalogs>>) {
+/// Decode the definitions once content has loaded, and what each spell's
+/// effects are for.
+pub fn define(world: &mut World) {
     use crate::game::hits::specials::{CHARACTER_BREATH, special};
+    let content = world.resource::<Catalogs>().spells.0.clone();
     let mut spells = HashMap::new();
     let mut backfires = HashMap::new();
     let mut pulses = HashMap::new();
-    for spell in content.spells.0.iter() {
-        let mut d = Definer::new(&mut commands);
+    for spell in content.iter() {
+        let mut d = Definer::new(world);
         let defined = define_spell(&mut d, spell).is_some();
         let definition = d.definition;
         if !defined {
-            commands.entity(definition).despawn();
+            world.entity_mut(definition).despawn();
             continue;
         }
         spells.insert(spell.id, definition);
         if crate::game::magic::enchantments::personal(spell.id) {
-            let mut d = Definer::new(&mut commands);
+            let mut d = Definer::new(world);
             define_backfire(&mut d, spell);
             backfires.insert(spell.id, d.definition);
         }
         if crate::game::magic::enchantments::OFFENSIVE.contains(&spell.id)
             || spell.id == SpellId::RING_OF_FIRE
         {
-            let mut d = Definer::new(&mut commands);
+            let mut d = Definer::new(world);
             define_pulse(&mut d, spell);
             pulses.insert(spell.id, d.definition);
         }
     }
     let mut specials = HashMap::new();
     for kind in (1..=u8::MAX).filter_map(|byte| SpecialAttackKind::try_from(byte).ok()) {
-        let mut d = Definer::new(&mut commands);
+        let mut d = Definer::new(world);
         define_special(&mut d, special(kind));
         specials.insert(kind, d.definition);
     }
-    let mut d = Definer::new(&mut commands);
+    let mut d = Definer::new(world);
     define_special(&mut d, CHARACTER_BREATH);
     let breath = d.definition;
-    let mut d = Definer::new(&mut commands);
+    let mut d = Definer::new(world);
     define_blow(&mut d);
     let blow = d.definition;
-    commands.insert_resource(Definitions { spells, backfires, pulses, specials, breath, blow });
+    let purposes =
+        spells.iter().map(|(&spell, &definition)| (spell, purposes(world, definition))).collect();
+    world.insert_resource(Definitions {
+        spells,
+        backfires,
+        pulses,
+        specials,
+        breath,
+        blow,
+        purposes,
+    });
+}
+
+/// What a definition's effects are for, in order, as a monster weighs them;
+/// a follow-up that only comes if the one before landed is not counted.
+fn purposes(world: &mut World, definition: Entity) -> Vec<Purpose> {
+    let effects: Vec<Entity> =
+        world.get::<Effects>(definition).into_iter().flat_map(|e| e.iter()).collect();
+    effects
+        .into_iter()
+        .filter_map(|effect| {
+            let effect = world.entity(effect);
+            if effect.contains::<Heal>() {
+                Some(Purpose::Heals)
+            } else if effect.contains::<Refresh>() {
+                Some(Purpose::Refreshes)
+            } else if let Some(afflict) = effect.get::<Afflict>()
+                && !effect.contains::<OnlyIfLanded>()
+            {
+                afflict.condition.map(Purpose::Afflicts)
+            } else if let Some(enchant) = effect.get::<Enchant>() {
+                Some(Purpose::Enchants(enchant.spell))
+            } else {
+                effect.get::<Cure>().map(|cure| Purpose::Cures(cure.conditions))
+            }
+        })
+        .collect()
 }
 
 /// Each act's reaches become its effects: the definition's prototypes,
@@ -898,51 +938,33 @@ pub fn roll(
     }
 }
 
-/// What a prototype is for, as a monster weighs whether a spell is worth
-/// casting at someone.
-#[derive(bevy::ecs::query::QueryData)]
-pub struct Purpose {
-    heals: Has<Heal>,
-    refreshes: Has<Refresh>,
-    afflict: Option<&'static Afflict>,
-    enchant: Option<&'static Enchant>,
-    cure: Option<&'static Cure>,
-    follow_up: Has<OnlyIfLanded>,
+/// What one of a spell's effects is for, as a monster weighs whether the
+/// spell is worth casting at someone.
+#[derive(Clone, Copy, Debug)]
+pub enum Purpose {
+    Heals,
+    Refreshes,
+    Afflicts(Condition),
+    Enchants(SpellId),
+    Cures(&'static [Condition]),
 }
 
-/// Whether a spell would do anything to `victim` (retail
-/// `MonsterSpellTargetOK`): healing only the hurt, rest only the tired,
-/// cures only what they cure, and no condition or enchantment it already
-/// has; a spell that does none of these always would.
-pub fn worthwhile(
-    definitions: &Definitions,
-    effects: &Query<&Effects>,
-    purposes: &Query<Purpose>,
-    spell: SpellId,
-    victim: &crate::game::characters::Vitals,
-) -> bool {
-    let Some(effects) = definitions.spell(spell).and_then(|d| effects.get(d).ok()) else {
-        return false;
-    };
-    let has = |condition| victim.conditions.has(condition);
-    let mut judged = false;
-    let mut worth = false;
-    for purpose in purposes.iter_many(effects.iter()).matched() {
-        let verdict = if purpose.heals {
-            Some(victim.health.current < victim.health.max)
-        } else if purpose.refreshes {
-            Some(victim.stamina.current < victim.stamina.max)
-        } else if let Some(afflict) = purpose.afflict.filter(|_| !purpose.follow_up) {
-            afflict.condition.map(|condition| !has(condition))
-        } else if let Some(enchant) = purpose.enchant {
-            Some(!victim.enchantments.has(enchant.spell))
-        } else {
-            purpose.cure.map(|cure| cure.conditions.iter().any(|&c| has(c)))
-        };
-        if let Some(verdict) = verdict {
-            judged = true;
-            worth |= verdict;
-        }
+impl Definitions {
+    /// Whether a spell would do anything to `victim` (retail
+    /// `MonsterSpellTargetOK`): healing only the hurt, rest only the tired,
+    /// cures only what they cure, and no condition or enchantment it
+    /// already has; a spell that does none of these always would. One the
+    /// game does not resolve would not.
+    pub fn worthwhile(&self, spell: SpellId, victim: &crate::game::characters::Vitals) -> bool {
+        let Some(purposes) = self.purposes.get(&spell) else { return false };
+        let has = |condition| victim.conditions.has(condition);
+        purposes.is_empty()
+            || purposes.iter().any(|purpose| match *purpose {
+                Purpose::Heals => victim.health.current < victim.health.max,
+                Purpose::Refreshes => victim.stamina.current < victim.stamina.max,
+                Purpose::Afflicts(condition) => !has(condition),
+                Purpose::Enchants(spell) => !victim.enchantments.has(spell),
+                Purpose::Cures(conditions) => conditions.iter().any(|&c| has(c)),
+            })
     }
-    !judged || worth
 }

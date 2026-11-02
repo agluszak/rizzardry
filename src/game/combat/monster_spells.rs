@@ -14,7 +14,7 @@ use crate::content::spells::{
     MAX_POWER, SpellCatalog, SpellDefinition, SpellId, Spellbook, Targeting,
 };
 use crate::game::characters::Condition;
-use crate::game::hits::prototypes::{Definitions, Effects, Purpose};
+use crate::game::hits::prototypes::Definitions;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::Stance;
 
@@ -153,11 +153,11 @@ fn castable(
     spell: &SpellDefinition,
     caster: &crate::game::characters::Vitals,
     kind: &Species,
-    craft: (&Definitions, &Query<&Effects>, &Query<Purpose>),
+    definitions: &Definitions,
 ) -> bool {
     let silenced = caster.conditions.has(Condition::Silenced);
     spell.monsters_cast
-        && craft.0.spell(spell.id).is_some()
+        && definitions.spell(spell.id).is_some()
         && !matches!(
             spell.targeting,
             Targeting::Party | Targeting::Point | Targeting::Item | Targeting::LockOrTrap
@@ -176,12 +176,10 @@ fn castable(
 pub(super) fn aims(
     spell: &SpellDefinition,
     scene: &Scene,
-    craft: (&Definitions, &Query<&Effects>, &Query<Purpose>),
+    definitions: &Definitions,
 ) -> Vec<SpellAim> {
     let reach = spell.reach.metres();
-    let worth = |vitals: &crate::game::characters::Vitals| {
-        crate::game::hits::prototypes::worthwhile(craft.0, craft.1, craft.2, spell.id, vitals)
-    };
+    let worth = |vitals: &crate::game::characters::Vitals| definitions.worthwhile(spell.id, vitals);
     let party_reached = scene.sees_party && scene.party <= reach;
     let monsters = |stance: Stance| {
         scene
@@ -235,13 +233,13 @@ pub(super) fn casts_at_foes(
     kind: &Species,
     spells: &SpellCatalog,
     scene: &Scene,
-    craft: (&Definitions, &Query<&Effects>, &Query<Purpose>),
+    definitions: &Definitions,
 ) -> bool {
     kind.magic.chance != 0
         && kind.magic.spells.iter().flatten().map(|&id| &spells[id]).any(|spell| {
             spell.aimed_at_enemies()
-                && castable(spell, caster, kind, craft)
-                && !aims(spell, scene, craft).is_empty()
+                && castable(spell, caster, kind, definitions)
+                && !aims(spell, scene, definitions).is_empty()
         })
 }
 
@@ -256,7 +254,7 @@ pub(super) fn choose(
     chance: u32,
     spells: &SpellCatalog,
     scene: &Scene,
-    craft: (&Definitions, &Query<&Effects>, &Query<Purpose>),
+    definitions: &Definitions,
 ) -> Option<(SpellId, SpellAim)> {
     let usable: Vec<(u32, &SpellDefinition, Vec<SpellAim>)> = kind
         .magic
@@ -265,10 +263,10 @@ pub(super) fn choose(
         .zip(SLOT_WEIGHTS)
         .filter_map(|(id, weight)| {
             let spell = &spells[(*id)?];
-            if !castable(spell, caster, kind, craft) {
+            if !castable(spell, caster, kind, definitions) {
                 return None;
             }
-            let aims = aims(spell, scene, craft);
+            let aims = aims(spell, scene, definitions);
             (!aims.is_empty()).then_some((weight, spell, aims))
         })
         .collect();
@@ -356,7 +354,6 @@ mod tests {
     /// reach, and casts none of them past its chance.
     #[test]
     fn a_monster_casts_what_would_work_at_its_chance() {
-        use bevy::ecs::system::RunSystemOnce;
         let caster = Entity::from_bits(1);
         let mut catalog = SpellCatalog(vec![SpellDefinition::default(); 80]);
         catalog.0[SpellId::HEAL_WOUNDS.0 as usize] =
@@ -365,55 +362,43 @@ mod tests {
             spell(SpellId::ENERGY_BLAST.0, Targeting::Enemy);
         let mut world = World::new();
         world.insert_resource(crate::game::data::Catalogs { spells: catalog, ..default() });
-        world.run_system_once(crate::game::hits::prototypes::define).unwrap();
-        world
-            .run_system_once(
-                move |content: Res<crate::game::data::Catalogs>,
-                      definitions: Res<Definitions>,
-                      effects: Query<&Effects>,
-                      purposes: Query<Purpose>| {
-                    let craft = (&*definitions, &effects, &purposes);
-                    let catalog = &content.spells;
-                    let mut spells = [None; 10];
-                    spells[0] = Some(SpellId::HEAL_WOUNDS);
-                    let kind = Species {
-                        magic: MonsterMagic { chance: 50, spells, budget: 50 },
-                        ..default()
-                    };
-                    let (_, monster) = super::super::conduct::tests::monster(100);
-                    let mut rng = GameRng::seeded(3);
-                    let choose = |rng: &mut GameRng, kind: &Species, chance, scene: &Scene| {
-                        choose(rng, &monster, kind, chance, catalog, scene, craft)
-                    };
-                    assert_eq!(choose(&mut rng, &kind, 100, &scene(caster, false)), None, "whole");
-                    assert_eq!(
-                        choose(&mut rng, &kind, 100, &scene(caster, true)),
-                        Some((SpellId::HEAL_WOUNDS, SpellAim::Monster(caster)))
-                    );
-                    assert_eq!(choose(&mut rng, &kind, 0, &scene(caster, true)), None);
-                    let mut spells = [None; 10];
-                    spells[9] = Some(SpellId::ENERGY_BLAST);
-                    let kind = Species { magic: MonsterMagic { spells, ..kind.magic }, ..kind };
-                    assert_eq!(
-                        choose(&mut rng, &kind, 100, &scene(caster, false)),
-                        Some((SpellId::ENERGY_BLAST, SpellAim::Member(Entity::from_bits(10))))
-                    );
-                    let mut far = scene(caster, false);
-                    far.party = 30.0;
-                    assert_eq!(choose(&mut rng, &kind, 100, &far), None, "out of reach");
-                    // Turned, it stands with the party and against its fellow.
-                    let mut turned = scene(caster, false);
-                    turned.members[0].stance = Stance::Friendly;
-                    let fellow = Entity::from_bits(2);
-                    turned.monsters.push(someone(fellow, Stance::Hostile, false));
-                    assert_eq!(
-                        choose(&mut rng, &kind, 100, &turned),
-                        Some((SpellId::ENERGY_BLAST, SpellAim::Monster(fellow))),
-                        "a turned caster blasts its fellow, not the party"
-                    );
-                },
-            )
-            .unwrap();
+        crate::game::hits::prototypes::define(&mut world);
+        let definitions = world.resource::<Definitions>();
+        let catalog = &world.resource::<crate::game::data::Catalogs>().spells;
+        let mut spells = [None; 10];
+        spells[0] = Some(SpellId::HEAL_WOUNDS);
+        let kind = Species { magic: MonsterMagic { chance: 50, spells, budget: 50 }, ..default() };
+        let (_, monster) = super::super::conduct::tests::monster(100);
+        let mut rng = GameRng::seeded(3);
+        let choose = |rng: &mut GameRng, kind: &Species, chance, scene: &Scene| {
+            choose(rng, &monster, kind, chance, catalog, scene, definitions)
+        };
+        assert_eq!(choose(&mut rng, &kind, 100, &scene(caster, false)), None, "whole");
+        assert_eq!(
+            choose(&mut rng, &kind, 100, &scene(caster, true)),
+            Some((SpellId::HEAL_WOUNDS, SpellAim::Monster(caster)))
+        );
+        assert_eq!(choose(&mut rng, &kind, 0, &scene(caster, true)), None);
+        let mut spells = [None; 10];
+        spells[9] = Some(SpellId::ENERGY_BLAST);
+        let kind = Species { magic: MonsterMagic { spells, ..kind.magic }, ..kind };
+        assert_eq!(
+            choose(&mut rng, &kind, 100, &scene(caster, false)),
+            Some((SpellId::ENERGY_BLAST, SpellAim::Member(Entity::from_bits(10))))
+        );
+        let mut far = scene(caster, false);
+        far.party = 30.0;
+        assert_eq!(choose(&mut rng, &kind, 100, &far), None, "out of reach");
+        // Turned, it stands with the party and against its fellow.
+        let mut turned = scene(caster, false);
+        turned.members[0].stance = Stance::Friendly;
+        let fellow = Entity::from_bits(2);
+        turned.monsters.push(someone(fellow, Stance::Hostile, false));
+        assert_eq!(
+            choose(&mut rng, &kind, 100, &turned),
+            Some((SpellId::ENERGY_BLAST, SpellAim::Monster(fellow))),
+            "a turned caster blasts its fellow, not the party"
+        );
     }
 
     /// A small budget casts at low power; a large one at the top.

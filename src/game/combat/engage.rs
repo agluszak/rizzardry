@@ -150,10 +150,7 @@ pub(super) fn engage(
     party: PartySight,
     mut engaged: MessageWriter<Engaged>,
     definitions: Res<crate::game::hits::prototypes::Definitions>,
-    effects: Query<&crate::game::hits::prototypes::Effects>,
-    purposes: Query<crate::game::hits::prototypes::Purpose>,
 ) {
-    let craft = (&*definitions, &effects, &purposes);
     let provoked: Vec<Entity> = provocations
         .read()
         .filter_map(|&hostility::Provocation(m)| Some(monsters.get(m).ok()?.4?.0))
@@ -209,12 +206,12 @@ pub(super) fn engage(
             party: distance,
             sees_party: sees,
         };
-        let casts = monster_spells::casts_at_foes(vitals, kind, spells, &scene, craft);
+        let casts = monster_spells::casts_at_foes(vitals, kind, spells, &scene, &definitions);
         let breathes = kind.special.chance != 0
             && special_ready(vitals, kind, false, None)
             && spells
                 .get(crate::content::spells::SpellId::SPECIAL_ATTACK_CONE)
-                .is_some_and(|cone| !monster_spells::aims(cone, &scene, craft).is_empty());
+                .is_some_and(|cone| !monster_spells::aims(cone, &scene, &definitions).is_empty());
         let acts = vitals.can_fight()
             && (reaches || (close && monster.body.speed > 0.0) || casts || breathes);
         Some((distance, sees, acts))
