@@ -134,6 +134,24 @@ impl BodyReadOnlyItem<'_, '_> {
         }
     }
 
+    /// Where its body is: a monster's pose, the party's eye for a member.
+    pub fn translation(&self, party_eye: Vec3) -> Vec3 {
+        match (&self.member_of, &self.pose) {
+            (None, Some(pose)) => pose.translation(),
+            _ => party_eye,
+        }
+    }
+
+    /// Which way a monster faces.
+    pub fn forward(&self) -> Option<Vec3> {
+        self.pose.as_ref().map(|pose| pose.forward())
+    }
+
+    /// A monster alive in the level being played.
+    pub fn alive_in_play(&self, levels: &Query<(), With<Level>>) -> bool {
+        !self.vitals.is_dead() && self.in_play(levels)
+    }
+
     /// Where it looks from: the party's eye for a member, a monster's eyes.
     pub fn eye(&self, party_eye: Vec3) -> Vec3 {
         match (&self.member_of, &self.monster) {

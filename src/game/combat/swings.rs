@@ -43,11 +43,9 @@ use crate::game::party::formation::{self, Formation, Row};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
-use crate::game::world::ActorPose;
 use crate::game::world::hostility::{self, Allegiance, Provocation, Stance};
 use crate::game::world::identify::MonsterGroup;
-use crate::game::world::level::{Level, LevelOwned};
-use crate::game::world::navigation::{Walker, feet};
+use crate::game::world::level::Level;
 use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::population::Monster;
 
@@ -251,33 +249,12 @@ pub(super) fn stages(app: &mut App) {
     );
 }
 
-/// Where a monster stands in the world: its pose, how it walks, and the
-/// level it belongs to.
-#[derive(QueryData)]
-pub(super) struct Place {
-    pose: ActorPose,
-    walker: Option<&'static Walker>,
-    owner: &'static LevelOwned,
-}
-
-impl PlaceItem<'_, '_> {
-    /// Its feet on the ground.
-    pub(super) fn feet(&self) -> Vec3 {
-        feet(self.pose.translation(), self.walker)
-    }
-
-    fn translation(&self) -> Vec3 {
-        self.pose.translation()
-    }
-}
-
 /// What a blow meets besides the body: a member defending, a monster
 /// advancing, the level a monster belongs to.
 #[derive(QueryData)]
 pub(super) struct Footing {
     turn: Option<&'static PartyTurn>,
     advancing: Has<CombatMove>,
-    owner: Option<&'static LevelOwned>,
 }
 
 /// Where the party stands in the fight: its eye and which way it faces.
@@ -312,11 +289,6 @@ fn distance(eye: Vec3, monster: &Monster, feet: Vec3) -> f32 {
     crate::game::world::perception::party_distance(eye, monster, feet)
 }
 
-/// Where a monster is struck: the middle of its body.
-fn body_centre(feet: Vec3, monster: &Monster) -> Vec3 {
-    feet + Vec3::Y * monster.body.eye_height * 0.5
-}
-
 /// Whether a monster has its back to the party: facing away by 135° or
 /// more (retail `IsPartyLookingAwayFrom`).
 fn back_to_party(forward: Vec3, at: Vec3, party_eye: Vec3) -> bool {
@@ -325,11 +297,6 @@ fn back_to_party(forward: Vec3, at: Vec3, party_eye: Vec3) -> bool {
     to_party != Vec2::ZERO
         && forward != Vec2::ZERO
         && forward.angle_to(to_party).abs() >= std::f32::consts::FRAC_PI_4 * 3.0
-}
-
-/// A monster in play: alive, in the played level.
-fn in_play(body: &BodyReadOnlyItem, place: &PlaceItem, levels: &Query<(), With<Level>>) -> bool {
-    !body.is_dead() && levels.contains(place.owner.0)
 }
 
 /// A body's defence as a blow meets it. A member's: what they wear and the
@@ -361,7 +328,7 @@ fn blow_defence<'s>(
         return Some(Defence::member(&stats, armour, running, defending));
     }
     let monster = body.monster.as_ref()?;
-    let in_play = footing.owner.is_some_and(|owner| levels.contains(owner.0));
+    let in_play = body.in_play(levels);
     (in_play && !body.is_dead())
         .then(|| Defence::monster(&species[monster.species], body.vitals, footing.advancing))
 }
@@ -429,7 +396,6 @@ fn member_target(
     combatants: &[Entity],
     roster: &[Entity],
     bodies: &mut Query<Body>,
-    places: &Query<Place, With<Monster>>,
     levels: &Query<(), With<Level>>,
     stand: Stand,
     formation: &Formation,
@@ -439,21 +405,27 @@ fn member_target(
         .iter()
         .filter_map(|&entity| {
             let body = bodies.get(entity).ok()?;
-            let place = places.get(entity).ok()?;
+            let place = bodies.get(entity).ok()?;
             let monster = body.monster.as_ref()?;
             let kind = &species[monster.species];
-            let distance = distance(stand.eye, monster, place.feet());
+            let distance = distance(stand.eye, monster, place.feet(stand.eye));
             let side = body.side.0;
             let opposed = if turned { side == Stance::Friendly } else { side != Stance::Friendly };
             if kind.npc.is_some()
                 || !opposed
-                || !in_play(&body, &place, levels)
-                || !stand.reaches(formation, member, place.translation(), hand.reach, distance)
+                || !body.alive_in_play(levels)
+                || !stand.reaches(
+                    formation,
+                    member,
+                    place.translation(stand.eye),
+                    hand.reach,
+                    distance,
+                )
             {
                 return None;
             }
             let worst = body.vitals.conditions.worst();
-            let quadrant = formation::quadrant(stand.eye, stand.yaw, place.translation());
+            let quadrant = formation::quadrant(stand.eye, stand.yaw, place.translation(stand.eye));
             let in_reach = !kind.attacks.is_empty()
                 && (quadrant == Row::Rear
                     || (!formation.occupied(quadrant) && formation.occupied(Row::Center)));
@@ -489,7 +461,7 @@ pub(super) fn member_attacks(
     actor: Option<Single<(Entity, &mut PartyTurn), With<Acting>>>,
     battle: Single<(&mut Battle, Option<&Combatants>)>,
     mut bodies: Query<Body>,
-    (places, levels): (Query<Place, With<Monster>>, Query<(), With<Level>>),
+    levels: Query<(), With<Level>>,
     (stand, roster, formation, party): (
         Single<(&Position, &PartyBody)>,
         Single<&PartyRoster>,
@@ -539,7 +511,6 @@ pub(super) fn member_attacks(
                     combatants,
                     &roster,
                     &mut bodies,
-                    &places,
                     &levels,
                     stand,
                     &formation,
@@ -588,9 +559,10 @@ pub(super) fn member_attacks(
         && matches!(hand.weapon_skill, Skill::Sword | Skill::Dagger);
     let mut surprise = Surprise { unaware: false, natural: backstab };
     if hand.reach <= Reach::Short
-        && let Ok(place) = places.get(target)
+        && let Ok(place) = bodies.get(target)
     {
-        surprise.unaware = back_to_party(place.pose.forward(), place.translation(), stand.eye);
+        surprise.unaware =
+            back_to_party(place.forward().unwrap(), place.translation(stand.eye), stand.eye);
     }
     news.write(CombatNews::Attack {
         attacker: member,
@@ -625,7 +597,6 @@ fn reachable_targets(
     combatants: &[Entity],
     roster: &[Entity],
     bodies: &mut Query<Body>,
-    places: &Query<Place, With<Monster>>,
     levels: &Query<(), With<Level>>,
     obstacles: &WorldObstacles,
     stand: Stand,
@@ -636,8 +607,8 @@ fn reachable_targets(
     let me = bodies.get(entity).unwrap();
     let monster = me.monster.unwrap().clone();
     let kind = &species[monster.species];
-    let place = places.get(entity).unwrap();
-    let (here, at) = (place.feet(), place.translation());
+    let place = bodies.get(entity).unwrap();
+    let (here, at) = (place.feet(stand.eye), place.translation(stand.eye));
     let reach_of_party = distance(stand.eye, &monster, here);
     let eye = monster.eye(here);
     let mut unseen = Vec::new();
@@ -668,14 +639,14 @@ fn reachable_targets(
             candidates.extend(attack.modes.iter().map(|mode| (a, mode, member)));
         }
         for &other in combatants {
-            let (Ok(body), Ok(there)) = (bodies.get(other), places.get(other)) else {
+            let Ok(body) = bodies.get(other) else {
                 continue;
             };
             let theirs = body.monster.unwrap();
-            let feet = there.feet();
+            let feet = body.feet(stand.eye);
             if other != entity
-                && in_play(&body, &there, levels)
-                && obstacles.clear(eye, body_centre(feet, theirs))
+                && body.alive_in_play(levels)
+                && obstacles.clear(eye, body.centre(stand.eye))
                 && toward(mine, &body, species) == wanted
                 && monster.gap(here, theirs, feet) <= attack.reach.metres()
             {
@@ -735,11 +706,7 @@ pub(super) fn monster_attacks(
     battle: Single<(&mut Battle, Option<&Combatants>)>,
     (party_turns, mut spotted): (Query<&PartyTurn>, Query<&mut Spotted>),
     mut bodies: Query<Body>,
-    (places, levels, obstacles): (
-        Query<Place, With<Monster>>,
-        Query<(), With<Level>>,
-        WorldObstacles,
-    ),
+    (levels, obstacles): (Query<(), With<Level>>, WorldObstacles),
     (stand, roster, mut formation): (
         Single<(&Position, &PartyBody)>,
         Single<&PartyRoster>,
@@ -782,7 +749,6 @@ pub(super) fn monster_attacks(
             combatants,
             &roster,
             &mut bodies,
-            &places,
             &levels,
             &obstacles,
             stand,
@@ -806,7 +772,6 @@ pub(super) fn monster_attacks(
                     wanted,
                     combatants,
                     &mut bodies,
-                    &places,
                     stand,
                     species,
                     &mut news,
@@ -831,7 +796,7 @@ pub(super) fn monster_attacks(
             natural: kind.kind == MonsterKind::Rogue && attack.reach <= Reach::Touch,
         };
         // A member not facing it may turn in time, or be struck from behind.
-        let position = places.get(monster).unwrap().translation();
+        let position = bodies.get(monster).unwrap().translation(stand.eye);
         if attack.reach <= Reach::Short
             && let Ok(body) = bodies.get(target)
             && body.character.is_some()
@@ -883,20 +848,19 @@ fn close_in(
     wanted: Stance,
     combatants: &[Entity],
     bodies: &mut Query<Body>,
-    places: &Query<Place, With<Monster>>,
     stand: Stand,
     species: &MonsterCatalog,
     news: &mut MessageWriter<CombatNews>,
 ) {
-    let place = places.get(monster).unwrap();
-    let here = place.translation();
+    let place = bodies.get(monster).unwrap();
+    let here = place.translation(stand.eye);
     let walks = place.walker.is_some_and(|walker| walker.speed > 0.0);
     let move_to = if mine.stance == Stance::Friendly {
         let target = combatants
             .iter()
             .filter_map(|&entity| {
                 let body = bodies.get(entity).ok()?;
-                let at = places.get(entity).ok()?.translation();
+                let at = bodies.get(entity).ok()?.translation(stand.eye);
                 (entity != monster && !body.is_dead() && toward(mine, &body, species) == wanted)
                     .then_some((here.distance_squared(at), entity))
             })
@@ -939,7 +903,6 @@ fn swing_members(
     mut attacks: Query<(Entity, &mut Attack, &Wielding, &AttackBy, Option<&AimsAt>)>,
     mut bodies: Query<Body>,
     footings: Query<Footing>,
-    places: Query<Place, With<Monster>>,
     levels: Query<(), With<Level>>,
     battle: Single<(&Battle, Option<&Combatants>)>,
     stand: Single<(&Position, &PartyBody)>,
@@ -995,13 +958,20 @@ fn swing_members(
                 })
                 .collect();
             for &entity in combatants {
-                let (Ok(body), Ok(place)) = (bodies.get(entity), places.get(entity)) else {
+                let Ok(body) = bodies.get(entity) else {
                     continue;
                 };
-                let distance = distance(stand.eye, body.monster.as_ref().unwrap(), place.feet());
+                let distance =
+                    distance(stand.eye, body.monster.as_ref().unwrap(), body.feet(stand.eye));
                 if entity != target
-                    && in_play(&body, &place, &levels)
-                    && stand.reaches(&formation, member, place.translation(), hand.reach, distance)
+                    && body.alive_in_play(&levels)
+                    && stand.reaches(
+                        &formation,
+                        member,
+                        body.translation(stand.eye),
+                        hand.reach,
+                        distance,
+                    )
                 {
                     bystanders.push(entity);
                 }
@@ -1012,16 +982,8 @@ fn swing_members(
             }
         };
         let close = hand.reach < Reach::Long;
-        let landed = land(
-            &mut rng,
-            target,
-            aim,
-            delivery,
-            &mut attack.surprise,
-            stand.eye,
-            &mut bodies,
-            &places,
-        );
+        let landed =
+            land(&mut rng, target, aim, delivery, &mut attack.surprise, stand.eye, &mut bodies);
         settle_landing(
             &mut commands,
             attack_entity,
@@ -1078,7 +1040,6 @@ fn swing_monsters(
     mut attacks: Query<(Entity, &mut Attack, &Striking, &AttackBy, Option<&AimsAt>)>,
     mut bodies: Query<Body>,
     footings: Query<Footing>,
-    places: Query<Place, With<Monster>>,
     levels: Query<(), With<Level>>,
     battle: Single<(&Battle, Option<&Combatants>)>,
     stand: Single<(&Position, &PartyBody)>,
@@ -1126,8 +1087,8 @@ fn swing_monsters(
             Some(&aimed_at),
             difficulty,
         );
-        let place = places.get(entity).unwrap();
-        let here = place.feet();
+        let place = bodies.get(entity).unwrap();
+        let here = place.feet(stand.eye);
         let delivery = if swung.reach >= Reach::Long {
             Delivery::Shot {
                 from: monster.eye(here),
@@ -1138,7 +1099,7 @@ fn swing_monsters(
             // Who the swing could go astray onto (retail
             // `BuildMonsterTargetList`): the members its attack reaches but
             // the one aimed at, itself, and the monsters within its reach.
-            let at = place.translation();
+            let at = place.translation(stand.eye);
             let reach_of_party = distance(stand.eye, &monster, here);
             let mut bystanders: Vec<Entity> = roster
                 .iter()
@@ -1147,13 +1108,13 @@ fn swing_monsters(
                 .filter(|&m| stand.reaches(&formation, m, at, swung.reach, reach_of_party))
                 .collect();
             for &other in combatants {
-                let (Ok(body), Ok(there)) = (bodies.get(other), places.get(other)) else {
+                let Ok(body) = bodies.get(other) else {
                     continue;
                 };
-                if other == target || !in_play(&body, &there, &levels) {
+                if other == target || !body.alive_in_play(&levels) {
                     continue;
                 }
-                let gap = monster.gap(here, body.monster.as_ref().unwrap(), there.feet());
+                let gap = monster.gap(here, body.monster.as_ref().unwrap(), body.feet(stand.eye));
                 if other == entity || gap <= swung.reach.metres() {
                     bystanders.push(other);
                 }
@@ -1166,16 +1127,8 @@ fn swing_monsters(
             }
         };
         let close = swung.reach < Reach::Long;
-        let landed = land(
-            &mut rng,
-            target,
-            aim,
-            delivery,
-            &mut attack.surprise,
-            stand.eye,
-            &mut bodies,
-            &places,
-        );
+        let landed =
+            land(&mut rng, target, aim, delivery, &mut attack.surprise, stand.eye, &mut bodies);
         settle_landing(
             &mut commands,
             attack_entity,
@@ -1201,14 +1154,14 @@ fn intercept_swings(
     swings: Query<(Entity, &Strikes, &HitOf), With<Swing>>,
     mut attacks: Query<(&mut Attack, &AttackBy)>,
     mut bodies: Query<Body>,
-    places: Query<Place, With<Monster>>,
     guards: Query<&Guards>,
     mut interceptions: Query<&mut Interceptions>,
+    stand: Single<&Position, With<PartyBody>>,
     content: If<Res<Catalogs>>,
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<CombatNews>,
 ) {
-    let (items, species) = (&content.items, &content.species);
+    let (items, species, eye) = (&content.items, &content.species, PartyBody::eye(*stand));
     for (swing, strikes, hit_of) in &swings {
         let ward = strikes.0;
         let Ok(guarding) = guards.get(ward) else { continue };
@@ -1237,19 +1190,36 @@ fn intercept_swings(
             pressing + 10 * i32::from(surprise.unaware) + 10 * i32::from(surprise.natural);
         let Some((ward_monster, ward_feet)) = bodies.get(ward).ok().and_then(|body| {
             (!body.is_dead()).then_some(())?;
-            Some((body.monster?.clone(), places.get(ward).ok()?.feet()))
+            Some((body.monster?.clone(), body.feet(eye)))
         }) else {
             continue;
         };
         let mut stepping = Vec::new();
         for &guard in guarding.entities() {
-            let (Ok(body), Ok(place)) = (bodies.get(guard), places.get(guard)) else {
+            let Ok(body) = bodies.get(guard) else { continue };
+            let monster = body.monster.as_ref().unwrap();
+            let kind = &species[monster.species];
+            let Some(first) = kind.attacks.first() else { continue };
+            let gap = monster.gap(body.feet(eye), &ward_monster, ward_feet);
+            let taken = interceptions.get(guard).map_or(0, |taken| taken.0);
+            if !(body.vitals.can_guard()
+                && gap <= first.reach.metres()
+                && taken < u32::from(kind.attacks_per_round))
+            {
+                continue;
+            }
+            let guarding = attack::monster_protection(kind, body.vitals);
+            let chance = (guarding - pressing + 50).clamp(5, 95) as u32;
+            if rng.below(100) < chance {
+                stepping.push(guard);
+            }
+            let Ok(body) = bodies.get(guard) else {
                 continue;
             };
             let monster = body.monster.as_ref().unwrap();
             let kind = &species[monster.species];
             let Some(first) = kind.attacks.first() else { continue };
-            let gap = monster.gap(place.feet(), &ward_monster, ward_feet);
+            let gap = monster.gap(body.feet(eye), &ward_monster, ward_feet);
             let taken = interceptions.get(guard).map_or(0, |taken| taken.0);
             if !(body.vitals.can_guard()
                 && gap <= first.reach.metres()
@@ -1746,23 +1716,19 @@ struct Landing {
     fumbled: bool,
 }
 
-/// Where a body is struck: a monster's middle, or the party's.
-fn struck_body(
-    victim: Entity,
-    eye: Vec3,
-    bodies: &mut Query<Body>,
-    places: &Query<Place, With<Monster>>,
-) -> Option<(Vec3, f32, f32)> {
+/// Where a body is struck, and how big it is to a missile: a monster's
+/// middle and its size, or the party's.
+fn struck_body(victim: Entity, eye: Vec3, bodies: &Query<Body>) -> Option<(Vec3, f32, f32)> {
     let body = bodies.get(victim).ok()?;
-    if let (Some(monster), Ok(place)) = (&body.monster, places.get(victim)) {
-        return Some((
-            body_centre(place.feet(), monster),
-            monster.body.radius,
-            monster.body.eye_height * 0.5,
-        ));
+    match body.monster {
+        Some(monster) => {
+            Some((body.centre(eye), monster.body.radius, monster.body.eye_height * 0.5))
+        }
+        // The party's members share its body.
+        None => {
+            (!body.is_dead()).then(|| (body.centre(eye), party_body::RADIUS, party_body::RADIUS))
+        }
     }
-    // The party's members share its body.
-    (!body.is_dead()).then(|| (PartyBody::centre(eye), party_body::RADIUS, party_body::RADIUS))
 }
 
 /// Where an attack aimed at `target` lands, if anywhere: a shot scatters
@@ -1777,11 +1743,10 @@ fn land(
     surprise: &mut Surprise,
     eye: Vec3,
     bodies: &mut Query<Body>,
-    places: &Query<Place, With<Monster>>,
 ) -> Result<Option<Landing>, ()> {
     match delivery {
         Delivery::Shot { from, blind, through } => {
-            let (centre, radius, half) = struck_body(target, eye, bodies, places).ok_or(())?;
+            let (centre, radius, half) = struck_body(target, eye, bodies).ok_or(())?;
             let shot = attack::scatter(rng, from, centre, aim, blind);
             Ok(attack::strikes(centre, shot, radius, half).then(|| Landing {
                 victim: target,
