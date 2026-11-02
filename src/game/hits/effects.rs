@@ -227,6 +227,64 @@ impl Chain {
     }
 }
 
+/// An effect that may be settled now: not in flight, not waiting on the
+/// one before it.
+#[derive(Component, Debug)]
+pub struct Ready;
+
+/// Effects become ready once they have arrived and the one before them is
+/// settled.
+pub fn ready(
+    mut commands: Commands,
+    effects: Query<
+        Entity,
+        (
+            With<HitOf>,
+            Without<super::prototypes::Reach>,
+            Without<InFlight>,
+            Without<Follows>,
+            Without<Outcome>,
+            Without<Ready>,
+        ),
+    >,
+) {
+    for effect in &effects {
+        commands.entity(effect).insert(Ready);
+    }
+}
+
+/// What harms, afflicts, drains or restores a body does nothing once it is
+/// dead, or gone.
+pub fn miss_the_dead(
+    mut commands: Commands,
+    effects: Query<
+        (Entity, &Strikes),
+        (
+            With<Ready>,
+            Without<Outcome>,
+            Or<(
+                With<Harm>,
+                With<Sap>,
+                With<Afflict>,
+                With<Slay>,
+                With<Tire>,
+                With<DrainMagic>,
+                With<DrainRealm>,
+                With<Heal>,
+                With<Refresh>,
+                With<Replenish>,
+            )>,
+        ),
+    >,
+    vitals: Query<&crate::game::characters::Vitals>,
+) {
+    for (effect, strikes) in &effects {
+        if !vitals.get(strikes.0).is_ok_and(|vitals| !vitals.is_dead()) {
+            commands.entity(effect).insert(Outcome::Missed);
+        }
+    }
+}
+
 /// Fly each missile; one that arrives lands.
 pub fn fly(mut commands: Commands, mut flying: Query<(Entity, &mut InFlight)>, time: Res<Time>) {
     for (effect, mut flight) in &mut flying {
@@ -245,7 +303,7 @@ fn record(acts: &mut Query<&mut Deed>, act: Entity, effect: Effect) {
 /// An effect that happens only by chance may not.
 pub fn roll_chances(
     mut commands: Commands,
-    effects: Query<(Entity, &Chance), (Without<InFlight>, Without<Follows>, Without<Outcome>)>,
+    effects: Query<(Entity, &Chance), (With<Ready>, Without<Outcome>)>,
     mut rng: ResMut<GameRng>,
 ) {
     for (effect, chance) in &effects {
@@ -259,10 +317,7 @@ pub fn roll_chances(
 /// it off before any save.
 pub fn immunities(
     mut commands: Commands,
-    effects: Query<
-        (Entity, &Strikes, &HitOf, &Afflict),
-        (Without<InFlight>, Without<Follows>, Without<Outcome>),
-    >,
+    effects: Query<(Entity, &Strikes, &HitOf, &Afflict), (With<Ready>, Without<Outcome>)>,
     bodies: Query<Body>,
     mut acts: Query<&mut Deed>,
     content: If<Res<Catalogs>>,
@@ -304,7 +359,7 @@ pub fn saves(
     mut commands: Commands,
     effects: Query<
         (Entity, &Strikes, &HitOf, &Save, &Resist, Has<HalfStrength>),
-        (Without<InFlight>, Without<Follows>, Without<Outcome>),
+        (With<Ready>, Without<Outcome>),
     >,
     mut bodies: Query<Body>,
     mut acts: Query<&mut Deed>,
@@ -318,9 +373,6 @@ pub fn saves(
     for (effect, strikes, hit_of, save, resist, half) in &effects {
         let against = against(&strengths, hit_of.0, half);
         let Ok(body) = bodies.get(strikes.0) else { continue };
-        if body.is_dead() {
-            continue;
-        }
         let defence = defence(&body, resist.realm, catalogs.0, catalogs.1, catalogs.2);
         let mut body = bodies.get_mut(strikes.0).unwrap();
         let (saved, practised) = body.saves(&mut rng, &defence, save.0, against, *difficulty);
@@ -340,7 +392,7 @@ pub fn resist(
     mut commands: Commands,
     mut effects: Query<
         (Entity, &Strikes, &HitOf, &Resist, &mut Magnitude, Has<HalfStrength>),
-        (Without<InFlight>, Without<Follows>, Without<Outcome>),
+        (With<Ready>, Without<Outcome>),
     >,
     bodies: Query<Body>,
     mut acts: Query<&mut Deed>,
@@ -353,9 +405,6 @@ pub fn resist(
     for (effect, strikes, hit_of, resist, mut magnitude, half) in &mut effects {
         let against = against(&strengths, hit_of.0, half);
         let Ok(body) = bodies.get(strikes.0) else { continue };
-        if body.is_dead() {
-            continue;
-        }
         let defence = defence(&body, resist.realm, catalogs.0, catalogs.1, catalogs.2);
         magnitude.0 =
             body::resist(&mut rng, magnitude.0, defence.resistance, defence.level, against);
@@ -371,7 +420,7 @@ pub fn harm(
     mut commands: Commands,
     effects: Query<
         (Entity, &Strikes, &HitOf, &Magnitude),
-        (With<Harm>, Without<InFlight>, Without<Follows>, Without<Outcome>),
+        (With<Harm>, With<Ready>, Without<Outcome>),
     >,
     mut bodies: Query<Body>,
     mut acts: Query<(&mut Deed, Option<&mut super::spells::Drains>)>,
@@ -383,10 +432,6 @@ pub fn harm(
     let fight = fight.single().ok();
     for (effect, strikes, hit_of, magnitude) in &effects {
         let Ok(mut body) = bodies.get_mut(strikes.0) else { continue };
-        if body.is_dead() {
-            commands.entity(effect).insert(Outcome::Missed);
-            continue;
-        }
         let hurt = wound(
             &mut body,
             magnitude.0,
@@ -432,7 +477,7 @@ pub fn sap(
     mut commands: Commands,
     effects: Query<
         (Entity, &Strikes, &HitOf, &Magnitude),
-        (With<Sap>, Without<InFlight>, Without<Follows>, Without<Outcome>),
+        (With<Sap>, With<Ready>, Without<Outcome>),
     >,
     mut bodies: Query<Body>,
     mut acts: Query<&mut Deed>,
@@ -444,9 +489,7 @@ pub fn sap(
     let fight = fight.single().ok();
     for (effect, strikes, hit_of, magnitude) in &effects {
         let Ok(mut body) = bodies.get_mut(strikes.0) else { continue };
-        let Some(lost) =
-            (!body.is_dead()).then(|| body.sap(magnitude.0, &mut rng, fight)).flatten()
-        else {
+        let Some(lost) = body.sap(magnitude.0, &mut rng, fight) else {
             commands.entity(effect).insert(Outcome::Missed);
             continue;
         };
@@ -461,7 +504,7 @@ pub fn afflict(
     mut commands: Commands,
     effects: Query<
         (Entity, &Strikes, &HitOf, &Afflict, &Magnitude, Has<Save>),
-        (Without<InFlight>, Without<Follows>, Without<Outcome>),
+        (With<Ready>, Without<Outcome>),
     >,
     mut bodies: Query<Body>,
     mut acts: Query<&mut Deed>,
@@ -478,10 +521,6 @@ pub fn afflict(
             afflict.condition.is_some_and(|c| saveable && read.shrugs(c, afflict.indefinite));
         let side = read.side.0;
         let mut body = bodies.get_mut(victim).unwrap();
-        if body.is_dead() {
-            commands.entity(effect).insert(Outcome::Missed);
-            continue;
-        }
         let Some(condition) = afflict.condition else {
             let lost = body.slay(&mut rng, species, fight);
             record(&mut acts, hit_of.0, slain(&body, lost, species, &mut notices));
@@ -512,10 +551,7 @@ pub fn afflict(
 /// Dead).
 pub fn slay(
     mut commands: Commands,
-    effects: Query<
-        (Entity, &Strikes, &HitOf),
-        (With<Slay>, Without<InFlight>, Without<Follows>, Without<Outcome>),
-    >,
+    effects: Query<(Entity, &Strikes, &HitOf), (With<Slay>, With<Ready>, Without<Outcome>)>,
     mut bodies: Query<Body>,
     mut acts: Query<&mut Deed>,
     content: If<Res<Catalogs>>,
@@ -526,10 +562,6 @@ pub fn slay(
     let (species, fight) = (&content.species, fight.single().ok());
     for (effect, strikes, hit_of) in &effects {
         let Ok(mut body) = bodies.get_mut(strikes.0) else { continue };
-        if body.is_dead() {
-            commands.entity(effect).insert(Outcome::Missed);
-            continue;
-        }
         let lost = body.slay(&mut rng, species, fight);
         record(&mut acts, hit_of.0, slain(&body, lost, species, &mut notices));
         commands.entity(effect).insert(Outcome::Landed);
@@ -541,17 +573,13 @@ pub fn tire(
     mut commands: Commands,
     effects: Query<
         (Entity, &Strikes, &HitOf, &Magnitude),
-        (With<Tire>, Without<InFlight>, Without<Follows>, Without<Outcome>),
+        (With<Tire>, With<Ready>, Without<Outcome>),
     >,
     mut bodies: Query<Body>,
     mut acts: Query<&mut Deed>,
 ) {
     for (effect, strikes, hit_of, magnitude) in &effects {
         let Ok(mut body) = bodies.get_mut(strikes.0) else { continue };
-        if body.is_dead() {
-            commands.entity(effect).insert(Outcome::Missed);
-            continue;
-        }
         let amount = body.vitals.tire(magnitude.0);
         record(&mut acts, hit_of.0, Effect::Tired { victim: strikes.0, amount });
         commands.entity(effect).insert(Outcome::Landed);
@@ -564,7 +592,7 @@ pub fn drain_magic(
     mut commands: Commands,
     effects: Query<
         (Entity, &Strikes, &HitOf, &Magnitude, Has<ForParty>),
-        (With<DrainMagic>, Without<InFlight>, Without<Follows>, Without<Outcome>),
+        (With<DrainMagic>, With<Ready>, Without<Outcome>),
     >,
     mut bodies: Query<Body>,
     mut acts: Query<&mut Deed>,
@@ -587,10 +615,6 @@ pub fn drain_magic(
             continue;
         }
         let Ok(mut body) = bodies.get_mut(strikes.0) else { continue };
-        if body.is_dead() {
-            commands.entity(effect).insert(Outcome::Missed);
-            continue;
-        }
         let amount = body.drain_magic(magnitude.0, &mut rng, &content.spells, &content.species);
         record(&mut acts, hit_of.0, Effect::Drained { victim: strikes.0, amount });
         commands.entity(effect).insert(Outcome::Landed);
@@ -602,7 +626,7 @@ pub fn drain_realm(
     mut commands: Commands,
     effects: Query<
         (Entity, &Strikes, &HitOf, &DrainRealm, &Magnitude),
-        (Without<InFlight>, Without<Follows>, Without<Outcome>),
+        (With<Ready>, Without<Outcome>),
     >,
     mut bodies: Query<Body>,
     mut acts: Query<&mut Deed>,
@@ -612,9 +636,7 @@ pub fn drain_realm(
         let Ok(read) = bodies.get(strikes.0) else { continue };
         let maximum = read.mana_maximum(&content.spells);
         let mut body = bodies.get_mut(strikes.0).unwrap();
-        let (Some(maximum), Some((_, pool)), false) =
-            (maximum, body.magic.as_mut(), body.vitals.is_dead())
-        else {
+        let (Some(maximum), Some((_, pool))) = (maximum, body.magic.as_mut()) else {
             commands.entity(effect).insert(Outcome::Missed);
             continue;
         };
@@ -631,7 +653,7 @@ pub fn heal(
     mut commands: Commands,
     effects: Query<
         (Entity, &Strikes, &HitOf, &Magnitude),
-        (With<Heal>, Without<InFlight>, Without<Follows>, Without<Outcome>),
+        (With<Heal>, With<Ready>, Without<Outcome>),
     >,
     mut bodies: Query<Body>,
     mut acts: Query<&mut Deed>,
@@ -639,10 +661,6 @@ pub fn heal(
     for (effect, strikes, hit_of, magnitude) in &effects {
         let victim = strikes.0;
         let Ok(mut body) = bodies.get_mut(victim) else { continue };
-        if body.is_dead() {
-            commands.entity(effect).insert(Outcome::Missed);
-            continue;
-        }
         let amount = body.vitals.heal(magnitude.0);
         let landed = if amount == 0 {
             Effect::Nothing { victim }
@@ -659,7 +677,7 @@ pub fn refresh(
     mut commands: Commands,
     effects: Query<
         (Entity, &Strikes, &HitOf, &Magnitude),
-        (With<Refresh>, Without<InFlight>, Without<Follows>, Without<Outcome>),
+        (With<Refresh>, With<Ready>, Without<Outcome>),
     >,
     mut bodies: Query<Body>,
     mut acts: Query<&mut Deed>,
@@ -667,10 +685,6 @@ pub fn refresh(
     for (effect, strikes, hit_of, magnitude) in &effects {
         let victim = strikes.0;
         let Ok(mut body) = bodies.get_mut(victim) else { continue };
-        if body.is_dead() {
-            commands.entity(effect).insert(Outcome::Missed);
-            continue;
-        }
         let amount = body.vitals.rest(magnitude.0);
         let landed = if amount == 0 {
             Effect::Nothing { victim }
@@ -687,7 +701,7 @@ pub fn replenish(
     mut commands: Commands,
     effects: Query<
         (Entity, &Strikes, &HitOf, &Magnitude),
-        (With<Replenish>, Without<InFlight>, Without<Follows>, Without<Outcome>),
+        (With<Replenish>, With<Ready>, Without<Outcome>),
     >,
     mut bodies: Query<Body>,
     mut acts: Query<&mut Deed>,
@@ -695,8 +709,7 @@ pub fn replenish(
     for (effect, strikes, hit_of, magnitude) in &effects {
         let victim = strikes.0;
         let Ok(mut body) = bodies.get_mut(victim) else { continue };
-        let dead = body.is_dead();
-        let Some((_, pool)) = body.magic.as_mut().filter(|_| !dead) else {
+        let Some((_, pool)) = body.magic.as_mut() else {
             commands.entity(effect).insert(Outcome::Missed);
             continue;
         };
@@ -715,10 +728,7 @@ pub fn replenish(
 /// does.
 pub fn cure(
     mut commands: Commands,
-    effects: Query<
-        (Entity, &Strikes, &HitOf, &Cure),
-        (Without<InFlight>, Without<Follows>, Without<Outcome>),
-    >,
+    effects: Query<(Entity, &Strikes, &HitOf, &Cure), (With<Ready>, Without<Outcome>)>,
     mut bodies: Query<Body>,
     mut acts: Query<&mut Deed>,
     strengths: Query<&Strength>,
@@ -745,10 +755,7 @@ pub fn cure(
 /// Drained lifts: a member gets back what draining and disease took.
 pub fn renew(
     mut commands: Commands,
-    effects: Query<
-        (Entity, &Strikes, &HitOf),
-        (With<Renew>, Without<InFlight>, Without<Follows>, Without<Outcome>),
-    >,
+    effects: Query<(Entity, &Strikes, &HitOf), (With<Renew>, With<Ready>, Without<Outcome>)>,
     mut bodies: Query<Body>,
     mut acts: Query<&mut Deed>,
     strengths: Query<&Strength>,
@@ -783,10 +790,7 @@ pub fn renew(
 /// at least 1.
 pub fn raise(
     mut commands: Commands,
-    effects: Query<
-        (Entity, &Strikes, &HitOf),
-        (With<Raise>, Without<InFlight>, Without<Follows>, Without<Outcome>),
-    >,
+    effects: Query<(Entity, &Strikes, &HitOf), (With<Raise>, With<Ready>, Without<Outcome>)>,
     mut bodies: Query<Body>,
     mut acts: Query<&mut Deed>,
 ) {
@@ -835,7 +839,7 @@ pub fn purify(
     mut commands: Commands,
     effects: Query<
         (Entity, &Strikes, &HitOf, &Purify, &Magnitude, Has<ForParty>),
-        (Without<InFlight>, Without<Follows>, Without<Outcome>),
+        (With<Ready>, Without<Outcome>),
     >,
     mut bodies: Query<Body>,
     mut acts: Query<&mut Deed>,
@@ -858,7 +862,7 @@ pub fn enchant(
     mut commands: Commands,
     effects: Query<
         (Entity, &Strikes, &HitOf, &Enchant, &Magnitude, Has<ForParty>),
-        (Without<InFlight>, Without<Follows>, Without<Outcome>),
+        (With<Ready>, Without<Outcome>),
     >,
     mut bodies: Query<Body>,
     mut acts: Query<&mut Deed>,
@@ -933,7 +937,7 @@ pub fn burn(
     mut commands: Commands,
     effects: Query<
         (Entity, &HitOf, &Strikes, &Magnitude, Has<ForParty>),
-        (With<Burn>, Without<InFlight>, Without<Follows>, Without<Outcome>),
+        (With<Burn>, With<Ready>, Without<Outcome>),
     >,
     mut bodies: Query<Body>,
     mut acts: Query<&mut Deed>,
@@ -985,10 +989,7 @@ pub fn burn(
 /// The party loses a share of its gold.
 pub fn lose_gold(
     mut commands: Commands,
-    effects: Query<
-        (Entity, &HitOf, &Magnitude),
-        (With<LoseGold>, Without<InFlight>, Without<Follows>, Without<Outcome>),
-    >,
+    effects: Query<(Entity, &HitOf, &Magnitude), (With<LoseGold>, With<Ready>, Without<Outcome>)>,
     mut acts: Query<&mut Deed>,
     mut inventory: Single<&mut PartyInventory>,
 ) {
@@ -1004,7 +1005,7 @@ pub fn lose_gold(
 /// stay.
 pub fn dispel(
     mut commands: Commands,
-    effects: Query<Entity, (With<Dispel>, Without<InFlight>, Without<Follows>, Without<Outcome>)>,
+    effects: Query<Entity, (With<Dispel>, With<Ready>, Without<Outcome>)>,
     mut party: Single<&mut PartyEffects>,
 ) {
     for effect in &effects {

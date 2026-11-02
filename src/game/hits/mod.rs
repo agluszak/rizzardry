@@ -190,7 +190,18 @@ impl Plugin for HitsPlugin {
         .add_systems(
             Hits,
             (
-                (instantiate, pick, roll, roll_chances, immunities, saves, resist).chain(),
+                (
+                    instantiate,
+                    pick,
+                    roll,
+                    ready,
+                    miss_the_dead,
+                    roll_chances,
+                    immunities,
+                    saves,
+                    resist,
+                )
+                    .chain(),
                 (
                     harm,
                     sap,
