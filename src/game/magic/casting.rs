@@ -237,31 +237,66 @@ pub(crate) fn in_cone(aim: Vec3, target: Vec3) -> bool {
     within(heading(aim), heading(target)) && within(elevation(aim), elevation(target))
 }
 
-/// Monsters a member in a fight may aim at (retail
-/// `CharacterActionReachesTarget`): those in the fight, targetable, and in
-/// the party's sight, with where they stand and how far from the party.
-pub(crate) fn candidates(
-    party_eye: Vec3,
-    combatants: &[Entity],
-    bodies: &mut Query<Body>,
-    levels: &Query<(), With<Level>>,
-    species: &crate::content::species::MonsterCatalog,
-    obstacles: &WorldObstacles,
+/// A monster in the fight the party may aim at (retail
+/// `CharacterActionReachesTarget`): targetable and in the party's sight,
+/// where it stands and how far it is from the party.
+///
+/// Derived from the fight's combatants, their bodies and the level's
+/// geometry by [`party_sight`], at the head of the cast stages and as
+/// members act in a fight; readers trust it until the next judgement.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct InSight {
+    pub at: Vec3,
+    pub distance: f32,
+}
+
+/// Judge which of the fight's monsters the party may aim at now.
+pub fn party_sight(
+    mut commands: Commands,
+    fight: Option<Single<&crate::game::combat::Combatants>>,
+    bodies: Query<Body>,
+    sighted: Query<Entity, With<InSight>>,
+    stand: Single<&Position, With<PartyBody>>,
+    levels: Query<(), With<Level>>,
+    obstacles: WorldObstacles,
+    content: If<Res<Catalogs>>,
+) {
+    let eye = PartyBody::eye(*stand);
+    let combatants = fight.as_deref().map_or(&[][..], |fight| fight.entities());
+    for monster in &sighted {
+        if !combatants.contains(&monster) {
+            commands.entity(monster).remove::<InSight>();
+        }
+    }
+    for &entity in combatants {
+        let Ok(body) = bodies.get(entity) else { continue };
+        let sight = body.monster.filter(|_| body.targetable(&levels, &content.species)).and_then(
+            |monster| {
+                let feet = body.feet(eye);
+                obstacles.clear(eye, body.eye(eye)).then(|| InSight {
+                    at: feet,
+                    distance: crate::game::world::perception::party_distance(eye, monster, feet),
+                })
+            },
+        );
+        match sight {
+            Some(sight) => commands.entity(entity).insert(sight),
+            None => commands.entity(entity).remove::<InSight>(),
+        };
+    }
+}
+
+/// The monsters the party may aim at, in the fight's order.
+pub(crate) fn in_sight(
+    fight: Option<&crate::game::combat::Combatants>,
+    sights: &Query<&InSight>,
 ) -> Vec<Candidate> {
+    let combatants = fight.map_or(&[][..], |fight| fight.entities());
     combatants
         .iter()
         .filter_map(|&entity| {
-            let body = bodies.get(entity).ok()?;
-            let monster = body.monster.as_ref()?;
-            if !body.targetable(levels, species) {
-                return None;
-            }
-            let feet = body.feet(party_eye);
-            obstacles.clear(party_eye, body.eye(party_eye)).then(|| Candidate {
-                entity,
-                at: feet,
-                distance: crate::game::world::perception::party_distance(party_eye, monster, feet),
-            })
+            let sight = sights.get(entity).ok()?;
+            Some(Candidate { entity, at: sight.at, distance: sight.distance })
         })
         .collect()
 }
@@ -506,7 +541,15 @@ pub(crate) fn stages(app: &mut App) {
     app.add_systems(
         Casts,
         (
-            (check_able, check_silence, check_learned, check_affordable, check_item, check_moment)
+            (
+                party_sight,
+                check_able,
+                check_silence,
+                check_learned,
+                check_affordable,
+                check_item,
+                check_moment,
+            )
                 .chain(),
             (aim_caster, aim_ally, aim_party, aim_enemy, aim_group, aim_all, aim_cone).chain(),
             (play_instruments, refuse, choose_power, aim_blast, provoke).chain(),
@@ -776,16 +819,13 @@ fn aimed(
 fn aim_enemy(
     mut commands: Commands,
     casts: Query<(Entity, &Cast, &CastBy, &Chosen), (Without<Refused>, Without<Target>)>,
-    mut bodies: Query<Body>,
     stand: Single<(&Position, &PartyBody)>,
     fight: Option<Single<&crate::game::combat::Combatants>>,
-    levels: Query<(), With<Level>>,
-    obstacles: WorldObstacles,
+    sights: Query<&InSight>,
     content: If<Res<Catalogs>>,
 ) {
     let eye = PartyBody::eye(stand.0);
-    let combatants = fight.as_deref().map_or(&[][..], |fight| fight.entities());
-    let monsters = candidates(eye, combatants, &mut bodies, &levels, &content.species, &obstacles);
+    let monsters = in_sight(fight.as_deref().copied(), &sights);
     for (cast, &Cast { spell, .. }, _, chosen) in &casts {
         let spell = &content.spells[spell];
         if !matches!(spell.targeting, Targeting::Enemy | Targeting::Radius) {
@@ -810,18 +850,15 @@ fn aim_enemy(
 fn aim_group(
     mut commands: Commands,
     casts: Query<(Entity, &Cast, &CastBy, &Chosen), (Without<Refused>, Without<Target>)>,
-    mut bodies: Query<Body>,
     stand: Single<(&Position, &PartyBody)>,
     fight: Option<Single<&crate::game::combat::Combatants>>,
-    levels: Query<(), With<Level>>,
+    sights: Query<&InSight>,
     memberships: Query<&GroupMember>,
     groups: Query<&GroupMembers>,
-    obstacles: WorldObstacles,
     content: If<Res<Catalogs>>,
 ) {
     let eye = PartyBody::eye(stand.0);
-    let combatants = fight.as_deref().map_or(&[][..], |fight| fight.entities());
-    let monsters = candidates(eye, combatants, &mut bodies, &levels, &content.species, &obstacles);
+    let monsters = in_sight(fight.as_deref().copied(), &sights);
     for (cast, _, chosen, &Cast { spell, .. }) in
         aiming(&casts, &content.spells, Targeting::EnemyGroup)
     {
@@ -849,16 +886,13 @@ fn aim_group(
 fn aim_all(
     mut commands: Commands,
     casts: Query<(Entity, &Cast, &CastBy, &Chosen), (Without<Refused>, Without<Target>)>,
-    mut bodies: Query<Body>,
     stand: Single<(&Position, &PartyBody)>,
     fight: Option<Single<&crate::game::combat::Combatants>>,
-    levels: Query<(), With<Level>>,
-    obstacles: WorldObstacles,
+    sights: Query<&InSight>,
     content: If<Res<Catalogs>>,
 ) {
-    let eye = PartyBody::eye(stand.0);
-    let combatants = fight.as_deref().map_or(&[][..], |fight| fight.entities());
-    let monsters = candidates(eye, combatants, &mut bodies, &levels, &content.species, &obstacles);
+    let _eye = PartyBody::eye(stand.0);
+    let monsters = in_sight(fight.as_deref().copied(), &sights);
     for (cast, _, _, &Cast { spell, .. }) in aiming(&casts, &content.spells, Targeting::AllEnemies)
     {
         let reach_of = content.spells[spell].reach.metres();
@@ -878,16 +912,13 @@ fn aim_all(
 fn aim_cone(
     mut commands: Commands,
     casts: Query<(Entity, &Cast, &CastBy, &Chosen), (Without<Refused>, Without<Target>)>,
-    mut bodies: Query<Body>,
     stand: Single<(&Position, &PartyBody)>,
     fight: Option<Single<&crate::game::combat::Combatants>>,
-    levels: Query<(), With<Level>>,
-    obstacles: WorldObstacles,
+    sights: Query<&InSight>,
     content: If<Res<Catalogs>>,
 ) {
     let eye = PartyBody::eye(stand.0);
-    let combatants = fight.as_deref().map_or(&[][..], |fight| fight.entities());
-    let monsters = candidates(eye, combatants, &mut bodies, &levels, &content.species, &obstacles);
+    let monsters = in_sight(fight.as_deref().copied(), &sights);
     for (cast, _, chosen, &Cast { spell, .. }) in aiming(&casts, &content.spells, Targeting::Cone) {
         let spell = &content.spells[spell];
         let Some(target) = aimed(&monsters, eye, stand.1.forward(), chosen.0.aim, spell) else {

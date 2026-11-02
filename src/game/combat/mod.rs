@@ -117,6 +117,7 @@ impl Plugin for CombatPlugin {
                         .chain(),
                     // The member whose initiative came acts,
                     (
+                        casting::party_sight,
                         member_turn::member_turns,
                         swings::member_attacks,
                         member_turn::start_member_cast,

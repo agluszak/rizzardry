@@ -15,12 +15,10 @@ use crate::game::hits::spells::reach;
 use crate::game::hits::{Act, Body, Deed};
 use crate::game::inventory::{Carried, EquipSlot, PartyInventory};
 use crate::game::magic::casting::{
-    Cast, CastBy, Chosen, MagicNews, Refusal, UseContext, candidates, in_cone,
+    Cast, CastBy, Chosen, InSight, MagicNews, Refusal, UseContext, in_cone, in_sight,
 };
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
-use crate::game::world::level::Level;
-use crate::game::world::obstacles::WorldObstacles;
 
 /// The acting member's accepted turn, revalidated (retail
 /// `ExecuteCharacterAction`): one no longer in the party or able, or whose
@@ -116,14 +114,12 @@ pub(super) fn start_breath(
     mut bodies: Query<Body>,
     battle: Single<(&mut Battle, Option<&Combatants>)>,
     stand: Single<&Position, With<PartyBody>>,
-    levels: Query<(), With<Level>>,
-    obstacles: WorldObstacles,
+    sights: Query<&InSight>,
     content: If<Res<Catalogs>>,
     definitions: Res<Definitions>,
     mut news: MessageWriter<CombatNews>,
 ) {
-    let (mut battle, combatants) = battle.into_inner();
-    let combatants = combatants.map_or(&[][..], Combatants::entities);
+    let (mut battle, fight) = battle.into_inner();
     let eye = PartyBody::eye(*stand);
     for (member, mut turn) in &mut actors {
         let RoundAction::Breathe(target) = turn.action else { continue };
@@ -136,8 +132,7 @@ pub(super) fn start_breath(
         let strength =
             crate::game::hits::specials::strength(character.level(), breather.vitals.stamina);
         let cone = &content.spells[SpellId::SPECIAL_ATTACK_CONE];
-        let monsters =
-            candidates(eye, combatants, &mut bodies, &levels, &content.species, &obstacles);
+        let monsters = in_sight(fight, &sights);
         let aimed = monsters
             .iter()
             .find(|c| c.entity == target && c.distance <= cone.reach.metres())
