@@ -340,7 +340,7 @@ fn harm(
 /// none (retail `InflictConditionOnTarget`). `rounds` of `None` lasts until
 /// lifted.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn afflict(
+pub(crate) fn afflict(
     rng: &mut GameRng,
     body: &mut BodyItem,
     defence: &Defence,

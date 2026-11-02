@@ -132,7 +132,6 @@ pub(super) fn refresh(
     screen: Single<&InventoryScreen>,
     members: Query<CharacterView>,
     content: If<Res<crate::game::data::Catalogs>>,
-    battle: Option<Single<&crate::game::combat::Battle>>,
     party_effects: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
     art: Res<InventoryArt>,
     mut values: Query<(&Value, &mut BitmapText)>,
@@ -140,11 +139,7 @@ pub(super) fn refresh(
 ) {
     let view = members.get(screen.member).unwrap();
     let load = view.load();
-    let armour = view.armour(
-        screen.member,
-        &content.items,
-        battle.as_deref().copied(),
-        party_effects.as_deref().copied(),
+    let armour = view.armour(&content.items, party_effects.as_deref().copied(),
     );
     let CharacterViewItem { profile: character, vitals, burden, .. } = view;
 

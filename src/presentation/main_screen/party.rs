@@ -299,7 +299,6 @@ pub fn draw_party(
     assets: Res<AssetServer>,
     slots: PortraitSlots,
     members: Query<CharacterView>,
-    battle: Option<Single<&crate::game::combat::Battle>>,
     party_effects: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
     content: If<Res<crate::game::data::Catalogs>>,
     mut parts: Query<(
@@ -324,11 +323,7 @@ pub fn draw_party(
         let mut hand_x = None;
         let image = |path: &str, frame| (crate::content::paths::retail(path), frame);
         if let Some(view) = actor {
-            let armour = view.armour(
-                part.member,
-                catalog,
-                battle.as_deref().copied(),
-                party_effects.as_deref().copied(),
+            let armour = view.armour(catalog, party_effects.as_deref().copied(),
             );
             let CharacterViewItem { profile, vitals, carried, .. } = view;
             let dead = vitals.is_dead();

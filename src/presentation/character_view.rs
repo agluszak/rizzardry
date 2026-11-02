@@ -12,6 +12,8 @@ pub struct CharacterView {
     pub carried: &'static Carried,
     pub burden: &'static Burden,
     pub member: Option<&'static crate::game::party::roster::PartyMember>,
+    /// The member's action this round, while in a fight.
+    pub turn: Option<&'static crate::game::combat::PartyTurn>,
 }
 
 impl CharacterViewItem<'_, '_> {
@@ -19,9 +21,7 @@ impl CharacterViewItem<'_, '_> {
     /// round action. The party's protections count for its members only.
     pub fn armour(
         &self,
-        actor: bevy::prelude::Entity,
         catalog: &crate::content::items::ItemCatalog,
-        battle: Option<&crate::game::combat::Battle>,
         party: Option<&crate::game::magic::enchantments::PartyEffects>,
     ) -> crate::game::combat::attack::Armour {
         crate::game::combat::attack::enchanted_armour(
@@ -29,7 +29,7 @@ impl CharacterViewItem<'_, '_> {
             self.carried,
             catalog,
             self.load(),
-            battle.is_some_and(|battle| battle.defends(actor)),
+            self.turn.is_some_and(|turn| turn.defends()),
             (&self.vitals.enchantments, party.filter(|_| self.member.is_some()).map(|p| &p.0)),
         )
     }

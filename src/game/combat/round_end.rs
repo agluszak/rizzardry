@@ -209,7 +209,7 @@ pub(super) fn end_round(
     if !anyone_alive(roster, members) {
         return false;
     }
-    rest_defenders(battle, roster, members, rng);
+    rest_defenders(roster, members, &magic.party_turns, rng);
     battle.wait = Timer::from_seconds(ROUND_SECONDS, TimerMode::Once);
     if !fight_over(battle, combatants, staying, damage, (clock.ms, party_eye), species) {
         return false;
@@ -238,9 +238,8 @@ pub(super) fn pass_round(
     // breath back (retail `AdvanceCombatRound`).
     for &entity in combatants {
         let mut vitals = damage.vitals_mut(entity);
-        let resting =
-            battle.this_round.monsters.iter().any(|turn| turn.actor == entity && turn.waited)
-                || vitals
+        let resting = magic.monster_turns.get(entity).is_ok_and(|turn| turn.waited)
+            || vitals
                     .conditions
                     .iter()
                     .any(|&(c, _)| matches!(c, Condition::Asleep | Condition::Unconscious));
@@ -251,11 +250,13 @@ pub(super) fn pass_round(
     }
     // A special attack cools down over the rounds the monster does not
     // make one (retail `AdvanceCombatRound`).
-    for (monster, left) in &mut battle.cooldowns {
-        if *left > 0
-            && !battle.this_round.monsters.iter().any(|turn| turn.actor == *monster && turn.special)
+    for &monster in combatants {
+        let special = magic.monster_turns.get(monster).is_ok_and(|turn| turn.special);
+        if let Ok(mut cooldown) = magic.cooldowns.get_mut(monster)
+            && cooldown.0 > 0
+            && !special
         {
-            *left -= 1;
+            cooldown.0 -= 1;
         }
     }
     for &entity in combatants {
@@ -292,18 +293,15 @@ pub(super) fn pass_round(
 /// Members who defended, or lie asleep or knocked out, get their breath
 /// back after their conditions age, in accepted actor order.
 pub(super) fn rest_defenders(
-    battle: &Battle,
     roster: &PartyRoster,
     members: &mut Members,
+    turns: &Query<&mut PartyTurn>,
     rng: &mut GameRng,
 ) {
-    for work in &battle.this_round.party {
-        let member = work.actor;
-        if !roster.contains(&member) {
-            continue;
-        }
+    for member in roster.iter() {
+        let Ok(turn) = turns.get(member) else { continue };
         let (character, mut vitals, ..) = members.get_mut(member).unwrap();
-        let resting = battle.defends(member)
+        let resting = turn.defends()
             || matches!(
                 vitals.conditions.worst(),
                 Some(Condition::Asleep | Condition::Unconscious)
@@ -334,7 +332,7 @@ pub(super) fn fight_over(
         let (monster, at, walker, .., vitals) = monsters.get(entity).unwrap();
         approach::needs_approach((monster, vitals), at.translation(), walker, party_eye, species)
     });
-    let active = battle.this_round.attacked || approaching;
+    let active = battle.attacked || approaching;
     battle.passive_rounds = if active { 0 } else { battle.passive_rounds + 1 };
     let hostiles_left = staying.iter().any(|&e| {
         damage.stance(e, now) == hostility::Stance::Hostile && !monsters.get(e).unwrap().5.is_dead()

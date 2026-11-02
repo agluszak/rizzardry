@@ -208,16 +208,4 @@ impl PartyView {
             obstacles,
         }
     }
-
-    pub(super) fn reaches(
-        &self,
-        formation: &Formation,
-        member: Entity,
-        at: Vec3,
-        reach: Reach,
-        distance: f32,
-    ) -> bool {
-        let side = formation::quadrant(self.eye, self.yaw, at);
-        formation.reach(member, side, reach).is_some_and(|r| distance <= r.metres())
-    }
 }

@@ -4,7 +4,7 @@
 use bevy::prelude::*;
 
 use super::attack::phase;
-use super::{Battle, PartyMove, PartyPace, RoundPhase, attack, blows};
+use super::{Battle, PartyMove, RoundPhase, attack};
 use crate::content::items::ItemCatalog;
 use crate::content::species::MonsterCatalog;
 use crate::game::characters::Condition;
@@ -15,11 +15,11 @@ use crate::game::party::{Members, Order};
 use crate::game::rng::GameRng;
 use crate::game::world::damage::MonsterQuery;
 
-/// Accepted work and history for one monster. Spending its attacks never
-/// discards the facts needed by later attacks or end-of-round recovery.
-#[derive(Clone, Copy, Debug)]
+/// A monster's accepted work and history this round. Spending its attacks
+/// never discards the facts needed by later attacks or end-of-round
+/// recovery.
+#[derive(Component, Clone, Copy, Debug)]
 pub(super) struct MonsterTurn {
-    pub(super) actor: Entity,
     pub(super) phase: u32,
     pub(super) attacks_left: u32,
     pub(super) moved: bool,
@@ -28,9 +28,8 @@ pub(super) struct MonsterTurn {
     pub(super) waited: bool,
 }
 impl MonsterTurn {
-    fn new(actor: Entity, phase: u32, attacks_left: u32) -> Self {
+    fn new(phase: u32, attacks_left: u32) -> Self {
         Self {
-            actor,
             phase,
             attacks_left,
             moved: false,
@@ -64,9 +63,9 @@ pub(super) enum RoundAction {
     Breathe(Entity),
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(super) struct PartyTurn {
-    pub(super) actor: Entity,
+/// A member's accepted work this round.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct PartyTurn {
     pub(super) action: RoundAction,
     /// When the member acts next, 1 to 100; 0 when done for the round.
     pub(super) phase: u32,
@@ -75,6 +74,12 @@ pub(super) struct PartyTurn {
 }
 
 impl PartyTurn {
+    /// The effective action stands until the next round: spending or losing
+    /// a turn does not end defending; a refused spell starts it.
+    pub fn defends(&self) -> bool {
+        matches!(self.action, RoundAction::Defend)
+    }
+
     /// Done for the round: nothing left to act with.
     pub(super) fn end(&mut self) {
         self.phase = 0;
@@ -94,38 +99,85 @@ pub(super) struct HandTurns {
     pub(super) lightning: bool,
 }
 
-/// One round: its committed work, fixed when the round is accepted (who
-/// acts, with what, when and how often), and what has happened in it so
-/// far. Execution revalidates each actor (still a member or combatant, able,
-/// the same weapon) but never redirects work to whoever holds its slot now.
-/// Each round starts a new one.
-#[derive(Debug, Default)]
-pub(super) struct Round {
-    pub(super) party: Vec<PartyTurn>,
-    pub(super) monsters: Vec<MonsterTurn>,
-    /// Someone has attacked.
-    pub(super) attacked: bool,
-    /// Guards in activation order, which also fixes interception RNG order.
-    pub(super) guards: Vec<Guard>,
-    /// How the party moves this round.
-    pub(super) pace: Option<PartyPace>,
-    /// How often each member has tried to spot an attacker this round.
-    pub(super) spotted: bevy::ecs::entity::EntityHashMap<u32>,
+/// The actor whose initiative has come this step, to act now.
+#[derive(Component, Debug)]
+pub(super) struct Acting;
+
+/// A monster guarding a fellow this round (retail `ACTION_PROTECT`).
+#[derive(Component, Debug)]
+#[relationship(relationship_target = Guards)]
+#[require(Interceptions)]
+pub(super) struct Guarding(pub(super) Entity);
+
+/// How many blows a guard has taken in its ward's place this round (retail
+/// `interception_count`).
+#[derive(Component, Debug, Default)]
+pub(super) struct Interceptions(pub(super) u32);
+
+/// A monster's guards this round, in the order they took it up, which also
+/// fixes the order they try to intercept.
+#[derive(Component, Debug)]
+#[relationship_target(relationship = Guarding)]
+pub(super) struct Guards(Vec<Entity>);
+
+impl Guards {
+    pub(super) fn entities(&self) -> &[Entity] {
+        &self.0
+    }
 }
 
-/// A monster guarding a fellow this round, and how many blows it has
-/// taken in its place (retail `ACTION_PROTECT`, `interception_count`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Guard {
-    pub(super) guard: Entity,
-    pub(super) ward: Entity,
-    pub(super) interceptions: u32,
+/// How often a member has tried to spot an attacker this round.
+#[derive(Component, Debug, Default)]
+pub(super) struct Spotted(pub(super) u32);
+
+/// A monster running for its life (retail `pCombat->advancing`), for the
+/// rest of the fight.
+#[derive(Component, Debug)]
+pub(super) struct Fleeing;
+
+/// Rounds a monster still waits before its next special attack (retail
+/// `pCombat->special_cooldown`).
+#[derive(Component, Debug)]
+pub(super) struct SpecialCooldown(pub(super) u8);
+
+/// The fight is over: what its rounds left on the members and monsters goes
+/// with it.
+pub(super) fn clear_fight(
+    _: On<Remove<Battle>>,
+    mut commands: Commands,
+    actors: Query<
+        Entity,
+        Or<(
+            With<PartyTurn>,
+            With<MonsterTurn>,
+            With<Acting>,
+            With<Guarding>,
+            With<Interceptions>,
+            With<Spotted>,
+            With<Fleeing>,
+            With<SpecialCooldown>,
+        )>,
+    >,
+) {
+    for actor in &actors {
+        commands.entity(actor).try_remove::<(
+            PartyTurn,
+            MonsterTurn,
+            Acting,
+            Guarding,
+            Interceptions,
+            Spotted,
+            Fleeing,
+            SpecialCooldown,
+        )>();
+    }
 }
 
 /// Accept a round (retail `BeginCombatExecution`): lock each member's order
 /// and weapon, and everyone's initiative and attacks, the party first, then
 /// the combatants in order. Pacing delays only its execution.
 pub(super) fn accept_round(
+    commands: &mut Commands,
     battle: &mut Battle,
     combatants: &[Entity],
     roster: &PartyRoster,
@@ -139,7 +191,8 @@ pub(super) fn accept_round(
     battle.round += 1;
     let surprised = battle.opening.take().is_some();
     let pace = if surprised { None } else { battle.party_pace };
-    let mut round = Round { pace, ..default() };
+    battle.pace = pace;
+    battle.attacked = false;
     // Samurai ready their Lightning Strike with a sword before anyone's
     // initiative is rolled (retail `BeginCombatExecution`).
     let prepared: Vec<_> = roster
@@ -170,7 +223,7 @@ pub(super) fn accept_round(
             Order::Attack => RoundAction::Attack { weapons, berserk: false },
             // One who can no longer berserk attacks as usual.
             Order::Berserk => {
-                RoundAction::Attack { weapons, berserk: blows::can_berserk(character, &hands) }
+                RoundAction::Attack { weapons, berserk: super::swings::can_berserk(character, &hands) }
             }
             Order::Defend => RoundAction::Defend,
             Order::Magic(choice) => RoundAction::Magic(choice),
@@ -196,7 +249,7 @@ pub(super) fn accept_round(
             }
             _ => 0,
         };
-        round.party.push(PartyTurn { actor: member, action, phase, hands: turns });
+        commands.entity(member).insert((PartyTurn { action, phase, hands: turns }, Spotted(0)));
     }
     for &entity in combatants {
         let (monster, .., vitals) = monsters.get(entity).unwrap();
@@ -206,7 +259,10 @@ pub(super) fn accept_round(
         } else {
             (phase(rng, i32::from(kind.initiative)), u32::from(kind.attacks_per_round))
         };
-        round.monsters.push(MonsterTurn::new(entity, phase, attacks));
+        commands
+            .entity(entity)
+            .insert(MonsterTurn::new(phase, attacks))
+            .remove::<(Guarding, Interceptions)>();
     }
     // The party's own move takes the phase its slowest living member
     // allows, by the initiative its actions use, on a step of ten (retail
@@ -227,6 +283,5 @@ pub(super) fn accept_round(
         }
         None => PartyMove::None,
     };
-    battle.this_round = round;
     battle.phase = RoundPhase::Accepted;
 }

@@ -4,7 +4,6 @@
 
 pub mod approach;
 pub mod attack;
-mod blows;
 pub mod breath;
 mod conduct;
 mod engage;
@@ -13,6 +12,7 @@ mod party_turn;
 mod round_end;
 mod scene;
 mod sight;
+mod swings;
 use crate::game::GameplaySet;
 use crate::game::data::Catalogs;
 pub use conduct::Interrupt;
@@ -24,7 +24,8 @@ use sight::*;
 mod monster_spells;
 mod monster_turn;
 mod round;
-use round::{Guard, Round, RoundAction, accept_round};
+pub use round::PartyTurn;
+use round::{Acting, Fleeing, Guarding, MonsterTurn, RoundAction, SpecialCooldown, accept_round};
 pub mod summon;
 
 use crate::game::world::level::LevelOwned;
@@ -48,7 +49,6 @@ use crate::game::magic::{LearnedSpells, MagicContext, SpellPoints};
 use crate::game::party::Members;
 use crate::game::party::Order;
 use crate::game::party::body::PartyBody;
-use crate::game::party::formation::{self, Formation};
 use crate::game::party::recovery;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
@@ -57,14 +57,15 @@ use crate::game::world::damage::{MonsterDamage, MonsterQuery};
 use crate::game::world::hostility;
 use crate::game::world::identify::{GroupMember, GroupMembers, GroupRecognition, MonsterGroup};
 use crate::game::world::population::{Monster, blinded};
-use attack::Armour;
 use bevy::ecs::relationship::RelationshipTarget;
 
 pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<CombatNews>()
+        swings::stages(app);
+        app.add_observer(round::clear_fight)
+            .add_message::<CombatNews>()
             .add_message::<hostility::Provocation>()
             .add_message::<CyclePartyMove>()
             .add_message::<StartRound>()
@@ -107,7 +108,12 @@ impl Plugin for CombatPlugin {
                     crate::game::characters::settle_deaths,
                     settle_defeat,
                     begin_round,
-                    run_battle,
+                    call_actor,
+                    party_acts,
+                    swings::member_attacks,
+                    monster_acts,
+                    swings::monster_attacks,
+                    swings::run_swings,
                     finish_round,
                     summon::summon,
                     // and again after the round's damage.
@@ -177,7 +183,10 @@ pub struct Battle {
     /// Accepted encounter history, consumed when the opening round is initialized.
     opening: Option<SurpriseCause>,
     phase: RoundPhase,
-    this_round: Round,
+    /// How the party moves this round.
+    pace: Option<PartyPace>,
+    /// Someone has attacked this round.
+    attacked: bool,
     /// Experience from kills, shared at the end.
     experience: u32,
     kills: u32,
@@ -185,11 +194,6 @@ pub struct Battle {
     /// The party's standing choice to walk or run in the next rounds.
     pub party_pace: Option<PartyPace>,
     party_move: PartyMove,
-    /// Monsters running for their lives (retail `pCombat->advancing`).
-    fleeing: Vec<Entity>,
-    /// Rounds each monster still waits before its next special attack
-    /// (retail `pCombat->special_cooldown`).
-    cooldowns: Vec<(Entity, u8)>,
     /// Until the next action.
     wait: Timer,
 }
@@ -210,15 +214,6 @@ impl Battle {
         self.phase != RoundPhase::Waiting
     }
 
-    /// The effective action retained until the next round or battle removal.
-    /// Spending or losing a turn does not end defense; a refused spell starts it.
-    pub fn defends(&self, actor: Entity) -> bool {
-        self.this_round
-            .party
-            .iter()
-            .any(|work| work.actor == actor && matches!(work.action, RoundAction::Defend))
-    }
-
     /// Whether the party may walk: in a fight, only during its own move.
     pub fn party_may_move(&self) -> bool {
         matches!(self.party_move, PartyMove::Moving { .. })
@@ -229,8 +224,8 @@ impl Battle {
         matches!(self.party_move, PartyMove::Moving { pace: PartyPace::Run, .. })
     }
 
-    /// A monster died to the party: its experience is shared at the end and
-    /// it acts no more this round.
+    /// A monster died to the party: its experience is shared at the end.
+    /// Dead, it acts no more.
     pub fn credit_kill(
         &mut self,
         monster: Entity,
@@ -239,9 +234,6 @@ impl Battle {
     ) {
         self.experience += experience;
         self.kills += 1;
-        if let Some(turn) = self.this_round.monsters.iter_mut().find(|turn| turn.actor == monster) {
-            turn.end();
-        }
         news.write(CombatNews::Killed { actor: monster });
     }
 
@@ -269,7 +261,7 @@ impl Battle {
 
     /// Something in this round counts as an attack, keeping the fight going.
     pub fn attacked(&mut self, attacked: bool) {
-        self.this_round.attacked |= attacked;
+        self.attacked |= attacked;
     }
 
     /// How far through the round its play is, 0 to 1, while a round is
@@ -477,11 +469,13 @@ fn allegiance(
 /// (retail `UpdateCombat`, `BeginCombatExecution`). Choosing the party's
 /// pace between rounds is taken here too.
 pub fn begin_round(
+    mut commands: Commands,
     time: Res<Time>,
     battle: Option<Single<(&mut Battle, Option<&Combatants>)>>,
     mut rng: ResMut<GameRng>,
     (mut members, damage): (Members, MonsterDamage),
     (roster, orders, settings): (Single<&PartyRoster>, Query<&Order>, Res<CombatSettings>),
+    mut turns: Query<&mut PartyTurn>,
     content: If<Res<Catalogs>>,
     (in_flight, moving): (
         Query<(), With<casting::SpellInFlight>>,
@@ -509,13 +503,14 @@ pub fn begin_round(
     // Starting the round while the party moves ends its move (retail
     // `MGSKeyboard.cpp:568-573`).
     if start && matches!(battle.party_move, PartyMove::Moving { .. }) {
-        finish_party_move(&mut battle, &mut rng, &mut members);
+        finish_party_move(&mut battle, &mut rng, (&roster, &mut members, &mut turns));
         news.write(CombatNews::PartyStops);
     }
     let (items, species) = (&content.items, &content.species);
     let roster = &**roster;
-    let accept = |battle: &mut Battle, rng: &mut GameRng| {
+    let mut accept = |battle: &mut Battle, rng: &mut GameRng| {
         accept_round(
+            &mut commands,
             battle,
             combatants,
             roster,
@@ -546,32 +541,36 @@ pub fn begin_round(
     }
 }
 
-/// Carry out the round's actions, one per pause, once nothing is in flight.
-pub fn run_battle(
+/// Call the actor whose initiative has come, one per pause, once nothing
+/// is in flight: the party's move when its phase comes, then the members in
+/// accepted order, then the monsters in theirs. A step with nobody due
+/// passes to the next.
+fn call_actor(
     mut commands: Commands,
-    battle: Option<Single<(Entity, &mut Battle, Option<&Combatants>)>>,
-    mut rng: ResMut<GameRng>,
-    clock: Res<GameClock>,
-    (mut members, mut damage): (Members, MonsterDamage),
-    party_body: Query<(&Position, &PartyBody)>,
-    (roster, content, level): (Single<&PartyRoster>, If<Res<Catalogs>>, PlayedLevel),
-    mut magic: BattleMagic,
-    (mut news, mut summons): (MessageWriter<CombatNews>, MessageWriter<summon::Summon>),
+    battle: Option<Single<(&mut Battle, Option<&Combatants>)>>,
+    (roster, party_body): (Single<&PartyRoster>, Single<&Position, With<PartyBody>>),
+    vitals: Query<&Vitals>,
+    (party_turns, monster_turns): (Query<&PartyTurn>, Query<&MonsterTurn>),
+    (in_flight, moving, acting): (
+        Query<(), With<casting::SpellInFlight>>,
+        Query<(), With<approach::CombatMove>>,
+        Query<(), With<Acting>>,
+    ),
+    mut news: MessageWriter<CombatNews>,
 ) {
-    let Some((_, mut battle, combatants)) = battle.map(Single::into_inner) else { return };
+    let Some((mut battle, combatants)) = battle.map(Single::into_inner) else { return };
     let combatants = combatants.map_or(&[][..], Combatants::entities);
-    let species = &content.species;
-    let Ok((position, body)) = party_body.single() else { return };
-    if !battle.executing() || !battle.wait.is_finished() || magic.busy() {
+    if !battle.executing()
+        || !battle.wait.is_finished()
+        || !in_flight.is_empty()
+        || !moving.is_empty()
+        || !acting.is_empty()
+    {
         return;
     }
-    let roster = &**roster;
-    let party = PartyView::new((position, body), &level, clock.ms);
     if battle.phase == RoundPhase::Accepted {
         battle.phase = RoundPhase::Executing(1);
     }
-
-    // The next actor due: accepted party order first, then monsters in order.
     while let RoundPhase::Executing(step) = battle.phase
         && step <= 100
     {
@@ -584,8 +583,11 @@ pub fn run_battle(
             let haste = roster
                 .iter()
                 .try_fold(0, |sum, member| {
-                    let (_, vitals, ..) = members.get(member).unwrap();
-                    let effect = vitals.enchantments.get(crate::content::spells::SpellId::HASTE)?;
+                    let effect = vitals
+                        .get(member)
+                        .unwrap()
+                        .enchantments
+                        .get(crate::content::spells::SpellId::HASTE)?;
                     Some(sum + effect.scaled(effect.power * 10))
                 })
                 .map_or(0.0, |sum| (sum / roster.len() as u32) as f32 * 0.2);
@@ -593,53 +595,102 @@ pub fn run_battle(
                 pace,
                 budget: pace.combat_budget() + haste,
                 moved: 0.0,
-                last: position.0,
+                last: party_body.0,
             };
             news.write(CombatNews::PartyMoves);
             return;
         }
         // Nobody in the party acts while its move is still to come.
         let party_waits = matches!(battle.party_move, PartyMove::Pending { .. });
-        if let Some(index) =
-            battle.this_round.party.iter().position(|p| p.phase == step).filter(|_| !party_waits)
-        {
-            let acted = party_turn(
-                &mut commands,
-                &mut battle,
-                index,
-                combatants,
-                &mut rng,
-                (&mut members, &mut damage),
-                &party,
-                &mut magic,
-                &mut news,
-            );
-            if acted {
-                battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
-                return;
-            }
-            continue;
-        }
-        if let Some(index) = battle.this_round.monsters.iter().position(|turn| turn.phase == step) {
-            let acted = monster_turn::monster_turn(
-                &mut commands,
-                &mut battle,
-                (index, step),
-                combatants,
-                &mut rng,
-                (&mut members, &mut damage),
-                &party,
-                &mut magic,
-                species,
-                (&mut news, &mut summons),
-            );
-            if acted {
-                battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
-                return;
-            }
-            continue;
+        let due = roster
+            .iter()
+            .filter(|_| !party_waits)
+            .find(|&member| party_turns.get(member).is_ok_and(|turn| turn.phase == step))
+            .or_else(|| {
+                combatants.iter().copied().find(|&monster| {
+                    monster_turns.get(monster).is_ok_and(|turn| turn.phase == step)
+                })
+            });
+        if let Some(actor) = due {
+            commands.entity(actor).insert(Acting);
+            return;
         }
         battle.phase = RoundPhase::Executing(step + 1);
+    }
+}
+
+/// The acting member takes their turn. One who acted holds the fight for
+/// the action's pause.
+fn party_acts(
+    mut commands: Commands,
+    actor: Option<Single<Entity, (With<Acting>, With<PartyTurn>)>>,
+    battle: Single<(&mut Battle, Option<&Combatants>)>,
+    mut rng: ResMut<GameRng>,
+    clock: Res<GameClock>,
+    (mut members, mut damage): (Members, MonsterDamage),
+    party_body: Single<(&Position, &PartyBody)>,
+    level: PlayedLevel,
+    mut magic: BattleMagic,
+    mut news: MessageWriter<CombatNews>,
+) {
+    let Some(member) = actor.map(|actor| *actor) else { return };
+    let (mut battle, combatants) = battle.into_inner();
+    let combatants = combatants.map_or(&[][..], Combatants::entities);
+    let party = PartyView::new(*party_body, &level, clock.ms);
+    let acted = party_turn(
+        &mut commands,
+        &mut battle,
+        member,
+        combatants,
+        &mut rng,
+        (&mut members, &mut damage),
+        &party,
+        &mut magic,
+        &mut news,
+    );
+    // An attack still standing is the attack systems' to make.
+    let turn = magic.party_turns.get(member).unwrap();
+    if !(matches!(turn.action, RoundAction::Attack { .. }) && turn.phase != 0) {
+        commands.entity(member).remove::<Acting>();
+    }
+    if acted {
+        battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
+    }
+}
+
+/// The acting monster takes its turn. One that acted holds the fight for
+/// the action's pause.
+fn monster_acts(
+    mut commands: Commands,
+    actor: Option<Single<Entity, (With<Acting>, With<MonsterTurn>)>>,
+    battle: Single<(&mut Battle, Option<&Combatants>)>,
+    mut rng: ResMut<GameRng>,
+    clock: Res<GameClock>,
+    (mut members, mut damage): (Members, MonsterDamage),
+    party_body: Single<(&Position, &PartyBody)>,
+    (content, level): (If<Res<Catalogs>>, PlayedLevel),
+    mut magic: BattleMagic,
+    (mut news, mut summons): (MessageWriter<CombatNews>, MessageWriter<summon::Summon>),
+) {
+    let Some(monster) = actor.map(|actor| *actor) else { return };
+    commands.entity(monster).remove::<Acting>();
+    let (mut battle, combatants) = battle.into_inner();
+    let combatants = combatants.map_or(&[][..], Combatants::entities);
+    let party = PartyView::new(*party_body, &level, clock.ms);
+    let acted = monster_turn::monster_turn(
+        &mut commands,
+        &mut battle,
+        monster,
+        combatants,
+        &mut rng,
+        (&mut members, &mut damage),
+        &party,
+        &mut magic,
+        &content.species,
+        (&mut news, &mut summons),
+    );
+    if acted {
+        battle.wait = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
     }
 }
 
@@ -664,6 +715,10 @@ pub struct BattleMagic<'w, 's> {
     /// monsters still advancing.
     in_flight: Query<'w, 's, (), With<casting::SpellInFlight>>,
     moving: Query<'w, 's, (), With<approach::CombatMove>>,
+    party_turns: Query<'w, 's, &'static mut PartyTurn>,
+    monster_turns: Query<'w, 's, &'static mut MonsterTurn>,
+    fleeing: Query<'w, 's, (), With<Fleeing>>,
+    cooldowns: Query<'w, 's, &'static mut SpecialCooldown>,
 }
 
 impl BattleMagic<'_, '_> {

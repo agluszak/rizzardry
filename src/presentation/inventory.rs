@@ -770,18 +770,13 @@ fn draw_header_hands(
     assets: Res<AssetServer>,
     content: If<Res<Catalogs>>,
     members: Query<crate::presentation::character_view::CharacterView>,
-    battle: Option<Single<&crate::game::combat::Battle>>,
     party_effects: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
     art: Res<InventoryArt>,
     mut parts: Query<(&HeaderHand, &mut Visibility, Option<&mut Picture>, Option<&mut BitmapText>)>,
 ) {
     let catalog = &content.items;
     let view = members.get(screen.member).unwrap();
-    let armour = view.armour(
-        screen.member,
-        catalog,
-        battle.as_deref().copied(),
-        party_effects.as_deref().copied(),
+    let armour = view.armour(catalog, party_effects.as_deref().copied(),
     );
     let profile = view.profile;
     let carried = view.carried;

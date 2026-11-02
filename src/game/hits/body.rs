@@ -32,6 +32,7 @@ pub struct Body {
     pub vitals: &'static mut Vitals,
     pub character: Option<&'static mut Character>,
     pub carried: Option<&'static mut Carried>,
+    pub burden: Option<&'static crate::game::inventory::Burden>,
     pub magic: Option<(&'static LearnedSpells, &'static mut SpellPoints)>,
     pub monster: Option<&'static mut Monster>,
     pub group: Option<&'static GroupMember>,

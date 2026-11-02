@@ -100,7 +100,7 @@ pub fn track_party_move(
     battle: Option<Single<&mut Battle>>,
     party: Query<&Position, With<PartyBody>>,
     mut rng: ResMut<GameRng>,
-    mut members: Members,
+    (roster, mut members, mut turns): (Single<&PartyRoster>, Members, Query<&mut PartyTurn>),
     mut news: MessageWriter<CombatNews>,
 ) {
     let Some(mut battle) = battle else { return };
@@ -114,7 +114,7 @@ pub fn track_party_move(
         *moved >= *budget
     };
     if spent {
-        finish_party_move(&mut battle, &mut rng, &mut members);
+        finish_party_move(&mut battle, &mut rng, (&roster, &mut members, &mut turns));
         news.write(CombatNews::PartyStops);
     }
 }
@@ -144,7 +144,11 @@ impl PartyPace {
 /// each member keeps their action with the chance the unspent share gives
 /// (spent counting half again when running), and pays stamina for the
 /// ground covered, by load, half again when diseased.
-pub(super) fn finish_party_move(battle: &mut Battle, rng: &mut GameRng, members: &mut Members) {
+pub(super) fn finish_party_move(
+    battle: &mut Battle,
+    rng: &mut GameRng,
+    (roster, members, turns): (&PartyRoster, &mut Members, &mut Query<&mut PartyTurn>),
+) {
     let PartyMove::Moving { pace, budget, moved, .. } = battle.party_move else { return };
     let step = match battle.phase {
         RoundPhase::Executing(step) => step,
@@ -156,7 +160,8 @@ pub(super) fn finish_party_move(battle: &mut Battle, rng: &mut GameRng, members:
         spent *= 1.5;
     }
     let keep = 100 - (spent as u32).min(100);
-    for work in &mut battle.this_round.party {
+    for member in roster.iter() {
+        let Ok(mut work) = turns.get_mut(member) else { continue };
         if work.phase == 0 {
             continue;
         }
@@ -166,8 +171,8 @@ pub(super) fn finish_party_move(battle: &mut Battle, rng: &mut GameRng, members:
             work.end();
         }
     }
-    for work in &battle.this_round.party {
-        let (_, mut vitals, _, burden) = members.get_mut(work.actor).unwrap();
+    for member in roster.iter().filter(|&member| turns.contains(member)) {
+        let (_, mut vitals, _, burden) = members.get_mut(member).unwrap();
         if vitals.is_dead() {
             continue;
         }
