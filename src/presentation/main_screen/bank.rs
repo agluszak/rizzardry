@@ -12,7 +12,7 @@ use super::{MainScreenArt, Panel, ScreenLayout, SelectedMember, layer};
 use crate::content::ui::SpriteSheet;
 use crate::game::camp::CampRequest;
 use crate::game::characters::{Character, Vitals};
-use crate::game::combat::{Battle, CombatSettings};
+use crate::game::combat::{Battle, CombatSettings, Round};
 use crate::game::inventory::{Carried, EquipSlot};
 use crate::game::party::Order;
 use crate::game::party::roster::PartyRoster;
@@ -111,7 +111,7 @@ pub fn draw_bank(
     layout: Res<ScreenLayout>,
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
-    battle: Option<Single<&Battle>>,
+    battle: Option<Single<(&Battle, &Round)>>,
     orders: Query<&Order>,
     settings: Res<CombatSettings>,
     search: Res<Search>,
@@ -135,7 +135,7 @@ pub fn draw_bank(
             !matches!(kind, Bank::EndCombat)
                 && !(fighting && matches!(kind, Bank::Camp | Bank::Search))
                 // Choices are made between rounds.
-                && !(matches!(kind, Bank::Magic { .. } | Bank::PartyMove) && battle.as_ref().is_some_and(|b| b.executing()))
+                && !(matches!(kind, Bank::Magic { .. } | Bank::PartyMove) && battle.as_ref().is_some_and(|fight| fight.1.executing()))
                 && !(combat_only && !fighting)
         });
         set_enabled(&mut commands, entity, enabled, disabled);
@@ -143,7 +143,9 @@ pub fn draw_bank(
             Some(Bank::Search) => search.on(fighting),
             Some(Bank::Formation) => layout.shows(Panel::Formation),
             Some(Bank::Order(wanted)) => wanted == order,
-            Some(Bank::PartyMove) => battle.as_ref().is_some_and(|b| b.party_pace.is_some()),
+            Some(Bank::PartyMove) => {
+                battle.as_ref().is_some_and(|fight| fight.0.party_pace.is_some())
+            }
             _ => false,
         };
         crate::presentation::retail_controls::set_selected(
@@ -154,7 +156,10 @@ pub fn draw_bank(
         );
         let sheet = match face.kind {
             Some(Bank::Round) => {
-                match (settings.continuous, battle.as_ref().is_some_and(|b| b.executing())) {
+                match (
+                    settings.continuous,
+                    battle.as_ref().is_some_and(|fight| fight.1.executing()),
+                ) {
                     (false, false) => &art.attack_confirm,
                     (false, true) => &art.cont_toggle,
                     (true, true) => &art.combat_stop,
@@ -250,10 +255,10 @@ fn press(
 
 /// Show the round's progress along the roof while one plays.
 pub fn show_round_progress(
-    battle: Option<Single<&Battle>>,
+    battle: Option<Single<&Round, With<Battle>>>,
     mut bars: Query<(&mut PictureCrop, &mut Visibility), With<RoundProgress>>,
 ) {
-    let progress = battle.and_then(|b| b.progress());
+    let progress = battle.and_then(|round| round.progress());
     for (mut crop, mut visibility) in &mut bars {
         match progress {
             Some(progress) => {
@@ -274,7 +279,7 @@ pub fn draw_caption(
     roster: Single<&PartyRoster>,
     members: Query<(&Character, &Vitals, &Carried)>,
     content: If<Res<crate::game::data::Catalogs>>,
-    battle: Option<Single<&Battle>>,
+    battle: Option<Single<&Round, With<Battle>>>,
     orders: Query<&Order>,
     mut captions: Query<(&CaptionLine, &mut BitmapText)>,
     strings: crate::presentation::screen_art::GameStrings,
@@ -305,7 +310,8 @@ pub fn draw_caption(
                         format!("{verb} - {weapon}")
                     }
                     Order::Magic(choice) => match choice.source {
-                        crate::game::magic::casting::Source::Spell { spell, power } => {
+                        crate::game::magic::casting::Source::Spell { spell, power }
+                        | crate::game::magic::casting::Source::Innate { spell, power, .. } => {
                             format!("Cast {} ({power})", spells[spell].name)
                         }
                         crate::game::magic::casting::Source::PoolItem(id) => {
@@ -335,7 +341,7 @@ pub fn draw_caption(
                     })
                     .unwrap_or_default()
             };
-            if battle.as_ref().is_some_and(|b| b.executing()) && !second.is_empty() {
+            if battle.as_ref().is_some_and(|round| round.executing()) && !second.is_empty() {
                 second = format!("Next: {second}");
             }
             (first, second)

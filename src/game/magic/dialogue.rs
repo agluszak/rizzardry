@@ -34,14 +34,15 @@ pub(crate) fn cast(
     }
     let actor = conversation.actor;
     let body = active_body(world, actor).ok_or(Refusal::NoTarget)?;
-    if choice.aim != Aim::Monster(body) {
+    if choice.aim != Aim::Body(body) {
         return Err(Refusal::NoTarget);
     }
     let monster = world.get::<Monster>(body).unwrap();
+    let vitals = world.get::<crate::game::characters::Vitals>(body).unwrap();
     let kind = &world.resource::<crate::game::data::Catalogs>().species[monster.species];
     let (level, resistance, notice_chance) = (
         u32::from(kind.level),
-        monster.resistance(kind, Realm::Mental),
+        crate::game::world::population::resistance(kind, vitals, Realm::Mental),
         (u32::from(kind.attributes.senses) + u32::from(kind.attributes.intelligence)) / 2,
     );
     let (mut report, strength) =
@@ -55,8 +56,16 @@ pub(crate) fn cast(
             }
         }
         Outcome::Cast => {
-            let chance = super::effects::condition_chance(level, resistance, strength.against, 0);
-            let saved = super::effects::save_roll(&mut world.resource_mut::<GameRng>(), chance);
+            let chance = crate::game::hits::defences::condition_chance(
+                level,
+                resistance,
+                strength.against,
+                0,
+            );
+            let saved = crate::game::hits::defences::save_roll(
+                &mut world.resource_mut::<GameRng>(),
+                chance,
+            );
             if id == SpellId::MINDREAD {
                 reply = MagicalReply::Quote(if saved {
                     0x69
@@ -67,13 +76,11 @@ pub(crate) fn cast(
                     quote
                 });
             } else if saved {
-                report
-                    .effects
-                    .push(super::Effect::Resisted { victim: super::Victim::Monster(body) });
+                report.effects.push(crate::game::hits::Effect::Resisted { victim: body });
             } else {
                 let amount = strength.power * 7;
                 let amount = amount + amount * strength.boost / 100;
-                let amount = super::effects::resist(
+                let amount = crate::game::hits::defences::resist(
                     &mut world.resource_mut::<GameRng>(),
                     amount,
                     resistance.min(100),

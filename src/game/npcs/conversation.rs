@@ -379,7 +379,7 @@ pub(crate) fn active_body(world: &World, actor: Entity) -> Option<Entity> {
         world
             .get::<crate::game::world::level::LevelOwned>(*body)
             .is_some_and(|parent| world.get::<Level>(parent.0).is_some())
-            && !world.get::<Monster>(*body).unwrap().is_dead()
+            && !world.get::<crate::game::characters::Vitals>(*body).unwrap().is_dead()
     })
 }
 /// What a neutral NPC says first, and its answers to charm, small talk and
@@ -411,8 +411,8 @@ pub fn disposition(world: &World, actor: Entity) -> i32 {
 /// [`disposition`] were the NPC's own `disposition` this.
 fn standing(world: &World, actor: Entity, disposition: u8) -> i32 {
     let turned = active_body(world, actor)
-        .and_then(|body| world.get::<Monster>(body))
-        .is_some_and(|m| m.conditions.has(Condition::Turncoat));
+        .and_then(|body| world.get::<crate::game::characters::Vitals>(body))
+        .is_some_and(|vitals| vitals.conditions.has(Condition::Turncoat));
     let charm = world
         .try_query::<&Conversation>()
         .and_then(|mut q| q.iter(world).find_map(|c| c.charms.get(&actor).copied()))

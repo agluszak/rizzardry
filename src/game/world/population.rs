@@ -18,62 +18,24 @@ use crate::game::rng::GameRng;
 use crate::game::world::items::{WorldItem, placed_item};
 
 /// A monster in the level: which one (its level-unique location id), what
-/// it is, its body, and its health and stamina.
+/// it is and its body. Its health, stamina, conditions and spells are its
+/// [`Vitals`](crate::game::characters::Vitals).
 #[derive(Component, Clone, Debug)]
+#[require(super::footing::Footing, super::footing::Eyes, super::footing::Conspicuous)]
 pub struct Monster {
-    pub enchantments: crate::game::magic::enchantments::Enchantments,
     pub location: i32,
     pub species: u32,
-    pub hp: u32,
-    pub max_hp: u32,
-    pub stamina: u32,
-    pub max_stamina: u32,
-    pub conditions: crate::game::characters::Conditions,
     pub body: ScaledBody,
-    /// What has been done to its spell budget since it was met: drained
-    /// away, or raised by Might to Magic (retail `spell_points`, zero at
-    /// first). Its casting stands on this and its species' budget together.
-    pub spell_points: i32,
 }
 
+/// What a monster's casting stands on now (retail
+/// `ChooseMonsterSpellPowerLevel`, `MonsterCastsSpell`): its species' budget
+/// when met, drained away or raised by Might to Magic since, never below
+/// nothing. It stands in for a caster's skill in the failure roll.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpellBudget(pub u32);
+
 impl Monster {
-    /// What its casting stands on now (retail `ChooseMonsterSpellPowerLevel`,
-    /// `MonsterCastsSpell`): its species' budget and what has been done to
-    /// it, never below nothing.
-    pub fn spell_budget(&self, kind: &crate::content::species::Species) -> u32 {
-        (self.spell_points + kind.magic.budget).max(0) as u32
-    }
-
-    /// Its resistance to a realm: its species' and its enchantments', at most
-    /// 100.
-    pub fn resistance(
-        &self,
-        kind: &crate::content::species::Species,
-        realm: crate::content::characters::Realm,
-    ) -> i32 {
-        (i32::from(kind.resistances[realm]) + self.enchantments.resistance(realm)).min(100)
-    }
-
-    pub fn is_dead(&self) -> bool {
-        self.hp == 0
-    }
-
-    pub fn can_fight(&self) -> bool {
-        !self.is_dead() && self.conditions.below(Condition::Asleep)
-    }
-
-    /// Alive and nothing worse than insane: able to guard a fellow
-    /// (retail bodyguards, `highest_condition < BLIND`).
-    pub fn can_guard(&self) -> bool {
-        !self.is_dead() && self.conditions.below(Condition::Blind)
-    }
-
-    /// Blindness takes its sight; a Monk fights on without it.
-    pub fn blinded(&self, kind: &crate::content::species::Species) -> bool {
-        self.conditions.has(Condition::Blind)
-            && kind.kind != crate::content::species::MonsterKind::Monk
-    }
-
     /// Its eyes, over its feet at `feet`.
     pub fn eye(&self, feet: Vec3) -> Vec3 {
         feet + Vec3::Y * self.body.eye_height
@@ -85,12 +47,25 @@ impl Monster {
     pub fn gap(&self, feet: Vec3, other: &Monster, other_feet: Vec3) -> f32 {
         (feet.distance(other_feet) - self.body.radius - other.body.radius).max(0.0)
     }
+}
 
-    /// Hurt enough to charge rather than walk up (retail `SetUpMonsterTurn`:
-    /// at 95% of its health or less).
-    pub fn charges(&self) -> bool {
-        self.hp * 100 <= self.max_hp * 95
-    }
+/// A monster's resistance to a realm: its species' and its spells', at most
+/// 100.
+pub fn resistance(
+    kind: &crate::content::species::Species,
+    vitals: &crate::game::characters::Vitals,
+    realm: crate::content::characters::Realm,
+) -> i32 {
+    (i32::from(kind.resistances[realm]) + vitals.enchantments.resistance(realm)).min(100)
+}
+
+/// Blindness takes a monster's sight; a Monk fights on without it.
+pub fn blinded(
+    kind: &crate::content::species::Species,
+    vitals: &crate::game::characters::Vitals,
+) -> bool {
+    vitals.conditions.has(Condition::Blind)
+        && kind.kind != crate::content::species::MonsterKind::Monk
 }
 
 /// A monster's effective gameplay body at the size it was rolled.
@@ -190,13 +165,56 @@ fn actor_name(species: &MonsterCatalog, (id, location): (u32, i32)) -> String {
     format!("{} #{location}", species[id].name)
 }
 
+/// A monster of a species magic never takes as a target or victim (retail
+/// `untargetable`).
+#[derive(Component, Debug)]
+pub struct Untargetable;
+
+/// What a monster's death is worth in experience to a fight: its species'.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Worth(pub u32);
+
+/// How a body carries itself in a fight when it decides for itself: its
+/// species' temper.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Temper(pub crate::content::species::Temper);
+
+/// The special attack a body may make at its turn: its species'.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Special(pub crate::content::species::SpecialAttack);
+
+/// What a body may cast at its turn when it decides for itself: the chance
+/// it does, its ten spell slots, and whether a silence leaves it its
+/// alchemy (retail `IsSpellBlockedForMonster`).
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Spellcasting {
+    pub chance: u8,
+    pub spells: [Option<crate::content::spells::SpellId>; 10],
+    pub silent_alchemy: bool,
+}
+
+impl Spellcasting {
+    /// A species' casting.
+    pub fn of(kind: &crate::content::species::Species) -> Self {
+        use crate::content::species::MonsterKind;
+        Self {
+            chance: kind.magic.chance,
+            spells: kind.magic.spells,
+            silent_alchemy: matches!(
+                kind.kind,
+                MonsterKind::Ranger | MonsterKind::Alchemist | MonsterKind::Ninja
+            ),
+        }
+    }
+}
+
 /// Make a monster an actor of its level: standing at its feet and facing
 /// its heading, in its group, and a walker if it walks.
 fn embody(
     entity: &mut EntityCommands,
     root: Entity,
     (feet, yaw, body): (Vec3, f32, ScaledBody),
-    group: Option<Entity>,
+    (group, kind): (Option<Entity>, &crate::content::species::Species),
     (navigation, configs): (&LevelNavigation, &mut Assets<WalkerMotionConfig>),
 ) {
     let ScaledBody { radius, speed, .. } = body;
@@ -207,6 +225,15 @@ fn embody(
     ));
     if let Some(group) = group {
         entity.insert(GroupMember(group));
+    }
+    entity.insert((
+        Worth(kind.experience),
+        Temper(kind.temper),
+        Special(kind.special),
+        Spellcasting::of(kind),
+    ));
+    if kind.untargetable {
+        entity.insert(Untargetable);
     }
     if speed > 0.0 {
         super::navigation::insert_walker(entity, (feet, yaw), (radius, speed), navigation, configs);
@@ -291,9 +318,15 @@ fn spawn_member(
     (navigation, configs): (&LevelNavigation, &mut Assets<WalkerMotionConfig>),
 ) -> Entity {
     let name = actor_name(species, (kept.monster.species, kept.monster.location));
-    let body = kept.monster.body;
-    let mut entity = commands.spawn((Name::new(name), kept.monster));
-    embody(&mut entity, root, (kept.feet, kept.yaw, body), Some(group), (navigation, configs));
+    let (body, kind) = (kept.monster.body, &species[kept.monster.species]);
+    let mut entity = commands.spawn((Name::new(name), kept.monster, kept.vitals, kept.budget));
+    embody(
+        &mut entity,
+        root,
+        (kept.feet, kept.yaw, body),
+        (Some(group), kind),
+        (navigation, configs),
+    );
     entity.id()
 }
 
@@ -438,13 +471,14 @@ pub fn populate(
         .collect();
     let mut actors = Vec::new();
     for kept in monsters {
-        if kept.monster.is_dead() {
+        if kept.vitals.is_dead() {
             continue;
         }
         let body = kept.monster.body;
         let name = actor_name(species, (kept.monster.species, kept.monster.location));
-        let entity = commands.spawn((Name::new(name), kept.monster)).id();
-        actors.push((entity, kept.feet, kept.yaw, body, kept.group));
+        let id = kept.monster.species;
+        let entity = commands.spawn((Name::new(name), kept.monster, kept.vitals, kept.budget)).id();
+        actors.push((entity, kept.feet, kept.yaw, body, kept.group, id));
     }
     let average = npcs.average_level();
     let mut placed_actors = std::collections::HashSet::new();
@@ -461,17 +495,24 @@ pub fn populate(
         };
         let name = actor_name(species, (placed.species, placed.location));
         commands.entity(actor.0).insert(Name::new(name));
-        actors.push(actor);
+        let (entity, feet, yaw, body, group) = actor;
+        actors.push((entity, feet, yaw, body, group, placed.species));
     }
     actors.extend(npcs.visitors(commands, map, &mut placed_actors));
     let monster_count = actors.len();
-    for (actor, feet, yaw, body, group) in actors {
+    for (actor, feet, yaw, body, group, id) in actors {
         let group = group.map(|authored| {
             *groups.entry(authored).or_insert_with(|| {
                 commands.spawn((MonsterGroup { authored, ..default() }, LevelOwned(root))).id()
             })
         });
-        embody(&mut commands.entity(actor), root, (feet, yaw, body), group, (navigation, configs));
+        embody(
+            &mut commands.entity(actor),
+            root,
+            (feet, yaw, body),
+            (group, &species[id]),
+            (navigation, configs),
+        );
     }
     let lying: Vec<(WorldItem, Vec3)> = match remembered_items {
         Some(items) => items,

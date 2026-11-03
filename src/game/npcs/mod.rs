@@ -110,7 +110,7 @@ pub struct NpcPopulation<'w, 's> {
         (
             Entity,
             &'static mut NpcWorldRole,
-            &'static Monster,
+            (&'static Monster, &'static crate::game::characters::Vitals),
             ActorPose,
             Option<&'static Walker>,
             Option<&'static LevelOwned>,
@@ -161,8 +161,8 @@ impl NpcPopulation<'_, '_> {
                 return None;
             }
             let entity = *bodies.first()?;
-            let (_, role, monster, pose, walker, ..) = self.roles.get(entity).ok()?;
-            if role.map != map || monster.is_dead() {
+            let (_, role, (monster, vitals), pose, walker, ..) = self.roles.get(entity).ok()?;
+            if role.map != map || vitals.is_dead() {
                 return None;
             }
             commands.entity(entity).remove::<Disabled>();
@@ -201,6 +201,8 @@ impl NpcPopulation<'_, '_> {
                 NpcBody(actor),
                 NpcWorldRole { map: map.into(), group: kept.group },
                 kept.monster,
+                kept.vitals,
+                kept.budget,
             ))
             .id();
         Some((entity, kept.feet, kept.yaw, body, kept.group))
@@ -256,15 +258,18 @@ impl NpcPopulation<'_, '_> {
         commands: &mut Commands,
         map: &str,
         placed_actors: &mut std::collections::HashSet<ActorId>,
-    ) -> Vec<(Entity, Vec3, f32, crate::game::world::population::ScaledBody, Option<i32>)> {
+    ) -> Vec<(Entity, Vec3, f32, crate::game::world::population::ScaledBody, Option<i32>, u32)>
+    {
         let mut visitors = Vec::new();
         for (actor, key, bodies) in &self.npcs {
             if !self.may_stand(actor) || placed_actors.contains(key) {
                 continue;
             }
             let Some(&entity) = bodies.first() else { continue };
-            let Ok((_, role, monster, pose, walker, ..)) = self.roles.get(entity) else { continue };
-            if role.map != map || monster.is_dead() {
+            let Ok((_, role, (monster, vitals), pose, walker, ..)) = self.roles.get(entity) else {
+                continue;
+            };
+            if role.map != map || vitals.is_dead() {
                 continue;
             }
             placed_actors.insert(key.clone());
@@ -275,6 +280,7 @@ impl NpcPopulation<'_, '_> {
                 pose.rotation().to_euler(EulerRot::YXZ).0,
                 monster.body,
                 role.group,
+                monster.species,
             ));
         }
         visitors
@@ -337,12 +343,6 @@ impl Plugin for NpcPlugin {
                     .in_set(conversation::Conversing)
                     .after(GameplaySet::Combat),
             )
-            .add_systems(Update, recruit::settle_npc_members.before(GameplaySet::LevelActivation))
-            .add_systems(
-                FixedUpdate,
-                recruit::settle_npc_members
-                    .after(GameplaySet::Combat)
-                    .run_if(crate::game::world::level::level_active),
-            );
+            .add_observer(recruit::npc_member_falls);
     }
 }

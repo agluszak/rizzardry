@@ -35,6 +35,13 @@ fn app() -> App {
         .init_resource::<Assets<crate::game::world::navigation::WalkerMotionConfig>>()
         .init_resource::<LevelMemory>()
         .add_observer(give_bodies)
+        .add_observer(crate::game::world::damage::monster_died)
+        .add_systems(
+            Update,
+            (crate::game::characters::cheat_death, crate::game::characters::settle_deaths)
+                .chain()
+                .before(activate_level),
+        )
         .init_resource::<crate::game::factions::Factions>()
         .add_message::<crate::game::factions::FactionNews>()
         .init_resource::<ItemIds>()
@@ -500,7 +507,6 @@ fn direct_damage_settles_death_once() {
     use crate::content::items::{Dice, ItemDefinition, ItemId};
     use crate::content::species::{Drop, Treasure};
     use crate::game::inventory::PartyInventory;
-    use crate::game::world::damage::MonsterDamage;
     use crate::game::world::items::WorldItem;
     use bevy::ecs::system::RunSystemOnce;
     let mut app = app();
@@ -522,15 +528,10 @@ fn direct_damage_settles_death_once() {
     let world = app.world_mut();
     let target = world.query_filtered::<Entity, With<Monster>>().single(world).unwrap();
     let hit = |world: &mut World| {
-        world
-            .run_system_once(
-                move |mut damage: MonsterDamage,
-                      mut purse: Single<&mut crate::game::inventory::PartyInventory>,
-                      mut rng: ResMut<GameRng>| {
-                    damage.apply(target, 10, (1, 0), &mut purse, &mut rng)
-                },
-            )
-            .unwrap()
+        let lost = world.get_mut::<crate::game::characters::Vitals>(target).unwrap().hurt(10);
+        // Death settles its consequences.
+        world.run_system_once(crate::game::characters::settle_deaths).unwrap();
+        lost
     };
     use crate::game::world::navigation::{Walker, WalkerMotion, links::Crossing};
     use avian3d::prelude::{LinearVelocity, Position};
@@ -550,7 +551,8 @@ fn direct_damage_settles_death_once() {
         controller,
     ));
     world.get_mut::<TnuaMotor>(target).unwrap().lin.boost = Vec3::X;
-    assert!(hit(world).died);
+    assert_eq!(hit(world), 10);
+    assert!(world.get::<crate::game::characters::Dead>(target).is_some());
     assert!(world.get::<Crossing>(target).is_none());
     assert!(world.get::<UsingAnimationLink>(target).is_none());
     assert!(matches!(world.get::<AgentTarget3d>(target), Some(AgentTarget3d::None)));
@@ -602,7 +604,12 @@ fn entry_suspends_gameplay_and_departure_captures_the_source_at_commit() {
 
     // What the source holds at the commit is what is remembered.
     let world = app.world_mut();
-    world.query::<&mut Monster>().single_mut(world).unwrap().hp = 0;
+    world
+        .query_filtered::<&mut crate::game::characters::Vitals, With<Monster>>()
+        .single_mut(world)
+        .unwrap()
+        .health
+        .current = 0;
     world
         .resource_mut::<Assets<LevelDefinition>>()
         .insert(&loading, LevelDefinition { collision: floor(), ..default() })
@@ -662,7 +669,7 @@ fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
     // snapshot would resurrect this monster at the commit boundary.
     let monster =
         app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
-    app.world_mut().get_mut::<Monster>(monster).unwrap().hp = 0;
+    app.world_mut().get_mut::<crate::game::characters::Vitals>(monster).unwrap().health.current = 0;
     app.world_mut().resource_mut::<Assets<LevelDefinition>>().insert(&loading, geometry).unwrap();
     app.update();
     assert!(is_played(&app, destination));
@@ -793,9 +800,8 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
         npc.stock.lots[0].units = 2;
     }
     {
-        let mut body = app.world_mut().get_mut::<Monster>(body).unwrap();
-        body.hp = 4;
-        body.max_hp = 9;
+        let mut body = app.world_mut().get_mut::<crate::game::characters::Vitals>(body).unwrap();
+        body.health = crate::game::characters::Pool { current: 4, max: 9 };
     }
     // A merchant re-enters at authored quote zero even after its greeting was remembered.
     use crate::game::npcs::conversation::{self, Conversation, ConversationRequest, Talk};
@@ -863,7 +869,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert_eq!(app.world().get::<LevelOwned>(body).unwrap().0, replacement);
     assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(body).is_none());
     assert!(app.world().get::<Collider>(body).is_some());
-    assert_eq!(app.world().get::<Monster>(body).unwrap().hp, 4);
+    assert_eq!(app.world().get::<crate::game::characters::Vitals>(body).unwrap().health.current, 4);
     assert_eq!(app.world().get::<Npc>(actor).unwrap().stock, stock);
     let source = replacement;
     app.world_mut()
@@ -884,7 +890,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert!(app.world().get::<Monster>(actor).is_none());
     assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(body).is_some());
     assert_eq!(app.world().get::<NpcBodies>(actor).unwrap()[0], body);
-    assert_eq!(app.world().get::<Monster>(body).unwrap().hp, 4);
+    assert_eq!(app.world().get::<crate::game::characters::Vitals>(body).unwrap().health.current, 4);
     assert!(app.world().get::<Collider>(body).is_none());
     assert!(app.world().get::<avian3d::prelude::RigidBody>(body).is_none());
     assert!(
@@ -901,7 +907,10 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert_eq!(app.world().get::<LevelOwned>(returned_body).unwrap().0, back);
     assert!(app.world().get::<Collider>(returned_body).is_some());
     assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(returned_body).is_none());
-    assert_eq!(app.world().get::<Monster>(returned_body).unwrap().hp, 4);
+    assert_eq!(
+        app.world().get::<crate::game::characters::Vitals>(returned_body).unwrap().health.current,
+        4
+    );
     let group =
         app.world().get::<crate::game::world::identify::GroupMember>(returned_body).unwrap().0;
     assert_eq!(
@@ -927,7 +936,6 @@ fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
     };
     use crate::game::inventory::PartyInventory;
     use crate::game::npcs::{Npc, NpcAssets, NpcBodies};
-    use crate::game::world::damage::MonsterDamage;
     use crate::game::world::items::{GroundLoot, WorldItem};
     use bevy::ecs::system::RunSystemOnce;
     let mut app = app();
@@ -966,14 +974,9 @@ fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
     let body = app.world().get::<NpcBodies>(actor).unwrap()[0];
     let party =
         app.world_mut().query_filtered::<Entity, With<Party>>().single(app.world()).unwrap();
-    let strike = move |damage: MonsterDamage,
-                       mut purses: Query<&mut PartyInventory>,
-                       mut rng: ResMut<GameRng>| {
-        let mut damage = damage;
-        damage.apply(body, 1000, (1, 0), &mut purses.get_mut(party).unwrap(), &mut rng)
-    };
-    let killed = app.world_mut().run_system_once(strike).unwrap();
-    assert!(killed.died);
+    app.world_mut().get_mut::<crate::game::characters::Vitals>(body).unwrap().hurt(1000);
+    app.world_mut().run_system_once(crate::game::characters::settle_deaths).unwrap();
+    assert!(app.world().get::<crate::game::characters::Dead>(body).is_some());
     let npc = app.world().get::<Npc>(actor).unwrap();
     assert!(npc.dead);
     assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 25);
@@ -990,8 +993,11 @@ fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
     assert_eq!(dropped.len(), 2, "the sure item and one draw: {dropped:?}");
     assert_eq!(dropped[0], ItemId(1));
     // The corpse pays nothing more.
-    let again = app.world_mut().run_system_once(strike).unwrap();
-    assert!(!again.died);
+    assert_eq!(
+        app.world_mut().get_mut::<crate::game::characters::Vitals>(body).unwrap().hurt(1000),
+        0
+    );
+    app.world_mut().run_system_once(crate::game::characters::settle_deaths).unwrap();
     assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 25);
     // Away and back: the NPC stays dead and out of the world.
     let away = spawn_level(&mut app, floor());
@@ -1069,7 +1075,11 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     let party =
         app.world_mut().query_filtered::<Entity, With<Party>>().single(app.world()).unwrap();
     let afraid = (Condition::Afraid, Lasting::Rounds(3));
-    app.world_mut().get_mut::<Monster>(body).unwrap().conditions.inflict(afraid.0, afraid.1);
+    app.world_mut()
+        .get_mut::<crate::game::characters::Vitals>(body)
+        .unwrap()
+        .conditions
+        .inflict(afraid.0, afraid.1);
     let members = |app: &App| app.world().get::<PartyRoster>(party).unwrap().len();
 
     // Joining.
@@ -1129,8 +1139,8 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     assert!(app.world().get::<Disabled>(body).is_none());
     assert_eq!(app.world().get::<LevelOwned>(body).unwrap().0, elsewhere);
     assert_eq!(app.world().get::<NpcWorldRole>(body).unwrap().map, away_path);
-    let monster = app.world().get::<Monster>(body).unwrap();
-    assert!(monster.hp > 0);
+    let monster = app.world().get::<crate::game::characters::Vitals>(body).unwrap();
+    assert!(monster.health.current > 0);
     assert_eq!(monster.conditions, [afraid].into());
     let pool: Vec<_> = app
         .world()
@@ -1173,7 +1183,7 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     assert!(app.world().get::<Carried>(actor).unwrap().backpack[0].is_none());
 
     // Death and accepted travel share a frame: settle before retiring the source level.
-    app.world_mut().get_mut::<Vitals>(actor).unwrap().hp = 0;
+    app.world_mut().get_mut::<Vitals>(actor).unwrap().health.current = 0;
     let destination = spawn_level(&mut app, floor());
     app.update();
     assert!(is_played(&app, destination));

@@ -8,18 +8,11 @@
 
 pub mod casting;
 pub(crate) mod dialogue;
-pub mod effects;
 pub mod enchantments;
-pub(crate) mod impacts;
 pub(crate) mod pointcasts;
 pub mod portals;
-pub(crate) mod targeting;
 pub(crate) mod traps;
 pub(crate) mod utilities;
-
-pub use effects::{Effect, Field, Victim};
-
-use crate::game::party::Members;
 
 use std::collections::BTreeSet;
 
@@ -37,12 +30,7 @@ use crate::game::characters::{Character, Profession};
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
 use crate::game::inventory::PartyInventory;
-use crate::game::party::DamageApplied;
-use crate::game::party::body::PartyBody;
-use crate::game::party::formation::Formation;
 use crate::game::rng::GameRng;
-use crate::game::time::GameClock;
-use crate::game::world::damage::MonsterDamage;
 
 /// The spells a character has learned. Creation picks the first ones.
 #[derive(Component, Clone, Debug, Default, PartialEq, Eq)]
@@ -401,7 +389,7 @@ fn power_cast(character: &Character) -> u32 {
 
 /// The strength a cast's victims save against, and the percent its rolls are
 /// raised by (retail `CastSpellFromSource`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Strength {
     pub power: u32,
     pub against: u32,
@@ -485,17 +473,20 @@ impl Plugin for MagicPlugin {
         app.add_message::<MagicRequest>()
             .add_message::<casting::MagicNews>()
             .add_message::<crate::game::world::hostility::Provocation>()
-            .init_resource::<casting::FlightOrder>()
             .add_systems(
                 Update,
-                (accept_magic, pointcasts::expire_lures, pointcasts::follow_lures)
+                (
+                    accept_magic,
+                    casting::run_casts,
+                    pointcasts::expire_lures,
+                    pointcasts::follow_lures,
+                )
                     .chain()
                     .after(GameplaySet::Burden)
                     .before(GameplaySet::Combat)
                     .run_if(crate::game::world::level::level_active),
             );
-        // Missiles fly on the fixed step, ahead of the fight's step there
-        // (see `CombatPlugin`).
+        casting::stages(app);
     }
 }
 
@@ -505,70 +496,6 @@ impl Plugin for MagicPlugin {
 pub struct MagicRequest {
     pub caster: Entity,
     pub choice: casting::MagicChoice,
-}
-
-/// What resolving magic needs beside the members and monsters it changes.
-#[derive(bevy::ecs::system::SystemParam)]
-pub struct MagicContext<'w, 's> {
-    pub roster: Single<'w, 's, &'static crate::game::party::roster::PartyRoster>,
-    pub content: If<Res<'w, Catalogs>>,
-    difficulty: Res<'w, crate::game::difficulty::Difficulty>,
-    pub formation: Single<'w, 's, &'static mut Formation>,
-    pub party_damage: MessageWriter<'w, DamageApplied>,
-    pub enchantments: Single<'w, 's, &'static mut enchantments::PartyEffects>,
-    pub inventory: Single<'w, 's, &'static mut PartyInventory>,
-    pub news: MessageWriter<'w, casting::MagicNews>,
-    level: Single<'w, 's, Entity, With<crate::game::world::level::Level>>,
-    level_rules: Query<'w, 's, &'static crate::game::world::triggers::LevelState>,
-    pub visibility: crate::game::world::obstacles::WorldObstacles<'w, 's>,
-    /// Missiles leave in launch order, so equal arrivals land in it too.
-    pub flight_order: ResMut<'w, casting::FlightOrder>,
-    provocations: MessageWriter<'w, crate::game::world::hostility::Provocation>,
-    fight: Query<'w, 's, Entity, With<Battle>>,
-}
-
-impl MagicContext<'_, '_> {
-    /// The level being played, which spell missiles belong to.
-    pub fn level(&self) -> Entity {
-        *self.level
-    }
-
-    /// Resolve one action against the live party, monsters and shared content.
-    /// The field is the sole source of both rule catalogs and roster order.
-    pub fn resolve<R>(
-        &mut self,
-        now: u64,
-        members: &mut Members,
-        monsters: &mut MonsterDamage,
-        cast: impl FnOnce(&mut Field) -> R,
-    ) -> R {
-        let party: Vec<Entity> = self.roster.iter().collect();
-        let party_level = crate::game::party::average_level(
-            members.iter_many(self.roster.iter()).matched().map(|(c, ..)| c.level()),
-        );
-        let items = &self.content.items;
-        let mut field = Field {
-            visibility: &self.visibility,
-            underwater: self.level_rules.get(*self.level).is_ok_and(|state| state.camera_sway),
-            members,
-            monsters,
-            enchantments: &mut self.enchantments.0,
-            inventory: &mut self.inventory,
-            formation: &mut self.formation,
-            party_damage: &mut self.party_damage,
-            items,
-            species: &self.content.species,
-            spells: &self.content.spells,
-            party_level,
-            now,
-            difficulty: *self.difficulty,
-            party: &party,
-            improved: Vec::new(),
-            provocations: &mut self.provocations,
-            fight: self.fight.single().ok(),
-        };
-        cast(&mut field)
-    }
 }
 
 /// Carry out magic that needs the whole world, announcing a refusal: a
@@ -598,28 +525,22 @@ pub(crate) fn execute_in_world(
 }
 
 /// Accept magic requests (retail `ChooseAction`): in combat only record the
-/// choice; outside it, execute it now.
+/// choice; outside it, cast now.
 pub fn accept_magic(
+    mut commands: Commands,
     mut requests: MessageReader<MagicRequest>,
     battle: Option<Single<&Battle>>,
     camp: Option<Res<crate::game::camp::Camp>>,
     interaction: Query<(), With<crate::game::world::interaction::DeviceInteraction>>,
     mut orders: Query<&mut crate::game::party::Order>,
-    (mut members, mut monsters): (Members, MonsterDamage),
-    mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
-    mut context: MagicContext,
-    mut rng: ResMut<GameRng>,
-    party: Single<(&avian3d::prelude::Position, &PartyBody)>,
-    mut commands: Commands,
-    clock: Res<GameClock>,
+    carried: Query<&crate::game::inventory::Carried>,
+    inventory: Single<&PartyInventory>,
+    content: If<Res<Catalogs>>,
+    mut news: MessageWriter<casting::MagicNews>,
 ) {
-    let (party_at, facing) = (PartyBody::eye(party.0), party.1.forward());
     for &MagicRequest { caster, choice } in requests.read() {
-        let spell = choice.source.spell_id(
-            members.get(caster).unwrap().2,
-            &context.inventory,
-            &context.content.items,
-        );
+        let spell =
+            choice.source.spell_id(carried.get(caster).unwrap(), &inventory, &content.items);
         // A point cast in a fight waits for its turn, as any other order.
         let in_world = (spell.is_some_and(utilities::spell)
             && (battle.is_none() || !spell.is_some_and(pointcasts::spell)))
@@ -630,11 +551,13 @@ pub fn accept_magic(
             });
             continue;
         }
-        if !interaction.is_empty() {
-            context.news.write(casting::MagicNews::Refused {
-                caster,
-                refusal: casting::Refusal::WrongTime,
-            });
+        let refusal = match spell {
+            None => Some(casting::Refusal::NoItem),
+            Some(_) if !interaction.is_empty() => Some(casting::Refusal::WrongTime),
+            Some(_) => None,
+        };
+        if let Some(refusal) = refusal {
+            news.write(casting::MagicNews::Refused { caster, refusal });
             continue;
         }
         if battle.is_some() {
@@ -643,112 +566,13 @@ pub fn accept_magic(
         }
         // Outside a fight no monster is a target: the hostile spells are
         // combat spells.
-        let level = context.level();
-        let performed = context.resolve(clock.ms, &mut members, &mut monsters, |field| {
-            let situation = casting::Situation {
-                context: if camp.is_some() {
-                    casting::UseContext::Camp
-                } else {
-                    casting::UseContext::World
-                },
-                party: field.party,
-                party_at,
-                facing,
-                monsters: &[],
-                group_of: &|m| vec![m],
-            };
-            casting::perform(caster, choice, &situation, &mut points, &mut rng, field)
-        });
-        context.news.write(match performed {
-            Ok((report, flights)) => {
-                context.flight_order.launch(&mut commands, flights, level);
-                casting::MagicNews::Done(report)
-            }
-            Err(refusal) => casting::MagicNews::Refused { caster, refusal },
-        });
-    }
-}
-
-/// Fly spell missiles and resolve them on arrival (retail
-/// `ResolveSpellMissileHit`): on the victims captured at the cast; one that
-/// died meanwhile is missed. Kills in a fight count for it.
-pub fn deliver_spells(
-    mut points: Query<(&LearnedSpells, &mut SpellPoints)>,
-    party: Single<&avian3d::prelude::Position, With<PartyBody>>,
-    time: Res<Time<Fixed>>,
-    mut flights: Query<(Entity, &mut casting::SpellInFlight)>,
-    (mut members, mut monsters): (Members, MonsterDamage),
-    mut context: MagicContext,
-    mut rng: ResMut<GameRng>,
-    mut battle: Option<Single<&mut Battle>>,
-    mut combat_news: MessageWriter<crate::game::combat::CombatNews>,
-    mut commands: Commands,
-    clock: Res<GameClock>,
-) {
-    if flights.is_empty() {
-        return;
-    }
-    let party_at = PartyBody::eye(*party);
-    // Every impact due in this update, in the order they arrive.
-    let mut due = Vec::new();
-    for (entity, mut flight) in &mut flights {
-        let left = flight.arrives.remaining();
-        if flight.arrives.tick(time.delta()).is_finished() {
-            due.push((left, flight.launched, entity));
-        }
-    }
-    let mut due: Vec<_> = due
-        .into_iter()
-        .map(|(left, launched, entity)| {
-            (left, launched, Some(entity), flights.get(entity).unwrap().1.clone())
-        })
-        .collect();
-    while let Some((index, _)) =
-        due.iter().enumerate().min_by_key(|(_, (left, launched, ..))| (*left, *launched))
-    {
-        let (at, _, entity, flight) = due.swap_remove(index);
-        if let Some(entity) = entity {
-            commands.entity(entity).despawn();
-        }
-        let mut secondary = Vec::new();
-        let (effects, improved) = context.resolve(clock.ms, &mut members, &mut monsters, |field| {
-            let spell = &field.spells[flight.spell];
-            let effects = impacts::resolve(
-                flight.caster,
-                flight.origin,
-                false,
-                spell,
-                flight.strength,
-                &flight.victims,
-                flight.finish.as_ref(),
-                party_at,
-                &mut rng,
-                field,
-                &mut points,
-                &mut secondary,
-            );
-            (effects, std::mem::take(&mut field.improved))
-        });
-        if let Some(battle) = battle.as_mut() {
-            battle.credit_kills(&effects, &mut combat_news);
-        }
-        context.news.write(casting::MagicNews::Landed {
-            caster: flight.caster,
-            spell: flight.spell,
-            effects,
-            improved,
-        });
-        for mut reflection in secondary {
-            context.flight_order.stamp(&mut reflection);
-            let arrival = at + reflection.arrives.remaining();
-            if arrival <= time.delta() {
-                due.push((arrival, reflection.launched, None, reflection));
-            } else {
-                reflection.arrives.tick(time.delta() - at);
-                let level = context.level();
-                context.flight_order.launch(&mut commands, vec![reflection], level);
-            }
-        }
+        let context =
+            if camp.is_some() { casting::UseContext::Camp } else { casting::UseContext::World };
+        commands.spawn((
+            casting::Cast { spell: spell.unwrap(), context },
+            casting::Chosen(choice),
+            crate::game::hits::By(caster),
+        ));
     }
 }
 
@@ -773,7 +597,7 @@ pub(crate) fn test_points(world: &World, member: Entity, realm: Realm) -> i32 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::content::items::Dice;
     use crate::content::items::ItemCatalog;
@@ -833,13 +657,18 @@ mod tests {
             .init_resource::<ItemIds>()
             .init_resource::<crate::game::difficulty::Difficulty>()
             .init_resource::<avian3d::collider_tree::ColliderTrees>()
-            .init_resource::<casting::FlightOrder>()
             .insert_resource(GameRng::seeded(3))
-            .add_message::<DamageApplied>()
+            .add_message::<crate::game::party::DamageApplied>()
             .add_message::<MagicRequest>()
             .add_message::<casting::MagicNews>()
             .add_message::<crate::game::world::hostility::Provocation>()
-            .add_systems(Update, accept_magic);
+            .add_message::<crate::game::combat::CombatNews>()
+            .add_plugins(crate::game::hits::HitsPlugin)
+            .add_systems(
+                Update,
+                (accept_magic, casting::run_casts).chain().before(crate::game::hits::Resolution),
+            );
+        casting::stages(&mut app);
         let potion = ItemDefinition {
             id: ItemId(0),
             name: "Potion of Light Heal".into(),
@@ -882,7 +711,7 @@ mod tests {
         });
         let profile = Character::new("Drinker", Race::Human, Gender::Male, Profession::Fighter);
         let mut vitals = Vitals::new(&profile);
-        vitals.hp = 1;
+        vitals.health.current = 1;
         let mut carried = Carried::default();
         carried.backpack[0] = Some(potions);
         carried.equipment[EquipSlot::Misc1] = Some(Equipped::new(charged));
@@ -895,20 +724,20 @@ mod tests {
         ));
         let mut news = Vec::new();
         let mut request = |app: &mut App, source| {
-            let choice = MagicChoice { source, aim: Aim::Member(member) };
+            let choice = MagicChoice { source, aim: Aim::Body(member) };
             app.world_mut().write_message(MagicRequest { caster: member, choice });
             app.update();
             news.extend(app.world_mut().resource_mut::<Messages<MagicNews>>().drain());
             news.last().cloned()
         };
-        let hp = |app: &App| app.world().get::<Vitals>(member).unwrap().hp;
+        let hp = |app: &App| app.world().get::<Vitals>(member).unwrap().health.current;
         let backpack = |app: &App| app.world().get::<Carried>(member).unwrap().backpack[0].clone();
         assert!(matches!(request(&mut app, Source::Item(potion_id)), Some(MagicNews::Done(_))));
         assert_eq!(backpack(&app).unwrap().count(), 1);
         let before = hp(&app);
         assert!(before > 1, "4d4 heals at power 1");
         // Hurt again, and drink the last one: it is gone, and it heals.
-        app.world_mut().get_mut::<Vitals>(member).unwrap().hp = 1;
+        app.world_mut().get_mut::<Vitals>(member).unwrap().health.current = 1;
         assert!(matches!(request(&mut app, Source::Item(potion_id)), Some(MagicNews::Done(_))));
         assert!(backpack(&app).is_none(), "the last dose is used up");
         assert!(hp(&app) > 1, "the effect outlives the potion");
@@ -1008,13 +837,20 @@ mod tests {
                 .init_resource::<ItemIds>()
                 .init_resource::<crate::game::difficulty::Difficulty>()
                 .init_resource::<avian3d::collider_tree::ColliderTrees>()
-                .init_resource::<casting::FlightOrder>()
                 .insert_resource(GameRng::seeded(3))
-                .add_message::<DamageApplied>()
+                .add_message::<crate::game::party::DamageApplied>()
                 .add_message::<MagicRequest>()
                 .add_message::<MagicNews>()
                 .add_message::<crate::game::world::hostility::Provocation>()
-                .add_systems(Update, accept_magic);
+                .add_message::<crate::game::combat::CombatNews>()
+                .add_plugins(crate::game::hits::HitsPlugin)
+                .add_systems(
+                    Update,
+                    (accept_magic, casting::run_casts)
+                        .chain()
+                        .before(crate::game::hits::Resolution),
+                );
+            casting::stages(&mut app);
             let definition = ItemDefinition {
                 id: ItemId(0),
                 class: EquipClass::Potion,
@@ -1061,8 +897,8 @@ mod tests {
             let user = world.spawn((Vitals::new(&user), user, carried)).id();
             let ally = Character::new("Ally", Race::Human, Gender::Male, Profession::Priest);
             let mut vitals = Vitals::new(&ally);
-            vitals.hp = 1;
-            vitals.stamina = 1;
+            vitals.health.current = 1;
+            vitals.stamina.current = 1;
             vitals.inflict(Condition::Asleep, Lasting::Rounds(8));
             vitals.inflict(Condition::Unconscious, Lasting::Rounds(8));
             vitals.poison(Lasting::Rounds(20), 10);
@@ -1085,7 +921,7 @@ mod tests {
             let user_before = world.get::<Vitals>(user).unwrap().clone();
             world.write_message(MagicRequest {
                 caster: user,
-                choice: MagicChoice { source: Source::Item(stack_id), aim: Aim::Member(ally) },
+                choice: MagicChoice { source: Source::Item(stack_id), aim: Aim::Body(ally) },
             });
             app.update();
             let world = app.world_mut();
@@ -1096,9 +932,9 @@ mod tests {
                 1
             );
             let user_after = world.get::<Vitals>(user).unwrap();
-            assert_eq!(user_after.hp, user_before.hp);
+            assert_eq!(user_after.health.current, user_before.health.current);
             assert_eq!(user_after.conditions, user_before.conditions);
-            let fatigue = user_before.stamina - user_after.stamina;
+            let fatigue = user_before.stamina.current - user_after.stamina.current;
             if id == SpellId::SMELLING_SALTS {
                 assert_eq!(fatigue, 10);
             } else {
@@ -1116,16 +952,12 @@ mod tests {
                             .absorption,
                         4
                     );
-                    let profile = world.get::<Character>(ally).unwrap().clone();
                     let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
-                    let stamina = vitals.stamina;
-                    let mut rng = GameRng::default();
-                    let mut fate = crate::game::characters::Fate { fight: None, rng: &mut rng };
-                    assert_eq!(vitals.damage(&profile, 4, &mut fate), 0);
-                    assert_eq!(vitals.stamina, stamina, "absorbed damage does not fatigue");
-                    assert_eq!(vitals.damage(&profile, 2, &mut fate), 1);
+                    let stamina = vitals.stamina.current;
+                    assert_eq!(vitals.hurt(4), 0);
+                    assert_eq!(vitals.stamina.current, stamina, "absorbed damage does not fatigue");
+                    assert_eq!(vitals.hurt(2), 1);
                     assert!(vitals.is_dead());
-                    assert!(vitals.enchantments.0.is_empty());
                 }
                 SpellId::ARMORPLATE => {
                     assert!(vitals.enchantments.0.is_empty());
@@ -1142,12 +974,15 @@ mod tests {
                     assert!(vitals.enchantments.get(id).is_none());
                 }
                 SpellId::RESTORE_HEALTH => {
-                    assert_eq!(vitals.hp, 5, "power four heals 4d1");
-                    assert_eq!(vitals.stamina, 9, "stamina rolls twice the dice, independently");
+                    assert_eq!(vitals.health.current, 5, "power four heals 4d1");
+                    assert_eq!(
+                        vitals.stamina.current, 9,
+                        "stamina rolls twice the dice, independently"
+                    );
                 }
                 SpellId::RESTORE_MAGIC => {
                     assert!(test_points(world, ally, Realm::Divine) > 0);
-                    assert_eq!((vitals.hp, vitals.stamina), (1, 1));
+                    assert_eq!((vitals.health.current, vitals.stamina.current), (1, 1));
                 }
                 SpellId::SMELLING_SALTS => {
                     assert!(

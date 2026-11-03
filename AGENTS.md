@@ -46,9 +46,10 @@ character, not its C++ architecture.
 - Level preparation is not activation. Reject missing mandatory content; preserve
   map-owned state in dormant records and restore it on revisit. Views cannot
   initialize campaign state or make gameplay readiness depend on artwork.
-- Keep time domains and RNG consumption explicit. Settle consequences under the
-  originating policy/level, retain time remainders and define target order. UI and
-  cosmetics never consume gameplay RNG. System-local caches are not game history.
+- Keep time domains explicit. Settle consequences under the originating
+  policy/level and retain time remainders. Retail's order of random draws need not
+  be reproduced. UI and cosmetics never consume gameplay RNG. System-local caches
+  are not game history.
 - Dependency direction: retail decodes into content; game consumes content and owns
   rules; presentation observes game state; app composes them. No reverse imports,
   giant Game object or second position authority alongside physics.

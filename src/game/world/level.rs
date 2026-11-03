@@ -241,6 +241,8 @@ pub struct LevelRecord {
 pub struct KeptMonster {
     pub group: Option<i32>,
     pub monster: Monster,
+    pub vitals: crate::game::characters::Vitals,
+    pub budget: super::population::SpellBudget,
     pub feet: Vec3,
     pub yaw: f32,
 }
@@ -275,19 +277,9 @@ impl KeptMonster {
         let max_stamina = rng.roll(kind.stamina);
         let body = super::population::ScaledBody::new(body, rng.below(1000));
         KeptMonster {
-            monster: Monster {
-                enchantments: default(),
-                location,
-                species,
-                hp: max_hp,
-                max_hp,
-                stamina: max_stamina,
-
-                max_stamina,
-                conditions: Default::default(),
-                spell_points: 0,
-                body,
-            },
+            monster: Monster { location, species, body },
+            vitals: crate::game::characters::Vitals::full(max_hp, max_stamina),
+            budget: super::population::SpellBudget(kind.magic.budget.max(0) as u32),
             group,
             feet,
             yaw,
@@ -296,7 +288,11 @@ impl KeptMonster {
 
     /// A monster as it stands now, to keep while its level is away.
     pub fn capture(
-        monster: &Monster,
+        (monster, vitals, budget): (
+            &Monster,
+            &crate::game::characters::Vitals,
+            &super::population::SpellBudget,
+        ),
         pose: &super::ActorPoseItem,
         walker: Option<&super::navigation::Walker>,
         group: Option<i32>,
@@ -304,6 +300,8 @@ impl KeptMonster {
         KeptMonster {
             group,
             monster: monster.clone(),
+            vitals: vitals.clone(),
+            budget: *budget,
             feet: super::navigation::feet(pose.translation(), walker),
             yaw: pose.rotation().to_euler(EulerRot::YXZ).0,
         }
@@ -319,7 +317,16 @@ pub struct LevelContents<'w, 's> {
     monsters: Query<
         'w,
         's,
-        (&'static Monster, super::ActorPose, Option<&'static Walker>, Option<&'static GroupMember>),
+        (
+            (
+                &'static Monster,
+                &'static crate::game::characters::Vitals,
+                &'static super::population::SpellBudget,
+            ),
+            super::ActorPose,
+            Option<&'static Walker>,
+            Option<&'static GroupMember>,
+        ),
         Without<crate::game::npcs::NpcBody>,
     >,
     items: Query<'w, 's, (&'static WorldItem, &'static Transform)>,

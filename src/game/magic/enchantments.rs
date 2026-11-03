@@ -81,32 +81,15 @@ impl Enchantments {
         self.get(spell).is_some()
     }
 
-    /// A character's effect is replaced only by a stronger one.
+    /// A personal effect is replaced by one at least as strong (retail
+    /// `ApplyMonsterCondition`; retail replaces a character's only by a
+    /// stronger one, a difference taken here as none).
     pub fn accepts(&self, spell: SpellId, power: u32) -> bool {
-        self.admits(spell, power, false)
-    }
-
-    /// A monster's effect is also refreshed at equal power (retail
-    /// `ApplyMonsterCondition`).
-    pub fn monster_accepts(&self, spell: SpellId, power: u32) -> bool {
-        self.admits(spell, power, true)
-    }
-
-    fn admits(&self, spell: SpellId, power: u32, equal: bool) -> bool {
-        !personal(spell)
-            || self.get(spell).is_none_or(|e| power > e.power || equal && power == e.power)
+        !personal(spell) || self.get(spell).is_none_or(|e| power >= e.power)
     }
 
     pub fn apply(&mut self, effect: Enchantment) -> bool {
-        self.install(effect, false)
-    }
-
-    pub fn apply_to_monster(&mut self, effect: Enchantment) -> bool {
-        self.install(effect, true)
-    }
-
-    fn install(&mut self, effect: Enchantment, equal: bool) -> bool {
-        if effect.turns == 0 || !self.admits(effect.spell, effect.power, equal) {
+        if effect.turns == 0 || !self.accepts(effect.spell, effect.power) {
             return false;
         }
         self.0.retain(|e| e.spell != effect.spell);
@@ -262,7 +245,6 @@ pub fn haste(
     conditions: &mut Conditions,
     enchantments: &mut Enchantments,
     effect: Enchantment,
-    monster: bool,
 ) -> bool {
     let turns = match conditions.lasting_mut(Condition::Slowed) {
         None => effect.turns,
@@ -277,8 +259,7 @@ pub fn haste(
         }
     };
     let effect = Enchantment { turns, ..effect };
-    turns == 0
-        || if monster { enchantments.apply_to_monster(effect) } else { enchantments.apply(effect) }
+    turns == 0 || enchantments.apply(effect)
 }
 
 #[cfg(test)]
@@ -319,13 +300,13 @@ mod tests {
     }
 
     #[test]
-    fn actors_require_stronger_power_but_party_slots_replace() {
+    fn personal_effects_need_the_power_but_party_slots_replace() {
         let boosted = Enchantment { boost: 100, ..effect(SpellId::ARMORPLATE, 7, 10) };
         assert_eq!(boosted.adjusted(200), 400);
         let mut effects = Enchantments::default();
         assert!(effects.apply(effect(SpellId::GUARDIAN_ANGEL, 3, 4)));
         assert_eq!(effects.absorb(5), 0);
-        assert!(!effects.apply(effect(SpellId::GUARDIAN_ANGEL, 3, 20)));
+        assert!(!effects.apply(effect(SpellId::GUARDIAN_ANGEL, 2, 20)));
         assert_eq!(effects.get(SpellId::GUARDIAN_ANGEL).unwrap().absorption, 7);
         assert_eq!(effects.get(SpellId::GUARDIAN_ANGEL).unwrap().turns, 4);
         assert!(effects.apply(effect(SpellId::GUARDIAN_ANGEL, 4, 2)));
@@ -338,13 +319,12 @@ mod tests {
         assert!(effects.0.is_empty());
     }
     #[test]
-    fn monsters_refresh_at_equal_power() {
+    fn personal_effects_refresh_at_equal_power_and_never_weaken() {
         let mut effects = Enchantments::default();
-        assert!(effects.apply_to_monster(effect(SpellId::HASTE, 3, 2)));
-        assert!(effects.apply_to_monster(effect(SpellId::HASTE, 3, 9)));
+        assert!(effects.apply(effect(SpellId::HASTE, 3, 2)));
+        assert!(effects.apply(effect(SpellId::HASTE, 3, 9)));
         assert_eq!(effects.get(SpellId::HASTE).unwrap().turns, 9);
-        assert!(!effects.apply_to_monster(effect(SpellId::HASTE, 2, 20)));
-        assert!(!effects.apply(effect(SpellId::HASTE, 3, 20)));
+        assert!(!effects.apply(effect(SpellId::HASTE, 2, 20)));
     }
     #[test]
     fn the_boost_raises_party_and_combat_slots() {

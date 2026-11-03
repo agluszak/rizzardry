@@ -134,30 +134,22 @@ fn damage_party(
     In(dice): In<Dice>,
     mut commands: Commands,
     roster: Single<&PartyRoster>,
-    mut members: Query<(&Character, &mut Vitals)>,
+    mut members: Query<&mut Vitals, With<Character>>,
     mut rng: ResMut<GameRng>,
-    mut formation: Single<&mut crate::game::party::formation::Formation>,
     mut damage: MessageWriter<DamageApplied>,
-    fight: Option<Single<Entity, With<crate::game::combat::Battle>>>,
 ) {
-    let fight = fight.map(|fight| *fight);
     for entity in roster.iter() {
-        let (profile, mut member) = members.get_mut(entity).unwrap();
+        let mut member = members.get_mut(entity).unwrap();
         if member.is_dead() {
             continue;
         }
         let rolled = rng.roll(dice);
         if rolled > 0 {
-            let mut fate = crate::game::characters::Fate { fight, rng: &mut rng };
-            crate::game::party::damage_member(
-                entity,
-                (profile, &mut member),
-                &mut formation,
-                (rolled, &mut fate),
-                &mut damage,
-            );
+            crate::game::party::damage_member(entity, &mut member, rolled, &mut damage);
         }
     }
+    commands.run_system_cached(crate::game::characters::cheat_death);
+    commands.run_system_cached(crate::game::characters::settle_deaths);
     commands.run_system_cached(crate::game::combat::settle_defeat);
 }
 
@@ -167,7 +159,6 @@ fn drink_fountain(
     clock: Res<GameClock>,
     roster: Single<&PartyRoster>,
     mut members: Query<(
-        &Character,
         &mut Vitals,
         Option<(&crate::game::magic::LearnedSpells, &mut crate::game::magic::SpellPoints)>,
     )>,
@@ -196,15 +187,14 @@ fn drink_fountain(
             state.refills_at = fountain.refills_after.map(|after| now + after);
         }
     }
-    for (profile, mut member, points) in members.iter_many_unique_mut(roster.iter()).matched() {
+    for (mut member, points) in members.iter_many_unique_mut(roster.iter()).matched() {
         if member.is_dead()
             || match fountain.restores {
                 Restores::Restoration => false,
                 Restores::Magic => points.is_none(),
-                Restores::Health => member.hp >= profile.stats(&member.enchantments).max_hp(),
+                Restores::Health => member.health.current >= member.health.max,
                 Restores::Stamina => {
-                    member.stamina >= profile.stats(&member.enchantments).max_stamina()
-                        && !member.conditions.exhausted()
+                    member.stamina.current >= member.stamina.max && !member.conditions.exhausted()
                 }
             }
         {
@@ -216,13 +206,12 @@ fn drink_fountain(
                 // power one (the retail temple fountain authors fifteen).
                 let power = if fountain.amount > 7 { 1 } else { fountain.amount };
                 if power > 0 {
-                    let amount = crate::game::magic::effects::magnitude(
+                    let amount = crate::game::hits::prototypes::magnitude(
                         &mut rng,
                         restoration.unwrap().dice,
                         crate::game::magic::Strength { power, ..default() },
                     );
-                    let maximum = profile.stats(&member.enchantments).max_hp();
-                    member.heal(amount, maximum);
+                    member.heal(amount);
                 }
                 member.conditions.lift_all();
             }
@@ -231,12 +220,10 @@ fn drink_fountain(
                 points.restore_evenly(fountain.amount);
             }
             Restores::Health => {
-                let maximum = profile.stats(&member.enchantments).max_hp();
-                member.heal(fountain.amount, maximum)
+                member.heal(fountain.amount);
             }
             Restores::Stamina => {
-                let maximum = profile.stats(&member.enchantments).max_stamina();
-                member.restore_stamina(fountain.amount, maximum)
+                member.rest(fountain.amount);
             }
         }
     }

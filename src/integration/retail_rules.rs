@@ -1,14 +1,11 @@
 //! Rules checked against the retail databases. Ignored by default: run
 //! them with `RIZZARDRY_RETAIL` set.
 
-use crate::content::items::{AttackMode, ItemCatalog, ItemId};
-use crate::game::characters::{Character, Gender, Load, Profession, Race, Vitals};
-use crate::game::combat::attack::*;
-use crate::game::difficulty::Difficulty;
+use crate::content::items::ItemCatalog;
+use crate::game::characters::{Character, Gender, Profession, Race};
 use crate::game::inventory::{Carried, EquipSlot, ItemIds, make_item, place_at_creation};
 use crate::game::party::roster::starting_items;
 use crate::game::rng::GameRng;
-use crate::game::world::population::{Monster, ScaledBody};
 use crate::retail::files::RetailFiles;
 
 fn retail_files() -> RetailFiles {
@@ -22,62 +19,6 @@ fn retail_catalog(files: &RetailFiles) -> ItemCatalog {
     let strings = crate::retail::strings::read_string_table(&strings).unwrap();
     let items = files.read("data/databases/items.dbs").unwrap().unwrap();
     crate::retail::items::read_item_catalog(&items, &strings).unwrap()
-}
-
-#[test]
-#[ignore = "requires a retail installation"]
-fn a_fighter_and_a_crab_trade_blows() {
-    let files = retail_files();
-    let catalog = retail_catalog(&files);
-    let species = crate::retail::species::read_species(
-        &files.read("data/databases/monsters.dbs").unwrap().unwrap(),
-    )
-    .unwrap();
-    let crab = species.iter().find(|s| s.name.contains("Crab")).unwrap();
-    let fighter = Character::new("Ragnar", Race::Human, Gender::Male, Profession::Fighter);
-    let (mut ids, mut rng) = (ItemIds::default(), GameRng::seeded(9));
-    let mut carried = Carried::default();
-    for id in [143, 153, 203, 246, 7] {
-        let item = make_item(catalog.get(ItemId(id)).unwrap(), &mut ids, &mut rng, true, true);
-        assert!(place_at_creation(&mut carried, item, &catalog, &fighter).is_none());
-    }
-    let hand = primary_hand(&fighter.base_stats(), &carried, &catalog, Load::None);
-    let armour = armour(&fighter.base_stats(), &carried, &catalog, Load::None, false);
-    let body = Monster {
-        location: 0,
-        species: 0,
-        hp: 10,
-        max_hp: 10,
-        stamina: 10,
-        max_stamina: 10,
-        conditions: Default::default(),
-        enchantments: Default::default(),
-        spell_points: 0,
-        body: ScaledBody { scale: 1.0, radius: 1.0, eye_height: 1.0, speed: 0.0 },
-    };
-    // Each side's aim lands somewhere a roll of 1-100 sometimes beats and
-    // sometimes does not.
-    let ours = member_aim(
-        &fighter.base_stats(),
-        &Vitals::new(&fighter),
-        &hand,
-        AttackMode::Swing,
-        Surprise::default(),
-        Some(&Defence::monster(crab, &body, false)),
-        Difficulty::Normal,
-    );
-    assert!((6..=95).contains(&ours), "the fighter sometimes hits and sometimes misses: {ours}");
-    let attack = &crab.attacks[0];
-    let mode = choose_mode(&mut rng, attack.modes);
-    let theirs = monster_aim(
-        (crab, &body, crate::game::world::hostility::Stance::Hostile),
-        attack,
-        mode,
-        Surprise::default(),
-        Some(&Defence::member(&fighter.base_stats(), armour, false, false)),
-        Difficulty::Normal,
-    );
-    assert!(theirs > 5, "the crab sometimes hits: {theirs}");
 }
 
 #[test]

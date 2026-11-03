@@ -15,8 +15,9 @@ use bevy::prelude::*;
 use bevy_landmass::prelude::*;
 
 use super::Combatant;
-use crate::content::species::{MonsterCatalog, Reach, Species};
+use crate::content::species::Reach;
 use crate::game::characters::Condition;
+use crate::game::characters::Vitals;
 use crate::game::party::body::PartyBody;
 use crate::game::world::navigation::Walker;
 use crate::game::world::population::Monster;
@@ -42,61 +43,55 @@ pub enum MoveGoal {
     Attack(Entity),
 }
 
-/// Whether this living walker still needs to close to attack range. Combat's
-/// passive-round decision and navigation use the same current actor state.
+/// Whether a living walker `gap` from its foe still needs to close to
+/// attack range, its arms reaching `reach`. Combat's passive-round decision
+/// and navigation use the same current actor state.
 pub(super) fn needs_approach(
-    monster: &Monster,
-    origin: Vec3,
+    reach: Reach,
+    vitals: &Vitals,
     walker: Option<&Walker>,
-    party_eye: Vec3,
-    species: &MonsterCatalog,
+    gap: f32,
 ) -> bool {
     let Some(walker) = walker else { return false };
-    if monster.is_dead() || walker.speed <= 0.0 {
+    if vitals.is_dead() || walker.speed <= 0.0 {
         return false;
     }
-    let kind = &species[monster.species];
-    let reach = kind.attacks.iter().map(|a| a.reach).max().unwrap_or(Reach::Touch);
-    let feet = crate::game::world::navigation::feet(origin, Some(walker));
-    crate::game::world::perception::party_distance(party_eye, monster, feet)
-        > reach.metres() - REACH_MARGIN
+    gap > reach.metres() - REACH_MARGIN
 }
 
-/// A monster's move this round, and whether it is a charge.
+/// A body's move this round, and whether it is a charge.
 pub(super) struct MoveBudget {
     pub metres: f32,
     pub charge: bool,
 }
 
-/// How far a monster with nobody in reach may advance this round: up to
-/// `combat_move_range` × 20 metres, half again when charging (hurt, at 95%
-/// health or less), halved when slowed (retail `StepMonsterCombatAction`).
+/// How far a body `gap` from the party with nobody in reach may advance
+/// this round: its stride, half again when charging (hurt, at 95% health
+/// or less), halved when slowed (retail `StepMonsterCombatAction`).
 pub(super) fn move_budget(
-    monster: &Monster,
-    origin: Vec3,
+    (reach, stride): (Reach, f32),
+    vitals: &Vitals,
     walker: Option<&Walker>,
-    party_eye: Vec3,
-    species: &MonsterCatalog,
+    gap: f32,
 ) -> Option<MoveBudget> {
-    if !needs_approach(monster, origin, walker, party_eye, species) {
+    if !needs_approach(reach, vitals, walker, gap) {
         return None;
     }
-    let kind = &species[monster.species];
-    let charge = monster.charges();
-    Some(MoveBudget { metres: move_metres(monster, kind, charge), charge })
+    let charge = vitals.charges();
+    Some(MoveBudget { metres: move_metres(vitals, stride, charge), charge })
 }
 
-/// How far a monster moves in one combat action (retail
-/// `SetUpMonsterTurn`): its move range, half again when charging, raised
-/// by Haste or halved when slowed.
-pub(super) fn move_metres(monster: &Monster, kind: &Species, charge: bool) -> f32 {
-    let mut budget = kind.combat_move_range * METRES_PER_MOVE_RANGE;
+/// How far a body moves in one combat action (retail `SetUpMonsterTurn`):
+/// its stride, half again when charging, raised by Haste or halved when
+/// slowed.
+pub(super) fn move_metres(vitals: &Vitals, stride: f32, charge: bool) -> f32 {
+    let mut budget = stride;
     if charge {
         budget *= 1.5;
     }
-    if let Some(haste) = monster.enchantments.get(crate::content::spells::SpellId::HASTE) {
-        budget += kind.combat_move_range * METRES_PER_MOVE_RANGE * haste.power as f32 * 0.1;
-    } else if monster.conditions.has(Condition::Slowed) {
+    if let Some(haste) = vitals.enchantments.get(crate::content::spells::SpellId::HASTE) {
+        budget += stride * haste.power as f32 * 0.1;
+    } else if vitals.conditions.has(Condition::Slowed) {
         budget *= 0.5;
     }
     budget
@@ -120,40 +115,47 @@ pub(super) const METRES_PER_MOVE_RANGE: f32 = 20.0;
 pub fn steer_moves(
     mut commands: Commands,
     party: Query<(Entity, &Position), With<PartyBody>>,
-    mut walkers: Query<(Entity, &Monster, ActorPose, &Walker, &mut AgentTarget3d, &CombatMove)>,
-    content: If<Res<crate::game::data::Catalogs>>,
-    targets: Query<(&Monster, ActorPose, Option<&Walker>)>,
+    mut walkers: Query<(
+        Entity,
+        (&Monster, &Vitals, &super::fighters::Arms),
+        ActorPose,
+        &Walker,
+        &mut AgentTarget3d,
+        &CombatMove,
+    )>,
+    targets: Query<(&Monster, &Vitals, ActorPose, Option<&Walker>)>,
 ) {
-    let catalog = &content.species;
     let Ok((party, party_at)) = party.single() else { return };
     let party_eye = PartyBody::eye(party_at);
-    for (entity, monster, at, walker, mut target, movement) in &mut walkers {
+    for (entity, (monster, vitals, arms), at, walker, mut target, movement) in &mut walkers {
         let (needs_move, heading) = match movement.goal {
             MoveGoal::Retreat(point) => (true, AgentTarget3d::Point(point)),
-            MoveGoal::Party => (
-                needs_approach(monster, at.translation(), Some(walker), party_eye, catalog),
-                AgentTarget3d::Entity(party),
-            ),
+            MoveGoal::Party => {
+                let here = crate::game::world::navigation::feet(at.translation(), Some(walker));
+                let gap = crate::game::world::perception::party_distance(party_eye, monster, here);
+                (
+                    needs_approach(arms.reach(), vitals, Some(walker), gap),
+                    AgentTarget3d::Entity(party),
+                )
+            }
             MoveGoal::Attack(entity) => {
-                let needed = targets.get(entity).is_ok_and(|(target, target_at, target_walker)| {
-                    let here = crate::game::world::navigation::feet(at.translation(), Some(walker));
-                    let there = crate::game::world::navigation::feet(
-                        target_at.translation(),
-                        target_walker,
-                    );
-                    let reach = catalog[monster.species]
-                        .attacks
-                        .iter()
-                        .map(|a| a.reach)
-                        .max()
-                        .unwrap_or(Reach::Touch)
-                        .metres();
-                    !target.is_dead() && monster.gap(here, target, there) > reach - REACH_MARGIN
-                });
+                let needed = targets.get(entity).is_ok_and(
+                    |(target, target_vitals, target_at, target_walker)| {
+                        let here =
+                            crate::game::world::navigation::feet(at.translation(), Some(walker));
+                        let there = crate::game::world::navigation::feet(
+                            target_at.translation(),
+                            target_walker,
+                        );
+                        !target_vitals.is_dead()
+                            && monster.gap(here, target, there)
+                                > arms.reach().metres() - REACH_MARGIN
+                    },
+                );
                 (needed, AgentTarget3d::Entity(entity))
             }
         };
-        let continues = monster.can_fight() && movement.moved < movement.budget && needs_move;
+        let continues = vitals.can_fight() && movement.moved < movement.budget && needs_move;
         let heading = if !continues {
             commands.entity(entity).remove::<CombatMove>();
             AgentTarget3d::None

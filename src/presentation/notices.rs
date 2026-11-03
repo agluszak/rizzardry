@@ -300,17 +300,17 @@ fn improves(
 
 /// What a spell or a blow did to someone. Retail's own strings for these
 /// are not mapped yet; the wording is plain.
-fn effect_line(names: &super::names::ActorNames, effect: crate::game::magic::Effect) -> String {
-    use crate::game::magic::{Effect, Victim};
-    let victim = |victim: Victim| names.name(victim.entity()).unwrap_or_default();
+fn effect_line(names: &super::names::ActorNames, effect: crate::game::hits::Effect) -> String {
+    use crate::game::hits::Effect;
+    let victim = |victim: Entity| names.name(victim).unwrap_or_default();
     match effect {
         Effect::Purified { victim: v } => format!("The air around {} clears.", victim(v)),
         Effect::Enchanted { victim: v, .. } => format!("{} is enchanted.", victim(v)),
         Effect::Healed { victim: v, amount } => {
             format!("{} heals {amount}.", victim(v))
         }
-        Effect::Damaged { victim: v, outcome } => {
-            format!("{} takes {} damage.", victim(v), outcome.damage)
+        Effect::Damaged { victim: v, amount } => {
+            format!("{} takes {amount} damage.", victim(v))
         }
         Effect::Inflicted { victim: v, condition } => {
             format!("{} is {}.", victim(v), condition_word(condition))
@@ -343,12 +343,10 @@ fn magic_lines(
     news: &crate::game::magic::casting::MagicNews,
     names: &super::names::ActorNames,
     spells: &crate::content::spells::SpellCatalog,
-    string: &impl Fn(usize) -> String,
 ) -> Vec<String> {
     use crate::game::magic::Outcome;
     use crate::game::magic::casting::{MagicNews, Refusal};
     let name = |entity| names.name(entity).unwrap_or_default();
-    let improves = |member, skill| improves(names, string, member, skill);
     let effect_line = |effect| effect_line(names, effect);
     match news {
         MagicNews::Refused { caster, refusal } => {
@@ -371,11 +369,8 @@ fn magic_lines(
             }
             lines
         }
-        MagicNews::Triggered { effects, improved, .. }
-        | MagicNews::Landed { effects, improved, .. } => {
-            let mut lines: Vec<_> = effects.iter().map(|&e| effect_line(e)).collect();
-            lines.extend(improved.iter().map(|&(member, skill)| improves(member, skill)));
-            lines
+        MagicNews::Triggered { effects, .. } | MagicNews::Landed { effects, .. } => {
+            effects.iter().map(|&e| effect_line(e)).collect()
         }
         MagicNews::Done(report) => {
             let spell = &spells[report.spell].name;
@@ -389,9 +384,6 @@ fn magic_lines(
                 Outcome::Cast => {}
             }
             lines.extend(report.effects.iter().map(|&e| effect_line(e)));
-            for &(member, skill) in &report.improved {
-                lines.push(improves(member, skill));
-            }
             lines
         }
     }
@@ -476,13 +468,11 @@ fn post_magic(
     mut magic: MessageReader<crate::game::magic::casting::MagicNews>,
     names: super::names::ActorNames,
     content: If<Res<crate::game::data::Catalogs>>,
-    strings: GameStrings,
     mut notices: Notices,
 ) {
     let spells = &content.spells;
-    let string = |index| strings.get(index).to_owned();
     for news in magic.read() {
-        for line in magic_lines(news, &names, spells, &string) {
+        for line in magic_lines(news, &names, spells) {
             notices.post(&line);
         }
     }
@@ -718,8 +708,8 @@ fn post_combat(
                 .unwrap_or_default(),
             // Retail `g_condition_interrupt_notices` (0x3a0 on, twelve of
             // them); fear's flight has none.
-            CombatNews::Interrupted { monster, interrupt } => names
-                .name(*monster)
+            CombatNews::Interrupted { actor, interrupt } => names
+                .name(*actor)
                 .filter(|_| interrupt.number() < 12)
                 .map(|name| {
                     vec![format!("{name} {}", string(0x3a0 + usize::from(interrupt.number())))]
@@ -749,7 +739,7 @@ fn post_combat(
             }
             // Retail `AnnounceAccidentalStrike`'s own words.
             CombatNews::Fumble { attacker, victim } => {
-                match (names.name(*attacker), names.name(victim.entity())) {
+                match (names.name(*attacker), names.name(*victim)) {
                     (Some(attacker), Some(victim)) => {
                         vec![format!("{attacker} accidentally strikes {victim}")]
                     }

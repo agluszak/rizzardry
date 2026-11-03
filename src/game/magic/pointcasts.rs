@@ -116,7 +116,9 @@ pub(crate) fn cast(
             return Err(Refusal::WrongTime);
         }
         if world.get::<Elementals>(caster).is_some_and(|summons| {
-            summons.iter().any(|entity| !world.get::<Monster>(entity).unwrap().is_dead())
+            summons.iter().any(|entity| {
+                !world.get::<crate::game::characters::Vitals>(entity).unwrap().is_dead()
+            })
         }) {
             return Err(Refusal::NoTarget);
         }
@@ -168,7 +170,12 @@ fn lure(
     for old in old {
         world.despawn(old);
     }
-    let turns = super::effects::duration(&mut world.resource_mut::<GameRng>(), spell, strength);
+    let turns = crate::game::hits::prototypes::duration(
+        &mut world.resource_mut::<GameRng>(),
+        spell.duration_base,
+        spell.duration_per_power,
+        strength,
+    );
     let lure = world
         .spawn((
             Lure { expires: now + u64::from(turns) * AGING_TICK_MS },
@@ -177,10 +184,10 @@ fn lure(
         ))
         .id();
     let mut order: Vec<_> = world
-        .query::<(Entity, &Monster, &LevelOwned)>()
+        .query::<(Entity, &Monster, &crate::game::characters::Vitals, &LevelOwned)>()
         .iter(world)
-        .filter(|(_, monster, owner)| owner.0 == root && !monster.is_dead())
-        .map(|(entity, body, _)| (body.location, entity))
+        .filter(|(_, _, vitals, owner)| owner.0 == root && !vitals.is_dead())
+        .map(|(entity, body, ..)| (body.location, entity))
         .collect();
     order.sort_unstable();
     let mut sight = SystemState::<WorldObstacles>::new(world);
@@ -195,7 +202,8 @@ fn lure(
             continue;
         }
         let body = world.get::<Monster>(entity).unwrap();
-        if !body.can_fight() || body.conditions.has(Condition::Blind) {
+        let vitals = world.get::<crate::game::characters::Vitals>(entity).unwrap();
+        if !vitals.can_fight() || vitals.conditions.has(Condition::Blind) {
             continue;
         }
         let here = crate::game::world::actor_position(world, entity);
@@ -206,8 +214,12 @@ fn lure(
         if kind.kind == MonsterKind::Undead {
             continue;
         }
-        let resistance = body.resistance(kind, crate::content::characters::Realm::Mental);
-        let chance = super::effects::condition_chance(
+        let resistance = crate::game::world::population::resistance(
+            kind,
+            vitals,
+            crate::content::characters::Realm::Mental,
+        );
+        let chance = crate::game::hits::defences::condition_chance(
             u32::from(kind.level),
             resistance,
             strength.against,
@@ -218,11 +230,13 @@ fn lure(
         if !clear {
             continue;
         }
-        let response = if super::effects::save_roll(&mut world.resource_mut::<GameRng>(), chance) {
-            LureResponse::Resisted
-        } else {
-            LureResponse::Controlled
-        };
+        let response =
+            if crate::game::hits::defences::save_roll(&mut world.resource_mut::<GameRng>(), chance)
+            {
+                LureResponse::Resisted
+            } else {
+                LureResponse::Controlled
+            };
         let group =
             world.get::<GroupMember>(entity).and_then(|group| world.get::<GroupMembers>(group.0));
         let affected = if !fighting {
@@ -304,9 +318,14 @@ fn summon_elemental(
                 [realm];
         let turns = world.resource_scope(|world, mut rng: Mut<GameRng>| {
             let definition = &world.resource::<Catalogs>().spells[buff];
-            super::effects::duration(&mut rng, definition, strength)
+            crate::game::hits::prototypes::duration(
+                &mut rng,
+                definition.duration_base,
+                definition.duration_per_power,
+                strength,
+            )
         });
-        world.get_mut::<Monster>(elemental).unwrap().enchantments.apply_to_monster(
+        world.get_mut::<crate::game::characters::Vitals>(elemental).unwrap().enchantments.apply(
             super::enchantments::Enchantment {
                 spell: buff,
                 power: strength.power,
@@ -338,7 +357,7 @@ pub(crate) fn follow_lures(
     mut followers: Query<
         (
             &LureInfluence,
-            &Monster,
+            &crate::game::characters::Vitals,
             Option<&mut AgentTarget3d>,
             Option<&avian3d::prelude::Position>,
             &mut Transform,

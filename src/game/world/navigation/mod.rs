@@ -267,9 +267,9 @@ fn sync_walker_velocity(mut walkers: Query<(&LinearVelocity, &mut Velocity3d), W
 /// new move does.
 pub(crate) fn walking(
     target: &AgentTarget3d,
-    monster: Option<&super::population::Monster>,
+    body: Option<&crate::game::characters::Vitals>,
 ) -> bool {
-    !matches!(target, AgentTarget3d::None) && monster.is_none_or(|m| m.can_fight())
+    !matches!(target, AgentTarget3d::None) && body.is_none_or(|b| b.can_fight())
 }
 
 /// Feed Landmass's desired velocity to Tnua; while crossing a doorway link,
@@ -278,7 +278,7 @@ fn steer_walkers(
     mut walkers: Query<(
         &Walker,
         &AgentTarget3d,
-        Option<&super::population::Monster>,
+        Option<&crate::game::characters::Vitals>,
         Option<&AgentDesiredVelocity3d>,
         Option<&links::Crossing>,
         &Transform,

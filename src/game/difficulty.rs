@@ -16,20 +16,12 @@ pub enum Difficulty {
 }
 
 impl Difficulty {
-    /// A party member's figure (retail `ScaleValueForCharacterDifficulty`):
-    /// easier on Novice, harder on Expert; a turncoat's the other way round.
-    pub fn for_character(self, value: i32, turncoat: bool) -> i32 {
-        match (self, turncoat) {
-            (Difficulty::Normal, _) => value,
-            (Difficulty::Novice, false) | (Difficulty::Expert, true) => value * 7 * 20 / 100,
-            (Difficulty::Expert, false) | (Difficulty::Novice, true) => value * 3 * 20 / 100,
-        }
-    }
-
-    /// A monster's figure (retail `ScaleValueForMonsterDifficulty`): hostile
-    /// ones are weaker on Novice and stronger on Expert, friendly ones the
-    /// reverse, neutral ones unscaled.
-    pub fn for_monster(self, value: i32, side: Stance) -> i32 {
+    /// A figure of someone standing `side` toward the party (retail
+    /// `ScaleValueForCharacterDifficulty`, `ScaleValueForMonsterDifficulty`,
+    /// one rule): the hostile are weaker on Novice and stronger on Expert,
+    /// the party's side the reverse, the neutral unscaled. A member stands
+    /// friendly, hostile under Turncoat.
+    pub fn scale(self, value: i32, side: Stance) -> i32 {
         match (self, side) {
             (Difficulty::Normal, _) | (_, Stance::Neutral) => value,
             (Difficulty::Novice, Stance::Hostile) | (Difficulty::Expert, Stance::Friendly) => {
@@ -59,12 +51,12 @@ mod tests {
 
     #[test]
     fn scaling_follows_retail_factors() {
-        assert_eq!(Difficulty::Novice.for_character(50, false), 70);
-        assert_eq!(Difficulty::Expert.for_character(50, false), 30);
-        assert_eq!(Difficulty::Expert.for_character(50, true), 70);
-        assert_eq!(Difficulty::Novice.for_monster(50, Stance::Hostile), 30);
-        assert_eq!(Difficulty::Expert.for_monster(50, Stance::Hostile), 70);
-        assert_eq!(Difficulty::Expert.for_monster(50, Stance::Neutral), 50);
+        assert_eq!(Difficulty::Novice.scale(50, Stance::Friendly), 70);
+        assert_eq!(Difficulty::Expert.scale(50, Stance::Friendly), 30);
+        assert_eq!(Difficulty::Expert.scale(50, Stance::Hostile), 70);
+        assert_eq!(Difficulty::Novice.scale(50, Stance::Hostile), 30);
+        assert_eq!(Difficulty::Expert.scale(50, Stance::Hostile), 70);
+        assert_eq!(Difficulty::Expert.scale(50, Stance::Neutral), 50);
         assert_eq!(Difficulty::Normal.scale_by_pace(40, 0), 40);
         assert_eq!(Difficulty::Normal.scale_by_pace(40, 60), 40);
         assert_eq!(Difficulty::Normal.scale_by_pace(50, 100), 90);

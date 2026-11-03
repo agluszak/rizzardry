@@ -482,7 +482,7 @@ fn admits(
 pub fn write_off_wiped_out(
     mut levels: Query<&mut EncounterState, With<Level>>,
     mut groups: Query<(&mut MonsterGroup, Option<&GroupMembers>)>,
-    monsters: Query<&Monster>,
+    monsters: Query<&crate::game::characters::Vitals, With<Monster>>,
     battle: Option<Single<(), With<crate::game::combat::Battle>>>,
     level: PlayedLevel,
 ) {
@@ -508,7 +508,12 @@ pub fn run_encounters(
         With<Level>,
     >,
     mut groups: Query<(Entity, &mut MonsterGroup, Option<&GroupMembers>)>,
-    monsters: Query<(&Monster, ActorPose, Option<&Walker>, Option<&super::identify::GroupMember>)>,
+    monsters: Query<(
+        (&Monster, &crate::game::characters::Vitals),
+        ActorPose,
+        Option<&Walker>,
+        Option<&super::identify::GroupMember>,
+    )>,
     party: Query<(&Position, &crate::game::party::roster::PartyRoster), With<PartyBody>>,
     characters: Query<(&crate::game::characters::Character, Has<crate::game::npcs::Npc>)>,
     blocked: (
@@ -546,7 +551,7 @@ pub fn run_encounters(
         Onlooker { eye: PartyBody::eye(party_at), feet: PartyBody::feet(party_at), level };
     let night = night(&clock);
     let (next_location, next_group) = population::next_ids(
-        monsters.iter().map(|(m, ..)| m.location),
+        monsters.iter().map(|((m, _), ..)| m.location),
         groups.iter().map(|(_, g, _)| g.authored),
         &unborn,
     );
@@ -572,7 +577,7 @@ pub fn run_encounters(
             .collect(),
         standing: monsters
             .iter()
-            .filter(|(m, ..)| !m.is_dead())
+            .filter(|((_, vitals), ..)| !vitals.is_dead())
             .map(|(_, pose, walker, member)| {
                 let group = member.and_then(|member| groups.get(member.0).ok());
                 let leader =

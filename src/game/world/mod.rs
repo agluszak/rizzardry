@@ -3,6 +3,7 @@
 pub mod containers;
 pub mod damage;
 pub mod encounters;
+pub mod footing;
 pub mod hostility;
 pub mod identify;
 pub mod interaction;
@@ -26,22 +27,28 @@ use bevy::prelude::*;
 /// Gameplay level roots have identity transforms.
 #[derive(bevy::ecs::query::QueryData)]
 pub struct ActorPose {
-    transform: &'static Transform,
-    position: Option<&'static avian3d::prelude::Position>,
-    rotation: Option<&'static avian3d::prelude::Rotation>,
+    transform: Ref<'static, Transform>,
+    position: Option<Ref<'static, avian3d::prelude::Position>>,
+    rotation: Option<Ref<'static, avian3d::prelude::Rotation>>,
 }
 
 impl ActorPoseItem<'_, '_> {
     pub fn translation(&self) -> Vec3 {
-        self.position.map_or(self.transform.translation, |position| position.0)
+        self.position.as_ref().map_or(self.transform.translation, |position| position.0)
     }
 
     pub fn rotation(&self) -> Quat {
-        self.rotation.map_or(self.transform.rotation, |rotation| rotation.0)
+        self.rotation.as_ref().map_or(self.transform.rotation, |rotation| rotation.0)
     }
 
     pub fn forward(&self) -> Vec3 {
         self.rotation() * Vec3::NEG_Z
+    }
+
+    pub fn is_changed(&self) -> bool {
+        self.transform.is_changed()
+            || self.position.as_ref().is_some_and(|p| p.is_changed())
+            || self.rotation.as_ref().is_some_and(|r| r.is_changed())
     }
 }
 
@@ -107,6 +114,7 @@ impl Plugin for WorldPlugin {
             .add_message::<crate::game::automap::CommitNote>()
             .add_plugins(interaction::plugin)
             .add_observer(interaction::end_attempts)
+            .add_observer(damage::monster_died)
             // Resolve travel intent early; activation owns the later level swap.
             .add_systems(PreUpdate, (level::answer_travel_questions, level::travel).chain())
             .add_observer(level::suspend_physics_for_entry)
