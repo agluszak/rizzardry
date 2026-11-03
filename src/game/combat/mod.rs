@@ -17,6 +17,9 @@ pub mod summon;
 mod swings;
 pub mod turn;
 
+#[cfg(test)]
+mod tests;
+
 use crate::game::GameplaySet;
 use crate::game::data::Catalogs;
 pub use conduct::Interrupt;
@@ -50,6 +53,18 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         swings::stages(app);
+        app.add_systems(
+            Settlement,
+            (
+                crate::game::hits::run_hits,
+                crate::game::characters::cheat_death,
+                crate::game::characters::settle_deaths,
+                credit_deaths,
+                settle_defeat,
+                hostility::judge_sides,
+            )
+                .chain(),
+        );
         app.add_observer(fighters::leave).add_observer(fighters::disband);
         app.add_observer(turn::clear_fight)
             .add_message::<CombatNews>()
@@ -105,20 +120,16 @@ impl Plugin for CombatPlugin {
             .add_systems(
                 FixedUpdate,
                 (
-                    (
-                        hostility::judge_sides,
-                        crate::game::characters::cheat_death,
-                        crate::game::characters::settle_deaths,
-                        settle_defeat,
-                    )
-                        .chain(),
-                    // what everyone in the fight is to blows is judged,
+                    // Place bodies before arrivals can reflect or burst from them.
                     (
                         crate::game::world::footing::place_bodies,
-                        (crate::game::hits::defences::judge_defences, fighters::judge_fighters)
-                            .run_if(any_with_component::<Battle>),
+                        crate::game::hits::effects::fly,
+                        settle,
                     )
                         .chain(),
+                    // Current capabilities are ready before initiative is accepted.
+                    (crate::game::hits::defences::judge_defences, fighters::judge_fighters)
+                        .run_if(any_with_component::<Battle>),
                     (stop_party_move, begin_round, call_actor).chain(),
                     // The actor whose initiative came follows its orders or
                     // decides, its conditions may interrupt it, and it acts;
@@ -140,7 +151,14 @@ impl Plugin for CombatPlugin {
                     )
                         .chain(),
                     // its blows and casts settle within the step,
-                    (swings::run_swings, casting::run_casts, turn::defend_instead).chain(),
+                    (
+                        swings::run_swings,
+                        casting::run_casts,
+                        turn::defend_instead,
+                        summon::summon,
+                        settle,
+                    )
+                        .chain(),
                     // and once everyone has acted the round ends.
                     (
                         judge_round,
@@ -149,21 +167,16 @@ impl Plugin for CombatPlugin {
                         round_end::cool_specials,
                         round_end::age_conditions,
                         round_end::recover_pools,
+                        // Aging damage is settled before selecting cloud victims.
+                        settle.run_if(any_with_component::<RoundEnding>),
                         round_end::pulse_clouds,
+                        // The last pulse still sees the round's protections.
+                        settle.run_if(any_with_component::<RoundEnding>),
                         round_end::age_enchantments,
+                        hostility::judge_sides,
                         round_end::judge_victory,
                         round_end::look_again,
                         end_round,
-                    )
-                        .chain(),
-                    (
-                        summon::summon,
-                        // and again after the round's damage, crediting the
-                        // fight's kills.
-                        crate::game::characters::cheat_death,
-                        crate::game::characters::settle_deaths,
-                        credit_deaths,
-                        settle_defeat,
                     )
                         .chain(),
                 )
@@ -192,6 +205,15 @@ impl Plugin for CombatPlugin {
                     .run_if(crate::game::world::level::level_active),
             );
     }
+}
+
+/// One settlement system instance owns death credit across all boundaries.
+/// Calling it repeatedly must not credit Added<Dead> once per call site.
+#[derive(bevy::ecs::schedule::ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
+struct Settlement;
+
+fn settle(world: &mut World) {
+    world.run_schedule(Settlement);
 }
 
 /// Seconds of simulation between actors (retail `combat_delay_ms`, 1000 by

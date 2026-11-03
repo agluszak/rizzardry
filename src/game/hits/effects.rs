@@ -248,7 +248,7 @@ pub fn miss_the_dead(
 /// An effect that happens only by chance may not.
 pub fn roll_chances(
     mut commands: Commands,
-    effects: Query<(Entity, &Chance), Without<Outcome>>,
+    effects: Query<(Entity, &Chance), (With<HitOf>, Without<Outcome>)>,
     mut rng: ResMut<GameRng>,
 ) {
     for (effect, chance) in &effects {

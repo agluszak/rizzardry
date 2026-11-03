@@ -163,10 +163,22 @@ pub struct Resolution;
 #[derive(bevy::ecs::schedule::ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Hits;
 
+/// Extension points for the owner of a completed act. Resolution finishes
+/// first; continuations consume their work before reporting destroys the deed.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HitPhase {
+    Effects,
+    Completed,
+    Report,
+}
+
 /// Run the hit stages until no reach is left to work but missiles still on
 /// their way: each effect, and what a landed act set off (a reflection, a
 /// burst), is settled within the same step.
 pub fn run_hits(world: &mut World) {
+    if world.query_filtered::<(), With<Deed>>().iter(world).next().is_none() {
+        return;
+    }
     world.run_schedule(Hits);
     let mut passes = 1;
     while world
@@ -189,8 +201,12 @@ pub struct HitsPlugin;
 impl Plugin for HitsPlugin {
     fn build(&self, app: &mut App) {
         use effects::*;
-        use prototypes::{Definitions, advance, define, pick, roll};
-        app.add_systems(
+        use prototypes::{Definitions, advance, define, party_reaches, pick, roll};
+        app.configure_sets(
+            Hits,
+            (HitPhase::Effects, HitPhase::Completed, HitPhase::Report).chain(),
+        )
+        .add_systems(
             PreUpdate,
             define
                 .run_if(resource_exists::<crate::game::data::Catalogs>)
@@ -201,6 +217,7 @@ impl Plugin for HitsPlugin {
             (
                 defences::judge_defences.run_if(any_with_component::<HitOf>),
                 spells::strength_of_owners,
+                party_reaches,
                 advance,
                 (
                     pick,
@@ -245,30 +262,20 @@ impl Plugin for HitsPlugin {
                     crate::game::characters::settle_deaths,
                 )
                     .chain(),
-                (
-                    spells::drain_back,
-                    spells::burst_blood,
-                    spells::reflect_spells,
-                    crate::game::magic::casting::practise_casts,
-                    crate::game::magic::casting::recast,
-                )
-                    .chain(),
-                report_deeds,
+                (spells::drain_back, spells::burst_blood, spells::reflect_spells).chain(),
             )
-                .chain(),
+                .chain()
+                .in_set(HitPhase::Effects),
         )
-        .add_systems(Update, run_hits.in_set(Resolution))
-        .add_systems(FixedUpdate, (fly, run_hits).chain().in_set(Resolution))
-        // Outside a fight acts land on the frame, once magic is accepted; in
-        // one, on the step, once the round's actors and clouds have made
-        // theirs and before its deaths and defeat are settled.
-        .configure_sets(Update, Resolution.after(crate::game::GameplaySet::Combat))
-        .configure_sets(
-            FixedUpdate,
-            Resolution
-                .after(crate::game::combat::end_round)
-                .before(crate::game::combat::summon::summon),
-        );
+        .add_systems(Hits, report_deeds.in_set(HitPhase::Report))
+        .add_systems(
+            Update,
+            run_hits
+                .in_set(Resolution)
+                .run_if(not(any_with_component::<crate::game::combat::Battle>)),
+        )
+        // Combat owns fixed-step settlement, including missile flight.
+        .configure_sets(Update, Resolution.after(crate::game::GameplaySet::Combat));
     }
 }
 

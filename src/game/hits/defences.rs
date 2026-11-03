@@ -67,6 +67,36 @@ impl CasterLevels {
     }
 }
 
+/// A source's projected values. Writes preserve change ticks for facts that
+/// did not change; this is not another component or an alternate authority.
+struct Defences {
+    level: SaveLevel,
+    senses: Senses,
+    resistances: Resistances,
+    caster: CasterLevels,
+    immunities: Immunities,
+    kind: Option<Kind>,
+}
+
+impl Defences {
+    fn write(self, entity: &mut EntityCommands) {
+        entity
+            .insert_if_neq(self.level)
+            .insert_if_neq(self.senses)
+            .insert_if_neq(self.resistances)
+            .insert_if_neq(self.caster)
+            .insert_if_neq(self.immunities);
+        match self.kind {
+            Some(kind) => {
+                entity.insert_if_neq(kind);
+            }
+            None => {
+                entity.remove::<Kind>();
+            }
+        }
+    }
+}
+
 /// A character's defences, by their sheet and gear, and a member's by the
 /// party's spells too.
 fn character_defences(
@@ -75,57 +105,80 @@ fn character_defences(
     member: bool,
     party: &Enchantments,
     items: &crate::content::items::ItemCatalog,
-) -> impl Bundle {
+) -> Defences {
     let stats = character.stats(&vitals.enchantments);
     let resistances = match member {
         true => member_resistances(&stats, carried, items, party),
         false => resistances(&stats, carried, items),
     };
-    (
-        SaveLevel(u32::from(character.level())),
-        Senses(stats.attribute(crate::content::characters::Attribute::Senses)),
-        Resistances(EnumMap::from_fn(|realm| resistances[realm].total)),
-        CasterLevels(EnumMap::from_fn(|book| {
+    Defences {
+        level: SaveLevel(u32::from(character.level())),
+        senses: Senses(stats.attribute(crate::content::characters::Attribute::Senses)),
+        resistances: Resistances(EnumMap::from_fn(|realm| resistances[realm].total)),
+        caster: CasterLevels(EnumMap::from_fn(|book| {
             crate::game::magic::total_caster_level(character, enumset::EnumSet::only(book)).max(0)
                 as u32
         })),
-        Immunities::default(),
-    )
+        immunities: Immunities::default(),
+        kind: None,
+    }
 }
 
 /// A monster's defences, by its species and spells.
-fn species_defences(kind: &crate::content::species::Species, vitals: &Vitals) -> impl Bundle {
-    (
-        SaveLevel(u32::from(kind.level)),
-        Senses(u32::from(kind.attributes.senses)),
-        Resistances(EnumMap::from_fn(|realm| population::resistance(kind, vitals, realm))),
-        CasterLevels(EnumMap::from_fn(|_| u32::from(kind.level))),
-        Immunities { conditions: immune(kind.kind), death: kind.death_immune },
-        Kind(kind.kind),
-    )
+fn species_defences(kind: &crate::content::species::Species, vitals: &Vitals) -> Defences {
+    Defences {
+        level: SaveLevel(u32::from(kind.level)),
+        senses: Senses(u32::from(kind.attributes.senses)),
+        resistances: Resistances(EnumMap::from_fn(|realm| {
+            population::resistance(kind, vitals, realm)
+        })),
+        caster: CasterLevels(EnumMap::from_fn(|_| u32::from(kind.level))),
+        immunities: Immunities { conditions: immune(kind.kind), death: kind.death_immune },
+        kind: Some(Kind(kind.kind)),
+    }
 }
 
-/// Every body's defences, from its own sources.
+/// Refresh changed sources before effects read them. Membership removal is
+/// also an input: a former member must stop borrowing the party's resistance.
 #[allow(clippy::type_complexity)]
 pub fn judge_defences(
     mut commands: Commands,
-    bodies: Query<(Entity, &Vitals, AnyOf<((&Character, &Carried), &Monster)>, Has<PartyMember>)>,
-    party: Single<&PartyEffects>,
+    bodies: Query<(
+        Entity,
+        Ref<Vitals>,
+        AnyOf<((Ref<Character>, Ref<Carried>), Ref<Monster>)>,
+        Option<Ref<PartyMember>>,
+        Has<SaveLevel>,
+    )>,
+    party: Single<Ref<PartyEffects>>,
     content: If<Res<Catalogs>>,
+    mut departed: RemovedComponents<PartyMember>,
 ) {
-    for (entity, vitals, (character, monster), member) in &bodies {
-        match (character, monster) {
-            (Some(character), _) => {
-                let defences =
-                    character_defences(character, vitals, member, &party.0, &content.items);
-                commands.entity(entity).insert(defences);
+    let departed: bevy::ecs::entity::EntityHashSet = departed.read().collect();
+    for (entity, vitals, (character, monster), member, judged) in &bodies {
+        let changed = !judged
+            || vitals.is_changed()
+            || content.is_changed()
+            || member.as_ref().is_some_and(|m| m.is_changed() || party.is_changed())
+            || departed.contains(&entity);
+        let defences = match (character, monster) {
+            (Some((character, carried)), _)
+                if changed || character.is_changed() || carried.is_changed() =>
+            {
+                character_defences(
+                    (&character, &carried),
+                    &vitals,
+                    member.is_some(),
+                    &party.0,
+                    &content.items,
+                )
             }
-            (None, Some(monster)) => {
-                let defences = species_defences(&content.species[monster.species], vitals);
-                commands.entity(entity).insert(defences);
+            (None, Some(monster)) if changed || monster.is_changed() => {
+                species_defences(&content.species[monster.species], &vitals)
             }
-            (None, None) => {}
-        }
+            _ => continue,
+        };
+        defences.write(&mut commands.entity(entity));
     }
 }
 

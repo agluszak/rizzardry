@@ -363,7 +363,6 @@ pub(super) fn open_attacks(
                 }
             }
             if candidates.is_empty() {
-                turn.attacks[slot] = 0;
                 continue;
             }
             chosen = Some((slot, candidates));

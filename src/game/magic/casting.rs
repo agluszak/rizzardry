@@ -474,6 +474,10 @@ pub fn run_casts(world: &mut World) {
 
 pub(crate) fn stages(app: &mut App) {
     app.add_systems(
+        crate::game::hits::Hits,
+        (practise_casts, recast).chain().in_set(crate::game::hits::HitPhase::Completed),
+    );
+    app.add_systems(
         Casts,
         (
             (check_able, check_silence, check_learned, check_affordable, check_item, check_moment)
@@ -1620,12 +1624,14 @@ fn practise(
 
 /// Settle each landed cast's practice ([`Practice`]).
 pub fn practise_casts(
-    deeds: Query<(&Deed, &Practice), Without<DeedHits>>,
+    mut commands: Commands,
+    deeds: Query<(Entity, &Deed, &Practice), Without<DeedHits>>,
     mut characters: Query<&mut Character>,
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<crate::game::combat::CombatNews>,
 ) {
-    for (deed, practice) in &deeds {
+    for (entity, deed, practice) in &deeds {
+        commands.entity(entity).remove::<Practice>();
         if !practice.sure && !crate::game::hits::affected(&deed.effects) {
             continue;
         }
@@ -1637,13 +1643,15 @@ pub fn practise_casts(
 /// Recast each landed auto recast whose victims are not yet whole, while
 /// its caster's stamina and points last.
 pub fn recast(
-    deeds: Query<&Recast, Without<DeedHits>>,
+    mut commands: Commands,
+    deeds: Query<(Entity, &Recast), Without<DeedHits>>,
     bodies: Query<&Vitals>,
     casters: Query<(&Character, &Vitals, &LearnedSpells, &SpellPoints)>,
     content: If<Res<Catalogs>>,
     mut requests: MessageWriter<super::MagicRequest>,
 ) {
-    for recast in &deeds {
+    for (entity, recast) in &deeds {
+        commands.entity(entity).remove::<Recast>();
         let Source::Spell { spell, .. } = recast.choice.source else { continue };
         let spell = &content.spells[spell];
         // Every victim whole in what the spell restores, so it can stop.

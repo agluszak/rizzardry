@@ -487,13 +487,6 @@ impl Plugin for MagicPlugin {
                     .run_if(crate::game::world::level::level_active),
             );
         casting::stages(app);
-        // A cast's practice and an auto recast follow its landing.
-        app.add_systems(
-            crate::game::hits::Hits,
-            (casting::practise_casts, casting::recast)
-                .after(crate::game::hits::spells::reflect_spells)
-                .before(crate::game::hits::report_deeds),
-        );
     }
 }
 
@@ -604,7 +597,7 @@ pub(crate) fn test_points(world: &World, member: Entity, realm: Realm) -> i32 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::content::items::Dice;
     use crate::content::items::ItemCatalog;

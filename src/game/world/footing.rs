@@ -115,19 +115,23 @@ impl Eyes {
 /// level.
 #[allow(clippy::type_complexity)]
 pub fn place_bodies(
-    party: Single<(&Position, &PartyBody, &PartyEffects, &PartyRoster)>,
+    party: Single<(Ref<Position>, Ref<PartyBody>, Ref<PartyEffects>, Ref<PartyRoster>)>,
     mut bodies: Query<(
         Entity,
         &mut Footing,
         &mut Conspicuous,
         Option<&mut Eyes>,
-        &Vitals,
-        AnyOf<(&Character, (&Monster, ActorPose, Option<&Walker>))>,
+        Ref<Vitals>,
+        AnyOf<(Ref<Character>, (Ref<Monster>, ActorPose, Option<Ref<Walker>>))>,
     )>,
     content: If<Res<Catalogs>>,
+    mut departed: RemovedComponents<crate::game::party::roster::PartyMember>,
+    mut removed_walkers: RemovedComponents<Walker>,
+    mut removed_positions: RemovedComponents<Position>,
+    mut removed_rotations: RemovedComponents<avian3d::prelude::Rotation>,
 ) {
     let (position, body, effects, roster) = party.into_inner();
-    let eye = PartyBody::eye(position);
+    let eye = PartyBody::eye(&position);
     let in_party = Footing {
         feet: PartyBody::feet_below(eye),
         eye,
@@ -136,22 +140,48 @@ pub fn place_bodies(
         half_height: party_body::RADIUS,
         yaw: body.yaw,
     };
-    let level = crate::game::party::lowest_level(
-        bodies
-            .iter_many(roster.iter())
-            .matched()
-            .filter_map(|(.., vitals, (character, _))| Some((character?, vitals))),
-    );
+    let party_changed = position.is_changed()
+        || body.is_changed()
+        || effects.is_changed()
+        || roster.is_changed()
+        || bodies.iter_many(roster.iter()).matched().any(|(.., vitals, (character, _))| {
+            vitals.is_changed() || character.is_some_and(|c| c.is_changed())
+        });
+    let level =
+        crate::game::party::lowest_level(bodies.iter_many(roster.iter()).matched().filter_map(
+            |(.., vitals, (character, _))| character.map(|c| (c.into_inner(), vitals.into_inner())),
+        ));
+    let removed: bevy::ecs::entity::EntityHashSet = departed
+        .read()
+        .chain(removed_walkers.read())
+        .chain(removed_positions.read())
+        .chain(removed_rotations.read())
+        .collect();
     let of_party = Conspicuous { level, concealment: effects.0.concealment() };
     for (entity, mut at, mut seen, eyes, vitals, (character, monster)) in &mut bodies {
         match (character.filter(|_| roster.contains(&entity)), monster) {
             (Some(_), _) => {
+                if !(party_changed || at.is_added() || seen.is_added()) {
+                    continue;
+                }
                 at.set_if_neq(in_party);
                 seen.set_if_neq(of_party);
             }
             (None, Some((monster, pose, walker))) => {
+                if !(at.is_added()
+                    || seen.is_added()
+                    || eyes.as_ref().is_some_and(|e| e.is_added())
+                    || monster.is_changed()
+                    || pose.is_changed()
+                    || vitals.is_changed()
+                    || walker.as_ref().is_some_and(|w| w.is_changed())
+                    || content.is_changed()
+                    || removed.contains(&entity))
+                {
+                    continue;
+                }
                 let kind = &content.species[monster.species];
-                let feet = feet(pose.translation(), walker);
+                let feet = feet(pose.translation(), walker.as_deref());
                 let half_height = monster.body.eye_height * 0.5;
                 at.set_if_neq(Footing {
                     feet,
@@ -169,7 +199,7 @@ pub fn place_bodies(
                         } else {
                             0
                         },
-                        open: vitals.can_fight() && !blinded(kind, vitals),
+                        open: vitals.can_fight() && !blinded(kind, &vitals),
                     });
                 }
                 seen.set_if_neq(Conspicuous { level: i32::from(kind.level), concealment: 0 });

@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use bevy::ecs::entity::EntityHashSet;
+use bevy::ecs::entity::EntityHashMap;
 use bevy::prelude::*;
 
 use super::defences::{CONDITION_SAVE, DEATH_SAVE, INDEFINITE, condition_save};
@@ -21,7 +21,7 @@ use crate::content::spells::{SpellDefinition, SpellId};
 use crate::game::characters::Condition;
 use crate::game::data::Catalogs;
 use crate::game::magic::Strength;
-use crate::game::party::roster::PartyMember;
+use crate::game::party::roster::{Party, PartyMember};
 use crate::game::rng::GameRng;
 
 /// A definition: what an act that uses it does.
@@ -60,11 +60,6 @@ pub struct WeaponEffects {
     pub effects: AttackEffects,
     pub by_monster: bool,
 }
-
-/// The act's effects on the party itself (its shared spells, pool and
-/// purse) have been made, once, as its first reach on a member came to them.
-#[derive(Component, Debug)]
-pub struct SharedWithParty;
 
 /// It happens only if the effect before it landed.
 #[derive(Component, Clone, Debug)]
@@ -769,10 +764,45 @@ fn purposes(world: &mut World, definition: Entity) -> Vec<Purpose> {
         .collect()
 }
 
+/// A released act reaches each affected party once, independently of its
+/// body reaches. The party's sequence includes every OnParty prototype and
+/// starts when the first of its members is reached. Added<Uses> is the act's
+/// release boundary; finishing a reach never makes another one.
+pub fn party_reaches(
+    mut commands: Commands,
+    acts: Query<(Entity, &Uses, &super::DeedHits), Added<Uses>>,
+    definitions: Query<&Effects>,
+    party_effects: Query<(), With<OnParty>>,
+    reaches: Query<(&Strikes, Option<&InFlight>), With<Reach>>,
+    members: Query<&PartyMember>,
+) {
+    for (act, uses, hits) in &acts {
+        let Ok(effects) = definitions.get(uses.0) else { continue };
+        if !effects.iter().any(|effect| party_effects.contains(effect)) {
+            continue;
+        }
+        let mut parties = EntityHashMap::<f32>::default();
+        for (strikes, flight) in reaches.iter_many(hits.iter()).matched() {
+            let Ok(member) = members.get(strikes.0) else { continue };
+            let seconds = flight.map_or(0.0, |flight| flight.0.remaining_secs());
+            parties
+                .entry(member.0)
+                .and_modify(|first| *first = first.min(seconds))
+                .or_insert(seconds);
+        }
+        for (party, seconds) in parties {
+            let mut reach = commands.spawn((Reach::default(), HitOf(act), Strikes(party)));
+            if seconds > 0.0 {
+                reach.insert(InFlight(Timer::from_seconds(seconds, TimerMode::Once)));
+            }
+        }
+    }
+}
+
 /// Each reach whose effect is settled, or that has none yet, takes the next
 /// of its definition's prototypes that fits its body: a copy of it, landing
 /// as the reach's current effect. Those not for this body (its kind, its
-/// side, a party share already taken by the first member reached) are
+/// side, or body versus party scope) are
 /// passed over; one that needed the opposite outcome of the one before
 /// counts as missed. A blow's weapon effects land at the weapon's chance, a
 /// poison at its strength. A reach with no prototype left is done.
@@ -781,7 +811,7 @@ pub fn advance(
     mut commands: Commands,
     mut reaches: Query<(Entity, &mut Reach, &HitOf, &Strikes, Option<&Current>), Without<InFlight>>,
     settled: Query<&Outcome>,
-    acts: Query<(&Uses, Option<&WeaponEffects>, Has<SharedWithParty>)>,
+    acts: Query<(&Uses, Option<&WeaponEffects>)>,
     definitions: Query<&Effects>,
     prototypes: Query<(
         (
@@ -795,10 +825,8 @@ pub fn advance(
         Option<&FromWeapon>,
         Option<&Afflict>,
     )>,
-    bodies: Query<(Option<&super::defences::Kind>, Option<&PartyMember>)>,
+    bodies: Query<(Option<&super::defences::Kind>, Has<PartyMember>, Has<Party>)>,
 ) {
-    // The acts whose party share was taken earlier in this run.
-    let mut shared = EntityHashSet::default();
     for (reach, mut cursor, hit_of, strikes, current) in &mut reaches {
         if let Some(effect) = current.and_then(Current::effect) {
             let Ok(&outcome) = settled.get(effect) else { continue };
@@ -806,7 +834,7 @@ pub fn advance(
             commands.entity(effect).despawn();
         }
         let act = hit_of.0;
-        let (Ok((uses, weapon, party_shared)), Ok((kind, party_member))) =
+        let (Ok((uses, weapon)), Ok((kind, member, party))) =
             (acts.get(act), bodies.get(strikes.0))
         else {
             commands.entity(reach).despawn();
@@ -816,7 +844,7 @@ pub fn advance(
             commands.entity(reach).despawn();
             continue;
         };
-        let (member, kind) = (party_member.is_some(), kind.map(|kind| kind.0));
+        let kind = kind.map(|kind| kind.0);
         let mut spawned = false;
         while let Some(prototype) = effects.iter().nth(cursor.next) {
             cursor.next += 1;
@@ -833,8 +861,7 @@ pub fn advance(
                 && (!monsters || kind.is_some())
                 && kinds.is_none_or(|kinds| kind.is_some_and(|kind| kinds.0.contains(&kind)))
                 && (!by_monsters || weapon.is_some_and(|weapon| weapon.by_monster))
-                && (!on_party
-                    || (party_member.is_some() && !party_shared && !shared.contains(&act)));
+                && on_party == party;
             let chance = match (from_weapon, weapon) {
                 (Some(from), Some(weapon)) => weapon.effects.chances[from.0],
                 (Some(_), None) => 0,
@@ -849,14 +876,6 @@ pub fn advance(
                 cursor.last = Some(Outcome::Missed);
                 continue;
             }
-            let victim = match (on_party, party_member) {
-                (true, Some(party)) => party.0,
-                _ => strikes.0,
-            };
-            if on_party {
-                shared.insert(act);
-                commands.entity(act).insert(SharedWithParty);
-            }
             let effect = commands
                 .entity(prototype)
                 .clone_and_spawn_with_opt_out(|builder| {
@@ -864,7 +883,7 @@ pub fn advance(
                 })
                 .id();
             let mut effect = commands.entity(effect);
-            effect.insert((HitOf(act), Strikes(victim), CurrentOf(reach)));
+            effect.insert((HitOf(act), Strikes(strikes.0), CurrentOf(reach)));
             if let (Some(_), Some(weapon)) = (from_weapon, weapon) {
                 effect.insert(Chance(chance));
                 if let Some(afflict) = afflict.filter(|a| a.condition == Condition::Poisoned) {
@@ -884,7 +903,7 @@ pub fn advance(
 /// otherwise a weighted condition, or death.
 pub fn pick(
     mut commands: Commands,
-    effects: Query<(Entity, &Prismic), Without<Outcome>>,
+    effects: Query<(Entity, &Prismic), (With<HitOf>, Without<Outcome>)>,
     mut rng: ResMut<GameRng>,
 ) {
     for (effect, prismic) in &effects {

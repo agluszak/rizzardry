@@ -697,7 +697,9 @@ pub(super) fn refresh(
                         4 => grip.swings(&stats, load, primary).to_string(),
                         5 => format!("{:+}", grip.to_hit(&stats, load, primary)),
                         7 => format!("{:+}%", grip.damage_percent(&stats, primary)),
-                        8 => (stats.initiative(load) + grip.initiative(&stats, primary)).to_string(),
+                        8 => {
+                            (stats.initiative(load) + grip.initiative(&stats, primary)).to_string()
+                        }
                         _ => String::new(),
                     }
                 }
