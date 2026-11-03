@@ -24,7 +24,7 @@ use bevy::prelude::*;
 fn app() -> App {
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-        .add_plugins(crate::game::npcs::NpcPlugin)
+        .add_plugins((crate::game::npcs::NpcPlugin, crate::game::party::formation::FormationPlugin))
         .init_resource::<crate::game::time::GameClock>()
         .init_asset::<LevelDefinition>()
         .init_asset::<bevy_landmass::NavMesh3d>()

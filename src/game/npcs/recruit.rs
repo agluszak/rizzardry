@@ -16,7 +16,6 @@ use crate::game::data::Catalogs;
 use crate::game::inventory::{Carried, EquipSlot, Equipped, ItemIds, ItemStack, PartyInventory};
 use crate::game::magic::{LearnedSpells, SpellPoints};
 use crate::game::party::body::PartyBody;
-use crate::game::party::formation::Formation;
 use crate::game::party::roster::{PartyMember, PartyRoster, the_party};
 use crate::game::rng::GameRng;
 use crate::game::world::level::{Level, LevelOwned};
@@ -73,14 +72,16 @@ const SEXUS: NpcId = NpcId(0x4f);
 /// offer the service of the region the party is in; its authored terms
 /// hold; and the party's living, able members average at least its minimum
 /// level.
-fn willing(world: &World, id: NpcId, definition: &NpcDefinition) -> bool {
-    let level = world.try_query::<&Level>().unwrap().single(world).unwrap();
-    let band = crate::content::levels::LevelInfo::for_path(&level.path).map_or(0, |info| info.band);
+fn willing(
+    id: NpcId,
+    definition: &NpcDefinition,
+    band: u8,
+    able_levels: impl Iterator<Item = u8>,
+    fact: impl Fn(&str) -> u8,
+) -> bool {
     if offers_service(definition, band) {
         return false;
     }
-    let fact =
-        |symbol: &str| super::conversation::fact_named(world, symbol).expect("a ported fact");
     let terms = match id {
         GLUMPH => fact("FACT_UMISSION_SCUBA_DONE") == 0,
         SEXUS => fact("FACT_SEXUS_PAID") != 0,
@@ -93,8 +94,7 @@ fn willing(world: &World, id: NpcId, definition: &NpcDefinition) -> bool {
     }
     if definition.min_party_level > 0 {
         // Retail counts no able member as an average of nothing.
-        let mut levels =
-            crate::game::party::able_in_world(world).map(|(_, c)| c.level()).peekable();
+        let mut levels = able_levels.peekable();
         let average =
             if levels.peek().is_none() { 0 } else { crate::game::party::average_level(levels) };
         if average < u32::from(definition.min_party_level) {
@@ -107,21 +107,24 @@ fn willing(world: &World, id: NpcId, definition: &NpcDefinition) -> bool {
 /// Whether the NPC would join the party now, and if not, why (retail
 /// `RequestNpcJoinParty`'s order: an NPC without a character declines
 /// before the party's room is counted).
-pub fn joinable(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
-    let party = the_party(world);
-    let world = &*world;
+pub fn joinable(world: &World, actor: Entity) -> Result<(), JoinRefusal> {
     let id = world.get::<super::ActorId>(actor).unwrap().npc();
     let definition = super::definition(world, actor);
     let gone = world.get::<Npc>(actor).unwrap().dead;
     if definition.character.is_none() || gone || world.get::<PartyMember>(actor).is_some() {
         return Err(JoinRefusal::Declines);
     }
-    let roster = world.get::<PartyRoster>(party).unwrap();
+    let roster = world.try_query::<&PartyRoster>().unwrap().single(world).unwrap();
     let npcs = roster.iter().filter(|&m| world.get::<Npc>(m).is_some()).count();
     if npcs >= NPC_PLACES {
         return Err(JoinRefusal::NoRoom);
     }
-    if !willing(world, id, definition) {
+    let level = world.try_query::<&Level>().unwrap().single(world).unwrap();
+    let band = crate::content::levels::LevelInfo::for_path(&level.path).map_or(0, |info| info.band);
+    let able_levels = crate::game::party::able_in_world(world).map(|(_, c)| c.level());
+    let fact =
+        |symbol: &str| super::conversation::fact_named(world, symbol).expect("a ported fact");
+    if !willing(id, definition, band, able_levels, fact) {
         return Err(JoinRefusal::Declines);
     }
     Ok(())
@@ -229,7 +232,6 @@ pub fn join(world: &mut World, actor: Entity) -> Result<(), JoinRefusal> {
         world.flush();
     }
     world.entity_mut(actor).insert((PartyMember(party), crate::game::party::Order::Attack));
-    world.get_mut::<Formation>(party).unwrap().seat(actor);
     Ok(())
 }
 
@@ -286,7 +288,6 @@ pub fn dismiss(world: &mut World, actor: Entity) -> bool {
     let body = world.get::<NpcBodies>(actor).and_then(|bodies| bodies.first().copied());
     let level = played_level(world);
     world.entity_mut(actor).remove::<PartyMember>();
-    world.get_mut::<Formation>(party).unwrap().unseat(actor);
     if alive && let Some(body) = body {
         stand_beside_party(world, actor, body, (party, level));
     }
@@ -394,11 +395,12 @@ pub fn npc_member_falls(
     mut commands: Commands,
 ) {
     let member = death.entity;
-    let Ok(&PartyMember(party)) = members.get(member) else { return };
+    if !members.contains(member) {
+        return;
+    }
     commands.queue(move |world: &mut World| {
         let level = played_level(world);
         world.entity_mut(member).remove::<PartyMember>();
-        world.get_mut::<Formation>(party).unwrap().unseat(member);
         world.get_mut::<Npc>(member).unwrap().dead = true;
         hand_over(world, member, level, |_| false);
     });
