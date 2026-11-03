@@ -731,7 +731,7 @@ mod tests {
         ));
         let mut news = Vec::new();
         let mut request = |app: &mut App, source| {
-            let choice = MagicChoice { source, aim: Aim::Member(member) };
+            let choice = MagicChoice { source, aim: Aim::Body(member) };
             app.world_mut().write_message(MagicRequest { caster: member, choice });
             app.update();
             news.extend(app.world_mut().resource_mut::<Messages<MagicNews>>().drain());
@@ -928,7 +928,7 @@ mod tests {
             let user_before = world.get::<Vitals>(user).unwrap().clone();
             world.write_message(MagicRequest {
                 caster: user,
-                choice: MagicChoice { source: Source::Item(stack_id), aim: Aim::Member(ally) },
+                choice: MagicChoice { source: Source::Item(stack_id), aim: Aim::Body(ally) },
             });
             app.update();
             let world = app.world_mut();

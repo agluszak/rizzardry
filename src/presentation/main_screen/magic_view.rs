@@ -1013,7 +1013,7 @@ pub(super) fn commit_magic_choice(
         }) else {
             return;
         };
-        Aim::Monster(body)
+        Aim::Body(body)
     } else if let Some(attempt) = attempt {
         Aim::Device(attempt)
     } else {
@@ -1030,14 +1030,14 @@ pub(super) fn commit_magic_choice(
                 None => return,
             },
             Targeting::Ally => match view.member {
-                Some(member) => Aim::Member(member),
+                Some(member) => Aim::Body(member),
                 None => return,
             },
             // The game picks the monster ahead when the spell is cast.
             Targeting::Enemy | Targeting::EnemyGroup | Targeting::Cone | Targeting::Radius => {
                 Aim::Ahead
             }
-            _ => Aim::Member(view.caster),
+            _ => Aim::Body(view.caster),
         }
     };
     let source = match source {

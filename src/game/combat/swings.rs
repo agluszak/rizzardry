@@ -26,7 +26,7 @@ use super::approach::{self, CombatMove};
 use super::attack::{self, Location, Surprise};
 use super::fighters::{
     Agility, Arm, ArmourClass, Arms, Backstab, BlindFighting, HitLocations, MissileShield,
-    Protection, Reduction, reaches,
+    Protection, Reduction, Stride, reaches,
 };
 use super::turn::{
     Acting, Decided, Fights, Guards, Interceptions, Ordered, Resumes, Spotted, Turn,
@@ -45,6 +45,7 @@ use crate::game::hits::spells::reach;
 use crate::game::hits::{Act, By, Deed, DeedHits, Effect};
 use crate::game::inventory::{Burden, Carried, WeaponSlot};
 use crate::game::magic::Strength;
+use crate::game::npcs::NpcBody;
 use crate::game::party::formation::{Formation, Row};
 use crate::game::party::roster::{PartyMember, PartyRoster};
 use crate::game::rng::GameRng;
@@ -300,22 +301,20 @@ pub(super) fn open_attacks(
             &Fights,
             &mut Turn,
             (&Arms, &Vitals, &Side, &Loyalty, &Footing, &SaveLevel),
-            (Has<Ordered>, Option<(&Monster, &Walker)>),
+            (Has<Ordered>, Option<(&Stride, &Walker)>),
         ),
         With<Acting>,
     >,
-    bodies: Query<(&Vitals, &Side, &Loyalty, &Footing, Option<&Monster>)>,
+    bodies: Query<(&Vitals, &Side, &Loyalty, &Footing, (Option<&Arms>, Has<NpcBody>))>,
     mut characters: Query<&mut Character>,
     fight: Single<(&mut Round, &mut Pause, Option<&Combatants>), With<Battle>>,
     (formation, roster): (Single<&Formation>, Single<&PartyRoster>),
     obstacles: WorldObstacles,
-    content: If<Res<Catalogs>>,
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<CombatNews>,
 ) {
     let (mut round, mut pause, combatants) = fight.into_inner();
     let combatants = combatants.map_or(&[][..], Combatants::entities);
-    let species = &content.species;
     let rng = &mut *rng;
     let step = step(&round);
     let party_at = roster.iter().find_map(|member| bodies.get(member).ok().map(|(.., at, _)| *at));
@@ -349,14 +348,15 @@ pub(super) fn open_attacks(
             let mut candidates: Vec<(&Arm, AttackMode, Entity)> = Vec::new();
             for arm in arms.of(slot) {
                 for other in everyone(&roster, combatants) {
-                    let Ok((theirs, their_side, their_loyalty, there, monster)) = bodies.get(other)
+                    let Ok((theirs, their_side, their_loyalty, there, (_, npc))) =
+                        bodies.get(other)
                     else {
                         continue;
                     };
                     if other == actor
                         || theirs.is_dead()
                         || hostility::between(mine, (their_side.0, *their_loyalty)) != wanted
-                        || (ordered && monster.is_some_and(|m| species[m.species].npc.is_some()))
+                        || (ordered && npc)
                         || !reaches(&formation, (actor, at), (other, there), arm.reach)
                         || (!ordered && !obstacles.clear(at.eye, there.centre))
                     {
@@ -388,34 +388,36 @@ pub(super) fn open_attacks(
         }
         let Some((slot, candidates)) = chosen else {
             // A body that walks closes in on a foe, hurt ones charging.
-            let goal = walks.filter(|_| !turn.moved).and_then(|(body, walker)| {
-                let kind = &species[body.species];
-                match side.0 {
-                    Stance::Friendly => combatants
-                        .iter()
-                        .filter_map(|&other| {
-                            let (theirs, their_side, their_loyalty, there, _) =
-                                bodies.get(other).ok()?;
-                            let toward = hostility::between(mine, (their_side.0, *their_loyalty));
-                            (!theirs.is_dead() && toward == wanted)
-                                .then_some((at.feet.distance_squared(there.feet), other))
-                        })
-                        .min_by(|a, b| a.0.total_cmp(&b.0))
-                        .filter(|_| walker.speed > 0.0)
-                        .map(|(_, target)| {
-                            let charge = vitals.charges();
-                            let metres = approach::move_metres(vitals, kind, charge);
-                            (
-                                approach::MoveBudget { metres, charge },
-                                approach::MoveGoal::Attack(target),
-                            )
-                        }),
-                    Stance::Hostile => party_at.and_then(|party| {
-                        approach::move_budget(kind, vitals, Some(walker), at.gap(&party))
-                            .map(|budget| (budget, approach::MoveGoal::Party))
+            let goal = walks.filter(|_| !turn.moved).and_then(|(stride, walker)| match side.0 {
+                Stance::Friendly => combatants
+                    .iter()
+                    .filter_map(|&other| {
+                        let (theirs, their_side, their_loyalty, there, _) =
+                            bodies.get(other).ok()?;
+                        let toward = hostility::between(mine, (their_side.0, *their_loyalty));
+                        (!theirs.is_dead() && toward == wanted)
+                            .then_some((at.feet.distance_squared(there.feet), other))
+                    })
+                    .min_by(|a, b| a.0.total_cmp(&b.0))
+                    .filter(|_| walker.speed > 0.0)
+                    .map(|(_, target)| {
+                        let charge = vitals.charges();
+                        let metres = approach::move_metres(vitals, stride.0, charge);
+                        (
+                            approach::MoveBudget { metres, charge },
+                            approach::MoveGoal::Attack(target),
+                        )
                     }),
-                    Stance::Neutral => None,
-                }
+                Stance::Hostile => party_at.and_then(|party| {
+                    approach::move_budget(
+                        (arms.reach(), stride.0),
+                        vitals,
+                        Some(walker),
+                        at.gap(&party),
+                    )
+                    .map(|budget| (budget, approach::MoveGoal::Party))
+                }),
+                Stance::Neutral => None,
             });
             match goal {
                 Some((budget, goal)) => {
@@ -438,14 +440,11 @@ pub(super) fn open_attacks(
             let best = candidates
                 .iter()
                 .map(|&(arm, _, other)| {
-                    let (theirs, _, _, there, monster) = bodies.get(other).unwrap();
+                    let (theirs, _, _, there, (their_arms, _)) = bodies.get(other).unwrap();
                     let quadrant = at.quadrant(there.feet);
-                    let in_reach = monster.is_none_or(|m| {
-                        !species[m.species].attacks.is_empty()
-                            && (quadrant == Row::Rear
-                                || (!formation.occupied(quadrant)
-                                    && formation.occupied(Row::Center)))
-                    });
+                    let in_reach = their_arms.is_some_and(|arms| !arms.0.is_empty())
+                        && (quadrant == Row::Rear
+                            || (!formation.occupied(quadrant) && formation.occupied(Row::Center)));
                     ((theirs.conditions.worst(), !in_reach, at.gap(there)), arm, other)
                 })
                 .min_by(|a, b| {

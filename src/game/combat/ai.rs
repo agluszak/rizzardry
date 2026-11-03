@@ -18,7 +18,7 @@ use crate::game::characters::{Condition, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::hits::prototypes::Definitions;
 use crate::game::magic::casting::{MagicChoice, Source};
-use crate::game::party::roster::{PartyMember, PartyRoster};
+use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::footing::{Conspicuous, Eyes, Footing};
 use crate::game::world::hostility::{self, Loyalty, Side, Stance};
@@ -60,7 +60,7 @@ pub(super) fn seen(
     monster: Entity,
     (at, eyes): (&Footing, &Eyes),
     (roster, combatants): (&PartyRoster, &[Entity]),
-    bodies: &Query<(&Vitals, &Footing, &Side, &Loyalty, Has<PartyMember>)>,
+    bodies: &Query<(&Vitals, &Footing, &Side, &Loyalty)>,
     conspicuous: &Query<&Conspicuous>,
     far: f32,
     obstacles: &WorldObstacles,
@@ -143,7 +143,7 @@ pub(super) fn decide_special(
         (Entity, &Monster, &Vitals, &Side, &Footing, &Eyes, Option<&SpecialCooldown>),
         (With<Acting>, Without<Ordered>, Without<Decided>),
     >,
-    bodies: Query<(&Vitals, &Footing, &Side, &Loyalty, Has<PartyMember>)>,
+    bodies: Query<(&Vitals, &Footing, &Side, &Loyalty)>,
     conspicuous: Query<&Conspicuous>,
     footings: Query<&Footing>,
     fight: Single<Option<&Combatants>, With<Battle>>,
@@ -182,7 +182,7 @@ pub(super) fn decide_special(
                 far,
                 &obstacles,
             );
-            let aims = monster_spells::aims(cone, monster, &seen, &bodies, &definitions);
+            let aims = monster_spells::aims(cone, monster, &seen, &bodies, &roster, &definitions);
             if aims.is_empty() {
                 continue;
             }
@@ -219,7 +219,7 @@ pub(super) fn decide_spell(
         (Entity, &Monster, &Vitals, &Footing, &Eyes),
         (With<Acting>, Without<Ordered>, Without<Decided>),
     >,
-    bodies: Query<(&Vitals, &Footing, &Side, &Loyalty, Has<PartyMember>)>,
+    bodies: Query<(&Vitals, &Footing, &Side, &Loyalty)>,
     conspicuous: Query<&Conspicuous>,
     footings: Query<&Footing>,
     fight: Single<Option<&Combatants>, With<Battle>>,
@@ -257,6 +257,7 @@ pub(super) fn decide_spell(
             &content.spells,
             &seen,
             &bodies,
+            &roster,
             &definitions,
         ) else {
             continue;

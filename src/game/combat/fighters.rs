@@ -41,6 +41,12 @@ pub struct Brawn(pub u32);
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Initiative(pub i32);
 
+/// How far a body may walk in one combat move, in metres: a monster's
+/// species' move range (retail `combat_move_range` × 20). The party walks
+/// as one, so a member has none.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Stride(pub f32);
+
 /// The percent cut off the damage of blows at it.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Reduction(pub i32);
@@ -182,6 +188,11 @@ pub struct Arm {
 pub struct Arms(pub Vec<Arm>);
 
 impl Arms {
+    /// The furthest any of its arms reaches.
+    pub fn reach(&self) -> Reach {
+        self.0.iter().map(|arm| arm.reach).max().unwrap_or(Reach::Touch)
+    }
+
     /// The arms of a slot.
     pub fn of(&self, slot: WeaponSlot) -> impl Iterator<Item = &Arm> {
         self.0.iter().filter(move |arm| arm.slot == slot)
@@ -393,6 +404,7 @@ pub(super) fn judge_monsters(
         commands.entity(entity).insert((
             Arms(arms),
             Initiative(i32::from(kind.initiative)),
+            Stride(kind.combat_move_range * super::approach::METRES_PER_MOVE_RANGE),
             Brawn(u32::from(kind.attributes.strength)),
             Agility(attack::monster_agility(kind, &vitals.enchantments)),
             Reduction(attack::monster_reduction(kind, vitals)),
@@ -421,6 +433,7 @@ fn forget(commands: &mut EntityCommands) {
     commands.try_remove::<(
         Arms,
         Initiative,
+        Stride,
         Brawn,
         Agility,
         Reduction,

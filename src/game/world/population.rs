@@ -174,6 +174,10 @@ fn actor_name(species: &MonsterCatalog, (id, location): (u32, i32)) -> String {
 #[derive(Component, Debug)]
 pub struct Untargetable;
 
+/// What a monster's death is worth in experience to a fight: its species'.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Worth(pub u32);
+
 /// Make a monster an actor of its level: standing at its feet and facing
 /// its heading, in its group, and a walker if it walks.
 fn embody(
@@ -192,6 +196,7 @@ fn embody(
     if let Some(group) = group {
         entity.insert(GroupMember(group));
     }
+    entity.insert(Worth(kind.experience));
     if kind.untargetable {
         entity.insert(Untargetable);
     }

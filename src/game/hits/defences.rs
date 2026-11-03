@@ -10,6 +10,7 @@ use enum_map::EnumMap;
 
 use crate::content::characters::Realm;
 use crate::content::species::MonsterKind;
+use crate::content::spells::Spellbook;
 use crate::game::characters::resistance::{member_resistances, resistances};
 use crate::game::characters::{Character, Condition, Conditions, Lasting, Vitals};
 use crate::game::data::Catalogs;
@@ -36,6 +37,20 @@ pub struct Senses(pub u32);
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Resistances(pub EnumMap<Realm, i32>);
 
+/// How strongly a body casts from each book, which a spell turned back on
+/// it or from it grows from: a member's caster level in the book, a
+/// monster's species' level.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CasterLevels(pub EnumMap<Spellbook, u32>);
+
+impl CasterLevels {
+    /// What a spell's strength from the body grows from: its highest level
+    /// among the spell's books.
+    pub fn figure(&self, spell: &crate::content::spells::SpellDefinition) -> u32 {
+        spell.books.iter().map(|book| self.0[book]).max().unwrap_or(0)
+    }
+}
+
 /// Characters, by their sheet and gear, and a member by the party's spells.
 pub fn judge_characters(
     mut commands: Commands,
@@ -53,6 +68,10 @@ pub fn judge_characters(
             SaveLevel(u32::from(character.level())),
             Senses(stats.attribute(crate::content::characters::Attribute::Senses)),
             Resistances(EnumMap::from_fn(|realm| resistances[realm].total)),
+            CasterLevels(EnumMap::from_fn(|book| {
+                crate::game::magic::total_caster_level(character, enumset::EnumSet::only(book))
+                    .max(0) as u32
+            })),
         ));
     }
 }
@@ -69,6 +88,7 @@ pub fn judge_monsters(
             SaveLevel(u32::from(kind.level)),
             Senses(u32::from(kind.attributes.senses)),
             Resistances(EnumMap::from_fn(|realm| population::resistance(kind, vitals, realm))),
+            CasterLevels(EnumMap::from_fn(|_| u32::from(kind.level))),
         ));
     }
 }

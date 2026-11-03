@@ -6,11 +6,12 @@
 
 use bevy::prelude::*;
 
+use super::defences::CasterLevels;
 use super::effects::{InFlight, Reach};
 use super::prototypes::{Definitions, Uses};
 use super::reach::{Recipients, within};
 use super::{Deed, DeedHits, Effect, HitOf, Strikes};
-use crate::content::spells::{SpellDefinition, SpellId, Targeting};
+use crate::content::spells::{SpellId, Targeting};
 use crate::game::characters::{Character, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::magic::casting::{Aim, MISSILE_SPEED, in_cone};
@@ -63,36 +64,20 @@ pub struct OwnersStrength {
     pub spell: SpellId,
 }
 
-/// What a spell's strength from a body grows from: a member's caster level
-/// in the spell's books, a monster's species' level, nothing from anyone
-/// else.
-pub fn caster_figure(
-    (character, monster): (Option<&Character>, Option<&Monster>),
-    spell: &SpellDefinition,
-    species: &crate::content::species::MonsterCatalog,
-) -> u32 {
-    match (character, monster) {
-        (Some(character), _) => {
-            crate::game::magic::total_caster_level(character, spell.books).max(0) as u32
-        }
-        (None, Some(monster)) => u32::from(species[monster.species].level),
-        (None, None) => 0,
-    }
-}
-
-/// An act's strength is settled by its owner's figure.
+/// An act's strength is settled by its owner's caster levels
+/// ([`CasterLevels`]); an owner gone, or none, casts from nothing.
 pub fn strength_of_owners(
     mut commands: Commands,
     mut acts: Query<(Entity, &OwnersStrength, &mut Strength)>,
-    bodies: Query<(Option<&Character>, Option<&Monster>)>,
+    casters: Query<&CasterLevels>,
     content: If<Res<Catalogs>>,
 ) {
     for (act, owned, mut strength) in &mut acts {
         let spell = &content.spells[owned.spell];
         let figure = owned
             .owner
-            .and_then(|owner| bodies.get(owner).ok())
-            .map_or(0, |owner| caster_figure(owner, spell, &content.species));
+            .and_then(|owner| casters.get(owner).ok())
+            .map_or(0, |levels| levels.figure(spell));
         *strength = Strength::at(figure, spell, strength.power, strength.boost);
         commands.entity(act).remove::<OwnersStrength>();
     }
@@ -304,18 +289,17 @@ pub fn reflect_spells(
         bodies.get_mut(charged).unwrap().1.enchantments.spend_charge(SpellId::EYE_FOR_AN_EYE);
         deed.effects.push(Effect::Reflected { victim: charged });
         let owner = cast.owner;
-        let owner_is_member = owner.is_some_and(|owner| roster.contains(&owner));
         let eye = party_at.map_or(cast.from, |at| at.eye);
         let eye_of = |actor: Entity| bodies.get(actor).map_or(eye, |(.., at, _)| at.eye);
         // Whom and where it comes back from.
         let (source, from) = match (spell.targeting, cast.aim) {
             (Targeting::Radius | Targeting::Cone, Aim::Point(at)) => (owner, at),
             (Targeting::Radius | Targeting::Cone | Targeting::AllEnemies, _) => (owner, cast.from),
-            (Targeting::EnemyGroup, Aim::Monster(entity)) => {
+            (Targeting::EnemyGroup, Aim::Body(entity)) => {
                 let leader = leader(entity, &monsters, &memberships, &group_members);
                 (Some(leader), eye_of(leader))
             }
-            (_, Aim::Monster(entity)) => (Some(entity), eye_of(entity)),
+            (_, Aim::Body(entity)) => (Some(entity), eye_of(entity)),
             _ => {
                 let first = roster
                     .iter()
@@ -363,11 +347,7 @@ pub fn reflect_spells(
             ),
             _ => vec![],
         };
-        let aim = match owner {
-            Some(owner) if owner_is_member => Aim::Member(owner),
-            Some(owner) => Aim::Monster(owner),
-            None => Aim::Point(cast.from),
-        };
+        let aim = owner.map_or(Aim::Point(cast.from), Aim::Body);
         let flights: Vec<_> = victims
             .iter()
             .map(|&victim| {

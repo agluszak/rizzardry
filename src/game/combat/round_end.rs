@@ -406,7 +406,7 @@ pub(super) fn judge_victory(
     >,
     mut members: Query<(&mut Character, &Vitals)>,
     monsters: Query<(
-        &Monster,
+        &super::fighters::Arms,
         &Vitals,
         &Side,
         &Footing,
@@ -415,7 +415,6 @@ pub(super) fn judge_victory(
     footings: Query<&Footing>,
     leaving: Query<(), With<Leaves>>,
     roster: Single<&PartyRoster>,
-    content: If<Res<Catalogs>>,
     mut news: MessageWriter<CombatNews>,
 ) {
     let (fight, mut battle, round, spoils, mut pause, combatants) = fight.into_inner();
@@ -426,11 +425,10 @@ pub(super) fn judge_victory(
     }
     pause.0 = Timer::from_seconds(ROUND_SECONDS, TimerMode::Once);
     let party_at = roster.iter().find_map(|m| footings.get(m).ok()).copied();
-    let species = &content.species;
     let approaching = combatants.entities().iter().any(|&entity| {
-        monsters.get(entity).is_ok_and(|(monster, vitals, _, at, walker)| {
+        monsters.get(entity).is_ok_and(|(arms, vitals, _, at, walker)| {
             party_at.is_some_and(|party| {
-                approach::needs_approach(&species[monster.species], vitals, walker, at.gap(&party))
+                approach::needs_approach(arms.reach(), vitals, walker, at.gap(&party))
             })
         })
     });

@@ -14,7 +14,7 @@ use bevy::prelude::*;
 use enum_map::EnumMap;
 
 use super::attack::phase;
-use super::fighters::{Arms, BlindFighting, Brawn, Initiative, reaches};
+use super::fighters::{Arms, BlindFighting, Brawn, Initiative, Stride, reaches};
 use super::{
     ACTION_SECONDS, Battle, CombatNews, Combatant, PartyMove, Pause, Round, RoundPhase, conduct,
     summon,
@@ -39,7 +39,6 @@ use crate::game::world::footing::Footing;
 use crate::game::world::hostility::{self, Loyalty, Side, Stance};
 use crate::game::world::navigation::Walker;
 use crate::game::world::obstacles::WorldObstacles;
-use crate::game::world::population::Monster;
 
 /// An actor's accepted work and history this round: when it acts next,
 /// the attacks each weapon slot has left (retail `hand_attack_values`; a
@@ -559,15 +558,14 @@ fn done(commands: &mut Commands, actor: Entity, pause: Option<&mut Pause>) {
 /// fails).
 pub(super) fn retreat(
     mut commands: Commands,
-    mut actors: Query<(Entity, &Retreats, &mut Turn, &Monster, &Vitals, &Footing, Option<&Walker>)>,
+    mut actors: Query<(Entity, &Retreats, &mut Turn, &Stride, &Vitals, &Footing, Option<&Walker>)>,
     mut pause: Single<&mut Pause>,
     roster: Single<&PartyRoster>,
     footings: Query<&Footing>,
-    content: If<Res<Catalogs>>,
     mut news: MessageWriter<CombatNews>,
 ) {
     let party_eye = roster.iter().find_map(|member| footings.get(member).ok()).map(|at| at.eye);
-    for (monster, retreats, mut turn, body, vitals, at, walker) in &mut actors {
+    for (monster, retreats, mut turn, stride, vitals, at, walker) in &mut actors {
         commands.entity(monster).remove::<Retreats>();
         turn.end();
         if retreats.conduct == conduct::Conduct::Hold {
@@ -580,8 +578,7 @@ pub(super) fn retreat(
             continue;
         }
         turn.moved = true;
-        let kind = &content.species[body.species];
-        let metres = super::approach::move_metres(vitals, kind, false);
+        let metres = super::approach::move_metres(vitals, stride.0, false);
         let away = super::approach::away_from(at.feet, party_eye.unwrap_or(at.feet), metres);
         commands.entity(monster).insert(super::approach::CombatMove {
             budget: metres,

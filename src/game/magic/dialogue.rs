@@ -34,7 +34,7 @@ pub(crate) fn cast(
     }
     let actor = conversation.actor;
     let body = active_body(world, actor).ok_or(Refusal::NoTarget)?;
-    if choice.aim != Aim::Monster(body) {
+    if choice.aim != Aim::Body(body) {
         return Err(Refusal::NoTarget);
     }
     let monster = world.get::<Monster>(body).unwrap();

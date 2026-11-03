@@ -105,13 +105,7 @@ pub(super) fn engage(
     )>,
     mut groups: Query<(Entity, &mut MonsterGroup, &GroupMembers, &LevelOwned)>,
     members: Query<(&Footing, &Conspicuous, &Vitals), With<Character>>,
-    bodies: Query<(
-        &Vitals,
-        &Footing,
-        &Side,
-        &Loyalty,
-        Has<crate::game::party::roster::PartyMember>,
-    )>,
+    bodies: Query<(&Vitals, &Footing, &Side, &Loyalty)>,
     roster: Single<&PartyRoster>,
     level: PlayedLevel,
     obstacles: WorldObstacles,
@@ -164,13 +158,21 @@ pub(super) fn engage(
             .chain(roster.iter().filter(|_| sees))
             .filter(|&body| bodies.get(body).is_ok_and(|(vitals, ..)| !vitals.is_dead()))
             .collect();
-        let casts =
-            monster_spells::casts_at_foes(fighter, kind, spells, &seen, &bodies, &definitions);
+        let casts = monster_spells::casts_at_foes(
+            fighter,
+            kind,
+            spells,
+            &seen,
+            &bodies,
+            &roster,
+            &definitions,
+        );
         let breathes = kind.special.chance != 0
             && special_ready(vitals, kind, false, None)
             && spells.get(crate::content::spells::SpellId::SPECIAL_ATTACK_CONE).is_some_and(
                 |cone| {
-                    !monster_spells::aims(cone, fighter, &seen, &bodies, &definitions).is_empty()
+                    !monster_spells::aims(cone, fighter, &seen, &bodies, &roster, &definitions)
+                        .is_empty()
                 },
             );
         let acts = vitals.can_fight()

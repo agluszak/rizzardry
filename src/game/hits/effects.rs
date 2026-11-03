@@ -642,24 +642,21 @@ pub fn cure(
     }
 }
 
-/// Renewal lifts a body's drain; a sheet gets back what draining took.
+/// Renewal lifts a drain from a body with a sheet to give back what
+/// draining took; only such bodies are ever drained.
 pub fn renew(
     mut commands: Commands,
     effects: Query<(Entity, &Strikes, &HitOf), (With<Renew>, Without<Outcome>)>,
-    mut bodies: Query<(&mut Vitals, Option<&mut Character>)>,
+    mut members: Query<(&mut Character, &mut Vitals)>,
     mut acts: Query<&mut Deed>,
 ) {
     for (effect, strikes, hit_of) in &effects {
         let victim = strikes.0;
-        let Ok((mut vitals, character)) = bodies.get_mut(victim) else { continue };
-        let lifted = match character {
-            Some(mut character) => vitals.lift_drain(&mut character),
-            None => {
-                let drained = vitals.conditions.has(Condition::Drained);
-                vitals.conditions.lift(Condition::Drained);
-                drained
-            }
+        let Ok((mut character, mut vitals)) = members.get_mut(victim) else {
+            commands.entity(effect).insert(Outcome::Missed);
+            continue;
         };
+        let lifted = vitals.lift_drain(&mut character);
         let landed = if lifted {
             Effect::Cured { victim, condition: Condition::Drained }
         } else {

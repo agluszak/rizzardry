@@ -27,7 +27,7 @@ use crate::game::difficulty::Difficulty;
 use crate::game::hits::effects::{Heal, InFlight, Refresh};
 use crate::game::hits::prototypes::{Definitions, Effects, Leeches, Uses};
 use crate::game::hits::reach::{Recipients, within};
-use crate::game::hits::spells::{caster_figure, group_of, leader, reach};
+use crate::game::hits::spells::{group_of, leader, reach};
 use crate::game::hits::{Act, By, Deed, DeedHits, Effect, Strikes};
 use crate::game::inventory::{Carried, PartyInventory, StackId};
 use crate::game::party::roster::{PartyMember, PartyRoster};
@@ -87,8 +87,8 @@ impl Source {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Aim {
     Point(Vec3),
-    Member(Entity),
-    Monster(Entity),
+    /// A body, a member's or a monster's.
+    Body(Entity),
     /// Whoever stands nearest the caster's heading within the spell's
     /// reach when it is cast (retail's automatic targeting), the nearer of
     /// equals.
@@ -103,7 +103,7 @@ impl Aim {
     /// The body aimed at, if one was.
     pub fn body(self) -> Option<Entity> {
         match self {
-            Aim::Member(entity) | Aim::Monster(entity) => Some(entity),
+            Aim::Body(entity) => Some(entity),
             _ => None,
         }
     }
@@ -1261,23 +1261,12 @@ fn settle(commands: &mut Commands, cast: Entity) {
 /// spell aimed at one body on the caster, a wider one on everyone of the
 /// caster's side in the fight within its reach, a blast on those within
 /// its radius of the caster. It comes from whom it was aimed at, or where
-/// it was to land, and is as strong as they are.
+/// it was to land, and is as strong as they are, settled as it lands.
 #[allow(clippy::type_complexity)]
 fn backfire(
     mut commands: Commands,
-    mut casts: Query<(
-        Entity,
-        &Cast,
-        &By,
-        &Chosen,
-        &Rolled,
-        &Target,
-        &Power,
-        &mut Strength,
-        Option<&DeedHits>,
-    )>,
+    casts: Query<(Entity, &Cast, &By, &Chosen, &Rolled, &Target, &Power, Option<&DeedHits>)>,
     bodies: Query<(Entity, &Vitals, &Side, &Footing, Option<&Monster>), Without<Untargetable>>,
-    sources: Query<(Option<&Character>, Option<&Monster>)>,
     monsters: Query<&Monster>,
     memberships: Query<&GroupMember>,
     groups: Query<&GroupMembers>,
@@ -1287,9 +1276,7 @@ fn backfire(
     content: If<Res<Catalogs>>,
 ) {
     let combatants = fight.as_deref().map_or(&[][..], |fight| fight.entities());
-    for (cast, &Cast { spell, .. }, by, chosen, rolled, target, power, mut strength, hits) in
-        &mut casts
-    {
+    for (cast, &Cast { spell, .. }, by, chosen, rolled, target, power, hits) in &casts {
         if rolled.0 != Outcome::Backfired {
             continue;
         }
@@ -1303,19 +1290,14 @@ fn backfire(
         let eye = stand.eye;
         let eye_of = |body: Entity| bodies.get(body).map_or(eye, |(.., at, _)| at.eye);
         let (owner, from) = match (spell.targeting, chosen.0.aim) {
-            (Targeting::Enemy | Targeting::Ally, Aim::Monster(entity) | Aim::Member(entity)) => {
-                (entity, eye_of(entity))
-            }
-            (Targeting::EnemyGroup, Aim::Monster(entity)) => {
+            (Targeting::Enemy | Targeting::Ally, Aim::Body(entity)) => (entity, eye_of(entity)),
+            (Targeting::EnemyGroup, Aim::Body(entity)) => {
                 let leader = leader(entity, &monsters, &memberships, &groups);
                 (leader, eye_of(leader))
             }
             (Targeting::Radius | Targeting::Cone, _) => (caster, target.0.unwrap_or(eye)),
             _ => (caster, eye),
         };
-        let figure =
-            sources.get(owner).map_or(0, |source| caster_figure(source, spell, &content.species));
-        *strength = Strength::at(figure, spell, strength.power, strength.boost);
         let victims: Vec<Entity> = match spell.targeting {
             Targeting::Caster | Targeting::Ally | Targeting::Enemy => vec![caster],
             Targeting::Radius => within(
@@ -1344,16 +1326,19 @@ fn backfire(
             (Targeting::Radius | Targeting::Cone, Some(at)) => Aim::Point(at),
             _ => chosen.0.aim,
         };
-        commands.entity(cast).insert(crate::game::hits::spells::Spell {
-            id: spell.id,
-            caster,
-            backfired: true,
-            reflected: false,
-            owner: Some(owner),
-            from,
-            aim,
-            victims: victims.clone(),
-        });
+        commands.entity(cast).insert((
+            crate::game::hits::spells::Spell {
+                id: spell.id,
+                caster,
+                backfired: true,
+                reflected: false,
+                owner: Some(owner),
+                from,
+                aim,
+                victims: victims.clone(),
+            },
+            crate::game::hits::spells::OwnersStrength { owner: Some(owner), spell: spell.id },
+        ));
         let victims: Vec<_> = victims.into_iter().map(|victim| (victim, None)).collect();
         reach(&mut commands, cast, &victims);
     }

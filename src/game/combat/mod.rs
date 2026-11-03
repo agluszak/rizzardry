@@ -474,31 +474,35 @@ pub fn settle_defeat(
     }
 }
 
-/// A death in the fight: a hostile monster's is a kill worth its species'
-/// experience (nothing for one summoned), shared at the fight's end
-/// (retail `MonsterStartsDying`); everyone's is announced.
+/// A death in the fight: a hostile body's with a worth is a kill worth it
+/// (nothing for one summoned), shared at the fight's end (retail
+/// `MonsterStartsDying`); everyone's is announced.
 pub fn credit_deaths(
     deaths: Query<
-        (Entity, &Side, Option<&Monster>, Has<crate::game::magic::pointcasts::SummonedBy>),
+        (
+            Entity,
+            &Side,
+            Option<&crate::game::world::population::Worth>,
+            Has<crate::game::magic::pointcasts::SummonedBy>,
+        ),
         Added<Dead>,
     >,
     fight: Option<Single<(&mut Spoils, Option<&Combatants>), With<Battle>>>,
     roster: Single<&PartyRoster>,
-    content: If<Res<Catalogs>>,
     mut news: MessageWriter<CombatNews>,
 ) {
     let Some((mut spoils, combatants)) = fight.map(Single::into_inner) else { return };
     let combatants = combatants.map_or(&[][..], Combatants::entities);
-    for (actor, side, monster, summoned) in &deaths {
+    for (actor, side, worth, summoned) in &deaths {
         if !roster.contains(&actor) && !combatants.contains(&actor) {
             continue;
         }
-        if let Some(monster) = monster
+        if let Some(worth) = worth
             && side.0 == Stance::Hostile
         {
             spoils.kills += 1;
             if !summoned {
-                spoils.experience += content.species[monster.species].experience;
+                spoils.experience += worth.0;
             }
         }
         news.write(CombatNews::Killed { actor });
