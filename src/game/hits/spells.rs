@@ -7,8 +7,8 @@
 use bevy::prelude::*;
 
 use super::defences::CasterLevels;
-use super::effects::{InFlight, Reach};
-use super::prototypes::{Definitions, Uses};
+use super::definitions::{Definitions, Uses};
+use super::effects::InFlight;
 use super::reach::{Recipients, within};
 use super::{Deed, DeedHits, Effect, HitOf, Strikes};
 use crate::content::spells::{SpellId, Targeting};
@@ -86,7 +86,7 @@ pub fn strength_of_owners(
 /// Spawn an act's reaches on `victims`, each after its missile's flight.
 pub fn reach(commands: &mut Commands, act: Entity, victims: &[(Entity, Option<f32>)]) {
     for &(victim, flight) in victims {
-        let mut reach = commands.spawn((Reach::default(), HitOf(act), Strikes(victim)));
+        let mut reach = commands.spawn((HitOf(act), Strikes(victim)));
         if let Some(seconds) = flight {
             reach.insert(InFlight(Timer::from_seconds(seconds, TimerMode::Once)));
         }
@@ -99,7 +99,8 @@ pub fn reach(commands: &mut Commands, act: Entity, victims: &[(Entity, Option<f3
 /// monster's to itself, 70% of the health back or half of it as spell
 /// points.
 pub fn drain_back(
-    mut deeds: Query<(&mut Deed, &Drains), Without<DeedHits>>,
+    mut commands: Commands,
+    mut deeds: Query<(Entity, &mut Deed, &Drains), Without<DeedHits>>,
     casters: Query<Has<PartyMember>>,
     roster: Single<&PartyRoster>,
     mut bodies: Query<&mut Vitals>,
@@ -107,7 +108,8 @@ pub fn drain_back(
     mut budgets: Query<&mut SpellBudget>,
     content: If<Res<Catalogs>>,
 ) {
-    for (mut deed, drains) in &mut deeds {
+    for (act, mut deed, drains) in &mut deeds {
+        commands.entity(act).remove::<Drains>();
         let Ok(member) = casters.get(drains.caster) else { continue };
         let candidates: Vec<Entity> =
             if member { roster.iter().collect() } else { vec![drains.caster] };
@@ -257,7 +259,7 @@ pub fn leader(
 #[allow(clippy::type_complexity)]
 pub fn reflect_spells(
     mut commands: Commands,
-    mut acts: Query<(&Spell, &Strength, &mut Deed), Without<DeedHits>>,
+    mut acts: Query<(Entity, &Spell, &Strength, &mut Deed), Without<DeedHits>>,
     mut bodies: Query<(Entity, &mut Vitals, &Side, &Footing), Without<Untargetable>>,
     fight: Option<Single<&crate::game::combat::Combatants>>,
     memberships: Query<&GroupMember>,
@@ -270,7 +272,10 @@ pub fn reflect_spells(
     let spells = &content.spells;
     let combatants = fight.as_deref().map_or(&[][..], |fight| fight.entities());
     let party_at = roster.iter().find_map(|member| bodies.get(member).ok().map(|(.., at)| *at));
-    for (cast, &strength, mut deed) in &mut acts {
+    for (act, cast, &strength, mut deed) in &mut acts {
+        // Bursts have already read the spell. Completion consumes it even
+        // when there is no eligible reflection or the deed is retained.
+        commands.entity(act).remove::<Spell>();
         let spell = &spells[cast.id];
         let Some(uses) = definitions.spell(cast.id) else { continue };
         if cast.backfired || cast.reflected || !spell.aimed_at_enemies() {

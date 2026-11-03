@@ -24,8 +24,8 @@ use crate::content::spells::{
 use crate::game::characters::{Character, Condition, Lasting, Profession, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
-use crate::game::hits::effects::{Heal, InFlight, Refresh};
-use crate::game::hits::prototypes::{Definitions, Effects, Leeches, Uses};
+use crate::game::hits::definitions::{Definitions, EffectKind, Uses};
+use crate::game::hits::effects::InFlight;
 use crate::game::hits::reach::{Recipients, within};
 use crate::game::hits::spells::{group_of, leader, reach};
 use crate::game::hits::{Act, By, Deed, DeedHits, Effect, Strikes};
@@ -483,7 +483,15 @@ pub(crate) fn stages(app: &mut App) {
             (check_able, check_silence, check_learned, check_affordable, check_item, check_moment)
                 .chain(),
             (aim_caster, aim_ally, aim_party, aim_enemy, aim_group, aim_all, aim_cone).chain(),
-            (play_instruments, refuse, choose_power, aim_blast, provoke, hostility::take_offence)
+            (
+                play_instruments,
+                refuse,
+                choose_power,
+                aim_blast,
+                provoke,
+                hostility::take_offence,
+                hostility::judge_sides,
+            )
                 .chain(),
             (judge_attempts, roll_casts, pay_points, pay_items, tire_casters).chain(),
             (fizzle, backfire, launch, release).chain(),
@@ -749,9 +757,7 @@ fn foes_reached(
 ) -> Vec<Entity> {
     let Ok((_, from, side, loyalty)) = bodies.get(caster) else { return vec![] };
     let mine = (side.0, *loyalty);
-    roster
-        .iter()
-        .chain(combatants.iter().copied())
+    crate::game::combat::participants(roster, combatants)
         .filter(|&other| {
             other != caster
                 && bodies.get(other).is_ok_and(|(vitals, to, their_side, their_loyalty)| {
@@ -913,9 +919,7 @@ fn aim_cone(
             continue;
         };
         let toward = footings.get(target).map_or(from.eye, |at| at.feet) - from.eye;
-        let victims: Vec<_> = roster
-            .iter()
-            .chain(combatants.iter().copied())
+        let victims: Vec<_> = crate::game::combat::participants(&roster, combatants)
             .filter(|&other| other != caster)
             .filter(|&other| {
                 bodies.get(other).is_ok_and(|(vitals, at, ..)| {
@@ -998,8 +1002,6 @@ fn choose_power(
     inventory: Single<&PartyInventory>,
     content: If<Res<Catalogs>>,
     definitions: Res<Definitions>,
-    effects: Query<&Effects>,
-    restoring: Query<(), Or<(With<Heal>, With<Refresh>)>>,
 ) {
     for (cast, &Cast { spell, .. }, by, chosen) in &casts {
         let spell = &content.spells[spell];
@@ -1013,10 +1015,13 @@ fn choose_power(
                 if power != AUTO_POWER {
                     power.min(affordable)
                 } else {
-                    let restores = definitions
-                        .spell(spell.id)
-                        .and_then(|definition| effects.get(definition).ok())
-                        .is_some_and(|effects| effects.iter().any(|p| restoring.contains(p)));
+                    let restores = definitions.spell(spell.id).is_some_and(|id| {
+                        definitions
+                            .get(id)
+                            .effects
+                            .iter()
+                            .any(|e| matches!(e.kind, EffectKind::Heal | EffectKind::Refresh))
+                    });
                     let victim = chosen.0.aim.body().and_then(|body| victims.get(body).ok());
                     auto_power(character, spell, victim, affordable, restores)
                 }
@@ -1314,9 +1319,7 @@ fn backfire(
                 (&roster, combatants),
                 &obstacles,
             ),
-            _ => roster
-                .iter()
-                .chain(combatants.iter().copied())
+            _ => crate::game::combat::participants(&roster, combatants)
                 .filter(|&other| {
                     bodies.get(other).is_ok_and(|(_, vitals, their_side, at)| {
                         !vitals.is_dead()
@@ -1354,7 +1357,7 @@ fn backfire(
 fn launch(
     mut commands: Commands,
     casts: Query<(&Cast, &By, &Rolled, &Target, &DeedHits)>,
-    reaches: Query<(Entity, &Strikes), With<crate::game::hits::effects::Reach>>,
+    reaches: Query<(Entity, &Strikes), With<crate::game::hits::HitOf>>,
     footings: Query<&Footing>,
     content: If<Res<Catalogs>>,
 ) {
@@ -1389,11 +1392,10 @@ fn release(
         Option<&crate::game::hits::spells::Spell>,
         (Option<&DeedHits>, &mut Deed, Option<&mut Practice>),
     )>,
-    reaches: Query<&Strikes, With<crate::game::hits::effects::Reach>>,
+    reaches: Query<&Strikes, With<crate::game::hits::HitOf>>,
     footings: Query<&Footing>,
     content: If<Res<Catalogs>>,
     definitions: Res<Definitions>,
-    leeches: Query<&Leeches>,
     mut round: Option<Single<&mut crate::game::combat::Round>>,
     mut news: MessageWriter<MagicNews>,
 ) {
@@ -1430,10 +1432,10 @@ fn release(
         }
         if let Some(uses) = uses {
             commands.entity(cast).insert(Uses(uses));
-            if let Ok(leech) = leeches.get(uses) {
+            if let Some(lifesteal) = definitions.get(uses).leeches {
                 commands.entity(cast).insert(crate::game::hits::spells::Drains {
                     caster: owner,
-                    lifesteal: leech.lifesteal,
+                    lifesteal,
                     drained: 0,
                 });
             }

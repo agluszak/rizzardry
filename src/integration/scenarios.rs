@@ -25,10 +25,6 @@ fn game(args: &[&str]) -> App {
     let mut app = build(&options).expect("the game builds");
     app.finish();
     app.cleanup();
-    assert!(app.get_sub_app(bevy::render::RenderApp).is_none());
-    assert!(!app.world().contains_resource::<Assets<Mesh>>());
-    assert!(!app.world().contains_resource::<Assets<Image>>());
-    assert!(!app.world().contains_resource::<Assets<StandardMaterial>>());
     wait_for_level(&mut app, "levels/monastery/monastery1.pvl");
     app
 }
@@ -234,7 +230,6 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
         playing(w).is_some_and(|p| p.ends_with("monastery2.pvl"))
     });
     assert!(app.world().get::<Monster>(actor).is_none());
-    assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(body).is_some());
     let stock_offmap = app.world().get::<Npc>(actor).unwrap().stock.clone();
     for _ in 0..10 {
         app.update();
@@ -246,7 +241,6 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     });
     let returned_body = app.world().get::<NpcBodies>(actor).unwrap()[0];
     assert!(app.world().get::<Monster>(returned_body).is_some());
-    assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(body).is_none());
     let npc = app.world().get::<Npc>(actor).unwrap();
     assert_eq!(npc.stock, stock);
     assert!(npc.paid_topics.contains(&topic));

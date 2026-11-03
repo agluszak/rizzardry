@@ -481,7 +481,7 @@ fn ready_trap(world: &mut World, on: Entity) -> Result<Disarming, Unable> {
     }
     if let Err(error) = crate::game::magic::traps::validate(
         trap.trap,
-        world.resource::<crate::game::hits::prototypes::Definitions>(),
+        world.resource::<crate::game::hits::definitions::Definitions>(),
     ) {
         if error == Unable::UnsupportedTrap {
             world.write_message(LockNews::UnsupportedTrap);

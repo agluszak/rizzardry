@@ -109,9 +109,9 @@ pub fn within_radius(species: &Species, nearest: f32) -> bool {
 ///
 /// Derived, so that every rule reads one fact instead of the group, the
 /// factions and the clock. [`judge_sides`] produces it from those sources
-/// at the start of each frame and fixed step, for every body; rules may
-/// trust it until the next. A body spawned in between reads it as neutral
-/// until then.
+/// before action selection, after provocation, and between immediate effects.
+/// A living body's next consequence sees changed stance and conditions.
+/// Death freezes its last live side for kill credit; resurrection refreshes it.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Side(pub Stance);
 
@@ -124,12 +124,16 @@ pub fn judge_sides(
         Option<&Monster>,
         Option<&GroupMember>,
         Has<crate::game::combat::Combatant>,
+        Has<crate::game::characters::Dead>,
     )>,
     groups: Query<&MonsterGroup>,
     content: If<Res<crate::game::data::Catalogs>>,
     (factions, clock): (Res<Factions>, Res<GameClock>),
 ) {
-    for (mut side, mut loyalty, vitals, monster, member, fighting) in &mut bodies {
+    for (mut side, mut loyalty, vitals, monster, member, fighting, dead) in &mut bodies {
+        if dead {
+            continue;
+        }
         let turncoat = vitals.conditions.has(Condition::Turncoat);
         let (own, loyal) = match monster {
             Some(monster) => {

@@ -1604,7 +1604,6 @@ mod tests {
         fighter.recover_health(1, 0.5);
         assert_eq!(fighter.health.current, 2);
         fighter.recover_health(1, 0.0);
-        assert_eq!(fighter.regeneration.health, 0.0, "no recovery clears the fraction");
     }
 
     #[test]

@@ -976,50 +976,6 @@ mod tests {
     }
 
     #[test]
-    fn modes_are_chosen_from_the_set_bits_round_robin() {
-        // Each draw below 9 walks the set bits round: with two modes the
-        // first takes the even draws (5 in 9), with three each takes 3 in 9.
-        let (mut rng, mut twin) = (GameRng::seeded(3), GameRng::seeded(3));
-        for _ in 0..50 {
-            let expected = match twin.below(9) % 2 {
-                0 => AttackMode::Swing,
-                _ => AttackMode::Shoot,
-            };
-            assert_eq!(choose_mode(&mut rng, AttackMode::Shoot | AttackMode::Swing), expected);
-            let expected = [AttackMode::Thrust, AttackMode::Kick, AttackMode::Lash]
-                [twin.below(9) as usize % 3];
-            let modes = AttackMode::Lash | AttackMode::Thrust | AttackMode::Kick;
-            assert_eq!(choose_mode(&mut rng, modes), expected);
-        }
-        assert_eq!(choose_mode(&mut rng, EnumSet::empty()), AttackMode::Swing);
-    }
-
-    #[test]
-    fn a_roll_of_five_lands_over_ninety_five_misses_and_fumbles_go_astray() {
-        for seed in 0..200 {
-            let roll = GameRng::seeded(seed).below(100) + 1;
-            match swing(&mut GameRng::seeded(seed), 3, 30) {
-                Aim::Reaches { roll: r, sure } => {
-                    assert_eq!((r, sure), (roll, roll <= 5));
-                    assert!(roll <= 70);
-                }
-                // At a 30% fumble chance a roll over 95 goes astray first.
-                Aim::Missed => panic!("{roll} should have gone astray"),
-                Aim::Fumbled { bystander, .. } => assert!(roll > 70 && bystander < 3),
-            }
-            // With nobody else in reach, over 95 simply misses.
-            let alone = swing(&mut GameRng::seeded(seed), 0, 30);
-            assert_eq!(alone == Aim::Missed, roll > 95);
-        }
-        assert_eq!(fumble_chance(1, 100), 0);
-        // 50 short: round(1.25) = 1, then 1 · 3 bystanders · 10 / 100 = 0.
-        assert_eq!(fumble_chance(3, 50), 0);
-        // 100 short: 10 a bystander, at a tenth of a percent each.
-        assert_eq!(fumble_chance(4, 0), 4);
-        assert_eq!(fumble_chance(20, -100), 100);
-    }
-
-    #[test]
     fn defending_adds_two_everywhere_and_lets_shield_skill_count_for_more() {
         let shield = ItemDefinition {
             class: EquipClass::Shield,

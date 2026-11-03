@@ -14,7 +14,7 @@ use crate::content::spells::{
     MAX_POWER, SpellCatalog, SpellDefinition, SpellId, Spellbook, Targeting,
 };
 use crate::game::characters::{Condition, Vitals};
-use crate::game::hits::prototypes::Definitions;
+use crate::game::hits::definitions::Definitions;
 use crate::game::magic::casting::Aim;
 #[cfg(test)]
 use crate::game::party::roster::PartyMember;
@@ -266,7 +266,7 @@ mod tests {
             spell(SpellId::ENERGY_BLAST.0, Targeting::Enemy);
         let mut world = World::new();
         world.insert_resource(crate::game::data::Catalogs { spells: catalog, ..default() });
-        crate::game::hits::prototypes::define(&mut world);
+        crate::game::hits::definitions::define(&mut world);
         let caster = body(&mut world, Stance::Hostile, 0.0, false);
         let hurt = body(&mut world, Stance::Hostile, 0.0, true);
         let party = world.spawn(crate::game::party::roster::Party).id();

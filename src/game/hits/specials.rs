@@ -1,5 +1,5 @@
 //! Special attacks, a breath or a gaze (retail `ResolveMonsterGroupAttack`):
-//! retail's table of what each does, which [`super::prototypes`] decodes
+//! retail's table of what each does, which [`super::definitions`] decodes
 //! into effects.
 
 use crate::content::characters::Realm;

@@ -23,7 +23,6 @@ use crate::game::data::Catalogs;
 use crate::game::inventory::{Burden, Carried, StackId, WeaponSlot};
 use crate::game::magic::enchantments::PartyEffects;
 use crate::game::party::formation::Formation;
-use crate::game::party::roster::PartyMember;
 use crate::game::world::footing::Footing;
 use crate::game::world::population::Monster;
 
@@ -483,7 +482,7 @@ pub(super) fn judge_fighters(
         Entity,
         Ref<Vitals>,
         AnyOf<((Ref<Character>, Ref<Carried>, Ref<Burden>), Ref<Monster>)>,
-        (Option<&Ordered>, Has<CombatMove>, Has<PartyMember>, Has<Combatant>),
+        (Option<&Ordered>, Has<CombatMove>, Has<Combatant>),
         Option<&ArmourClass>,
     )>,
     party: Single<Ref<PartyEffects>>,
@@ -491,10 +490,8 @@ pub(super) fn judge_fighters(
     content: If<Res<Catalogs>>,
 ) {
     let running = round.pace == Some(PartyPace::Run);
-    for (entity, vitals, (sheet, monster), (ordered, advancing, member, combatant), previous) in
-        &bodies
-    {
-        if !(member || combatant) {
+    for (entity, vitals, (sheet, monster), (ordered, advancing, combatant), previous) in &bodies {
+        if !combatant {
             continue;
         }
         let changed = previous.is_none() || vitals.is_changed() || content.is_changed();
@@ -554,20 +551,9 @@ fn forget(commands: &mut EntityCommands) {
     )>();
 }
 
-/// A monster leaving the fight is no longer judged.
+/// An actor leaving the fight is no longer judged.
 pub(super) fn leave(left: On<Remove<Combatant>>, mut commands: Commands) {
     forget(&mut commands.entity(left.entity));
-}
-
-/// The fight is over: nobody is judged.
-pub(super) fn disband(
-    _: On<Remove<Battle>>,
-    mut commands: Commands,
-    judged: Query<Entity, With<ArmourClass>>,
-) {
-    for body in &judged {
-        forget(&mut commands.entity(body));
-    }
 }
 
 #[cfg(test)]

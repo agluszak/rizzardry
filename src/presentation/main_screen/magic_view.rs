@@ -584,7 +584,7 @@ fn offers<'a>(
     points: &SpellPoints,
     maximum: &enum_map::EnumMap<Realm, u32>,
     spells: &'a SpellCatalog,
-    (items, definitions): (&ItemCatalog, &crate::game::hits::prototypes::Definitions),
+    (items, definitions): (&ItemCatalog, &crate::game::hits::definitions::Definitions),
     context: UseContext,
     pool: &PartyInventory,
     silenced: bool,
@@ -740,7 +740,7 @@ pub(super) fn draw_magic_view(
         Single<&PartyInventory>,
     ),
     content: If<Res<Catalogs>>,
-    definitions: Res<crate::game::hits::prototypes::Definitions>,
+    definitions: Res<crate::game::hits::definitions::Definitions>,
     conversations: Query<&crate::game::npcs::conversation::Conversation>,
     (art, assets, strings): (
         Res<MagicViewArt>,
@@ -975,7 +975,7 @@ pub(super) fn commit_magic_choice(
     carried: Query<&Carried>,
     pool: Single<&PartyInventory>,
     content: If<Res<Catalogs>>,
-    _definitions: Res<crate::game::hits::prototypes::Definitions>,
+    _definitions: Res<crate::game::hits::definitions::Definitions>,
     (conversations, speakers, monsters, party): (
         Query<&crate::game::npcs::conversation::Conversation>,
         Query<&crate::game::npcs::NpcBody>,
@@ -1084,7 +1084,7 @@ fn choose_row(
         Single<&PartyInventory>,
     ),
     content: If<Res<Catalogs>>,
-    definitions: Res<crate::game::hits::prototypes::Definitions>,
+    definitions: Res<crate::game::hits::definitions::Definitions>,
     conversations: Query<&crate::game::npcs::conversation::Conversation>,
 ) {
     let (Ok(row), Ok((mut view, casts_at, conversation_target))) =

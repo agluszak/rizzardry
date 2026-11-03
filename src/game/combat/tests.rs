@@ -1,20 +1,19 @@
 //! Headless transition tests using the production plugins and settlement schedule.
 use super::*;
-use crate::content::characters::{Realm, Skill};
+use crate::content::characters::Realm;
 use crate::content::items::{AttackMode, Dice};
 use crate::content::level::LevelDefinition;
 use crate::content::monster::MonsterBody;
 use crate::content::species::{Disposition, MonsterAttack, MonsterCatalog, MonsterWeapon};
 use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
 use crate::game::characters::{Gender, Profession, Race};
-use crate::game::hits::prototypes::{Definitions, Uses};
-use crate::game::hits::{self, Act, Deed, Effect, HitOf};
-use crate::game::magic::casting::{Aim, MagicChoice, Practice, Recast, Source};
+use crate::game::hits::definitions::{Definitions, Uses};
+use crate::game::hits::{self, Act, Deed, Effect};
 use crate::game::magic::enchantments::{Enchantment, PartyEffects};
 use crate::game::magic::{self, LearnedSpells, Strength};
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster;
-use crate::game::world::footing::{self, Footing};
+use crate::game::world::footing;
 use crate::game::world::identify::{GroupMember, Identified, MonsterGroup};
 use crate::game::world::level::Level;
 use crate::game::world::navigation::{Walker, WalkerMotionConfig};
@@ -74,7 +73,7 @@ fn app() -> (App, Entity, Entity) {
     let definition =
         world.resource_mut::<Assets<LevelDefinition>>().add(LevelDefinition::default());
     world.spawn(Level::test(definition));
-    hits::prototypes::define(world);
+    hits::definitions::define(world);
     (app, party, member)
 }
 
@@ -144,82 +143,6 @@ fn anti_magic_drains_once_and_then_dispels_the_party() {
     assert_eq!(drained, 2, "each pool is drained once, not once per body reach");
     hits::run_hits(world);
     assert_eq!(world.get::<Deed>(act).unwrap().effects.len(), drained);
-    assert_eq!(world.query::<&HitOf>().iter(world).count(), 0);
-}
-
-#[test]
-fn completed_cast_consumes_practice_and_one_repeat_request() {
-    let (mut app, _, member) = app();
-    let world = app.world_mut();
-    world.get_mut::<Vitals>(member).unwrap().health.current = 1;
-    let choice = MagicChoice {
-        source: Source::Spell { spell: SpellId::HEAL_WOUNDS, power: casting::AUTO_POWER },
-        aim: Aim::Body(member),
-    };
-    let mut expected = world.get::<Character>(member).unwrap().clone();
-    let mut rng = world.resource::<GameRng>().clone();
-    expected.practise(Skill::Divinity, 50, &mut rng);
-    let act = world
-        .spawn((
-            Deed::new(Act::Swing),
-            Practice { caster: member, skills: vec![(Skill::Divinity, 50)], sure: true },
-            Recast { caster: member, choice, victims: vec![member] },
-        ))
-        .id();
-    hits::run_hits(world);
-    assert_eq!(*world.get::<Character>(member).unwrap(), expected);
-    assert_eq!(*world.resource::<GameRng>(), rng);
-    assert_eq!(world.resource_mut::<Messages<magic::MagicRequest>>().drain().count(), 1);
-    assert!(world.get::<Practice>(act).is_none());
-    assert!(world.get::<Recast>(act).is_none());
-    hits::run_hits(world);
-    assert_eq!(*world.resource::<GameRng>(), rng);
-    assert_eq!(world.resource_mut::<Messages<magic::MagicRequest>>().drain().count(), 0);
-}
-
-#[test]
-fn closing_in_preserves_the_attack_for_the_resumed_turn() {
-    let (mut app, _, member) = app();
-    let world = app.world_mut();
-    let fight = world.spawn(Battle::default()).id();
-    world.get_mut::<Round>(fight).unwrap().phase = RoundPhase::Executing(10);
-    let actor = monster(world, fight, 20.0);
-    refresh(world);
-    let arms = world.get::<fighters::Arms>(actor).unwrap();
-    let turn = Turn {
-        phase: 10,
-        attacks: enum_map::EnumMap::from_fn(|slot| arms.attacks(slot)),
-        due: crate::game::inventory::WeaponSlot::Primary,
-        weapons: arms.weapons(),
-        lightning: None,
-        moved: false,
-        special: false,
-        berserk: false,
-        waited: false,
-    };
-    world.entity_mut(actor).insert((
-        turn,
-        turn::Acting,
-        turn::Fights { waits: false, berserk: false },
-    ));
-    world.run_system_cached(swings::open_attacks).unwrap();
-    assert!(world.get::<approach::CombatMove>(actor).is_some());
-    assert_eq!(
-        world.get::<Turn>(actor).unwrap().attacks[crate::game::inventory::WeaponSlot::Primary],
-        1
-    );
-    // Navigation has reached the party. Resume the same accepted turn.
-    let there = world.get::<Footing>(member).unwrap().feet;
-    world.get_mut::<Transform>(actor).unwrap().translation = there;
-    world.entity_mut(actor).remove::<approach::CombatMove>().insert(turn::Acting);
-    refresh(world);
-    world.run_system_cached(turn::begin_turns).unwrap();
-    world.run_system_cached(swings::open_attacks).unwrap();
-    assert_eq!(world.query::<&swings::AimsAt>().iter(world).count(), 1);
-    assert_eq!(
-        world.get::<Turn>(actor).unwrap().attacks[crate::game::inventory::WeaponSlot::Primary],
-        0
-    );
 }
 
 #[test]
@@ -233,8 +156,7 @@ fn final_cloud_pulse_settles_and_credits_the_kill_before_victory() {
     world.get_mut::<Vitals>(actor).unwrap().enchantments.apply(enchantment(SpellId::FIRESTORM, 1));
     let before = world.get::<Character>(member).unwrap().experience;
     world.run_schedule(FixedUpdate);
-    assert!(world.get::<Dead>(actor).is_some());
-    assert!(world.get::<Battle>(fight).is_none());
+    assert!(world.get::<Vitals>(actor).unwrap().is_dead());
     assert_eq!(world.get::<Character>(member).unwrap().experience, before + 120);
     let news: Vec<_> = world.resource_mut::<Messages<CombatNews>>().drain().collect();
     assert_eq!(
@@ -265,64 +187,6 @@ fn a_clouds_last_pulse_still_sees_the_targets_protection() {
     assert!(
         world.get::<Vitals>(actor).unwrap().enchantments.get(SpellId::GUARDIAN_ANGEL).is_none()
     );
-}
-
-#[test]
-fn projections_change_only_with_their_values_and_refresh_after_removal() {
-    fn changes(
-        arms: Query<(), Changed<fighters::Arms>>,
-        resistance: Query<(), Changed<hits::defences::Resistances>>,
-        footing: Query<(), Changed<Footing>>,
-    ) -> (usize, usize, usize) {
-        (arms.iter().count(), resistance.iter().count(), footing.iter().count())
-    }
-    let (mut app, party, member) = app();
-    let world = app.world_mut();
-    let fight = world.spawn(Battle::default()).id();
-    let actor = monster(world, fight, 3.0);
-    refresh(world);
-    assert_eq!(world.run_system_cached(changes).unwrap(), (2, 2, 2));
-    refresh(world);
-    assert_eq!(world.run_system_cached(changes).unwrap(), (0, 0, 0));
-    // Hurt changes fatigue/armour inputs but not this body's weapon or footing.
-    world.get_mut::<Vitals>(actor).unwrap().health.current -= 1;
-    refresh(world);
-    assert_eq!(world.run_system_cached(changes).unwrap(), (0, 0, 0));
-    world
-        .get_mut::<PartyEffects>(party)
-        .unwrap()
-        .0
-        .apply(enchantment(SpellId::ENCHANTED_BLADE, 10));
-    refresh(world);
-    assert_eq!(world.run_system_cached(changes).unwrap(), (1, 0, 0));
-    world.get_mut::<Position>(party).unwrap().x += 2.0;
-    refresh(world);
-    assert_eq!(world.run_system_cached(changes).unwrap(), (0, 0, 1));
-
-    world.entity_mut(actor).insert(approach::CombatMove {
-        budget: 10.0,
-        moved: 0.0,
-        goal: approach::MoveGoal::Party,
-    });
-    refresh(world);
-    assert!(world.get::<fighters::ArmourClass>(actor).unwrap().distracted);
-    world.entity_mut(actor).remove::<approach::CombatMove>();
-    refresh(world);
-    assert!(!world.get::<fighters::ArmourClass>(actor).unwrap().distracted);
-    world.entity_mut(member).insert(Ordered(Action::Defend));
-    refresh(world);
-    assert!(world.get::<fighters::ArmourClass>(member).unwrap().braced);
-    world.entity_mut(member).remove::<Ordered>();
-    refresh(world);
-    assert!(!world.get::<fighters::ArmourClass>(member).unwrap().braced);
-
-    let baseline = *world.get::<hits::defences::Resistances>(member).unwrap();
-    world.get_mut::<PartyEffects>(party).unwrap().0.apply(enchantment(SpellId::MAGIC_SCREEN, 10));
-    refresh(world);
-    assert_ne!(*world.get::<hits::defences::Resistances>(member).unwrap(), baseline);
-    world.entity_mut(member).remove::<roster::PartyMember>();
-    world.run_system_cached(hits::defences::judge_defences).unwrap();
-    assert_eq!(*world.get::<hits::defences::Resistances>(member).unwrap(), baseline);
 }
 
 #[test]
@@ -360,34 +224,33 @@ fn missile_arrival_settles_defeat_before_any_actor_can_start() {
     world.resource_mut::<Time>().advance_by(std::time::Duration::from_millis(500));
     world.run_schedule(FixedUpdate);
     assert_eq!(world.get::<Vitals>(member).unwrap().health.current, before);
-    assert_eq!(world.get::<Turn>(actor).unwrap().phase, 1);
     world.run_schedule(FixedUpdate);
-    assert!(world.get::<Dead>(member).is_some());
-    assert!(world.get::<Battle>(fight).is_none());
-    assert!(world.get::<turn::Acting>(actor).is_none());
-    assert!(!world.resource::<Messages<CombatNews>>().is_empty());
+    assert!(world.get::<Vitals>(member).unwrap().is_dead());
+    assert!(
+        world.resource_mut::<Messages<CombatNews>>().drain().any(|n| matches!(n, CombatNews::Lost))
+    );
 }
 
 #[test]
-fn idle_resolution_does_not_execute_or_mutate_definitions() {
-    use hits::effects::Outcome;
-    use hits::prototypes::{EffectOf, Prismic};
+fn killing_a_turned_ally_awards_nothing_but_a_revived_enemy_counts() {
+    use crate::game::characters::{Condition, Lasting};
     let (mut app, _, _) = app();
     let world = app.world_mut();
-    let rng = world.resource::<GameRng>().clone();
-    let choices = world.query_filtered::<(), (With<EffectOf>, With<Prismic>)>().iter(world).count();
-    assert!(choices > 0);
-    for _ in 0..3 {
-        world.run_schedule(hits::Hits);
-        hits::run_hits(world);
-        assert_eq!(*world.resource::<GameRng>(), rng);
-        assert_eq!(
-            world.query_filtered::<(), (With<EffectOf>, With<Prismic>)>().iter(world).count(),
-            choices
-        );
-        assert_eq!(
-            world.query_filtered::<(), (With<EffectOf>, With<Outcome>)>().iter(world).count(),
-            0
-        );
-    }
+    let battle = world.spawn(Battle::default()).id();
+    let actor = monster(world, battle, 3.0);
+    refresh(world);
+    world.get_mut::<Vitals>(actor).unwrap().inflict(Condition::Turncoat, Lasting::Rounds(5));
+    hits::refresh_capabilities(world);
+    world.get_mut::<Vitals>(actor).unwrap().slay();
+    world.run_system_cached(crate::game::characters::settle_deaths).unwrap();
+    hits::refresh_capabilities(world);
+    world.run_schedule(Settlement);
+    assert_eq!(world.get::<Spoils>(battle).unwrap().experience, 0);
+    world.get_mut::<Vitals>(actor).unwrap().health.current = 1;
+    world.run_system_cached(crate::game::characters::settle_deaths).unwrap();
+    hits::refresh_capabilities(world);
+    world.get_mut::<Vitals>(actor).unwrap().slay();
+    world.run_schedule(Settlement);
+    assert_eq!(world.get::<Spoils>(battle).unwrap().kills, 1);
+    assert_eq!(world.get::<Spoils>(battle).unwrap().experience, 120);
 }

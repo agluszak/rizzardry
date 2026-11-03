@@ -65,7 +65,7 @@ impl Plugin for CombatPlugin {
             )
                 .chain(),
         );
-        app.add_observer(fighters::leave).add_observer(fighters::disband);
+        app.add_observer(fighters::leave).add_observer(join_party);
         app.add_observer(turn::clear_fight)
             .add_message::<CombatNews>()
             .add_message::<hostility::Provocation>()
@@ -225,13 +225,13 @@ const ROUND_SECONDS: f32 = 1.0;
 /// Rounds in which nobody could attack before the fight peters out.
 const PASSIVE_ROUNDS: u32 = 2;
 
-/// A monster taking part in a fight. Ending the fight ends the
-/// participation, never the monster.
+/// An actor participating in the current fight. Removing this relationship
+/// removes its fight-specific state, never the actor or its party membership.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 #[relationship(relationship_target = Combatants)]
 pub struct Combatant(pub Entity);
 
-/// The monsters in a fight, in the order they joined (by location id),
+/// Participants in action order: party seats first, then joining monsters,
 /// maintained by Bevy from [`Combatant`].
 #[derive(Component, Debug, Default)]
 #[relationship_target(relationship = Combatant)]
@@ -499,13 +499,12 @@ pub fn credit_deaths(
         Added<Dead>,
     >,
     fight: Option<Single<(&mut Spoils, Option<&Combatants>), With<Battle>>>,
-    roster: Single<&PartyRoster>,
     mut news: MessageWriter<CombatNews>,
 ) {
     let Some((mut spoils, combatants)) = fight.map(Single::into_inner) else { return };
     let combatants = combatants.map_or(&[][..], Combatants::entities);
     for (actor, side, worth, summoned) in &deaths {
-        if !roster.contains(&actor) && !combatants.contains(&actor) {
+        if !combatants.contains(&actor) {
             continue;
         }
         if let Some(worth) = worth
@@ -681,10 +680,10 @@ fn call_actor(
         }
         // Nobody in the party acts while its move is still to come.
         let party_waits = matches!(*party_move, PartyMove::Pending { .. });
-        let due = roster
+        let due = combatants
             .iter()
-            .filter(|_| !party_waits)
-            .chain(combatants.iter().copied())
+            .copied()
+            .filter(|actor| !party_waits || !roster.contains(actor))
             .find(|&actor| turns.get(actor).is_ok_and(|turn| turn.phase == step));
         if let Some(actor) = due {
             commands.entity(actor).insert(turn::Acting);
@@ -692,4 +691,27 @@ fn call_actor(
         }
         round.phase = RoundPhase::Executing(step + 1);
     }
+}
+
+/// The roster controls formation and initial ordering; participation controls
+/// execution and cleanup for both kinds of actor.
+fn join_party(
+    joined: On<Add<Battle>>,
+    mut commands: Commands,
+    roster: Option<Single<&PartyRoster>>,
+) {
+    if let Some(roster) = roster {
+        for actor in roster.iter() {
+            commands.entity(actor).insert(Combatant(joined.entity));
+        }
+    }
+}
+
+/// Targets in combat use participation order. Outside combat the party still
+/// exists, and spells may target it without creating a battle.
+pub(crate) fn participants<'a>(
+    roster: &'a PartyRoster,
+    combatants: &'a [Entity],
+) -> impl Iterator<Item = Entity> + 'a {
+    combatants.iter().copied().chain(roster.iter().filter(|_| combatants.is_empty()))
 }
