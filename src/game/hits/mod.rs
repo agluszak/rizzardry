@@ -114,6 +114,17 @@ pub struct HitOf(pub Entity);
 #[relationship_target(relationship = HitOf, linked_spawn)]
 pub struct DeedHits(Vec<Entity>);
 
+/// The deed is part of a larger one, which takes what it did into its own
+/// report: a blow of an attack.
+#[derive(Component, Clone, Copy, Debug)]
+#[relationship(relationship_target = Parts)]
+pub struct PartOf(pub Entity);
+
+/// The deeds still part of a larger one, gone with it.
+#[derive(Component, Debug)]
+#[relationship_target(relationship = PartOf, linked_spawn)]
+pub struct Parts(Vec<Entity>);
+
 /// What one act did, gathered from its hits for its news.
 #[derive(Component, Debug)]
 pub struct Deed {
@@ -245,10 +256,10 @@ impl Plugin for HitsPlugin {
 }
 
 /// Turn each deed whose hits have all landed into news, crediting a
-/// fight's kills, and let it go.
+/// fight's kills, and let it go; one part of a larger deed is left to it.
 pub fn report_deeds(
     mut commands: Commands,
-    deeds: Query<(Entity, &Deed), Without<DeedHits>>,
+    deeds: Query<(Entity, &Deed), (Without<DeedHits>, Without<PartOf>)>,
     members: Query<(), With<crate::game::characters::Character>>,
     mut battle: Option<Single<&mut crate::game::combat::Battle>>,
     mut magic_news: MessageWriter<MagicNews>,

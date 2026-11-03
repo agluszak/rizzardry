@@ -237,6 +237,29 @@ pub enum EquipSlot {
     Feet,
 }
 
+/// The two slots of the weapon set in use, which attack.
+#[derive(Debug, Hash, Enum, EnumSetType)]
+pub enum WeaponSlot {
+    Primary,
+    Secondary,
+}
+
+impl WeaponSlot {
+    pub fn equip(self) -> EquipSlot {
+        match self {
+            Self::Primary => EquipSlot::Primary,
+            Self::Secondary => EquipSlot::Secondary,
+        }
+    }
+
+    pub fn other(self) -> Self {
+        match self {
+            Self::Primary => Self::Secondary,
+            Self::Secondary => Self::Primary,
+        }
+    }
+}
+
 impl EquipSlot {
     pub fn is_active(self) -> bool {
         !matches!(self, Self::AlternatePrimary | Self::AlternateSecondary)

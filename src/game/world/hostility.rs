@@ -119,6 +119,7 @@ pub struct Side(pub Stance);
 pub fn judge_sides(
     mut bodies: Query<(
         &mut Side,
+        &mut Loyalty,
         &crate::game::characters::Vitals,
         Option<&Monster>,
         Option<&GroupMember>,
@@ -128,15 +129,25 @@ pub fn judge_sides(
     content: If<Res<crate::game::data::Catalogs>>,
     (factions, clock): (Res<Factions>, Res<GameClock>),
 ) {
-    for (mut side, vitals, monster, member, fighting) in &mut bodies {
-        let own = match monster {
+    for (mut side, mut loyalty, vitals, monster, member, fighting) in &mut bodies {
+        let turncoat = vitals.conditions.has(Condition::Turncoat);
+        let (own, loyal) = match monster {
             Some(monster) => {
+                let kind = &content.species[monster.species];
                 let set = member.and_then(|member| groups.get(member.0).ok()).and_then(|g| g.set);
-                stance(set, &content.species[monster.species], &factions, clock.ms, fighting)
+                let loyal = if monster.species == BYSTANDER_SPECIES {
+                    Loyalty::Bystander
+                } else if turncoat || kind.faction == UNALIGNED {
+                    Loyalty::None
+                } else {
+                    Loyalty::Faction(kind.faction)
+                };
+                (stance(set, kind, &factions, clock.ms, fighting), loyal)
             }
-            None => Stance::Friendly,
+            None => (Stance::Friendly, Loyalty::None),
         };
-        side.set_if_neq(Side(own_stance(own, vitals.conditions.has(Condition::Turncoat))));
+        side.set_if_neq(Side(own_stance(own, turncoat)));
+        loyalty.set_if_neq(loyal);
     }
 }
 
@@ -236,41 +247,32 @@ pub fn member_stance(turncoat: bool) -> Stance {
     own_stance(Stance::Friendly, turncoat)
 }
 
-/// How a monster stands toward a member: as it stands toward the party,
-/// hostile and friendly swapped for a member under Turncoat (retail
-/// `MonsterVsCharDisposition`).
-pub fn toward_member(monster: Stance, member_turncoat: bool) -> Stance {
-    own_stance(monster, member_turncoat)
+/// The band a body keeps to besides its side, which two monsters on
+/// different sides weigh before they quarrel (retail `MonsterHostility`).
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Loyalty {
+    /// Of no faction: a member, an unaligned monster, or one under Turncoat,
+    /// which has broken with its own.
+    #[default]
+    None,
+    Faction(i32),
+    /// A bystander, who stays out of every quarrel.
+    Bystander,
 }
 
-/// A monster as another sees it: its species, own stance, faction and
-/// whether it is under Turncoat.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Allegiance {
-    pub species: u32,
-    pub stance: Stance,
-    pub faction: i32,
-    pub turncoat: bool,
-}
-
-/// How two monsters stand toward each other (retail `MonsterHostility`):
-/// alike, friends; either neutral, neutral; otherwise foes, but for two of
-/// one faction, who quarrel only when Turncoat holds one and not the other.
-pub fn between(first: Allegiance, second: Allegiance) -> Stance {
-    if first.species == BYSTANDER_SPECIES || second.species == BYSTANDER_SPECIES {
-        return Stance::Neutral;
+/// How two bodies stand toward each other, by their sides and loyalties
+/// (retail `MonsterHostility`, `MonsterVsCharDisposition`): a bystander
+/// stays out; alike, friends; either neutral, neutral; otherwise foes, but
+/// for two loyal to one faction, who stay out of it.
+pub fn between(first: (Stance, Loyalty), second: (Stance, Loyalty)) -> Stance {
+    use Loyalty::*;
+    match (first, second) {
+        ((_, Bystander), _) | (_, (_, Bystander)) => Stance::Neutral,
+        ((a, _), (b, _)) if a == b => Stance::Friendly,
+        ((Stance::Neutral, _), _) | (_, (Stance::Neutral, _)) => Stance::Neutral,
+        ((_, Faction(a)), (_, Faction(b))) if a == b => Stance::Neutral,
+        _ => Stance::Hostile,
     }
-    if first.stance == second.stance {
-        return Stance::Friendly;
-    }
-    if first.stance == Stance::Neutral || second.stance == Stance::Neutral {
-        return Stance::Neutral;
-    }
-    if first.faction == UNALIGNED || second.faction == UNALIGNED || first.faction != second.faction
-    {
-        return Stance::Hostile;
-    }
-    if first.turncoat == second.turncoat { Stance::Neutral } else { Stance::Hostile }
 }
 
 /// The party acted against this monster: a blow aimed at it, a hostile
@@ -315,24 +317,17 @@ mod tests {
     fn monsters_stand_by_their_sides_and_turncoat_swaps_them() {
         assert_eq!(own_stance(Stance::Hostile, true), Stance::Friendly);
         assert_eq!(own_stance(Stance::Neutral, true), Stance::Neutral);
-        assert_eq!(toward_member(Stance::Hostile, true), Stance::Friendly);
-        let side = |stance, faction, turncoat| Allegiance { species: 1, stance, faction, turncoat };
-        let foe = side(Stance::Hostile, UNALIGNED, false);
-        let turned = side(own_stance(Stance::Hostile, true), UNALIGNED, true);
+        // A member is of no faction, so a monster turned on its own side
+        // quarrels with them and its former fellows alike.
+        let foe = (Stance::Hostile, Loyalty::None);
+        let turned = (own_stance(Stance::Hostile, true), Loyalty::None);
         assert_eq!(between(foe, foe), Stance::Friendly);
         assert_eq!(between(foe, turned), Stance::Hostile);
-        assert_eq!(between(foe, side(Stance::Neutral, UNALIGNED, false)), Stance::Neutral);
-        let mook = |stance, turncoat| side(stance, crate::game::factions::MOOK, turncoat);
-        assert_eq!(
-            between(mook(Stance::Hostile, false), mook(Stance::Friendly, false)),
-            Stance::Neutral
-        );
-        assert_eq!(
-            between(mook(Stance::Hostile, false), mook(Stance::Friendly, true)),
-            Stance::Hostile
-        );
-        let bystander = Allegiance { species: BYSTANDER_SPECIES, ..foe };
-        assert_eq!(between(foe, bystander), Stance::Neutral);
+        assert_eq!(between(foe, (Stance::Neutral, Loyalty::None)), Stance::Neutral);
+        let mook = |stance| (stance, Loyalty::Faction(crate::game::factions::MOOK));
+        assert_eq!(between(mook(Stance::Hostile), mook(Stance::Friendly)), Stance::Neutral);
+        assert_eq!(between(mook(Stance::Hostile), turned), Stance::Hostile);
+        assert_eq!(between(foe, (Stance::Hostile, Loyalty::Bystander)), Stance::Neutral);
     }
 
     /// A provocation holds for Intelligence² game minutes outside a fight,

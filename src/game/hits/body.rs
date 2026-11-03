@@ -53,6 +53,8 @@ pub struct Body {
     pub level: Option<&'static LevelOwned>,
     /// Which side it is on toward the party now.
     pub side: &'static Side,
+    /// The band it keeps to besides.
+    pub loyalty: &'static hostility::Loyalty,
 }
 
 /// Retail's marker for a condition without end (`W8_CONDITION_INDEFINITE`),

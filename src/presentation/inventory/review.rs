@@ -5,7 +5,7 @@ use crate::content::characters::{Attribute, Skill};
 use crate::content::items::EquipClass;
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::Character;
-use crate::game::combat::attack::character_initiative;
+use crate::game::combat::attack::Grip;
 use crate::game::data::Catalogs;
 use crate::game::inventory::EquipSlot;
 use crate::game::magic::LearnedSpells;
@@ -492,8 +492,11 @@ pub(super) fn refresh(
 ) {
     let view = characters.get(screen.member).unwrap();
     let load = view.load();
-    let hand = view.hand(&content.items);
     let CharacterViewItem { profile, vitals, carried, .. } = view;
+    // The sheet shows the primary weapon slot's numbers.
+    let stats = profile.stats(&vitals.enchantments);
+    let grip = Grip::of(carried, &content.items);
+    let primary = crate::game::inventory::WeaponSlot::Primary;
     let armour_view = info.as_ref().is_some_and(|info| info.armour);
     let effect_filter = info.as_ref().map_or(EffectFilter::All, |info| info.filter);
     let show_items = info.as_ref().is_some_and(|info| info.items);
@@ -680,23 +683,21 @@ pub(super) fn refresh(
                 } else {
                     match index {
                         1 => {
-                            let min = hand.dice.base + hand.dice.count;
-                            let max = hand.dice.base + hand.dice.count * hand.dice.sides;
-                            let scale = 100 + hand.damage_percent;
+                            let dice = grip.dice(&stats, primary);
+                            let min = dice.base + dice.count;
+                            let max = dice.base + dice.count * dice.sides;
+                            let scale = 100 + grip.damage_percent(&stats, primary);
                             format!(
                                 "{}-{}",
                                 ((min * scale + 50) / 100).max(1),
                                 ((max * scale + 50) / 100).max(1)
                             )
                         }
-                        3 => hand.attacks.to_string(),
-                        4 => hand.swings.to_string(),
-                        5 => format!("{:+}", hand.to_hit),
-                        7 => format!("{:+}%", hand.damage_percent),
-                        8 => {
-                            character_initiative(&profile.stats(&vitals.enchantments), &hand, load)
-                                .to_string()
-                        }
+                        3 => grip.attacks(&stats, load, primary).to_string(),
+                        4 => grip.swings(&stats, load, primary).to_string(),
+                        5 => format!("{:+}", grip.to_hit(&stats, load, primary)),
+                        7 => format!("{:+}%", grip.damage_percent(&stats, primary)),
+                        8 => (stats.initiative(load) + grip.initiative(&stats, primary)).to_string(),
                         _ => String::new(),
                     }
                 }

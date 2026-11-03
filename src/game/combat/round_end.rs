@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use super::approach::{self, CombatMove};
 use super::round::{MonsterTurn, PartyTurn, SpecialCooldown};
 use super::sight::{Seen, Sight, reinforces};
-use super::swings::{allegiance, toward};
+use super::monster_turn::{standing, toward};
 use super::{
     Battle, CombatNews, Combatant, Combatants, PASSIVE_ROUNDS, PartyMove, ROUND_SECONDS, RoundPhase,
 };
@@ -163,7 +163,7 @@ pub(super) fn leave_fight(
             }
             Some(Stance::Friendly) => fellows.iter().any(|(fellow, _)| {
                 let observer = bodies.get(fellow.entity).unwrap();
-                let mine = allegiance(&observer, species).unwrap();
+                let mine = standing(&observer);
                 let watcher = observer.monster.unwrap().clone();
                 let vitals = observer.vitals.clone();
                 let feet = observer.feet(sight.eye);
@@ -172,7 +172,7 @@ pub(super) fn leave_fight(
                     bodies.get(enemy).is_ok_and(|target| {
                         let them = target.monster.as_ref().unwrap();
                         !target.is_dead()
-                            && toward(mine, &target, species) == Stance::Hostile
+                            && toward(mine, &target) == Stance::Hostile
                             && sight.sees_from(
                                 &watcher,
                                 &vitals,

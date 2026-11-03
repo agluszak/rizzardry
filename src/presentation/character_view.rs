@@ -35,19 +35,6 @@ impl CharacterViewItem<'_, '_> {
         )
     }
 
-    /// The main hand's numbers, as the sheet shows them.
-    pub fn hand(
-        &self,
-        catalog: &crate::content::items::ItemCatalog,
-    ) -> crate::game::combat::attack::Hand {
-        crate::game::combat::attack::primary_hand(
-            &self.profile.stats(&self.vitals.enchantments),
-            self.carried,
-            catalog,
-            self.load(),
-        )
-    }
-
     /// The member's resistances, the party's protections included for its
     /// members.
     pub fn resistances(

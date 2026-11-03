@@ -909,7 +909,7 @@ impl Pool {
 /// together. A monster's maxima were rolled when it was made; a member's
 /// follow their stats ([`Vitals::sync_maxima`]).
 #[derive(Component, Clone, Debug, Default, PartialEq)]
-#[require(crate::game::world::hostility::Side)]
+#[require(crate::game::world::hostility::Side, crate::game::world::hostility::Loyalty)]
 pub struct Vitals {
     pub health: Pool,
     pub stamina: Pool,

@@ -48,6 +48,10 @@ pub struct Leeches {
 #[derive(Component, Debug)]
 pub struct Uses(pub Entity);
 
+/// The damage a blow deals, its first effect.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct BlowDamage(pub u32);
+
 /// The act's weapon effects: each prototype of the blow definition lands at
 /// the weapon's chance for it, a poison at the weapon's strength.
 #[derive(Component, Debug)]
@@ -130,6 +134,8 @@ pub enum Roll {
     /// A blow's rounds: `count`d2 + 1, within 1 and 12, `count` being the
     /// effect power over 3, plus 1.
     BlowRounds,
+    /// A blow's damage, as its act's [`BlowDamage`] says.
+    Damage,
     /// A blow's amount: (`count` × `times`)d`sides` + `base`, and one more.
     Blow {
         times: u32,
@@ -602,9 +608,9 @@ fn define_special(d: &mut Definer, definition: crate::game::hits::specials::Spec
     }
 }
 
-/// What a blow that drew blood does besides its damage (retail
-/// `ApplyEffectConditions`): each weapon effect, in turn, at the weapon's
-/// chance, saved against and resisted at the attacker's effect power.
+/// What a blow does: its damage, then, once that drew blood, each weapon
+/// effect in turn (retail `ApplyEffectConditions`), at the weapon's chance,
+/// saved against and resisted at the attacker's effect power.
 fn define_blow(d: &mut Definer) {
     use AttackEffect as A;
     use Condition::*;
@@ -636,7 +642,8 @@ fn define_blow(d: &mut Definer) {
             FromWeapon(effect),
         )
     };
-    d.effect(condition(Some(Asleep), Realm::Air, A::Sleep))
+    d.effect((Harm, Roll::Damage))
+        .effect(condition(Some(Asleep), Realm::Air, A::Sleep))
         .effect(condition(Some(Paralyzed), Realm::Water, A::Paralyze))
         .effect((
             Afflict { condition: Some(Poisoned), poison: 0, indefinite: false },
@@ -886,11 +893,11 @@ fn three(rng: &mut GameRng, bound: u32) -> u32 {
 pub fn roll(
     mut commands: Commands,
     effects: Query<(Entity, &HitOf, &Roll), Without<InFlight>>,
-    acts: Query<(&Strength, Option<&WeaponEffects>)>,
+    acts: Query<(&Strength, Option<&WeaponEffects>, Option<&BlowDamage>)>,
     mut rng: ResMut<GameRng>,
 ) {
     for (effect, hit_of, roll) in &effects {
-        let Ok((&strength, weapon)) = acts.get(hit_of.0) else { continue };
+        let Ok((&strength, weapon, damage)) = acts.get(hit_of.0) else { continue };
         let rng = &mut *rng;
         let count = strength.power / 3 + 1;
         let amount = match *roll {
@@ -924,6 +931,7 @@ pub fn roll(
             }
             Roll::ThirdOfBound => (strength.power / 3).max(1),
             Roll::BelowBound => rng.below(strength.power),
+            Roll::Damage => damage.map_or(0, |damage| damage.0),
             Roll::BlowRounds => blow_roll(rng, count, 2, 1).clamp(1, 12),
             Roll::Blow { times, sides, base } => {
                 let base = match base {

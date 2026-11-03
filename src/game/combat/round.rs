@@ -4,11 +4,13 @@
 use bevy::prelude::*;
 
 use super::attack::phase;
-use super::{Battle, PartyMove, RoundPhase, attack};
+use super::{Battle, PartyMove, RoundPhase};
+use super::attack::Grip;
+use enum_map::EnumMap;
 use crate::content::items::ItemCatalog;
 use crate::content::species::MonsterCatalog;
 use crate::game::characters::Condition;
-use crate::game::inventory::{EquipSlot, StackId};
+use crate::game::inventory::{EquipSlot, StackId, WeaponSlot};
 use crate::game::magic::casting::MagicChoice;
 use crate::game::party::roster::PartyRoster;
 use crate::game::party::{Members, Order};
@@ -62,8 +64,14 @@ pub struct PartyTurn {
     pub(super) action: RoundAction,
     /// When the member acts next, 1 to 100; 0 when done for the round.
     pub(super) phase: u32,
-    /// What an attack has left; other actions act once.
-    pub(super) hands: HandTurns,
+    /// The attacks each weapon slot has left this round (retail
+    /// `hand_attack_values`); other actions act once.
+    pub(super) attacks: EnumMap<WeaponSlot, u32>,
+    /// The slot due to attack next (retail `current_hand`).
+    pub(super) due: WeaponSlot,
+    /// A Samurai's Lightning Strike, readied for the primary slot's next
+    /// attack (retail `extra_swings`).
+    pub(super) lightning: bool,
 }
 
 impl PartyTurn {
@@ -76,20 +84,8 @@ impl PartyTurn {
     /// Done for the round: nothing left to act with.
     pub(super) fn end(&mut self) {
         self.phase = 0;
-        self.hands.left = [0, 0];
+        self.attacks = EnumMap::default();
     }
-}
-
-/// A member's attacks left in each hand this round and the hand due next
-/// (retail `hand_attack_values`, `current_hand`): the one authority on
-/// what an attack has left.
-#[derive(Clone, Copy, Debug, Default)]
-pub(super) struct HandTurns {
-    pub(super) left: [u32; 2],
-    pub(super) current: usize,
-    /// A Samurai's Lightning Strike, readied for the main hand's next
-    /// attack (retail `extra_swings`).
-    pub(super) lightning: bool,
 }
 
 /// The actor whose initiative has come this step, to act now.
@@ -193,19 +189,19 @@ pub(super) fn accept_round(
         .iter()
         .filter(|_| !surprised)
         .map(|member| {
-            let (character, vitals, carried, burden) = members.get(member).unwrap();
-            let stats = character.stats(&vitals.enchantments);
-            let hands = attack::hands(&stats, carried, items, burden.load);
+            let (character, _, carried, _) = members.get(member).unwrap();
+            let grip = Grip::of(carried, items);
             let lightning = *orders.get(member).unwrap() == Order::Attack
                 && character.has_trait(Trait::LightningStrike)
-                && hands.hands[0].weapon_skill == Skill::Sword
+                && grip.weapon_skill(WeaponSlot::Primary) == Skill::Sword
                 && rng.below(100) < u32::from(character.scale_by_profession(12.0) as u8);
-            (member, hands, lightning)
+            (member, lightning)
         })
         .collect();
-    for (member, hands, lightning) in prepared {
+    for (member, lightning) in prepared {
         let (character, vitals, carried, burden) = members.get(member).unwrap();
         let stats = character.stats(&vitals.enchantments);
+        let grip = Grip::of(carried, items);
         let weapons =
             [EquipSlot::Primary, EquipSlot::Secondary].map(|slot| carried.worn(slot).map(|i| i.id));
         let order = if vitals.conditions.has(Condition::Turncoat) {
@@ -218,33 +214,37 @@ pub(super) fn accept_round(
             // One who can no longer berserk attacks as usual.
             Order::Berserk => RoundAction::Attack {
                 weapons,
-                berserk: super::swings::can_berserk(character, &hands),
+                berserk: grip.can_berserk(&stats),
             },
             Order::Defend => RoundAction::Defend,
             Order::Magic(choice) => RoundAction::Magic(choice),
             Order::Breathe(target) => RoundAction::Breathe(target),
         };
-        let mut turns = HandTurns { lightning, ..default() };
-        let phase = match action {
-            // The hand with the most attacks opens, its weapon's initiative
+        let mut turn = PartyTurn {
+            action,
+            phase: 0,
+            attacks: EnumMap::default(),
+            due: WeaponSlot::Primary,
+            lightning,
+        };
+        let load = burden.load;
+        turn.phase = match action {
+            // The slot with the most attacks opens, its weapon's initiative
             // counting (retail `AssignCombatPhases`).
-            RoundAction::Attack { .. } if vitals.can_fight() => match hands.choose() {
-                Some(hand) => {
-                    turns.current = hand;
-                    turns.left =
-                        hands.hands.each_ref().map(|h| if h.in_play { h.attacks } else { 0 });
-                    let initiative =
-                        attack::character_initiative(&stats, &hands.hands[hand], burden.load);
-                    phase(rng, initiative)
+            RoundAction::Attack { .. } if vitals.can_fight() => match grip.opening(&stats, load) {
+                Some(slot) => {
+                    turn.due = slot;
+                    turn.attacks = EnumMap::from_fn(|slot| grip.attacks(&stats, load, slot));
+                    phase(rng, stats.initiative(load) + grip.initiative(&stats, slot))
                 }
                 None => 0,
             },
             RoundAction::Magic(_) | RoundAction::Breathe(_) if vitals.can_fight() => {
-                phase(rng, stats.initiative(burden.load))
+                phase(rng, stats.initiative(load))
             }
             _ => 0,
         };
-        commands.entity(member).insert((PartyTurn { action, phase, hands: turns }, Spotted(0)));
+        commands.entity(member).insert((turn, Spotted(0)));
     }
     for &entity in combatants {
         let (monster, .., vitals) = monsters.get(entity).unwrap();

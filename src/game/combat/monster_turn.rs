@@ -15,7 +15,6 @@ use super::monster_spells::{self, Scene, SpellAim};
 use super::round::{Acting, Fleeing, Guarding, MonsterTurn, SpecialCooldown};
 use super::scene::{scene, special_ready};
 use super::sight::Sight;
-use super::swings::{Fights, allegiance, toward};
 use super::{ACTION_SECONDS, Battle, CombatNews, Combatants, approach, conduct, summon};
 use crate::content::spells::SpellId;
 use crate::game::characters::Condition;
@@ -29,10 +28,27 @@ use crate::game::magic::enchantments::PartyEffects;
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
-use crate::game::world::hostility::Stance;
+use crate::game::world::hostility::{self, Stance};
 use crate::game::world::level::{Level, PlayedLevel};
 use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::perception::party_distance;
+
+/// A monster that settled on fighting this action; `waits` when it may
+/// hold back instead.
+#[derive(Component, Debug)]
+pub(super) struct Fights {
+    pub(super) waits: bool,
+}
+
+/// How one body stands toward another, by their sides and loyalties.
+pub(super) fn toward(mine: (Stance, hostility::Loyalty), body: &BodyReadOnlyItem) -> Stance {
+    hostility::between(mine, standing(body))
+}
+
+/// A body's side and loyalty.
+pub(super) fn standing(body: &BodyReadOnlyItem) -> (Stance, hostility::Loyalty) {
+    (body.side.0, *body.loyalty)
+}
 
 /// The monster has settled what it does with its action.
 #[derive(Component, Debug)]
@@ -176,9 +192,9 @@ fn sees(
             .filter_map(|body| Some((body.character?, body.vitals))),
     );
     let sight = Sight { eye, far, lowest_level, concealment, obstacles };
-    let mine = allegiance(&bodies.get(monster).unwrap(), species).unwrap();
+    let mine = standing(&bodies.get(monster).unwrap());
     scene(monster, combatants, roster, bodies, &sight, species, &|body: &BodyReadOnlyItem| {
-        toward(mine, body, species)
+        toward(mine, body)
     })
 }
 
@@ -362,7 +378,7 @@ pub(super) fn decide_guard(
             continue;
         }
         let (feet, can_guard) = (body.feet(eye), body.vitals.can_guard());
-        let mine = allegiance(&body, species).unwrap();
+        let mine = standing(&body);
         let intelligence = u32::from(kind.attributes.intelligence);
         let able = kind.temper.bodyguard && can_guard && !kind.attacks.is_empty();
         let wards: Vec<Entity> = if able && rng.below(100) < intelligence {
@@ -374,7 +390,7 @@ pub(super) fn decide_guard(
                     other != monster
                         && bodies.get(other).is_ok_and(|o| {
                             let fellow = o.monster.as_ref().unwrap();
-                            toward(mine, &o, species) == Stance::Friendly
+                            toward(mine, &o) == Stance::Friendly
                                 && !o.is_dead()
                                 && me.gap(feet, fellow, o.feet(eye)) <= reach
                                 && species[fellow.species].level > kind.level
@@ -436,13 +452,13 @@ pub(super) fn interrupt(
         let kind = &species[me.species];
         let (nearest, _) = bearing(&body, eye, species);
         let (feet, vitals) = (body.feet(eye), body.vitals.clone());
-        let mine = allegiance(&body, species).unwrap();
+        let mine = standing(&body);
         let against_foes = match casts {
             Some(cast) => content.spells[cast.spell].aimed_at_enemies(),
             None => breathes || fights,
         };
         let friendly_member = roster.iter().any(|member| {
-            bodies.get(member).is_ok_and(|b| toward(mine, &b, species) == Stance::Friendly)
+            bodies.get(member).is_ok_and(|b| toward(mine, &b) == Stance::Friendly)
         });
         let strikes_friend = kind.attacks.iter().any(|attack| {
             let reach = attack.reach.metres();
@@ -450,7 +466,7 @@ pub(super) fn interrupt(
                 || combatants.iter().any(|&other| {
                     other != monster
                         && bodies.get(other).is_ok_and(|o| {
-                            toward(mine, &o, species) == Stance::Friendly
+                            toward(mine, &o) == Stance::Friendly
                                 && me.gap(feet, o.monster.as_ref().unwrap(), o.feet(eye)) <= reach
                         })
                 })

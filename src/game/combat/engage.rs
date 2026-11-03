@@ -189,7 +189,8 @@ pub(super) fn engage(
         let toward = |victim: Entity| {
             let turncoat =
                 party.members.get(victim).is_ok_and(|(_, v)| v.conditions.has(Condition::Turncoat));
-            hostility::toward_member(hostility::Stance::Hostile, turncoat)
+            let member = (hostility::member_stance(turncoat), hostility::Loyalty::None);
+            hostility::between((hostility::Stance::Hostile, hostility::Loyalty::None), member)
         };
         let scene = monster_spells::Scene {
             caster: fighter,

@@ -5,6 +5,7 @@
 pub mod approach;
 pub mod attack;
 pub mod breath;
+mod fighters;
 mod conduct;
 mod engage;
 mod member_turn;
@@ -60,6 +61,7 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         swings::stages(app);
+        app.add_observer(fighters::leave).add_observer(fighters::disband);
         app.add_observer(round::clear_fight)
             .add_message::<CombatNews>()
             .add_message::<hostility::Provocation>()
@@ -115,11 +117,20 @@ impl Plugin for CombatPlugin {
                         call_actor,
                     )
                         .chain(),
+                    // what everyone in the fight is to blows is judged,
+                    (
+                        fighters::place_members,
+                        fighters::place_monsters,
+                        fighters::judge_members,
+                        fighters::judge_monsters,
+                    )
+                        .chain()
+                        .run_if(any_with_component::<Battle>),
                     // The member whose initiative came acts,
                     (
                         casting::party_sight,
                         member_turn::member_turns,
-                        swings::member_attacks,
+                        swings::open_member_attacks,
                         member_turn::start_member_cast,
                         member_turn::start_breath,
                     )
@@ -138,7 +149,7 @@ impl Plugin for CombatPlugin {
                         monster_turn::protect,
                         monster_turn::start_special,
                         monster_turn::start_monster_cast,
-                        swings::monster_attacks,
+                        swings::open_monster_attacks,
                     )
                         .chain(),
                     // its blows and casts settle within the step,
