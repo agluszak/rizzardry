@@ -341,6 +341,61 @@ fn selection_key(id: SpellId) -> SpellId {
     if id == SpellId::RETURN_TO_PORTAL { SpellId::SET_PORTAL } else { id }
 }
 
+/// What keeps a member from training: a fight, a journey, a conversation,
+/// a travel question.
+#[derive(bevy::ecs::query::QueryFilter)]
+struct Busy {
+    _any: Or<(
+        With<crate::game::combat::Battle>,
+        With<crate::game::world::level::Destination>,
+        With<crate::game::npcs::conversation::Conversation>,
+        With<crate::game::world::level::TravelQuestion>,
+    )>,
+}
+
+/// Whether a member may gain a level now: nothing keeps the party busy,
+/// they are still in it, and they are ready ([`ready`]).
+fn eligibility(
+    busy: &Query<(), Busy>,
+    roster: &Query<&PartyRoster>,
+    member: Entity,
+    (character, vitals): (&Character, &Vitals),
+) -> Result<(), &'static str> {
+    if !busy.is_empty() {
+        return Err("Finish the current encounter or journey first.");
+    }
+    if !roster.single().is_ok_and(|r| r.contains(&member)) {
+        return Err("This character is no longer in the party.");
+    }
+    if !ready(character, vitals) {
+        return Err("This character is not ready to gain a level.");
+    }
+    Ok(())
+}
+
+/// The level-up offer: whether a member may train now, and the draft to
+/// work it out. Reads only; [`Progression`] accepts.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct LevelOffer<'w, 's> {
+    roster: Query<'w, 's, &'static PartyRoster>,
+    members: Query<'w, 's, (&'static Character, &'static Vitals, &'static LearnedSpells)>,
+    busy: Query<'w, 's, (), Busy>,
+}
+impl LevelOffer<'_, '_> {
+    pub fn eligibility(&self, member: Entity) -> Result<(), &'static str> {
+        let (character, vitals, _) =
+            self.members.get(member).map_err(|_| "This character is no longer in the party.")?;
+        eligibility(&self.busy, &self.roster, member, (character, vitals))
+    }
+    pub fn begin(&self, member: Entity) -> Result<Advancement, &'static str> {
+        self.eligibility(member)?;
+        let (character, _, known) = self.members.get(member).unwrap();
+        Ok(Advancement::new(member, character, known))
+    }
+}
+
+/// Accepting a level-up draft: the training and its consequences for the
+/// member, their equipment and the party's pool.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct Progression<'w, 's> {
     roster: Query<'w, 's, &'static PartyRoster>,
@@ -355,42 +410,22 @@ pub struct Progression<'w, 's> {
         ),
     >,
     inventory: Query<'w, 's, &'static mut PartyInventory>,
-    blocked: Query<
-        'w,
-        's,
-        (),
-        Or<(
-            With<crate::game::combat::Battle>,
-            With<crate::game::world::level::Destination>,
-            With<crate::game::npcs::conversation::Conversation>,
-            With<crate::game::world::level::TravelQuestion>,
-        )>,
-    >,
+    busy: Query<'w, 's, (), Busy>,
     content: If<Res<'w, crate::game::data::Catalogs>>,
     ids: ResMut<'w, crate::game::inventory::ItemIds>,
     rng: ResMut<'w, crate::game::rng::GameRng>,
     news: MessageWriter<'w, crate::game::inventory::ItemNews>,
 }
 impl Progression<'_, '_> {
-    pub fn eligibility(&self, member: Entity) -> Result<(), &'static str> {
-        if !self.blocked.is_empty() {
-            return Err("Finish the current encounter or journey first.");
-        }
-        if !self.roster.single().is_ok_and(|r| r.contains(&member)) {
-            return Err("This character is no longer in the party.");
-        }
-        let (c, v, ..) = self.members.get(member).unwrap();
-        if !ready(c, v) {
-            return Err("This character is not ready to gain a level.");
-        }
-        Ok(())
+    fn eligibility(&self, member: Entity) -> Result<(), &'static str> {
+        let (character, vitals, ..) =
+            self.members.get(member).map_err(|_| "This character is no longer in the party.")?;
+        eligibility(&self.busy, &self.roster, member, (character, vitals))
     }
-    pub fn begin(&self, member: Entity) -> Result<Advancement, &'static str> {
-        self.eligibility(member)?;
-        let (c, _, known, ..) = self.members.get(member).unwrap();
-        Ok(Advancement::new(member, c, known))
-    }
-    pub fn accept(&mut self, draft: &Advancement) -> Result<(), &'static str> {
+    /// Commit the draft, revalidated against the member as they are now;
+    /// nothing changes on refusal. Experience enough for another level
+    /// returns its draft straight away.
+    pub fn accept(&mut self, draft: &Advancement) -> Result<Option<Advancement>, &'static str> {
         self.eligibility(draft.member)?;
         let spells = &self.content.spells;
         let items = &self.content.items;
@@ -440,6 +475,43 @@ impl Progression<'_, '_> {
             (&mut self.ids, &mut self.rng),
         );
         self.news.write_batch(told);
-        Ok(())
+        let (character, vitals, known, _) = self.members.get(draft.member).unwrap();
+        let next = eligibility(&self.busy, &self.roster, draft.member, (character, vitals))
+            .ok()
+            .map(|()| Advancement::new(draft.member, character, known));
+        Ok(next)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    /// The offer reads: a member with the experience for a level is offered
+    /// one, unless the party is busy or they have left.
+    #[test]
+    fn the_offer_follows_readiness_membership_and_what_keeps_the_party_busy() {
+        let mut world = World::new();
+        let character = Character::new("Up", Race::Human, Gender::Male, Profession::Fighter);
+        let goal = character.experience_goal();
+        let vitals = Vitals::new(&character);
+        let member = world.spawn((character, vitals, LearnedSpells::default())).id();
+        let other = world.spawn(()).id();
+        crate::game::party::roster::test_party(&mut world, &[member, other]);
+        let offer = |world: &mut World| {
+            world.run_system_once(move |offer: LevelOffer| offer.eligibility(member)).unwrap()
+        };
+        assert!(offer(&mut world).is_err(), "not enough experience yet");
+        world.get_mut::<Character>(member).unwrap().experience = goal;
+        assert_eq!(offer(&mut world), Ok(()));
+        let fight = world.spawn(crate::game::combat::Battle::default()).id();
+        assert!(offer(&mut world).is_err(), "not during a fight");
+        world.despawn(fight);
+        assert!(
+            world.run_system_once(move |offer: LevelOffer| offer.begin(member)).unwrap().is_ok()
+        );
+        world.entity_mut(member).remove::<crate::game::party::roster::PartyMember>();
+        assert!(offer(&mut world).is_err(), "not after leaving");
     }
 }

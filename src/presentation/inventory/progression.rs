@@ -2,7 +2,7 @@
 use super::{InventoryArt, InventoryScreen};
 use crate::content::characters::{Attribute, Profession, Skill};
 use crate::content::spells::SpellId;
-use crate::game::characters::progression::{Advancement, Progression};
+use crate::game::characters::progression::{Advancement, LevelOffer, Progression};
 use crate::game::data::Catalogs;
 use crate::presentation::retail_controls::{ControlSkin, FocusRing, set_enabled};
 use crate::presentation::screen_art::{BitmapText, Picture, absolute};
@@ -131,7 +131,7 @@ fn offer(
     mut commands: Commands,
     screens: Query<&InventoryScreen>,
     mut buttons: Query<(Entity, Has<InteractionDisabled>, &mut Node), With<Open>>,
-    progression: Progression,
+    progression: LevelOffer,
     editors: Query<(), With<Editor>>,
     mut focus: ResMut<InputFocus>,
 ) {
@@ -151,7 +151,7 @@ fn open(
     mut commands: Commands,
     screens: Query<(Entity, &InventoryScreen)>,
     editors: Query<(), With<Editor>>,
-    progression: Progression,
+    progression: LevelOffer,
     content: If<Res<Catalogs>>,
     art: Res<InventoryArt>,
     mut focus: ResMut<InputFocus>,
@@ -313,19 +313,20 @@ fn press(
     editor.message.clear();
     match *action {
         Action::Cancel | Action::Accept => {
-            if matches!(action, Action::Accept)
-                && let Err(error) = progression.accept(&editor.draft)
-            {
-                editor.message = error.into();
-                return;
-            }
-            // Experience enough for another level opens its review straight away.
-            if matches!(action, Action::Accept)
-                && let Ok(next) = progression.begin(editor.draft.member())
-            {
-                editor.draft = next;
-                editor.page = Page::Attributes;
-                return;
+            if matches!(action, Action::Accept) {
+                match progression.accept(&editor.draft) {
+                    Err(error) => {
+                        editor.message = error.into();
+                        return;
+                    }
+                    // Experience enough for another level opens its review straight away.
+                    Ok(Some(next)) => {
+                        editor.draft = next;
+                        editor.page = Page::Attributes;
+                        return;
+                    }
+                    Ok(None) => {}
+                }
             }
             if let Ok(button) = offers.single() {
                 focus.set(button, bevy::input_focus::FocusCause::Navigated);
