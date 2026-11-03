@@ -62,14 +62,16 @@ pub struct LightActivation {
     lights: HashMap<String, bool>,
 }
 impl LightActivation {
+    /// `name` is the canonical uppercase key supplied by the content loader.
     pub fn light_enabled(&self, name: &str, initial: bool) -> bool {
-        self.lights.get(&name.to_uppercase()).copied().unwrap_or(initial)
+        self.lights.get(name).copied().unwrap_or(initial)
     }
 }
 
 impl LevelState {
+    /// `name` is the canonical uppercase key supplied by the content loader.
     pub fn ambient_sound_enabled(&self, name: &str) -> bool {
-        self.ambient_sounds.get(&name.to_uppercase()).copied().unwrap_or(true)
+        self.ambient_sounds.get(name).copied().unwrap_or(true)
     }
     /// Rebase walk-in detection after teleporting, without firing destination
     /// triggers or treating an unobserved level as already visited.
@@ -654,7 +656,7 @@ fn execute(
             for (name, initial) in sources {
                 let enabled = state.light_enabled(name, *initial);
                 let next = change.apply(enabled);
-                state.lights.insert(name.to_uppercase(), next);
+                state.lights.insert(name.clone(), next);
             }
         }
         TriggerAction::Particles { sources, change } => {
@@ -684,7 +686,7 @@ fn execute(
             for name in names {
                 let enabled = state.ambient_sound_enabled(name);
                 let next = change.apply(enabled);
-                state.ambient_sounds.insert(name.to_uppercase(), next);
+                state.ambient_sounds.insert(name.clone(), next);
             }
         }
         TriggerAction::SetDevices(change) => {

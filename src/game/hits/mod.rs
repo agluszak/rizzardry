@@ -21,6 +21,10 @@ use crate::game::magic::casting::{MagicNews, Report};
 /// What an act did to one victim.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Effect {
+    Improved {
+        victim: Entity,
+        skill: crate::content::characters::Skill,
+    },
     Purified {
         victim: Entity,
     },
@@ -85,7 +89,7 @@ pub enum Effect {
 /// Whether anything an act did counts as affecting a victim, which is what
 /// practice needs (retail `SpellAffectedTarget`).
 pub fn affected(effects: &[Effect]) -> bool {
-    effects.iter().any(|e| !matches!(e, Effect::Nothing { .. }))
+    effects.iter().any(|e| !matches!(e, Effect::Nothing { .. } | Effect::Improved { .. }))
 }
 
 /// The act is made by this actor; the actor gone, so is the act.

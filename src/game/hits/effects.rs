@@ -786,7 +786,6 @@ pub fn defend(
     difficulty: Res<Difficulty>,
     mut rng: ResMut<GameRng>,
     mut acts: Query<&mut Deed>,
-    mut news: MessageWriter<crate::game::combat::CombatNews>,
 ) -> (EffectInput, Option<Outcome>) {
     use EffectKind as K;
     let victim = input.victim;
@@ -830,11 +829,9 @@ pub fn defend(
         if resisted
             && let Ok(mut character) = characters.get_mut(victim)
             && character.practise(Skill::IronWill, 2, &mut rng)
+            && let Ok(mut deed) = acts.get_mut(input.act)
         {
-            news.write(crate::game::combat::CombatNews::Improved {
-                member: victim,
-                skill: Skill::IronWill,
-            });
+            deed.effects.push(Effect::Improved { victim, skill: Skill::IronWill });
         }
     }
     if !resisted

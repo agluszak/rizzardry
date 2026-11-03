@@ -300,10 +300,15 @@ fn improves(
 
 /// What a spell or a blow did to someone. Retail's own strings for these
 /// are not mapped yet; the wording is plain.
-fn effect_line(names: &super::names::ActorNames, effect: crate::game::hits::Effect) -> String {
+fn effect_line(
+    names: &super::names::ActorNames,
+    string: &impl Fn(usize) -> String,
+    effect: crate::game::hits::Effect,
+) -> String {
     use crate::game::hits::Effect;
     let victim = |victim: Entity| names.name(victim).unwrap_or_default();
     match effect {
+        Effect::Improved { victim, skill } => improves(names, string, victim, skill),
         Effect::Purified { victim: v } => format!("The air around {} clears.", victim(v)),
         Effect::Enchanted { victim: v, .. } => format!("{} is enchanted.", victim(v)),
         Effect::Healed { victim: v, amount } => {
@@ -337,17 +342,32 @@ fn effect_line(names: &super::names::ActorNames, effect: crate::game::hits::Effe
     }
 }
 
+/// Improvements follow the action's effects, regardless of when practice ran.
+fn effect_lines(
+    names: &super::names::ActorNames,
+    string: &impl Fn(usize) -> String,
+    effects: &[crate::game::hits::Effect],
+) -> Vec<String> {
+    use crate::game::hits::Effect;
+    effects
+        .iter()
+        .filter(|e| !matches!(e, Effect::Improved { .. }))
+        .chain(effects.iter().filter(|e| matches!(e, Effect::Improved { .. })))
+        .map(|&effect| effect_line(names, string, effect))
+        .collect()
+}
+
 /// What a cast or an item use tells the player. Retail's own strings for
 /// these are not mapped yet; the wording is plain.
 fn magic_lines(
     news: &crate::game::magic::casting::MagicNews,
     names: &super::names::ActorNames,
     spells: &crate::content::spells::SpellCatalog,
+    string: &impl Fn(usize) -> String,
 ) -> Vec<String> {
     use crate::game::magic::Outcome;
     use crate::game::magic::casting::{MagicNews, Refusal};
     let name = |entity| names.name(entity).unwrap_or_default();
-    let effect_line = |effect| effect_line(names, effect);
     match news {
         MagicNews::Refused { caster, refusal } => {
             let why = match refusal {
@@ -370,7 +390,7 @@ fn magic_lines(
             lines
         }
         MagicNews::Triggered { effects, .. } | MagicNews::Landed { effects, .. } => {
-            effects.iter().map(|&e| effect_line(e)).collect()
+            effect_lines(names, string, effects)
         }
         MagicNews::Done(report) => {
             let spell = &spells[report.spell].name;
@@ -383,7 +403,7 @@ fn magic_lines(
                 Outcome::Backfired => lines.push("The spell backfires!".into()),
                 Outcome::Cast => {}
             }
-            lines.extend(report.effects.iter().map(|&e| effect_line(e)));
+            lines.extend(effect_lines(names, string, &report.effects));
             lines
         }
     }
@@ -469,10 +489,11 @@ fn post_magic(
     names: super::names::ActorNames,
     content: If<Res<crate::game::data::Catalogs>>,
     mut notices: Notices,
+    strings: GameStrings,
 ) {
     let spells = &content.spells;
     for news in magic.read() {
-        for line in magic_lines(news, &names, spells) {
+        for line in magic_lines(news, &names, spells, &|index| strings.get(index).to_owned()) {
             notices.post(&line);
         }
     }
@@ -746,9 +767,7 @@ fn post_combat(
                     _ => vec![],
                 }
             }
-            CombatNews::Effects(effects) => {
-                effects.iter().map(|&effect| effect_line(&names, effect)).collect()
-            }
+            CombatNews::Effects(effects) => effect_lines(&names, &string, effects),
             CombatNews::Improved { member, skill } => {
                 vec![improves(&names, &string, *member, *skill)]
             }

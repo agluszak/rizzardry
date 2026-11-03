@@ -272,7 +272,8 @@ pub fn build(options: &Options) -> Result<App, String> {
         );
     }
     if let Some(line) = options.say.clone() {
-        app.insert_resource(SayLine { line, started: None }).add_systems(Update, say_line);
+        app.insert_resource(SayLine { line, started: None })
+            .add_systems(Update, say_line.run_if(resource_exists::<SayLine>));
     }
     if let Some(seed) = options.seed {
         app.insert_resource(crate::game::rng::GameRng::seeded(seed));
