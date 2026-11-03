@@ -198,6 +198,7 @@ pub fn clear_fight(left: On<Remove<Combatant>>, mut commands: Commands) {
         CurrentAction,
         Resumes,
         Guarding,
+        Guards,
         Interceptions,
         Spotted,
         Fleeing,
