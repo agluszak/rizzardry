@@ -50,7 +50,7 @@ pub enum PartyMotion {}
 /// The party's spatial body. Exactly one exists while a level is active.
 /// Its own rotation is locked; facing lives here and on the camera.
 #[derive(Component, Debug, Default)]
-#[require(Transform)]
+#[require(Transform, crate::game::world::footing::Footing)]
 pub struct PartyBody {
     pub yaw: f32,
     pub pitch: f32,

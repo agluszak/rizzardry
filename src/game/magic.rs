@@ -482,7 +482,7 @@ impl Plugin for MagicPlugin {
                     pointcasts::follow_lures,
                 )
                     .chain()
-                    .after(GameplaySet::Burden)
+                    .after(GameplaySet::Sides)
                     .before(GameplaySet::Combat)
                     .run_if(crate::game::world::level::level_active),
             );

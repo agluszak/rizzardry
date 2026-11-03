@@ -494,10 +494,14 @@ const UNKNOWN_QUOTES: [u16; 2] = [0x1c, 0x1d];
 const CLASSIFIED_QUOTE: u16 = 0x1e;
 /// The script's quote for a party that cannot pay.
 const TOO_POOR_QUOTE: u16 = 0x14;
+/// Whether the NPC is there to talk to: it has a body in the world that
+/// is not on the party's bad side ([`crate::game::world::hostility::Side`],
+/// judged for the frame before anything activates).
 fn available(world: &World, actor: Entity) -> bool {
     active_body(world, actor).is_some_and(|body| {
-        crate::game::world::hostility::monster_stance(world, body)
-            != crate::game::world::hostility::Stance::Hostile
+        world
+            .get::<crate::game::world::hostility::Side>(body)
+            .is_some_and(|side| side.0 != crate::game::world::hostility::Stance::Hostile)
     }) && world.get::<Npc>(actor).is_some()
 }
 /// Shared gameplay permission, also used to derive the trade controls.

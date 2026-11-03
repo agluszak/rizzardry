@@ -43,9 +43,8 @@ pub fn summon(
     mut summons: MessageReader<Summon>,
     battle: Option<Single<Entity, With<Battle>>>,
     party: Query<(&Position, &PartyBody)>,
-    monsters: Query<(&Monster, ActorPose, Option<&Walker>, &Vitals)>,
+    monsters: Query<(&Monster, ActorPose, Option<&Walker>, &Vitals, &hostility::Side)>,
     groups: Query<&MonsterGroup>,
-    stances: hostility::Stances,
     mut levels: Query<(Entity, &LevelNavigation, &mut Unborn, &MonsterBodies), With<Level>>,
     level: PlayedLevel,
     obstacles: WorldObstacles,
@@ -76,7 +75,7 @@ pub fn summon(
     // not in the queries, yet the next group must stand clear of them.
     let mut landed: Vec<(Vec3, f32)> = vec![];
     for &Summon { summoner, species: id } in summons.read() {
-        let (caller, caller_at, caller_walker, _) = monsters.get(summoner).unwrap();
+        let (caller, caller_at, caller_walker, _, caller_side) = monsters.get(summoner).unwrap();
         let kind = &species[id];
         let definition = bodies.get(id, &definitions).expect("bodies load with the level");
         let authored = next_group;
@@ -91,8 +90,9 @@ pub fn summon(
         if count == 0 {
             continue;
         }
-        let stance = match stances.own(summoner, species, clock.ms) {
-            Some(Stance::Friendly) => Stance::Friendly,
+        // The summoner's own side, as judged when the round's deaths settled.
+        let stance = match caller_side.0 {
+            Stance::Friendly => Stance::Friendly,
             _ => Stance::Hostile,
         };
         let caller_feet = feet(caller_at.translation(), caller_walker);
@@ -107,7 +107,7 @@ pub fn summon(
             };
             apart(party_at.0, body::RADIUS)
                 && landed.iter().all(|&(at, radius)| apart(at, radius))
-                && monsters.iter().all(|(other, at, walker, vitals)| {
+                && monsters.iter().all(|(other, at, walker, vitals, _)| {
                     vitals.is_dead() || apart(feet(at.translation(), walker), other.body.radius)
                 })
         };

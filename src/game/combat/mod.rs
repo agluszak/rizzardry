@@ -77,20 +77,6 @@ impl Plugin for CombatPlugin {
             .add_message::<GiveOrder>()
             .add_message::<engage::Engaged>()
             .init_resource::<CombatSettings>()
-            // Every body's side is judged at the start of the frame, before
-            // magic is accepted and cast, and again on each fight step.
-            .add_systems(
-                Update,
-                hostility::judge_sides
-                    .after(GameplaySet::Burden)
-                    .before(crate::game::magic::accept_magic),
-            )
-            // Where everyone stands and how they see is placed before
-            // gameplay reads it, each frame and each fixed step.
-            .add_systems(
-                Update,
-                crate::game::world::footing::place_bodies.before(GameplaySet::LevelActivation),
-            )
             .add_observer(approach::end_move)
             .add_observer(approach::stop_walking)
             .add_systems(
@@ -196,11 +182,13 @@ impl Plugin for CombatPlugin {
                     .after(avian3d::prelude::PhysicsSystems::Writeback)
                     .run_if(crate::game::world::level::level_active),
             )
-            // Monsters' moves likewise: headed before navigation plans the
-            // step, charged once physics has walked it.
+            // Monsters' moves likewise: headed, where everyone stands this
+            // step placed first, before navigation plans the step; charged
+            // once physics has walked it.
             .add_systems(
                 FixedPreUpdate,
-                approach::steer_moves
+                (crate::game::world::footing::place_bodies, approach::steer_moves)
+                    .chain()
                     .before(bevy_landmass::LandmassSystems::SyncExistence)
                     .run_if(crate::game::world::level::level_active),
             );

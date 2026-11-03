@@ -192,7 +192,7 @@ fn lure(
     order.sort_unstable();
     let mut sight = SystemState::<WorldObstacles>::new(world);
     for (_, entity) in order {
-        if hostility::monster_stance(world, entity) != Stance::Hostile {
+        if world.get::<hostility::Side>(entity).is_none_or(|side| side.0 != Stance::Hostile) {
             continue;
         }
         if world

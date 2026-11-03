@@ -99,9 +99,9 @@ const ITEM_BLIPS: BlipColours = BlipColours {
 
 /// A monster's blip class by its own stance (retail
 /// `g_radar_disposition_class`).
-fn blip_class(stance: Option<crate::game::world::hostility::Stance>) -> BlipColours {
+fn blip_class(stance: crate::game::world::hostility::Stance) -> BlipColours {
     use crate::game::world::hostility::Stance;
-    match stance.unwrap_or_default() {
+    match stance {
         Stance::Neutral => NEUTRAL_BLIPS,
         Stance::Hostile => HOSTILE_BLIPS,
         Stance::Friendly => FRIENDLY_BLIPS,
@@ -192,6 +192,7 @@ pub fn update_radar(
         Option<&crate::game::world::navigation::Walker>,
         Has<crate::game::combat::Combatant>,
         &crate::game::world::level::LevelOwned,
+        &crate::game::world::hostility::Side,
     )>,
     views: Query<&RadarView>,
     mut blips: Query<(Entity, &mut Node, &mut BackgroundColor, &mut Visibility), With<RadarBlip>>,
@@ -199,11 +200,7 @@ pub fn update_radar(
         Query<(Entity, &crate::game::world::items::WorldItem, &GlobalTransform, &mut RadarItem)>,
         WorldObstacles,
     ),
-    (content, stances, clock): (
-        If<Res<crate::game::data::Catalogs>>,
-        crate::game::world::hostility::Stances,
-        Res<crate::game::time::GameClock>,
-    ),
+    content: If<Res<crate::game::data::Catalogs>>,
     (search, battle, levels): (
         Option<Res<crate::game::world::search::Search>>,
         Query<(), With<crate::game::combat::Battle>>,
@@ -258,7 +255,7 @@ pub fn update_radar(
     };
     let shadow_hound =
         effects.is_some_and(|effects| effects.0.has(crate::content::spells::SpellId::SHADOW_HOUND));
-    for (entity, monster, at, walker, in_combat, owner) in &monsters {
+    for (entity, monster, at, walker, in_combat, owner, side) in &monsters {
         let Some(roster) = roster else { continue };
         let species = &catalog[monster.0.species];
         let feet = crate::game::world::navigation::feet(at.translation(), walker);
@@ -279,7 +276,7 @@ pub fn update_radar(
             continue;
         }
         let delta = at.translation() - position.0;
-        let class = blip_class(stances.own(entity, catalog, clock.ms));
+        let class = blip_class(side.0);
         let at = blip_position(delta, body.yaw, false) - Vec2::ONE;
         show(entity, at, class.at(delta.y));
     }

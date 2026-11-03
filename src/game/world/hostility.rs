@@ -11,7 +11,7 @@ use bevy::prelude::*;
 
 use super::identify::{GroupMember, MonsterGroup};
 use super::population::Monster;
-use crate::content::species::{Disposition, MonsterCatalog, Species};
+use crate::content::species::{Disposition, Species};
 use crate::game::characters::Condition;
 use crate::game::factions::{Band, Factions, PARTY, UNALIGNED};
 use crate::game::time::GameClock;
@@ -155,81 +155,6 @@ pub fn judge_sides(
     }
 }
 
-/// A monster's own stance now: its group's set stance while it holds
-/// ([`stance`]), swapped by the monster's own Turncoat ([`own_stance`]).
-/// Every reader of a monster's side goes through this.
-pub fn monster_own(
-    vitals: &crate::game::characters::Vitals,
-    set: Option<SetStance>,
-    species: &Species,
-    factions: &Factions,
-    now: u64,
-    fighting: bool,
-) -> Stance {
-    own_stance(
-        stance(set, species, factions, now, fighting),
-        vitals.conditions.has(Condition::Turncoat),
-    )
-}
-
-/// A monster's stance now, through its group, for operations that hold the
-/// whole world. A monster outside any group stands by its species' default.
-pub fn monster_stance(world: &World, monster: Entity) -> Stance {
-    let Some(species) = world
-        .get::<Monster>(monster)
-        .map(|m| &world.resource::<crate::game::data::Catalogs>().species[m.species])
-    else {
-        return Stance::Neutral;
-    };
-    let set = world
-        .get::<GroupMember>(monster)
-        .and_then(|member| world.get::<MonsterGroup>(member.0))
-        .and_then(|group| group.set);
-    let fighting = world.get::<crate::game::combat::Combatant>(monster).is_some();
-    let now = world.resource::<GameClock>().ms;
-    let body = world.get::<crate::game::characters::Vitals>(monster).unwrap();
-    monster_own(body, set, species, world.resource::<Factions>(), now, fighting)
-}
-
-/// Monsters' stances now, through their groups, for systems that only
-/// read them (the fight's snapshot, the radar). Time is the caller's: the
-/// fight holds the clock itself.
-#[derive(bevy::ecs::system::SystemParam)]
-pub struct Stances<'w, 's> {
-    monsters: Query<
-        'w,
-        's,
-        (
-            &'static Monster,
-            Option<&'static GroupMember>,
-            Has<crate::game::combat::Combatant>,
-            &'static crate::game::characters::Vitals,
-        ),
-    >,
-    groups: Query<'w, 's, &'static MonsterGroup>,
-    factions: Res<'w, Factions>,
-}
-
-impl Stances<'_, '_> {
-    /// A monster's group's stance now; one outside any group by its
-    /// species' default.
-    pub fn group(&self, monster: Entity, species: &MonsterCatalog, now: u64) -> Option<Stance> {
-        let (body, member, fighting, _) = self.monsters.get(monster).ok()?;
-        let kind = &species[body.species];
-        let set = member.and_then(|m| self.groups.get(m.0).ok()).and_then(|g| g.set);
-        Some(stance(set, kind, &self.factions, now, fighting))
-    }
-
-    /// A monster's own stance now: its group's, swapped by its own Turncoat
-    /// (retail's per-monster `ubDisposition`).
-    pub fn own(&self, monster: Entity, species: &MonsterCatalog, now: u64) -> Option<Stance> {
-        let group = self.group(monster, species, now)?;
-        let (.., vitals) = self.monsters.get(monster).ok()?;
-        let turncoat = vitals.conditions.has(Condition::Turncoat);
-        Some(own_stance(group, turncoat))
-    }
-}
-
 /// The species retail keeps out of every quarrel (record 0x224): neutral to
 /// everyone, and only ever waiting in a fight.
 pub const BYSTANDER_SPECIES: u32 = 0x224;
@@ -243,12 +168,6 @@ pub fn own_stance(group: Stance, turncoat: bool) -> Stance {
         (Stance::Friendly, true) => Stance::Hostile,
         (stance, _) => stance,
     }
-}
-
-/// A member's stance toward the party: on its side, against it under
-/// Turncoat, by the same rule as a monster's.
-pub fn member_stance(turncoat: bool) -> Stance {
-    own_stance(Stance::Friendly, turncoat)
 }
 
 /// The band a body keeps to besides its side, which two monsters on
