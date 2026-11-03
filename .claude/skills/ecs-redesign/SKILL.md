@@ -5,90 +5,70 @@ description: Refactor gameplay around explicit ownership, independent lifetimes,
 
 # Gameplay ownership and execution
 
-Start with the game rules and the state that must survive an operation.
-Read the existing code and retail evidence to inventory behavior before
-changing representation. Preserve coupled invariants and same-step
-settlement; ECS is an ownership and composition model, not a requirement
-to turn each instruction into a system.
+Apply the project rules in [AGENTS.md](../../../AGENTS.md). This skill supplies a
+refactoring procedure and examples; ownership and verification policy live there.
 
-## Choose representation by lifetime
+## 1. Inventory behavior and ownership
 
-| Concept | Representation |
+Read the implementation and retail evidence. Trace the affected target selection,
+costs, rolls, conditional follow-ups, death, interruption, movement, reflection and
+cleanup. Identify state that survives each operation and consequences that must
+settle before the next actor or swing.
+
+For substantial changes, describe the intended ownership/execution boundaries in
+the PR. An approved task or review can supply the design; routine choices within
+that scope do not need repeated approval.
+
+## 2. Choose representation and execution boundaries
+
+Use these examples to apply the criteria in AGENTS.md:
+
+| Concept | Candidate representation |
 | --- | --- |
-| Actor capabilities and authoritative state | Cohesive components |
-| Participation, guarding, ownership of pending work | Relationships with explicit cleanup |
-| Editable intent versus accepted work | Separate values with distinct lifetimes |
+| Independently used actor capabilities | Components, including single-field ones |
+| Coupled damage, absorption, fatigue and death preparation | A cohesive vitals operation |
+| Editable order versus accepted cast | Separate values with distinct lifetimes |
 | Independently delayed projectiles or impacts | Entities with progress and ownership |
-| Shared spell/effect descriptions | Immutable catalog values or assets |
-| Immediate arithmetic, branches, sequence cursors | Local values and ordinary functions |
+| Immediate aim, penetration, damage or sequence cursors | Local values and ordinary functions |
+| Mutually exclusive actions | An enum and a local `match` |
 
-Several occurrences can be a collection owned by one component. Give an
-occurrence its own entity when it has independent identity, behavior, or
-lifetime that another system actually needs. Do not create an entity only
-because a loop has several iterations.
+Inspect [fighter projection](../../../src/game/combat/fighters.rs):
+`judge_fighters` translates character/monster inputs into common capabilities;
+`Fighter::write` publishes them with equality-aware updates. Compare those choices
+to the consumers' needs rather than copying the component layout.
 
-Mutually exclusive actions usually belong in an enum. Separate components
-are appropriate for facts that can coexist or have independent lifetimes.
-A `match` is often the clearest way to express a finite domain choice.
+Inspect [impact resolution](../../../src/game/hits/resolve.rs): `impacts` runs
+immediate effects in a local sequence, with explicit capability/consequence
+boundaries; impacts waiting for flight retain entities. Several occurrences can
+remain a collection owned by one component when none needs independent identity.
 
-Keep coupled state together: damage, absorption, fatigue, conditions, and
-death preparation may legitimately be one `Vitals` operation. Components
-should expose the vocabulary consumers need, not mirror individual fields
-or terms of a formula.
+## 3. Trace freshness and cleanup
 
-## Make operations cohesive
+For changed representations, identify owner, writer, readers and lifetime. Follow
+source changes through publication to the first dependent consequence. Check which
+values intentionally freeze and which must refresh:
 
-A system boundary should represent independently scheduled behavior or a
-meaningful synchronization boundary. Calculate aim, penetration, and damage
-with ordinary values. Do not publish partially calculated arithmetic into
-the world or repeatedly traverse relationships to add individual terms.
+- An accepted snapshot ignores later intent edits.
+- A live capability reflects changed inputs before a consequence consumes it.
+- A historical result, such as side at death, stays frozen.
 
-Immediate effects can be a local ordered sequence with a local previous
-outcome. Settle an operation's consequences before advancing to the next
-actor or swing. Delayed impacts retain entities until their actual arrival.
-Do not spread synchronous work across frames for architectural neatness.
+Include removal and membership changes in the trace. For combat, distinguish battle
+participation from party membership/seating: leaving a fight cleans the participant;
+ending it follows participation relationships. Check cancellation and delayed work
+without introducing a global scan for stray temporary components. Ensure executors
+cannot mutate shared definitions to select their next effect.
 
-A focused `SystemParam` can express a useful access boundary. Judge it by
-its responsibilities, coupling, and borrowing requirements, not its syntax.
-Avoid passing an entire gameplay world facade to every formula. Plain
-rules should receive only the values they need. Function length is a reason
-to inspect cohesion, not an automatic instruction to split systems.
+## 4. Verify behavior and remove obsolete machinery
 
-## State and freshness contracts
+Choose checks using AGENTS.md's proportional verification policy. Assert observable
+outcomes and external contracts, including production schedule behavior when order
+matters. Replace assertions that merely pin internal layouts/stages, while keeping
+meaningful freshness and lifecycle regressions. Derive expected results from game
+rules rather than reproducing implementation arithmetic.
 
-For every stored value document its owner, writer, readers, and lifetime.
-For a projection also identify authoritative inputs and its validity:
-
-- An accepted snapshot intentionally ignores later input edits.
-- A live capability must refresh before a consequence uses changed inputs.
-- An historical result (such as the side at death) stays frozen.
-
-Prefer deriving cheap local facts on demand. Keep reusable projections when
-they give consumers a common actor vocabulary; skip unchanged inputs and
-avoid emitting changes when the result is equal. Removal and membership
-changes are inputs too. Definitions must not be selectable by executors.
-
-Battle participation owns fight state for every participating actor. Party
-membership still owns seating and formation. Leaving a fight cleans that
-actor; ending a fight follows its participation relationships, without a
-global scan for stray temporary components.
-
-## Design and verification
-
-Describe the intended ownership and execution boundaries before substantial
-changes. An approved task or review can supply the design; routine choices
-within that scope do not need repeated approval. Record material behavior
-changes and deviations from retail in the PR.
-
-Inventory and preserve the rules: target selection, costs, rolls, conditional
-follow-ups, death, interruption, movement, reflection, and cleanup. Test
-observable gameplay outcomes and external contracts. Remove tests that pin
-component layouts, change ticks, scheduler stages, temporary markers, or
-catalog representation. Do not reproduce the implementation to calculate an
-expected result. A representation change with unchanged behavior should not
-require rewriting expected outcomes.
-
-Check that removed machinery is actually gone. Review both code size and
-conceptual complexity; fewer lines are useful evidence, not a correctness
-criterion. Run formatting, Clippy, unit tests, and the retail scenarios:
-`RIZZARDRY_RETAIL=... cargo test --lib -- --ignored`.
+Check that replaced state, synchronization and cleanup paths are gone. Review
+remaining ownership complexity as well as code size. Use
+[CI](../../../.github/workflows/ci.yml) for exact automated check commands and
+[README.md](../../../README.md) for game/retail checks. Run applicable checks for the
+change; retail scenarios require game data and are useful when affected behavior
+needs integration evidence, not as a blanket requirement for every edit.
