@@ -170,7 +170,7 @@ fn lure(
     for old in old {
         world.despawn(old);
     }
-    let turns = crate::game::hits::prototypes::duration(
+    let turns = crate::game::hits::definitions::duration(
         &mut world.resource_mut::<GameRng>(),
         spell.duration_base,
         spell.duration_per_power,
@@ -318,7 +318,7 @@ fn summon_elemental(
                 [realm];
         let turns = world.resource_scope(|world, mut rng: Mut<GameRng>| {
             let definition = &world.resource::<Catalogs>().spells[buff];
-            crate::game::hits::prototypes::duration(
+            crate::game::hits::definitions::duration(
                 &mut rng,
                 definition.duration_base,
                 definition.duration_per_power,

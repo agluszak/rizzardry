@@ -114,7 +114,7 @@ pub(super) fn engage(
     clock: Res<GameClock>,
     content: If<Res<Catalogs>>,
     mut engaged: MessageWriter<Engaged>,
-    definitions: Res<crate::game::hits::prototypes::Definitions>,
+    definitions: Res<crate::game::hits::definitions::Definitions>,
 ) {
     let provoked: Vec<Entity> = provocations
         .read()

@@ -1,6 +1,6 @@
 //! A body deciding its action for itself (retail `UpdateMonsterAI`,
 //! `BuildMonsterActionQueue`): a chain of systems, each of which may settle
-//! the decision with the action it takes and [`Decided`]: to run, withdraw
+//! the decision with one [`CurrentAction`]: to run, withdraw
 //! or hold back by its [`Temper`], to make its [`Special`] attack, to cast
 //! by its [`Spellcasting`], to withdraw when it can strike nobody, to guard
 //! a fellow, to hold back warily, or to fight. What it decides from is what
@@ -11,7 +11,7 @@ use bevy::prelude::*;
 use super::fighters::{Arms, BlindFighting, Wit};
 use super::monster_spells;
 use super::turn::{
-    Acting, Breathes, Casts, Decided, Fights, Fleeing, Ordered, Protects, Retreats, SpecialCooldown,
+    Acting, Breathes, CurrentAction, Fights, Fleeing, Ordered, Retreats, SpecialCooldown,
 };
 use super::{Battle, Combatants, conduct};
 use crate::content::species::{Reach, SpecialAttack};
@@ -19,7 +19,7 @@ use crate::content::spells::SpellId;
 use crate::game::characters::{Condition, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::hits::defences::SaveLevel;
-use crate::game::hits::prototypes::Definitions;
+use crate::game::hits::definitions::Definitions;
 use crate::game::magic::casting::{MagicChoice, Source};
 use crate::game::npcs::NpcBody;
 use crate::game::party::roster::PartyRoster;
@@ -73,13 +73,19 @@ pub(super) fn seen(
         .iter()
         .find_map(|member| Some((bodies.get(member).ok()?.1, conspicuous.get(member).ok()?)));
     let sees_party = party.is_some_and(|party| eyes.see(at, party, far, obstacles));
-    roster
+    combatants
         .iter()
-        .filter(|_| sees_party)
-        .chain(combatants.iter().copied().filter(|&other| {
-            other == body
-                || bodies.get(other).is_ok_and(|(_, there, ..)| obstacles.clear(at.eye, there.eye))
-        }))
+        .copied()
+        .filter(|&other| {
+            if roster.contains(&other) {
+                sees_party
+            } else {
+                other == body
+                    || bodies
+                        .get(other)
+                        .is_ok_and(|(_, there, ..)| obstacles.clear(at.eye, there.eye))
+            }
+        })
         .filter(|&other| bodies.get(other).is_ok_and(|(vitals, ..)| !vitals.is_dead()))
         .collect()
 }
@@ -111,7 +117,7 @@ pub(super) fn decide_conduct(
     mut commands: Commands,
     actors: Query<
         (Entity, &Temper, &Vitals, &Side, &Loyalty, &Footing, Has<NpcBody>, Has<Fleeing>),
-        (With<Acting>, Without<Ordered>, Without<Decided>),
+        (With<Acting>, Without<Ordered>, Without<CurrentAction>),
     >,
     footings: Query<&Footing>,
     roster: Single<&PartyRoster>,
@@ -141,7 +147,7 @@ pub(super) fn decide_conduct(
             _ => {}
         }
         if conduct != conduct::Conduct::Fight {
-            entity.insert((Retreats { conduct, quiet: false }, Decided));
+            entity.insert(CurrentAction::Retreat(Retreats { conduct, quiet: false }));
         }
     }
 }
@@ -162,7 +168,7 @@ pub(super) fn decide_special(
             (&Vitals, &Side, &Footing, &Eyes),
             Option<&SpecialCooldown>,
         ),
-        (With<Acting>, Without<Ordered>, Without<Decided>),
+        (With<Acting>, Without<Ordered>, Without<CurrentAction>),
     >,
     bodies: Query<(&Vitals, &Footing, &Side, &Loyalty)>,
     conspicuous: Query<&Conspicuous>,
@@ -214,18 +220,15 @@ pub(super) fn decide_special(
         if rng.below(100) >= if reaches { u32::from(special.chance) } else { 100 } {
             continue;
         }
-        commands.entity(body).insert((
-            Breathes {
-                special: Some(kind),
-                definition: definitions.special(kind),
-                summons: kind.summons(),
-                strength: crate::game::hits::specials::strength(level.0 as u8, vitals.stamina),
-                toward,
-                cost: vitals.stamina.max / 10,
-                cooldown: special.cooldown,
-            },
-            Decided,
-        ));
+        commands.entity(body).insert((CurrentAction::Special(Breathes {
+            special: Some(kind),
+            definition: definitions.special(kind),
+            summons: kind.summons(),
+            strength: crate::game::hits::specials::strength(level.0 as u8, vitals.stamina),
+            toward,
+            cost: vitals.stamina.max / 10,
+            cooldown: special.cooldown,
+        }),));
     }
 }
 
@@ -237,7 +240,7 @@ pub(super) fn decide_spell(
     mut commands: Commands,
     actors: Query<
         (Entity, (&Spellcasting, &Temper, &Arms, &SpellBudget, &SaveLevel), (&Footing, &Eyes)),
-        (With<Acting>, Without<Ordered>, Without<Decided>),
+        (With<Acting>, Without<Ordered>, Without<CurrentAction>),
     >,
     bodies: Query<(&Vitals, &Footing, &Side, &Loyalty)>,
     conspicuous: Query<&Conspicuous>,
@@ -275,7 +278,7 @@ pub(super) fn decide_spell(
         };
         let power = monster_spells::power(&mut rng, budget.0, &content.spells[spell]);
         let source = Source::Innate { spell, power, budget: budget.0, level: level.0 as u8 };
-        commands.entity(body).insert((Casts(MagicChoice { source, aim }), Decided));
+        commands.entity(body).insert(CurrentAction::Magic(MagicChoice { source, aim }));
     }
 }
 
@@ -286,7 +289,7 @@ pub(super) fn withdraw_if_helpless(
     mut commands: Commands,
     actors: Query<
         (Entity, &Arms, &Vitals, &BlindFighting, &Footing),
-        (With<Acting>, Without<Ordered>, Without<Decided>),
+        (With<Acting>, Without<Ordered>, Without<CurrentAction>),
     >,
     footings: Query<&Footing>,
     roster: Single<&PartyRoster>,
@@ -295,8 +298,11 @@ pub(super) fn withdraw_if_helpless(
         let nearest = party_gap(at, &roster, &footings);
         let blind = vitals.conditions.has(Condition::Blind) && blind_fighting.0.is_none();
         if arms.0.is_empty() || (blind && !reaches_party(arms, nearest)) {
-            let withdraw = Retreats { conduct: conduct::Conduct::Withdraw, quiet: false };
-            commands.entity(body).insert((withdraw, Decided));
+            let withdraw = CurrentAction::Retreat(Retreats {
+                conduct: conduct::Conduct::Withdraw,
+                quiet: false,
+            });
+            commands.entity(body).insert(withdraw);
         }
     }
 }
@@ -309,7 +315,7 @@ pub(super) fn decide_guard(
     mut commands: Commands,
     actors: Query<
         (Entity, (&Temper, &Wit, &Arms, &SaveLevel), (&Vitals, &Footing, &Side, &Loyalty)),
-        (With<Acting>, Without<Ordered>, Without<Decided>),
+        (With<Acting>, Without<Ordered>, Without<CurrentAction>),
     >,
     fellows: Query<(&SaveLevel, &Vitals, &Footing, &Side, &Loyalty)>,
     footings: Query<&Footing>,
@@ -349,9 +355,11 @@ pub(super) fn decide_guard(
         };
         if !wards.is_empty() {
             let ward = wards[rng.below(wards.len() as u32) as usize];
-            commands.entity(body).insert((Protects(ward), Decided));
+            commands.entity(body).insert(CurrentAction::Protect(ward));
         } else if temper.0.wary && rng.below(100) < wit.0 {
-            commands.entity(body).insert((Fights { waits: true, berserk: false }, Decided));
+            commands
+                .entity(body)
+                .insert(CurrentAction::Fight(Fights { waits: true, berserk: false }));
         }
     }
 }
@@ -359,9 +367,9 @@ pub(super) fn decide_guard(
 /// Anything else fights: strikes someone, or closes in to.
 pub(super) fn default_fight(
     mut commands: Commands,
-    actors: Query<Entity, (With<Acting>, Without<Ordered>, Without<Decided>)>,
+    actors: Query<Entity, (With<Acting>, Without<Ordered>, Without<CurrentAction>)>,
 ) {
     for body in &actors {
-        commands.entity(body).insert((Fights { waits: false, berserk: false }, Decided));
+        commands.entity(body).insert(CurrentAction::Fight(Fights { waits: false, berserk: false }));
     }
 }

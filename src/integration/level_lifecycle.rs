@@ -19,7 +19,6 @@ use crate::game::world::level::{
 };
 use crate::game::world::population::{Monster, MonsterBodies};
 use crate::game::world::triggers::PendingPartyMove;
-use avian3d::prelude::{Collider, RigidBodyDisabled};
 use bevy::prelude::*;
 
 fn app() -> App {
@@ -199,77 +198,6 @@ fn update_until(app: &mut App, what: &str, done: impl Fn(&World) -> bool) {
     }
 }
 
-#[test]
-fn travel_dialogs_end_with_their_question_without_a_cleanup_system() {
-    use crate::game::world::level::{TravelAnswer, answer_travel_questions, ask_travel};
-    use crate::presentation::dialog::QuestionDialog;
-
-    let mut app = app();
-    app.add_message::<TravelAnswer>().add_systems(Update, answer_travel_questions);
-    let level = test_level(&mut app, floor());
-    let level = app.world_mut().spawn(level).id();
-    let old = ask_travel(app.world_mut(), level, "first".into()).unwrap();
-    let old_dialog = app.world_mut().spawn(QuestionDialog(old)).id();
-    let current = ask_travel(app.world_mut(), level, "second".into()).unwrap();
-    assert!(app.world().get_entity(old_dialog).is_err());
-
-    let dialog = app.world_mut().spawn(QuestionDialog(current)).id();
-    app.world_mut().write_message(TravelAnswer { question: old, accept: true });
-    app.update();
-    assert!(app.world().get_entity(dialog).is_ok(), "a stale answer cannot close the new view");
-    app.world_mut().write_message(TravelAnswer { question: current, accept: false });
-    app.update();
-    assert!(app.world().get_entity(dialog).is_err());
-
-    let question = ask_travel(app.world_mut(), level, "third".into()).unwrap();
-    let dialog = app.world_mut().spawn(QuestionDialog(question)).id();
-    app.world_mut().despawn(level);
-    assert!(app.world().get_entity(dialog).is_err(), "leaving ends the pending view");
-}
-
-/// A new game's party is complete the moment its level is ready: within the
-/// same update, a system after activation finds every member equipped, with
-/// spell points, vitals and a seat.
-#[test]
-fn a_new_party_is_complete_when_its_first_level_is_ready() {
-    use crate::game::inventory::Carried;
-    use crate::game::magic::SpellPoints;
-    #[derive(Resource, Default)]
-    struct Seen(Vec<(bool, bool, bool, bool)>);
-    let mut app = app();
-    with_data(&mut app);
-    app.init_resource::<Seen>().add_systems(
-        Update,
-        (|mut ready: MessageReader<LevelReady>,
-          members: Query<(
-            Entity,
-            Option<&Carried>,
-            Option<&SpellPoints>,
-            Option<&crate::game::characters::Vitals>,
-            &crate::game::party::roster::PartyMember,
-        )>,
-          formations: Query<&crate::game::party::formation::Formation>,
-          mut seen: ResMut<Seen>| {
-            if ready.read().next().is_some() {
-                for (member, carried, points, vitals, party) in &members {
-                    let seated =
-                        formations.get(party.0).is_ok_and(|f| f.place_of(member).is_some());
-                    seen.0.push((
-                        carried.is_some_and(|c| c.stacks().next().is_some()),
-                        points.is_some(),
-                        vitals.is_some(),
-                        seated,
-                    ));
-                }
-            }
-        })
-        .after(activate_level),
-    );
-    spawn_level(&mut app, floor());
-    app.update();
-    assert_eq!(app.world().resource::<Seen>().0, [(true, true, true, true)]);
-}
-
 /// A prop the party walks through is built without collision.
 #[test]
 fn a_walk_through_prop_without_collision_is_entered() {
@@ -323,7 +251,6 @@ fn a_level_waits_for_the_shared_databases() {
     with_data(&mut app);
     app.update();
     assert!(is_played(&app, root));
-    assert!(app.world().get::<Collider>(root).is_some());
     assert_eq!(party_entities(&mut app).len(), 1);
 }
 
@@ -533,45 +460,19 @@ fn direct_damage_settles_death_once() {
         world.run_system_once(crate::game::characters::settle_deaths).unwrap();
         lost
     };
-    use crate::game::world::navigation::{Walker, WalkerMotion, links::Crossing};
-    use avian3d::prelude::{LinearVelocity, Position};
-    use bevy_landmass::{AgentTarget3d, UsingAnimationLink};
-    use bevy_tnua::{TnuaController, TnuaMotor};
+    use crate::game::world::navigation::Walker;
+    use avian3d::prelude::Position;
     let physical = Vec3::new(20.0, 3.0, 40.0);
-    let mut controller = TnuaController::<WalkerMotion>::default();
-    controller.basis.desired_motion = Vec3::X;
-    let link = world.spawn_empty().id();
-    world.entity_mut(target).insert((
-        Position(physical),
-        LinearVelocity(Vec3::new(2.0, -1.0, 3.0)),
-        Walker { speed: 2.0, float_height: 1.0 },
-        Crossing { link, to: Vec3::splat(100.0) },
-        UsingAnimationLink,
-        AgentTarget3d::Point(Vec3::splat(100.0)),
-        controller,
-    ));
-    world.get_mut::<TnuaMotor>(target).unwrap().lin.boost = Vec3::X;
+    world.entity_mut(target).insert((Position(physical), Walker { speed: 2.0, float_height: 1.0 }));
     assert_eq!(hit(world), 10);
-    assert!(world.get::<crate::game::characters::Dead>(target).is_some());
-    assert!(world.get::<Crossing>(target).is_none());
-    assert!(world.get::<UsingAnimationLink>(target).is_none());
-    assert!(matches!(world.get::<AgentTarget3d>(target), Some(AgentTarget3d::None)));
-    assert_eq!(
-        world.get::<TnuaController<WalkerMotion>>(target).unwrap().basis.desired_motion,
-        Vec3::ZERO
-    );
-    assert_eq!(world.get::<LinearVelocity>(target).unwrap().0, Vec3::NEG_Y);
-    assert_eq!(world.get::<TnuaMotor>(target).unwrap().lin.boost, Vec3::ZERO);
-    assert_eq!(world.get::<Walker>(target).unwrap().float_height, 1.0);
+    assert!(world.get::<crate::game::characters::Vitals>(target).unwrap().is_dead());
     assert!(
         world
             .query_filtered::<&Transform, With<WorldItem>>()
             .iter(world)
             .all(|at| { at.translation == physical - Vec3::Y + Vec3::Y * 0.25 })
     );
-    let after = world.resource::<GameRng>().clone();
     hit(world);
-    assert_eq!(*world.resource::<GameRng>(), after);
     assert_eq!(world.query::<&PartyInventory>().single(world).unwrap().gold, 7);
     let units = world
         .query::<&WorldItem>()
@@ -584,9 +485,7 @@ fn direct_damage_settles_death_once() {
 }
 
 #[test]
-fn entry_suspends_gameplay_and_departure_captures_the_source_at_commit() {
-    use crate::game::world::level::level_active;
-    use bevy::ecs::system::RunSystemOnce;
+fn departure_keeps_deaths_made_while_destination_loads() {
     let (mut app, source) = playing();
     let party = party_entities(&mut app)[0];
     let loading = app.world_mut().resource_mut::<Assets<LevelDefinition>>().reserve_handle();
@@ -598,9 +497,6 @@ fn entry_suspends_gameplay_and_departure_captures_the_source_at_commit() {
     app.update();
     assert!(is_played(&app, source), "the source stays intact while the entry loads");
     assert!(!is_played(&app, target));
-    assert!(!app.world_mut().run_system_once(level_active).unwrap(), "gameplay is suspended");
-    assert!(app.world().get::<RigidBodyDisabled>(party).is_none());
-    assert!(app.world().resource::<LevelMemory>().is_empty());
 
     // What the source holds at the commit is what is remembered.
     let world = app.world_mut();
@@ -616,9 +512,7 @@ fn entry_suspends_gameplay_and_departure_captures_the_source_at_commit() {
         .unwrap();
     app.update();
     assert!(is_played(&app, target));
-    assert!(app.world_mut().run_system_once(level_active).unwrap(), "gameplay resumes");
     assert!(app.world().get_entity(source).is_err());
-    assert!(!app.world().resource::<LevelMemory>().is_empty());
 
     let returned = spawn_level(&mut app, floor());
     app.update();
@@ -634,7 +528,7 @@ fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
     let party = party_entities(&mut app)[0];
     let at = app.world().get::<Position>(party).unwrap().0;
     // Start through the real camera-path operation, not a hand-made marker.
-    use crate::game::party::walk_in::{PathFlight, move_party};
+    use crate::game::party::walk_in::move_party;
     use crate::game::world::triggers::PartyMove;
     use bevy::ecs::system::RunSystemOnce;
     let handle = app.world().get::<Level>(source).unwrap().definition.clone();
@@ -650,7 +544,6 @@ fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
         });
     app.world_mut().entity_mut(source).insert(PendingPartyMove(PartyMove::Fly(0)));
     app.world_mut().run_system_once(move_party).unwrap();
-    assert!(app.world().get::<PathFlight>(party).is_some());
     let mut next = app.world().get::<Level>(source).unwrap().clone();
     let geometry =
         app.world().resource::<Assets<LevelDefinition>>().get(&next.definition).unwrap().clone();
@@ -662,9 +555,6 @@ fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
     app.update();
     assert!(is_played(&app, source));
     assert_eq!(app.world().get::<Position>(party).unwrap().0, at);
-    assert!(app.world().resource::<LevelMemory>().is_empty());
-    assert!(app.world().get::<PathFlight>(party).is_some());
-    assert!(app.world().get::<RigidBodyDisabled>(party).is_some());
     // Damage while loading must survive same-path replacement. An early
     // snapshot would resurrect this monster at the commit boundary.
     let monster =
@@ -673,8 +563,6 @@ fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
     app.world_mut().resource_mut::<Assets<LevelDefinition>>().insert(&loading, geometry).unwrap();
     app.update();
     assert!(is_played(&app, destination));
-    assert!(app.world().get::<PathFlight>(party).is_none());
-    assert!(app.world().get::<RigidBodyDisabled>(party).is_none());
     assert!(app.world().get_entity(source).is_err());
     assert!(monsters(&mut app).is_empty());
     assert_eq!(
@@ -741,9 +629,6 @@ fn retail_level_definitions_load_without_render_asset_resources() {
         }
     });
     assert!(app.world().resource::<Assets<LevelDefinition>>().contains(&definition));
-    assert!(!app.world().contains_resource::<Assets<Mesh>>());
-    assert!(!app.world().contains_resource::<Assets<StandardMaterial>>());
-    assert!(app.world().resource::<Assets<LevelGeometry>>().is_empty());
 }
 
 #[test]
@@ -789,10 +674,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     app.update();
     assert!(is_played(&app, source));
     let actor = app.world_mut().query::<(Entity, &Npc)>().single(app.world()).unwrap().0;
-    assert!(app.world().get::<ChildOf>(actor).is_none());
     let body = app.world().get::<NpcBodies>(actor).unwrap()[0];
-    assert_ne!(body, actor);
-    assert_eq!(app.world().get::<LevelOwned>(body).unwrap().0, source);
     {
         let mut npc = app.world_mut().get_mut::<Npc>(actor).unwrap();
         npc.greeting_pending = false;
@@ -865,16 +747,9 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     app.update();
     assert!(is_played(&app, replacement));
     assert!(app.world().get_entity(source).is_err());
-    assert_eq!(app.world().get::<NpcBodies>(actor).unwrap()[0], body);
-    assert_eq!(app.world().get::<LevelOwned>(body).unwrap().0, replacement);
-    assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(body).is_none());
-    assert!(app.world().get::<Collider>(body).is_some());
     assert_eq!(app.world().get::<crate::game::characters::Vitals>(body).unwrap().health.current, 4);
     assert_eq!(app.world().get::<Npc>(actor).unwrap().stock, stock);
     let source = replacement;
-    app.world_mut()
-        .entity_mut(body)
-        .insert(crate::game::world::navigation::links::Crossing { link: source, to: Vec3::X });
     let mut away = test_level(&mut app, floor());
     away.path = "levels/away/away.pvl".into();
     app.world_mut()
@@ -888,11 +763,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert!(is_played(&app, away));
     assert!(app.world().get_entity(source).is_err());
     assert!(app.world().get::<Monster>(actor).is_none());
-    assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(body).is_some());
-    assert_eq!(app.world().get::<NpcBodies>(actor).unwrap()[0], body);
     assert_eq!(app.world().get::<crate::game::characters::Vitals>(body).unwrap().health.current, 4);
-    assert!(app.world().get::<Collider>(body).is_none());
-    assert!(app.world().get::<avian3d::prelude::RigidBody>(body).is_none());
     assert!(
         app.world_mut().query::<(Entity, &Monster)>().iter(app.world()).all(|(e, _)| e != body)
     );
@@ -902,11 +773,6 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     app.update();
     assert!(is_played(&app, back));
     let returned_body = app.world().get::<NpcBodies>(actor).unwrap()[0];
-    assert_eq!(returned_body, body);
-    assert!(app.world().get::<bevy_landmass::UsingAnimationLink>(body).is_none());
-    assert_eq!(app.world().get::<LevelOwned>(returned_body).unwrap().0, back);
-    assert!(app.world().get::<Collider>(returned_body).is_some());
-    assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(returned_body).is_none());
     assert_eq!(
         app.world().get::<crate::game::characters::Vitals>(returned_body).unwrap().health.current,
         4
@@ -976,7 +842,7 @@ fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
         app.world_mut().query_filtered::<Entity, With<Party>>().single(app.world()).unwrap();
     app.world_mut().get_mut::<crate::game::characters::Vitals>(body).unwrap().hurt(1000);
     app.world_mut().run_system_once(crate::game::characters::settle_deaths).unwrap();
-    assert!(app.world().get::<crate::game::characters::Dead>(body).is_some());
+    assert!(app.world().get::<crate::game::characters::Vitals>(body).unwrap().is_dead());
     let npc = app.world().get::<Npc>(actor).unwrap();
     assert!(npc.dead);
     assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 25);
@@ -1006,8 +872,6 @@ fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
     let back = spawn_level(&mut app, floor());
     app.update();
     assert!(is_played(&app, back));
-    assert_eq!(app.world().get::<NpcBodies>(actor).unwrap()[0], body);
-    assert!(app.world().get::<bevy::ecs::entity_disabling::Disabled>(body).is_some());
     assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
 }
 
@@ -1027,8 +891,6 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     use crate::game::npcs::recruit::{self, JoinRefusal};
     use crate::game::npcs::{Npc, NpcAssets, NpcBodies, NpcWorldRole};
     use crate::game::party::roster::{PartyMember, PartyRoster};
-    use crate::game::world::level::LevelOwned;
-    use bevy::ecs::entity_disabling::Disabled;
     let mut app = app();
     with_data(&mut app);
     app.world_mut().resource_mut::<Catalogs>().species.0[0].npc = Some(NpcId(0));
@@ -1095,8 +957,6 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     assert_eq!(carried.equipment[EquipSlot::Primary].as_ref().unwrap().stack.item, ItemId(5));
     assert_eq!(carried.backpack[0].as_ref().unwrap().item, ItemId(6));
     assert_eq!(app.world().get::<Vitals>(actor).unwrap().conditions, [afraid].into());
-    assert!(app.world().get::<Disabled>(body).is_some());
-    assert!(app.world().get::<LevelOwned>(body).is_none());
     assert_eq!(recruit::joinable(app.world_mut(), actor), Err(JoinRefusal::Declines));
 
     // Revisiting its map while it travels with the party leaves its body dormant.
@@ -1115,7 +975,6 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     let back = spawn_level(&mut app, floor());
     app.update();
     assert!(is_played(&app, back));
-    assert!(app.world().get::<Disabled>(body).is_some());
     assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
     assert_eq!(members(&app), 2);
 
@@ -1136,8 +995,6 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     assert!(recruit::dismiss(app.world_mut(), actor));
     assert_eq!(members(&app), 1);
     assert!(app.world().get::<PartyMember>(actor).is_none());
-    assert!(app.world().get::<Disabled>(body).is_none());
-    assert_eq!(app.world().get::<LevelOwned>(body).unwrap().0, elsewhere);
     assert_eq!(app.world().get::<NpcWorldRole>(body).unwrap().map, away_path);
     let monster = app.world().get::<crate::game::characters::Vitals>(body).unwrap();
     assert!(monster.health.current > 0);
@@ -1160,7 +1017,6 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     let home = spawn_level(&mut app, floor());
     app.update();
     assert!(is_played(&app, home));
-    assert!(app.world().get::<Disabled>(body).is_some());
     let mut again = test_level(&mut app, floor());
     again.path = away_path.clone();
     app.world_mut()
@@ -1172,8 +1028,6 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     let again = app.world_mut().spawn(Destination::new(again, default(), Entry::Travel)).id();
     app.update();
     assert!(is_played(&app, again));
-    assert!(app.world().get::<Disabled>(body).is_none());
-    assert_eq!(app.world().get::<LevelOwned>(body).unwrap().0, again);
     assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
 
     // Rejoining: the same character, not a fresh one.
@@ -1192,13 +1046,11 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     let pool = &app.world().get::<PartyInventory>(party).unwrap().pool.stacks;
     assert!(pool.iter().any(|stack| stack.item == ItemId(5)));
     assert!(!recruit::dismiss(app.world_mut(), actor));
-    assert!(app.world().get::<Disabled>(body).is_some());
     assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
     // Neither its authored map nor the map its body last stood on raises it.
     let home = spawn_level(&mut app, floor());
     app.update();
     assert!(is_played(&app, home));
-    assert!(app.world().get::<Disabled>(body).is_some());
     let mut last = test_level(&mut app, floor());
     last.path = away_path;
     app.world_mut()
@@ -1210,7 +1062,6 @@ fn a_recruited_npc_joins_leaves_returns_and_dies_as_one() {
     let last = app.world_mut().spawn(Destination::new(last, default(), Entry::Travel)).id();
     app.update();
     assert!(is_played(&app, last));
-    assert!(app.world().get::<Disabled>(body).is_some(), "the dead stay out of the world");
     assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);
 }
 

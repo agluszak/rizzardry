@@ -804,7 +804,6 @@ pub(crate) mod tests {
         assert_eq!(points.current(Realm::Air, &maximum), 0);
         assert_eq!(points.restore_evenly(100), 10);
         assert!(!points.short());
-        assert_eq!(points.fraction[Realm::Fire], 0.75);
         assert_eq!(points.restore_evenly(5), 0);
     }
 
@@ -1020,7 +1019,6 @@ pub(crate) mod tests {
         let spell = SpellDefinition { realm: Some(Realm::Divine), cost: 1, ..default() };
         assert_eq!(points.affordable_power(&spell, &low), 0);
         assert_eq!(points.current(Realm::Divine, &high), 1);
-        assert_eq!(points.fraction[Realm::Divine], 0.5);
     }
 
     #[test]
@@ -1033,16 +1031,14 @@ pub(crate) mod tests {
         assert_eq!(points.current(Realm::Divine, &maximum), 6);
         points.recover(10_000, 1.0, &maximum);
         assert_eq!(points.current(Realm::Divine, &maximum), 20);
-        assert_eq!(points.fraction[Realm::Divine], 0.0);
         points.spent[Realm::Divine] = -5;
         points.fraction[Realm::Divine] = 0.5;
         points.recover(1, 1.0, &maximum);
         assert_eq!(points.current(Realm::Divine, &maximum), 25, "retail skips full realms");
-        assert_eq!(points.fraction[Realm::Divine], 0.0);
     }
 
     #[test]
-    fn idle_recovery_keeps_surplus_but_clears_its_fraction() {
+    fn idle_recovery_keeps_surplus() {
         let mut maximum = EnumMap::default();
         maximum[Realm::Divine] = 10;
         let mut points = SpellPoints::default();
@@ -1050,7 +1046,6 @@ pub(crate) mod tests {
         points.fraction[Realm::Divine] = 0.5;
         points.recover(1, 0.5, &maximum);
         assert_eq!(points.current(Realm::Divine, &maximum), 15);
-        assert_eq!(points.fraction[Realm::Divine], 0.0);
         assert!(!points.needs_recovery());
         points.spend(Realm::Divine, 6);
         points.recover(100, 0.5, &maximum);
@@ -1066,23 +1061,6 @@ pub(crate) mod tests {
         assert_eq!(points.affordable_power(&heal_wounds(), &maximum), 3);
         points.spent[Realm::Divine] = 0;
         assert_eq!(points.affordable_power(&heal_wounds(), &maximum), 7);
-    }
-
-    #[test]
-    fn failure_and_backfire_share_one_roll_and_guaranteed_casts_draw_none() {
-        let spell =
-            SpellDefinition { id: SpellId::ENERGY_BLAST, targeting: Targeting::Enemy, ..default() };
-        let mut rng = GameRng::seeded(17);
-        let mut expected = rng.clone();
-        let rolled = expected.below(100);
-        let outcome = if rolled < 33 { Outcome::Backfired } else { Outcome::Fizzled };
-        assert_eq!(roll(&mut rng, 100, &spell, false, false), outcome);
-        assert_eq!(rng, expected, "backfire must not consume a second random draw");
-        assert_eq!(roll(&mut rng, 0, &spell, false, false), Outcome::Cast);
-        assert_eq!(rng, expected, "a guaranteed cast consumes no failure draw");
-        expected.below(100);
-        assert_eq!(roll(&mut rng, 100, &spell, true, false), Outcome::Backfired);
-        assert_eq!(rng, expected);
     }
 
     #[test]

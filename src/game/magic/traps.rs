@@ -4,7 +4,7 @@
 use super::Strength;
 use crate::content::spells::SpellId;
 use crate::game::characters::Vitals;
-use crate::game::hits::prototypes::{Definitions, Uses};
+use crate::game::hits::definitions::{Definitions, Uses};
 use crate::game::hits::{Act, Deed};
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::interaction::Unable;

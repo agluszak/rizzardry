@@ -1,16 +1,13 @@
-//! What lands on bodies. An act (a cast, a missile's impact, a breath, a
-//! cloud's pulse, a trap, a blow) is an entity with a [`Deed`] recording what
-//! it did. It reaches each body it lands on ([`Reach`]), and the reach works
-//! through what the act's definition does to that body one effect at a time
-//! ([`effects`]): each effect is an entity that [`Strikes`] the body and is a
-//! [`HitOf`] the act, settled by the [`Hits`] stages. Once an act's reaches
-//! are done, what follows (a drain's share, a burst, a reflection) is made
-//! and [`report_deeds`] turns the act into news.
+//! Acts own their deeds and independently delayed impacts. Once an impact
+//! arrives, its immutable definition is evaluated as one immediate operation.
+//! Consequences settle before another swing or actor advances; completed acts
+//! produce drains, reflections, practice, recasts, and finally reports.
 
 pub mod defences;
+pub mod definitions;
 pub mod effects;
-pub mod prototypes;
 pub mod reach;
+mod resolve;
 pub mod specials;
 pub mod spells;
 
@@ -101,22 +98,22 @@ pub struct By(pub Entity);
 #[relationship_target(relationship = By, linked_spawn)]
 pub struct Acts(Vec<Entity>);
 
-/// The reach or effect lands on this body.
+/// The impact lands on this body.
 #[derive(Component, Clone, Copy, Debug)]
 #[relationship(relationship_target = Incoming)]
 pub struct Strikes(pub Entity);
 
-/// The reaches and effects landing on a body, gone with it.
+/// Impacts on a body, gone with it.
 #[derive(Component, Debug)]
 #[relationship_target(relationship = Strikes, linked_spawn)]
 pub struct Incoming(Vec<Entity>);
 
-/// The reach or effect belongs to this act.
+/// The impact belongs to this act.
 #[derive(Component, Clone, Copy, Debug)]
 #[relationship(relationship_target = DeedHits)]
 pub struct HitOf(pub Entity);
 
-/// An act's reaches and effects still to land, gone with it.
+/// An act's outstanding impacts, gone with it.
 #[derive(Component, Debug)]
 #[relationship_target(relationship = HitOf, linked_spawn)]
 pub struct DeedHits(Vec<Entity>);
@@ -172,26 +169,20 @@ pub enum HitPhase {
     Report,
 }
 
-/// Run the hit stages until no reach is left to work but missiles still on
-/// their way: each effect, and what a landed act set off (a reflection, a
-/// burst), is settled within the same step.
+/// Drain immediate impacts and the finite follow-ups they release. Each spell
+/// completion is consumed once; reflected spells cannot reflect again and
+/// explosions do not burst. Only missile flight may survive this boundary.
 pub fn run_hits(world: &mut World) {
     if world.query_filtered::<(), With<Deed>>().iter(world).next().is_none() {
         return;
     }
     world.run_schedule(Hits);
-    let mut passes = 1;
     while world
         .query_filtered::<(), (With<HitOf>, Without<effects::InFlight>)>()
         .iter(world)
         .next()
         .is_some()
     {
-        passes += 1;
-        if passes > 256 {
-            error!("effects left unsettled after {passes} passes");
-            break;
-        }
         world.run_schedule(Hits);
     }
 }
@@ -200,12 +191,27 @@ pub struct HitsPlugin;
 
 impl Plugin for HitsPlugin {
     fn build(&self, app: &mut App) {
-        use effects::*;
-        use prototypes::{Definitions, advance, define, party_reaches, pick, roll};
-        app.configure_sets(
-            Hits,
-            (HitPhase::Effects, HitPhase::Completed, HitPhase::Report).chain(),
+        use definitions::{Definitions, define};
+        use resolve::party_reaches;
+        app.add_systems(
+            Capabilities,
+            (
+                crate::game::world::hostility::judge_sides,
+                crate::game::world::footing::place_bodies,
+                defences::judge_defences,
+            )
+                .chain(),
         )
+        .add_systems(
+            AfterEffect,
+            (
+                crate::game::characters::sync_member_maxima,
+                crate::game::characters::cheat_death,
+                crate::game::characters::settle_deaths,
+            )
+                .chain(),
+        )
+        .configure_sets(Hits, (HitPhase::Effects, HitPhase::Completed, HitPhase::Report).chain())
         .add_systems(
             PreUpdate,
             define
@@ -215,54 +221,14 @@ impl Plugin for HitsPlugin {
         .add_systems(
             Hits,
             (
-                defences::judge_defences.run_if(any_with_component::<HitOf>),
+                refresh_capabilities,
                 spells::strength_of_owners,
                 party_reaches,
-                advance,
-                (
-                    pick,
-                    roll,
-                    miss_the_dead,
-                    roll_chances,
-                    immunities,
-                    saves,
-                    iron_will,
-                    resist,
-                    shrug,
-                )
-                    .chain(),
-                (
-                    harm,
-                    sap,
-                    afflict,
-                    slay,
-                    tire,
-                    drain_pool,
-                    drain_budget,
-                    drain_realm,
-                    heal,
-                    refresh,
-                    replenish,
-                    cure,
-                    renew,
-                    raise,
-                    purify,
-                    enchant,
-                    burn,
-                )
-                    .chain(),
-                (enchant_party, purify_party, drain_party, burn_pool, lose_gold, dispel).chain(),
-                (
-                    notify_hurt,
-                    break_lures,
-                    count_drains,
-                    wake,
-                    crate::game::characters::sync_member_maxima,
-                    crate::game::characters::cheat_death,
-                    crate::game::characters::settle_deaths,
-                )
-                    .chain(),
-                (spells::drain_back, spells::burst_blood, spells::reflect_spells).chain(),
+                resolve::impacts,
+                refresh_capabilities,
+                spells::drain_back,
+                spells::burst_blood,
+                spells::reflect_spells,
             )
                 .chain()
                 .in_set(HitPhase::Effects),
@@ -341,4 +307,13 @@ pub fn report_deeds(
             Act::Swing => unreachable!(),
         }
     }
+}
+
+/// Projections are live capabilities, refreshed at consequence boundaries.
+#[derive(bevy::ecs::schedule::ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct Capabilities;
+#[derive(bevy::ecs::schedule::ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
+struct AfterEffect;
+pub(crate) fn refresh_capabilities(world: &mut World) {
+    world.run_schedule(Capabilities);
 }

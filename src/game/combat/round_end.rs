@@ -22,8 +22,8 @@ use crate::game::characters::Vitals;
 use crate::game::characters::{Character, Condition};
 use crate::game::data::Catalogs;
 use crate::game::factions::Factions;
+use crate::game::hits::definitions::{Definitions, Uses};
 use crate::game::hits::effects::InFlight;
-use crate::game::hits::prototypes::{Definitions, Uses};
 use crate::game::hits::reach::{Recipients, within};
 use crate::game::hits::spells::reach;
 use crate::game::hits::{Act, Deed};
@@ -207,11 +207,10 @@ pub(super) fn leave_fight(
 /// `AdvanceCombatRound`); a Fighter's sheet scales it.
 pub(super) fn rest_the_idle(
     fight: Single<&Combatants, With<RoundEnding>>,
-    roster: Single<&PartyRoster>,
     mut bodies: Query<(&mut Vitals, Option<&Turn>, Option<&Ordered>, Option<&Character>)>,
     mut rng: ResMut<GameRng>,
 ) {
-    for body in roster.iter().chain(fight.entities().iter().copied()) {
+    for &body in fight.entities() {
         let Ok((mut vitals, turn, ordered, character)) = bodies.get_mut(body) else { continue };
         let resting = turn.is_some_and(|turn| turn.waited)
             || ordered.is_some_and(Ordered::defends)
@@ -251,7 +250,10 @@ pub(super) fn cool_specials(
 /// The fighting monsters' conditions age by the round's tick.
 pub(super) fn age_conditions(
     fight: Single<(&Combatants, &RoundEnding)>,
-    mut monsters: Query<&mut crate::game::characters::Vitals>,
+    mut monsters: Query<
+        &mut crate::game::characters::Vitals,
+        Without<crate::game::party::roster::PartyMember>,
+    >,
 ) {
     let (combatants, ending) = *fight;
     for &monster in combatants.entities() {
@@ -363,7 +365,10 @@ pub(super) fn pulse_clouds(
 pub(super) fn age_enchantments(
     fight: Single<(&mut Round, &Combatants, &RoundEnding), With<Battle>>,
     mut party: Single<&mut PartyEffects>,
-    mut monsters: Query<&mut crate::game::characters::Vitals>,
+    mut monsters: Query<
+        &mut crate::game::characters::Vitals,
+        Without<crate::game::party::roster::PartyMember>,
+    >,
 ) {
     let (mut round, combatants, ending) = fight.into_inner();
     party.0.age(ending.0.aging);
@@ -466,7 +471,10 @@ pub fn end_round(
     fight: Single<(Entity, &Combatants, Has<FightOver>), With<RoundEnding>>,
     leaving: Query<Entity, With<Leaves>>,
     mut party: Single<&mut PartyEffects>,
-    mut monsters: Query<&mut crate::game::characters::Vitals>,
+    mut monsters: Query<
+        &mut crate::game::characters::Vitals,
+        Without<crate::game::party::roster::PartyMember>,
+    >,
 ) {
     let (fight, combatants, over) = *fight;
     for monster in &leaving {
