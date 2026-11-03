@@ -37,7 +37,7 @@ use crate::game::world::hostility::{self, Loyalty, Provocation, Side, Stance};
 use crate::game::world::identify::{GroupMember, GroupMembers};
 use crate::game::world::level::Level;
 use crate::game::world::obstacles::WorldObstacles;
-use crate::game::world::population::{Monster, Untargetable};
+use crate::game::world::population::Untargetable;
 
 /// The power that asks the caster to choose it: as much as the victim needs
 /// (retail "Auto Calibrate"), or, outside a fight, as much and as often as
@@ -1038,15 +1038,17 @@ fn aim_blast(
         (Entity, &Cast, &By, &Target, &Power),
         (With<Chosen>, Without<Rolled>, Without<DeedHits>),
     >,
-    bodies: Query<(Entity, &Vitals, &Side, &Footing, Option<&Monster>), Without<Untargetable>>,
+    bodies: Query<(Entity, &Vitals, &Side, &Footing), Without<Untargetable>>,
+    fight: Option<Single<&crate::game::combat::Combatants>>,
     roster: Single<&PartyRoster>,
     obstacles: WorldObstacles,
     content: If<Res<Catalogs>>,
 ) {
+    let combatants = fight.as_deref().map_or(&[][..], |fight| fight.entities());
     for (cast, &Cast { spell, .. }, by, target, power) in &casts {
         let spell = &content.spells[spell];
         let (Targeting::Radius, Some(centre)) = (spell.targeting, target.0) else { continue };
-        let side = bodies.get(by.0).map_or(Stance::Friendly, |(_, _, side, ..)| side.0);
+        let side = bodies.get(by.0).map_or(Stance::Friendly, |(_, _, side, _)| side.0);
         let radius = spell.radius + spell.radius_per_power * power.0 as f32;
         let victims: Vec<_> = within(
             centre,
@@ -1054,7 +1056,7 @@ fn aim_blast(
             radius,
             Recipients::Opponents(side),
             &bodies,
-            &roster,
+            (&roster, combatants),
             &obstacles,
         )
         .into_iter()
@@ -1266,8 +1268,7 @@ fn settle(commands: &mut Commands, cast: Entity) {
 fn backfire(
     mut commands: Commands,
     casts: Query<(Entity, &Cast, &By, &Chosen, &Rolled, &Target, &Power, Option<&DeedHits>)>,
-    bodies: Query<(Entity, &Vitals, &Side, &Footing, Option<&Monster>), Without<Untargetable>>,
-    monsters: Query<&Monster>,
+    bodies: Query<(Entity, &Vitals, &Side, &Footing), Without<Untargetable>>,
     memberships: Query<&GroupMember>,
     groups: Query<&GroupMembers>,
     fight: Option<Single<&crate::game::combat::Combatants>>,
@@ -1285,14 +1286,14 @@ fn backfire(
         }
         let spell = &content.spells[spell];
         let caster = by.0;
-        let Ok((_, _, side, stand, _)) = bodies.get(caster) else { continue };
+        let Ok((_, _, side, stand)) = bodies.get(caster) else { continue };
         let (side, stand) = (side.0, *stand);
         let eye = stand.eye;
-        let eye_of = |body: Entity| bodies.get(body).map_or(eye, |(.., at, _)| at.eye);
+        let eye_of = |body: Entity| bodies.get(body).map_or(eye, |(.., at)| at.eye);
         let (owner, from) = match (spell.targeting, chosen.0.aim) {
             (Targeting::Enemy | Targeting::Ally, Aim::Body(entity)) => (entity, eye_of(entity)),
             (Targeting::EnemyGroup, Aim::Body(entity)) => {
-                let leader = leader(entity, &monsters, &memberships, &groups);
+                let leader = leader(entity, combatants, &memberships, &groups);
                 (leader, eye_of(leader))
             }
             (Targeting::Radius | Targeting::Cone, _) => (caster, target.0.unwrap_or(eye)),
@@ -1306,14 +1307,14 @@ fn backfire(
                 spell.radius + spell.radius_per_power * power.0 as f32,
                 Recipients::Opponents(side).reversed(),
                 &bodies,
-                &roster,
+                (&roster, combatants),
                 &obstacles,
             ),
             _ => roster
                 .iter()
                 .chain(combatants.iter().copied())
                 .filter(|&other| {
-                    bodies.get(other).is_ok_and(|(_, vitals, their_side, at, _)| {
+                    bodies.get(other).is_ok_and(|(_, vitals, their_side, at)| {
                         !vitals.is_dead()
                             && their_side.0 == side
                             && (other == caster

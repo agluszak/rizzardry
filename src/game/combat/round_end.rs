@@ -293,7 +293,7 @@ pub(super) fn recover_members(
 pub(super) fn pulse_clouds(
     mut commands: Commands,
     fight: Single<&Combatants, With<RoundEnding>>,
-    bodies: Query<(Entity, &Vitals, &Side, &Footing, Option<&Monster>), Without<Untargetable>>,
+    bodies: Query<(Entity, &Vitals, &Side, &Footing), Without<Untargetable>>,
     party: Single<(&Position, &PartyRoster, &PartyEffects)>,
     obstacles: WorldObstacles,
     content: If<Res<Catalogs>>,
@@ -308,7 +308,7 @@ pub(super) fn pulse_clouds(
         reach(commands, act, &victims);
     };
     let living: Vec<Entity> =
-        roster.iter().filter(|&m| bodies.get(m).is_ok_and(|(_, v, ..)| !v.is_dead())).collect();
+        roster.iter().filter(|&m| bodies.get(m).is_ok_and(|(_, v, _, _)| !v.is_dead())).collect();
     for id in OFFENSIVE {
         if let Some(effect) = effects.0.get(id) {
             let strength = Strength::at(0, &content.spells[id], effect.power, effect.boost);
@@ -341,7 +341,7 @@ pub(super) fn pulse_clouds(
             reach_of,
             Recipients::Opponents(Stance::Friendly),
             &bodies,
-            roster,
+            (roster, fight.entities()),
             &obstacles,
         );
         let strength = Strength { power: effect.power, boost: 0, against: effect.power * 3 };

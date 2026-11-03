@@ -8,7 +8,7 @@ use crate::game::party::roster::PartyRoster;
 use crate::game::world::footing::Footing;
 use crate::game::world::hostility::{Side, Stance};
 use crate::game::world::obstacles::WorldObstacles;
-use crate::game::world::population::{Monster, Untargetable};
+use crate::game::world::population::Untargetable;
 
 /// Whom a burst may take: those standing against its source's side, or
 /// anyone when it has no source.
@@ -37,33 +37,37 @@ impl Recipients {
 }
 
 /// The living bodies within `radius` of `centre` that `origin` has a clear
-/// line to, in burst order: the party's members by seat, then monsters by
-/// placement.
+/// line to, in the fight's order: the party's members by seat, then the
+/// combatants as they joined, then anyone else.
 pub fn within(
     centre: Vec3,
     origin: Vec3,
     radius: f32,
     recipients: Recipients,
-    bodies: &Query<(Entity, &Vitals, &Side, &Footing, Option<&Monster>), Without<Untargetable>>,
-    roster: &PartyRoster,
+    bodies: &Query<(Entity, &Vitals, &Side, &Footing), Without<Untargetable>>,
+    (roster, combatants): (&PartyRoster, &[Entity]),
     obstacles: &WorldObstacles,
 ) -> Vec<Entity> {
     if radius <= 0.0 {
         return vec![];
     }
-    let mut taken: Vec<((u8, i32), Entity)> = bodies
+    let mut taken: Vec<((u8, usize), Entity)> = bodies
         .iter()
-        .filter(|(_, vitals, side, ..)| !vitals.is_dead() && recipients.admits(side.0))
-        .filter(|(.., at, _)| at.centre.distance(centre) - at.radius <= radius)
-        .filter(|(.., at, _)| obstacles.clear(origin, at.centre))
-        .map(|(entity, .., monster)| {
-            let order = match roster.get_index_of(&entity) {
-                Some(seat) => (0, seat as i32),
-                None => (1, monster.map_or(i32::MAX, |monster| monster.location)),
+        .filter(|(_, vitals, side, _)| !vitals.is_dead() && recipients.admits(side.0))
+        .filter(|(.., at)| at.centre.distance(centre) - at.radius <= radius)
+        .filter(|(.., at)| obstacles.clear(origin, at.centre))
+        .map(|(entity, ..)| {
+            let order = match (
+                roster.get_index_of(&entity),
+                combatants.iter().position(|&c| c == entity),
+            ) {
+                (Some(seat), _) => (0, seat),
+                (None, Some(joined)) => (1, joined),
+                (None, None) => (2, 0),
             };
             (order, entity)
         })
         .collect();
-    taken.sort_unstable_by_key(|(order, _)| *order);
+    taken.sort_by_key(|(order, _)| *order);
     taken.into_iter().map(|(_, entity)| entity).collect()
 }

@@ -158,12 +158,14 @@ pub fn drain_back(
 pub fn burst_blood(
     mut commands: Commands,
     acts: Query<(&Spell, &Strength), (With<Deed>, Without<DeedHits>)>,
-    bodies: Query<(Entity, &Vitals, &Side, &Footing, Option<&Monster>), Without<Untargetable>>,
+    bodies: Query<(Entity, &Vitals, &Side, &Footing), Without<Untargetable>>,
+    fight: Option<Single<&crate::game::combat::Combatants>>,
     roster: Single<&PartyRoster>,
     obstacles: WorldObstacles,
     content: If<Res<Catalogs>>,
     definitions: Res<Definitions>,
 ) {
+    let combatants = fight.as_deref().map_or(&[][..], |fight| fight.entities());
     let Some(explosion) = content.spells.get(SpellId::BOILING_BLOOD_EXPLOSION) else { return };
     let Some(uses) = definitions.spell(explosion.id) else { return };
     for (spell, strength) in &acts {
@@ -179,15 +181,22 @@ pub fn burst_blood(
         };
         let radius = explosion.radius + explosion.radius_per_power * strength.power as f32;
         for &victim in &spell.victims {
-            let Ok((_, vitals, _, at, _)) = bodies.get(victim) else { continue };
+            let Ok((_, vitals, _, at)) = bodies.get(victim) else { continue };
             if !vitals.is_dead() {
                 continue;
             }
-            let victims: Vec<_> =
-                within(at.feet, at.feet, radius, recipients, &bodies, &roster, &obstacles)
-                    .into_iter()
-                    .map(|victim| (victim, None))
-                    .collect();
+            let victims: Vec<_> = within(
+                at.feet,
+                at.feet,
+                radius,
+                recipients,
+                &bodies,
+                (&roster, combatants),
+                &obstacles,
+            )
+            .into_iter()
+            .map(|victim| (victim, None))
+            .collect();
             let act = commands
                 .spawn((
                     Deed::new(super::Act::Missile { caster: spell.caster, spell: explosion.id }),
@@ -219,11 +228,11 @@ pub fn group_of(
         .map_or_else(|| vec![entity], |members| members.iter().collect())
 }
 
-/// The first placed of a monster's group, whom a group spell turned back
-/// comes from.
+/// The first of a monster's group to have joined the fight, whom a group
+/// spell turned back comes from.
 pub fn leader(
     entity: Entity,
-    monsters: &Query<&Monster>,
+    combatants: &[Entity],
     memberships: &Query<&GroupMember>,
     groups: &Query<&GroupMembers>,
 ) -> Entity {
@@ -233,7 +242,7 @@ pub fn leader(
         .and_then(|member| groups.get(member.0).ok())
         .map_or_else(|| vec![entity], |members| members.iter().collect())
         .into_iter()
-        .min_by_key(|&member| monsters.get(member).map_or(i32::MAX, |monster| monster.location))
+        .min_by_key(|&member| combatants.iter().position(|&c| c == member).unwrap_or(usize::MAX))
         .unwrap_or(entity)
 }
 
@@ -249,11 +258,8 @@ pub fn leader(
 pub fn reflect_spells(
     mut commands: Commands,
     mut acts: Query<(&Spell, &Strength, &mut Deed), Without<DeedHits>>,
-    mut bodies: Query<
-        (Entity, &mut Vitals, &Side, &Footing, Option<&Monster>),
-        Without<Untargetable>,
-    >,
-    monsters: Query<&Monster>,
+    mut bodies: Query<(Entity, &mut Vitals, &Side, &Footing), Without<Untargetable>>,
+    fight: Option<Single<&crate::game::combat::Combatants>>,
     memberships: Query<&GroupMember>,
     group_members: Query<&GroupMembers>,
     roster: Single<&PartyRoster>,
@@ -262,7 +268,8 @@ pub fn reflect_spells(
     definitions: Res<Definitions>,
 ) {
     let spells = &content.spells;
-    let party_at = roster.iter().find_map(|member| bodies.get(member).ok().map(|(.., at, _)| *at));
+    let combatants = fight.as_deref().map_or(&[][..], |fight| fight.entities());
+    let party_at = roster.iter().find_map(|member| bodies.get(member).ok().map(|(.., at)| *at));
     for (cast, &strength, mut deed) in &mut acts {
         let spell = &spells[cast.id];
         let Some(uses) = definitions.spell(cast.id) else { continue };
@@ -271,8 +278,8 @@ pub fn reflect_spells(
         }
         let mut order = cast.victims.clone();
         order.sort_by_key(|&victim| match roster.get_index_of(&victim) {
-            Some(seat) => (0, seat as i32),
-            None => (1, monsters.get(victim).map_or(i32::MAX, |monster| monster.location)),
+            Some(seat) => (0, seat),
+            None => (1, combatants.iter().position(|&c| c == victim).unwrap_or(usize::MAX)),
         });
         let best = order
             .into_iter()
@@ -290,13 +297,13 @@ pub fn reflect_spells(
         deed.effects.push(Effect::Reflected { victim: charged });
         let owner = cast.owner;
         let eye = party_at.map_or(cast.from, |at| at.eye);
-        let eye_of = |actor: Entity| bodies.get(actor).map_or(eye, |(.., at, _)| at.eye);
+        let eye_of = |actor: Entity| bodies.get(actor).map_or(eye, |(.., at)| at.eye);
         // Whom and where it comes back from.
         let (source, from) = match (spell.targeting, cast.aim) {
             (Targeting::Radius | Targeting::Cone, Aim::Point(at)) => (owner, at),
             (Targeting::Radius | Targeting::Cone | Targeting::AllEnemies, _) => (owner, cast.from),
             (Targeting::EnemyGroup, Aim::Body(entity)) => {
-                let leader = leader(entity, &monsters, &memberships, &group_members);
+                let leader = leader(entity, combatants, &memberships, &group_members);
                 (Some(leader), eye_of(leader))
             }
             (_, Aim::Body(entity)) => (Some(entity), eye_of(entity)),
@@ -309,7 +316,7 @@ pub fn reflect_spells(
             }
         };
         let recipients = match owner.and_then(|owner| bodies.get(owner).ok()) {
-            Some((_, _, side, ..)) => Recipients::Opponents(side.0).reversed(),
+            Some((_, _, side, _)) => Recipients::Opponents(side.0).reversed(),
             None => Recipients::Everyone,
         };
         let readonly = bodies.as_readonly();
@@ -325,24 +332,38 @@ pub fn reflect_spells(
             Targeting::Radius => {
                 let centre = owner
                     .and_then(|owner| readonly.get(owner).ok())
-                    .map_or(party_at.map_or(cast.from, |at| at.feet), |(.., at, _)| at.feet);
+                    .map_or(party_at.map_or(cast.from, |at| at.feet), |(.., at)| at.feet);
                 let radius =
                     spell.radius + spell.radius_per_power * strength.power.min(power) as f32;
-                within(centre, cast.from, radius, recipients, &readonly, &roster, &obstacles)
+                within(
+                    centre,
+                    cast.from,
+                    radius,
+                    recipients,
+                    &readonly,
+                    (&roster, combatants),
+                    &obstacles,
+                )
             }
-            Targeting::Cone => {
-                within(from, from, spell.reach.metres(), recipients, &readonly, &roster, &obstacles)
-                    .into_iter()
-                    .filter(|&victim| in_cone(cast.from - from, eye_of(victim) - from))
-                    .collect()
-            }
+            Targeting::Cone => within(
+                from,
+                from,
+                spell.reach.metres(),
+                recipients,
+                &readonly,
+                (&roster, combatants),
+                &obstacles,
+            )
+            .into_iter()
+            .filter(|&victim| in_cone(cast.from - from, eye_of(victim) - from))
+            .collect(),
             Targeting::AllEnemies => within(
                 cast.from,
                 cast.from,
                 spell.reach.metres(),
                 recipients,
                 &readonly,
-                &roster,
+                (&roster, combatants),
                 &obstacles,
             ),
             _ => vec![],
