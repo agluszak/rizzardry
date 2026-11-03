@@ -254,3 +254,83 @@ fn killing_a_turned_ally_awards_nothing_but_a_revived_enemy_counts() {
     assert_eq!(world.get::<Spoils>(battle).unwrap().kills, 1);
     assert_eq!(world.get::<Spoils>(battle).unwrap().experience, 120);
 }
+
+/// A member's cast in a fight, resolved in one pass: it provokes the foe it
+/// is aimed at, pays its points whatever the roll, and a missile that went
+/// off is reported as it leaves, then lands on arrival.
+#[test]
+fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
+    use crate::content::characters::Skill;
+    use crate::content::spells::{Reach, Spellbook, Targeting, Usable};
+    use crate::game::hits::{By, DeedHits, effects::InFlight};
+    use crate::game::magic::casting::{
+        self, Aim, Cast, MagicChoice, MagicNews, Source, UseContext,
+    };
+    use crate::game::magic::{Outcome, SpellPoints};
+    use crate::game::world::hostility::Provocation;
+    let (mut app, _, member) = app();
+    let world = app.world_mut();
+    world.resource_mut::<Catalogs>().spells.0[SpellId::ENERGY_BLAST.0 as usize] = SpellDefinition {
+        id: SpellId::ENERGY_BLAST,
+        realm: Some(Realm::Fire),
+        level: 1,
+        cost: 1,
+        books: Spellbook::Divinity.into(),
+        targeting: Targeting::Enemy,
+        reach: Reach::Long,
+        usable: Usable::Always,
+        missile: Some(1),
+        dice: Some(Dice { base: 5, count: 0, sides: 1 }),
+        ..default()
+    };
+    let mut character = world.get_mut::<Character>(member).unwrap();
+    character.skill_points[Skill::Divinity] = 100;
+    character.skill_points[Skill::FireMagic] = 100;
+    world.entity_mut(member).insert((
+        LearnedSpells([SpellId::HEAL_WOUNDS, SpellId::ENERGY_BLAST].into()),
+        SpellPoints::default(),
+        crate::game::inventory::Carried::default(),
+    ));
+    let fight = world.spawn(Battle::default()).id();
+    world.get_mut::<Round>(fight).unwrap().phase = RoundPhase::Executing(1);
+    let foe = monster(world, fight, 3.0);
+    refresh(world);
+    let points = magic::test_points(world, member, Realm::Fire);
+    assert!(points >= 1);
+    let spell = &world.resource::<Catalogs>().spells[SpellId::ENERGY_BLAST];
+    assert_eq!(magic::fail_chance(world.get::<Character>(member).unwrap(), spell, 1), 0);
+    let choice = MagicChoice {
+        source: Source::Spell { spell: SpellId::ENERGY_BLAST, power: 1 },
+        aim: Aim::Body(foe),
+    };
+    let cast = world
+        .spawn((Cast::new(SpellId::ENERGY_BLAST, UseContext::Combat, choice), By(member)))
+        .id();
+    casting::resolve_casts(world);
+    assert!(world.get::<Cast>(cast).is_none(), "resolved in one pass");
+    assert_eq!(magic::test_points(world, member, Realm::Fire), points - 1);
+    let provoked: Vec<_> = world.resource_mut::<Messages<Provocation>>().drain().collect();
+    assert_eq!(provoked, vec![Provocation(foe)]);
+    let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
+    assert!(
+        matches!(news.as_slice(), [MagicNews::Done(report)] if report.outcome == Outcome::Cast),
+        "{news:?}"
+    );
+    assert_eq!(
+        world.get::<Deed>(cast).unwrap().act,
+        Act::Missile { caster: member, spell: SpellId::ENERGY_BLAST }
+    );
+    let hits: Vec<_> = world.get::<DeedHits>(cast).unwrap().iter().collect();
+    assert_eq!(hits.len(), 1);
+    assert!(world.get::<InFlight>(hits[0]).is_some(), "a missile flies to its victim");
+    assert!(world.get::<Round>(fight).unwrap().attacked);
+    // Three metres at fifteen a second: it lands within the next step.
+    world.resource_mut::<Time>().advance_by(std::time::Duration::from_millis(500));
+    world.run_schedule(FixedUpdate);
+    world.run_schedule(FixedUpdate);
+    let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
+    assert!(
+        matches!(news.as_slice(), [MagicNews::Landed { caster, spell: SpellId::ENERGY_BLAST, .. }] if *caster == member),
+        "{news:?}"
+    );
+}
