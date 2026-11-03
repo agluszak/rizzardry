@@ -35,6 +35,7 @@ fn play_line(
     commands.entity(e).insert(LinePace::Text { remaining: text_seconds(&line.text) });
     if let Some(voice) = &line.voice {
         commands.entity(e).insert((
+            crate::presentation::voice::Speaking,
             bevy::audio::AudioPlayer::new(
                 assets.load(crate::presentation::voice::voice_path(voice)),
             ),
@@ -52,16 +53,20 @@ fn play_line(
         ));
     }
 }
-/// A line whose speech plays shows while it does, then holds briefly; one
-/// whose speech never plays shows for its text's time.
-fn watch_playback(mut lines: Query<(&bevy::audio::AudioSink, &mut LinePace)>) {
+/// A line whose speech plays shows while it does, then holds briefly, no
+/// longer speaking; one whose speech never plays shows for its text's time.
+fn watch_playback(
+    mut commands: Commands,
+    mut lines: Query<(Entity, &bevy::audio::AudioSink, &mut LinePace)>,
+) {
     use bevy::audio::AudioSinkPlayback;
-    for (sink, mut pace) in &mut lines {
+    for (line, sink, mut pace) in &mut lines {
         if matches!(*pace, LinePace::Text { .. }) {
             *pace = LinePace::Speech;
         }
         if *pace == LinePace::Speech && sink.empty() {
             *pace = LinePace::Hold { remaining: 0.7 };
+            commands.entity(line).remove::<crate::presentation::voice::Speaking>();
         }
     }
 }

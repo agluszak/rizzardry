@@ -1,9 +1,18 @@
-//! What passing game time does to the party. Retail ticks stamina every
-//! 1.4 game seconds and heals and ages conditions on its 120-second aging
-//! tick; how much they recover depends on how the time is spent.
+//! What passing game time does to bodies. Retail ticks stamina every 1.4
+//! game seconds and heals and ages conditions on its 120-second aging
+//! tick; how much the party recovers depends on how the time is spent.
 //!
-//! Whatever passes time applies this at once, with its own pace:
-//! exploring and camping in `game::time`, a combat round when it ends.
+//! The mechanics here are shared; the phase that passes time owns the
+//! policy, as an ordered operation of its own:
+//!
+//! - exploring and camping (`game::time::pass_time`): each aging tick,
+//!   every member [`pass`]es at the party's pace, then the party's spells
+//!   and every monster's conditions and spells age ([`age_conditions`],
+//!   [`age_enchantments`]);
+//! - a combat round's end (`game::combat::round_end`): the fighting
+//!   monsters' conditions age, the members [`pass`] at [`Pace::Fighting`],
+//!   the clouds pulse once more, then the party's and the monsters' spells
+//!   age, so the last pulse still sees the round's protections.
 
 use bevy::prelude::*;
 
@@ -82,6 +91,22 @@ pub fn pass(
     }
 }
 
+/// Any body's timed conditions run out as time passes; a body with none
+/// is left unmarked.
+pub fn age_conditions(vitals: &mut Mut<Vitals>, ticks: u32) {
+    if vitals.conditions.any_timed() {
+        vitals.age_conditions(ticks);
+    }
+}
+
+/// Any body's spells run out as time passes; a body under none is left
+/// unmarked.
+pub fn age_enchantments(vitals: &mut Mut<Vitals>, ticks: u32) {
+    if !vitals.enchantments.0.is_empty() {
+        vitals.age_enchantments(ticks);
+    }
+}
+
 /// What the ticks passed at `pace` do to one member: poison bites first,
 /// then disease, then they recover, then their conditions age (retail
 /// `GameTurnsPassedChar`). Returns what disease did.
@@ -110,7 +135,9 @@ pub fn elapse(
             pool.recover(ticks.aging, recovery_scale(pace.health_scale()), &maximum);
         }
         member.recover_health(ticks.aging, health);
-        member.age_conditions(ticks.aging, rng);
+        member.weaken_poison(ticks.aging, rng);
+        member.age_conditions(ticks.aging);
+        member.age_enchantments(ticks.aging);
         // Spells that run out take what they raised the maxima by.
         member.sync_maxima(profile);
         member.health.current = member.health.current.min(member.health.max);
@@ -215,7 +242,8 @@ mod tests {
         // Half of what is left: half the strength.
         let mut halved = Vitals::new(&profile);
         halved.poison(Lasting::Rounds(10), 8);
-        halved.age_conditions(5, &mut rng);
+        halved.weaken_poison(5, &mut rng);
+        halved.age_conditions(5);
         assert_eq!(halved.poison, 4);
         // A stronger poison raises the bite; a weaker one does not lower it,
         // and a fresh poisoning after one runs out starts afresh.
@@ -223,7 +251,8 @@ mod tests {
         assert_eq!(halved.poison, 6);
         halved.poison(Lasting::Rounds(2), 1);
         assert_eq!(halved.poison, 6);
-        halved.age_conditions(20, &mut rng);
+        halved.weaken_poison(20, &mut rng);
+        halved.age_conditions(20);
         assert!(!halved.conditions.has(Condition::Poisoned));
         assert_eq!(halved.poison_damage(5, false), 0);
         halved.poison(Lasting::Rounds(3), 2);
@@ -355,5 +384,41 @@ mod tests {
         doomed.health.current = 2;
         assert_eq!(doomed.drain_health(&mut profile, 5), 2);
         assert!(doomed.is_dead() && doomed.conditions.has(Condition::Drained));
+    }
+}
+
+#[cfg(test)]
+mod aging_tests {
+    use super::*;
+    use crate::game::characters::{Condition, Lasting};
+
+    /// Time passing on a body counts its timed conditions and its spells
+    /// down alike, and a body with nothing running is left unmarked.
+    #[test]
+    fn aging_counts_conditions_and_spells_down_and_leaves_the_untimed_unmarked() {
+        use crate::game::magic::enchantments::Enchantment;
+        let mut world = World::new();
+        let mut timed = Vitals::full(10, 10);
+        timed.inflict(Condition::Asleep, Lasting::Rounds(2));
+        timed.enchantments.apply(Enchantment {
+            spell: crate::content::spells::SpellId::HASTE,
+            power: 1,
+            boost: 0,
+            turns: 1,
+            absorption: 0,
+        });
+        let timed = world.spawn(timed).id();
+        let untimed = world.spawn(Vitals::full(10, 10)).id();
+        world.clear_trackers();
+        for body in [timed, untimed] {
+            let mut vitals = world.get_mut::<Vitals>(body).unwrap();
+            age_conditions(&mut vitals, 1);
+            age_enchantments(&mut vitals, 1);
+        }
+        let vitals = world.entity(timed).get_ref::<Vitals>().unwrap();
+        assert!(vitals.is_changed());
+        assert_eq!(vitals.conditions.lasting(Condition::Asleep), Some(Lasting::Rounds(1)));
+        assert!(vitals.enchantments.0.is_empty(), "a one-turn spell ran out");
+        assert!(!world.entity(untimed).get_ref::<Vitals>().unwrap().is_changed());
     }
 }

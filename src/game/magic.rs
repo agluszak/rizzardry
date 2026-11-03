@@ -969,7 +969,7 @@ pub(crate) mod tests {
                 SpellId::HASTE | SpellId::SUPERMAN | SpellId::BODY_OF_STONE => {
                     let turns = vitals.enchantments.get(id).unwrap().turns;
                     let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
-                    vitals.age_conditions(turns, &mut GameRng::default());
+                    vitals.age_enchantments(turns);
                     assert!(vitals.enchantments.get(id).is_none());
                 }
                 SpellId::RESTORE_HEALTH => {

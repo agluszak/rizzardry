@@ -168,14 +168,10 @@ pub(crate) fn pass_time(
             if !enchantments.0.0.is_empty() {
                 enchantments.0.age(1);
             }
-            // Monsters' conditions run out in the world too.
+            // Monsters' conditions and spells run out in the world too.
             for mut monster in &mut affected.p2() {
-                if !monster.enchantments.0.is_empty() {
-                    monster.enchantments.age(1);
-                }
-                if monster.conditions.any_timed() {
-                    monster.conditions.age(1);
-                }
+                recovery::age_enchantments(&mut monster, 1);
+                recovery::age_conditions(&mut monster, 1);
             }
         }
         if pass > 0

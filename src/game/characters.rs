@@ -995,10 +995,14 @@ impl Vitals {
     }
 
     /// Count timed conditions down, lifting those that run out (retail
-    /// `TickCharacterCondition`), the poison weakening as it goes.
-    pub fn age_conditions(&mut self, ticks: u32, rng: &mut GameRng) {
-        self.weaken_poison(ticks, rng);
+    /// `TickCharacterCondition`'s count). A poison's bite weakens
+    /// separately ([`Self::weaken_poison`]), before its rounds are counted.
+    pub fn age_conditions(&mut self, ticks: u32) {
         self.conditions.age(ticks);
+    }
+
+    /// Count the spells on the body down, lifting those that run out.
+    pub fn age_enchantments(&mut self, ticks: u32) {
         self.enchantments.age(ticks);
     }
 
@@ -1612,7 +1616,7 @@ mod tests {
         let mut mage = Vitals::new(&profile);
         mage.inflict(Condition::Asleep, Lasting::Rounds(3));
         mage.inflict(Condition::Unconscious, Lasting::Indefinite);
-        mage.age_conditions(2, &mut crate::game::rng::GameRng::default());
+        mage.age_conditions(2);
         assert_eq!(
             mage.conditions,
             Conditions::from([
@@ -1620,7 +1624,7 @@ mod tests {
                 (Condition::Unconscious, Lasting::Indefinite)
             ])
         );
-        mage.age_conditions(1, &mut crate::game::rng::GameRng::default());
+        mage.age_conditions(1);
         mage.inflict(Condition::Asleep, Lasting::Rounds(70_000));
         mage.conditions.age(69_999);
         assert_eq!(mage.conditions.lasting(Condition::Asleep), Some(Lasting::Rounds(1)));

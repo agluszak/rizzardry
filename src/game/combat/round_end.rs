@@ -257,10 +257,8 @@ pub(super) fn age_conditions(
 ) {
     let (combatants, ending) = *fight;
     for &monster in combatants.entities() {
-        if let Ok(mut vitals) = monsters.get_mut(monster)
-            && vitals.conditions.any_timed()
-        {
-            vitals.conditions.age(ending.0.aging);
+        if let Ok(mut vitals) = monsters.get_mut(monster) {
+            recovery::age_conditions(&mut vitals, ending.0.aging);
         }
     }
 }
@@ -374,7 +372,7 @@ pub(super) fn age_enchantments(
     party.0.age(ending.0.aging);
     for &monster in combatants.entities() {
         if let Ok(mut vitals) = monsters.get_mut(monster) {
-            vitals.enchantments.age(ending.0.aging);
+            recovery::age_enchantments(&mut vitals, ending.0.aging);
         }
     }
     round.phase = RoundPhase::Waiting;
