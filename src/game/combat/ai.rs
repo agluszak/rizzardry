@@ -24,7 +24,7 @@ use crate::game::world::footing::{Conspicuous, Eyes, Footing};
 use crate::game::world::hostility::{self, Loyalty, Side, Stance};
 use crate::game::world::level::PlayedLevel;
 use crate::game::world::obstacles::WorldObstacles;
-use crate::game::world::population::Monster;
+use crate::game::world::population::{Monster, SpellBudget};
 
 /// Whether a monster can make its special attack now (retail
 /// `CanMonsterFlee`): it has one, it is not cooling down, it has a tenth of
@@ -216,7 +216,7 @@ pub(super) fn decide_special(
 pub(super) fn decide_spell(
     mut commands: Commands,
     actors: Query<
-        (Entity, &Monster, &Vitals, &Footing, &Eyes),
+        (Entity, &Monster, &SpellBudget, &Footing, &Eyes),
         (With<Acting>, Without<Ordered>, Without<Decided>),
     >,
     bodies: Query<(&Vitals, &Footing, &Side, &Loyalty)>,
@@ -232,7 +232,7 @@ pub(super) fn decide_spell(
 ) {
     let combatants = fight.map_or(&[][..], Combatants::entities);
     let far = level.view_distance().unwrap_or(0.0);
-    for (monster, caster, _, at, eyes) in &actors {
+    for (monster, caster, budget, at, eyes) in &actors {
         let kind = &content.species[caster.species];
         let nearest = party_gap(at, &roster, &footings);
         if kind.magic.chance == 0 || closes_in(kind, nearest) {
@@ -262,9 +262,8 @@ pub(super) fn decide_spell(
         ) else {
             continue;
         };
-        let budget = caster.spell_budget(kind);
-        let power = monster_spells::power(&mut rng, budget, &content.spells[spell]);
-        let source = Source::Innate { spell, power, budget, level: kind.level };
+        let power = monster_spells::power(&mut rng, budget.0, &content.spells[spell]);
+        let source = Source::Innate { spell, power, budget: budget.0, level: kind.level };
         commands.entity(monster).insert((Casts(MagicChoice { source, aim }), Decided));
     }
 }

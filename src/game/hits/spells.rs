@@ -21,7 +21,7 @@ use crate::game::world::footing::Footing;
 use crate::game::world::hostility::Side;
 use crate::game::world::identify::{GroupMember, GroupMembers};
 use crate::game::world::obstacles::WorldObstacles;
-use crate::game::world::population::{Monster, Untargetable};
+use crate::game::world::population::{SpellBudget, Untargetable};
 
 /// The share of Lifesteal's damage that heals the most wounded party member,
 /// in percent.
@@ -104,7 +104,7 @@ pub fn drain_back(
     roster: Single<&PartyRoster>,
     mut bodies: Query<&mut Vitals>,
     mut pools: Query<(&Character, &LearnedSpells, &mut SpellPoints)>,
-    mut budgets: Query<&mut Monster>,
+    mut budgets: Query<&mut SpellBudget>,
     content: If<Res<Catalogs>>,
 ) {
     for (mut deed, drains) in &mut deeds {
@@ -145,8 +145,8 @@ pub fn drain_back(
         } else if let Ok((.., mut pool)) = pools.get_mut(victim) {
             let amount = pool.restore_evenly(drains.drained);
             deed.effects.push(Effect::Replenished { victim, amount });
-        } else if let Ok(mut monster) = budgets.get_mut(victim) {
-            monster.spell_points += (drains.drained / 2) as i32;
+        } else if let Ok(mut budget) = budgets.get_mut(victim) {
+            budget.0 += drains.drained / 2;
         }
     }
 }

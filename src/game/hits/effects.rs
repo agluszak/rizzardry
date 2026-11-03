@@ -31,7 +31,7 @@ use crate::game::party::DamageApplied;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::{Side, Stance};
-use crate::game::world::population::Monster;
+use crate::game::world::population::{Monster, SpellBudget};
 
 /// An act reaching a body: which of its definition's effects comes next,
 /// and how the last one came out, for the ones that depend on it.
@@ -504,21 +504,20 @@ pub fn drain_pool(
     }
 }
 
-/// A monster's spell budget, directly.
+/// A spell budget, directly.
 pub fn drain_budget(
     mut commands: Commands,
     effects: Query<(Entity, &Strikes, &HitOf, &Magnitude), (With<DrainBudget>, Without<Outcome>)>,
-    mut monsters: Query<&mut Monster>,
+    mut budgets: Query<&mut SpellBudget>,
     mut acts: Query<&mut Deed>,
-    content: If<Res<Catalogs>>,
 ) {
     for (effect, strikes, hit_of, magnitude) in &effects {
-        let Ok(mut monster) = monsters.get_mut(strikes.0) else {
+        let Ok(mut budget) = budgets.get_mut(strikes.0) else {
             commands.entity(effect).insert(Outcome::Missed);
             continue;
         };
-        let lost = monster.spell_budget(&content.species[monster.species]).min(magnitude.0);
-        monster.spell_points -= lost as i32;
+        let lost = budget.0.min(magnitude.0);
+        budget.0 -= lost;
         record(&mut acts, hit_of.0, Effect::Drained { victim: strikes.0, amount: lost });
         commands.entity(effect).insert(Outcome::Landed);
     }

@@ -26,20 +26,16 @@ pub struct Monster {
     pub location: i32,
     pub species: u32,
     pub body: ScaledBody,
-    /// What has been done to its spell budget since it was met: drained
-    /// away, or raised by Might to Magic (retail `spell_points`, zero at
-    /// first). Its casting stands on this and its species' budget together.
-    pub spell_points: i32,
 }
 
-impl Monster {
-    /// What its casting stands on now (retail `ChooseMonsterSpellPowerLevel`,
-    /// `MonsterCastsSpell`): its species' budget and what has been done to
-    /// it, never below nothing.
-    pub fn spell_budget(&self, kind: &crate::content::species::Species) -> u32 {
-        (self.spell_points + kind.magic.budget).max(0) as u32
-    }
+/// What a monster's casting stands on now (retail
+/// `ChooseMonsterSpellPowerLevel`, `MonsterCastsSpell`): its species' budget
+/// when met, drained away or raised by Might to Magic since, never below
+/// nothing. It stands in for a caster's skill in the failure roll.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpellBudget(pub u32);
 
+impl Monster {
     /// Its eyes, over its feet at `feet`.
     pub fn eye(&self, feet: Vec3) -> Vec3 {
         feet + Vec3::Y * self.body.eye_height
@@ -284,7 +280,7 @@ fn spawn_member(
 ) -> Entity {
     let name = actor_name(species, (kept.monster.species, kept.monster.location));
     let (body, kind) = (kept.monster.body, &species[kept.monster.species]);
-    let mut entity = commands.spawn((Name::new(name), kept.monster, kept.vitals));
+    let mut entity = commands.spawn((Name::new(name), kept.monster, kept.vitals, kept.budget));
     embody(
         &mut entity,
         root,
@@ -442,7 +438,7 @@ pub fn populate(
         let body = kept.monster.body;
         let name = actor_name(species, (kept.monster.species, kept.monster.location));
         let id = kept.monster.species;
-        let entity = commands.spawn((Name::new(name), kept.monster, kept.vitals)).id();
+        let entity = commands.spawn((Name::new(name), kept.monster, kept.vitals, kept.budget)).id();
         actors.push((entity, kept.feet, kept.yaw, body, kept.group, id));
     }
     let average = npcs.average_level();

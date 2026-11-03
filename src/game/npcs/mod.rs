@@ -202,6 +202,7 @@ impl NpcPopulation<'_, '_> {
                 NpcWorldRole { map: map.into(), group: kept.group },
                 kept.monster,
                 kept.vitals,
+                kept.budget,
             ))
             .id();
         Some((entity, kept.feet, kept.yaw, body, kept.group))

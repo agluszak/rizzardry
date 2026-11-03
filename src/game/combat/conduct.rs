@@ -170,7 +170,6 @@ pub(super) mod tests {
         let monster = Monster {
             location: 0,
             species: 0,
-            spell_points: 0,
             body: crate::game::world::population::ScaledBody {
                 scale: 1.0,
                 radius: 0.5,
