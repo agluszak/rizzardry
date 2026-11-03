@@ -10,7 +10,6 @@
 
 use bevy::prelude::*;
 
-use crate::content::species::{MonsterKind, Species};
 use crate::content::spells::{
     MAX_POWER, SpellCatalog, SpellDefinition, SpellId, Spellbook, Targeting,
 };
@@ -23,23 +22,19 @@ use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::footing::Footing;
 use crate::game::world::hostility::{self, Loyalty, Side, Stance};
+use crate::game::world::population::Spellcasting;
 
 /// How much each of the ten slots weighs in the choice (retail
 /// `g_spell_cast_weights`).
 const SLOT_WEIGHTS: [u32; 10] = [5, 5, 5, 10, 10, 10, 10, 15, 15, 15];
 
-/// The kinds whose alchemy a silence leaves them (retail
-/// `IsSpellBlockedForMonster`).
-const SILENT_ALCHEMISTS: [MonsterKind; 3] =
-    [MonsterKind::Ranger, MonsterKind::Alchemist, MonsterKind::Ninja];
-
-/// Whether the monster may cast the spell at all (retail
+/// Whether the body may cast the spell at all (retail
 /// `IsSpellUsableByMonster`): monsters may cast it, its effect is modelled
 /// here, its aim is one a monster takes, and a silence does not stop it.
 fn castable(
     spell: &SpellDefinition,
     caster: &Vitals,
-    kind: &Species,
+    casting: &Spellcasting,
     definitions: &Definitions,
 ) -> bool {
     let silenced = caster.conditions.has(Condition::Silenced);
@@ -49,8 +44,7 @@ fn castable(
             spell.targeting,
             Targeting::Party | Targeting::Point | Targeting::Item | Targeting::LockOrTrap
         )
-        && (!silenced
-            || (spell.books.contains(Spellbook::Alchemy) && SILENT_ALCHEMISTS.contains(&kind.kind)))
+        && (!silenced || (spell.books.contains(Spellbook::Alchemy) && casting.silent_alchemy))
 }
 
 /// Where the spell may be cast (retail `CollectMonsterSpellTargets`), each
@@ -146,7 +140,7 @@ pub(super) fn aims(
 /// castable with an aim.
 pub(super) fn casts_at_foes(
     caster: Entity,
-    kind: &Species,
+    casting: &Spellcasting,
     spells: &SpellCatalog,
     seen: &[Entity],
     bodies: &Query<(&Vitals, &Footing, &Side, &Loyalty)>,
@@ -154,10 +148,10 @@ pub(super) fn casts_at_foes(
     definitions: &Definitions,
 ) -> bool {
     let Ok((own, ..)) = bodies.get(caster) else { return false };
-    kind.magic.chance != 0
-        && kind.magic.spells.iter().flatten().map(|&id| &spells[id]).any(|spell| {
+    casting.chance != 0
+        && casting.spells.iter().flatten().map(|&id| &spells[id]).any(|spell| {
             spell.aimed_at_enemies()
-                && castable(spell, own, kind, definitions)
+                && castable(spell, own, casting, definitions)
                 && !aims(spell, caster, seen, bodies, roster, definitions).is_empty()
         })
 }
@@ -170,7 +164,7 @@ pub(super) fn casts_at_foes(
 pub(super) fn choose(
     rng: &mut GameRng,
     caster: Entity,
-    kind: &Species,
+    casting: &Spellcasting,
     chance: u32,
     spells: &SpellCatalog,
     seen: &[Entity],
@@ -179,14 +173,13 @@ pub(super) fn choose(
     definitions: &Definitions,
 ) -> Option<(SpellId, Aim)> {
     let (own, ..) = bodies.get(caster).ok()?;
-    let usable: Vec<(u32, &SpellDefinition, Vec<Aim>)> = kind
-        .magic
+    let usable: Vec<(u32, &SpellDefinition, Vec<Aim>)> = casting
         .spells
         .iter()
         .zip(SLOT_WEIGHTS)
         .filter_map(|(id, weight)| {
             let spell = &spells[(*id)?];
-            if !castable(spell, own, kind, definitions) {
+            if !castable(spell, own, casting, definitions) {
                 return None;
             }
             let aims = aims(spell, caster, seen, bodies, roster, definitions);
@@ -232,7 +225,7 @@ pub(super) fn power(rng: &mut GameRng, budget: u32, spell: &SpellDefinition) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::species::MonsterMagic;
+    use crate::content::species::{MonsterMagic, Species};
     use bevy::ecs::system::RunSystemOnce;
 
     fn spell(id: u8, targeting: Targeting) -> SpellDefinition {
@@ -292,7 +285,7 @@ mod tests {
             Species { magic: MonsterMagic { chance: 50, spells, budget: 50 }, ..default() };
         let choose =
             |world: &mut World, caster: Entity, kind: &Species, chance: u32, seen: &[Entity]| {
-                let (kind, seen) = (kind.clone(), seen.to_vec());
+                let (casting, seen) = (Spellcasting::of(kind), seen.to_vec());
                 world
                     .run_system_once(
                         move |bodies: Query<(&Vitals, &Footing, &Side, &Loyalty)>,
@@ -303,7 +296,7 @@ mod tests {
                             super::choose(
                                 &mut rng,
                                 caster,
-                                &kind,
+                                &casting,
                                 chance,
                                 &content.spells,
                                 &seen,

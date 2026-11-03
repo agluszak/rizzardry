@@ -36,6 +36,10 @@ pub struct Agility(pub i32);
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Brawn(pub u32);
 
+/// Its intelligence, which weighs its choices.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Wit(pub u32);
+
 /// When it acts in a round, before its weapon's own initiative.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Initiative(pub i32);
@@ -360,6 +364,7 @@ fn member_fighter(
         Arms(arms),
         Initiative(stats.initiative(load)),
         Brawn(stats.attribute(Attribute::Strength)),
+        Wit(stats.attribute(Attribute::Intelligence)),
         Agility(attack::member_agility(&stats)),
         Reduction(stats.damage_reduction()),
         Protection(attack::member_protection(&stats, vitals, &grip, load)),
@@ -391,6 +396,7 @@ fn monster_fighter(kind: &Species, vitals: &Vitals, advancing: bool) -> impl Bun
         Initiative(i32::from(kind.initiative)),
         Stride(kind.combat_move_range * super::approach::METRES_PER_MOVE_RANGE),
         Brawn(u32::from(kind.attributes.strength)),
+        Wit(u32::from(kind.attributes.intelligence)),
         Agility(attack::monster_agility(kind, &vitals.enchantments)),
         Reduction(attack::monster_reduction(kind, vitals)),
         Protection(attack::monster_protection(kind, vitals)),
@@ -460,6 +466,7 @@ fn forget(commands: &mut EntityCommands) {
         Initiative,
         Stride,
         Brawn,
+        Wit,
         Agility,
         Reduction,
         Protection,

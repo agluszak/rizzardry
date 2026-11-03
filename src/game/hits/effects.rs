@@ -16,7 +16,7 @@
 
 use bevy::prelude::*;
 
-use super::defences::{self, Resistances, SaveLevel, Senses};
+use super::defences::{self, Immunities, Resistances, SaveLevel, Senses};
 use super::{Deed, Effect, HitOf, Strikes};
 use crate::content::characters::{Attribute, Realm, Skill, Trait};
 use crate::content::items::{EquipClass, ItemCatalog};
@@ -31,7 +31,7 @@ use crate::game::party::DamageApplied;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::{Side, Stance};
-use crate::game::world::population::{Monster, SpellBudget};
+use crate::game::world::population::SpellBudget;
 
 /// An act reaching a body: which of its definition's effects comes next,
 /// and how the last one came out, for the ones that depend on it.
@@ -258,21 +258,19 @@ pub fn roll_chances(
     }
 }
 
-/// A monster whose kind cannot suffer a condition, or cannot be slain,
-/// shrugs it off before any save (retail `g_condition_immunities`).
+/// A body whose kind cannot suffer a condition, or cannot be slain, shrugs
+/// it off before any save ([`Immunities`]).
 pub fn immunities(
     mut commands: Commands,
     effects: Query<(Entity, &Strikes, &HitOf, Option<&Afflict>, Has<Slay>), Without<Outcome>>,
-    monsters: Query<&Monster>,
+    bodies: Query<&Immunities>,
     mut acts: Query<&mut Deed>,
-    content: If<Res<Catalogs>>,
 ) {
     for (effect, strikes, hit_of, afflict, slays) in &effects {
-        let Ok(monster) = monsters.get(strikes.0) else { continue };
-        let kind = &content.species[monster.species];
+        let Ok(immunities) = bodies.get(strikes.0) else { continue };
         let immune = match afflict {
-            Some(afflict) => defences::immune(kind.kind, afflict.condition),
-            None => slays && kind.death_immune,
+            Some(afflict) => immunities.conditions.contains(&afflict.condition),
+            None => slays && immunities.death,
         };
         if immune {
             record(&mut acts, hit_of.0, Effect::Resisted { victim: strikes.0 });

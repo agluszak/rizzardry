@@ -6,11 +6,10 @@
 //! explicit target scores nodes by distance from it), with their own
 //! notices: one runs for its life, one withdraws.
 
-use crate::content::species::{Reach, Species};
+use crate::content::species::{Reach, Temper};
 use crate::game::characters::Vitals;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::Stance;
-use crate::game::world::population::Monster;
 
 /// A monster's choice at its turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,46 +32,48 @@ pub enum Conduct {
 /// craven.
 fn flee_chance(
     vitals: &Vitals,
-    kind: &Species,
+    temper: &Temper,
+    npc: bool,
     stance: Stance,
     fleeing: bool,
     nearest: f32,
 ) -> (u32, bool) {
     let health = vitals.health.current * 100 / vitals.health.max;
-    if kind.npc.is_some() && stance != Stance::Hostile && health <= 33 {
+    if npc && stance != Stance::Hostile && health <= 33 {
         return (100, fleeing);
     }
     if fleeing {
         return if nearest > Reach::Short.metres() { (100, true) } else { (0, false) };
     }
-    match kind.temper.flee_chance {
-        0 if kind.temper.craven => (100, false),
+    match temper.flee_chance {
+        0 if temper.craven => (100, false),
         chance => (u32::from(chance), false),
     }
 }
 
-/// Decide a monster's conduct this turn. `fleeing` is whether it ran in an
-/// earlier round; it is updated. `nearest` is how far the party is.
+/// Decide a body's conduct this turn by its temper; a bystander only ever
+/// holds. `fleeing` is whether it ran in an earlier round; it is updated.
+/// `nearest` is how far the party is.
 pub(super) fn decide(
     rng: &mut GameRng,
-    monster: &Monster,
     vitals: &Vitals,
-    kind: &Species,
+    temper: &Temper,
+    (npc, bystander): (bool, bool),
     stance: Stance,
     fleeing: &mut bool,
     nearest: f32,
 ) -> Conduct {
-    if monster.species == crate::game::world::hostility::BYSTANDER_SPECIES {
+    if bystander {
         return Conduct::Hold;
     }
-    let (chance, still) = flee_chance(vitals, kind, stance, *fleeing, nearest);
+    let (chance, still) = flee_chance(vitals, temper, npc, stance, *fleeing, nearest);
     *fleeing = still;
     if rng.below(100) < chance {
         *fleeing = true;
         return Conduct::Flee;
     }
     if stance == Stance::Neutral {
-        return if kind.temper.camouflaged { Conduct::Hold } else { Conduct::Withdraw };
+        return if temper.camouflaged { Conduct::Hold } else { Conduct::Withdraw };
     }
     Conduct::Fight
 }
@@ -164,7 +165,7 @@ pub(super) fn interrupt(
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use crate::content::species::Temper;
+    use crate::game::world::population::Monster;
 
     pub(crate) fn monster(hp: u32) -> (Monster, Vitals) {
         let monster = Monster {
@@ -207,87 +208,62 @@ pub(super) mod tests {
         assert_eq!(interrupt(&mut rng, &turned, weak, false, false, false, false), None);
     }
 
-    /// A craven species without its own chance always runs, and keeps
+    /// A craven temper without its own chance always runs, and keeps
     /// running until the party closes to short reach; a steady one fights;
-    /// a neutral one withdraws, or holds when camouflaged.
+    /// a neutral one withdraws, or holds when camouflaged; a hurt NPC not
+    /// hostile runs.
     #[test]
-    fn monsters_run_withdraw_hold_or_fight_by_their_temper() {
+    fn bodies_run_withdraw_hold_or_fight_by_their_temper() {
         let mut rng = GameRng::seeded(7);
-        let steady = Species::default();
-        let craven = Species { temper: Temper { craven: true, ..default() }, ..default() };
+        let steady = Temper::default();
+        let craven = Temper { craven: true, ..default() };
         let mut fleeing = false;
         let hostile = Stance::Hostile;
+        let plain = (false, false);
+        let vitals = monster(100).1;
         assert_eq!(
-            decide(
-                &mut rng,
-                &monster(100).0,
-                &monster(100).1,
-                &steady,
-                hostile,
-                &mut fleeing,
-                10.0
-            ),
+            decide(&mut rng, &vitals, &steady, plain, hostile, &mut fleeing, 10.0),
             Conduct::Fight
         );
         assert_eq!(
-            decide(
-                &mut rng,
-                &monster(100).0,
-                &monster(100).1,
-                &craven,
-                hostile,
-                &mut fleeing,
-                10.0
-            ),
+            decide(&mut rng, &vitals, &craven, plain, hostile, &mut fleeing, 10.0),
             Conduct::Flee
         );
         assert!(fleeing);
-        let brave = Species { temper: Temper { flee_chance: 0, ..default() }, ..default() };
+        let brave = Temper { flee_chance: 0, ..default() };
         assert_eq!(
-            decide(&mut rng, &monster(100).0, &monster(100).1, &brave, hostile, &mut fleeing, 10.0),
+            decide(&mut rng, &vitals, &brave, plain, hostile, &mut fleeing, 10.0),
             Conduct::Flee,
             "a flight goes on"
         );
         assert_eq!(
-            decide(&mut rng, &monster(100).0, &monster(100).1, &brave, hostile, &mut fleeing, 3.0),
+            decide(&mut rng, &vitals, &brave, plain, hostile, &mut fleeing, 3.0),
             Conduct::Fight,
             "cornered"
         );
         assert!(!fleeing);
         let neutral = Stance::Neutral;
         assert_eq!(
-            decide(
-                &mut rng,
-                &monster(100).0,
-                &monster(100).1,
-                &steady,
-                neutral,
-                &mut fleeing,
-                10.0
-            ),
+            decide(&mut rng, &vitals, &steady, plain, neutral, &mut fleeing, 10.0),
             Conduct::Withdraw
         );
-        let hidden = Species { temper: Temper { camouflaged: true, ..default() }, ..default() };
+        let hidden = Temper { camouflaged: true, ..default() };
         assert_eq!(
-            decide(
-                &mut rng,
-                &monster(100).0,
-                &monster(100).1,
-                &hidden,
-                neutral,
-                &mut fleeing,
-                10.0
-            ),
+            decide(&mut rng, &vitals, &hidden, plain, neutral, &mut fleeing, 10.0),
             Conduct::Hold
         );
-        let npc = Species { npc: Some(crate::content::npcs::NpcId(1)), ..default() };
+        let hurt = monster(30).1;
         assert_eq!(
-            decide(&mut rng, &monster(30).0, &monster(30).1, &npc, neutral, &mut fleeing, 10.0),
+            decide(&mut rng, &hurt, &steady, (true, false), neutral, &mut fleeing, 10.0),
             Conduct::Flee
         );
         assert_eq!(
-            decide(&mut rng, &monster(30).0, &monster(30).1, &npc, hostile, &mut false, 10.0),
+            decide(&mut rng, &hurt, &steady, (true, false), hostile, &mut false, 10.0),
             Conduct::Fight
+        );
+        assert_eq!(
+            decide(&mut rng, &vitals, &craven, (false, true), hostile, &mut false, 10.0),
+            Conduct::Hold
         );
     }
 }

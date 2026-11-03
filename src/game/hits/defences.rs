@@ -38,6 +38,21 @@ pub struct Senses(pub u32);
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Resistances(pub EnumMap<Realm, i32>);
 
+/// A monster's kind (undead, demon, plant, …), which holy and slaying
+/// things single out.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Kind(pub MonsterKind);
+
+/// What a body shrugs off before any save: the conditions its kind cannot
+/// suffer, and whether it cannot be slain outright (retail
+/// `g_condition_immunities`, `death_immune`). A member's own immunities
+/// are traits, weighed after the save.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Immunities {
+    pub conditions: &'static [Condition],
+    pub death: bool,
+}
+
 /// How strongly a body casts from each book, which a spell turned back on
 /// it or from it grows from: a member's caster level in the book, a
 /// monster's species' level.
@@ -60,7 +75,7 @@ fn character_defences(
     member: bool,
     party: &Enchantments,
     items: &crate::content::items::ItemCatalog,
-) -> (SaveLevel, Senses, Resistances, CasterLevels) {
+) -> impl Bundle {
     let stats = character.stats(&vitals.enchantments);
     let resistances = match member {
         true => member_resistances(&stats, carried, items, party),
@@ -74,19 +89,19 @@ fn character_defences(
             crate::game::magic::total_caster_level(character, enumset::EnumSet::only(book)).max(0)
                 as u32
         })),
+        Immunities::default(),
     )
 }
 
 /// A monster's defences, by its species and spells.
-fn species_defences(
-    kind: &crate::content::species::Species,
-    vitals: &Vitals,
-) -> (SaveLevel, Senses, Resistances, CasterLevels) {
+fn species_defences(kind: &crate::content::species::Species, vitals: &Vitals) -> impl Bundle {
     (
         SaveLevel(u32::from(kind.level)),
         Senses(u32::from(kind.attributes.senses)),
         Resistances(EnumMap::from_fn(|realm| population::resistance(kind, vitals, realm))),
         CasterLevels(EnumMap::from_fn(|_| u32::from(kind.level))),
+        Immunities { conditions: immune(kind.kind), death: kind.death_immune },
+        Kind(kind.kind),
     )
 }
 
@@ -99,14 +114,18 @@ pub fn judge_defences(
     content: If<Res<Catalogs>>,
 ) {
     for (entity, vitals, (character, monster), member) in &bodies {
-        let defences = match (character, monster) {
+        match (character, monster) {
             (Some(character), _) => {
-                character_defences(character, vitals, member, &party.0, &content.items)
+                let defences =
+                    character_defences(character, vitals, member, &party.0, &content.items);
+                commands.entity(entity).insert(defences);
             }
-            (None, Some(monster)) => species_defences(&content.species[monster.species], vitals),
-            (None, None) => continue,
-        };
-        commands.entity(entity).insert(defences);
+            (None, Some(monster)) => {
+                let defences = species_defences(&content.species[monster.species], vitals);
+                commands.entity(entity).insert(defences);
+            }
+            (None, None) => {}
+        }
     }
 }
 
@@ -125,19 +144,18 @@ pub fn condition_save(condition: Condition) -> i32 {
     CONDITION_SAVE[condition as usize + 1]
 }
 
-/// Whether a monster of `kind` shrugs a condition off (retail
+/// The conditions a monster of `kind` shrugs off (retail
 /// `g_condition_immunities`).
-pub fn immune(kind: MonsterKind, condition: Condition) -> bool {
+pub fn immune(kind: MonsterKind) -> &'static [Condition] {
     use Condition::*;
-    let immune: &[_] = match kind {
+    match kind {
         MonsterKind::Undead => {
             &[Diseased, Poisoned, Unconscious, Irritated, Afraid, Insane, Asleep, Nauseated]
         }
         MonsterKind::Android => &[Diseased, Poisoned, Nauseated, Irritated, Afraid, Asleep],
         MonsterKind::Plant => &[Insane, Afraid, Nauseated],
         _ => &[],
-    };
-    immune.contains(&condition)
+    }
 }
 
 /// `(level − strength)·3 + base + resistance`, the chance a victim saves.

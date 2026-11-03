@@ -158,9 +158,10 @@ pub(super) fn engage(
             .chain(roster.iter().filter(|_| sees))
             .filter(|&body| bodies.get(body).is_ok_and(|(vitals, ..)| !vitals.is_dead()))
             .collect();
+        let casting = crate::game::world::population::Spellcasting::of(kind);
         let casts = monster_spells::casts_at_foes(
             fighter,
-            kind,
+            &casting,
             spells,
             &seen,
             &bodies,
@@ -168,7 +169,7 @@ pub(super) fn engage(
             &definitions,
         );
         let breathes = kind.special.chance != 0
-            && special_ready(vitals, kind, false, None)
+            && special_ready(vitals, &kind.special, false, None)
             && spells.get(crate::content::spells::SpellId::SPECIAL_ATTACK_CONE).is_some_and(
                 |cone| {
                     !monster_spells::aims(cone, fighter, &seen, &bodies, &roster, &definitions)

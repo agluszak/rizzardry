@@ -53,7 +53,6 @@ use crate::game::world::footing::Footing;
 use crate::game::world::hostility::{self, Loyalty, Provocation, Side, Stance};
 use crate::game::world::navigation::Walker;
 use crate::game::world::obstacles::WorldObstacles;
-use crate::game::world::population::Monster;
 
 /// The attack is aimed at this body; a target gone ends it.
 #[derive(Component, Debug)]
@@ -1129,16 +1128,13 @@ fn braced(
 fn slaying_dice(
     mut swings: Query<(&mut DiceCount, &At, &SwingOf)>,
     attacks: Query<&Striking>,
-    monsters: Query<&Monster>,
-    content: If<Res<Catalogs>>,
+    kinds: Query<&crate::game::hits::defences::Kind>,
 ) {
     for (mut count, at, swing_of) in &mut swings {
-        let (Some(striking), Ok(monster)) = (attacks.get(swing_of.0).ok(), monsters.get(at.0))
-        else {
+        let (Ok(striking), Ok(kind)) = (attacks.get(swing_of.0), kinds.get(at.0)) else {
             continue;
         };
-        let kind = content.species[monster.species].kind;
-        count.0 += striking.0.slays.iter().filter(|&&slays| slays == kind).count() as u32;
+        count.0 += striking.0.slays.iter().filter(|&&slays| slays == kind.0).count() as u32;
     }
 }
 

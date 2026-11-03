@@ -174,6 +174,40 @@ pub struct Untargetable;
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Worth(pub u32);
 
+/// How a body carries itself in a fight when it decides for itself: its
+/// species' temper.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Temper(pub crate::content::species::Temper);
+
+/// The special attack a body may make at its turn: its species'.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Special(pub crate::content::species::SpecialAttack);
+
+/// What a body may cast at its turn when it decides for itself: the chance
+/// it does, its ten spell slots, and whether a silence leaves it its
+/// alchemy (retail `IsSpellBlockedForMonster`).
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Spellcasting {
+    pub chance: u8,
+    pub spells: [Option<crate::content::spells::SpellId>; 10],
+    pub silent_alchemy: bool,
+}
+
+impl Spellcasting {
+    /// A species' casting.
+    pub fn of(kind: &crate::content::species::Species) -> Self {
+        use crate::content::species::MonsterKind;
+        Self {
+            chance: kind.magic.chance,
+            spells: kind.magic.spells,
+            silent_alchemy: matches!(
+                kind.kind,
+                MonsterKind::Ranger | MonsterKind::Alchemist | MonsterKind::Ninja
+            ),
+        }
+    }
+}
+
 /// Make a monster an actor of its level: standing at its feet and facing
 /// its heading, in its group, and a walker if it walks.
 fn embody(
@@ -192,7 +226,12 @@ fn embody(
     if let Some(group) = group {
         entity.insert(GroupMember(group));
     }
-    entity.insert(Worth(kind.experience));
+    entity.insert((
+        Worth(kind.experience),
+        Temper(kind.temper),
+        Special(kind.special),
+        Spellcasting::of(kind),
+    ));
     if kind.untargetable {
         entity.insert(Untargetable);
     }

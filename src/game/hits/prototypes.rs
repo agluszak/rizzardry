@@ -18,12 +18,11 @@ use crate::content::characters::Realm;
 use crate::content::items::{AttackEffect, AttackEffects, Dice};
 use crate::content::species::{MonsterKind, SpecialAttackKind};
 use crate::content::spells::{SpellDefinition, SpellId};
-use crate::game::characters::{Character, Condition};
+use crate::game::characters::Condition;
 use crate::game::data::Catalogs;
 use crate::game::magic::Strength;
 use crate::game::party::roster::PartyMember;
 use crate::game::rng::GameRng;
-use crate::game::world::population::Monster;
 
 /// A definition: what an act that uses it does.
 #[derive(Component, Debug)]
@@ -796,8 +795,7 @@ pub fn advance(
         Option<&FromWeapon>,
         Option<&Afflict>,
     )>,
-    bodies: Query<(Has<Character>, Option<&Monster>, Option<&PartyMember>)>,
-    content: If<Res<Catalogs>>,
+    bodies: Query<(Option<&super::defences::Kind>, Option<&PartyMember>)>,
 ) {
     // The acts whose party share was taken earlier in this run.
     let mut shared = EntityHashSet::default();
@@ -808,7 +806,7 @@ pub fn advance(
             commands.entity(effect).despawn();
         }
         let act = hit_of.0;
-        let (Ok((uses, weapon, party_shared)), Ok((member, monster, party_member))) =
+        let (Ok((uses, weapon, party_shared)), Ok((kind, party_member))) =
             (acts.get(act), bodies.get(strikes.0))
         else {
             commands.entity(reach).despawn();
@@ -818,7 +816,7 @@ pub fn advance(
             commands.entity(reach).despawn();
             continue;
         };
-        let kind = monster.map(|monster| content.species[monster.species].kind);
+        let (member, kind) = (party_member.is_some(), kind.map(|kind| kind.0));
         let mut spawned = false;
         while let Some(prototype) = effects.iter().nth(cursor.next) {
             cursor.next += 1;
@@ -832,7 +830,7 @@ pub fn advance(
                 continue;
             };
             let fits = (!members || member)
-                && (!monsters || !member)
+                && (!monsters || kind.is_some())
                 && kinds.is_none_or(|kinds| kind.is_some_and(|kind| kinds.0.contains(&kind)))
                 && (!by_monsters || weapon.is_some_and(|weapon| weapon.by_monster))
                 && (!on_party
