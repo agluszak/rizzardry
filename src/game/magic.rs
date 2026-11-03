@@ -477,7 +477,9 @@ impl Plugin for MagicPlugin {
                 Update,
                 (
                     accept_magic,
-                    casting::run_casts,
+                    casting::resolve_casts,
+                    // Whom a member's cast provoked is hostile before it lands.
+                    crate::game::world::hostility::take_offence,
                     pointcasts::expire_lures,
                     pointcasts::follow_lures,
                 )
@@ -486,7 +488,6 @@ impl Plugin for MagicPlugin {
                     .before(GameplaySet::Combat)
                     .run_if(crate::game::world::level::level_active),
             );
-        casting::stages(app);
     }
 }
 
@@ -569,8 +570,7 @@ pub fn accept_magic(
         let context =
             if camp.is_some() { casting::UseContext::Camp } else { casting::UseContext::World };
         commands.spawn((
-            casting::Cast { spell: spell.unwrap(), context },
-            casting::Chosen(choice),
+            casting::Cast::new(spell.unwrap(), context, choice),
             crate::game::hits::By(caster),
         ));
     }
@@ -666,9 +666,10 @@ pub(crate) mod tests {
             .add_plugins(crate::game::hits::HitsPlugin)
             .add_systems(
                 Update,
-                (accept_magic, casting::run_casts).chain().before(crate::game::hits::Resolution),
+                (accept_magic, casting::resolve_casts)
+                    .chain()
+                    .before(crate::game::hits::Resolution),
             );
-        casting::stages(&mut app);
         let potion = ItemDefinition {
             id: ItemId(0),
             name: "Potion of Light Heal".into(),
@@ -845,11 +846,10 @@ pub(crate) mod tests {
                 .add_plugins(crate::game::hits::HitsPlugin)
                 .add_systems(
                     Update,
-                    (accept_magic, casting::run_casts)
+                    (accept_magic, casting::resolve_casts)
                         .chain()
                         .before(crate::game::hits::Resolution),
                 );
-            casting::stages(&mut app);
             let definition = ItemDefinition {
                 id: ItemId(0),
                 class: EquipClass::Potion,

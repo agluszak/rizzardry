@@ -29,7 +29,7 @@ use crate::game::hits::{Act, By, Deed};
 use crate::game::inventory::{Carried, PartyInventory, StackId, WeaponSlot};
 use crate::game::magic::Strength;
 use crate::game::magic::casting::{
-    Cast, Chosen, MagicChoice, MagicNews, Refusal, UseContext, in_cone, reaches as spell_reaches,
+    Cast, MagicChoice, MagicNews, Refusal, UseContext, in_cone, reaches as spell_reaches,
 };
 use crate::game::party::Order;
 use crate::game::party::roster::PartyRoster;
@@ -690,7 +690,7 @@ pub(super) fn start_casts(
             });
             continue;
         }
-        commands.spawn((Cast { spell, context: UseContext::Combat }, Chosen(choice), By(actor)));
+        commands.spawn((Cast::new(spell, UseContext::Combat, choice), By(actor)));
     }
 }
 

@@ -153,7 +153,8 @@ impl Plugin for CombatPlugin {
                     // its blows and casts settle within the step,
                     (
                         swings::run_swings,
-                        casting::run_casts,
+                        casting::resolve_casts,
+                        hostility::take_offence,
                         turn::defend_instead,
                         summon::summon,
                         settle,
