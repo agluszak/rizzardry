@@ -44,8 +44,7 @@ impl Plugin for PartyPlugin {
         .add_message::<body::PartyLook>()
         .add_message::<body::TurnParty>()
         .add_message::<DamageApplied>()
-        .add_observer(formation::vacate_seat)
-        .add_observer(formation::retake_seat)
+        .add_plugins(formation::FormationPlugin)
         .add_systems(
             Update,
             (

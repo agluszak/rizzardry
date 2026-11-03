@@ -211,14 +211,51 @@ pub fn quadrant(from: Vec3, yaw: f32, to: Vec3) -> Row {
     }
 }
 
+/// Formation membership follows party membership, including replacement and
+/// despawning. Recruitment and dismissal own their gameplay decisions; they do
+/// not maintain another list of party members here.
+pub struct FormationPlugin;
+
+impl Plugin for FormationPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_observer(seat_joiner)
+            .add_observer(unseat_departure)
+            .add_observer(vacate_seat)
+            .add_observer(retake_seat);
+    }
+}
+
+fn seat_joiner(
+    joined: On<Insert<super::roster::PartyMember>>,
+    members: Query<(&super::roster::PartyMember, Has<crate::game::characters::Dead>)>,
+    mut formations: Query<&mut Formation>,
+) {
+    let Ok((membership, dead)) = members.get(joined.entity) else { return };
+    if let Ok(mut formation) = formations.get_mut(membership.0) {
+        formation.update_seat(joined.entity, dead);
+    }
+}
+
+fn unseat_departure(
+    leaving: On<Discard<super::roster::PartyMember>>,
+    members: Query<&super::roster::PartyMember>,
+    mut formations: Query<&mut Formation>,
+) {
+    let Ok(membership) = members.get(leaving.entity) else { return };
+    if let Ok(mut formation) = formations.get_mut(membership.0) {
+        formation.unseat(leaving.entity);
+    }
+}
+
 /// A member who dies gives up their seat, remembering its row (retail
 /// `UpdateFormationSlotState`).
 pub fn vacate_seat(
     death: On<Add<crate::game::characters::Dead>>,
+    members: Query<&super::roster::PartyMember>,
     mut formations: Query<&mut Formation>,
 ) {
-    let Ok(mut formation) = formations.single_mut() else { return };
-    if formation.row_of(death.entity).is_some() {
+    let Ok(membership) = members.get(death.entity) else { return };
+    if let Ok(mut formation) = formations.get_mut(membership.0) {
         formation.update_seat(death.entity, true);
     }
 }
@@ -227,11 +264,11 @@ pub fn vacate_seat(
 /// is seated like a joiner.
 pub fn retake_seat(
     life: On<Remove<crate::game::characters::Dead>>,
-    members: Query<(), With<super::roster::PartyMember>>,
+    members: Query<&super::roster::PartyMember>,
     mut formations: Query<&mut Formation>,
 ) {
-    let Ok(mut formation) = formations.single_mut() else { return };
-    if members.contains(life.entity) {
+    let Ok(membership) = members.get(life.entity) else { return };
+    if let Ok(mut formation) = formations.get_mut(membership.0) {
         formation.update_seat(life.entity, false);
     }
 }

@@ -23,6 +23,18 @@ pub fn impacts(world: &mut World) {
         let sequence = world.resource::<Definitions>().get(uses.0).effects.clone();
         let mut previous = None;
         for spec in sequence {
+            let chance = spec.weapon.map(|effect| {
+                world.get::<WeaponEffects>(act).map_or(0, |weapon| weapon.effects.chances[effect])
+            });
+            if chance == Some(0) {
+                continue;
+            }
+            // Weapon follow-ups stop drawing rolls once an earlier effect kills.
+            if spec.weapon.is_some()
+                && world.get::<crate::game::characters::Vitals>(victim).is_some_and(|v| v.is_dead())
+            {
+                break;
+            }
             // Every consequence sees mutations made by its predecessor.
             world.run_schedule(super::Capabilities);
             let kind = world.get::<super::defences::Kind>(victim).map(|k| k.0);
@@ -35,10 +47,6 @@ pub fn impacts(world: &mut World) {
                 || (spec.by_monsters && !weapon.is_some_and(|w| w.by_monster))
                 || spec.party != party
             {
-                continue;
-            }
-            let chance = spec.weapon.map(|effect| weapon.map_or(0, |w| w.effects.chances[effect]));
-            if chance == Some(0) {
                 continue;
             }
             if (spec.landed && previous != Some(Outcome::Landed))

@@ -91,7 +91,6 @@ impl Recruit {
 pub fn recruit_character(
     commands: &mut Commands,
     party: Entity,
-    formation: &mut super::formation::Formation,
     (character, learned): (Character, crate::game::magic::LearnedSpells),
     items: &ItemCatalog,
     (ids, rng): (&mut ItemIds, &mut GameRng),
@@ -106,7 +105,7 @@ pub fn recruit_character(
     }
     let points = crate::game::magic::SpellPoints::default();
     let vitals = crate::game::characters::Vitals::new(&character);
-    let member = commands
+    commands
         .spawn((
             Name::new(character.name.clone()),
             character,
@@ -116,9 +115,7 @@ pub fn recruit_character(
             carried,
             PartyMember(party),
         ))
-        .id();
-    formation.seat(member);
-    member
+        .id()
 }
 
 /// A new character's starting items (retail `g_starting_equipment` and

@@ -7,8 +7,6 @@ use crate::content::factions::Faction;
 
 pub const UNALIGNED: i32 = Faction::Unaligned as i32;
 pub const PARTY: i32 = Faction::Party as i32;
-pub const DARK_SAVANT: i32 = Faction::DarkSavant as i32;
-pub const COSMIC_LORDS: i32 = Faction::CosmicLords as i32;
 pub const UMPANI: i32 = Faction::Umpani as i32;
 pub const TRANG: i32 = Faction::Trang as i32;
 pub const MOOK: i32 = Faction::Mook as i32;
@@ -19,11 +17,8 @@ pub const HIGARDI_BANK: i32 = Faction::HigardiBank as i32;
 pub const HIGARDI_LUNAR_LEGION: i32 = Faction::HigardiLunarLegion as i32;
 pub const HIGARDI_COMMON: i32 = Faction::HigardiCommon as i32;
 pub const TRYNNIE: i32 = Faction::Trynnie as i32;
-pub const MAD_MARTEN: i32 = Faction::MadMarten as i32;
 pub const RAPAX_COMMON: i32 = Faction::RapaxCommon as i32;
 pub const RAPAX_TEMPLAR: i32 = Faction::RapaxTemplar as i32;
-pub const RAPAX_ARMY: i32 = Faction::RapaxArmy as i32;
-pub const KINGS_ASSASSINS: i32 = Faction::KingsAssassins as i32;
 const HIGARDI: [i32; 3] = [HIGARDI_BANK, HIGARDI_LUNAR_LEGION, HIGARDI_COMMON];
 
 /// How a faction stands toward the party.

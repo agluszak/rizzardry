@@ -1,12 +1,16 @@
 //! One swing is a calculation, not an entity or a partially constructed bundle.
 use super::*;
 
-fn practise(world: &mut World, actor: Entity, skill: Skill, rng: &mut GameRng) {
+fn practise(world: &mut World, attack: Entity, actor: Entity, skill: Skill, rng: &mut GameRng) {
     if let Some(mut character) = world.get_mut::<Character>(actor)
         && character.skill_available(skill)
         && character.practise(skill, 1, rng)
     {
-        world.write_message(CombatNews::Improved { member: actor, skill });
+        world
+            .get_mut::<Tally>(attack)
+            .unwrap()
+            .effects
+            .push(Effect::Improved { victim: actor, skill });
     }
 }
 
@@ -276,7 +280,7 @@ pub(super) fn swing(world: &mut World, rng: &mut GameRng, attack_entity: Entity)
                     damage =
                         attack::fumble_cap(damage, world.get::<Vitals>(victim).unwrap().health.max);
                 }
-                practise(world, victim, Skill::IronSkin, rng);
+                practise(world, attack_entity, victim, Skill::IronSkin, rng);
                 if !fumbled && let Some(character) = world.get::<Character>(by) {
                     if let Some(skill) = arm.critical_skill {
                         let skill = character
@@ -317,7 +321,7 @@ pub(super) fn swing(world: &mut World, rng: &mut GameRng, attack_entity: Entity)
                         &[Skill::EagleEye]
                     };
                     for &skill in skills {
-                        practise(world, by, skill, rng);
+                        practise(world, attack_entity, by, skill, rng);
                     }
                 }
             }

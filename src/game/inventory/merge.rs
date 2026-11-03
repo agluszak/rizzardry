@@ -7,7 +7,7 @@ use crate::content::items::Recipe;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Merged {
     /// The item both are an ingredient of was made.
-    Made(ItemId),
+    Made,
     /// Held units joined a stack of the same item.
     Stacked,
     /// Nothing changed: a full stack.
@@ -95,7 +95,7 @@ impl PartyInventory {
             || match target {
                 ItemAt::Slot(Slot::Equipment(slot)) => {
                     let fits = character.can_use(product)
-                        && allowed_slots(product, carried, catalog, &[slot]).contains(&slot);
+                        && fits_slot(product, slot, carried, catalog, &[slot]);
                     if !fits && held_survives {
                         return Err(Refusal::DoesNotFit);
                     }
@@ -126,14 +126,13 @@ impl PartyInventory {
         if product.quantity == QuantityKind::Stack {
             made.count = NonZeroU16::new(units).unwrap();
         }
-        let id = made.item;
         match (target, row) {
             _ if into_hand => self.hand.held = Some(made),
             (_, Some(row)) => self.pool.stacks.insert(row, made),
             (ItemAt::Slot(slot), None) => carried.put(slot, Some(made)),
             _ => unreachable!("the pool has its row"),
         }
-        Ok(Merged::Made(id))
+        Ok(Merged::Made)
     }
 
     /// Stack the held units onto the target (retail `MergeItemStacks`).

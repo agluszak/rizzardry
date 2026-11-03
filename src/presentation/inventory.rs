@@ -1138,7 +1138,7 @@ fn click_cell(
         // Retail keeps merging armed until something is made or stacked.
         ItemAction::Merge if inventory.holds() => {
             match target.map(|at| inventory.merge(screen.member, at, (&mut ids, &mut rng))) {
-                None | Some(Ok(Merged::Made(_) | Merged::Stacked) | Err(Refusal::Nothing)) => {
+                None | Some(Ok(Merged::Made | Merged::Stacked) | Err(Refusal::Nothing)) => {
                     *action = ItemAction::None;
                 }
                 Some(Ok(_)) => {}

@@ -1491,7 +1491,6 @@ fn perform_utility(
     difficulty: Res<Difficulty>,
     states: Query<&crate::game::world::triggers::LevelState, With<Level>>,
     mut rng: ResMut<GameRng>,
-    mut news: MessageWriter<crate::game::combat::CombatNews>,
 ) -> Result<(Report, Strength), Refusal> {
     if !roster.contains(&caster) {
         return Err(Refusal::CannotAct);
@@ -1530,7 +1529,7 @@ fn perform_utility(
     }
     let Attempt { failure, quiet, strength } = attempt(&character, item, spell, power, *difficulty);
     let outcome = super::roll(&mut rng, failure, spell, quiet, underwater);
-    let report = Report {
+    let mut report = Report {
         caster,
         spell: spell.id,
         power,
@@ -1548,7 +1547,7 @@ fn perform_utility(
     }
     vitals.tire(super::cast_fatigue(spell, power));
     let skills = practice(&character, spell, power, item.map(|item| item.definition));
-    practise(caster, &mut character, &skills, &mut rng, &mut news);
+    practise(caster, &mut character, &skills, &mut rng, &mut report.effects);
     Ok((report, strength))
 }
 
@@ -1615,11 +1614,11 @@ fn practise(
     character: &mut Character,
     skills: &[(Skill, u32)],
     rng: &mut GameRng,
-    news: &mut MessageWriter<crate::game::combat::CombatNews>,
+    effects: &mut Vec<crate::game::hits::Effect>,
 ) {
     for &(skill, usage) in skills {
         if character.practise(skill, usage, rng) {
-            news.write(crate::game::combat::CombatNews::Improved { member: caster, skill });
+            effects.push(crate::game::hits::Effect::Improved { victim: caster, skill });
         }
     }
 }
@@ -1627,18 +1626,17 @@ fn practise(
 /// Settle each landed cast's practice ([`Practice`]).
 pub fn practise_casts(
     mut commands: Commands,
-    deeds: Query<(Entity, &Deed, &Practice), Without<DeedHits>>,
+    mut deeds: Query<(Entity, &mut Deed, &Practice), Without<DeedHits>>,
     mut characters: Query<&mut Character>,
     mut rng: ResMut<GameRng>,
-    mut news: MessageWriter<crate::game::combat::CombatNews>,
 ) {
-    for (entity, deed, practice) in &deeds {
+    for (entity, mut deed, practice) in &mut deeds {
         commands.entity(entity).remove::<Practice>();
         if !practice.sure && !crate::game::hits::affected(&deed.effects) {
             continue;
         }
         let Ok(mut character) = characters.get_mut(practice.caster) else { continue };
-        practise(practice.caster, &mut character, &practice.skills, &mut rng, &mut news);
+        practise(practice.caster, &mut character, &practice.skills, &mut rng, &mut deed.effects);
     }
 }
 

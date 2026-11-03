@@ -716,17 +716,14 @@ fn found_party(
     (ids, rng): (&mut ItemIds, &mut GameRng),
 ) -> Entity {
     let party = commands.spawn((Name::new("Party"), Party)).id();
-    let mut formation = crate::game::party::formation::Formation::default();
     for member in characters {
         crate::game::party::roster::recruit_character(
             commands,
             party,
-            &mut formation,
             member,
             items,
             (&mut *ids, &mut *rng),
         );
     }
-    commands.entity(party).insert(formation);
     party
 }
