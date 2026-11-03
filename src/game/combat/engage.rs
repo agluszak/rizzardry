@@ -21,86 +21,38 @@
 
 use super::*;
 
+use crate::game::world::footing::{Conspicuous, Eyes, Footing};
+use crate::game::world::hostility::{Loyalty, Side};
+
 /// Monsters coming into the fight, in placement order.
 #[derive(Message)]
 pub(super) struct Engaged(Vec<Entity>);
 
-type MonsterSight<'w, 's> = Query<
-    'w,
-    's,
-    (
-        Entity,
-        &'static Monster,
-        ActorPose,
-        Option<&'static Walker>,
-        Option<&'static GroupMember>,
-        Has<Combatant>,
-        &'static Vitals,
-    ),
->;
-type Groups<'w, 's> =
-    Query<'w, 's, (Entity, &'static mut MonsterGroup, &'static GroupMembers, &'static LevelOwned)>;
-
-/// The party as monsters look for it on the played level.
-#[derive(bevy::ecs::system::SystemParam)]
-pub(super) struct PartySight<'w, 's> {
-    party: Single<'w, 's, (&'static Position, &'static PartyBody)>,
-    effects: Single<'w, 's, &'static crate::game::magic::enchantments::PartyEffects>,
-    members: Query<'w, 's, (&'static Character, &'static Vitals)>,
-    roster: Single<'w, 's, &'static PartyRoster>,
-    level: PlayedLevel<'w, 's>,
-    obstacles: WorldObstacles<'w, 's>,
-}
-
-impl PartySight<'_, '_> {
-    fn anyone_alive(&self) -> bool {
-        self.roster.iter().any(|m| !self.members.get(m).unwrap().1.is_dead())
-    }
-
-    /// Monsters' sight of the party and the level it is played on.
-    fn sight(&self) -> Option<(Sight<'_, '_, '_>, Entity)> {
-        Some((
-            Sight {
-                eye: PartyBody::eye(self.party.0),
-                concealment: self.effects.0.concealment(),
-                far: self.level.view_distance()?,
-                lowest_level: crate::game::party::lowest_level(
-                    self.roster.iter().map(|m| self.members.get(m).unwrap()),
-                ),
-                obstacles: &self.obstacles,
-            },
-            self.level.entity()?,
-        ))
-    }
+/// The first living member of a group.
+fn leader(members: &GroupMembers, vitals: &Query<&Vitals, With<Monster>>) -> Option<Entity> {
+    members.iter().find(|&m| vitals.get(m).is_ok_and(|vitals| !vitals.is_dead()))
 }
 
 /// While a fight runs, a fighting hostile group alerts the groups of its
 /// faction whose leaders see its own (retail `AlertSameFactionGroups`).
 pub(super) fn alert_factions(
-    monsters: MonsterSight,
-    mut groups: Groups,
+    monsters: Query<(&Monster, &Footing, &Eyes, &Conspicuous, Has<Combatant>)>,
+    vitals: Query<&Vitals, With<Monster>>,
+    mut groups: Query<(Entity, &mut MonsterGroup, &GroupMembers, &LevelOwned)>,
+    level: PlayedLevel,
+    obstacles: WorldObstacles,
     factions: Res<crate::game::factions::Factions>,
     clock: Res<GameClock>,
     content: If<Res<Catalogs>>,
-    party: PartySight,
 ) {
-    let catalog = &content.species;
-    let Some((sight, root)) = party.sight() else { return };
-    let now = clock.ms;
-    let living = |membership: &GroupMembers| {
-        membership.iter().find(|&m| monsters.get(m).is_ok_and(|(.., vitals)| !vitals.is_dead()))
-    };
-    let view = |monster: Entity| {
-        monsters.get(monster).ok().map(|(_, body, at, walker, .., vitals)| {
-            (body, at, walker, &catalog[body.species], vitals)
-        })
-    };
+    let (Some(far), Some(root)) = (level.view_distance(), level.entity()) else { return };
+    let (catalog, now) = (&content.species, clock.ms);
     // Fighting hostile groups by their leaders, and their factions.
     let alerting: Vec<(Entity, i32, Entity)> = groups
         .iter()
-        .filter_map(|(entity, group, membership, owner)| {
-            let leader = living(membership).filter(|_| owner.0 == root)?;
-            let (_, body, .., fighting, _) = monsters.get(leader).ok()?;
+        .filter_map(|(entity, group, members, owner)| {
+            let leader = leader(members, &vitals).filter(|_| owner.0 == root)?;
+            let (body, .., fighting) = monsters.get(leader).ok()?;
             let kind = &catalog[body.species];
             (fighting
                 && kind.faction != crate::game::factions::UNALIGNED
@@ -109,26 +61,23 @@ pub(super) fn alert_factions(
                 .then_some((entity, kind.faction, leader))
         })
         .collect();
-    for (entity, mut group, membership, owner) in &mut groups {
-        let Some(leader) = living(membership).filter(|_| owner.0 == root) else { continue };
-        let Some(observer) = view(leader) else { continue };
+    for (entity, mut group, members, owner) in &mut groups {
+        let Some(leader) = leader(members, &vitals).filter(|_| owner.0 == root) else { continue };
+        let Ok((body, at, eyes, _, fighting)) = monsters.get(leader) else { continue };
+        let kind = &catalog[body.species];
         // NPCs keep to their own roles here.
-        if observer.3.npc.is_some() {
+        if kind.npc.is_some() {
             continue;
         }
         let alerted = alerting.iter().any(|&(source, faction, target)| {
             source != entity
-                && faction == observer.3.faction
-                && view(target).is_some_and(|target| {
-                    sight.sees_monster(
-                        ((observer.0, observer.4), &observer.1, observer.2, observer.3),
-                        (target.0, &target.1, target.2, target.3),
-                    )
+                && faction == kind.faction
+                && monsters.get(target).is_ok_and(|(_, there, _, seen, _)| {
+                    eyes.see(at, (there, seen), far, &obstacles)
                 })
         });
-        let fighting = monsters.get(leader).is_ok_and(|m| m.5);
         if alerted
-            && hostility::stance(group.set, observer.3, &factions, now, fighting)
+            && hostility::stance(group.set, kind, &factions, now, fighting)
                 != hostility::Stance::Hostile
         {
             group.set = Some(hostility::SetStance { stance: hostility::Stance::Hostile, at: now });
@@ -141,25 +90,33 @@ pub(super) fn alert_factions(
 /// it.
 pub(super) fn engage(
     battles: Query<(), With<Battle>>,
-    monsters: MonsterSight,
-    mut groups: Groups,
+    monsters: Query<(Entity, &Monster, &Vitals, &Footing, &Eyes, Option<&GroupMember>, Has<Combatant>)>,
+    mut groups: Query<(Entity, &mut MonsterGroup, &GroupMembers, &LevelOwned)>,
+    members: Query<(&Footing, &Conspicuous, &Vitals, &Side, &Loyalty), With<Character>>,
+    roster: Single<&PartyRoster>,
+    level: PlayedLevel,
+    obstacles: WorldObstacles,
     factions: Res<crate::game::factions::Factions>,
     mut provocations: MessageReader<hostility::Provocation>,
     clock: Res<GameClock>,
     content: If<Res<Catalogs>>,
-    party: PartySight,
     mut engaged: MessageWriter<Engaged>,
     definitions: Res<crate::game::hits::prototypes::Definitions>,
 ) {
     let provoked: Vec<Entity> = provocations
         .read()
-        .filter_map(|&hostility::Provocation(m)| Some(monsters.get(m).ok()?.4?.0))
+        .filter_map(|&hostility::Provocation(m)| Some(monsters.get(m).ok()?.5?.0))
         .collect();
     let running = !battles.is_empty();
-    if !running && !party.anyone_alive() {
+    let anyone_alive =
+        roster.iter().any(|m| members.get(m).is_ok_and(|(.., vitals, _, _)| !vitals.is_dead()));
+    if !running && !anyone_alive {
         return;
     }
-    let Some((sight, root)) = party.sight() else { return };
+    let (Some(far), Some(root)) = (level.view_distance(), level.entity()) else { return };
+    let Some((party, seen_party, ..)) = roster.iter().find_map(|m| members.get(m).ok()) else {
+        return;
+    };
     let (catalog, spells) = (&content.species, &content.spells);
     let now = clock.ms;
     // Those of a group that fight: alive, and not an NPC.
@@ -167,41 +124,38 @@ pub(super) fn engage(
         group
             .iter()
             .filter(|&member| {
-                monsters.get(member).is_ok_and(|(_, monster, .., vitals)| {
+                monsters.get(member).is_ok_and(|(_, monster, vitals, ..)| {
                     !vitals.is_dead() && catalog[monster.species].npc.is_none()
                 })
             })
             .collect()
+    };
+    // A monster about to fight stands hostile toward the members on the
+    // party's side.
+    let toward = |member: Entity| {
+        let (.., side, loyalty) = members.get(member).unwrap();
+        hostility::between((hostility::Stance::Hostile, Loyalty::None), (side.0, *loyalty))
     };
     // How far a fighter is, whether it sees the party, and whether it can
     // act on it (retail `MonsterGroupCanEngage`): one of its attacks
     // reaches, or its best attack is close and it can walk up, or it can
     // cast or breathe at the party.
     let look = |fighter: Entity| -> Option<(f32, bool, bool)> {
-        let (_, monster, at, walker, .., vitals) = monsters.get(fighter).ok()?;
+        let (_, monster, vitals, at, eyes, ..) = monsters.get(fighter).ok()?;
         let kind = &catalog[monster.species];
-        let at_feet = feet(at.translation(), walker);
-        let distance = party_distance(sight.eye, monster, at_feet);
-        let sees = sight.sees(monster, vitals, &at, walker, kind);
+        let distance = at.gap(party);
+        let sees = eyes.see(at, (party, seen_party), far, &obstacles);
         let reaches = kind.attacks.iter().any(|a| distance <= a.reach.metres());
         let close = kind.attacks.iter().map(|a| a.reach).max().is_some_and(|r| r <= Reach::Short);
-        let party_at = PartyBody::feet_below(sight.eye);
-        let toward = |victim: Entity| {
-            let turncoat =
-                party.members.get(victim).is_ok_and(|(_, v)| v.conditions.has(Condition::Turncoat));
-            let member = (hostility::member_stance(turncoat), hostility::Loyalty::None);
-            hostility::between((hostility::Stance::Hostile, hostility::Loyalty::None), member)
-        };
         let scene = monster_spells::Scene {
             caster: fighter,
-            from: at_feet,
-            party_at,
-            members: party
-                .roster
+            from: at.feet,
+            party_at: party.feet,
+            members: roster
                 .iter()
-                .map(|m| (m, party.members.get(m).unwrap()))
-                .filter(|(_, (_, v))| !v.is_dead())
-                .map(|(m, (_, v))| member_in_scene(m, v, party_at, distance, &toward))
+                .filter_map(|m| Some((m, members.get(m).ok()?.2)))
+                .filter(|(_, vitals)| !vitals.is_dead())
+                .map(|(m, vitals)| member_in_scene(m, vitals, party.feet, distance, &toward))
                 .collect(),
             monsters: Vec::new(),
             party: distance,
@@ -217,16 +171,7 @@ pub(super) fn engage(
             && (reaches || (close && monster.body.speed > 0.0) || casts || breathes);
         Some((distance, sees, acts))
     };
-    let seen = |member: Entity| -> Option<Seen> {
-        let (_, monster, at, walker, .., vitals) = monsters.get(member).ok()?;
-        Some(sight.seen(member, ((monster, vitals), &at, walker, &catalog[monster.species])))
-    };
-    // How far a monster is from the party.
-    let nearest_of = |member: Entity| {
-        monsters.get(member).map_or(f32::INFINITY, |(_, monster, at, walker, ..)| {
-            party_distance(sight.eye, monster, feet(at.translation(), walker))
-        })
-    };
+    let footing = |monster: Entity| monsters.get(monster).ok().map(|(_, _, _, at, ..)| at);
     // Whether a group's leader (its first fighter) is in reach of the
     // party: its best attack's reach and one combat move, never under the
     // engagement range and its floor (retail `ShouldMonsterGroupEnterCombat`;
@@ -237,19 +182,20 @@ pub(super) fn engage(
             .max(ENGAGEMENT_RANGE + ENGAGEMENT_FLOOR);
         distance <= reach
     };
-    // The fight's hostile fighters in the party's sight, as reinforcement
+    // The fight's hostile fighters in the party's view, as reinforcement
     // reads them (retail `CheckMonsterGroupsEnterCombat`).
-    let hostiles: Vec<Seen> = if running {
+    let hostiles: Vec<(Entity, &Footing)> = if running {
         monsters
             .iter()
-            .filter(|&(_, monster, .., group, fighting, vitals)| {
+            .filter(|&(_, monster, vitals, at, _, group, fighting)| {
                 let set = group.and_then(|g| groups.get(g.0).ok()).and_then(|(_, g, ..)| g.set);
                 fighting
                     && !vitals.is_dead()
+                    && party.in_view(at, far, &obstacles)
                     && hostility::stance(set, &catalog[monster.species], &factions, now, true)
                         == hostility::Stance::Hostile
             })
-            .filter_map(|(entity, ..)| seen(entity).filter(|s| s.in_view))
+            .map(|(entity, _, _, at, ..)| (entity, at))
             .collect()
     } else {
         Vec::new()
@@ -265,7 +211,7 @@ pub(super) fn engage(
     units.extend(
         monsters
             .iter()
-            .filter(|(_, monster, .., group, _, vitals)| {
+            .filter(|(_, monster, vitals, _, _, group, _)| {
                 group.is_none() && !vitals.is_dead() && catalog[monster.species].npc.is_none()
             })
             .map(|(entity, ..)| (i32::MAX, None, vec![entity])),
@@ -274,7 +220,7 @@ pub(super) fn engage(
     for (_, group, fighters) in units {
         // Those already fighting stay; the rest of their group may join them.
         let fighters: Vec<Entity> =
-            fighters.into_iter().filter(|&m| monsters.get(m).is_ok_and(|m| !m.5)).collect();
+            fighters.into_iter().filter(|&m| monsters.get(m).is_ok_and(|m| !m.6)).collect();
         let Some(&first) = fighters.first() else { continue };
         let kind = &catalog[monsters.get(first).unwrap().1.species];
         let looks: Vec<_> = fighters.iter().filter_map(|&m| look(m)).collect();
@@ -300,17 +246,19 @@ pub(super) fn engage(
             // hostile group that sees the party with its leader in reach
             // (`ShouldMonsterGroupEnterCombat`).
             hostility::Stance::Hostile if running => {
-                provoked || (sees && leader_reaches(kind, nearest_of(first)))
+                provoked
+                    || (sees && footing(first).is_some_and(|at| leader_reaches(kind, at.gap(party))))
             }
             hostility::Stance::Hostile => provoked || (sees && acts),
             // A neutral group joins a running fight it stands with.
             hostility::Stance::Neutral if running => {
-                let members: Vec<(Seen, bool)> = fighters
+                let standing: Vec<(Entity, &Footing)> = fighters
                     .iter()
-                    .filter_map(|&m| seen(m))
-                    .map(|s| (s, kind.temper.camouflaged))
+                    .filter(|_| !kind.temper.camouflaged)
+                    .filter_map(|&m| footing(m).map(|at| (m, at)))
+                    .filter(|(_, at)| party.in_view(at, far, &obstacles))
                     .collect();
-                reinforces(&members, &hostiles)
+                reinforces(party, &standing, &hostiles)
             }
             _ => false,
         };
@@ -345,11 +293,19 @@ pub(super) fn open_battle(
     battles: Query<Entity, With<Battle>>,
     camp: Option<Res<crate::game::camp::Camp>>,
     search: Res<crate::game::world::search::Search>,
-    movement: Single<&crate::game::party::body::PartyMovement>,
     mut camp_news: MessageWriter<crate::game::camp::CampNews>,
-    monsters: MonsterSight,
+    monsters: Query<(&Monster, &Vitals, &Footing)>,
+    party: Single<(
+        &Position,
+        &PartyBody,
+        &crate::game::magic::enchantments::PartyEffects,
+        &PartyRoster,
+        &crate::game::party::body::PartyMovement,
+    )>,
+    members: Query<(&Character, &Vitals)>,
+    level: PlayedLevel,
+    obstacles: WorldObstacles,
     content: If<Res<Catalogs>>,
-    party: PartySight,
     mut recognition: GroupRecognition,
     mut news: MessageWriter<CombatNews>,
     mut rng: ResMut<GameRng>,
@@ -361,25 +317,25 @@ pub(super) fn open_battle(
         }
         return;
     }
-    let Some((sight, root)) = party.sight() else { return };
+    let (Some(far), Some(root)) = (level.view_distance(), level.entity()) else { return };
     info!("combat: {} monsters", joined.len());
     let catalog = &content.species;
-    let forward = party.party.1.forward();
-    let shadow_hound = party.effects.0.has(crate::content::spells::SpellId::SHADOW_HOUND);
+    let (position, body, effects, roster, movement) = *party;
+    let (eye, forward) = (PartyBody::eye(position), body.forward());
+    let shadow_hound = effects.0.has(crate::content::spells::SpellId::SHADOW_HOUND);
     let searching = search.on(false);
-    let view =
-        crate::game::world::perception::View { eye: sight.eye, forward, far: sight.far, searching };
-    let members = || party.members.iter_many(party.roster.iter()).matched();
+    let view = crate::game::world::perception::View { eye, forward, far, searching };
+    let members = || members.iter_many(roster.iter()).matched();
     let seen = joined.iter().any(|&entity| {
-        let (_, monster, at, walker, .., vitals) = monsters.get(entity).unwrap();
+        let (monster, vitals, at) = monsters.get(entity).unwrap();
         view.sees(
             members(),
             shadow_hound,
             (monster, vitals),
             &catalog[monster.species],
-            feet(at.translation(), walker),
+            at.feet,
             false,
-            sight.obstacles,
+            &obstacles,
         )
     });
     let opening = opening_surprise(
@@ -400,8 +356,8 @@ pub(super) fn open_battle(
     // player's.
     let nearest = joined
         .iter()
-        .map(|&m| (m, monsters.get(m).unwrap().2.translation()))
-        .min_by(|a, b| a.1.distance(sight.eye).total_cmp(&b.1.distance(sight.eye)))
+        .map(|&m| (m, monsters.get(m).unwrap().2.feet))
+        .min_by(|a, b| a.1.distance(eye).total_cmp(&b.1.distance(eye)))
         .map(|(m, _)| m);
     let battle = commands
         .spawn((Name::new("Battle"), Battle { opening, ..default() }, LevelOwned(root)))
@@ -409,7 +365,7 @@ pub(super) fn open_battle(
     for &monster in joined {
         commands.entity(monster).insert(Combatant(battle));
     }
-    recognition.detect(sight.eye, forward, Some(joined), shadow_hound, searching, &mut rng);
+    recognition.detect(eye, forward, Some(joined), shadow_hound, searching, &mut rng);
     news.write(CombatNews::Began { nearest });
     if let Some(cause) = opening {
         news.write(CombatNews::Surprised(cause));

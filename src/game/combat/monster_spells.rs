@@ -54,8 +54,9 @@ pub(super) struct Someone {
     pub stance: Stance,
 }
 
-/// What a casting monster sees of the fight.
-#[derive(Debug)]
+/// What a monster deciding its action sees of the fight ([`super::scene`]),
+/// for as long as it decides.
+#[derive(Component, Clone, Debug)]
 pub(super) struct Scene {
     pub caster: Entity,
     /// Where the caster stands, and the party's point.

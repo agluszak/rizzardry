@@ -13,41 +13,31 @@ use bevy::prelude::*;
 
 use super::monster_spells::{self, Scene, SpellAim};
 use super::round::{Acting, Fleeing, Guarding, MonsterTurn, SpecialCooldown};
-use super::scene::{scene, special_ready};
-use super::sight::Sight;
+use super::scene::special_ready;
 use super::{ACTION_SECONDS, Battle, CombatNews, Combatants, approach, conduct, summon};
 use crate::content::spells::SpellId;
 use crate::game::characters::Condition;
 use crate::game::data::Catalogs;
 use crate::game::hits::prototypes::{Definitions, Uses};
 use crate::game::hits::spells::reach;
-use crate::game::hits::{Act, Body, BodyReadOnlyItem, Deed};
+use crate::game::hits::{Act, Body, Deed};
 use crate::game::magic::Strength;
 use crate::game::magic::casting::{Aim, Cast, CastBy, MonsterBudget, Power, Target, UseContext};
-use crate::game::magic::enchantments::PartyEffects;
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::{self, Stance};
-use crate::game::world::level::{Level, PlayedLevel};
+use crate::game::world::footing::Footing;
+use crate::game::world::population::Monster;
+use crate::game::characters::Vitals;
+use crate::game::world::level::Level;
 use crate::game::world::obstacles::WorldObstacles;
-use crate::game::world::perception::party_distance;
 
 /// A monster that settled on fighting this action; `waits` when it may
 /// hold back instead.
 #[derive(Component, Debug)]
 pub(super) struct Fights {
     pub(super) waits: bool,
-}
-
-/// How one body stands toward another, by their sides and loyalties.
-pub(super) fn toward(mine: (Stance, hostility::Loyalty), body: &BodyReadOnlyItem) -> Stance {
-    hostility::between(mine, standing(body))
-}
-
-/// A body's side and loyalty.
-pub(super) fn standing(body: &BodyReadOnlyItem) -> (Stance, hostility::Loyalty) {
-    (body.side.0, *body.loyalty)
 }
 
 /// The monster has settled what it does with its action.
@@ -92,19 +82,6 @@ pub(super) struct CastsSpell {
     budget: u32,
 }
 
-/// How far a monster is from the party, and whether one of its attacks
-/// reaches the party from there.
-fn bearing(
-    body: &BodyReadOnlyItem,
-    eye: Vec3,
-    species: &crate::content::species::MonsterCatalog,
-) -> (f32, bool) {
-    let monster = body.monster.as_ref().unwrap();
-    let nearest = party_distance(eye, monster, body.feet(eye));
-    let kind = &species[monster.species];
-    (nearest, kind.attacks.iter().any(|attack| nearest <= attack.reach.metres()))
-}
-
 /// A monster whose action has come, revalidated: one no longer in the fight
 /// or able loses its turn; one going on with its turn after moving fights
 /// on without deciding again.
@@ -135,28 +112,18 @@ pub(super) fn begin_monster_turns(
 /// while the party stays off.
 pub(super) fn decide_conduct(
     mut commands: Commands,
-    actors: Query<(Entity, Has<Fleeing>), (With<Acting>, With<MonsterTurn>, Without<Decided>)>,
-    bodies: Query<Body>,
-    stand: Single<&Position, With<PartyBody>>,
+    actors: Query<
+        (Entity, &Monster, &Vitals, &hostility::Side, &Scene, Has<Fleeing>),
+        (With<Acting>, With<MonsterTurn>, Without<Decided>),
+    >,
     content: If<Res<Catalogs>>,
     mut rng: ResMut<GameRng>,
 ) {
-    let eye = PartyBody::eye(*stand);
-    for (monster, was_fleeing) in &actors {
-        let body = bodies.get(monster).unwrap();
-        let kind = &content.species[body.monster.as_ref().unwrap().species];
-        let (nearest, _) = bearing(&body, eye, &content.species);
-        let side = body.side.0;
+    for (monster, body, vitals, side, scene, was_fleeing) in &actors {
+        let kind = &content.species[body.species];
         let mut fleeing = was_fleeing;
-        let conduct = conduct::decide(
-            &mut rng,
-            body.monster.as_ref().unwrap(),
-            body.vitals,
-            kind,
-            side,
-            &mut fleeing,
-            nearest,
-        );
+        let conduct =
+            conduct::decide(&mut rng, body, vitals, kind, side.0, &mut fleeing, scene.party);
         let mut entity = commands.entity(monster);
         match (was_fleeing, fleeing) {
             (false, true) => {
@@ -173,31 +140,6 @@ pub(super) fn decide_conduct(
     }
 }
 
-/// The fight as a monster about to breathe or cast sees it.
-fn sees(
-    monster: Entity,
-    bodies: &mut Query<Body>,
-    combatants: &[Entity],
-    roster: &PartyRoster,
-    eye: Vec3,
-    far: f32,
-    concealment: u32,
-    obstacles: &WorldObstacles,
-    species: &crate::content::species::MonsterCatalog,
-) -> Scene {
-    let lowest_level = crate::game::party::lowest_level(
-        roster
-            .iter()
-            .filter_map(|member| bodies.get(member).ok())
-            .filter_map(|body| Some((body.character?, body.vitals))),
-    );
-    let sight = Sight { eye, far, lowest_level, concealment, obstacles };
-    let mine = standing(&bodies.get(monster).unwrap());
-    scene(monster, combatants, roster, bodies, &sight, species, &|body: &BodyReadOnlyItem| {
-        toward(mine, body)
-    })
-}
-
 /// A monster with a special attack ready may make it (retail
 /// `UpdateMonsterAI`'s special branch): always if it cannot strike the
 /// party, else at its chance; one that would close in to strike does that
@@ -206,65 +148,45 @@ fn sees(
 /// summoning needs no one in sight.
 pub(super) fn decide_special(
     mut commands: Commands,
-    actors: Query<Entity, (With<Acting>, With<MonsterTurn>, Without<Decided>)>,
-    mut bodies: Query<Body>,
+    actors: Query<
+        (Entity, &Monster, &Vitals, &hostility::Side, &Scene),
+        (With<Acting>, With<MonsterTurn>, Without<Decided>),
+    >,
     cooldowns: Query<&SpecialCooldown>,
-    fight: Single<Option<&Combatants>, With<Battle>>,
-    stand: Single<&Position, With<PartyBody>>,
-    roster: Single<&PartyRoster>,
-    party: Single<&PartyEffects>,
-    level: PlayedLevel,
-    obstacles: WorldObstacles,
     content: If<Res<Catalogs>>,
     definitions: Res<Definitions>,
     mut rng: ResMut<GameRng>,
 ) {
-    let combatants = fight.map_or(&[][..], Combatants::entities);
-    let eye = PartyBody::eye(*stand);
-    let far = level.view_distance().unwrap_or(0.0);
-    for monster in &actors {
-        let body = bodies.get(monster).unwrap();
-        let kind = &content.species[body.monster.as_ref().unwrap().species];
-        let (nearest, reaches) = bearing(&body, eye, &content.species);
+    for (monster, body, vitals, side, scene) in &actors {
+        let kind = &content.species[body.species];
+        let nearest = scene.party;
+        let reaches = kind.attacks.iter().any(|attack| nearest <= attack.reach.metres());
         let closes_in = !kind.temper.prefers_range && !kind.attacks.is_empty() && !reaches;
-        let side = body.side.0;
         let cooling = cooldowns.get(monster).is_ok_and(|cooldown| cooldown.0 > 0);
         let special = kind.special;
         let Some(special_kind) = special.kind else { continue };
         if special.chance == 0
             || closes_in
-            || !special_ready(body.vitals, kind, cooling, Some((nearest, side)))
+            || !special_ready(vitals, kind, cooling, Some((nearest, side.0)))
         {
             continue;
         }
-        let breather = (kind.level, body.vitals.stamina);
         let victims = if special_kind.summons().is_some() {
             Some(Vec::new())
         } else {
             let Some(cone) = content.spells.get(SpellId::SPECIAL_ATTACK_CONE) else { continue };
-            let scene = sees(
-                monster,
-                &mut bodies,
-                combatants,
-                &roster,
-                eye,
-                far,
-                party.0.concealment(),
-                &obstacles,
-                &content.species,
-            );
-            let aims = monster_spells::aims(cone, &scene, &definitions);
+            let aims = monster_spells::aims(cone, scene, &definitions);
             (!aims.is_empty()).then(|| {
                 let aim = aims[rng.below(aims.len() as u32) as usize];
-                let toward = monster_spells::aimed_at(&scene, aim);
-                monster_spells::cone_victims(&scene, toward, cone.reach.metres())
+                let toward = monster_spells::aimed_at(scene, aim);
+                monster_spells::cone_victims(scene, toward, cone.reach.metres())
             })
         };
         let Some(victims) = victims else { continue };
         if rng.below(100) >= if reaches { u32::from(special.chance) } else { 100 } {
             continue;
         }
-        let strength = crate::game::hits::specials::strength(breather.0, breather.1);
+        let strength = crate::game::hits::specials::strength(kind.level, vitals.stamina);
         commands.entity(monster).insert((
             Breathes { kind: special_kind, cooldown: special.cooldown, strength, victims },
             Decided,
@@ -277,56 +199,36 @@ pub(super) fn decide_special(
 /// that would close in to strike does that instead.
 pub(super) fn decide_spell(
     mut commands: Commands,
-    actors: Query<Entity, (With<Acting>, With<MonsterTurn>, Without<Decided>)>,
-    mut bodies: Query<Body>,
-    fight: Single<Option<&Combatants>, With<Battle>>,
-    stand: Single<&Position, With<PartyBody>>,
-    roster: Single<&PartyRoster>,
-    party: Single<&PartyEffects>,
-    level: PlayedLevel,
-    obstacles: WorldObstacles,
+    actors: Query<
+        (Entity, &Monster, &Vitals, &Scene),
+        (With<Acting>, With<MonsterTurn>, Without<Decided>),
+    >,
     content: If<Res<Catalogs>>,
     definitions: Res<Definitions>,
     mut rng: ResMut<GameRng>,
 ) {
-    let combatants = fight.map_or(&[][..], Combatants::entities);
-    let eye = PartyBody::eye(*stand);
-    let far = level.view_distance().unwrap_or(0.0);
-    for monster in &actors {
-        let body = bodies.get(monster).unwrap();
-        let caster = body.monster.unwrap().clone();
+    for (monster, caster, vitals, scene) in &actors {
         let kind = &content.species[caster.species];
-        let (_, reaches) = bearing(&body, eye, &content.species);
+        let reaches = kind.attacks.iter().any(|attack| scene.party <= attack.reach.metres());
         let closes_in = !kind.temper.prefers_range && !kind.attacks.is_empty() && !reaches;
         if kind.magic.chance == 0 || closes_in {
             continue;
         }
-        let vitals = body.vitals.clone();
         let chance = if reaches { u32::from(kind.magic.chance) } else { 100 };
-        let scene = sees(
-            monster,
-            &mut bodies,
-            combatants,
-            &roster,
-            eye,
-            far,
-            party.0.concealment(),
-            &obstacles,
-            &content.species,
-        );
         let Some((spell, aim)) = monster_spells::choose(
             &mut rng,
-            &vitals,
+            vitals,
             kind,
             chance,
             &content.spells,
-            &scene,
+            scene,
             &definitions,
         ) else {
             continue;
         };
         let budget = caster.spell_budget(kind);
         let power = monster_spells::power(&mut rng, budget, &content.spells[spell]);
+        let scene = scene.clone();
         commands.entity(monster).insert((CastsSpell { spell, power, aim, scene, budget }, Decided));
     }
 }
@@ -336,17 +238,16 @@ pub(super) fn decide_spell(
 /// blind.
 pub(super) fn withdraw_if_helpless(
     mut commands: Commands,
-    actors: Query<Entity, (With<Acting>, With<MonsterTurn>, Without<Decided>)>,
-    bodies: Query<Body>,
-    stand: Single<&Position, With<PartyBody>>,
+    actors: Query<
+        (Entity, &Monster, &Vitals, &Scene),
+        (With<Acting>, With<MonsterTurn>, Without<Decided>),
+    >,
     content: If<Res<Catalogs>>,
 ) {
-    let eye = PartyBody::eye(*stand);
-    for monster in &actors {
-        let body = bodies.get(monster).unwrap();
-        let kind = &content.species[body.monster.as_ref().unwrap().species];
-        let (_, reaches) = bearing(&body, eye, &content.species);
-        let blind = crate::game::world::population::blinded(kind, body.vitals);
+    for (monster, body, vitals, scene) in &actors {
+        let kind = &content.species[body.species];
+        let reaches = kind.attacks.iter().any(|attack| scene.party <= attack.reach.metres());
+        let blind = crate::game::world::population::blinded(kind, vitals);
         if kind.attacks.is_empty() || (blind && !reaches) {
             let withdraw = Retreats { conduct: conduct::Conduct::Withdraw, quiet: false };
             commands.entity(monster).insert((withdraw, Decided));
@@ -359,44 +260,37 @@ pub(super) fn withdraw_if_helpless(
 /// `BuildMonsterActionQueue`); a wary one may hold back instead.
 pub(super) fn decide_guard(
     mut commands: Commands,
-    actors: Query<Entity, (With<Acting>, With<MonsterTurn>, Without<Decided>)>,
-    bodies: Query<Body>,
-    fight: Single<Option<&Combatants>, With<Battle>>,
-    stand: Single<&Position, With<PartyBody>>,
+    actors: Query<
+        (Entity, &Monster, &Vitals, &Footing, &Scene),
+        (With<Acting>, With<MonsterTurn>, Without<Decided>),
+    >,
+    fellows: Query<(&Monster, &Vitals, &Footing)>,
     content: If<Res<Catalogs>>,
     mut rng: ResMut<GameRng>,
 ) {
-    let combatants = fight.map_or(&[][..], Combatants::entities);
-    let eye = PartyBody::eye(*stand);
     let species = &content.species;
-    for monster in &actors {
-        let body = bodies.get(monster).unwrap();
-        let me = body.monster.unwrap().clone();
+    for (monster, me, vitals, at, scene) in &actors {
         let kind = &species[me.species];
-        let (_, reaches) = bearing(&body, eye, species);
-        if !reaches {
+        if !kind.attacks.iter().any(|attack| scene.party <= attack.reach.metres()) {
             continue;
         }
-        let (feet, can_guard) = (body.feet(eye), body.vitals.can_guard());
-        let mine = standing(&body);
         let intelligence = u32::from(kind.attributes.intelligence);
-        let able = kind.temper.bodyguard && can_guard && !kind.attacks.is_empty();
+        let able = kind.temper.bodyguard && vitals.can_guard() && !kind.attacks.is_empty();
         let wards: Vec<Entity> = if able && rng.below(100) < intelligence {
             let reach = kind.attacks[0].reach.metres();
-            combatants
+            scene
+                .monsters
                 .iter()
-                .copied()
-                .filter(|&other| {
-                    other != monster
-                        && bodies.get(other).is_ok_and(|o| {
-                            let fellow = o.monster.as_ref().unwrap();
-                            toward(mine, &o) == Stance::Friendly
-                                && !o.is_dead()
-                                && me.gap(feet, fellow, o.feet(eye)) <= reach
-                                && species[fellow.species].level > kind.level
-                                && o.vitals.health.current * 100 / o.vitals.health.max < 40
-                        })
+                .filter(|other| other.entity != monster && other.stance == Stance::Friendly)
+                .filter(|other| {
+                    fellows.get(other.entity).is_ok_and(|(fellow, vitals, there)| {
+                        !vitals.is_dead()
+                            && at.gap(there) <= reach
+                            && species[fellow.species].level > kind.level
+                            && vitals.health.current * 100 / vitals.health.max < 40
+                    })
                 })
+                .map(|other| other.entity)
                 .collect()
         } else {
             Vec::new()
@@ -433,43 +327,30 @@ pub(super) fn interrupt(
         ),
         (With<Acting>, With<Decided>, Without<Resumes>),
     >,
-    mut bodies: Query<Body>,
-    fight: Single<(&mut Battle, Option<&Combatants>)>,
-    stand: Single<&Position, With<PartyBody>>,
-    roster: Single<&PartyRoster>,
+    mut vitals: Query<(&mut Vitals, &Monster, &Scene)>,
+    mut battle: Single<&mut Battle>,
     content: If<Res<Catalogs>>,
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<CombatNews>,
 ) {
     use super::Interrupt;
-    let (mut battle, combatants) = fight.into_inner();
-    let combatants = combatants.map_or(&[][..], Combatants::entities);
-    let eye = PartyBody::eye(*stand);
-    let species = &content.species;
     for (monster, mut turn, (retreats, casts, breathes, fights)) in &mut actors {
-        let body = bodies.get(monster).unwrap();
-        let me = body.monster.unwrap().clone();
-        let kind = &species[me.species];
-        let (nearest, _) = bearing(&body, eye, species);
-        let (feet, vitals) = (body.feet(eye), body.vitals.clone());
-        let mine = standing(&body);
+        let Ok((mut vitals, me, scene)) = vitals.get_mut(monster) else { continue };
+        let kind = &content.species[me.species];
         let against_foes = match casts {
             Some(cast) => content.spells[cast.spell].aimed_at_enemies(),
             None => breathes || fights,
         };
-        let friendly_member = roster.iter().any(|member| {
-            bodies.get(member).is_ok_and(|b| toward(mine, &b) == Stance::Friendly)
-        });
+        // Whether one of its attacks reaches a friend it sees: a living
+        // member on its side, or a living fellow in its line. (Before, the
+        // dead and fellows out of its line counted too.)
         let strikes_friend = kind.attacks.iter().any(|attack| {
             let reach = attack.reach.metres();
-            (nearest <= reach && friendly_member)
-                || combatants.iter().any(|&other| {
-                    other != monster
-                        && bodies.get(other).is_ok_and(|o| {
-                            toward(mine, &o) == Stance::Friendly
-                                && me.gap(feet, o.monster.as_ref().unwrap(), o.feet(eye)) <= reach
-                        })
-                })
+            scene.members.iter().chain(&scene.monsters).any(|other| {
+                other.entity != monster
+                    && other.stance == Stance::Friendly
+                    && other.from_caster <= reach
+            })
         });
         let fleeing = retreats.is_some_and(|r| r.conduct == conduct::Conduct::Flee);
         let interrupted = conduct::interrupt(
@@ -501,7 +382,7 @@ pub(super) fn interrupt(
                     .remove::<(Retreats, CastsSpell, Breathes, Protects, Fights, Decided, Acting)>(
                     );
                 if interrupt == Interrupt::Freed {
-                    bodies.get_mut(monster).unwrap().vitals.conditions.lift(Condition::Webbed);
+                    vitals.conditions.lift(Condition::Webbed);
                 }
                 news.write(CombatNews::Interrupted { monster, interrupt });
                 turn.end();

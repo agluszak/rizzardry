@@ -2,6 +2,9 @@
 //! fellows and foes, and whether its special attack is ready.
 
 use super::*;
+use super::monster_turn::Decided;
+use super::round::{Acting, MonsterTurn};
+use crate::game::world::footing::{Conspicuous, Eyes, Footing};
 
 /// Whether a monster can make its special attack now (retail
 /// `CanMonsterFlee`): it has one, it is not cooling down, it has a tenth of
@@ -47,64 +50,73 @@ pub(super) fn member_in_scene(
     }
 }
 
-/// The fight as a monster about to cast or breathe sees it: the living
-/// party at the party's point, and the living monsters in the fight it has
-/// a clear line to, itself among them standing friendly to itself, with
-/// how it stands toward each.
-pub(super) fn scene(
-    caster: Entity,
-    combatants: &[Entity],
-    roster: &PartyRoster,
-    bodies: &mut Query<crate::game::hits::Body>,
-    sight: &Sight,
-    species: &MonsterCatalog,
-    toward: &dyn Fn(&crate::game::hits::BodyReadOnlyItem) -> hostility::Stance,
-) -> monster_spells::Scene {
-    let party_eye = sight.eye;
-    let party_at = PartyBody::feet_below(party_eye);
-    let me = bodies.get(caster).unwrap();
-    let body = me.monster.unwrap().clone();
-    let feet_at = me.feet(party_eye);
-    let eye = me.eye(party_eye);
-    let party = party_distance(party_eye, &body, feet_at);
-    let sees_party = me
-        .pose
-        .as_ref()
-        .is_some_and(|pose| sight.sees(&body, me.vitals, pose, me.walker, &species[body.species]));
-    let members = roster
-        .iter()
-        .filter_map(|member| {
-            let body = bodies.get(member).ok()?;
-            (!body.is_dead()).then(|| monster_spells::Someone {
-                entity: member,
-                at: party_at,
-                from_caster: party,
-                vitals: body.vitals.clone(),
-                stance: toward(&body),
-            })
-        })
-        .collect();
-    let monsters = combatants
-        .iter()
-        .filter_map(|&entity| {
-            let other = bodies.get(entity).ok()?;
-            let them = other.monster?;
-            if other.is_dead() {
-                return None;
-            }
-            let at = other.feet(party_eye);
-            // A fellow is in reach of its spell only along a clear line.
-            if entity != caster && !sight.obstacles.clear(eye, them.eye(at)) {
-                return None;
-            }
-            Some(monster_spells::Someone {
+/// The fight as each monster deciding its action sees it: the living party
+/// at the party's point, and the living monsters in the fight it has a
+/// clear line to, itself among them standing friendly to itself, with how
+/// it stands toward each; and whether it sees the party.
+pub(super) fn see_fight(
+    mut commands: Commands,
+    deciding: Query<
+        (Entity, &Footing, &Eyes, &hostility::Side, &hostility::Loyalty),
+        (With<Acting>, With<MonsterTurn>, Without<Decided>),
+    >,
+    bodies: Query<(&Vitals, &Footing, &hostility::Side, &hostility::Loyalty)>,
+    seen: Query<&Conspicuous>,
+    fight: Single<Option<&Combatants>, With<Battle>>,
+    roster: Single<&PartyRoster>,
+    level: PlayedLevel,
+    obstacles: WorldObstacles,
+) {
+    let combatants = fight.map_or(&[][..], Combatants::entities);
+    let far = level.view_distance().unwrap_or(0.0);
+    for (caster, at, eyes, side, loyalty) in &deciding {
+        let mine = (side.0, *loyalty);
+        let someone = |entity: Entity, there: &Footing, vitals: &Vitals, side: &hostility::Side, loyalty: &hostility::Loyalty| {
+            monster_spells::Someone {
                 entity,
-                at,
-                from_caster: body.gap(feet_at, them, at),
-                vitals: other.vitals.clone(),
-                stance: if entity == caster { hostility::Stance::Friendly } else { toward(&other) },
+                at: there.feet,
+                from_caster: at.gap(there),
+                vitals: vitals.clone(),
+                stance: if entity == caster {
+                    hostility::Stance::Friendly
+                } else {
+                    hostility::between(mine, (side.0, *loyalty))
+                },
+            }
+        };
+        let party = roster.iter().find_map(|m| Some((bodies.get(m).ok()?.1, seen.get(m).ok()?)));
+        let members = roster
+            .iter()
+            .filter_map(|m| {
+                let (vitals, there, side, loyalty) = bodies.get(m).ok()?;
+                (!vitals.is_dead()).then(|| someone(m, there, vitals, side, loyalty))
             })
-        })
-        .collect();
-    monster_spells::Scene { caster, from: feet_at, party_at, members, monsters, party, sees_party }
+            .collect();
+        // A fellow is in reach of its spell only along a clear line.
+        let monsters = combatants
+            .iter()
+            .filter_map(|&m| {
+                let (vitals, there, side, loyalty) = bodies.get(m).ok()?;
+                let clear = m == caster || obstacles.clear(at.eye, there.eye);
+                (!vitals.is_dead() && clear).then(|| someone(m, there, vitals, side, loyalty))
+            })
+            .collect();
+        let scene = monster_spells::Scene {
+            caster,
+            from: at.feet,
+            party_at: party.map_or(at.feet, |(there, _)| there.feet),
+            members,
+            monsters,
+            party: party.map_or(f32::INFINITY, |(there, _)| at.gap(there)),
+            sees_party: party.is_some_and(|party| eyes.see(at, party, far, &obstacles)),
+        };
+        commands.entity(caster).insert(scene);
+    }
+}
+
+/// A monster's decision made, what it saw goes.
+pub(super) fn forget_fight(mut commands: Commands, seeing: Query<Entity, With<monster_spells::Scene>>) {
+    for monster in &seeing {
+        commands.entity(monster).remove::<monster_spells::Scene>();
+    }
 }

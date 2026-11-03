@@ -32,8 +32,8 @@ use enum_map::EnumMap;
 use super::approach::{self, CombatMove};
 use super::attack::{self, Aim, Grip, Location, Surprise};
 use super::fighters::{
-    Agility, ArmourClass, Backstab, BlindFighting, Footing, HitLocations, MissileShield,
-    Protection, Reduction, reaches,
+    Agility, ArmourClass, Backstab, BlindFighting, HitLocations, MissileShield, Protection,
+    Reduction, reaches,
 };
 use super::monster_turn::{Decided, Fights, Resumes};
 use super::round::{Acting, Guards, Interceptions, MonsterTurn, PartyTurn, Spotted};
@@ -58,6 +58,7 @@ use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
 use crate::game::world::ActorPose;
+use crate::game::world::footing::Footing;
 use crate::game::world::hostility::{self, Loyalty, Provocation, Side, Stance};
 use crate::game::world::identify::{GroupMember, MonsterGroup};
 use crate::game::world::navigation::Walker;
@@ -324,7 +325,8 @@ pub(super) fn run_swings(world: &mut World) {
 }
 
 pub(super) fn stages(app: &mut App) {
-    use super::fighters::{judge_members, judge_monsters, place_members, place_monsters};
+    use super::fighters::{judge_members, judge_monsters};
+    use crate::game::world::footing::{place_members, place_monsters};
     app.init_schedule(Swings).add_systems(
         Swings,
         (

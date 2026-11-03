@@ -30,17 +30,14 @@ pub mod summon;
 
 use crate::game::world::level::LevelOwned;
 use crate::game::world::level::PlayedLevel;
-use crate::game::world::navigation::{Walker, feet};
 use crate::game::world::obstacles::WorldObstacles;
-use crate::game::world::perception::{party_distance, sight_threshold};
-use crate::game::world::{ActorPose, ActorPoseItem};
 use avian3d::prelude::Position;
 use bevy::prelude::*;
 
 use crate::content::items::AttackMode;
 use crate::content::species::AttackWord;
 
-use crate::content::species::{MonsterCatalog, Reach, Species};
+use crate::content::species::{Reach, Species};
 use crate::game::characters::{Character, Condition, Vitals};
 use crate::game::hits::Effect;
 use crate::game::magic::casting::{self};
@@ -53,7 +50,7 @@ use crate::game::time::GameClock;
 use crate::game::world::damage::MonsterDamage;
 use crate::game::world::hostility;
 use crate::game::world::identify::{GroupMember, GroupMembers, GroupRecognition, MonsterGroup};
-use crate::game::world::population::{Monster, blinded};
+use crate::game::world::population::Monster;
 use bevy::ecs::relationship::RelationshipTarget;
 
 pub struct CombatPlugin;
@@ -80,6 +77,13 @@ impl Plugin for CombatPlugin {
                 hostility::judge_sides
                     .after(GameplaySet::Burden)
                     .before(crate::game::magic::accept_magic),
+            )
+            // Where everyone stands and how they see is placed before
+            // gameplay reads it, each frame and each fixed step.
+            .add_systems(
+                Update,
+                (crate::game::world::footing::place_members, crate::game::world::footing::place_monsters)
+                    .before(GameplaySet::LevelActivation),
             )
             .add_observer(approach::end_move)
             .add_observer(approach::stop_walking)
@@ -119,13 +123,12 @@ impl Plugin for CombatPlugin {
                         .chain(),
                     // what everyone in the fight is to blows is judged,
                     (
-                        fighters::place_members,
-                        fighters::place_monsters,
-                        fighters::judge_members,
-                        fighters::judge_monsters,
+                        crate::game::world::footing::place_members,
+                        crate::game::world::footing::place_monsters,
+                        (fighters::judge_members, fighters::judge_monsters)
+                            .run_if(any_with_component::<Battle>),
                     )
-                        .chain()
-                        .run_if(any_with_component::<Battle>),
+                        .chain(),
                     // The member whose initiative came acts,
                     (
                         casting::party_sight,
@@ -138,6 +141,7 @@ impl Plugin for CombatPlugin {
                     // or the monster decides and acts;
                     (
                         monster_turn::begin_monster_turns,
+                        scene::see_fight,
                         monster_turn::decide_conduct,
                         monster_turn::decide_special,
                         monster_turn::decide_spell,
@@ -150,6 +154,7 @@ impl Plugin for CombatPlugin {
                         monster_turn::start_special,
                         monster_turn::start_monster_cast,
                         swings::open_monster_attacks,
+                        scene::forget_fight,
                     )
                         .chain(),
                     // its blows and casts settle within the step,

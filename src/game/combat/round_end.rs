@@ -12,8 +12,7 @@ use bevy::prelude::*;
 
 use super::approach::{self, CombatMove};
 use super::round::{MonsterTurn, PartyTurn, SpecialCooldown};
-use super::sight::{Seen, Sight, reinforces};
-use super::monster_turn::{standing, toward};
+use super::sight::reinforces;
 use super::{
     Battle, CombatNews, Combatant, Combatants, PASSIVE_ROUNDS, PartyMove, ROUND_SECONDS, RoundPhase,
 };
@@ -35,7 +34,11 @@ use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::{GameClock, Ticks};
 use crate::game::world::hostility::{self, Stance};
-use crate::game::world::identify::{GroupMember, GroupRecognition, MonsterGroup};
+use crate::game::world::identify::{GroupMember, GroupMembers, GroupRecognition, MonsterGroup};
+use crate::game::world::footing::{Conspicuous, Eyes, Footing};
+use crate::game::world::population::Monster;
+use crate::game::characters::Vitals;
+use bevy::ecs::relationship::RelationshipTarget;
 use crate::game::world::level::{Level, PlayedLevel};
 use crate::game::world::obstacles::WorldObstacles;
 
@@ -85,115 +88,111 @@ pub fn judge_round(
 pub(super) fn leave_fight(
     mut commands: Commands,
     fight: Single<&Combatants, With<RoundEnding>>,
-    mut bodies: Query<Body>,
-    memberships: Query<&GroupMember>,
-    stand: Single<&Position, With<PartyBody>>,
+    fighters: Query<(
+        &Monster,
+        &Vitals,
+        &Footing,
+        &Eyes,
+        &Conspicuous,
+        &hostility::Side,
+        &hostility::Loyalty,
+        Option<&GroupMember>,
+    )>,
+    groups: Query<(&MonsterGroup, &GroupMembers)>,
+    members: Query<(&Footing, &Conspicuous), With<Character>>,
     roster: Single<&PartyRoster>,
-    party: Single<&PartyEffects>,
     level: PlayedLevel,
-    groups: Query<&MonsterGroup>,
     obstacles: WorldObstacles,
     content: If<Res<Catalogs>>,
     factions: Res<Factions>,
     clock: Res<GameClock>,
 ) {
     let combatants = fight.entities();
-    let species = &content.species;
-    let members: Vec<_> = roster
-        .iter()
-        .filter_map(|member| {
-            let body = bodies.get(member).ok()?;
-            Some((body.character?.clone(), body.vitals.clone()))
+    let far = level.view_distance().unwrap_or(0.0);
+    let Some(party) = roster.iter().find_map(|member| members.get(member).ok()) else { return };
+    let fighting = |monster: Entity| combatants.contains(&monster);
+    let alive = |monster: Entity| fighters.get(monster).is_ok_and(|(_, vitals, ..)| !vitals.is_dead());
+    // The stance its group holds toward the party, Turncoat aside.
+    let stance = |monster: Entity| {
+        let (body, .., group) = fighters.get(monster).ok()?;
+        let set = group.and_then(|group| groups.get(group.0).ok()).and_then(|(g, _)| g.set);
+        Some(hostility::stance(set, &content.species[body.species], &factions, clock.ms, true))
+    };
+    let in_view = |monster: Entity| {
+        fighters.get(monster).is_ok_and(|(_, _, at, ..)| party.0.in_view(at, far, &obstacles))
+    };
+    let sees_party = |monster: Entity| {
+        fighters.get(monster).is_ok_and(|(_, _, at, eyes, ..)| eyes.see(at, party, far, &obstacles))
+    };
+    // Whether a monster sees a foe of its own in the fight.
+    let sees_foe = |monster: Entity| {
+        let Ok((_, _, at, eyes, _, side, loyalty, _)) = fighters.get(monster) else { return false };
+        combatants.iter().any(|&other| {
+            fighters.get(other).is_ok_and(|(_, vitals, there, _, seen, their_side, theirs, _)| {
+                !vitals.is_dead()
+                    && hostility::between((side.0, *loyalty), (their_side.0, *theirs))
+                        == hostility::Stance::Hostile
+                    && eyes.see(at, (there, seen), far, &obstacles)
+            })
         })
-        .collect();
-    let sight = Sight {
-        eye: PartyBody::eye(*stand),
-        far: level.view_distance().unwrap_or(0.0),
-        lowest_level: crate::game::party::lowest_level(members.iter().map(|(c, v)| (c, v))),
-        concealment: party.0.concealment(),
-        obstacles: &obstacles,
     };
-    let group_of = |monster: Entity| memberships.get(monster).ok().map(|m| m.0);
-    let seen = |monster: Entity, bodies: &mut Query<Body>| -> Option<(Seen, bool, Stance)> {
-        let body = bodies.get(monster).ok()?;
-        let me = body.monster?;
-        let kind = &species[me.species];
-        let pose = body.pose.as_ref()?;
-        if body.is_dead() {
-            return None;
-        }
-        let stance = hostility::stance(
-            body.group.and_then(|g| groups.get(g.0).ok()).and_then(|g| g.set),
-            kind,
-            &factions,
-            clock.ms,
-            body.fighting,
-        );
-        let seen = sight.seen(monster, ((me, body.vitals), pose, body.walker, kind));
-        Some((seen, kind.temper.camouflaged, stance))
-    };
-    let hostiles: Vec<Seen> = combatants
+    let hostiles: Vec<Entity> = combatants
         .iter()
-        .filter_map(|&c| seen(c, &mut bodies))
-        .filter(|(s, _, stance)| *stance == Stance::Hostile && s.in_view)
-        .map(|(s, ..)| s)
+        .copied()
+        .filter(|&c| alive(c) && in_view(c) && stance(c) == Some(hostility::Stance::Hostile))
         .collect();
-    let (mut checked, mut leaving, mut engaged) = (Vec::new(), Vec::new(), false);
+    let footing = |monster: Entity| fighters.get(monster).ok().map(|(_, _, at, ..)| at);
+    let mut engaged = false;
+    let mut leaving = Vec::new();
+    // A monster outside any group keeps hostile groups engaged.
     for &combatant in combatants {
-        let stance = seen(combatant, &mut bodies).map(|(.., stance)| stance);
-        let Some(group) = group_of(combatant) else {
-            engaged |= stance == Some(Stance::Hostile);
-            continue;
-        };
-        if checked.contains(&group) {
-            continue;
+        if fighters.get(combatant).is_ok_and(|(.., group)| group.is_none()) && alive(combatant) {
+            engaged |= stance(combatant) == Some(hostility::Stance::Hostile);
         }
-        checked.push(group);
-        let fellows: Vec<(Seen, bool)> = combatants
-            .iter()
-            .filter(|&&c| group_of(c) == Some(group))
-            .filter_map(|&c| seen(c, &mut bodies).map(|(s, camouflaged, _)| (s, camouflaged)))
-            .collect();
+    }
+    let fought: Vec<Entity> = combatants
+        .iter()
+        .filter_map(|&c| fighters.get(c).ok().and_then(|(.., group)| group).map(|g| g.0))
+        .fold(Vec::new(), |mut groups, group| {
+            if !groups.contains(&group) {
+                groups.push(group);
+            }
+            groups
+        });
+    for group in fought {
+        let Ok((_, members)) = groups.get(group) else { continue };
+        let fellows: Vec<Entity> = members.iter().filter(|&m| fighting(m) && alive(m)).collect();
+        let Some(stance) = members.iter().find(|&m| fighting(m)).and_then(stance) else { continue };
         let stays = match stance {
-            Some(Stance::Neutral) => reinforces(&fellows, &hostiles),
-            Some(Stance::Hostile) => {
-                let sees = fellows.iter().any(|(s, _)| s.sees);
+            hostility::Stance::Neutral => {
+                let unseen = |m: Entity| {
+                    fighters.get(m).is_ok_and(|(body, ..)| {
+                        content.species[body.species].temper.camouflaged
+                    })
+                };
+                let standing: Vec<(Entity, &Footing)> = fellows
+                    .iter()
+                    .filter(|&&m| !unseen(m) && in_view(m))
+                    .filter_map(|&m| footing(m).map(|at| (m, at)))
+                    .collect();
+                let hostiles: Vec<(Entity, &Footing)> =
+                    hostiles.iter().filter_map(|&h| footing(h).map(|at| (h, at))).collect();
+                reinforces(party.0, &standing, &hostiles)
+            }
+            hostility::Stance::Hostile => {
+                let sees = fellows.iter().any(|&m| sees_party(m));
                 engaged |= sees;
                 sees
             }
-            Some(Stance::Friendly) => fellows.iter().any(|(fellow, _)| {
-                let observer = bodies.get(fellow.entity).unwrap();
-                let mine = standing(&observer);
-                let watcher = observer.monster.unwrap().clone();
-                let vitals = observer.vitals.clone();
-                let feet = observer.feet(sight.eye);
-                let forward = observer.pose.as_ref().unwrap().forward();
-                combatants.iter().any(|&enemy| {
-                    bodies.get(enemy).is_ok_and(|target| {
-                        let them = target.monster.as_ref().unwrap();
-                        !target.is_dead()
-                            && toward(mine, &target) == Stance::Hostile
-                            && sight.sees_from(
-                                &watcher,
-                                &vitals,
-                                &species[watcher.species],
-                                feet,
-                                forward,
-                                them,
-                                target.feet(sight.eye),
-                                &species[them.species],
-                            )
-                    })
-                })
-            }),
-            None => false,
+            hostility::Stance::Friendly => fellows.iter().any(|&m| sees_foe(m)),
         };
         if !stays {
             leaving.push(group);
         }
     }
     for &combatant in combatants {
-        if !engaged || group_of(combatant).is_some_and(|g| leaving.contains(&g)) {
+        let group = fighters.get(combatant).ok().and_then(|(.., group)| group).map(|g| g.0);
+        if !engaged || group.is_some_and(|g| leaving.contains(&g)) {
             commands.entity(combatant).insert(Leaves);
         }
     }

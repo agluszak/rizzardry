@@ -1,13 +1,13 @@
 //! What a body in a fight is to the blows struck at it and by it: the same
 //! components on a party member and on a monster, so the swing systems read
 //! them without asking which it is. Each component is produced from its
-//! body's own sources (a member's sheet, gear and party; a monster's species,
-//! pose and spells) by one system per kind, at the start of every fixed step
-//! of a fight and of every swing pass, and nothing else writes it. They are
+//! body's own sources (a member's sheet, gear and party; a monster's species
+//! and spells) by one system per kind, at the start of every fixed step of
+//! a fight and of every swing pass, and nothing else writes it. They are
 //! valid only in a fight: they go when the fight ends, or when a monster
-//! leaves it.
+//! leaves it. Where bodies stand is their
+//! [`Footing`](crate::game::world::footing::Footing).
 
-use avian3d::prelude::Position;
 use bevy::prelude::*;
 use enum_map::EnumMap;
 
@@ -22,43 +22,10 @@ use crate::game::characters::{Character, Vitals, scale_by_level};
 use crate::game::data::Catalogs;
 use crate::game::inventory::{Burden, Carried};
 use crate::game::magic::enchantments::PartyEffects;
-use crate::game::party::body::{self as party_body, PartyBody};
-use crate::game::party::formation::{self, Formation, Row};
+use crate::game::party::formation::Formation;
+use crate::game::world::footing::Footing;
 use crate::game::party::roster::PartyRoster;
-use crate::game::world::ActorPose;
-use crate::game::world::navigation::{Walker, feet};
 use crate::game::world::population::Monster;
-
-/// Where a body stands and how big it is: a monster at its pose, a member
-/// in the party's body, which they share.
-#[derive(Component, Clone, Copy, Debug)]
-pub struct Footing {
-    pub feet: Vec3,
-    /// Where it looks from.
-    pub eye: Vec3,
-    /// Where a blow or a missile strikes it.
-    pub centre: Vec3,
-    pub radius: f32,
-    pub half_height: f32,
-    /// Which way it faces.
-    pub yaw: f32,
-}
-
-impl Footing {
-    pub fn forward(&self) -> Vec3 {
-        party_body::heading(self.yaw)
-    }
-
-    /// How far it is from another body, body to body.
-    pub fn gap(&self, other: &Footing) -> f32 {
-        (self.feet.distance(other.feet) - self.radius - other.radius).max(0.0)
-    }
-
-    /// The side of it something at `at` is on.
-    pub fn quadrant(&self, at: Vec3) -> Row {
-        formation::quadrant(self.eye, self.yaw, at)
-    }
-}
 
 /// Senses + speed + dexterity + intelligence (retail SSDI), which weighs
 /// for its blows and against those at it.
@@ -163,46 +130,6 @@ pub fn reaches(
     }
 }
 
-/// The members stand in the party's body.
-pub(super) fn place_members(
-    mut commands: Commands,
-    body: Single<(&Position, &PartyBody)>,
-    roster: Single<&PartyRoster>,
-) {
-    let (position, body) = *body;
-    let eye = PartyBody::eye(position);
-    let footing = Footing {
-        feet: PartyBody::feet_below(eye),
-        eye,
-        centre: PartyBody::centre(eye),
-        radius: party_body::RADIUS,
-        half_height: party_body::RADIUS,
-        yaw: body.yaw,
-    };
-    for member in roster.iter() {
-        commands.entity(member).insert(footing);
-    }
-}
-
-/// The monsters in the fight stand at their poses.
-pub(super) fn place_monsters(
-    mut commands: Commands,
-    monsters: Query<(Entity, &Monster, ActorPose, Option<&Walker>), With<Combatant>>,
-) {
-    for (entity, monster, pose, walker) in &monsters {
-        let feet = feet(pose.translation(), walker);
-        let half_height = monster.body.eye_height * 0.5;
-        commands.entity(entity).insert(Footing {
-            feet,
-            eye: monster.eye(feet),
-            centre: feet + Vec3::Y * half_height,
-            radius: monster.body.radius,
-            half_height,
-            yaw: party_body::yaw_toward(pose.forward()),
-        });
-    }
-}
-
 /// A member, by their sheet, gear and party: what they wear and the spells
 /// on them and the party, braced when they defend and distracted while the
 /// party runs.
@@ -289,7 +216,6 @@ pub(super) fn judge_monsters(
 /// What a body is to blows, gone once it is out of the fight.
 fn forget(commands: &mut EntityCommands) {
     commands.try_remove::<(
-        Footing,
         Agility,
         Reduction,
         Protection,
@@ -310,7 +236,7 @@ pub(super) fn leave(left: On<Remove<Combatant>>, mut commands: Commands) {
 pub(super) fn disband(
     _: On<Remove<Battle>>,
     mut commands: Commands,
-    judged: Query<Entity, With<Footing>>,
+    judged: Query<Entity, With<ArmourClass>>,
 ) {
     for body in &judged {
         forget(&mut commands.entity(body));

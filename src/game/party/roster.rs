@@ -27,6 +27,7 @@ pub struct Party;
 /// leaves (an NPC dismissed) keeps its identity and state.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 #[relationship(relationship_target = PartyRoster)]
+#[require(crate::game::world::footing::Footing, crate::game::world::footing::Conspicuous)]
 pub struct PartyMember(pub Entity);
 
 /// The party's members in slot order, maintained by Bevy from
