@@ -202,23 +202,32 @@ pub(super) fn leave_fight(
     }
 }
 
-/// A monster that waited, or lies asleep or knocked out, gets its breath
-/// back (retail `AdvanceCombatRound`).
-pub(super) fn rest_waiters(
+/// Whoever held back this round (a body that waited, a member who
+/// defended), or lies asleep or knocked out, gets its breath back (retail
+/// `AdvanceCombatRound`); a Fighter's sheet scales it.
+pub(super) fn rest_the_idle(
     fight: Single<&Combatants, With<RoundEnding>>,
-    mut monsters: Query<(&mut crate::game::characters::Vitals, Option<&Turn>)>,
+    roster: Single<&PartyRoster>,
+    mut bodies: Query<(&mut Vitals, Option<&Turn>, Option<&Ordered>, Option<&Character>)>,
     mut rng: ResMut<GameRng>,
 ) {
-    for &monster in fight.entities() {
-        let Ok((mut vitals, turn)) = monsters.get_mut(monster) else { continue };
+    for body in roster.iter().chain(fight.entities().iter().copied()) {
+        let Ok((mut vitals, turn, ordered, character)) = bodies.get_mut(body) else { continue };
         let resting = turn.is_some_and(|turn| turn.waited)
-            || vitals
-                .conditions
-                .iter()
-                .any(|&(c, _)| matches!(c, Condition::Asleep | Condition::Unconscious));
-        if resting {
-            let maximum = vitals.stamina.max;
-            vitals.rest(recovery::rest_roll(maximum, &mut rng));
+            || ordered.is_some_and(Ordered::defends)
+            || matches!(
+                vitals.conditions.worst(),
+                Some(Condition::Asleep | Condition::Unconscious)
+            );
+        if vitals.is_dead() || !resting {
+            continue;
+        }
+        let maximum = vitals.stamina.max;
+        let rolled = recovery::rest_roll(maximum, &mut rng);
+        let gained =
+            character.map_or(rolled, |character| recovery::combat_rest_amount(character, rolled));
+        if vitals.stamina.current < maximum || vitals.conditions.exhausted() {
+            vitals.rest(gained);
         }
     }
 }
@@ -254,9 +263,9 @@ pub(super) fn age_conditions(
     }
 }
 
-/// The members recover as a fighting round allows: spell points at half
-/// rate, nothing else.
-pub(super) fn recover_members(
+/// Bodies with spell pools recover as a fighting round allows: spell
+/// points at half rate, nothing else.
+pub(super) fn recover_pools(
     fight: Single<(Entity, &RoundEnding)>,
     roster: Single<&PartyRoster>,
     mut members: Query<(
@@ -364,33 +373,6 @@ pub(super) fn age_enchantments(
         }
     }
     round.phase = RoundPhase::Waiting;
-}
-
-/// Members who defended, or lie asleep or knocked out, get their breath
-/// back after their conditions age, in accepted actor order.
-pub(super) fn rest_defenders(
-    _fight: Single<(), With<RoundEnding>>,
-    roster: Single<&PartyRoster>,
-    mut members: Query<(&Character, &mut crate::game::characters::Vitals, &Ordered)>,
-    mut rng: ResMut<GameRng>,
-) {
-    for member in roster.iter() {
-        let Ok((character, mut vitals, ordered)) = members.get_mut(member) else { continue };
-        let resting = ordered.defends()
-            || matches!(
-                vitals.conditions.worst(),
-                Some(Condition::Asleep | Condition::Unconscious)
-            );
-        if vitals.is_dead() || !resting {
-            continue;
-        }
-        let maximum = vitals.stamina.max;
-        let gained =
-            recovery::combat_rest_amount(character, recovery::rest_roll(maximum, &mut rng));
-        if vitals.stamina.current < maximum || vitals.conditions.exhausted() {
-            vitals.rest(gained);
-        }
-    }
 }
 
 /// The fight is over when no hostile stays in it, or nobody attacked or
