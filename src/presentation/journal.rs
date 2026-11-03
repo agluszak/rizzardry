@@ -1,7 +1,7 @@
 //! Retail fact journal: twelve historical transitions per page, newest page first.
 use super::screen_art::{BitmapText, spawn_picture};
 use crate::content::npcs::JournalVisibility;
-use crate::game::{difficulty::Difficulty, npcs::conversation::StoryFacts};
+use crate::game::{difficulty::Difficulty, npcs::story::StoryFacts};
 use crate::presentation::retail_controls::RestoreFocus;
 use crate::presentation::screen::Screen;
 use bevy::input_focus::{FocusCause, InputFocus, tab_navigation::TabGroup};

@@ -1,44 +1,36 @@
-//! Stock is merchandise, not the NPC's personal equipment: a merchant's
-//! [`MerchantStock`] beside its [`super::Npc`]. A quote reads what a trade
-//! would cost now; settling it validates the whole request again and
-//! commits the transfer and the payment at once.
-use crate::content::{
-    items::{EquipClass, ItemCatalog, ItemDefinition, ItemId, QuantityKind},
-    npcs::NpcDefinition,
+//! Merchant inventory and atomic transfers. No dialogue state is read here.
+use super::ActorId;
+use crate::{
+    content::{
+        items::{EquipClass, ItemCatalog, ItemDefinition, ItemId, QuantityKind},
+        npcs::NpcDefinition,
+    },
+    game::{
+        characters::{Character, Vitals},
+        data::Catalogs,
+        inventory::{Carried, ItemIds, ItemOwner, ItemRef, ItemStack, PartyInventory},
+        party::roster::PartyRoster,
+        rng::GameRng,
+        time::{DAY_MS, GameClock},
+    },
 };
-use crate::game::characters::{Character, Vitals};
-use crate::game::data::Catalogs;
-use crate::game::party::roster::PartyRoster;
-use crate::game::time::DAY_MS;
-use crate::game::{
-    inventory::{Carried, ItemIds, ItemOwner, ItemRef, ItemStack, PartyInventory},
-    rng::GameRng,
-};
-use bevy::prelude::*;
-
-/// The one restocked item retail holds back until the Templar fact is set
-/// (`RestockNpcItems`).
-pub(crate) const TEMPLAR_GATED: ItemId = ItemId(0x1fc);
+use bevy::{ecs::system::SystemParam, prelude::*};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StockLotId(pub u64);
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct StockLot {
     pub id: StockLotId,
     pub item: ItemId,
     pub units: u32,
     pub available_at: u64,
 }
-/// What an NPC has for sale, on the NPCs that own stock: the lots, when
-/// they are next replenished and maintained, and how many trades it has
-/// made, which a quote confirms only the next of.
-#[derive(Component, Clone, Debug, Default, PartialEq)]
+#[derive(Component, Debug, Default)]
 pub struct MerchantStock {
     pub lots: Vec<StockLot>,
-    pub restock_at: Option<u64>,
-    pub maintenance_at: u64,
+    revision: u64,
     next: u64,
-    /// Trades made with the merchant: a quote confirms only the next one.
-    pub trades: u64,
+    restocked: u64,
+    maintained: u64,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TradeError {
@@ -57,385 +49,372 @@ pub enum TradeSource {
     Party(ItemRef),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TradeQuote {
-    pub conversation: Entity,
-    /// The merchant's [`MerchantStock::trades`] when quoted.
-    pub trade: u64,
+pub struct Quote {
+    pub merchant: Entity,
+    pub revision: u64,
     pub source: TradeSource,
     pub quantity: u32,
     pub gold: u32,
 }
-fn tier(def: &ItemDefinition, level: u32) -> u32 {
-    let base = level * 2 / 3;
-    let lower = base.clamp(1, 16);
-    let upper = (base + 4).clamp(4, 20);
-    let difficulty = def.identify_difficulty as u32;
-    if difficulty > upper {
-        0
-    } else if difficulty < lower {
-        1 + (difficulty + 4 >= lower) as u32
-    } else {
-        3
-    }
+#[derive(Message)]
+pub struct Visit(pub Entity);
+#[derive(Message)]
+pub struct Order {
+    pub reply_to: Entity,
+    pub quote: Quote,
 }
-fn jitter(n: u32, rng: &mut GameRng) -> u32 {
-    match rng.below(3) {
-        0 => n + n / 2,
-        1 => n - n / 2,
-        _ => n,
+#[derive(Message)]
+pub struct Receipt {
+    pub reply_to: Entity,
+    pub result: Result<(), TradeError>,
+}
+#[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Trading;
+pub fn install(app: &mut App) {
+    app.add_message::<Visit>()
+        .add_message::<Order>()
+        .add_message::<Receipt>()
+        .add_systems(Update, (maintain, settle).chain().in_set(Trading));
+}
+fn chance(item: &ItemDefinition, level: u32) -> u32 {
+    let centre = level * 2 / 3;
+    let low = centre.clamp(1, 16);
+    let high = (centre + 4).clamp(4, 20);
+    let d = u32::from(item.identify_difficulty);
+    if d > high {
+        0
+    } else if d < low {
+        if d + 4 >= low { 50 } else { 25 }
+    } else {
+        75
     }
 }
 impl MerchantStock {
+    pub fn new(
+        d: &NpcDefinition,
+        items: &ItemCatalog,
+        level: u32,
+        now: u64,
+        rng: &mut GameRng,
+    ) -> Self {
+        let mut stock = Self { restocked: now, maintained: now, ..default() };
+        for rule in &d.stock {
+            let probability = if rule.persistent { 100 } else { chance(&items[rule.item], level) };
+            let count = (0..rule.quantity).filter(|_| rng.below(100) < probability).count() as u32;
+            stock.add(rule.item, count, items, true);
+        }
+        stock
+    }
     pub fn lot(&self, id: StockLotId) -> Result<&StockLot, TradeError> {
         self.lots.iter().find(|l| l.id == id).ok_or(TradeError::StaleSelection)
     }
-    pub fn add(
-        &mut self,
-        item: ItemId,
-        units: u32,
-        catalog: &ItemCatalog,
-        ammunition_bundle: bool,
-    ) {
-        let d = &catalog[item];
+    fn add(&mut self, item: ItemId, units: u32, catalog: &ItemCatalog, bundles: bool) {
         if units == 0 {
             return;
         }
-        if d.class == EquipClass::Ammunition && ammunition_bundle {
-            for _ in 0..units {
-                self.new_lot(d, 25)
-            }
-        } else if d.class != EquipClass::Ammunition
-            && let Some(lot) = self.lots.iter_mut().find(|l| l.item == item && l.available_at == 0)
+        let ammo = catalog[item].class == EquipClass::Ammunition;
+        if !ammo
+            && let Some(l) = self.lots.iter_mut().find(|l| l.item == item && l.available_at == 0)
         {
-            lot.units += units;
-        } else {
-            self.new_lot(d, units)
-        }
-    }
-    fn new_lot(&mut self, d: &ItemDefinition, units: u32) {
-        self.next += 1;
-        self.lots.push(StockLot { id: StockLotId(self.next), item: d.id, units, available_at: 0 });
-    }
-    pub fn maintain(
-        &mut self,
-        def: &NpcDefinition,
-        catalog: &ItemCatalog,
-        level: u32,
-        now: u64,
-        templar: bool,
-        rng: &mut GameRng,
-    ) {
-        let Some(restock_at) = self.restock_at else {
-            for r in &def.stock {
-                let chance = if r.persistent { 100 } else { tier(&catalog[r.item], level) * 25 };
-                let n = (0..r.quantity).filter(|_| rng.below(100) < chance).count() as u32;
-                self.add(r.item, n, catalog, true);
-            }
-            self.restock_at = Some(now);
-            self.maintenance_at = now;
+            l.units += units;
             return;
-        };
-        let daily = now - self.maintenance_at >= DAY_MS;
-        if now - restock_at > DAY_MS / 2 {
-            self.replenish(def, catalog, level, true, templar, rng);
-            self.restock_at = Some(now);
         }
-        if daily {
-            for lot in &mut self.lots {
-                let d = &catalog[lot.item];
-                if lot.available_at != 0
-                    || d.crucial
-                    || d.merchant_cannot_sell
-                    || def.stock.iter().any(|r| r.item == lot.item && r.persistent)
-                {
-                    continue;
-                }
-                // Retail consumes one of the non-stack counts even for a stack;
-                // its Random(100)<100 still draws for each removed count.
-                let count = if d.quantity == QuantityKind::Stack { 1 } else { lot.units };
-                for _ in 0..count {
-                    rng.below(100);
-                }
-                lot.units -= count;
-            }
-            self.replenish(def, catalog, level, false, templar, rng);
-            self.lots.retain(|l| l.units > 0);
-            self.maintenance_at = now;
-            self.restock_at = Some(now);
-        }
-        for lot in &mut self.lots {
-            if lot.available_at != 0 && lot.available_at < now {
-                lot.available_at = 0;
-            }
+        let count = if ammo && bundles { units } else { 1 };
+        for _ in 0..count {
+            self.next += 1;
+            self.lots.push(StockLot {
+                id: StockLotId(self.next),
+                item,
+                units: if ammo && bundles { 25 } else { units },
+                available_at: 0,
+            });
         }
     }
     fn replenish(
         &mut self,
-        def: &NpcDefinition,
-        catalog: &ItemCatalog,
+        d: &NpcDefinition,
+        items: &ItemCatalog,
         level: u32,
         persistent: bool,
         templar: bool,
         rng: &mut GameRng,
     ) {
-        for r in &def.stock {
-            if r.persistent != persistent {
+        for r in d.stock.iter().filter(|r| r.persistent == persistent) {
+            if !persistent && r.item == ItemId(0x1fc) && !templar {
                 continue;
             }
-            // Retail RestockNpcItems gates only this non-persistent rule.
-            // Initial population and persistent replenishment do not use the gate.
-            if !persistent && r.item == TEMPLAR_GATED && !templar {
-                continue;
-            }
-            let held = self.lots.iter().find(|l| l.item == r.item).map_or(0, |l| {
-                if catalog[r.item].quantity == QuantityKind::Stack { 1 } else { l.units }
+            let have = self.lots.iter().find(|l| l.item == r.item).map_or(0, |l| {
+                if items[r.item].quantity == QuantityKind::Stack { 1 } else { l.units }
             });
-            let configured = u32::from(r.quantity);
-            if configured == 0 || held > configured / 2 {
+            let wanted = u32::from(r.quantity);
+            if wanted == 0 || have > wanted / 2 {
                 continue;
             }
-            if !persistent && rng.below(100) >= tier(&catalog[r.item], level) * 25 {
+            if !persistent && rng.below(100) >= chance(&items[r.item], level) {
                 continue;
             }
-            let n = jitter(configured - held, rng);
-            self.add(r.item, n, catalog, true);
+            let n = wanted - have;
+            let n = match rng.below(3) {
+                0 => n + n / 2,
+                1 => n - n / 2,
+                _ => n,
+            };
+            self.add(r.item, n, items, true);
         }
     }
 }
-/// Retail price arithmetic: truncation per unit before multiplying ordinary
-/// stacks, best party Communication, quarter price for unidentified sales.
-pub fn price(
-    def: &NpcDefinition,
-    item: &ItemDefinition,
-    quantity: u32,
-    identified: bool,
-    buy: bool,
-    communication: u32,
-) -> Result<u32, TradeError> {
-    if quantity == 0 {
-        return Err(TradeError::InvalidQuantity);
-    }
-    let mut adjustment = communication as f32 * 0.002;
-    if adjustment > (def.sell_factor - def.buy_factor).abs() * 0.5 {
-        adjustment *= 0.5;
-    }
-    let mut factor = if buy { def.sell_factor - adjustment } else { def.buy_factor + adjustment };
-    if factor <= 0.0 {
-        factor = 0.1;
-    }
-    let value = if item.class == EquipClass::Ammunition {
-        let bundled = (u64::from(item.value) * u64::from(quantity))
-            .div_ceil(u64::from(crate::content::items::AMMUNITION_BUNDLE));
-        (factor * bundled as f32) as u64
-    } else {
-        // Ordinary stacks and separate items are priced per unit. Charges do
-        // not reduce the source game's trade valuation.
-        u64::from((factor * item.value as f32) as u32) * u64::from(quantity)
-    };
-    let value = if identified { value } else { value / 4 };
-    Ok(value.max(1) as u32)
+pub fn on_sale(l: &StockLot, d: &ItemDefinition) -> bool {
+    l.units > 0 && l.available_at == 0 && !d.merchant_cannot_sell
 }
-/// Whether the merchant offers this lot now.
-pub fn on_sale(lot: &StockLot, item: &ItemDefinition) -> bool {
-    lot.units > 0 && lot.available_at == 0 && !item.merchant_cannot_sell
+pub fn trade_quantity(d: &ItemDefinition, units: u32) -> u32 {
+    if d.class == EquipClass::Ammunition { units } else { 1 }
 }
-/// How much of `units` one trade moves: ammunition goes as a whole stack,
-/// anything else one at a time.
-pub fn trade_quantity(item: &ItemDefinition, units: u32) -> u32 {
-    if item.class == EquipClass::Ammunition { units } else { 1 }
-}
-/// What `quantity` of the lot costs, if the merchant will sell that many.
-pub fn purchase_price(
-    source: &StockLot,
-    def: &NpcDefinition,
-    catalog: &ItemCatalog,
-    quantity: u32,
-    communication: u32,
-) -> Result<u32, TradeError> {
-    let item = &catalog[source.item];
-    if source.available_at != 0 || item.merchant_cannot_sell {
-        return Err(TradeError::Unavailable);
-    }
-    if quantity == 0
-        || quantity > source.units
-        || (item.class == EquipClass::Ammunition && quantity != source.units)
-    {
-        return Err(TradeError::InvalidQuantity);
-    }
-    price(def, item, quantity, true, true, communication)
-}
-/// Check the complete delivery against insertion capacity, then commit directly.
-pub fn buy(
-    stock: &mut MerchantStock,
-    party: &mut PartyInventory,
-    ids: &mut ItemIds,
-    def: &NpcDefinition,
-    catalog: &ItemCatalog,
-    lot: StockLotId,
-    quantity: u32,
-    quoted: u32,
-    communication: u32,
-) -> Result<(), TradeError> {
-    let row = stock.lots.iter().position(|l| l.id == lot).ok_or(TradeError::StaleSelection)?;
-    let source = &stock.lots[row];
-    let cost = purchase_price(source, def, catalog, quantity, communication)?;
-    let item = &catalog[source.item];
-    if cost != quoted {
-        return Err(TradeError::PriceChanged);
-    }
-    if cost > party.gold {
-        return Err(TradeError::Funds);
-    }
-    if party.pool.room_for(item, true) < quantity {
-        return Err(TradeError::Capacity);
-    }
-    let mut remaining = quantity;
-    while remaining > 0 {
-        let units = if item.quantity == QuantityKind::Stack {
-            remaining.min(u32::from(item.stack_limit).max(1))
-        } else {
-            1
-        };
-        let amount = if item.quantity == QuantityKind::Stack {
-            units as u16
-        } else if item.quantity == QuantityKind::None {
-            1
-        } else {
-            item.initial_quantity.maximum() as u16
-        };
-        let delivered = ItemStack::new(item, ids, amount, true);
-        let _ = party.pool.receive(delivered, catalog);
-        remaining -= units;
-    }
-    party.gold -= cost;
-    stock.lots[row].units -= quantity;
-    stock.lots.retain(|l| l.units != 0);
-    Ok(())
-}
-pub fn validate_sale(
-    def: &NpcDefinition,
-    item: &ItemStack,
-    quantity: u32,
-    catalog: &ItemCatalog,
-    communication: u32,
-) -> Result<u32, TradeError> {
-    let d = &catalog[item.item];
-    if d.crucial || !d.class.merchant_class() || !def.accepted_classes.contains(d.class) {
-        return Err(TradeError::Rejected);
-    }
-    if quantity == 0
-        || quantity > item.units()
-        || (d.class == EquipClass::Ammunition && quantity != item.units())
-    {
-        return Err(TradeError::InvalidQuantity);
-    }
-    price(def, d, quantity, item.identified, false, communication)
-}
-
-/// The party's best Communication among those who can act, which prices
-/// trades (retail `GetBestPartyCommunication`).
 pub fn communication<'a>(members: impl Iterator<Item = (&'a Character, &'a Vitals)>) -> u32 {
     members
-        .filter(|(_, vitals)| vitals.can_act())
-        .map(|(character, _)| character.skill(crate::content::characters::Skill::Communication))
+        .filter(|(_, v)| v.can_act())
+        .map(|(c, _)| c.skill(crate::content::characters::Skill::Communication))
         .max()
         .unwrap_or(0)
 }
-
-/// The party's stack a sale offers, in the pool or a member's backpack.
-fn sale_item<'a>(
+fn price(
+    d: &NpcDefinition,
+    item: &ItemDefinition,
+    units: u32,
+    identified: bool,
+    buying: bool,
+    skill: u32,
+) -> u32 {
+    let mut adjustment = skill as f32 * 0.002;
+    if adjustment > (d.sell_factor - d.buy_factor).abs() / 2.0 {
+        adjustment /= 2.0;
+    }
+    let factor = if buying { d.sell_factor - adjustment } else { d.buy_factor + adjustment };
+    let factor = if factor <= 0.0 { 0.1 } else { factor };
+    let amount = if item.class == EquipClass::Ammunition {
+        let value = (u64::from(item.value) * u64::from(units))
+            .div_ceil(u64::from(crate::content::items::AMMUNITION_BUNDLE));
+        (factor * value as f32) as u64
+    } else {
+        u64::from((factor * item.value as f32) as u32) * u64::from(units)
+    };
+    (if identified { amount } else { amount / 4 }).clamp(1, u64::from(u32::MAX)) as u32
+}
+pub fn sale_item<'a>(
     source: ItemRef,
     inventory: &'a PartyInventory,
-    members: &'a Query<(&Character, &Vitals, Option<&mut Carried>)>,
+    pack: Option<&'a Carried>,
 ) -> Result<&'a ItemStack, TradeError> {
     match source.owner {
-        ItemOwner::Pool => inventory.pool.stacks.iter().find(|i| i.id == source.id),
-        ItemOwner::Member(member) => {
-            members.get(member).ok().and_then(|(_, _, carried)| carried?.backpack_stack(source.id))
-        }
+        ItemOwner::Pool => inventory.pool.stacks.iter().find(|s| s.id == source.id),
+        ItemOwner::Member(_) => pack.and_then(|p| p.backpack_stack(source.id)),
     }
     .ok_or(TradeError::StaleSelection)
 }
-
-/// What a trade with the merchant would come to now: a lot's purchase
-/// price, or a party item's sale price, by the party's best communicator.
-/// Reads only; the conversation decides whether a trade may be quoted.
-pub(super) fn quote(
-    In((actor, conversation, source, quantity)): In<(Entity, Entity, TradeSource, u32)>,
-    stocks: Query<(&MerchantStock, &super::ActorId)>,
-    party: Single<(&PartyRoster, &PartyInventory)>,
-    members: Query<(&Character, &Vitals, Option<&mut Carried>)>,
-    content: Res<Catalogs>,
-) -> Result<TradeQuote, TradeError> {
-    let (stock, id) = stocks.get(actor).map_err(|_| TradeError::Unavailable)?;
-    let def = &content.npcs[id.npc()];
-    let catalog = &content.items;
-    let (roster, inventory) = *party;
-    let communication =
-        communication(members.iter_many(roster.iter()).matched().map(|(c, v, _)| (c, v)));
-    let gold = match source {
-        TradeSource::Stock(lot) => {
-            purchase_price(stock.lot(lot)?, def, catalog, quantity, communication)
-        }
-        TradeSource::Party(item) => validate_sale(
-            def,
-            sale_item(item, inventory, &members)?,
-            quantity,
-            catalog,
-            communication,
-        ),
-    }?;
-    Ok(TradeQuote { conversation, trade: stock.trades, source, quantity, gold })
+fn quantity(d: &ItemDefinition, asked: u32, available: u32) -> Result<(), TradeError> {
+    if asked == 0 || asked > available || (d.class == EquipClass::Ammunition && asked != available)
+    {
+        Err(TradeError::InvalidQuantity)
+    } else {
+        Ok(())
+    }
 }
-
-/// Settle a quoted trade: the merchant's next trade, at the quoted price
-/// still, the goods and the gold moved at once; or nothing.
-pub(super) fn settle(
-    In((actor, quote)): In<(Entity, TradeQuote)>,
-    mut stocks: Query<(&mut MerchantStock, &super::ActorId)>,
-    mut party: Single<(&PartyRoster, &mut PartyInventory)>,
-    mut members: Query<(&Character, &Vitals, Option<&mut Carried>)>,
-    content: Res<Catalogs>,
-    mut ids: ResMut<ItemIds>,
-) -> Result<(), TradeError> {
-    let (mut stock, id) = stocks.get_mut(actor).map_err(|_| TradeError::Unavailable)?;
-    if stock.trades != quote.trade {
-        return Err(TradeError::StaleSelection);
-    }
-    let def = &content.npcs[id.npc()];
-    let catalog = &content.items;
-    let (roster, inventory) = &mut *party;
-    let communication =
-        communication(members.iter_many(roster.iter()).matched().map(|(c, v, _)| (c, v)));
-    match quote.source {
-        TradeSource::Stock(lot) => buy(
-            &mut stock,
-            inventory,
-            &mut ids,
-            def,
-            catalog,
-            lot,
-            quote.quantity,
-            quote.gold,
-            communication,
-        )?,
-        TradeSource::Party(source) => {
-            let item = sale_item(source, inventory, &members)?;
-            if validate_sale(def, item, quote.quantity, catalog, communication)? != quote.gold {
-                return Err(TradeError::PriceChanged);
-            }
-            let (item, units) = (item.item, quote.quantity as u16);
-            stock.add(item, quote.quantity, catalog, false);
-            match source.owner {
-                ItemOwner::Pool => inventory.pool.consume_units(source.id, units),
-                ItemOwner::Member(member) => {
-                    let (_, _, carried) = members.get_mut(member).unwrap();
-                    carried.unwrap().consume_backpack_units(source.id, units);
+/// Read-only economic inputs. Pricing does not reserve stock or mutate inventories.
+#[derive(SystemParam)]
+pub struct Pricing<'w, 's> {
+    stocks: Query<'w, 's, (&'static ActorId, &'static MerchantStock)>,
+    party: Single<'w, 's, (&'static PartyRoster, &'static PartyInventory)>,
+    members: Query<'w, 's, (&'static Character, &'static Vitals)>,
+    packs: Query<'w, 's, &'static Carried>,
+    content: Res<'w, Catalogs>,
+}
+impl Pricing<'_, '_> {
+    pub fn quote(
+        &self,
+        merchant: Entity,
+        source: TradeSource,
+        units: u32,
+    ) -> Result<Quote, TradeError> {
+        let (id, stock) = self.stocks.get(merchant).map_err(|_| TradeError::Unavailable)?;
+        let (roster, inventory) = &*self.party;
+        let skill = communication(roster.iter().filter_map(|m| self.members.get(m).ok()));
+        let d = &self.content.npcs[id.0];
+        let gold = match source {
+            TradeSource::Stock(id) => {
+                let lot = stock.lot(id)?;
+                let item = &self.content.items[lot.item];
+                if !on_sale(lot, item) {
+                    return Err(TradeError::Unavailable);
                 }
+                quantity(item, units, lot.units)?;
+                price(d, item, units, true, true, skill)
             }
-            inventory.gold += quote.gold;
+            TradeSource::Party(source) => {
+                let pack = match source.owner {
+                    ItemOwner::Pool => None,
+                    ItemOwner::Member(m) => {
+                        if !roster.contains(&m) {
+                            return Err(TradeError::StaleSelection);
+                        }
+                        self.packs.get(m).ok()
+                    }
+                };
+                let stack = sale_item(source, inventory, pack)?;
+                let item = &self.content.items[stack.item];
+                if item.crucial
+                    || !item.class.merchant_class()
+                    || !d.accepted_classes.contains(item.class)
+                {
+                    return Err(TradeError::Rejected);
+                }
+                quantity(item, units, stack.units())?;
+                price(d, item, units, stack.identified, false, skill)
+            }
+        };
+        Ok(Quote { merchant, revision: stock.revision, source, quantity: units, gold })
+    }
+}
+#[derive(SystemParam)]
+struct Settlement<'w, 's> {
+    stocks: Query<'w, 's, &'static mut MerchantStock>,
+    inventory: Single<'w, 's, &'static mut PartyInventory>,
+    packs: Query<'w, 's, &'static mut Carried>,
+    content: Res<'w, Catalogs>,
+    ids: ResMut<'w, ItemIds>,
+}
+impl Settlement<'_, '_> {
+    fn settle(&mut self, q: Quote, current: Quote) -> Result<(), TradeError> {
+        if current.revision != q.revision {
+            return Err(TradeError::StaleSelection);
+        }
+        if current.gold != q.gold {
+            return Err(TradeError::PriceChanged);
+        }
+        let mut stock = self.stocks.get_mut(q.merchant).map_err(|_| TradeError::Unavailable)?;
+        let inventory = &mut *self.inventory;
+        match q.source {
+            TradeSource::Stock(id) => {
+                let row =
+                    stock.lots.iter().position(|l| l.id == id).ok_or(TradeError::StaleSelection)?;
+                let item = &self.content.items[stock.lots[row].item];
+                if inventory.gold < q.gold {
+                    return Err(TradeError::Funds);
+                }
+                if inventory.pool.room_for(item, true) < q.quantity {
+                    return Err(TradeError::Capacity);
+                }
+                let mut remaining = q.quantity;
+                while remaining > 0 {
+                    let units = if item.quantity == QuantityKind::Stack {
+                        remaining.min(u32::from(item.stack_limit).max(1))
+                    } else {
+                        1
+                    };
+                    let count = match item.quantity {
+                        QuantityKind::Stack => units as u16,
+                        QuantityKind::None => 1,
+                        _ => item.initial_quantity.maximum() as u16,
+                    };
+                    let stack = ItemStack::new(item, &mut self.ids, count, true);
+                    inventory.pool.receive(stack, &self.content.items);
+                    remaining -= units;
+                }
+                inventory.gold -= q.gold;
+                stock.lots[row].units -= q.quantity;
+                stock.lots.retain(|l| l.units > 0);
+            }
+            TradeSource::Party(source) => {
+                let pack = match source.owner {
+                    ItemOwner::Pool => None,
+                    ItemOwner::Member(m) => self.packs.get(m).ok(),
+                };
+                let item = sale_item(source, inventory, pack)?.item;
+                let gold = inventory.gold.checked_add(q.gold).ok_or(TradeError::Capacity)?;
+                match source.owner {
+                    ItemOwner::Pool => inventory.pool.consume_units(source.id, q.quantity as u16),
+                    ItemOwner::Member(m) => self
+                        .packs
+                        .get_mut(m)
+                        .map_err(|_| TradeError::StaleSelection)?
+                        .consume_backpack_units(source.id, q.quantity as u16),
+                };
+                stock.add(item, q.quantity, &self.content.items, false);
+                inventory.gold = gold;
+            }
+        }
+        stock.revision = stock.revision.wrapping_add(1);
+        Ok(())
+    }
+}
+fn settle(
+    mut orders: MessageReader<Order>,
+    mut receipts: MessageWriter<Receipt>,
+    mut market: ParamSet<(Pricing, Settlement)>,
+) {
+    for order in orders.read() {
+        let q = order.quote;
+        let priced = market.p0().quote(q.merchant, q.source, q.quantity);
+        let result = priced.and_then(|current| market.p1().settle(q, current));
+        receipts.write(Receipt { reply_to: order.reply_to, result });
+    }
+}
+fn maintain(
+    mut visits: MessageReader<Visit>,
+    mut stocks: Query<(&ActorId, &mut MerchantStock)>,
+    content: If<Res<Catalogs>>,
+    clock: Res<GameClock>,
+    story: Res<super::story::StoryFacts>,
+    party: Query<&PartyRoster>,
+    members: Query<&Character>,
+    mut rng: ResMut<GameRng>,
+) {
+    let average = crate::game::party::average_level(
+        party
+            .iter()
+            .flat_map(|p| p.iter())
+            .filter_map(|m| members.get(m).ok())
+            .map(Character::level),
+    );
+    for visit in visits.read() {
+        let Ok((id, mut stock)) = stocks.get_mut(visit.0) else { continue };
+        let d = &content.npcs[id.0];
+        let mut changed = false;
+        if clock.ms.saturating_sub(stock.restocked) > DAY_MS / 2 {
+            stock.replenish(d, &content.items, average, true, false, &mut rng);
+            stock.restocked = clock.ms;
+            changed = true;
+        }
+        if clock.ms.saturating_sub(stock.maintained) >= DAY_MS {
+            for lot in &mut stock.lots {
+                let item = &content.items[lot.item];
+                if lot.available_at != 0
+                    || item.crucial
+                    || item.merchant_cannot_sell
+                    || d.stock.iter().any(|r| r.persistent && r.item == lot.item)
+                {
+                    continue;
+                }
+                let count = if item.quantity == QuantityKind::Stack { 1 } else { lot.units };
+                for _ in 0..count {
+                    rng.below(100);
+                }
+                lot.units = lot.units.saturating_sub(count);
+            }
+            let templar = super::story::fact_named(&story, &content.facts, "FACT_TEMPLAR")
+                .is_ok_and(|v| v != 0);
+            stock.replenish(d, &content.items, average, false, templar, &mut rng);
+            stock.lots.retain(|l| l.units > 0);
+            stock.maintained = clock.ms;
+            stock.restocked = clock.ms;
+            changed = true;
+        }
+        for l in &mut stock.lots {
+            if l.available_at != 0 && l.available_at < clock.ms {
+                l.available_at = 0;
+                changed = true;
+            }
+        }
+        if changed {
+            stock.revision = stock.revision.wrapping_add(1);
         }
     }
-    stock.trades += 1;
-    Ok(())
 }

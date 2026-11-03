@@ -545,6 +545,11 @@ fn execute(
     if definition.door.is_some() && links_moving(world, entity, 0) {
         return Ran::Declined;
     }
+    if let Some(speaker) = world.get::<crate::game::npcs::NpcSpeaker>(entity) {
+        let actor = speaker.0;
+        world.write_message(crate::game::npcs::conversation::BeginConversation { actor });
+        return Ran::Committed;
+    }
     let party = crate::game::party::roster::the_party(world);
     let offered = world.get::<PartyInventory>(party).unwrap().hand.held.as_ref().map(|h| h.item);
     let chosen = select_use(

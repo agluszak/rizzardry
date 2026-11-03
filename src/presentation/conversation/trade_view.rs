@@ -136,8 +136,10 @@ pub(super) fn sync_trade_rows(
         for (entity, count) in &captions {
             if let Ok(mut text) = texts.get_mut(entity) {
                 let value = match selection {
-                    Some(Selection::Priced(q)) if count && units > 1 => q.quantity.to_string(),
-                    Some(Selection::Priced(q)) if !count => format!("{}g", q.gold),
+                    Some(Selection::Priced(q)) if count && units > 1 => {
+                        q.offer.quantity.to_string()
+                    }
+                    Some(Selection::Priced(q)) if !count => format!("{}g", q.offer.gold),
                     Some(Selection::Gift(_)) if count && units > 1 => "1".into(),
                     _ => String::new(),
                 };

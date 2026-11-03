@@ -14,7 +14,8 @@ use crate::game::data::Catalogs;
 use crate::game::npcs::{
     Npc,
     conversation::*,
-    trade::{self, TradeQuote, TradeSource},
+    story::StoryFacts,
+    trade::{self, TradeSource},
 };
 use crate::game::{
     inventory::{Carried, ItemOwner, ItemRef, PartyInventory},
@@ -78,7 +79,7 @@ impl Selection {
     fn source(self) -> Option<TradeSource> {
         match self {
             Selection::Gift(item) => Some(TradeSource::Party(item)),
-            Selection::Priced(quote) => Some(quote.source),
+            Selection::Priced(quote) => Some(quote.offer.source),
             Selection::Refused(_) => None,
         }
     }
@@ -275,10 +276,12 @@ fn select(world: &mut World, view: Entity, source: TradeSource, quantity: u32) {
         {
             Selection::Gift(item)
         }
-        source => match quote_trade(world, session, source, quantity) {
-            Ok(quote) => Selection::Priced(quote),
-            Err(error) => Selection::Refused(error),
-        },
+        source => {
+            match world.run_system_cached_with(quote_trade, (session, source, quantity)).unwrap() {
+                Ok(quote) => Selection::Priced(quote),
+                Err(error) => Selection::Refused(error),
+            }
+        }
     };
     world.get_mut::<DialogueState>(view).unwrap().selection = Some(selection);
 }
