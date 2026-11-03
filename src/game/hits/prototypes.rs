@@ -242,7 +242,7 @@ impl Definer<'_> {
 /// A condition, rolled for so many rounds, saved against and resisted.
 fn condition(condition: Condition, rounds: Roll, realm: Realm) -> impl Bundle {
     (
-        Afflict { condition: Some(condition), poison: 0, indefinite: false },
+        Afflict { condition, poison: 0, indefinite: false },
         rounds,
         Save(condition_save(condition)),
         Resist { realm },
@@ -437,7 +437,7 @@ fn define_spell(d: &mut Definer, spell: &SpellDefinition) -> Option<()> {
         }
         // One who keeps their mind is afraid anyway, with no save.
         S::PANDEMONIUM => {
-            let afraid = Afflict { condition: Some(Afraid), poison: 0, indefinite: false };
+            let afraid = Afflict { condition: Afraid, poison: 0, indefinite: false };
             d.effect(afflict(Insane)).effect((afraid, rounds, resist, OnlyIfResisted));
         }
         S::INSTANT_DEATH | S::QUICKSAND | S::ASPHYXIATION | S::DEATH_WISH => {
@@ -540,8 +540,7 @@ fn define_pulse(d: &mut Definer, spell: &SpellDefinition) {
     let resist = Resist { realm };
     let dice = |over| Roll::Dice { dice: spell.dice, plain: false, over };
     if spell.id == SpellId::DEATH_CLOUD {
-        let death = Afflict { condition: None, poison: 0, indefinite: true };
-        d.effect((death, Roll::Fixed(INDEFINITE), Save(DEATH_SAVE), resist));
+        d.effect((Slay, Roll::Fixed(INDEFINITE), Save(DEATH_SAVE), resist));
         return;
     }
     d.effect((Harm, dice(1), resist));
@@ -571,7 +570,7 @@ fn define_special(d: &mut Definer, definition: crate::game::hits::specials::Spec
         let chance = Chance(if slot == 0 { 90 } else { 50 });
         match effect {
             E::Inflict(afflicted) => {
-                let afflict = Afflict { condition: Some(afflicted), poison: 0, indefinite: false };
+                let afflict = Afflict { condition: afflicted, poison: 0, indefinite: false };
                 let save = Save(condition_save(afflicted));
                 d.effect((afflict, Roll::ThirdOfBound, save, resist, chance, OnlyMonsters))
                     .effect((afflict, Roll::BelowBound, save, resist, chance, OnlyMembers));
@@ -614,22 +613,20 @@ fn define_special(d: &mut Definer, definition: crate::game::hits::specials::Spec
 fn define_blow(d: &mut Definer) {
     use AttackEffect as A;
     use Condition::*;
-    let condition = |afflicted: Option<Condition>, realm, effect| {
-        let base = afflicted.map_or(DEATH_SAVE, condition_save);
+    let condition = |afflicted: Condition, realm, effect| {
         (
             Afflict { condition: afflicted, poison: 0, indefinite: false },
             Roll::BlowRounds,
-            Save(base),
+            Save(condition_save(afflicted)),
             Resist { realm },
             FromWeapon(effect),
         )
     };
-    let indefinite = |afflicted: Option<Condition>, realm, effect| {
-        let base = afflicted.map_or(DEATH_SAVE, condition_save);
+    let indefinite = |afflicted: Condition, realm, effect| {
         (
             Afflict { condition: afflicted, poison: 0, indefinite: true },
             Roll::Fixed(INDEFINITE),
-            Save(base),
+            Save(condition_save(afflicted)),
             Resist { realm },
             FromWeapon(effect),
         )
@@ -643,22 +640,22 @@ fn define_blow(d: &mut Definer) {
         )
     };
     d.effect((Harm, Roll::Damage))
-        .effect(condition(Some(Asleep), Realm::Air, A::Sleep))
-        .effect(condition(Some(Paralyzed), Realm::Water, A::Paralyze))
+        .effect(condition(Asleep, Realm::Air, A::Sleep))
+        .effect(condition(Paralyzed, Realm::Water, A::Paralyze))
         .effect((
-            Afflict { condition: Some(Poisoned), poison: 0, indefinite: false },
+            Afflict { condition: Poisoned, poison: 0, indefinite: false },
             Roll::Blow { times: 3, sides: 2, base: BlowBase::Weapon },
             Save(condition_save(Poisoned)),
             Resist { realm: Realm::Water },
             FromWeapon(A::Poison),
         ))
-        .effect(condition(Some(Hexed), Realm::Divine, A::Hex))
-        .effect(indefinite(Some(Diseased), Realm::Divine, A::Disease))
-        .effect(indefinite(None, Realm::Divine, A::Kill))
-        .effect(condition(Some(Unconscious), Realm::Earth, A::KnockOut))
-        .effect(condition(Some(Blind), Realm::Fire, A::Blind))
-        .effect(condition(Some(Afraid), Realm::Mental, A::Frighten))
-        .effect((condition(Some(Turncoat), Realm::Divine, A::Possess), OnlyMembers, OnlyByMonsters))
+        .effect(condition(Hexed, Realm::Divine, A::Hex))
+        .effect(indefinite(Diseased, Realm::Divine, A::Disease))
+        .effect((Slay, Roll::Fixed(INDEFINITE), Save(DEATH_SAVE), Resist { realm: Realm::Divine }, FromWeapon(A::Kill)))
+        .effect(condition(Unconscious, Realm::Earth, A::KnockOut))
+        .effect(condition(Blind, Realm::Fire, A::Blind))
+        .effect(condition(Afraid, Realm::Mental, A::Frighten))
+        .effect((condition(Turncoat, Realm::Divine, A::Possess), OnlyMembers, OnlyByMonsters))
         .effect((Sap, drain(1, 2, BlowBase::Zero, Realm::Earth, A::DrainHealth), OnlyMembers))
         .effect((Tire, drain(2, 5, BlowBase::Count(3), Realm::Water, A::DrainStamina)))
         .effect((
@@ -666,8 +663,8 @@ fn define_blow(d: &mut Definer) {
             drain(1, 6, BlowBase::Count(1), Realm::Divine, A::DrainSpellPoints),
             OnlyMembers,
         ))
-        .effect(condition(Some(Nauseated), Realm::Air, A::Nauseate))
-        .effect(condition(Some(Insane), Realm::Mental, A::Insane));
+        .effect(condition(Nauseated, Realm::Air, A::Nauseate))
+        .effect(condition(Insane, Realm::Mental, A::Insane));
 }
 
 /// Decode the definitions once content has loaded, and what each spell's
@@ -741,7 +738,7 @@ fn purposes(world: &mut World, definition: Entity) -> Vec<Purpose> {
             } else if let Some(afflict) = effect.get::<Afflict>()
                 && !effect.contains::<OnlyIfLanded>()
             {
-                afflict.condition.map(Purpose::Afflicts)
+                Some(Purpose::Afflicts(afflict.condition))
             } else if let Some(enchant) = effect.get::<Enchant>() {
                 Some(Purpose::Enchants(enchant.spell))
             } else {
@@ -809,7 +806,7 @@ pub fn instantiate(
                 if let (Some(_), Some(weapon)) = (from_weapon, weapon) {
                     commands.entity(effect).insert(Chance(chance));
                     if let Some(afflict) =
-                        afflict.filter(|a| a.condition == Some(Condition::Poisoned))
+                        afflict.filter(|a| a.condition == Condition::Poisoned)
                     {
                         let poison = Afflict { poison: weapon.effects.strength, ..*afflict };
                         commands.entity(effect).insert(poison);
@@ -841,7 +838,7 @@ pub fn pick(
             .and_then(|index| AFFLICTIONS[index].0);
         match pick {
             Some(afflicted) => {
-                let afflict = Afflict { condition: Some(afflicted), poison: 0, indefinite: false };
+                let afflict = Afflict { condition: afflicted, poison: 0, indefinite: false };
                 entity.insert((afflict, rounds, Save(condition_save(afflicted))));
             }
             None => {

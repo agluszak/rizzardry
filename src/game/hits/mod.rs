@@ -7,6 +7,7 @@
 //! act into news.
 
 pub mod body;
+pub mod defences;
 pub mod effects;
 pub mod prototypes;
 pub mod reach;
@@ -201,6 +202,7 @@ impl Plugin for HitsPlugin {
         .add_systems(
             Hits,
             (
+                (defences::judge_characters, defences::judge_monsters).run_if(any_with_component::<HitOf>),
                 (
                     instantiate,
                     pick,
@@ -210,30 +212,44 @@ impl Plugin for HitsPlugin {
                     roll_chances,
                     immunities,
                     saves,
+                    iron_will,
                     resist,
+                    shrug,
                 )
                     .chain(),
                 (
-                    harm,
+                    harm_members,
+                    harm_monsters,
                     sap,
+                    poison_members,
                     afflict,
-                    slay,
+                    slay_members,
+                    slay_monsters,
                     tire,
-                    drain_magic,
+                    drain_members_magic,
+                    drain_monsters_magic,
                     drain_realm,
                     heal,
                     refresh,
                     replenish,
+                    ease_poison,
                     cure,
-                    renew,
+                )
+                    .chain(),
+                (
+                    renew_members,
+                    renew_monsters,
                     raise,
                     purify,
-                    enchant,
+                    enchant_party,
+                    enchant_members,
+                    enchant_monsters,
                     burn,
                     lose_gold,
                     dispel,
                 )
                     .chain(),
+                (notify_hurt, break_lures, count_drains),
                 release_followers,
                 (spells::drain_life, spells::burst_blood, spells::reflect_spells).chain(),
                 report_deeds,
