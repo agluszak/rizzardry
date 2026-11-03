@@ -36,7 +36,12 @@ fn app() -> App {
         .init_resource::<LevelMemory>()
         .add_observer(give_bodies)
         .add_observer(crate::game::world::damage::monster_died)
-        .add_systems(Update, crate::game::characters::settle_deaths.before(activate_level))
+        .add_systems(
+            Update,
+            (crate::game::characters::cheat_death, crate::game::characters::settle_deaths)
+                .chain()
+                .before(activate_level),
+        )
         .init_resource::<crate::game::factions::Factions>()
         .add_message::<crate::game::factions::FactionNews>()
         .init_resource::<ItemIds>()
@@ -502,7 +507,6 @@ fn direct_damage_settles_death_once() {
     use crate::content::items::{Dice, ItemDefinition, ItemId};
     use crate::content::species::{Drop, Treasure};
     use crate::game::inventory::PartyInventory;
-    use crate::game::world::damage::MonsterDamage;
     use crate::game::world::items::WorldItem;
     use bevy::ecs::system::RunSystemOnce;
     let mut app = app();
@@ -524,14 +528,10 @@ fn direct_damage_settles_death_once() {
     let world = app.world_mut();
     let target = world.query_filtered::<Entity, With<Monster>>().single(world).unwrap();
     let hit = |world: &mut World| {
-        let outcome = world
-            .run_system_once(move |mut damage: MonsterDamage, mut rng: ResMut<GameRng>| {
-                damage.apply(target, 10, &mut rng)
-            })
-            .unwrap();
+        let lost = world.get_mut::<crate::game::characters::Vitals>(target).unwrap().hurt(10);
         // Death settles its consequences.
         world.run_system_once(crate::game::characters::settle_deaths).unwrap();
-        outcome
+        lost
     };
     use crate::game::world::navigation::{Walker, WalkerMotion, links::Crossing};
     use avian3d::prelude::{LinearVelocity, Position};
@@ -551,7 +551,8 @@ fn direct_damage_settles_death_once() {
         controller,
     ));
     world.get_mut::<TnuaMotor>(target).unwrap().lin.boost = Vec3::X;
-    assert!(hit(world).died);
+    assert_eq!(hit(world), 10);
+    assert!(world.get::<crate::game::characters::Dead>(target).is_some());
     assert!(world.get::<Crossing>(target).is_none());
     assert!(world.get::<UsingAnimationLink>(target).is_none());
     assert!(matches!(world.get::<AgentTarget3d>(target), Some(AgentTarget3d::None)));
@@ -935,7 +936,6 @@ fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
     };
     use crate::game::inventory::PartyInventory;
     use crate::game::npcs::{Npc, NpcAssets, NpcBodies};
-    use crate::game::world::damage::MonsterDamage;
     use crate::game::world::items::{GroundLoot, WorldItem};
     use bevy::ecs::system::RunSystemOnce;
     let mut app = app();
@@ -974,12 +974,9 @@ fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
     let body = app.world().get::<NpcBodies>(actor).unwrap()[0];
     let party =
         app.world_mut().query_filtered::<Entity, With<Party>>().single(app.world()).unwrap();
-    let strike = move |mut damage: MonsterDamage, mut rng: ResMut<GameRng>| {
-        damage.apply(body, 1000, &mut rng)
-    };
-    let killed = app.world_mut().run_system_once(strike).unwrap();
+    app.world_mut().get_mut::<crate::game::characters::Vitals>(body).unwrap().hurt(1000);
     app.world_mut().run_system_once(crate::game::characters::settle_deaths).unwrap();
-    assert!(killed.died);
+    assert!(app.world().get::<crate::game::characters::Dead>(body).is_some());
     let npc = app.world().get::<Npc>(actor).unwrap();
     assert!(npc.dead);
     assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 25);
@@ -996,8 +993,11 @@ fn a_slain_npc_gives_up_what_it_carries_and_never_returns() {
     assert_eq!(dropped.len(), 2, "the sure item and one draw: {dropped:?}");
     assert_eq!(dropped[0], ItemId(1));
     // The corpse pays nothing more.
-    let again = app.world_mut().run_system_once(strike).unwrap();
-    assert!(!again.died);
+    assert_eq!(
+        app.world_mut().get_mut::<crate::game::characters::Vitals>(body).unwrap().hurt(1000),
+        0
+    );
+    app.world_mut().run_system_once(crate::game::characters::settle_deaths).unwrap();
     assert_eq!(app.world().get::<PartyInventory>(party).unwrap().gold, 25);
     // Away and back: the NPC stays dead and out of the world.
     let away = spawn_level(&mut app, floor());

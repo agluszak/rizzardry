@@ -281,6 +281,34 @@ pub fn between(first: (Stance, Loyalty), second: (Stance, Loyalty)) -> Stance {
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Provocation(pub Entity);
 
+/// A monster provoked turns its group hostile as the action starts, before
+/// the blows or spells land (retail `MakeTargetGroupHostile`); a dead
+/// monster, or one under Turncoat, provokes nobody. Runs wherever
+/// provocations are made: in the swing and cast stages, and on the frame
+/// before groups engage.
+pub fn take_offence(
+    mut provocations: MessageReader<Provocation>,
+    monsters: Query<(&Monster, &crate::game::characters::Vitals, Option<&GroupMember>)>,
+    mut groups: Query<&mut MonsterGroup>,
+    content: If<Res<crate::game::data::Catalogs>>,
+    factions: Res<Factions>,
+    clock: Res<GameClock>,
+) {
+    for &Provocation(provoked) in provocations.read() {
+        let Ok((monster, vitals, member)) = monsters.get(provoked) else { continue };
+        if vitals.is_dead() || vitals.conditions.has(Condition::Turncoat) {
+            continue;
+        }
+        let kind = &content.species[monster.species];
+        if let Some(member) = member
+            && let Ok(mut group) = groups.get_mut(member.0)
+            && stance(group.set, kind, &factions, clock.ms, true) != Stance::Hostile
+        {
+            group.set = Some(SetStance { stance: Stance::Hostile, at: clock.ms });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

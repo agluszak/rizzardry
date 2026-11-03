@@ -14,7 +14,7 @@ use crate::game::world::population::Monster;
 
 /// A monster's choice at its turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Conduct {
+pub enum Conduct {
     /// It runs for its life, and keeps running in later rounds while the
     /// party stays off.
     Flee,
@@ -118,15 +118,17 @@ impl Interrupt {
     }
 }
 
-/// What a monster's conditions do to its action as it begins (retail
-/// `GetConditionInterrupt` for a monster): nausea, a web held or broken by
-/// Strength, blindness (not a Monk's), insanity (or a berserk turn on its
-/// friends), fear (or flight), and Turncoat letting an action against its
-/// new foes stand.
+/// What an actor's conditions do to its action as it begins (retail
+/// `GetConditionInterrupt`): nausea, a web held or broken by Strength,
+/// blindness (not for one who fights blind), insanity (or a berserk turn on
+/// its friends), fear (or, for a monster, flight), and Turncoat letting an
+/// action against its new foes stand. `brawn` is its strength,
+/// `fights_blind` whether blindness does not stop it, `panics` whether fear
+/// may send it running.
 pub(super) fn interrupt(
     rng: &mut GameRng,
     vitals: &Vitals,
-    kind: &Species,
+    (brawn, fights_blind, panics): (u32, bool, bool),
     fleeing: bool,
     strikes_friend: bool,
     berserk: bool,
@@ -138,13 +140,10 @@ pub(super) fn interrupt(
         return Some(Interrupt::Nauseated);
     }
     if has(Condition::Webbed) {
-        let freed = rng.below(100) < u32::from(kind.attributes.strength) / 3;
+        let freed = rng.below(100) < brawn / 3;
         return Some(if freed { Interrupt::Freed } else { Interrupt::Webbed });
     }
-    if has(Condition::Blind)
-        && rng.below(100) < 20
-        && kind.kind != crate::content::species::MonsterKind::Monk
-    {
+    if has(Condition::Blind) && rng.below(100) < 20 && !fights_blind {
         return Some(Interrupt::Blinded);
     }
     if has(Condition::Insane) && rng.below(100) < 80 {
@@ -156,7 +155,7 @@ pub(super) fn interrupt(
     if has(Condition::Afraid) && rng.below(100) < 25 && !fleeing {
         return Some(Interrupt::Afraid);
     }
-    if has(Condition::Afraid) && rng.below(100) < 40 {
+    if panics && has(Condition::Afraid) && rng.below(100) < 40 {
         return Some(Interrupt::Panics);
     }
     (has(Condition::Turncoat) && against_foes).then_some(Interrupt::Turncoat)
@@ -192,21 +191,21 @@ pub(super) mod tests {
     fn conditions_interrupt_a_monsters_action() {
         use crate::game::characters::{Condition, Lasting};
         let mut rng = GameRng::seeded(4);
-        let kind = Species::default();
+        let weak = (0, false, true);
         let (_, mut webbed) = monster(100);
         webbed.conditions.inflict(Condition::Webbed, Lasting::Rounds(3));
         assert_eq!(
-            interrupt(&mut rng, &webbed, &kind, false, false, false, true),
+            interrupt(&mut rng, &webbed, weak, false, false, false, true),
             Some(Interrupt::Webbed)
         );
-        assert_eq!(interrupt(&mut rng, &monster(100).1, &kind, false, false, false, true), None);
+        assert_eq!(interrupt(&mut rng, &monster(100).1, weak, false, false, false, true), None);
         let (_, mut turned) = monster(100);
         turned.conditions.inflict(Condition::Turncoat, Lasting::Rounds(3));
         assert_eq!(
-            interrupt(&mut rng, &turned, &kind, false, false, false, true),
+            interrupt(&mut rng, &turned, weak, false, false, false, true),
             Some(Interrupt::Turncoat)
         );
-        assert_eq!(interrupt(&mut rng, &turned, &kind, false, false, false, false), None);
+        assert_eq!(interrupt(&mut rng, &turned, weak, false, false, false, false), None);
     }
 
     /// A craven species without its own chance always runs, and keeps

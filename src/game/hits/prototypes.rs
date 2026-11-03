@@ -2,17 +2,18 @@
 //! once from content into data: a definition entity whose effect
 //! prototypes ([`EffectOf`]) say, in order, what lands on each victim, how
 //! its magnitude is rolled ([`Roll`]) and whom it may land on. An act that
-//! [`Uses`] a definition reaches its victims ([`Reach`]); [`instantiate`]
-//! clones the prototypes onto each, [`pick`] settles Prismic's either-or
-//! and [`roll`] rolls each magnitude from the act's [`Strength`].
+//! [`Uses`] a definition reaches its victims; [`advance`] works each reach
+//! through the prototypes one at a time, [`pick`] settles Prismic's
+//! either-or and [`roll`] rolls each magnitude from the act's [`Strength`].
 
 use std::collections::HashMap;
 
+use bevy::ecs::entity::EntityHashSet;
 use bevy::prelude::*;
 
-use super::body::{CONDITION_SAVE, DEATH_SAVE, INDEFINITE, condition_save};
+use super::defences::{CONDITION_SAVE, DEATH_SAVE, INDEFINITE, condition_save};
 use super::effects::*;
-use super::{DeedHits, HitOf, Strikes};
+use super::{HitOf, Strikes};
 use crate::content::characters::Realm;
 use crate::content::items::{AttackEffect, AttackEffects, Dice};
 use crate::content::species::{MonsterKind, SpecialAttackKind};
@@ -20,6 +21,7 @@ use crate::content::spells::{SpellDefinition, SpellId};
 use crate::game::characters::{Character, Condition};
 use crate::game::data::Catalogs;
 use crate::game::magic::Strength;
+use crate::game::party::roster::PartyMember;
 use crate::game::rng::GameRng;
 use crate::game::world::population::Monster;
 
@@ -60,9 +62,23 @@ pub struct WeaponEffects {
     pub by_monster: bool,
 }
 
-/// The act reaches this body; [`instantiate`] turns it into effects.
+/// The act's effects on the party itself (its shared spells, pool and
+/// purse) have been made, once, as its first reach on a member came to them.
 #[derive(Component, Debug)]
-pub struct Reach;
+pub struct SharedWithParty;
+
+/// It happens only if the effect before it landed.
+#[derive(Component, Clone, Debug)]
+pub struct OnlyIfLanded;
+
+/// It happens only if the effect before it was resisted.
+#[derive(Component, Clone, Debug)]
+pub struct OnlyIfResisted;
+
+/// It acts on the party itself (its shared spells, pool or purse), once,
+/// through the first member the act reaches.
+#[derive(Component, Clone, Debug)]
+pub struct OnParty;
 
 /// The weapon effect a blow prototype stands for.
 #[derive(Component, Clone, Copy, Debug)]
@@ -324,7 +340,7 @@ fn define_spell(d: &mut Definer, spell: &SpellDefinition) -> Option<()> {
             } else {
                 // The party's own slots hold for all its members at once.
                 d.effect((enchant, rounds, OnlyMonsters));
-                d.effect((enchant, rounds, ForParty));
+                d.effect((enchant, rounds, OnParty));
             }
         }
         S::HOLY_WATER => {
@@ -480,10 +496,10 @@ fn define_spell(d: &mut Definer, spell: &SpellDefinition) -> Option<()> {
         // its members at once.
         S::PURIFY_AIR => {
             let purify = Purify { level: spell.level };
-            d.effect((purify, Roll::Purify, OnlyMonsters)).effect((purify, Roll::Purify, ForParty));
+            d.effect((purify, Roll::Purify, OnlyMonsters)).effect((purify, Roll::Purify, OnParty));
         }
         S::PHILOSOPHERS_BANE => {
-            d.effect((LoseGold, Roll::GoldShare(spell.dice), ForParty));
+            d.effect((LoseGold, Roll::GoldShare(spell.dice), OnParty));
         }
         // Members lose the plain roll, without the cast's boost, for good.
         S::VAMPIRIC_VORTEX => {
@@ -496,12 +512,12 @@ fn define_spell(d: &mut Definer, spell: &SpellDefinition) -> Option<()> {
         // Retail visits every slot a victim carries, and the party's pool
         // once.
         S::HEATWAVE => {
-            d.effect((Burn, Roll::PerPower(10))).effect((Burn, Roll::PerPower(10), ForParty));
+            d.effect((Burn, Roll::PerPower(10))).effect((Burn, Roll::PerPower(10), OnParty));
         }
         // Anti-Magic drains the whole living party, not only its victims,
         // and ends the party's lasting spells.
         S::ANTI_MAGIC => {
-            d.effect((DrainMagic, Roll::Fifty, ForParty)).effect((Dispel, ForParty));
+            d.effect((DrainPool, Roll::Fifty, OnParty)).effect((Dispel, OnParty));
         }
         _ => return None,
     }
@@ -546,7 +562,7 @@ fn define_pulse(d: &mut Definer, spell: &SpellDefinition) {
     d.effect((Harm, dice(1), resist));
     if spell.id == SpellId::DRAINING_CLOUD {
         d.effect((DrainRealm(None), dice(1), OnlyMembers, OnlyIfLanded))
-            .effect((DrainMagic, dice(2), OnlyMonsters, OnlyIfLanded))
+            .effect((DrainBudget, dice(2), OnlyMonsters, OnlyIfLanded))
             .effect((Tire, dice(1), OnlyIfLanded));
     }
     if spell.id == SpellId::TOXIC_CLOUD {
@@ -580,7 +596,7 @@ fn define_special(d: &mut Definer, definition: crate::game::hits::specials::Spec
             }
             // A member's realm six times over, a monster's budget by half.
             E::Drain => {
-                d.effect((DrainMagic, three(6, 1, 1, 2), resist, chance, OnlyMonsters)).effect((
+                d.effect((DrainBudget, three(6, 1, 1, 2), resist, chance, OnlyMonsters)).effect((
                     DrainRealm(Some(definition.realm)),
                     three(3, 1, 6, 1),
                     resist,
@@ -651,7 +667,13 @@ fn define_blow(d: &mut Definer) {
         ))
         .effect(condition(Hexed, Realm::Divine, A::Hex))
         .effect(indefinite(Diseased, Realm::Divine, A::Disease))
-        .effect((Slay, Roll::Fixed(INDEFINITE), Save(DEATH_SAVE), Resist { realm: Realm::Divine }, FromWeapon(A::Kill)))
+        .effect((
+            Slay,
+            Roll::Fixed(INDEFINITE),
+            Save(DEATH_SAVE),
+            Resist { realm: Realm::Divine },
+            FromWeapon(A::Kill),
+        ))
         .effect(condition(Unconscious, Realm::Earth, A::KnockOut))
         .effect(condition(Blind, Realm::Fire, A::Blind))
         .effect(condition(Afraid, Realm::Mental, A::Frighten))
@@ -659,7 +681,7 @@ fn define_blow(d: &mut Definer) {
         .effect((Sap, drain(1, 2, BlowBase::Zero, Realm::Earth, A::DrainHealth), OnlyMembers))
         .effect((Tire, drain(2, 5, BlowBase::Count(3), Realm::Water, A::DrainStamina)))
         .effect((
-            DrainMagic,
+            DrainPool,
             drain(1, 6, BlowBase::Count(1), Realm::Divine, A::DrainSpellPoints),
             OnlyMembers,
         ))
@@ -748,72 +770,114 @@ fn purposes(world: &mut World, definition: Entity) -> Vec<Purpose> {
         .collect()
 }
 
-/// Each act's reaches become its effects: the definition's prototypes,
-/// cloned in order onto each body it reaches, chained so each waits on the
-/// one before; those not for this body (its kind, its side, or a party
-/// share already taken by the first member reached) are left out. A blow's
-/// weapon effects land at the weapon's chance, a poison at its strength.
+/// Each reach whose effect is settled, or that has none yet, takes the next
+/// of its definition's prototypes that fits its body: a copy of it, landing
+/// as the reach's current effect. Those not for this body (its kind, its
+/// side, a party share already taken by the first member reached) are
+/// passed over; one that needed the opposite outcome of the one before
+/// counts as missed. A blow's weapon effects land at the weapon's chance, a
+/// poison at its strength. A reach with no prototype left is done.
 #[allow(clippy::type_complexity)]
-pub fn instantiate(
+pub fn advance(
     mut commands: Commands,
-    acts: Query<(Entity, &Uses, &DeedHits, Option<&WeaponEffects>)>,
-    reaches: Query<(&Strikes, Option<&InFlight>), With<Reach>>,
+    mut reaches: Query<(Entity, &mut Reach, &HitOf, &Strikes, Option<&Current>), Without<InFlight>>,
+    settled: Query<&Outcome>,
+    acts: Query<(&Uses, Option<&WeaponEffects>, Has<SharedWithParty>)>,
     definitions: Query<&Effects>,
     prototypes: Query<(
-        Has<OnlyMembers>,
-        Has<OnlyMonsters>,
-        Option<&OnlyKinds>,
-        Has<OnlyByMonsters>,
-        Has<ForParty>,
+        (
+            Has<OnlyMembers>,
+            Has<OnlyMonsters>,
+            Option<&OnlyKinds>,
+            Has<OnlyByMonsters>,
+            Has<OnParty>,
+        ),
+        (Has<OnlyIfLanded>, Has<OnlyIfResisted>),
         Option<&FromWeapon>,
         Option<&Afflict>,
     )>,
-    bodies: Query<(Has<Character>, Option<&Monster>)>,
+    bodies: Query<(Has<Character>, Option<&Monster>, Option<&PartyMember>)>,
     content: If<Res<Catalogs>>,
 ) {
-    for (act, uses, hits, weapon) in &acts {
-        let Ok(effects) = definitions.get(uses.0) else { continue };
-        let mut party_shared = false;
-        for reach in hits.iter() {
-            let Ok((strikes, flight)) = reaches.get(reach) else { continue };
+    // The acts whose party share was taken earlier in this run.
+    let mut shared = EntityHashSet::default();
+    for (reach, mut cursor, hit_of, strikes, current) in &mut reaches {
+        if let Some(effect) = current.and_then(Current::effect) {
+            let Ok(&outcome) = settled.get(effect) else { continue };
+            cursor.last = Some(outcome);
+            commands.entity(effect).despawn();
+        }
+        let act = hit_of.0;
+        let (Ok((uses, weapon, party_shared)), Ok((member, monster, party_member))) =
+            (acts.get(act), bodies.get(strikes.0))
+        else {
             commands.entity(reach).despawn();
-            let Ok((member, monster)) = bodies.get(strikes.0) else { continue };
-            let kind = monster.map(|monster| content.species[monster.species].kind);
-            let mut chain =
-                Chain::new(act, strikes.0).flying(flight.map(|flight| flight.0.remaining_secs()));
-            let mut shares = false;
-            for prototype in effects.iter() {
-                let Ok((members, monsters, kinds, by_monsters, for_party, from_weapon, afflict)) =
-                    prototypes.get(prototype)
-                else {
-                    continue;
-                };
-                let fits = (!members || member)
-                    && (!monsters || !member)
-                    && kinds.is_none_or(|kinds| kind.is_some_and(|kind| kinds.0.contains(&kind)))
-                    && (!by_monsters || weapon.is_some_and(|weapon| weapon.by_monster))
-                    && (!for_party || (member && !party_shared));
-                let chance = match (from_weapon, weapon) {
-                    (Some(from), Some(weapon)) => weapon.effects.chances[from.0],
-                    (Some(_), None) => 0,
-                    (None, _) => 100,
-                };
-                if !fits || chance == 0 {
-                    continue;
-                }
-                shares |= for_party;
-                let effect = chain.clone_of(&mut commands, prototype);
-                if let (Some(_), Some(weapon)) = (from_weapon, weapon) {
-                    commands.entity(effect).insert(Chance(chance));
-                    if let Some(afflict) =
-                        afflict.filter(|a| a.condition == Condition::Poisoned)
-                    {
-                        let poison = Afflict { poison: weapon.effects.strength, ..*afflict };
-                        commands.entity(effect).insert(poison);
-                    }
+            continue;
+        };
+        let Ok(effects) = definitions.get(uses.0) else {
+            commands.entity(reach).despawn();
+            continue;
+        };
+        let kind = monster.map(|monster| content.species[monster.species].kind);
+        let mut spawned = false;
+        while let Some(prototype) = effects.iter().nth(cursor.next) {
+            cursor.next += 1;
+            let Ok((
+                (members, monsters, kinds, by_monsters, on_party),
+                (if_landed, if_resisted),
+                from_weapon,
+                afflict,
+            )) = prototypes.get(prototype)
+            else {
+                continue;
+            };
+            let fits = (!members || member)
+                && (!monsters || !member)
+                && kinds.is_none_or(|kinds| kind.is_some_and(|kind| kinds.0.contains(&kind)))
+                && (!by_monsters || weapon.is_some_and(|weapon| weapon.by_monster))
+                && (!on_party
+                    || (party_member.is_some() && !party_shared && !shared.contains(&act)));
+            let chance = match (from_weapon, weapon) {
+                (Some(from), Some(weapon)) => weapon.effects.chances[from.0],
+                (Some(_), None) => 0,
+                (None, _) => 100,
+            };
+            if !fits || chance == 0 {
+                continue;
+            }
+            if (if_landed && cursor.last != Some(Outcome::Landed))
+                || (if_resisted && cursor.last != Some(Outcome::Resisted))
+            {
+                cursor.last = Some(Outcome::Missed);
+                continue;
+            }
+            let victim = match (on_party, party_member) {
+                (true, Some(party)) => party.0,
+                _ => strikes.0,
+            };
+            if on_party {
+                shared.insert(act);
+                commands.entity(act).insert(SharedWithParty);
+            }
+            let effect = commands
+                .entity(prototype)
+                .clone_and_spawn_with_opt_out(|builder| {
+                    builder.deny::<EffectOf>();
+                })
+                .id();
+            let mut effect = commands.entity(effect);
+            effect.insert((HitOf(act), Strikes(victim), CurrentOf(reach)));
+            if let (Some(_), Some(weapon)) = (from_weapon, weapon) {
+                effect.insert(Chance(chance));
+                if let Some(afflict) = afflict.filter(|a| a.condition == Condition::Poisoned) {
+                    effect.insert(Afflict { poison: weapon.effects.strength, ..*afflict });
                 }
             }
-            party_shared |= shares;
+            spawned = true;
+            break;
+        }
+        if !spawned {
+            commands.entity(reach).despawn();
         }
     }
 }
@@ -822,7 +886,7 @@ pub fn instantiate(
 /// otherwise a weighted condition, or death.
 pub fn pick(
     mut commands: Commands,
-    effects: Query<(Entity, &Prismic), Without<InFlight>>,
+    effects: Query<(Entity, &Prismic), Without<Outcome>>,
     mut rng: ResMut<GameRng>,
 ) {
     for (effect, prismic) in &effects {
@@ -889,7 +953,7 @@ fn three(rng: &mut GameRng, bound: u32) -> u32 {
 /// Roll each effect's magnitude from its act's strength.
 pub fn roll(
     mut commands: Commands,
-    effects: Query<(Entity, &HitOf, &Roll), Without<InFlight>>,
+    effects: Query<(Entity, &HitOf, &Roll), Without<Outcome>>,
     acts: Query<(&Strength, Option<&WeaponEffects>, Option<&BlowDamage>)>,
     mut rng: ResMut<GameRng>,
 ) {

@@ -2,6 +2,7 @@
 //! move between rounds, and starting rounds.
 
 use super::*;
+use crate::game::characters::Condition;
 
 /// Retail's combat settings (`ResetGameplaySettings`): phased by default,
 /// each round started by the player.
@@ -32,6 +33,7 @@ pub(super) fn give_orders(
     mut orders: Query<(&mut crate::game::party::Order, &Character, &Vitals)>,
 ) {
     use crate::content::characters::Trait;
+    use crate::game::party::Order;
     for &GiveOrder { member, order } in requests.read() {
         if battle.is_some()
             && roster.contains(&member)
@@ -49,9 +51,9 @@ pub(super) fn give_orders(
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CyclePartyMove;
 
-/// The party's move this round.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(super) enum PartyMove {
+/// The party's move this round, on the fight.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
+pub enum PartyMove {
     #[default]
     None,
     /// Waiting for its phase; members do not act before it.
@@ -59,6 +61,18 @@ pub(super) enum PartyMove {
     /// Under way: metres allowed and covered (retail `GetPartyMovementSpeed`:
     /// 10000 units walking, 15000 running).
     Moving { pace: PartyPace, budget: f32, moved: f32, last: Vec3 },
+}
+
+impl PartyMove {
+    /// Whether the party may walk: in a fight, only during its own move.
+    pub fn under_way(&self) -> bool {
+        matches!(self, PartyMove::Moving { .. })
+    }
+
+    /// Whether the party's move is a run.
+    pub fn running(&self) -> bool {
+        matches!(self, PartyMove::Moving { pace: PartyPace::Run, .. })
+    }
 }
 
 /// Start the next round (Enter, or the round button).
@@ -74,7 +88,7 @@ pub enum CombatControl {
 
 pub(super) fn control_combat(
     mut requests: MessageReader<CombatControl>,
-    battle: Option<Single<&Battle>>,
+    round: Option<Single<&Round, With<Battle>>>,
     mut settings: ResMut<CombatSettings>,
     mut rounds: MessageWriter<StartRound>,
 ) {
@@ -82,8 +96,8 @@ pub(super) fn control_combat(
         match request {
             CombatControl::ToggleContinuous => settings.continuous = !settings.continuous,
             CombatControl::RoundButton => {
-                if let Some(battle) = &battle {
-                    if battle.executing() {
+                if let Some(round) = &round {
+                    if round.executing() {
                         settings.continuous = !settings.continuous;
                     } else {
                         rounds.write(StartRound);
@@ -97,18 +111,18 @@ pub(super) fn control_combat(
 /// Count the ground the party covers while it moves in a fight, and end the
 /// move when it is spent.
 pub fn track_party_move(
-    battle: Option<Single<&mut Battle>>,
-    party: Query<&Position, With<PartyBody>>,
+    fight: Option<Single<(&Round, &mut PartyMove), With<Battle>>>,
+    party: Query<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>,
     mut rng: ResMut<GameRng>,
     roster: Single<&PartyRoster>,
-    mut members: Members,
-    mut turns: Query<&mut PartyTurn>,
+    mut movers: Query<(&mut Vitals, &crate::game::inventory::Burden), With<Turn>>,
+    mut turns: Query<&mut Turn>,
     mut news: MessageWriter<CombatNews>,
 ) {
-    let Some(mut battle) = battle else { return };
+    let Some((round, mut party_move)) = fight.map(Single::into_inner) else { return };
     let Ok(position) = party.single() else { return };
     let spent = {
-        let PartyMove::Moving { budget, moved, last, .. } = &mut battle.party_move else {
+        let PartyMove::Moving { budget, moved, last, .. } = &mut *party_move else {
             return;
         };
         *moved += last.with_y(0.0).distance(position.0.with_y(0.0));
@@ -116,7 +130,7 @@ pub fn track_party_move(
         *moved >= *budget
     };
     if spent {
-        finish_party_move(&mut battle, &mut rng, &roster, &mut members, &mut turns);
+        finish_party_move((round, &mut party_move), &mut rng, &roster, &mut movers, &mut turns);
         news.write(CombatNews::PartyStops);
     }
 }
@@ -147,18 +161,18 @@ impl PartyPace {
 /// (spent counting half again when running), and pays stamina for the
 /// ground covered, by load, half again when diseased.
 pub(super) fn finish_party_move(
-    battle: &mut Battle,
+    (round, party_move): (&Round, &mut PartyMove),
     rng: &mut GameRng,
     roster: &PartyRoster,
-    members: &mut Members,
-    turns: &mut Query<&mut PartyTurn>,
+    movers: &mut Query<(&mut Vitals, &crate::game::inventory::Burden), With<Turn>>,
+    turns: &mut Query<&mut Turn>,
 ) {
-    let PartyMove::Moving { pace, budget, moved, .. } = battle.party_move else { return };
-    let step = match battle.phase {
+    let PartyMove::Moving { pace, budget, moved, .. } = *party_move else { return };
+    let step = match round.phase {
         RoundPhase::Executing(step) => step,
         _ => 1,
     };
-    battle.party_move = PartyMove::None;
+    *party_move = PartyMove::None;
     let mut spent = (moved / budget.max(0.01) * 100.0).min(100.0);
     if pace == PartyPace::Run {
         spent *= 1.5;
@@ -175,8 +189,8 @@ pub(super) fn finish_party_move(
             work.end();
         }
     }
-    for member in roster.iter().filter(|&member| turns.contains(member)) {
-        let (_, mut vitals, _, burden) = members.get_mut(member).unwrap();
+    for member in roster.iter() {
+        let Ok((mut vitals, burden)) = movers.get_mut(member) else { continue };
         if vitals.is_dead() {
             continue;
         }

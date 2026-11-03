@@ -421,7 +421,7 @@ impl Progression<'_, '_> {
         }
         // Preserve deficits, conditions and recovery fractions; advancement is not a full heal.
         // The spells on the member count for both maxima.
-        v.follow_maxima(&next, None);
+        v.follow_maxima(&next);
         *c = next;
         *known = learned;
         *carried = equipment;

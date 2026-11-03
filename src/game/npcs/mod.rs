@@ -257,7 +257,8 @@ impl NpcPopulation<'_, '_> {
         commands: &mut Commands,
         map: &str,
         placed_actors: &mut std::collections::HashSet<ActorId>,
-    ) -> Vec<(Entity, Vec3, f32, crate::game::world::population::ScaledBody, Option<i32>)> {
+    ) -> Vec<(Entity, Vec3, f32, crate::game::world::population::ScaledBody, Option<i32>, u32)>
+    {
         let mut visitors = Vec::new();
         for (actor, key, bodies) in &self.npcs {
             if !self.may_stand(actor) || placed_actors.contains(key) {
@@ -278,6 +279,7 @@ impl NpcPopulation<'_, '_> {
                 pose.rotation().to_euler(EulerRot::YXZ).0,
                 monster.body,
                 role.group,
+                monster.species,
             ));
         }
         visitors

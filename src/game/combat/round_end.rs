@@ -11,20 +11,22 @@ use avian3d::prelude::Position;
 use bevy::prelude::*;
 
 use super::approach::{self, CombatMove};
-use super::round::{MonsterTurn, PartyTurn, SpecialCooldown};
 use super::sight::reinforces;
+use super::turn::{Ordered, SpecialCooldown, Turn};
 use super::{
-    Battle, CombatNews, Combatant, Combatants, PASSIVE_ROUNDS, PartyMove, ROUND_SECONDS, RoundPhase,
+    Battle, CombatNews, Combatant, Combatants, PASSIVE_ROUNDS, PartyMove, Pause, ROUND_SECONDS,
+    Round, RoundPhase, Spoils,
 };
 use crate::content::spells::SpellId;
-use crate::game::characters::{Character, Condition, Fate};
+use crate::game::characters::Vitals;
+use crate::game::characters::{Character, Condition};
 use crate::game::data::Catalogs;
 use crate::game::factions::Factions;
 use crate::game::hits::effects::InFlight;
 use crate::game::hits::prototypes::{Definitions, Uses};
-use crate::game::hits::reach::{Recipients, radius};
+use crate::game::hits::reach::{Recipients, within};
 use crate::game::hits::spells::reach;
-use crate::game::hits::{Act, Body, Deed};
+use crate::game::hits::{Act, Deed};
 use crate::game::magic::Strength;
 use crate::game::magic::casting::Cast;
 use crate::game::magic::enchantments::{OFFENSIVE, PartyEffects};
@@ -33,14 +35,13 @@ use crate::game::party::recovery;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::{GameClock, Ticks};
-use crate::game::world::hostility::{self, Stance};
-use crate::game::world::identify::{GroupMember, GroupMembers, GroupRecognition, MonsterGroup};
 use crate::game::world::footing::{Conspicuous, Eyes, Footing};
-use crate::game::world::population::Monster;
-use crate::game::characters::Vitals;
-use bevy::ecs::relationship::RelationshipTarget;
-use crate::game::world::level::{Level, PlayedLevel};
+use crate::game::world::hostility::{self, Side, Stance};
+use crate::game::world::identify::{GroupMember, GroupMembers, GroupRecognition, MonsterGroup};
+use crate::game::world::level::PlayedLevel;
 use crate::game::world::obstacles::WorldObstacles;
+use crate::game::world::population::{Monster, Untargetable};
+use bevy::ecs::relationship::RelationshipTarget;
 
 /// The round is ending, a round's game time having passed.
 #[derive(Component, Debug)]
@@ -60,15 +61,17 @@ pub struct FightOver;
 #[allow(clippy::type_complexity)]
 pub fn judge_round(
     mut commands: Commands,
-    battle: Option<Single<(Entity, &Battle), Without<RoundEnding>>>,
+    battle: Option<
+        Single<(Entity, &Round, &PartyMove, &Pause), (With<Battle>, Without<RoundEnding>)>,
+    >,
     busy: (Query<(), With<InFlight>>, Query<(), With<CombatMove>>, Query<(), With<Cast>>),
     mut clock: ResMut<GameClock>,
 ) {
-    let Some((fight, battle)) = battle.map(Single::into_inner) else { return };
-    let RoundPhase::Executing(step) = battle.phase else { return };
+    let Some((fight, round, party_move, pause)) = battle.map(Single::into_inner) else { return };
+    let RoundPhase::Executing(step) = round.phase else { return };
     if step <= 100
-        || matches!(battle.party_move, PartyMove::Moving { .. })
-        || !battle.wait.is_finished()
+        || matches!(party_move, PartyMove::Moving { .. })
+        || !pause.0.is_finished()
         || !busy.0.is_empty()
         || !busy.1.is_empty()
         || !busy.2.is_empty()
@@ -111,7 +114,8 @@ pub(super) fn leave_fight(
     let far = level.view_distance().unwrap_or(0.0);
     let Some(party) = roster.iter().find_map(|member| members.get(member).ok()) else { return };
     let fighting = |monster: Entity| combatants.contains(&monster);
-    let alive = |monster: Entity| fighters.get(monster).is_ok_and(|(_, vitals, ..)| !vitals.is_dead());
+    let alive =
+        |monster: Entity| fighters.get(monster).is_ok_and(|(_, vitals, ..)| !vitals.is_dead());
     // The stance its group holds toward the party, Turncoat aside.
     let stance = |monster: Entity| {
         let (body, .., group) = fighters.get(monster).ok()?;
@@ -166,9 +170,9 @@ pub(super) fn leave_fight(
         let stays = match stance {
             hostility::Stance::Neutral => {
                 let unseen = |m: Entity| {
-                    fighters.get(m).is_ok_and(|(body, ..)| {
-                        content.species[body.species].temper.camouflaged
-                    })
+                    fighters
+                        .get(m)
+                        .is_ok_and(|(body, ..)| content.species[body.species].temper.camouflaged)
                 };
                 let standing: Vec<(Entity, &Footing)> = fellows
                     .iter()
@@ -202,7 +206,7 @@ pub(super) fn leave_fight(
 /// back (retail `AdvanceCombatRound`).
 pub(super) fn rest_waiters(
     fight: Single<&Combatants, With<RoundEnding>>,
-    mut monsters: Query<(&mut crate::game::characters::Vitals, Option<&MonsterTurn>)>,
+    mut monsters: Query<(&mut crate::game::characters::Vitals, Option<&Turn>)>,
     mut rng: ResMut<GameRng>,
 ) {
     for &monster in fight.entities() {
@@ -223,7 +227,7 @@ pub(super) fn rest_waiters(
 /// one (retail `AdvanceCombatRound`).
 pub(super) fn cool_specials(
     fight: Single<&Combatants, With<RoundEnding>>,
-    mut monsters: Query<(&mut SpecialCooldown, Option<&MonsterTurn>)>,
+    mut monsters: Query<(&mut SpecialCooldown, Option<&Turn>)>,
 ) {
     for &monster in fight.entities() {
         if let Ok((mut cooldown, turn)) = monsters.get_mut(monster)
@@ -264,7 +268,7 @@ pub(super) fn recover_members(
     content: If<Res<Catalogs>>,
     mut rng: ResMut<GameRng>,
 ) {
-    let (fight, ending) = *fight;
+    let (_, ending) = *fight;
     for member in roster.iter() {
         let Ok((mut profile, mut vitals, known, mut pool)) = members.get_mut(member) else {
             continue;
@@ -276,7 +280,7 @@ pub(super) fn recover_members(
             recovery::Pace::Fighting,
             (known, &mut pool),
             &content.spells,
-            &mut Fate { fight: Some(fight), rng: &mut rng },
+            &mut rng,
         );
     }
 }
@@ -289,9 +293,8 @@ pub(super) fn recover_members(
 pub(super) fn pulse_clouds(
     mut commands: Commands,
     fight: Single<&Combatants, With<RoundEnding>>,
-    mut bodies: Query<Body>,
+    bodies: Query<(Entity, &Vitals, &Side, &Footing, Option<&Monster>), Without<Untargetable>>,
     party: Single<(&Position, &PartyRoster, &PartyEffects)>,
-    levels: Query<(), With<Level>>,
     obstacles: WorldObstacles,
     content: If<Res<Catalogs>>,
     definitions: Res<Definitions>,
@@ -305,7 +308,7 @@ pub(super) fn pulse_clouds(
         reach(commands, act, &victims);
     };
     let living: Vec<Entity> =
-        roster.iter().filter(|&m| bodies.get(m).is_ok_and(|b| !b.is_dead())).collect();
+        roster.iter().filter(|&m| bodies.get(m).is_ok_and(|(_, v, ..)| !v.is_dead())).collect();
     for id in OFFENSIVE {
         if let Some(effect) = effects.0.get(id) {
             let strength = Strength::at(0, &content.spells[id], effect.power, effect.boost);
@@ -313,13 +316,13 @@ pub(super) fn pulse_clouds(
         }
     }
     for &monster in fight.entities() {
-        let Ok(body) = bodies.get(monster) else { continue };
-        if body.is_dead() {
+        let Ok((_, vitals, ..)) = bodies.get(monster) else { continue };
+        if vitals.is_dead() {
             continue;
         }
         let clouds: Vec<_> = OFFENSIVE
             .iter()
-            .filter_map(|&id| body.vitals.enchantments.get(id).map(|e| (id, *e)))
+            .filter_map(|&id| vitals.enchantments.get(id).map(|e| (id, *e)))
             .collect();
         for (id, effect) in clouds {
             let strength = Strength::at(0, &content.spells[id], effect.power, effect.boost);
@@ -332,15 +335,13 @@ pub(super) fn pulse_clouds(
         let centre = PartyBody::centre(eye);
         let reach_of =
             crate::game::party::body::RADIUS + crate::content::species::Reach::Short.metres();
-        let victims = radius(
+        let victims = within(
             centre,
             centre,
             reach_of,
             Recipients::Opponents(Stance::Friendly),
-            None,
-            &mut bodies,
-            &levels,
-            &content.species,
+            &bodies,
+            roster,
             &obstacles,
         );
         let strength = Strength { power: effect.power, boost: 0, against: effect.power * 3 };
@@ -351,18 +352,18 @@ pub(super) fn pulse_clouds(
 /// The party's spells and the fighting monsters' age by the round's tick,
 /// and the next round waits to be accepted.
 pub(super) fn age_enchantments(
-    fight: Single<(&mut Battle, &Combatants, &RoundEnding)>,
+    fight: Single<(&mut Round, &Combatants, &RoundEnding), With<Battle>>,
     mut party: Single<&mut PartyEffects>,
     mut monsters: Query<&mut crate::game::characters::Vitals>,
 ) {
-    let (mut battle, combatants, ending) = fight.into_inner();
+    let (mut round, combatants, ending) = fight.into_inner();
     party.0.age(ending.0.aging);
     for &monster in combatants.entities() {
         if let Ok(mut vitals) = monsters.get_mut(monster) {
             vitals.enchantments.age(ending.0.aging);
         }
     }
-    battle.phase = RoundPhase::Waiting;
+    round.phase = RoundPhase::Waiting;
 }
 
 /// Members who defended, or lie asleep or knocked out, get their breath
@@ -370,12 +371,12 @@ pub(super) fn age_enchantments(
 pub(super) fn rest_defenders(
     _fight: Single<(), With<RoundEnding>>,
     roster: Single<&PartyRoster>,
-    mut members: Query<(&Character, &mut crate::game::characters::Vitals, &PartyTurn)>,
+    mut members: Query<(&Character, &mut crate::game::characters::Vitals, &Ordered)>,
     mut rng: ResMut<GameRng>,
 ) {
     for member in roster.iter() {
-        let Ok((character, mut vitals, turn)) = members.get_mut(member) else { continue };
-        let resting = turn.defends()
+        let Ok((character, mut vitals, ordered)) = members.get_mut(member) else { continue };
+        let resting = ordered.defends()
             || matches!(
                 vitals.conditions.worst(),
                 Some(Condition::Asleep | Condition::Unconscious)
@@ -396,57 +397,62 @@ pub(super) fn rest_defenders(
 /// closed in for two rounds; the living, the unconscious included, share
 /// its experience. Poison may have killed the last of the party as the
 /// round passed: that is their defeat, not a victory.
+#[allow(clippy::type_complexity)]
 pub(super) fn judge_victory(
     mut commands: Commands,
-    fight: Single<(Entity, &mut Battle, &Combatants), With<RoundEnding>>,
-    mut bodies: Query<Body>,
+    fight: Single<
+        (Entity, &mut Battle, &Round, &Spoils, &mut Pause, &Combatants),
+        With<RoundEnding>,
+    >,
+    mut members: Query<(&mut Character, &Vitals)>,
+    monsters: Query<(
+        &Monster,
+        &Vitals,
+        &Side,
+        &Footing,
+        Option<&crate::game::world::navigation::Walker>,
+    )>,
+    footings: Query<&Footing>,
     leaving: Query<(), With<Leaves>>,
-    stand: Single<&Position, With<PartyBody>>,
     roster: Single<&PartyRoster>,
     content: If<Res<Catalogs>>,
     mut news: MessageWriter<CombatNews>,
 ) {
-    let (fight, mut battle, combatants) = fight.into_inner();
+    let (fight, mut battle, round, spoils, mut pause, combatants) = fight.into_inner();
     let living: Vec<Entity> =
-        roster.iter().filter(|&m| bodies.get(m).is_ok_and(|b| !b.is_dead())).collect();
+        roster.iter().filter(|&m| members.get(m).is_ok_and(|(_, v)| !v.is_dead())).collect();
     if living.is_empty() {
         return;
     }
-    battle.wait = Timer::from_seconds(ROUND_SECONDS, TimerMode::Once);
-    let (eye, species) = (PartyBody::eye(*stand), &content.species);
+    pause.0 = Timer::from_seconds(ROUND_SECONDS, TimerMode::Once);
+    let party_at = roster.iter().find_map(|m| footings.get(m).ok()).copied();
+    let species = &content.species;
     let approaching = combatants.entities().iter().any(|&entity| {
-        bodies.get(entity).is_ok_and(|body| {
-            let monster = body.monster.as_ref().unwrap();
-            let pose = body.pose.as_ref().unwrap();
-            approach::needs_approach(
-                monster,
-                body.vitals,
-                pose.translation(),
-                body.walker,
-                eye,
-                species,
-            )
+        monsters.get(entity).is_ok_and(|(monster, vitals, _, at, walker)| {
+            party_at.is_some_and(|party| {
+                approach::needs_approach(&species[monster.species], vitals, walker, at.gap(&party))
+            })
         })
     });
-    let active = battle.attacked || approaching;
+    let active = round.attacked || approaching;
     battle.passive_rounds = if active { 0 } else { battle.passive_rounds + 1 };
     let hostiles_left = combatants.entities().iter().any(|&entity| {
         !leaving.contains(entity)
-            && bodies
+            && monsters
                 .get(entity)
-                .is_ok_and(|body| !body.is_dead() && body.side.0 == Stance::Hostile)
+                .is_ok_and(|(_, vitals, side, ..)| !vitals.is_dead() && side.0 == Stance::Hostile)
     });
     if hostiles_left && battle.passive_rounds < PASSIVE_ROUNDS {
         return;
     }
-    let each = battle.experience / living.len() as u32;
+    let each = spoils.experience / living.len() as u32;
     if each > 0 {
         for &member in &living {
-            bodies.get_mut(member).unwrap().character.as_mut().unwrap().award_experience(each);
+            members.get_mut(member).unwrap().0.award_experience(each);
         }
     }
-    news.write(if battle.kills > 0 {
-        CombatNews::Won { kills: battle.kills, experience_each: each }
+    news.write(if spoils.kills > 0 {
+        CombatNews::Won { kills: spoils.kills, experience_each: each }
     } else {
         CombatNews::Over
     });

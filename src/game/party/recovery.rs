@@ -10,6 +10,7 @@ use bevy::prelude::*;
 use crate::content::spells::SpellCatalog;
 use crate::game::characters::{Character, Vitals};
 use crate::game::magic::{LearnedSpells, SpellPoints, recovery_scale};
+use crate::game::rng::GameRng;
 use crate::game::time::Ticks;
 
 /// Stamina a round's rest brings back to anyone in a fight (retail
@@ -68,12 +69,12 @@ pub fn pass(
     pace: Pace,
     (known, pool): (&LearnedSpells, &mut Mut<SpellPoints>),
     spells: &SpellCatalog,
-    fate: &mut crate::game::characters::Fate,
+    rng: &mut GameRng,
 ) {
     let magic = (ticks.aging > 0 && pool.needs_recovery()).then(|| (known, &mut **pool, spells));
     let vitals = member.bypass_change_detection();
     let before = vitals.clone();
-    if elapse(profile.bypass_change_detection(), vitals, ticks, pace, fate, magic).is_some() {
+    if elapse(profile.bypass_change_detection(), vitals, ticks, pace, rng, magic).is_some() {
         profile.set_changed();
     }
     if *vitals != before {
@@ -89,7 +90,7 @@ pub fn elapse(
     member: &mut Vitals,
     ticks: Ticks,
     pace: Pace,
-    fate: &mut crate::game::characters::Fate,
+    rng: &mut GameRng,
     magic: Option<(&LearnedSpells, &mut SpellPoints, &SpellCatalog)>,
 ) -> Option<crate::game::characters::Sickness> {
     let mut sickness = None;
@@ -101,15 +102,15 @@ pub fn elapse(
         let still = matches!(pace, Pace::Still | Pace::Camping);
         let poisoned = member.poison_damage(ticks.aging, still);
         if poisoned > 0 {
-            member.damage(profile, poisoned, fate);
+            member.hurt(poisoned);
         }
-        sickness = member.sicken(profile, ticks.aging, fate);
+        sickness = member.sicken(profile, ticks.aging, rng);
         if let Some((known, pool, spells)) = magic {
             let maximum = profile.stats(&member.enchantments).max_points(known, spells);
             pool.recover(ticks.aging, recovery_scale(pace.health_scale()), &maximum);
         }
         member.recover_health(ticks.aging, health);
-        member.age_conditions(ticks.aging, fate.rng);
+        member.age_conditions(ticks.aging, rng);
         // Spells that run out take what they raised the maxima by.
         member.sync_maxima(profile);
         member.health.current = member.health.current.min(member.health.max);
@@ -121,14 +122,8 @@ pub fn elapse(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::characters::Fate;
     use crate::game::characters::{Condition, Gender, Lasting, Profession, Race};
     use crate::game::rng::GameRng;
-
-    /// Fate outside any fight.
-    fn calm(rng: &mut GameRng) -> Fate<'_> {
-        Fate { fight: None, rng }
-    }
 
     #[test]
     fn fighter_rest_uses_current_profession_level_and_stops_scaling_at_twenty() {
@@ -164,7 +159,7 @@ mod tests {
             &mut fighter,
             Ticks { stamina: 85, aging: 1 },
             Pace::Fighting,
-            &mut calm(&mut GameRng::default()),
+            &mut GameRng::default(),
             None,
         );
         assert_eq!((fighter.health.current, fighter.stamina.current), (hp, stamina));
@@ -175,7 +170,7 @@ mod tests {
             &mut fighter,
             Ticks { stamina: 85, aging: 60 },
             Pace::Still,
-            &mut calm(&mut GameRng::default()),
+            &mut GameRng::default(),
             None,
         );
         assert!(fighter.health.current > hp && fighter.stamina.current > stamina);
@@ -188,8 +183,7 @@ mod tests {
     fn poison_bites_harder_on_the_move_and_wears_off() {
         let mut profile = Character::new("Brute", Race::Human, Gender::Male, Profession::Fighter);
         let mut walking = Vitals::new(&profile);
-        assert!(!walking.poison(Lasting::Rounds(10), 0), "no strength, no poisoning");
-        assert!(walking.poison(Lasting::Rounds(10), 4));
+        walking.poison(Lasting::Rounds(10), 4);
         let mut still = walking.clone();
         let hp = walking.health.current;
         let mut rng = GameRng::default();
@@ -198,7 +192,7 @@ mod tests {
             &mut walking,
             Ticks { stamina: 0, aging: 1 },
             Pace::Walking,
-            &mut calm(&mut rng),
+            &mut rng,
             None,
         );
         elapse(
@@ -206,7 +200,7 @@ mod tests {
             &mut still,
             Ticks { stamina: 0, aging: 1 },
             Pace::Still,
-            &mut calm(&mut rng),
+            &mut rng,
             None,
         );
         assert_eq!(walking.health.current, hp - 6, "four, half again on the move");
@@ -254,7 +248,7 @@ mod tests {
                 (sick.base_stats().max_hp(), sick.base_stats().max_stamina());
             let attributes = sick.attributes;
             // A long stretch makes the roll sure.
-            let struck = member.sicken(&mut sick, 10_000, &mut calm(&mut rng));
+            let struck = member.sicken(&mut sick, 10_000, &mut rng);
             match struck {
                 Some(Sickness::Condition(condition)) => {
                     assert!(member.conditions.lasting(condition) == Some(Lasting::Indefinite));
@@ -281,9 +275,9 @@ mod tests {
         assert_eq!(seen.len(), 4, "every blow comes up");
         // Without disease, or with no time, nothing happens.
         let mut well = Vitals::new(&profile);
-        assert_eq!(well.sicken(&mut profile, 10_000, &mut calm(&mut rng)), None);
+        assert_eq!(well.sicken(&mut profile, 10_000, &mut rng), None);
         well.inflict(Condition::Diseased, Lasting::Indefinite);
-        assert_eq!(well.sicken(&mut profile, 0, &mut calm(&mut rng)), None);
+        assert_eq!(well.sicken(&mut profile, 0, &mut rng), None);
     }
 
     /// A Vitality point lost to disease lowers the health maximum, and a
@@ -305,8 +299,7 @@ mod tests {
                 let max_hp = profile.base_stats().max_hp();
                 member.health.current = if dying { 1 } else { max_hp - 20 };
                 let hp = member.health.current;
-                let struck =
-                    member.sicken(&mut profile, 10_000, &mut calm(&mut GameRng::seeded(seed)));
+                let struck = member.sicken(&mut profile, 10_000, &mut GameRng::seeded(seed));
                 if struck != Some(Sickness::Weakened(Attribute::Vitality)) {
                     continue;
                 }
@@ -333,7 +326,7 @@ mod tests {
         let mut member = Vitals::new(&profile);
         let (max_hp, max_stamina) =
             (profile.base_stats().max_hp(), profile.base_stats().max_stamina());
-        assert_eq!(member.drain_health(&mut profile, 3, &mut calm(&mut GameRng::default())), 3);
+        assert_eq!(member.drain_health(&mut profile, 3), 3);
         assert_eq!(
             (profile.base_stats().max_hp(), member.health.current),
             (max_hp - 3, max_hp - 3)
@@ -348,7 +341,7 @@ mod tests {
             &mut member,
             Ticks { stamina: 0, aging: 60 },
             Pace::Camping,
-            &mut calm(&mut GameRng::default()),
+            &mut GameRng::default(),
             None,
         );
         assert_eq!(member.health.current, max_hp - 3);
@@ -360,7 +353,7 @@ mod tests {
         // Draining the last of it kills, and the dead stay Drained.
         let mut doomed = Vitals::new(&profile);
         doomed.health.current = 2;
-        assert_eq!(doomed.drain_health(&mut profile, 5, &mut calm(&mut GameRng::default())), 2);
+        assert_eq!(doomed.drain_health(&mut profile, 5), 2);
         assert!(doomed.is_dead() && doomed.conditions.has(Condition::Drained));
     }
 }

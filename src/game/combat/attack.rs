@@ -293,6 +293,11 @@ impl<'a> Grip<'a> {
         self.worn[slot].map(|(_, d)| d)
     }
 
+    /// The stack worn in a slot, by its identity.
+    pub fn weapon_id(&self, slot: WeaponSlot) -> Option<crate::game::inventory::StackId> {
+        self.worn[slot].map(|(stack, _)| stack.id)
+    }
+
     /// The slot can attack.
     pub fn in_play(&self, slot: WeaponSlot) -> bool {
         self.in_play[slot]
@@ -511,8 +516,9 @@ impl<'a> Grip<'a> {
         if !self.in_play[slot] {
             return 0;
         }
-        let [strength, dexterity, senses] = [Attribute::Strength, Attribute::Dexterity, Attribute::Senses]
-            .map(|a| c.attribute(a) as i32);
+        let [strength, dexterity, senses] =
+            [Attribute::Strength, Attribute::Dexterity, Attribute::Senses]
+                .map(|a| c.attribute(a) as i32);
         let mut to_hit = 0;
         if let Some(d) = self.weapon(slot) {
             to_hit += d.hit_bonus;
@@ -845,8 +851,7 @@ pub fn member_protection(c: &CharacterStats<'_>, vitals: &Vitals, grip: &Grip, l
     if grip.weapon_skill(WeaponSlot::Primary) == Skill::ModernWeapon {
         fatigue >>= 1;
     }
-    let armed =
-        grip.to_hit(c, load, WeaponSlot::Primary) * 5 + grip.rating(c, WeaponSlot::Primary);
+    let armed = grip.to_hit(c, load, WeaponSlot::Primary) * 5 + grip.rating(c, WeaponSlot::Primary);
     c.attribute(Attribute::Speed) as i32 - fatigue + armed + vitals.enchantments.hit_bonus() * 5
 }
 

@@ -1,12 +1,12 @@
 //! What lands on bodies. An act (a cast, a missile's impact, a breath, a
-//! cloud's pulse, a trap, a blow) is an entity with a [`Deed`] recording
-//! what it did; each effect it has on a body is an entity that [`Strikes`]
-//! that body and is a [`HitOf`] the act ([`effects`]). The [`Hits`] stages
-//! settle the effects on the bodies' components, then what follows once an
-//! act's effects have all landed, and [`report_deeds`] turns each finished
-//! act into news.
+//! cloud's pulse, a trap, a blow) is an entity with a [`Deed`] recording what
+//! it did. It reaches each body it lands on ([`Reach`]), and the reach works
+//! through what the act's definition does to that body one effect at a time
+//! ([`effects`]): each effect is an entity that [`Strikes`] the body and is a
+//! [`HitOf`] the act, settled by the [`Hits`] stages. Once an act's reaches
+//! are done, what follows (a drain's share, a burst, a reflection) is made
+//! and [`report_deeds`] turns the act into news.
 
-pub mod body;
 pub mod defences;
 pub mod effects;
 pub mod prototypes;
@@ -16,17 +16,13 @@ pub mod spells;
 
 use bevy::prelude::*;
 
-use crate::content::characters::Skill;
 use crate::content::items::EquipClass;
 use crate::content::spells::SpellId;
 use crate::game::characters::Condition;
 use crate::game::magic::casting::{MagicNews, Report};
-use crate::game::world::damage::DamageOutcome;
 
-pub use body::{Body, BodyItem, BodyReadOnlyItem};
-
-/// What a spell did to one victim.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// What an act did to one victim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Effect {
     Purified {
         victim: Entity,
@@ -49,7 +45,7 @@ pub enum Effect {
     },
     Damaged {
         victim: Entity,
-        outcome: DamageOutcome,
+        amount: u32,
     },
     Inflicted {
         victim: Entity,
@@ -89,50 +85,47 @@ pub enum Effect {
     },
 }
 
-/// Whether anything a spell did counts as affecting a victim, which is what
+/// Whether anything an act did counts as affecting a victim, which is what
 /// practice needs (retail `SpellAffectedTarget`).
 pub fn affected(effects: &[Effect]) -> bool {
     effects.iter().any(|e| !matches!(e, Effect::Nothing { .. }))
 }
 
-/// The hit lands on this body.
+/// The act is made by this actor; the actor gone, so is the act.
+#[derive(Component, Clone, Copy, Debug)]
+#[relationship(relationship_target = Acts)]
+pub struct By(pub Entity);
+
+/// An actor's acts under way, maintained by Bevy from [`By`].
+#[derive(Component, Debug)]
+#[relationship_target(relationship = By, linked_spawn)]
+pub struct Acts(Vec<Entity>);
+
+/// The reach or effect lands on this body.
 #[derive(Component, Clone, Copy, Debug)]
 #[relationship(relationship_target = Incoming)]
 pub struct Strikes(pub Entity);
 
-/// The hits landing on a body, gone with it.
+/// The reaches and effects landing on a body, gone with it.
 #[derive(Component, Debug)]
 #[relationship_target(relationship = Strikes, linked_spawn)]
 pub struct Incoming(Vec<Entity>);
 
-/// The hit belongs to this deed.
+/// The reach or effect belongs to this act.
 #[derive(Component, Clone, Copy, Debug)]
 #[relationship(relationship_target = DeedHits)]
 pub struct HitOf(pub Entity);
 
-/// A deed's hits still to land.
+/// An act's reaches and effects still to land, gone with it.
 #[derive(Component, Debug)]
 #[relationship_target(relationship = HitOf, linked_spawn)]
 pub struct DeedHits(Vec<Entity>);
 
-/// The deed is part of a larger one, which takes what it did into its own
-/// report: a blow of an attack.
-#[derive(Component, Clone, Copy, Debug)]
-#[relationship(relationship_target = Parts)]
-pub struct PartOf(pub Entity);
-
-/// The deeds still part of a larger one, gone with it.
-#[derive(Component, Debug)]
-#[relationship_target(relationship = PartOf, linked_spawn)]
-pub struct Parts(Vec<Entity>);
-
-/// What one act did, gathered from its hits for its news.
+/// What one act did, gathered from its effects for its news.
 #[derive(Component, Debug)]
 pub struct Deed {
     pub act: Act,
     pub effects: Vec<Effect>,
-    /// Skills its hits made victims practise, by whom.
-    pub improved: Vec<(Entity, Skill)>,
 }
 
 /// Which act a deed is, for its news.
@@ -147,11 +140,15 @@ pub enum Act {
     /// Something in a fight whose effects the fight reports: a monster's
     /// cast, a breath.
     Fight,
+    /// A blow of an attack, which the attack tallies into its own report.
+    Swing,
+    /// A blow reported on its own: one gone astray, or Razor Cloak's answer.
+    Blow { by: Entity, at: Entity },
 }
 
 impl Deed {
     pub fn new(act: Act) -> Self {
-        Self { act, effects: Vec::new(), improved: Vec::new() }
+        Self { act, effects: Vec::new() }
     }
 }
 
@@ -166,9 +163,9 @@ pub struct Resolution;
 #[derive(bevy::ecs::schedule::ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Hits;
 
-/// Run the hit stages until no effect is left to settle but missiles still
-/// on their way: an effect waiting on the one before it, or what a landed
-/// act set off (a reflection, a burst), is settled within the same step.
+/// Run the hit stages until no reach is left to work but missiles still on
+/// their way: each effect, and what a landed act set off (a reflection, a
+/// burst), is settled within the same step.
 pub fn run_hits(world: &mut World) {
     world.run_schedule(Hits);
     let mut passes = 1;
@@ -179,7 +176,7 @@ pub fn run_hits(world: &mut World) {
         .is_some()
     {
         passes += 1;
-        if passes > 64 {
+        if passes > 256 {
             error!("effects left unsettled after {passes} passes");
             break;
         }
@@ -192,7 +189,7 @@ pub struct HitsPlugin;
 impl Plugin for HitsPlugin {
     fn build(&self, app: &mut App) {
         use effects::*;
-        use prototypes::{Definitions, define, instantiate, pick, roll};
+        use prototypes::{Definitions, advance, define, pick, roll};
         app.add_systems(
             PreUpdate,
             define
@@ -202,12 +199,13 @@ impl Plugin for HitsPlugin {
         .add_systems(
             Hits,
             (
-                (defences::judge_characters, defences::judge_monsters).run_if(any_with_component::<HitOf>),
+                (defences::judge_characters, defences::judge_monsters)
+                    .run_if(any_with_component::<HitOf>),
+                spells::strength_of_owners,
+                advance,
                 (
-                    instantiate,
                     pick,
                     roll,
-                    ready,
                     miss_the_dead,
                     roll_chances,
                     immunities,
@@ -218,40 +216,44 @@ impl Plugin for HitsPlugin {
                 )
                     .chain(),
                 (
-                    harm_members,
-                    harm_monsters,
+                    harm,
                     sap,
-                    poison_members,
                     afflict,
-                    slay_members,
-                    slay_monsters,
+                    slay,
                     tire,
-                    drain_members_magic,
-                    drain_monsters_magic,
+                    drain_pool,
+                    drain_budget,
                     drain_realm,
                     heal,
                     refresh,
                     replenish,
-                    ease_poison,
                     cure,
+                    renew,
+                    raise,
+                    purify,
+                    enchant,
+                    burn,
+                )
+                    .chain(),
+                (enchant_party, purify_party, drain_party, burn_pool, lose_gold, dispel).chain(),
+                (
+                    notify_hurt,
+                    break_lures,
+                    count_drains,
+                    wake,
+                    crate::game::characters::sync_member_maxima,
+                    crate::game::characters::cheat_death,
+                    crate::game::characters::settle_deaths,
                 )
                     .chain(),
                 (
-                    renew_members,
-                    renew_monsters,
-                    raise,
-                    purify,
-                    enchant_party,
-                    enchant_members,
-                    enchant_monsters,
-                    burn,
-                    lose_gold,
-                    dispel,
+                    spells::drain_back,
+                    spells::burst_blood,
+                    spells::reflect_spells,
+                    crate::game::magic::casting::practise_casts,
+                    crate::game::magic::casting::recast,
                 )
                     .chain(),
-                (notify_hurt, break_lures, count_drains),
-                release_followers,
-                (spells::drain_life, spells::burst_blood, spells::reflect_spells).chain(),
                 report_deeds,
             )
                 .chain(),
@@ -271,43 +273,66 @@ impl Plugin for HitsPlugin {
     }
 }
 
-/// Turn each deed whose hits have all landed into news, crediting a
-/// fight's kills, and let it go; one part of a larger deed is left to it.
+/// Turn each deed whose reaches are all done into news, and let it go; a
+/// swing is left to its attack.
 pub fn report_deeds(
     mut commands: Commands,
-    deeds: Query<(Entity, &Deed), (Without<DeedHits>, Without<PartOf>)>,
-    members: Query<(), With<crate::game::characters::Character>>,
-    mut battle: Option<Single<&mut crate::game::combat::Battle>>,
+    deeds: Query<(Entity, &Deed), Without<DeedHits>>,
+    mut battle: Option<Single<&mut crate::game::combat::Round>>,
     mut magic_news: MessageWriter<MagicNews>,
     mut combat_news: MessageWriter<crate::game::combat::CombatNews>,
 ) {
     for (entity, deed) in &deeds {
-        commands.entity(entity).despawn();
-        if let Some(battle) = battle.as_mut() {
-            battle.credit_kills(&deed.effects, &members, &mut combat_news);
-            // A cloud's pulse keeps the fight going as an attack would.
-            if matches!(deed.act, Act::Triggered { .. }) {
-                battle.attacked(affected(&deed.effects));
-            }
+        if deed.act == Act::Swing {
+            continue;
         }
-        let (effects, improved) = (deed.effects.clone(), deed.improved.clone());
+        commands.entity(entity).despawn();
+        // A cloud's pulse keeps the fight going as an attack would.
+        if let Some(round) = battle.as_mut()
+            && matches!(deed.act, Act::Triggered { .. })
+        {
+            round.attacked(affected(&deed.effects));
+        }
+        let effects = deed.effects.clone();
         match deed.act.clone() {
             Act::Cast(mut report) => {
                 report.effects.extend(effects);
-                report.improved.extend(improved);
                 magic_news.write(MagicNews::Done(report));
             }
             Act::Missile { caster, spell } => {
-                magic_news.write(MagicNews::Landed { caster, spell, effects, improved });
+                magic_news.write(MagicNews::Landed { caster, spell, effects });
             }
             Act::Triggered { spell } => {
-                magic_news.write(MagicNews::Triggered { spell, effects, improved });
+                magic_news.write(MagicNews::Triggered { spell, effects });
             }
             Act::Fight => {
                 if !effects.is_empty() {
                     combat_news.write(crate::game::combat::CombatNews::Effects(effects));
                 }
             }
+            Act::Blow { by, at } => {
+                let damage = effects
+                    .iter()
+                    .map(|effect| match effect {
+                        Effect::Damaged { amount, .. } => *amount,
+                        _ => 0,
+                    })
+                    .sum();
+                combat_news.write(crate::game::combat::CombatNews::Result {
+                    attacker: by,
+                    target: at,
+                    hits: 1,
+                    damage,
+                });
+                let rest: Vec<Effect> = effects
+                    .into_iter()
+                    .filter(|effect| !matches!(effect, Effect::Damaged { .. }))
+                    .collect();
+                if !rest.is_empty() {
+                    combat_news.write(crate::game::combat::CombatNews::Effects(rest));
+                }
+            }
+            Act::Swing => unreachable!(),
         }
     }
 }

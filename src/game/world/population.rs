@@ -169,13 +169,18 @@ fn actor_name(species: &MonsterCatalog, (id, location): (u32, i32)) -> String {
     format!("{} #{location}", species[id].name)
 }
 
+/// A monster of a species magic never takes as a target or victim (retail
+/// `untargetable`).
+#[derive(Component, Debug)]
+pub struct Untargetable;
+
 /// Make a monster an actor of its level: standing at its feet and facing
 /// its heading, in its group, and a walker if it walks.
 fn embody(
     entity: &mut EntityCommands,
     root: Entity,
     (feet, yaw, body): (Vec3, f32, ScaledBody),
-    group: Option<Entity>,
+    (group, kind): (Option<Entity>, &crate::content::species::Species),
     (navigation, configs): (&LevelNavigation, &mut Assets<WalkerMotionConfig>),
 ) {
     let ScaledBody { radius, speed, .. } = body;
@@ -186,6 +191,9 @@ fn embody(
     ));
     if let Some(group) = group {
         entity.insert(GroupMember(group));
+    }
+    if kind.untargetable {
+        entity.insert(Untargetable);
     }
     if speed > 0.0 {
         super::navigation::insert_walker(entity, (feet, yaw), (radius, speed), navigation, configs);
@@ -270,9 +278,15 @@ fn spawn_member(
     (navigation, configs): (&LevelNavigation, &mut Assets<WalkerMotionConfig>),
 ) -> Entity {
     let name = actor_name(species, (kept.monster.species, kept.monster.location));
-    let body = kept.monster.body;
+    let (body, kind) = (kept.monster.body, &species[kept.monster.species]);
     let mut entity = commands.spawn((Name::new(name), kept.monster, kept.vitals));
-    embody(&mut entity, root, (kept.feet, kept.yaw, body), Some(group), (navigation, configs));
+    embody(
+        &mut entity,
+        root,
+        (kept.feet, kept.yaw, body),
+        (Some(group), kind),
+        (navigation, configs),
+    );
     entity.id()
 }
 
@@ -422,8 +436,9 @@ pub fn populate(
         }
         let body = kept.monster.body;
         let name = actor_name(species, (kept.monster.species, kept.monster.location));
+        let id = kept.monster.species;
         let entity = commands.spawn((Name::new(name), kept.monster, kept.vitals)).id();
-        actors.push((entity, kept.feet, kept.yaw, body, kept.group));
+        actors.push((entity, kept.feet, kept.yaw, body, kept.group, id));
     }
     let average = npcs.average_level();
     let mut placed_actors = std::collections::HashSet::new();
@@ -440,17 +455,24 @@ pub fn populate(
         };
         let name = actor_name(species, (placed.species, placed.location));
         commands.entity(actor.0).insert(Name::new(name));
-        actors.push(actor);
+        let (entity, feet, yaw, body, group) = actor;
+        actors.push((entity, feet, yaw, body, group, placed.species));
     }
     actors.extend(npcs.visitors(commands, map, &mut placed_actors));
     let monster_count = actors.len();
-    for (actor, feet, yaw, body, group) in actors {
+    for (actor, feet, yaw, body, group, id) in actors {
         let group = group.map(|authored| {
             *groups.entry(authored).or_insert_with(|| {
                 commands.spawn((MonsterGroup { authored, ..default() }, LevelOwned(root))).id()
             })
         });
-        embody(&mut commands.entity(actor), root, (feet, yaw, body), group, (navigation, configs));
+        embody(
+            &mut commands.entity(actor),
+            root,
+            (feet, yaw, body),
+            (group, &species[id]),
+            (navigation, configs),
+        );
     }
     let lying: Vec<(WorldItem, Vec3)> = match remembered_items {
         Some(items) => items,

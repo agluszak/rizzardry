@@ -945,7 +945,7 @@ pub(super) fn draw_magic_view(
             .and_then(|s| match s {
                 Source::Item(id) => carried.find_stack(id),
                 Source::PoolItem(id) => pool.pool.stacks.iter().find(|s| s.id == id),
-                Source::Spell { .. } => None,
+                Source::Spell { .. } | Source::Innate { .. } => None,
             })
             .map(|stack| &items[stack.item]);
         for (mut picture, mut visibility) in &mut parts.p7() {

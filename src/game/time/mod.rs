@@ -161,7 +161,7 @@ pub(crate) fn pass_time(
                 pace,
                 (known, &mut pool),
                 &content.spells,
-                &mut crate::game::characters::Fate { fight: None, rng: &mut rng },
+                &mut rng,
             );
         }
         if pass > 0 {

@@ -134,28 +134,22 @@ fn damage_party(
     In(dice): In<Dice>,
     mut commands: Commands,
     roster: Single<&PartyRoster>,
-    mut members: Query<(&Character, &mut Vitals)>,
+    mut members: Query<&mut Vitals, With<Character>>,
     mut rng: ResMut<GameRng>,
     mut damage: MessageWriter<DamageApplied>,
-    fight: Option<Single<Entity, With<crate::game::combat::Battle>>>,
 ) {
-    let fight = fight.map(|fight| *fight);
     for entity in roster.iter() {
-        let (profile, mut member) = members.get_mut(entity).unwrap();
+        let mut member = members.get_mut(entity).unwrap();
         if member.is_dead() {
             continue;
         }
         let rolled = rng.roll(dice);
         if rolled > 0 {
-            let mut fate = crate::game::characters::Fate { fight, rng: &mut rng };
-            crate::game::party::damage_member(
-                entity,
-                (profile, &mut member),
-                (rolled, &mut fate),
-                &mut damage,
-            );
+            crate::game::party::damage_member(entity, &mut member, rolled, &mut damage);
         }
     }
+    commands.run_system_cached(crate::game::characters::cheat_death);
+    commands.run_system_cached(crate::game::characters::settle_deaths);
     commands.run_system_cached(crate::game::combat::settle_defeat);
 }
 

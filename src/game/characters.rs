@@ -468,13 +468,6 @@ pub fn resized(current: u32, old: u32, new: u32) -> u32 {
     (current + new).max(old) - old
 }
 
-/// What a lethal blow to a member needs, should she cheat death: the fight
-/// it falls in, if any, and the dice.
-pub struct Fate<'a> {
-    pub fight: Option<Entity>,
-    pub rng: &'a mut GameRng,
-}
-
 /// What disease did to a member ([`Vitals::sicken`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sickness {
@@ -918,6 +911,10 @@ pub struct Vitals {
     /// The fight in which a Valkyrie last cheated death, which only the
     /// first time in a fight does at full strength.
     pub cheated_death_in: Option<Entity>,
+    /// The health the body had before whatever ran it out, which a
+    /// Valkyrie's later cheats of death in a fight roll under (retail
+    /// `CheatDeathRevive` reads it before the blow lands).
+    pub fell_from: u32,
     /// How hard a poison bites a member while Poisoned (retail
     /// `condition_argument`): damage each aging tick, wearing off as the
     /// poison runs its course. It means nothing otherwise.
@@ -986,20 +983,15 @@ impl Vitals {
         }
     }
 
-    /// Poison the member for `lasting` at `strength` (retail
+    /// Poison the body for `lasting` at `strength` (retail
     /// `SetCharacterCondition` with a poison strength): a fresh poisoning
-    /// bites as hard as it is, a further one only ever harder. No strength,
-    /// no poisoning. Whether it took.
-    pub fn poison(&mut self, lasting: Lasting, strength: u32) -> bool {
-        if strength == 0 {
-            return false;
-        }
+    /// bites as hard as it is, a further one only ever harder.
+    pub fn poison(&mut self, lasting: Lasting, strength: u32) {
         if !self.conditions.has(Condition::Poisoned) {
             self.poison = 0;
         }
         self.inflict(Condition::Poisoned, lasting);
         self.poison = self.poison.max(strength);
-        true
     }
 
     /// Count timed conditions down, lifting those that run out (retail
@@ -1040,46 +1032,50 @@ impl Vitals {
         if still { damage } else { damage + damage / 2 }
     }
 
-    /// Damage a member (retail `ApplyDamageToCharacter`): two thirds of it
-    /// also drain stamina, and health reaching 0 is death unless death is
-    /// cheated. The dead take none. Returns the health lost, all of it when
-    /// death is cheated. Guardian Angel absorbs before fatigue. The caller
-    /// handles waking.
-    pub fn damage(&mut self, profile: &Character, amount: u32, fate: &mut Fate) -> u32 {
+    /// Take `amount` health (retail `ApplyDamageToCharacter`,
+    /// `ApplyDamageToMonster`): Guardian Angel absorbs what it can, two
+    /// thirds of the rest tire, and health falls by it, to nothing at most.
+    /// The dead take none. Health run out is death once it is settled
+    /// ([`settle_deaths`]), unless it is cheated first ([`cheat_death`]).
+    /// Returns the health lost. The caller handles waking.
+    pub fn hurt(&mut self, amount: u32) -> u32 {
         if self.is_dead() {
             return 0;
         }
         let amount = self.enchantments.absorb(amount);
         self.tire(amount * 2 / 3);
-        let hp = self.health.current;
-        if amount >= hp && self.cheats_death(profile, fate) {
-            return hp;
-        }
-        self.health.current -= amount.min(hp);
+        let lost = amount.min(self.health.current);
+        self.health.current -= lost;
         if self.is_dead() {
-            self.die();
+            self.fell_from = lost;
         }
-        hp - self.health.current
+        lost
     }
 
-    /// A member dies outright, as death effects inflict it (retail
+    /// Die outright, as death effects inflict it (retail
     /// `SetCharacterCondition` with Dead): no damage, absorption or fatigue
-    /// comes first, but death may still be cheated. Whether death took.
-    pub fn perish(&mut self, profile: &Character, fate: &mut Fate) -> bool {
-        if self.is_dead() || self.cheats_death(profile, fate) {
-            return false;
-        }
+    /// comes first. The health lost; death itself is settled as any other.
+    pub fn slay(&mut self) -> u32 {
+        let had = self.health.current;
         self.health.current = 0;
-        self.die();
-        true
+        if had > 0 {
+            self.fell_from = had;
+        }
+        had
     }
 
     /// The Valkyrie's trait (retail `CheatDeathRevive`) keeps her from death
     /// unless she is already seven rounds or more out cold: a stint
     /// unconscious, shorter the higher her level, and health back. The first
     /// time in a fight it is half to all of her maximum, scaled; any other
-    /// time, a scaled roll of the health she had. Whether she cheated it.
-    fn cheats_death(&mut self, profile: &Character, fate: &mut Fate) -> bool {
+    /// time, a scaled roll of the health she had before the blow (what the
+    /// blow took back). Whether she cheated it.
+    pub fn cheats_death(
+        &mut self,
+        profile: &Character,
+        fight: Option<Entity>,
+        rng: &mut GameRng,
+    ) -> bool {
         use crate::content::characters::Trait;
         if !profile.has_trait(Trait::CheatDeath) {
             return false;
@@ -1098,21 +1094,18 @@ impl Vitals {
             self.inflict(Condition::Unconscious, Lasting::Rounds(stint));
         }
         let maximum = self.health.max;
-        self.health.current = match fate.fight {
+        self.health.current = match fight {
             Some(fight) if self.cheated_death_in != Some(fight) => {
                 self.cheated_death_in = Some(fight);
-                let share =
-                    fate.rng.below(profile.scale_by_profession(maximum as f32 * 0.5) as u32);
+                let share = rng.below(profile.scale_by_profession(maximum as f32 * 0.5) as u32);
                 (share + 50) * maximum / 100
             }
-            _ => {
-                let had = self.health.current as f32;
-                fate.rng.below(profile.scale_by_profession(had) as u32) + 1
-            }
+            _ => rng.below(profile.scale_by_profession(self.fell_from as f32) as u32) + 1,
         };
         true
     }
 
+    /// Death: what lasted on the body goes with it.
     fn die(&mut self) {
         self.enchantments.0.clear();
         self.conditions.lift_all();
@@ -1124,14 +1117,14 @@ impl Vitals {
     /// tires, the maximum loses it until Drained is lifted, and present
     /// health falls with the maximum; none left is death. Guardian Angel
     /// does not stop it. Returns the health lost.
-    pub fn drain_health(&mut self, profile: &mut Character, amount: u32, fate: &mut Fate) -> u32 {
+    pub fn drain_health(&mut self, profile: &mut Character, amount: u32) -> u32 {
         if self.is_dead() || amount == 0 {
             return 0;
         }
         self.tire(amount * 2 / 3);
         let hp = self.health.current;
         profile.hp_drained += amount;
-        self.follow_maxima(profile, Some(fate));
+        self.follow_maxima(profile);
         let lost = hp.max(self.health.current) - self.health.current;
         if !self.conditions.has(Condition::Drained) {
             self.inflict(Condition::Drained, Lasting::Indefinite);
@@ -1149,7 +1142,7 @@ impl Vitals {
         self.conditions.lift(Condition::Drained);
         profile.hp_drained = 0;
         profile.stamina_drained = 0;
-        self.follow_maxima(profile, None);
+        self.follow_maxima(profile);
         true
     }
 
@@ -1170,18 +1163,19 @@ impl Vitals {
 
     /// Carry the move of a member's maxima to their profile's present ones
     /// into health and stamina (retail `RecalculateCharacterHitPoints`,
-    /// `RecalculateCharacterStamina`); health run out is death, unless death
-    /// is cheated where `fate` is given. The dead only keep their maxima.
-    pub fn follow_maxima(&mut self, profile: &Character, fate: Option<&mut Fate>) {
+    /// `RecalculateCharacterStamina`); health run out is death once settled.
+    /// The dead only keep their maxima.
+    pub fn follow_maxima(&mut self, profile: &Character) {
         if self.is_dead() {
             self.sync_maxima(profile);
             return;
         }
+        let hp = self.health.current;
         let (health, stamina) = self.maxima_of(profile);
         self.health.follow(health);
         self.stamina.follow(stamina);
-        if self.is_dead() && !fate.is_some_and(|fate| self.cheats_death(profile, fate)) {
-            self.die();
+        if self.is_dead() {
+            self.fell_from = hp;
         }
     }
 
@@ -1193,12 +1187,11 @@ impl Vitals {
         &mut self,
         profile: &mut Character,
         minutes: u32,
-        fate: &mut Fate,
+        rng: &mut GameRng,
     ) -> Option<Sickness> {
         if !self.conditions.has(Condition::Diseased) {
             return None;
         }
-        let rng = &mut *fate.rng;
         let vitality = profile.stats(&self.enchantments).attribute(Attribute::Vitality);
         if rng.below(vitality * 10) >= minutes {
             return None;
@@ -1224,7 +1217,7 @@ impl Vitals {
                 // The maxima follow the attribute, and the pools with them
                 // (retail `ApplyAttributeChange`).
                 profile.attributes[attribute] -= 1;
-                self.follow_maxima(profile, Some(fate));
+                self.follow_maxima(profile);
                 Some(Sickness::Weakened(attribute))
             }
             2 => {
@@ -1293,19 +1286,38 @@ impl Vitals {
 
 /// A body whose health has run out, a party member's or a monster's. What
 /// death brings about (a monster's loot, a member giving up their seat, an
-/// NPC member leaving) follows its addition, wherever the blow came from.
+/// NPC member leaving, a fight's kill) follows its addition, wherever the
+/// blow came from.
 #[derive(Component, Debug)]
 pub struct Dead;
 
-/// Mark the bodies whose health ran out as [`Dead`], and the raised as alive
-/// again. Death is settled here, once, for every way a body can be hurt.
+/// A Valkyrie whose health ran out cheats death before it is settled
+/// ([`Vitals::cheats_death`]), in whatever fight is on. Runs right before
+/// [`settle_deaths`].
+pub fn cheat_death(
+    mut members: Query<(&Character, &mut Vitals), (Changed<Vitals>, Without<Dead>)>,
+    fight: Option<Single<Entity, With<crate::game::combat::Battle>>>,
+    mut rng: ResMut<GameRng>,
+) {
+    let fight = fight.map(|fight| *fight);
+    for (profile, mut vitals) in &mut members {
+        if vitals.health.current == 0 {
+            vitals.cheats_death(profile, fight, &mut rng);
+        }
+    }
+}
+
+/// Settle the deaths: a body whose health ran out dies, losing what lasted
+/// on it, and is marked [`Dead`]; one raised is alive again. Death is
+/// settled here, once, for every way a body can be hurt.
 pub fn settle_deaths(
     mut commands: Commands,
-    bodies: Query<(Entity, &Vitals, Has<Dead>), Changed<Vitals>>,
+    mut bodies: Query<(Entity, &mut Vitals, Has<Dead>), Changed<Vitals>>,
 ) {
-    for (body, vitals, marked) in &bodies {
+    for (body, mut vitals, marked) in &mut bodies {
         match (vitals.is_dead(), marked) {
             (true, false) => {
+                vitals.die();
                 commands.entity(body).insert(Dead);
             }
             (false, true) => {
@@ -1498,12 +1510,16 @@ mod tests {
         let mut rng = crate::game::rng::GameRng::seeded(9);
         let fight = Entity::from_bits(77);
         let other = Entity::from_bits(78);
-        // A blow just past her health: one heavy enough to exhaust her
+        // A blow just past her health, and death settled as the systems
+        // settle it: cheated, or died. One heavy enough to exhaust her
         // knocks her out for good first, and that she does not cheat.
         let mut struck = |vitals: &mut Vitals, fight| {
             let hp = vitals.health.current;
-            let lost = vitals.damage(&valkyrie, hp + 1, &mut Fate { fight, rng: &mut rng });
+            let lost = vitals.hurt(hp + 1);
             assert_eq!(lost, hp, "the blow takes what she had");
+            if !vitals.cheats_death(&valkyrie, fight, &mut rng) {
+                vitals.die();
+            }
         };
         // Outside a fight: a roll of the health she had, at least one, and
         // a stint out cold (level one scales five down to three).
@@ -1532,17 +1548,19 @@ mod tests {
         struck(&mut member, Some(fight));
         assert!(member.is_dead());
         let mut member = Vitals::new(&valkyrie);
-        member.damage(&valkyrie, 1000, &mut Fate { fight: None, rng: &mut rng });
-        assert!(member.is_dead(), "exhausted by the blow itself");
+        member.hurt(1000);
+        assert!(!member.cheats_death(&valkyrie, None, &mut rng), "exhausted by the blow itself");
         let fighter = Character::new("Ragnar", Race::Human, Gender::Male, Profession::Fighter);
         let mut member = Vitals::new(&fighter);
-        member.damage(&fighter, 1000, &mut Fate { fight: Some(fight), rng: &mut rng });
-        assert!(member.is_dead());
+        member.hurt(1000);
+        assert!(!member.cheats_death(&fighter, Some(fight), &mut rng));
         // Draining her to nothing is cheated too.
         let mut drained = valkyrie.clone();
         let mut member = Vitals::new(&drained);
         member.health.current = 2;
-        member.drain_health(&mut drained, 5, &mut Fate { fight: None, rng: &mut rng });
+        member.drain_health(&mut drained, 5);
+        assert!(member.is_dead() && member.fell_from == 2);
+        assert!(member.cheats_death(&drained, None, &mut rng));
         assert!(!member.is_dead() && member.conditions.has(Condition::Drained));
     }
 
@@ -1550,9 +1568,7 @@ mod tests {
     fn damage_tires_knocks_out_and_kills() {
         let profile = Character::new("Ragnar", Race::Human, Gender::Male, Profession::Fighter);
         let mut fighter = Vitals::new(&profile);
-        let mut rng = crate::game::rng::GameRng::default();
-        let mut fate = Fate { fight: None, rng: &mut rng };
-        assert_eq!(fighter.damage(&profile, 6, &mut fate), 6);
+        assert_eq!(fighter.hurt(6), 6);
         assert_eq!((fighter.health.current, fighter.stamina.current), (12, 101));
         fighter.tire(200);
         assert!(fighter.conditions.has(Condition::Unconscious));
@@ -1560,10 +1576,11 @@ mod tests {
         assert!(fighter.conditions.has(Condition::Unconscious), "not above 9 yet");
         fighter.rest(1);
         assert!(!fighter.conditions.has(Condition::Unconscious));
-        assert_eq!(fighter.damage(&profile, 100, &mut fate), 12);
+        assert_eq!(fighter.hurt(100), 12);
         assert!(fighter.is_dead());
+        fighter.die();
         assert!(fighter.conditions.is_empty() && fighter.stamina.current == 0);
-        assert_eq!(fighter.damage(&profile, 5, &mut fate), 0);
+        assert_eq!(fighter.hurt(5), 0);
         fighter.heal(10);
         assert!(fighter.is_dead(), "healing does not raise the dead");
     }

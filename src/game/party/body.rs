@@ -334,7 +334,7 @@ pub fn drive_party(
     time: Res<Time>,
     mut party: Query<(&mut PartyBody, &mut TnuaController<PartyMotion>, &PartyMovement)>,
     freedom: crate::game::freedom::Freedom,
-    battle: Option<Single<&crate::game::combat::Battle>>,
+    battle: Option<Single<&crate::game::combat::PartyMove, With<crate::game::combat::Battle>>>,
 ) {
     let Ok((mut body, mut controller, movement)) = party.single_mut() else { return };
     // A party held by a camp or a question stands still; a screen over the
@@ -346,8 +346,9 @@ pub fn drive_party(
     }
     // In a fight the party walks only during its own move, and a Run runs
     // (retail `MOVEMENT_STOPPED`, `FAST_MOVEMENT`).
-    let walks = free && battle.as_ref().is_none_or(|b| b.party_may_move());
-    let running = movement.running || battle.as_ref().is_some_and(|b| b.party_running());
+    let walks = free && battle.as_ref().is_none_or(|party_move| party_move.under_way());
+    let running =
+        movement.running || battle.as_ref().is_some_and(|party_move| party_move.running());
     // The walk config's speed is the run speed; walking scales the input.
     let input = if walks { movement.walk.clamp_length_max(1.0) } else { Vec2::ZERO };
     let fraction = if running { 1.0 } else { WALK_SPEED / RUN_SPEED };

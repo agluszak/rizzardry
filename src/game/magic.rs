@@ -578,7 +578,7 @@ pub fn accept_magic(
         commands.spawn((
             casting::Cast { spell: spell.unwrap(), context },
             casting::Chosen(choice),
-            casting::CastBy(caster),
+            crate::game::hits::By(caster),
         ));
     }
 }
@@ -959,16 +959,12 @@ mod tests {
                             .absorption,
                         4
                     );
-                    let profile = world.get::<Character>(ally).unwrap().clone();
                     let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
                     let stamina = vitals.stamina.current;
-                    let mut rng = GameRng::default();
-                    let mut fate = crate::game::characters::Fate { fight: None, rng: &mut rng };
-                    assert_eq!(vitals.damage(&profile, 4, &mut fate), 0);
+                    assert_eq!(vitals.hurt(4), 0);
                     assert_eq!(vitals.stamina.current, stamina, "absorbed damage does not fatigue");
-                    assert_eq!(vitals.damage(&profile, 2, &mut fate), 1);
+                    assert_eq!(vitals.hurt(2), 1);
                     assert!(vitals.is_dead());
-                    assert!(vitals.enchantments.0.is_empty());
                 }
                 SpellId::ARMORPLATE => {
                     assert!(vitals.enchantments.0.is_empty());

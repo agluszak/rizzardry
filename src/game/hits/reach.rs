@@ -3,12 +3,12 @@
 
 use bevy::prelude::*;
 
-use super::Body;
-use crate::content::species::MonsterCatalog;
+use crate::game::characters::Vitals;
 use crate::game::party::roster::PartyRoster;
-use crate::game::world::hostility::Stance;
-use crate::game::world::level::Level;
+use crate::game::world::footing::Footing;
+use crate::game::world::hostility::{Side, Stance};
 use crate::game::world::obstacles::WorldObstacles;
+use crate::game::world::population::{Monster, Untargetable};
 
 /// Whom a burst may take: those standing against its source's side, or
 /// anyone when it has no source.
@@ -37,49 +37,33 @@ impl Recipients {
 }
 
 /// The living bodies within `radius` of `centre` that `origin` has a clear
-/// line to: the party's members, when the party stands within it, then the
-/// targetable monsters in their placement order.
-pub fn radius(
+/// line to, in burst order: the party's members by seat, then monsters by
+/// placement.
+pub fn within(
     centre: Vec3,
     origin: Vec3,
     radius: f32,
     recipients: Recipients,
-    party: Option<(Vec3, &PartyRoster)>,
-    bodies: &mut Query<Body>,
-    levels: &Query<(), With<Level>>,
-    species: &MonsterCatalog,
+    bodies: &Query<(Entity, &Vitals, &Side, &Footing, Option<&Monster>), Without<Untargetable>>,
+    roster: &PartyRoster,
     obstacles: &WorldObstacles,
 ) -> Vec<Entity> {
     if radius <= 0.0 {
         return vec![];
     }
-    let clear = |to: Vec3| obstacles.clear(origin, to);
-    let mut victims = Vec::new();
-    if let Some((eye, roster)) = party
-        && crate::game::party::body::PartyBody::centre(eye).distance(centre) <= radius
-        && clear(eye)
-    {
-        for member in roster.iter() {
-            let body = bodies.get(member).unwrap();
-            if !body.is_dead() && recipients.admits(body.side.0) {
-                victims.push(member);
-            }
-        }
-    }
-    let mut found: Vec<_> = bodies
+    let mut taken: Vec<((u8, i32), Entity)> = bodies
         .iter()
-        .filter_map(|body| {
-            let monster = body.monster.as_ref()?;
-            let at = body.pose.as_ref()?.translation();
-            (body.member_of.is_none()
-                && body.targetable(levels, species)
-                && recipients.admits(body.side.0)
-                && at.distance(centre) - monster.body.radius <= radius
-                && clear(at))
-            .then_some((monster.location, body.entity))
+        .filter(|(_, vitals, side, ..)| !vitals.is_dead() && recipients.admits(side.0))
+        .filter(|(.., at, _)| at.centre.distance(centre) - at.radius <= radius)
+        .filter(|(.., at, _)| obstacles.clear(origin, at.centre))
+        .map(|(entity, .., monster)| {
+            let order = match roster.get_index_of(&entity) {
+                Some(seat) => (0, seat as i32),
+                None => (1, monster.map_or(i32::MAX, |monster| monster.location)),
+            };
+            (order, entity)
         })
         .collect();
-    found.sort_unstable();
-    victims.extend(found.into_iter().map(|(_, entity)| entity));
-    victims
+    taken.sort_unstable_by_key(|(order, _)| *order);
+    taken.into_iter().map(|(_, entity)| entity).collect()
 }

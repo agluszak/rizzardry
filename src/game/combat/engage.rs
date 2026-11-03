@@ -21,8 +21,12 @@
 
 use super::*;
 
+use super::ai::special_ready;
+use super::monster_spells;
+use crate::game::party::body::PartyBody;
 use crate::game::world::footing::{Conspicuous, Eyes, Footing};
 use crate::game::world::hostility::{Loyalty, Side};
+use avian3d::prelude::Position;
 
 /// Monsters coming into the fight, in placement order.
 #[derive(Message)]
@@ -90,9 +94,24 @@ pub(super) fn alert_factions(
 /// it.
 pub(super) fn engage(
     battles: Query<(), With<Battle>>,
-    monsters: Query<(Entity, &Monster, &Vitals, &Footing, &Eyes, Option<&GroupMember>, Has<Combatant>)>,
+    monsters: Query<(
+        Entity,
+        &Monster,
+        &Vitals,
+        &Footing,
+        &Eyes,
+        Option<&GroupMember>,
+        Has<Combatant>,
+    )>,
     mut groups: Query<(Entity, &mut MonsterGroup, &GroupMembers, &LevelOwned)>,
-    members: Query<(&Footing, &Conspicuous, &Vitals, &Side, &Loyalty), With<Character>>,
+    members: Query<(&Footing, &Conspicuous, &Vitals), With<Character>>,
+    bodies: Query<(
+        &Vitals,
+        &Footing,
+        &Side,
+        &Loyalty,
+        Has<crate::game::party::roster::PartyMember>,
+    )>,
     roster: Single<&PartyRoster>,
     level: PlayedLevel,
     obstacles: WorldObstacles,
@@ -109,7 +128,7 @@ pub(super) fn engage(
         .collect();
     let running = !battles.is_empty();
     let anyone_alive =
-        roster.iter().any(|m| members.get(m).is_ok_and(|(.., vitals, _, _)| !vitals.is_dead()));
+        roster.iter().any(|m| members.get(m).is_ok_and(|(.., vitals)| !vitals.is_dead()));
     if !running && !anyone_alive {
         return;
     }
@@ -130,16 +149,10 @@ pub(super) fn engage(
             })
             .collect()
     };
-    // A monster about to fight stands hostile toward the members on the
-    // party's side.
-    let toward = |member: Entity| {
-        let (.., side, loyalty) = members.get(member).unwrap();
-        hostility::between((hostility::Stance::Hostile, Loyalty::None), (side.0, *loyalty))
-    };
     // How far a fighter is, whether it sees the party, and whether it can
     // act on it (retail `MonsterGroupCanEngage`): one of its attacks
     // reaches, or its best attack is close and it can walk up, or it can
-    // cast or breathe at the party.
+    // cast or breathe at the party, which it sees of the fight-to-be.
     let look = |fighter: Entity| -> Option<(f32, bool, bool)> {
         let (_, monster, vitals, at, eyes, ..) = monsters.get(fighter).ok()?;
         let kind = &catalog[monster.species];
@@ -147,26 +160,19 @@ pub(super) fn engage(
         let sees = eyes.see(at, (party, seen_party), far, &obstacles);
         let reaches = kind.attacks.iter().any(|a| distance <= a.reach.metres());
         let close = kind.attacks.iter().map(|a| a.reach).max().is_some_and(|r| r <= Reach::Short);
-        let scene = monster_spells::Scene {
-            caster: fighter,
-            from: at.feet,
-            party_at: party.feet,
-            members: roster
-                .iter()
-                .filter_map(|m| Some((m, members.get(m).ok()?.2)))
-                .filter(|(_, vitals)| !vitals.is_dead())
-                .map(|(m, vitals)| member_in_scene(m, vitals, party.feet, distance, &toward))
-                .collect(),
-            monsters: Vec::new(),
-            party: distance,
-            sees_party: sees,
-        };
-        let casts = monster_spells::casts_at_foes(vitals, kind, spells, &scene, &definitions);
+        let seen: Vec<Entity> = std::iter::once(fighter)
+            .chain(roster.iter().filter(|_| sees))
+            .filter(|&body| bodies.get(body).is_ok_and(|(vitals, ..)| !vitals.is_dead()))
+            .collect();
+        let casts =
+            monster_spells::casts_at_foes(fighter, kind, spells, &seen, &bodies, &definitions);
         let breathes = kind.special.chance != 0
             && special_ready(vitals, kind, false, None)
-            && spells
-                .get(crate::content::spells::SpellId::SPECIAL_ATTACK_CONE)
-                .is_some_and(|cone| !monster_spells::aims(cone, &scene, &definitions).is_empty());
+            && spells.get(crate::content::spells::SpellId::SPECIAL_ATTACK_CONE).is_some_and(
+                |cone| {
+                    !monster_spells::aims(cone, fighter, &seen, &bodies, &definitions).is_empty()
+                },
+            );
         let acts = vitals.can_fight()
             && (reaches || (close && monster.body.speed > 0.0) || casts || breathes);
         Some((distance, sees, acts))
@@ -247,7 +253,8 @@ pub(super) fn engage(
             // (`ShouldMonsterGroupEnterCombat`).
             hostility::Stance::Hostile if running => {
                 provoked
-                    || (sees && footing(first).is_some_and(|at| leader_reaches(kind, at.gap(party))))
+                    || (sees
+                        && footing(first).is_some_and(|at| leader_reaches(kind, at.gap(party))))
             }
             hostility::Stance::Hostile => provoked || (sees && acts),
             // A neutral group joins a running fight it stands with.

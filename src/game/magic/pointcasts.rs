@@ -219,7 +219,7 @@ fn lure(
             vitals,
             crate::content::characters::Realm::Mental,
         );
-        let chance = crate::game::hits::body::condition_chance(
+        let chance = crate::game::hits::defences::condition_chance(
             u32::from(kind.level),
             resistance,
             strength.against,
@@ -231,7 +231,8 @@ fn lure(
             continue;
         }
         let response =
-            if crate::game::hits::body::save_roll(&mut world.resource_mut::<GameRng>(), chance) {
+            if crate::game::hits::defences::save_roll(&mut world.resource_mut::<GameRng>(), chance)
+            {
                 LureResponse::Resisted
             } else {
                 LureResponse::Controlled
@@ -324,17 +325,15 @@ fn summon_elemental(
                 strength,
             )
         });
-        world
-            .get_mut::<crate::game::characters::Vitals>(elemental)
-            .unwrap()
-            .enchantments
-            .apply_to_monster(super::enchantments::Enchantment {
+        world.get_mut::<crate::game::characters::Vitals>(elemental).unwrap().enchantments.apply(
+            super::enchantments::Enchantment {
                 spell: buff,
                 power: strength.power,
                 boost: 0,
                 turns,
                 absorption: 0,
-            });
+            },
+        );
     }
 }
 

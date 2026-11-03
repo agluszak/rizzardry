@@ -13,7 +13,7 @@ pub struct CharacterView {
     pub burden: &'static Burden,
     pub member: Option<&'static crate::game::party::roster::PartyMember>,
     /// The member's action this round, while in a fight.
-    pub turn: Option<&'static crate::game::combat::PartyTurn>,
+    pub ordered: Option<&'static crate::game::combat::Ordered>,
 }
 
 impl CharacterViewItem<'_, '_> {
@@ -29,7 +29,7 @@ impl CharacterViewItem<'_, '_> {
             self.carried,
             catalog,
             self.load(),
-            self.turn.is_some_and(|turn| turn.defends()),
+            self.ordered.is_some_and(|ordered| ordered.defends()),
             &self.vitals.enchantments,
             party.filter(|_| self.member.is_some()).map(|p| &p.0),
         )
