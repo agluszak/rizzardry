@@ -28,10 +28,20 @@ pub struct MonsterGroup {
     /// A random encounter about the level, and the game second it came
     /// (retail `encounter_registered`, `spawn_time`).
     pub encounter: Option<u64>,
-    /// A companion group come along with the random encounter of this
-    /// group id, which it goes with (retail `leader_group_id`).
-    pub escort_of: Option<i32>,
 }
+
+/// A companion group come along with a random encounter, which it goes
+/// with: retired with it, but not killed with it (retail `leader_group_id`).
+#[derive(Component, Debug)]
+#[component(immutable)]
+#[relationship(relationship_target = Escorts)]
+pub struct EscortOf(pub Entity);
+
+/// An encounter's companion groups, maintained by Bevy from [`EscortOf`].
+/// Not `linked_spawn`: an encounter written off leaves its survivors.
+#[derive(Component, Debug)]
+#[relationship_target(relationship = EscortOf)]
+pub struct Escorts(Vec<Entity>);
 
 /// Membership is independent of level lifetime ownership. Replacing this
 /// immutable relationship updates the group's reverse collection automatically.

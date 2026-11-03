@@ -6,7 +6,7 @@
 use avian3d::prelude::Position;
 use bevy::prelude::*;
 
-use super::identify::{GroupMembers, MonsterGroup};
+use super::identify::{EscortOf, Escorts, GroupMembers, MonsterGroup};
 use super::level::{Level, PlayedLevel};
 use super::navigation::{LevelNavigation, Walker, WalkerMotionConfig, feet};
 use super::obstacles::WorldObstacles;
@@ -263,7 +263,7 @@ impl Spawning<'_, '_, '_> {
         (configs, rng): (&mut Assets<WalkerMotionConfig>, &mut GameRng),
         group: MonsterGroup,
         unborn: &mut Unborn,
-    ) -> Option<Vec<Vec3>> {
+    ) -> Option<(Entity, Vec<Vec3>)> {
         let kind = &self.species[id];
         let definition = self.bodies.0.get(id, self.bodies.1).expect("bodies load with the level");
         let (location, authored) = self.next;
@@ -302,15 +302,15 @@ impl Spawning<'_, '_, '_> {
             (self.navigation, configs),
         );
         commands.entity(group_entity).insert(group);
-        Some(feet)
+        Some((group_entity, feet))
     }
 }
 
 /// One encounter from a generator (retail `MonGen::GenerateEncounter`): an
 /// entry suiting now from its table, its companions at their chances, as
 /// many as the encounter's size, registered as the level's; its companions
-/// come along under it. A harassing generator never generates here: the
-/// possession facts it waits on are not kept yet.
+/// come along as its escorts ([`EscortOf`]). A harassing generator never
+/// generates here: the possession facts it waits on are not kept yet.
 fn generate(
     commands: &mut Commands,
     generator: &Generator,
@@ -318,7 +318,7 @@ fn generate(
     spawning: &mut Spawning,
     (configs, rng): (&mut Assets<WalkerMotionConfig>, &mut GameRng),
     unborn: &mut Unborn,
-) -> Option<(i32, Vec<Vec3>)> {
+) -> Option<(Entity, Vec<Vec3>)> {
     let table = generator.table.as_ref().filter(|_| !generator.disabled)?;
     let chosen = choose_entry(table, party.level, night, rng)?;
     let id = table.entries[chosen].species;
@@ -335,7 +335,7 @@ fn generate(
     }
     let count = group_size(kind, party.level, difficulty, rng);
     let main = MonsterGroup { encounter: Some(now_s), ..default() };
-    let mut feet = spawning.group(
+    let (leader, mut feet) = spawning.group(
         commands,
         (id, count),
         (generator.position, party.feet),
@@ -343,23 +343,20 @@ fn generate(
         main,
         unborn,
     )?;
-    let leader = spawning.next.1 - 1;
     for companion in companions {
         let companion_kind = &spawning.species[companion];
         let count = rng.roll(companion_kind.group_size);
-        let escort = MonsterGroup { escort_of: Some(leader), ..default() };
-        feet.extend(
-            spawning
-                .group(
-                    commands,
-                    (companion, count),
-                    (generator.position, party.feet),
-                    (configs, rng),
-                    escort,
-                    unborn,
-                )
-                .unwrap_or_default(),
-        );
+        if let Some((escort, spots)) = spawning.group(
+            commands,
+            (companion, count),
+            (generator.position, party.feet),
+            (configs, rng),
+            default(),
+            unborn,
+        ) {
+            commands.entity(escort).insert(EscortOf(leader));
+            feet.extend(spots);
+        }
     }
     Some((leader, feet))
 }
@@ -368,36 +365,38 @@ fn generate(
 /// a spawn or retirement it accepts counts for the next generator at once,
 /// before its commands apply (retail registers each synchronously).
 struct Working {
-    /// Each encounter about: its group id, when it came and where its
-    /// leader stands.
-    active: Vec<(i32, u64, Option<Vec3>)>,
+    /// Each encounter about: its group, when it came and where its leader
+    /// stands.
+    active: Vec<(Entity, u64, Option<Vec3>)>,
     /// Living monsters' feet, with the encounter each belongs to.
-    standing: Vec<(Option<i32>, Vec3)>,
+    standing: Vec<(Option<Entity>, Vec3)>,
 }
 
 impl Working {
-    /// Take an encounter off the level: despawn it and its companions, and
-    /// forget them here.
+    /// Take an encounter off the level: despawn its group, its escorts
+    /// ([`Escorts`]) and all their members, and forget them here.
     fn retire(
         &mut self,
         commands: &mut Commands,
-        groups: &Query<(Entity, &mut MonsterGroup, Option<&GroupMembers>)>,
-        leader: i32,
+        groups: &Query<(Entity, &mut MonsterGroup, Option<&GroupMembers>, Option<&Escorts>)>,
+        leader: Entity,
     ) {
-        for (entity, group, members) in groups.iter() {
-            if group.authored == leader || group.escort_of == Some(leader) {
+        let Ok((_, _, _, escorts)) = groups.get(leader) else { return };
+        let retired = std::iter::once(leader).chain(escorts.into_iter().flat_map(|e| e.iter()));
+        for group in retired {
+            if let Ok((_, _, members, _)) = groups.get(group) {
                 for member in members.into_iter().flat_map(|m| m.iter()) {
                     commands.entity(member).despawn();
                 }
-                commands.entity(entity).despawn();
             }
+            commands.entity(group).despawn();
         }
         self.active.retain(|&(l, ..)| l != leader);
         self.standing.retain(|&(l, _)| l != Some(leader));
     }
 
     /// A new encounter and its companions, standing where they were put.
-    fn add(&mut self, (leader, feet): (i32, Vec<Vec3>), now_s: u64) {
+    fn add(&mut self, (leader, feet): (Entity, Vec<Vec3>), now_s: u64) {
         self.active.push((leader, now_s, feet.first().copied()));
         self.standing.extend(feet.into_iter().map(|at| (Some(leader), at)));
     }
@@ -415,7 +414,10 @@ fn admits(
     encounters: &Encounters,
     party: &Onlooker,
     (working, limit, now_s): (&mut Working, i32, u64),
-    (commands, groups): (&mut Commands, &Query<(Entity, &mut MonsterGroup, Option<&GroupMembers>)>),
+    (commands, groups): (
+        &mut Commands,
+        &Query<(Entity, &mut MonsterGroup, Option<&GroupMembers>, Option<&Escorts>)>,
+    ),
     obstacles: &WorldObstacles,
     (force, blocked, rng): (bool, bool, &mut GameRng),
 ) -> bool {
@@ -439,7 +441,7 @@ fn admits(
         // Retire the overdue far from the party (retail
         // `CullExpiredEncounters`; the age compares unsigned).
         let lingers = encounters.limits.lingers as f32 * LINGER_SCALE;
-        let overdue: Vec<i32> = working
+        let overdue: Vec<Entity> = working
             .active
             .iter()
             .filter(|&&(_, spawned, at)| {
@@ -507,7 +509,8 @@ pub fn run_encounters(
         (Entity, &mut EncounterState, &LevelNavigation, &mut Unborn, &MonsterBodies),
         With<Level>,
     >,
-    mut groups: Query<(Entity, &mut MonsterGroup, Option<&GroupMembers>)>,
+    mut groups: Query<(Entity, &mut MonsterGroup, Option<&GroupMembers>, Option<&Escorts>)>,
+    escorts: Query<&EscortOf>,
     monsters: Query<(
         (&Monster, &crate::game::characters::Vitals),
         ActorPose,
@@ -552,7 +555,7 @@ pub fn run_encounters(
     let night = night(&clock);
     let (next_location, next_group) = population::next_ids(
         monsters.iter().map(|((m, _), ..)| m.location),
-        groups.iter().map(|(_, g, _)| g.authored),
+        groups.iter().map(|(_, g, ..)| g.authored),
         &unborn,
     );
     let mut spawning = Spawning {
@@ -566,22 +569,25 @@ pub fn run_encounters(
     let mut working = Working {
         active: groups
             .iter()
-            .filter_map(|(_, group, members)| {
+            .filter_map(|(entity, group, members, _)| {
                 let spawned = group.encounter?;
                 let at = members.into_iter().flat_map(|m| m.iter()).find_map(|m| {
                     let (_, pose, walker, _) = monsters.get(m).ok()?;
                     Some(feet(pose.translation(), walker))
                 });
-                Some((group.authored, spawned, at))
+                Some((entity, spawned, at))
             })
             .collect(),
         standing: monsters
             .iter()
             .filter(|((_, vitals), ..)| !vitals.is_dead())
             .map(|(_, pose, walker, member)| {
-                let group = member.and_then(|member| groups.get(member.0).ok());
-                let leader =
-                    group.and_then(|(_, g, _)| g.encounter.map(|_| g.authored).or(g.escort_of));
+                // The encounter a monster belongs to: its group's, or the
+                // one its group escorts.
+                let leader = member.and_then(|member| {
+                    let (group, state, ..) = groups.get(member.0).ok()?;
+                    state.encounter.map(|_| group).or(escorts.get(group).ok().map(|e| e.0))
+                });
                 (leader, feet(pose.translation(), walker))
             })
             .collect(),
@@ -595,7 +601,7 @@ pub fn run_encounters(
                     working: &mut Working,
                     (commands, groups): (
         &mut Commands,
-        &Query<(Entity, &mut MonsterGroup, Option<&GroupMembers>)>,
+        &Query<(Entity, &mut MonsterGroup, Option<&GroupMembers>, Option<&Escorts>)>,
     ),
                     rng: &mut GameRng| {
         let generator = &encounters.generators[index];
@@ -637,7 +643,7 @@ pub fn run_encounters(
             // Every encounter about goes, and every generator, in a
             // shuffled order, gets a forced try (retail
             // `RollRandomEncounters`).
-            let leaders: Vec<i32> = working.active.iter().map(|&(leader, ..)| leader).collect();
+            let leaders: Vec<Entity> = working.active.iter().map(|&(leader, ..)| leader).collect();
             for leader in leaders {
                 working.retire(&mut commands, &groups, leader);
             }
@@ -654,7 +660,7 @@ pub fn run_encounters(
             }
             return;
         }
-        for (_, mut group, _) in &mut groups {
+        for (_, mut group, ..) in &mut groups {
             if let Some(spawned) = group.encounter.as_mut() {
                 *spawned += elapsed;
             }
@@ -674,5 +680,59 @@ pub fn run_encounters(
         let duration = jittered(interval(encounters, generator), &mut rng);
         state.generators[index] =
             GeneratorState { elapsed: 0.0, duration, ..state.generators[index] };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::world::identify::GroupMember;
+    use bevy::ecs::system::RunSystemOnce;
+
+    /// Retiring an encounter takes its group, its escorts and all their
+    /// members; an escort goes with its encounter only when it is retired,
+    /// not when the encounter's group happens to be despawned.
+    #[test]
+    fn retiring_an_encounter_takes_its_escorts_and_nothing_else() {
+        let mut world = World::new();
+        let leader = world.spawn(MonsterGroup { encounter: Some(5), ..default() }).id();
+        let crab = world.spawn(GroupMember(leader)).id();
+        let escort = world.spawn((MonsterGroup::default(), EscortOf(leader))).id();
+        let gull = world.spawn(GroupMember(escort)).id();
+        let other = world.spawn(MonsterGroup { encounter: Some(5), ..default() }).id();
+        let slime = world.spawn(GroupMember(other)).id();
+        assert_eq!(world.get::<Escorts>(leader).unwrap().iter().collect::<Vec<_>>(), vec![escort]);
+
+        world
+            .run_system_once(
+                move |mut commands: Commands,
+                      groups: Query<(
+                    Entity,
+                    &mut MonsterGroup,
+                    Option<&GroupMembers>,
+                    Option<&Escorts>,
+                )>| {
+                    let mut working = Working {
+                        active: vec![(leader, 5, None), (other, 5, None)],
+                        standing: vec![(Some(leader), Vec3::ZERO), (Some(other), Vec3::ZERO)],
+                    };
+                    working.retire(&mut commands, &groups, leader);
+                    assert_eq!(working.active.len(), 1);
+                    assert_eq!(working.standing.len(), 1);
+                },
+            )
+            .unwrap();
+        for gone in [leader, crab, escort, gull] {
+            assert!(world.get_entity(gone).is_err(), "{gone:?} is retired");
+        }
+        for kept in [other, slime] {
+            assert!(world.get_entity(kept).is_ok(), "{kept:?} is another encounter");
+        }
+
+        let leader = world.spawn(MonsterGroup { encounter: Some(5), ..default() }).id();
+        let escort = world.spawn((MonsterGroup::default(), EscortOf(leader))).id();
+        world.despawn(leader);
+        assert!(world.get_entity(escort).is_ok(), "survivors are not cascaded away");
+        assert!(world.get::<EscortOf>(escort).is_none());
     }
 }
