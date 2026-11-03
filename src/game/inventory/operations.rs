@@ -4,7 +4,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use super::*;
-use crate::game::party::roster::PartyRoster;
+use crate::game::party::roster::{PartyMember, PartyRoster};
 use crate::game::rng::GameRng;
 
 /// Explicitly finish handling the held stack, preferring this member and then
@@ -16,18 +16,27 @@ pub struct PutAwayHeld {
 }
 
 /// Return the hand to the reviewed member, falling back to the pool;
-/// overflow remains owned by the hand.
+/// overflow remains owned by the hand. Someone who has left the party
+/// since the hand was filled takes nothing; the pool does.
 pub(crate) fn put_away_held(request: On<PutAwayHeld>, mut inventory: InventoryOperations) {
     let InventoryOperations { party, members, content, .. } = &mut inventory;
-    let (_, _, mut carried) = members.get_mut(request.member).unwrap();
-    party.give_held(Some(&mut carried), false, &content.items);
+    let mut carried = members.get_mut(request.member).ok().map(|(_, _, carried)| carried);
+    party.give_held(carried.as_deref_mut(), false, &content.items);
 }
 
+/// Party inventory operations act for current party members only: a
+/// recruited NPC keeps its character and pack after it is dismissed, so
+/// having them does not make it a member.
 #[derive(SystemParam)]
 pub struct InventoryOperations<'w, 's> {
     party: Single<'w, 's, &'static mut PartyInventory>,
     roster: Single<'w, 's, &'static PartyRoster>,
-    members: Members<'w, 's>,
+    members: Query<
+        'w,
+        's,
+        (&'static mut Character, &'static Vitals, &'static mut Carried),
+        With<PartyMember>,
+    >,
     content: If<Res<'w, crate::game::data::Catalogs>>,
     battle: Option<Single<'w, 's, &'static crate::game::combat::Battle>>,
     news: MessageWriter<'w, ItemNews>,
@@ -40,7 +49,9 @@ impl InventoryOperations<'_, '_> {
     pub fn give_to(&mut self, member: Entity) -> bool {
         let Some(held) = self.party.hand.held.as_ref() else { return false };
         let catalog = &self.content.items;
-        let (profile, vitals, mut carried) = self.members.get_mut(member).unwrap();
+        let Ok((profile, vitals, mut carried)) = self.members.get_mut(member) else {
+            return false;
+        };
         let definition = &catalog[held.item];
         let item = held.display_name(definition, false);
         let name = profile.name.clone();
@@ -82,7 +93,8 @@ impl InventoryOperations<'_, '_> {
     }
     pub fn interact_slot(&mut self, destination: MemberSlot) -> Result<(), Refusal> {
         let catalog = &self.content.items;
-        let (character, vitals, mut carried) = self.members.get_mut(destination.member).unwrap();
+        let (character, vitals, mut carried) =
+            self.members.get_mut(destination.member).map_err(|_| Refusal::Nothing)?;
         self.party.interact_slot(&character, vitals, &mut carried, destination.slot, catalog)
     }
 
@@ -105,7 +117,8 @@ impl InventoryOperations<'_, '_> {
         (ids, rng): (&mut ItemIds, &mut GameRng),
     ) -> Result<merge::Merged, Refusal> {
         let catalog = &self.content.items;
-        let (mut character, _, mut carried) = self.members.get_mut(member).unwrap();
+        let (mut character, _, mut carried) =
+            self.members.get_mut(member).map_err(|_| Refusal::Nothing)?;
         let merged = self.party.merge(&mut character, &mut carried, target, catalog, (ids, rng))?;
         match merged {
             merge::Merged::Unidentified => {
@@ -135,7 +148,9 @@ impl InventoryOperations<'_, '_> {
         let stack = match item {
             ItemAt::Hand => self.party.hand.held.as_ref(),
             ItemAt::Pool(id) => self.party.pool.stacks.iter().find(|s| s.id == id),
-            ItemAt::Slot(slot) => self.members.get(member).unwrap().2.slot(slot),
+            ItemAt::Slot(slot) => {
+                self.members.get(member).map_err(|_| Refusal::Nothing)?.2.slot(slot)
+            }
         };
         let stack = stack.ok_or(Refusal::Nothing)?;
         if stack.identified {
@@ -171,12 +186,40 @@ impl InventoryOperations<'_, '_> {
                 self.party.pool.stacks.iter_mut().find(|s| s.id == id).ok_or(Refusal::Nothing)
             }
             ItemAt::Slot(slot) => {
-                let (_, _, carried) = self.members.get_mut(member).unwrap();
+                let (_, _, carried) = self.members.get_mut(member).map_err(|_| Refusal::Nothing)?;
                 carried.into_inner().stack_mut(slot).ok_or(Refusal::Nothing)
             }
         }
     }
 }
 
-type Members<'w, 's> =
-    Query<'w, 's, (&'static mut Character, &'static Vitals, &'static mut Carried)>;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::characters::{Gender, Profession, Race};
+    use bevy::ecs::system::RunSystemOnce;
+
+    /// A dismissed recruit keeps its character and pack; party inventory
+    /// operations still refuse it rather than reaching into a non-member.
+    #[test]
+    fn party_operations_refuse_someone_who_is_not_a_member() {
+        let mut world = World::new();
+        world.init_resource::<Messages<ItemNews>>();
+        world.insert_resource(crate::game::data::Catalogs::default());
+        let character = Character::new("Left", Race::Human, Gender::Male, Profession::Fighter);
+        let vitals = Vitals::new(&character);
+        let member = world.spawn((character, vitals, Carried::default())).id();
+        let staying = world.spawn(Carried::default()).id();
+        let party = crate::game::party::roster::test_party(&mut world, &[staying, member]);
+        world.entity_mut(member).remove::<crate::game::party::roster::PartyMember>();
+        world.get_mut::<PartyInventory>(party).unwrap().gold = 7;
+
+        let slot = MemberSlot { member, slot: Slot::Backpack(0) };
+        let result = world
+            .run_system_once(move |mut ops: InventoryOperations| {
+                (ops.interact_slot(slot), ops.give_to(member))
+            })
+            .unwrap();
+        assert_eq!(result, (Err(Refusal::Nothing), false));
+    }
+}

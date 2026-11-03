@@ -78,6 +78,11 @@ impl NpcDefinition {
             self.source_name.to_lowercase()
         )
     }
+    /// The sound set it remarks with as a party member (retail
+    /// `FormatNpcVoiceSoundPath` for a grouped NPC): `data/sound/pcs/rpc_<name>`.
+    pub fn party_voice_stem(&self) -> String {
+        format!("rpc_{}", self.source_name.to_lowercase())
+    }
 }
 #[derive(Clone, Debug)]
 pub struct StockRule {
