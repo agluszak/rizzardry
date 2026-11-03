@@ -199,8 +199,7 @@ impl Plugin for HitsPlugin {
         .add_systems(
             Hits,
             (
-                (defences::judge_characters, defences::judge_monsters)
-                    .run_if(any_with_component::<HitOf>),
+                defences::judge_defences.run_if(any_with_component::<HitOf>),
                 spells::strength_of_owners,
                 advance,
                 (

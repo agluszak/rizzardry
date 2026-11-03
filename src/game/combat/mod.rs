@@ -74,11 +74,7 @@ impl Plugin for CombatPlugin {
             // gameplay reads it, each frame and each fixed step.
             .add_systems(
                 Update,
-                (
-                    crate::game::world::footing::place_members,
-                    crate::game::world::footing::place_monsters,
-                )
-                    .before(GameplaySet::LevelActivation),
+                crate::game::world::footing::place_bodies.before(GameplaySet::LevelActivation),
             )
             .add_observer(approach::end_move)
             .add_observer(approach::stop_walking)
@@ -118,14 +114,8 @@ impl Plugin for CombatPlugin {
                         .chain(),
                     // what everyone in the fight is to blows is judged,
                     (
-                        crate::game::world::footing::place_members,
-                        crate::game::world::footing::place_monsters,
-                        (
-                            crate::game::hits::defences::judge_characters,
-                            crate::game::hits::defences::judge_monsters,
-                            fighters::judge_members,
-                            fighters::judge_monsters,
-                        )
+                        crate::game::world::footing::place_bodies,
+                        (crate::game::hits::defences::judge_defences, fighters::judge_fighters)
                             .run_if(any_with_component::<Battle>),
                     )
                         .chain(),

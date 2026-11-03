@@ -1,9 +1,10 @@
 //! What a body is to the effects that land on it: the level its saves and
-//! resistance weigh, its senses, and its resistance in each realm. The same
-//! components on a member and a monster, each produced from its own sources
-//! (a member's sheet, gear and party; a monster's species and spells) at the
-//! start of each pass of the hit stages; the save, resistance and waking
-//! rules read them without asking which it is. The rules themselves follow.
+//! resistance weigh, its senses, its resistance in each realm and how it
+//! casts. The same components on a member and a monster, judged by one
+//! system from each body's own sources (a member's sheet, gear and party; a
+//! monster's species and spells) at the start of each pass of the hit
+//! stages; the save, resistance and waking rules read them without asking
+//! which it is. The rules themselves follow.
 
 use bevy::prelude::*;
 use enum_map::EnumMap;
@@ -16,7 +17,7 @@ use crate::game::characters::{Character, Condition, Conditions, Lasting, Vitals}
 use crate::game::data::Catalogs;
 use crate::game::inventory::Carried;
 use crate::game::magic::Strength;
-use crate::game::magic::enchantments::PartyEffects;
+use crate::game::magic::enchantments::{Enchantments, PartyEffects};
 use crate::game::party::roster::PartyMember;
 use crate::game::rng::GameRng;
 use crate::game::world::population::{self, Monster};
@@ -51,45 +52,61 @@ impl CasterLevels {
     }
 }
 
-/// Characters, by their sheet and gear, and a member by the party's spells.
-pub fn judge_characters(
+/// A character's defences, by their sheet and gear, and a member's by the
+/// party's spells too.
+fn character_defences(
+    (character, carried): (&Character, &Carried),
+    vitals: &Vitals,
+    member: bool,
+    party: &Enchantments,
+    items: &crate::content::items::ItemCatalog,
+) -> (SaveLevel, Senses, Resistances, CasterLevels) {
+    let stats = character.stats(&vitals.enchantments);
+    let resistances = match member {
+        true => member_resistances(&stats, carried, items, party),
+        false => resistances(&stats, carried, items),
+    };
+    (
+        SaveLevel(u32::from(character.level())),
+        Senses(stats.attribute(crate::content::characters::Attribute::Senses)),
+        Resistances(EnumMap::from_fn(|realm| resistances[realm].total)),
+        CasterLevels(EnumMap::from_fn(|book| {
+            crate::game::magic::total_caster_level(character, enumset::EnumSet::only(book)).max(0)
+                as u32
+        })),
+    )
+}
+
+/// A monster's defences, by its species and spells.
+fn species_defences(
+    kind: &crate::content::species::Species,
+    vitals: &Vitals,
+) -> (SaveLevel, Senses, Resistances, CasterLevels) {
+    (
+        SaveLevel(u32::from(kind.level)),
+        Senses(u32::from(kind.attributes.senses)),
+        Resistances(EnumMap::from_fn(|realm| population::resistance(kind, vitals, realm))),
+        CasterLevels(EnumMap::from_fn(|_| u32::from(kind.level))),
+    )
+}
+
+/// Every body's defences, from its own sources.
+#[allow(clippy::type_complexity)]
+pub fn judge_defences(
     mut commands: Commands,
-    characters: Query<(Entity, &Character, &Vitals, &Carried, Has<PartyMember>)>,
+    bodies: Query<(Entity, &Vitals, AnyOf<((&Character, &Carried), &Monster)>, Has<PartyMember>)>,
     party: Single<&PartyEffects>,
     content: If<Res<Catalogs>>,
 ) {
-    for (entity, character, vitals, carried, member) in &characters {
-        let stats = character.stats(&vitals.enchantments);
-        let resistances = match member {
-            true => member_resistances(&stats, carried, &content.items, &party.0),
-            false => resistances(&stats, carried, &content.items),
+    for (entity, vitals, (character, monster), member) in &bodies {
+        let defences = match (character, monster) {
+            (Some(character), _) => {
+                character_defences(character, vitals, member, &party.0, &content.items)
+            }
+            (None, Some(monster)) => species_defences(&content.species[monster.species], vitals),
+            (None, None) => continue,
         };
-        commands.entity(entity).insert((
-            SaveLevel(u32::from(character.level())),
-            Senses(stats.attribute(crate::content::characters::Attribute::Senses)),
-            Resistances(EnumMap::from_fn(|realm| resistances[realm].total)),
-            CasterLevels(EnumMap::from_fn(|book| {
-                crate::game::magic::total_caster_level(character, enumset::EnumSet::only(book))
-                    .max(0) as u32
-            })),
-        ));
-    }
-}
-
-/// Monsters, by their species and spells.
-pub fn judge_monsters(
-    mut commands: Commands,
-    monsters: Query<(Entity, &Monster, &Vitals)>,
-    content: If<Res<Catalogs>>,
-) {
-    for (entity, monster, vitals) in &monsters {
-        let kind = &content.species[monster.species];
-        commands.entity(entity).insert((
-            SaveLevel(u32::from(kind.level)),
-            Senses(u32::from(kind.attributes.senses)),
-            Resistances(EnumMap::from_fn(|realm| population::resistance(kind, vitals, realm))),
-            CasterLevels(EnumMap::from_fn(|_| u32::from(kind.level))),
-        ));
+        commands.entity(entity).insert(defences);
     }
 }
 

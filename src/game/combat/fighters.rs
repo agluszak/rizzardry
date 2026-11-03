@@ -1,12 +1,11 @@
 //! What a body in a fight is to the blows struck at it and by it: the same
 //! components on a party member and on a monster, so the swing systems read
-//! them without asking which it is. Each component is produced from its
-//! body's own sources (a member's sheet, gear and party; a monster's species
-//! and spells) by one system per source, at the start of every fixed step of
-//! a fight and of every swing pass, and nothing else writes it. They are
-//! valid only in a fight: they go when the fight ends, or when a monster
-//! leaves it. Where bodies stand is their
-//! [`Footing`](crate::game::world::footing::Footing).
+//! them without asking which it is. One system judges every body from its
+//! own sources (a member's sheet, gear and party; a monster's species and
+//! spells), at the start of every fixed step of a fight and of every swing
+//! pass, and nothing else writes them. They are valid only in a fight: they
+//! go when the fight ends, or when a monster leaves it. Where bodies stand
+//! is their [`Footing`](crate::game::world::footing::Footing).
 
 use bevy::prelude::*;
 use enum_map::EnumMap;
@@ -24,7 +23,7 @@ use crate::game::data::Catalogs;
 use crate::game::inventory::{Burden, Carried, StackId, WeaponSlot};
 use crate::game::magic::enchantments::PartyEffects;
 use crate::game::party::formation::Formation;
-use crate::game::party::roster::PartyRoster;
+use crate::game::party::roster::PartyMember;
 use crate::game::world::footing::Footing;
 use crate::game::world::population::Monster;
 
@@ -328,103 +327,129 @@ fn monster_arm(
     }
 }
 
-/// A member, by their sheet, gear and party: what they wear and the spells
-/// on them and the party, braced when they defend and distracted while the
-/// party runs.
-pub(super) fn judge_members(
+/// What a member is to blows, by their sheet, gear and party: what they
+/// wear and the spells on them and the party, braced when they defend and
+/// distracted while the party runs.
+fn member_fighter(
+    (character, vitals, carried, burden): (&Character, &Vitals, &Carried, &Burden),
+    braced: bool,
+    running: bool,
+    party: &PartyEffects,
+    items: &crate::content::items::ItemCatalog,
+) -> impl Bundle {
+    let stats = character.stats(&vitals.enchantments);
+    let load = burden.load;
+    let armour = attack::enchanted_armour(
+        &stats,
+        carried,
+        items,
+        load,
+        braced,
+        &vitals.enchantments,
+        Some(&party.0),
+    );
+    let grip = Grip::of(carried, items);
+    let blind_fighter = character.has_trait(Trait::EffectiveWhileBlind);
+    let to_hit_bonus = party.0.hit_bonus();
+    let arms = [WeaponSlot::Primary, WeaponSlot::Secondary]
+        .into_iter()
+        .filter(|&slot| grip.in_play(slot))
+        .map(|slot| member_arm(&grip, &stats, character, load, to_hit_bonus, slot))
+        .collect();
+    (
+        Arms(arms),
+        Initiative(stats.initiative(load)),
+        Brawn(stats.attribute(Attribute::Strength)),
+        Agility(attack::member_agility(&stats)),
+        Reduction(stats.damage_reduction()),
+        Protection(attack::member_protection(&stats, vitals, &grip, load)),
+        MissileShield(party.0.missile_deflection()),
+        BlindFighting(blind_fighter.then(|| character.profession_levels[character.profession])),
+        Backstab(character.scale_by_profession(100.0) as i32),
+        ArmourClass {
+            total: armour.total,
+            at: std::array::from_fn(|location| {
+                armour.by_location.values().nth(location).copied().unwrap_or(armour.total)
+            }),
+            by_mode: EnumMap::default(),
+            exposed: armour.speed.max(0) + armour.shield.max(0),
+            tired: 0,
+            distracted: running,
+            braced,
+        },
+    )
+}
+
+/// What a monster is to blows, by its species, fatigue and spells: its
+/// guard drops while it advances.
+fn monster_fighter(kind: &Species, vitals: &Vitals, advancing: bool) -> impl Bundle {
+    let spells = vitals.enchantments.armour();
+    let hit_bonus = vitals.enchantments.hit_bonus();
+    let arms = kind.attacks.iter().map(|swung| monster_arm(kind, swung, hit_bonus)).collect();
+    (
+        Arms(arms),
+        Initiative(i32::from(kind.initiative)),
+        Stride(kind.combat_move_range * super::approach::METRES_PER_MOVE_RANGE),
+        Brawn(u32::from(kind.attributes.strength)),
+        Agility(attack::monster_agility(kind, &vitals.enchantments)),
+        Reduction(attack::monster_reduction(kind, vitals)),
+        Protection(attack::monster_protection(kind, vitals)),
+        MissileShield(vitals.enchantments.missile_deflection()),
+        BlindFighting((kind.kind == MonsterKind::Monk).then_some(kind.level)),
+        Backstab(scale_by_level(kind.level, 100.0) as i32),
+        HitLocations(kind.hit_locations),
+        ArmourClass {
+            total: 10 - i32::from(kind.evasion) + spells,
+            at: std::array::from_fn(|location| {
+                10 + spells - i32::from(kind.armour_by_location[location])
+            }),
+            by_mode: EnumMap::from_fn(|mode| i32::from(kind.armour_by_mode[mode])),
+            exposed: 2 * i32::from(kind.vulnerable_from_behind),
+            tired: attack::fatigue(vitals) / 10,
+            distracted: advancing,
+            braced: false,
+        },
+    )
+}
+
+/// Everyone in the fight is judged from their own sources: the party's
+/// members and the combatants.
+#[allow(clippy::type_complexity)]
+pub(super) fn judge_fighters(
     mut commands: Commands,
-    members: Query<(&Character, &Vitals, &Carried, &Burden, Option<&Ordered>)>,
-    roster: Single<&PartyRoster>,
+    bodies: Query<(
+        Entity,
+        &Vitals,
+        AnyOf<((&Character, &Carried, &Burden), &Monster)>,
+        (Option<&Ordered>, Has<CombatMove>, Has<PartyMember>, Has<Combatant>),
+    )>,
     party: Single<&PartyEffects>,
     round: Single<&super::Round, With<Battle>>,
     content: If<Res<Catalogs>>,
 ) {
     let running = round.pace == Some(PartyPace::Run);
-    for member in roster.iter() {
-        let Ok((character, vitals, carried, burden, ordered)) = members.get(member) else {
+    for (entity, vitals, (sheet, monster), (ordered, advancing, member, combatant)) in &bodies {
+        if !(member || combatant) {
             continue;
-        };
-        let stats = character.stats(&vitals.enchantments);
-        let braced = ordered.is_some_and(Ordered::defends);
-        let load = burden.load;
-        let armour = attack::enchanted_armour(
-            &stats,
-            carried,
-            &content.items,
-            load,
-            braced,
-            &vitals.enchantments,
-            Some(&party.0),
-        );
-        let grip = Grip::of(carried, &content.items);
-        let blind_fighter = character.has_trait(Trait::EffectiveWhileBlind);
-        let to_hit_bonus = party.0.hit_bonus();
-        let arms = [WeaponSlot::Primary, WeaponSlot::Secondary]
-            .into_iter()
-            .filter(|&slot| grip.in_play(slot))
-            .map(|slot| member_arm(&grip, &stats, character, load, to_hit_bonus, slot))
-            .collect();
-        commands.entity(member).insert((
-            Arms(arms),
-            Initiative(stats.initiative(load)),
-            Brawn(stats.attribute(Attribute::Strength)),
-            Agility(attack::member_agility(&stats)),
-            Reduction(stats.damage_reduction()),
-            Protection(attack::member_protection(&stats, vitals, &grip, load)),
-            MissileShield(party.0.missile_deflection()),
-            BlindFighting(blind_fighter.then(|| character.profession_levels[character.profession])),
-            Backstab(character.scale_by_profession(100.0) as i32),
-            ArmourClass {
-                total: armour.total,
-                at: std::array::from_fn(|location| {
-                    armour.by_location.values().nth(location).copied().unwrap_or(armour.total)
-                }),
-                by_mode: EnumMap::default(),
-                exposed: armour.speed.max(0) + armour.shield.max(0),
-                tired: 0,
-                distracted: running,
-                braced,
-            },
-        ));
-    }
-}
-
-/// A monster in the fight, by its species, fatigue and spells: its guard
-/// drops while it advances.
-pub(super) fn judge_monsters(
-    mut commands: Commands,
-    monsters: Query<(Entity, &Monster, &Vitals, Has<CombatMove>), With<Combatant>>,
-    content: If<Res<Catalogs>>,
-) {
-    for (entity, monster, vitals, advancing) in &monsters {
-        let kind = &content.species[monster.species];
-        let spells = vitals.enchantments.armour();
-        let hit_bonus = vitals.enchantments.hit_bonus();
-        let arms = kind.attacks.iter().map(|swung| monster_arm(kind, swung, hit_bonus)).collect();
-        commands.entity(entity).insert((
-            Arms(arms),
-            Initiative(i32::from(kind.initiative)),
-            Stride(kind.combat_move_range * super::approach::METRES_PER_MOVE_RANGE),
-            Brawn(u32::from(kind.attributes.strength)),
-            Agility(attack::monster_agility(kind, &vitals.enchantments)),
-            Reduction(attack::monster_reduction(kind, vitals)),
-            Protection(attack::monster_protection(kind, vitals)),
-            MissileShield(vitals.enchantments.missile_deflection()),
-            BlindFighting((kind.kind == MonsterKind::Monk).then_some(kind.level)),
-            Backstab(scale_by_level(kind.level, 100.0) as i32),
-            HitLocations(kind.hit_locations),
-            ArmourClass {
-                total: 10 - i32::from(kind.evasion) + spells,
-                at: std::array::from_fn(|location| {
-                    10 + spells - i32::from(kind.armour_by_location[location])
-                }),
-                by_mode: EnumMap::from_fn(|mode| i32::from(kind.armour_by_mode[mode])),
-                exposed: 2 * i32::from(kind.vulnerable_from_behind),
-                tired: attack::fatigue(vitals) / 10,
-                distracted: advancing,
-                braced: false,
-            },
-        ));
+        }
+        match (sheet, monster) {
+            (Some((character, carried, burden)), _) => {
+                let braced = ordered.is_some_and(Ordered::defends);
+                let fighter = member_fighter(
+                    (character, vitals, carried, burden),
+                    braced,
+                    running,
+                    &party,
+                    &content.items,
+                );
+                commands.entity(entity).insert(fighter);
+            }
+            (None, Some(monster)) => {
+                let fighter = monster_fighter(&content.species[monster.species], vitals, advancing);
+                commands.entity(entity).insert(fighter);
+            }
+            (None, None) => {}
+        }
     }
 }
 

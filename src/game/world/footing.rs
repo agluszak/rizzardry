@@ -1,11 +1,11 @@
 //! Where each body stands, and how bodies see one another: the same
 //! components on a party member and a monster, so the rules that ask who
-//! reaches or sees whom read them alike. Each is produced from its body's
-//! own sources by one system per kind (a member's from the party's body and
-//! spells, a monster's from its pose, species and vitals), the way
-//! `GlobalTransform` follows `Transform`, before anything reads it: at the
-//! start of each frame's gameplay and of each fixed step. Physics stays the
-//! authority on position; nothing else writes these.
+//! reaches or sees whom read them alike. One system places every body from
+//! its own sources (a member from the party's body and spells, a monster
+//! from its pose, species and vitals), the way `GlobalTransform` follows
+//! `Transform`, before anything reads it: at the start of each frame's
+//! gameplay and of each fixed step. Physics stays the authority on
+//! position; nothing else writes these.
 
 use avian3d::prelude::Position;
 use bevy::prelude::*;
@@ -109,17 +109,26 @@ impl Eyes {
     }
 }
 
-/// The members stand in the party's body, and are as conspicuous as its
-/// lowest level and its concealment let it be.
-pub fn place_members(
-    body: Single<(&Position, &PartyBody)>,
-    roster: Single<&PartyRoster>,
-    party: Single<&PartyEffects>,
-    mut members: Query<(&mut Footing, &mut Conspicuous, &Character, &Vitals)>,
+/// Every body is placed: a member in the party's body, as conspicuous as
+/// the party's lowest level and its concealment let it be; a monster at
+/// its own pose, looking about by its species, as conspicuous as its
+/// level.
+#[allow(clippy::type_complexity)]
+pub fn place_bodies(
+    party: Single<(&Position, &PartyBody, &PartyEffects, &PartyRoster)>,
+    mut bodies: Query<(
+        Entity,
+        &mut Footing,
+        &mut Conspicuous,
+        Option<&mut Eyes>,
+        &Vitals,
+        AnyOf<(&Character, (&Monster, ActorPose, Option<&Walker>))>,
+    )>,
+    content: If<Res<Catalogs>>,
 ) {
-    let (position, body) = *body;
+    let (position, body, effects, roster) = party.into_inner();
     let eye = PartyBody::eye(position);
-    let footing = Footing {
+    let in_party = Footing {
         feet: PartyBody::feet_below(eye),
         eye,
         centre: PartyBody::centre(eye),
@@ -128,48 +137,44 @@ pub fn place_members(
         yaw: body.yaw,
     };
     let level = crate::game::party::lowest_level(
-        members.iter_many(roster.iter()).matched().map(|(.., character, vitals)| (character, vitals)),
+        bodies
+            .iter_many(roster.iter())
+            .matched()
+            .filter_map(|(.., vitals, (character, _))| Some((character?, vitals))),
     );
-    let conspicuous = Conspicuous { level, concealment: party.0.concealment() };
-    for member in roster.iter() {
-        if let Ok((mut at, mut seen, ..)) = members.get_mut(member) {
-            at.set_if_neq(footing);
-            seen.set_if_neq(conspicuous);
+    let of_party = Conspicuous { level, concealment: effects.0.concealment() };
+    for (entity, mut at, mut seen, eyes, vitals, (character, monster)) in &mut bodies {
+        match (character.filter(|_| roster.contains(&entity)), monster) {
+            (Some(_), _) => {
+                at.set_if_neq(in_party);
+                seen.set_if_neq(of_party);
+            }
+            (None, Some((monster, pose, walker))) => {
+                let kind = &content.species[monster.species];
+                let feet = feet(pose.translation(), walker);
+                let half_height = monster.body.eye_height * 0.5;
+                at.set_if_neq(Footing {
+                    feet,
+                    eye: monster.eye(feet),
+                    centre: feet + Vec3::Y * half_height,
+                    radius: monster.body.radius,
+                    half_height,
+                    yaw: party_body::yaw_toward(pose.forward()),
+                });
+                if let Some(mut eyes) = eyes {
+                    eyes.set_if_neq(Eyes {
+                        senses: i32::from(kind.attributes.senses),
+                        bonus: if kind.level_sight {
+                            (u32::from(kind.level) * 5).min(125)
+                        } else {
+                            0
+                        },
+                        open: vitals.can_fight() && !blinded(kind, vitals),
+                    });
+                }
+                seen.set_if_neq(Conspicuous { level: i32::from(kind.level), concealment: 0 });
+            }
+            (None, None) => {}
         }
-    }
-}
-
-/// Monsters stand at their poses, look about by their species, and are as
-/// conspicuous as their level.
-pub fn place_monsters(
-    mut monsters: Query<(
-        &mut Footing,
-        &mut Eyes,
-        &mut Conspicuous,
-        &Monster,
-        &Vitals,
-        ActorPose,
-        Option<&Walker>,
-    )>,
-    content: If<Res<Catalogs>>,
-) {
-    for (mut at, mut eyes, mut seen, monster, vitals, pose, walker) in &mut monsters {
-        let kind = &content.species[monster.species];
-        let feet = feet(pose.translation(), walker);
-        let half_height = monster.body.eye_height * 0.5;
-        at.set_if_neq(Footing {
-            feet,
-            eye: monster.eye(feet),
-            centre: feet + Vec3::Y * half_height,
-            radius: monster.body.radius,
-            half_height,
-            yaw: party_body::yaw_toward(pose.forward()),
-        });
-        eyes.set_if_neq(Eyes {
-            senses: i32::from(kind.attributes.senses),
-            bonus: if kind.level_sight { (u32::from(kind.level) * 5).min(125) } else { 0 },
-            open: vitals.can_fight() && !blinded(kind, vitals),
-        });
-        seen.set_if_neq(Conspicuous { level: i32::from(kind.level), concealment: 0 });
     }
 }

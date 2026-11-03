@@ -203,21 +203,13 @@ pub(super) fn run_swings(world: &mut World) {
 }
 
 pub(super) fn stages(app: &mut App) {
-    use super::fighters::{judge_members, judge_monsters};
-    use crate::game::hits::defences;
-    use crate::game::world::footing::{place_members, place_monsters};
+    use super::fighters::judge_fighters;
+    use crate::game::hits::defences::judge_defences;
+    use crate::game::world::footing::place_bodies;
     app.init_schedule(SwingStages).add_systems(
         SwingStages,
         (
-            (
-                place_members,
-                place_monsters,
-                defences::judge_characters,
-                defences::judge_monsters,
-                judge_members,
-                judge_monsters,
-            )
-                .chain(),
+            (place_bodies, judge_defences, judge_fighters).chain(),
             (catch_unaware, provoke, hostility::take_offence, announce).chain(),
             (tally_swings, start_swings).chain(),
             (
