@@ -121,9 +121,15 @@ impl Plugin for WorldPlugin {
             .add_observer(level::resume_physics_after_entry)
             .add_observer(search::suspend_search)
             .add_observer(search::resume_search)
+            // Where everyone stands and how they see, and whose side each
+            // body is on, are placed before gameplay reads them each frame;
+            // the fixed step and the fight refresh them at their own
+            // boundaries.
             .add_systems(
                 Update,
                 (
+                    footing::place_bodies.before(GameplaySet::LevelActivation),
+                    hostility::judge_sides.in_set(GameplaySet::Sides),
                     level::activate_level.in_set(GameplaySet::LevelActivation),
                     (
                         activate_devices,
@@ -132,7 +138,7 @@ impl Plugin for WorldPlugin {
                         crate::game::automap::commit_notes,
                     )
                         .chain()
-                        .after(GameplaySet::Burden)
+                        .after(GameplaySet::Sides)
                         .before(GameplaySet::Combat),
                     particles::switch_off_spent.before(GameplaySet::LevelActivation),
                     population::give_birth.run_if(level::level_active).before(GameplaySet::Combat),

@@ -254,3 +254,28 @@ fn killing_a_turned_ally_awards_nothing_but_a_revived_enemy_counts() {
     assert_eq!(world.get::<Spoils>(battle).unwrap().kills, 1);
     assert_eq!(world.get::<Spoils>(battle).unwrap().experience, 120);
 }
+
+/// A monster's move reads where the party stands this fixed step: bodies
+/// are placed before the move is steered, so a party that stepped into
+/// reach ends the move on the same step.
+#[test]
+fn a_move_toward_the_party_sees_where_the_party_stands_this_step() {
+    use approach::{CombatMove, MoveGoal};
+    use bevy_landmass::AgentTarget3d;
+    let (mut app, party, _) = app();
+    let world = app.world_mut();
+    let fight = world.spawn(Battle::default()).id();
+    let actor = monster(world, fight, 10.0);
+    refresh(world);
+    world.entity_mut(actor).insert((
+        CombatMove { budget: 100.0, moved: 0.0, goal: MoveGoal::Party },
+        AgentTarget3d::None,
+    ));
+    world.run_schedule(FixedPreUpdate);
+    assert_eq!(*world.get::<AgentTarget3d>(actor).unwrap(), AgentTarget3d::Entity(party));
+    // The party steps up to it, within its claws' two metres.
+    world.get_mut::<Position>(party).unwrap().0.z = 9.0;
+    world.run_schedule(FixedPreUpdate);
+    assert!(world.get::<CombatMove>(actor).is_none(), "in reach, the move is over");
+    assert_eq!(*world.get::<AgentTarget3d>(actor).unwrap(), AgentTarget3d::None);
+}

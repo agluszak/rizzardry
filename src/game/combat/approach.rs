@@ -9,8 +9,6 @@
 //! round (`Combat.cpp:2486-2551, 2855-2909`). The fight's next actor waits
 //! for it to arrive or spend its move.
 
-use crate::game::world::ActorPose;
-use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy_landmass::prelude::*;
 
@@ -19,8 +17,8 @@ use crate::content::species::Reach;
 use crate::game::characters::Condition;
 use crate::game::characters::Vitals;
 use crate::game::party::body::PartyBody;
+use crate::game::world::footing::Footing;
 use crate::game::world::navigation::Walker;
-use crate::game::world::population::Monster;
 
 /// Stop this far inside an attack's reach.
 const REACH_MARGIN: f32 = 0.3;
@@ -107,52 +105,37 @@ pub(super) fn away_from(feet: Vec3, party_eye: Vec3, metres: f32) -> Vec3 {
 /// Metres per unit of a species' `combat_move_range`.
 pub(super) const METRES_PER_MOVE_RANGE: f32 = 20.0;
 
-/// Head monsters on their move, at the start of each fixed step before
-/// navigation plans it; the move ends when it is spent, the monster
-/// arrives, or it can no longer fight. The step's walking is counted after
-/// physics moves it ([`spend_moves`]), so a move begun between steps is
-/// charged nothing for time before it.
+/// Head monsters on their move, at the start of each fixed step once every
+/// body is placed for it ([`Footing`]) and before navigation plans it; the
+/// move ends when it is spent, the monster arrives, or it can no longer
+/// fight. The step's walking is counted after physics moves it
+/// ([`spend_moves`]), so a move begun between steps is charged nothing for
+/// time before it.
 pub fn steer_moves(
     mut commands: Commands,
-    party: Query<(Entity, &Position), With<PartyBody>>,
+    party: Single<(Entity, &Footing), With<PartyBody>>,
     mut walkers: Query<(
         Entity,
-        (&Monster, &Vitals, &super::fighters::Arms),
-        ActorPose,
+        (&Footing, &Vitals, &super::fighters::Arms),
         &Walker,
         &mut AgentTarget3d,
         &CombatMove,
     )>,
-    targets: Query<(&Monster, &Vitals, ActorPose, Option<&Walker>)>,
+    targets: Query<(&Footing, &Vitals)>,
 ) {
-    let Ok((party, party_at)) = party.single() else { return };
-    let party_eye = PartyBody::eye(party_at);
-    for (entity, (monster, vitals, arms), at, walker, mut target, movement) in &mut walkers {
+    let (party, party_at) = *party;
+    for (entity, (at, vitals, arms), walker, mut target, movement) in &mut walkers {
         let (needs_move, heading) = match movement.goal {
             MoveGoal::Retreat(point) => (true, AgentTarget3d::Point(point)),
-            MoveGoal::Party => {
-                let here = crate::game::world::navigation::feet(at.translation(), Some(walker));
-                let gap = crate::game::world::perception::party_distance(party_eye, monster, here);
-                (
-                    needs_approach(arms.reach(), vitals, Some(walker), gap),
-                    AgentTarget3d::Entity(party),
-                )
-            }
-            MoveGoal::Attack(entity) => {
-                let needed = targets.get(entity).is_ok_and(
-                    |(target, target_vitals, target_at, target_walker)| {
-                        let here =
-                            crate::game::world::navigation::feet(at.translation(), Some(walker));
-                        let there = crate::game::world::navigation::feet(
-                            target_at.translation(),
-                            target_walker,
-                        );
-                        !target_vitals.is_dead()
-                            && monster.gap(here, target, there)
-                                > arms.reach().metres() - REACH_MARGIN
-                    },
-                );
-                (needed, AgentTarget3d::Entity(entity))
+            MoveGoal::Party => (
+                needs_approach(arms.reach(), vitals, Some(walker), at.gap(party_at)),
+                AgentTarget3d::Entity(party),
+            ),
+            MoveGoal::Attack(foe) => {
+                let needed = targets.get(foe).is_ok_and(|(there, foe_vitals)| {
+                    !foe_vitals.is_dead() && at.gap(there) > arms.reach().metres() - REACH_MARGIN
+                });
+                (needed, AgentTarget3d::Entity(foe))
             }
         };
         let continues = vitals.can_fight() && movement.moved < movement.budget && needs_move;

@@ -22,8 +22,9 @@ use crate::game::party::body::{self as party_body, PartyBody};
 use crate::game::party::formation::{self, Row};
 use crate::game::party::roster::PartyRoster;
 
-/// Where a body stands and how big it is: a monster at its pose, a member
-/// in the party's body, which they share.
+/// Where a body stands and how big it is: a monster at its pose, the
+/// party's body where physics has it, a member in the party's body, which
+/// they share.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
 pub struct Footing {
     pub feet: Vec3,
@@ -109,28 +110,37 @@ impl Eyes {
     }
 }
 
-/// Every body is placed: a member in the party's body, as conspicuous as
-/// the party's lowest level and its concealment let it be; a monster at
-/// its own pose, looking about by its species, as conspicuous as its
-/// level.
+/// Every body is placed: the party's body where physics has it, and each
+/// member in it, as conspicuous as the party's lowest level and its
+/// concealment let it be; a monster at its own pose, looking about by its
+/// species, as conspicuous as its level.
 #[allow(clippy::type_complexity)]
 pub fn place_bodies(
-    party: Single<(Ref<Position>, Ref<PartyBody>, Ref<PartyEffects>, Ref<PartyRoster>)>,
-    mut bodies: Query<(
-        Entity,
+    party: Single<(
+        Ref<Position>,
+        Ref<PartyBody>,
+        Ref<PartyEffects>,
+        Ref<PartyRoster>,
         &mut Footing,
-        &mut Conspicuous,
-        Option<&mut Eyes>,
-        Ref<Vitals>,
-        AnyOf<(Ref<Character>, (Ref<Monster>, ActorPose, Option<Ref<Walker>>))>,
     )>,
+    mut bodies: Query<
+        (
+            Entity,
+            &mut Footing,
+            &mut Conspicuous,
+            Option<&mut Eyes>,
+            Ref<Vitals>,
+            AnyOf<(Ref<Character>, (Ref<Monster>, ActorPose, Option<Ref<Walker>>))>,
+        ),
+        Without<PartyBody>,
+    >,
     content: If<Res<Catalogs>>,
     mut departed: RemovedComponents<crate::game::party::roster::PartyMember>,
     mut removed_walkers: RemovedComponents<Walker>,
     mut removed_positions: RemovedComponents<Position>,
     mut removed_rotations: RemovedComponents<avian3d::prelude::Rotation>,
 ) {
-    let (position, body, effects, roster) = party.into_inner();
+    let (position, body, effects, roster, mut party_at) = party.into_inner();
     let eye = PartyBody::eye(&position);
     let in_party = Footing {
         feet: PartyBody::feet_below(eye),
@@ -140,6 +150,7 @@ pub fn place_bodies(
         half_height: party_body::RADIUS,
         yaw: body.yaw,
     };
+    party_at.set_if_neq(in_party);
     let party_changed = position.is_changed()
         || body.is_changed()
         || effects.is_changed()

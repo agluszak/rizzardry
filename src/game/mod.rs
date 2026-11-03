@@ -25,6 +25,9 @@ pub enum GameplaySet {
     LevelActivation,
     /// Inventory has redistributed burden outside combat. Other stats are live rules.
     Burden,
+    /// Every body's side toward the party is judged for the frame
+    /// ([`world::hostility::Side`]); magic, devices and combat read it.
+    Sides,
     Combat,
 }
 
@@ -46,7 +49,13 @@ impl Plugin for GamePlugin {
             .add_systems(Update, data::publish_catalogs.run_if(resource_exists::<data::Loading>))
             .configure_sets(
                 Update,
-                (GameplaySet::LevelActivation, GameplaySet::Burden, GameplaySet::Combat).chain(),
+                (
+                    GameplaySet::LevelActivation,
+                    GameplaySet::Burden,
+                    GameplaySet::Sides,
+                    GameplaySet::Combat,
+                )
+                    .chain(),
             )
             .add_plugins((
                 avian3d::prelude::PhysicsPlugins::default(),
