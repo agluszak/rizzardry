@@ -1,5 +1,6 @@
 //! Project merchandise once per view, retaining resolved definitions through the pass.
 use super::*;
+use crate::game::npcs::trade::MerchantStock;
 
 /// The gold amount typed to give the NPC.
 #[derive(Component)]
@@ -33,7 +34,7 @@ pub(super) fn sync_trade_rows(
     assets: Res<AssetServer>,
     content: If<Res<crate::game::data::Catalogs>>,
     sessions: Query<&Conversation>,
-    npcs: Query<&Npc>,
+    stocks: Query<&MerchantStock>,
     parties: Query<(&PartyRoster, &PartyInventory), With<crate::game::party::roster::Party>>,
     members: Query<(&crate::game::characters::Character, &Carried)>,
     selection: Res<SelectedMember>,
@@ -58,7 +59,7 @@ pub(super) fn sync_trade_rows(
         if state.mode == Mode::Talk {
             continue;
         }
-        let Ok(npc) = npcs.get(c.actor) else { continue };
+        let stock = stocks.get(c.actor).ok();
         let member = selection.0.filter(|e| roster.contains(e));
         let allows = |d: &crate::content::items::ItemDefinition| {
             state.item_group.is_none_or(|group| group == ItemGroup::of(d.class))
@@ -72,7 +73,7 @@ pub(super) fn sync_trade_rows(
         };
         let mut rows = Vec::new();
         if state.mode == Mode::Buy {
-            for lot in &npc.stock.lots {
+            for lot in stock.into_iter().flat_map(|stock| &stock.lots) {
                 let d = &items[lot.item];
                 if trade::on_sale(lot, d) && allows(d) {
                     rows.push(Listing {

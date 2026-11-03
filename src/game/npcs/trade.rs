@@ -1,12 +1,17 @@
-//! Stock is merchandise, not the NPC's personal equipment. Commit transfers
-//! and payment synchronously after validating the entire request.
+//! Stock is merchandise, not the NPC's personal equipment: a merchant's
+//! [`MerchantStock`] beside its [`super::Npc`]. A quote reads what a trade
+//! would cost now; settling it validates the whole request again and
+//! commits the transfer and the payment at once.
 use crate::content::{
     items::{EquipClass, ItemCatalog, ItemDefinition, ItemId, QuantityKind},
     npcs::NpcDefinition,
 };
+use crate::game::characters::{Character, Vitals};
+use crate::game::data::Catalogs;
+use crate::game::party::roster::PartyRoster;
 use crate::game::time::DAY_MS;
 use crate::game::{
-    inventory::{ItemIds, ItemRef, ItemStack, PartyInventory},
+    inventory::{Carried, ItemIds, ItemOwner, ItemRef, ItemStack, PartyInventory},
     rng::GameRng,
 };
 use bevy::prelude::*;
@@ -23,7 +28,10 @@ pub struct StockLot {
     pub units: u32,
     pub available_at: u64,
 }
-#[derive(Clone, Debug, Default, PartialEq)]
+/// What an NPC has for sale, on the NPCs that own stock: the lots, when
+/// they are next replenished and maintained, and how many trades it has
+/// made, which a quote confirms only the next of.
+#[derive(Component, Clone, Debug, Default, PartialEq)]
 pub struct MerchantStock {
     pub lots: Vec<StockLot>,
     pub restock_at: Option<u64>,
@@ -78,6 +86,9 @@ fn jitter(n: u32, rng: &mut GameRng) -> u32 {
     }
 }
 impl MerchantStock {
+    pub fn lot(&self, id: StockLotId) -> Result<&StockLot, TradeError> {
+        self.lots.iter().find(|l| l.id == id).ok_or(TradeError::StaleSelection)
+    }
     pub fn add(
         &mut self,
         item: ItemId,
@@ -319,4 +330,112 @@ pub fn validate_sale(
         return Err(TradeError::InvalidQuantity);
     }
     price(def, d, quantity, item.identified, false, communication)
+}
+
+/// The party's best Communication among those who can act, which prices
+/// trades (retail `GetBestPartyCommunication`).
+pub fn communication<'a>(members: impl Iterator<Item = (&'a Character, &'a Vitals)>) -> u32 {
+    members
+        .filter(|(_, vitals)| vitals.can_act())
+        .map(|(character, _)| character.skill(crate::content::characters::Skill::Communication))
+        .max()
+        .unwrap_or(0)
+}
+
+/// The party's stack a sale offers, in the pool or a member's backpack.
+fn sale_item<'a>(
+    source: ItemRef,
+    inventory: &'a PartyInventory,
+    members: &'a Query<(&Character, &Vitals, Option<&mut Carried>)>,
+) -> Result<&'a ItemStack, TradeError> {
+    match source.owner {
+        ItemOwner::Pool => inventory.pool.stacks.iter().find(|i| i.id == source.id),
+        ItemOwner::Member(member) => {
+            members.get(member).ok().and_then(|(_, _, carried)| carried?.backpack_stack(source.id))
+        }
+    }
+    .ok_or(TradeError::StaleSelection)
+}
+
+/// What a trade with the merchant would come to now: a lot's purchase
+/// price, or a party item's sale price, by the party's best communicator.
+/// Reads only; the conversation decides whether a trade may be quoted.
+pub(super) fn quote(
+    In((actor, conversation, source, quantity)): In<(Entity, Entity, TradeSource, u32)>,
+    stocks: Query<(&MerchantStock, &super::ActorId)>,
+    party: Single<(&PartyRoster, &PartyInventory)>,
+    members: Query<(&Character, &Vitals, Option<&mut Carried>)>,
+    content: Res<Catalogs>,
+) -> Result<TradeQuote, TradeError> {
+    let (stock, id) = stocks.get(actor).map_err(|_| TradeError::Unavailable)?;
+    let def = &content.npcs[id.npc()];
+    let catalog = &content.items;
+    let (roster, inventory) = *party;
+    let communication =
+        communication(members.iter_many(roster.iter()).matched().map(|(c, v, _)| (c, v)));
+    let gold = match source {
+        TradeSource::Stock(lot) => {
+            purchase_price(stock.lot(lot)?, def, catalog, quantity, communication)
+        }
+        TradeSource::Party(item) => validate_sale(
+            def,
+            sale_item(item, inventory, &members)?,
+            quantity,
+            catalog,
+            communication,
+        ),
+    }?;
+    Ok(TradeQuote { conversation, trade: stock.trades, source, quantity, gold })
+}
+
+/// Settle a quoted trade: the merchant's next trade, at the quoted price
+/// still, the goods and the gold moved at once; or nothing.
+pub(super) fn settle(
+    In((actor, quote)): In<(Entity, TradeQuote)>,
+    mut stocks: Query<(&mut MerchantStock, &super::ActorId)>,
+    mut party: Single<(&PartyRoster, &mut PartyInventory)>,
+    mut members: Query<(&Character, &Vitals, Option<&mut Carried>)>,
+    content: Res<Catalogs>,
+    mut ids: ResMut<ItemIds>,
+) -> Result<(), TradeError> {
+    let (mut stock, id) = stocks.get_mut(actor).map_err(|_| TradeError::Unavailable)?;
+    if stock.trades != quote.trade {
+        return Err(TradeError::StaleSelection);
+    }
+    let def = &content.npcs[id.npc()];
+    let catalog = &content.items;
+    let (roster, inventory) = &mut *party;
+    let communication =
+        communication(members.iter_many(roster.iter()).matched().map(|(c, v, _)| (c, v)));
+    match quote.source {
+        TradeSource::Stock(lot) => buy(
+            &mut stock,
+            inventory,
+            &mut ids,
+            def,
+            catalog,
+            lot,
+            quote.quantity,
+            quote.gold,
+            communication,
+        )?,
+        TradeSource::Party(source) => {
+            let item = sale_item(source, inventory, &members)?;
+            if validate_sale(def, item, quote.quantity, catalog, communication)? != quote.gold {
+                return Err(TradeError::PriceChanged);
+            }
+            let (item, units) = (item.item, quote.quantity as u16);
+            stock.add(item, quote.quantity, catalog, false);
+            match source.owner {
+                ItemOwner::Pool => inventory.pool.consume_units(source.id, units),
+                ItemOwner::Member(member) => {
+                    let (_, _, carried) = members.get_mut(member).unwrap();
+                    carried.unwrap().consume_backpack_units(source.id, units);
+                }
+            }
+            inventory.gold += quote.gold;
+        }
+    }
+    stock.trades += 1;
+    Ok(())
 }

@@ -1,13 +1,10 @@
 //! Authored continuation and waits belong to gameplay, not the dialogue view.
 use super::{
     Npc, definition,
-    trade::{self, TradeError, TradeQuote, TradeSource},
+    trade::{self, MerchantStock, TradeError, TradeQuote, TradeSource},
 };
 use crate::content::factions::Faction;
-use crate::content::{
-    items::{ItemCatalog, ItemId},
-    npcs::*,
-};
+use crate::content::{items::ItemId, npcs::*};
 use crate::game::data::Catalogs;
 use crate::game::factions::{Band, Factions};
 use crate::game::time::GameClock;
@@ -363,16 +360,8 @@ pub enum Approach {
 }
 /// Run `f` with the NPC's definition and the item catalog while the world
 /// stays writable; the catalogs are out of the world meanwhile.
-fn with_definition<T>(
-    world: &mut World,
-    actor: Entity,
-    f: impl FnOnce(&mut World, &NpcDefinition, &ItemCatalog) -> T,
-) -> T {
-    let id = world.get::<super::ActorId>(actor).expect("an NPC actor").npc();
-    Catalogs::scope(world, |world, catalogs| f(world, &catalogs.npcs[id], &catalogs.items))
-}
 pub fn party_communication(world: &World) -> u32 {
-    best_communicator(world).map_or(0, |(_, level)| level)
+    trade::communication(crate::game::party::members_in_world(world).map(|(_, c, v)| (c, v)))
 }
 pub(crate) fn active_body(world: &World, actor: Entity) -> Option<Entity> {
     world.get::<super::NpcBodies>(actor)?.iter().find(|body| {
@@ -500,9 +489,10 @@ fn available(world: &World, actor: Entity) -> bool {
             != crate::game::world::hostility::Stance::Hostile
     }) && world.get::<Npc>(actor).is_some()
 }
-/// Shared gameplay permission, also used to derive the trade controls.
+/// Shared gameplay permission, also used to derive the trade controls: an
+/// NPC with stock trades.
 pub fn trade_allowed(world: &World, actor: Entity) -> bool {
-    definition(world, actor).owns_stock
+    world.get::<MerchantStock>(actor).is_some()
 }
 fn entry_quote(def: &NpcDefinition, npc: &Npc) -> u16 {
     if def.merchant || npc.greeting_pending { 0 } else { 1 }
@@ -571,20 +561,24 @@ pub fn begin(world: &mut World, actor: Entity) -> Result<Entity, TradeError> {
     let average = crate::game::party::average_level(
         crate::game::party::members_in_world(world).map(|(_, c, _)| c.level()),
     );
-    let def = definition(world, actor);
-    if def.owns_stock {
-        let stock = &world.get::<Npc>(actor).unwrap().stock;
+    // A merchant's stock is maintained as the party comes to talk.
+    if let Some(stock) = world.get::<MerchantStock>(actor) {
+        let def = definition(world, actor);
         let gated = stock.restock_at.is_some()
             && now - stock.maintenance_at >= crate::game::time::DAY_MS
             && def.stock.iter().any(|r| !r.persistent && r.item == super::trade::TEMPLAR_GATED);
         let templar = gated && fact_named(world, "FACT_TEMPLAR").expect("the Templar fact") != 0;
-        with_definition(world, actor, |world, def, items| {
+        Catalogs::scope(world, |world, catalogs| {
             world.resource_scope(|world, mut rng: Mut<GameRng>| {
-                world
-                    .get_mut::<Npc>(actor)
-                    .unwrap()
-                    .stock
-                    .maintain(def, items, average, now, templar, &mut rng)
+                let id = world.get::<super::ActorId>(actor).expect("an NPC actor").npc();
+                world.get_mut::<MerchantStock>(actor).unwrap().maintain(
+                    &catalogs.npcs[id],
+                    &catalogs.items,
+                    average,
+                    now,
+                    templar,
+                    &mut rng,
+                )
             })
         });
     }
@@ -1571,28 +1565,7 @@ pub fn quote_trade(
         return Err(TradeError::Unavailable);
     }
     let actor = c.actor;
-    let party = the_party(world);
-    let communication = party_communication(world);
-    let def = definition(world, actor);
-    let catalog = &world.resource::<Catalogs>().items;
-    let trade = world.get::<Npc>(actor).unwrap().stock.trades;
-    let gold = match source {
-        TradeSource::Stock(lot) => {
-            let stock = &world.get::<Npc>(actor).unwrap().stock;
-            trade::purchase_price(
-                stock.lots.iter().find(|l| l.id == lot).ok_or(TradeError::StaleSelection)?,
-                def,
-                catalog,
-                quantity,
-                communication,
-            )
-        }
-        TradeSource::Party(source) => {
-            let item = sale_item(world, source, party)?;
-            trade::validate_sale(def, item, quantity, catalog, communication)
-        }
-    }?;
-    Ok(TradeQuote { conversation, trade, source, quantity, gold })
+    world.run_system_cached_with(trade::quote, (actor, conversation, source, quantity)).unwrap()
 }
 fn sale_item(
     world: &World,
@@ -1623,46 +1596,7 @@ fn execute_trade(world: &mut World, quote: TradeQuote) -> Result<(), TradeError>
         return Err(TradeError::Unavailable);
     }
     let actor = c.actor;
-    if world.get::<Npc>(actor).unwrap().stock.trades != quote.trade {
-        return Err(TradeError::StaleSelection);
-    }
-    let party = the_party(world);
-    let communication = party_communication(world);
-    with_definition(world, actor, |world, def, catalog| match quote.source {
-        TradeSource::Stock(lot) => world.resource_scope(|world, mut ids: Mut<ItemIds>| {
-            let [mut party_entity, mut actor] = world.get_entity_mut([party, actor]).unwrap();
-            let mut inventory = party_entity.get_mut::<PartyInventory>().unwrap();
-            let mut npc = actor.get_mut::<Npc>().unwrap();
-            trade::buy(
-                &mut npc.stock,
-                &mut inventory,
-                &mut ids,
-                def,
-                catalog,
-                lot,
-                quote.quantity,
-                quote.gold,
-                communication,
-            )
-        }),
-        TradeSource::Party(source) => {
-            let item = sale_item(world, source, party)?;
-            let units = quote.quantity as u16;
-            let gold = world.get::<PartyInventory>(party).unwrap().gold + quote.gold;
-            if trade::validate_sale(def, item, quote.quantity, catalog, communication)?
-                != quote.gold
-            {
-                return Err(TradeError::PriceChanged);
-            }
-            let item = item.item;
-            world.get_mut::<Npc>(actor).unwrap().stock.add(item, quote.quantity, catalog, false);
-            consume_item(world, party, source, units);
-            world.get_mut::<PartyInventory>(party).unwrap().gold = gold;
-            Ok(())
-        }
-    })?;
-    world.get_mut::<Npc>(actor).unwrap().stock.trades += 1;
-    Ok(())
+    world.run_system_cached_with(trade::settle, (actor, quote)).unwrap()
 }
 /// The systems that carry conversations: lines spoken, conversations
 /// begun, the party's requests answered, then scripts run.
