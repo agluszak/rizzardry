@@ -206,8 +206,8 @@ pub struct TalkTo(pub String);
 /// Ask to talk to the named NPC once the party is free in its level, and
 /// stop with an error if the conversation is refused.
 pub fn talk_to_npc(
-    request: Res<TalkTo>,
-    speakers: crate::game::npcs::conversation::Speakers,
+    If(request): If<Res<TalkTo>>,
+    speakers: crate::game::npcs::access::NpcActors,
     freedom: crate::game::freedom::Freedom,
     conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
     mut requested: Local<bool>,

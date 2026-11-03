@@ -2,20 +2,18 @@
 //! [`MerchantStock`] beside its [`super::Npc`]. A quote reads what a trade
 //! would cost now; settling it validates the whole request again and
 //! commits the transfer and the payment at once.
-use super::conversation::{Conversation, Speakers};
+use super::ActorId;
 use crate::content::{
     items::{EquipClass, ItemCatalog, ItemDefinition, ItemId, QuantityKind},
     npcs::NpcDefinition,
 };
 use crate::game::characters::{Character, Vitals};
+use crate::game::data::Catalogs;
 use crate::game::party::roster::PartyRoster;
 use crate::game::time::DAY_MS;
 use crate::game::{
-    combat::Battle,
-    factions::Factions,
     inventory::{Carried, ItemIds, ItemOwner, ItemRef, ItemStack, PartyInventory},
     rng::GameRng,
-    world::level::Destination,
 };
 use bevy::prelude::*;
 
@@ -62,6 +60,7 @@ pub enum TradeSource {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TradeQuote {
     pub conversation: Entity,
+    pub merchant: Entity,
     /// The merchant's [`MerchantStock::trades`] when quoted.
     pub trade: u64,
     pub source: TradeSource,
@@ -359,50 +358,131 @@ pub fn sale_item<'a>(
     .ok_or(TradeError::StaleSelection)
 }
 
-/// What a trade with the merchant would come to now: a lot's purchase
-/// price, or a party item's sale price, by the party's best communicator.
-/// Reads only. The conversation must be ready for a request and its NPC
-/// still speaking to the party, with no level entry or fight under way.
+/// Validate and settle the complete transaction. Session permission is the
+/// caller's responsibility; goods, ownership, price and funds are ours.
+pub fn settle(
+    In(quote): In<TradeQuote>,
+    mut stocks: Query<(&ActorId, &mut MerchantStock)>,
+    mut party: Single<(&PartyRoster, &mut PartyInventory)>,
+    mut members: Query<(&Character, &Vitals, Option<&mut Carried>)>,
+    content: Res<Catalogs>,
+    mut ids: ResMut<ItemIds>,
+) -> Result<(), TradeError> {
+    let (id, mut stock) = stocks.get_mut(quote.merchant).map_err(|_| TradeError::Unavailable)?;
+    if stock.trades != quote.trade {
+        return Err(TradeError::StaleSelection);
+    }
+    let (roster, inventory) = &mut *party;
+    let communication =
+        communication(roster.iter().filter_map(|m| members.get(m).ok()).map(|(c, v, _)| (c, v)));
+    let def = &content.npcs[id.npc()];
+    match quote.source {
+        TradeSource::Stock(lot) => buy(
+            &mut stock,
+            inventory,
+            &mut ids,
+            def,
+            &content.items,
+            lot,
+            quote.quantity,
+            quote.gold,
+            communication,
+        )?,
+        TradeSource::Party(source) => {
+            let carried = match source.owner {
+                ItemOwner::Pool => None,
+                ItemOwner::Member(member) => {
+                    if !roster.contains(&member) {
+                        return Err(TradeError::StaleSelection);
+                    }
+                    members.get(member).ok().and_then(|(_, _, pack)| pack)
+                }
+            };
+            let item = sale_item(source, inventory, carried)?;
+            if validate_sale(def, item, quote.quantity, &content.items, communication)?
+                != quote.gold
+            {
+                return Err(TradeError::PriceChanged);
+            }
+            let item_id = item.item;
+            match source.owner {
+                ItemOwner::Pool => inventory.pool.consume_units(source.id, quote.quantity as u16),
+                ItemOwner::Member(member) => members
+                    .get_mut(member)
+                    .unwrap()
+                    .2
+                    .unwrap()
+                    .consume_backpack_units(source.id, quote.quantity as u16),
+            }
+            stock.add(item_id, quote.quantity, &content.items, false);
+            inventory.gold += quote.gold;
+        }
+    }
+    stock.trades += 1;
+    Ok(())
+}
+
+pub fn maintain(
+    In(actor): In<Entity>,
+    mut stocks: Query<(&ActorId, &mut MerchantStock)>,
+    party: Single<&PartyRoster>,
+    characters: Query<&Character>,
+    content: Res<Catalogs>,
+    story: Res<super::story::StoryFacts>,
+    clock: Res<crate::game::time::GameClock>,
+    mut rng: ResMut<GameRng>,
+) {
+    let Ok((id, mut stock)) = stocks.get_mut(actor) else { return };
+    let def = &content.npcs[id.npc()];
+    let average = crate::game::party::average_level(
+        party.iter().filter_map(|m| characters.get(m).ok()).map(Character::level),
+    );
+    let gated = stock.restock_at.is_some()
+        && clock.ms - stock.maintenance_at >= DAY_MS
+        && def.stock.iter().any(|r| !r.persistent && r.item == TEMPLAR_GATED);
+    let templar = gated
+        && super::story::fact_named(&story, &content.facts, "FACT_TEMPLAR")
+            .expect("the Templar fact")
+            != 0;
+    stock.maintain(def, &content.items, average, clock.ms, templar, &mut rng);
+}
+
+/// Quote the goods against their current owner, stock and party skill. The
+/// conversation id is returned unchanged; session permission belongs to callers.
 pub fn quote(
-    In((conversation, source, quantity)): In<(Entity, TradeSource, u32)>,
-    conversations: Query<&Conversation>,
-    occupied: Query<(), Or<(With<Destination>, With<Battle>)>>,
-    speakers: Speakers,
-    factions: Res<Factions>,
-    stocks: Query<&MerchantStock>,
+    In((conversation, merchant, source, quantity)): In<(Entity, Entity, TradeSource, u32)>,
+    stocks: Query<(&ActorId, &MerchantStock)>,
     party: Single<(&PartyRoster, &PartyInventory)>,
     members: Query<(&Character, &Vitals, Option<&Carried>)>,
+    content: Res<Catalogs>,
 ) -> Result<TradeQuote, TradeError> {
-    let c = conversations.get(conversation).map_err(|_| TradeError::StaleSelection)?;
-    if !occupied.is_empty() || !c.ready() {
-        return Err(TradeError::Busy);
-    }
-    if !speakers.available(c.actor, &factions) {
-        return Err(TradeError::Unavailable);
-    }
-    let stock = stocks.get(c.actor).map_err(|_| TradeError::Unavailable)?;
-    let def = speakers.definition(c.actor);
-    let catalog = &speakers.content.items;
+    let (id, stock) = stocks.get(merchant).map_err(|_| TradeError::Unavailable)?;
     let (roster, inventory) = *party;
-    let communication =
-        communication(members.iter_many(roster.iter()).matched().map(|(c, v, _)| (c, v)));
+    let skill =
+        communication(roster.iter().filter_map(|m| members.get(m).ok()).map(|(c, v, _)| (c, v)));
+    let def = &content.npcs[id.npc()];
     let gold = match source {
         TradeSource::Stock(lot) => {
-            purchase_price(stock.lot(lot)?, def, catalog, quantity, communication)
+            purchase_price(stock.lot(lot)?, def, &content.items, quantity, skill)?
         }
         TradeSource::Party(item) => {
             let carried = match item.owner {
                 ItemOwner::Pool => None,
-                ItemOwner::Member(member) => members.get(member).ok().and_then(|(_, _, c)| c),
+                ItemOwner::Member(member) => {
+                    if !roster.contains(&member) {
+                        return Err(TradeError::StaleSelection);
+                    }
+                    members.get(member).ok().and_then(|(_, _, pack)| pack)
+                }
             };
             validate_sale(
                 def,
                 sale_item(item, inventory, carried)?,
                 quantity,
-                catalog,
-                communication,
-            )
+                &content.items,
+                skill,
+            )?
         }
-    }?;
-    Ok(TradeQuote { conversation, trade: stock.trades, source, quantity, gold })
+    };
+    Ok(TradeQuote { conversation, merchant, trade: stock.trades, source, quantity, gold })
 }

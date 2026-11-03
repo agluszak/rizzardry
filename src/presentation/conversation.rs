@@ -14,6 +14,7 @@ use crate::game::data::Catalogs;
 use crate::game::npcs::{
     Npc,
     conversation::*,
+    story::StoryFacts,
     trade::{self, TradeQuote, TradeSource},
 };
 use crate::game::{
@@ -276,7 +277,7 @@ fn select(world: &mut World, view: Entity, source: TradeSource, quantity: u32) {
             Selection::Gift(item)
         }
         source => {
-            match world.run_system_cached_with(trade::quote, (session, source, quantity)).unwrap() {
+            match world.run_system_cached_with(quote_trade, (session, source, quantity)).unwrap() {
                 Ok(quote) => Selection::Priced(quote),
                 Err(error) => Selection::Refused(error),
             }

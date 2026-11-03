@@ -66,7 +66,7 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
     }
     let Some(q) = world.get::<DialogueState>(view).and_then(|s| s.quote()) else { return };
     if world
-        .run_system_cached_with(trade::quote, (q.conversation, q.source, q.quantity))
+        .run_system_cached_with(quote_trade, (q.conversation, q.source, q.quantity))
         .unwrap()
         .is_err()
     {
@@ -83,7 +83,7 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
         0
     } else {
         let Ok(remaining) = world
-            .run_system_cached_with(trade::quote, (q.conversation, q.source, maximum - q.quantity))
+            .run_system_cached_with(quote_trade, (q.conversation, q.source, maximum - q.quantity))
             .unwrap()
         else {
             return;
@@ -284,13 +284,13 @@ fn change(world: &mut World, panel: Entity, n: u32, rewrite: bool) {
         return;
     }
     if let Ok(quote) =
-        world.run_system_cached_with(trade::quote, (q.conversation, q.source, n)).unwrap()
+        world.run_system_cached_with(quote_trade, (q.conversation, q.source, n)).unwrap()
     {
         let remaining = if max == n {
             0
         } else {
             let Ok(remaining) = world
-                .run_system_cached_with(trade::quote, (q.conversation, q.source, max - n))
+                .run_system_cached_with(quote_trade, (q.conversation, q.source, max - n))
                 .unwrap()
             else {
                 return;
@@ -336,7 +336,7 @@ fn finish(world: &mut World, panel: Entity, accept: bool) {
     let Some(overlay) = world.get::<ChildOf>(panel).map(ChildOf::parent) else { return };
     if accept && world.get::<Conversation>(q.conversation).is_some_and(Conversation::ready) {
         let Ok(verified) = world
-            .run_system_cached_with(trade::quote, (q.conversation, q.source, q.quantity))
+            .run_system_cached_with(quote_trade, (q.conversation, q.source, q.quantity))
             .unwrap()
         else {
             return;

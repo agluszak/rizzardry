@@ -1,6 +1,8 @@
 //! Campaign-lived NPCs retain their world-role state while their level is dormant.
+pub mod access;
 pub mod conversation;
 pub mod recruit;
+pub mod story;
 pub mod trade;
 use crate::content::npcs::*;
 use crate::game::GameplaySet;
@@ -303,7 +305,7 @@ impl Plugin for NpcPlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<DialogueScript>()
             .init_resource::<NpcAssets>()
-            .init_resource::<conversation::StoryFacts>()
+            .init_resource::<story::StoryFacts>()
             .init_resource::<conversation::NoAnswerTurn>()
             .add_message::<conversation::ConversationRequest>()
             .add_message::<conversation::BeginConversation>()
@@ -316,16 +318,14 @@ impl Plugin for NpcPlugin {
             .add_message::<crate::game::factions::FactionNews>()
             .add_systems(
                 Update,
-                (
-                    conversation::finish_lines,
-                    conversation::edit_notebook,
-                    conversation::begin_conversations,
-                    conversation::answer_requests,
-                    conversation::run_conversations,
-                )
+                (conversation::finish_lines, conversation::edit_notebook, conversation::converse)
                     .chain()
                     .in_set(conversation::Conversing)
                     .after(GameplaySet::Combat),
+            )
+            .add_systems(
+                Update,
+                conversation::interrupt_for_travel.before(GameplaySet::LevelActivation),
             )
             .add_observer(recruit::npc_member_falls);
     }

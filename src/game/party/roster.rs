@@ -27,6 +27,7 @@ pub struct Party;
 /// leaves (an NPC dismissed) keeps its identity and state.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 #[relationship(relationship_target = PartyRoster)]
+#[component(on_insert = member_inserted, on_discard = member_removed)]
 #[require(crate::game::world::footing::Footing, crate::game::world::footing::Conspicuous)]
 pub struct PartyMember(pub Entity);
 
@@ -56,7 +57,6 @@ pub fn test_party(world: &mut World, members: &[Entity]) -> Entity {
     let party = world.spawn(Party).id();
     for &member in members {
         world.entity_mut(member).insert(PartyMember(party));
-        world.get_mut::<super::formation::Formation>(party).unwrap().seat(member);
     }
     party
 }
@@ -91,7 +91,6 @@ impl Recruit {
 pub fn recruit_character(
     commands: &mut Commands,
     party: Entity,
-    formation: &mut super::formation::Formation,
     (character, learned): (Character, crate::game::magic::LearnedSpells),
     items: &ItemCatalog,
     (ids, rng): (&mut ItemIds, &mut GameRng),
@@ -106,7 +105,7 @@ pub fn recruit_character(
     }
     let points = crate::game::magic::SpellPoints::default();
     let vitals = crate::game::characters::Vitals::new(&character);
-    let member = commands
+    commands
         .spawn((
             Name::new(character.name.clone()),
             character,
@@ -116,9 +115,7 @@ pub fn recruit_character(
             carried,
             PartyMember(party),
         ))
-        .id();
-    formation.seat(member);
-    member
+        .id()
 }
 
 /// A new character's starting items (retail `g_starting_equipment` and
@@ -156,4 +153,26 @@ pub fn starting_items(character: &Character) -> Vec<ItemId> {
         _ => None,
     };
     set.iter().copied().map(ItemId).chain(extra).collect()
+}
+
+fn member_inserted(
+    mut world: bevy::ecs::world::DeferredWorld,
+    context: bevy::ecs::lifecycle::HookContext,
+) {
+    let member = context.entity;
+    let party = world.get::<PartyMember>(member).unwrap().0;
+    let dead = world.get::<crate::game::characters::Dead>(member).is_some();
+    if let Some(mut formation) = world.get_mut::<super::formation::Formation>(party) {
+        formation.seat(member);
+        formation.update_seat(member, dead);
+    }
+}
+fn member_removed(
+    mut world: bevy::ecs::world::DeferredWorld,
+    context: bevy::ecs::lifecycle::HookContext,
+) {
+    let party = world.get::<PartyMember>(context.entity).unwrap().0;
+    if let Some(mut formation) = world.get_mut::<super::formation::Formation>(party) {
+        formation.unseat(context.entity);
+    }
 }

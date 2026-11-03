@@ -9,7 +9,8 @@ use crate::{
     game::{
         npcs::{
             Npc,
-            conversation::{Conversation, MagicalReply, Speakers},
+            access::NpcActors,
+            conversation::{Conversation, MagicalReply},
         },
         rng::GameRng,
         world::population::Monster,
@@ -37,7 +38,7 @@ pub(crate) fn cast(
     // dialogues read it.
     let body = world
         .run_system_cached_with(
-            |In(actor): In<Entity>, speakers: Speakers| speakers.active_body(actor),
+            |In(actor): In<Entity>, speakers: NpcActors| speakers.active_body(actor),
             actor,
         )
         .unwrap()

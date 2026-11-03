@@ -8,8 +8,11 @@ use avian3d::prelude::Position;
 use bevy::ecs::entity_disabling::Disabled;
 use bevy::prelude::*;
 
-use super::conversation::{Dialogue, fact_named};
 use super::{Npc, NpcBodies, NpcWorldRole};
+use super::{
+    access::NpcActors,
+    story::{StoryFacts, fact_named},
+};
 use crate::content::items::ItemCatalog;
 use crate::content::npcs::{NpcCharacter, NpcDefinition, NpcId};
 use crate::content::spells::SpellCatalog;
@@ -18,12 +21,12 @@ use crate::game::data::Catalogs;
 use crate::game::inventory::{Carried, EquipSlot, Equipped, ItemIds, ItemStack, PartyInventory};
 use crate::game::magic::{LearnedSpells, SpellPoints};
 use crate::game::party::body::PartyBody;
-use crate::game::party::formation::Formation;
 use crate::game::party::roster::{PartyMember, PartyRoster};
 use crate::game::rng::GameRng;
 use crate::game::world::level::{Level, LevelOwned};
 use crate::game::world::navigation::{LevelNavigation, WalkerMotionConfig};
 use crate::game::world::population::Monster;
+use bevy::ecs::system::SystemParam;
 
 /// The party's places for NPCs (retail party rows 0 and 1).
 pub const NPC_PLACES: usize = 2;
@@ -76,56 +79,77 @@ const SEXUS: NpcId = NpcId(0x4f);
 /// offer the service of the region the party is in; its authored terms
 /// hold; and the party's living, able members average at least its minimum
 /// level.
-fn willing(dialogue: &Dialogue, actor: Entity, definition: &NpcDefinition) -> bool {
-    let band = dialogue
-        .speakers
-        .level()
-        .and_then(|(_, level)| crate::content::levels::LevelInfo::for_path(&level.path))
-        .map_or(0, |info| info.band);
-    if offers_service(definition, band) {
-        return false;
+pub fn eligibility(
+    id: NpcId,
+    definition: &NpcDefinition,
+    dead: bool,
+    already_member: bool,
+    occupied: usize,
+    region: u8,
+    levels: impl Iterator<Item = u8>,
+    fact: impl Fn(&str) -> u8,
+) -> Result<(), JoinRefusal> {
+    if definition.character.is_none() || dead || already_member {
+        return Err(JoinRefusal::Declines);
     }
-    let facts = &dialogue.speakers.content.facts;
-    let fact = |symbol: &str| fact_named(&dialogue.story, facts, symbol).expect("a ported fact");
-    let terms = match dialogue.speakers.id(actor) {
+    if occupied >= NPC_PLACES {
+        return Err(JoinRefusal::NoRoom);
+    }
+    let terms = match id {
         GLUMPH => fact("FACT_UMISSION_SCUBA_DONE") == 0,
         SEXUS => fact("FACT_SEXUS_PAID") != 0,
         MADRAS => fact("FACT_TRYNNIE_MADRAS_WILL_JOIN") != 0,
         DRAZIC | RODAN => fact("FACT_PEACE_ACHIEVED") == 0,
         _ => true,
     };
-    if !terms {
-        return false;
-    }
-    if definition.min_party_level > 0 {
-        // Retail counts no able member as an average of nothing.
-        let mut levels = dialogue.able().map(|(_, c)| c.level()).peekable();
-        let average =
-            if levels.peek().is_none() { 0 } else { crate::game::party::average_level(levels) };
-        if average < u32::from(definition.min_party_level) {
-            return false;
-        }
-    }
-    true
-}
-
-/// Whether the NPC would join the party now, and if not, why (retail
-/// `RequestNpcJoinParty`'s order: an NPC without a character declines
-/// before the party's room is counted).
-pub fn joinable(dialogue: &Dialogue, actor: Entity) -> Result<(), JoinRefusal> {
-    let definition = dialogue.speakers.definition(actor);
-    let gone = dialogue.npcs.get(actor).is_ok_and(|npc| npc.dead);
-    let roster = dialogue.party.roster;
-    if definition.character.is_none() || gone || roster.contains(&actor) {
-        return Err(JoinRefusal::Declines);
-    }
-    if roster.iter().filter(|&member| dialogue.npcs.contains(member)).count() >= NPC_PLACES {
-        return Err(JoinRefusal::NoRoom);
-    }
-    if !willing(dialogue, actor, definition) {
+    let (sum, count) =
+        levels.fold((0u32, 0u32), |(sum, count), level| (sum + u32::from(level), count + 1));
+    if !terms
+        || offers_service(definition, region)
+        || sum / count.max(1) < u32::from(definition.min_party_level)
+    {
         return Err(JoinRefusal::Declines);
     }
     Ok(())
+}
+
+/// Only the inputs to recruitment policy. No conversation is required.
+#[derive(SystemParam)]
+pub struct Candidates<'w, 's> {
+    npcs: Query<'w, 's, (&'static super::ActorId, &'static Npc)>,
+    content: Res<'w, Catalogs>,
+    level: Single<'w, 's, &'static Level>,
+    party: Single<'w, 's, (Entity, &'static PartyRoster)>,
+    members: Query<'w, 's, (&'static Character, &'static Vitals), Without<Monster>>,
+    story: Res<'w, StoryFacts>,
+}
+impl Candidates<'_, '_> {
+    pub fn check(&self, actor: Entity) -> Result<(), JoinRefusal> {
+        let (id, npc) = self.npcs.get(actor).map_err(|_| JoinRefusal::Declines)?;
+        let (_, roster) = *self.party;
+        let region =
+            crate::content::levels::LevelInfo::for_path(&self.level.path).map_or(0, |l| l.band);
+        eligibility(
+            id.npc(),
+            &self.content.npcs[id.npc()],
+            npc.dead,
+            roster.contains(&actor),
+            roster.iter().filter(|&m| self.npcs.contains(m)).count(),
+            region,
+            roster
+                .iter()
+                .filter_map(|m| self.members.get(m).ok())
+                .filter(|(_, v)| v.can_fight())
+                .map(|(c, _)| c.level()),
+            |name| {
+                fact_named(&self.story, &self.content.facts, name)
+                    .expect("a ported recruitment fact")
+            },
+        )
+    }
+}
+pub fn joinable(In(actor): In<Entity>, candidates: Candidates) -> Result<(), JoinRefusal> {
+    candidates.check(actor)
 }
 
 /// The character an NPC brings the first time it joins (retail
@@ -181,28 +205,32 @@ fn first_character(
 /// Take the NPC into the party (retail `RecruitNpcIntoParty`): it brings
 /// its character (made the first time), the conditions its world body had,
 /// and takes an NPC place; its world body goes dormant.
-pub fn join(dialogue: &mut Dialogue, actor: Entity) -> Result<(), JoinRefusal> {
-    joinable(dialogue, actor)?;
-    let party = dialogue.party.entity;
-    let body = dialogue.speakers.active_body(actor);
-    let conditions =
-        body.and_then(|body| dialogue.speakers.vitals(body)).map(|v| v.conditions.clone());
-    if dialogue.characters.contains(actor) {
-        if let Some(conditions) = conditions {
-            dialogue.characters.get_mut(actor).unwrap().1.conditions = conditions;
-        }
-    } else {
-        let content = &dialogue.speakers.content;
-        let template = content.npcs[dialogue.speakers.id(actor)].character.as_ref().unwrap();
-        let (character, mut vitals, learned, points, carried) = first_character(
-            template,
-            (&content.items, &content.spells),
-            (&mut dialogue.ids, &mut dialogue.rng),
-        );
+pub fn join(
+    In(actor): In<Entity>,
+    candidates: Candidates,
+    actors: NpcActors,
+    mut ids: ResMut<ItemIds>,
+    mut rng: ResMut<GameRng>,
+    mut commands: Commands,
+) -> Result<(), JoinRefusal> {
+    candidates.check(actor)?;
+    let body = actors.active_body(actor);
+    let conditions = body.and_then(|body| actors.vitals(body)).map(|v| v.conditions.clone());
+    if let Ok((_, vitals)) = candidates.members.get(actor) {
+        let mut vitals = vitals.clone();
         if let Some(conditions) = conditions {
             vitals.conditions = conditions;
         }
-        dialogue.commands.entity(actor).insert((
+        commands.entity(actor).insert(vitals);
+    } else {
+        let content = &candidates.content;
+        let template = actors.definition(actor).character.as_ref().unwrap();
+        let (character, mut vitals, learned, points, carried) =
+            first_character(template, (&content.items, &content.spells), (&mut ids, &mut rng));
+        if let Some(conditions) = conditions {
+            vitals.conditions = conditions;
+        }
+        commands.entity(actor).insert((
             Name::new(character.name.clone()),
             character,
             vitals,
@@ -212,12 +240,13 @@ pub fn join(dialogue: &mut Dialogue, actor: Entity) -> Result<(), JoinRefusal> {
         ));
     }
     if let Some(body) = body
-        && let Some(at) = dialogue.speakers.standing_pose(body)
+        && let Some(at) = actors.standing_pose(body)
     {
-        super::retire(&mut dialogue.commands, body, at);
+        super::retire(&mut commands, body, at);
     }
-    dialogue.commands.entity(actor).insert((PartyMember(party), crate::game::party::Order::Attack));
-    dialogue.party.formation.seat(actor);
+    commands
+        .entity(actor)
+        .insert((PartyMember(candidates.party.0), crate::game::party::Order::Attack));
     Ok(())
 }
 
@@ -252,7 +281,7 @@ fn hand_over(
 #[allow(clippy::too_many_arguments)]
 pub fn dismiss(
     In(actor): In<Entity>,
-    mut party: Single<(&PartyRoster, &mut PartyInventory, &mut Formation, &Position, &PartyBody)>,
+    mut party: Single<(&PartyRoster, &mut PartyInventory, &Position, &PartyBody)>,
     actors: Query<(&NpcBodies, &super::ActorId), With<Npc>>,
     mut characters: Query<(&Character, &Vitals, &mut Carried), Without<Monster>>,
     mut bodies: Query<(&mut Vitals, &Monster, &mut NpcWorldRole), (With<Monster>, Allow<Disabled>)>,
@@ -262,7 +291,7 @@ pub fn dismiss(
     mut configs: ResMut<Assets<WalkerMotionConfig>>,
     mut commands: Commands,
 ) -> bool {
-    let (roster, inventory, formation, at, facing) = &mut *party;
+    let (roster, inventory, at, facing) = &mut *party;
     let Ok((npc_bodies, id)) = actors.get(actor) else { return false };
     if !roster.contains(&actor) {
         return false;
@@ -273,7 +302,6 @@ pub fn dismiss(
     let stamina_max = character.base_stats().max_stamina();
     let (root, played, navigation) = *level;
     commands.entity(actor).remove::<PartyMember>();
-    formation.unseat(actor);
     if alive
         && let Some(&body) = npc_bodies.first()
         && let Ok((mut monster_vitals, monster, mut role)) = bodies.get_mut(body)
@@ -343,16 +371,15 @@ pub fn dismiss(
 pub fn npc_member_falls(
     death: On<Add<crate::game::characters::Dead>>,
     mut members: Query<(&PartyMember, &mut Npc, &mut Carried)>,
-    mut parties: Query<(&mut PartyInventory, &mut Formation, &Position)>,
+    mut parties: Query<(&mut PartyInventory, &Position)>,
     level: Single<Entity, With<Level>>,
     content: Res<Catalogs>,
     mut commands: Commands,
 ) {
     let member = death.entity;
     let Ok((&PartyMember(party), mut npc, mut carried)) = members.get_mut(member) else { return };
-    let Ok((mut inventory, mut formation, at)) = parties.get_mut(party) else { return };
+    let Ok((mut inventory, at)) = parties.get_mut(party) else { return };
     commands.entity(member).remove::<PartyMember>();
-    formation.unseat(member);
     npc.dead = true;
     let feet = PartyBody::feet(at);
     hand_over(&mut carried, &mut inventory, &content.items, &mut commands, (*level, feet), |_| {
