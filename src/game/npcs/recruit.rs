@@ -1,388 +1,372 @@
-//! NPCs joining and leaving the party (retail `CanNpcJoinParty`,
-//! `RecruitNpcIntoParty`, `DismissNpcFromParty`, `UpdateNpcPartyMember`).
-//! The NPC's actor is the member: its identity, character and belongings
-//! last through leaving and rejoining. Its world body waits, dormant, while
-//! it travels with the party, and stands again where it leaves.
-
-use avian3d::prelude::Position;
-use bevy::ecs::entity_disabling::Disabled;
-use bevy::prelude::*;
-
-use super::{Npc, NpcBodies, NpcWorldRole};
-use super::{
-    access::NpcActors,
-    story::{StoryFacts, fact_named},
+//! Party transitions for NPCs. A stored profile is inactive data, not an off-party Character.
+use super::{ActorId, Npc, NpcBodies, NpcBody, NpcLocation};
+use crate::{
+    content::npcs::{NpcCharacter, NpcId},
+    game::{
+        characters::{Character, Dead, Vitals},
+        data::Catalogs,
+        inventory::{Carried, EquipSlot, Equipped, ItemIds, PartyInventory, make_item},
+        magic::{LearnedSpells, SpellPoints},
+        party::{
+            body::PartyBody,
+            roster::{PartyMember, PartyRoster},
+        },
+        rng::GameRng,
+        world::{
+            level::{KeptMonster, Level},
+            navigation::{LevelNavigation, WalkerMotionConfig},
+            population::Monster,
+        },
+    },
 };
-use crate::content::items::ItemCatalog;
-use crate::content::npcs::{NpcCharacter, NpcDefinition, NpcId};
-use crate::content::spells::SpellCatalog;
-use crate::game::characters::{Character, Vitals};
-use crate::game::data::Catalogs;
-use crate::game::inventory::{Carried, EquipSlot, Equipped, ItemIds, ItemStack, PartyInventory};
-use crate::game::magic::{LearnedSpells, SpellPoints};
-use crate::game::party::body::PartyBody;
-use crate::game::party::roster::{PartyMember, PartyRoster};
-use crate::game::rng::GameRng;
-use crate::game::world::level::{Level, LevelOwned};
-use crate::game::world::navigation::{LevelNavigation, WalkerMotionConfig};
-use crate::game::world::population::Monster;
-use bevy::ecs::system::SystemParam;
-
-/// The party's places for NPCs (retail party rows 0 and 1).
-pub const NPC_PLACES: usize = 2;
-
-/// Why an NPC does not join.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum JoinRefusal {
-    /// Both of the party's NPC places are taken.
-    NoRoom,
-    /// The NPC will not, or cannot, join.
-    Declines,
+use avian3d::prelude::Position;
+use bevy::prelude::*;
+#[derive(Bundle, Clone)]
+pub struct Profile {
+    character: Character,
+    vitals: Vitals,
+    carried: Carried,
+    spells: LearnedSpells,
+    points: SpellPoints,
 }
-
-/// Retail's service table (`g_npc_services`): each region whose service an
-/// NPC may offer, and the NPC's flag for it.
-const SERVICES: [(u8, u32); 14] = [
-    (2, 0x1),
-    (3, 0x2),
-    (4, 0x400),
-    (5, 0x4),
-    (7, 0x8),
-    (8, 0x80),
-    (9, 0x40),
-    (10, 0x20),
-    (11, 0x10),
-    (12, 0x100),
-    (13, 0x800),
-    (14, 0x200),
-    (15, 0x1000),
-    (6, 0x2000),
-];
-
-/// Whether the NPC offers the service of the region `band` (retail
-/// `NpcOffersService`).
-fn offers_service(definition: &NpcDefinition, band: u8) -> bool {
-    SERVICES
-        .iter()
-        .find(|&&(region, _)| region == band)
-        .is_some_and(|&(_, flag)| definition.services & flag != 0)
-}
-
-/// Retail's NPCs with authored joining terms (`W8NpcId`).
-const DRAZIC: NpcId = NpcId(0x10);
-const RODAN: NpcId = NpcId(0x11);
-const GLUMPH: NpcId = NpcId(0x2b);
-const MADRAS: NpcId = NpcId(0x4a);
-const SEXUS: NpcId = NpcId(0x4f);
-
-/// Whether the NPC would join now (retail `CanNpcJoinParty`): it does not
-/// offer the service of the region the party is in; its authored terms
-/// hold; and the party's living, able members average at least its minimum
-/// level.
-pub fn eligibility(
-    id: NpcId,
-    definition: &NpcDefinition,
-    dead: bool,
-    already_member: bool,
-    occupied: usize,
-    region: u8,
-    levels: impl Iterator<Item = u8>,
-    fact: impl Fn(&str) -> u8,
-) -> Result<(), JoinRefusal> {
-    if definition.character.is_none() || dead || already_member {
-        return Err(JoinRefusal::Declines);
-    }
-    if occupied >= NPC_PLACES {
-        return Err(JoinRefusal::NoRoom);
-    }
-    let terms = match id {
-        GLUMPH => fact("FACT_UMISSION_SCUBA_DONE") == 0,
-        SEXUS => fact("FACT_SEXUS_PAID") != 0,
-        MADRAS => fact("FACT_TRYNNIE_MADRAS_WILL_JOIN") != 0,
-        DRAZIC | RODAN => fact("FACT_PEACE_ACHIEVED") == 0,
-        _ => true,
-    };
-    let (sum, count) =
-        levels.fold((0u32, 0u32), |(sum, count), level| (sum + u32::from(level), count + 1));
-    if !terms
-        || offers_service(definition, region)
-        || sum / count.max(1) < u32::from(definition.min_party_level)
-    {
-        return Err(JoinRefusal::Declines);
-    }
-    Ok(())
-}
-
-/// Only the inputs to recruitment policy. No conversation is required.
-#[derive(SystemParam)]
-pub struct Candidates<'w, 's> {
-    npcs: Query<'w, 's, (&'static super::ActorId, &'static Npc)>,
-    content: Res<'w, Catalogs>,
-    level: Single<'w, 's, &'static Level>,
-    party: Single<'w, 's, (Entity, &'static PartyRoster)>,
-    members: Query<'w, 's, (&'static Character, &'static Vitals), Without<Monster>>,
-    story: Res<'w, StoryFacts>,
-}
-impl Candidates<'_, '_> {
-    pub fn check(&self, actor: Entity) -> Result<(), JoinRefusal> {
-        let (id, npc) = self.npcs.get(actor).map_err(|_| JoinRefusal::Declines)?;
-        let (_, roster) = *self.party;
-        let region =
-            crate::content::levels::LevelInfo::for_path(&self.level.path).map_or(0, |l| l.band);
-        eligibility(
-            id.npc(),
-            &self.content.npcs[id.npc()],
-            npc.dead,
-            roster.contains(&actor),
-            roster.iter().filter(|&m| self.npcs.contains(m)).count(),
-            region,
-            roster
-                .iter()
-                .filter_map(|m| self.members.get(m).ok())
-                .filter(|(_, v)| v.can_fight())
-                .map(|(c, _)| c.level()),
-            |name| {
-                fact_named(&self.story, &self.content.facts, name)
-                    .expect("a ported recruitment fact")
-            },
-        )
-    }
-}
-pub fn joinable(In(actor): In<Entity>, candidates: Candidates) -> Result<(), JoinRefusal> {
-    candidates.check(actor)
-}
-
-/// The character an NPC brings the first time it joins (retail
-/// `InitializeNpcCharacter`): the template's identity, attributes, skills
-/// and level, with the experience that level took; the spells it lists
-/// that it can learn; its items made and identified; and full health,
-/// stamina and spell points.
-fn first_character(
-    template: &NpcCharacter,
-    (items, spells): (&ItemCatalog, &SpellCatalog),
-    (ids, rng): (&mut ItemIds, &mut GameRng),
-) -> (Character, Vitals, LearnedSpells, SpellPoints, Carried) {
+#[derive(Component, Clone)]
+pub struct StoredCharacter(Profile);
+pub fn character(
+    t: &NpcCharacter,
+    content: &Catalogs,
+    ids: &mut ItemIds,
+    rng: &mut GameRng,
+) -> StoredCharacter {
     use enum_map::Enum;
-    let mut character =
-        Character::new(&template.name, template.race, template.gender, template.profession);
-    character.attributes = template.attributes;
-    character.skill_points = template.skills;
-    character.profession_levels = default();
-    character.profession_levels[template.profession] = 1;
-    // Walked up from level 1, as retail `AdvanceCharacterToLevel` does.
-    character.experience_previous_goal = 0;
-    while character.level() < template.level {
-        character.experience_previous_goal = character.experience_goal();
-        character.profession_levels[template.profession] += 1;
+    let mut c = Character::new(&t.name, t.race, t.gender, t.profession);
+    c.attributes = t.attributes;
+    c.skill_points = t.skills;
+    c.profession_levels = default();
+    c.profession_levels[t.profession] = 1;
+    c.experience_previous_goal = 0;
+    while c.level() < t.level {
+        c.experience_previous_goal = c.experience_goal();
+        c.profession_levels[t.profession] += 1;
     }
-    character.experience = character.experience_previous_goal;
-    character.portrait = crate::game::characters::creation::identity::PORTRAITS
-        .get(template.portrait)
-        .map_or_else(String::new, |&portrait| portrait.to_owned());
-    let learned = LearnedSpells(
-        template
-            .spells
+    c.experience = c.experience_previous_goal;
+    c.portrait = crate::game::characters::creation::identity::PORTRAITS
+        .get(t.portrait)
+        .copied()
+        .unwrap_or_default()
+        .into();
+    let spells = LearnedSpells(
+        t.spells
             .iter()
             .copied()
-            .filter(|&id| crate::game::magic::can_learn(&character, &spells[id]))
+            .filter(|&s| crate::game::magic::can_learn(&c, &content.spells[s]))
             .collect(),
     );
     let mut carried = Carried::default();
-    let mut make = |id| crate::game::inventory::make_item(&items[id], ids, rng, true, true);
-    for (slot, id) in template.equipment.iter().enumerate() {
-        if let Some(stack) = id.map(&mut make) {
-            carried.equipment[EquipSlot::from_usize(slot)] = Some(Equipped::new(stack));
+    for (slot, item) in t.equipment.iter().enumerate() {
+        if let Some(item) = item {
+            carried.equipment[EquipSlot::from_usize(slot)] =
+                Some(Equipped::new(make_item(&content.items[*item], ids, rng, true, true)));
         }
     }
-    for (slot, id) in template.backpack.iter().enumerate() {
-        carried.backpack[slot] = id.map(&mut make);
+    for (slot, item) in t.backpack.iter().enumerate() {
+        if let Some(item) = item {
+            carried.backpack[slot] = Some(make_item(&content.items[*item], ids, rng, true, true));
+        }
     }
-    let points = SpellPoints::default();
-    let vitals = Vitals::new(&character);
-    (character, vitals, learned, points, carried)
+    StoredCharacter(Profile {
+        vitals: Vitals::new(&c),
+        character: c,
+        carried,
+        spells,
+        points: default(),
+    })
 }
-
-/// Take the NPC into the party (retail `RecruitNpcIntoParty`): it brings
-/// its character (made the first time), the conditions its world body had,
-/// and takes an NPC place; its world body goes dormant.
-pub fn join(
-    In(actor): In<Entity>,
-    candidates: Candidates,
-    actors: NpcActors,
-    mut ids: ResMut<ItemIds>,
-    mut rng: ResMut<GameRng>,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JoinRefusal {
+    NoRoom,
+    Declines,
+}
+#[derive(Message)]
+pub struct Join {
+    pub actor: Entity,
+    pub reply_to: Entity,
+}
+#[derive(Message)]
+pub struct Joined {
+    pub reply_to: Entity,
+    pub result: Result<(), JoinRefusal>,
+}
+#[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Recruiting;
+pub fn install(app: &mut App) {
+    app.add_message::<Join>()
+        .add_message::<Joined>()
+        .add_systems(Update, (join, retire_fallen).chain().in_set(Recruiting))
+        .add_observer(died)
+        .add_observer(revived);
+}
+fn service(flags: u32, region: u8) -> bool {
+    let bit = match region {
+        2 => 1,
+        3 => 2,
+        4 => 0x400,
+        5 => 4,
+        7 => 8,
+        8 => 0x80,
+        9 => 0x40,
+        10 => 0x20,
+        11 => 0x10,
+        12 => 0x100,
+        13 => 0x800,
+        14 => 0x200,
+        15 => 0x1000,
+        6 => 0x2000,
+        _ => 0,
+    };
+    flags & bit != 0
+}
+fn terms(id: NpcId, story: &super::story::StoryFacts, content: &Catalogs) -> bool {
+    let requirement = match id.0 {
+        0x2b => Some(("FACT_UMISSION_SCUBA_DONE", false)),
+        0x4f => Some(("FACT_SEXUS_PAID", true)),
+        0x4a => Some(("FACT_TRYNNIE_MADRAS_WILL_JOIN", true)),
+        0x10 | 0x11 => Some(("FACT_PEACE_ACHIEVED", false)),
+        _ => None,
+    };
+    requirement.is_none_or(|(name, expected)| {
+        super::story::fact_named(story, &content.facts, name).is_ok_and(|v| (v != 0) == expected)
+    })
+}
+fn join(
+    mut requests: MessageReader<Join>,
+    mut results: MessageWriter<Joined>,
+    records: Query<(&ActorId, &Npc, &StoredCharacter, Option<&NpcBodies>)>,
+    party: Single<(Entity, &PartyRoster)>,
+    members: Query<(&Character, &Vitals, Has<Npc>)>,
+    bodies: Query<&Vitals, With<Monster>>,
+    level: Single<&Level>,
+    content: Res<Catalogs>,
+    story: Res<super::story::StoryFacts>,
     mut commands: Commands,
-) -> Result<(), JoinRefusal> {
-    candidates.check(actor)?;
-    let body = actors.active_body(actor);
-    let conditions = body.and_then(|body| actors.vitals(body)).map(|v| v.conditions.clone());
-    if let Ok((_, vitals)) = candidates.members.get(actor) {
-        let mut vitals = vitals.clone();
-        if let Some(conditions) = conditions {
-            vitals.conditions = conditions;
-        }
-        commands.entity(actor).insert(vitals);
-    } else {
-        let content = &candidates.content;
-        let template = actors.definition(actor).character.as_ref().unwrap();
-        let (character, mut vitals, learned, points, carried) =
-            first_character(template, (&content.items, &content.spells), (&mut ids, &mut rng));
-        if let Some(conditions) = conditions {
-            vitals.conditions = conditions;
-        }
-        commands.entity(actor).insert((
-            Name::new(character.name.clone()),
-            character,
-            vitals,
-            learned,
-            points,
-            carried,
-        ));
-    }
-    if let Some(body) = body
-        && let Some(at) = actors.standing_pose(body)
-    {
-        super::retire(&mut commands, body, at);
-    }
-    commands
-        .entity(actor)
-        .insert((PartyMember(candidates.party.0), crate::game::party::Order::Attack));
-    Ok(())
-}
-
-/// Give a departing member's items to the party, those the pool has no room
-/// for dropped at its feet. `keep` says which the member keeps.
-fn hand_over(
-    carried: &mut Carried,
-    inventory: &mut PartyInventory,
-    items: &ItemCatalog,
-    commands: &mut Commands,
-    (level, feet): (Entity, Vec3),
-    keep: impl Fn(&ItemStack) -> bool,
 ) {
-    let worn = carried
-        .equipment
-        .values_mut()
-        .filter_map(|worn| worn.take_if(|e| !keep(&e.stack)).map(|e| e.stack));
-    let mut given: Vec<_> = worn.collect();
-    given.extend(carried.backpack.iter_mut().filter_map(|place| place.take_if(|s| !keep(s))));
-    let mut left = Vec::new();
-    for stack in given {
-        left.extend(inventory.pool.receive(stack, items));
+    let (party_id, roster) = *party;
+    let mut occupied = roster.iter().filter(|&e| members.get(e).is_ok_and(|r| r.2)).count();
+    let mut admitted = std::collections::HashSet::new();
+    for request in requests.read() {
+        let result = (|| {
+            let (id, npc, stored, binding) =
+                records.get(request.actor).map_err(|_| JoinRefusal::Declines)?;
+            if npc.dead || roster.contains(&request.actor) || admitted.contains(&request.actor) {
+                return Err(JoinRefusal::Declines);
+            }
+            let d = &content.npcs[id.0];
+            if occupied >= 2 {
+                return Err(JoinRefusal::NoRoom);
+            }
+            let region =
+                crate::content::levels::LevelInfo::for_path(&level.path).map_or(0, |l| l.band);
+            let (sum, count) = roster
+                .iter()
+                .filter_map(|e| members.get(e).ok())
+                .filter(|(_, v, _)| v.can_fight())
+                .fold((0u32, 0u32), |(sum, count), (c, _, _)| {
+                    (sum + u32::from(c.level()), count + 1)
+                });
+            if service(d.services, region)
+                || !terms(id.0, &story, &content)
+                || sum / count.max(1) < u32::from(d.min_party_level)
+            {
+                return Err(JoinRefusal::Declines);
+            }
+            let mut profile = stored.0.clone();
+            if let Some(binding) = binding {
+                for b in binding.iter() {
+                    if let Ok(v) = bodies.get(b) {
+                        profile.vitals.conditions = v.conditions.clone();
+                    }
+                    commands.entity(b).despawn();
+                }
+            }
+            let name = profile.character.name.clone();
+            commands.entity(request.actor).remove::<StoredCharacter>().insert((
+                Name::new(name),
+                profile,
+                PartyMember(party_id),
+            ));
+            occupied += 1;
+            admitted.insert(request.actor);
+            Ok(())
+        })();
+        results.write(Joined { reply_to: request.reply_to, result });
     }
-    crate::game::world::items::drop_loot(commands, level, feet, left, items);
 }
-
-/// Let the NPC leave the party (retail `DismissNpcFromParty`, its body not
-/// held back): it gives up its NPC place; alive, it stands again beside the
-/// party with the conditions it has, at a fresh roll of its species' health;
-/// and it gives the party every item it neither wants nor has cursed on.
-/// Whether it was a member to dismiss.
-#[allow(clippy::too_many_arguments)]
+/// Dismissal is a complete ownership transfer; the caller does not edit formation.
 pub fn dismiss(
     In(actor): In<Entity>,
     mut party: Single<(&PartyRoster, &mut PartyInventory, &Position, &PartyBody)>,
-    actors: Query<(&NpcBodies, &super::ActorId), With<Npc>>,
-    mut characters: Query<(&Character, &Vitals, &mut Carried), Without<Monster>>,
-    mut bodies: Query<(&mut Vitals, &Monster, &mut NpcWorldRole), (With<Monster>, Allow<Disabled>)>,
-    level: Single<(Entity, &Level, Option<&LevelNavigation>)>,
+    records: Query<(&ActorId, &NpcLocation), With<Npc>>,
+    profiles: Query<(&Character, &Vitals, &Carried, &LearnedSpells, &SpellPoints)>,
+    level: Single<(
+        Entity,
+        &Level,
+        &LevelNavigation,
+        &crate::game::world::population::MonsterBodies,
+    )>,
+    body_assets: Res<Assets<crate::content::monster::MonsterBody>>,
     content: Res<Catalogs>,
     mut rng: ResMut<GameRng>,
     mut configs: ResMut<Assets<WalkerMotionConfig>>,
     mut commands: Commands,
 ) -> bool {
     let (roster, inventory, at, facing) = &mut *party;
-    let Ok((npc_bodies, id)) = actors.get(actor) else { return false };
     if !roster.contains(&actor) {
         return false;
     }
-    let Ok((character, vitals, _)) = characters.get(actor) else { return false };
-    let alive = !vitals.is_dead();
-    let (conditions, stamina) = (vitals.conditions.clone(), vitals.stamina.current);
-    let stamina_max = character.base_stats().max_stamina();
-    let (root, played, navigation) = *level;
-    commands.entity(actor).remove::<PartyMember>();
-    if alive
-        && let Some(&body) = npc_bodies.first()
-        && let Ok((mut monster_vitals, monster, mut role)) = bodies.get_mut(body)
-    {
-        // Retail asks the navigator for a place out from the party along its
-        // heading turned by an eighth of a turn; this stands it two metres out
-        // that way, without the navigator's search.
-        let yaw = facing.yaw;
-        let feet = PartyBody::feet(at)
-            + Quat::from_rotation_y(yaw + std::f32::consts::FRAC_PI_4) * Vec3::NEG_Z * 2.0;
-        let kind = &content.species[monster.species];
-        monster_vitals.health =
-            crate::game::characters::Pool::full(rng.roll(kind.hit_points).max(1));
-        monster_vitals.stamina = crate::game::characters::Pool::full(rng.roll(kind.stamina));
-        // An NPC out cold stays as spent as it was.
-        if conditions.exhausted() {
-            monster_vitals.stamina.current = stamina.min(stamina_max);
-        }
-        monster_vitals.conditions = conditions;
-        role.map = played.path.clone();
-        role.group = None;
-        let (speed, radius) = (monster.body.speed, monster.body.radius);
-        let mut entity = commands.entity(body);
-        entity.remove::<Disabled>().insert((
-            Transform::from_translation(
-                feet + Vec3::Y * crate::game::world::navigation::float_height(speed),
-            )
-            .with_rotation(Quat::from_rotation_y(yaw)),
-            LevelOwned(root),
-        ));
-        if speed > 0.0
-            && let Some(navigation) = navigation
+    let Ok((id, location)) = records.get(actor) else { return false };
+    let Ok((c, v, carried, spells, points)) = profiles.get(actor) else { return false };
+    let (root, played, navigation, handles) = *level;
+    let Some(shape) = handles.get(location.species, &body_assets) else { return false };
+    let feet = PartyBody::feet(at)
+        + Quat::from_rotation_y(facing.yaw + std::f32::consts::FRAC_PI_4) * Vec3::NEG_Z * 2.0;
+    let mut profile = Profile {
+        character: c.clone(),
+        vitals: v.clone(),
+        carried: carried.clone(),
+        spells: spells.clone(),
+        points: points.clone(),
+    };
+    let wanted = content.npcs[id.0].character.as_ref().map(|t| &t.wanted);
+    let wants = |item: crate::content::items::ItemId| {
+        wanted.is_some_and(|list| {
+            list.iter().any(|&id| {
+                id == item
+                    || (content.items[id].kind.0 == 0x83 && content.items[item].kind.0 == 0x83)
+            })
+        })
+    };
+    let mut returned = vec![];
+    for slot in profile.carried.equipment.values_mut() {
+        if slot.as_ref().is_some_and(|e| {
+            !wants(e.stack.item) && (!content.items[e.stack.item].cursed || e.curse_released)
+        }) && let Some(e) = slot.take()
         {
-            crate::game::world::navigation::insert_walker(
-                &mut entity,
-                (feet, yaw),
-                (radius, speed),
-                navigation,
-                &mut configs,
-            );
+            returned.push(e.stack);
         }
     }
-    let definition = &content.npcs[id.npc()];
-    let wanted =
-        definition.character.as_ref().map_or_else(Vec::new, |character| character.wanted.clone());
-    let items = &content.items;
-    let Ok((_, _, mut carried)) = characters.get_mut(actor) else { return true };
-    let held: Vec<_> = carried
-        .active_equipment()
-        .filter(|(_, e)| !e.curse_released && items[e.stack.item].cursed)
-        .map(|(_, e)| e.stack.id)
-        .collect();
-    hand_over(
-        &mut carried,
-        inventory,
-        items,
+    for slot in &mut profile.carried.backpack {
+        if slot.as_ref().is_some_and(|s| !wants(s.item))
+            && let Some(s) = slot.take()
+        {
+            returned.push(s);
+        }
+    }
+    let mut overflow = vec![];
+    for item in returned {
+        overflow.extend(inventory.pool.receive(item, &content.items));
+    }
+    crate::game::world::items::drop_loot(
         &mut commands,
-        (root, PartyBody::feet(at)),
-        |stack| wanted.contains(&stack.item) || held.contains(&stack.id),
+        root,
+        PartyBody::feet(at),
+        overflow,
+        &content.items,
     );
+    if !v.is_dead() {
+        let kind = &content.species[location.species];
+        let mut kept = KeptMonster::rolled(
+            (-1, location.species, None),
+            (feet, facing.yaw),
+            (kind, shape),
+            &mut rng,
+        );
+        kept.vitals.conditions = v.conditions.clone();
+        if v.conditions.exhausted() {
+            kept.vitals.stamina.current = v.stamina.current.min(c.base_stats().max_stamina());
+        }
+        let mut body = commands.spawn((
+            NpcBody(actor),
+            kept.monster.clone(),
+            kept.vitals.clone(),
+            kept.budget,
+        ));
+        crate::game::world::population::embody(
+            &mut body,
+            root,
+            (feet, kept.yaw, kept.monster.body),
+            (None, kind),
+            (navigation, &mut configs),
+        );
+        commands.entity(actor).insert(NpcLocation {
+            map: played.path.clone(),
+            species: location.species,
+            dormant: None,
+        });
+    }
+    commands
+        .entity(actor)
+        .remove::<(PartyMember, Character, Vitals, Carried, LearnedSpells, SpellPoints)>()
+        .insert(StoredCharacter(profile));
     true
 }
+fn died(event: On<Add<Dead>>, mut records: Query<&mut Npc, With<PartyMember>>) {
+    if let Ok(mut npc) = records.get_mut(event.entity) {
+        npc.dead = true;
+    }
+}
+fn revived(event: On<Remove<Dead>>, mut records: Query<&mut Npc, With<PartyMember>>) {
+    if let Ok(mut npc) = records.get_mut(event.entity) {
+        npc.dead = false;
+    }
+}
 
-/// A member NPC that dies leaves the party at once (retail
-/// `UpdateNpcPartyMember`): its items go to the party, it is dead for good
-/// (retail `spawned`), and it never stands in the world again.
-pub fn npc_member_falls(
-    death: On<Add<crate::game::characters::Dead>>,
-    mut members: Query<(&PartyMember, &mut Npc, &mut Carried)>,
-    mut parties: Query<(&mut PartyInventory, &Position)>,
+/// Retail removes fallen RPCs outside combat. Until then resurrection can clear
+/// the death mark through the normal character condition lifecycle.
+fn retire_fallen(
+    battles: Query<(), With<crate::game::combat::Battle>>,
+    members: Query<
+        (Entity, &Character, &Vitals, &Carried, &LearnedSpells, &SpellPoints),
+        (With<Npc>, With<PartyMember>, With<Dead>),
+    >,
+    mut party: Single<(&mut PartyInventory, &Position)>,
     level: Single<Entity, With<Level>>,
-    content: Res<Catalogs>,
+    content: If<Res<Catalogs>>,
     mut commands: Commands,
 ) {
-    let member = death.entity;
-    let Ok((&PartyMember(party), mut npc, mut carried)) = members.get_mut(member) else { return };
-    let Ok((mut inventory, at)) = parties.get_mut(party) else { return };
-    commands.entity(member).remove::<PartyMember>();
-    npc.dead = true;
-    let feet = PartyBody::feet(at);
-    hand_over(&mut carried, &mut inventory, &content.items, &mut commands, (*level, feet), |_| {
-        false
-    });
+    if !battles.is_empty() {
+        return;
+    }
+    for (entity, character, vitals, carried, spells, points) in &members {
+        let mut carried = carried.clone();
+        let mut items = Vec::new();
+        for slot in carried.equipment.values_mut() {
+            if let Some(item) = slot.take() {
+                items.push(item.stack);
+            }
+        }
+        for slot in &mut carried.backpack {
+            items.extend(slot.take());
+        }
+        let (inventory, at) = &mut *party;
+        let mut overflow = vec![];
+        for item in items {
+            overflow.extend(inventory.pool.receive(item, &content.items));
+        }
+        crate::game::world::items::drop_loot(
+            &mut commands,
+            *level,
+            PartyBody::feet(at),
+            overflow,
+            &content.items,
+        );
+        commands
+            .entity(entity)
+            .remove::<(PartyMember, Character, Vitals, Carried, LearnedSpells, SpellPoints)>()
+            .insert(StoredCharacter(Profile {
+                character: character.clone(),
+                vitals: vitals.clone(),
+                carried,
+                spells: spells.clone(),
+                points: points.clone(),
+            }));
+    }
 }

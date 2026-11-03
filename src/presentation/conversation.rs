@@ -15,7 +15,7 @@ use crate::game::npcs::{
     Npc,
     conversation::*,
     story::StoryFacts,
-    trade::{self, TradeQuote, TradeSource},
+    trade::{self, TradeSource},
 };
 use crate::game::{
     inventory::{Carried, ItemOwner, ItemRef, PartyInventory},
@@ -79,7 +79,7 @@ impl Selection {
     fn source(self) -> Option<TradeSource> {
         match self {
             Selection::Gift(item) => Some(TradeSource::Party(item)),
-            Selection::Priced(quote) => Some(quote.source),
+            Selection::Priced(quote) => Some(quote.offer.source),
             Selection::Refused(_) => None,
         }
     }

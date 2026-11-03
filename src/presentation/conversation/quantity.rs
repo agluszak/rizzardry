@@ -32,7 +32,7 @@ pub(super) enum Control {
 
 fn stack(world: &mut World, q: TradeQuote) -> Option<(crate::content::items::ItemId, u32)> {
     let c = world.get::<Conversation>(q.conversation)?;
-    match q.source {
+    match q.offer.source {
         TradeSource::Stock(id) => world
             .get::<MerchantStock>(c.actor)?
             .lots
@@ -66,7 +66,7 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
     }
     let Some(q) = world.get::<DialogueState>(view).and_then(|s| s.quote()) else { return };
     if world
-        .run_system_cached_with(quote_trade, (q.conversation, q.source, q.quantity))
+        .run_system_cached_with(quote_trade, (q.conversation, q.offer.source, q.offer.quantity))
         .unwrap()
         .is_err()
     {
@@ -79,16 +79,19 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
     }
     let (name, image, unit_weight, class, generic) =
         (item.name.clone(), item.image.clone(), item.weight, item.class, item.kind_name.clone());
-    let remaining_price = if maximum == q.quantity {
+    let remaining_price = if maximum == q.offer.quantity {
         0
     } else {
         let Ok(remaining) = world
-            .run_system_cached_with(quote_trade, (q.conversation, q.source, maximum - q.quantity))
+            .run_system_cached_with(
+                quote_trade,
+                (q.conversation, q.offer.source, maximum - q.offer.quantity),
+            )
             .unwrap()
         else {
             return;
         };
-        remaining.gold
+        remaining.offer.gold
     };
     let assets = world.resource::<AssetServer>().clone();
     let previous_focus = world.resource::<InputFocus>().get();
@@ -152,7 +155,7 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
     label(world, panel, "Value", Vec2::new(187., 53.), 53.);
     let remaining_price_label = label(world, panel, "", Vec2::new(244., 53.), 54.);
     world.entity_mut(remaining_price_label).insert((RemainingPrice, ZIndex(1)));
-    let buying = matches!(q.source, TradeSource::Stock(_));
+    let buying = matches!(q.offer.source, TradeSource::Stock(_));
     label(
         world,
         panel,
@@ -198,7 +201,7 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
         EditableText {
             max_characters: Some(5),
             allow_newlines: false,
-            ..EditableText::new(q.quantity.to_string())
+            ..EditableText::new(q.offer.quantity.to_string())
         },
         EditableTextFilter::new(|c| c.is_ascii_digit()),
         TextFont {
@@ -238,7 +241,7 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
                     if let Some(accept) = answer {
                         finish(world, panel, accept);
                     } else if let Some(draft) = world.get::<Draft>(panel) {
-                        let n = (draft.quote.quantity as i64 + i64::from(delta))
+                        let n = (draft.quote.offer.quantity as i64 + i64::from(delta))
                             .clamp(1, i64::from(draft.maximum))
                             as u32;
                         change(world, panel, n, true);
@@ -284,18 +287,18 @@ fn change(world: &mut World, panel: Entity, n: u32, rewrite: bool) {
         return;
     }
     if let Ok(quote) =
-        world.run_system_cached_with(quote_trade, (q.conversation, q.source, n)).unwrap()
+        world.run_system_cached_with(quote_trade, (q.conversation, q.offer.source, n)).unwrap()
     {
         let remaining = if max == n {
             0
         } else {
             let Ok(remaining) = world
-                .run_system_cached_with(quote_trade, (q.conversation, q.source, max - n))
+                .run_system_cached_with(quote_trade, (q.conversation, q.offer.source, max - n))
                 .unwrap()
             else {
                 return;
             };
-            remaining.gold
+            remaining.offer.gold
         };
         let mut draft = world.get_mut::<Draft>(panel).unwrap();
         draft.quote = quote;
@@ -331,24 +334,24 @@ fn finish(world: &mut World, panel: Entity, accept: bool) {
         if n == 0 || n > maximum {
             return;
         }
-        q.quantity = n;
+        q.offer.quantity = n;
     }
     let Some(overlay) = world.get::<ChildOf>(panel).map(ChildOf::parent) else { return };
     if accept && world.get::<Conversation>(q.conversation).is_some_and(Conversation::ready) {
         let Ok(verified) = world
-            .run_system_cached_with(quote_trade, (q.conversation, q.source, q.quantity))
+            .run_system_cached_with(quote_trade, (q.conversation, q.offer.source, q.offer.quantity))
             .unwrap()
         else {
             return;
         };
-        if matches!(q.source, TradeSource::Stock(_)) {
+        if matches!(q.offer.source, TradeSource::Stock(_)) {
             let party = crate::game::party::roster::the_party(world);
             let gold = world.get::<PartyInventory>(party).unwrap().gold;
-            if gold < verified.gold {
+            if gold < verified.offer.gold {
                 return;
             }
         }
-        select(world, view, q.source, q.quantity);
+        select(world, view, q.offer.source, q.offer.quantity);
     }
     world.despawn(overlay);
 }
@@ -374,7 +377,7 @@ pub(super) fn sync(
                 && input.is_changed()
                 && !input.is_composing()
                 && let Ok(n) = input.value().to_string().parse::<u32>()
-                && n != d.quote.quantity
+                && n != d.quote.offer.quantity
             {
                 commands.queue(move |world: &mut World| change(world, panel, n, false));
             }
@@ -386,18 +389,18 @@ pub(super) fn sync(
             .iter()
             .find(|(_, p)| p.parent() == panel)
             .and_then(|(input, _)| input.value().to_string().parse::<u32>().ok());
-        let valid = entered.is_some_and(|n| n > 0 && n <= d.maximum && n == d.quote.quantity);
+        let valid = entered.is_some_and(|n| n > 0 && n <= d.maximum && n == d.quote.offer.quantity);
         let enabled = match kind {
             Control::Accept => {
                 valid
-                    && (!matches!(d.quote.source, TradeSource::Stock(_))
-                        || parties.single().is_ok_and(|p| p.gold >= d.quote.gold))
+                    && (!matches!(d.quote.offer.source, TradeSource::Stock(_))
+                        || parties.single().is_ok_and(|p| p.gold >= d.quote.offer.gold))
             }
             Control::Adjust(delta) => {
                 if *delta < 0 {
-                    d.quote.quantity > 1
+                    d.quote.offer.quantity > 1
                 } else {
-                    d.quote.quantity < d.maximum
+                    d.quote.offer.quantity < d.maximum
                 }
             }
         };
@@ -406,12 +409,13 @@ pub(super) fn sync(
     for (mut text, parent, remaining, remaining_price, weight) in &mut labels {
         let Ok((_, d, _)) = drafts.get(parent.parent()) else { continue };
         let value = if let Some(weight) = weight {
-            let count = if weight.0 { d.maximum - d.quote.quantity } else { d.quote.quantity };
+            let count =
+                if weight.0 { d.maximum - d.quote.offer.quantity } else { d.quote.offer.quantity };
             format!("{:.1}", f64::from(d.unit_weight) * f64::from(count) / 10.)
         } else if remaining {
-            (d.maximum - d.quote.quantity).to_string()
+            (d.maximum - d.quote.offer.quantity).to_string()
         } else {
-            (if remaining_price { d.remaining_price } else { d.quote.gold }).to_string()
+            (if remaining_price { d.remaining_price } else { d.quote.offer.gold }).to_string()
         };
         if text.value != value {
             text.value = value;

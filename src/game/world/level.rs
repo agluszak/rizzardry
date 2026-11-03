@@ -695,7 +695,7 @@ fn prepare(
         return false;
     };
     let species = &catalogs.species;
-    if !npcs.prepare(catalogs, &geometry.monsters, assets) {
+    if !npcs.prepare(catalogs, geometry, assets) {
         return false;
     }
     let bodies = bodies.get_or_insert_with(|| MonsterBodies::for_level(geometry, species, assets));

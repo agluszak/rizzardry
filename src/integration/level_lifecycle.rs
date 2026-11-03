@@ -727,6 +727,3 @@ fn an_unborn_group_waits_until_born_and_is_born_once() {
     assert_eq!(monsters(&mut app).len(), 2, "born for good");
     assert!(app.world().get::<Unborn>(root).unwrap().0.is_empty());
 }
-
-#[path = "npc_dialogue.rs"]
-mod npc_dialogue;

@@ -1,332 +1,95 @@
-//! Campaign-lived NPCs retain their world-role state while their level is dormant.
+//! NPC state outlives its current world binding; a binding is not its identity.
 pub mod access;
 pub mod conversation;
+mod population;
 pub mod recruit;
 pub mod story;
 pub mod trade;
-use crate::content::npcs::*;
-use crate::game::GameplaySet;
-use crate::game::data::Catalogs;
-use crate::game::rng::GameRng;
-use crate::game::world::level::LevelOwned;
-use crate::game::{
-    characters::Character,
-    party::{body::PartyBody, roster::PartyRoster},
-    world::{ActorPose, level::KeptMonster, navigation::Walker, population::Monster},
-};
-use bevy::{
-    ecs::{entity_disabling::Disabled, system::SystemParam},
-    prelude::*,
-};
+use crate::content::npcs::{DialogueScript, NpcDefinition, NpcId};
+use bevy::prelude::*;
+pub use population::{NpcPopulation, Placing};
 use std::collections::HashMap;
 
-/// Named NPCs use their definition identity; repeatable monster-bound NPCs also
-/// need the authored placement. Neither key uses a transient retail runtime slot.
-#[derive(Component, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum ActorId {
-    Named(NpcId),
-    Placed { npc: NpcId, map: String, location: i32 },
-}
+#[derive(Component, Clone, Copy, Debug)]
+pub struct ActorId(pub NpcId);
 impl ActorId {
-    /// The NPC this is.
     pub fn npc(&self) -> NpcId {
-        match *self {
-            Self::Named(npc) | Self::Placed { npc, .. } => npc,
-        }
-    }
-    pub fn for_placement(id: NpcId, def: &NpcDefinition, map: &str, location: i32) -> Self {
-        if def.monster_bound {
-            Self::Placed { npc: id, map: map.into(), location }
-        } else {
-            Self::Named(id)
-        }
+        self.0
     }
 }
-/// The durable world role of an NPC, separate from its retained party profile.
+
 #[derive(Component, Debug)]
-#[component(immutable)]
 #[relationship(relationship_target = NpcBodies)]
 pub struct NpcBody(pub Entity);
 #[derive(Component, Debug, Deref)]
-#[relationship_target(relationship = NpcBody, linked_spawn)]
+#[relationship_target(relationship = NpcBody)]
 pub struct NpcBodies(Vec<Entity>);
 
-/// The map and authored group of an NPC's world role. Its Monster component
-/// remains on the world-role entity; only its physical embodiment ends on departure.
 #[derive(Component, Debug)]
-pub struct NpcWorldRole {
-    pub map: String,
-    pub group: Option<i32>,
-}
-#[derive(Component, Debug, Default)]
 pub struct Npc {
     pub disposition: u8,
     pub greeting_pending: bool,
     pub paid_topics: Vec<u16>,
-    /// Successful Mindread attempts advance through the NPC's three responses.
     pub mindread_refusals: u8,
-    /// What it still takes in bribes before it warms to the party.
     pub trade_pool: u16,
-    /// When the party last charmed it and made small talk with it; each
-    /// waits half a day before the party may try again.
     pub charmed_at: Option<u64>,
     pub small_talk_at: Option<u64>,
-    /// Killed (retail `W8NpcState::spawned`): the NPC never comes back to
-    /// the world, and story facts read its death from here.
     pub dead: bool,
 }
-
+impl Npc {
+    fn from_definition(d: &NpcDefinition) -> Self {
+        Self {
+            disposition: d.disposition,
+            greeting_pending: true,
+            paid_topics: vec![],
+            mindread_refusals: 0,
+            trade_pool: d.trade_pool,
+            charmed_at: None,
+            small_talk_at: None,
+            dead: false,
+        }
+    }
+}
+/// Remembered placement data, never a retained physics or render entity.
+#[derive(Component, Clone, Debug)]
+pub struct NpcLocation {
+    pub map: String,
+    pub species: u32,
+    pub dormant: Option<crate::game::world::level::KeptMonster>,
+}
+/// A trigger can provide an interaction binding without a monster.
+#[derive(Component, Debug)]
+pub struct NpcTrigger(pub Entity);
+#[derive(Component)]
+pub struct NpcSpeaker(pub Entity);
 #[derive(Resource, Default)]
 pub struct NpcAssets {
     pub scripts: HashMap<NpcId, Handle<DialogueScript>>,
 }
-#[derive(SystemParam)]
-pub struct NpcPopulation<'w, 's> {
-    pub assets: ResMut<'w, NpcAssets>,
-    pub scripts: Res<'w, Assets<DialogueScript>>,
-    pub npcs: Query<'w, 's, (Entity, &'static ActorId, &'static NpcBodies)>,
-    // Activation owns both live and dormant roles. Departure and placement
-    // happen in one commit, before deferred Disabled changes become visible.
-    roles: Query<
-        'w,
-        's,
-        (
-            Entity,
-            &'static mut NpcWorldRole,
-            (&'static Monster, &'static crate::game::characters::Vitals),
-            ActorPose,
-            Option<&'static Walker>,
-            Option<&'static LevelOwned>,
-            Option<&'static crate::game::world::identify::GroupMember>,
-        ),
-        (With<NpcBody>, Allow<Disabled>, Without<PartyBody>),
-    >,
-    groups: Query<'w, 's, &'static crate::game::world::identify::MonsterGroup>,
-    pub clock: Res<'w, crate::game::time::GameClock>,
-    roster: Query<'w, 's, &'static PartyRoster>,
-    profiles: Query<'w, 's, &'static Character>,
-    /// NPCs travelling with the party, whose world roles wait.
-    members: Query<'w, 's, (), With<crate::game::party::roster::PartyMember>>,
-    /// Whether each NPC has died, which outranks whatever its dormant body
-    /// last recorded.
-    states: Query<'w, 's, &'static Npc>,
-}
-/// An NPC's placement as a level's population meets it.
-pub struct Placing<'a> {
-    pub placed: &'a crate::content::level::MonsterPlacement,
-    pub id: NpcId,
-    /// The level's map, which identifies the placement.
-    pub map: &'a str,
-    /// The party's average level, which stock scales by.
-    pub average: u32,
+#[derive(Resource, Default)]
+pub(super) struct Registry {
+    named: HashMap<NpcId, Entity>,
+    // A level's remembered monster binding, not a definition's global identity.
+    placed: HashMap<(String, i32), Entity>,
+    initialized: bool,
 }
 
-impl NpcPopulation<'_, '_> {
-    /// Reuse the actor and its gameplay components; create them only on first meeting.
-    pub fn place(
-        &mut self,
-        commands: &mut Commands,
-        Placing { placed, id, map, average }: Placing,
-        catalogs: &Catalogs,
-        placed_actors: &mut std::collections::HashSet<ActorId>,
-        rng: &mut GameRng,
-        roll: impl FnOnce(&mut GameRng) -> KeptMonster,
-    ) -> Option<(Entity, Vec3, f32, crate::game::world::population::ScaledBody, Option<i32>)> {
-        let definition = &catalogs.npcs[id];
-        let key = ActorId::for_placement(id, definition, map, placed.location);
-        if !placed_actors.insert(key.clone()) {
-            return None;
-        }
-        if let Some((actor, _, bodies)) =
-            self.npcs.iter().find(|(_, identity, _)| **identity == key)
-        {
-            if !self.may_stand(actor) {
-                return None;
-            }
-            let entity = *bodies.first()?;
-            let (_, role, (monster, vitals), pose, walker, ..) = self.roles.get(entity).ok()?;
-            if role.map != map || vitals.is_dead() {
-                return None;
-            }
-            commands.entity(entity).remove::<Disabled>();
-            return Some((
-                entity,
-                crate::game::world::navigation::feet(pose.translation(), walker),
-                pose.rotation().to_euler(EulerRot::YXZ).0,
-                monster.body,
-                role.group,
-            ));
-        }
-        let actor = commands
-            .spawn((
-                key,
-                Npc {
-                    disposition: definition.disposition,
-                    greeting_pending: true,
-                    mindread_refusals: 0,
-                    paid_topics: vec![],
-                    trade_pool: definition.trade_pool,
-                    charmed_at: None,
-                    small_talk_at: None,
-                    dead: false,
-                },
-            ))
-            .id();
-        // Its stock, when it keeps one, is stocked as the party first meets it.
-        if definition.owns_stock {
-            let mut stock = trade::MerchantStock::default();
-            stock.maintain(definition, &catalogs.items, average, self.clock.ms, false, rng);
-            commands.entity(actor).insert(stock);
-        }
-        let kept = roll(rng);
-        let body = kept.monster.body;
-        let entity = commands
-            .spawn((
-                NpcBody(actor),
-                NpcWorldRole { map: map.into(), group: kept.group },
-                kept.monster,
-                kept.vitals,
-                kept.budget,
-            ))
-            .id();
-        Some((entity, kept.feet, kept.yaw, body, kept.group))
-    }
-
-    pub fn average_level(&self) -> u32 {
-        self.roster.single().map_or(1, |roster| {
-            crate::game::party::average_level(
-                self.profiles.iter_many(roster.iter()).matched().map(|c| c.level()),
-            )
-        })
-    }
-    /// Preparation changes only asset requests. Missing mandatory NPC content
-    /// fails activation without touching the currently played world.
-    pub fn prepare(
-        &mut self,
-        catalogs: &Catalogs,
-        placements: &[crate::content::level::MonsterPlacement],
-        server: &AssetServer,
-    ) -> bool {
-        let species = &catalogs.species;
-        let ids: Vec<_> =
-            placements.iter().filter_map(|p| species.kind(p.species).and_then(|s| s.npc)).collect();
-        if ids.is_empty() {
-            return true;
-        }
-        let catalog = &catalogs.npcs;
-        let mut ready = true;
-        for id in ids {
-            let def = &catalog[id];
-            let script =
-                self.assets.scripts.entry(id).or_insert_with(|| {
-                    server.load(crate::content::paths::retail(&def.script_path()))
-                });
-            assert!(
-                !matches!(server.get_load_state(&*script), Some(bevy::asset::LoadState::Failed(_))),
-                "NPC script failed to load: {}",
-                def.script_path()
-            );
-            ready &= self.scripts.contains(&*script);
-        }
-        ready
-    }
-    /// Whether the NPC's world role may stand in a level: not while it
-    /// travels with the party, and never once it has died, wherever.
-    fn may_stand(&self, actor: Entity) -> bool {
-        !self.members.contains(actor) && self.states.get(actor).is_ok_and(|npc| !npc.dead)
-    }
-    /// NPCs whose world roles stand on `map` without being placed there,
-    /// such as one that left the party on it, as the level meets them again.
-    pub fn visitors(
-        &mut self,
-        commands: &mut Commands,
-        map: &str,
-        placed_actors: &mut std::collections::HashSet<ActorId>,
-    ) -> Vec<(Entity, Vec3, f32, crate::game::world::population::ScaledBody, Option<i32>, u32)>
-    {
-        let mut visitors = Vec::new();
-        for (actor, key, bodies) in &self.npcs {
-            if !self.may_stand(actor) || placed_actors.contains(key) {
-                continue;
-            }
-            let Some(&entity) = bodies.first() else { continue };
-            let Ok((_, role, (monster, vitals), pose, walker, ..)) = self.roles.get(entity) else {
-                continue;
-            };
-            if role.map != map || vitals.is_dead() {
-                continue;
-            }
-            placed_actors.insert(key.clone());
-            commands.entity(entity).remove::<Disabled>();
-            visitors.push((
-                entity,
-                crate::game::world::navigation::feet(pose.translation(), walker),
-                pose.rotation().to_euler(EulerRot::YXZ).0,
-                monster.body,
-                role.group,
-                monster.species,
-            ));
-        }
-        visitors
-    }
-    pub fn depart(&mut self, commands: &mut Commands, root: Entity) {
-        for (entity, mut role, _, pose, walker, parent, group) in &mut self.roles {
-            if !parent.is_some_and(|parent| parent.0 == root) {
-                continue;
-            }
-            role.group = group.and_then(|g| self.groups.get(g.0).ok()).map(|g| g.authored);
-            let at = Transform::from_translation(crate::game::world::navigation::feet(
-                pose.translation(),
-                walker,
-            ))
-            .with_rotation(pose.rotation());
-            retire(commands, entity, at);
-        }
-    }
-}
-/// End an NPC body's embodiment, leaving it standing dormant at `at`: it
-/// keeps its monster state but leaves its level, its group, physics and
-/// navigation.
-pub(super) fn retire(commands: &mut Commands, entity: Entity, at: Transform) {
-    use avian3d::prelude::{Collider, RigidBody};
-    commands
-        .entity(entity)
-        .remove::<LevelOwned>()
-        .remove::<crate::game::world::identify::GroupMember>()
-        .remove_with_requires::<(Collider, RigidBody)>()
-        .remove_with_requires::<bevy_landmass::prelude::Agent3dBundle>()
-        .remove_with_requires::<crate::game::world::navigation::links::Crossing>()
-        .remove::<(Walker, bevy_landmass::prelude::ReachedAnimationLink3d)>()
-        .despawn_related::<Children>()
-        .insert((at, Disabled));
-}
 pub struct NpcPlugin;
 impl Plugin for NpcPlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<DialogueScript>()
+            .init_resource::<Registry>()
             .init_resource::<NpcAssets>()
             .init_resource::<story::StoryFacts>()
-            .init_resource::<conversation::NoAnswerTurn>()
-            .add_message::<conversation::ConversationRequest>()
-            .add_message::<conversation::BeginConversation>()
-            .add_message::<conversation::LineSpoken>()
-            .add_message::<conversation::EditNotebook>()
-            .add_message::<conversation::PartyRemark>()
-            .add_message::<conversation::NpcSpeech>()
-            // Gifts and faction shifts dialogues make, also announced by others.
-            .add_message::<crate::game::inventory::ItemNews>()
-            .add_message::<crate::game::factions::FactionNews>()
             .add_systems(
                 Update,
-                (conversation::finish_lines, conversation::edit_notebook, conversation::converse)
-                    .chain()
-                    .in_set(conversation::Conversing)
-                    .after(GameplaySet::Combat),
-            )
-            .add_systems(
-                Update,
-                conversation::interrupt_for_travel.before(GameplaySet::LevelActivation),
-            )
-            .add_observer(recruit::npc_member_falls);
+                (
+                    population::initialize.before(crate::game::GameplaySet::LevelActivation),
+                    population::bind_triggers.after(crate::game::GameplaySet::LevelActivation),
+                ),
+            );
+        conversation::install(app);
+        recruit::install(app);
+        trade::install(app);
     }
 }
