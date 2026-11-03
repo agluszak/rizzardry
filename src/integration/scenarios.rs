@@ -121,7 +121,7 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     use crate::game::npcs::conversation::{
         self, Conversation, ConversationRequest, ConversationWait, Talk,
     };
-    use crate::game::npcs::trade::TradeSource;
+    use crate::game::npcs::trade::{MerchantStock, TradeSource};
     use crate::game::npcs::{Npc, NpcBodies};
     let mut app = game(&["--seed", "8", "--start=225,36.7,-68.6"]);
     step_until(&mut app, "the Monastery becoming active", |w| playing(w).is_some());
@@ -184,8 +184,15 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     finish(&mut app, session);
     assert!(app.world().get::<Conversation>(session).unwrap().ready());
     assert!(app.world().get::<Npc>(actor).unwrap().paid_topics.contains(&topic));
-    let lot =
-        app.world().get::<Npc>(actor).unwrap().stock.lots.iter().find(|l| l.units > 0).unwrap().id;
+    let lot = app
+        .world()
+        .get::<MerchantStock>(actor)
+        .unwrap()
+        .lots
+        .iter()
+        .find(|l| l.units > 0)
+        .unwrap()
+        .id;
     let quote =
         conversation::quote_trade(app.world_mut(), session, TradeSource::Stock(lot), 1).unwrap();
     let gold = app.world().get::<PartyInventory>(party).unwrap().gold;
@@ -221,7 +228,7 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
             _ => None,
         })
         .unwrap();
-    let stock = app.world().get::<Npc>(actor).unwrap().stock.clone();
+    let stock = app.world().get::<MerchantStock>(actor).unwrap().clone();
     app.world_mut().write_message(ConversationRequest::new(session, Talk::Close));
     app.update();
     assert!(app.world().get_entity(session).is_err());
@@ -230,11 +237,11 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
         playing(w).is_some_and(|p| p.ends_with("monastery2.pvl"))
     });
     assert!(app.world().get::<Monster>(actor).is_none());
-    let stock_offmap = app.world().get::<Npc>(actor).unwrap().stock.clone();
+    let stock_offmap = app.world().get::<MerchantStock>(actor).unwrap().clone();
     for _ in 0..10 {
         app.update();
     }
-    assert_eq!(app.world().get::<Npc>(actor).unwrap().stock, stock_offmap);
+    assert_eq!(*app.world().get::<MerchantStock>(actor).unwrap(), stock_offmap);
     app.world_mut().write_message(Travel { entrance: "MO105".into() });
     step_until(&mut app, "returning to Burz", |w| {
         playing(w).is_some_and(|p| p.ends_with("monastery1.pvl"))
@@ -242,7 +249,7 @@ fn burz_conversation_trade_and_revisit_keep_one_actor() {
     let returned_body = app.world().get::<NpcBodies>(actor).unwrap()[0];
     assert!(app.world().get::<Monster>(returned_body).is_some());
     let npc = app.world().get::<Npc>(actor).unwrap();
-    assert_eq!(npc.stock, stock);
+    assert_eq!(*app.world().get::<MerchantStock>(actor).unwrap(), stock);
     assert!(npc.paid_topics.contains(&topic));
     assert!(!npc.greeting_pending);
     let facts = &app.world().resource::<Catalogs>().facts;

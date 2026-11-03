@@ -81,7 +81,6 @@ pub struct Npc {
     pub paid_topics: Vec<u16>,
     /// Successful Mindread attempts advance through the NPC's three responses.
     pub mindread_refusals: u8,
-    pub stock: trade::MerchantStock,
     /// What it still takes in bribes before it warms to the party.
     pub trade_pool: u16,
     /// When the party last charmed it and made small talk with it; each
@@ -174,10 +173,6 @@ impl NpcPopulation<'_, '_> {
                 role.group,
             ));
         }
-        let mut stock = trade::MerchantStock::default();
-        if definition.owns_stock {
-            stock.maintain(definition, &catalogs.items, average, self.clock.ms, false, rng);
-        }
         let actor = commands
             .spawn((
                 key,
@@ -186,7 +181,6 @@ impl NpcPopulation<'_, '_> {
                     greeting_pending: true,
                     mindread_refusals: 0,
                     paid_topics: vec![],
-                    stock,
                     trade_pool: definition.trade_pool,
                     charmed_at: None,
                     small_talk_at: None,
@@ -194,6 +188,12 @@ impl NpcPopulation<'_, '_> {
                 },
             ))
             .id();
+        // Its stock, when it keeps one, is stocked as the party first meets it.
+        if definition.owns_stock {
+            let mut stock = trade::MerchantStock::default();
+            stock.maintain(definition, &catalogs.items, average, self.clock.ms, false, rng);
+            commands.entity(actor).insert(stock);
+        }
         let kept = roll(rng);
         let body = kept.monster.body;
         let entity = commands

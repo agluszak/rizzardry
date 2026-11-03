@@ -637,7 +637,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
         items::{ItemDefinition, ItemId},
         npcs::{DialogueScript, FactCatalog, NpcCatalog, NpcDefinition, NpcId, Quote, StockRule},
     };
-    use crate::game::npcs::{ActorId, Npc, NpcAssets, NpcBodies};
+    use crate::game::npcs::{ActorId, Npc, NpcAssets, NpcBodies, trade::MerchantStock};
     let mut app = app();
     with_data(&mut app);
     {
@@ -679,8 +679,8 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
         let mut npc = app.world_mut().get_mut::<Npc>(actor).unwrap();
         npc.greeting_pending = false;
         npc.paid_topics.push(7);
-        npc.stock.lots[0].units = 2;
     }
+    app.world_mut().get_mut::<MerchantStock>(actor).unwrap().lots[0].units = 2;
     {
         let mut body = app.world_mut().get_mut::<crate::game::characters::Vitals>(body).unwrap();
         body.health = crate::game::characters::Pool { current: 4, max: 9 };
@@ -711,7 +711,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
             use crate::game::npcs::trade::TradeSource;
             let purse = |app: &App| app.world().get::<PartyInventory>(party).unwrap().gold;
             app.world_mut().get_mut::<PartyInventory>(party).unwrap().gold = 10_000;
-            let lot = app.world().get::<Npc>(actor).unwrap().stock.lots[0].id;
+            let lot = app.world().get::<MerchantStock>(actor).unwrap().lots[0].id;
             let quote =
                 conversation::quote_trade(app.world_mut(), session, TradeSource::Stock(lot), 1)
                     .unwrap();
@@ -722,7 +722,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
             app.world_mut().write_message(ConversationRequest::trade(quote));
             app.update();
             assert_eq!(purse(&app), 10_000 - quote.gold);
-            assert_eq!(app.world().get::<Npc>(actor).unwrap().stock.lots[0].units, 1);
+            assert_eq!(app.world().get::<MerchantStock>(actor).unwrap().lots[0].units, 1);
             let bought = app.world().get::<PartyInventory>(party).unwrap().pool.stacks[0].id;
             let source = TradeSource::Party(ItemRef { owner: ItemOwner::Pool, id: bought });
             let sale = conversation::quote_trade(app.world_mut(), session, source, 1).unwrap();
@@ -740,7 +740,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     let group = app.world().get::<crate::game::world::identify::GroupMember>(body).unwrap().0;
     app.world_mut().get_mut::<crate::game::world::identify::MonsterGroup>(group).unwrap().set =
         Some(provoked);
-    let stock = app.world().get::<Npc>(actor).unwrap().stock.clone();
+    let stock = app.world().get::<MerchantStock>(actor).unwrap().clone();
     // Replacing the current map departs and reuses this role in the same
     // activation, before its queued Disabled insertion is applied.
     let replacement = spawn_level(&mut app, floor());
@@ -748,7 +748,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
     assert!(is_played(&app, replacement));
     assert!(app.world().get_entity(source).is_err());
     assert_eq!(app.world().get::<crate::game::characters::Vitals>(body).unwrap().health.current, 4);
-    assert_eq!(app.world().get::<Npc>(actor).unwrap().stock, stock);
+    assert_eq!(*app.world().get::<MerchantStock>(actor).unwrap(), stock);
     let source = replacement;
     let mut away = test_level(&mut app, floor());
     away.path = "levels/away/away.pvl".into();
@@ -768,7 +768,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
         app.world_mut().query::<(Entity, &Monster)>().iter(app.world()).all(|(e, _)| e != body)
     );
     app.update();
-    assert_eq!(app.world().get::<Npc>(actor).unwrap().stock, stock);
+    assert_eq!(*app.world().get::<MerchantStock>(actor).unwrap(), stock);
     let back = spawn_level(&mut app, floor());
     app.update();
     assert!(is_played(&app, back));
@@ -785,7 +785,7 @@ fn named_actor_memory_stock_and_world_role_survive_an_unloaded_map() {
         "the NPC's group keeps the provocation"
     );
     let npc = app.world().get::<Npc>(actor).unwrap();
-    assert_eq!(npc.stock, stock);
+    assert_eq!(*app.world().get::<MerchantStock>(actor).unwrap(), stock);
     assert_eq!(npc.paid_topics, [7]);
     assert!(!npc.greeting_pending);
     assert_eq!(app.world_mut().query::<&Npc>().iter(app.world()).count(), 1);

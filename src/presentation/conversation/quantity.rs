@@ -1,6 +1,7 @@
 //! Retail split-item presentation. This edits a quote, never inventory itself.
 use super::*;
 use crate::content::ui::TextTable;
+use crate::game::npcs::trade::MerchantStock;
 use crate::presentation::screen_art::StringTable;
 use bevy::text::{EditableTextFilter, TextEdit};
 use bevy::ui_widgets::ModalDialog;
@@ -33,8 +34,7 @@ fn stack(world: &mut World, q: TradeQuote) -> Option<(crate::content::items::Ite
     let c = world.get::<Conversation>(q.conversation)?;
     match q.source {
         TradeSource::Stock(id) => world
-            .get::<Npc>(c.actor)?
-            .stock
+            .get::<MerchantStock>(c.actor)?
             .lots
             .iter()
             .find(|lot| lot.id == id)
