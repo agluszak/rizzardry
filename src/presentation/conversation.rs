@@ -275,10 +275,12 @@ fn select(world: &mut World, view: Entity, source: TradeSource, quantity: u32) {
         {
             Selection::Gift(item)
         }
-        source => match quote_trade(world, session, source, quantity) {
-            Ok(quote) => Selection::Priced(quote),
-            Err(error) => Selection::Refused(error),
-        },
+        source => {
+            match world.run_system_cached_with(trade::quote, (session, source, quantity)).unwrap() {
+                Ok(quote) => Selection::Priced(quote),
+                Err(error) => Selection::Refused(error),
+            }
+        }
     };
     world.get_mut::<DialogueState>(view).unwrap().selection = Some(selection);
 }

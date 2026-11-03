@@ -203,41 +203,41 @@ pub fn log_news(
 #[derive(Resource)]
 pub struct TalkTo(pub String);
 
-pub fn talk_to_npc(world: &mut World) {
-    use crate::game::npcs::{NpcBodies, conversation};
-    let Some(request) = world.get_resource::<TalkTo>() else { return };
-    let name = request.0.clone();
-    if world.query::<&Level>().iter(world).next().is_none() {
+/// Ask to talk to the named NPC once the party is free in its level, and
+/// stop with an error if the conversation is refused.
+pub fn talk_to_npc(
+    request: Res<TalkTo>,
+    speakers: crate::game::npcs::conversation::Speakers,
+    freedom: crate::game::freedom::Freedom,
+    conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
+    mut requested: Local<bool>,
+    mut begin: MessageWriter<crate::game::npcs::conversation::BeginConversation>,
+    mut exit: MessageWriter<AppExit>,
+    mut commands: Commands,
+) {
+    let name = &request.0;
+    if !conversations.is_empty() {
+        commands.remove_resource::<TalkTo>();
         return;
     }
-    let catalog = crate::game::npcs::catalog(world);
-    let definition = catalog.0.iter().position(|npc| npc.source_name.eq_ignore_ascii_case(&name));
-    let Some(definition) = definition else {
+    if *requested {
+        error!("cannot start --talk-to {name}: refused; choose a nearby --start position");
+        exit.write(AppExit::error());
+        commands.remove_resource::<TalkTo>();
+        return;
+    }
+    if speakers.level().is_none() || !freedom.free() {
+        return;
+    }
+    let Some(actor) = speakers.actor_named(name) else {
         error!("unknown NPC for --talk-to: {name}");
-        world.write_message(AppExit::error());
-        world.remove_resource::<TalkTo>();
+        exit.write(AppExit::error());
+        commands.remove_resource::<TalkTo>();
         return;
     };
-    let actor = world
-        .query::<(Entity, &crate::game::npcs::ActorId, &NpcBodies)>()
-        .iter(world)
-        .find(|(_, identity, bodies)| {
-            usize::from(identity.npc().0) == definition
-                && bodies
-                    .iter()
-                    .any(|body| world.get::<crate::game::world::level::LevelOwned>(body).is_some())
-        })
-        .map(|(entity, _, _)| entity);
-    let Some(actor) = actor else { return };
-    match conversation::begin(world, actor) {
-        Ok(_) => {
-            world.remove_resource::<TalkTo>();
-        }
-        Err(crate::game::npcs::trade::TradeError::Busy) => {}
-        Err(error) => {
-            error!("cannot start --talk-to {name}: {error:?}; choose a nearby --start position");
-            world.write_message(AppExit::error());
-            world.remove_resource::<TalkTo>();
-        }
+    if speakers.active_body(actor).is_none() {
+        return;
     }
+    begin.write(crate::game::npcs::conversation::BeginConversation { actor });
+    *requested = true;
 }

@@ -2,17 +2,20 @@
 //! [`MerchantStock`] beside its [`super::Npc`]. A quote reads what a trade
 //! would cost now; settling it validates the whole request again and
 //! commits the transfer and the payment at once.
+use super::conversation::{Conversation, Speakers};
 use crate::content::{
     items::{EquipClass, ItemCatalog, ItemDefinition, ItemId, QuantityKind},
     npcs::NpcDefinition,
 };
 use crate::game::characters::{Character, Vitals};
-use crate::game::data::Catalogs;
 use crate::game::party::roster::PartyRoster;
 use crate::game::time::DAY_MS;
 use crate::game::{
+    combat::Battle,
+    factions::Factions,
     inventory::{Carried, ItemIds, ItemOwner, ItemRef, ItemStack, PartyInventory},
     rng::GameRng,
+    world::level::Destination,
 };
 use bevy::prelude::*;
 
@@ -342,34 +345,44 @@ pub fn communication<'a>(members: impl Iterator<Item = (&'a Character, &'a Vital
         .unwrap_or(0)
 }
 
-/// The party's stack a sale offers, in the pool or a member's backpack.
-fn sale_item<'a>(
+/// The party's stack a sale or gift names, in the pool or in `carried`,
+/// the backpack of the member it names.
+pub fn sale_item<'a>(
     source: ItemRef,
     inventory: &'a PartyInventory,
-    members: &'a Query<(&Character, &Vitals, Option<&mut Carried>)>,
+    carried: Option<&'a Carried>,
 ) -> Result<&'a ItemStack, TradeError> {
     match source.owner {
         ItemOwner::Pool => inventory.pool.stacks.iter().find(|i| i.id == source.id),
-        ItemOwner::Member(member) => {
-            members.get(member).ok().and_then(|(_, _, carried)| carried?.backpack_stack(source.id))
-        }
+        ItemOwner::Member(_) => carried.and_then(|carried| carried.backpack_stack(source.id)),
     }
     .ok_or(TradeError::StaleSelection)
 }
 
 /// What a trade with the merchant would come to now: a lot's purchase
 /// price, or a party item's sale price, by the party's best communicator.
-/// Reads only; the conversation decides whether a trade may be quoted.
-pub(super) fn quote(
-    In((actor, conversation, source, quantity)): In<(Entity, Entity, TradeSource, u32)>,
-    stocks: Query<(&MerchantStock, &super::ActorId)>,
+/// Reads only. The conversation must be ready for a request and its NPC
+/// still speaking to the party, with no level entry or fight under way.
+pub fn quote(
+    In((conversation, source, quantity)): In<(Entity, TradeSource, u32)>,
+    conversations: Query<&Conversation>,
+    occupied: Query<(), Or<(With<Destination>, With<Battle>)>>,
+    speakers: Speakers,
+    factions: Res<Factions>,
+    stocks: Query<&MerchantStock>,
     party: Single<(&PartyRoster, &PartyInventory)>,
-    members: Query<(&Character, &Vitals, Option<&mut Carried>)>,
-    content: Res<Catalogs>,
+    members: Query<(&Character, &Vitals, Option<&Carried>)>,
 ) -> Result<TradeQuote, TradeError> {
-    let (stock, id) = stocks.get(actor).map_err(|_| TradeError::Unavailable)?;
-    let def = &content.npcs[id.npc()];
-    let catalog = &content.items;
+    let c = conversations.get(conversation).map_err(|_| TradeError::StaleSelection)?;
+    if !occupied.is_empty() || !c.ready() {
+        return Err(TradeError::Busy);
+    }
+    if !speakers.available(c.actor, &factions) {
+        return Err(TradeError::Unavailable);
+    }
+    let stock = stocks.get(c.actor).map_err(|_| TradeError::Unavailable)?;
+    let def = speakers.definition(c.actor);
+    let catalog = &speakers.content.items;
     let (roster, inventory) = *party;
     let communication =
         communication(members.iter_many(roster.iter()).matched().map(|(c, v, _)| (c, v)));
@@ -377,65 +390,19 @@ pub(super) fn quote(
         TradeSource::Stock(lot) => {
             purchase_price(stock.lot(lot)?, def, catalog, quantity, communication)
         }
-        TradeSource::Party(item) => validate_sale(
-            def,
-            sale_item(item, inventory, &members)?,
-            quantity,
-            catalog,
-            communication,
-        ),
+        TradeSource::Party(item) => {
+            let carried = match item.owner {
+                ItemOwner::Pool => None,
+                ItemOwner::Member(member) => members.get(member).ok().and_then(|(_, _, c)| c),
+            };
+            validate_sale(
+                def,
+                sale_item(item, inventory, carried)?,
+                quantity,
+                catalog,
+                communication,
+            )
+        }
     }?;
     Ok(TradeQuote { conversation, trade: stock.trades, source, quantity, gold })
-}
-
-/// Settle a quoted trade: the merchant's next trade, at the quoted price
-/// still, the goods and the gold moved at once; or nothing.
-pub(super) fn settle(
-    In((actor, quote)): In<(Entity, TradeQuote)>,
-    mut stocks: Query<(&mut MerchantStock, &super::ActorId)>,
-    mut party: Single<(&PartyRoster, &mut PartyInventory)>,
-    mut members: Query<(&Character, &Vitals, Option<&mut Carried>)>,
-    content: Res<Catalogs>,
-    mut ids: ResMut<ItemIds>,
-) -> Result<(), TradeError> {
-    let (mut stock, id) = stocks.get_mut(actor).map_err(|_| TradeError::Unavailable)?;
-    if stock.trades != quote.trade {
-        return Err(TradeError::StaleSelection);
-    }
-    let def = &content.npcs[id.npc()];
-    let catalog = &content.items;
-    let (roster, inventory) = &mut *party;
-    let communication =
-        communication(members.iter_many(roster.iter()).matched().map(|(c, v, _)| (c, v)));
-    match quote.source {
-        TradeSource::Stock(lot) => buy(
-            &mut stock,
-            inventory,
-            &mut ids,
-            def,
-            catalog,
-            lot,
-            quote.quantity,
-            quote.gold,
-            communication,
-        )?,
-        TradeSource::Party(source) => {
-            let item = sale_item(source, inventory, &members)?;
-            if validate_sale(def, item, quote.quantity, catalog, communication)? != quote.gold {
-                return Err(TradeError::PriceChanged);
-            }
-            let (item, units) = (item.item, quote.quantity as u16);
-            stock.add(item, quote.quantity, catalog, false);
-            match source.owner {
-                ItemOwner::Pool => inventory.pool.consume_units(source.id, units),
-                ItemOwner::Member(member) => {
-                    let (_, _, carried) = members.get_mut(member).unwrap();
-                    carried.unwrap().consume_backpack_units(source.id, units);
-                }
-            }
-            inventory.gold += quote.gold;
-        }
-    }
-    stock.trades += 1;
-    Ok(())
 }

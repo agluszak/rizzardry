@@ -20,24 +20,6 @@ use std::collections::HashMap;
 
 /// Named NPCs use their definition identity; repeatable monster-bound NPCs also
 /// need the authored placement. Neither key uses a transient retail runtime slot.
-/// The NPC catalog, for operations that hold the whole world.
-pub(crate) fn catalog(world: &World) -> &NpcCatalog {
-    &world.resource::<Catalogs>().npcs
-}
-
-/// An NPC actor's authored definition, for operations that hold the whole
-/// world. A level places only NPCs it has definitions for.
-pub(crate) fn definition(world: &World, actor: Entity) -> &NpcDefinition {
-    &catalog(world)[world.get::<ActorId>(actor).expect("an NPC actor").npc()]
-}
-
-/// An NPC actor's dialogue script, loaded before the level that placed it
-/// was entered.
-pub(crate) fn script(world: &World, actor: Entity) -> AssetId<DialogueScript> {
-    let id = world.get::<ActorId>(actor).expect("an NPC actor").npc();
-    world.resource::<NpcAssets>().scripts[&id].id()
-}
-
 #[derive(Component, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ActorId {
     Named(NpcId),
@@ -303,7 +285,7 @@ impl NpcPopulation<'_, '_> {
 /// End an NPC body's embodiment, leaving it standing dormant at `at`: it
 /// keeps its monster state but leaves its level, its group, physics and
 /// navigation.
-fn retire(commands: &mut Commands, entity: Entity, at: Transform) {
+pub(super) fn retire(commands: &mut Commands, entity: Entity, at: Transform) {
     use avian3d::prelude::{Collider, RigidBody};
     commands
         .entity(entity)
@@ -329,7 +311,9 @@ impl Plugin for NpcPlugin {
             .add_message::<conversation::EditNotebook>()
             .add_message::<conversation::PartyRemark>()
             .add_message::<conversation::NpcSpeech>()
-            .add_observer(conversation::end_conversations)
+            // Gifts and faction shifts dialogues make, also announced by others.
+            .add_message::<crate::game::inventory::ItemNews>()
+            .add_message::<crate::game::factions::FactionNews>()
             .add_systems(
                 Update,
                 (

@@ -85,24 +85,6 @@ impl Plugin for PartyPlugin {
     }
 }
 
-/// The party's members in roster order, for operations that hold the whole
-/// world.
-pub fn members_in_world(
-    world: &World,
-) -> impl Iterator<Item = (Entity, &Character, &crate::game::characters::Vitals)> {
-    let party =
-        world.try_query_filtered::<Entity, With<roster::Party>>().unwrap().single(world).unwrap();
-    let roster = world.get::<roster::PartyRoster>(party).unwrap();
-    roster.iter().map(|m| (m, world.get(m).unwrap(), world.get(m).unwrap()))
-}
-
-/// The members awake and well enough to fight: the population retail's NPC
-/// rules work with (`hp_current != 0 && highest_condition < ASLEEP`, as in
-/// `CanNpcJoinParty`, the charm and dialogue practice).
-pub fn able_in_world(world: &World) -> impl Iterator<Item = (Entity, &Character)> {
-    members_in_world(world).filter(|(_, _, v)| v.can_fight()).map(|(m, c, _)| (m, c))
-}
-
 /// The lowest level among those who can fight, which weakens monsters' sight
 /// from behind.
 pub fn lowest_level<'a>(

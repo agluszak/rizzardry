@@ -268,7 +268,9 @@ pub fn build(options: &Options) -> Result<App, String> {
     if let Some(name) = options.talk_to.clone() {
         app.insert_resource(crate::dev::TalkTo(name)).add_systems(
             Update,
-            crate::dev::talk_to_npc.after(crate::game::GameplaySet::LevelActivation),
+            crate::dev::talk_to_npc
+                .after(crate::game::GameplaySet::LevelActivation)
+                .after(crate::game::npcs::conversation::Conversing),
         );
     }
     if let Some(line) = options.say.clone() {

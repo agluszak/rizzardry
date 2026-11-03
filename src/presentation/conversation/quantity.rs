@@ -65,7 +65,11 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
         return;
     }
     let Some(q) = world.get::<DialogueState>(view).and_then(|s| s.quote()) else { return };
-    if quote_trade(world, q.conversation, q.source, q.quantity).is_err() {
+    if world
+        .run_system_cached_with(trade::quote, (q.conversation, q.source, q.quantity))
+        .unwrap()
+        .is_err()
+    {
         return;
     }
     let Some((item, maximum)) = stack(world, q) else { return };
@@ -78,7 +82,9 @@ pub(super) fn open(world: &mut World, view: Entity, canvas: Entity) {
     let remaining_price = if maximum == q.quantity {
         0
     } else {
-        let Ok(remaining) = quote_trade(world, q.conversation, q.source, maximum - q.quantity)
+        let Ok(remaining) = world
+            .run_system_cached_with(trade::quote, (q.conversation, q.source, maximum - q.quantity))
+            .unwrap()
         else {
             return;
         };
@@ -277,11 +283,16 @@ fn change(world: &mut World, panel: Entity, n: u32, rewrite: bool) {
     if n == 0 || n > max {
         return;
     }
-    if let Ok(quote) = quote_trade(world, q.conversation, q.source, n) {
+    if let Ok(quote) =
+        world.run_system_cached_with(trade::quote, (q.conversation, q.source, n)).unwrap()
+    {
         let remaining = if max == n {
             0
         } else {
-            let Ok(remaining) = quote_trade(world, q.conversation, q.source, max - n) else {
+            let Ok(remaining) = world
+                .run_system_cached_with(trade::quote, (q.conversation, q.source, max - n))
+                .unwrap()
+            else {
                 return;
             };
             remaining.gold
@@ -324,7 +335,12 @@ fn finish(world: &mut World, panel: Entity, accept: bool) {
     }
     let Some(overlay) = world.get::<ChildOf>(panel).map(ChildOf::parent) else { return };
     if accept && world.get::<Conversation>(q.conversation).is_some_and(Conversation::ready) {
-        let Ok(verified) = quote_trade(world, q.conversation, q.source, q.quantity) else { return };
+        let Ok(verified) = world
+            .run_system_cached_with(trade::quote, (q.conversation, q.source, q.quantity))
+            .unwrap()
+        else {
+            return;
+        };
         if matches!(q.source, TradeSource::Stock(_)) {
             let party = crate::game::party::roster::the_party(world);
             let gold = world.get::<PartyInventory>(party).unwrap().gold;
