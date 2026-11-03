@@ -220,9 +220,12 @@ impl Plugin for PresentationPlugin {
                     .after(environment::attach_level_visuals)
                     .after(monsters::build_monster_instances)
                     .after(world_items::build_world_items),
-                surfaces::tint_surfaces
-                    .after(monsters::light_monsters)
-                    .after(world_items::light_world_items),
+                // Every lit actor is sampled and composed once, after the
+                // monsters and items of the frame are built, then tinted.
+                (surfaces::light_actors, surfaces::tint_surfaces)
+                    .chain()
+                    .after(monsters::build_monster_instances)
+                    .after(world_items::build_world_items),
                 environment::apply_environment,
                 sky::shade_clouds,
                 sky::build_sky,
@@ -241,7 +244,6 @@ impl Plugin for PresentationPlugin {
                     monsters::request_monster_visuals,
                     monsters::build_monster_instances,
                     monsters::animate_monsters,
-                    monsters::light_monsters,
                 )
                     .chain()
                     // A monster killed this frame starts dying this frame.
@@ -250,7 +252,6 @@ impl Plugin for PresentationPlugin {
                     world_items::show_world_items,
                     world_items::build_world_items,
                     world_items::turn_world_items,
-                    world_items::light_world_items,
                 )
                     .chain(),
             ),

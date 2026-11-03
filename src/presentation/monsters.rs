@@ -6,19 +6,16 @@
 
 use std::time::Duration;
 
-use super::surfaces::ActorLight;
+use super::surfaces::{ActorLight, LightSample, SkyResponse};
 use bevy::camera::visibility::NoAutoAabb;
 use bevy::mesh::morph::{MeshMorphWeights, MorphWeights};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::time::Stopwatch;
 
-use avian3d::prelude::{LinearVelocity, SpatialQuery, SpatialQueryFilter};
+use avian3d::prelude::LinearVelocity;
 
-use super::environment::LevelAppearance;
-use crate::content::level::LevelGeometry;
 use crate::content::monster::MonsterModel;
-use crate::game::time::GameClock;
 use crate::game::world::navigation::Walker;
 use crate::game::world::population::Monster;
 use crate::presentation::screen_art::visible_if;
@@ -46,7 +43,7 @@ pub fn remove_monster_visuals(
     if actors.contains(removed.entity) {
         commands
             .entity(removed.entity)
-            .try_remove::<(MonsterVisual, MonsterPlayback, MonsterLight)>();
+            .try_remove::<(MonsterVisual, MonsterPlayback, LightSample, SkyResponse)>();
     }
 }
 
@@ -69,18 +66,6 @@ pub fn request_monster_visuals(
 pub struct MonsterPlayback {
     /// The cycle shown, and how long it has played.
     playing: Option<(&'static str, Stopwatch)>,
-}
-
-/// The lighting of one actor's built model, independent of its playback: a
-/// settled corpse is still relit.
-#[derive(Component, Debug)]
-pub struct MonsterLight {
-    /// How much sky light reaches the actor: retail fades it between 0.75
-    /// in sight of the level's `SUN` light and 0 out of it.
-    sky_scale: f32,
-    /// Where the sunlight target and fixed light were last decided, and
-    /// their values; only moving re-decides them.
-    lit_at: Option<(Vec3, f32, Vec3)>,
 }
 
 /// The hierarchy itself records which visual entities were successfully built.
@@ -144,9 +129,11 @@ pub fn build_monster_instances(
                 ));
             }
         }
+        // Lit independently of its playback: a settled corpse is still relit.
         commands.entity(actor).insert((
             MonsterPlayback { playing: None },
-            MonsterLight { sky_scale: SUNLIT, lit_at: None },
+            LightSample::default(),
+            SkyResponse::fading(),
             ActorLight::default(),
             Visibility::default(),
         ));
@@ -226,88 +213,4 @@ pub fn animate_monsters(
             }
         }
     }
-}
-
-/// The sky light an actor in sight of the sun receives (Whizzardry
-/// `Monster::Update`).
-const SUNLIT: f32 = 0.75;
-/// Retail steps the sky scale by 0.05 every 25 ms.
-const SKY_SCALE_PER_SECOND: f32 = 2.0;
-
-/// Light actors as retail does models without baked light: sky light while
-/// they can see the `SUN` light, scaled by each material's ambient, plus the
-/// level's offset, nearby lights and the material's emission. Retail adds
-/// point lights per vertex with N·L; here they light the whole actor by
-/// their falloff at its centre.
-pub fn light_monsters(
-    time: Res<Time>,
-    torch: super::environment::PartyTorch,
-    clock: Res<GameClock>,
-    levels: Query<(
-        Entity,
-        &LevelAppearance,
-        Option<Ref<crate::game::world::triggers::LightActivation>>,
-    )>,
-    geometry: Res<Assets<LevelGeometry>>,
-    spatial: SpatialQuery,
-    mut actors: Query<(&GlobalTransform, &mut MonsterLight, &mut ActorLight)>,
-) {
-    let Some((level_entity, level, state)) =
-        levels.iter().find_map(|(e, l, state)| geometry.get(&l.0).map(|g| (e, g, state)))
-    else {
-        return;
-    };
-    let sky = super::environment::sky_now(level, &clock);
-    let torch = torch.light();
-    for (transform, mut sampled, mut light) in &mut actors {
-        let centre = transform.translation();
-        let (target, fixed) = match sampled.lit_at {
-            Some((at, target, fixed))
-                if at == centre
-                    && !geometry.is_changed()
-                    && !state.as_ref().is_some_and(|s| s.is_changed()) =>
-            {
-                (target, fixed)
-            }
-            _ => {
-                let target =
-                    if sunlit(&spatial, level_entity, level, centre) { SUNLIT } else { 0.0 };
-                let fixed =
-                    super::environment::actor_light(&level.lighting, state.as_deref(), centre);
-                sampled.lit_at = Some((centre, target, fixed));
-                (target, fixed)
-            }
-        };
-        if sampled.sky_scale != target {
-            let step = SKY_SCALE_PER_SECOND * time.delta_secs();
-            sampled.sky_scale += (target - sampled.sky_scale).clamp(-step, step);
-        }
-        light.set_if_neq(ActorLight {
-            sky: sky * sampled.sky_scale,
-            fixed: fixed + torch.as_ref().map_or(Vec3::ZERO, |light| light.at(centre)),
-        });
-    }
-}
-
-/// Whether the level's `SUN` light is in sight from `at`, past the level's
-/// own geometry. A level without one has no sunlight.
-pub fn sunlit(
-    spatial: &SpatialQuery,
-    level_entity: Entity,
-    level: &LevelGeometry,
-    at: Vec3,
-) -> bool {
-    level.lighting.sun.is_some_and(|sun| {
-        let Ok(direction) = Dir3::new(sun - at) else { return true };
-        spatial
-            .cast_ray_predicate(
-                at,
-                direction,
-                at.distance(sun),
-                true,
-                &SpatialQueryFilter::default(),
-                &|hit| hit == level_entity,
-            )
-            .is_none()
-    })
 }

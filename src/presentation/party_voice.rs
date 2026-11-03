@@ -1,7 +1,7 @@
 //! Device remarks are presentation-only, actor-bound, and never draw gameplay RNG.
 use super::{
     PresentationRng,
-    voice::{Speech, pc_voice_path, pc_voice_stem},
+    voice::{Speaking, pc_voice_path, pc_voice_stem},
 };
 use crate::{
     content::ui::TextTable,
@@ -38,9 +38,6 @@ pub(super) struct PendingRemark {
     /// Asked for by the conversation, which it does not wait out.
     dialogue: bool,
 }
-#[derive(Component)]
-pub(super) struct PlayingRemark;
-
 pub(super) fn queue_device_remarks(
     mut commands: Commands,
     mut news: MessageReader<LockNews>,
@@ -141,7 +138,7 @@ pub(super) fn play_device_remarks(
     mut pending: Query<(Entity, &mut PendingRemark)>,
     roster: Option<Single<&PartyRoster>>,
     members: Query<&Vitals>,
-    speaking: Query<(), Or<(With<Speech>, With<PlayingRemark>)>>,
+    speaking: Query<(), With<Speaking>>,
     conversations: Query<
         (),
         (
@@ -201,7 +198,7 @@ pub(super) fn play_device_remarks(
             }
         }
         commands.entity(entity).remove::<PendingRemark>().insert((
-            PlayingRemark,
+            Speaking,
             AudioPlayer::new(sound.clone()),
             PlaybackSettings::DESPAWN,
         ));

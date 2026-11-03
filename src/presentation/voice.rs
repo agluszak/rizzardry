@@ -26,7 +26,13 @@ pub fn pc_voice_path(stem: &str, event: u16) -> String {
     format!("retail://data/sound/pcs/{stem}/{stem}_{event:03}.mp3")
 }
 
-/// A voice line being spoken.
+/// A voice playing on this entity, whoever started it: a conversation's
+/// line, a party member's remark, a line said on request. Whatever waits
+/// for silence queries this; each owner ends its own playback.
+#[derive(Component, Debug)]
+pub struct Speaking;
+
+/// A voice line said on request, reported by name when it has played out.
 #[derive(Component, Debug)]
 pub struct Speech {
     /// The retail line name, e.g. `npc_aletheides_000`.
@@ -54,6 +60,7 @@ pub fn speak(commands: &mut Commands, assets: &AssetServer, line: &str) -> Entit
         .spawn((
             Name::new(format!("Speech {line}")),
             Speech { line: line.to_owned() },
+            Speaking,
             AudioPlayer::new(assets.load(voice_path(line))),
             PlaybackSettings::ONCE,
         ))
