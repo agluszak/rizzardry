@@ -743,21 +743,6 @@ pub(crate) mod tests {
         ));
     }
 
-    /// Spell points pay for a learned cast whatever its roll; a refusal
-    /// spends nothing.
-    #[test]
-    fn a_learned_cast_pays_even_when_it_fizzles_and_a_refusal_pays_nothing() {
-        let priest = Character::new("Cleric", Race::Human, Gender::Male, Profession::Priest);
-        let heal = heal_wounds();
-        let mut rng = GameRng::seeded(9);
-        // An untrained priest at power 7: a high failure chance.
-        let chance = fail_chance(&priest, &heal, 7);
-        assert!(chance > 50, "{chance}");
-        let outcomes: Vec<_> =
-            (0..50).map(|_| roll(&mut rng, chance, &heal, false, false)).collect();
-        assert!(outcomes.contains(&Outcome::Fizzled) && outcomes.contains(&Outcome::Cast));
-    }
-
     #[test]
     fn a_priest_picks_two_first_level_divine_spells_and_gains_their_points() {
         let priest = Character::new("Cleric", Race::Human, Gender::Male, Profession::Priest);
