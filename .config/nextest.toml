@@ -1,8 +1,0 @@
-# Each retail scenario builds the whole game and loads a level: run them one
-# at a time, or they thrash memory and disk together.
-[test-groups]
-scenarios = { max-threads = 1 }
-
-[[profile.default.overrides]]
-filter = 'test(/^integration::scenarios::/)'
-test-group = 'scenarios'

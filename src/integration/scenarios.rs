@@ -71,32 +71,21 @@ fn crab_fight(app: &mut App) {
     step_until(app, "the fight's end", |w| !fighting(w));
 }
 
+/// One play-through, since every scenario begins with the same fight: the
+/// party beats the beach crabs, rests eight hours on the quiet beach, and
+/// finds the crabs still dead after leaving the level and coming back.
 #[test]
 #[ignore = "requires a retail installation"]
-fn the_dead_stay_dead_across_travel() {
+fn the_party_fights_rests_and_finds_the_dead_still_dead() {
+    use crate::game::camp::{Camp, CampNews, CampRequest};
+    use crate::game::party::body::PartyBody;
+    use crate::game::time::GameClock;
+    use avian3d::prelude::LinearVelocity;
     let mut app = game(&["--continuous", "--start=108,2.5,-96"]);
     crab_fight(&mut app);
     let (count, dead) = monsters(app.world_mut());
     assert_eq!(dead, 3, "the party beat the three beach crabs");
 
-    app.world_mut().write_message(Travel { entrance: "MO204".into() });
-    wait_for_level(&mut app, "levels/monastery/monastery2.pvl");
-    app.world_mut().write_message(Travel { entrance: "MO102".into() });
-    wait_for_level(&mut app, "levels/monastery/monastery1.pvl");
-
-    assert_eq!(monsters(app.world_mut()), (count - dead, 0), "the crabs did not come back");
-}
-
-#[test]
-#[ignore = "requires a retail installation"]
-fn the_party_rests_eight_hours_and_wakes() {
-    use crate::game::camp::{Camp, CampNews, CampRequest};
-    use crate::game::party::body::PartyBody;
-    use crate::game::time::GameClock;
-    use avian3d::prelude::LinearVelocity;
-    // After beating the beach crabs, with the beach quiet.
-    let mut app = game(&["--continuous", "--start=108,2.5,-96"]);
-    crab_fight(&mut app);
     // The party may not camp while moving.
     step_until(&mut app, "the party standing still", |w| {
         let mut party = w.query_filtered::<&LinearVelocity, With<PartyBody>>();
@@ -110,4 +99,10 @@ fn the_party_rests_eight_hours_and_wakes() {
     step_until(&mut app, "waking", |w| !w.contains_resource::<Camp>());
     let rested = app.world().resource::<GameClock>().ms - before;
     assert!(rested >= 8 * 3_600_000, "rested {} game hours", rested / 3_600_000);
+
+    app.world_mut().write_message(Travel { entrance: "MO204".into() });
+    wait_for_level(&mut app, "levels/monastery/monastery2.pvl");
+    app.world_mut().write_message(Travel { entrance: "MO102".into() });
+    wait_for_level(&mut app, "levels/monastery/monastery1.pvl");
+    assert_eq!(monsters(app.world_mut()), (count - dead, 0), "the crabs did not come back");
 }
