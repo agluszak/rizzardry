@@ -10,11 +10,9 @@ use super::props::PropMotion;
 use super::triggers::TriggerEffect;
 use crate::game::characters::Character;
 use crate::game::data::Catalogs;
-use crate::game::inventory::{
-    Carried, ItemIds, ItemNews, ItemStack, PartyInventory, Refusal, StackId, make_item,
-};
+use crate::game::inventory::{Carried, ItemIds, ItemNews, ItemStack, PartyInventory, make_item};
 use crate::game::loot::roll_loot;
-use crate::game::party::roster::{PartyRoster, the_party};
+use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 
 /// A container's contents, drawn from its loot table the first time it is
@@ -112,115 +110,81 @@ pub enum Recipient {
     Member(Entity),
 }
 
-/// The container the named attempt looks through, if that attempt is
-/// still under way.
-pub fn looting(world: &World, on: Entity) -> Option<Entity> {
-    let entity = world.get_entity(on).ok()?;
-    match (entity.get::<DeviceInteraction>()?, entity.get::<AttemptOn>()?) {
-        (DeviceInteraction { work: Work::Looting }, AttemptOn(device)) => Some(*device),
-        _ => None,
-    }
-}
-
 /// Take the chosen stacks, each whole or `amount` of it, in the container's
 /// order (retail `TransferSelectedItems`). Each stack goes as far as there
 /// is room; what does not fit stays in the container exactly as it was, and
 /// when nothing is left the container is done with. A member must be able
 /// to act to receive anything.
-pub fn take_from_container(
-    world: &mut World,
-    on: Entity,
-    picks: &[(StackId, u16)],
-    to: Recipient,
-) -> Result<(), Refusal> {
-    if crate::game::world::party_occupied(world) || picks.is_empty() {
-        return Err(Refusal::Nothing);
-    }
-    let device = looting(world, on).ok_or(Refusal::Nothing)?;
-    let party = the_party(world);
-    if let Recipient::Member(member) = to
-        && !world.get::<crate::game::characters::Vitals>(member).unwrap().can_act()
-    {
-        return Err(Refusal::DoesNotFit);
-    }
-
-    let mut container = world.entity_mut(device).take::<Container>().unwrap();
-    let mut news = Vec::new();
-    let mut refused = false;
-    let mut moved_any = false;
-    Catalogs::scope(world, |world, catalogs| {
-        world.resource_scope(|world, mut ids: Mut<ItemIds>| {
-            let catalog = &catalogs.items;
-            let items = &mut container.contents.items;
-            for &(id, amount) in picks {
-                let index = items.iter().position(|s| s.id == id).unwrap();
-                let definition = &catalog[items[index].item];
-                let name = items[index].display_name(definition, false);
-                let mut receive = |part: ItemStack| match to {
-                    Recipient::Party => world
-                        .get_mut::<PartyInventory>(party)
-                        .unwrap()
-                        .into_inner()
-                        .pool
-                        .receive(part, catalog),
-                    Recipient::Member(member) => world
-                        .get_mut::<Carried>(member)
-                        .unwrap()
-                        .into_inner()
-                        .receive(part, catalog),
-                };
-                let moved = if amount == items[index].count() {
-                    let whole = items.remove(index);
-                    let units = whole.count();
-                    let rest = receive(whole);
-                    let left = rest.as_ref().map_or(0, ItemStack::count);
-                    if let Some(rest) = rest {
-                        items.insert(index, rest);
-                    }
-                    units - left
-                } else {
-                    items[index].give_part(amount, &mut ids, receive)
-                };
-                moved_any |= moved > 0;
-                if moved > 0 {
-                    news.push(ItemNews::Takes {
-                        member: match to {
-                            Recipient::Party => None,
-                            Recipient::Member(member) => Some(
-                                world
-                                    .get::<crate::game::characters::Character>(member)
-                                    .unwrap()
-                                    .name
-                                    .clone(),
-                            ),
-                        },
-                        item: name,
-                    });
+pub(crate) fn take_from_containers(
+    mut commands: Commands,
+    mut requests: MessageReader<super::interaction::DeviceRequest>,
+    attempts: Query<(&DeviceInteraction, &AttemptOn)>,
+    mut containers: Query<&mut Container>,
+    mut inventory: Single<&mut PartyInventory>,
+    mut members: Query<(&Character, &crate::game::characters::Vitals, &mut Carried)>,
+    (entering, battle): (
+        Query<(), With<super::level::Destination>>,
+        Query<(), With<crate::game::combat::Battle>>,
+    ),
+    content: Res<Catalogs>,
+    mut ids: ResMut<ItemIds>,
+    mut news: MessageWriter<ItemNews>,
+) {
+    use super::interaction::DeviceAct;
+    for request in requests.read() {
+        let DeviceAct::Take { picks, to } = &request.act else { continue };
+        let Ok((DeviceInteraction { work: Work::Looting }, &AttemptOn(device))) =
+            attempts.get(request.on)
+        else {
+            continue;
+        };
+        if !entering.is_empty() || !battle.is_empty() {
+            continue;
+        }
+        let mut receiver = match *to {
+            Recipient::Party => None,
+            Recipient::Member(member) => match members.get_mut(member) {
+                Ok((character, vitals, carried)) if vitals.can_act() => {
+                    Some((character.name.clone(), carried))
                 }
-                if moved < amount {
-                    refused = true;
+                _ => continue,
+            },
+        };
+        let Ok(mut container) = containers.get_mut(device) else { continue };
+        let catalog = &content.items;
+        let items = &mut container.contents.items;
+        let mut refused = false;
+        for &(id, amount) in picks {
+            let Some(index) = items.iter().position(|s| s.id == id) else { continue };
+            let definition = &catalog[items[index].item];
+            let name = items[index].display_name(definition, false);
+            let mut receive = |part: ItemStack| match receiver.as_mut() {
+                None => inventory.pool.receive(part, catalog),
+                Some((_, carried)) => carried.receive(part, catalog),
+            };
+            let moved = if amount == items[index].count() {
+                let whole = items.remove(index);
+                let units = whole.count();
+                let rest = receive(whole);
+                let left = rest.as_ref().map_or(0, ItemStack::count);
+                if let Some(rest) = rest {
+                    items.insert(index, rest);
                 }
+                units - left
+            } else {
+                items[index].give_part(amount, &mut ids, receive)
+            };
+            if moved > 0 {
+                let member = receiver.as_ref().map(|(name, _)| name.clone());
+                news.write(ItemNews::Takes { member, item: name });
             }
-        });
-    });
-    let empty = container.contents.items.is_empty();
-    world.entity_mut(device).insert(container);
-    for news in news {
-        world.write_message(news);
-    }
-    if refused {
-        world.write_message(ItemNews::NoRoom);
-    }
-    if empty {
-        close_container(world, on);
-    }
-    // Some of it moving is a take; none of it is a refusal.
-    if moved_any { Ok(()) } else { Err(Refusal::NoRoom) }
-}
-
-/// Stop looking through the container, leaving the rest in it.
-pub fn close_container(world: &mut World, on: Entity) {
-    if looting(world, on).is_some() {
-        world.despawn(on);
+            refused |= moved < amount;
+        }
+        if refused {
+            news.write(ItemNews::NoRoom);
+        }
+        if items.is_empty() {
+            commands.entity(request.on).despawn();
+        }
     }
 }

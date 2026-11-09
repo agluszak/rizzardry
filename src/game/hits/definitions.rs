@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use super::defences::{CONDITION_SAVE, DEATH_SAVE, INDEFINITE, condition_save};
-use super::effects::*;
 use crate::content::characters::Realm;
 use crate::content::items::{AttackEffect, AttackEffects, Dice};
 use crate::content::species::{MonsterKind, SpecialAttackKind};
@@ -19,7 +18,9 @@ use EffectKind::{
     Sap, Slay, Tire,
 };
 
-/// An immutable entry in the decoded effect catalog. It never enters gameplay queries.
+/// What something does to each body it lands on: its effects in order, and
+/// whether its damage comes back to its caster's side (`Some(true)` as
+/// health, `Some(false)` as spell points).
 #[derive(Clone, Debug, Default)]
 pub struct Definition {
     pub effects: Vec<EffectSpec>,
@@ -29,65 +30,17 @@ pub struct Definition {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DefinitionId(usize);
 
-/// An act refers to shared data; the catalog owns its lifetime.
-#[derive(Component, Debug)]
-pub struct Uses(pub DefinitionId);
-
-/// The damage a blow deals, its first effect.
-#[derive(Component, Clone, Copy, Debug)]
-pub struct BlowDamage(pub u32);
-
-/// The act's weapon effects: each description of the blow definition lands at
-/// the weapon's chance for it, a poison at the weapon's strength.
-#[derive(Component, Debug)]
-pub struct WeaponEffects {
+/// A weapon blow behind a strike: the damage it deals and its weapon's
+/// effects, each landing at the weapon's chance for it, a poison at the
+/// weapon's strength.
+#[derive(Clone, Copy, Debug)]
+pub struct Blow {
+    pub damage: u32,
     pub effects: AttackEffects,
     pub by_monster: bool,
 }
 
-/// It happens only if the effect before it landed.
-#[derive(Clone, Debug)]
-pub struct OnlyIfLanded;
-
-/// It happens only if the effect before it was resisted.
-#[derive(Clone, Debug)]
-pub struct OnlyIfResisted;
-
-/// It acts on the party itself (its shared spells, pool or purse), once,
-/// through the first member the act reaches.
-#[derive(Clone, Debug)]
-pub struct OnParty;
-
-/// The weapon effect a blow description stands for.
-#[derive(Clone, Copy, Debug)]
-pub struct FromWeapon(pub AttackEffect);
-
-/// Only for a party member.
-#[derive(Clone, Debug)]
-pub struct OnlyMembers;
-
-/// Only for a monster.
-#[derive(Clone, Debug)]
-pub struct OnlyMonsters;
-
-/// Only for a monster of these kinds.
-#[derive(Clone, Debug)]
-pub struct OnlyKinds(pub &'static [MonsterKind]);
-
-/// Only from a monster's blow.
-#[derive(Clone, Debug)]
-pub struct OnlyByMonsters;
-
-/// Prismic Ray's either-or: half the time damage, otherwise a weighted
-/// condition or death.
-#[derive(Clone, Copy, Debug)]
-pub struct Prismic {
-    pub dice: Option<Dice>,
-    pub base: i32,
-    pub per_power: i32,
-}
-
-/// How an effect's magnitude is rolled from its act's [`Strength`].
+/// How an effect's magnitude is rolled from its strike's [`Strength`].
 #[derive(Clone, Copy, Debug)]
 pub enum Roll {
     Fixed(u32),
@@ -112,7 +65,7 @@ pub enum Roll {
     Fifty,
     /// So much a power.
     PerPower(u32),
-    /// Three rolls under the act's bound (its power), summed, over
+    /// Three rolls under the strike's bound (its power), summed, over
     /// `divide`, plus `plus`, times `times`, over `over` (retail
     /// `RollSpecialAttackSum`).
     Three {
@@ -128,7 +81,7 @@ pub enum Roll {
     /// A blow's rounds: `count`d2 + 1, within 1 and 12, `count` being the
     /// effect power over 3, plus 1.
     BlowRounds,
-    /// A blow's damage, as its act's [`BlowDamage`] says.
+    /// A blow's damage, as its [`Blow`] says.
     Damage,
     /// A blow's amount: (`count` × `times`)d`sides` + `base`, and one more.
     Blow {
@@ -180,7 +133,6 @@ pub struct Definitions {
     specials: HashMap<SpecialAttackKind, DefinitionId>,
     breath: DefinitionId,
     blow: DefinitionId,
-    purposes: HashMap<SpellId, Vec<Purpose>>,
 }
 
 impl Definitions {
@@ -207,112 +159,151 @@ impl Definitions {
     }
 }
 
-/// Definition construction is ordinary data composition, independent of World.
-#[derive(Default)]
-struct Definer {
-    definition: Definition,
-}
-impl Definer {
-    fn effect(&mut self, parts: impl EffectParts) -> &mut Self {
-        let mut effect = EffectSpec::default();
-        parts.describe(&mut effect);
-        self.definition.effects.push(effect);
-        self
-    }
-    fn finish(self, entries: &mut Vec<Definition>) -> DefinitionId {
-        let id = DefinitionId(entries.len());
-        entries.push(self.definition);
-        id
-    }
-}
-
-/// Immutable instructions. The previous result and rolled magnitude are locals
-/// of resolution, never fields in this catalog or components in the world.
-#[derive(Clone, Debug, Default)]
+/// One effect of a definition: what it does, how its magnitude is rolled,
+/// what may stop it, and whom it is for.
+#[derive(Clone, Copy, Debug, Default)]
 pub struct EffectSpec {
     pub kind: EffectKind,
     pub roll: Option<Roll>,
-    pub chance: Option<Chance>,
-    pub save: Option<Save>,
-    pub resist: Option<Resist>,
+    /// The percent chance it happens at all.
+    pub chance: Option<u32>,
+    /// The body may save against it outright, from this base.
+    pub save: Option<i32>,
+    /// The body's resistance in this realm cuts it; saves are made in it too.
+    pub resist: Option<Realm>,
+    /// Saved against and resisted at half its strike's strength.
     pub half: bool,
+    /// Only if the effect before it landed.
     pub landed: bool,
+    /// Only if the effect before it was resisted.
     pub resisted: bool,
+    /// It acts on the party itself (its shared spells, pool or purse), once,
+    /// through the first member the strike reaches.
     pub party: bool,
     pub members: bool,
     pub monsters: bool,
     pub kinds: Option<&'static [MonsterKind]>,
+    /// Only from a monster's blow.
     pub by_monsters: bool,
+    /// The weapon effect a blow's effect stands for.
     pub weapon: Option<AttackEffect>,
+}
+
+impl EffectSpec {
+    fn of(kind: EffectKind) -> Self {
+        Self { kind, ..default() }
+    }
+    fn roll(self, roll: Roll) -> Self {
+        Self { roll: Some(roll), ..self }
+    }
+    fn chance(self, percent: u32) -> Self {
+        Self { chance: Some(percent), ..self }
+    }
+    fn save(self, base: i32) -> Self {
+        Self { save: Some(base), ..self }
+    }
+    fn resist(self, realm: Realm) -> Self {
+        Self { resist: Some(realm), ..self }
+    }
+    fn half(self) -> Self {
+        Self { half: true, ..self }
+    }
+    fn if_landed(self) -> Self {
+        Self { landed: true, ..self }
+    }
+    fn if_resisted(self) -> Self {
+        Self { resisted: true, ..self }
+    }
+    fn on_party(self) -> Self {
+        Self { party: true, ..self }
+    }
+    fn members(self) -> Self {
+        Self { members: true, ..self }
+    }
+    fn monsters(self) -> Self {
+        Self { monsters: true, ..self }
+    }
+    fn kinds(self, kinds: &'static [MonsterKind]) -> Self {
+        Self { kinds: Some(kinds), ..self }
+    }
+    fn by_monsters(self) -> Self {
+        Self { by_monsters: true, ..self }
+    }
+    fn weapon(self, effect: AttackEffect) -> Self {
+        Self { weapon: Some(effect), ..self }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub enum EffectKind {
     #[default]
     Harm,
+    /// A member's health drained for good.
     Sap,
-    Afflict(Afflict),
+    /// A condition; `indefinite` lasts until lifted, whatever its magnitude;
+    /// a poison bites by `poison`.
+    Afflict {
+        condition: Condition,
+        poison: u32,
+        indefinite: bool,
+    },
     Slay,
     Tire,
     DrainPool,
     DrainBudget,
-    DrainRealm(DrainRealm),
+    /// A member's spell points in one realm; in every realm when `None`.
+    DrainRealm(Option<Realm>),
     Heal,
     Refresh,
     Replenish,
-    Cure(Cure),
+    /// Lift these conditions, by the strike's strength, or outright.
+    Cure {
+        conditions: &'static [Condition],
+        outright: bool,
+    },
     Renew,
     Raise,
-    Purify(Purify),
-    Enchant(Enchant),
+    /// Shorten the clouds hanging over the body; `level` is the purifying
+    /// spell's.
+    Purify {
+        level: u32,
+    },
+    /// A spell laid on the body for its magnitude's rounds.
+    Enchant(SpellId),
     Burn,
     LoseGold,
     Dispel,
-    Prismic(Prismic),
+    /// Prismic Ray's either-or: half the time damage, otherwise a weighted
+    /// condition or death.
+    Prismic {
+        dice: Option<Dice>,
+        base: i32,
+        per_power: i32,
+    },
 }
 
-trait EffectParts {
-    fn describe(self, effect: &mut EffectSpec);
+fn afflict(condition: Condition) -> EffectSpec {
+    EffectSpec::of(EffectKind::Afflict { condition, poison: 0, indefinite: false })
 }
-macro_rules! tuples {
-    ($($T:ident),+) => {
-        impl<$($T: EffectParts),+> EffectParts for ($($T,)+) {
-            #[allow(non_snake_case)]
-            fn describe(self, effect: &mut EffectSpec) {
-                let ($($T,)+) = self;
-                $($T.describe(effect);)+
-            }
-        }
-    }
-}
-tuples!(A, B);
-tuples!(A, B, C);
-tuples!(A, B, C, D);
-tuples!(A, B, C, D, E);
-tuples!(A, B, C, D, E, F);
+
 /// A condition, rolled for so many rounds, saved against and resisted.
-fn condition(condition: Condition, rounds: Roll, realm: Realm) -> impl EffectParts {
-    (
-        Afflict { condition, poison: 0, indefinite: false },
-        rounds,
-        Save(condition_save(condition)),
-        Resist { realm },
-    )
+fn condition(afflicted: Condition, rounds: Roll, realm: Realm) -> EffectSpec {
+    afflict(afflicted).roll(rounds).save(condition_save(afflicted)).resist(realm)
 }
 
 /// What a spell does to each victim, by retail's effect functions
 /// (`Magic Effects.cpp`); `None` for one the game does not resolve.
-fn define_spell(d: &mut Definer, spell: &SpellDefinition) -> Option<()> {
+fn define_spell(spell: &SpellDefinition) -> Option<Definition> {
     use Condition::*;
     use SpellId as S;
     let realm = spell.realm?;
-    let resist = Resist { realm };
     let dice = Roll::Dice { dice: spell.dice, plain: false, over: 1 };
     let rounds = Roll::Duration { base: spell.duration_base, per_power: spell.duration_per_power };
-    let harm = (Harm, dice, resist);
-    let afflict = |c| condition(c, rounds, realm);
-    let personal = crate::game::magic::enchantments::personal(spell.id);
-    match spell.id {
+    let harm = EffectSpec::of(Harm).roll(dice).resist(realm);
+    let inflict = |c| condition(c, rounds, realm);
+    let cure = |conditions| EffectSpec::of(EffectKind::Cure { conditions, outright: false });
+    let mut leeches = None;
+    let effects = match spell.id {
         S::BOILING_BLOOD
         | S::BOILING_BLOOD_EXPLOSION
         | S::ACID_SPLASH
@@ -335,13 +326,10 @@ fn define_spell(d: &mut Definer, spell: &SpellDefinition) -> Option<()> {
         | S::FALLING_STARS
         | S::MIND_FLAY
         | S::NUCLEAR_BLAST
-        | S::TSUNAMI => {
-            d.effect(harm);
-        }
+        | S::TSUNAMI => vec![harm],
         S::LIFESTEAL | S::MIGHT_TO_MAGIC => {
-            d.effect(harm);
-            let lifesteal = spell.id == S::LIFESTEAL;
-            d.definition.leeches = Some(lifesteal);
+            leeches = Some(spell.id == S::LIFESTEAL);
+            vec![harm]
         }
         S::EYE_FOR_AN_EYE
         | S::DRACON_BREATH
@@ -369,27 +357,18 @@ fn define_spell(d: &mut Definer, spell: &SpellDefinition) -> Option<()> {
         | S::SOUL_SHIELD
         | S::SUPERMAN
         | S::BODY_OF_STONE => {
-            let enchant = Enchant { spell: spell.id };
-            if personal {
-                d.effect((enchant, rounds));
+            let enchant = EffectSpec::of(EffectKind::Enchant(spell.id)).roll(rounds);
+            if crate::game::magic::enchantments::personal(spell.id) {
+                vec![enchant]
             } else {
                 // The party's own slots hold for all its members at once.
-                d.effect((enchant, rounds, OnlyMonsters));
-                d.effect((enchant, rounds, OnParty));
+                vec![enchant.monsters(), enchant.on_party()]
             }
         }
-        S::HOLY_WATER => {
-            d.effect((harm, OnlyKinds(UNDEAD)));
-        }
-        S::BANISH => {
-            d.effect((harm, OnlyKinds(BANISHED)));
-        }
-        S::HEAL_WOUNDS | S::HEAL_ALL => {
-            d.effect((Heal, dice));
-        }
-        S::STAMINA | S::REST_ALL => {
-            d.effect((Refresh, dice));
-        }
+        S::HOLY_WATER => vec![harm.kinds(UNDEAD)],
+        S::BANISH => vec![harm.kinds(BANISHED)],
+        S::HEAL_WOUNDS | S::HEAL_ALL => vec![EffectSpec::of(Heal).roll(dice)],
+        S::STAMINA | S::REST_ALL => vec![EffectSpec::of(Refresh).roll(dice)],
         S::RESTORATION => {
             const ALL: &[Condition] = &[
                 Diseased,
@@ -409,176 +388,113 @@ fn define_spell(d: &mut Definer, spell: &SpellDefinition) -> Option<()> {
                 Unconscious,
             ];
             let restoring = Roll::Dice { dice: Some(RESTORATION_DICE), plain: false, over: 1 };
-            d.effect((Heal, restoring))
-                .effect((Refresh, restoring))
-                .effect(Cure { conditions: ALL, outright: true });
+            vec![
+                EffectSpec::of(Heal).roll(restoring),
+                EffectSpec::of(Refresh).roll(restoring),
+                EffectSpec::of(EffectKind::Cure { conditions: ALL, outright: true }),
+            ]
         }
         S::RESTORE_HEALTH => {
             let twice = spell.dice.map(|dice| Dice { count: dice.count * 2, ..dice });
-            d.effect((Heal, dice))
-                .effect((Refresh, Roll::Dice { dice: twice, plain: false, over: 1 }));
+            vec![
+                EffectSpec::of(Heal).roll(dice),
+                EffectSpec::of(Refresh).roll(Roll::Dice { dice: twice, plain: false, over: 1 }),
+            ]
         }
-        S::RESTORE_MAGIC => {
-            d.effect((Replenish, dice));
-        }
-        S::ITCHING_SKIN => {
-            d.effect(afflict(Irritated));
-        }
-        S::PARALYZE | S::FREEZE_FLESH | S::FREEZE_ALL => {
-            d.effect(afflict(Paralyzed));
-        }
-        S::SLEEP => {
-            d.effect(afflict(Asleep));
-        }
-        S::BLINDING_FLASH => {
-            d.effect(afflict(Blind));
-        }
-        S::INSANITY => {
-            d.effect(afflict(Insane));
-        }
-        S::SLOW => {
-            d.effect(afflict(Slowed));
-        }
-        S::WEB => {
-            d.effect(afflict(Webbed));
-        }
-        S::SILENCE => {
-            d.effect(afflict(Silenced));
-        }
-        S::HEX => {
-            d.effect(afflict(Hexed));
-        }
-        S::TURNCOAT => {
-            d.effect(afflict(Turncoat));
-        }
-        S::MIND_STAB | S::PSIONIC_BLAST => {
-            d.effect(harm).effect((afflict(Insane), Chance(25)));
-        }
-        S::BLIZZARD => {
-            d.effect(harm).effect((afflict(Blind), Chance(25)));
-        }
-        S::CEREBRAL_HEMORRHAGE => {
-            d.effect(harm).effect((afflict(Insane), Chance(75)));
-        }
-        S::CONCUSSION => {
-            d.effect(harm).effect((afflict(Unconscious), Chance(50)));
-        }
+        S::RESTORE_MAGIC => vec![EffectSpec::of(Replenish).roll(dice)],
+        S::ITCHING_SKIN => vec![inflict(Irritated)],
+        S::PARALYZE | S::FREEZE_FLESH | S::FREEZE_ALL => vec![inflict(Paralyzed)],
+        S::SLEEP => vec![inflict(Asleep)],
+        S::BLINDING_FLASH => vec![inflict(Blind)],
+        S::INSANITY => vec![inflict(Insane)],
+        S::SLOW => vec![inflict(Slowed)],
+        S::WEB => vec![inflict(Webbed)],
+        S::SILENCE => vec![inflict(Silenced)],
+        S::HEX => vec![inflict(Hexed)],
+        S::TURNCOAT => vec![inflict(Turncoat)],
+        S::MIND_STAB | S::PSIONIC_BLAST => vec![harm, inflict(Insane).chance(25)],
+        S::BLIZZARD => vec![harm, inflict(Blind).chance(25)],
+        S::CEREBRAL_HEMORRHAGE => vec![harm, inflict(Insane).chance(75)],
+        S::CONCUSSION => vec![harm, inflict(Unconscious).chance(50)],
         S::NOXIOUS_FUMES => {
-            d.effect(harm)
-                .effect((afflict(Nauseated), Chance(90)))
-                .effect((afflict(Unconscious), Chance(25)));
+            vec![harm, inflict(Nauseated).chance(90), inflict(Unconscious).chance(25)]
         }
         // A member it lands on may be knocked out too, a monster frightened
         // again, at half strength.
         S::TERROR => {
-            d.effect(afflict(Afraid)).effect((
-                afflict(Unconscious),
-                OnlyMembers,
-                OnlyIfLanded,
-                HalfStrength,
-            ));
+            vec![inflict(Afraid), inflict(Unconscious).members().if_landed().half()]
         }
-        S::SONIC_BOOM => {
-            d.effect(afflict(Afraid)).effect((
-                afflict(Afraid),
-                OnlyMonsters,
-                OnlyIfLanded,
-                HalfStrength,
-            ));
-        }
+        S::SONIC_BOOM => vec![inflict(Afraid), inflict(Afraid).monsters().if_landed().half()],
         // One who keeps their mind is afraid anyway, with no save.
         S::PANDEMONIUM => {
-            let afraid = Afflict { condition: Afraid, poison: 0, indefinite: false };
-            d.effect(afflict(Insane)).effect((afraid, rounds, resist, OnlyIfResisted));
+            vec![inflict(Insane), afflict(Afraid).roll(rounds).resist(realm).if_resisted()]
         }
         S::INSTANT_DEATH | S::QUICKSAND | S::ASPHYXIATION | S::DEATH_WISH => {
-            d.effect((Slay, rounds, Save(DEATH_SAVE), resist));
+            vec![EffectSpec::of(Slay).roll(rounds).save(DEATH_SAVE).resist(realm)]
         }
         S::PRISMIC_RAY | S::PRISMIC_CHAOS => {
-            let prismic = Prismic {
+            let prismic = EffectKind::Prismic {
                 dice: spell.dice,
                 base: spell.duration_base,
                 per_power: spell.duration_per_power,
             };
-            d.effect((prismic, resist));
+            vec![EffectSpec::of(prismic).resist(realm)]
         }
-        S::CURE_LESSER_COND => {
-            let conditions = &[Irritated, Nauseated, Afraid, Asleep, Blind];
-            d.effect(Cure { conditions, outright: false });
-        }
-        S::CURE_PARALYSIS => {
-            d.effect(Cure { conditions: &[Paralyzed, Webbed], outright: false });
-        }
-        S::CURE_POISON => {
-            d.effect(Cure { conditions: &[Poisoned], outright: false });
-        }
-        S::CURE_DISEASE => {
-            d.effect(Cure { conditions: &[Diseased], outright: false });
-        }
-        S::REMOVE_CURSE => {
-            d.effect(Cure { conditions: &[Hexed], outright: false });
-        }
-        S::SANE_MIND => {
-            d.effect(Cure { conditions: &[Insane, Turncoat], outright: false });
-        }
-        S::SMELLING_SALTS => {
-            d.effect(Cure { conditions: &[Unconscious, Asleep], outright: false });
-        }
-        S::RESURRECTION => {
-            d.effect(Raise);
-        }
+        S::CURE_LESSER_COND => vec![cure(&[Irritated, Nauseated, Afraid, Asleep, Blind])],
+        S::CURE_PARALYSIS => vec![cure(&[Paralyzed, Webbed])],
+        S::CURE_POISON => vec![cure(&[Poisoned])],
+        S::CURE_DISEASE => vec![cure(&[Diseased])],
+        S::REMOVE_CURSE => vec![cure(&[Hexed])],
+        S::SANE_MIND => vec![cure(&[Insane, Turncoat])],
+        S::SMELLING_SALTS => vec![cure(&[Unconscious, Asleep])],
+        S::RESURRECTION => vec![EffectSpec::of(Raise)],
         // Purify rolls from power alone; the party's clouds hang over all
         // its members at once.
         S::PURIFY_AIR => {
-            let purify = Purify { level: spell.level };
-            d.effect((purify, Roll::Purify, OnlyMonsters)).effect((purify, Roll::Purify, OnParty));
+            let purify =
+                EffectSpec::of(EffectKind::Purify { level: spell.level }).roll(Roll::Purify);
+            vec![purify.monsters(), purify.on_party()]
         }
         S::PHILOSOPHERS_BANE => {
-            d.effect((LoseGold, Roll::GoldShare(spell.dice), OnParty));
+            vec![EffectSpec::of(LoseGold).roll(Roll::GoldShare(spell.dice)).on_party()]
         }
         // Members lose the plain roll, without the cast's boost, for good.
         S::VAMPIRIC_VORTEX => {
             let plain = Roll::Dice { dice: spell.dice, plain: true, over: 1 };
-            d.effect((Sap, plain, resist, OnlyMembers)).effect((harm, OnlyMonsters));
+            vec![EffectSpec::of(Sap).roll(plain).resist(realm).members(), harm.monsters()]
         }
-        S::RENEWAL => {
-            d.effect(Renew);
-        }
+        S::RENEWAL => vec![EffectSpec::of(Renew)],
         // Retail visits every slot a victim carries, and the party's pool
         // once.
         S::HEATWAVE => {
-            d.effect((Burn, Roll::PerPower(10))).effect((Burn, Roll::PerPower(10), OnParty));
+            let burn = EffectSpec::of(Burn).roll(Roll::PerPower(10));
+            vec![burn, burn.on_party()]
         }
         // Anti-Magic drains the whole living party, not only its victims,
         // and ends the party's lasting spells.
-        S::ANTI_MAGIC => {
-            d.effect((DrainPool, Roll::Fifty, OnParty)).effect((Dispel, OnParty));
-        }
+        S::ANTI_MAGIC => vec![
+            EffectSpec::of(DrainPool).roll(Roll::Fifty).on_party(),
+            EffectSpec::of(Dispel).on_party(),
+        ],
         _ => return None,
-    }
-    Some(())
+    };
+    Some(Definition { effects, leeches })
 }
 
 /// What a personal spell turned on its caster's side does: Dracon Breath
 /// nauseates, Haste slows, Razor Cloak harms; the others nothing.
-fn define_backfire(d: &mut Definer, spell: &SpellDefinition) {
-    let Some(realm) = spell.realm else { return };
+fn define_backfire(spell: &SpellDefinition) -> Vec<EffectSpec> {
+    let Some(realm) = spell.realm else { return vec![] };
     let rounds = Roll::Duration { base: spell.duration_base, per_power: spell.duration_per_power };
     match spell.id {
-        SpellId::DRACON_BREATH => {
-            d.effect(condition(Condition::Nauseated, rounds, realm));
-        }
-        SpellId::HASTE => {
-            d.effect(condition(Condition::Slowed, rounds, realm));
-        }
-        SpellId::RAZOR_CLOAK => {
-            d.effect((
-                Harm,
-                Roll::Dice { dice: spell.dice, plain: false, over: 1 },
-                Resist { realm },
-            ));
-        }
-        _ => {}
+        SpellId::DRACON_BREATH => vec![condition(Condition::Nauseated, rounds, realm)],
+        SpellId::HASTE => vec![condition(Condition::Slowed, rounds, realm)],
+        SpellId::RAZOR_CLOAK => vec![
+            EffectSpec::of(Harm)
+                .roll(Roll::Dice { dice: spell.dice, plain: false, over: 1 })
+                .resist(realm),
+        ],
+        _ => vec![],
     }
 }
 
@@ -586,190 +502,150 @@ fn define_backfire(d: &mut Definer, spell: &SpellDefinition) {
 /// `TickCombatEffectSlots`): Death Cloud makes a death save; the others
 /// hurt, Draining Cloud then draining spell points and stamina by its own
 /// roll, Toxic Cloud then nauseating, poisoning and knocking out.
-fn define_pulse(d: &mut Definer, spell: &SpellDefinition) {
-    let Some(realm) = spell.realm else { return };
-    let resist = Resist { realm };
+fn define_pulse(spell: &SpellDefinition) -> Vec<EffectSpec> {
+    let Some(realm) = spell.realm else { return vec![] };
     let dice = |over| Roll::Dice { dice: spell.dice, plain: false, over };
     if spell.id == SpellId::DEATH_CLOUD {
-        d.effect((Slay, Roll::Fixed(INDEFINITE), Save(DEATH_SAVE), resist));
-        return;
+        return vec![
+            EffectSpec::of(Slay).roll(Roll::Fixed(INDEFINITE)).save(DEATH_SAVE).resist(realm),
+        ];
     }
-    d.effect((Harm, dice(1), resist));
+    let mut effects = vec![EffectSpec::of(Harm).roll(dice(1)).resist(realm)];
     if spell.id == SpellId::DRAINING_CLOUD {
-        d.effect((DrainRealm(None), dice(1), OnlyMembers, OnlyIfLanded))
-            .effect((DrainBudget, dice(2), OnlyMonsters, OnlyIfLanded))
-            .effect((Tire, dice(1), OnlyIfLanded));
+        effects.extend([
+            EffectSpec::of(EffectKind::DrainRealm(None)).roll(dice(1)).members().if_landed(),
+            EffectSpec::of(DrainBudget).roll(dice(2)).monsters().if_landed(),
+            EffectSpec::of(Tire).roll(dice(1)).if_landed(),
+        ]);
     }
     if spell.id == SpellId::TOXIC_CLOUD {
         let rounds =
             Roll::Duration { base: spell.duration_base, per_power: spell.duration_per_power };
         for afflicted in [Condition::Nauseated, Condition::Poisoned, Condition::Unconscious] {
-            d.effect(condition(afflicted, rounds, realm));
+            effects.push(condition(afflicted, rounds, realm));
         }
     }
+    effects
 }
 
 /// A special attack's effects: each of its two may be escaped (the first
 /// one time in ten, the second one in two), each resisted by its realm; a
 /// member and a monster roll them differently.
-fn define_special(d: &mut Definer, definition: crate::game::hits::specials::SpecialDefinition) {
+fn define_special(definition: crate::game::hits::specials::SpecialDefinition) -> Vec<EffectSpec> {
     use crate::game::hits::specials::SpecialEffect as E;
-    let resist = Resist { realm: definition.realm };
+    let realm = definition.realm;
     let three = |divide, plus, times, over| Roll::Three { divide, plus, times, over };
+    let mut effects = Vec::new();
     for (slot, effect) in definition.effects.iter().enumerate() {
         let Some(effect) = *effect else { continue };
-        let chance = Chance(if slot == 0 { 90 } else { 50 });
+        let chance = if slot == 0 { 90 } else { 50 };
+        let of = |kind, roll| EffectSpec::of(kind).roll(roll).resist(realm).chance(chance);
         match effect {
             E::Inflict(afflicted) => {
-                let afflict = Afflict { condition: afflicted, poison: 0, indefinite: false };
-                let save = Save(condition_save(afflicted));
-                d.effect((afflict, Roll::ThirdOfBound, save, resist, chance, OnlyMonsters))
-                    .effect((afflict, Roll::BelowBound, save, resist, chance, OnlyMembers));
+                let inflict =
+                    afflict(afflicted).save(condition_save(afflicted)).resist(realm).chance(chance);
+                effects.push(inflict.roll(Roll::ThirdOfBound).monsters());
+                effects.push(inflict.roll(Roll::BelowBound).members());
             }
-            E::Harm => {
-                d.effect((Harm, three(3, 1, 1, 1), resist, chance));
-            }
+            E::Harm => effects.push(of(Harm, three(3, 1, 1, 1))),
             // A member's realm six times over, a monster's budget by half.
             E::Drain => {
-                d.effect((DrainBudget, three(6, 1, 1, 2), resist, chance, OnlyMonsters)).effect((
-                    DrainRealm(Some(definition.realm)),
-                    three(3, 1, 6, 1),
-                    resist,
-                    chance,
-                    OnlyMembers,
-                ));
+                effects.push(of(DrainBudget, three(6, 1, 1, 2)).monsters());
+                effects.push(of(EffectKind::DrainRealm(Some(realm)), three(3, 1, 6, 1)).members());
             }
             E::Tire => {
-                d.effect((Tire, three(1, 0, 1, 1), resist, chance, OnlyMonsters)).effect((
-                    Tire,
-                    three(1, 1, 1, 1),
-                    resist,
-                    chance,
-                    OnlyMembers,
-                ));
+                effects.push(of(Tire, three(1, 0, 1, 1)).monsters());
+                effects.push(of(Tire, three(1, 1, 1, 1)).members());
             }
-            E::Wound if definition.resisted => {
-                d.effect((Harm, three(3, 1, 1, 1), resist, chance));
-            }
+            E::Wound if definition.resisted => effects.push(of(Harm, three(3, 1, 1, 1))),
             E::Wound => {
-                d.effect((Harm, three(3, 1, 1, 1), chance));
+                effects.push(EffectSpec::of(Harm).roll(three(3, 1, 1, 1)).chance(chance));
             }
         }
     }
+    effects
 }
 
 /// What a blow does: its damage, then, once that drew blood, each weapon
 /// effect in turn (retail `ApplyEffectConditions`), at the weapon's chance,
 /// saved against and resisted at the attacker's effect power.
-fn define_blow(d: &mut Definer) {
+fn define_blow() -> Vec<EffectSpec> {
     use AttackEffect as A;
     use Condition::*;
-    let condition = |afflicted: Condition, realm, effect| {
-        (
-            Afflict { condition: afflicted, poison: 0, indefinite: false },
-            Roll::BlowRounds,
-            Save(condition_save(afflicted)),
-            Resist { realm },
-            FromWeapon(effect),
-        )
+    let timed = |afflicted: Condition, realm, effect| {
+        condition(afflicted, Roll::BlowRounds, realm).weapon(effect)
     };
-    let indefinite = |afflicted: Condition, realm, effect| {
-        (
-            Afflict { condition: afflicted, poison: 0, indefinite: true },
-            Roll::Fixed(INDEFINITE),
-            Save(condition_save(afflicted)),
-            Resist { realm },
-            FromWeapon(effect),
-        )
+    let drain = |kind, times, sides, base, realm, effect| {
+        EffectSpec::of(kind)
+            .roll(Roll::Blow { times, sides, base })
+            .save(CONDITION_SAVE[0])
+            .resist(realm)
+            .weapon(effect)
     };
-    let drain = |times, sides, base, realm, effect| {
-        (
-            Roll::Blow { times, sides, base },
-            Save(CONDITION_SAVE[0]),
-            Resist { realm },
-            FromWeapon(effect),
-        )
-    };
-    d.effect((Harm, Roll::Damage))
-        .effect(condition(Asleep, Realm::Air, A::Sleep))
-        .effect(condition(Paralyzed, Realm::Water, A::Paralyze))
-        .effect((
-            Afflict { condition: Poisoned, poison: 0, indefinite: false },
+    vec![
+        EffectSpec::of(Harm).roll(Roll::Damage),
+        timed(Asleep, Realm::Air, A::Sleep),
+        timed(Paralyzed, Realm::Water, A::Paralyze),
+        condition(
+            Poisoned,
             Roll::Blow { times: 3, sides: 2, base: BlowBase::Weapon },
-            Save(condition_save(Poisoned)),
-            Resist { realm: Realm::Water },
-            FromWeapon(A::Poison),
-        ))
-        .effect(condition(Hexed, Realm::Divine, A::Hex))
-        .effect(indefinite(Diseased, Realm::Divine, A::Disease))
-        .effect((
-            Slay,
-            Roll::Fixed(INDEFINITE),
-            Save(DEATH_SAVE),
-            Resist { realm: Realm::Divine },
-            FromWeapon(A::Kill),
-        ))
-        .effect(condition(Unconscious, Realm::Earth, A::KnockOut))
-        .effect(condition(Blind, Realm::Fire, A::Blind))
-        .effect(condition(Afraid, Realm::Mental, A::Frighten))
-        .effect((condition(Turncoat, Realm::Divine, A::Possess), OnlyMembers, OnlyByMonsters))
-        .effect((Sap, drain(1, 2, BlowBase::Zero, Realm::Earth, A::DrainHealth), OnlyMembers))
-        .effect((Tire, drain(2, 5, BlowBase::Count(3), Realm::Water, A::DrainStamina)))
-        .effect((
-            DrainPool,
-            drain(1, 6, BlowBase::Count(1), Realm::Divine, A::DrainSpellPoints),
-            OnlyMembers,
-        ))
-        .effect(condition(Nauseated, Realm::Air, A::Nauseate))
-        .effect(condition(Insane, Realm::Mental, A::Insane));
+            Realm::Water,
+        )
+        .weapon(A::Poison),
+        timed(Hexed, Realm::Divine, A::Hex),
+        EffectSpec::of(EffectKind::Afflict { condition: Diseased, poison: 0, indefinite: true })
+            .roll(Roll::Fixed(INDEFINITE))
+            .save(condition_save(Diseased))
+            .resist(Realm::Divine)
+            .weapon(A::Disease),
+        EffectSpec::of(Slay)
+            .roll(Roll::Fixed(INDEFINITE))
+            .save(DEATH_SAVE)
+            .resist(Realm::Divine)
+            .weapon(A::Kill),
+        timed(Unconscious, Realm::Earth, A::KnockOut),
+        timed(Blind, Realm::Fire, A::Blind),
+        timed(Afraid, Realm::Mental, A::Frighten),
+        timed(Turncoat, Realm::Divine, A::Possess).members().by_monsters(),
+        drain(Sap, 1, 2, BlowBase::Zero, Realm::Earth, A::DrainHealth).members(),
+        drain(Tire, 2, 5, BlowBase::Count(3), Realm::Water, A::DrainStamina),
+        drain(DrainPool, 1, 6, BlowBase::Count(1), Realm::Divine, A::DrainSpellPoints).members(),
+        timed(Nauseated, Realm::Air, A::Nauseate),
+        timed(Insane, Realm::Mental, A::Insane),
+    ]
 }
 
-/// Decode the definitions once content has loaded, and what each spell's
-/// effects are for.
-pub fn define(world: &mut World) {
+/// Decode the definitions once content has loaded.
+pub fn define(mut commands: Commands, content: Res<Catalogs>) {
     use crate::game::hits::specials::{CHARACTER_BREATH, special};
-    let content = world.resource::<Catalogs>().spells.0.clone();
     let mut entries = Vec::new();
+    let mut add = |definition: Definition| {
+        entries.push(definition);
+        DefinitionId(entries.len() - 1)
+    };
+    let plain = |effects| Definition { effects, leeches: None };
     let mut spells = HashMap::new();
     let mut backfires = HashMap::new();
     let mut pulses = HashMap::new();
-    for spell in content.iter() {
-        let mut d = Definer::default();
-        let defined = define_spell(&mut d, spell).is_some();
-        if !defined {
-            continue;
-        }
-        spells.insert(spell.id, d.finish(&mut entries));
+    for spell in content.spells.0.iter() {
+        let Some(definition) = define_spell(spell) else { continue };
+        spells.insert(spell.id, add(definition));
         if crate::game::magic::enchantments::personal(spell.id) {
-            let mut d = Definer::default();
-            define_backfire(&mut d, spell);
-            backfires.insert(spell.id, d.finish(&mut entries));
+            backfires.insert(spell.id, add(plain(define_backfire(spell))));
         }
         if crate::game::magic::enchantments::OFFENSIVE.contains(&spell.id)
             || spell.id == SpellId::RING_OF_FIRE
         {
-            let mut d = Definer::default();
-            define_pulse(&mut d, spell);
-            pulses.insert(spell.id, d.finish(&mut entries));
+            pulses.insert(spell.id, add(plain(define_pulse(spell))));
         }
     }
-    let mut specials = HashMap::new();
-    for kind in (1..=u8::MAX).filter_map(|byte| SpecialAttackKind::try_from(byte).ok()) {
-        let mut d = Definer::default();
-        define_special(&mut d, special(kind));
-        specials.insert(kind, d.finish(&mut entries));
-    }
-    let mut d = Definer::default();
-    define_special(&mut d, CHARACTER_BREATH);
-    let breath = d.finish(&mut entries);
-    let mut d = Definer::default();
-    define_blow(&mut d);
-    let blow = d.finish(&mut entries);
-    let purposes = spells
-        .iter()
-        .map(|(&spell, &definition)| (spell, purposes(&entries[definition.0])))
+    let specials = (1..=u8::MAX)
+        .filter_map(|byte| SpecialAttackKind::try_from(byte).ok())
+        .map(|kind| (kind, add(plain(define_special(special(kind))))))
         .collect();
-    world.insert_resource(Definitions {
+    let breath = add(plain(define_special(CHARACTER_BREATH)));
+    let blow = add(plain(define_blow()));
+    commands.insert_resource(Definitions {
         entries,
         spells,
         backfires,
@@ -777,46 +653,75 @@ pub fn define(world: &mut World) {
         specials,
         breath,
         blow,
-        purposes,
     });
 }
 
-/// What a definition's effects are for, in order, as a monster weighs them;
-/// a follow-up that only comes if the one before landed is not counted.
-fn purposes(definition: &Definition) -> Vec<Purpose> {
-    definition
-        .effects
-        .iter()
-        .filter_map(|effect| match &effect.kind {
-            EffectKind::Heal => Some(Purpose::Heals),
-            EffectKind::Refresh => Some(Purpose::Refreshes),
-            EffectKind::Afflict(a) if !effect.landed => Some(Purpose::Afflicts(a.condition)),
-            EffectKind::Enchant(e) => Some(Purpose::Enchants(e.spell)),
-            EffectKind::Cure(c) => Some(Purpose::Cures(c.conditions)),
-            _ => None,
-        })
-        .collect()
+/// What one of a spell's effects is for, as a monster weighs whether the
+/// spell is worth casting at someone.
+#[derive(Clone, Copy, Debug)]
+enum Purpose {
+    Heals,
+    Refreshes,
+    Afflicts(Condition),
+    Enchants(SpellId),
+    Cures(&'static [Condition]),
+}
+
+impl Definitions {
+    /// Whether a spell would do anything to `victim` (retail
+    /// `MonsterSpellTargetOK`): healing only the hurt, rest only the tired,
+    /// cures only what they cure, and no condition or enchantment it
+    /// already has; a spell that does none of these always would. One the
+    /// game does not resolve would not. A follow-up that only comes if the
+    /// effect before it landed is not weighed.
+    pub fn worthwhile(&self, spell: SpellId, victim: &crate::game::characters::Vitals) -> bool {
+        let Some(definition) = self.spell(spell) else { return false };
+        let has = |condition| victim.conditions.has(condition);
+        let mut purposes = self
+            .get(definition)
+            .effects
+            .iter()
+            .filter_map(|effect| match effect.kind {
+                EffectKind::Heal => Some(Purpose::Heals),
+                EffectKind::Refresh => Some(Purpose::Refreshes),
+                EffectKind::Afflict { condition, .. } if !effect.landed => {
+                    Some(Purpose::Afflicts(condition))
+                }
+                EffectKind::Enchant(spell) => Some(Purpose::Enchants(spell)),
+                EffectKind::Cure { conditions, .. } => Some(Purpose::Cures(conditions)),
+                _ => None,
+            })
+            .peekable();
+        purposes.peek().is_none()
+            || purposes.any(|purpose| match purpose {
+                Purpose::Heals => victim.health.current < victim.health.max,
+                Purpose::Refreshes => victim.stamina.current < victim.stamina.max,
+                Purpose::Afflicts(condition) => !has(condition),
+                Purpose::Enchants(spell) => !victim.enchantments.has(spell),
+                Purpose::Cures(conditions) => conditions.iter().any(|&c| has(c)),
+            })
+    }
 }
 
 impl EffectSpec {
+    /// Prismic's either-or settled into the effect it is this time.
     pub fn pick(mut self, rng: &mut GameRng) -> Self {
-        if let EffectKind::Prismic(ref prismic) = self.kind {
-            let rounds = Roll::Duration { base: prismic.base, per_power: prismic.per_power };
+        if let EffectKind::Prismic { dice, base, per_power } = self.kind {
             let roll = rng.below(100);
             if roll >= 50 {
-                self.roll = Some(Roll::Dice { dice: prismic.dice, plain: false, over: 1 });
+                self.roll = Some(Roll::Dice { dice, plain: false, over: 1 });
                 self.kind = EffectKind::Harm;
             } else {
                 let pick = crate::game::rng::weighted(roll, AFFLICTIONS.iter().map(|&(_, w)| w))
                     .and_then(|index| AFFLICTIONS[index].0);
-                self.roll = Some(rounds);
+                self.roll = Some(Roll::Duration { base, per_power });
                 self.kind = match pick {
                     Some(condition) => {
-                        self.save = Some(Save(condition_save(condition)));
-                        EffectKind::Afflict(Afflict { condition, poison: 0, indefinite: false })
+                        self.save = Some(condition_save(condition));
+                        EffectKind::Afflict { condition, poison: 0, indefinite: false }
                     }
                     None => {
-                        self.save = Some(Save(DEATH_SAVE));
+                        self.save = Some(DEATH_SAVE);
                         EffectKind::Slay
                     }
                 };
@@ -864,13 +769,7 @@ fn three(rng: &mut GameRng, bound: u32) -> u32 {
     rng.below(bound) + rng.below(bound) + rng.below(bound)
 }
 
-pub fn roll(
-    roll: Roll,
-    strength: Strength,
-    weapon: Option<&WeaponEffects>,
-    damage: u32,
-    rng: &mut GameRng,
-) -> u32 {
+pub fn roll(roll: Roll, strength: Strength, blow: Option<&Blow>, rng: &mut GameRng) -> u32 {
     let count = strength.power / 3 + 1;
     match roll {
         Roll::Fixed(amount) => amount,
@@ -903,166 +802,15 @@ pub fn roll(
         }
         Roll::ThirdOfBound => (strength.power / 3).max(1),
         Roll::BelowBound => rng.below(strength.power),
-        Roll::Damage => damage,
+        Roll::Damage => blow.map_or(0, |blow| blow.damage),
         Roll::BlowRounds => blow_roll(rng, count, 2, 1).clamp(1, 12),
         Roll::Blow { times, sides, base } => {
             let base = match base {
                 BlowBase::Zero => 0,
                 BlowBase::Count(times) => count * times,
-                BlowBase::Weapon => weapon.map_or(0, |weapon| weapon.effects.strength),
+                BlowBase::Weapon => blow.map_or(0, |blow| blow.effects.strength),
             };
             blow_roll(rng, count * times, sides, base)
         }
-    }
-}
-
-/// What one of a spell's effects is for, as a monster weighs whether the
-/// spell is worth casting at someone.
-#[derive(Clone, Copy, Debug)]
-pub enum Purpose {
-    Heals,
-    Refreshes,
-    Afflicts(Condition),
-    Enchants(SpellId),
-    Cures(&'static [Condition]),
-}
-
-impl Definitions {
-    /// Whether a spell would do anything to `victim` (retail
-    /// `MonsterSpellTargetOK`): healing only the hurt, rest only the tired,
-    /// cures only what they cure, and no condition or enchantment it
-    /// already has; a spell that does none of these always would. One the
-    /// game does not resolve would not.
-    pub fn worthwhile(&self, spell: SpellId, victim: &crate::game::characters::Vitals) -> bool {
-        let Some(purposes) = self.purposes.get(&spell) else { return false };
-        let has = |condition| victim.conditions.has(condition);
-        purposes.is_empty()
-            || purposes.iter().any(|purpose| match *purpose {
-                Purpose::Heals => victim.health.current < victim.health.max,
-                Purpose::Refreshes => victim.stamina.current < victim.stamina.max,
-                Purpose::Afflicts(condition) => !has(condition),
-                Purpose::Enchants(spell) => !victim.enchantments.has(spell),
-                Purpose::Cures(conditions) => conditions.iter().any(|&c| has(c)),
-            })
-    }
-}
-
-impl EffectParts for Afflict {
-    fn describe(self, e: &mut EffectSpec) {
-        e.kind = EffectKind::Afflict(self);
-    }
-}
-
-impl EffectParts for DrainRealm {
-    fn describe(self, e: &mut EffectSpec) {
-        e.kind = EffectKind::DrainRealm(self);
-    }
-}
-
-impl EffectParts for Cure {
-    fn describe(self, e: &mut EffectSpec) {
-        e.kind = EffectKind::Cure(self);
-    }
-}
-
-impl EffectParts for Purify {
-    fn describe(self, e: &mut EffectSpec) {
-        e.kind = EffectKind::Purify(self);
-    }
-}
-
-impl EffectParts for Enchant {
-    fn describe(self, e: &mut EffectSpec) {
-        e.kind = EffectKind::Enchant(self);
-    }
-}
-
-impl EffectParts for Prismic {
-    fn describe(self, e: &mut EffectSpec) {
-        e.kind = EffectKind::Prismic(self);
-    }
-}
-
-impl EffectParts for Roll {
-    fn describe(self, e: &mut EffectSpec) {
-        e.roll = Some(self);
-    }
-}
-
-impl EffectParts for Chance {
-    fn describe(self, e: &mut EffectSpec) {
-        e.chance = Some(self);
-    }
-}
-
-impl EffectParts for Save {
-    fn describe(self, e: &mut EffectSpec) {
-        e.save = Some(self);
-    }
-}
-
-impl EffectParts for Resist {
-    fn describe(self, e: &mut EffectSpec) {
-        e.resist = Some(self);
-    }
-}
-
-impl EffectParts for HalfStrength {
-    fn describe(self, e: &mut EffectSpec) {
-        e.half = true;
-    }
-}
-
-impl EffectParts for OnlyIfLanded {
-    fn describe(self, e: &mut EffectSpec) {
-        e.landed = true;
-    }
-}
-
-impl EffectParts for OnlyIfResisted {
-    fn describe(self, e: &mut EffectSpec) {
-        e.resisted = true;
-    }
-}
-
-impl EffectParts for OnParty {
-    fn describe(self, e: &mut EffectSpec) {
-        e.party = true;
-    }
-}
-
-impl EffectParts for OnlyMembers {
-    fn describe(self, e: &mut EffectSpec) {
-        e.members = true;
-    }
-}
-
-impl EffectParts for OnlyMonsters {
-    fn describe(self, e: &mut EffectSpec) {
-        e.monsters = true;
-    }
-}
-
-impl EffectParts for OnlyByMonsters {
-    fn describe(self, e: &mut EffectSpec) {
-        e.by_monsters = true;
-    }
-}
-
-impl EffectParts for OnlyKinds {
-    fn describe(self, e: &mut EffectSpec) {
-        e.kinds = Some(self.0);
-    }
-}
-
-impl EffectParts for FromWeapon {
-    fn describe(self, e: &mut EffectSpec) {
-        e.weapon = Some(self.0);
-    }
-}
-
-impl EffectParts for EffectKind {
-    fn describe(self, e: &mut EffectSpec) {
-        e.kind = self;
     }
 }

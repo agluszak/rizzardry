@@ -1,24 +1,39 @@
-//! Acts own their deeds and independently delayed impacts. Once an impact
-//! arrives, its immutable definition is evaluated as one immediate operation.
-//! Consequences settle before another swing or actor advances; completed acts
-//! produce drains, reflections, practice, recasts, and finally reports.
+//! Deeds and what they do to those they reach. Whoever does something to
+//! others (a cast, a breath, a cloud's pulse, a trap) releases a [`Deed`] at
+//! its victims ([`Release`]); [`resolve`] lands it on each as it arrives and,
+//! once all of it has landed, settles what follows and tells of it. Only a
+//! deed with missiles still in the air lives on as an entity ([`Flight`]).
+//! A weapon's blows land the same way, swing by swing, within their attack.
 
 pub mod defences;
 pub mod definitions;
 pub mod effects;
 pub mod reach;
-mod resolve;
 pub mod specials;
 pub mod spells;
+
+use std::collections::VecDeque;
 
 use bevy::prelude::*;
 
 use crate::content::items::EquipClass;
 use crate::content::spells::SpellId;
 use crate::game::characters::Condition;
-use crate::game::magic::casting::{MagicNews, Report};
+use crate::game::combat::{Battle, CombatNews, Combatants, Round};
+use crate::game::data::Catalogs;
+use crate::game::difficulty::Difficulty;
+use crate::game::inventory::PartyInventory;
+use crate::game::magic::casting::{MagicNews, Practice, Recast, Report};
+use crate::game::magic::enchantments::PartyEffects;
+use crate::game::party::roster::PartyRoster;
+use crate::game::rng::GameRng;
+use crate::game::world::identify::{GroupMember, GroupMembers};
+use crate::game::world::obstacles::WorldObstacles;
+use definitions::Definitions;
+use effects::{Body, Log, Rules, Strike};
+use spells::{Leech, Spell};
 
-/// What an act did to one victim.
+/// What a deed did to one victim.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Effect {
     Purified {
@@ -82,50 +97,22 @@ pub enum Effect {
     },
 }
 
-/// Whether anything an act did counts as affecting a victim, which is what
+/// Whether anything a deed did counts as affecting a victim, which is what
 /// practice needs (retail `SpellAffectedTarget`).
 pub fn affected(effects: &[Effect]) -> bool {
     effects.iter().any(|e| !matches!(e, Effect::Nothing { .. }))
 }
 
-/// The act is made by this actor; the actor gone, so is the act.
-#[derive(Component, Clone, Copy, Debug)]
-#[relationship(relationship_target = Acts)]
-pub struct By(pub Entity);
-
-/// An actor's acts under way, maintained by Bevy from [`By`].
-#[derive(Component, Debug)]
-#[relationship_target(relationship = By, linked_spawn)]
-pub struct Acts(Vec<Entity>);
-
-/// The impact lands on this body.
-#[derive(Component, Clone, Copy, Debug)]
-#[relationship(relationship_target = Incoming)]
-pub struct Strikes(pub Entity);
-
-/// Impacts on a body, gone with it.
-#[derive(Component, Debug)]
-#[relationship_target(relationship = Strikes, linked_spawn)]
-pub struct Incoming(Vec<Entity>);
-
-/// The impact belongs to this act.
-#[derive(Component, Clone, Copy, Debug)]
-#[relationship(relationship_target = DeedHits)]
-pub struct HitOf(pub Entity);
-
-/// An act's outstanding impacts, gone with it.
-#[derive(Component, Debug)]
-#[relationship_target(relationship = HitOf, linked_spawn)]
-pub struct DeedHits(Vec<Entity>);
-
-/// What one act did, gathered from its effects for its news.
-#[derive(Component, Debug)]
-pub struct Deed {
-    pub act: Act,
-    pub effects: Vec<Effect>,
+/// A body lost health to something, whatever it was. Presentation can keep
+/// this even if healing follows before it draws.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Damaged {
+    pub body: Entity,
+    pub amount: u32,
+    pub died: bool,
 }
 
-/// Which act a deed is, for its news.
+/// Which deed it is, for its news.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Act {
     /// A member's cast, reported with what landed at once.
@@ -137,136 +124,214 @@ pub enum Act {
     /// Something in a fight whose effects the fight reports: a monster's
     /// cast, a breath.
     Fight,
-    /// A blow of an attack, which the attack tallies into its own report.
-    Swing,
-    /// A blow reported on its own: one gone astray, or Razor Cloak's answer.
-    Blow { by: Entity, at: Entity },
+}
+
+/// Something done to others: what lands on each of them, and what follows
+/// once all of it has.
+#[derive(Clone, Debug)]
+pub struct Deed {
+    pub act: Act,
+    pub strike: Strike,
+    /// The spell it is, which may burst or be turned back.
+    pub spell: Option<Spell>,
+    /// Its damage comes back to its caster's side.
+    pub leech: Option<Leech>,
+    pub practice: Option<Practice>,
+    pub recast: Option<Recast>,
 }
 
 impl Deed {
-    pub fn new(act: Act) -> Self {
-        Self { act, effects: Vec::new() }
+    pub fn new(act: Act, strike: Strike) -> Self {
+        Self { act, strike, spell: None, leech: None, practice: None, recast: None }
     }
 }
 
-/// Where acts land and are reported: [`run_hits`]. It runs wherever acts
-/// are made: on the frame for magic outside a fight, on the fixed step
-/// within one.
-#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Resolution;
-
-/// The stages that settle effects, in order, then what follows once an
-/// act's effects have all landed, then the acts' reports.
-#[derive(bevy::ecs::schedule::ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Hits;
-
-/// Extension points for the owner of a completed act. Resolution finishes
-/// first; continuations consume their work before reporting destroys the deed.
-#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum HitPhase {
-    Effects,
-    Completed,
-    Report,
+/// A deed let go at its victims, each reached at once or after its
+/// missile's flight in seconds.
+#[derive(Message, Clone, Debug)]
+pub struct Release {
+    pub deed: Deed,
+    pub victims: Vec<(Entity, Option<f32>)>,
 }
 
-/// Drain immediate impacts and the finite follow-ups they release. Each spell
-/// completion is consumed once; reflected spells cannot reflect again and
-/// explosions do not burst. Only missile flight may survive this boundary.
-pub fn run_hits(world: &mut World) {
-    if world.query_filtered::<(), With<Deed>>().iter(world).next().is_none() {
-        return;
-    }
-    world.run_schedule(Hits);
-    while world
-        .query_filtered::<(), (With<HitOf>, Without<effects::InFlight>)>()
-        .iter(world)
-        .next()
-        .is_some()
-    {
-        world.run_schedule(Hits);
-    }
+/// A deed on its way: who it has yet to reach and when, and what it has
+/// done so far.
+#[derive(Clone, Debug)]
+struct Progress {
+    deed: Deed,
+    /// Those still to reach; a timer for one a missile flies at.
+    arrivals: Vec<(Entity, Option<Timer>)>,
+    effects: Vec<Effect>,
+    harm: u32,
+    /// Its party effects have landed, with the first member reached.
+    party_reached: bool,
 }
 
-pub struct HitsPlugin;
+impl Progress {
+    fn new(deed: Deed, victims: Vec<(Entity, Option<f32>)>) -> Self {
+        let arrivals = victims
+            .into_iter()
+            .map(|(victim, flight)| {
+                (victim, flight.map(|seconds| Timer::from_seconds(seconds, TimerMode::Once)))
+            })
+            .collect();
+        Self { deed, arrivals, effects: Vec::new(), harm: 0, party_reached: false }
+    }
 
-impl Plugin for HitsPlugin {
-    fn build(&self, app: &mut App) {
-        use definitions::{Definitions, define};
-        use resolve::party_reaches;
-        app.add_systems(
-            Capabilities,
-            (
-                crate::game::world::hostility::judge_sides,
-                crate::game::world::footing::place_bodies,
-                defences::judge_defences,
-            )
-                .chain(),
-        )
-        .add_systems(
-            AfterEffect,
-            (
-                crate::game::characters::sync_member_maxima,
-                crate::game::characters::cheat_death,
-                crate::game::characters::settle_deaths,
-            )
-                .chain(),
-        )
-        .configure_sets(Hits, (HitPhase::Effects, HitPhase::Completed, HitPhase::Report).chain())
-        .add_systems(
-            PreUpdate,
-            define
-                .run_if(resource_exists::<crate::game::data::Catalogs>)
-                .run_if(not(resource_exists::<Definitions>)),
-        )
-        .add_systems(
-            Hits,
-            (
-                refresh_capabilities,
-                spells::strength_of_owners,
-                party_reaches,
-                resolve::impacts,
-                refresh_capabilities,
-                spells::drain_back,
-                spells::burst_blood,
-                spells::reflect_spells,
-            )
-                .chain()
-                .in_set(HitPhase::Effects),
-        )
-        .add_systems(Hits, report_deeds.in_set(HitPhase::Report))
-        .add_systems(
-            Update,
-            run_hits
-                .in_set(Resolution)
-                .run_if(not(any_with_component::<crate::game::combat::Battle>)),
-        )
-        // Combat owns fixed-step settlement, including missile flight.
-        .configure_sets(Update, Resolution.after(crate::game::GameplaySet::Combat));
+    /// Land the deed on those it has reached. Its party effects land once,
+    /// with the first member reached. Whether all of it has landed.
+    fn advance(
+        &mut self,
+        bodies: &mut Query<Body>,
+        (party, effects, inventory, roster): (
+            Entity,
+            &mut PartyEffects,
+            &mut PartyInventory,
+            &PartyRoster,
+        ),
+        rules: &Rules,
+        rng: &mut GameRng,
+        log: &mut Log,
+    ) -> bool {
+        let strike = self.deed.strike;
+        let (due, waiting) = std::mem::take(&mut self.arrivals)
+            .into_iter()
+            .partition(|(_, timer)| timer.as_ref().is_none_or(Timer::is_finished));
+        self.arrivals = waiting;
+        for (victim, _) in due {
+            let Ok(mut body) = bodies.get_mut(victim) else { continue };
+            let member = body.member;
+            effects::land(&strike, &mut body, rules, rng, log);
+            if member && !self.party_reached {
+                self.party_reached = true;
+                let mut members: Vec<_> =
+                    bodies.iter_many_unique_mut(roster.iter()).matched().collect();
+                effects::land_on_party(
+                    &strike,
+                    party,
+                    (&mut *effects, &mut *inventory),
+                    &mut members,
+                    rules,
+                    rng,
+                    log,
+                );
+            }
+        }
+        self.effects.append(&mut log.effects);
+        self.harm += std::mem::take(&mut log.harm);
+        self.arrivals.is_empty()
     }
 }
 
-/// Turn each deed whose reaches are all done into news, and let it go; a
-/// swing is left to its attack.
-pub fn report_deeds(
+/// A deed with missiles still in the air.
+#[derive(Component, Debug)]
+pub struct Flight(Progress);
+
+/// Missiles fly on: each step brings them nearer those they are aimed at.
+pub fn fly(mut flights: Query<&mut Flight>, time: Res<Time>) {
+    for mut flight in &mut flights {
+        for timer in flight.0.arrivals.iter_mut().filter_map(|(_, timer)| timer.as_mut()) {
+            timer.tick(time.delta());
+        }
+    }
+}
+
+/// Land what has arrived and settle what is complete (retail
+/// `FinishSpellEffectTargets`): new deeds, missiles reaching their victims,
+/// and whatever a finished deed sets off in turn (a drain's share, Boiling
+/// Blood's bursts, Eye for an Eye), until only missiles in the air remain.
+/// Each deed's consequences are settled before the next lands.
+pub fn resolve(
     mut commands: Commands,
-    deeds: Query<(Entity, &Deed), Without<DeedHits>>,
-    mut battle: Option<Single<&mut crate::game::combat::Round>>,
-    mut magic_news: MessageWriter<MagicNews>,
-    mut combat_news: MessageWriter<crate::game::combat::CombatNews>,
+    mut released: ResMut<Messages<Release>>,
+    mut flights: Query<(Entity, &mut Flight)>,
+    mut bodies: Query<Body>,
+    party: Single<(Entity, &mut PartyEffects, &mut PartyInventory, &PartyRoster)>,
+    mut fight: Option<Single<(Entity, &mut Round, Option<&Combatants>), With<Battle>>>,
+    (memberships, groups): (Query<&'static GroupMember>, Query<&'static GroupMembers>),
+    obstacles: WorldObstacles,
+    (content, definitions, difficulty): (Res<Catalogs>, Res<Definitions>, Res<Difficulty>),
+    mut rng: ResMut<GameRng>,
+    mut damaged: MessageWriter<Damaged>,
+    mut requests: MessageWriter<crate::game::magic::MagicRequest>,
+    (mut magic_news, mut combat_news): (MessageWriter<MagicNews>, MessageWriter<CombatNews>),
 ) {
-    for (entity, deed) in &deeds {
-        if deed.act == Act::Swing {
+    let (party, mut party_effects, mut inventory, roster) = party.into_inner();
+    let rules = Rules {
+        content: &content,
+        definitions: &definitions,
+        difficulty: *difficulty,
+        fight: fight.as_ref().map(|fight| fight.0),
+    };
+    let mut log = Log::default();
+    let mut queue = VecDeque::new();
+    for (entity, mut flight) in &mut flights {
+        if !flight.0.arrivals.iter().any(|(_, timer)| timer.as_ref().is_none_or(Timer::is_finished))
+        {
             continue;
         }
-        commands.entity(entity).despawn();
-        // A cloud's pulse keeps the fight going as an attack would.
-        if let Some(round) = battle.as_mut()
-            && matches!(deed.act, Act::Triggered { .. })
-        {
-            round.attacked(affected(&deed.effects));
+        let party = (party, &mut *party_effects, &mut *inventory, roster);
+        if flight.0.advance(&mut bodies, party, &rules, &mut rng, &mut log) {
+            commands.entity(entity).despawn();
+            queue.push_back(flight.0.clone());
         }
-        let effects = deed.effects.clone();
-        match deed.act.clone() {
+    }
+    queue.extend(released.drain().map(|release| Progress::new(release.deed, release.victims)));
+    while let Some(mut progress) = queue.pop_front() {
+        let party = (party, &mut *party_effects, &mut *inventory, roster);
+        if !progress.advance(&mut bodies, party, &rules, &mut rng, &mut log) {
+            commands.spawn(Flight(progress));
+            continue;
+        }
+        let Progress { deed, mut effects, harm, .. } = progress;
+        if let Some(leech) = deed.leech {
+            effects.extend(spells::drain_back(leech, harm, roster, &mut bodies, &content));
+        }
+        if let Some(spell) = &deed.spell {
+            let around = spells::Surroundings {
+                roster,
+                combatants: fight
+                    .as_ref()
+                    .and_then(|fight| fight.2)
+                    .map_or(&[][..], Combatants::entities),
+                memberships: &memberships,
+                groups: &groups,
+                obstacles: &obstacles,
+                content: &content,
+                definitions: &definitions,
+            };
+            let strength = deed.strike.strength;
+            for (burst, victims) in spells::bursts(spell, strength, &bodies.as_readonly(), &around)
+            {
+                queue.push_back(Progress::new(burst, victims));
+            }
+            if let Some((charged, turned, victims)) =
+                spells::reflection(spell, strength, &mut bodies, &around)
+            {
+                effects.push(Effect::Reflected { victim: charged });
+                queue.push_back(Progress::new(turned, victims));
+            }
+        }
+        if let Some(practice) = &deed.practice
+            && (practice.sure || affected(&effects))
+            && let Ok(mut body) = bodies.get_mut(practice.caster)
+            && let Some(character) = body.character.as_deref_mut()
+        {
+            for &(skill, usage) in &practice.skills {
+                if character.practise(skill, usage, &mut rng) {
+                    log.improved.push((practice.caster, skill));
+                }
+            }
+        }
+        if let Some(recast) = &deed.recast
+            && recast.wanted(&bodies.as_readonly(), &content)
+        {
+            requests.write(crate::game::magic::MagicRequest {
+                caster: recast.caster,
+                choice: recast.choice,
+            });
+        }
+        match deed.act {
             Act::Cast(mut report) => {
                 report.effects.extend(effects);
                 magic_news.write(MagicNews::Done(report));
@@ -275,45 +340,34 @@ pub fn report_deeds(
                 magic_news.write(MagicNews::Landed { caster, spell, effects });
             }
             Act::Triggered { spell } => {
+                // A cloud's pulse keeps the fight going as an attack would.
+                if let Some(fight) = fight.as_mut() {
+                    fight.1.attacked(affected(&effects));
+                }
                 magic_news.write(MagicNews::Triggered { spell, effects });
             }
             Act::Fight => {
                 if !effects.is_empty() {
-                    combat_news.write(crate::game::combat::CombatNews::Effects(effects));
+                    combat_news.write(CombatNews::Effects(effects));
                 }
             }
-            Act::Blow { by, at } => {
-                let damage = effects
-                    .iter()
-                    .map(|effect| match effect {
-                        Effect::Damaged { amount, .. } => *amount,
-                        _ => 0,
-                    })
-                    .sum();
-                combat_news.write(crate::game::combat::CombatNews::Result {
-                    attacker: by,
-                    target: at,
-                    hits: 1,
-                    damage,
-                });
-                let rest: Vec<Effect> = effects
-                    .into_iter()
-                    .filter(|effect| !matches!(effect, Effect::Damaged { .. }))
-                    .collect();
-                if !rest.is_empty() {
-                    combat_news.write(crate::game::combat::CombatNews::Effects(rest));
-                }
-            }
-            Act::Swing => unreachable!(),
         }
     }
+    damaged.write_batch(log.damaged);
+    combat_news.write_batch(
+        log.improved.into_iter().map(|(member, skill)| CombatNews::Improved { member, skill }),
+    );
 }
 
-/// Projections are live capabilities, refreshed at consequence boundaries.
-#[derive(bevy::ecs::schedule::ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct Capabilities;
-#[derive(bevy::ecs::schedule::ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
-struct AfterEffect;
-pub(crate) fn refresh_capabilities(world: &mut World) {
-    world.run_schedule(Capabilities);
+pub struct HitsPlugin;
+
+impl Plugin for HitsPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_message::<Release>().add_message::<Damaged>().add_systems(
+            PreUpdate,
+            definitions::define
+                .run_if(resource_exists::<Catalogs>)
+                .run_if(not(resource_exists::<Definitions>)),
+        );
+    }
 }

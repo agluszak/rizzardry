@@ -6,9 +6,8 @@ use bevy::prelude::*;
 use crate::game::characters::Vitals;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::footing::Footing;
-use crate::game::world::hostility::{Side, Stance};
+use crate::game::world::hostility::Stance;
 use crate::game::world::obstacles::WorldObstacles;
-use crate::game::world::population::Untargetable;
 
 /// Whom a burst may take: those standing against its source's side, or
 /// anyone when it has no source.
@@ -39,12 +38,12 @@ impl Recipients {
 /// The living bodies within `radius` of `centre` that `origin` has a clear
 /// line to, in the fight's order: the party's members by seat, then the
 /// combatants as they joined, then anyone else.
-pub fn within(
+pub fn within<'a>(
     centre: Vec3,
     origin: Vec3,
     radius: f32,
     recipients: Recipients,
-    bodies: &Query<(Entity, &Vitals, &Side, &Footing), Without<Untargetable>>,
+    bodies: impl IntoIterator<Item = (Entity, &'a Vitals, Stance, &'a Footing)>,
     (roster, combatants): (&PartyRoster, &[Entity]),
     obstacles: &WorldObstacles,
 ) -> Vec<Entity> {
@@ -52,8 +51,8 @@ pub fn within(
         return vec![];
     }
     let mut taken: Vec<((u8, usize), Entity)> = bodies
-        .iter()
-        .filter(|(_, vitals, side, _)| !vitals.is_dead() && recipients.admits(side.0))
+        .into_iter()
+        .filter(|(_, vitals, side, _)| !vitals.is_dead() && recipients.admits(*side))
         .filter(|(.., at)| at.centre.distance(centre) - at.radius <= radius)
         .filter(|(.., at)| obstacles.clear(origin, at.centre))
         .map(|(entity, ..)| {

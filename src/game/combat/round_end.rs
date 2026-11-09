@@ -22,13 +22,12 @@ use crate::game::characters::Vitals;
 use crate::game::characters::{Character, Condition};
 use crate::game::data::Catalogs;
 use crate::game::factions::Factions;
-use crate::game::hits::definitions::{Definitions, Uses};
-use crate::game::hits::effects::InFlight;
+use crate::game::hits::Flight;
+use crate::game::hits::definitions::Definitions;
+use crate::game::hits::effects::Strike;
 use crate::game::hits::reach::{Recipients, within};
-use crate::game::hits::spells::reach;
-use crate::game::hits::{Act, Deed};
+use crate::game::hits::{Act, Deed, Release};
 use crate::game::magic::Strength;
-use crate::game::magic::casting::Cast;
 use crate::game::magic::enchantments::{OFFENSIVE, PartyEffects};
 use crate::game::party::body::PartyBody;
 use crate::game::party::recovery;
@@ -64,7 +63,7 @@ pub fn judge_round(
     battle: Option<
         Single<(Entity, &Round, &PartyMove, &Pause), (With<Battle>, Without<RoundEnding>)>,
     >,
-    busy: (Query<(), With<InFlight>>, Query<(), With<CombatMove>>, Query<(), With<Cast>>),
+    busy: (Query<(), With<Flight>>, Query<(), With<CombatMove>>),
     mut clock: ResMut<GameClock>,
 ) {
     let Some((fight, round, party_move, pause)) = battle.map(Single::into_inner) else { return };
@@ -74,7 +73,6 @@ pub fn judge_round(
         || !pause.0.is_finished()
         || !busy.0.is_empty()
         || !busy.1.is_empty()
-        || !busy.2.is_empty()
     {
         return;
     }
@@ -302,7 +300,7 @@ pub(super) fn recover_pools(
 /// and Ring of Fire on the monsters close around the party, sampled anew
 /// each pulse. Each pulse is an act with no caster.
 pub(super) fn pulse_clouds(
-    mut commands: Commands,
+    mut released: MessageWriter<Release>,
     fight: Single<&Combatants, With<RoundEnding>>,
     bodies: Query<(Entity, &Vitals, &Side, &Footing), Without<Untargetable>>,
     party: Single<(&Position, &PartyRoster, &PartyEffects)>,
@@ -312,18 +310,20 @@ pub(super) fn pulse_clouds(
 ) {
     let (position, roster, effects) = *party;
     let eye = PartyBody::eye(position);
-    let pulse = |commands: &mut Commands, spell: SpellId, strength, victims: &[Entity]| {
-        let Some(uses) = definitions.pulse(spell) else { return };
-        let act = commands.spawn((Deed::new(Act::Triggered { spell }), Uses(uses), strength)).id();
-        let victims: Vec<_> = victims.iter().map(|&victim| (victim, None)).collect();
-        reach(commands, act, &victims);
+    let mut pulse = |spell: SpellId, strength, victims: &[Entity]| {
+        let Some(definition) = definitions.pulse(spell) else { return };
+        let strike = Strike { definition, strength, blow: None };
+        released.write(Release {
+            deed: Deed::new(Act::Triggered { spell }, strike),
+            victims: victims.iter().map(|&victim| (victim, None)).collect(),
+        });
     };
     let living: Vec<Entity> =
         roster.iter().filter(|&m| bodies.get(m).is_ok_and(|(_, v, _, _)| !v.is_dead())).collect();
     for id in OFFENSIVE {
         if let Some(effect) = effects.0.get(id) {
             let strength = Strength::at(0, &content.spells[id], effect.power, effect.boost);
-            pulse(&mut commands, id, strength, &living);
+            pulse(id, strength, &living);
         }
     }
     for &monster in fight.entities() {
@@ -337,7 +337,7 @@ pub(super) fn pulse_clouds(
             .collect();
         for (id, effect) in clouds {
             let strength = Strength::at(0, &content.spells[id], effect.power, effect.boost);
-            pulse(&mut commands, id, strength, &[monster]);
+            pulse(id, strength, &[monster]);
         }
     }
     // Ring of Fire follows the party and takes whoever is close around it
@@ -351,12 +351,12 @@ pub(super) fn pulse_clouds(
             centre,
             reach_of,
             Recipients::Opponents(Stance::Friendly),
-            &bodies,
+            bodies.iter().map(|(entity, vitals, side, at)| (entity, vitals, side.0, at)),
             (roster, fight.entities()),
             &obstacles,
         );
         let strength = Strength { power: effect.power, boost: 0, against: effect.power * 3 };
-        pulse(&mut commands, SpellId::RING_OF_FIRE, strength, &victims);
+        pulse(SpellId::RING_OF_FIRE, strength, &victims);
     }
 }
 

@@ -82,11 +82,6 @@ impl PartyBody {
         Self::eye(world.query_filtered::<&Position, With<PartyBody>>().single(world).unwrap())
     }
 
-    /// The party's feet, for operations that hold the whole world.
-    pub fn feet_in(world: &mut World) -> Vec3 {
-        Self::feet(world.query_filtered::<&Position, With<PartyBody>>().single(world).unwrap())
-    }
-
     /// The centre of the party's body under an eye at `eye`: [`Self::eye`]'s
     /// inverse.
     pub fn centre(eye: Vec3) -> Vec3 {

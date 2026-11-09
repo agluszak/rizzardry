@@ -8,7 +8,7 @@ pub mod attack;
 pub mod breath;
 mod conduct;
 mod engage;
-mod fighters;
+pub mod fighters;
 mod monster_spells;
 mod orders;
 mod round_end;
@@ -52,21 +52,18 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
-        swings::stages(app);
-        app.add_systems(
-            Settlement,
-            (
-                crate::game::hits::run_hits,
-                crate::game::characters::cheat_death,
-                crate::game::characters::settle_deaths,
-                credit_deaths,
-                settle_defeat,
-                hostility::judge_sides,
-            )
-                .chain(),
-        );
-        app.add_observer(fighters::leave).add_observer(join_party);
-        app.add_observer(turn::clear_fight)
+        use crate::game::characters::settle_deaths;
+        use crate::game::hits::defences::judge_defences;
+        use crate::game::world::footing::place_bodies;
+        // Deeds land, and what they did is settled: deaths, the fight's
+        // kills, the party's defeat, and who stands with whom.
+        let settle = || (crate::game::hits::resolve, settle_deaths, settle_defeat).chain();
+        app.add_observer(fighters::leave)
+            .add_observer(credit_death)
+            .add_observer(join_party)
+            .add_observer(turn::clear_fight)
+            .add_observer(approach::end_move)
+            .add_observer(approach::stop_walking)
             .add_message::<CombatNews>()
             .add_message::<hostility::Provocation>()
             .add_message::<CyclePartyMove>()
@@ -76,29 +73,22 @@ impl Plugin for CombatPlugin {
             .add_message::<crate::game::camp::CampNews>()
             .add_message::<GiveOrder>()
             .add_message::<engage::Engaged>()
+            .add_message::<turn::Called>()
+            .add_message::<turn::Perform>()
             .init_resource::<CombatSettings>()
-            // Every body's side is judged at the start of the frame, before
-            // magic is accepted and cast, and again on each fight step.
+            // Where everyone stands, whose side they are on and what they
+            // are to what lands on them follow their sources before the
+            // frame's gameplay reads them.
             .add_systems(
                 Update,
-                hostility::judge_sides
-                    .after(GameplaySet::Burden)
-                    .before(crate::game::magic::accept_magic),
+                (place_bodies, hostility::judge_sides, judge_defences)
+                    .chain()
+                    .in_set(GameplaySet::Bodies),
             )
-            // Where everyone stands and how they see is placed before
-            // gameplay reads it, each frame and each fixed step.
-            .add_systems(
-                Update,
-                crate::game::world::footing::place_bodies.before(GameplaySet::LevelActivation),
-            )
-            .add_observer(approach::end_move)
-            .add_observer(approach::stop_walking)
             .add_systems(
                 Update,
                 (
                     give_orders,
-                    // Defeat is settled before a fight starts,
-                    settle_defeat,
                     // provocations and alerts, then engagement, then the opening,
                     hostility::take_offence,
                     engage::alert_factions.run_if(any_with_component::<Battle>),
@@ -114,53 +104,38 @@ impl Plugin for CombatPlugin {
             // every roll, follows simulation time, not how often frames
             // come. Requests made in Update wait for the next step, and a
             // move the round starts or ends governs the party's input on
-            // that same step. Spell missiles fly on it too: an impact lands
-            // at the step its travel ends, and a defeat it causes is settled
+            // that same step. Spell missiles fly on it too: one lands at
+            // the step its flight ends, and a defeat it causes is settled
             // before anyone else acts.
             .add_systems(
                 FixedUpdate,
                 (
-                    // Place bodies before arrivals can reflect or burst from them.
+                    // Everyone is as their sources make them now, and what
+                    // was in the air has landed, before anyone acts.
                     (
-                        crate::game::world::footing::place_bodies,
-                        crate::game::hits::effects::fly,
-                        settle,
+                        place_bodies,
+                        hostility::judge_sides,
+                        judge_defences,
+                        fighters::judge_fighters.run_if(any_with_component::<Battle>),
+                        crate::game::hits::fly,
+                        settle(),
                     )
                         .chain(),
-                    // Current capabilities are ready before initiative is accepted.
-                    (crate::game::hits::defences::judge_defences, fighters::judge_fighters)
-                        .run_if(any_with_component::<Battle>),
-                    (stop_party_move, begin_round, call_actor).chain(),
-                    // The actor whose initiative came follows its orders or
-                    // decides, its conditions may interrupt it, and it acts;
+                    // The actor whose initiative came takes its turn, and
+                    // what it does settles within the step.
                     (
-                        turn::begin_turns,
-                        turn::follow_orders,
-                        ai::decide_conduct,
-                        ai::decide_special,
-                        ai::decide_spell,
-                        ai::withdraw_if_helpless,
-                        ai::decide_guard,
-                        ai::default_fight,
-                        turn::interrupt,
-                        turn::retreat,
-                        turn::protect,
-                        turn::start_specials,
-                        turn::start_casts,
-                        swings::open_attacks,
-                    )
-                        .chain(),
-                    // its blows and casts settle within the step,
-                    (
-                        swings::run_swings,
-                        casting::resolve_casts,
+                        (stop_party_move, begin_round, call_actor).chain(),
+                        turn::take_turn,
+                        (turn::perform, swings::attack),
+                        casting::cast,
                         hostility::take_offence,
                         turn::defend_instead,
                         summon::summon,
-                        settle,
+                        settle(),
                     )
-                        .chain(),
-                    // and once everyone has acted the round ends.
+                        .chain()
+                        .run_if(any_with_component::<Battle>),
+                    // Once everyone has acted the round ends.
                     (
                         judge_round,
                         round_end::leave_fight,
@@ -168,24 +143,22 @@ impl Plugin for CombatPlugin {
                         round_end::cool_specials,
                         round_end::age_conditions,
                         round_end::recover_pools,
-                        // Aging damage is settled before selecting cloud victims.
-                        settle.run_if(any_with_component::<RoundEnding>),
                         round_end::pulse_clouds,
-                        // The last pulse still sees the round's protections.
-                        settle.run_if(any_with_component::<RoundEnding>),
+                        settle(),
                         round_end::age_enchantments,
                         hostility::judge_sides,
                         round_end::judge_victory,
                         round_end::look_again,
                         end_round,
                     )
-                        .chain(),
+                        .chain()
+                        .run_if(any_with_component::<Battle>),
                 )
                     .chain()
                     .in_set(GameplaySet::Combat)
+                    .run_if(crate::game::world::level::level_active)
                     .after(crate::game::party::body::turn_party)
-                    .before(bevy_tnua::TnuaUserControlsSystems)
-                    .run_if(crate::game::world::level::level_active),
+                    .before(bevy_tnua::TnuaUserControlsSystems),
             )
             // The party walks on the fixed step; its move is measured on
             // every step, once physics has moved it, so how frames batch
@@ -206,15 +179,6 @@ impl Plugin for CombatPlugin {
                     .run_if(crate::game::world::level::level_active),
             );
     }
-}
-
-/// One settlement system instance owns death credit across all boundaries.
-/// Calling it repeatedly must not credit Added<Dead> once per call site.
-#[derive(bevy::ecs::schedule::ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
-struct Settlement;
-
-fn settle(world: &mut World) {
-    world.run_schedule(Settlement);
 }
 
 /// Seconds of simulation between actors (retail `combat_delay_ms`, 1000 by
@@ -454,11 +418,6 @@ pub enum CombatNews {
     PartyStops,
 }
 
-/// Whether the party is fighting, for operations that hold the whole world.
-pub fn in_battle(world: &mut World) -> bool {
-    world.query_filtered::<(), With<Battle>>().iter(world).next().is_some()
-}
-
 /// Terminal state is settled independently of whose action dealt the damage.
 /// Used before/after combat execution and at the end of environmental damage.
 pub fn settle_defeat(
@@ -489,35 +448,28 @@ pub fn settle_defeat(
 /// A death in the fight: a hostile body's with a worth is a kill worth it
 /// (nothing for one summoned), shared at the fight's end (retail
 /// `MonsterStartsDying`); everyone's is announced.
-pub fn credit_deaths(
-    deaths: Query<
-        (
-            Entity,
-            &Side,
-            Option<&crate::game::world::population::Worth>,
-            Has<crate::game::magic::pointcasts::SummonedBy>,
-        ),
-        Added<Dead>,
-    >,
-    fight: Option<Single<(&mut Spoils, Option<&Combatants>), With<Battle>>>,
+fn credit_death(
+    died: On<Add<Dead>>,
+    bodies: Query<(
+        &Side,
+        Option<&crate::game::world::population::Worth>,
+        Has<crate::game::magic::pointcasts::SummonedBy>,
+        Has<Combatant>,
+    )>,
+    mut spoils: Single<&mut Spoils, With<Battle>>,
     mut news: MessageWriter<CombatNews>,
 ) {
-    let Some((mut spoils, combatants)) = fight.map(Single::into_inner) else { return };
-    let combatants = combatants.map_or(&[][..], Combatants::entities);
-    for (actor, side, worth, summoned) in &deaths {
-        if !combatants.contains(&actor) {
-            continue;
+    let actor = died.entity;
+    let Ok((side, worth, summoned, true)) = bodies.get(actor) else { return };
+    if let Some(worth) = worth
+        && side.0 == Stance::Hostile
+    {
+        spoils.kills += 1;
+        if !summoned {
+            spoils.experience += worth.0;
         }
-        if let Some(worth) = worth
-            && side.0 == Stance::Hostile
-        {
-            spoils.kills += 1;
-            if !summoned {
-                spoils.experience += worth.0;
-            }
-        }
-        news.write(CombatNews::Killed { actor });
     }
+    news.write(CombatNews::Killed { actor });
 }
 
 /// Starting the round while the party moves ends its move (retail
@@ -557,11 +509,11 @@ pub fn begin_round(
     bodies: Query<(
         &Vitals,
         &fighters::Arms,
-        &fighters::Initiative,
+        &fighters::Fighter,
         Option<(&Character, &crate::game::party::Order)>,
     )>,
     settings: Res<CombatSettings>,
-    in_flight: Query<(), With<crate::game::hits::effects::InFlight>>,
+    in_flight: Query<(), With<crate::game::hits::Flight>>,
     moving: Query<(), With<approach::CombatMove>>,
     mut starts: MessageReader<StartRound>,
     mut moves: MessageReader<CyclePartyMove>,
@@ -624,27 +576,21 @@ pub fn begin_round(
 /// passes to the next.
 #[allow(clippy::type_complexity)]
 fn call_actor(
-    mut commands: Commands,
     fight: Option<Single<(&mut Round, &mut PartyMove, &Pause, Option<&Combatants>), With<Battle>>>,
     roster: Single<&PartyRoster>,
     footings: Query<&crate::game::world::footing::Footing>,
     vitals: Query<&Vitals>,
     turns: Query<&Turn>,
-    in_flight: Query<(), With<crate::game::hits::effects::InFlight>>,
+    in_flight: Query<(), With<crate::game::hits::Flight>>,
     moving: Query<(), With<approach::CombatMove>>,
-    acting: Query<(), With<turn::Acting>>,
+    mut called: MessageWriter<turn::Called>,
     mut news: MessageWriter<CombatNews>,
 ) {
     let Some((mut round, mut party_move, pause, combatants)) = fight.map(Single::into_inner) else {
         return;
     };
     let combatants = combatants.map_or(&[][..], Combatants::entities);
-    if !round.executing()
-        || !pause.0.is_finished()
-        || !in_flight.is_empty()
-        || !moving.is_empty()
-        || !acting.is_empty()
-    {
+    if !round.executing() || !pause.0.is_finished() || !in_flight.is_empty() || !moving.is_empty() {
         return;
     }
     if round.phase == RoundPhase::Accepted {
@@ -687,7 +633,7 @@ fn call_actor(
             .filter(|actor| !party_waits || !roster.contains(actor))
             .find(|&actor| turns.get(actor).is_ok_and(|turn| turn.phase == step));
         if let Some(actor) = due {
-            commands.entity(actor).insert(turn::Acting);
+            called.write(turn::Called(actor));
             return;
         }
         round.phase = RoundPhase::Executing(step + 1);

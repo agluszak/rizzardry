@@ -15,9 +15,9 @@ use rand::Rng;
 use super::{LayoutMode, MainScreenArt, ScreenLayout, SelectedMember, layer};
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, Vitals};
+use crate::game::hits::Damaged;
 use crate::game::inventory::EquipSlot;
 use crate::game::npcs::conversation::Conversation;
-use crate::game::party::DamageApplied;
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::PresentationRng;
 use crate::presentation::screen_art::visible_if;
@@ -697,14 +697,14 @@ const SPLAT_FRAME: f32 = 0.1;
 
 pub fn record_splats(
     mut commands: Commands,
-    mut damage: MessageReader<DamageApplied>,
+    mut damage: MessageReader<Damaged>,
     art: Res<MainScreenArt>,
     layers: Query<Entity, With<Splats>>,
     mut existing: Query<&mut Splat>,
     mut rng: ResMut<PresentationRng>,
 ) {
     let mut hits = std::collections::BTreeMap::<Entity, (u32, bool)>::new();
-    for &DamageApplied { member, amount, died } in damage.read() {
+    for &Damaged { body: member, amount, died } in damage.read() {
         let (lost, death) = hits.entry(member).or_default();
         *lost += amount;
         *death |= died;

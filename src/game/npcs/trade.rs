@@ -27,7 +27,6 @@ pub struct StockLot {
 #[derive(Component, Debug, Default)]
 pub struct MerchantStock {
     pub lots: Vec<StockLot>,
-    revision: u64,
     next: u64,
     restocked: u64,
     maintained: u64,
@@ -51,7 +50,6 @@ pub enum TradeSource {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Quote {
     pub merchant: Entity,
-    pub revision: u64,
     pub source: TradeSource,
     pub quantity: u32,
     pub gold: u32,
@@ -270,7 +268,7 @@ impl Pricing<'_, '_> {
                 price(d, item, units, stack.identified, false, skill)
             }
         };
-        Ok(Quote { merchant, revision: stock.revision, source, quantity: units, gold })
+        Ok(Quote { merchant, source, quantity: units, gold })
     }
 }
 #[derive(SystemParam)]
@@ -283,9 +281,6 @@ struct Settlement<'w, 's> {
 }
 impl Settlement<'_, '_> {
     fn settle(&mut self, q: Quote, current: Quote) -> Result<(), TradeError> {
-        if current.revision != q.revision {
-            return Err(TradeError::StaleSelection);
-        }
         if current.gold != q.gold {
             return Err(TradeError::PriceChanged);
         }
@@ -328,7 +323,6 @@ impl Settlement<'_, '_> {
                     ItemOwner::Member(m) => self.packs.get(m).ok(),
                 };
                 let item = sale_item(source, inventory, pack)?.item;
-                let gold = inventory.gold.checked_add(q.gold).ok_or(TradeError::Capacity)?;
                 match source.owner {
                     ItemOwner::Pool => inventory.pool.consume_units(source.id, q.quantity as u16),
                     ItemOwner::Member(m) => self
@@ -338,10 +332,9 @@ impl Settlement<'_, '_> {
                         .consume_backpack_units(source.id, q.quantity as u16),
                 };
                 stock.add(item, q.quantity, &self.content.items, false);
-                inventory.gold = gold;
+                inventory.gold += q.gold;
             }
         }
-        stock.revision = stock.revision.wrapping_add(1);
         Ok(())
     }
 }
@@ -377,13 +370,11 @@ fn maintain(
     for visit in visits.read() {
         let Ok((id, mut stock)) = stocks.get_mut(visit.0) else { continue };
         let d = &content.npcs[id.0];
-        let mut changed = false;
-        if clock.ms.saturating_sub(stock.restocked) > DAY_MS / 2 {
+        if clock.ms - stock.restocked > DAY_MS / 2 {
             stock.replenish(d, &content.items, average, true, false, &mut rng);
             stock.restocked = clock.ms;
-            changed = true;
         }
-        if clock.ms.saturating_sub(stock.maintained) >= DAY_MS {
+        if clock.ms - stock.maintained >= DAY_MS {
             for lot in &mut stock.lots {
                 let item = &content.items[lot.item];
                 if lot.available_at != 0
@@ -393,11 +384,7 @@ fn maintain(
                 {
                     continue;
                 }
-                let count = if item.quantity == QuantityKind::Stack { 1 } else { lot.units };
-                for _ in 0..count {
-                    rng.below(100);
-                }
-                lot.units = lot.units.saturating_sub(count);
+                lot.units -= if item.quantity == QuantityKind::Stack { 1 } else { lot.units };
             }
             let templar = super::story::fact_named(&story, &content.facts, "FACT_TEMPLAR")
                 .is_ok_and(|v| v != 0);
@@ -405,16 +392,11 @@ fn maintain(
             stock.lots.retain(|l| l.units > 0);
             stock.maintained = clock.ms;
             stock.restocked = clock.ms;
-            changed = true;
         }
         for l in &mut stock.lots {
             if l.available_at != 0 && l.available_at < clock.ms {
                 l.available_at = 0;
-                changed = true;
             }
-        }
-        if changed {
-            stock.revision = stock.revision.wrapping_add(1);
         }
     }
 }

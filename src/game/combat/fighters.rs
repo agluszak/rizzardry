@@ -1,11 +1,11 @@
 //! What a body in a fight is to the blows struck at it and by it: the same
-//! components on a party member and on a monster, so the swing systems read
-//! them without asking which it is. One system judges every body from its
-//! own sources (a member's sheet, gear and party; a monster's species and
-//! spells), at the start of every fixed step of a fight and of every swing
-//! pass, and nothing else writes them. They are valid only in a fight: they
-//! go when the fight ends, or when a monster leaves it. Where bodies stand
-//! is their [`Footing`](crate::game::world::footing::Footing).
+//! components on a party member and on a monster, so the rules of a fight
+//! read them without asking which it is. One system judges every body from
+//! its own sources (a member's sheet, gear and party; a monster's species
+//! and spells) as each fixed step of a fight begins, and nothing else
+//! writes them. They are valid only in a fight: they go when the fight
+//! ends, or when a monster leaves it. Where bodies stand is their
+//! [`Footing`](crate::game::world::footing::Footing).
 
 use bevy::prelude::*;
 use enum_map::EnumMap;
@@ -26,58 +26,43 @@ use crate::game::party::formation::Formation;
 use crate::game::world::footing::Footing;
 use crate::game::world::population::Monster;
 
-/// Senses + speed + dexterity + intelligence (retail SSDI), which weighs
-/// for its blows and against those at it.
+/// What a body in a fight is, apart from what it strikes with and its
+/// armour.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
-pub struct Agility(pub i32);
-
-/// Its strength, which breaks webs.
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
-pub struct Brawn(pub u32);
-
-/// Its intelligence, which weighs its choices.
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
-pub struct Wit(pub u32);
-
-/// When it acts in a round, before its weapon's own initiative.
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
-pub struct Initiative(pub i32);
-
-/// How far a body may walk in one combat move, in metres: a monster's
-/// species' move range (retail `combat_move_range` × 20). The party walks
-/// as one, so a member has none.
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
-pub struct Stride(pub f32);
-
-/// The percent cut off the damage of blows at it.
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
-pub struct Reduction(pub i32);
-
-/// How well it presses a blow past a guard, or guards against one (retail
-/// `GetCharacterProtectionScore`, `GetMonsterProtectionScore`).
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
-pub struct Protection(pub i32);
-
-/// The percent chance a Missile Shield turns aside what is shot or thrown
-/// at it: a monster's own, a member's party's.
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
-pub struct MissileShield(pub u32);
-
-/// How a blinded body still fights: its aim at 10 at most, or for one
-/// effective while blind (a member with the trait, a Monk among monsters),
-/// by its level past that, and its action not lost to blindness.
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
-pub struct BlindFighting(pub Option<u8>);
-
-/// The percent chance its natural strikes roll extra dice (retail
-/// `RollBackstabExtraDice`): by a member's profession, a monster's level.
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
-pub struct Backstab(pub i32);
-
-/// Where blows land on a monster, by its species' chances; a member has
-/// none of its own.
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
-pub struct HitLocations(pub [u8; 7]);
+pub struct Fighter {
+    /// When it acts in a round, before its weapon's own initiative.
+    pub initiative: i32,
+    /// How far it may walk in one combat move, in metres: a monster's
+    /// species' move range (retail `combat_move_range` × 20). The party
+    /// walks as one, so a member has none.
+    pub stride: Option<f32>,
+    /// Its strength, which breaks webs.
+    pub brawn: u32,
+    /// Its intelligence, which weighs its choices.
+    pub wit: u32,
+    /// Senses + speed + dexterity + intelligence (retail SSDI), which
+    /// weighs for its blows and against those at it.
+    pub agility: i32,
+    /// The percent cut off the damage of blows at it.
+    pub reduction: i32,
+    /// How well it presses a blow past a guard, or guards against one
+    /// (retail `GetCharacterProtectionScore`, `GetMonsterProtectionScore`).
+    pub protection: i32,
+    /// The percent chance a Missile Shield turns aside what is shot or
+    /// thrown at it: a monster's own, a member's party's.
+    pub missile_shield: u32,
+    /// Effective while blind (a member with the trait, a Monk among
+    /// monsters): its aim past 10 scales by this level instead of being
+    /// held to 10, and its action is not lost to blindness.
+    pub blind_fighting: Option<u8>,
+    /// The percent chance its natural strikes roll extra dice (retail
+    /// `RollBackstabExtraDice`): by a member's profession, a monster's
+    /// level.
+    pub backstab: i32,
+    /// Where blows land on a monster, by its species' chances; a member
+    /// has none of its own.
+    pub hit_locations: Option<[u8; 7]>,
+}
 
 /// A body's armour class against blows (retail `GetTargetArmorClass`,
 /// `TargetArmorClassAtLocation`, `GetTargetArmorClassModifier`).
@@ -91,8 +76,8 @@ pub struct ArmourClass {
     pub by_mode: EnumMap<AttackMode, i32>,
     /// What a surprise strips from its guard.
     pub exposed: i32,
-    /// What fatigue adds to a monster's guard.
-    pub tired: i32,
+    /// Fatigue adds to its guard, as it does to a monster's.
+    pub tires: bool,
     /// On the move, its guard down to blows that close in.
     pub distracted: bool,
     /// Braced, defending.
@@ -100,10 +85,11 @@ pub struct ArmourClass {
 }
 
 impl ArmourClass {
-    /// What its guard comes to against a blow: a surprise strips what it
-    /// exposes, and four go to a blow that closes in on it on the move.
-    pub fn guard(&self, mode: AttackMode, surprise: attack::Surprise) -> i32 {
-        let mut guard = self.tired;
+    /// What its guard comes to against a blow: fatigue adds a tenth of
+    /// itself, a surprise strips what it exposes, and four go to a blow
+    /// that closes in on it on the move.
+    pub fn guard(&self, mode: AttackMode, surprise: attack::Surprise, vitals: &Vitals) -> i32 {
+        let mut guard = if self.tires { attack::fatigue(vitals) / 10 } else { 0 };
         if surprise.any() {
             guard -= self.exposed;
         }
@@ -114,13 +100,24 @@ impl ArmourClass {
     }
 
     /// Its armour against a blow's aim; its guard counts once.
-    pub fn against_aim(&self, mode: AttackMode, surprise: attack::Surprise) -> i32 {
-        self.total + self.guard(mode, surprise)
+    pub fn against_aim(
+        &self,
+        mode: AttackMode,
+        surprise: attack::Surprise,
+        vitals: &Vitals,
+    ) -> i32 {
+        self.total + self.guard(mode, surprise, vitals)
     }
 
     /// Its armour where a blow struck; its guard counts twice.
-    pub fn at(&self, mode: AttackMode, surprise: attack::Surprise, location: usize) -> i32 {
-        self.at[location] - self.by_mode[mode] + 2 * self.guard(mode, surprise)
+    pub fn at(
+        &self,
+        mode: AttackMode,
+        surprise: attack::Surprise,
+        vitals: &Vitals,
+        location: usize,
+    ) -> i32 {
+        self.at[location] - self.by_mode[mode] + 2 * self.guard(mode, surprise, vitals)
     }
 }
 
@@ -330,57 +327,6 @@ fn monster_arm(
     }
 }
 
-/// Projected values from one source. These are written as independent
-/// capabilities, and unchanged values retain their ECS change ticks.
-struct Fighter {
-    arms: Arms,
-    initiative: Initiative,
-    brawn: Brawn,
-    wit: Wit,
-    agility: Agility,
-    reduction: Reduction,
-    protection: Protection,
-    shield: MissileShield,
-    blind: BlindFighting,
-    backstab: Backstab,
-    armour: ArmourClass,
-    stride: Option<Stride>,
-    locations: Option<HitLocations>,
-}
-
-impl Fighter {
-    fn write(self, entity: &mut EntityCommands) {
-        entity
-            .insert_if_neq(self.arms)
-            .insert_if_neq(self.initiative)
-            .insert_if_neq(self.brawn)
-            .insert_if_neq(self.wit)
-            .insert_if_neq(self.agility)
-            .insert_if_neq(self.reduction)
-            .insert_if_neq(self.protection)
-            .insert_if_neq(self.shield)
-            .insert_if_neq(self.blind)
-            .insert_if_neq(self.backstab)
-            .insert_if_neq(self.armour);
-        match self.stride {
-            Some(stride) => {
-                entity.insert_if_neq(stride);
-            }
-            None => {
-                entity.remove::<Stride>();
-            }
-        }
-        match self.locations {
-            Some(locations) => {
-                entity.insert_if_neq(locations);
-            }
-            None => {
-                entity.remove::<HitLocations>();
-            }
-        }
-    }
-}
-
 /// What a member is to blows, by their sheet, gear and party: what they
 /// wear and the spells on them and the party, braced when they defend and
 /// distracted while the party runs.
@@ -390,7 +336,7 @@ fn member_fighter(
     running: bool,
     party: &PartyEffects,
     items: &crate::content::items::ItemCatalog,
-) -> Fighter {
+) -> (Fighter, Arms, ArmourClass) {
     let stats = character.stats(&vitals.enchantments);
     let load = burden.load;
     let armour = attack::enchanted_armour(
@@ -410,92 +356,95 @@ fn member_fighter(
         .filter(|&slot| grip.in_play(slot))
         .map(|slot| member_arm(&grip, &stats, character, load, to_hit_bonus, slot))
         .collect();
-    Fighter {
-        arms: Arms(arms),
-        initiative: Initiative(stats.initiative(load)),
-        brawn: Brawn(stats.attribute(Attribute::Strength)),
-        wit: Wit(stats.attribute(Attribute::Intelligence)),
-        agility: Agility(attack::member_agility(&stats)),
-        reduction: Reduction(stats.damage_reduction()),
-        protection: Protection(attack::member_protection(&stats, vitals, &grip, load)),
-        shield: MissileShield(party.0.missile_deflection()),
-        blind: BlindFighting(
-            blind_fighter.then(|| character.profession_levels[character.profession]),
-        ),
-        backstab: Backstab(character.scale_by_profession(100.0) as i32),
-        armour: ArmourClass {
-            total: armour.total,
-            at: std::array::from_fn(|location| {
-                armour.by_location.values().nth(location).copied().unwrap_or(armour.total)
-            }),
-            by_mode: EnumMap::default(),
-            exposed: armour.speed.max(0) + armour.shield.max(0),
-            tired: 0,
-            distracted: running,
-            braced,
-        },
+    let fighter = Fighter {
+        initiative: stats.initiative(load),
         stride: None,
-        locations: None,
-    }
+        brawn: stats.attribute(Attribute::Strength),
+        wit: stats.attribute(Attribute::Intelligence),
+        agility: attack::member_agility(&stats),
+        reduction: stats.damage_reduction(),
+        protection: attack::member_protection(&stats, vitals, &grip, load),
+        missile_shield: party.0.missile_deflection(),
+        blind_fighting: blind_fighter.then(|| character.profession_levels[character.profession]),
+        backstab: character.scale_by_profession(100.0) as i32,
+        hit_locations: None,
+    };
+    let armour = ArmourClass {
+        total: armour.total,
+        at: std::array::from_fn(|location| {
+            armour.by_location.values().nth(location).copied().unwrap_or(armour.total)
+        }),
+        by_mode: EnumMap::default(),
+        exposed: armour.speed.max(0) + armour.shield.max(0),
+        tires: false,
+        distracted: running,
+        braced,
+    };
+    (fighter, Arms(arms), armour)
 }
 
 /// What a monster is to blows, by its species, fatigue and spells: its
 /// guard drops while it advances.
-fn monster_fighter(kind: &Species, vitals: &Vitals, advancing: bool) -> Fighter {
+fn monster_fighter(
+    kind: &Species,
+    vitals: &Vitals,
+    advancing: bool,
+) -> (Fighter, Arms, ArmourClass) {
     let spells = vitals.enchantments.armour();
     let hit_bonus = vitals.enchantments.hit_bonus();
     let arms = kind.attacks.iter().map(|swung| monster_arm(kind, swung, hit_bonus)).collect();
-    Fighter {
-        arms: Arms(arms),
-        initiative: Initiative(i32::from(kind.initiative)),
-        stride: Some(Stride(kind.combat_move_range * super::approach::METRES_PER_MOVE_RANGE)),
-        brawn: Brawn(u32::from(kind.attributes.strength)),
-        wit: Wit(u32::from(kind.attributes.intelligence)),
-        agility: Agility(attack::monster_agility(kind, &vitals.enchantments)),
-        reduction: Reduction(attack::monster_reduction(kind, vitals)),
-        protection: Protection(attack::monster_protection(kind, vitals)),
-        shield: MissileShield(vitals.enchantments.missile_deflection()),
-        blind: BlindFighting((kind.kind == MonsterKind::Monk).then_some(kind.level)),
-        backstab: Backstab(scale_by_level(kind.level, 100.0) as i32),
-        locations: Some(HitLocations(kind.hit_locations)),
-        armour: ArmourClass {
-            total: 10 - i32::from(kind.evasion) + spells,
-            at: std::array::from_fn(|location| {
-                10 + spells - i32::from(kind.armour_by_location[location])
-            }),
-            by_mode: EnumMap::from_fn(|mode| i32::from(kind.armour_by_mode[mode])),
-            exposed: 2 * i32::from(kind.vulnerable_from_behind),
-            tired: attack::fatigue(vitals) / 10,
-            distracted: advancing,
-            braced: false,
-        },
-    }
+    let fighter = Fighter {
+        initiative: i32::from(kind.initiative),
+        stride: Some(kind.combat_move_range * super::approach::METRES_PER_MOVE_RANGE),
+        brawn: u32::from(kind.attributes.strength),
+        wit: u32::from(kind.attributes.intelligence),
+        agility: attack::monster_agility(kind, &vitals.enchantments),
+        reduction: attack::monster_reduction(kind, vitals),
+        protection: attack::monster_protection(kind, vitals),
+        missile_shield: vitals.enchantments.missile_deflection(),
+        blind_fighting: (kind.kind == MonsterKind::Monk).then_some(kind.level),
+        backstab: scale_by_level(kind.level, 100.0) as i32,
+        hit_locations: Some(kind.hit_locations),
+    };
+    let armour = ArmourClass {
+        total: 10 - i32::from(kind.evasion) + spells,
+        at: std::array::from_fn(|location| {
+            10 + spells - i32::from(kind.armour_by_location[location])
+        }),
+        by_mode: EnumMap::from_fn(|mode| i32::from(kind.armour_by_mode[mode])),
+        exposed: 2 * i32::from(kind.vulnerable_from_behind),
+        tires: true,
+        distracted: advancing,
+        braced: false,
+    };
+    (fighter, Arms(arms), armour)
 }
 
-/// Refresh participants whose sources changed. Defending and movement are
-/// compared to the previous projection, so removing an order or CombatMove
-/// invalidates armour just as adding one does.
+/// Keep every body in the fight judged from its sources: its sheet, gear,
+/// spells and party, or its species and spells; braced while it defends,
+/// distracted while it moves. One whose sources have not changed since it
+/// was last judged is left alone.
 #[allow(clippy::type_complexity)]
 pub(super) fn judge_fighters(
     mut commands: Commands,
-    bodies: Query<(
-        Entity,
-        Ref<Vitals>,
-        AnyOf<((Ref<Character>, Ref<Carried>, Ref<Burden>), Ref<Monster>)>,
-        (Option<&Ordered>, Has<CombatMove>, Has<Combatant>),
-        Option<&ArmourClass>,
-    )>,
+    bodies: Query<
+        (
+            Entity,
+            Ref<Vitals>,
+            AnyOf<((Ref<Character>, Ref<Carried>, Ref<Burden>), Ref<Monster>)>,
+            (Option<&Ordered>, Has<CombatMove>),
+            Option<&ArmourClass>,
+        ),
+        With<Combatant>,
+    >,
     party: Single<Ref<PartyEffects>>,
     round: Single<&super::Round, With<Battle>>,
-    content: If<Res<Catalogs>>,
+    content: Res<Catalogs>,
 ) {
     let running = round.pace == Some(PartyPace::Run);
-    for (entity, vitals, (sheet, monster), (ordered, advancing, combatant), previous) in &bodies {
-        if !combatant {
-            continue;
-        }
+    for (entity, vitals, (sheet, monster), (ordered, advancing), previous) in &bodies {
         let changed = previous.is_none() || vitals.is_changed() || content.is_changed();
-        let fighter = match (sheet, monster) {
+        let judged = match (sheet, monster) {
             (Some((character, carried, burden)), _) => {
                 let braced = ordered.is_some_and(Ordered::defends);
                 if !(changed
@@ -528,32 +477,13 @@ pub(super) fn judge_fighters(
             }
             (None, None) => continue,
         };
-        fighter.write(&mut commands.entity(entity));
+        commands.entity(entity).insert(judged);
     }
-}
-
-/// What a body is to blows, gone once it is out of the fight.
-fn forget(commands: &mut EntityCommands) {
-    commands.try_remove::<(
-        Arms,
-        Initiative,
-        Stride,
-        Brawn,
-        Wit,
-        Agility,
-        Reduction,
-        Protection,
-        MissileShield,
-        BlindFighting,
-        Backstab,
-        HitLocations,
-        ArmourClass,
-    )>();
 }
 
 /// An actor leaving the fight is no longer judged.
 pub(super) fn leave(left: On<Remove<Combatant>>, mut commands: Commands) {
-    forget(&mut commands.entity(left.entity));
+    commands.entity(left.entity).try_remove::<(Fighter, Arms, ArmourClass)>();
 }
 
 #[cfg(test)]
@@ -568,19 +498,20 @@ mod tests {
             at: [8; 7],
             by_mode: EnumMap::default(),
             exposed: 5,
-            tired: 0,
+            tires: false,
             distracted: false,
             braced: false,
         };
+        let vitals = Vitals::full(10, 10);
         let swing = AttackMode::Swing;
-        assert_eq!(armour.against_aim(swing, Surprise::default()), 8);
+        assert_eq!(armour.against_aim(swing, Surprise::default(), &vitals), 8);
         let behind = Surprise { unaware: true, natural: false };
-        assert_eq!(armour.against_aim(swing, behind), 8 - 5);
+        assert_eq!(armour.against_aim(swing, behind, &vitals), 8 - 5);
         let running = ArmourClass { distracted: true, ..armour };
-        assert_eq!(running.against_aim(swing, Surprise::default()), 8 - 4);
+        assert_eq!(running.against_aim(swing, Surprise::default(), &vitals), 8 - 4);
         // Shots and throws do not find the gap; where struck the guard
         // counts twice.
-        assert_eq!(running.against_aim(AttackMode::Shoot, Surprise::default()), 8);
-        assert_eq!(running.at(swing, behind, 1), 8 - 2 * (5 + 4));
+        assert_eq!(running.against_aim(AttackMode::Shoot, Surprise::default(), &vitals), 8);
+        assert_eq!(running.at(swing, behind, &vitals, 1), 8 - 2 * (5 + 4));
     }
 }

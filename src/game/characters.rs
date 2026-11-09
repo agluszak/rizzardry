@@ -902,7 +902,11 @@ impl Pool {
 /// together. A monster's maxima were rolled when it was made; a member's
 /// follow their stats ([`Vitals::sync_maxima`]).
 #[derive(Component, Clone, Debug, Default, PartialEq)]
-#[require(crate::game::world::hostility::Side, crate::game::world::hostility::Loyalty)]
+#[require(
+    crate::game::world::hostility::Side,
+    crate::game::world::hostility::Loyalty,
+    crate::game::hits::defences::Defences
+)]
 pub struct Vitals {
     pub health: Pool,
     pub stamina: Pool,
@@ -1036,7 +1040,7 @@ impl Vitals {
     /// `ApplyDamageToMonster`): Guardian Angel absorbs what it can, two
     /// thirds of the rest tire, and health falls by it, to nothing at most.
     /// The dead take none. Health run out is death once it is settled
-    /// ([`settle_deaths`]), unless it is cheated first ([`cheat_death`]).
+    /// ([`settle_deaths`]), unless it is cheated first.
     /// Returns the health lost. The caller handles waking.
     pub fn hurt(&mut self, amount: u32) -> u32 {
         if self.is_dead() {
@@ -1150,6 +1154,11 @@ impl Vitals {
     fn maxima_of(&self, profile: &Character) -> (u32, u32) {
         let stats = profile.stats(&self.enchantments);
         (stats.max_hp(), stats.max_stamina())
+    }
+
+    /// Whether a member's maxima are no longer what their stats make them.
+    pub fn maxima_differ(&self, profile: &Character) -> bool {
+        (self.health.max, self.stamina.max) != self.maxima_of(profile)
     }
 
     /// Keep a member's maxima to their stats, leaving health and stamina as
@@ -1291,32 +1300,23 @@ impl Vitals {
 #[derive(Component, Debug)]
 pub struct Dead;
 
-/// A Valkyrie whose health ran out cheats death before it is settled
-/// ([`Vitals::cheats_death`]), in whatever fight is on. Runs right before
-/// [`settle_deaths`].
-pub fn cheat_death(
-    mut members: Query<(&Character, &mut Vitals), (Changed<Vitals>, Without<Dead>)>,
+/// Settle the deaths, once, for every way a body can be hurt: a Valkyrie
+/// whose health ran out cheats death ([`Vitals::cheats_death`]) in whatever
+/// fight is on; anyone else whose health ran out dies, losing what lasted
+/// on them, and is marked [`Dead`]; one raised is alive again.
+pub fn settle_deaths(
+    mut commands: Commands,
+    mut bodies: Query<(Entity, &mut Vitals, Option<&Character>, Has<Dead>), Changed<Vitals>>,
     fight: Option<Single<Entity, With<crate::game::combat::Battle>>>,
     mut rng: ResMut<GameRng>,
 ) {
     let fight = fight.map(|fight| *fight);
-    for (profile, mut vitals) in &mut members {
-        if vitals.health.current == 0 {
-            vitals.cheats_death(profile, fight, &mut rng);
-        }
-    }
-}
-
-/// Settle the deaths: a body whose health ran out dies, losing what lasted
-/// on it, and is marked [`Dead`]; one raised is alive again. Death is
-/// settled here, once, for every way a body can be hurt.
-pub fn settle_deaths(
-    mut commands: Commands,
-    mut bodies: Query<(Entity, &mut Vitals, Has<Dead>), Changed<Vitals>>,
-) {
-    for (body, mut vitals, marked) in &mut bodies {
+    for (body, mut vitals, profile, marked) in &mut bodies {
         match (vitals.is_dead(), marked) {
             (true, false) => {
+                if profile.is_some_and(|profile| vitals.cheats_death(profile, fight, &mut rng)) {
+                    continue;
+                }
                 vitals.die();
                 commands.entity(body).insert(Dead);
             }

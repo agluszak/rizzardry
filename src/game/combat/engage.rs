@@ -25,7 +25,6 @@ use super::ai::special_ready;
 use super::monster_spells;
 use crate::game::party::body::PartyBody;
 use crate::game::world::footing::{Conspicuous, Eyes, Footing};
-use crate::game::world::hostility::{Loyalty, Side};
 use avian3d::prelude::Position;
 
 /// Monsters coming into the fight, in placement order.
@@ -105,7 +104,7 @@ pub(super) fn engage(
     )>,
     mut groups: Query<(Entity, &mut MonsterGroup, &GroupMembers, &LevelOwned)>,
     members: Query<(&Footing, &Conspicuous, &Vitals), With<Character>>,
-    bodies: Query<(&Vitals, &Footing, &Side, &Loyalty)>,
+    bodies: Query<crate::game::hits::effects::BodyReadOnly>,
     roster: Single<&PartyRoster>,
     level: PlayedLevel,
     obstacles: WorldObstacles,
@@ -156,7 +155,7 @@ pub(super) fn engage(
         let close = kind.attacks.iter().map(|a| a.reach).max().is_some_and(|r| r <= Reach::Short);
         let seen: Vec<Entity> = std::iter::once(fighter)
             .chain(roster.iter().filter(|_| sees))
-            .filter(|&body| bodies.get(body).is_ok_and(|(vitals, ..)| !vitals.is_dead()))
+            .filter(|&body| bodies.get(body).is_ok_and(|body| !body.vitals.is_dead()))
             .collect();
         let casting = crate::game::world::population::Spellcasting::of(kind);
         let casts = monster_spells::casts_at_foes(

@@ -1,10 +1,10 @@
 //! What a body is to the effects that land on it: the level its saves and
 //! resistance weigh, its senses, its resistance in each realm and how it
-//! casts. The same components on a member and a monster, judged by one
+//! casts. The same component on a member and a monster, judged by one
 //! system from each body's own sources (a member's sheet, gear and party; a
-//! monster's species and spells) at the start of each pass of the hit
-//! stages; the save, resistance and waking rules read them without asking
-//! which it is. The rules themselves follow.
+//! monster's species and spells) whenever those change; the save,
+//! resistance and waking rules read it without asking which it is. The
+//! rules themselves follow.
 
 use bevy::prelude::*;
 use enum_map::EnumMap;
@@ -22,78 +22,39 @@ use crate::game::party::roster::PartyMember;
 use crate::game::rng::GameRng;
 use crate::game::world::population::{self, Monster};
 
-/// The level a body's saves and resistance weigh against an effect's
-/// strength: a member's, a monster's species'.
+/// What a body is to the effects that land on it, a member's or a
+/// monster's alike.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SaveLevel(pub u32);
-
-/// How alert a body is, which a blow may wake it by: a member's Senses, a
-/// monster's species'.
-#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Senses(pub u32);
-
-/// A body's resistance in each realm: a member's from their stats, what
-/// they wear and, in the party, its spells; a monster's from its species
-/// and spells.
-#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Resistances(pub EnumMap<Realm, i32>);
-
-/// A monster's kind (undead, demon, plant, …), which holy and slaying
-/// things single out.
-#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Kind(pub MonsterKind);
-
-/// What a body shrugs off before any save: the conditions its kind cannot
-/// suffer, and whether it cannot be slain outright (retail
-/// `g_condition_immunities`, `death_immune`). A member's own immunities
-/// are traits, weighed after the save.
-#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Immunities {
-    pub conditions: &'static [Condition],
-    pub death: bool,
-}
-
-/// How strongly a body casts from each book, which a spell turned back on
-/// it or from it grows from: a member's caster level in the book, a
-/// monster's species' level.
-#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CasterLevels(pub EnumMap<Spellbook, u32>);
-
-impl CasterLevels {
-    /// What a spell's strength from the body grows from: its highest level
-    /// among the spell's books.
-    pub fn figure(&self, spell: &crate::content::spells::SpellDefinition) -> u32 {
-        spell.books.iter().map(|book| self.0[book]).max().unwrap_or(0)
-    }
-}
-
-/// A source's projected values. Writes preserve change ticks for facts that
-/// did not change; this is not another component or an alternate authority.
-struct Defences {
-    level: SaveLevel,
-    senses: Senses,
-    resistances: Resistances,
-    caster: CasterLevels,
-    immunities: Immunities,
-    kind: Option<Kind>,
+pub struct Defences {
+    /// The level its saves and resistance weigh against an effect's
+    /// strength: a member's, a monster's species'.
+    pub level: u32,
+    /// How alert it is, which a blow may wake it by.
+    pub senses: u32,
+    /// Its resistance in each realm: a member's from their stats, what
+    /// they wear and, in the party, its spells; a monster's from its
+    /// species and spells.
+    pub resistances: EnumMap<Realm, i32>,
+    /// How strongly it casts from each book, which a spell turned back on
+    /// it or from it grows from: a member's caster level in the book, a
+    /// monster's species' level.
+    pub caster: EnumMap<Spellbook, u32>,
+    /// A monster's kind (undead, demon, plant, …), which holy and slaying
+    /// things single out.
+    pub kind: Option<MonsterKind>,
+    /// The conditions its kind cannot suffer, before any save (retail
+    /// `g_condition_immunities`). A member's own immunities are traits,
+    /// weighed after the save.
+    pub immune: &'static [Condition],
+    /// It cannot be slain outright (retail `death_immune`).
+    pub death_immune: bool,
 }
 
 impl Defences {
-    fn write(self, entity: &mut EntityCommands) {
-        entity
-            .insert_if_neq(self.level)
-            .insert_if_neq(self.senses)
-            .insert_if_neq(self.resistances)
-            .insert_if_neq(self.caster)
-            .insert_if_neq(self.immunities);
-        match self.kind {
-            Some(kind) => {
-                entity.insert_if_neq(kind);
-            }
-            None => {
-                entity.remove::<Kind>();
-            }
-        }
+    /// What a spell's strength from the body grows from: its highest level
+    /// among the spell's books.
+    pub fn caster_level(&self, spell: &crate::content::spells::SpellDefinition) -> u32 {
+        spell.books.iter().map(|book| self.caster[book]).max().unwrap_or(0)
     }
 }
 
@@ -112,56 +73,54 @@ fn character_defences(
         false => resistances(&stats, carried, items),
     };
     Defences {
-        level: SaveLevel(u32::from(character.level())),
-        senses: Senses(stats.attribute(crate::content::characters::Attribute::Senses)),
-        resistances: Resistances(EnumMap::from_fn(|realm| resistances[realm].total)),
-        caster: CasterLevels(EnumMap::from_fn(|book| {
+        level: u32::from(character.level()),
+        senses: stats.attribute(crate::content::characters::Attribute::Senses),
+        resistances: EnumMap::from_fn(|realm| resistances[realm].total),
+        caster: EnumMap::from_fn(|book| {
             crate::game::magic::total_caster_level(character, enumset::EnumSet::only(book)).max(0)
                 as u32
-        })),
-        immunities: Immunities::default(),
-        kind: None,
+        }),
+        ..default()
     }
 }
 
 /// A monster's defences, by its species and spells.
 fn species_defences(kind: &crate::content::species::Species, vitals: &Vitals) -> Defences {
     Defences {
-        level: SaveLevel(u32::from(kind.level)),
-        senses: Senses(u32::from(kind.attributes.senses)),
-        resistances: Resistances(EnumMap::from_fn(|realm| {
-            population::resistance(kind, vitals, realm)
-        })),
-        caster: CasterLevels(EnumMap::from_fn(|_| u32::from(kind.level))),
-        immunities: Immunities { conditions: immune(kind.kind), death: kind.death_immune },
-        kind: Some(Kind(kind.kind)),
+        level: u32::from(kind.level),
+        senses: u32::from(kind.attributes.senses),
+        resistances: EnumMap::from_fn(|realm| population::resistance(kind, vitals, realm)),
+        caster: EnumMap::from_fn(|_| u32::from(kind.level)),
+        kind: Some(kind.kind),
+        immune: immune(kind.kind),
+        death_immune: kind.death_immune,
     }
 }
 
-/// Refresh changed sources before effects read them. Membership removal is
-/// also an input: a former member must stop borrowing the party's resistance.
+/// Keep every body's defences to their sources: its sheet, gear and spells,
+/// and the party's spells for a member. Leaving the party is a change too:
+/// a former member stops borrowing the party's resistance.
 #[allow(clippy::type_complexity)]
 pub fn judge_defences(
-    mut commands: Commands,
-    bodies: Query<(
+    mut bodies: Query<(
         Entity,
+        &mut Defences,
         Ref<Vitals>,
         AnyOf<((Ref<Character>, Ref<Carried>), Ref<Monster>)>,
         Option<Ref<PartyMember>>,
-        Has<SaveLevel>,
     )>,
     party: Single<Ref<PartyEffects>>,
     content: If<Res<Catalogs>>,
     mut departed: RemovedComponents<PartyMember>,
 ) {
     let departed: bevy::ecs::entity::EntityHashSet = departed.read().collect();
-    for (entity, vitals, (character, monster), member, judged) in &bodies {
-        let changed = !judged
+    for (entity, mut defences, vitals, (character, monster), member) in &mut bodies {
+        let changed = defences.is_added()
             || vitals.is_changed()
             || content.is_changed()
             || member.as_ref().is_some_and(|m| m.is_changed() || party.is_changed())
             || departed.contains(&entity);
-        let defences = match (character, monster) {
+        let judged = match (character, monster) {
             (Some((character, carried)), _)
                 if changed || character.is_changed() || carried.is_changed() =>
             {
@@ -178,7 +137,7 @@ pub fn judge_defences(
             }
             _ => continue,
         };
-        defences.write(&mut commands.entity(entity));
+        defences.set_if_neq(judged);
     }
 }
 

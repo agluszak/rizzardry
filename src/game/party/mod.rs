@@ -13,6 +13,7 @@ use bevy_tnua_avian3d::prelude::*;
 
 use crate::game::GameplaySet;
 use crate::game::characters::Character;
+use crate::game::hits::Damaged;
 use crate::game::world::level::level_active;
 
 /// A member's standing choice for the next round. Recruitment starts on
@@ -43,15 +44,16 @@ impl Plugin for PartyPlugin {
         .insert_resource(Gravity(Vec3::NEG_Y * body::GRAVITY))
         .add_message::<body::PartyLook>()
         .add_message::<body::TurnParty>()
-        .add_message::<DamageApplied>()
         .add_observer(formation::vacate_seat)
         .add_observer(formation::retake_seat)
         .add_systems(
             Update,
             (
-                crate::game::characters::sync_member_maxima.before(GameplaySet::LevelActivation),
                 // A death settles before travel can retire the level it happened on.
-                (crate::game::characters::cheat_death, crate::game::characters::settle_deaths)
+                (
+                    crate::game::characters::sync_member_maxima,
+                    crate::game::characters::settle_deaths,
+                )
                     .chain()
                     .before(GameplaySet::LevelActivation),
                 body::look_around
@@ -135,26 +137,17 @@ pub fn average_level(levels: impl IntoIterator<Item = u8>) -> u32 {
     sum.max(1) / count.max(1)
 }
 
-/// Actual damage to an actor, after its gameplay consequences have settled.
-/// Presentation can retain this result even if healing follows before it draws.
-#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DamageApplied {
-    pub member: Entity,
-    pub amount: u32,
-    pub died: bool,
-}
-
 /// Hurt a member ([`crate::game::characters::Vitals::hurt`]) and report
 /// what it cost them. Death is settled afterwards, as every death is.
 pub fn damage_member(
     member: Entity,
     vitals: &mut crate::game::characters::Vitals,
     amount: u32,
-    damage: &mut MessageWriter<DamageApplied>,
+    damage: &mut MessageWriter<Damaged>,
 ) -> u32 {
     let lost = vitals.hurt(amount);
     if lost > 0 {
-        damage.write(DamageApplied { member, amount: lost, died: vitals.is_dead() });
+        damage.write(Damaged { body: member, amount: lost, died: vitals.is_dead() });
     }
     lost
 }
@@ -183,12 +176,13 @@ mod tests {
     #[test]
     fn damage_reports_actual_loss_and_death_even_when_healing_follows() {
         let mut world = World::new();
-        world.init_resource::<Messages<DamageApplied>>();
+        world.init_resource::<Messages<Damaged>>();
+        world.init_resource::<crate::game::rng::GameRng>();
         let first = world.spawn(Vitals::full(10, 20)).id();
         roster::test_party(&mut world, &[first]);
         world.add_observer(formation::vacate_seat);
         let mut operation =
-            SystemState::<(Query<&mut Vitals>, MessageWriter<DamageApplied>)>::new(&mut world);
+            SystemState::<(Query<&mut Vitals>, MessageWriter<Damaged>)>::new(&mut world);
         {
             let (mut members, mut damage) = operation.get_mut(&mut world).unwrap();
             let mut vitals = members.get_mut(first).unwrap();
@@ -204,16 +198,16 @@ mod tests {
             assert_eq!(damage_member(first, &mut vitals, 3, &mut damage), 3);
             vitals.heal(3);
         }
-        let reported: Vec<_> = world.resource_mut::<Messages<DamageApplied>>().drain().collect();
-        assert_eq!(reported, [DamageApplied { member: first, amount: 3, died: false }]);
+        let reported: Vec<_> = world.resource_mut::<Messages<Damaged>>().drain().collect();
+        assert_eq!(reported, [Damaged { body: first, amount: 3, died: false }]);
         {
             let (mut members, mut damage) = operation.get_mut(&mut world).unwrap();
             let mut vitals = members.get_mut(first).unwrap();
             assert_eq!(damage_member(first, &mut vitals, 100, &mut damage), 10);
             assert_eq!(damage_member(first, &mut vitals, 1, &mut damage), 0);
         }
-        let reported: Vec<_> = world.resource_mut::<Messages<DamageApplied>>().drain().collect();
-        assert_eq!(reported, [DamageApplied { member: first, amount: 10, died: true }]);
+        let reported: Vec<_> = world.resource_mut::<Messages<Damaged>>().drain().collect();
+        assert_eq!(reported, [Damaged { body: first, amount: 10, died: true }]);
         // Settling the death gives up the member's seat.
         use bevy::ecs::system::RunSystemOnce;
         world.run_system_once(crate::game::characters::settle_deaths).unwrap();

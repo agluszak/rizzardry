@@ -290,9 +290,7 @@ mod tests {
         let mut world = World::new();
         let pc = member(&mut world, "Made");
         let recruit = member(&mut world, "Drazic");
-        world
-            .entity_mut(recruit)
-            .insert((ActorId::Named(NpcId(0)), crate::game::npcs::Npc::default()));
+        world.entity_mut(recruit).insert(ActorId(NpcId(0)));
         crate::game::party::roster::test_party(&mut world, &[pc, recruit]);
         world.insert_resource(crate::game::data::Catalogs {
             npcs: NpcCatalog(vec![NpcDefinition { source_name: "Drazic".into(), ..default() }]),

@@ -52,7 +52,7 @@ impl Voices<'_, '_> {
     }
 }
 pub fn approach_ready(at: Option<u64>, now: u64) -> bool {
-    at.is_none_or(|at| now.saturating_sub(at) > 43_200_000)
+    at.is_none_or(|at| now - at > 43_200_000)
 }
 pub(super) fn band(
     own: u8,
@@ -77,7 +77,7 @@ pub(super) fn band(
 }
 fn debit(npc: &mut Npc, d: &NpcDefinition, value: u32, skill: u32) {
     let value = u64::from(value) * (500 + u64::from(skill)) / 500;
-    npc.trade_pool = u64::from(npc.trade_pool).saturating_sub(value) as u16;
+    npc.trade_pool = (u64::from(npc.trade_pool).max(value) - value) as u16;
     if npc.trade_pool == 0 {
         npc.trade_pool = d.trade_pool;
         npc.disposition = 75;
@@ -266,11 +266,9 @@ pub(super) fn gift(
         };
         let item = &content.items[stack.item];
         let value = match (item.class, item.quantity) {
-            (EquipClass::Ammunition, _) => item
-                .value
-                .saturating_mul(u32::from(stack.count()))
+            (EquipClass::Ammunition, _) => (item.value * u32::from(stack.count()))
                 .div_ceil(crate::content::items::AMMUNITION_BUNDLE),
-            (_, QuantityKind::Stack) => item.value.saturating_mul(u32::from(stack.count()).max(1)),
+            (_, QuantityKind::Stack) => item.value * u32::from(stack.count()).max(1),
             _ => item.value,
         };
         let cold = !d.voice_script
