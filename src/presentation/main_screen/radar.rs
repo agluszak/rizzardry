@@ -199,10 +199,9 @@ pub fn update_radar(
         Query<(Entity, &crate::game::world::items::WorldItem, &GlobalTransform, &mut RadarItem)>,
         WorldObstacles,
     ),
-    (content, stances, clock): (
+    (content, sides): (
         If<Res<crate::game::data::Catalogs>>,
-        crate::game::world::hostility::Stances,
-        Res<crate::game::time::GameClock>,
+        Query<&crate::game::world::hostility::Side>,
     ),
     (search, battle, levels): (
         Option<Res<crate::game::world::search::Search>>,
@@ -279,7 +278,7 @@ pub fn update_radar(
             continue;
         }
         let delta = at.translation() - position.0;
-        let class = blip_class(stances.own(entity, catalog, clock.ms));
+        let class = blip_class(sides.get(entity).ok().map(|side| side.0));
         let at = blip_position(delta, body.yaw, false) - Vec2::ONE;
         show(entity, at, class.at(delta.y));
     }

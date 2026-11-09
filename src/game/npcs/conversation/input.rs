@@ -37,7 +37,7 @@ pub(super) fn begin(
         if admitted || !freedom.free() || !battles.is_empty() || party.0.hand.held.is_some() {
             continue;
         }
-        if !actors.available(request.actor, &factions) || scripts.get(request.actor).is_none() {
+        if !actors.available(request.actor) || scripts.get(request.actor).is_none() {
             continue;
         }
         let centre = PartyBody::centre(PartyBody::eye(party.1));
@@ -85,13 +85,12 @@ pub(super) fn begin(
 pub(super) fn interrupt(
     conversations: Query<(Entity, &Conversation)>,
     actors: NpcActors,
-    factions: Res<Factions>,
     occupied: Query<(), Or<(With<Destination>, With<Battle>)>>,
     camp: Option<Res<crate::game::camp::Camp>>,
     mut commands: Commands,
 ) {
     for (entity, c) in &conversations {
-        if !occupied.is_empty() || camp.is_some() || !actors.available(c.actor, &factions) {
+        if !occupied.is_empty() || camp.is_some() || !actors.available(c.actor) {
             commands.entity(entity).despawn();
         }
     }

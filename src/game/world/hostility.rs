@@ -11,7 +11,7 @@ use bevy::prelude::*;
 
 use super::identify::{GroupMember, MonsterGroup};
 use super::population::Monster;
-use crate::content::species::{Disposition, MonsterCatalog, Species};
+use crate::content::species::{Disposition, Species};
 use crate::game::characters::Condition;
 use crate::game::factions::{Band, Factions, PARTY, UNALIGNED};
 use crate::game::time::GameClock;
@@ -152,62 +152,6 @@ pub fn judge_sides(
         };
         side.set_if_neq(Side(own_stance(own, turncoat)));
         loyalty.set_if_neq(loyal);
-    }
-}
-
-/// A monster's own stance now: its group's set stance while it holds
-/// ([`stance`]), swapped by the monster's own Turncoat ([`own_stance`]).
-/// Every reader of a monster's side goes through this.
-pub fn monster_own(
-    vitals: &crate::game::characters::Vitals,
-    set: Option<SetStance>,
-    species: &Species,
-    factions: &Factions,
-    now: u64,
-    fighting: bool,
-) -> Stance {
-    own_stance(
-        stance(set, species, factions, now, fighting),
-        vitals.conditions.has(Condition::Turncoat),
-    )
-}
-
-/// Monsters' stances now, through their groups, for systems that only
-/// read them (the fight's snapshot, the radar). Time is the caller's: the
-/// fight holds the clock itself.
-#[derive(bevy::ecs::system::SystemParam)]
-pub struct Stances<'w, 's> {
-    monsters: Query<
-        'w,
-        's,
-        (
-            &'static Monster,
-            Option<&'static GroupMember>,
-            Has<crate::game::combat::Combatant>,
-            &'static crate::game::characters::Vitals,
-        ),
-    >,
-    groups: Query<'w, 's, &'static MonsterGroup>,
-    factions: Res<'w, Factions>,
-}
-
-impl Stances<'_, '_> {
-    /// A monster's group's stance now; one outside any group by its
-    /// species' default.
-    pub fn group(&self, monster: Entity, species: &MonsterCatalog, now: u64) -> Option<Stance> {
-        let (body, member, fighting, _) = self.monsters.get(monster).ok()?;
-        let kind = &species[body.species];
-        let set = member.and_then(|m| self.groups.get(m.0).ok()).and_then(|g| g.set);
-        Some(stance(set, kind, &self.factions, now, fighting))
-    }
-
-    /// A monster's own stance now: its group's, swapped by its own Turncoat
-    /// (retail's per-monster `ubDisposition`).
-    pub fn own(&self, monster: Entity, species: &MonsterCatalog, now: u64) -> Option<Stance> {
-        let group = self.group(monster, species, now)?;
-        let (.., vitals) = self.monsters.get(monster).ok()?;
-        let turncoat = vitals.conditions.has(Condition::Turncoat);
-        Some(own_stance(group, turncoat))
     }
 }
 

@@ -45,7 +45,7 @@ pub fn summon(
     party: Query<(&Position, &PartyBody)>,
     monsters: Query<(&Monster, ActorPose, Option<&Walker>, &Vitals)>,
     groups: Query<&MonsterGroup>,
-    stances: hostility::Stances,
+    sides: Query<&hostility::Side>,
     mut levels: Query<(Entity, &LevelNavigation, &mut Unborn, &MonsterBodies), With<Level>>,
     level: PlayedLevel,
     obstacles: WorldObstacles,
@@ -91,8 +91,8 @@ pub fn summon(
         if count == 0 {
             continue;
         }
-        let stance = match stances.own(summoner, species, clock.ms) {
-            Some(Stance::Friendly) => Stance::Friendly,
+        let stance = match sides.get(summoner).map(|side| side.0) {
+            Ok(Stance::Friendly) => Stance::Friendly,
             _ => Stance::Hostile,
         };
         let caller_feet = feet(caller_at.translation(), caller_walker);

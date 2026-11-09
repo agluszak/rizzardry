@@ -10,7 +10,6 @@ use crate::{
         characters::Condition,
         combat::{Battle, CombatNews, Combatant},
         difficulty::Difficulty,
-        factions::Factions,
         freedom::Freedom,
         hits::effects::Body,
         inventory::PartyInventory,
@@ -18,7 +17,7 @@ use crate::{
         rng::GameRng,
         time::{AGING_TICK_MS, GameClock},
         world::{
-            hostility::{self, SetStance, Stance},
+            hostility::{SetStance, Stance},
             identify::{GroupMember, GroupMembers, MonsterGroup},
             level::{Level, LevelOwned},
             navigation::{LevelNavigation, WalkerMotionConfig},
@@ -105,7 +104,6 @@ pub(crate) fn cast(
         crate::game::world::ActorPose,
         Option<&GroupMember>,
         Option<&LureInfluence>,
-        Has<Combatant>,
     )>,
     groups: Query<(&MonsterGroup, &LevelOwned, &GroupMembers)>,
     (freedom, obstacles): (Freedom, WorldObstacles),
@@ -114,12 +112,7 @@ pub(crate) fn cast(
         Res<Assets<MonsterBody>>,
         ResMut<Assets<WalkerMotionConfig>>,
     ),
-    (content, difficulty, factions, clock): (
-        Res<Catalogs>,
-        Res<Difficulty>,
-        Res<Factions>,
-        Res<GameClock>,
-    ),
+    (content, difficulty, clock): (Res<Catalogs>, Res<Difficulty>, Res<GameClock>),
     mut rng: ResMut<GameRng>,
     (mut news, mut improved): (MessageWriter<MagicNews>, MessageWriter<CombatNews>),
 ) {
@@ -211,16 +204,12 @@ pub(crate) fn cast(
                 .collect();
             order.sort_unstable();
             for (_, entity) in order {
-                let (_, monster, _, pose, group, influence, fighting) =
-                    monsters.get(entity).unwrap();
+                let (_, monster, _, pose, group, influence) = monsters.get(entity).unwrap();
                 let Ok(body) = bodies.get(entity) else { continue };
                 let kind = &content.species[monster.species];
                 let group = group.and_then(|group| groups.get(group.0).ok());
-                let set = group.and_then(|(group, ..)| group.set);
-                let stance =
-                    hostility::monster_own(body.vitals, set, kind, &factions, now, fighting);
                 let here = pose.translation();
-                if stance != Stance::Hostile
+                if body.side.0 != Stance::Hostile
                     || influence.is_some_and(|held| held.response == LureResponse::Resisted)
                     || !body.vitals.can_fight()
                     || body.vitals.conditions.has(Condition::Blind)
