@@ -68,14 +68,14 @@ impl NpcDefinition {
         format!(
             "data/npc scripts/{}_{}.nsf",
             if self.voice_script { "voc" } else { "npc" },
-            self.source_name.to_lowercase()
+            self.display_name.to_lowercase()
         )
     }
     pub fn voice_stem(&self) -> String {
         format!(
             "{}_{}",
             if self.voice_script { "voc" } else { "npc" },
-            self.source_name.to_lowercase()
+            self.display_name.to_lowercase()
         )
     }
     /// The sound set it remarks with as a party member (retail

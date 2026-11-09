@@ -210,7 +210,7 @@ impl Spellcasting {
 
 /// Make a monster an actor of its level: standing at its feet and facing
 /// its heading, in its group, and a walker if it walks.
-fn embody(
+pub(crate) fn embody(
     entity: &mut EntityCommands,
     root: Entity,
     (feet, yaw, body): (Vec3, f32, ScaledBody),
@@ -488,9 +488,11 @@ pub fn populate(
         let Some(id) = kind.npc else { continue };
         let body = handles.get(placed.species, bodies).unwrap();
         let place = crate::game::npcs::Placing { placed, id, map, average };
-        let Some(actor) = npcs.place(commands, place, catalogs, &mut placed_actors, rng, |rng| {
-            KeptMonster::placed(placed, kind, body, rng)
-        }) else {
+        let Some(actor) =
+            npcs.place(commands, place, catalogs, &mut placed_actors, ids, rng, |rng| {
+                KeptMonster::placed(placed, kind, body, rng)
+            })
+        else {
             continue;
         };
         let name = actor_name(species, (placed.species, placed.location));

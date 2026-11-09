@@ -9,7 +9,8 @@ use crate::{
     game::{
         npcs::{
             Npc,
-            conversation::{Conversation, MagicalReply, active_body},
+            access::NpcActors,
+            conversation::{Conversation, MagicalReply},
         },
         rng::GameRng,
         world::population::Monster,
@@ -33,7 +34,15 @@ pub(crate) fn cast(
         return Err(Refusal::WrongTime);
     }
     let actor = conversation.actor;
-    let body = active_body(world, actor).ok_or(Refusal::NoTarget)?;
+    // The casting path still holds the world; the speaker's body is read as
+    // dialogues read it.
+    let body = world
+        .run_system_cached_with(
+            |In(actor): In<Entity>, speakers: NpcActors| speakers.active_body(actor),
+            actor,
+        )
+        .unwrap()
+        .ok_or(Refusal::NoTarget)?;
     if choice.aim != Aim::Body(body) {
         return Err(Refusal::NoTarget);
     }
@@ -93,11 +102,8 @@ pub(crate) fn cast(
             }
         }
     }
-    let charmed = matches!(reply, MagicalReply::Charmed(_));
+    // An NPC won over leaves its menu as its script next runs.
     world.get_mut::<Conversation>(entity).unwrap().magical_reply(reply);
-    if charmed {
-        crate::game::npcs::conversation::won_over(world, entity, true);
-    }
     world.write_message(MagicNews::Done(report));
     Ok(())
 }
