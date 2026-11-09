@@ -472,12 +472,15 @@ impl Plugin for MagicPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<MagicRequest>()
             .add_message::<casting::MagicNews>()
+            .add_message::<casting::Cast>()
+            .add_message::<Utility>()
             .add_message::<crate::game::world::hostility::Provocation>()
             .add_systems(
                 Update,
                 (
                     accept_magic,
-                    casting::resolve_casts,
+                    (utilities::identify, dialogue::cast, portals::cast, pointcasts::cast),
+                    casting::cast.run_if(not(any_with_component::<Battle>)),
                     // Whom a member's cast provoked is hostile before it lands.
                     crate::game::world::hostility::take_offence,
                     pointcasts::expire_lures,
@@ -499,57 +502,39 @@ pub struct MagicRequest {
     pub choice: casting::MagicChoice,
 }
 
-/// Carry out magic that needs the whole world, announcing a refusal: a
-/// utility spell (portals, dialogue, point casts, Identify) or a cast at a
-/// device. The one way such magic executes, in or out of a fight.
-pub(crate) fn execute_in_world(
-    world: &mut World,
-    caster: Entity,
-    choice: casting::MagicChoice,
-) -> Result<(), casting::Refusal> {
-    let result = utilities::source_spell(world, caster, choice.source).and_then(|id| match id {
-        id if pointcasts::spell(id) => pointcasts::cast(world, caster, choice, id),
-        id if dialogue::spell(id) => dialogue::cast(world, caster, choice, id),
-        id if portals::spell(id) => portals::cast(world, caster, choice.source, id),
-        SpellId::IDENTIFY_ITEM => utilities::identify(world, caster, choice),
-        _ => match choice.aim {
-            casting::Aim::Device(attempt) => {
-                crate::game::world::interaction::cast_device(world, caster, attempt, choice.source)
-            }
-            _ => Err(casting::Refusal::Unsupported),
-        },
-    });
-    if let Err(refusal) = result {
-        world.write_message(casting::MagicNews::Refused { caster, refusal });
-    }
-    result
+/// Magic that is not a deed on bodies, accepted: a utility spell (portals,
+/// dialogue, point casts, Identify) or a cast at a device. The system for
+/// its kind carries it out.
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
+pub struct Utility {
+    pub caster: Entity,
+    pub spell: SpellId,
+    pub choice: casting::MagicChoice,
 }
 
 /// Accept magic requests (retail `ChooseAction`): in combat only record the
 /// choice; outside it, cast now.
 pub fn accept_magic(
-    mut commands: Commands,
     mut requests: MessageReader<MagicRequest>,
+    (mut casts, mut utilities): (MessageWriter<casting::Cast>, MessageWriter<Utility>),
     battle: Option<Single<&Battle>>,
     camp: Option<Res<crate::game::camp::Camp>>,
     interaction: Query<(), With<crate::game::world::interaction::DeviceInteraction>>,
     mut orders: Query<&mut crate::game::party::Order>,
     carried: Query<&crate::game::inventory::Carried>,
     inventory: Single<&PartyInventory>,
-    content: If<Res<Catalogs>>,
+    content: Res<Catalogs>,
     mut news: MessageWriter<casting::MagicNews>,
 ) {
     for &MagicRequest { caster, choice } in requests.read() {
         let spell =
             choice.source.spell_id(carried.get(caster).unwrap(), &inventory, &content.items);
         // A point cast in a fight waits for its turn, as any other order.
-        let in_world = (spell.is_some_and(utilities::spell)
+        let utility = (spell.is_some_and(utilities::spell)
             && (battle.is_none() || !spell.is_some_and(pointcasts::spell)))
             || matches!(choice.aim, casting::Aim::Device(_));
-        if in_world {
-            commands.queue(move |world: &mut World| {
-                let _ = execute_in_world(world, caster, choice);
-            });
+        if let (true, Some(spell)) = (utility, spell) {
+            utilities.write(Utility { caster, spell, choice });
             continue;
         }
         let refusal = match spell {
@@ -569,10 +554,7 @@ pub fn accept_magic(
         // combat spells.
         let context =
             if camp.is_some() { casting::UseContext::Camp } else { casting::UseContext::World };
-        commands.spawn((
-            casting::Cast::new(spell.unwrap(), context, choice),
-            crate::game::hits::By(caster),
-        ));
+        casts.write(casting::Cast { caster, spell: spell.unwrap(), context, choice });
     }
 }
 
@@ -658,17 +640,22 @@ pub(crate) mod tests {
             .init_resource::<crate::game::difficulty::Difficulty>()
             .init_resource::<avian3d::collider_tree::ColliderTrees>()
             .insert_resource(GameRng::seeded(3))
-            .add_message::<crate::game::party::DamageApplied>()
             .add_message::<MagicRequest>()
             .add_message::<casting::MagicNews>()
+            .add_message::<casting::Cast>()
+            .add_message::<Utility>()
             .add_message::<crate::game::world::hostility::Provocation>()
             .add_message::<crate::game::combat::CombatNews>()
             .add_plugins(crate::game::hits::HitsPlugin)
             .add_systems(
                 Update,
-                (accept_magic, casting::resolve_casts)
-                    .chain()
-                    .before(crate::game::hits::Resolution),
+                (
+                    crate::game::world::footing::place_bodies,
+                    accept_magic,
+                    casting::cast,
+                    crate::game::hits::resolve,
+                )
+                    .chain(),
             );
         let potion = ItemDefinition {
             id: ItemId(0),
@@ -838,17 +825,22 @@ pub(crate) mod tests {
                 .init_resource::<crate::game::difficulty::Difficulty>()
                 .init_resource::<avian3d::collider_tree::ColliderTrees>()
                 .insert_resource(GameRng::seeded(3))
-                .add_message::<crate::game::party::DamageApplied>()
                 .add_message::<MagicRequest>()
                 .add_message::<MagicNews>()
+                .add_message::<casting::Cast>()
+                .add_message::<Utility>()
                 .add_message::<crate::game::world::hostility::Provocation>()
                 .add_message::<crate::game::combat::CombatNews>()
                 .add_plugins(crate::game::hits::HitsPlugin)
                 .add_systems(
                     Update,
-                    (accept_magic, casting::resolve_casts)
-                        .chain()
-                        .before(crate::game::hits::Resolution),
+                    (
+                        crate::game::world::footing::place_bodies,
+                        accept_magic,
+                        casting::cast,
+                        crate::game::hits::resolve,
+                    )
+                        .chain(),
                 );
             let definition = ItemDefinition {
                 id: ItemId(0),

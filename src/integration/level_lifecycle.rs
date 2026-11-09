@@ -37,7 +37,7 @@ fn app() -> App {
         .add_observer(crate::game::world::damage::monster_died)
         .add_systems(
             Update,
-            (crate::game::characters::cheat_death, crate::game::characters::settle_deaths)
+            (crate::game::characters::sync_member_maxima, crate::game::characters::settle_deaths)
                 .chain()
                 .before(activate_level),
         )

@@ -15,13 +15,13 @@ use crate::content::spells::{
 };
 use crate::game::characters::{Condition, Vitals};
 use crate::game::hits::definitions::Definitions;
+use crate::game::hits::effects::BodyReadOnly;
 use crate::game::magic::casting::Aim;
 #[cfg(test)]
 use crate::game::party::roster::PartyMember;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
-use crate::game::world::footing::Footing;
-use crate::game::world::hostility::{self, Loyalty, Side, Stance};
+use crate::game::world::hostility::{self, Stance};
 use crate::game::world::population::Spellcasting;
 
 /// How much each of the ten slots weighs in the choice (retail
@@ -59,12 +59,13 @@ pub(super) fn aims(
     spell: &SpellDefinition,
     caster: Entity,
     seen: &[Entity],
-    bodies: &Query<(&Vitals, &Footing, &Side, &Loyalty)>,
+    bodies: &Query<BodyReadOnly>,
     roster: &PartyRoster,
     definitions: &Definitions,
 ) -> Vec<Aim> {
-    let Ok((own, at, side, loyalty)) = bodies.get(caster) else { return vec![] };
-    let mine = (side.0, *loyalty);
+    let Ok(own) = bodies.get(caster) else { return vec![] };
+    let (at, mine) = (own.at, (own.side.0, *own.loyalty));
+    let own = own.vitals;
     let reach = spell.reach.metres();
     let worth = |vitals: &Vitals| definitions.worthwhile(spell.id, vitals);
     // Each body seen: whether it is of the party, how the caster stands
@@ -73,14 +74,14 @@ pub(super) fn aims(
     let looked: Vec<(Entity, bool, Stance, bool, bool)> = seen
         .iter()
         .filter_map(|&other| {
-            let (vitals, there, their_side, their_loyalty) = bodies.get(other).ok()?;
+            let their = bodies.get(other).ok()?;
             let stance = if other == caster {
                 Stance::Friendly
             } else {
-                hostility::between(mine, (their_side.0, *their_loyalty))
+                hostility::between(mine, (their.side.0, *their.loyalty))
             };
             let member = roster.contains(&other);
-            Some((other, member, stance, at.gap(there) <= reach, worth(vitals)))
+            Some((other, member, stance, at.gap(their.at) <= reach, worth(their.vitals)))
         })
         .collect();
     let standing = |member: bool, stance: Stance| {
@@ -143,11 +144,11 @@ pub(super) fn casts_at_foes(
     casting: &Spellcasting,
     spells: &SpellCatalog,
     seen: &[Entity],
-    bodies: &Query<(&Vitals, &Footing, &Side, &Loyalty)>,
+    bodies: &Query<BodyReadOnly>,
     roster: &PartyRoster,
     definitions: &Definitions,
 ) -> bool {
-    let Ok((own, ..)) = bodies.get(caster) else { return false };
+    let Ok(own) = bodies.get(caster).map(|body| body.vitals) else { return false };
     casting.chance != 0
         && casting.spells.iter().flatten().map(|&id| &spells[id]).any(|spell| {
             spell.aimed_at_enemies()
@@ -168,11 +169,11 @@ pub(super) fn choose(
     chance: u32,
     spells: &SpellCatalog,
     seen: &[Entity],
-    bodies: &Query<(&Vitals, &Footing, &Side, &Loyalty)>,
+    bodies: &Query<BodyReadOnly>,
     roster: &PartyRoster,
     definitions: &Definitions,
 ) -> Option<(SpellId, Aim)> {
-    let (own, ..) = bodies.get(caster).ok()?;
+    let own = bodies.get(caster).ok()?.vitals;
     let usable: Vec<(u32, &SpellDefinition, Vec<Aim>)> = casting
         .spells
         .iter()
@@ -226,6 +227,8 @@ pub(super) fn power(rng: &mut GameRng, budget: u32, spell: &SpellDefinition) -> 
 mod tests {
     use super::*;
     use crate::content::species::{MonsterMagic, Species};
+    use crate::game::world::footing::Footing;
+    use crate::game::world::hostility::{Loyalty, Side};
     use bevy::ecs::system::RunSystemOnce;
 
     fn spell(id: u8, targeting: Targeting) -> SpellDefinition {
@@ -266,7 +269,8 @@ mod tests {
             spell(SpellId::ENERGY_BLAST.0, Targeting::Enemy);
         let mut world = World::new();
         world.insert_resource(crate::game::data::Catalogs { spells: catalog, ..default() });
-        crate::game::hits::definitions::define(&mut world);
+        world.run_system_once(crate::game::hits::definitions::define).unwrap();
+        world.flush();
         let caster = body(&mut world, Stance::Hostile, 0.0, false);
         let hurt = body(&mut world, Stance::Hostile, 0.0, true);
         let party = world.spawn(crate::game::party::roster::Party).id();
@@ -288,7 +292,7 @@ mod tests {
                 let (casting, seen) = (Spellcasting::of(kind), seen.to_vec());
                 world
                     .run_system_once(
-                        move |bodies: Query<(&Vitals, &Footing, &Side, &Loyalty)>,
+                        move |bodies: Query<BodyReadOnly>,
                               roster: Single<&PartyRoster>,
                               definitions: Res<Definitions>,
                               content: Res<crate::game::data::Catalogs>| {

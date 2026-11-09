@@ -7,8 +7,9 @@ use crate::content::monster::MonsterBody;
 use crate::content::species::{Disposition, MonsterAttack, MonsterCatalog, MonsterWeapon};
 use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
 use crate::game::characters::{Gender, Profession, Race};
-use crate::game::hits::definitions::{Definitions, Uses};
-use crate::game::hits::{self, Act, Deed, Effect};
+use crate::game::hits::definitions::Definitions;
+use crate::game::hits::effects::Strike;
+use crate::game::hits::{self, Act, Deed, Effect, Release};
 use crate::game::magic::enchantments::{Enchantment, PartyEffects};
 use crate::game::magic::{self, LearnedSpells, Strength};
 use crate::game::party::body::PartyBody;
@@ -33,7 +34,6 @@ fn app() -> (App, Entity, Entity) {
         .init_resource::<Assets<MonsterBody>>()
         .init_resource::<Assets<WalkerMotionConfig>>()
         .add_message::<crate::game::factions::FactionNews>()
-        .add_message::<crate::game::party::DamageApplied>()
         .add_message::<Identified>()
         .add_plugins((CombatPlugin, magic::MagicPlugin, hits::HitsPlugin));
     let mut spells: Vec<_> = (0..=255)
@@ -73,7 +73,8 @@ fn app() -> (App, Entity, Entity) {
     let definition =
         world.resource_mut::<Assets<LevelDefinition>>().add(LevelDefinition::default());
     world.spawn(Level::test(definition));
-    hits::definitions::define(world);
+    world.run_system_cached(hits::definitions::define).unwrap();
+    world.flush();
     (app, party, member)
 }
 
@@ -104,7 +105,7 @@ fn refresh(world: &mut World) {
     world.run_system_cached(hostility::judge_sides).unwrap();
     world.run_system_cached(footing::place_bodies).unwrap();
     world.run_system_cached(hits::defences::judge_defences).unwrap();
-    world.run_system_cached(fighters::judge_fighters).unwrap();
+    let _ = world.run_system_cached(fighters::judge_fighters);
 }
 
 #[test]
@@ -121,28 +122,18 @@ fn anti_magic_drains_once_and_then_dispels_the_party() {
         .id();
     world.get_mut::<PartyEffects>(party).unwrap().0.apply(enchantment(SpellId::MAGIC_SCREEN, 10));
     let definition = world.resource::<Definitions>().spell(SpellId::ANTI_MAGIC).unwrap();
-    // Keep the completed deed to inspect its outcomes, as an attack does.
-    let act = world
-        .spawn((
-            Deed::new(Act::Swing),
-            Uses(definition),
-            Strength { power: 1, against: 1, boost: 0 },
-        ))
-        .id();
-    hits::spells::reach(&mut world.commands(), act, &[(member, None), (second, None)]);
-    world.flush();
-    hits::run_hits(world);
+    let strength = Strength { power: 1, against: 1, boost: 0 };
+    world.write_message(Release {
+        deed: Deed::new(Act::Fight, Strike { definition, strength, blow: None }),
+        victims: vec![(member, None), (second, None)],
+    });
+    refresh(world);
+    world.run_system_cached(hits::resolve).unwrap();
     assert!(world.get::<PartyEffects>(party).unwrap().0.get(SpellId::MAGIC_SCREEN).is_none());
-    let drained = world
-        .get::<Deed>(act)
-        .unwrap()
-        .effects
-        .iter()
-        .filter(|e| matches!(e, Effect::Drained { .. }))
-        .count();
-    assert_eq!(drained, 2, "each pool is drained once, not once per body reach");
-    hits::run_hits(world);
-    assert_eq!(world.get::<Deed>(act).unwrap().effects.len(), drained);
+    let news: Vec<_> = world.resource_mut::<Messages<CombatNews>>().drain().collect();
+    let [CombatNews::Effects(effects)] = news.as_slice() else { panic!("{news:?}") };
+    let drained = effects.iter().filter(|e| matches!(e, Effect::Drained { .. })).count();
+    assert_eq!(drained, 2, "each pool is drained once, not once per body reached");
 }
 
 #[test]
@@ -211,17 +202,15 @@ fn missile_arrival_settles_defeat_before_any_actor_can_start() {
     };
     world.entity_mut(actor).insert(turn);
     let definition = world.resource::<Definitions>().pulse(SpellId::FIRESTORM).unwrap();
-    let act = world
-        .spawn((
-            Deed::new(Act::Fight),
-            Uses(definition),
-            Strength { power: 1, against: 100, boost: 0 },
-        ))
-        .id();
-    hits::spells::reach(&mut world.commands(), act, &[(member, Some(1.0))]);
-    world.flush();
+    let strength = Strength { power: 1, against: 100, boost: 0 };
+    world.write_message(Release {
+        deed: Deed::new(Act::Fight, Strike { definition, strength, blow: None }),
+        victims: vec![(member, Some(1.0))],
+    });
     let before = world.get::<Vitals>(member).unwrap().health.current;
+    // Released this step, it flies for the next two.
     world.resource_mut::<Time>().advance_by(std::time::Duration::from_millis(500));
+    world.run_schedule(FixedUpdate);
     world.run_schedule(FixedUpdate);
     assert_eq!(world.get::<Vitals>(member).unwrap().health.current, before);
     world.run_schedule(FixedUpdate);
@@ -240,17 +229,15 @@ fn killing_a_turned_ally_awards_nothing_but_a_revived_enemy_counts() {
     let actor = monster(world, battle, 3.0);
     refresh(world);
     world.get_mut::<Vitals>(actor).unwrap().inflict(Condition::Turncoat, Lasting::Rounds(5));
-    hits::refresh_capabilities(world);
+    refresh(world);
     world.get_mut::<Vitals>(actor).unwrap().slay();
     world.run_system_cached(crate::game::characters::settle_deaths).unwrap();
-    hits::refresh_capabilities(world);
-    world.run_schedule(Settlement);
     assert_eq!(world.get::<Spoils>(battle).unwrap().experience, 0);
     world.get_mut::<Vitals>(actor).unwrap().health.current = 1;
     world.run_system_cached(crate::game::characters::settle_deaths).unwrap();
-    hits::refresh_capabilities(world);
+    refresh(world);
     world.get_mut::<Vitals>(actor).unwrap().slay();
-    world.run_schedule(Settlement);
+    world.run_system_cached(crate::game::characters::settle_deaths).unwrap();
     assert_eq!(world.get::<Spoils>(battle).unwrap().kills, 1);
     assert_eq!(world.get::<Spoils>(battle).unwrap().experience, 120);
 }
@@ -262,7 +249,6 @@ fn killing_a_turned_ally_awards_nothing_but_a_revived_enemy_counts() {
 fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
     use crate::content::characters::Skill;
     use crate::content::spells::{Reach, Spellbook, Targeting, Usable};
-    use crate::game::hits::{By, DeedHits, effects::InFlight};
     use crate::game::magic::casting::{
         self, Aim, Cast, MagicChoice, MagicNews, Source, UseContext,
     };
@@ -303,11 +289,9 @@ fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
         source: Source::Spell { spell: SpellId::ENERGY_BLAST, power: 1 },
         aim: Aim::Body(foe),
     };
-    let cast = world
-        .spawn((Cast::new(SpellId::ENERGY_BLAST, UseContext::Combat, choice), By(member)))
-        .id();
-    casting::resolve_casts(world);
-    assert!(world.get::<Cast>(cast).is_none(), "resolved in one pass");
+    let context = UseContext::Combat;
+    world.write_message(Cast { caster: member, spell: SpellId::ENERGY_BLAST, context, choice });
+    world.run_system_cached(casting::cast).unwrap();
     assert_eq!(magic::test_points(world, member, Realm::Fire), points - 1);
     let provoked: Vec<_> = world.resource_mut::<Messages<Provocation>>().drain().collect();
     assert_eq!(provoked, vec![Provocation(foe)]);
@@ -316,13 +300,12 @@ fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
         matches!(news.as_slice(), [MagicNews::Done(report)] if report.outcome == Outcome::Cast),
         "{news:?}"
     );
+    world.run_system_cached(hits::resolve).unwrap();
     assert_eq!(
-        world.get::<Deed>(cast).unwrap().act,
-        Act::Missile { caster: member, spell: SpellId::ENERGY_BLAST }
+        world.query::<&hits::Flight>().iter(world).count(),
+        1,
+        "a missile flies to its victim"
     );
-    let hits: Vec<_> = world.get::<DeedHits>(cast).unwrap().iter().collect();
-    assert_eq!(hits.len(), 1);
-    assert!(world.get::<InFlight>(hits[0]).is_some(), "a missile flies to its victim");
     assert!(world.get::<Round>(fight).unwrap().attacked);
     // Three metres at fifteen a second: it lands within the next step.
     world.resource_mut::<Time>().advance_by(std::time::Duration::from_millis(500));

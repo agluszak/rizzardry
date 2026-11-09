@@ -27,8 +27,8 @@ use crate::content::level::{
     VariableName,
 };
 use crate::game::characters::{Character, Vitals};
+use crate::game::hits::Damaged;
 use crate::game::inventory::PartyInventory;
-use crate::game::party::DamageApplied;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
@@ -132,11 +132,10 @@ struct FountainUses {
 /// Hurt each living member by `dice`, in roster order.
 fn damage_party(
     In(dice): In<Dice>,
-    mut commands: Commands,
     roster: Single<&PartyRoster>,
     mut members: Query<&mut Vitals, With<Character>>,
     mut rng: ResMut<GameRng>,
-    mut damage: MessageWriter<DamageApplied>,
+    mut damage: MessageWriter<Damaged>,
 ) {
     for entity in roster.iter() {
         let mut member = members.get_mut(entity).unwrap();
@@ -148,9 +147,6 @@ fn damage_party(
             crate::game::party::damage_member(entity, &mut member, rolled, &mut damage);
         }
     }
-    commands.run_system_cached(crate::game::characters::cheat_death);
-    commands.run_system_cached(crate::game::characters::settle_deaths);
-    commands.run_system_cached(crate::game::combat::settle_defeat);
 }
 
 fn drink_fountain(

@@ -65,7 +65,7 @@ pub(super) fn deliver(
     for reward in rewards.read() {
         let result = match &reward.kind {
             Kind::Gold { giver, amount } => {
-                inventory.gold = inventory.gold.saturating_add(*amount);
+                inventory.gold += *amount;
                 Some(QuestReward::Gold { giver: giver.clone(), amount: *amount })
             }
             Kind::Experience(amount) => {

@@ -52,15 +52,6 @@ impl ActorPoseItem<'_, '_> {
     }
 }
 
-/// An actor's position, for operations that hold the whole world: as
-/// [`ActorPose`] reads it.
-pub fn actor_position(world: &World, actor: Entity) -> Vec3 {
-    world.get::<avian3d::prelude::Position>(actor).map_or_else(
-        || world.get::<Transform>(actor).expect("an actor in the world").translation,
-        |position| position.0,
-    )
-}
-
 /// The level rotation that looks from `here` toward `toward`, if they are
 /// apart.
 pub fn facing(here: Vec3, toward: Vec3) -> Option<Quat> {
@@ -150,19 +141,16 @@ impl Plugin for WorldPlugin {
 #[derive(Message, Clone, Copy, Debug, PartialEq)]
 pub struct ActivateDevice {
     pub device: Entity,
+    /// The player uses it, within reach; otherwise it runs whatever the
+    /// party's reach, as when its lock or trap is overcome.
+    pub player: bool,
 }
 
 /// Run the devices the player uses, in order: the trigger interpreter
 /// needs the whole world.
 pub fn activate_devices(world: &mut World) {
     let requests: Vec<_> = world.resource_mut::<Messages<ActivateDevice>>().drain().collect();
-    for ActivateDevice { device } in requests {
-        triggers::activate(world, device, true);
+    for ActivateDevice { device, player } in requests {
+        triggers::activate(world, device, player);
     }
-}
-
-/// Whether the party is entering a level or fighting, when device, loot and
-/// trade operations wait.
-pub fn party_occupied(world: &mut World) -> bool {
-    level::entering(world) || crate::game::combat::in_battle(world)
 }

@@ -172,25 +172,6 @@ pub fn monster_own(
     )
 }
 
-/// A monster's stance now, through its group, for operations that hold the
-/// whole world. A monster outside any group stands by its species' default.
-pub fn monster_stance(world: &World, monster: Entity) -> Stance {
-    let Some(species) = world
-        .get::<Monster>(monster)
-        .map(|m| &world.resource::<crate::game::data::Catalogs>().species[m.species])
-    else {
-        return Stance::Neutral;
-    };
-    let set = world
-        .get::<GroupMember>(monster)
-        .and_then(|member| world.get::<MonsterGroup>(member.0))
-        .and_then(|group| group.set);
-    let fighting = world.get::<crate::game::combat::Combatant>(monster).is_some();
-    let now = world.resource::<GameClock>().ms;
-    let body = world.get::<crate::game::characters::Vitals>(monster).unwrap();
-    monster_own(body, set, species, world.resource::<Factions>(), now, fighting)
-}
-
 /// Monsters' stances now, through their groups, for systems that only
 /// read them (the fight's snapshot, the radar). Time is the caller's: the
 /// fight holds the clock itself.

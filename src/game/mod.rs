@@ -23,6 +23,9 @@ pub mod world;
 #[derive(bevy::prelude::SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GameplaySet {
     LevelActivation,
+    /// Every body's derived facts follow their sources: where it stands,
+    /// whose side it is on, what it is to what lands on it.
+    Bodies,
     /// Inventory has redistributed burden outside combat. Other stats are live rules.
     Burden,
     Combat,
@@ -46,7 +49,23 @@ impl Plugin for GamePlugin {
             .add_systems(Update, data::publish_catalogs.run_if(resource_exists::<data::Loading>))
             .configure_sets(
                 Update,
-                (GameplaySet::LevelActivation, GameplaySet::Burden, GameplaySet::Combat).chain(),
+                (
+                    GameplaySet::LevelActivation,
+                    GameplaySet::Bodies,
+                    GameplaySet::Burden,
+                    GameplaySet::Combat,
+                )
+                    .chain(),
+            )
+            // Outside a fight deeds land as the frame's gameplay ends; a fight
+            // settles its own on the fixed step.
+            .add_systems(
+                Update,
+                (hits::fly, hits::resolve, characters::settle_deaths)
+                    .chain()
+                    .after(GameplaySet::Combat)
+                    .run_if(world::level::level_active)
+                    .run_if(not(any_with_component::<combat::Battle>)),
             )
             .add_plugins((
                 avian3d::prelude::PhysicsPlugins::default(),

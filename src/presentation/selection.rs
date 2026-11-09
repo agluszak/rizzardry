@@ -92,7 +92,7 @@ pub fn activate_selection(
         && let Ok(device) = props.get(hit.entity)
     {
         if device {
-            requests.0.write(ActivateDevice { device: hit.entity });
+            requests.0.write(ActivateDevice { device: hit.entity, player: true });
         }
         return;
     }
