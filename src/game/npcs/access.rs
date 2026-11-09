@@ -3,13 +3,12 @@ use super::*;
 use crate::game::{
     characters::Vitals,
     data::Catalogs,
-    factions::Factions,
     party::roster::PartyMember,
     time::GameClock,
     world::{
         ActorPose,
         hostility::{self, Stance},
-        identify::{GroupMember, MonsterGroup},
+        identify::GroupMember,
         level::{Level, LevelOwned},
         population::Monster,
     },
@@ -41,7 +40,7 @@ pub struct NpcActors<'w, 's> {
             Has<crate::game::combat::Combatant>,
         ),
     >,
-    groups: Query<'w, 's, &'static MonsterGroup>,
+    sides: Query<'w, 's, &'static hostility::Side>,
     members: Query<'w, 's, &'static Vitals, With<PartyMember>>,
     levels: Query<'w, 's, (Entity, &'static Level)>,
     pub content: If<Res<'w, Catalogs>>,
@@ -81,7 +80,7 @@ impl NpcActors<'_, '_> {
     pub fn position(&self, body: Entity) -> Option<Vec3> {
         self.bodies.get(body).ok().map(|r| r.2.translation())
     }
-    pub fn available(&self, actor: Entity, factions: &Factions) -> bool {
+    pub fn available(&self, actor: Entity) -> bool {
         let Ok((_, _, _, trigger, member)) = self.records.get(actor) else { return false };
         if member {
             return self.members.get(actor).is_ok_and(|v| !v.is_dead());
@@ -90,16 +89,7 @@ impl NpcActors<'_, '_> {
             return true;
         }
         let Some(body) = self.active_body(actor) else { return false };
-        let Ok((v, m, _, _, g, fighting)) = self.bodies.get(body) else { return false };
-        let set = g.and_then(|g| self.groups.get(g.0).ok()).and_then(|g| g.set);
-        hostility::monster_own(
-            v,
-            set,
-            &self.content.species[m.species],
-            factions,
-            self.clock.ms,
-            fighting,
-        ) != Stance::Hostile
+        self.sides.get(body).is_ok_and(|side| side.0 != Stance::Hostile)
     }
     pub fn turned(&self, actor: Entity) -> bool {
         self.active_body(actor)

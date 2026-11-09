@@ -33,14 +33,15 @@ Use these examples to apply the criteria in AGENTS.md:
 | Mutually exclusive actions | An enum and a local `match` |
 
 Inspect [fighter projection](../../../src/game/combat/fighters.rs):
-`judge_fighters` translates character/monster inputs into common capabilities;
-`Fighter::write` publishes them with equality-aware updates. Compare those choices
-to the consumers' needs rather than copying the component layout.
+`judge_fighters` translates character/monster inputs into the capabilities both
+carry (`Fighter`, `Arms`, `ArmourClass`), once per fixed step; volatile inputs
+such as fatigue are read live where they are used. Compare those choices to the
+consumers' needs rather than copying the component layout.
 
-Inspect [impact resolution](../../../src/game/hits/resolve.rs): `impacts` runs
-immediate effects in a local sequence, with explicit capability/consequence
-boundaries; impacts waiting for flight retain entities. Several occurrences can
-remain a collection owned by one component when none needs independent identity.
+Inspect [effect resolution](../../../src/game/hits/effects.rs): `land` applies a
+definition's effects to one `Body` query item as a local sequence; producers
+release deeds by message and [`resolve`](../../../src/game/hits/mod.rs) lands
+them. Only a deed with missiles in the air keeps an entity (`Flight`).
 
 ## 3. Trace freshness and cleanup
 
