@@ -1,0 +1,87 @@
+#![enable(implicit_some)]
+// What each race is, named as `Race` names it. A row lists only what is not
+// the default (none, empty, 0).
+//
+//   attributes       the scores a new member of it starts with, in the order
+//                    Strength, Intelligence, Piety, Vitality, Dexterity,
+//                    Speed, Senses (retail `g_race_base_attributes`); a
+//                    race without them cannot be chosen for a party
+//   resistance       added to a realm's resistance (retail
+//                    `RecalculateCharacterResistances`): Flat(n), or
+//                    OfVitality(d), a d-th of vitality
+//   traits           what it can do besides (retail trait description order)
+//   armour           added to armour class
+//   carry_factor     tenths of a pound carried for each point of
+//                    `VIT + 2 * STR` (default 12)
+//   starting_items   the items a new member of it carries instead of its
+//                    profession's, by retail item number
+//                    (`g_starting_equipment`)
+{
+    Human: (
+        attributes: {Strength: 45, Intelligence: 45, Piety: 45, Vitality: 45, Dexterity: 45, Speed: 45, Senses: 45},
+    ),
+    Elf: (
+        attributes: {Strength: 35, Intelligence: 50, Piety: 50, Vitality: 35, Dexterity: 50, Speed: 45, Senses: 40},
+        resistance: {Mental: Flat(20), Air: Flat(10)},
+    ),
+    Dwarf: (
+        attributes: {Strength: 55, Intelligence: 30, Piety: 50, Vitality: 60, Dexterity: 35, Speed: 35, Senses: 35},
+        resistance: {Fire: OfVitality(5)},
+        traits: [DwarfDamageResistance],
+    ),
+    Gnome: (
+        attributes: {Strength: 35, Intelligence: 50, Piety: 40, Vitality: 50, Dexterity: 50, Speed: 35, Senses: 45},
+        resistance: {Mental: OfVitality(5), Earth: Flat(10)},
+    ),
+    Hobbit: (
+        attributes: {Strength: 40, Intelligence: 40, Piety: 30, Vitality: 45, Dexterity: 55, Speed: 50, Senses: 50},
+        resistance: {Earth: OfVitality(5)},
+    ),
+    Faerie: (
+        attributes: {Strength: 25, Intelligence: 55, Piety: 35, Vitality: 30, Dexterity: 50, Speed: 60, Senses: 45},
+        resistance: {Air: Flat(15), Earth: Flat(15), Mental: Flat(15), Divine: Flat(15)},
+        traits: [FaerieArmour, UnusualStartingEquipment, FaerieCarryCapacity, EquippableItemWeightLimit, FastMagicRecovery],
+        armour: 2,
+        carry_factor: 8,
+        starting_items: [63, 169, 196, 335, 358, 0],
+    ),
+    Lizardman: (
+        attributes: {Strength: 60, Intelligence: 25, Piety: 25, Vitality: 70, Dexterity: 40, Speed: 50, Senses: 30},
+        resistance: {Water: Flat(10), Earth: Flat(10), Fire: Flat(15), Divine: Flat(-10), Mental: Flat(-10)},
+        traits: [LizardmanMagicRecovery],
+    ),
+    Dracon: (
+        attributes: {Strength: 55, Intelligence: 35, Piety: 30, Vitality: 60, Dexterity: 50, Speed: 40, Senses: 30},
+        resistance: {Water: Flat(15), Air: Flat(5), Divine: Flat(-5), Mental: Flat(-5)},
+        traits: [Breathe],
+    ),
+    Felpurr: (
+        attributes: {Strength: 40, Intelligence: 40, Piety: 30, Vitality: 35, Dexterity: 50, Speed: 60, Senses: 50},
+        resistance: {Water: Flat(-15), Earth: Flat(10), Air: Flat(10), Mental: Flat(10)},
+    ),
+    Rawulf: (
+        attributes: {Strength: 40, Intelligence: 30, Piety: 55, Vitality: 50, Dexterity: 40, Speed: 40, Senses: 50},
+        resistance: {Water: Flat(10), Earth: Flat(5), Divine: Flat(15)},
+    ),
+    Mook: (
+        attributes: {Strength: 50, Intelligence: 50, Piety: 25, Vitality: 50, Dexterity: 35, Speed: 35, Senses: 55},
+        resistance: {Divine: Flat(10), Water: Flat(15), Mental: Flat(15)},
+    ),
+    // The five races below are the monsters' (no `attributes`).
+    Trynnie: (
+        resistance: {Earth: Flat(20), Air: Flat(20), Mental: Flat(-10)},
+    ),
+    TRang: (
+        resistance: {Mental: Flat(15), Water: Flat(15)},
+    ),
+    Umpani: (
+        resistance: {Earth: Flat(15), Air: Flat(15)},
+    ),
+    Rapax: (
+        resistance: {Fire: Flat(45), Mental: Flat(-20)},
+    ),
+    Android: (
+        resistance: {Mental: Flat(75), Divine: Flat(-25)},
+        traits: [AndroidConditionImmunity, CannotLearn],
+    ),
+}

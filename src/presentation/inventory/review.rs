@@ -664,7 +664,10 @@ pub(super) fn refresh(
             Field::Bonus => {
                 format!(
                     "{} {}",
-                    string(crate::content::ui::SKILL_NAMES + profile.bonus_skill() as usize),
+                    string(
+                        crate::content::ui::SKILL_NAMES
+                            + profile.profession.row().bonus_skill as usize
+                    ),
                     string(0x8c5)
                 )
             }

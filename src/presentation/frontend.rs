@@ -722,7 +722,9 @@ fn activate(
                 }
                 Action::Gender(direction) => {
                     let gender = if !choices.gender {
-                        if draft.profession() == Profession::Valkyrie || direction < 0 {
+                        if draft.profession().row().only_gender == Some(Gender::Female)
+                            || direction < 0
+                        {
                             Gender::Female
                         } else {
                             Gender::Male

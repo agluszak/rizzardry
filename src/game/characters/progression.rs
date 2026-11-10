@@ -21,9 +21,9 @@ impl SpellPicks {
         self.books.values().sum::<usize>() + self.general
     }
     pub(super) fn grant(&mut self, profession: Profession, amount: usize) {
-        if profession == Profession::Bishop {
+        if profession.row().picks_from_any_book {
             self.general += amount;
-        } else if let Some(book) = magic::profession_books(profession).iter().next() {
+        } else if let Some(book) = profession.row().books.iter().next() {
             self.books[book] += amount;
         }
     }
@@ -31,19 +31,15 @@ impl SpellPicks {
         if magic::caster_level(c, c.profession) < 1 {
             return 0;
         }
-        self.general
-            + magic::profession_books(c.profession)
-                .iter()
-                .map(|book| self.books[book])
-                .sum::<usize>()
+        self.general + c.profession.row().books.iter().map(|book| self.books[book]).sum::<usize>()
     }
     fn spend(&mut self, c: &Character, books: EnumSet<Spellbook>) -> bool {
-        let active = magic::profession_books(c.profession);
+        let active = c.profession.row().books;
         if let Some(book) = (active & books).iter().find(|&b| self.books[b] > 0) {
             self.books[book] -= 1;
         } else if self.general > 0 {
             self.general -= 1;
-        } else if c.profession == Profession::Bishop {
+        } else if c.profession.row().picks_from_any_book {
             let Some(book) = active.iter().find(|&b| self.books[b] > 0) else {
                 return false;
             };
@@ -58,7 +54,7 @@ impl SpellPicks {
 /// CalcXPGoal adds the current profession's increment to the threshold
 /// actually passed; switching profession never reprices previous levels.
 pub(super) fn experience_increment(profession: Profession, level: u8) -> u64 {
-    let weight = profession_row(profession).experience;
+    let weight = profession.row().experience;
     if level == 1 {
         return weight;
     }
@@ -112,10 +108,10 @@ impl Advancement {
         self.profession
     }
     pub fn eligible_profession(&self, profession: Profession) -> bool {
-        if profession == Profession::Valkyrie && self.original.gender != Gender::Female {
+        if profession.row().only_gender.is_some_and(|only| only != self.original.gender) {
             return false;
         }
-        let minimums = profession_row(profession).minimums;
+        let minimums = profession.row().minimums;
         let deficits: Vec<_> =
             minimums.iter().map(|(a, &n)| n - n.min(self.original.attributes[a])).collect();
         deficits.iter().all(|&n| n <= 3) && deficits.iter().sum::<u32>() <= 6
@@ -135,11 +131,11 @@ impl Advancement {
         c.experience_previous_goal = c.experience_goal();
         c.profession = self.profession;
         c.profession_levels[self.profession] += 1;
-        for (a, &minimum) in &profession_row(self.profession).minimums {
+        for (a, &minimum) in &self.profession.row().minimums {
             c.attributes[a] = c.attributes[a].max(minimum);
         }
         if self.profession != self.original.profession {
-            let row = profession_row(self.profession);
+            let row = self.profession.row();
             for &s in row.skills.iter().chain(std::iter::once(&row.bonus_skill)) {
                 c.skill_points[s] = c.skill_points[s].max(5);
             }
@@ -147,7 +143,7 @@ impl Advancement {
         if magic::caster_level(&c, c.profession) == 1
             && magic::caster_level(&self.original, c.profession) < 1
         {
-            for book in magic::profession_books(c.profession) {
+            for book in c.profession.row().books {
                 let s = magic::book_skill(book);
                 c.skill_points[s] = c.skill_points[s].max(5);
             }

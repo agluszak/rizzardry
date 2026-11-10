@@ -1,11 +1,10 @@
 //! Resistance from a character's profile and currently worn equipment.
-use crate::content::characters::{Attribute, Realm, Skill};
+use crate::content::characters::{Attribute, Realm, Resist, Skill};
 #[cfg(test)]
 use crate::game::characters::Character;
-use crate::game::characters::{Profession, Race};
 use crate::game::inventory::EquipSlot;
 use crate::game::items::Protection;
-use enum_map::{EnumMap, enum_map};
+use enum_map::EnumMap;
 use enumset::EnumSet;
 
 /// Base resistance and its current value, before unmodelled spell effects.
@@ -24,30 +23,12 @@ pub fn resistances<'a>(
     a: &crate::game::actors::Attributes,
     worn: impl Fn(EquipSlot) -> Option<(&'a Protection, bool)>,
 ) -> EnumMap<Realm, Resistance> {
-    use Realm::*;
-    let mut racial: EnumMap<Realm, i32> = enum_map! { _ => 0 };
-    let vitality = a[Attribute::Vitality] as i32 / 5;
-    let changes: &[(Realm, i32)] = match character.race {
-        Race::Human => &[],
-        Race::Elf => &[(Mental, 20), (Air, 10)],
-        Race::Dwarf => &[(Fire, vitality)],
-        Race::Gnome => &[(Mental, vitality), (Earth, 10)],
-        Race::Hobbit => &[(Earth, vitality)],
-        Race::Faerie => &[(Air, 15), (Earth, 15), (Mental, 15), (Divine, 15)],
-        Race::Lizardman => &[(Water, 10), (Earth, 10), (Fire, 15), (Divine, -10), (Mental, -10)],
-        Race::Dracon => &[(Water, 15), (Air, 5), (Divine, -5), (Mental, -5)],
-        Race::Felpurr => &[(Water, -15), (Earth, 10), (Air, 10), (Mental, 10)],
-        Race::Rawulf => &[(Water, 10), (Earth, 5), (Divine, 15)],
-        Race::Mook => &[(Divine, 10), (Water, 15), (Mental, 15)],
-        Race::Trynnie => &[(Earth, 20), (Air, 20), (Mental, -10)],
-        Race::TRang => &[(Mental, 15), (Water, 15)],
-        Race::Umpani => &[(Earth, 15), (Air, 15)],
-        Race::Rapax => &[(Fire, 45), (Mental, -20)],
-        Race::Android => &[(Mental, 75), (Divine, -25)],
+    let vitality = a[Attribute::Vitality] as i32;
+    let racial = |realm: Realm| match character.race.row().resistance[realm] {
+        None => 0,
+        Some(Resist::Flat(amount)) => amount,
+        Some(Resist::OfVitality(divisor)) => vitality / divisor,
     };
-    for &(realm, amount) in changes {
-        racial[realm] += amount;
-    }
     EnumMap::from_fn(|realm: Realm| {
         let skill = realm.skill();
         let iron_will = if character.skill_available(Skill::IronWill) {
@@ -55,14 +36,18 @@ pub fn resistances<'a>(
         } else {
             0
         };
-        let mental =
-            if realm == Mental { (a[Attribute::Intelligence] as i32 - 80).max(0) / 2 } else { 0 };
-        let divine = if realm == Divine { (a[Attribute::Piety] as i32 - 80).max(0) / 2 } else { 0 };
+        let mental = if realm == Realm::Mental {
+            (a[Attribute::Intelligence] as i32 - 80).max(0) / 2
+        } else {
+            0
+        };
+        let divine =
+            if realm == Realm::Divine { (a[Attribute::Piety] as i32 - 80).max(0) / 2 } else { 0 };
         let base = 25
             + character.skill(skill) as i32 / 10
             + iron_will
-            + i32::from(character.profession == Profession::Mage) * 5
-            + racial[realm]
+            + character.profession.row().resistance
+            + racial(realm)
             + mental
             + divine;
         let equipment: i32 = EnumSet::<EquipSlot>::all()
@@ -79,7 +64,23 @@ pub fn resistances<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::characters::{Gender, Profession};
+    use crate::content::characters::{Gender, Profession, Race};
+    use enum_map::enum_map;
+    /// A Dwarf resists fire by a fifth of vitality, and a Mage every realm by
+    /// five more.
+    #[test]
+    fn a_dwarfs_fire_follows_vitality_and_a_mages_every_realm_is_five_higher() {
+        let dwarf = Character::new("D", Race::Dwarf, Gender::Male, Profession::Fighter);
+        let sheet = crate::game::actors::Attributes::of_sheet(&dwarf);
+        let none = |_| None;
+        // 25, and vitality 60 / 5 = 12.
+        assert_eq!(resistances(&dwarf, &sheet, none)[Realm::Fire].base, 37);
+        assert_eq!(resistances(&dwarf, &sheet, none)[Realm::Water].base, 25);
+        let mage = Character::new("M", Race::Human, Gender::Male, Profession::Mage);
+        let sheet = crate::game::actors::Attributes::of_sheet(&mage);
+        assert_eq!(resistances(&mage, &sheet, none)[Realm::Water].base, 30);
+    }
+
     #[test]
     fn racial_and_worn_item_resistances_apply_without_alternate_weapons() {
         let elf = Character::new("Elf", Race::Elf, Gender::Female, Profession::Mage);

@@ -124,7 +124,7 @@ pub(super) fn open_info(
                 0x158,
                 &art.gray,
             ),
-            (profile.bonus_skill() == skill, 0x159, &art.blue),
+            (profile.profession.row().bonus_skill == skill, 0x159, &art.blue),
         ] {
             if show {
                 entries.push((String::new(), None));

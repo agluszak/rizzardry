@@ -6,8 +6,8 @@
 use crate::game::world::obstacles::WorldObstacles;
 use bevy::prelude::*;
 
-use crate::content::characters::{Attribute, Skill};
-use crate::game::characters::{Character, Profession, Vitals};
+use crate::content::characters::{Attribute, Skill, Trait};
+use crate::game::characters::{Character, Vitals};
 use crate::game::combat::Battle;
 use avian3d::prelude::Position;
 
@@ -124,7 +124,7 @@ pub fn search_score(
     search_mode: bool,
     running: bool,
 ) -> u32 {
-    if member.profession != Profession::Ranger && !search_mode {
+    if !member.has_trait(Trait::Search) && !search_mode {
         return 0;
     }
     let level = member.skill(Skill::Scouting);
