@@ -38,9 +38,10 @@ Corollaries:
   components and are read by the same rules. What differs between them is where
   their numbers come from, and that difference lives where the actor is made or
   changed, never in a rule that reads it.
-- **A thing with its own identity or lifetime is an entity.** An item, a spell
-  in the air, a spell laid on someone. Identity is the entity, not a counter we
-  allocate.
+- **A thing that exists apart from one owner, or that others refer to, is an
+  entity.** An item, a spell in the air, a fight. Identity is the entity, not a
+  counter we allocate. What is wholly a state of one owner, at most one of each
+  kind, is that owner's component: what ails an actor, the spells laid on it.
 - **A fact has one authority.** If a value can be computed from others, either
   it is computed where it is read, or it is stored and changed by exactly the
   events that change it. It is never stored *and* recomputed on a timer.
