@@ -38,6 +38,7 @@ pub struct NpcActors<'w, 's> {
             &'static LevelOwned,
             Option<&'static GroupMember>,
             Has<crate::game::combat::Combatant>,
+            &'static crate::game::actors::Level,
         ),
     >,
     sides: Query<'w, 's, &'static hostility::Side>,
@@ -74,7 +75,7 @@ impl NpcActors<'_, '_> {
         self.records.get(actor).ok()?.2?.iter().find(|&b| {
             self.bodies
                 .get(b)
-                .is_ok_and(|(v, _, _, l, _, _)| !v.is_dead() && self.levels.contains(l.0))
+                .is_ok_and(|(v, _, _, l, ..)| !v.is_dead() && self.levels.contains(l.0))
         })
     }
     pub fn position(&self, body: Entity) -> Option<Vec3> {
@@ -99,7 +100,7 @@ impl NpcActors<'_, '_> {
     pub fn species_level(&self, actor: Entity) -> u32 {
         self.active_body(actor)
             .and_then(|b| self.bodies.get(b).ok())
-            .map_or(1, |r| u32::from(self.content.species[r.1.species].level).max(1))
+            .map_or(1, |r| r.6.0.max(1))
     }
 }
 #[derive(SystemParam)]
