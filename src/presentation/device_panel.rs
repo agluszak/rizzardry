@@ -33,8 +33,7 @@ use crate::game::items::Items;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::containers::Recipient;
 use crate::game::world::interaction::{
-    self, AttemptOn, COMPONENTS, DeviceInteraction, DeviceRequest, Observation, TRAP_COMPONENTS,
-    Work,
+    self, AttemptOn, COMPONENTS, DeviceInteraction, DeviceRequest, Observation, Work,
 };
 use crate::game::world::props::PropMotion;
 
@@ -491,7 +490,9 @@ fn draw_device_panel(
                     .is_some()
             }),
             (Control::Component(index), Work::Disarming(disarming)) => {
-                skill.is_some() && TRAP_COMPONENTS[panel.guess][index] && !disarming.disarmed[index]
+                skill.is_some()
+                    && interaction::trap_kind(panel.guess as u8).has(index)
+                    && !disarming.disarmed[index]
             }
             (Control::Inspect, _) => skill.is_some(),
             (Control::Cast | Control::UseItem, _) => {
