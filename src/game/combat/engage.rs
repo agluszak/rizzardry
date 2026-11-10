@@ -179,7 +179,7 @@ pub(super) fn open_battle(
     info!("combat: {} monsters", joined.len());
     let (position, body, the_party, roster, movement) = *party;
     let (eye, forward) = (PartyBody::eye(position), body.forward());
-    let shadow_hound = laid.has(the_party, crate::content::spells::SpellId::SHADOW_HOUND);
+    let shadow_hound = laid.bonus(the_party).warns;
     let searching = search.on(false);
     let view = crate::game::world::perception::View { eye, forward, far, searching };
     let members = || members.iter_many(roster.iter()).matched();

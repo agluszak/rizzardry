@@ -503,6 +503,16 @@ pub struct WhileLaid {
     /// Percent cut off damage.
     pub reduction: Option<Amount>,
     pub concealment: Option<Amount>,
+    /// Its bearer is warned of what is about: never surprised, and makes
+    /// out who comes.
+    pub warns: bool,
+    /// Its bearer finds what is hidden as they search.
+    pub reveals: bool,
+    /// Its bearer can breathe as a Dracon does.
+    pub breath: bool,
+    /// It answers a close blow at its bearer with its dice, losing a point
+    /// of power each time.
+    pub answers_blows: bool,
     /// The share of a stride added to a combat move, for each power.
     pub stride_per_power: f32,
 }

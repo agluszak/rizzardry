@@ -20,7 +20,6 @@ use super::turn::{Fights, Turn};
 use super::{Announcement, Battle, CombatNews, Combatants, Pause, Round};
 use crate::content::characters::Skill;
 use crate::content::items::AttackEffects;
-use crate::content::spells::SpellId;
 use crate::game::actors::{Arm, Laying, Places, reaches};
 use crate::game::characters::{Condition, Fell, Practise};
 use crate::game::data::Catalogs;
@@ -299,11 +298,11 @@ pub(super) fn strike(
                 _ => {}
             }
 
-            // Razor Cloak answers a close blow.
+            // A spell laid on the victim may answer a close blow (Razor Cloak).
             if !attack::is_missile(arm.reach)
-                && let Some(cloak) = laying.spend(victim, SpellId::RAZOR_CLOAK)
+                && let Some(cloak) = laying.answer_blow(victim)
             {
-                let dice = content.spells[SpellId::RAZOR_CLOAK].dice;
+                let dice = content.spells[cloak.spell].dice;
                 let reduction = fighters.get(actor).map_or(0, |me| me.body.armour.reduction);
                 let answer = attack::riposte(&mut rng, dice, cloak.power, reduction);
                 let done = if answer > 0 {

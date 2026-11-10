@@ -22,7 +22,6 @@ use super::{
     Battle, CombatNews, Combatant, Combatants, PASSIVE_ROUNDS, Pause, ROUND_SECONDS, Round, Spoils,
 };
 use crate::content::spells::Pulsing;
-use crate::content::spells::SpellId;
 use crate::game::actors::Laid;
 use crate::game::actors::Places;
 use crate::game::actors::spells::Aged;
@@ -366,7 +365,7 @@ pub(super) fn look_again(
         PartyBody::eye(position),
         body.forward(),
         Some(combatants.entities()),
-        laid.has(party, SpellId::SHADOW_HOUND),
+        laid.bonus(party).warns,
         false,
         &mut rng,
     );
