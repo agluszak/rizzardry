@@ -31,6 +31,7 @@ use crate::game::magic::{cost, may::UseContext};
 use crate::game::npcs::conversation::Conversation;
 use crate::game::npcs::{Npc, NpcBodies};
 use crate::game::party::roster::PartyRoster;
+use crate::game::rng::GameRng;
 use crate::game::world::hostility::{self, Stance};
 use crate::game::world::identify::{GroupMember, GroupMembers};
 use crate::game::world::interaction::{AttemptOn, DeviceInteraction, Guarded, Work};
@@ -109,6 +110,57 @@ impl ItemUse<'_> {
     /// An instrument or gadget is played at the player's reach.
     pub fn played(&self) -> bool {
         matches!(self.definition.use_type, UseType::Instrument | UseType::Gadget)
+    }
+}
+
+/// What a cast comes from, read once. Where the rules differ by it (the
+/// power it goes off at, how likely it fails, what pays for it) they ask
+/// this, so nothing else has to tell the three apart.
+#[derive(Clone, Copy)]
+pub enum Means<'b> {
+    /// A learned spell at the power asked for, paid in points of its realm.
+    Learned { character: &'b Character, asked: u32 },
+    /// An item's spell, paid with one use of the item.
+    Item { character: &'b Character, item: ItemUse<'b> },
+    /// A monster's own casting at the power it chose: its budget stands in
+    /// for skill, its level sets the strength, and it pays nothing.
+    Own { power: u32, budget: u32, level: u8 },
+}
+
+/// What pays for a cast.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Payment {
+    /// Spell points of the spell's realm.
+    Points,
+    /// One use of an item.
+    Use(Entity),
+    Nothing,
+}
+
+impl<'b> Means<'b> {
+    /// The item it uses, if it is one.
+    pub fn item(&self) -> Option<&ItemUse<'b>> {
+        match self {
+            Means::Item { item, .. } => Some(item),
+            _ => None,
+        }
+    }
+
+    /// What a cast is paid with, whatever comes of the roll.
+    pub fn payment(&self) -> Payment {
+        match self {
+            Means::Learned { .. } => Payment::Points,
+            Means::Item { item, .. } => Payment::Use(item.item),
+            Means::Own { .. } => Payment::Nothing,
+        }
+    }
+
+    /// The member casting, whose skills are practised; a monster has none.
+    pub fn character(&self) -> Option<&'b Character> {
+        match *self {
+            Means::Learned { character, .. } | Means::Item { character, .. } => Some(character),
+            Means::Own { .. } => None,
+        }
     }
 }
 
@@ -208,6 +260,89 @@ impl<'a, 'c, 'q, 'p> Scene<'a, 'c, 'q, 'p, '_, '_> {
             worn: held.slot(item).is_some_and(|slot| slot.is_active()),
             spent: held.charges(item) == Some(0),
         })
+    }
+
+    /// What a cast that may be made comes from. None when what it names is
+    /// not there to cast from, which the rule of who may cast has refused
+    /// already.
+    pub fn means<'b>(&self, source: Source, body: &BodyReadOnlyItem<'b, '_>) -> Option<Means<'b>>
+    where
+        'c: 'b,
+    {
+        Some(match source {
+            Source::Innate { power, budget, level, .. } => Means::Own { power, budget, level },
+            Source::Spell { power, .. } => {
+                Means::Learned { character: body.character?, asked: power }
+            }
+            Source::Item(_) => Means::Item {
+                character: body.character?,
+                item: self.item_use(source, body.entity)?,
+            },
+        })
+    }
+
+    /// The power a cast goes off at: a monster's is the one it chose; an
+    /// item's is its own, but an instrument or gadget is played, well or
+    /// badly; a learned spell's is the power asked for as far as the points
+    /// reach, or worked out for the caster when left to them. None when an
+    /// instrument is played too badly to sound at all.
+    pub fn power(
+        &self,
+        rng: &mut GameRng,
+        means: &Means,
+        body: &BodyReadOnlyItem,
+        (cast, spell): (&Cast, &SpellDefinition),
+        boost: u32,
+    ) -> Option<u32> {
+        Some(match means {
+            Means::Own { power, .. } => *power,
+            Means::Item { character, item } if item.played() => {
+                match power::played(rng, self.played_chances(character, item, spell)) {
+                    0 => return None,
+                    power => power,
+                }
+            }
+            Means::Item { item, .. } => item.definition.spell.map_or(0, |uses| uses.power),
+            Means::Learned { asked, .. } => {
+                let affordable = self.affordable(body, spell);
+                if *asked != power::AUTO {
+                    return Some(power::chosen(*asked, affordable));
+                }
+                let identify = (spell.facts.working == Some(Working::Identify))
+                    .then(|| self.identify_difficulty(cast))
+                    .flatten()
+                    .map(|difficulty| (difficulty, boost));
+                power::auto(&self.auto(body, spell, cast, affordable, identify))
+            }
+        })
+    }
+
+    /// What the roll to cast is made against: how likely the cast fails at
+    /// this power and moment of the round, whether a failure passes without
+    /// notice, and whether water quenches it (the party under water casts no
+    /// Fire).
+    pub fn rolling(
+        &self,
+        means: &Means,
+        spell: &SpellDefinition,
+        power: u32,
+        on_oneself: bool,
+    ) -> roll::Rolling {
+        let (chance, quiet) = match means {
+            Means::Own { budget, .. } => (roll::spell_failure(*budget, spell, power), false),
+            Means::Item { character, item } => {
+                self.item_chance(character, item, spell, power, self.pace())
+            }
+            Means::Learned { character, .. } => {
+                (learned_chance(character, spell, power, self.pace(), on_oneself), false)
+            }
+        };
+        roll::Rolling {
+            chance,
+            quiet,
+            quenched: spell.realm == Some(Realm::Fire) && self.underwater(),
+            can_backfire: spell.can_backfire(),
+        }
     }
 
     /// The caster, as the rule of who may cast asks of them.
@@ -377,26 +512,18 @@ impl<'a, 'c, 'q, 'p> Scene<'a, 'c, 'q, 'p, '_, '_> {
     /// with no boost; an item user's level, or their Bard or Gadgeteer levels
     /// for an instrument or a gadget, with no boost; a learned spell's total
     /// caster level, boosted by Power Cast.
-    pub fn figure(
-        &self,
-        cast: &Cast,
-        body: &BodyReadOnlyItem,
-        item: Option<&ItemUse>,
-        spell: &SpellDefinition,
-    ) -> (u32, u32) {
-        let Some(character) = body.character else {
-            let Source::Innate { level, .. } = cast.choice.source else { return (0, 0) };
-            return (u32::from(level), 0);
-        };
-        match item.map(|item| item.definition.use_type) {
-            Some(UseType::Instrument) => {
-                (u32::from(character.profession_levels[Profession::Bard]), 0)
+    pub fn figure(&self, means: &Means, spell: &SpellDefinition) -> (u32, u32) {
+        match means {
+            Means::Own { level, .. } => (u32::from(*level), 0),
+            Means::Item { character, item } => {
+                let figure = match item.definition.use_type {
+                    UseType::Instrument => character.profession_levels[Profession::Bard],
+                    UseType::Gadget => character.profession_levels[Profession::Gadgeteer],
+                    _ => character.level(),
+                };
+                (u32::from(figure), 0)
             }
-            Some(UseType::Gadget) => {
-                (u32::from(character.profession_levels[Profession::Gadgeteer]), 0)
-            }
-            Some(_) => (u32::from(character.level()), 0),
-            None => {
+            Means::Learned { character, .. } => {
                 let figure = total_caster_level(character, spell.books).max(0) as u32;
                 let cast_skill = character.skill(Skill::PowerCast);
                 (figure, power::boost(cast_skill, character.skill_available(Skill::PowerCast)))
