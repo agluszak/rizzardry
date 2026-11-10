@@ -485,7 +485,9 @@ pub const MAX_LEVEL: u8 = 50;
 #[derive(Component, Clone, Debug, PartialEq)]
 #[require(
     MonsterKnowledge,
-    crate::game::inventory::Carried,
+    crate::game::items::Wears,
+    crate::game::items::Pack,
+    crate::game::items::Burden,
     crate::game::magic::LearnedSpells,
     crate::game::magic::SpellPoints,
     crate::game::party::Order

@@ -29,7 +29,6 @@ fn app() -> (App, Entity, Entity) {
         .init_resource::<GameClock>()
         .init_resource::<crate::game::factions::Factions>()
         .init_resource::<crate::game::difficulty::Difficulty>()
-        .init_resource::<crate::game::inventory::ItemIds>()
         .init_resource::<avian3d::collider_tree::ColliderTrees>()
         .init_resource::<Assets<LevelDefinition>>()
         .init_resource::<Assets<MonsterBody>>()
@@ -292,7 +291,6 @@ fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
     world.entity_mut(member).insert((
         LearnedSpells([SpellId::HEAL_WOUNDS, SpellId::ENERGY_BLAST].into()),
         SpellPoints::default(),
-        crate::game::inventory::Carried::default(),
     ));
     let fight = world.spawn(Battle::default()).id();
     world.get_mut::<Round>(fight).unwrap().phase = RoundPhase::Executing(1);

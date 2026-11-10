@@ -79,13 +79,14 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
 pub(super) fn refresh(
     screen: Single<&InventoryScreen>,
     characters: Query<crate::presentation::character_view::CharacterView>,
+    held: crate::game::items::Items,
     content: If<Res<crate::game::data::Catalogs>>,
     mut values: Query<(&Value, &mut BitmapText)>,
     mut segments: Query<(&Segment, &mut PictureCrop, &mut Picture)>,
 ) {
     let view = characters.get(screen.member).unwrap();
     let catalog = &content.items;
-    let scores = view.resistances(catalog);
+    let scores = view.resistances(&held, catalog);
     for (value, mut text) in &mut values {
         let desired = scores[value.0].total.to_string();
         if text.value != desired {

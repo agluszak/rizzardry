@@ -9,7 +9,7 @@ use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::freedom::Freedom;
 use crate::game::hits::effects::Body;
-use crate::game::inventory::{ItemStack, PartyInventory};
+use crate::game::items::{Items, Known, Place};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::level::Level;
@@ -42,7 +42,8 @@ fn identifies(strength: Strength, difficulty: u8) -> bool {
 pub(crate) fn identify(
     mut accepted: MessageReader<Utility>,
     mut bodies: Query<Body>,
-    party: Single<(&PartyRoster, &mut PartyInventory)>,
+    roster: Single<&PartyRoster>,
+    held: Items,
     (freedom, battle): (Freedom, Query<(), With<Battle>>),
     states: Query<&LevelState, With<Level>>,
     (content, difficulty): (Res<Catalogs>, Res<Difficulty>),
@@ -50,7 +51,7 @@ pub(crate) fn identify(
     mut news: MessageWriter<MagicNews>,
     mut commands: Commands,
 ) {
-    let (roster, mut inventory) = party.into_inner();
+    let roster = *roster;
     for &Utility { caster, choice, .. } in
         accepted.read().filter(|cast| cast.spell == SpellId::IDENTIFY_ITEM)
     {
@@ -59,21 +60,23 @@ pub(crate) fn identify(
                 return Err(Refusal::WrongTime);
             }
             let Aim::Item(target) = choice.aim else { return Err(Refusal::NoTarget) };
-            let holder = roster.iter().find(|&member| {
-                bodies
-                    .get(member)
-                    .is_ok_and(|body| body.carried.is_some_and(|c| c.find_stack(target).is_some()))
-            });
-            let stack = inventory
-                .find_stack(target)
-                .or_else(|| bodies.get(holder?).ok()?.carried?.find_stack(target))
+            // Something the party has: in hand, in the pool, or with a member.
+            let known = held
+                .place(target)
+                .filter(|place| match place {
+                    Place::Slot { member, .. } | Place::Pack { member, .. } => {
+                        roster.contains(member)
+                    }
+                    _ => true,
+                })
+                .and(held.known(target))
                 .ok_or(Refusal::NoTarget)?;
-            let hard = content.items[stack.item].identify_difficulty;
+            let hard = content.items[held.id(target).ok_or(Refusal::NoTarget)?].identify_difficulty;
             // The source cannot consume its own target and then silently
-            // identify a replacement. A fully known stack likewise needs no
+            // identify a replacement. A fully known item likewise needs no
             // paid attempt.
-            if matches!(choice.source, Source::Item(s) | Source::PoolItem(s) if s == target)
-                || stack.identified && stack.spell_known && stack.curse_known
+            if choice.source == Source::Item(target)
+                || known.identified && known.spell && known.curse
             {
                 return Err(Refusal::NoTarget);
             }
@@ -90,26 +93,18 @@ pub(crate) fn identify(
             };
             let (report, strength) = super::casting::pay(
                 &mut body,
-                &mut inventory,
+                &held,
                 (source, UseContext::World),
                 (&content, *difficulty, underwater(&states)),
                 &mut rng,
                 &mut commands,
             )?;
             if report.outcome == Outcome::Cast && identifies(strength, hard) {
-                let reveal = |stack: &mut ItemStack| {
-                    stack.identified = true;
-                    stack.spell_known = true;
-                    stack.curse_known = true;
-                };
-                if let Some(stack) = inventory.find_stack_mut(target) {
-                    reveal(stack);
-                } else if let Some(mut holder) = holder.and_then(|h| bodies.get_mut(h).ok())
-                    && let Some(stack) =
-                        holder.carried.as_mut().and_then(|c| c.find_stack_mut(target))
-                {
-                    reveal(stack);
-                }
+                commands.entity(target).insert(Known {
+                    identified: true,
+                    spell: true,
+                    curse: true,
+                });
             }
             Ok(report)
         };

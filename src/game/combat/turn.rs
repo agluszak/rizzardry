@@ -24,7 +24,8 @@ use crate::game::data::Catalogs;
 use crate::game::hits::definitions::Definitions;
 use crate::game::hits::effects::{Body, Strike};
 use crate::game::hits::{Act, Deed, Release};
-use crate::game::inventory::{Carried, PartyInventory, StackId, WeaponSlot};
+use crate::game::inventory::WeaponSlot;
+use crate::game::items::Items;
 use crate::game::magic::casting::{
     Cast, MagicChoice, MagicNews, Refusal, UseContext, in_cone, reaches as spell_reaches,
 };
@@ -48,7 +49,7 @@ pub struct Turn {
     pub phase: u32,
     pub attacks: EnumMap<WeaponSlot, u32>,
     pub due: WeaponSlot,
-    pub weapons: EnumMap<WeaponSlot, Option<StackId>>,
+    pub weapons: EnumMap<WeaponSlot, Option<Entity>>,
     /// A Samurai's Lightning Strike, readied for the primary slot's next
     /// attack (retail `extra_swings`), by their Samurai level.
     pub lightning: Option<u8>,
@@ -337,7 +338,8 @@ pub(super) fn take_turn(
     laid: crate::game::actors::Laid,
     places: crate::game::actors::Places,
     fight: Single<(&mut Pause, Option<&super::Combatants>), With<Battle>>,
-    party: Single<(Entity, &PartyRoster, &Formation, &PartyInventory)>,
+    party: Single<(Entity, &PartyRoster, &Formation)>,
+    held: Items,
     level: crate::game::world::level::PlayedLevel,
     obstacles: WorldObstacles,
     (content, definitions): (Res<Catalogs>, Res<Definitions>),
@@ -346,7 +348,7 @@ pub(super) fn take_turn(
 ) {
     let (mut pause, combatants) = fight.into_inner();
     let combatants = combatants.map_or(&[][..], super::Combatants::entities);
-    let (party, roster, formation, inventory) = *party;
+    let (party, roster, formation) = *party;
     for &Called(actor) in called.read() {
         let Ok((mut turn, ordered)) = turns.get_mut(actor) else { continue };
         let readonly = bodies.as_readonly();
@@ -449,7 +451,7 @@ pub(super) fn take_turn(
         let against_foes = match action {
             Chosen::Magic(choice) => choice
                 .source
-                .spell_id(own.carried.unwrap_or(&Carried::default()), inventory, &content.items)
+                .spell_id(&held, &content.items)
                 .is_some_and(|spell| content.spells[spell].aimed_at_enemies()),
             _ => matches!(action, Chosen::Special(_) | Chosen::Fight(_)),
         };
@@ -529,7 +531,8 @@ pub(super) fn perform(
     mut actors: Query<(&mut Turn, Option<&Walker>)>,
     mut bodies: Query<Body>,
     fight: Single<(&mut Round, &mut Pause, Option<&super::Combatants>), With<Battle>>,
-    party: Single<(Entity, &PartyRoster, &PartyInventory)>,
+    party: Single<(Entity, &PartyRoster)>,
+    held: Items,
     places: crate::game::actors::Places,
     obstacles: WorldObstacles,
     content: Res<Catalogs>,
@@ -544,7 +547,7 @@ pub(super) fn perform(
 ) {
     let (mut round, mut pause, combatants) = fight.into_inner();
     let combatants = combatants.map_or(&[][..], super::Combatants::entities);
-    let (party, _roster, inventory) = *party;
+    let (party, _roster) = *party;
     for &Perform { actor, action } in performs.read() {
         let Ok((mut turn, walker)) = actors.get_mut(actor) else { continue };
         let Ok(mut own) = bodies.get_mut(actor) else { continue };
@@ -627,11 +630,7 @@ pub(super) fn perform(
                 }
             }
             Chosen::Magic(choice) => {
-                let spell = choice.source.spell_id(
-                    own.carried.as_deref().unwrap_or(&Carried::default()),
-                    inventory,
-                    &content.items,
-                );
+                let spell = choice.source.spell_id(&held, &content.items);
                 let Some(spell) = spell else {
                     let refusal = Refusal::NoItem;
                     magic_news.write(MagicNews::Refused { caster: actor, refusal });

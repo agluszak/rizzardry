@@ -27,14 +27,15 @@ pub(super) fn begin(
     npcs: Query<&Npc>,
     factions: Res<Factions>,
     scripts: Scripts,
-    party: Single<(&PartyInventory, &Position)>,
+    party: Single<(Entity, &Position)>,
+    held: crate::game::items::Items,
     mut practice: MessageWriter<rewards::Practice>,
     mut visits: MessageWriter<trade::Visit>,
     mut commands: Commands,
 ) {
     let mut admitted = !conversations.is_empty();
     for request in requests.read() {
-        if admitted || !freedom.free() || !battles.is_empty() || party.0.hand.held.is_some() {
+        if admitted || !freedom.free() || !battles.is_empty() || held.held(party.0).is_some() {
             continue;
         }
         if !actors.available(request.actor) || scripts.get(request.actor).is_none() {

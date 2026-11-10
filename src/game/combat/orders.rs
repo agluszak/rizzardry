@@ -116,7 +116,7 @@ pub fn track_party_move(
     party: Query<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>,
     mut rng: ResMut<GameRng>,
     roster: Single<&PartyRoster>,
-    mut movers: Query<(&mut Vitals, &crate::game::inventory::Burden), With<Turn>>,
+    mut movers: Query<(&mut Vitals, &crate::game::items::Burden), With<Turn>>,
     mut turns: Query<&mut Turn>,
     mut news: MessageWriter<CombatNews>,
 ) {
@@ -165,7 +165,7 @@ pub(super) fn finish_party_move(
     (round, party_move): (&Round, &mut PartyMove),
     rng: &mut GameRng,
     roster: &PartyRoster,
-    movers: &mut Query<(&mut Vitals, &crate::game::inventory::Burden), With<Turn>>,
+    movers: &mut Query<(&mut Vitals, &crate::game::items::Burden), With<Turn>>,
     turns: &mut Query<&mut Turn>,
 ) {
     let PartyMove::Moving { pace, budget, moved, .. } = *party_move else { return };

@@ -299,6 +299,7 @@ pub fn draw_party(
     assets: Res<AssetServer>,
     slots: PortraitSlots,
     members: Query<CharacterView>,
+    held: crate::game::items::Items,
     content: If<Res<crate::game::data::Catalogs>>,
     mut parts: Query<(
         &PartyPart,
@@ -323,9 +324,10 @@ pub fn draw_party(
         let image = |path: &str, frame| (crate::content::paths::retail(path), frame);
         if let Some(view) = actor {
             let armour = view.armour();
-            let CharacterViewItem { profile, vitals, carried, .. } = view;
+            let CharacterViewItem { entity, profile, vitals, .. } = view;
             let dead = vitals.is_dead();
-            let worn = |slot| carried.worn(slot).map(|i| &catalog[i.item]);
+            let worn =
+                |slot| held.worn(entity, slot).and_then(|i| held.id(i)).map(|id| &catalog[id]);
             let two_handed = worn(EquipSlot::Primary).is_some_and(|d| d.two_handed);
             let condition = condition_icon(vitals);
             match part.kind {
@@ -554,10 +556,12 @@ fn press(
     click: On<PointerClick>,
     mut buttons: Query<&mut SlotButton>,
     roster: Single<Ref<PartyRoster>>,
-    mut operations: ParamSet<(
-        crate::game::inventory::operations::InventoryOperations,
-        super::magic_view::SourceTargeting,
-    )>,
+    targeting: super::magic_view::SourceTargeting,
+    (party, held): (
+        Single<Entity, With<crate::game::party::roster::PartyRoster>>,
+        crate::game::items::Items,
+    ),
+    mut commands: Commands,
     mut review: crate::presentation::inventory::OpenReview,
     mut views: Query<(&mut super::magic_view::MagicView, Has<super::magic_view::CastsAt>)>,
     conversations: Query<
@@ -581,12 +585,13 @@ fn press(
     // A spell for one party member is aimed by clicking their portrait
     // (retail `AimAtCharacter`).
     if let Ok((mut view, false)) = views.single_mut()
-        && view.wants_member(&operations.p1())
+        && view.wants_member(&targeting)
     {
         view.aim_at(member);
         return;
     }
-    if operations.p0().give_to(member) {
+    if held.held(*party).is_some() {
+        commands.trigger(crate::game::items::Pass { party: *party, to: member });
         button.review_armed = false;
         return;
     }
@@ -627,7 +632,10 @@ fn release_right(
     buttons: Query<(&SlotButton, &RightHold)>,
     time: Res<Time<Real>>,
     keys: Option<Res<ButtonInput<KeyCode>>>,
-    mut inventory: crate::game::inventory::operations::InventoryOperations,
+    (party, held): (
+        Single<Entity, With<crate::game::party::roster::PartyRoster>>,
+        crate::game::items::Items,
+    ),
     mut review: crate::presentation::inventory::OpenReview,
     mut commands: Commands,
     conversations: Query<
@@ -646,7 +654,8 @@ fn release_right(
     if !control && time.elapsed() - hold.since < REVIEW_HOLD {
         // Retail's right-release give always offers the party pool first
         // (`force_to_party`); this uses the left click's pool rule.
-        if inventory.give_to(member) {
+        if held.held(*party).is_some() {
+            commands.trigger(crate::game::items::Pass { party: *party, to: member });
             return;
         }
     }

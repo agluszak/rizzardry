@@ -3,7 +3,7 @@
 use super::controls::Interact;
 use super::morph_picking::MorphRayCast;
 use super::party_view::PartyCamera;
-use crate::game::inventory::PartyInventory;
+use crate::game::items::Items;
 use crate::game::world::ActivateDevice;
 use crate::game::world::items::WorldItem;
 use crate::game::world::items::{DropHeld, TakeItem};
@@ -73,7 +73,8 @@ pub fn activate_selection(
     interact: Single<&ActionEvents, With<Action<Interact>>>,
     selection: Res<WorldSelection>,
     props: Query<Has<Device>, With<Prop>>,
-    held: Single<&PartyInventory>,
+    party: Single<Entity, With<crate::game::party::roster::PartyRoster>>,
+    held: Items,
     npcs: Query<&crate::game::npcs::NpcBody>,
     mut conversations: MessageWriter<crate::game::npcs::conversation::BeginConversation>,
     mut requests: (MessageWriter<ActivateDevice>, MessageWriter<TakeItem>, MessageWriter<DropHeld>),
@@ -81,7 +82,7 @@ pub fn activate_selection(
     if !interact.contains(ActionEvents::START) {
         return;
     }
-    if held.hand.held.is_none()
+    if held.held(*party).is_none()
         && let Some(hit) = selection.hit
         && let Ok(npc) = npcs.get(hit.entity)
     {
@@ -96,7 +97,7 @@ pub fn activate_selection(
         }
         return;
     }
-    if held.hand.held.is_some() {
+    if held.held(*party).is_some() {
         // Only where the pointer aims matters; gameplay throws from the
         // party's eye, not the drawn (perhaps shaking) camera.
         let (Some(level), Some(ray)) = (selection.level, selection.ray) else { return };

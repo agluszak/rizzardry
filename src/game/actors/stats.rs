@@ -16,7 +16,8 @@ use crate::game::characters::resistance::resistances;
 use crate::game::characters::{Character, Condition, Vitals, scale_by_level};
 use crate::game::combat::attack::{self, Grip, Surprise};
 use crate::game::data::Catalogs;
-use crate::game::inventory::{Burden, Carried, StackId, WeaponSlot};
+use crate::game::inventory::WeaponSlot;
+use crate::game::items::{Burden, Fit, Items, Reweigh};
 use crate::game::party::formation::Formation;
 use crate::game::party::roster::PartyMember;
 use crate::game::world::population::Monster;
@@ -175,7 +176,7 @@ impl Armour {
 pub struct Arm {
     pub slot: WeaponSlot,
     /// The weapon held, which an accepted attack is locked to.
-    pub weapon: Option<StackId>,
+    pub weapon: Option<Entity>,
     pub reach: Reach,
     pub modes: EnumSet<AttackMode>,
     /// The dice its blows roll; a punch strikes with the secondary slot's
@@ -287,7 +288,7 @@ impl Attacks {
     }
 
     /// The weapons its slots hold.
-    pub fn weapons(&self) -> EnumMap<WeaponSlot, Option<StackId>> {
+    pub fn weapons(&self) -> EnumMap<WeaponSlot, Option<Entity>> {
         EnumMap::from_fn(|slot| self.of(slot).find_map(|arm| arm.weapon))
     }
 
@@ -337,23 +338,12 @@ pub(super) fn refit_made<T: Component>(made: On<Add<T>>, mut commands: Commands)
 
 pub(super) fn refit_joined(joined: On<Insert<PartyMember>>, mut commands: Commands) {
     commands.trigger(Refit { entity: joined.entity });
+    commands.trigger(Reweigh);
 }
 
 pub(super) fn refit_left(left: On<Remove<PartyMember>>, mut commands: Commands) {
     commands.trigger(Refit { entity: left.entity });
-}
-
-/// A member whose worn gear or load changed is refitted. Nothing says so
-/// when it happens yet (`docs/plan.md`: gear until items are things); this
-/// notices the write. The sheet is not polled: whatever changes it fires
-/// [`Refit`] itself.
-pub(super) fn refit_regeared(
-    geared: Query<Entity, Or<(Changed<Carried>, Changed<Burden>)>>,
-    mut commands: Commands,
-) {
-    for entity in &geared {
-        commands.trigger(Refit { entity });
-    }
+    commands.trigger(Reweigh);
 }
 
 /// Write an actor's components from its sources: a monster's species, or a
@@ -364,11 +354,12 @@ pub(super) fn refit(
     event: On<Refit>,
     mut actors: Query<(
         &mut Vitals,
-        AnyOf<((&Character, &Carried, Option<&Burden>), &Monster)>,
+        AnyOf<((&Character, Option<&Burden>), &Monster)>,
         Option<&PartyMember>,
         (&mut Attributes, &mut Level, &mut Resistances, &mut Armour, &mut Attacks),
     )>,
     rosters: Query<&crate::game::party::roster::PartyRoster>,
+    (items, fit): (Items, Query<Fit>),
     laid: Laid,
     content: Option<Res<Catalogs>>,
     mut commands: Commands,
@@ -387,9 +378,9 @@ pub(super) fn refit(
         spells += laid.bonus(member.0);
     }
     let (attributes, level, resistances, armour, attacks) = match (sheet, monster) {
-        (Some((character, carried, burden)), _) => {
+        (Some((character, burden)), _) => {
             let load = burden.map(|burden| burden.load).unwrap_or_default();
-            let made = of_member(character, carried, load, &spells, &content);
+            let made = of_member(character, (&items, &fit, event.entity), load, &spells, &content);
             let (health, stamina) = (character.max_hp(&made.0), character.max_stamina(&made.0));
             if (vitals.health.max, vitals.stamina.max) != (health, stamina) {
                 vitals.refit_maxima(health, stamina);
@@ -400,7 +391,10 @@ pub(super) fn refit(
         (None, None) => return,
     };
     let (mut a, mut l, mut r, mut ar, mut at) = written;
-    a.set_if_neq(attributes);
+    // What a member can carry follows their strength.
+    if a.set_if_neq(attributes) && member.is_some() {
+        commands.trigger(Reweigh);
+    }
     l.set_if_neq(level);
     r.set_if_neq(resistances);
     ar.set_if_neq(armour);
@@ -464,15 +458,18 @@ fn of_species(kind: &Species, spells: &Bonus) -> (Attributes, Level, Resistances
 /// the spells on them and, for a party member, the party's.
 fn of_member(
     character: &Character,
-    carried: &Carried,
+    (held, fit, member): (&Items, &Query<Fit>, Entity),
     load: crate::game::characters::Load,
     spells: &Bonus,
     content: &Catalogs,
 ) -> (Attributes, Level, Resistances, Armour, Attacks) {
-    let items = &content.items;
+    // What the member wears in a slot, and its definition from the catalog
+    // (until definitions are components).
+    let catalog = &content.items;
+    let definition = |slot| held.worn(member, slot).map(|item| &catalog[held.id(item).unwrap()]);
     let attributes = Attributes::with_spells(character.attributes, spells);
     let a = &attributes;
-    let sheet = resistances(character, a, carried, items);
+    let sheet = resistances(character, a, definition);
     let mut wards = Vec::new();
     if character.has_trait(Trait::AndroidConditionImmunity) {
         use Condition::*;
@@ -495,8 +492,8 @@ fn of_member(
         }),
     };
     let laid = spells.armour;
-    let standing = attack::armour(character, a, carried, items, load, false);
-    let bracing = attack::armour(character, a, carried, items, load, true);
+    let standing = attack::armour(character, a, definition, load, false);
+    let bracing = attack::armour(character, a, definition, load, true);
     let exposed = |armour: &attack::Armour| armour.speed.max(0) + armour.shield.max(0);
     let armour = Armour {
         total: standing.total + laid,
@@ -511,7 +508,7 @@ fn of_member(
         missile_shield: spells.missiles,
         hit_locations: None,
     };
-    let grip = Grip::of(carried, items);
+    let grip = Grip::worn_by(member, (held, fit), catalog);
     let hit_bonus = spells.to_hit;
     let primary = WeaponSlot::Primary;
     let attacks = Attacks {
@@ -550,7 +547,7 @@ fn member_arm(
     let reach = grip.reach(slot);
     Arm {
         slot,
-        weapon: grip.weapon_id(slot),
+        weapon: grip.weapon_item(slot),
         reach,
         modes: grip.modes(c, slot),
         dice: grip.dice(c, slot),

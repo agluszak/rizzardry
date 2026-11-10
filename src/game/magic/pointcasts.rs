@@ -12,7 +12,7 @@ use crate::{
         difficulty::Difficulty,
         freedom::Freedom,
         hits::effects::Body,
-        inventory::PartyInventory,
+        items::Items,
         party::body::PartyBody,
         rng::GameRng,
         time::{AGING_TICK_MS, GameClock},
@@ -92,7 +92,7 @@ pub(crate) fn cast(
     mut commands: Commands,
     mut accepted: MessageReader<Utility>,
     mut bodies: Query<Body>,
-    mut party: Single<(&avian3d::prelude::Position, &mut PartyInventory), With<PartyBody>>,
+    (party, held): (Single<&avian3d::prelude::Position, With<PartyBody>>, Items),
     level: Single<(Entity, &Level, &LevelState, &Unborn, &MonsterBodies, &LevelNavigation)>,
     battle: Option<Single<Entity, With<Battle>>>,
     summoned: Query<&Elementals>,
@@ -121,7 +121,7 @@ pub(crate) fn cast(
     let battle = battle.map(|battle| *battle);
     let now = clock.ms;
     for &Utility { caster, spell: id, choice } in accepted.read().filter(|cast| spell(cast.spell)) {
-        let (position, inventory) = &mut *party;
+        let position = *party;
         let spell = &content.spells[id];
         let eye = PartyBody::eye(position);
         let mut pay = || -> Result<_, Refusal> {
@@ -155,7 +155,7 @@ pub(crate) fn cast(
             let context = if battle.is_some() { UseContext::Combat } else { UseContext::World };
             let (report, strength) = super::casting::pay(
                 &mut body,
-                inventory,
+                &held,
                 (choice.source, context),
                 (&content, *difficulty, state.camera_sway),
                 &mut rng,

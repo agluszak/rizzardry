@@ -2,7 +2,8 @@
 //! acceptance revalidates the actor and commits training and its consequences.
 use super::*;
 use crate::content::spells::{SpellCatalog, SpellId, Spellbook};
-use crate::game::inventory::{Carried, PartyInventory};
+use crate::game::inventory::EquipSlot;
+use crate::game::items::{Fit, Give, Items, POOL_LIMIT};
 use crate::game::magic::{self, LearnedSpells};
 use crate::game::party::roster::PartyRoster;
 use enumset::EnumSet;
@@ -343,18 +344,11 @@ fn selection_key(id: SpellId) -> SpellId {
 
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct Progression<'w, 's> {
-    roster: Query<'w, 's, &'static PartyRoster>,
-    members: Query<
-        'w,
-        's,
-        (
-            &'static mut Character,
-            &'static mut Vitals,
-            &'static mut LearnedSpells,
-            &'static mut Carried,
-        ),
-    >,
-    inventory: Query<'w, 's, &'static mut PartyInventory>,
+    roster: Query<'w, 's, (Entity, &'static PartyRoster)>,
+    members:
+        Query<'w, 's, (&'static mut Character, &'static mut Vitals, &'static mut LearnedSpells)>,
+    held: Items<'w, 's>,
+    fit: Query<'w, 's, Fit>,
     blocked: Query<
         'w,
         's,
@@ -367,9 +361,6 @@ pub struct Progression<'w, 's> {
         )>,
     >,
     content: If<Res<'w, crate::game::data::Catalogs>>,
-    ids: ResMut<'w, crate::game::inventory::ItemIds>,
-    rng: ResMut<'w, crate::game::rng::GameRng>,
-    news: MessageWriter<'w, crate::game::inventory::ItemNews>,
     commands: Commands<'w, 's>,
 }
 impl Progression<'_, '_> {
@@ -377,7 +368,7 @@ impl Progression<'_, '_> {
         if !self.blocked.is_empty() {
             return Err("Finish the current encounter or journey first.");
         }
-        if !self.roster.single().is_ok_and(|r| r.contains(&member)) {
+        if !self.roster.single().is_ok_and(|(_, r)| r.contains(&member)) {
             return Err("This character is no longer in the party.");
         }
         let (c, v, ..) = self.members.get(member).unwrap();
@@ -394,54 +385,57 @@ impl Progression<'_, '_> {
     pub fn accept(&mut self, draft: &Advancement) -> Result<(), &'static str> {
         self.eligibility(draft.member)?;
         let spells = &self.content.spells;
-        let items = &self.content.items;
-        let (mut c, _, mut known, mut carried) = self.members.get_mut(draft.member).unwrap();
+        let (mut c, _, mut known) = self.members.get_mut(draft.member).unwrap();
         if *c != draft.original || *known != draft.known {
             return Err("This character's training changed. Reopen level-up.");
         }
         let (next, learned) = draft.finish(spells)?;
-        // Stage only inventory work that can fail. Full destinations preserve all owners.
-        let mut inventory =
-            self.inventory.single_mut().map_err(|_| "The party inventory is unavailable.")?;
-        let mut equipment = carried.clone();
-        let mut pool = inventory.pool.clone();
-        for slot in EnumSet::<crate::game::inventory::EquipSlot>::all() {
-            if let Some(worn) = &equipment.equipment[slot] {
-                let definition = &items[worn.stack.item];
-                if !next.can_use(definition) {
-                    let stack = equipment.equipment[slot].take().unwrap().stack;
-                    if equipment
-                        .receive(stack, items)
-                        .and_then(|s| pool.receive(s, items))
-                        .is_some()
-                    {
-                        return Err("Make room for equipment this profession cannot wear.");
-                    }
-                }
+        let (party, _) = self.roster.single().map_err(|_| "The party is unavailable.")?;
+        // What the new profession cannot wear goes to their pack or the
+        // pool, which must have room for all of it before anything changes.
+        let member = draft.member;
+        let stripped: Vec<_> = EnumSet::<EquipSlot>::all()
+            .iter()
+            .filter_map(|slot| self.held.worn(member, slot))
+            .filter(|&item| self.fit.get(item).is_ok_and(|worn| !worn.wear.users.admit(&next)))
+            .collect();
+        let staying = || self.held.carried(member).filter(|item| !stripped.contains(item));
+        let mut pack_free = self.held.pack(member).iter().filter(|slot| slot.is_none()).count();
+        let mut pool_free = POOL_LIMIT - self.held.pool(party).len();
+        for &item in &stripped {
+            let (Some(id), Some(known)) = (self.held.id(item), self.held.known(item)) else {
+                continue;
+            };
+            let alike = self.held.room_among(staying(), id, known.identified)
+                + self.held.room_among(self.held.pool(party).iter().copied(), id, known.identified);
+            if alike >= self.held.units(item) {
+                continue;
+            }
+            if pack_free > 0 {
+                pack_free -= 1;
+            } else if pool_free > 0 {
+                pool_free -= 1;
+            } else {
+                return Err("Make room for equipment this profession cannot wear.");
             }
         }
         // Preserve deficits, conditions and recovery fractions; advancement is not a full heal.
         // Their maxima follow the new sheet when they are refitted.
         *c = next;
         *known = learned;
-        *carried = equipment;
-        inventory.pool = pool;
+        for item in stripped {
+            self.commands.trigger(Give {
+                item,
+                to: Some(member),
+                party,
+                pool_first: false,
+                told: false,
+            });
+        }
         // A Gadgeteer's omnigun follows the committed level.
-        let character = c.clone();
-        let roster = self.roster.single().map_err(|_| "The party is unavailable.")?;
-        let mut owners = self.members.transmute_lens::<&mut Carried>();
-        let told = crate::game::inventory::omnigun::advance(
-            draft.member,
-            &character,
-            roster,
-            &mut owners.query(),
-            &mut inventory,
-            items,
-            (&mut self.ids, &mut self.rng),
-        );
-        self.news.write_batch(told);
+        self.commands.trigger(crate::game::inventory::omnigun::Advanced { party, member });
         // The new level, attributes and skill points are the member's now.
-        self.commands.trigger(crate::game::actors::Refit { entity: draft.member });
+        self.commands.trigger(crate::game::actors::Refit { entity: member });
         Ok(())
     }
 }

@@ -29,7 +29,7 @@ use crate::game::hits::effects::{Body, BodyItem, BodyReadOnly, BodyReadOnlyItem,
 use crate::game::hits::reach::{Recipients, within};
 use crate::game::hits::spells::{Leech, Spell, group_of, leader, owners_strength, targets};
 use crate::game::hits::{Act, Deed, Effect, Release};
-use crate::game::inventory::{Carried, PartyInventory, StackId};
+use crate::game::items::{Items, Spend};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::{self, Provocation, Stance};
@@ -52,10 +52,9 @@ pub enum Source {
     /// A learned spell at the chosen power, or [`AUTO_POWER`]; it is
     /// clamped to what the caster can afford when it runs.
     Spell { spell: SpellId, power: u32 },
-    /// A stack the actor carries, identified, not reserved.
-    Item(StackId),
-    /// A shared-pool stack; payment never silently changes owners.
-    PoolItem(StackId),
+    /// An item the actor carries or the party's pool holds, identified, not
+    /// reserved.
+    Item(Entity),
     /// A monster's own casting, which costs nothing: its spell budget
     /// stands in for a caster's skill, its level sets the strength.
     Innate { spell: SpellId, power: u32, budget: u32, level: u8 },
@@ -64,18 +63,10 @@ pub enum Source {
 impl Source {
     /// Resolve an item source by its stable stack identity. This is routing,
     /// not acceptance: the cast revalidates eligibility and payment.
-    pub fn spell_id(
-        self,
-        carried: &Carried,
-        inventory: &PartyInventory,
-        items: &ItemCatalog,
-    ) -> Option<SpellId> {
+    pub fn spell_id(self, held: &Items, catalog: &ItemCatalog) -> Option<SpellId> {
         match self {
             Self::Spell { spell, .. } | Self::Innate { spell, .. } => Some(spell),
-            Self::Item(id) => items[carried.find_stack(id)?.item].spell.map(|s| s.spell),
-            Self::PoolItem(id) => items[inventory.pool.stacks.iter().find(|s| s.id == id)?.item]
-                .spell
-                .map(|s| s.spell),
+            Self::Item(item) => catalog[held.id(item)?].spell.map(|s| s.spell),
         }
     }
 }
@@ -93,8 +84,8 @@ pub enum Aim {
     Ahead,
     /// The device attempt under way (its lock or trap), by the attempt.
     Device(Entity),
-    /// The selected stack, retained across any delayed request.
-    Item(StackId),
+    /// The selected item, retained across any delayed request.
+    Item(Entity),
 }
 
 impl Aim {
@@ -407,40 +398,36 @@ pub fn can_activate(character: &Character, item: &ItemDefinition, worn: bool) ->
         && (character.can_use(item) || consumed_by_anyone(item))
 }
 
-/// An item about to be used: its stack, what it is, and where it is kept.
+/// An item about to be used: what it is, and where it is kept.
 #[derive(Clone, Copy)]
 struct ItemUse<'d> {
-    id: StackId,
+    item: Entity,
     definition: &'d ItemDefinition,
     identified: bool,
-    from_pool: bool,
+    /// Worn in a slot in use.
+    worn: bool,
     /// No charge is left in it.
     spent: bool,
 }
 
-/// The item a source uses, if it is one and is still there.
+/// The item a source uses, if it is one and is still there: carried by the
+/// caster, or in the party's pool.
 fn item_use<'d>(
     source: Source,
-    carried: &Carried,
-    inventory: &PartyInventory,
-    items: &'d ItemCatalog,
+    caster: Entity,
+    held: &Items,
+    catalog: &'d ItemCatalog,
 ) -> Option<ItemUse<'d>> {
-    let (id, from_pool) = match source {
-        Source::Spell { .. } | Source::Innate { .. } => return None,
-        Source::Item(id) => (id, false),
-        Source::PoolItem(id) => (id, true),
-    };
-    let stack = if from_pool {
-        inventory.pool.stacks.iter().find(|s| s.id == id)
-    } else {
-        carried.find_stack(id)
-    }?;
+    let Source::Item(item) = source else { return None };
+    if held.bearer(item) != Some(caster) && !held.pooled(item) {
+        return None;
+    }
     Some(ItemUse {
-        id,
-        definition: &items[stack.item],
-        identified: stack.identified,
-        from_pool,
-        spent: stack.remaining_uses() == Some(0),
+        item,
+        definition: &catalog[held.id(item)?],
+        identified: held.known(item)?.identified,
+        worn: held.slot(item).is_some_and(|slot| slot.is_active()),
+        spent: held.charges(item) == Some(0),
     })
 }
 
@@ -523,7 +510,7 @@ struct Stage<'a, 'w, 's> {
 fn check(
     cast: &Cast,
     caster: Option<&BodyReadOnlyItem>,
-    inventory: &PartyInventory,
+    held: &Items,
     content: &Catalogs,
     definitions: &Definitions,
 ) -> Result<(), Refusal> {
@@ -534,9 +521,9 @@ fn check(
     else {
         return Err(Refusal::CannotAct);
     };
-    let character = caster.character.zip(caster.carried);
-    if !innate && let Some((_, carried)) = character {
-        let item = item_use(choice.source, carried, inventory, &content.items);
+    let character = caster.character;
+    if !innate && character.is_some() {
+        let item = item_use(choice.source, caster.entity, held, &content.items);
         let voiced = item.is_none_or(|item| item.definition.use_type == UseType::Instrument);
         if voiced && caster.vitals.conditions.has(Condition::Silenced) {
             return Err(Refusal::Silenced);
@@ -553,22 +540,19 @@ fn check(
             return Err(Refusal::NoSpellPoints);
         }
     }
-    if let Some((character, carried)) = character
-        && let Some(item) = item_use(choice.source, carried, inventory, &content.items)
+    if let Some(character) = character
+        && let Some(item) = item_use(choice.source, caster.entity, held, &content.items)
     {
-        let worn =
-            !item.from_pool && carried.active_equipment().any(|(_, e)| e.stack.id == item.id);
         let Some(uses) = item.definition.spell else { return Err(Refusal::CannotUse) };
         let powerless = uses.power == 0
             && !matches!(item.definition.use_type, UseType::Instrument | UseType::Gadget);
-        if powerless || !can_activate(character, item.definition, worn) {
+        if powerless || !can_activate(character, item.definition, item.worn) {
             return Err(Refusal::CannotUse);
         }
         if item.spent {
             return Err(Refusal::NoCharges);
         }
-    } else if character.is_some() && matches!(choice.source, Source::Item(_) | Source::PoolItem(_))
-    {
+    } else if character.is_some() && matches!(choice.source, Source::Item(_)) {
         return Err(Refusal::NoItem);
     }
     if definitions.spell(spell).is_none() {
@@ -759,19 +743,18 @@ fn played_power(
 fn plan(
     cast: &Cast,
     stage: &Stage,
-    inventory: &PartyInventory,
+    held: &Items,
     (content, definitions, difficulty): (&Catalogs, &Definitions, Difficulty),
     rng: &mut GameRng,
 ) -> Plan {
     let Cast { caster, choice: MagicChoice { source, aim }, .. } = *cast;
     let spell = &content.spells[cast.spell];
     let body = stage.bodies.get(caster).ok();
-    if let Err(refusal) = check(cast, body.as_ref(), inventory, content, definitions) {
+    if let Err(refusal) = check(cast, body.as_ref(), held, content, definitions) {
         return Plan::Refused(refusal);
     }
     let body = body.unwrap();
-    let item =
-        body.carried.and_then(|carried| item_use(source, carried, inventory, &content.items));
+    let item = item_use(source, caster, held, &content.items);
     // A potion or food used in a fight is taken by its user (retail
     // `UseItem` aims potions at their user).
     let forced = cast.context == UseContext::Combat
@@ -818,7 +801,7 @@ fn plan(
                 power.min(affordable)
             }
         }
-        (Source::Item(_) | Source::PoolItem(_), None) => {
+        (Source::Item(_), None) => {
             item.and_then(|item| item.definition.spell).map_or(0, |uses| uses.power)
         }
     };
@@ -901,7 +884,8 @@ pub fn cast(
     mut fight: Option<
         Single<(&mut crate::game::combat::Round, Option<&crate::game::combat::Combatants>)>,
     >,
-    party: Single<(&PartyRoster, &mut PartyInventory)>,
+    roster: Single<&PartyRoster>,
+    held: Items,
     obstacles: WorldObstacles,
     places: Places,
     states: Query<&crate::game::world::triggers::LevelState, With<Level>>,
@@ -914,7 +898,7 @@ pub fn cast(
     ),
     mut commands: Commands,
 ) {
-    let (roster, mut inventory) = party.into_inner();
+    let roster = *roster;
     let underwater = states.single().is_ok_and(|state| state.camera_sway);
     // An auto cast that fizzles goes again at once, provoking nobody anew.
     // Casts are taken, not read: whichever schedule carries casts out now
@@ -940,7 +924,7 @@ pub fn cast(
                 obstacles: &obstacles,
                 places: &places,
             },
-            &inventory,
+            &held,
             (&content, &definitions, *difficulty),
             &mut rng,
         );
@@ -984,10 +968,7 @@ pub fn cast(
             provocations.write_batch(victims.iter().map(|&victim| Provocation(victim)));
         }
         let innate = matches!(source, Source::Innate { .. });
-        let item = body
-            .carried
-            .as_deref()
-            .and_then(|carried| item_use(source, carried, &inventory, &content.items));
+        let item = item_use(source, caster, &held, &content.items);
         let report = Report {
             caster,
             spell,
@@ -1004,13 +985,7 @@ pub fn cast(
                 let realm = definition.realm.expect("a cast spell has a realm");
                 body.spells.as_mut().unwrap().1.spend(realm, definition.cost_at(power));
             }
-            (_, Some(item)) if item.from_pool => {
-                inventory.pool.consume_use(item.id, item.definition)
-            }
-            (_, Some(item)) => {
-                let keeps = item.definition.keeps_empty();
-                body.carried.as_mut().unwrap().consume_use(item.id, item.definition, keeps);
-            }
+            (_, Some(item)) => commands.trigger(Spend { item: item.item, amount: 1 }),
             _ => {}
         }
         if !innate {
@@ -1104,28 +1079,26 @@ pub fn cast(
 /// quenches Fire.
 pub(crate) fn pay(
     caster: &mut BodyItem,
-    inventory: &mut PartyInventory,
+    held: &Items,
     (source, context): (Source, UseContext),
     (content, difficulty, underwater): (&Catalogs, Difficulty, bool),
     rng: &mut GameRng,
     commands: &mut Commands,
 ) -> Result<(Report, Strength), Refusal> {
     let (spells, items) = (&content.spells, &content.items);
-    let (Some(character), Some(carried), true) =
-        (caster.character.as_deref_mut(), caster.carried.as_deref_mut(), caster.member)
-    else {
+    let (Some(character), true) = (caster.character.as_deref_mut(), caster.member) else {
         return Err(Refusal::CannotAct);
     };
     let vitals = &mut *caster.vitals;
     if !vitals.can_fight() {
         return Err(Refusal::CannotAct);
     }
-    let spell = source.spell_id(carried, inventory, items).ok_or(Refusal::NoItem)?;
+    let spell = source.spell_id(held, items).ok_or(Refusal::NoItem)?;
     let spell = &spells[spell];
     if !usable_now(spell, context) {
         return Err(Refusal::WrongTime);
     }
-    let item = item_use(source, carried, inventory, items);
+    let item = item_use(source, caster.entity, held, items);
     let power = match (source, item) {
         (Source::Spell { power, .. }, _) => {
             if vitals.conditions.has(Condition::Silenced) {
@@ -1160,8 +1133,7 @@ pub(crate) fn pay(
             let realm = spell.realm.expect("a cast spell has a realm");
             caster.spells.as_mut().unwrap().1.spend(realm, spell.cost_at(power));
         }
-        Some(item) if item.from_pool => inventory.pool.consume_use(item.id, item.definition),
-        Some(item) => carried.consume_use(item.id, item.definition, item.definition.keeps_empty()),
+        Some(item) => commands.trigger(Spend { item: item.item, amount: 1 }),
     }
     vitals.tire(super::cast_fatigue(spell, power));
     for (skill, usage) in skills {
@@ -1230,35 +1202,35 @@ fn practice(
 /// The spells and items an actor could use: what menus offer. Execution
 /// validates again.
 pub fn usable_items(
+    member: Entity,
     character: &Character,
-    carried: &Carried,
-    items: &crate::content::items::ItemCatalog,
+    held: &Items,
+    catalog: &ItemCatalog,
     definitions: &Definitions,
-) -> Vec<(StackId, SpellId)> {
-    carried
-        .stacks()
-        .filter_map(|stack| {
-            let worn =
-                carried.active_equipment().any(|(_, equipped)| equipped.stack.id == stack.id);
-            Some((stack.id, usable_stack(character, stack, items, definitions, worn)?))
+) -> Vec<(Entity, SpellId)> {
+    held.carried(member)
+        .filter_map(|item| {
+            let worn = held.slot(item).is_some_and(|slot| slot.is_active());
+            Some((item, usable_item(character, item, held, catalog, definitions, worn)?))
         })
         .collect()
 }
 
-/// The spell a stack casts for `character`, if they can use it now: one
+/// The spell an item casts for `character`, if they can use it now: one
 /// they may activate (worn, if it must be), with a charge left, whose
 /// effect the game resolves.
-pub fn usable_stack(
+pub fn usable_item(
     character: &Character,
-    stack: &crate::game::inventory::ItemStack,
-    items: &crate::content::items::ItemCatalog,
+    item: Entity,
+    held: &Items,
+    catalog: &ItemCatalog,
     definitions: &Definitions,
     worn: bool,
 ) -> Option<SpellId> {
-    let definition = &items[stack.item];
+    let definition = &catalog[held.id(item)?];
     let cast = definition.spell?;
     (can_activate(character, definition, worn)
-        && stack.remaining_uses() != Some(0)
+        && held.charges(item) != Some(0)
         && resolvable(cast.spell, definitions))
     .then_some(cast.spell)
 }

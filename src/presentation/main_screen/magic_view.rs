@@ -30,10 +30,10 @@ use crate::game::characters::Condition;
 use crate::game::characters::{Character, Vitals};
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
-use crate::game::inventory::{Carried, PartyInventory};
+use crate::game::items::Items;
 use crate::game::magic::casting::{
-    AUTO_POWER, Aim, MagicChoice, Source, UseContext, castable, usable_items, usable_now,
-    usable_stack,
+    AUTO_POWER, Aim, MagicChoice, Source, UseContext, castable, usable_item, usable_items,
+    usable_now,
 };
 use crate::game::magic::{LearnedSpells, MagicRequest, SpellPoints};
 use crate::game::party::body::PartyBody;
@@ -119,9 +119,7 @@ impl MagicView {
     /// cast at one party member, and none is chosen yet.
     pub fn wants_member(&self, targeting: &SourceTargeting) -> bool {
         self.member.is_none()
-            && self
-                .source
-                .is_some_and(|source| targeting.of(self.caster, source) == Some(Targeting::Ally))
+            && self.source.is_some_and(|source| targeting.of(source) == Some(Targeting::Ally))
     }
 
     pub fn aim_at(&mut self, member: Entity) {
@@ -133,15 +131,14 @@ impl MagicView {
 /// the party pool and the catalogs as they are now.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct SourceTargeting<'w, 's> {
-    carried: Query<'w, 's, &'static Carried>,
-    pool: Single<'w, 's, &'static PartyInventory>,
+    held: Items<'w, 's>,
     content: If<Res<'w, Catalogs>>,
 }
 
 impl SourceTargeting<'_, '_> {
-    pub fn of(&self, caster: Entity, source: Source) -> Option<Targeting> {
+    pub fn of(&self, source: Source) -> Option<Targeting> {
         let (spells, items) = (&self.content.spells, &self.content.items);
-        let id = source.spell_id(self.carried.get(caster).unwrap(), &self.pool, items)?;
+        let id = source.spell_id(&self.held, items)?;
         Some(spells[id].targeting)
     }
 }
@@ -187,7 +184,7 @@ pub(super) struct Row(usize, Option<Source>);
 fn same_source(a: Source, b: Source) -> bool {
     match (a, b) {
         (Source::Spell { spell: a, .. }, Source::Spell { spell: b, .. }) => a == b,
-        (Source::Item(a), Source::Item(b)) | (Source::PoolItem(a), Source::PoolItem(b)) => a == b,
+        (Source::Item(a), Source::Item(b)) => a == b,
         _ => false,
     }
 }
@@ -579,38 +576,33 @@ fn glyph(targeting: Targeting) -> char {
 #[allow(clippy::too_many_arguments)]
 fn offers<'a>(
     view: &MagicView,
-    character: &Character,
-    carried: &Carried,
+    (member, character): (Entity, &Character),
+    (party, held): (Entity, &Items),
     learned: &LearnedSpells,
     points: &SpellPoints,
     maximum: &enum_map::EnumMap<Realm, u32>,
     spells: &'a SpellCatalog,
     (items, definitions): (&ItemCatalog, &crate::game::hits::definitions::Definitions),
     context: UseContext,
-    pool: &PartyInventory,
     silenced: bool,
 ) -> Vec<Offer<'a>> {
     if view.items {
         let sources: Vec<_> = if view.pool {
-            pool.pool
-                .stacks
+            held.pool(party)
                 .iter()
-                .filter_map(|stack| {
-                    let spell = usable_stack(character, stack, items, definitions, false)?;
-                    Some((Source::PoolItem(stack.id), stack, spell))
+                .filter_map(|&item| {
+                    let spell = usable_item(character, item, held, items, definitions, false)?;
+                    Some((item, spell))
                 })
                 .collect()
         } else {
-            usable_items(character, carried, items, definitions)
-                .into_iter()
-                .filter_map(|(id, spell)| Some((Source::Item(id), carried.find_stack(id)?, spell)))
-                .collect()
+            usable_items(member, character, held, items, definitions)
         };
         return sources
             .into_iter()
-            .filter_map(|(source, stack, id)| {
+            .filter_map(|(item, id)| {
                 let spell = &spells[id];
-                let definition = &items[stack.item];
+                let definition = &items[held.id(item)?];
                 let silenced =
                     silenced && definition.use_type == crate::content::items::UseType::Instrument;
                 let available = usable_now(spell, context) && !silenced;
@@ -624,13 +616,15 @@ fn offers<'a>(
                 {
                     return None;
                 }
-                let label = match stack.remaining_uses() {
-                    Some(_) if !stack.identified => {
-                        format!("{} (?)", stack.display_name(definition, false))
+                let identified = held.known(item)?.identified;
+                let label = match held.charges(item) {
+                    Some(_) if !identified => {
+                        format!("{} (?)", held.name(item, items, false)?)
                     }
-                    Some(uses) => format!("{} ({uses})", stack.display_name(definition, false)),
-                    None => stack.display_name(definition, true),
+                    Some(uses) => format!("{} ({uses})", held.name(item, items, false)?),
+                    None => held.name(item, items, true)?,
                 };
+                let source = Source::Item(item);
                 Some(Offer { source, spell, label, cost: String::new(), available, silenced })
             })
             .collect();
@@ -732,13 +726,13 @@ pub(super) fn draw_magic_view(
     mut commands: Commands,
     mut views: Query<(&mut MagicView, &MagicScroll, Option<&CastsAt>, Option<&ConversationTarget>)>,
     sliders: Query<(&SliderValue, &SliderRange)>,
-    members: Query<(&Character, &Vitals, &Carried, &Attributes)>,
+    members: Query<(&Character, &Vitals, &Attributes)>,
     casters: Query<(&LearnedSpells, &SpellPoints)>,
-    (battle, camp, interaction, pool): (
+    (battle, camp, interaction, (party, held)): (
         Option<Single<&Battle>>,
         Option<Res<crate::game::camp::Camp>>,
         Query<&crate::game::world::interaction::DeviceInteraction>,
-        Single<&PartyInventory>,
+        (Single<Entity, With<PartyRoster>>, Items),
     ),
     content: If<Res<Catalogs>>,
     definitions: Res<crate::game::hits::definitions::Definitions>,
@@ -783,7 +777,7 @@ pub(super) fn draw_magic_view(
     ) else {
         return;
     };
-    let (character, vitals, carried, attributes) = members.get(view.caster).unwrap();
+    let (character, vitals, attributes) = members.get(view.caster).unwrap();
     let (learned, points) = casters.get(view.caster).unwrap();
     let mana_maximum = character.max_points(attributes, learned, spells);
     // Realms: their points, the chosen one latched; the first with points
@@ -830,15 +824,14 @@ pub(super) fn draw_magic_view(
     let silenced = vitals.conditions.has(Condition::Silenced);
     let offers = offers(
         &view,
-        character,
-        carried,
+        (view.caster, character),
+        (*party, &held),
         learned,
         points,
         &mana_maximum,
         spells,
         (items, &definitions),
         context,
-        &pool,
         silenced,
     );
     let Ok((scroll_value, scroll_range)) = sliders.get(scroll.0) else { return };
@@ -944,11 +937,10 @@ pub(super) fn draw_magic_view(
         let icon = view
             .source
             .and_then(|s| match s {
-                Source::Item(id) => carried.find_stack(id),
-                Source::PoolItem(id) => pool.pool.stacks.iter().find(|s| s.id == id),
+                Source::Item(item) => held.id(item),
                 Source::Spell { .. } | Source::Innate { .. } => None,
             })
-            .map(|stack| &items[stack.item]);
+            .map(|id| &items[id]);
         for (mut picture, mut visibility) in &mut parts.p7() {
             visibility.set_if_neq(visible_if(icon.is_some()));
             if let Some(definition) = icon {
@@ -973,8 +965,7 @@ pub(super) fn draw_magic_view(
 pub(super) fn commit_magic_choice(
     mut commands: Commands,
     mut views: Query<(Entity, &mut MagicView, Option<&CastsAt>, Option<&ConversationTarget>)>,
-    carried: Query<&Carried>,
-    pool: Single<&PartyInventory>,
+    (the_party, held): (Single<Entity, With<PartyRoster>>, Items),
     content: If<Res<Catalogs>>,
     _definitions: Res<crate::game::hits::definitions::Definitions>,
     (conversations, speakers, monsters, party): (
@@ -993,8 +984,7 @@ pub(super) fn commit_magic_choice(
     };
     let attempt = casts_at.map(|casts_at| casts_at.0);
     let Some(source) = view.source else { return };
-    let carried = carried.get(view.caster).unwrap();
-    let Some(id) = source.spell_id(carried, &pool, &content.items) else { return };
+    let Some(id) = source.spell_id(&held, &content.items) else { return };
     let spell = &content.spells[id];
     if !view.items && view.power.is_none() {
         match spell.power {
@@ -1026,8 +1016,8 @@ pub(super) fn commit_magic_choice(
                 let feet = PartyBody::feet(position);
                 Aim::Point(feet + body.forward() * spell.reach.metres().min(10.0))
             }
-            Targeting::Item => match pool.hand.held.as_ref() {
-                Some(stack) => Aim::Item(stack.id),
+            Targeting::Item => match held.held(*the_party) {
+                Some(item) => Aim::Item(item),
                 None => return,
             },
             Targeting::Ally => match view.member {
@@ -1076,13 +1066,13 @@ fn choose_row(
     click: On<Activate>,
     rows: Query<&Row>,
     mut views: Query<(&mut MagicView, Option<&CastsAt>, Option<&ConversationTarget>)>,
-    members: Query<(&Character, &Vitals, &Carried, &Attributes)>,
+    members: Query<(&Character, &Vitals, &Attributes)>,
     casters: Query<(&LearnedSpells, &SpellPoints)>,
     battle: Option<Single<&Battle>>,
-    (camp, interaction, pool): (
+    (camp, interaction, (party, held)): (
         Option<Res<crate::game::camp::Camp>>,
         Query<&crate::game::world::interaction::DeviceInteraction>,
-        Single<&PartyInventory>,
+        (Single<Entity, With<PartyRoster>>, Items),
     ),
     content: If<Res<Catalogs>>,
     definitions: Res<crate::game::hits::definitions::Definitions>,
@@ -1094,14 +1084,14 @@ fn choose_row(
         return;
     };
     let (spells, items) = (&content.spells, &content.items);
-    let (character, vitals, carried, attributes) = members.get(view.caster).unwrap();
+    let (character, vitals, attributes) = members.get(view.caster).unwrap();
     let (learned, points) = casters.get(view.caster).unwrap();
     let silenced = vitals.conditions.has(Condition::Silenced);
     let mana_maximum = character.max_points(attributes, learned, spells);
     let offers = offers(
         &view,
-        character,
-        carried,
+        (view.caster, character),
+        (*party, &held),
         learned,
         points,
         &mana_maximum,
@@ -1118,7 +1108,6 @@ fn choose_row(
             Some(c) => c,
             None => return,
         },
-        &pool,
         silenced,
     );
     // The offer the row showed, as it stands now. Unavailable rows only

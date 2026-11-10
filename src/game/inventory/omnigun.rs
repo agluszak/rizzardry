@@ -1,9 +1,21 @@
 //! The Gadgeteer's omnigun, which grows with its owner's Gadgeteer level as
 //! their advancement is committed (retail `UpgradeProfessionClassItem`).
 
-use super::*;
+use bevy::prelude::*;
+
 use crate::content::characters::Profession;
-use crate::content::items::ItemKind;
+use crate::content::items::{ItemId, ItemKind};
+use crate::game::characters::Character;
+use crate::game::data::Catalogs;
+use crate::game::items::{
+    Charges, Give, Item, ItemNews, Items, Kind, Known, Weight, make, roll_amount, wearable,
+};
+use crate::game::party::roster::PartyRoster;
+use crate::game::rng::GameRng;
+
+pub(crate) fn plugin(app: &mut App) {
+    app.add_observer(advance);
+}
 
 /// The omnigun tier a Gadgeteer level earns: the item and its tier above the
 /// first (1 to 11), none below level 3.
@@ -25,82 +37,84 @@ pub fn tier(level: u8) -> Option<(ItemId, usize)> {
     Some((ItemId(599 + tier as u16), tier))
 }
 
-/// Where the party's omnigun was found.
-#[derive(Clone, Copy)]
-enum At {
-    Member(Entity),
-    Hand,
-    Pool,
+/// A member's advancement has just been committed (retail
+/// `UpgradeProfessionClassItem`, from `CommitCharacter`). A level 1
+/// Gadgeteer without an omnigun of their own is given one, to them or else
+/// the party, unless neither has room. From level 3 the first omnigun found
+/// (theirs, worn or carried, else the hand's, each member's in turn, then the
+/// pool's) rises to the tier their level earns, never down. The party is
+/// told.
+#[derive(Event, Clone, Copy, Debug)]
+pub struct Advanced {
+    pub party: Entity,
+    pub member: Entity,
 }
 
-/// Give or raise a Gadgeteer's omnigun for the level their advancement has
-/// just committed (retail `UpgradeProfessionClassItem`, from
-/// `CommitCharacter`), returning what to tell. A level 1 Gadgeteer without
-/// one of their own is given one, to them or else the party, unless neither
-/// has room. From level 3 the first omnigun found (theirs, worn or carried,
-/// else the hand's, each member's in turn, then the pool's) rises to the
-/// tier their level earns, never down.
-pub fn advance(
-    member: Entity,
-    character: &Character,
-    roster: &PartyRoster,
-    carried: &mut Query<&mut Carried>,
-    party: &mut PartyInventory,
-    catalog: &ItemCatalog,
-    (ids, rng): (&mut ItemIds, &mut GameRng),
-) -> Vec<ItemNews> {
-    if character.profession != Profession::Gadgeteer {
-        return Vec::new();
-    }
-    let omnigun = |stack: &ItemStack| catalog[stack.item].kind == ItemKind::OMNIGUN;
-    let carries = |carried: &Query<&mut Carried>, owner: Entity| {
-        carried.get(owner).is_ok_and(|c| c.stacks().any(omnigun))
+fn advance(
+    event: On<Advanced>,
+    items: Items,
+    kinds: Query<&Kind>,
+    characters: Query<&Character>,
+    rosters: Query<&PartyRoster>,
+    content: Res<Catalogs>,
+    mut rng: ResMut<GameRng>,
+    mut news: MessageWriter<ItemNews>,
+    mut commands: Commands,
+) {
+    let Advanced { party, member } = *event;
+    let (Ok(character), Ok(roster)) = (characters.get(member), rosters.get(party)) else {
+        return;
     };
+    if character.profession != Profession::Gadgeteer {
+        return;
+    }
+    let omnigun = |&item: &Entity| kinds.get(item).is_ok_and(|kind| kind.0 == ItemKind::OMNIGUN);
+    let carries = |owner: Entity| items.carried(owner).find(omnigun);
     let told =
         |tier| ItemNews::Omnigun { member: character.name.clone(), gender: character.gender, tier };
     let level = character.profession_levels[Profession::Gadgeteer];
     if level == 1 {
-        let definition = &catalog[ItemId(599)];
-        if carries(carried, member) {
-            return Vec::new();
+        let definition = &content.items[ItemId(599)];
+        if carries(member).is_some() {
+            return;
         }
-        let mut given = make_item(definition, ids, rng, false, true);
-        given.curse_known = true;
-        let item = given.display_name(definition, false);
-        let rest = match carried.get_mut(member) {
-            Ok(mut own) => own.receive(given, catalog),
-            Err(_) => Some(given),
-        };
-        let taker = match rest.map(|rest| party.pool.receive(rest, catalog)) {
-            None => Some(character.name.clone()),
-            Some(None) => None,
-            Some(Some(_)) => return Vec::new(),
-        };
-        return vec![ItemNews::Takes { member: taker, item }, told(0)];
-    }
-    let Some((item, tier)) = tier(level) else { return Vec::new() };
-    let at = if carries(carried, member) {
-        At::Member(member)
-    } else if party.hand.held.as_ref().is_some_and(omnigun) {
-        At::Hand
-    } else {
-        roster.iter().find(|&owner| carries(carried, owner)).map_or(At::Pool, At::Member)
-    };
-    let current = match at {
-        At::Member(owner) => carried.get(owner).ok().and_then(|c| c.stacks().find(|s| omnigun(s))),
-        At::Hand => party.hand.held.as_ref(),
-        At::Pool => party.pool.stacks.iter().find(|s| omnigun(s)),
-    };
-    if !current.is_some_and(|stack| stack.item < item) {
-        return Vec::new();
-    }
-    let raise = |stack: &mut ItemStack| stack.item = item;
-    match at {
-        At::Member(owner) => {
-            carried.get_mut(owner).unwrap().stacks_mut().find(|s| omnigun(s)).map(raise)
+        let room = items.pack_room(member, definition.id, true, 1)
+            + items.pool_room(party, definition.id, true, 1);
+        if room == 0 {
+            return;
         }
-        At::Hand => party.hand.held.as_mut().map(raise),
-        At::Pool => party.pool.stacks.iter_mut().find(|s| omnigun(s)).map(raise),
+        let given = make(&mut commands, definition, roll_amount(definition, &mut rng, false), true);
+        commands.entity(given).insert(Known { identified: true, spell: false, curse: true });
+        commands.trigger(Give {
+            item: given,
+            to: Some(member),
+            party,
+            pool_first: false,
+            told: true,
+        });
+        news.write(told(0));
+        return;
+    }
+    let Some((id, tier)) = tier(level) else { return };
+    let current = carries(member)
+        .or_else(|| items.held(party).filter(omnigun))
+        .or_else(|| roster.iter().find_map(carries))
+        .or_else(|| items.pool(party).iter().copied().find(omnigun));
+    let Some(current) = current.filter(|&current| items.id(current).is_some_and(|now| now < id))
+    else {
+        return;
     };
-    vec![told(tier)]
+    // The same gun, grown: what it is made of is read again from the
+    // definition it has risen to.
+    let definition = &content.items[id];
+    commands.entity(current).insert((Item(id), Weight(definition.weight), Kind(definition.kind)));
+    if let Some(wearable) = wearable(definition) {
+        commands.entity(current).insert(wearable);
+    }
+    let full = definition.initial_quantity.maximum() as u16;
+    commands.entity(current).entry::<Charges>().and_modify(move |mut charges| charges.full = full);
+    if let Some(bearer) = items.bearer(current) {
+        commands.trigger(crate::game::actors::Refit { entity: bearer });
+    }
+    news.write(told(tier));
 }

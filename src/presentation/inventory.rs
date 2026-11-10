@@ -31,8 +31,9 @@ use crate::content::ui::SpriteSheet;
 use crate::game::GameplaySet;
 use crate::game::characters::{Character, Gender, Race, Vitals};
 use crate::game::data::Catalogs;
-use crate::game::inventory::{
-    BACKPACK_SLOTS, Carried, EquipSlot, ItemAt, ItemStack, MemberSlot, PartyInventory, Slot,
+use crate::game::inventory::{EquipSlot, PartyInventory};
+use crate::game::items::{
+    Identify, ItemNews, Items, Merge, PACK_SLOTS, Pass, Place, Refused, Swap,
 };
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::retail_controls::FocusRing;
@@ -116,19 +117,19 @@ struct ItemActionButton(ItemAction);
 fn press_item_action(
     click: On<Activate>,
     buttons: Query<&ItemActionButton>,
-    screen: Option<Single<(&InventoryScreen, &mut ItemAction)>>,
-    mut inventory: crate::game::inventory::operations::InventoryOperations,
+    screen: Option<Single<&mut ItemAction, With<InventoryScreen>>>,
+    party: Single<Entity, With<PartyRoster>>,
+    held: Items,
+    mut commands: Commands,
 ) {
-    let (Ok(&ItemActionButton(pressed)), Some(screen)) = (buttons.get(click.entity), screen) else {
+    let (Ok(&ItemActionButton(pressed)), Some(mut action)) = (buttons.get(click.entity), screen)
+    else {
         return;
     };
-    let (screen, mut action) = screen.into_inner();
-    *action = if *action == pressed {
+    **action = if **action == pressed {
         ItemAction::None
-    } else if pressed == ItemAction::Identify && inventory.holds() {
-        if let Err(refusal) = inventory.identify(screen.member, ItemAt::Hand) {
-            info!("identifying refused: {refusal:?}");
-        }
+    } else if let Some(item) = held.held(*party).filter(|_| pressed == ItemAction::Identify) {
+        commands.trigger(Identify { item, party: *party });
         ItemAction::None
     } else {
         pressed
@@ -362,12 +363,14 @@ fn enter_inventory(
 struct CloseReview<'w, 's> {
     commands: Commands<'w, 's>,
     view: Single<'w, 's, &'static InventoryScreen>,
+    party: Single<'w, 's, Entity, With<PartyRoster>>,
     next: ResMut<'w, NextState<Screen>>,
 }
 impl CloseReview<'_, '_> {
+    /// Closing puts away what is in hand: to the reviewed member, else the
+    /// pool.
     fn finish(&mut self) {
-        self.commands
-            .trigger(crate::game::inventory::operations::PutAwayHeld { member: self.view.member });
+        self.commands.trigger(Pass { party: *self.party, to: self.view.member });
         self.next.set(Screen::World);
     }
 }
@@ -399,33 +402,45 @@ fn statue(race: Race, gender: Gender) -> String {
 /// A place an item can be clicked in or out of.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Cell {
-    Member(Slot),
+    /// A slot the member wears things in.
+    Slot(EquipSlot),
+    /// A slot of the member's pack.
+    Pack(usize),
     /// A pool cell by its position on screen.
     Pool(usize),
 }
 
-/// A transient display address, never a retained gameplay item identity.
-/// Pool activation resolves its row to the owned stack before transferring.
-enum CellLocation {
-    Member(MemberSlot),
-    Pool(usize),
-}
-
 impl Cell {
-    fn location(self, member: Entity, pool_start: usize) -> CellLocation {
+    /// The place the cell stands for: the pool scrolled to `pool_start`.
+    fn place(self, member: Entity, party: Entity, pool_start: usize) -> Place {
         match self {
-            Self::Member(slot) => CellLocation::Member(MemberSlot { member, slot }),
-            Self::Pool(index) => CellLocation::Pool(pool_start + index),
+            Self::Slot(slot) => Place::Slot { member, slot },
+            Self::Pack(slot) => Place::Pack { member, slot },
+            Self::Pool(index) => Place::Pool { party, row: pool_start + index },
+        }
+    }
+
+    /// The item in the cell, if any.
+    fn item(
+        self,
+        held: &Items,
+        member: Entity,
+        party: Entity,
+        pool_start: usize,
+    ) -> Option<Entity> {
+        match self.place(member, party, pool_start) {
+            Place::Slot { slot, .. } => held.worn(member, slot),
+            Place::Pack { slot, .. } => held.pack(member)[slot],
+            Place::Pool { row, .. } => held.pool(party).get(row).copied(),
+            _ => None,
         }
     }
 
     /// Where the cell is and its size.
     fn area(self) -> Rect {
         match self {
-            Cell::Member(Slot::Equipment(slot)) => equipment_cell(slot),
-            Cell::Member(Slot::Backpack(i)) => {
-                Rect::from_corners(grid(11.0, i), grid(11.0, i) + CELL)
-            }
+            Cell::Slot(slot) => equipment_cell(slot),
+            Cell::Pack(i) => Rect::from_corners(grid(11.0, i), grid(11.0, i) + CELL),
             Cell::Pool(i) => Rect::from_corners(grid(512.0, i), grid(512.0, i) + CELL),
         }
     }
@@ -447,12 +462,13 @@ enum CellPart {
 
 /// A cell's count: a stack above one, charges or shots; `?` for charges
 /// not yet identified.
-fn count_label(item: &ItemStack, kind: QuantityKind) -> Option<String> {
-    let count = item.remaining_uses().unwrap_or(item.count());
+fn count_label(held: &Items, item: Entity, kind: QuantityKind) -> Option<String> {
+    let count = held.charges(item).unwrap_or(held.units(item) as u16);
+    let identified = held.known(item).is_some_and(|known| known.identified);
     match kind {
         QuantityKind::None | QuantityKind::Unlabelled => None,
         QuantityKind::Stack if count <= 1 => None,
-        QuantityKind::Charges | QuantityKind::Uses if !item.identified => Some("?".to_owned()),
+        QuantityKind::Charges | QuantityKind::Uses if !identified => Some("?".to_owned()),
         _ => Some(count.to_string()),
     }
 }
@@ -575,16 +591,14 @@ fn cell_controls(cell: Cell, art: &InventoryArt) -> impl Scene {
     let area = cell.area();
     let size = area.size();
     let (frame, at, count_at, width) = match cell {
-        Cell::Member(Slot::Equipment(_)) => {
-            (1, Vec2::ZERO, Vec2::new(2.0, size.y - 13.0), size.x - 4.0)
-        }
+        Cell::Slot(_) => (1, Vec2::ZERO, Vec2::new(2.0, size.y - 13.0), size.x - 4.0),
         _ => (0, Vec2::ONE, Vec2::new(1.0, 40.0), 44.0),
     };
-    let grid = !matches!(cell, Cell::Member(Slot::Equipment(_)));
+    let grid = !matches!(cell, Cell::Slot(_));
     let fill = art.fill.clone();
     let node = absolute(area.min, size + 1.0);
     let rim = match cell {
-        Cell::Member(Slot::Equipment(slot)) => equipment_rim(slot) + 3,
+        Cell::Slot(slot) => equipment_rim(slot) + 3,
         _ => 0,
     };
     bsn! {
@@ -631,8 +645,8 @@ fn spawn_inventory_screen(
     let bottom_bar = picture(art.bottom_bar.clone(), 0, Vec2::new(0.0, 450.0));
     let cells: Vec<_> = EnumSet::<EquipSlot>::all()
         .iter()
-        .map(|slot| Cell::Member(Slot::Equipment(slot)))
-        .chain((0..BACKPACK_SLOTS).map(|i| Cell::Member(Slot::Backpack(i))))
+        .map(Cell::Slot)
+        .chain((0..PACK_SLOTS).map(Cell::Pack))
         .map(|cell| cell_controls(cell, &art))
         .collect();
     let content = commands
@@ -769,6 +783,7 @@ fn draw_header_hands(
     assets: Res<AssetServer>,
     content: If<Res<Catalogs>>,
     members: Query<crate::presentation::character_view::CharacterView>,
+    held: Items,
     art: Res<InventoryArt>,
     mut parts: Query<(&HeaderHand, &mut Visibility, Option<&mut Picture>, Option<&mut BitmapText>)>,
 ) {
@@ -776,11 +791,10 @@ fn draw_header_hands(
     let view = members.get(screen.member).unwrap();
     let armour = view.armour();
     let profile = view.profile;
-    let carried = view.carried;
-    let two_handed = carried
-        .worn(EquipSlot::Primary)
-        .map(|item| &catalog[item.item])
-        .is_some_and(|item| item.two_handed);
+    let worn = |slot| held.worn(screen.member, slot);
+    let two_handed = worn(EquipSlot::Primary)
+        .and_then(|item| held.id(item))
+        .is_some_and(|id| catalog[id].two_handed);
     for (part, mut visibility, picture, text) in &mut parts {
         let mut source = None;
         let mut path = None;
@@ -798,7 +812,7 @@ fn draw_header_hands(
             HeaderHand::Hand(off) => {
                 shown = !(off && two_handed);
                 let slot = if off { EquipSlot::Secondary } else { EquipSlot::Primary };
-                let item = carried.worn(slot).map(|item| &catalog[item.item]);
+                let item = worn(slot).and_then(|item| held.id(item)).map(|id| &catalog[id]);
                 let (hand_path, frame, x) = if let Some(item) = item {
                     (item.image.clone(), 2, 132.0)
                 } else {
@@ -823,14 +837,9 @@ fn draw_header_hands(
                 shown = !(off && two_handed);
                 let slot = if off { EquipSlot::Secondary } else { EquipSlot::Primary };
                 value = Some(
-                    match carried
-                        .worn(slot)
-                        .filter(|item| catalog[item.item].quantity == QuantityKind::Stack)
-                        .map(ItemStack::count)
-                    {
-                        Some(count) => count.to_string(),
-                        _ => String::new(),
-                    },
+                    worn(slot)
+                        .and_then(|item| held.count(item))
+                        .map_or_else(String::new, |count| count.to_string()),
                 );
             }
             HeaderHand::Armour => value = Some(armour.average().to_string()),
@@ -1008,8 +1017,9 @@ fn draw_cells(
     screen: Single<&InventoryScreen>,
     assets: Res<AssetServer>,
     content: If<Res<Catalogs>>,
-    members: Query<(&Character, &Carried)>,
-    party: Single<&PartyInventory>,
+    members: Query<&Character>,
+    party: Single<Entity, With<PartyRoster>>,
+    held: Items,
     pool_scroll: Option<Single<&bevy::ui_widgets::SliderValue, With<pool_scroll::PoolScroll>>>,
     cells: Query<(&ItemCell, &Children)>,
     mut displays: Query<(
@@ -1020,23 +1030,21 @@ fn draw_cells(
     )>,
 ) {
     let catalog = &content.items;
-    let (profile, carried) = members.get(screen.member).unwrap();
+    let profile = members.get(screen.member).unwrap();
     let pool_start = pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2);
     for (cell, children) in &cells {
-        let item = match cell.cell.location(screen.member, pool_start) {
-            CellLocation::Member(slot) => carried.slot(slot.slot),
-            CellLocation::Pool(index) => party.pool.stacks.get(index),
-        };
-        let definition = item.map(|i| (i, &catalog[i.item]));
-        let grid = !matches!(cell.cell, Cell::Member(Slot::Equipment(_)));
-        let count = definition.and_then(|(i, d)| count_label(i, d.quantity));
+        let item = cell.cell.item(&held, screen.member, *party, pool_start);
+        let definition = item.and_then(|i| Some((i, &catalog[held.id(i)?])));
+        let grid = !matches!(cell.cell, Cell::Slot(_));
+        let count = definition.and_then(|(i, d)| count_label(&held, i, d.quantity));
         for child in children.iter() {
             let Ok((part, mut visible, picture, label)) = displays.get_mut(child) else { continue };
             let show = match *part {
                 CellPart::Picture => definition.is_some(),
                 CellPart::Count => count.is_some(),
                 CellPart::Unusable => grid && definition.is_some_and(|(_, d)| !profile.can_use(d)),
-                CellPart::Unidentified => definition.is_some_and(|(i, _)| !i.identified),
+                CellPart::Unidentified => definition
+                    .is_some_and(|(i, _)| held.known(i).is_some_and(|known| !known.identified)),
                 CellPart::Rim => !grid && definition.is_some(),
             };
             visible.set_if_neq(visible_if(show));
@@ -1084,7 +1092,8 @@ fn click_cell(
     click: On<Activate>,
     cells: Query<&ItemCell>,
     screen: Option<Single<(&InventoryScreen, &mut ItemAction)>>,
-    mut inventory: crate::game::inventory::operations::InventoryOperations,
+    party: Single<Entity, With<PartyRoster>>,
+    held: Items,
     selected: Option<Single<&bevy::ui_widgets::SelectedTab, With<review::PageTabs>>>,
     tabs: Query<&review::PageButton>,
     pool_scroll: Option<Single<&bevy::ui_widgets::SliderValue, With<pool_scroll::PoolScroll>>>,
@@ -1095,10 +1104,7 @@ fn click_cell(
             Without<crate::game::npcs::conversation::Closing>,
         ),
     >,
-    (mut ids, mut rng): (
-        ResMut<crate::game::inventory::ItemIds>,
-        ResMut<crate::game::rng::GameRng>,
-    ),
+    mut commands: Commands,
 ) {
     if !conversations.is_empty() {
         return;
@@ -1113,45 +1119,50 @@ fn click_cell(
         return;
     }
     let (screen, mut action) = screen.into_inner();
-    let destination = cell
-        .cell
-        .location(screen.member, pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2));
+    let pool_start = pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2);
+    let (member, party) = (screen.member, *party);
     // An armed action takes the click; an empty cell disarms it.
-    let target = match destination {
-        CellLocation::Member(slot) => Some(ItemAt::Slot(slot.slot)),
-        CellLocation::Pool(row) => inventory.pool_row(row).map(ItemAt::Pool),
-    };
-    use crate::game::inventory::{Refusal, merge::Merged};
+    let target = cell.cell.item(&held, member, party, pool_start);
     match *action {
         ItemAction::Identify => {
-            if let Some(at) = target
-                && let Err(refusal) = inventory.identify(screen.member, at)
-                && refusal != Refusal::Nothing
-            {
-                info!("identifying refused: {refusal:?}");
+            if let Some(item) = target {
+                commands.trigger(Identify { item, party });
             }
             *action = ItemAction::None;
             return;
         }
-        // Retail keeps merging armed until something is made or stacked.
-        ItemAction::Merge if inventory.holds() => {
-            match target.map(|at| inventory.merge(screen.member, at, (&mut ids, &mut rng))) {
-                None | Some(Ok(Merged::Made(_) | Merged::Stacked) | Err(Refusal::Nothing)) => {
-                    *action = ItemAction::None;
-                }
-                Some(Ok(_)) => {}
-                Some(Err(refusal)) => info!("merging refused: {refusal:?}"),
+        // Retail keeps merging armed until something is made or stacked: the
+        // merge says so ([`ItemNews::Merged`], see [`disarm_merge`]).
+        ItemAction::Merge if held.held(party).is_some() => {
+            match target {
+                Some(onto) => commands.trigger(Merge { party, member, onto }),
+                None => *action = ItemAction::None,
             }
             return;
         }
         _ => {}
     }
-    let result = match destination {
-        CellLocation::Member(slot) => inventory.interact_slot(slot),
-        CellLocation::Pool(index) => inventory.click_pool(index),
-    };
-    if let Err(refusal) = result {
-        info!("inventory: {:?} refused: {refusal:?}", cell.cell);
+    commands.trigger(Swap { party, at: cell.cell.place(member, party, pool_start) });
+}
+
+/// Merging is spent once something is made or stacked, or when it has
+/// nothing to merge with; the other ways it comes to nothing leave it armed.
+fn disarm_merge(
+    mut news: MessageReader<ItemNews>,
+    mut refused: MessageReader<Refused>,
+    mut action: Single<&mut ItemAction, With<InventoryScreen>>,
+) {
+    let merged = news.read().any(|news| *news == ItemNews::Merged);
+    let nothing = refused.read().any(|refused| refused.0 == crate::game::items::Refusal::Nothing);
+    if (merged || nothing) && **action == ItemAction::Merge {
+        **action = ItemAction::None;
+    }
+}
+
+/// What the party could not do with an item is logged; nothing is shown.
+fn log_refusals(mut refused: MessageReader<Refused>) {
+    for Refused(refusal) in refused.read() {
+        info!("inventory refused: {refusal:?}");
     }
 }
 
@@ -1173,7 +1184,8 @@ pub fn spawn_held_picture(mut commands: Commands) {
 }
 
 pub fn follow_held(
-    party: Single<Ref<PartyInventory>>,
+    party: Single<Entity, With<PartyRoster>>,
+    held: Items,
     pointers: Query<(&PointerId, &PointerLocation)>,
     scale: Res<UiScale>,
     assets: Res<AssetServer>,
@@ -1184,7 +1196,7 @@ pub fn follow_held(
 ) {
     let (image, node, visibility) = &mut *picture;
     let catalog = &content.items;
-    let definition = party.hand.held.as_ref().map(|h| &catalog[h.item]);
+    let definition = held.held(*party).and_then(|item| held.id(item)).map(|id| &catalog[id]);
     let cursor = pointers
         .iter()
         .find(|(id, _)| **id == PointerId::Mouse)
@@ -1244,9 +1256,10 @@ impl Plugin for InventoryPlugin {
                         draw_gold,
                         draw_cells,
                     )
-                        .after(GameplaySet::Burden)
+                        .after(GameplaySet::Bodies)
                         .run_if(any_with_component::<InventoryScreen>),
                     follow_held,
+                    (disarm_merge, log_refusals).run_if(any_with_component::<InventoryScreen>),
                 ),
             )
             .add_systems(
@@ -1264,7 +1277,7 @@ impl Plugin for InventoryPlugin {
                     spells::refresh,
                     pool_scroll::sync.before(draw_cells),
                 )
-                    .after(GameplaySet::Burden),
+                    .after(GameplaySet::Bodies),
             );
     }
 }

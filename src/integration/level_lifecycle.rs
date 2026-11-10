@@ -9,7 +9,6 @@ use crate::content::monster::MonsterBody;
 use crate::content::species::{MonsterCatalog, Species};
 use crate::game::characters::{Character, Gender, Profession, Race};
 use crate::game::data::Catalogs;
-use crate::game::inventory::ItemIds;
 use crate::game::party::body::{PartyBody, PartyMotionConfig};
 use crate::game::party::roster::Party;
 use crate::game::rng::GameRng;
@@ -39,7 +38,6 @@ fn app() -> App {
         .add_systems(Update, crate::game::characters::settle_deaths.before(activate_level))
         .init_resource::<crate::game::factions::Factions>()
         .add_message::<crate::game::factions::FactionNews>()
-        .init_resource::<ItemIds>()
         .init_resource::<GameRng>()
         .add_message::<LevelReady>()
         .add_message::<Travel>()

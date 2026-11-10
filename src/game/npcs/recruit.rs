@@ -2,11 +2,15 @@
 use super::{ActorId, Npc, NpcBodies, NpcBody, NpcLocation};
 use crate::game::actors::Attributes;
 use crate::{
-    content::npcs::{NpcCharacter, NpcId},
+    content::{
+        items::ItemId,
+        npcs::{NpcCharacter, NpcId},
+    },
     game::{
         characters::{Character, Dead, Vitals},
         data::Catalogs,
-        inventory::{Carried, EquipSlot, Equipped, ItemIds, PartyInventory, make_item},
+        inventory::EquipSlot,
+        items::{Cursed, ItemStack, Items, Place, Put, receive, unpack},
         magic::{LearnedSpells, SpellPoints},
         party::{
             body::PartyBody,
@@ -22,23 +26,23 @@ use crate::{
 };
 use avian3d::prelude::Position;
 use bevy::prelude::*;
-#[derive(Bundle, Clone)]
+use enum_map::Enum;
+use enumset::EnumSet;
+/// A character who is not in the party, with what they wore and packed as
+/// values: items are things only while the party has them (see
+/// [`ItemStack`]).
+#[derive(Clone)]
 pub struct Profile {
     character: Character,
     vitals: Vitals,
-    carried: Carried,
+    worn: Vec<(EquipSlot, ItemStack)>,
+    packed: Vec<(usize, ItemStack)>,
     spells: LearnedSpells,
     points: SpellPoints,
 }
 #[derive(Component, Clone)]
 pub struct StoredCharacter(Profile);
-pub fn character(
-    t: &NpcCharacter,
-    content: &Catalogs,
-    ids: &mut ItemIds,
-    rng: &mut GameRng,
-) -> StoredCharacter {
-    use enum_map::Enum;
+pub fn character(t: &NpcCharacter, content: &Catalogs, rng: &mut GameRng) -> StoredCharacter {
     let mut c = Character::new(&t.name, t.race, t.gender, t.profession);
     c.attributes = t.attributes;
     c.skill_points = t.skills;
@@ -62,22 +66,26 @@ pub fn character(
             .filter(|&s| crate::game::magic::can_learn(&c, &content.spells[s]))
             .collect(),
     );
-    let mut carried = Carried::default();
-    for (slot, item) in t.equipment.iter().enumerate() {
-        if let Some(item) = item {
-            carried.equipment[EquipSlot::from_usize(slot)] =
-                Some(Equipped::new(make_item(&content.items[*item], ids, rng, true, true)));
-        }
-    }
-    for (slot, item) in t.backpack.iter().enumerate() {
-        if let Some(item) = item {
-            carried.backpack[slot] = Some(make_item(&content.items[*item], ids, rng, true, true));
-        }
-    }
+    let stack = |item: &ItemId, rng: &mut GameRng| {
+        ItemStack::rolled(&content.items[*item], rng, true, true)
+    };
+    let worn = t
+        .equipment
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, item)| Some((EquipSlot::from_usize(slot), stack(item.as_ref()?, rng))))
+        .collect();
+    let packed = t
+        .backpack
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, item)| Some((slot, stack(item.as_ref()?, rng))))
+        .collect();
     StoredCharacter(Profile {
         vitals: Vitals::new(&c),
         character: c,
-        carried,
+        worn,
+        packed,
         spells,
         points: default(),
     })
@@ -188,12 +196,25 @@ fn join(
                     commands.entity(b).despawn();
                 }
             }
-            let name = profile.character.name.clone();
+            let Profile { character, vitals, worn, packed, spells, points } = profile;
             commands.entity(request.actor).remove::<StoredCharacter>().insert((
-                Name::new(name),
-                profile,
+                Name::new(character.name.clone()),
+                character,
+                vitals,
+                spells,
+                points,
                 PartyMember(party_id),
             ));
+            // What they wore and packed becomes things again.
+            let member = request.actor;
+            let wearing =
+                worn.iter().map(|(slot, stack)| (Place::Slot { member, slot: *slot }, stack));
+            let packing =
+                packed.iter().map(|(slot, stack)| (Place::Pack { member, slot: *slot }, stack));
+            for (at, stack) in wearing.chain(packing) {
+                let item = unpack(&mut commands, &content.items[stack.item], stack);
+                commands.trigger(Put { item, at });
+            }
             occupied += 1;
             admitted.insert(request.actor);
             Ok(())
@@ -204,9 +225,10 @@ fn join(
 /// Dismissal is a complete ownership transfer; the caller does not edit formation.
 pub fn dismiss(
     In(actor): In<Entity>,
-    mut party: Single<(&PartyRoster, &mut PartyInventory, &Position, &PartyBody)>,
+    party: Single<(Entity, &PartyRoster, &Position, &PartyBody)>,
     records: Query<(&ActorId, &NpcLocation), With<Npc>>,
-    profiles: Query<(&Character, &Vitals, &Carried, &LearnedSpells, &SpellPoints)>,
+    profiles: Query<(&Character, &Vitals, &LearnedSpells, &SpellPoints)>,
+    (held, cursed): (Items, Query<&Cursed>),
     level: Single<(
         Entity,
         &Level,
@@ -219,23 +241,16 @@ pub fn dismiss(
     mut configs: ResMut<Assets<WalkerMotionConfig>>,
     mut commands: Commands,
 ) -> bool {
-    let (roster, inventory, at, facing) = &mut *party;
+    let (party, roster, at, facing) = *party;
     if !roster.contains(&actor) {
         return false;
     }
     let Ok((id, location)) = records.get(actor) else { return false };
-    let Ok((c, v, carried, spells, points)) = profiles.get(actor) else { return false };
+    let Ok((c, v, spells, points)) = profiles.get(actor) else { return false };
     let (root, played, navigation, handles) = *level;
     let Some(shape) = handles.get(location.species, &body_assets) else { return false };
     let feet = PartyBody::feet(at)
         + Quat::from_rotation_y(facing.yaw + std::f32::consts::FRAC_PI_4) * Vec3::NEG_Z * 2.0;
-    let mut profile = Profile {
-        character: c.clone(),
-        vitals: v.clone(),
-        carried: carried.clone(),
-        spells: spells.clone(),
-        points: points.clone(),
-    };
     let wanted = content.npcs[id.0].character.as_ref().map(|t| &t.wanted);
     let wants = |item: crate::content::items::ItemId| {
         wanted.is_some_and(|list| {
@@ -245,26 +260,39 @@ pub fn dismiss(
             })
         })
     };
-    let mut returned = vec![];
-    for slot in profile.carried.equipment.values_mut() {
-        if slot.as_ref().is_some_and(|e| {
-            !wants(e.stack.item) && (!content.items[e.stack.item].cursed || e.curse_released)
-        }) && let Some(e) = slot.take()
-        {
-            returned.push(e.stack);
+    // What they keep goes into their record; the rest returns to the party,
+    // or lies where the party stands if its pool is full.
+    let (mut worn, mut packed, mut returned) = (vec![], vec![], vec![]);
+    for slot in EnumSet::<EquipSlot>::all() {
+        let Some(item) = held.worn(actor, slot) else { continue };
+        let Some(stack) = held.stack(item, &content.items) else { continue };
+        let binds = cursed.get(item).is_ok_and(|curse| !curse.released);
+        if wants(stack.item) || binds {
+            worn.push((slot, stack));
+        } else {
+            returned.push(stack);
         }
+        commands.entity(item).despawn();
     }
-    for slot in &mut profile.carried.backpack {
-        if slot.as_ref().is_some_and(|s| !wants(s.item))
-            && let Some(s) = slot.take()
-        {
-            returned.push(s);
+    for (slot, item) in held.pack(actor).into_iter().enumerate() {
+        let Some(item) = item else { continue };
+        let Some(stack) = held.stack(item, &content.items) else { continue };
+        if wants(stack.item) {
+            packed.push((slot, stack));
+        } else {
+            returned.push(stack);
         }
+        commands.entity(item).despawn();
     }
-    let mut overflow = vec![];
-    for item in returned {
-        overflow.extend(inventory.pool.receive(item, &content.items));
-    }
+    let profile = Profile {
+        character: c.clone(),
+        vitals: v.clone(),
+        worn,
+        packed,
+        spells: spells.clone(),
+        points: points.clone(),
+    };
+    let overflow = return_to_pool(party, returned, &held, &content, &mut commands);
     crate::game::world::items::drop_loot(
         &mut commands,
         root,
@@ -306,9 +334,23 @@ pub fn dismiss(
     }
     commands
         .entity(actor)
-        .remove::<(PartyMember, Character, Vitals, Carried, LearnedSpells, SpellPoints)>()
+        .remove::<(PartyMember, Character, Vitals, LearnedSpells, SpellPoints)>()
         .insert(StoredCharacter(profile));
+    commands.trigger(crate::game::items::Reweigh);
     true
+}
+
+/// What someone leaving gives back to the party's pool; what the pool has
+/// no room for is returned.
+fn return_to_pool(
+    party: Entity,
+    stacks: Vec<ItemStack>,
+    held: &Items,
+    content: &Catalogs,
+    commands: &mut Commands,
+) -> Vec<ItemStack> {
+    let taken = receive(held, commands, &content.items, (party, None), (&stacks, false));
+    stacks.into_iter().zip(taken).filter_map(|(stack, taken)| stack.without(taken)).collect()
 }
 fn died(event: On<Add<Dead>>, mut records: Query<&mut Npc, With<PartyMember>>) {
     if let Ok(mut npc) = records.get_mut(event.entity) {
@@ -326,10 +368,11 @@ fn revived(event: On<Remove<Dead>>, mut records: Query<&mut Npc, With<PartyMembe
 fn retire_fallen(
     battles: Query<(), With<crate::game::combat::Battle>>,
     members: Query<
-        (Entity, &Character, &Vitals, &Carried, &LearnedSpells, &SpellPoints),
+        (Entity, &Character, &Vitals, &LearnedSpells, &SpellPoints),
         (With<Npc>, With<PartyMember>, With<Dead>),
     >,
-    mut party: Single<(&mut PartyInventory, &Position)>,
+    party: Single<(Entity, &Position)>,
+    held: Items,
     level: Single<Entity, With<Level>>,
     content: If<Res<Catalogs>>,
     mut commands: Commands,
@@ -337,22 +380,17 @@ fn retire_fallen(
     if !battles.is_empty() {
         return;
     }
-    for (entity, character, vitals, carried, spells, points) in &members {
-        let mut carried = carried.clone();
-        let mut items = Vec::new();
-        for slot in carried.equipment.values_mut() {
-            if let Some(item) = slot.take() {
-                items.push(item.stack);
-            }
-        }
-        for slot in &mut carried.backpack {
-            items.extend(slot.take());
-        }
-        let (inventory, at) = &mut *party;
-        let mut overflow = vec![];
-        for item in items {
-            overflow.extend(inventory.pool.receive(item, &content.items));
-        }
+    let (party, at) = *party;
+    for (entity, character, vitals, spells, points) in &members {
+        // Everything they carried returns to the party.
+        let returned: Vec<_> = held
+            .carried(entity)
+            .filter_map(|item| {
+                commands.entity(item).despawn();
+                held.stack(item, &content.items)
+            })
+            .collect();
+        let overflow = return_to_pool(party, returned, &held, &content, &mut commands);
         crate::game::world::items::drop_loot(
             &mut commands,
             *level,
@@ -362,11 +400,12 @@ fn retire_fallen(
         );
         commands
             .entity(entity)
-            .remove::<(PartyMember, Character, Vitals, Carried, LearnedSpells, SpellPoints)>()
+            .remove::<(PartyMember, Character, Vitals, LearnedSpells, SpellPoints)>()
             .insert(StoredCharacter(Profile {
                 character: character.clone(),
                 vitals: vitals.clone(),
-                carried,
+                worn: vec![],
+                packed: vec![],
                 spells: spells.clone(),
                 points: points.clone(),
             }));

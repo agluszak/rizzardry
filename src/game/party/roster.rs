@@ -5,9 +5,10 @@ use bevy::prelude::*;
 use serde::Deserialize;
 
 use crate::content::characters::Skill;
-use crate::content::items::{ItemCatalog, ItemId};
+use crate::content::items::ItemId;
 use crate::game::characters::{Character, Gender, Profession, Race};
-use crate::game::inventory::{Carried, ItemIds, make_item, place_at_creation};
+use crate::game::data::Catalogs;
+use crate::game::items::{Outfit, make, roll_amount};
 use crate::game::rng::GameRng;
 
 /// The party: who adventures together, how they stand and what they share.
@@ -18,6 +19,8 @@ use crate::game::rng::GameRng;
     PartyRoster,
     super::formation::Formation,
     crate::game::inventory::PartyInventory,
+    crate::game::items::Pool,
+    crate::game::items::Hand,
     super::body::PartyMovement
 )]
 pub struct Party;
@@ -30,8 +33,8 @@ pub struct Party;
 pub struct PartyMember(pub Entity);
 
 /// The party's members in slot order, maintained by Bevy from
-/// [`PartyMember`]. Each is an entity with a [`Character`] and what it
-/// [`Carried`]. Roster order is the order of rules, RNG draws and the UI.
+/// [`PartyMember`]. Each is an entity with a [`Character`] and the
+/// items it wears and packs. Roster order is the order of rules, RNG draws and the UI.
 #[derive(Component, Debug, Default)]
 #[relationship_target(relationship = PartyMember)]
 pub struct PartyRoster(EntityIndexSet);
@@ -84,36 +87,33 @@ impl Recruit {
 /// player's allocated points, vitals, learned spells with full spell
 /// points, starting equipment at full quantity, identified and worn where
 /// it fits (retail `AddCharacterStartingEquipment`), order, membership and
-/// seat. Items are made in the starting set's order, so their identities
-/// and random rolls follow the order members join.
+/// seat. Items are made in the starting set's order.
 pub fn recruit_character(
     commands: &mut Commands,
     party: Entity,
     (character, learned): (Character, crate::game::magic::LearnedSpells),
-    items: &ItemCatalog,
-    (ids, rng): (&mut ItemIds, &mut GameRng),
+    content: &Catalogs,
+    rng: &mut GameRng,
 ) -> Entity {
-    let mut carried = Carried::default();
-    for id in starting_items(&character) {
-        let definition = &items[id];
-        let item = make_item(definition, ids, rng, true, true);
-        if place_at_creation(&mut carried, item, items, &character).is_some() {
-            warn!("{}: no room for {}", character.name, definition.name);
-        }
-    }
+    let starting = starting_items(&character);
     let points = crate::game::magic::SpellPoints::default();
     let vitals = crate::game::characters::Vitals::new(&character);
-    commands
+    let member = commands
         .spawn((
             Name::new(character.name.clone()),
             character,
             vitals,
             learned,
             points,
-            carried,
             PartyMember(party),
         ))
-        .id()
+        .id();
+    for id in starting {
+        let definition = &content.items[id];
+        let item = make(commands, definition, roll_amount(definition, rng, true), true);
+        commands.trigger(Outfit { member, item });
+    }
+    member
 }
 
 /// A new character's starting items (retail `g_starting_equipment` and

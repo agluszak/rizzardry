@@ -11,7 +11,8 @@ use bevy_tnua::{TnuaController, TnuaMotor};
 use super::items::drop_loot;
 use super::navigation::{Walker, feet};
 use super::population::Monster;
-use crate::game::inventory::{ItemIds, PartyInventory, make_item};
+use crate::game::inventory::PartyInventory;
+use crate::game::items::ItemStack;
 use crate::game::rng::GameRng;
 
 /// A monster has died: its autonomous work stops, and unless it was
@@ -46,8 +47,7 @@ pub fn monster_died(
         Query<&crate::game::characters::Character>,
     ),
     content: If<Res<crate::game::data::Catalogs>>,
-    (mut ids, mut rng, mut factions, clock): (
-        ResMut<ItemIds>,
+    (mut rng, mut factions, clock): (
         ResMut<GameRng>,
         ResMut<crate::game::factions::Factions>,
         Res<crate::game::time::GameClock>,
@@ -99,7 +99,7 @@ pub fn monster_died(
     };
     purse.gold += gold;
     let items =
-        found.into_iter().map(|id| make_item(&catalog[id], &mut ids, rng, false, false)).collect();
+        found.into_iter().map(|id| ItemStack::rolled(&catalog[id], rng, false, false)).collect();
     let position = feet(at.translation(), walker);
     drop_loot(&mut commands, owner.0, position, items, catalog);
 }

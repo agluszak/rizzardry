@@ -4,7 +4,7 @@ mod playback;
 mod rewards;
 mod social;
 use super::trade::{self, TradeError, TradeSource};
-use crate::{content::npcs::TopicCategory, game::inventory::ItemRef};
+use crate::content::npcs::TopicCategory;
 use bevy::prelude::*;
 pub use input::quote_trade;
 pub use social::approach_ready;
@@ -71,7 +71,7 @@ pub enum Talk {
     Close,
     Recruit,
     Trade(TradeQuote),
-    Give { item: ItemRef },
+    Give { item: Entity },
     GiveGold { amount: u32 },
     Approach { approach: Approach },
 }

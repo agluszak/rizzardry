@@ -159,7 +159,7 @@ pub fn exit_after_run(
 pub fn log_news(
     names: crate::presentation::names::ActorNames,
     mut combat: MessageReader<crate::game::combat::CombatNews>,
-    mut items: MessageReader<crate::game::inventory::ItemNews>,
+    mut items: MessageReader<crate::game::items::ItemNews>,
     mut search: MessageReader<crate::game::world::search::SearchNews>,
     mut identified: MessageReader<crate::game::world::identify::Identified>,
     mut camp: MessageReader<crate::game::camp::CampNews>,

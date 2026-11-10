@@ -16,7 +16,7 @@ use crate::game::camp::CampNews;
 use crate::game::characters::Improved;
 use crate::game::combat::{Announcement, CombatNews};
 use crate::game::factions::FactionNews;
-use crate::game::inventory::ItemNews;
+use crate::game::items::ItemNews;
 use crate::game::world::identify::Identified;
 use crate::game::world::interaction::LockNews;
 use crate::game::world::search::SearchNews;
@@ -583,6 +583,7 @@ fn post_items(mut items: MessageReader<ItemNews>, strings: GameStrings, mut noti
             ItemNews::NoRoom => string(NO_ROOM),
             ItemNews::CannotDrop => string(CANNOT_DROP),
             ItemNews::CannotMerge => string(CANNOT_MERGE),
+            ItemNews::Merged => continue,
             ItemNews::Unskilled { member } => string(UNSKILLED_MERGE).replace("%s", member),
             ItemNews::Unidentified => string(MERGE_UNIDENTIFIED),
             ItemNews::Omnigun { member, gender, tier } => {

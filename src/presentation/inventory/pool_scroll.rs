@@ -1,6 +1,5 @@
 //! The item pool's two-column retail scrollbar.
 use super::{InventoryArt, POOL_CELLS};
-use crate::game::inventory::PartyInventory;
 use bevy::prelude::*;
 use bevy::ui_widgets::{SliderRange, SliderValue};
 
@@ -26,11 +25,12 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
 
 pub(super) fn sync(
     slider: Single<(Entity, &SliderValue, &SliderRange), With<PoolScroll>>,
-    party: Single<&PartyInventory>,
+    party: Single<Entity, With<crate::game::party::roster::PartyRoster>>,
+    held: crate::game::items::Items,
     mut commands: Commands,
 ) {
     let (slider, value, range) = *slider;
-    let max = maximum(party.pool.stacks.len()) as f32;
+    let max = maximum(held.pool(*party).len()) as f32;
     crate::presentation::retail_controls::set_scroll_maximum(
         &mut commands,
         slider,

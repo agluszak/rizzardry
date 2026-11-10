@@ -24,6 +24,7 @@ use crate::game::combat::{Battle, CombatNews, Combatants, Round};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::inventory::PartyInventory;
+use crate::game::items::Items;
 use crate::game::magic::casting::{MagicNews, Practice, Recast, Report};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
@@ -245,6 +246,7 @@ pub fn resolve(
     mut bodies: Query<Body>,
     party: Single<(Entity, &mut PartyInventory, &PartyRoster)>,
     mut laying: Laying,
+    held: Items,
     mut fight: Option<Single<(Entity, &mut Round, Option<&Combatants>), With<Battle>>>,
     (memberships, groups): (Query<&'static GroupMember>, Query<&'static GroupMembers>),
     obstacles: WorldObstacles,
@@ -261,6 +263,7 @@ pub fn resolve(
         definitions: &definitions,
         difficulty: *difficulty,
         fight: fight.as_ref().map(|fight| fight.0),
+        held: &held,
     };
     let mut log = Log::default();
     let mut queue = VecDeque::new();
@@ -349,6 +352,7 @@ pub fn resolve(
             }
         }
     }
+    log.scorch(&mut commands);
     damaged.write_batch(log.damaged);
     for raised in log.raised {
         commands.entity(raised).remove::<crate::game::characters::Dead>();

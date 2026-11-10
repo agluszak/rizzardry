@@ -9,6 +9,7 @@ use crate::game::characters::Character;
 use crate::game::combat::attack::Grip;
 use crate::game::data::Catalogs;
 use crate::game::inventory::EquipSlot;
+use crate::game::items::{Cursed, Items};
 use crate::game::magic::LearnedSpells;
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::character_view::{CharacterView, CharacterViewItem};
@@ -476,9 +477,12 @@ pub(super) fn show_pages(
 }
 
 pub(super) fn refresh(
-    (laid, party): (
+    (laid, party, held, fit, curses): (
         crate::game::actors::Laid,
         Option<Single<Entity, With<crate::game::party::roster::Party>>>,
+        Items,
+        Query<crate::game::items::Fit>,
+        Query<&Cursed>,
     ),
     learned_spells: Query<&LearnedSpells>,
     screen: Single<&InventoryScreen>,
@@ -496,24 +500,29 @@ pub(super) fn refresh(
 ) {
     let view = characters.get(screen.member).unwrap();
     let load = view.load();
-    let CharacterViewItem { profile, vitals, attributes, carried, .. } = view;
+    let CharacterViewItem { entity: member, profile, vitals, attributes, .. } = view;
     // The sheet shows the primary weapon slot's numbers.
-    let grip = Grip::of(carried, &content.items);
+    let grip = Grip::worn_by(member, (&held, &fit), &content.items);
     let primary = crate::game::inventory::WeaponSlot::Primary;
     let armour_view = info.as_ref().is_some_and(|info| info.armour);
     let effect_filter = info.as_ref().map_or(EffectFilter::All, |info| info.filter);
     let show_items = info.as_ref().is_some_and(|info| info.items);
     let catalog = &content.items;
-    let unidentified = carried.worn(EquipSlot::Primary).is_some_and(|item| !item.identified);
+    let worn = |slot| held.worn(member, slot);
+    let unidentified = worn(EquipSlot::Primary)
+        .and_then(|item| held.known(item))
+        .is_some_and(|known| !known.identified);
     let table = strings.table();
     let learned = learned_spells.get(screen.member).unwrap();
     let spell_catalog = &content.spells;
     let string = |id| table.and_then(|table| table.get(id)).unwrap_or("");
     let mut effects = Vec::new();
     if show_items {
-        for (slot, equipped) in carried.active_equipment().filter(|(_, e)| e.stack.identified) {
-            let item = &equipped.stack;
-            let definition = &catalog[item.item];
+        let identified = |&(_, item): &(EquipSlot, Entity)| {
+            held.known(item).is_some_and(|known| known.identified)
+        };
+        for (slot, item) in held.in_use(member).filter(identified) {
+            let Some(definition) = held.id(item).map(|id| &catalog[id]) else { continue };
             let armour = if definition.armor_class_bonus < 0
                 || (!matches!(
                     slot,
@@ -528,7 +537,7 @@ pub(super) fn refresh(
             } else {
                 0
             };
-            let cursed = definition.cursed && !equipped.curse_released;
+            let cursed = curses.get(item).is_ok_and(|curse| !curse.released);
             let beneficial = definition.hit_bonus > 0
                 || armour > 0
                 || definition.resistance_bonus.values().any(|&value| value > 0);
@@ -542,7 +551,7 @@ pub(super) fn refresh(
             {
                 continue;
             }
-            effects.push((item.display_name(definition, false), true));
+            effects.push((held.name(item, catalog, false).unwrap_or_default(), true));
             if definition.hit_bonus != 0 {
                 effects.push((format!("{} {:+}", string(0x8b7), definition.hit_bonus), false));
             }
@@ -664,8 +673,8 @@ pub(super) fn refresh(
             }
             Field::HandName(_) if armour_view => String::new(),
             Field::HandName(left) => {
-                let empty = carried.worn(EquipSlot::Primary).is_none()
-                    && carried.worn(EquipSlot::Secondary).is_none();
+                let empty =
+                    worn(EquipSlot::Primary).is_none() && worn(EquipSlot::Secondary).is_none();
                 string(match (empty, left) {
                     (true, true) => 0x8b5,
                     (true, false) => 0x8b4,

@@ -31,7 +31,7 @@ use crate::game::difficulty::Difficulty;
 use crate::game::hits::Release;
 use crate::game::hits::definitions::Definitions;
 use crate::game::hits::effects::{Body, BodyItem};
-use crate::game::inventory::{PartyInventory, StackId};
+use crate::game::items::Items;
 use crate::game::magic::casting::{Aim, MagicNews, Refusal, Source, UseContext};
 use crate::game::magic::{Outcome, Utility};
 use crate::game::rng::GameRng;
@@ -628,7 +628,8 @@ pub enum DeviceAct {
         source: Source,
     },
     Take {
-        picks: Vec<(StackId, u16)>,
+        /// Positions in the container's contents, and how many of each.
+        picks: Vec<(usize, u16)>,
         to: super::containers::Recipient,
     },
     Leave,
@@ -672,7 +673,8 @@ pub fn handle_device_requests(
     mut attempts: Query<(&mut DeviceInteraction, &AttemptOn)>,
     mut devices: Query<(Option<&mut Guarded>, Option<&mut DoorState>)>,
     mut bodies: Query<Body>,
-    party: Single<(&crate::game::party::roster::PartyRoster, &mut PartyInventory)>,
+    roster: Single<&crate::game::party::roster::PartyRoster>,
+    held: Items,
     (entering, battle): (Query<(), With<super::level::Destination>>, Query<(), With<Battle>>),
     states: Query<&super::triggers::LevelState, With<super::level::Level>>,
     (content, definitions, setting): (Res<Catalogs>, Res<Definitions>, Res<Difficulty>),
@@ -684,7 +686,7 @@ pub fn handle_device_requests(
         MessageWriter<MagicNews>,
     ),
 ) {
-    let (roster, mut inventory) = party.into_inner();
+    let roster = *roster;
     let occupied = !entering.is_empty() || !battle.is_empty();
     let asked: Vec<_> = requests
         .read()
@@ -792,7 +794,7 @@ pub fn handle_device_requests(
                             }
                             crate::game::magic::casting::pay(
                                 &mut body,
-                                &mut inventory,
+                                &held,
                                 (source, context),
                                 (
                                     &content,

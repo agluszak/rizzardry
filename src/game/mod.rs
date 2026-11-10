@@ -28,8 +28,6 @@ pub enum GameplaySet {
     /// Every body's derived facts follow their sources: where it stands,
     /// whose side it is on, what it is to what lands on it.
     Bodies,
-    /// Inventory has redistributed burden outside combat. Other stats are live rules.
-    Burden,
     Combat,
 }
 
@@ -51,13 +49,7 @@ impl Plugin for GamePlugin {
             .add_systems(Update, data::publish_catalogs.run_if(resource_exists::<data::Loading>))
             .configure_sets(
                 Update,
-                (
-                    GameplaySet::LevelActivation,
-                    GameplaySet::Bodies,
-                    GameplaySet::Burden,
-                    GameplaySet::Combat,
-                )
-                    .chain(),
+                (GameplaySet::LevelActivation, GameplaySet::Bodies, GameplaySet::Combat).chain(),
             )
             // Outside a fight deeds land as the frame's gameplay ends; a fight
             // settles its own on the fixed step.

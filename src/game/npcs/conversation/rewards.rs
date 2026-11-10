@@ -5,7 +5,8 @@ use crate::{
     game::{
         characters::{Character, Practise, Vitals},
         data::Catalogs,
-        inventory::{Carried, ItemIds, PartyInventory, make_item},
+        inventory::PartyInventory,
+        items::{ItemStack, Items, Lose, Place, Put, receive, unpack},
         party::{body::PartyBody, roster::PartyRoster},
         rng::GameRng,
         world::{
@@ -52,16 +53,15 @@ pub(super) fn practise(
 pub(super) fn deliver(
     mut rewards: MessageReader<Reward>,
     mut conversations: Query<&mut Conversation>,
-    mut party: Single<(&PartyRoster, &mut PartyInventory, &Position)>,
+    mut party: Single<(Entity, &PartyRoster, &mut PartyInventory, &Position)>,
     mut characters: Query<(&mut Character, &Vitals)>,
-    mut packs: Query<&mut Carried>,
+    held: Items,
     content: If<Res<Catalogs>>,
     level: Single<Entity, With<Level>>,
-    mut ids: ResMut<ItemIds>,
     mut rng: ResMut<GameRng>,
     mut commands: Commands,
 ) {
-    let (roster, inventory, at) = &mut *party;
+    let (party, roster, inventory, at) = &mut *party;
     for reward in rewards.read() {
         let result = match &reward.kind {
             Kind::Gold { giver, amount } => {
@@ -80,10 +80,21 @@ pub(super) fn deliver(
             }
             Kind::Give(id) => {
                 let d = &content.items[*id];
-                let stack = make_item(d, &mut ids, &mut rng, true, true);
-                if let Some(rest) = inventory.pool.receive(stack, &content.items) {
-                    if d.crucial && inventory.hand.held.is_none() {
-                        inventory.hand.held = Some(rest);
+                let stack = ItemStack::rolled(d, &mut rng, true, true);
+                // The pool takes what it has room for; what it cannot is
+                // held in the hand if it is crucial, else lies at their feet.
+                let taken = receive(
+                    &held,
+                    &mut commands,
+                    &content.items,
+                    (*party, None),
+                    (std::slice::from_ref(&stack), false),
+                );
+                let rest = stack.without(taken[0]);
+                if let Some(rest) = rest {
+                    if d.crucial && held.held(*party).is_none() {
+                        let item = unpack(&mut commands, d, &rest);
+                        commands.trigger(Put { item, at: Place::Hand { party: *party } });
                     } else {
                         items::lay(
                             &mut commands,
@@ -96,28 +107,18 @@ pub(super) fn deliver(
                 Some(QuestReward::Item { name: d.name.clone() })
             }
             Kind::Take(id) => {
+                let is = |&item: &Entity| held.id(item) == Some(*id);
                 let owner = roster.iter().find_map(|m| {
-                    packs
-                        .get(m)
-                        .ok()?
-                        .backpack
-                        .iter()
-                        .flatten()
-                        .find(|s| s.item == *id)
-                        .map(|s| (m, s.id))
+                    held.pack(m).into_iter().flatten().find(is).map(|item| (Some(m), item))
                 });
-                if let Some((member, id)) = owner {
-                    if let Ok(mut pack) = packs.get_mut(member) {
-                        pack.consume_backpack_units(id, 1);
-                    }
+                let pooled = held.pool(*party).iter().copied().find(is).map(|item| (None, item));
+                if let Some((member, item)) = owner.or(pooled) {
+                    commands.trigger(Lose { item, amount: 1 });
                     Some(QuestReward::Taken {
-                        member: characters.get(member).ok().map(|(c, _)| c.name.clone()),
+                        member: member
+                            .and_then(|member| characters.get(member).ok())
+                            .map(|(c, _)| c.name.clone()),
                     })
-                } else if let Some(id) =
-                    inventory.pool.stacks.iter().find(|s| s.item == *id).map(|s| s.id)
-                {
-                    inventory.pool.consume_units(id, 1);
-                    Some(QuestReward::Taken { member: None })
                 } else {
                     None
                 }

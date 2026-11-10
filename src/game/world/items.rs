@@ -8,7 +8,7 @@ use crate::game::data::Catalogs;
 
 use crate::content::items::{ItemCatalog, ItemDefinition, ItemId, QuantityKind};
 use crate::content::level::ItemPlacement;
-use crate::game::inventory::{ItemIds, ItemNews, ItemStack, PartyInventory};
+use crate::game::items::{Crucial, ItemNews, ItemStack, Items, Place, Put, receive, unpack};
 
 /// An item lying in the level.
 #[derive(Component, Debug, Clone)]
@@ -97,17 +97,13 @@ pub fn lay(commands: &mut Commands, level: Entity, feet: Vec3, item: WorldItem) 
 pub const REACH: f32 = 10.0;
 
 /// The item an authored placement describes.
-pub fn placed_item(
-    placement: &ItemPlacement,
-    definition: &ItemDefinition,
-    ids: &mut ItemIds,
-) -> ItemStack {
+pub fn placed_item(placement: &ItemPlacement, definition: &ItemDefinition) -> ItemStack {
     let amount = match definition.quantity {
         QuantityKind::None => 1,
         QuantityKind::Stack => placement.stack,
         _ => placement.uses,
     };
-    ItemStack::new(definition, ids, u16::from(amount), placement.identified)
+    ItemStack::new(definition, u16::from(amount), placement.identified)
 }
 
 /// The player takes an item lying in the world.
@@ -130,37 +126,50 @@ pub struct DropHeld {
 pub fn take_items(
     mut requests: MessageReader<TakeItem>,
     freedom: crate::game::freedom::Freedom,
-    party: Single<(&avian3d::prelude::Position, &mut PartyInventory)>,
-    mut items: Query<(&mut WorldItem, super::ActorPose)>,
+    party: Single<(Entity, &avian3d::prelude::Position)>,
+    held: Items,
+    mut lying: Query<(&mut WorldItem, super::ActorPose)>,
     content: If<Res<Catalogs>>,
     mut news: MessageWriter<ItemNews>,
     mut commands: Commands,
 ) {
-    let (position, mut inventory) = party.into_inner();
+    let (party, position) = *party;
     let eye = crate::game::party::body::PartyBody::eye(position);
     let mut taken = Vec::new();
+    // The hand fills as a loose item is taken, though it shows only once
+    // the takings are carried out.
+    let mut handful = held.held(party).is_some();
     for &TakeItem { item: target } in requests.read() {
         // A second take of an item already taken finds nothing.
-        let Ok((mut item, at)) = items.get_mut(target) else { continue };
+        let Ok((mut item, at)) = lying.get_mut(target) else { continue };
         if !freedom.free()
             || taken.contains(&target)
             || item.hidden
             || eye.distance(at.translation()) > REACH
-            || inventory.hand.held.is_some()
+            || handful
         {
             continue;
         }
         match &mut item.loot {
             GroundLoot::Pile { contents, .. } => {
-                for (name, _) in inventory.pool.collect(contents, &content.items) {
-                    news.write(ItemNews::Takes { member: None, item: name });
-                }
+                let taken =
+                    receive(&held, &mut commands, &content.items, (party, None), (contents, true));
+                let left = std::mem::take(contents)
+                    .into_iter()
+                    .zip(taken)
+                    .filter_map(|(stack, taken)| stack.without(taken))
+                    .collect();
+                *contents = left;
                 if !contents.is_empty() {
                     news.write(ItemNews::NoRoom);
                     continue;
                 }
             }
-            GroundLoot::Loose(stack) => inventory.hand.held = Some(stack.clone()),
+            GroundLoot::Loose(stack) => {
+                let thing = unpack(&mut commands, &content.items[stack.item], stack);
+                commands.trigger(Put { item: thing, at: Place::Hand { party } });
+                handful = true;
+            }
         }
         taken.push(target);
         commands.entity(target).despawn();
@@ -173,21 +182,24 @@ pub fn take_items(
 pub fn drop_held(
     mut requests: MessageReader<DropHeld>,
     freedom: crate::game::freedom::Freedom,
-    party: Single<(&avian3d::prelude::Position, &mut PartyInventory)>,
+    party: Single<(Entity, &avian3d::prelude::Position)>,
+    held: Items,
+    crucial: Query<(), With<Crucial>>,
     obstacles: super::obstacles::WorldObstacles,
     content: If<Res<Catalogs>>,
     mut commands: Commands,
 ) {
-    let (position, mut inventory) = party.into_inner();
+    let (party, position) = *party;
     let eye = crate::game::party::body::PartyBody::eye(position);
     for &DropHeld { level, aim } in requests.read() {
-        let Some(held) = &inventory.hand.held else { continue };
-        if !freedom.free() || content.items[held.item].crucial {
+        let Some(item) = held.held(party) else { continue };
+        if !freedom.free() || crucial.contains(item) {
             continue;
         }
         let Some(ground) = landing(eye, aim, &obstacles) else { continue };
-        let held = inventory.hand.held.take().unwrap();
-        lay(&mut commands, level, ground, WorldItem::loose(held, false));
+        let Some(stack) = held.stack(item, &content.items) else { continue };
+        commands.entity(item).despawn();
+        lay(&mut commands, level, ground, WorldItem::loose(stack, false));
     }
 }
 

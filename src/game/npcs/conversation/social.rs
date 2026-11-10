@@ -9,7 +9,8 @@ use crate::{
         characters::{Character, Vitals},
         data::Catalogs,
         factions::{Band, Factions},
-        inventory::{Carried, ItemOwner, PartyInventory},
+        inventory::PartyInventory,
+        items::{Items, Lose},
         npcs::{
             Npc,
             access::{NpcActors, Scripts},
@@ -233,8 +234,8 @@ pub(super) fn gift(
     voices: Voices,
     factions: Res<Factions>,
     content: If<Res<Catalogs>>,
-    mut inventory: Single<&mut PartyInventory>,
-    mut packs: Query<&mut Carried>,
+    held: Items,
+    mut commands: Commands,
 ) {
     for mut c in &mut conversations {
         let Some(Talk::Give { item: source }) =
@@ -245,17 +246,8 @@ pub(super) fn gift(
         if !c.ready() {
             continue;
         }
-        let pack = match source.owner {
-            ItemOwner::Pool => None,
-            ItemOwner::Member(m) => {
-                if !voices.roster.contains(&m) {
-                    c.result = Some(Outcome::GiftRefused(TradeError::StaleSelection));
-                    continue;
-                }
-                packs.get(m).ok()
-            }
-        };
-        let Ok(stack) = trade::sale_item(source, &inventory, pack) else {
+        let id = trade::for_sale(source, &voices.roster, &held).ok().and_then(|()| held.id(source));
+        let Some(stack_item) = id else {
             c.result = Some(Outcome::GiftRefused(TradeError::StaleSelection));
             continue;
         };
@@ -264,20 +256,22 @@ pub(super) fn gift(
         else {
             continue;
         };
-        let item = &content.items[stack.item];
+        let item = &content.items[stack_item];
+        let count = held.units(source);
         let value = match (item.class, item.quantity) {
-            (EquipClass::Ammunition, _) => (item.value * u32::from(stack.count()))
-                .div_ceil(crate::content::items::AMMUNITION_BUNDLE),
-            (_, QuantityKind::Stack) => item.value * u32::from(stack.count()).max(1),
+            (EquipClass::Ammunition, _) => {
+                (item.value * count).div_ceil(crate::content::items::AMMUNITION_BUNDLE)
+            }
+            (_, QuantityKind::Stack) => item.value * count.max(1),
             _ => item.value,
         };
         let cold = !d.voice_script
             && band(npc.disposition, c.charm(), actors.turned(c.actor), d, &factions)
                 != Band::Friendly;
-        let authored = script.item_quote(stack.item);
+        let authored = script.item_quote(stack_item);
         let (quote, keep, bribe) = if cold && item.crucial {
             (0x11, false, false)
-        } else if cold && (d.kind == 20 || (stack.item != ItemId(0x29f) && value < 300)) {
+        } else if cold && (d.kind == 20 || (stack_item != ItemId(0x29f) && value < 300)) {
             (7, false, false)
         } else if let Some((q, keep)) = authored {
             (q, keep || cold, false)
@@ -309,14 +303,7 @@ pub(super) fn gift(
             continue;
         }
         if keep {
-            match source.owner {
-                ItemOwner::Pool => inventory.pool.consume_units(source.id, 1),
-                ItemOwner::Member(m) => {
-                    if let Ok(mut p) = packs.get_mut(m) {
-                        p.consume_backpack_units(source.id, 1);
-                    }
-                }
-            }
+            commands.trigger(Lose { item: source, amount: 1 });
         }
         if bribe {
             debit(&mut npc, d, value, voices.skill());
