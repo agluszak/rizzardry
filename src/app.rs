@@ -88,6 +88,10 @@ pub struct Options {
     /// Combine with --screenshot for UI captures.
     #[arg(long)]
     pub open_automap: bool,
+    /// Developer: open the first member's inventory through its normal
+    /// request after entering. Combine with --screenshot for UI captures.
+    #[arg(long)]
+    pub open_inventory: bool,
     /// Developer: draw the navmesh, agent paths and avoidance.
     #[arg(long)]
     pub nav_debug: bool,
@@ -262,6 +266,13 @@ pub fn build(options: &Options) -> Result<App, String> {
         app.add_systems(
             Update,
             crate::dev::open_automap
+                .run_if(any_with_component::<crate::game::party::body::PartyBody>),
+        );
+    }
+    if options.open_inventory {
+        app.add_systems(
+            Update,
+            crate::dev::open_inventory
                 .run_if(any_with_component::<crate::game::party::body::PartyBody>),
         );
     }
