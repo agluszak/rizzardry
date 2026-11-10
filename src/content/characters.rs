@@ -192,7 +192,7 @@ pub enum Skill {
 }
 
 /// The six magical realms, in retail's resistance and spell order.
-#[derive(Debug, Enum, EnumSetType, TryFromPrimitive)]
+#[derive(Debug, Enum, EnumSetType, TryFromPrimitive, Deserialize)]
 #[repr(u8)]
 pub enum Realm {
     Fire,

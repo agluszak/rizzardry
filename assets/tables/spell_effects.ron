@@ -1,0 +1,565 @@
+#![enable(implicit_some)]
+// What each spell does to each body it lands on, in order; the spells are
+// named as `SpellId` names them, in the order of their numbers.
+//
+// A row lists only what is not the default: it lands on `Everyone`, rolls
+// nothing, always happens, allows no save and is not resisted.
+//   kind         what it does (default: Harm)
+//   on           Everyone | Members | Monsters | Party (the party as a whole)
+//   roll         how its magnitude is rolled
+//   chance       the percent chance it happens at all
+//   save         the base of the save the body may make against it
+//   spell_realm  the body resists it, and saves, in the spell's own realm
+//   half         saved against and resisted at half strength
+//   landed       only if the row before it landed
+//   resisted     only if the row before it was resisted
+//   kinds        only these kinds of monster
+// Spell... kinds and rolls take what they name from the spell's own record:
+// SpellDice its dice, SpellRounds its duration, SpellEnchant itself.
+// leeches: the damage it deals comes back to its caster, as health (true)
+// or as spell points (false).
+{
+    ACID_SPLASH: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    BLESS: (
+        effects: [
+            (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
+            (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+    ),
+    FROST: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    ENERGY_BLAST: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    HEAL_WOUNDS: (
+        effects: [
+            (kind: Heal, roll: SpellDice),
+        ],
+    ),
+    ITCHING_SKIN: (
+        effects: [
+            (kind: Afflict(condition: Irritated), roll: SpellRounds, save: 3, spell_realm: true),
+        ],
+    ),
+    LIGHT: (
+        effects: [
+            (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
+            (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+    ),
+    MAKE_WOUNDS: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    MIND_STAB: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+            (kind: Afflict(condition: Insane), roll: SpellRounds, chance: 25, save: 10, spell_realm: true),
+        ],
+    ),
+    PARALYZE: (
+        effects: [
+            (kind: Afflict(condition: Paralyzed), roll: SpellRounds, save: 18, spell_realm: true),
+        ],
+    ),
+    SLEEP: (
+        effects: [
+            (kind: Afflict(condition: Asleep), roll: SpellRounds, save: 20, spell_realm: true),
+        ],
+    ),
+    STAMINA: (
+        effects: [
+            (kind: Refresh, roll: SpellDice),
+        ],
+    ),
+    TERROR: (
+        effects: [
+            (kind: Afflict(condition: Afraid), roll: SpellRounds, save: 5, spell_realm: true),
+            (kind: Afflict(condition: Unconscious), on: Members, roll: SpellRounds, save: 22, spell_realm: true, half: true, landed: true),
+        ],
+    ),
+    BLINDING_FLASH: (
+        effects: [
+            (kind: Afflict(condition: Blind), roll: SpellRounds, save: 12, spell_realm: true),
+        ],
+    ),
+    CURE_LESSER_COND: (
+        effects: [
+            (kind: Cure(conditions: [Irritated, Nauseated, Afraid, Asleep, Blind])),
+        ],
+    ),
+    DETECT_SECRETS: (
+        effects: [
+            (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
+            (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+    ),
+    DRACON_BREATH: (
+        effects: [
+            (kind: SpellEnchant, roll: SpellRounds),
+        ],
+    ),
+    ENCHANTED_BLADE: (
+        effects: [
+            (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
+            (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+    ),
+    GUARDIAN_ANGEL: (
+        effects: [
+            (kind: SpellEnchant, roll: SpellRounds),
+        ],
+    ),
+    HOLY_WATER: (
+        effects: [
+            (roll: SpellDice, spell_realm: true, kinds: [Undead, Demon]),
+        ],
+    ),
+    INSANITY: (
+        effects: [
+            (kind: Afflict(condition: Insane), roll: SpellRounds, save: 10, spell_realm: true),
+        ],
+    ),
+    MAGIC_MISSILES: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    MISSILE_SHIELD: (
+        effects: [
+            (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
+            (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+    ),
+    RAZOR_CLOAK: (
+        effects: [
+            (kind: SpellEnchant, roll: SpellRounds),
+        ],
+    ),
+    SHRILL_SOUND: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    SLOW: (
+        effects: [
+            (kind: Afflict(condition: Slowed), roll: SpellRounds, save: 4, spell_realm: true),
+        ],
+    ),
+    SONIC_BOOM: (
+        effects: [
+            (kind: Afflict(condition: Afraid), roll: SpellRounds, save: 5, spell_realm: true),
+            (kind: Afflict(condition: Afraid), on: Monsters, roll: SpellRounds, save: 5, spell_realm: true, half: true, landed: true),
+        ],
+    ),
+    WEB: (
+        effects: [
+            (kind: Afflict(condition: Webbed), roll: SpellRounds, save: 16, spell_realm: true),
+        ],
+    ),
+    ARMORPLATE: (
+        effects: [
+            (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
+            (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+    ),
+    CHAMELEON: (
+        effects: [
+            (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
+            (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+    ),
+    CURE_PARALYSIS: (
+        effects: [
+            (kind: Cure(conditions: [Paralyzed, Webbed])),
+        ],
+    ),
+    CURE_POISON: (
+        effects: [
+            (kind: Cure(conditions: [Poisoned])),
+        ],
+    ),
+    FIREBALL: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    FREEZE_FLESH: (
+        effects: [
+            (kind: Afflict(condition: Paralyzed), roll: SpellRounds, save: 18, spell_realm: true),
+        ],
+    ),
+    MAGIC_SCREEN: (
+        effects: [
+            (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
+            (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+    ),
+    NOXIOUS_FUMES: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+            (kind: Afflict(condition: Nauseated), roll: SpellRounds, chance: 90, save: 4, spell_realm: true),
+            (kind: Afflict(condition: Unconscious), roll: SpellRounds, chance: 25, save: 22, spell_realm: true),
+        ],
+    ),
+    PSIONIC_FIRE: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    REST_ALL: (
+        effects: [
+            (kind: Refresh, roll: SpellDice),
+        ],
+    ),
+    SHADOW_HOUND: (
+        effects: [
+            (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
+            (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+    ),
+    SILENCE: (
+        effects: [
+            (kind: Afflict(condition: Silenced), roll: SpellRounds, save: 7, spell_realm: true),
+        ],
+    ),
+    WHIPPING_ROCKS: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    ACID_BOMB: (
+        effects: [
+            (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
+            (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+    ),
+    ARMORMELT: (
+        effects: [
+            (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
+            (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+    ),
+    CRUSH: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    CURE_DISEASE: (
+        effects: [
+            (kind: Cure(conditions: [Diseased])),
+        ],
+    ),
+    EGO_WHIP: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    ELEMENT_SHIELD: (
+        effects: [
+            (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
+            (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+    ),
+    EYE_FOR_AN_EYE: (
+        effects: [
+            (kind: SpellEnchant, roll: SpellRounds),
+        ],
+    ),
+    FIRE_BOMB: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    HASTE: (
+        effects: [
+            (kind: SpellEnchant, roll: SpellRounds),
+        ],
+    ),
+    ICEBALL: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    REMOVE_CURSE: (
+        effects: [
+            (kind: Cure(conditions: [Hexed])),
+        ],
+    ),
+    SOUL_SHIELD: (
+        effects: [
+            (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
+            (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+    ),
+    SUPERMAN: (
+        effects: [
+            (kind: SpellEnchant, roll: SpellRounds),
+        ],
+    ),
+    RING_OF_FIRE: (
+        effects: [
+            (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
+            (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+    ),
+    WHIRLWIND: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    X_RAY: (
+        effects: [
+            (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
+            (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+    ),
+    BODY_OF_STONE: (
+        effects: [
+            (kind: SpellEnchant, roll: SpellRounds),
+        ],
+    ),
+    DEHYDRATE: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    FREEZE_ALL: (
+        effects: [
+            (kind: Afflict(condition: Paralyzed), roll: SpellRounds, save: 18, spell_realm: true),
+        ],
+    ),
+    HEAL_ALL: (
+        effects: [
+            (kind: Heal, roll: SpellDice),
+        ],
+    ),
+    HEX: (
+        effects: [
+            (kind: Afflict(condition: Hexed), roll: SpellRounds, save: 8, spell_realm: true),
+        ],
+    ),
+    INSTANT_DEATH: (
+        effects: [
+            (kind: Slay, roll: SpellRounds, save: 24, spell_realm: true),
+        ],
+    ),
+    PSIONIC_BLAST: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+            (kind: Afflict(condition: Insane), roll: SpellRounds, chance: 25, save: 10, spell_realm: true),
+        ],
+    ),
+    PURIFY_AIR: (
+        effects: [
+            (kind: SpellPurify, on: Monsters, roll: Purify),
+            (kind: SpellPurify, on: Party, roll: Purify),
+        ],
+    ),
+    SANE_MIND: (
+        effects: [
+            (kind: Cure(conditions: [Insane, Turncoat])),
+        ],
+    ),
+    TOXIC_CLOUD: (
+        effects: [
+            (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
+            (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+    ),
+    BANISH: (
+        effects: [
+            (roll: SpellDice, spell_realm: true, kinds: [Undead, Demon, Spirit]),
+        ],
+    ),
+    BLIZZARD: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+            (kind: Afflict(condition: Blind), roll: SpellRounds, chance: 25, save: 12, spell_realm: true),
+        ],
+    ),
+    BOILING_BLOOD: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    DRAINING_CLOUD: (
+        effects: [
+            (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
+            (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+    ),
+    FIRESTORM: (
+        effects: [
+            (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
+            (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+    ),
+    LIFESTEAL: (
+        leeches: true,
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    LIGHTNING: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    MIGHT_TO_MAGIC: (
+        leeches: false,
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    PANDEMONIUM: (
+        effects: [
+            (kind: Afflict(condition: Insane), roll: SpellRounds, save: 10, spell_realm: true),
+            (kind: Afflict(condition: Afraid), roll: SpellRounds, spell_realm: true, resisted: true),
+        ],
+    ),
+    PRISMIC_RAY: (
+        effects: [
+            (kind: SpellPrismic, spell_realm: true),
+        ],
+    ),
+    QUICKSAND: (
+        effects: [
+            (kind: Slay, roll: SpellRounds, save: 24, spell_realm: true),
+        ],
+    ),
+    RESURRECTION: (
+        effects: [
+            (kind: Raise),
+        ],
+    ),
+    TURNCOAT: (
+        effects: [
+            (kind: Afflict(condition: Turncoat), roll: SpellRounds, save: 14, spell_realm: true),
+        ],
+    ),
+    ASPHYXIATION: (
+        effects: [
+            (kind: Slay, roll: SpellRounds, save: 24, spell_realm: true),
+        ],
+    ),
+    CEREBRAL_HEMORRHAGE: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+            (kind: Afflict(condition: Insane), roll: SpellRounds, chance: 75, save: 10, spell_realm: true),
+        ],
+    ),
+    CONCUSSION: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+            (kind: Afflict(condition: Unconscious), roll: SpellRounds, chance: 50, save: 22, spell_realm: true),
+        ],
+    ),
+    DEATH_CLOUD: (
+        effects: [
+            (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
+            (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+    ),
+    DEATH_WISH: (
+        effects: [
+            (kind: Slay, roll: SpellRounds, save: 24, spell_realm: true),
+        ],
+    ),
+    EARTHQUAKE: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    FALLING_STARS: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    MIND_FLAY: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    NUCLEAR_BLAST: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    PRISMIC_CHAOS: (
+        effects: [
+            (kind: SpellPrismic, spell_realm: true),
+        ],
+    ),
+    RESTORATION: (
+        effects: [
+            (kind: Heal, roll: Dice(dice: (base: 0, count: 8, sides: 8))),
+            (kind: Refresh, roll: Dice(dice: (base: 0, count: 8, sides: 8))),
+            (kind: Cure(conditions: [Diseased, Irritated, Nauseated, Slowed, Afraid, Poisoned, Silenced, Hexed, Insane, Blind, Turncoat, Webbed, Asleep, Paralyzed, Unconscious], outright: true)),
+        ],
+    ),
+    TSUNAMI: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    RESTORE_HEALTH: (
+        effects: [
+            (kind: Heal, roll: SpellDice),
+            (kind: Refresh, roll: SpellDiceWith(times: 2)),
+        ],
+    ),
+    RESTORE_MAGIC: (
+        effects: [
+            (kind: Replenish, roll: SpellDice),
+        ],
+    ),
+    SMELLING_SALTS: (
+        effects: [
+            (kind: Cure(conditions: [Unconscious, Asleep])),
+        ],
+    ),
+    BOILING_BLOOD_EXPLOSION: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    RENEWAL: (
+        effects: [
+            (kind: Renew),
+        ],
+    ),
+    PHILOSOPHERS_BANE: (
+        effects: [
+            (kind: LoseGold, on: Party, roll: SpellGoldShare),
+        ],
+    ),
+    VAMPIRIC_VORTEX: (
+        effects: [
+            (kind: Sap, on: Members, roll: SpellDiceWith(plain: true), spell_realm: true),
+            (on: Monsters, roll: SpellDice, spell_realm: true),
+        ],
+    ),
+    HEATWAVE: (
+        effects: [
+            (kind: Burn, roll: PerPower(10)),
+            (kind: Burn, on: Party, roll: PerPower(10)),
+        ],
+    ),
+    ANTI_MAGIC: (
+        effects: [
+            (kind: DrainPool, on: Party, roll: Fifty),
+            (kind: Dispel, on: Party),
+        ],
+    ),
+}

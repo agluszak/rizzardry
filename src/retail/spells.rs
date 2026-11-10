@@ -155,6 +155,23 @@ mod tests {
         );
         assert!(sleep.books.contains(Spellbook::Wizardry));
     }
+
+    #[test]
+    #[ignore = "requires a retail installation"]
+    fn retail_spells_the_effects_table_names_all_resolve() {
+        use crate::game::hits::definitions::SpellEffects;
+        let files = crate::retail::files::retail_files();
+        let data = files.read("data/databases/spelltables.dbs").unwrap().unwrap();
+        let catalog = read_spell_catalog(&data).unwrap();
+        let table = SpellEffects::default();
+        for spell in &catalog.0 {
+            let Some(rows) = table.get(spell.id) else { continue };
+            let made =
+                rows.of_spell(spell).unwrap_or_else(|| panic!("{} has no realm", spell.name));
+            assert!(!made.effects.is_empty(), "{}", spell.name);
+        }
+        assert!(catalog.0.len() > 100);
+    }
 }
 
 #[derive(Default, TypePath)]

@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
+use serde::Deserialize;
 
 use super::defences::{CONDITION_SAVE, DEATH_SAVE, INDEFINITE, condition_save};
 use crate::content::characters::Realm;
@@ -13,15 +14,13 @@ use crate::game::characters::Condition;
 use crate::game::data::Catalogs;
 use crate::game::magic::Strength;
 use crate::game::rng::GameRng;
-use EffectKind::{
-    Burn, Dispel, DrainBudget, DrainPool, Harm, Heal, LoseGold, Raise, Refresh, Renew, Replenish,
-    Sap, Slay, Tire,
-};
+use EffectKind::{DrainBudget, DrainPool, Harm, Sap, Slay, Tire};
 
 /// What something does to each body it lands on: its effects in order, and
 /// whether its damage comes back to its caster's side (`Some(true)` as
 /// health, `Some(false)` as spell points).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Definition {
     pub effects: Vec<EffectSpec>,
     pub leeches: Option<bool>,
@@ -41,14 +40,34 @@ pub struct Blow {
 }
 
 /// How an effect's magnitude is rolled from its strike's [`Strength`].
-#[derive(Clone, Copy, Debug)]
+///
+/// The `Spell…` rolls are how a table row says "this spell's own": they are
+/// written in the spell effects table, and become the plain roll when the
+/// spell's effects are made ([`Definition::of_spell`]); none is ever rolled.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
 pub enum Roll {
+    /// This spell's dice (see [`Roll::Dice`]).
+    SpellDice,
+    /// This spell's dice, their count multiplied by `times`, without the
+    /// cast's boost when `plain`.
+    SpellDiceWith {
+        #[serde(default)]
+        plain: bool,
+        #[serde(default = "one::<i32>")]
+        times: i32,
+    },
+    /// This spell's rounds (see [`Roll::Duration`]).
+    SpellRounds,
+    /// This spell's dice as a gold share (see [`Roll::GoldShare`]).
+    SpellGoldShare,
     Fixed(u32),
     /// A spell's dice times power, raised by the boost unless `plain`, over
     /// `over` (retail `RollEffectMagnitude`).
     Dice {
         dice: Option<Dice>,
+        #[serde(default)]
         plain: bool,
+        #[serde(default = "one::<u32>")]
         over: u32,
     },
     /// A condition spell's rounds (retail `RollEffectDuration`).
@@ -91,8 +110,12 @@ pub enum Roll {
     },
 }
 
+fn one<T: From<u8>>() -> T {
+    T::from(1)
+}
+
 /// What a blow's amount adds.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
 pub enum BlowBase {
     Zero,
     /// So many times `count`.
@@ -114,14 +137,6 @@ const AFFLICTIONS: [(Option<Condition>, u32); 9] = [
     (Some(Condition::Paralyzed), 3),
     (None, 1),
 ];
-
-/// The monster kinds Dispel Undead harms, and the one only Banish harms
-/// besides them.
-const UNDEAD: &[MonsterKind] = &[MonsterKind::Undead, MonsterKind::Demon];
-const BANISHED: &[MonsterKind] = &[MonsterKind::Undead, MonsterKind::Demon, MonsterKind::Spirit];
-
-/// What Restoration restores health and stamina by, whatever its record says.
-const RESTORATION_DICE: Dice = Dice { base: 0, count: 8, sides: 8 };
 
 /// The definitions, by what uses them; decoded once from content.
 #[derive(Resource, Debug)]
@@ -159,11 +174,26 @@ impl Definitions {
     }
 }
 
+/// Whom an effect lands on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+pub enum Whom {
+    /// Every body the strike reaches, members and monsters.
+    #[default]
+    Everyone,
+    Members,
+    Monsters,
+    /// The party itself (its shared spells, pool or purse), once, through
+    /// the first member the strike reaches.
+    Party,
+}
+
 /// One effect of a definition: what it does, how its magnitude is rolled,
 /// what may stop it, and whom it is for.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct EffectSpec {
     pub kind: EffectKind,
+    pub on: Whom,
     pub roll: Option<Roll>,
     /// The percent chance it happens at all.
     pub chance: Option<u32>,
@@ -171,18 +201,18 @@ pub struct EffectSpec {
     pub save: Option<i32>,
     /// The body's resistance in this realm cuts it; saves are made in it too.
     pub resist: Option<Realm>,
+    /// Resisted in the realm of the spell it belongs to: how a table row
+    /// says `resist` for its spell, made [`resist`](Self::resist) when the
+    /// spell's effects are made, and false in every definition.
+    pub spell_realm: bool,
     /// Saved against and resisted at half its strike's strength.
     pub half: bool,
     /// Only if the effect before it landed.
     pub landed: bool,
     /// Only if the effect before it was resisted.
     pub resisted: bool,
-    /// It acts on the party itself (its shared spells, pool or purse), once,
-    /// through the first member the strike reaches.
-    pub party: bool,
-    pub members: bool,
-    pub monsters: bool,
-    pub kinds: Option<&'static [MonsterKind]>,
+    /// Only the monsters of these kinds.
+    pub kinds: Option<Vec<MonsterKind>>,
     /// Only from a monster's blow.
     pub by_monsters: bool,
     /// The weapon effect a blow's effect stands for.
@@ -205,26 +235,14 @@ impl EffectSpec {
     fn resist(self, realm: Realm) -> Self {
         Self { resist: Some(realm), ..self }
     }
-    fn half(self) -> Self {
-        Self { half: true, ..self }
-    }
     fn if_landed(self) -> Self {
         Self { landed: true, ..self }
     }
-    fn if_resisted(self) -> Self {
-        Self { resisted: true, ..self }
-    }
-    fn on_party(self) -> Self {
-        Self { party: true, ..self }
-    }
     fn members(self) -> Self {
-        Self { members: true, ..self }
+        Self { on: Whom::Members, ..self }
     }
     fn monsters(self) -> Self {
-        Self { monsters: true, ..self }
-    }
-    fn kinds(self, kinds: &'static [MonsterKind]) -> Self {
-        Self { kinds: Some(kinds), ..self }
+        Self { on: Whom::Monsters, ..self }
     }
     fn by_monsters(self) -> Self {
         Self { by_monsters: true, ..self }
@@ -234,7 +252,9 @@ impl EffectSpec {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+/// What an effect does. The `Spell…` kinds are how a table row says "this
+/// spell's own", as the [`Roll`]s do; none is ever applied.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub enum EffectKind {
     #[default]
     Harm,
@@ -244,7 +264,9 @@ pub enum EffectKind {
     /// a poison bites by `poison`.
     Afflict {
         condition: Condition,
+        #[serde(default)]
         poison: u32,
+        #[serde(default)]
         indefinite: bool,
     },
     Slay,
@@ -258,7 +280,8 @@ pub enum EffectKind {
     Replenish,
     /// Lift these conditions, by the strike's strength, or outright.
     Cure {
-        conditions: &'static [Condition],
+        conditions: Vec<Condition>,
+        #[serde(default)]
         outright: bool,
     },
     Renew,
@@ -268,8 +291,12 @@ pub enum EffectKind {
     Purify {
         level: u32,
     },
+    /// This spell's purifying (see [`EffectKind::Purify`]).
+    SpellPurify,
     /// A spell laid on the body for its magnitude's rounds.
     Enchant(SpellId),
+    /// This spell, laid on the body (see [`EffectKind::Enchant`]).
+    SpellEnchant,
     Burn,
     LoseGold,
     Dispel,
@@ -280,6 +307,8 @@ pub enum EffectKind {
         base: i32,
         per_power: i32,
     },
+    /// This spell's either-or (see [`EffectKind::Prismic`]).
+    SpellPrismic,
 }
 
 fn afflict(condition: Condition) -> EffectSpec {
@@ -291,194 +320,68 @@ fn condition(afflicted: Condition, rounds: Roll, realm: Realm) -> EffectSpec {
     afflict(afflicted).roll(rounds).save(condition_save(afflicted)).resist(realm)
 }
 
-/// What a spell does to each victim, by retail's effect functions
-/// (`Magic Effects.cpp`); `None` for one the game does not resolve.
-fn define_spell(spell: &SpellDefinition) -> Option<Definition> {
-    use Condition::*;
-    use SpellId as S;
-    let realm = spell.realm?;
-    let dice = Roll::Dice { dice: spell.dice, plain: false, over: 1 };
-    let rounds = Roll::Duration { base: spell.duration_base, per_power: spell.duration_per_power };
-    let harm = EffectSpec::of(Harm).roll(dice).resist(realm);
-    let inflict = |c| condition(c, rounds, realm);
-    let cure = |conditions| EffectSpec::of(EffectKind::Cure { conditions, outright: false });
-    let mut leeches = None;
-    let effects = match spell.id {
-        S::BOILING_BLOOD
-        | S::BOILING_BLOOD_EXPLOSION
-        | S::ACID_SPLASH
-        | S::FROST
-        | S::ENERGY_BLAST
-        | S::MAKE_WOUNDS
-        | S::MAGIC_MISSILES
-        | S::SHRILL_SOUND
-        | S::FIREBALL
-        | S::PSIONIC_FIRE
-        | S::WHIPPING_ROCKS
-        | S::CRUSH
-        | S::EGO_WHIP
-        | S::FIRE_BOMB
-        | S::ICEBALL
-        | S::WHIRLWIND
-        | S::DEHYDRATE
-        | S::LIGHTNING
-        | S::EARTHQUAKE
-        | S::FALLING_STARS
-        | S::MIND_FLAY
-        | S::NUCLEAR_BLAST
-        | S::TSUNAMI => vec![harm],
-        S::LIFESTEAL | S::MIGHT_TO_MAGIC => {
-            leeches = Some(spell.id == S::LIFESTEAL);
-            vec![harm]
-        }
-        S::EYE_FOR_AN_EYE
-        | S::DRACON_BREATH
-        | S::SHADOW_HOUND
-        | S::CHAMELEON
-        | S::ACID_BOMB
-        | S::DEATH_CLOUD
-        | S::TOXIC_CLOUD
-        | S::DRAINING_CLOUD
-        | S::FIRESTORM
-        | S::RAZOR_CLOAK
-        | S::ARMORMELT
-        | S::RING_OF_FIRE
-        | S::LIGHT
-        | S::X_RAY
-        | S::BLESS
-        | S::DETECT_SECRETS
-        | S::ENCHANTED_BLADE
-        | S::GUARDIAN_ANGEL
-        | S::MISSILE_SHIELD
-        | S::ARMORPLATE
-        | S::MAGIC_SCREEN
-        | S::ELEMENT_SHIELD
-        | S::HASTE
-        | S::SOUL_SHIELD
-        | S::SUPERMAN
-        | S::BODY_OF_STONE => {
-            let enchant = EffectSpec::of(EffectKind::Enchant(spell.id)).roll(rounds);
-            if crate::game::actors::spells::personal(spell.id) {
-                vec![enchant]
-            } else {
-                // The party's own slots hold for all its members at once.
-                vec![enchant.monsters(), enchant.on_party()]
+/// What each spell does to each victim, by spell: the table in
+/// `assets/tables/spell_effects.ron`, which ships with the game (retail keeps
+/// it in its program, not its data). A spell it does not name does nothing
+/// the game resolves.
+#[derive(Debug, Deserialize)]
+#[serde(transparent)]
+pub struct SpellEffects(HashMap<SpellId, Definition>);
+
+impl SpellEffects {
+    pub fn get(&self, spell: SpellId) -> Option<&Definition> {
+        self.0.get(&spell)
+    }
+}
+
+/// The shipped table: it is part of the program's content, read where the
+/// catalogs are made, so a catalog built by hand has it too.
+impl Default for SpellEffects {
+    fn default() -> Self {
+        ron::from_str(include_str!("../../../assets/tables/spell_effects.ron"))
+            .expect("assets/tables/spell_effects.ron is a spell effects table")
+    }
+}
+
+impl Definition {
+    /// A spell's table entry made that spell's own: each `Spell…` roll, kind
+    /// and realm in it resolved from the spell's record. `None` for a spell
+    /// with no realm, which the game does not resolve.
+    pub fn of_spell(&self, spell: &SpellDefinition) -> Option<Definition> {
+        let realm = spell.realm?;
+        let effects = self.effects.iter().map(|effect| effect.of_spell(spell, realm)).collect();
+        Some(Definition { effects, leeches: self.leeches })
+    }
+}
+
+impl EffectSpec {
+    fn of_spell(&self, spell: &SpellDefinition, realm: Realm) -> EffectSpec {
+        let roll = self.roll.map(|roll| match roll {
+            Roll::SpellDice => Roll::Dice { dice: spell.dice, plain: false, over: 1 },
+            Roll::SpellDiceWith { plain, times } => Roll::Dice {
+                dice: spell.dice.map(|dice| Dice { count: dice.count * times, ..dice }),
+                plain,
+                over: 1,
+            },
+            Roll::SpellRounds => {
+                Roll::Duration { base: spell.duration_base, per_power: spell.duration_per_power }
             }
-        }
-        S::HOLY_WATER => vec![harm.kinds(UNDEAD)],
-        S::BANISH => vec![harm.kinds(BANISHED)],
-        S::HEAL_WOUNDS | S::HEAL_ALL => vec![EffectSpec::of(Heal).roll(dice)],
-        S::STAMINA | S::REST_ALL => vec![EffectSpec::of(Refresh).roll(dice)],
-        S::RESTORATION => {
-            const ALL: &[Condition] = &[
-                Diseased,
-                Irritated,
-                Nauseated,
-                Slowed,
-                Afraid,
-                Poisoned,
-                Silenced,
-                Hexed,
-                Insane,
-                Blind,
-                Turncoat,
-                Webbed,
-                Asleep,
-                Paralyzed,
-                Unconscious,
-            ];
-            let restoring = Roll::Dice { dice: Some(RESTORATION_DICE), plain: false, over: 1 };
-            vec![
-                EffectSpec::of(Heal).roll(restoring),
-                EffectSpec::of(Refresh).roll(restoring),
-                EffectSpec::of(EffectKind::Cure { conditions: ALL, outright: true }),
-            ]
-        }
-        S::RESTORE_HEALTH => {
-            let twice = spell.dice.map(|dice| Dice { count: dice.count * 2, ..dice });
-            vec![
-                EffectSpec::of(Heal).roll(dice),
-                EffectSpec::of(Refresh).roll(Roll::Dice { dice: twice, plain: false, over: 1 }),
-            ]
-        }
-        S::RESTORE_MAGIC => vec![EffectSpec::of(Replenish).roll(dice)],
-        S::ITCHING_SKIN => vec![inflict(Irritated)],
-        S::PARALYZE | S::FREEZE_FLESH | S::FREEZE_ALL => vec![inflict(Paralyzed)],
-        S::SLEEP => vec![inflict(Asleep)],
-        S::BLINDING_FLASH => vec![inflict(Blind)],
-        S::INSANITY => vec![inflict(Insane)],
-        S::SLOW => vec![inflict(Slowed)],
-        S::WEB => vec![inflict(Webbed)],
-        S::SILENCE => vec![inflict(Silenced)],
-        S::HEX => vec![inflict(Hexed)],
-        S::TURNCOAT => vec![inflict(Turncoat)],
-        S::MIND_STAB | S::PSIONIC_BLAST => vec![harm, inflict(Insane).chance(25)],
-        S::BLIZZARD => vec![harm, inflict(Blind).chance(25)],
-        S::CEREBRAL_HEMORRHAGE => vec![harm, inflict(Insane).chance(75)],
-        S::CONCUSSION => vec![harm, inflict(Unconscious).chance(50)],
-        S::NOXIOUS_FUMES => {
-            vec![harm, inflict(Nauseated).chance(90), inflict(Unconscious).chance(25)]
-        }
-        // A member it lands on may be knocked out too, a monster frightened
-        // again, at half strength.
-        S::TERROR => {
-            vec![inflict(Afraid), inflict(Unconscious).members().if_landed().half()]
-        }
-        S::SONIC_BOOM => vec![inflict(Afraid), inflict(Afraid).monsters().if_landed().half()],
-        // One who keeps their mind is afraid anyway, with no save.
-        S::PANDEMONIUM => {
-            vec![inflict(Insane), afflict(Afraid).roll(rounds).resist(realm).if_resisted()]
-        }
-        S::INSTANT_DEATH | S::QUICKSAND | S::ASPHYXIATION | S::DEATH_WISH => {
-            vec![EffectSpec::of(Slay).roll(rounds).save(DEATH_SAVE).resist(realm)]
-        }
-        S::PRISMIC_RAY | S::PRISMIC_CHAOS => {
-            let prismic = EffectKind::Prismic {
+            Roll::SpellGoldShare => Roll::GoldShare(spell.dice),
+            roll => roll,
+        });
+        let kind = match self.kind {
+            EffectKind::SpellPurify => EffectKind::Purify { level: spell.level },
+            EffectKind::SpellEnchant => EffectKind::Enchant(spell.id),
+            EffectKind::SpellPrismic => EffectKind::Prismic {
                 dice: spell.dice,
                 base: spell.duration_base,
                 per_power: spell.duration_per_power,
-            };
-            vec![EffectSpec::of(prismic).resist(realm)]
-        }
-        S::CURE_LESSER_COND => vec![cure(&[Irritated, Nauseated, Afraid, Asleep, Blind])],
-        S::CURE_PARALYSIS => vec![cure(&[Paralyzed, Webbed])],
-        S::CURE_POISON => vec![cure(&[Poisoned])],
-        S::CURE_DISEASE => vec![cure(&[Diseased])],
-        S::REMOVE_CURSE => vec![cure(&[Hexed])],
-        S::SANE_MIND => vec![cure(&[Insane, Turncoat])],
-        S::SMELLING_SALTS => vec![cure(&[Unconscious, Asleep])],
-        S::RESURRECTION => vec![EffectSpec::of(Raise)],
-        // Purify rolls from power alone; the party's clouds hang over all
-        // its members at once.
-        S::PURIFY_AIR => {
-            let purify =
-                EffectSpec::of(EffectKind::Purify { level: spell.level }).roll(Roll::Purify);
-            vec![purify.monsters(), purify.on_party()]
-        }
-        S::PHILOSOPHERS_BANE => {
-            vec![EffectSpec::of(LoseGold).roll(Roll::GoldShare(spell.dice)).on_party()]
-        }
-        // Members lose the plain roll, without the cast's boost, for good.
-        S::VAMPIRIC_VORTEX => {
-            let plain = Roll::Dice { dice: spell.dice, plain: true, over: 1 };
-            vec![EffectSpec::of(Sap).roll(plain).resist(realm).members(), harm.monsters()]
-        }
-        S::RENEWAL => vec![EffectSpec::of(Renew)],
-        // Retail visits every slot a victim carries, and the party's pool
-        // once.
-        S::HEATWAVE => {
-            let burn = EffectSpec::of(Burn).roll(Roll::PerPower(10));
-            vec![burn, burn.on_party()]
-        }
-        // Anti-Magic drains the whole living party, not only its victims,
-        // and ends the party's lasting spells.
-        S::ANTI_MAGIC => vec![
-            EffectSpec::of(DrainPool).roll(Roll::Fifty).on_party(),
-            EffectSpec::of(Dispel).on_party(),
-        ],
-        _ => return None,
-    };
-    Some(Definition { effects, leeches })
+            },
+            _ => self.kind.clone(),
+        };
+        let resist = if self.spell_realm { Some(realm) } else { self.resist };
+        EffectSpec { kind, roll, resist, spell_realm: false, ..self.clone() }
+    }
 }
 
 /// What a personal spell turned on its caster's side does: Dracon Breath
@@ -544,7 +447,7 @@ fn define_special(definition: crate::game::hits::specials::SpecialDefinition) ->
             E::Inflict(afflicted) => {
                 let inflict =
                     afflict(afflicted).save(condition_save(afflicted)).resist(realm).chance(chance);
-                effects.push(inflict.roll(Roll::ThirdOfBound).monsters());
+                effects.push(inflict.clone().roll(Roll::ThirdOfBound).monsters());
                 effects.push(inflict.roll(Roll::BelowBound).members());
             }
             E::Harm => effects.push(of(Harm, three(3, 1, 1, 1))),
@@ -628,7 +531,11 @@ pub fn define(mut commands: Commands, content: Res<Catalogs>) {
     let mut backfires = HashMap::new();
     let mut pulses = HashMap::new();
     for spell in content.spells.0.iter() {
-        let Some(definition) = define_spell(spell) else { continue };
+        let Some(definition) =
+            content.spell_effects.get(spell.id).and_then(|rows| rows.of_spell(spell))
+        else {
+            continue;
+        };
         spells.insert(spell.id, add(definition));
         if crate::game::actors::spells::personal(spell.id) {
             backfires.insert(spell.id, add(plain(define_backfire(spell))));
@@ -659,12 +566,12 @@ pub fn define(mut commands: Commands, content: Res<Catalogs>) {
 /// What one of a spell's effects is for, as a monster weighs whether the
 /// spell is worth casting at someone.
 #[derive(Clone, Copy, Debug)]
-enum Purpose {
+enum Purpose<'a> {
     Heals,
     Refreshes,
     Afflicts(Condition),
     Enchants,
-    Cures(&'static [Condition]),
+    Cures(&'a [Condition]),
 }
 
 impl Definitions {
@@ -687,11 +594,11 @@ impl Definitions {
             .get(definition)
             .effects
             .iter()
-            .filter_map(|effect| match effect.kind {
+            .filter_map(|effect| match &effect.kind {
                 EffectKind::Heal => Some(Purpose::Heals),
                 EffectKind::Refresh => Some(Purpose::Refreshes),
                 EffectKind::Afflict { condition, .. } if !effect.landed => {
-                    Some(Purpose::Afflicts(condition))
+                    Some(Purpose::Afflicts(*condition))
                 }
                 EffectKind::Enchant(_) => Some(Purpose::Enchants),
                 EffectKind::Cure { conditions, .. } => Some(Purpose::Cures(conditions)),
@@ -778,6 +685,9 @@ fn three(rng: &mut GameRng, bound: u32) -> u32 {
 pub fn roll(roll: Roll, strength: Strength, blow: Option<&Blow>, rng: &mut GameRng) -> u32 {
     let count = strength.power / 3 + 1;
     match roll {
+        Roll::SpellDice | Roll::SpellDiceWith { .. } | Roll::SpellRounds | Roll::SpellGoldShare => {
+            unreachable!("a spell's own roll is made plain with its effects")
+        }
         Roll::Fixed(amount) => amount,
         Roll::Dice { dice, plain, over } => {
             let strength = if plain { Strength { boost: 0, ..strength } } else { strength };
@@ -817,6 +727,168 @@ pub fn roll(roll: Roll, strength: Strength, blow: Option<&Blow>, rng: &mut GameR
                 BlowBase::Weapon => blow.map_or(0, |blow| blow.effects.strength),
             };
             blow_roll(rng, count * times, sides, base)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const REALM: Realm = Realm::Air;
+    const DICE: Dice = Dice { base: 1, count: 2, sides: 6 };
+
+    /// A spell record with dice, level, realm and rounds of its own.
+    fn spell(id: SpellId) -> SpellDefinition {
+        SpellDefinition {
+            id,
+            realm: Some(REALM),
+            level: 4,
+            dice: Some(DICE),
+            duration_base: 2,
+            duration_per_power: 3,
+            ..default()
+        }
+    }
+
+    /// What the table makes of a spell, with its own numbers.
+    fn made(id: SpellId) -> Definition {
+        SpellEffects::default().get(id).unwrap().of_spell(&spell(id)).unwrap()
+    }
+
+    fn dice() -> Roll {
+        Roll::Dice { dice: Some(DICE), plain: false, over: 1 }
+    }
+
+    fn rounds() -> Roll {
+        Roll::Duration { base: 2, per_power: 3 }
+    }
+
+    #[test]
+    fn a_plain_harm_is_its_dice_resisted_in_its_realm() {
+        assert_eq!(
+            made(SpellId::ENERGY_BLAST).effects,
+            vec![EffectSpec { roll: Some(dice()), resist: Some(REALM), ..default() }]
+        );
+    }
+
+    #[test]
+    fn a_condition_is_its_rounds_saved_against_and_resisted() {
+        assert_eq!(
+            made(SpellId::SLEEP).effects,
+            vec![EffectSpec {
+                kind: EffectKind::Afflict {
+                    condition: Condition::Asleep,
+                    poison: 0,
+                    indefinite: false
+                },
+                roll: Some(rounds()),
+                save: Some(condition_save(Condition::Asleep)),
+                resist: Some(REALM),
+                ..default()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_follow_up_waits_on_the_effect_before_it() {
+        let terror = made(SpellId::TERROR).effects;
+        assert_eq!(terror.len(), 2);
+        let knocked_out = &terror[1];
+        assert_eq!(knocked_out.on, Whom::Members);
+        assert!(knocked_out.landed && knocked_out.half);
+        assert_eq!(
+            knocked_out.kind,
+            EffectKind::Afflict { condition: Condition::Unconscious, poison: 0, indefinite: false }
+        );
+    }
+
+    #[test]
+    fn a_cure_names_what_it_lifts() {
+        assert_eq!(
+            made(SpellId::CURE_PARALYSIS).effects,
+            vec![EffectSpec {
+                kind: EffectKind::Cure {
+                    conditions: vec![Condition::Paralyzed, Condition::Webbed],
+                    outright: false
+                },
+                ..default()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_party_wide_effect_lands_on_the_party_once() {
+        assert_eq!(
+            made(SpellId::ANTI_MAGIC).effects,
+            vec![
+                EffectSpec {
+                    kind: EffectKind::DrainPool,
+                    on: Whom::Party,
+                    roll: Some(Roll::Fifty),
+                    ..default()
+                },
+                EffectSpec { kind: EffectKind::Dispel, on: Whom::Party, ..default() },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_spell_laid_on_monsters_and_the_party_is_two_rows_and_a_personal_one_is_one() {
+        let laid = |on| EffectSpec {
+            kind: EffectKind::Enchant(SpellId::BLESS),
+            on,
+            roll: Some(rounds()),
+            ..default()
+        };
+        assert_eq!(made(SpellId::BLESS).effects, vec![laid(Whom::Monsters), laid(Whom::Party)]);
+        assert_eq!(made(SpellId::HASTE).effects.len(), 1);
+    }
+
+    #[test]
+    fn a_spell_s_own_numbers_are_taken_from_its_record() {
+        let restore = made(SpellId::RESTORE_HEALTH).effects;
+        assert_eq!(restore[0].roll, Some(dice()));
+        assert_eq!(
+            restore[1].roll,
+            Some(Roll::Dice {
+                dice: Some(Dice { count: DICE.count * 2, ..DICE }),
+                plain: false,
+                over: 1
+            })
+        );
+        assert_eq!(
+            made(SpellId::PRISMIC_RAY).effects[0].kind,
+            EffectKind::Prismic { dice: Some(DICE), base: 2, per_power: 3 }
+        );
+        assert_eq!(made(SpellId::PURIFY_AIR).effects[0].kind, EffectKind::Purify { level: 4 });
+        assert_eq!(
+            made(SpellId::PHILOSOPHERS_BANE).effects[0].roll,
+            Some(Roll::GoldShare(Some(DICE)))
+        );
+        let vortex = made(SpellId::VAMPIRIC_VORTEX).effects;
+        assert_eq!(vortex[0].roll, Some(Roll::Dice { dice: Some(DICE), plain: true, over: 1 }));
+    }
+
+    #[test]
+    fn who_the_dead_and_the_undead_are_is_in_the_table() {
+        assert_eq!(
+            made(SpellId::BANISH).effects[0].kinds,
+            Some(vec![MonsterKind::Undead, MonsterKind::Demon, MonsterKind::Spirit])
+        );
+        assert_eq!(made(SpellId::LIFESTEAL).leeches, Some(true));
+        assert_eq!(made(SpellId::MIGHT_TO_MAGIC).leeches, Some(false));
+    }
+
+    #[test]
+    fn every_spell_the_table_names_has_effects_and_resolves() {
+        let table = SpellEffects::default();
+        assert!(!table.0.is_empty());
+        for (&id, rows) in &table.0 {
+            assert_ne!(id, SpellId::NONE);
+            assert!(!rows.effects.is_empty(), "{id:?}");
+            let made = rows.of_spell(&spell(id)).unwrap();
+            assert!(made.effects.iter().all(|effect| !effect.spell_realm), "{id:?}");
         }
     }
 }

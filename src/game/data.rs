@@ -7,6 +7,7 @@ use crate::content::items::{ItemCatalog, LootTables};
 use crate::content::npcs::{FactCatalog, NpcCatalog};
 use crate::content::species::MonsterCatalog;
 use crate::content::spells::SpellCatalog;
+use crate::game::hits::definitions::SpellEffects;
 
 /// The databases, present once every one has loaded. A level cannot be
 /// entered before, so whatever runs in play may rely on them.
@@ -16,6 +17,8 @@ pub struct Catalogs {
     pub loot: LootTables,
     pub species: MonsterCatalog,
     pub spells: SpellCatalog,
+    /// What each spell does, from the table the game ships.
+    pub spell_effects: SpellEffects,
     pub npcs: NpcCatalog,
     pub facts: FactCatalog,
 }
@@ -79,6 +82,7 @@ pub fn publish_catalogs(
         loot: loot.remove(&loading.loot).unwrap(),
         species: species.remove(&loading.species).unwrap(),
         spells: spells.remove(&loading.spells).unwrap(),
+        spell_effects: SpellEffects::default(),
         npcs: npcs.remove(&loading.npcs).unwrap(),
         facts: facts.remove(&loading.facts).unwrap(),
     });
