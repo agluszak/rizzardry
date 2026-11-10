@@ -17,6 +17,40 @@ fn invalid(text: &str) -> LoadError {
 fn wide(bytes: &[u8]) -> Result<String, LoadError> {
     String::from_utf16(&utf16_units(bytes)).map_err(|_| invalid("invalid UTF-16"))
 }
+/// The regions an NPC's service flags name, one bit a region (retail's
+/// table of them in `CanNpcJoinParty`).
+fn posts(services: u32) -> Vec<u8> {
+    const BITS: [(u8, u32); 14] = [
+        (2, 0x1),
+        (3, 0x2),
+        (4, 0x400),
+        (5, 0x4),
+        (6, 0x2000),
+        (7, 0x8),
+        (8, 0x80),
+        (9, 0x40),
+        (10, 0x20),
+        (11, 0x10),
+        (12, 0x100),
+        (13, 0x800),
+        (14, 0x200),
+        (15, 0x1000),
+    ];
+    BITS.iter().filter(|&&(_, bit)| services & bit != 0).map(|&(region, _)| region).collect()
+}
+
+/// The story fact a few NPCs wait on before they will join, which the
+/// original keeps in its code rather than in their records.
+fn joins_when(npc: usize) -> Option<(&'static str, bool)> {
+    match npc {
+        0x2b => Some(("FACT_UMISSION_SCUBA_DONE", false)),
+        0x4f => Some(("FACT_SEXUS_PAID", true)),
+        0x4a => Some(("FACT_TRYNNIE_MADRAS_WILL_JOIN", true)),
+        0x10 | 0x11 => Some(("FACT_PEACE_ACHIEVED", false)),
+        _ => None,
+    }
+}
+
 pub fn read_npcs(data: &[u8]) -> Result<NpcCatalog, LoadError> {
     let mut b = Bytes::new(data);
     let count = b.u32()? as usize;
@@ -57,7 +91,8 @@ pub fn read_npcs(data: &[u8]) -> Result<NpcCatalog, LoadError> {
             owns_stock: r[0x55] != 0,
             merchant: r[0x56] != 0,
             character: if r[0x57] != 0 { Some(npc_character(r)?) } else { None },
-            services: u32_at(r, 0x68)?,
+            posts: posts(u32_at(r, 0x68)?),
+            joins_when: joins_when(out.len()),
             min_party_level: r[0x6f],
             disposition: r[0x5c],
             charm_scale: r[0x5d] as i8,

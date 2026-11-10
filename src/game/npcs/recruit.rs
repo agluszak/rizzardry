@@ -3,10 +3,7 @@
 use super::{ActorId, Npc, NpcBodies, NpcBody, NpcLocation};
 use crate::game::actors::Attributes;
 use crate::{
-    content::{
-        items::ItemId,
-        npcs::{NpcCharacter, NpcId},
-    },
+    content::{items::ItemId, npcs::NpcCharacter},
     game::{
         characters::{Character, Dead, Vitals},
         data::Catalogs,
@@ -106,38 +103,6 @@ pub fn install(app: &mut App) {
         .add_observer(died)
         .add_observer(revived);
 }
-fn service(flags: u32, region: u8) -> bool {
-    let bit = match region {
-        2 => 1,
-        3 => 2,
-        4 => 0x400,
-        5 => 4,
-        7 => 8,
-        8 => 0x80,
-        9 => 0x40,
-        10 => 0x20,
-        11 => 0x10,
-        12 => 0x100,
-        13 => 0x800,
-        14 => 0x200,
-        15 => 0x1000,
-        6 => 0x2000,
-        _ => 0,
-    };
-    flags & bit != 0
-}
-fn terms(id: NpcId, story: &super::story::StoryFacts, content: &Catalogs) -> bool {
-    let requirement = match id.0 {
-        0x2b => Some(("FACT_UMISSION_SCUBA_DONE", false)),
-        0x4f => Some(("FACT_SEXUS_PAID", true)),
-        0x4a => Some(("FACT_TRYNNIE_MADRAS_WILL_JOIN", true)),
-        0x10 | 0x11 => Some(("FACT_PEACE_ACHIEVED", false)),
-        _ => None,
-    };
-    requirement.is_none_or(|(name, expected)| {
-        super::story::fact_named(story, &content.facts, name).is_ok_and(|v| (v != 0) == expected)
-    })
-}
 fn join(
     mut requests: MessageReader<Join>,
     mut results: MessageWriter<Joined>,
@@ -173,8 +138,14 @@ fn join(
                 .fold((0u32, 0u32), |(sum, count), (c, _, _)| {
                     (sum + u32::from(c.level()), count + 1)
                 });
-            if service(d.services, region)
-                || !terms(id.0, &story, &content)
+            // It keeps to its post in a region it serves, waits on what the
+            // story owes it, and wants a party of its level.
+            let waiting = d.joins_when.is_some_and(|(fact, set)| {
+                !super::story::fact_named(&story, &content.facts, fact)
+                    .is_ok_and(|value| (value != 0) == set)
+            });
+            if d.posts.contains(&region)
+                || waiting
                 || sum / count.max(1) < u32::from(d.min_party_level)
             {
                 return Err(JoinRefusal::Declines);
@@ -345,6 +316,7 @@ mod tests {
     use crate::content::items::{EquipClass, ItemCatalog, ItemDefinition, ItemKind, QuantityKind};
     use crate::content::monster::MonsterBody;
     use crate::content::npcs::NpcCatalog;
+    use crate::content::npcs::NpcId;
     use crate::content::species::{MonsterCatalog, Species};
     use crate::game::characters::{Condition, Gender, Lasting, Profession};
     use crate::game::items::{Burden, Packed, Worn};

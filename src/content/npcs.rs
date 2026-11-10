@@ -27,9 +27,12 @@ pub struct NpcDefinition {
     pub trade_pool: u16,
     /// Retail's NPC kind; one kind takes no bribes in kind.
     pub kind: i32,
-    /// One bit per region whose service the NPC offers; it will not leave
-    /// that region's post to join.
-    pub services: u32,
+    /// The regions in which the NPC has a post, which it will not leave to
+    /// join.
+    pub posts: Vec<u8>,
+    /// What must be so before the NPC will join: a fact of the story by
+    /// name, and whether it must be set.
+    pub joins_when: Option<(&'static str, bool)>,
     /// The average party level before the NPC will join; 0 for any.
     pub min_party_level: u8,
     pub buy_factor: f32,
