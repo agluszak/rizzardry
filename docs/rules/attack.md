@@ -785,25 +785,28 @@ original, not understood rules.
 The sections above are the rules. This section says how the code is to be
 shaped around them; where the code differs from it, the code is wrong.
 
-**A rule is a function of the facts it is about.** Each numbered rule above is
-one function that takes plain values and returns a plain value. None of them
-takes a query, a world, a catalog or a log, and none of them changes anything.
+**A rule is a function of the fighters it is about.** Each numbered rule
+above is one function. It takes the fighters themselves (the attacker, the one
+struck, a guard), read through one view of an actor in a fight, and the attack
+under way (the arm, the mode, the surprise); one that rolls takes the
+random-number generator. None of them changes anything, and none is handed a
+copy of an actor's numbers: there is no struct of facts between an actor's
+components and the rule that reads them.
 
-| Rule | Takes | Gives |
+| Rule | Is about | Gives |
 | --- | --- | --- |
-| who may be struck, and with what (2) | for each candidate: how the attacker stands toward it, which arms reach it, whether it is seen, its worst condition, whether it is in reach of the party, the gap | the arm and target, or what to do instead (close in on whom, wait, stand) |
-| catching unaware (3) | the reach, where the attacker stands about the target, what the target is doing, its Senses and how often it has tried this round | whether the blow is unaware, whether it is natural, whether the target turned |
-| the roll to hit (4) | the arm's rating, the mode, the attacker's fatigue and blindness, the surprise, the target's armour and what it is doing, both agilities, the difficulty | the chance |
-| the swing's fate (4) | the chance, the bystanders in reach | reaches (and whether surely), misses, or fumbles onto which bystander |
-| who steps in (4) | the guards in the order they took it up, each one's reach and blows left, the attacker's press | the body the blow lands on |
-| getting through armour (4) | the arm's rating, the mode it pierces by, fatigue, armour at the place struck, both agilities, the difficulty | the chance |
-| the blow (5) | the arm's dice and percent, slaying, backstab, the kill skill, the weapon's effects | the damage and what else it does |
-| what a swing costs (6) | the mode, the weapon's weight, berserk, disease, load, slowed, hasted | the stamina |
+| who may be struck, and with what (2) | the actor, its turn, everyone in the fight and where they stand | the arm and target, or what to do instead (close in on whom, wait, stand) |
+| catching unaware (3) | the arm, the target, the side the attacker is on | whether the blow is unaware, whether it is natural, whether the target turned |
+| the roll to hit (4) | the attack, the attacker, the target | the chance |
+| the swing's fate (4) | the arm, the chance, how many stand in reach, where the two stand | reaches (and whether surely), misses, or fumbles onto which bystander |
+| who steps in (4) | the one struck and its guards, the attacker | the guard the blow lands on |
+| getting through armour (4) | the attack, the attacker, the one struck, the place and the mode that pierces | the chance |
+| the blow (5) | the attack, the attacker, the one struck | the damage and what else it does |
+| what a swing costs (6) | the attack, the attacker | the stamina |
 | the next attack's moment (7) | attacks left with each hand, each hand's initiative, the moment now | which hand and when, or none |
 
-The facts each takes are a small struct named for the rule, built in one
-place. Every number on this page is a test of one of these functions, with
-the expected value worked out from the page, not from running the code.
+A rule is tried on fighters made of the components it reads, with the
+expected value worked out from the page, not from running the code.
 
 **The attack itself is one piece that only arranges.** The observer of
 `Strike` reads what the rules need about the attacker, the target and those
@@ -816,7 +819,7 @@ own: no arithmetic, no constant.
 **What is read of an actor is one view.** The attacker and the target are read
 through the same view of an actor (health and what ails it, attributes, level,
 `Attacks`, `Armour`, side, place), whichever of member and monster they are.
-The places section 8 lists where the two differ are differences in the facts
+The places section 8 lists where the two differ are differences in what
 refit wrote, never a branch in a rule here.
 
 **What goes.** `open`, `swing`, `intercept`, `catch_unaware`, `land_blow`,

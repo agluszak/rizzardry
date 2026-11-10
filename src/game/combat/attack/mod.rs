@@ -1,8 +1,8 @@
-//! The rules of an attack with a weapon (`docs/rules/attack.md`), each a
-//! function of the facts it is about and nothing else: no query, no world, no
-//! log. A rule that rolls takes the random-number generator; none changes
-//! anything. [`super::swings`] reads the facts, calls the rules in the order
-//! of the page and makes happen what they decide.
+//! The rules of an attack with a weapon (`docs/rules/attack.md`). Each is a
+//! function of the fighters it is about ([`Fighter`]) and of the attack under
+//! way ([`Attack`]); one that rolls takes the random-number generator.
+//! [`super::swings`] calls them in the order of the page and makes happen
+//! what they decide.
 //!
 //! - [`choose`]: whom and with what to strike, or what to do instead (2)
 //! - [`unaware`]: catching the target unaware (3)
@@ -18,6 +18,8 @@
 //! the way.
 
 mod aim;
+#[cfg(test)]
+mod arena;
 mod blow;
 mod choose;
 mod cost;
@@ -31,14 +33,87 @@ pub use cost::*;
 pub use guards::*;
 pub use unaware::*;
 
-use bevy::prelude::Component;
+use bevy::ecs::query::QueryData;
+use bevy::prelude::*;
 use enumset::EnumSet;
 
+use super::approach::CombatMove;
+use super::turn::{Guards, Interceptions, Ordered, Spotted};
 use crate::content::items::{AttackMode, Dice};
 use crate::content::species::Reach;
-use crate::game::characters::Vitals;
+use crate::game::actors::Arm;
+use crate::game::characters::{Condition, Vitals};
+use crate::game::difficulty::Difficulty;
+use crate::game::hits::effects::Body;
 use crate::game::magic::Strength;
+use crate::game::npcs::NpcBody;
 use crate::game::rng::GameRng;
+
+/// An actor in a fight, as a blow finds it: what every actor is, and what
+/// the round has made of it.
+#[derive(QueryData)]
+#[query_data(mutable)]
+pub struct Fighter {
+    pub body: Body,
+    /// What a member was ordered to do this round.
+    pub ordered: Option<&'static Ordered>,
+    /// It is walking this round.
+    pub walking: Has<CombatMove>,
+    /// An NPC's body, whom a member under orders never strikes.
+    pub npc: Has<NpcBody>,
+    pub guards: Option<&'static Guards>,
+    pub interceptions: Option<&'static mut Interceptions>,
+    pub spotted: Option<&'static mut Spotted>,
+}
+
+impl FighterReadOnlyItem<'_, '_> {
+    pub fn has(&self, condition: Condition) -> bool {
+        self.body.vitals.conditions.has(condition)
+    }
+
+    /// Aim and armour lost to how tired it is.
+    pub fn fatigue(&self) -> i32 {
+        fatigue(self.body.vitals)
+    }
+
+    /// Braced: its order is Defend.
+    pub fn defending(&self) -> bool {
+        self.ordered.is_some_and(Ordered::defends)
+    }
+
+    /// On the move, its guard down to blows that close in: a monster that is
+    /// walking this round, a member while the party runs.
+    pub fn moving(&self, setting: Setting) -> bool {
+        if self.body.member { setting.running } else { self.walking }
+    }
+
+    /// A figure of its own, scaled for difficulty by the side it is on
+    /// (retail `ScaleValueForCharacterDifficulty`,
+    /// `ScaleValueForMonsterDifficulty`).
+    pub fn scaled(&self, figure: i32, setting: Setting) -> i32 {
+        setting.difficulty.scale(figure, self.body.stance())
+    }
+}
+
+/// What is the same for everyone all through an attack.
+#[derive(Clone, Copy, Debug)]
+pub struct Setting {
+    pub difficulty: Difficulty,
+    /// The party is running this round.
+    pub running: bool,
+}
+
+/// The attack under way: the arm it is made with and how, and how it
+/// catches whom it is at now (a blow gone astray or taken by a guard
+/// surprises nobody).
+#[derive(Clone, Copy, Debug)]
+pub struct Attack<'a> {
+    pub arm: &'a Arm,
+    pub mode: AttackMode,
+    /// A Berserk order's fury, which costs twice the stamina.
+    pub berserk: bool,
+    pub surprise: Surprise,
+}
 
 /// The to-hit term of a mode (retail `AttackModeMod` for the aim).
 pub fn mode_to_hit(mode: AttackMode) -> i32 {
@@ -96,12 +171,6 @@ pub fn agility_difference(attacker: i32, target: i32) -> i32 {
     (attacker - target) / 10
 }
 
-/// A party member who is not under Turncoat provokes the group of whom it
-/// strikes as the attack starts (retail `MakeTargetGroupHostile`).
-pub fn provokes(member: bool, turncoat: bool) -> bool {
-    member && !turncoat
-}
-
 /// Aim and armour lost to fatigue by the share of stamina spent (retail
 /// `FatigueArmorPenalty`).
 pub fn fatigue(vitals: &Vitals) -> i32 {
@@ -115,7 +184,7 @@ pub fn fatigue(vitals: &Vitals) -> i32 {
 }
 
 /// How an attack catches its target (retail `unaware` and `natural_attack`).
-#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Surprise {
     /// Struck from behind, unseen.
     pub unaware: bool,
@@ -131,7 +200,7 @@ impl Surprise {
 
 /// Where a blow lands: one of a monster's seven locations, or a member's
 /// body part.
-#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Location(pub usize);
 
 /// Damage with `reduction` percent cut off it.
@@ -158,33 +227,6 @@ pub fn effect_strength(level: u32) -> Strength {
 pub fn phase(rng: &mut GameRng, initiative: i32) -> u32 {
     let v = rng.below(4) as i32 + initiative;
     (90 - v.clamp(-10, 89)) as u32
-}
-
-/// One swing of an attack, for the attack's result.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Swung {
-    /// It reached a victim, other than one gone astray, whether or not it
-    /// got through armour or did damage.
-    pub hit: bool,
-    /// The health lost, after Guardian Angel, to a blow on the intended or
-    /// intercepting victim.
-    pub damage: u32,
-}
-
-/// What an attack came to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Totals {
-    pub hits: u32,
-    pub damage: u32,
-}
-
-/// What the swings of an attack came to: `hits` counts those that reached
-/// a victim, `damage` the health they took.
-pub fn tally(swung: &[Swung]) -> Totals {
-    Totals {
-        hits: swung.iter().filter(|swing| swing.hit).count() as u32,
-        damage: swung.iter().map(|swing| swing.damage).sum(),
-    }
 }
 
 #[cfg(test)]

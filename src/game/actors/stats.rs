@@ -165,8 +165,11 @@ pub struct Arm {
     pub loaded: Option<EnumSet<AttackMode>>,
     /// A Ninja's throw, which gets through armour whenever it strikes.
     pub sure_throw: bool,
-    /// The skill whose training adds a kill chance to its blows.
-    pub critical_skill: Option<Skill>,
+    /// The wielder's points in the skill whose training adds a kill chance
+    /// to its blows.
+    pub critical: Option<u32>,
+    /// The skills a blow of it that does damage practises.
+    pub practises: &'static [Skill],
     /// What swinging it weighs, for the stamina it costs; a natural attack
     /// costs none.
     pub weight: Option<u16>,
@@ -220,6 +223,9 @@ pub struct Attacks {
     /// The percent chance its natural strikes roll extra dice (retail
     /// `RollBackstabExtraDice`).
     pub backstab: i32,
+    /// The level of one whose blows knock out more often, by which the
+    /// chance grows: a member with the trait's, in their profession.
+    pub knock_out: Option<u8>,
     /// How far it may walk in one combat move, in metres; the party walks
     /// as one, so a member has none.
     pub stride: Option<f32>,
@@ -416,6 +422,7 @@ fn of_species(kind: &Species, spells: &Bonus) -> (Attributes, Level, Resistances
         blind_fighting: (kind.kind == MonsterKind::Monk).then_some(kind.level),
         keen_sight: if kind.level_sight { (u32::from(kind.level) * 5).min(125) } else { 0 },
         backstab: scale_by_level(kind.level, 100.0) as i32,
+        knock_out: None,
         stride: Some(
             kind.combat_move_range * crate::game::combat::monster::close::METRES_PER_MOVE_RANGE,
         ),
@@ -482,6 +489,9 @@ fn of_member(
             .then(|| character.profession_levels[character.profession]),
         keen_sight: 0,
         backstab: character.scale_by_profession(100.0) as i32,
+        knock_out: character
+            .has_trait(Trait::Knockout)
+            .then(|| character.profession_levels[character.profession]),
         stride: None,
         hasted: spells.stride,
         ..hands.attacks(character, a, load, spells.to_hit)
@@ -514,7 +524,8 @@ fn monster_arm(
         ranged: false,
         loaded: None,
         sure_throw: false,
-        critical_skill: None,
+        critical: None,
+        practises: &[],
         weight: None,
         tires: false,
         modern: swung.tires_little(),

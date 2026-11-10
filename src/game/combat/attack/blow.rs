@@ -1,51 +1,13 @@
 //! The blow that lands (`docs/rules/attack.md` section 5) and Razor Cloak's
 //! answer (section 7).
 
-use super::{Surprise, keeps_distance, reduce, roll_dice};
-use crate::content::characters::Skill;
+use super::{Attack, FighterReadOnlyItem, Setting, keeps_distance, reduce, roll_dice};
 use crate::content::items::{AttackEffect, AttackEffects, AttackMode, Dice};
-use crate::content::species::MonsterKind;
 use crate::game::characters::scale_by_level;
 use crate::game::hits::Effect;
 use crate::game::hits::definitions::magnitude;
 use crate::game::magic::Strength;
 use crate::game::rng::GameRng;
-
-/// What a member's training adds to a blow that got through armour.
-#[derive(Clone, Copy, Debug)]
-pub struct Training {
-    /// The points in the arm's critical skill, if it has one.
-    pub critical: Option<u32>,
-    /// The profession level of a member with the Knock Out trait, by which its
-    /// chance is `5` scaled: 3 at level 0 up to 5 from level 20, whole.
-    pub knock_out: Option<u8>,
-}
-
-/// What the damage of a blow weighs.
-#[derive(Clone, Copy, Debug)]
-pub struct Blowing<'a> {
-    /// The arm's dice for the mode, a punch's and a kick's their own.
-    pub dice: Dice,
-    pub percent: i32,
-    pub mode: AttackMode,
-    pub surprise: Surprise,
-    /// The attacker's backstab chance.
-    pub backstab: i32,
-    /// The victim is on the move, and is defending.
-    pub moving: bool,
-    pub defending: bool,
-    /// The monster kinds the arm slays, and the victim's kind.
-    pub slays: &'a [MonsterKind],
-    pub kind: Option<MonsterKind>,
-    /// The victim's damage reduction in percent.
-    pub reduction: i32,
-    /// The blow went astray: its damage is limited, and nothing trains.
-    pub fumbled: bool,
-    pub victim_health: u32,
-    pub effects: AttackEffects,
-    /// A member's training; a monster has none.
-    pub training: Option<Training>,
-}
 
 /// What a blow does: its damage, and the weapon's effects with what training
 /// added to their chances.
@@ -55,55 +17,33 @@ pub struct Struck {
     pub effects: AttackEffects,
 }
 
-/// The most one blow that went astray takes off its victim: a fifth of its
-/// health, at least one (retail `CapAttackDamageByTargetHealth`).
-pub fn fumble_cap(damage: u32, health: u32) -> u32 {
-    damage.min((health / 5).max(1))
-}
-
-/// The extra dice a backstab rolls for a draw below 100 (retail
-/// `RollBackstabExtraDice`): one if `roll + 15 < chance`, one more if
-/// `roll + 75 < chance`, one more if `roll + 95 < chance`.
-pub fn backstab_extra(roll: i32, chance: i32) -> u32 {
-    [15, 75, 95].iter().take_while(|&&over| roll + over < chance).count() as u32
-}
-
-/// Extra dice a backstab rolls, up to three with a high enough chance.
-pub fn backstab_dice(rng: &mut GameRng, chance: i32) -> u32 {
-    backstab_extra(rng.below(100) as i32, chance)
-}
-
-/// The kill chance training adds to a blow for a draw below 25: a point per 25
-/// of `skill` and one more with chance `(skill mod 25) / 25`.
-pub fn critical_bonus(skill: u32, roll: u32) -> u32 {
-    skill / 25 + u32::from(roll < skill % 25)
-}
-
-/// The kill chance training adds to a blow.
-pub fn critical_chance(rng: &mut GameRng, skill: u32) -> u32 {
-    critical_bonus(skill, rng.below(25))
-}
-
 /// How many times the arm's dice are rolled (retail
 /// `ResolveCharacterAttackDamage`): 2 for a close blow that is unaware or at a
-/// victim on the move, otherwise 1; the backstab's `extra` for a natural close
-/// blow; one more for berserk; one less if more than one, the victim is
-/// defending and the blow is not unaware; one more for each slay that is the
-/// victim's kind.
-pub fn dice_to_roll(facts: &Blowing, backstab: u32) -> u32 {
-    let close = !keeps_distance(facts.mode);
-    let mut count = if (facts.surprise.unaware || facts.moving) && close { 2 } else { 1 };
-    if facts.surprise.natural && close {
-        count += backstab;
+/// victim on the move, otherwise 1; the backstab's extra dice for a natural
+/// close blow; one more for berserk; one less if more than one, the victim is
+/// defending and the blow is not unaware; one more for each kind the arm
+/// slays that the victim is.
+fn dice_to_roll(
+    rng: &mut GameRng,
+    attack: &Attack,
+    me: &FighterReadOnlyItem,
+    struck: &FighterReadOnlyItem,
+    setting: Setting,
+) -> u32 {
+    let close = !keeps_distance(attack.mode);
+    let surprise = attack.surprise;
+    let mut count = if (surprise.unaware || struck.moving(setting)) && close { 2 } else { 1 };
+    if surprise.natural && close {
+        count += backstab_extra(rng.below(100) as i32, me.body.attacks.backstab);
     }
-    if facts.mode == AttackMode::Berserk {
+    if attack.mode == AttackMode::Berserk {
         count += 1;
     }
-    if count > 1 && facts.defending && !facts.surprise.unaware {
+    if count > 1 && struck.defending() && !surprise.unaware {
         count -= 1;
     }
-    if let Some(kind) = facts.kind {
-        count += facts.slays.iter().filter(|&&slain| slain == kind).count() as u32;
+    if let Some(kind) = struck.body.resistances.kind {
+        count += attack.arm.slays.iter().filter(|&&slain| slain == kind).count() as u32;
     }
     count
 }
@@ -113,59 +53,57 @@ pub fn damage_of(percent: i32, rolled: u32) -> u32 {
     (((100 + percent) * rolled as i32 + 50) / 100).max(1) as u32
 }
 
-/// The damage of a blow that got through armour, and the effects it carries: the
-/// dice rolled `dice_to_roll` times (the base added to each), raised by the
-/// percent, cut by the victim's reduction, limited if it went astray; for a
-/// blow not astray, a member's training raises the Kill chance (by the arm's
-/// critical skill) and the Knock Out chance, each held to 100.
-pub fn blow(rng: &mut GameRng, facts: &Blowing) -> Struck {
-    let backstab = if facts.surprise.natural && !keeps_distance(facts.mode) {
-        backstab_dice(rng, facts.backstab)
-    } else {
-        0
-    };
-    let rolled = roll_dice(rng, facts.dice, dice_to_roll(facts, backstab));
-    let mut damage = reduce(damage_of(facts.percent, rolled) as i32, facts.reduction);
-    if facts.fumbled && damage > 0 {
-        damage = fumble_cap(damage, facts.victim_health);
+/// The damage of a blow that got through armour, and the effects it carries:
+/// the arm's dice rolled as often as the blow rolls them (the base added to
+/// each), raised by the arm's percent and cut by the victim's reduction. One
+/// gone astray takes at most a fifth of its victim's health, at least one
+/// (retail `CapAttackDamageByTargetHealth`), and nothing trains it; otherwise
+/// the attacker's training raises the Kill chance, by a point per 25 in the
+/// arm's critical skill and one more with chance `(skill mod 25) / 25`, and
+/// the Knock Out chance, by 5 scaled by the level of one with the trait (3 at
+/// level 0 up to 5 from level 20), each held to 100.
+pub fn blow(
+    rng: &mut GameRng,
+    attack: &Attack,
+    me: &FighterReadOnlyItem,
+    struck: &FighterReadOnlyItem,
+    setting: Setting,
+    fumbled: bool,
+) -> Struck {
+    let arm = attack.arm;
+    let count = dice_to_roll(rng, attack, me, struck, setting);
+    let rolled = roll_dice(rng, arm.rolls(attack.mode), count);
+    let mut damage = reduce(damage_of(arm.percent, rolled) as i32, struck.body.armour.reduction);
+    let mut effects = arm.effects;
+    if fumbled {
+        if damage > 0 {
+            damage = damage.min((struck.body.vitals.health.max / 5).max(1));
+        }
+        return Struck { damage, effects };
     }
-    let mut effects = facts.effects;
-    if !facts.fumbled
-        && let Some(training) = facts.training
-    {
-        if let Some(skill) = training.critical {
-            let kill = &mut effects.chances[AttackEffect::Kill];
-            *kill = (*kill + critical_chance(rng, skill)).min(100);
-        }
-        if let Some(level) = training.knock_out {
-            let knock_out = &mut effects.chances[AttackEffect::KnockOut];
-            *knock_out = (*knock_out + scale_by_level(level, 5.0) as u32).min(100);
-        }
+    if let Some(skill) = arm.critical {
+        let kill = &mut effects.chances[AttackEffect::Kill];
+        *kill = (*kill + skill / 25 + u32::from(rng.below(25) < skill % 25)).min(100);
+    }
+    if let Some(level) = me.body.attacks.knock_out {
+        let knock_out = &mut effects.chances[AttackEffect::KnockOut];
+        *knock_out = (*knock_out + scale_by_level(level, 5.0) as u32).min(100);
     }
     Struck { damage, effects }
 }
 
-/// What Razor Cloak's answer weighs.
-#[derive(Clone, Copy, Debug)]
-pub struct Riposte {
-    /// The spell's dice.
-    pub dice: Option<Dice>,
-    /// The power the cloak had before the point was spent.
-    pub power: u32,
-    /// The attacker's own damage reduction in percent.
-    pub reduction: i32,
+/// The extra dice a backstab rolls for a draw below 100 (retail
+/// `RollBackstabExtraDice`): one if `roll + 15 < chance`, one more if
+/// `roll + 75 < chance`, one more if `roll + 95 < chance`.
+pub fn backstab_extra(roll: i32, chance: i32) -> u32 {
+    [15, 75, 95].iter().take_while(|&&over| roll + over < chance).count() as u32
 }
 
 /// The damage Razor Cloak answers a close blow with: the spell's dice rolled
-/// `count * power` times, no boost, less the attacker's reduction.
-pub fn riposte(rng: &mut GameRng, facts: &Riposte) -> u32 {
-    let strength = Strength { power: facts.power, against: 0, boost: 0 };
-    reduce(magnitude(rng, facts.dice, strength) as i32, facts.reduction)
-}
-
-/// Whether a blow lands as a hit: it did more than 0 damage.
-pub fn lands(damage: u32) -> bool {
-    damage > 0
+/// `count * power` times, at the power the cloak had before the point was
+/// spent, no boost, less the attacker's own reduction.
+pub fn riposte(rng: &mut GameRng, dice: Option<Dice>, power: u32, reduction: i32) -> u32 {
+    reduce(magnitude(rng, dice, Strength { power, against: 0, boost: 0 }) as i32, reduction)
 }
 
 /// What a landed blow did, told apart: the health it took and what else it did.
@@ -190,101 +128,109 @@ pub fn dealt(effects: impl IntoIterator<Item = Effect>) -> Dealt {
     Dealt { damage, rest }
 }
 
-/// The skills a blow that did damage and was not astray practises: a close arm
-/// Critical Strike and Power Strike; a ranged one Eagle Eye, and Critical
-/// Strike besides for a thrower with Thrown Criticals.
-pub fn practised_by_blow(ranged: bool, thrown_criticals: bool) -> &'static [Skill] {
-    match (ranged, thrown_criticals) {
-        (false, _) => &[Skill::CriticalStrike, Skill::PowerStrike],
-        (true, true) => &[Skill::EagleEye, Skill::CriticalStrike],
-        (true, false) => &[Skill::EagleEye],
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::arena::{NORMAL, arena, arm, duel, monster, swing};
     use super::*;
+    use crate::game::actors::Armour;
+    use crate::game::characters::Vitals;
+    use crate::game::combat::approach::{CombatMove, MoveGoal};
+    use crate::game::combat::attack::Surprise;
+    use crate::game::combat::turn::{Action, Ordered};
+    use crate::game::world::hostility::Stance;
+    use bevy::prelude::{Entity, Vec3, World};
 
-    /// Dice that roll 1 every time: a blow's damage is how many it rolls.
-    const ONE: Dice = Dice { count: 1, sides: 1, base: 0 };
-
-    fn blowing() -> Blowing<'static> {
-        Blowing {
-            dice: ONE,
-            percent: 0,
-            mode: AttackMode::Swing,
-            surprise: Surprise::default(),
-            backstab: 0,
-            moving: false,
-            defending: false,
-            slays: &[],
-            kind: None,
-            reduction: 0,
-            fumbled: false,
-            victim_health: 100,
-            effects: AttackEffects::default(),
-            training: None,
-        }
+    /// Two monsters facing each other.
+    fn pair() -> (World, (Entity, Entity)) {
+        let mut world = arena();
+        let pair = (
+            monster(&mut world, Vec3::ZERO, Stance::Hostile),
+            monster(&mut world, Vec3::NEG_Z, Stance::Friendly),
+        );
+        (world, pair)
     }
 
-    fn count(facts: &Blowing) -> u32 {
-        dice_to_roll(facts, 0)
-    }
-
-    fn damage(facts: &Blowing) -> u32 {
-        blow(&mut GameRng::seeded(0), facts).damage
+    /// The damage of a blow of the arena's arm, which rolls 1 a die: how
+    /// many dice it rolled.
+    fn damage(world: &mut World, pair: (Entity, Entity), attack: &Attack) -> u32 {
+        duel(world, pair, |me, struck| {
+            blow(&mut GameRng::seeded(0), attack, me, struck, NORMAL, false).damage
+        })
     }
 
     const UNAWARE: Surprise = Surprise { unaware: true, natural: false };
+
+    fn walk(world: &mut World, actor: Entity) {
+        world.entity_mut(actor).insert(CombatMove {
+            budget: 1.0,
+            moved: 0.0,
+            goal: MoveGoal::Party,
+        });
+    }
+
     #[test]
     fn a_close_blow_unaware_or_at_a_victim_on_the_move_rolls_two() {
-        assert_eq!(count(&Blowing { surprise: UNAWARE, ..blowing() }), 2);
-        assert_eq!(count(&Blowing { moving: true, ..blowing() }), 2);
+        let (mut world, pair) = pair();
+        let arm = arm(80);
+        assert_eq!(damage(&mut world, pair, &swing(&arm)), 1);
+        let unaware = Attack { surprise: UNAWARE, ..swing(&arm) };
+        assert_eq!(damage(&mut world, pair, &unaware), 2);
+        walk(&mut world, pair.1);
+        assert_eq!(damage(&mut world, pair, &swing(&arm)), 2);
         // Not both: 2, not 3.
-        assert_eq!(count(&Blowing { surprise: UNAWARE, moving: true, ..blowing() }), 2);
+        assert_eq!(damage(&mut world, pair, &unaware), 2);
         // Not throws, lashes and shots.
         for mode in [AttackMode::Throw, AttackMode::Lash, AttackMode::Shoot] {
-            assert_eq!(count(&Blowing { surprise: UNAWARE, moving: true, mode, ..blowing() }), 1);
+            assert_eq!(damage(&mut world, pair, &Attack { mode, ..unaware }), 1);
         }
     }
 
     #[test]
     fn a_defending_victim_takes_a_die_off_unless_the_blow_was_unaware() {
-        // On the move and defending: 2 - 1.
-        assert_eq!(count(&Blowing { moving: true, defending: true, ..blowing() }), 1);
-        // Berserk and defending: 1 + 1 - 1.
-        assert_eq!(count(&Blowing { mode: AttackMode::Berserk, defending: true, ..blowing() }), 1);
-        // Unaware: kept.
-        assert_eq!(count(&Blowing { surprise: UNAWARE, defending: true, ..blowing() }), 2);
+        let (mut world, pair) = pair();
+        let arm = arm(80);
+        world.entity_mut(pair.1).insert(Ordered(Action::Defend));
         // One die only: nothing to take.
-        assert_eq!(count(&Blowing { defending: true, ..blowing() }), 1);
+        assert_eq!(damage(&mut world, pair, &swing(&arm)), 1);
+        // Berserk and defending: 1 + 1 - 1.
+        let berserk = Attack { mode: AttackMode::Berserk, ..swing(&arm) };
+        assert_eq!(damage(&mut world, pair, &berserk), 1);
+        // Unaware: kept.
+        assert_eq!(damage(&mut world, pair, &Attack { surprise: UNAWARE, ..swing(&arm) }), 2);
+        // On the move and defending: 2 - 1.
+        walk(&mut world, pair.1);
+        assert_eq!(damage(&mut world, pair, &swing(&arm)), 1);
     }
 
     #[test]
     fn the_damage_is_raised_by_the_percent_and_is_at_least_one() {
         // max(1, ((100 + p) * rolled + 50) / 100).
-        let rolled = Dice { count: 7, sides: 1, base: 0 };
-        let with = |percent| Blowing { dice: rolled, percent, ..blowing() };
-        assert_eq!(damage(&with(0)), 7); // 750 / 100
-        assert_eq!(damage(&with(50)), 11); // (150 * 7 + 50) / 100 = 1100 / 100
-        assert_eq!(damage(&with(-50)), 4); // (50 * 7 + 50) / 100 = 400 / 100
-        assert_eq!(damage(&with(-100)), 1); // 50 / 100 = 0, at least 1
+        assert_eq!(damage_of(0, 7), 7); // 750 / 100
+        assert_eq!(damage_of(50, 7), 11); // (150 * 7 + 50) / 100 = 1100 / 100
+        assert_eq!(damage_of(-50, 7), 4); // (50 * 7 + 50) / 100 = 400 / 100
+        assert_eq!(damage_of(-100, 7), 1); // 50 / 100 = 0, at least 1
         assert_eq!(damage_of(0, 0), 1);
     }
 
     #[test]
     fn a_blow_gone_astray_is_limited_to_a_fifth_of_the_victims_health_at_least_one() {
-        let rolled = Dice { count: 50, sides: 1, base: 0 };
-        let astray = Blowing { dice: rolled, fumbled: true, victim_health: 20, ..blowing() };
-        assert_eq!(damage(&astray), 4);
-        assert_eq!(damage(&Blowing { fumbled: false, ..astray }), 50);
+        let (mut world, pair) = pair();
+        let mut heavy = arm(80);
+        heavy.dice = Dice { count: 50, sides: 1, base: 0 };
+        let astray = |world: &mut World, fumbled| {
+            duel(world, pair, |me, struck| {
+                blow(&mut GameRng::seeded(0), &swing(&heavy), me, struck, NORMAL, fumbled).damage
+            })
+        };
+        *world.get_mut::<Vitals>(pair.1).unwrap() = Vitals::full(20, 100);
+        assert_eq!(astray(&mut world, true), 4);
+        assert_eq!(astray(&mut world, false), 50);
         // A fifth of 3 is 0: one.
-        assert_eq!(damage(&Blowing { victim_health: 3, ..astray }), 1);
-        // Less than the limit is unchanged.
-        let small = Blowing { dice: Dice { count: 2, sides: 1, base: 0 }, ..astray };
-        assert_eq!(damage(&small), 2);
-        assert_eq!(fumble_cap(30, 100), 20);
-        assert_eq!(fumble_cap(30, 4), 1);
+        *world.get_mut::<Vitals>(pair.1).unwrap() = Vitals::full(3, 100);
+        assert_eq!(astray(&mut world, true), 1);
+        // What its armour cut to nothing stays nothing.
+        world.get_mut::<Armour>(pair.1).unwrap().reduction = 100;
+        assert_eq!(astray(&mut world, true), 0);
     }
 
     #[test]
@@ -306,15 +252,15 @@ mod tests {
 
     #[test]
     fn razor_cloak_rolls_the_spells_dice_count_times_power_less_the_attackers_reduction() {
+        let rng = &mut GameRng::seeded(0);
         // 1d1 at power 3 is three dice of 1.
-        let cloak = Riposte { dice: Some(ONE), power: 3, reduction: 0 };
-        assert_eq!(riposte(&mut GameRng::seeded(0), &cloak), 3);
+        let one = Some(Dice { count: 1, sides: 1, base: 0 });
+        assert_eq!(riposte(rng, one, 3, 0), 3);
         // (50 * 3 + 50) / 100 = 2.
-        assert_eq!(riposte(&mut GameRng::seeded(0), &Riposte { reduction: 50, ..cloak }), 2);
-        assert_eq!(riposte(&mut GameRng::seeded(0), &Riposte { reduction: 100, ..cloak }), 0);
-        assert_eq!(riposte(&mut GameRng::seeded(0), &Riposte { dice: None, ..cloak }), 0);
+        assert_eq!(riposte(rng, one, 3, 50), 2);
+        assert_eq!(riposte(rng, one, 3, 100), 0);
+        assert_eq!(riposte(rng, None, 3, 0), 0);
         // The base is not multiplied: 0d1+5 rolled count 0 times power 3 = 0 dice, +5.
-        let flat = Riposte { dice: Some(Dice { count: 0, sides: 1, base: 5 }), ..cloak };
-        assert_eq!(riposte(&mut GameRng::seeded(0), &flat), 5);
+        assert_eq!(riposte(rng, Some(Dice { count: 0, sides: 1, base: 5 }), 3, 0), 5);
     }
 }

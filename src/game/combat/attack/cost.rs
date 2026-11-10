@@ -1,29 +1,16 @@
 //! What a swing costs and uses up, and the attacker's next attack
 //! (`docs/rules/attack.md` sections 6 and 7).
 
+use bevy::prelude::{Entity, Query};
 use enum_map::EnumMap;
 
+use super::{Attack, FighterReadOnlyItem};
 use crate::content::items::AttackMode;
-use crate::game::characters::Load;
+use crate::game::actors::Arm;
+use crate::game::characters::Condition;
 use crate::game::inventory::WeaponSlot;
+use crate::game::items::{Items, Missile, Weapon};
 use crate::game::rng::GameRng;
-
-/// What a swing's stamina weighs.
-#[derive(Clone, Copy, Debug)]
-pub struct Cost {
-    /// The arm tires its wielder: a member's does, a monster's costs nothing.
-    pub tires: bool,
-    pub mode: AttackMode,
-    /// What the weapon weighs; none for a natural weapon.
-    pub weight: Option<u16>,
-    /// A Berserk order, which doubles it.
-    pub berserk: bool,
-    pub diseased: bool,
-    /// What the attacker carries; one that carries nothing weighed pays nothing.
-    pub load: Option<Load>,
-    pub slowed: bool,
-    pub hasted: bool,
-}
 
 /// The draw behind a swing's stamina: it costs `below(n) + add` (retail
 /// `CharacterActionFatigueCost`). A punch is `2 + below(3)`, a kick
@@ -47,63 +34,56 @@ pub fn stamina_draw(mode: AttackMode, weight: Option<u16>) -> (u32, u32) {
 /// order and again by disease, then scaled by the load (none 0 percent, light
 /// 25, medium 50, heavy 100, extreme 200; minus 25 if slowed, otherwise plus 25
 /// if hasted) as `cost + percent * cost / 100` (retail `FatigueCharacter`).
-pub fn swing_stamina(rng: &mut GameRng, facts: &Cost) -> u32 {
-    let Some(load) = facts.load.filter(|_| facts.tires) else { return 0 };
-    let (below, add) = stamina_draw(facts.mode, facts.weight);
+/// An arm that does not tire, and one who carries nothing weighed, pay
+/// nothing.
+pub fn swing_stamina(rng: &mut GameRng, attack: &Attack, me: &FighterReadOnlyItem) -> u32 {
+    let Some(burden) = me.body.burden.filter(|_| attack.arm.tires) else { return 0 };
+    let (below, add) = stamina_draw(attack.mode, attack.arm.weight);
     let cost = (rng.below(below) + add)
-        * if facts.berserk { 2 } else { 1 }
-        * if facts.diseased { 2 } else { 1 };
-    load.scale_fatigue(cost, facts.slowed, facts.hasted)
+        * if attack.berserk { 2 } else { 1 }
+        * if me.has(Condition::Diseased) { 2 } else { 1 };
+    burden.load.scale_fatigue(cost, me.has(Condition::Slowed), me.body.attacks.hasted > 0.0)
 }
 
-/// What a swing uses up of what is shot or thrown.
-#[derive(Clone, Copy, Debug)]
-pub struct Ammunition {
-    /// A member's missile weapon whose ammunition is at hand; nothing else
-    /// uses anything up.
-    pub ranged: bool,
-    /// It shoots the missiles in the other hand.
-    pub launcher: bool,
-    /// What it uses casts its spell, or is a thrown missile that is kept.
-    pub kept: bool,
-    /// What the weapon counts: charges, else units.
-    pub left: Option<u16>,
-    /// How many swings of the attack there have been, this one included.
-    pub spent: usize,
-}
-
-/// What a swing used.
+/// What a swing used of what is shot or thrown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Used {
-    /// How many of what it shoots or throws are spent.
-    pub spends: Option<u16>,
+    /// The item one of which is spent.
+    pub spends: Option<Entity>,
     /// What the weapon counts is used up by the swings of this attack: the
     /// slot has no attacks left for the round and the attack ends at once.
     pub used_up: bool,
 }
 
-/// What a swing uses up: a launcher one of the missiles in the other hand every
-/// swing, a thrown weapon or a gun one of itself; a weapon that casts its
-/// spell, or a thrown missile that is kept, uses nothing.
-pub fn uses_up(facts: &Ammunition) -> Used {
-    let spends = (facts.ranged && (facts.launcher || !facts.kept)).then_some(1);
-    Used {
-        spends,
-        used_up: spends.is_some()
-            && facts.left.is_some_and(|left| usize::from(left) <= facts.spent),
-    }
+/// Whether `swings` swings have used up all a weapon counts.
+pub fn runs_out(left: Option<u16>, swings: usize) -> bool {
+    left.is_some_and(|left| usize::from(left) <= swings)
 }
 
-/// What the next attack weighs.
-#[derive(Clone, Copy, Debug)]
-pub struct Hands {
-    /// Attacks left in each slot, the one just made counted.
-    pub left: EnumMap<WeaponSlot, u32>,
-    pub initiative: EnumMap<WeaponSlot, i32>,
-    /// The slot the attack was made with.
-    pub current: WeaponSlot,
-    /// The moment of the round it was made in.
-    pub now: u32,
+/// What the latest of `swings` swings of a missile weapon uses up: a launcher
+/// one of the missiles in the other hand every swing, a thrown weapon or a gun
+/// one of itself; a weapon that casts its spell, or a thrown missile that is
+/// kept, uses nothing, and neither does a close weapon.
+pub fn uses_up(
+    arm: &Arm,
+    actor: Entity,
+    swings: usize,
+    held: &Items,
+    strikers: &Query<(Option<&Weapon>, Option<&Missile>)>,
+) -> Used {
+    let nothing = Used { spends: None, used_up: false };
+    if !arm.ranged || arm.weapon.is_none() {
+        return nothing;
+    }
+    let slot = if arm.loaded.is_some() { arm.slot.other() } else { arm.slot };
+    let Some(item) = held.worn(actor, slot.equip()) else { return nothing };
+    let kept = strikers.get(item).is_ok_and(|(weapon, missile)| {
+        weapon.is_some_and(|weapon| weapon.casts) || missile.is_some_and(|missile| missile.kept)
+    });
+    if kept && arm.loaded.is_none() {
+        return nothing;
+    }
+    Used { spends: Some(item), used_up: runs_out(held.charges(item).or(held.count(item)), swings) }
 }
 
 /// The next attack: with which slot and at which moment.
@@ -114,109 +94,98 @@ pub struct Next {
 }
 
 /// When the attacker's next attack follows, if it has one (retail
-/// `ComputeCharacterActionPhase`): with the other slot while it has attacks,
-/// unless it has fewer than the current slot and less initiative; at
-/// `now + (100 - now) / (attacks left + 1)` when the next slot is the current
-/// one or the other has no more attacks than it, otherwise at `now`; changing
-/// hands adds the current slot's initiative less the new slot's; held between
-/// `now` and 100.
-pub fn next_attack(hands: &Hands) -> Option<Next> {
-    let current = hands.current;
+/// `ComputeCharacterActionPhase`), by the attacks `left` in each slot (the
+/// one just made counted) and each slot's initiative: with the other slot
+/// while it has attacks, unless it has fewer than the `current` slot and less
+/// initiative; at `now + (100 - now) / (attacks left + 1)` when the next slot
+/// is the current one or the other has no more attacks than it, otherwise at
+/// `now`; changing hands adds the current slot's initiative less the new
+/// slot's; held between `now` and 100.
+pub fn next_attack(
+    left: EnumMap<WeaponSlot, u32>,
+    initiative: EnumMap<WeaponSlot, i32>,
+    current: WeaponSlot,
+    now: u32,
+) -> Option<Next> {
     let other = current.other();
-    let (here, there) = (hands.left[current], hands.left[other]);
-    let slot =
-        if there != 0 && !(there < here && hands.initiative[other] < hands.initiative[current]) {
-            other
-        } else {
-            current
-        };
-    let left = hands.left[slot];
-    let now = hands.now;
-    let phase = if left == 0 {
+    let (here, there) = (left[current], left[other]);
+    let slot = if there != 0 && !(there < here && initiative[other] < initiative[current]) {
+        other
+    } else {
+        current
+    };
+    let phase = if left[slot] == 0 {
         return None;
     } else if slot == current || there <= here {
-        now + (100 - now) / (left + 1)
+        now + (100 - now) / (left[slot] + 1)
     } else {
         now
     };
-    let switch =
-        if slot != current { hands.initiative[current] - hands.initiative[slot] } else { 0 };
+    let switch = if slot != current { initiative[current] - initiative[slot] } else { 0 };
     Some(Next { slot, moment: (phase as i32 + switch).clamp(now as i32, 100) as u32 })
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::arena::{arena, arm, duel, party, swing};
     use super::*;
-
-    fn cost(mode: AttackMode, weight: Option<u16>) -> Cost {
-        Cost {
-            tires: true,
-            mode,
-            weight,
-            berserk: false,
-            diseased: false,
-            load: Some(Load::None),
-            slowed: false,
-            hasted: false,
-        }
-    }
-
-    fn spent(facts: &Cost, seed: u64) -> u32 {
-        swing_stamina(&mut GameRng::seeded(seed), facts)
-    }
+    use crate::game::actors::Attacks;
+    use crate::game::characters::{Lasting, Load, Vitals};
+    use crate::game::items::Burden;
+    use bevy::prelude::World;
 
     #[test]
     fn slowed_takes_a_quarter_off_hasted_adds_a_quarter_and_slowed_wins() {
-        let eight = Cost { berserk: true, diseased: true, ..cost(AttackMode::Swing, Some(0)) };
-        assert_eq!(spent(&Cost { slowed: true, ..eight }, 0), 6); // 8 - 25 * 8 / 100
-        assert_eq!(spent(&Cost { hasted: true, ..eight }, 0), 10);
-        assert_eq!(spent(&Cost { slowed: true, hasted: true, ..eight }, 0), 6);
-        // With a heavy load: 100 - 25 = 75 percent, 8 + 6 = 14.
-        let heavy = Cost { load: Some(Load::Heavy), ..eight };
-        assert_eq!(spent(&Cost { slowed: true, ..heavy }, 0), 14);
-        assert_eq!(spent(&Cost { hasted: true, ..heavy }, 0), 18);
-    }
-
-    fn ammunition() -> Ammunition {
-        Ammunition { ranged: true, launcher: false, kept: false, left: Some(3), spent: 1 }
-    }
-
-    #[test]
-    fn a_launcher_uses_a_missile_of_the_other_hand_even_if_those_are_kept() {
-        let launcher = Ammunition { launcher: true, kept: true, ..ammunition() };
-        assert_eq!(uses_up(&launcher).spends, Some(1));
+        let mut world = arena();
+        let (_, members) = party(&mut world, 1);
+        let member = members[0];
+        // A weapon of no weight costs 2, doubled by a Berserk order and again
+        // by disease: 8.
+        let mut light = arm(80);
+        (light.tires, light.weight) = (true, Some(0));
+        let spent = |world: &mut World, load| {
+            world.entity_mut(member).insert(Burden { weight: 0, load });
+            duel(world, (member, member), |me, _| {
+                let fury = Attack { berserk: true, ..swing(&light) };
+                swing_stamina(&mut GameRng::seeded(0), &fury, me)
+            })
+        };
+        let afflict = |world: &mut World, condition| {
+            world.get_mut::<Vitals>(member).unwrap().afflict(condition, Lasting::Rounds(9));
+        };
+        afflict(&mut world, Condition::Diseased);
+        assert_eq!(spent(&mut world, Load::None), 8);
+        world.get_mut::<Attacks>(member).unwrap().hasted = 0.1;
+        assert_eq!(spent(&mut world, Load::None), 10);
+        // With a heavy load: 100 + 25 percent, 8 + 10.
+        assert_eq!(spent(&mut world, Load::Heavy), 18);
+        // Slowed wins over hasted: 8 - 25 * 8 / 100; heavy, 75 percent, 8 + 6.
+        afflict(&mut world, Condition::Slowed);
+        assert_eq!(spent(&mut world, Load::None), 6);
+        assert_eq!(spent(&mut world, Load::Heavy), 14);
     }
 
     #[test]
     fn when_the_swings_have_used_up_all_it_counts_the_attack_ends() {
-        // Three left, one spent: not yet; two spent: not yet; three: used up.
-        for (spent, used_up) in [(1, false), (2, false), (3, true), (4, true)] {
-            let facts = Ammunition { spent, ..ammunition() };
-            assert_eq!(uses_up(&facts), Used { spends: Some(1), used_up }, "{spent} spent");
-        }
+        // Three left: one or two swings do not use it up, three do.
+        assert_eq!(
+            [1, 2, 3, 4].map(|swings| runs_out(Some(3), swings)),
+            [false, false, true, true]
+        );
         // Nothing it counts: never used up.
-        let uncounted = Ammunition { left: None, spent: 9, ..ammunition() };
-        assert_eq!(uses_up(&uncounted), Used { spends: Some(1), used_up: false });
+        assert!(!runs_out(None, 9));
     }
 
-    fn hands(
+    fn next(
         (primary, secondary): (u32, u32),
         initiative: (i32, i32),
         current: WeaponSlot,
         now: u32,
-    ) -> Hands {
-        Hands {
-            left: EnumMap::from_fn(|slot| match slot {
-                WeaponSlot::Primary => primary,
-                WeaponSlot::Secondary => secondary,
-            }),
-            initiative: EnumMap::from_fn(|slot| match slot {
-                WeaponSlot::Primary => initiative.0,
-                WeaponSlot::Secondary => initiative.1,
-            }),
-            current,
-            now,
+    ) -> Option<Next> {
+        fn by_slot<T: Copy>(main: T, off: T) -> EnumMap<WeaponSlot, T> {
+            EnumMap::from_fn(|slot| if slot == WeaponSlot::Primary { main } else { off })
         }
+        next_attack(by_slot(primary, secondary), by_slot(initiative.0, initiative.1), current, now)
     }
 
     #[test]
@@ -224,33 +193,26 @@ mod tests {
         use WeaponSlot::*;
         // Equal attacks (1 and 1): the other, at 40 + (100 - 40) / (1 + 1) = 70;
         // changing hands adds 10 - 4 = 6 for the initiative: 76.
-        let next = next_attack(&hands((1, 1), (10, 4), Primary, 40));
-        assert_eq!(next, Some(Next { slot: Secondary, moment: 76 }));
+        assert_eq!(next((1, 1), (10, 4), Primary, 40), Some(Next { slot: Secondary, moment: 76 }));
         // Fewer attacks in the other (1 against 2) but not less initiative
         // (4 against 4): still the other, 40 + 60 / 2 = 70, no initiative to add.
-        let next = next_attack(&hands((2, 1), (4, 4), Primary, 40));
-        assert_eq!(next, Some(Next { slot: Secondary, moment: 70 }));
+        assert_eq!(next((2, 1), (4, 4), Primary, 40), Some(Next { slot: Secondary, moment: 70 }));
         // Fewer attacks and less initiative: the current hand again,
         // 40 + 60 / (2 + 1) = 60.
-        let next = next_attack(&hands((2, 1), (10, 4), Primary, 40));
-        assert_eq!(next, Some(Next { slot: Primary, moment: 60 }));
+        assert_eq!(next((2, 1), (10, 4), Primary, 40), Some(Next { slot: Primary, moment: 60 }));
         // The other has attacks, the current has none: the other, and since it
         // has more than the current the moment is now.
-        let next = next_attack(&hands((0, 2), (0, 0), Primary, 40));
-        assert_eq!(next, Some(Next { slot: Secondary, moment: 40 }));
+        assert_eq!(next((0, 2), (0, 0), Primary, 40), Some(Next { slot: Secondary, moment: 40 }));
     }
 
     #[test]
     fn the_moment_is_held_between_now_and_100() {
         use WeaponSlot::*;
         // Moment now (40) plus an initiative of 0 - 20 = -20 is 20: held to 40.
-        let low = next_attack(&hands((1, 3), (0, 20), Primary, 40));
-        assert_eq!(low, Some(Next { slot: Secondary, moment: 40 }));
+        assert_eq!(next((1, 3), (0, 20), Primary, 40), Some(Next { slot: Secondary, moment: 40 }));
         // 40 + 80 = 120: held to 100.
-        let high = next_attack(&hands((1, 3), (80, 0), Primary, 40));
-        assert_eq!(high, Some(Next { slot: Secondary, moment: 100 }));
+        assert_eq!(next((1, 3), (80, 0), Primary, 40), Some(Next { slot: Secondary, moment: 100 }));
         // The same hand at moment 100: 100 + 0 / 2 = 100.
-        let late = next_attack(&hands((1, 0), (0, 0), Primary, 100));
-        assert_eq!(late, Some(Next { slot: Primary, moment: 100 }));
+        assert_eq!(next((1, 0), (0, 0), Primary, 100), Some(Next { slot: Primary, moment: 100 }));
     }
 }
