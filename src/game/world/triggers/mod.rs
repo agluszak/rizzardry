@@ -335,6 +335,65 @@ fn player_distance(world: &mut World, geometry: &LevelDefinition, entity: Entity
     distance.unwrap_or_else(|| eye.distance(centre))
 }
 
+/// Something the story does to a named device or variable of the level
+/// the party is in (retail `FindTriggerByName`, `CreateLocationVar`). A name
+/// the level does not have is nothing to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Bidding {
+    Run(String),
+    /// Run it if it never has.
+    RunOnce(String),
+    SwitchOff(String),
+    Set(VariableName, bool),
+}
+
+/// Carry out the story's bidding on the level the party is in.
+pub fn bid(world: &mut World, bidding: Bidding) {
+    let Some(level) = world.query_filtered::<Entity, With<Level>>().iter(world).next() else {
+        return;
+    };
+    let named = |world: &mut World, name: &str| {
+        let handle = world.get::<Level>(level)?.definition.clone();
+        let devices: Vec<(Entity, usize)> = world
+            .query::<(Entity, &Device, &LevelOwned)>()
+            .iter(world)
+            .filter(|(_, _, owner)| owner.0 == level)
+            .map(|(entity, device, _)| (entity, device.definition))
+            .collect();
+        let geometry = world.resource::<Assets<LevelDefinition>>().get(&handle)?;
+        let found = |&(_, definition): &(Entity, usize)| {
+            geometry.triggers[definition].name.eq_ignore_ascii_case(name)
+        };
+        devices.into_iter().find(found).map(|(entity, _)| entity)
+    };
+    match bidding {
+        Bidding::Run(name) => {
+            if let Some(device) = named(world, &name) {
+                activate(world, device, false);
+            }
+        }
+        Bidding::RunOnce(name) => {
+            if let Some(device) = named(world, &name)
+                && world.get::<TriggerState>(device).is_some_and(|state| !state.fired)
+            {
+                activate(world, device, false);
+            }
+        }
+        Bidding::SwitchOff(name) => {
+            if let Some(device) = named(world, &name)
+                && let Some(mut state) = world.get_mut::<TriggerState>(device)
+            {
+                state.on = false;
+            }
+        }
+        Bidding::Set(name, value) => {
+            if let Some(mut state) = world.get_mut::<LevelState>(level) {
+                state.set_variable(&name, value);
+            }
+        }
+    }
+}
+
 /// How running a device went.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Ran {
@@ -555,7 +614,7 @@ fn execute(
     }
     if let Some(speaker) = world.get::<crate::game::npcs::NpcSpeaker>(entity) {
         let actor = speaker.0;
-        world.write_message(crate::game::npcs::conversation::BeginConversation { actor });
+        world.commands().trigger(crate::game::npcs::conversation::Begin { actor });
         return Ran::Committed;
     }
     let party = crate::game::party::roster::the_party(world);

@@ -93,6 +93,7 @@ impl Plugin for NpcPlugin {
                     population::bind_triggers.after(crate::game::GameplaySet::LevelActivation),
                 ),
             );
+        app.add_observer(story::follow);
         conversation::install(app);
         recruit::install(app);
         trade::install(app);

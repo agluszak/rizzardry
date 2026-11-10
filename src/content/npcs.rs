@@ -146,18 +146,14 @@ pub enum DialogueOp {
         words: Vec<String>,
     },
     SetFact(FactId, u8),
-    /// The NPC hands the party an item, identified and at full quantity.
-    GiveItem(ItemId),
-    /// One of the item leaves the party.
-    TakeItem(ItemId),
+    /// Something changes hands once the quote's lines are said.
+    Give(Gift),
     /// This quote answers the party offering the item. The NPC keeps what it
     /// asked for and hands back what it only remarks on.
     ItemQuote {
         item: ItemId,
         keeps: bool,
     },
-    GiveGold(u32),
-    GiveExperience(u32),
     /// The party answers by typing one of these words, not by choosing.
     KeywordInput(Vec<String>),
     /// The dialogue closes and the NPC goes back to what it was doing.
@@ -198,6 +194,17 @@ pub enum DialogueOp {
         operands: [i32; 3],
         subentries: Vec<(i32, Option<String>)>,
     },
+}
+/// What a quote hands the party, or takes from it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gift {
+    Gold(u32),
+    /// So much experience for each living member.
+    Experience(u32),
+    /// An item, identified and at full quantity.
+    Item(ItemId),
+    /// One of an item leaves the party.
+    Take(ItemId),
 }
 #[derive(Clone, Debug, Default)]
 pub struct Quote {

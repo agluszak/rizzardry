@@ -249,8 +249,8 @@ fn operation(
         ),
         8 => DialogueOp::Close,
         9..=11 | 15 => match u16::try_from(args[0]).map(ItemId) {
-            Ok(item) if kind == 9 => DialogueOp::GiveItem(item),
-            Ok(item) if kind == 10 => DialogueOp::TakeItem(item),
+            Ok(item) if kind == 9 => DialogueOp::Give(Gift::Item(item)),
+            Ok(item) if kind == 10 => DialogueOp::Give(Gift::Take(item)),
             Ok(item) => DialogueOp::ItemQuote { item, keeps: kind == 11 },
             Err(_) => unsupported(),
         },
@@ -279,8 +279,8 @@ fn operation(
             Ok(event) => DialogueOp::PartyRemark(event),
             Err(_) => unsupported(),
         },
-        16 if args[0] >= 0 => DialogueOp::GiveGold(args[0] as u32),
-        17 if args[0] >= 0 => DialogueOp::GiveExperience(args[0] as u32),
+        16 if args[0] >= 0 => DialogueOp::Give(Gift::Gold(args[0] as u32)),
+        17 if args[0] >= 0 => DialogueOp::Give(Gift::Experience(args[0] as u32)),
         // `AdjustFactionDisposition` takes the operand as a char.
         22 if subs.len() == 1 => {
             DialogueOp::AdjustFaction { faction: faction(&words()?[0]), delta: args[0] as i8 }

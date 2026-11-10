@@ -12,7 +12,7 @@ use crate::game::difficulty::Difficulty;
 use crate::game::hits::Effect;
 use crate::game::hits::effects::BodyReadOnly;
 use crate::game::npcs::Npc;
-use crate::game::npcs::conversation::{Conversation, MagicalReply};
+use crate::game::npcs::conversation::{Continue, Conversation, Script};
 use crate::game::rng::GameRng;
 use bevy::prelude::*;
 
@@ -21,13 +21,15 @@ use bevy::prelude::*;
 /// noticed.
 pub(crate) fn cast(
     worked: On<Worked>,
-    mut conversation: Single<&mut Conversation>,
+    conversation: Single<(Entity, &mut Conversation, &mut Script)>,
     mut speakers: Query<&mut Npc>,
     bodies: Query<BodyReadOnly>,
     difficulty: Res<Difficulty>,
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<MagicNews>,
+    mut commands: Commands,
 ) {
+    let (talk, mut conversation, mut script) = conversation.into_inner();
     let Worked { working, mut report, strength, marked, .. } = worked.event().clone();
     if !matches!(working, Working::Charm | Working::Mindread) {
         return;
@@ -48,11 +50,12 @@ pub(crate) fn cast(
     if spoken.resisted {
         report.effects.push(Effect::Resisted { victim: body });
     }
-    // An NPC won over leaves its menu as its script next runs.
-    conversation.magical_reply(match spoken.reply {
-        Reply::Unnoticed => MagicalReply::Unnoticed,
-        Reply::Quote(quote) => MagicalReply::Quote(quote),
-        Reply::Charmed(amount) => MagicalReply::Charmed(amount),
-    });
+    // One won over greets the party as a friend as the conversation goes on.
+    match spoken.reply {
+        Reply::Unnoticed => {}
+        Reply::Quote(quote) => script.say(quote),
+        Reply::Charmed(amount) => conversation.charmed(amount),
+    }
+    commands.trigger(Continue { conversation: talk });
     news.write(MagicNews::Done(report));
 }

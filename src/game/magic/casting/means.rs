@@ -25,7 +25,7 @@ use crate::game::magic::portals::Portal;
 use crate::game::magic::reach::{Aim, Marked};
 use crate::game::magic::roll::{self, Pace};
 use crate::game::magic::{power, total_caster_level, traps};
-use crate::game::npcs::conversation::Conversation;
+use crate::game::npcs::conversation::{Conversation, DialogueReadOnly};
 use crate::game::npcs::{Npc, NpcBodies};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
@@ -49,7 +49,7 @@ pub struct Circumstances<'w, 's> {
     freedom: Freedom<'w, 's>,
     camp: Option<Res<'w, Camp>>,
     attempts: Query<'w, 's, &'static DeviceInteraction>,
-    conversation: Option<Single<'w, 's, &'static Conversation>>,
+    conversation: Option<Single<'w, 's, DialogueReadOnly>>,
     states: Query<'w, 's, &'static LevelState, With<Level>>,
 }
 
@@ -240,7 +240,7 @@ impl Circumstances<'_, '_> {
             context,
             occupied: !self.freedom.unoccupied(),
             camped: self.camp.is_some(),
-            spoken_to: self.conversation.as_ref().is_some_and(|c| c.ready()),
+            spoken_to: self.conversation.as_ref().is_some_and(|talk| talk.idle()),
         }
     }
 

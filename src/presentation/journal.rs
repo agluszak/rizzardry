@@ -269,8 +269,7 @@ fn refresh(
                 entries.push((
                     location.to_owned(),
                     text.to_owned(),
-                    fact.highlight_when_true
-                        && facts.get(entry.fact, catalog).is_ok_and(|v| v != 0),
+                    fact.highlight_when_true && facts.stored(fact) != 0,
                 ));
             }
         }

@@ -192,20 +192,26 @@ fn edit_state(
         },
     );
 }
-/// Activating `button` asks this of its view's conversation.
-fn request_on(world: &mut World, button: Entity, root: Entity, talk: Talk) {
+/// Activating `button` does this in its view's conversation.
+fn act_on<E>(
+    world: &mut World,
+    button: Entity,
+    root: Entity,
+    act: impl Fn(Entity) -> E + Send + Sync + 'static,
+) where
+    E: Event,
+    for<'t> E::Trigger<'t>: Default,
+{
     world.entity_mut(button).observe(
-        move |_: On<Activate>,
-              roots: Query<&ConversationView>,
-              mut requests: MessageWriter<ConversationRequest>| {
+        move |_: On<Activate>, roots: Query<&ConversationView>, mut commands: Commands| {
             if let Ok(view) = roots.get(root) {
-                requests.write(ConversationRequest::new(view.0, talk.clone()));
+                commands.trigger(act(view.0));
             }
         },
     );
 }
 fn leave_on(world: &mut World, button: Entity, root: Entity) {
-    request_on(world, button, root, Talk::Close);
+    act_on(world, button, root, |conversation| Leave { conversation });
 }
 /// Retail `ShowNpcDialogueTopicMenu`: an NPC not yet friendly may be
 /// charmed, talked to or bribed before it talks of anything else.
@@ -237,7 +243,7 @@ fn build_menu(world: &mut World, canvas: Entity, root: Entity) {
             0 | 1 => {
                 let approach = if i == 0 { Approach::Charm } else { Approach::SmallTalk };
                 world.entity_mut(e).insert(ApproachButton(approach));
-                request_on(world, e, root, Talk::Approach { approach });
+                act_on(world, e, root, move |conversation| Sway { conversation, approach });
             }
             // Retail's bribe opens the give layout.
             2 => {
@@ -285,16 +291,16 @@ fn build_actions(world: &mut World, group: Entity, root: Entity, trade: bool) {
                 });
             }
             (false, 2) => {
-                world.entity_mut(e).observe(move |_: On<Activate>, roots: Query<&ConversationView>, conversations: Query<&crate::game::npcs::conversation::Conversation>,
+                world.entity_mut(e).observe(move |_: On<Activate>, roots: Query<&ConversationView>, conversations: Query<crate::game::npcs::conversation::DialogueReadOnly>,
                     selected: Res<crate::presentation::main_screen::SelectedMember>, roster: Single<&crate::game::party::roster::PartyRoster>,
                     art: Res<crate::presentation::main_screen::magic_view::MagicViewArt>, mut commands: Commands| {
-                    if let Ok(view) = roots.get(root) && conversations.get(view.0).is_ok_and(|c| c.ready()) && let Some(caster) = selected.member(&roster) {
+                    if let Ok(view) = roots.get(root) && conversations.get(view.0).is_ok_and(|c| c.idle()) && let Some(caster) = selected.member(&roster) {
                         crate::presentation::main_screen::magic_view::open(&mut commands, &art, caster, false, Some(crate::presentation::main_screen::magic_view::ViewTarget::Conversation(view.0)));
                     }
                 });
             }
             (false, 3) => {
-                request_on(world, e, root, Talk::Recruit);
+                act_on(world, e, root, |conversation| Invite { conversation });
             }
             (false, 5) => leave_on(world, e, root),
             (true, 4..=5) => {
@@ -449,24 +455,27 @@ fn build_offer(world: &mut World, group: Entity, root: Entity, canvas: Entity) {
               mut states: Query<&mut DialogueState>,
               roots: Query<&ConversationView>,
               gold: Query<&EditableText, With<GiftGold>>,
-              mut requests: MessageWriter<ConversationRequest>| {
+              mut commands: Commands| {
             let (Ok(mut state), Ok(view)) = (states.get_mut(root), roots.get(root)) else {
                 return;
             };
             let amount = gold.get(gift_gold).map_or(0, gift_amount);
             match state.selection {
                 Some(Selection::Priced(quote)) => {
-                    requests.write(ConversationRequest::trade(quote));
+                    commands.trigger(quote);
                     // The trade settles the selection.
                     state.selection = None;
                 }
                 Some(Selection::Gift(item)) => {
-                    requests.write(ConversationRequest::new(view.0, Talk::Give { item }));
+                    commands.trigger(crate::game::npcs::conversation::Offer {
+                        conversation: view.0,
+                        item,
+                    });
                     // Retail returns to the transcript for the answer.
                     state.set_mode(Mode::Talk);
                 }
                 _ if state.mode == Mode::Give && amount > 0 => {
-                    requests.write(ConversationRequest::new(view.0, Talk::GiveGold { amount }));
+                    commands.trigger(OfferGold { conversation: view.0, amount, sure: false });
                     state.set_mode(Mode::Talk);
                 }
                 _ => {}
@@ -643,14 +652,14 @@ pub(super) fn build(world: &mut World, session: Entity) -> Entity {
     world.entity_mut(root).observe(
         move |mut event: On<FocusedInput<KeyboardInput>>,
               mut states: Query<(&ConversationView, &mut DialogueState)>,
-              mut requests: MessageWriter<ConversationRequest>| {
+              mut commands: Commands| {
             if event.input.state.is_pressed() && event.input.logical_key == Key::Escape {
                 event.propagate(false);
                 let Ok((view, mut state)) = states.get_mut(root) else { return };
                 if state.mode != Mode::Talk {
                     state.set_mode(Mode::Talk);
                 } else {
-                    requests.write(ConversationRequest::new(view.0, Talk::Close));
+                    commands.trigger(Leave { conversation: view.0 });
                 }
             }
         },

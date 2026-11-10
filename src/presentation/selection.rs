@@ -75,7 +75,7 @@ pub fn activate_selection(
     party: Single<Entity, With<crate::game::party::roster::PartyRoster>>,
     held: Items,
     npcs: Query<&crate::game::npcs::NpcBody>,
-    mut conversations: MessageWriter<crate::game::npcs::conversation::BeginConversation>,
+    mut commands: Commands,
     mut requests: (MessageWriter<ActivateDevice>, MessageWriter<TakeItem>, MessageWriter<DropHeld>),
 ) {
     if !interact.contains(ActionEvents::START) {
@@ -85,7 +85,7 @@ pub fn activate_selection(
         && let Some(hit) = selection.hit
         && let Ok(npc) = npcs.get(hit.entity)
     {
-        conversations.write(crate::game::npcs::conversation::BeginConversation { actor: npc.0 });
+        commands.trigger(crate::game::npcs::conversation::Begin { actor: npc.0 });
         return;
     }
     if let Some(hit) = selection.hit

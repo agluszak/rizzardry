@@ -334,7 +334,12 @@ fn finish(world: &mut World, panel: Entity, accept: bool) {
         q.offer.quantity = n;
     }
     let Some(overlay) = world.get::<ChildOf>(panel).map(ChildOf::parent) else { return };
-    if accept && world.get::<Conversation>(q.conversation).is_some_and(Conversation::ready) {
+    if accept
+        && world
+            .query::<DialogueReadOnly>()
+            .get(world, q.conversation)
+            .is_ok_and(|talk| talk.idle())
+    {
         let Ok(verified) = world
             .run_system_cached_with(quote_trade, (q.conversation, q.offer.source, q.offer.quantity))
             .unwrap()
@@ -355,7 +360,7 @@ fn finish(world: &mut World, panel: Entity, accept: bool) {
 pub(super) fn sync(
     mut commands: Commands,
     drafts: Query<(Entity, &Draft, &ChildOf)>,
-    sessions: Query<&Conversation>,
+    sessions: Query<DialogueReadOnly>,
     inputs: Query<(Ref<EditableText>, &ChildOf), With<Count>>,
     buttons: Query<(Entity, &ChildOf, &Control, Has<InteractionDisabled>)>,
     parties: Query<&PartyInventory, With<crate::game::party::roster::Party>>,
@@ -365,7 +370,7 @@ pub(super) fn sync(
     >,
 ) {
     for (panel, d, parent) in &drafts {
-        if !sessions.get(d.quote.conversation).is_ok_and(Conversation::ready) {
+        if !sessions.get(d.quote.conversation).is_ok_and(|talk| talk.idle()) {
             commands.entity(parent.parent()).despawn();
             continue;
         }

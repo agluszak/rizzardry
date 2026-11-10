@@ -223,7 +223,6 @@ pub fn talk_to_npc(
     freedom: crate::game::freedom::Freedom,
     conversations: Query<(), With<crate::game::npcs::conversation::Conversation>>,
     mut requested: Local<bool>,
-    mut begin: MessageWriter<crate::game::npcs::conversation::BeginConversation>,
     mut exit: MessageWriter<AppExit>,
     mut commands: Commands,
 ) {
@@ -250,6 +249,6 @@ pub fn talk_to_npc(
     if speakers.active_body(actor).is_none() {
         return;
     }
-    begin.write(crate::game::npcs::conversation::BeginConversation { actor });
+    commands.trigger(crate::game::npcs::conversation::Begin { actor });
     *requested = true;
 }
