@@ -69,19 +69,20 @@ pub(super) fn alert_factions(
 pub(super) fn engage(
     battles: Query<(), With<Battle>>,
     monsters: Query<(Entity, &Monster, &Allegiance, Option<&GroupMember>, Has<Combatant>)>,
-    groups: Query<(Entity, &MonsterGroup, &GroupMembers, &LevelOwned)>,
+    groups: Query<(Entity, &MonsterGroup, &GroupMembers, &LevelOwned, Has<hostility::Provoked>)>,
     sight: Sight,
     level: PlayedLevel,
-    mut provocations: MessageReader<hostility::Provoked>,
     content: If<Res<Catalogs>>,
     definitions: Res<crate::game::hits::definitions::Definitions>,
     mut engaged: MessageWriter<Engaged>,
     mut commands: Commands,
 ) {
-    let provoked: Vec<Entity> = provocations
-        .read()
-        .filter_map(|&hostility::Provoked(m)| Some(monsters.get(m).ok()?.3?.0))
-        .collect();
+    // What provoked a group is looked at this once.
+    let provoked: Vec<Entity> =
+        groups.iter().filter(|group| group.4).map(|(group, ..)| group).collect();
+    for &group in &provoked {
+        commands.entity(group).remove::<hostility::Provoked>();
+    }
     let running = !battles.is_empty();
     let (Some(_), Some(root)) = (level.view_distance(), level.entity()) else { return };
     if !running && !sight.roster().iter().any(|member| sight.alive(member)) {
@@ -103,8 +104,8 @@ pub(super) fn engage(
         .collect();
     let mut units: Vec<(i32, Option<Entity>, Vec<Entity>)> = groups
         .iter()
-        .filter(|(.., owner)| owner.0 == root)
-        .map(|(entity, group, members, _)| {
+        .filter(|(.., owner, _)| owner.0 == root)
+        .map(|(entity, group, members, ..)| {
             (group.authored, Some(entity), members.iter().filter(|&m| fights(m)).collect())
         })
         .collect();

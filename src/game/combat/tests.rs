@@ -319,8 +319,8 @@ fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
     world.trigger(Cast { caster: member, spell: SpellId::ENERGY_BLAST, choice });
     world.flush();
     assert_eq!(magic::test_points(world, member, Realm::Fire), points - 1);
-    let provoked: Vec<_> = world.resource_mut::<Messages<Provoked>>().drain().collect();
-    assert_eq!(provoked, vec![Provoked(foe)]);
+    let group = world.get::<GroupMember>(foe).unwrap().0;
+    assert!(world.get::<Provoked>(group).is_some(), "its group is provoked");
     let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
     assert!(
         matches!(news.as_slice(), [MagicNews::Done(report)] if report.outcome == Outcome::Cast),
@@ -526,7 +526,7 @@ fn a_cast_refused_in_a_fight_falls_back_to_defending() {
 #[test]
 fn a_provoked_neutral_group_stands_hostile_and_enters_the_fight() {
     use crate::game::characters::{Condition, Lasting};
-    use crate::game::world::hostility::{Allegiance, Provocation, Provoked, Stand};
+    use crate::game::world::hostility::{Allegiance, Provocation, Stand};
     use crate::game::world::level::LevelOwned;
     use crate::game::world::population::{Special, Spellcasting, Temper};
     let (mut app, ..) = app();
@@ -555,17 +555,14 @@ fn a_provoked_neutral_group_stands_hostile_and_enters_the_fight() {
     world.trigger(Provocation { monster: turned });
     world.flush();
     assert_eq!(world.get::<Side>(turned).unwrap().own(), Stance::Neutral);
+    world.run_system_cached(engage::engage).unwrap();
+    assert!(world.resource_mut::<Messages<engage::Engaged>>().drain().next().is_none());
     let (foe, _) = neutral(world);
     world.trigger(Provocation { monster: foe });
     world.flush();
     assert_eq!(world.get::<Side>(foe).unwrap().own(), Stance::Hostile);
-    let provoked: Vec<_> = world.resource_mut::<Messages<Provoked>>().drain().collect();
-    assert_eq!(provoked, [Provoked(turned), Provoked(foe)]);
-    // Engagement is told the same step: the provoked hostile group enters,
-    // far off as it is, which nothing else brings it to do.
-    world.run_system_cached(engage::engage).unwrap();
-    assert!(world.resource_mut::<Messages<engage::Engaged>>().drain().next().is_none());
-    world.resource_mut::<Messages<Provoked>>().write(Provoked(foe));
+    // Engagement looks at it the same step: the provoked hostile group
+    // enters, far off as it is, which nothing else brings it to do.
     world.run_system_cached(engage::engage).unwrap();
     let engaged: Vec<_> = world.resource_mut::<Messages<engage::Engaged>>().drain().collect();
     assert!(engaged.iter().any(|engage::Engaged(group)| group.contains(&foe)));
