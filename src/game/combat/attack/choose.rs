@@ -7,7 +7,7 @@ use enumset::EnumSet;
 use super::choose_mode;
 use crate::content::items::AttackMode;
 use crate::game::characters::Condition;
-use crate::game::combat::approach::MoveBudget;
+use crate::game::combat::monster::close::MoveBudget;
 use crate::game::inventory::WeaponSlot;
 use crate::game::party::formation::Row;
 use crate::game::rng::GameRng;

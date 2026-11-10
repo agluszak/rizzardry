@@ -127,6 +127,7 @@ pub struct GroupRecognition<'w, 's> {
         's,
         (
             (&'static Monster, &'static Vitals),
+            (&'static crate::game::actors::Level, Option<&'static super::population::Camouflage>),
             ActorPose,
             Option<&'static super::navigation::Walker>,
         ),
@@ -185,13 +186,13 @@ impl GroupRecognition<'_, '_> {
             }
             let (mut species_id, mut count, mut in_view) = (None, 0usize, false);
             for member in membership.iter() {
-                let ((monster, vitals), at, walker) = monsters.get(member).unwrap();
+                let ((monster, vitals), (level, camouflage), at, walker) =
+                    monsters.get(member).unwrap();
                 if vitals.is_dead() || combatants.is_some_and(|c| !c.contains(&member)) {
                     continue;
                 }
                 species_id.get_or_insert(monster.species);
                 count += 1;
-                let species = &catalog[monster.species];
                 in_view |= view.sees(
                     members
                         .iter_many(roster.iter())
@@ -199,7 +200,7 @@ impl GroupRecognition<'_, '_> {
                         .map(|(profile, vitals, attributes, _)| (profile, vitals, attributes)),
                     shadow_hound,
                     (monster, vitals),
-                    species,
+                    (*level, camouflage.copied()),
                     super::navigation::feet(at.translation(), walker),
                     combatants.is_some(),
                     obstacles,

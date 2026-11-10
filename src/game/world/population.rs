@@ -211,6 +211,12 @@ fn actor_name(species: &MonsterCatalog, (id, location): (u32, i32)) -> String {
 #[derive(Component, Debug)]
 pub struct Untargetable;
 
+/// How well a monster's kind hides outside a fight: the rating the Monster
+/// Editor gives it (retail record 0x248). The party makes it out less far for
+/// each point (`docs/rules/monsters.md` section 2).
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Camouflage(pub u8);
+
 /// What a monster's death is worth in experience to a fight: its species'.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Worth(pub u32);
@@ -271,6 +277,7 @@ pub(crate) fn embody(
     entity.insert((
         allegiance,
         Worth(kind.experience),
+        Camouflage(kind.camouflage),
         Temper(kind.temper),
         Special(kind.special),
         Spellcasting::of(kind),

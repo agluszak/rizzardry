@@ -11,8 +11,9 @@ use crate::content::items::AttackMode;
 use crate::content::species::MonsterKind;
 use crate::game::actors::{Arm, Places, reaches};
 use crate::game::characters::{Condition, Load};
-use crate::game::combat::approach::{self, CombatMove, MoveBudget};
+use crate::game::combat::approach::CombatMove;
 use crate::game::combat::attack::{self, Surprise};
+use crate::game::combat::monster::close::{self, MoveBudget, Moving};
 use crate::game::combat::turn::{Guards, Interceptions, Ordered, Spotted, Turn};
 use crate::game::difficulty::Difficulty;
 use crate::game::hits::effects::{Body, BodyReadOnlyItem};
@@ -336,23 +337,23 @@ impl<'a, 'w, 's> Scene<'a, 'w, 's> {
         roster: &PartyRoster,
     ) -> Option<attack::Closing> {
         let (_, walker) = own.attacks.stride.zip(walker).filter(|_| !turn.moved)?;
-        let charge = own.vitals.charges();
+        let hurt = close::charges(own.vitals.health.current, own.vitals.health.max);
         let at = self.places.of(own.entity);
         let party = roster.iter().find_map(|member| self.bodies.get(member).ok());
+        let moving = Moving {
+            walks: !own.vitals.is_dead() && walker.speed > 0.0,
+            reach: own.attacks.reach(),
+            stride: own.attacks.stride.unwrap_or(0.0),
+            hasted: own.attacks.hasted,
+            slowed: own.vitals.conditions.has(Condition::Slowed),
+        };
         Some(attack::Closing {
             stance: own.stance(),
             toward_party: party.and_then(|party| {
-                approach::move_budget(
-                    own.attacks,
-                    own.vitals,
-                    Some(walker),
-                    at.gap(&self.places.of(party.entity)),
-                )
+                close::budget(&moving, hurt, at.gap(&self.places.of(party.entity)))
             }),
-            toward_foes: (walker.speed > 0.0).then(|| MoveBudget {
-                metres: approach::move_metres(own.attacks, own.vitals, charge),
-                charge,
-            }),
+            toward_foes: (walker.speed > 0.0)
+                .then(|| MoveBudget { metres: close::metres(&moving, hurt), charge: hurt }),
             now,
         })
     }

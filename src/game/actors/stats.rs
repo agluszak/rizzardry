@@ -416,7 +416,9 @@ fn of_species(kind: &Species, spells: &Bonus) -> (Attributes, Level, Resistances
         blind_fighting: (kind.kind == MonsterKind::Monk).then_some(kind.level),
         keen_sight: if kind.level_sight { (u32::from(kind.level) * 5).min(125) } else { 0 },
         backstab: scale_by_level(kind.level, 100.0) as i32,
-        stride: Some(kind.combat_move_range * crate::game::combat::approach::METRES_PER_MOVE_RANGE),
+        stride: Some(
+            kind.combat_move_range * crate::game::combat::monster::close::METRES_PER_MOVE_RANGE,
+        ),
         hasted: spells.stride,
     };
     (attributes, Level(u32::from(kind.level)), resistances, armour, attacks)

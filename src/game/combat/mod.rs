@@ -2,16 +2,13 @@
 //! and round history live on the actors ([`turn`]); attacks and magic settle
 //! their consequences before the scheduler advances to the next actor.
 
-pub mod ai;
 pub mod approach;
 pub mod attack;
 pub mod breath;
-mod conduct;
 mod engage;
-mod monster_spells;
+pub mod monster;
 mod orders;
 mod round_end;
-mod sight;
 pub mod summon;
 mod swings;
 pub mod turn;
@@ -21,20 +18,18 @@ mod tests;
 
 use crate::game::GameplaySet;
 use crate::game::data::Catalogs;
-pub use conduct::Interrupt;
+pub use monster::Interrupt;
 pub use orders::*;
 pub use round_end::{RoundEnds, end_round};
 pub use turn::{Action, Ordered, Turn};
 
 use crate::game::world::level::LevelOwned;
 use crate::game::world::level::PlayedLevel;
-use crate::game::world::obstacles::WorldObstacles;
 use bevy::prelude::*;
 
 use crate::content::items::AttackMode;
 use crate::content::species::AttackWord;
 
-use crate::content::species::Reach;
 use crate::game::characters::{Character, Dead, Vitals};
 use crate::game::hits::Effect;
 use crate::game::party::roster::PartyRoster;

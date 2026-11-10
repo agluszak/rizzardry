@@ -4,7 +4,9 @@ use crate::content::characters::Realm;
 use crate::content::items::{AttackMode, Dice};
 use crate::content::level::LevelDefinition;
 use crate::content::monster::MonsterBody;
-use crate::content::species::{Disposition, MonsterAttack, MonsterCatalog, MonsterWeapon, Species};
+use crate::content::species::{
+    Disposition, MonsterAttack, MonsterCatalog, MonsterWeapon, Reach, Species,
+};
 use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
 use crate::game::actors::{Enchantment, Laid, Laying};
 use crate::game::characters::{Gender, Profession, Race};

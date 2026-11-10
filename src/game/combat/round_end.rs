@@ -14,8 +14,9 @@
 use avian3d::prelude::Position;
 use bevy::prelude::*;
 
-use super::approach;
-use super::sight::Sight;
+use super::monster;
+use super::monster::coming::{self, Leaving, Remaining, Standing};
+use super::monster::facts::Sight;
 use super::turn::{Ordered, SpecialCooldown, Turn};
 use super::{
     Battle, CombatNews, Combatant, Combatants, PASSIVE_ROUNDS, Pause, ROUND_SECONDS, Round, Spoils,
@@ -30,6 +31,7 @@ use crate::game::characters::Vitals;
 use crate::game::characters::{Character, Condition};
 use crate::game::data::Catalogs;
 use crate::game::hits::definitions::Definitions;
+use crate::game::hits::effects::BodyReadOnly;
 use crate::game::hits::effects::Strike;
 use crate::game::hits::reach::{Recipients, within};
 use crate::game::hits::{Act, Deed, Release};
@@ -41,6 +43,7 @@ use crate::game::rng::GameRng;
 use crate::game::time::{AGING_TICK_MS, GameClock};
 use crate::game::world::hostility::{Side, Stance};
 use crate::game::world::identify::{GroupMember, GroupMembers, GroupRecognition};
+use crate::game::world::level::PlayedLevel;
 use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::population::{Monster, Temper, Untargetable};
 use bevy::ecs::relationship::RelationshipTarget;
@@ -117,30 +120,50 @@ pub struct RoundEnded {
 }
 
 /// Groups with nothing left to fight leave it (retail
-/// `CheckMonsterGroupsLeaveCombat`): a neutral group once it no longer
-/// stands with the fight; a friendly group unless one of its members sees
-/// an enemy; a hostile group unless a living member sees the party. When no
-/// hostile group is left engaged, everyone leaves. One outside any group
-/// stays while hostile groups fight on.
+/// `CheckMonsterGroupsLeaveCombat`): this reads what each group's members
+/// make out and where its neighbours stand, and asks [`coming::leaves`] who
+/// goes. When no hostile group is left engaged, everyone leaves. One outside
+/// any group stays while hostile groups fight on.
+#[allow(clippy::type_complexity)]
 pub(super) fn leave_fight(
     leave: On<GroupsLeave>,
     mut fights: Query<(&Combatants, &mut Round)>,
     fighters: Query<(&Temper, Option<&GroupMember>), With<Monster>>,
     groups: Query<&GroupMembers>,
-    sight: Sight,
+    (bodies, places, laid, obstacles, group_members): (
+        Query<BodyReadOnly>,
+        Places,
+        Laid,
+        WorldObstacles,
+        Query<&'static GroupMember>,
+    ),
+    party: Single<(Entity, &PartyRoster)>,
+    level: PlayedLevel,
 ) {
     let Ok((combatants, mut round)) = fights.get_mut(leave.fight) else { return };
     let combatants = combatants.entities();
-    let fighting = |monster: Entity| combatants.contains(&monster) && sight.alive(monster);
+    let (party, roster) = *party;
+    let sight = Sight {
+        bodies: &bodies,
+        places: &places,
+        laid: &laid,
+        groups: &group_members,
+        party,
+        roster,
+        far: level.view_distance().unwrap_or(0.0),
+        obstacles: &obstacles,
+    };
     let hostile = |monster: Entity| sight.side(monster) == Some(Stance::Hostile);
     let group_of = |monster: Entity| fighters.get(monster).ok()?.1.map(|group| group.0);
-    let hostiles: Vec<Entity> = combatants
+    let camouflaged = |monster: Entity| fighters.get(monster).is_ok_and(|(t, _)| t.0.camouflaged);
+    let hostiles: Vec<Standing> = combatants
         .iter()
         .copied()
-        .filter(|&c| sight.alive(c) && sight.in_party_view(c) && hostile(c))
+        .filter(|&c| sight.alive(c) && hostile(c))
+        .map(|c| sight.standing(c, camouflaged(c)))
         .collect();
     // A monster outside any group keeps hostile groups engaged.
-    let mut engaged = combatants
+    let ungrouped_hostile = combatants
         .iter()
         .any(|&c| fighters.contains(c) && group_of(c).is_none() && sight.alive(c) && hostile(c));
     let mut fought: Vec<Entity> = Vec::new();
@@ -149,33 +172,49 @@ pub(super) fn leave_fight(
             fought.push(group);
         }
     }
-    let mut leaving = Vec::new();
+    // Each group fought in, with its members in the fight and what each makes out.
+    let mut judged: Vec<(Entity, Stance, Vec<Remaining>, Vec<Standing>)> = Vec::new();
     for group in fought {
         let Ok(members) = groups.get(group) else { continue };
-        let fellows: Vec<Entity> = members.iter().filter(|&m| fighting(m)).collect();
-        let side = members.iter().find(|m| combatants.contains(m)).and_then(|m| sight.side(m));
-        let stays = match side {
-            Some(Stance::Neutral) => {
-                let plain = |&m: &Entity| fighters.get(m).is_ok_and(|(t, _)| !t.0.camouflaged);
-                let standing: Vec<Entity> = fellows.iter().copied().filter(plain).collect();
-                sight.reinforces(&standing, &hostiles)
-            }
-            Some(Stance::Hostile) => {
-                let sees = fellows.iter().any(|&m| sight.sees_party(m));
-                engaged |= sees;
-                sees
-            }
-            Some(Stance::Friendly) => fellows.iter().any(|&m| sight.sees_foe(m, combatants)),
-            None => continue,
+        let Some(side) =
+            members.iter().find(|m| combatants.contains(m)).and_then(|m| sight.side(m))
+        else {
+            continue;
         };
-        if !stays {
-            leaving.push(group);
-        }
+        let fellows: Vec<Entity> =
+            members.iter().filter(|&m| combatants.contains(&m) && sight.alive(m)).collect();
+        let remaining = fellows
+            .iter()
+            .map(|&m| Remaining {
+                sees_party: sight.sees_party(m),
+                sees_foe: sight.sees_foe(m, combatants),
+            })
+            .collect();
+        let standing = fellows.iter().map(|&m| sight.standing(m, camouflaged(m))).collect();
+        judged.push((group, side, remaining, standing));
     }
+    let leaving: Vec<Leaving> = judged
+        .iter()
+        .map(|(_, stance, members, standing)| Leaving {
+            stance: *stance,
+            members,
+            standing,
+            hostiles: &hostiles,
+        })
+        .collect();
+    let leaves = coming::leaves(&leaving, ungrouped_hostile);
+    let going: Vec<Entity> = judged
+        .iter()
+        .zip(&leaves.groups)
+        .filter(|&(_, &leaves)| leaves)
+        .map(|((group, ..), _)| *group)
+        .collect();
     round.leaving = combatants
         .iter()
         .copied()
-        .filter(|&combatant| !engaged || group_of(combatant).is_some_and(|g| leaving.contains(&g)))
+        .filter(|&combatant| {
+            leaves.everyone || group_of(combatant).is_some_and(|g| going.contains(&g))
+        })
         .collect();
 }
 
@@ -325,7 +364,11 @@ pub(super) fn judge_victory(
     let approaching = combatants.entities().iter().any(|&entity| {
         monsters.get(entity).is_ok_and(|(arms, vitals, _, walker)| {
             let gap = roster.first().map_or(f32::INFINITY, |&member| places.gap(entity, member));
-            approach::needs_approach(arms.reach(), vitals, walker, gap)
+            monster::close::needs_approach(
+                !vitals.is_dead() && walker.is_some_and(|walker| walker.speed > 0.0),
+                arms.reach(),
+                gap,
+            )
         })
     });
     let active = round.attacked || approaching;
