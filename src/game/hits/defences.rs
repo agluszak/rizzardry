@@ -3,6 +3,7 @@
 //! [`Resistances`](crate::game::actors::Resistances) hold.
 
 use super::definitions::{EffectKind, EffectSpec};
+use crate::content::characters::Realm;
 use crate::content::species::MonsterKind;
 use crate::game::actors::Resistances;
 use crate::game::characters::{Condition, Conditions, Lasting};
@@ -135,27 +136,6 @@ pub fn needs_the_living(kind: &EffectKind) -> bool {
     )
 }
 
-/// The victim of an effect, as its defences find it.
-#[derive(Clone, Copy, Debug)]
-pub struct Victim<'a> {
-    pub dead: bool,
-    pub level: u32,
-    /// The side it is on, by which its saves are scaled for difficulty.
-    pub stance: Stance,
-    pub resistances: &'a Resistances,
-}
-
-/// What defending against one effect weighs (retail `ApplyEffectConditions`).
-#[derive(Clone, Copy, Debug)]
-pub struct Defending<'a> {
-    pub row: &'a EffectSpec,
-    /// The magnitude the effect rolled, before its save.
-    pub rolled: u32,
-    pub strength: Strength,
-    pub difficulty: Difficulty,
-    pub victim: Victim<'a>,
-}
-
 /// How an effect was stopped, or the magnitude it lands with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Defended {
@@ -172,11 +152,17 @@ pub enum Defended {
 /// page: the dead, its chance, immunity, the save, resistance, wards. `half`
 /// halves the strength it weighs against and the rounds rolled. The magnitude
 /// it lands with is cut by resistance; one cut to nothing is resisted.
-pub fn defend(rng: &mut GameRng, facts: &Defending) -> Defended {
+pub fn defend(
+    rng: &mut GameRng,
+    (row, realm): (&EffectSpec, Option<Realm>),
+    rolled: u32,
+    strength: Strength,
+    difficulty: Difficulty,
+    (dead, level, stance, resistances): (bool, u32, Stance, &Resistances),
+) -> Defended {
     use EffectKind as K;
-    let Defending { row, rolled, strength, difficulty, victim } = *facts;
     let mut magnitude = if row.half { rolled / 2 } else { rolled };
-    if needs_the_living(&row.kind) && victim.dead {
+    if needs_the_living(&row.kind) && dead {
         return Defended::Missed;
     }
     if row.chance.is_some_and(|chance| rng.below(100) >= chance) {
@@ -188,22 +174,22 @@ pub fn defend(rng: &mut GameRng, facts: &Defending) -> Defended {
         _ => None,
     };
     let mut resisted = match affliction {
-        Some(condition) => victim.resistances.immune.contains(&condition),
-        None => matches!(row.kind, K::Slay) && victim.resistances.death_immune,
+        Some(condition) => resistances.immune.contains(&condition),
+        None => matches!(row.kind, K::Slay) && resistances.death_immune,
     };
     let mut saved = false;
-    if !resisted && let (Some(save), Some(realm)) = (row.save, row.resist) {
-        let resistance = victim.resistances.realms[realm];
-        let chance = condition_chance(victim.level, resistance, against, save);
-        resisted = save_roll(rng, difficulty.scale(chance, victim.stance));
+    if !resisted && let (Some(save), Some(realm)) = (row.save, realm) {
+        let resistance = resistances.realms[realm];
+        let chance = condition_chance(level, resistance, against, save);
+        resisted = save_roll(rng, difficulty.scale(chance, stance));
         saved = resisted;
     }
     if !resisted
         && row.roll.is_some()
-        && let Some(realm) = row.resist
+        && let Some(realm) = realm
     {
-        let resistance = victim.resistances.realms[realm];
-        magnitude = resist(rng, magnitude, resistance, victim.level, against);
+        let resistance = resistances.realms[realm];
+        magnitude = resist(rng, magnitude, resistance, level, against);
         resisted = magnitude == 0;
     }
     // What it shrugs off whenever a save is allowed at all.
@@ -211,7 +197,7 @@ pub fn defend(rng: &mut GameRng, facts: &Defending) -> Defended {
         && row.save.is_some()
         && let Some(condition) = affliction
     {
-        resisted = victim.resistances.wards.contains(&condition);
+        resisted = resistances.wards.contains(&condition);
     }
     if resisted { Defended::Resisted { saved } } else { Defended::Through(magnitude) }
 }
@@ -219,7 +205,6 @@ pub fn defend(rng: &mut GameRng, facts: &Defending) -> Defended {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::characters::Realm;
     use crate::game::hits::definitions::Roll;
 
     /// With resistance 1000 against a level-50 victim and strength 0 the cut
@@ -242,35 +227,37 @@ mod tests {
         EffectKind::Afflict { condition: Condition::Poisoned, poison: 0, indefinite: false }
     }
 
-    fn victim(resistances: &Resistances) -> Victim<'_> {
-        Victim { dead: false, level: 10, stance: Stance::Hostile, resistances }
-    }
+    const WEAK: Strength = Strength { power: 3, against: 0, boost: 0 };
 
-    fn defending<'a>(row: &'a EffectSpec, rolled: u32, victim: Victim<'a>) -> Defending<'a> {
-        Defending {
-            row,
+    /// A level-10 hostile defends against a row on a normal game.
+    fn defended(
+        row: &EffectSpec,
+        rolled: u32,
+        strength: Strength,
+        (dead, resistances): (bool, &Resistances),
+        seed: u64,
+    ) -> Defended {
+        let victim = (dead, 10, Stance::Hostile, resistances);
+        defend(
+            &mut GameRng::seeded(seed),
+            (row, row.resist),
             rolled,
-            strength: Strength { power: 3, against: 0, boost: 0 },
-            difficulty: Difficulty::Normal,
+            strength,
+            Difficulty::Normal,
             victim,
-        }
-    }
-
-    fn defended(facts: &Defending, seed: u64) -> Defended {
-        defend(&mut GameRng::seeded(seed), facts)
+        )
     }
 
     #[test]
     fn the_dead_are_missed_by_what_needs_the_living_only() {
         let none = Resistances::default();
-        let dead = Victim { dead: true, ..victim(&none) };
         for kind in [EffectKind::Harm, EffectKind::Heal, EffectKind::Slay, poison()] {
             let harm = row(kind.clone());
-            assert_eq!(defended(&defending(&harm, 5, dead), 0), Defended::Missed, "{kind:?}");
+            assert_eq!(defended(&harm, 5, WEAK, (true, &none), 0), Defended::Missed, "{kind:?}");
         }
         for kind in [EffectKind::Raise, EffectKind::Cure { conditions: vec![], outright: false }] {
             let raise = row(kind);
-            assert_eq!(defended(&defending(&raise, 5, dead), 0), Defended::Through(5));
+            assert_eq!(defended(&raise, 5, WEAK, (true, &none), 0), Defended::Through(5));
         }
     }
 
@@ -282,18 +269,18 @@ mod tests {
         let saving = EffectSpec { save: Some(0), resist: Some(Realm::Water), ..row(poison()) };
         for seed in 0..50 {
             assert_eq!(
-                defended(&defending(&saving, 5, victim(&immune)), seed),
+                defended(&saving, 5, WEAK, (false, &immune), seed),
                 Defended::Resisted { saved: false }
             );
         }
         let deathless = Resistances { death_immune: true, ..Default::default() };
         let slay = row(EffectKind::Slay);
         assert_eq!(
-            defended(&defending(&slay, 5, victim(&deathless)), 0),
+            defended(&slay, 5, WEAK, (false, &deathless), 0),
             Defended::Resisted { saved: false }
         );
         let mortal = Resistances::default();
-        assert_eq!(defended(&defending(&slay, 5, victim(&mortal)), 0), Defended::Through(5));
+        assert_eq!(defended(&slay, 5, WEAK, (false, &mortal), 0), Defended::Through(5));
     }
 
     /// A row with a roll in a realm, not saved against, has its magnitude cut by
@@ -309,8 +296,7 @@ mod tests {
         let harm = EffectSpec { resist: Some(Realm::Fire), ..row(EffectKind::Harm) };
         let strength = Strength { power: 3, against: 10, boost: 0 };
         let against = |harm: &EffectSpec, rolled, resistance: &Resistances, seed| {
-            let facts = Defending { strength, ..defending(harm, rolled, victim(resistance)) };
-            defended(&facts, seed)
+            defended(harm, rolled, strength, (false, resistance), seed)
         };
         assert_eq!(against(&harm, 100, &at(1000), 0), Defended::Resisted { saved: false });
         assert_eq!(against(&harm, 100, &at(0), 0), Defended::Through(100));
@@ -332,13 +318,13 @@ mod tests {
         let warded = Resistances { wards: vec![Condition::Poisoned], ..Default::default() };
         let allows = EffectSpec { save: Some(6), ..row(poison()) };
         assert_eq!(
-            defended(&defending(&allows, 5, victim(&warded)), 0),
+            defended(&allows, 5, WEAK, (false, &warded), 0),
             Defended::Resisted { saved: false }
         );
         let disallows = row(poison());
-        assert_eq!(defended(&defending(&disallows, 5, victim(&warded)), 0), Defended::Through(5));
+        assert_eq!(defended(&disallows, 5, WEAK, (false, &warded), 0), Defended::Through(5));
         let unwarded = Resistances::default();
-        assert_eq!(defended(&defending(&allows, 5, victim(&unwarded)), 0), Defended::Through(5));
+        assert_eq!(defended(&allows, 5, WEAK, (false, &unwarded), 0), Defended::Through(5));
     }
 
     fn rounds(left: u32) -> Conditions {

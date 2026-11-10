@@ -10,11 +10,9 @@ use bevy::prelude::Entity;
 
 use super::close::{closes_in, reaches_party};
 use super::sight::{Fray, MindItem, Sight};
-use crate::content::spells::{
-    MAX_POWER, SpellCatalog, SpellDefinition, SpellId, Spellbook, Targeting,
-};
+use crate::content::spells::{MAX_POWER, SpellDefinition, SpellId, Spellbook, Targeting};
 use crate::game::characters::Condition;
-use crate::game::hits::definitions::Definitions;
+use crate::game::data::Catalogs;
 use crate::game::hits::effects::BodyReadOnlyItem;
 use crate::game::magic::reach::Aim;
 use crate::game::magic::roll::spell_failure;
@@ -79,7 +77,7 @@ pub fn aims(
     sight: &Sight,
     own: &BodyReadOnlyItem,
     spell: &SpellDefinition,
-    definitions: &Definitions,
+    content: &Catalogs,
     fray: Fray,
 ) -> Vec<Aim> {
     let (targeting, caster) = (spell.targeting, own.entity);
@@ -105,11 +103,9 @@ pub fn aims(
                 },
                 stance,
                 reached: sight.places.gap(caster, body) <= spell.reach.metres(),
-                worth: definitions.worthwhile(
-                    spell.id,
-                    their.vitals,
-                    sight.laid.has(body, spell.id),
-                ),
+                worth: content.spell_row(spell.id).is_some_and(|row| {
+                    row.worthwhile(their.vitals, sight.laid.has(body, spell.id))
+                }),
             })
         })
         .collect();
@@ -198,7 +194,7 @@ fn usable<'a>(
     sight: &Sight,
     own: &BodyReadOnlyItem,
     mind: &MindItem,
-    (spells, definitions): (&'a SpellCatalog, &Definitions),
+    content: &'a Catalogs,
     fray: Fray,
 ) -> Vec<(u32, &'a SpellDefinition, Vec<Aim>)> {
     let silenced = own.vitals.conditions.has(Condition::Silenced);
@@ -206,12 +202,12 @@ fn usable<'a>(
         .spells
         .iter()
         .zip(SLOT_WEIGHTS)
-        .filter_map(|(id, weight)| Some((weight, spells.get((*id)?)?)))
+        .filter_map(|(id, weight)| Some((weight, content.spells.get((*id)?)?)))
         .filter(|(_, spell)| {
-            let modelled = definitions.spell(spell.id).is_some();
+            let modelled = content.spell_row(spell.id).is_some();
             castable(spell, modelled, silenced, mind.casting.silent_alchemy)
         })
-        .map(|(weight, spell)| (weight, spell, aims(sight, own, spell, definitions, fray)))
+        .map(|(weight, spell)| (weight, spell, aims(sight, own, spell, content, fray)))
         .filter(|(.., aims)| !aims.is_empty())
         .collect()
 }
@@ -222,11 +218,11 @@ pub fn casts_at_foes(
     sight: &Sight,
     own: &BodyReadOnlyItem,
     mind: &MindItem,
-    records: (&SpellCatalog, &Definitions),
+    content: &Catalogs,
     fray: Fray,
 ) -> bool {
     mind.casting.chance != 0
-        && usable(sight, own, mind, records, fray)
+        && usable(sight, own, mind, content, fray)
             .iter()
             .any(|(_, spell, _)| spell.aimed_at_enemies())
 }
@@ -242,7 +238,7 @@ pub fn casts(
     own: &BodyReadOnlyItem,
     mind: &MindItem,
     gap: f32,
-    records: (&SpellCatalog, &Definitions),
+    content: &Catalogs,
     fray: Fray,
 ) -> Option<Cast> {
     let budget = own.budget?.0;
@@ -250,7 +246,7 @@ pub fn casts(
         return None;
     }
     let chance = if reaches_party(own.attacks, gap) { u32::from(mind.casting.chance) } else { 100 };
-    let usable = usable(sight, own, mind, records, fray);
+    let usable = usable(sight, own, mind, content, fray);
     if usable.is_empty() || rng.below(100) >= chance {
         return None;
     }

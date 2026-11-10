@@ -370,9 +370,7 @@ fn magic_lines(
             };
             vec![format!("{} {why}.", name(*caster))]
         }
-        MagicNews::Triggered { effects, .. } | MagicNews::Landed { effects, .. } => {
-            effects.iter().map(|&e| effect_line(e)).collect()
-        }
+        MagicNews::Landed { effects } => effects.iter().map(|&e| effect_line(e)).collect(),
         MagicNews::Done(report) => {
             let spell = &spells[report.spell].name;
             let mut lines = vec![match &report.item {

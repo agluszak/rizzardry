@@ -73,7 +73,6 @@ pub(super) fn engage(
     sight: Sight,
     level: PlayedLevel,
     content: If<Res<Catalogs>>,
-    definitions: Res<crate::game::hits::definitions::Definitions>,
     mut engaged: MessageWriter<Engaged>,
     mut commands: Commands,
 ) {
@@ -88,7 +87,6 @@ pub(super) fn engage(
     if !running && !sight.roster().iter().any(|member| sight.alive(member)) {
         return;
     }
-    let records = (&content.spells, &*definitions);
     // Those who fight: alive, and not an NPC.
     let fights = |monster: Entity| {
         sight.alive(monster)
@@ -126,7 +124,7 @@ pub(super) fn engage(
         let side = (sight.side(first).unwrap_or_default(), allegiance.hostility_radius());
         let provoked = group.is_some_and(|g| provoked.contains(&g));
         let came =
-            coming::comes_in(&sight, &fighters, side, (running, provoked), &hostiles, records);
+            coming::comes_in(&sight, &fighters, side, (running, provoked), &hostiles, &content);
         if let Some(group) = group
             && came.turns_hostile
         {

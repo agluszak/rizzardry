@@ -2299,12 +2299,10 @@ mod tests {
     /// and the looking ends when it is empty.
     #[test]
     fn items_are_taken_from_a_container() {
-        use crate::game::world::containers::{Container, Recipient, take_from_containers};
-        use crate::game::world::interaction::{
-            AttemptOn, DeviceAct, DeviceInteraction, DeviceRequest, Work,
-        };
+        use crate::game::world::containers::{Container, Recipient, Take, take};
+        use crate::game::world::interaction::{AttemptOn, DeviceInteraction, Work};
         let (mut world, member, party) = party();
-        world.init_resource::<Messages<DeviceRequest>>();
+        world.add_observer(take);
         let chest = world.spawn(Container { table: None, gold: 0 }).id();
         let attempt =
             world.spawn((DeviceInteraction { work: Work::Looting }, AttemptOn(chest))).id();
@@ -2314,12 +2312,7 @@ mod tests {
         }
         world.flush();
         let take = |world: &mut World, picks: Vec<(Entity, u16)>| {
-            world.write_message(DeviceRequest {
-                on: attempt,
-                act: DeviceAct::Take { picks, to: Recipient::Member(member) },
-            });
-            world.run_system_once(take_from_containers).unwrap();
-            world.resource_mut::<Messages<DeviceRequest>>().clear();
+            world.trigger(Take { attempt, picks, to: Recipient::Member(member) });
             world.flush();
         };
         let inside = |world: &mut World| {

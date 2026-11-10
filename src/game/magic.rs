@@ -17,6 +17,7 @@
 pub mod casting;
 pub mod cost;
 pub(crate) mod dialogue;
+pub mod landed;
 pub mod may;
 pub(crate) mod pointcasts;
 pub mod portals;
@@ -331,6 +332,7 @@ impl Plugin for MagicPlugin {
             .add_message::<casting::MagicNews>()
             .add_observer(casting::cast)
             .add_observer(casting::refuse)
+            .add_observer(landed::settle)
             .add_observer(utilities::identify)
             .add_observer(dialogue::cast)
             .add_observer(portals::cast)

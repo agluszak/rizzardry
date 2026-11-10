@@ -6,8 +6,7 @@
 
 use super::casting::{MagicNews, Worked};
 use super::reach::Marked;
-use super::workings::{self, Reply, Speaking};
-use crate::content::characters::{Attribute, Realm};
+use super::workings::{self, Reply};
 use crate::content::spells::Working;
 use crate::game::difficulty::Difficulty;
 use crate::game::hits::Effect;
@@ -37,20 +36,14 @@ pub(crate) fn cast(
     let (Ok(mut npc), Ok(their)) = (speakers.get_mut(conversation.actor), bodies.get(body)) else {
         return;
     };
-    let speaking = Speaking {
-        mindread: working == Working::Mindread,
-        outcome: report.outcome,
+    let spoken = workings::speak(
+        &mut rng,
+        (working == Working::Mindread, report.outcome),
         strength,
-        difficulty: *difficulty,
-        stance: their.stance(),
-        level: their.level.0,
-        resistance: their.resistances.realms[Realm::Mental],
-        senses: their.attributes[Attribute::Senses],
-        intelligence: their.attributes[Attribute::Intelligence],
-        charmed: conversation.charm(),
-        refusals: npc.mindread_refusals,
-    };
-    let spoken = workings::speak(&mut rng, &speaking);
+        *difficulty,
+        &their,
+        (conversation.charm(), npc.mindread_refusals),
+    );
     npc.mindread_refusals = spoken.refusals;
     if spoken.resisted {
         report.effects.push(Effect::Resisted { victim: body });

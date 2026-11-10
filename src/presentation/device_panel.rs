@@ -33,7 +33,8 @@ use crate::game::items::Items;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::containers::Recipient;
 use crate::game::world::interaction::{
-    self, AttemptOn, COMPONENTS, DeviceInteraction, DeviceRequest, Observation, Work,
+    self, AttemptOn, COMPONENTS, DeviceInteraction, Disarm, Force, Inspect, Leave, Observation,
+    Pick, Spring, Work,
 };
 use crate::game::world::props::PropMotion;
 
@@ -167,18 +168,12 @@ fn open_panel(
             TabGroup::modal(),
             ChildOf(root),
         ))
-        .observe(
-            move |mut key: On<FocusedInput<KeyboardInput>>,
-                  mut requests: MessageWriter<DeviceRequest>| {
-                if key.input.state.is_pressed() && key.input.logical_key == Key::Escape {
-                    key.propagate(false);
-                    requests.write(DeviceRequest {
-                        on: attempt,
-                        act: crate::game::world::interaction::DeviceAct::Leave,
-                    });
-                }
-            },
-        )
+        .observe(move |mut key: On<FocusedInput<KeyboardInput>>, mut commands: Commands| {
+            if key.input.state.is_pressed() && key.input.logical_key == Key::Escape {
+                key.propagate(false);
+                commands.trigger(Leave { attempt });
+            }
+        })
         .id();
     caption(&mut commands, body, &font, Caption::Title);
     caption(&mut commands, body, &font, Caption::Status);
@@ -531,7 +526,6 @@ fn press(
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
     mut commands: Commands,
-    mut requests: MessageWriter<DeviceRequest>,
 ) {
     let (Ok(&control), Ok((&PanelOf(on), mut panel))) =
         (controls.get(click.entity), panels.single_mut())
@@ -555,41 +549,26 @@ fn press(
         }
         Control::Tumbler(tumbler) => {
             if let Some(actor) = actor {
-                requests.write(DeviceRequest {
-                    on,
-                    act: crate::game::world::interaction::DeviceAct::Pick { actor, tumbler },
-                });
+                commands.trigger(Pick { attempt: on, actor, tumbler });
             }
         }
         Control::Force => {
             if let Some(actor) = actor {
-                requests.write(DeviceRequest {
-                    on,
-                    act: crate::game::world::interaction::DeviceAct::Force { actor },
-                });
+                commands.trigger(Force { attempt: on, actor });
             }
         }
         Control::Inspect => {
             if let Some(actor) = actor {
-                requests.write(DeviceRequest {
-                    on,
-                    act: crate::game::world::interaction::DeviceAct::Inspect { actor },
-                });
+                commands.trigger(Inspect { attempt: on, actor });
             }
         }
         Control::Component(component) => {
             if let Some(actor) = actor {
-                requests.write(DeviceRequest {
-                    on,
-                    act: crate::game::world::interaction::DeviceAct::Disarm { actor, component },
-                });
+                commands.trigger(Disarm { attempt: on, actor, component });
             }
         }
         Control::Spring => {
-            requests.write(DeviceRequest {
-                on,
-                act: crate::game::world::interaction::DeviceAct::Spring { actor },
-            });
+            commands.trigger(Spring { attempt: on, actor });
         }
         Control::PreviousTrap => panel.guess = (panel.guess + TRAP_TYPES - 1) % TRAP_TYPES,
         Control::NextTrap => panel.guess = (panel.guess + 1) % TRAP_TYPES,
@@ -629,16 +608,10 @@ fn press(
                 },
             };
             let picks = std::mem::take(&mut panel.chosen);
-            requests.write(DeviceRequest {
-                on,
-                act: crate::game::world::interaction::DeviceAct::Take { picks, to },
-            });
+            commands.trigger(crate::game::world::containers::Take { attempt: on, picks, to });
         }
         Control::Leave => {
-            requests.write(DeviceRequest {
-                on,
-                act: crate::game::world::interaction::DeviceAct::Leave,
-            });
+            commands.trigger(Leave { attempt: on });
         }
     }
 }

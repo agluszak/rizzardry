@@ -6,8 +6,8 @@ use bevy::prelude::*;
 use crate::content::items::{ItemCatalog, LootTables};
 use crate::content::npcs::{FactCatalog, NpcCatalog};
 use crate::content::species::MonsterCatalog;
-use crate::content::spells::SpellCatalog;
-use crate::game::hits::definitions::SpellEffects;
+use crate::content::spells::{SpellCatalog, SpellId};
+use crate::game::hits::definitions::{SpellEffects, SpellRow};
 
 /// The databases, present once every one has loaded. A level cannot be
 /// entered before, so whatever runs in play may rely on them.
@@ -21,6 +21,15 @@ pub struct Catalogs {
     pub spell_effects: SpellEffects,
     pub npcs: NpcCatalog,
     pub facts: FactCatalog,
+}
+
+impl Catalogs {
+    /// What a spell does, if the game resolves it: its row of the effects
+    /// table, for a spell of a realm.
+    pub fn spell_row(&self, spell: SpellId) -> Option<&SpellRow> {
+        self.spells.get(spell).filter(|spell| spell.realm.is_some())?;
+        self.spell_effects.get(spell)
+    }
 }
 
 /// The databases while they load.

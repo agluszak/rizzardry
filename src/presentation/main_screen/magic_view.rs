@@ -23,7 +23,6 @@ use bevy_enhanced_input::prelude::*;
 use enumset::EnumSet;
 
 use crate::content::characters::{Realm, Skill};
-use crate::content::items::ItemCatalog;
 use crate::content::spells::{MAX_POWER, PowerChoice, SpellCatalog, SpellDefinition, Targeting};
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::Condition;
@@ -248,7 +247,7 @@ pub fn open(
 ) {
     let art = art.clone();
     commands.queue(move |world: &mut World| {
-        use crate::game::world::interaction::{DeviceRequest, current, magic_attempt};
+        use crate::game::world::interaction::{ReleasePins, current, magic_attempt};
         let target = match requested_target {
             Some(ViewTarget::Conversation(entity)) => {
                 if current(world).is_some()
@@ -274,10 +273,7 @@ pub fn open(
             _ => None,
         };
         if let Some(attempt) = attempt {
-            world.write_message(DeviceRequest {
-                on: attempt,
-                act: crate::game::world::interaction::DeviceAct::PrepareMagic { actor: caster },
-            });
+            world.trigger(ReleasePins { attempt, actor: caster });
         }
         // Serialize replacements, including multiple opens queued in one frame.
         // A replacement gives focus back to what the first view took it from.
@@ -584,7 +580,7 @@ fn offers<'a>(
     points: &SpellPoints,
     maximum: &enum_map::EnumMap<Realm, u32>,
     spells: &'a SpellCatalog,
-    (items, definitions): (&ItemCatalog, &crate::game::hits::definitions::Definitions),
+    content: &'a Catalogs,
     context: UseContext,
     silenced: bool,
 ) -> Vec<Offer<'a>> {
@@ -593,12 +589,12 @@ fn offers<'a>(
             held.pool(party)
                 .iter()
                 .filter_map(|&item| {
-                    let spell = usable_item(character, item, held, spells, definitions, false)?;
+                    let spell = usable_item(character, item, held, content, false)?;
                     Some((item, spell))
                 })
                 .collect()
         } else {
-            usable_items(member, character, held, spells, definitions)
+            usable_items(member, character, held, content)
         };
         return sources
             .into_iter()
@@ -620,10 +616,10 @@ fn offers<'a>(
                 let identified = held.known(item)?.identified;
                 let label = match held.charges(item) {
                     Some(_) if !identified => {
-                        format!("{} (?)", held.name(item, items, false)?)
+                        format!("{} (?)", held.name(item, &content.items, false)?)
                     }
-                    Some(uses) => format!("{} ({uses})", held.name(item, items, false)?),
-                    None => held.name(item, items, true)?,
+                    Some(uses) => format!("{} ({uses})", held.name(item, &content.items, false)?),
+                    None => held.name(item, &content.items, true)?,
                 };
                 let source = Source::Item(item);
                 Some(Offer { source, spell, label, cost: String::new(), available, silenced })
@@ -645,7 +641,7 @@ fn offers<'a>(
                 label: format!("{} {}", glyph(s.targeting), s.name),
                 cost: s.cost.to_string(),
                 available: affordable > 0
-                    && resolvable(s, definitions)
+                    && resolvable(s, content)
                     && usable_now(s, context)
                     && !silenced,
                 silenced,
@@ -696,7 +692,6 @@ pub(super) fn follow_caster(
         Query<&crate::game::world::interaction::DeviceInteraction>,
         Query<&crate::game::npcs::conversation::Conversation>,
     ),
-    mut devices: MessageWriter<crate::game::world::interaction::DeviceRequest>,
 ) {
     let Ok((root, mut view, casts_at, conversation_target)) = views.single_mut() else {
         return;
@@ -706,10 +701,8 @@ pub(super) fn follow_caster(
         && member != view.caster
     {
         if let Some(attempt) = attempt {
-            devices.write(crate::game::world::interaction::DeviceRequest {
-                on: attempt,
-                act: crate::game::world::interaction::DeviceAct::PrepareMagic { actor: member },
-            });
+            commands
+                .trigger(crate::game::world::interaction::ReleasePins { attempt, actor: member });
         }
         *view = MagicView {
             caster: member,
@@ -751,7 +744,6 @@ pub(super) fn draw_magic_view(
         (Single<Entity, With<PartyRoster>>, Items),
     ),
     content: If<Res<Catalogs>>,
-    definitions: Res<crate::game::hits::definitions::Definitions>,
     conversations: Query<&crate::game::npcs::conversation::Conversation>,
     (art, assets, strings): (
         Res<MagicViewArt>,
@@ -846,7 +838,7 @@ pub(super) fn draw_magic_view(
         points,
         &mana_maximum,
         spells,
-        (items, &definitions),
+        &content,
         context,
         silenced,
     );
@@ -989,7 +981,6 @@ pub(super) fn commit_magic_choice(
     mut views: Query<(Entity, &mut MagicView, Option<&CastsAt>, Option<&ConversationTarget>)>,
     (the_party, held): (Single<Entity, With<PartyRoster>>, Items),
     content: If<Res<Catalogs>>,
-    _definitions: Res<crate::game::hits::definitions::Definitions>,
     (conversations, speakers, monsters, party): (
         Query<&crate::game::npcs::conversation::Conversation>,
         Query<&crate::game::npcs::NpcBody>,
@@ -1097,7 +1088,6 @@ fn choose_row(
         (Single<Entity, With<PartyRoster>>, Items),
     ),
     content: If<Res<Catalogs>>,
-    definitions: Res<crate::game::hits::definitions::Definitions>,
     conversations: Query<&crate::game::npcs::conversation::Conversation>,
 ) {
     let (Ok(row), Ok((mut view, casts_at, conversation_target))) =
@@ -1105,7 +1095,7 @@ fn choose_row(
     else {
         return;
     };
-    let (spells, items) = (&content.spells, &content.items);
+    let spells = &content.spells;
     let (character, vitals, attributes) = members.get(view.caster).unwrap();
     let (learned, points) = casters.get(view.caster).unwrap();
     let silenced = vitals.conditions.has(Condition::Silenced);
@@ -1118,7 +1108,7 @@ fn choose_row(
         points,
         &mana_maximum,
         spells,
-        (items, &definitions),
+        &content,
         match context(
             casts_at.map(|c| c.0),
             conversation_target.map(|r| r.0),

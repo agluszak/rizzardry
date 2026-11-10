@@ -9,15 +9,18 @@
 //! It is related to its device ([`AttemptOn`]), so it ends with the device or
 //! its level, and every request names the attempt it was made for, so a
 //! request left over from an attempt that has ended changes nothing.
-//! Leaving the interaction forgets those, as retail's panels do. Each
-//! attempt names its actor, validates them and commits its costs and
-//! consequences at once; retail's progress bars and tumbler animations are
-//! presentation and do not delay the outcome.
+//! Leaving the interaction forgets those, as retail's panels do. What the
+//! party does to the attempt is an event at it ([`Pick`], [`Force`],
+//! [`Inspect`], [`Disarm`], [`Spring`], [`Leave`]), each with one observer
+//! that validates its actor and commits its costs and consequences at once;
+//! retail's progress bars and tumbler animations are presentation and do
+//! not delay the outcome.
 //!
 //! Knock-Knock, Divine Trap and tools share source validation and payment. Traps
 //! whose missile, poison, hearing or summoning prerequisites remain unported
 //! are refused before spending RNG or changing the device.
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use super::triggers::DoorState;
@@ -28,7 +31,6 @@ use crate::game::characters::{Character, Practise, Vitals};
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
-use crate::game::hits::definitions::Definitions;
 use crate::game::hits::effects::{Body, BodyItem};
 use crate::game::magic::Outcome;
 use crate::game::magic::casting::{MagicNews, Worked};
@@ -253,18 +255,11 @@ pub enum LockNews {
     },
 }
 
-/// Why an attempt was not made.
+/// Why magic cannot be aimed at an attempt, or a trap not be worked on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unable {
     /// No such interaction, or not this kind of work.
     NotNow,
-    CannotAct,
-    /// The member lacks Locks & Traps, or cannot act.
-    Unskilled,
-    /// Too weak or too tired to force the lock.
-    TooWeak,
-    /// That tumbler or component is already done.
-    Done,
     UnsupportedTrap,
 }
 
@@ -354,50 +349,140 @@ fn roll_trap(difficulty: u8, rng: &mut GameRng) -> u8 {
     }
 }
 
-/// The member acting, unless the party is entering a level or fighting.
-fn member<'a, 's>(
-    bodies: &'a mut Query<'_, 's, Body>,
-    actor: Entity,
-    occupied: bool,
-) -> Result<BodyItem<'a, 's>, Unable> {
-    bodies.get_mut(actor).ok().filter(|_| !occupied).ok_or(Unable::NotNow)
+/// Whether the party is too busy to work on a device: entering a level, or
+/// fighting.
+#[derive(SystemParam)]
+struct Busy<'w, 's> {
+    entering: Query<'w, 's, (), With<super::level::Destination>>,
+    battle: Query<'w, 's, (), With<Battle>>,
 }
 
-/// What an operation on the attempt came to.
-enum Step {
-    /// The attempt goes on.
-    Stay,
-    /// The lock or trap is overcome.
-    Opened,
-    /// The trap goes off, on this member if anyone set it off.
-    Sprung(Option<Entity>),
+impl Busy<'_, '_> {
+    fn busy(&self) -> bool {
+        !self.entering.is_empty() || !self.battle.is_empty()
+    }
 }
 
 /// A member's Locks & Traps level if they can use it now.
-fn skill(body: &BodyItem) -> Result<u32, Unable> {
-    if !body.vitals.can_act() {
-        return Err(Unable::CannotAct);
-    }
-    let character = body.character.as_deref().ok_or(Unable::CannotAct)?;
-    lock_skill(character, &body.vitals).ok_or(Unable::Unskilled)
+fn skill(body: &BodyItem) -> Option<u32> {
+    lock_skill(body.character.as_deref()?, &body.vitals)
+}
+
+/// A member raises a tumbler of the lock being picked.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Pick {
+    #[event_target]
+    pub attempt: Entity,
+    pub actor: Entity,
+    pub tumbler: usize,
+}
+
+/// A member tries to force the lock being picked.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Force {
+    #[event_target]
+    pub attempt: Entity,
+    pub actor: Entity,
+}
+
+/// A member looks the trap over.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Inspect {
+    #[event_target]
+    pub attempt: Entity,
+    pub actor: Entity,
+}
+
+/// A member disarms one component of the trap.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Disarm {
+    #[event_target]
+    pub attempt: Entity,
+    pub actor: Entity,
+    pub component: usize,
+}
+
+/// The party sets the trap off on purpose, on `actor` if anyone.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Spring {
+    #[event_target]
+    pub attempt: Entity,
+    pub actor: Option<Entity>,
+}
+
+/// A member opens a spell or item selector on the device: the pins their
+/// spell holds fall, even if the selector is then cancelled (retail
+/// `ReleaseOwnedTumblers`).
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct ReleasePins {
+    #[event_target]
+    pub attempt: Entity,
+    pub actor: Entity,
+}
+
+/// The party leaves the attempt.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Leave {
+    #[event_target]
+    pub attempt: Entity,
+}
+
+/// The lock or trap an attempt works on is overcome: the attempt ends and
+/// the device runs (retail `CompleteItemInteraction` then `Run`).
+#[derive(EntityEvent, Clone, Copy, Debug)]
+struct Overcome {
+    #[event_target]
+    attempt: Entity,
+}
+
+/// The trap an attempt works on goes off, on `by` if anyone set it off.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+struct Sprung {
+    #[event_target]
+    attempt: Entity,
+    by: Option<Entity>,
+}
+
+/// Whether a trap may be worked on: it still stands, and its discharge can
+/// be resolved. One that cannot stays guarded: nothing that could set it off
+/// is attempted.
+fn ready(
+    trap: &Disarming,
+    guarded: bool,
+    content: &Catalogs,
+    news: &mut MessageWriter<LockNews>,
+) -> bool {
+    guarded
+        && crate::game::magic::traps::validate(trap.trap, content)
+            .inspect_err(|_| {
+                news.write(LockNews::UnsupportedTrap);
+            })
+            .is_ok()
 }
 
 /// Raise a tumbler (retail `OnTumblerPicked`, `ResolvePick`). Every tumbler
 /// the actor already holds may drop, each by the actor's skill; when all
 /// are up the lock opens.
-fn pick_tumbler(
-    picking: &mut Picking,
-    tumbler: usize,
-    body: &mut BodyItem,
-    guarded: Option<Mut<Guarded>>,
-    setting: Difficulty,
-    rng: &mut GameRng,
-    (news, commands): (&mut MessageWriter<LockNews>, &mut Commands),
-) -> Result<Step, Unable> {
-    let actor = body.entity;
-    let skill = skill(body)?;
+fn pick(
+    pick: On<Pick>,
+    mut attempts: Query<(&mut DeviceInteraction, &AttemptOn)>,
+    mut guards: Query<&mut Guarded>,
+    mut bodies: Query<Body>,
+    busy: Busy,
+    setting: Res<Difficulty>,
+    mut rng: ResMut<GameRng>,
+    mut news: MessageWriter<LockNews>,
+    mut commands: Commands,
+) {
+    let Pick { attempt, actor, tumbler } = *pick;
+    let Ok((mut interaction, &AttemptOn(device))) = attempts.get_mut(attempt) else { return };
+    let Work::Picking(picking) = &mut interaction.work else { return };
+    let Some(skill) = bodies.get_mut(actor).ok().filter(|_| !busy.busy()).and_then(|b| skill(&b))
+    else {
+        return;
+    };
     if picking.tumblers.get(tumbler).is_none_or(|pin| pin.raised()) {
-        return Err(Unable::Done);
+        return;
     }
     if picking.picker != Some(actor) {
         for held in &mut picking.tumblers {
@@ -407,7 +492,7 @@ fn pick_tumbler(
         }
         picking.picker = Some(actor);
     }
-    let penalty = 5 * setting as u32;
+    let penalty = 5 * *setting as u32;
     let chance = (skill + 5).max(penalty) - penalty;
     let mut dropped = false;
     for held in &mut picking.tumblers {
@@ -419,7 +504,7 @@ fn pick_tumbler(
     picking.tumblers[tumbler] = Tumbler::Held(actor);
     // The device's practice is finite; leaving the panel does not renew it.
     if rng.below(5) == 0
-        && let Some(mut guarded) = guarded
+        && let Ok(mut guarded) = guards.get_mut(device)
         && guarded.practice_left > 0
     {
         guarded.practice_left -= 1;
@@ -428,57 +513,69 @@ fn pick_tumbler(
     news.write(LockNews::Tumbler { dropped });
     if picking.tumblers.iter().all(|pin| pin.raised()) {
         news.write(LockNews::Picked);
-        return Ok(Step::Opened);
+        commands.trigger(Overcome { attempt });
     }
-    Ok(Step::Stay)
 }
 
 /// Force the lock (retail `AttemptForce`): it costs stamina whatever comes
 /// of it.
-fn force_lock(
-    picking: &Picking,
-    body: &mut BodyItem,
-    setting: Difficulty,
-    rng: &mut GameRng,
-    news: &mut MessageWriter<LockNews>,
-) -> Result<Step, Unable> {
-    let member = body.entity;
-    if !body.vitals.can_act() {
-        return Err(Unable::CannotAct);
-    }
-    let chance = force_chance(
-        body.attributes[Attribute::Strength],
-        &body.vitals,
-        picking.tumblers.len(),
-        setting,
-    )
-    .ok_or(Unable::TooWeak)?;
+fn force(
+    force: On<Force>,
+    mut attempts: Query<&mut DeviceInteraction>,
+    mut bodies: Query<Body>,
+    busy: Busy,
+    setting: Res<Difficulty>,
+    mut rng: ResMut<GameRng>,
+    mut news: MessageWriter<LockNews>,
+    mut commands: Commands,
+) {
+    let Force { attempt, actor: member } = *force;
+    let Ok(mut interaction) = attempts.get_mut(attempt) else { return };
+    let Work::Picking(picking) = &interaction.work else { return };
+    let Ok(mut body) = bodies.get_mut(member) else { return };
+    let strength = body.attributes[Attribute::Strength];
+    let Some(chance) = force_chance(strength, &body.vitals, picking.tumblers.len(), *setting)
+        .filter(|_| !busy.busy())
+    else {
+        return;
+    };
     body.vitals.tire(FORCE_STAMINA);
+    // The panel redraws from the attempt: what its members can do changed.
+    interaction.set_changed();
     if rng.below(100) < chance {
         news.write(LockNews::Forced { member });
-        return Ok(Step::Opened);
+        commands.trigger(Overcome { attempt });
+    } else {
+        news.write(LockNews::NotForced { member });
     }
-    news.write(LockNews::NotForced { member });
-    Ok(Step::Stay)
 }
 
 /// Look a trap over: a failed inspection sets it off; otherwise the member
-/// makes out each component at the same chance, practice counting at once.
-fn inspect_trap(
-    trap: &mut Disarming,
-    body: &mut BodyItem,
-    setting: Difficulty,
-    rng: &mut GameRng,
-    (news, commands): (&mut MessageWriter<LockNews>, &mut Commands),
-) -> Result<Step, Unable> {
-    let actor = body.entity;
-    let chance = trap.inspection_chance(Some(skill(body)?), setting);
-    if rng.below(100) >= chance {
-        return Ok(Step::Sprung(Some(actor)));
+/// makes out each component at the same chance.
+fn inspect(
+    inspect: On<Inspect>,
+    mut attempts: Query<(&mut DeviceInteraction, &AttemptOn)>,
+    guards: Query<(), With<Guarded>>,
+    mut bodies: Query<Body>,
+    busy: Busy,
+    (content, setting): (Res<Catalogs>, Res<Difficulty>),
+    mut rng: ResMut<GameRng>,
+    mut news: MessageWriter<LockNews>,
+    mut commands: Commands,
+) {
+    let Inspect { attempt, actor } = *inspect;
+    let Ok((mut interaction, &AttemptOn(device))) = attempts.get_mut(attempt) else { return };
+    let Work::Disarming(trap) = &mut interaction.work else { return };
+    if !ready(trap, guards.contains(device), &content, &mut news) || busy.busy() {
+        return;
     }
-    // Practice may increase this very inspection's observation chance.
+    let Some(skill) = bodies.get_mut(actor).ok().and_then(|body| skill(&body)) else { return };
+    let chance = trap.inspection_chance(Some(skill), *setting);
+    if rng.below(100) >= chance {
+        commands.trigger(Sprung { attempt, by: Some(actor) });
+        return;
+    }
     commands.trigger(Practise { member: actor, skill: Skill::LocksAndTraps, usage: 1 });
-    let chance = trap.inspection_chance(skill(body).ok(), setting);
     let seen = std::array::from_fn(|column| {
         if rng.below(100) >= chance {
             Observation::Unknown
@@ -493,69 +590,191 @@ fn inspect_trap(
         None => trap.observations.push((actor, seen)),
     }
     news.write(LockNews::Inspected { member: actor });
-    Ok(Step::Stay)
 }
 
 /// Disarm one component: a part the trap lacks, or a failed attempt, sets
 /// it off; with every part it has disarmed, the trap is.
-fn disarm_component(
-    trap: &mut Disarming,
-    component: usize,
-    body: &mut BodyItem,
-    setting: Difficulty,
-    rng: &mut GameRng,
-    (news, commands): (&mut MessageWriter<LockNews>, &mut Commands),
-) -> Result<Step, Unable> {
-    let actor = body.entity;
-    if component >= COMPONENTS || trap.disarmed[component] {
-        return Err(Unable::Done);
+fn disarm(
+    disarm: On<Disarm>,
+    mut attempts: Query<(&mut DeviceInteraction, &AttemptOn)>,
+    guards: Query<(), With<Guarded>>,
+    mut bodies: Query<Body>,
+    busy: Busy,
+    (content, setting): (Res<Catalogs>, Res<Difficulty>),
+    mut rng: ResMut<GameRng>,
+    mut news: MessageWriter<LockNews>,
+    mut commands: Commands,
+) {
+    let Disarm { attempt, actor, component } = *disarm;
+    let Ok((mut interaction, &AttemptOn(device))) = attempts.get_mut(attempt) else { return };
+    let Work::Disarming(trap) = &mut interaction.work else { return };
+    if !ready(trap, guards.contains(device), &content, &mut news) || busy.busy() {
+        return;
     }
-    let chance = trap.disarm_chance(Some(skill(body)?), setting);
-    if !trap_kind(trap.trap).has(component) || rng.below(100) >= chance {
-        return Ok(Step::Sprung(Some(actor)));
+    let Some(skill) = bodies.get_mut(actor).ok().and_then(|body| skill(&body)) else { return };
+    if component >= COMPONENTS || trap.disarmed[component] {
+        return;
+    }
+    let kind = trap_kind(trap.trap);
+    if !kind.has(component) || rng.below(100) >= trap.disarm_chance(Some(skill), *setting) {
+        commands.trigger(Sprung { attempt, by: Some(actor) });
+        return;
     }
     trap.disarmed[component] = true;
     commands.trigger(Practise { member: actor, skill: Skill::LocksAndTraps, usage: 1 });
     news.write(LockNews::ComponentDisarmed { member: actor, component });
-    let kind = trap_kind(trap.trap);
     if (0..COMPONENTS).all(|part| !kind.has(part) || trap.disarmed[part]) {
         news.write(LockNews::Disarmed { trap: trap.trap });
-        return Ok(Step::Opened);
+        commands.trigger(Overcome { attempt });
     }
-    Ok(Step::Stay)
 }
 
-/// Knock-Knock reaches a few tumblers at random and seals each it moves; a
-/// backfire drops them instead (the reaching is [`workings::knock`]).
-fn knock(
-    picking: &mut Picking,
-    actor: Entity,
-    (level, backfire): (u32, bool),
-    rng: &mut GameRng,
-    news: &mut MessageWriter<LockNews>,
-) -> Step {
-    let mut dropped = false;
-    for reached in workings::knock(rng, picking.tumblers.len(), level) {
-        if reached.moves {
-            let pin = &mut picking.tumblers[reached.tumbler];
-            if backfire {
-                dropped |= pin.raised();
-                *pin = Tumbler::Down;
-            } else {
-                *pin = Tumbler::Sealed(actor);
-            }
+/// The party sets the trap off.
+fn spring(
+    spring: On<Spring>,
+    attempts: Query<(&DeviceInteraction, &AttemptOn)>,
+    guards: Query<(), With<Guarded>>,
+    busy: Busy,
+    content: Res<Catalogs>,
+    mut news: MessageWriter<LockNews>,
+    mut commands: Commands,
+) {
+    let Spring { attempt, actor } = *spring;
+    let Ok((interaction, &AttemptOn(device))) = attempts.get(attempt) else { return };
+    let Work::Disarming(trap) = &interaction.work else { return };
+    if !busy.busy() && ready(trap, guards.contains(device), &content, &mut news) {
+        commands.trigger(Sprung { attempt, by: actor });
+    }
+}
+
+/// The pins a member's spell holds fall.
+fn release_pins(
+    release: On<ReleasePins>,
+    mut attempts: Query<&mut DeviceInteraction>,
+    members: Query<(), With<Character>>,
+    busy: Busy,
+) {
+    let Ok(mut interaction) = attempts.get_mut(release.attempt) else { return };
+    let Work::Picking(picking) = &mut interaction.work else { return };
+    if busy.busy() || !members.contains(release.actor) {
+        return;
+    }
+    for pin in &mut picking.tumblers {
+        if *pin == Tumbler::Sealed(release.actor) {
+            *pin = Tumbler::Down;
         }
     }
-    news.write(LockNews::Tumbler { dropped });
-    if picking.tumblers.iter().all(|pin| pin.raised()) {
-        news.write(LockNews::Picked);
-        return Step::Opened;
-    }
-    Step::Stay
 }
 
-/// Opening either selector releases this actor's spell-held pins even if
-/// the uncommitted selector is cancelled, as retail ReleaseOwnedTumblers does.
+/// The attempt is left: what was done to the lock or trap is forgotten.
+fn leave(leave: On<Leave>, mut commands: Commands) {
+    commands.entity(leave.attempt).try_despawn();
+}
+
+/// A cast aimed at the attempt under way, paid for and rolled as any other,
+/// does what it is for: Knock-Knock reaches a few tumblers at random and
+/// seals each it moves, or drops them on a backfire (the reaching is
+/// [`workings::knock`]); Divine Trap helps those who look the trap over; any
+/// other disarms the trap or sets it off on its caster. A fizzle does
+/// nothing.
+fn cast_at(
+    worked: On<Worked>,
+    mut attempts: Query<&mut DeviceInteraction>,
+    mut rng: ResMut<GameRng>,
+    (mut news, mut told): (MessageWriter<LockNews>, MessageWriter<MagicNews>),
+    mut commands: Commands,
+) {
+    let Worked { caster, working, report, strength, marked } = worked.event();
+    let Marked::Attempt(attempt) = *marked else { return };
+    let (outcome, level) = (report.outcome, workings::level(*strength));
+    told.write(MagicNews::Done(report.clone()));
+    let Ok(mut interaction) = attempts.get_mut(attempt) else { return };
+    if outcome == Outcome::Fizzled {
+        return;
+    }
+    match &mut interaction.work {
+        Work::Disarming(trap) if *working == Working::DivineTrap => trap.divine_power = level,
+        Work::Picking(picking) => {
+            let mut dropped = false;
+            for reached in workings::knock(&mut rng, picking.tumblers.len(), level) {
+                if reached.moves {
+                    let pin = &mut picking.tumblers[reached.tumbler];
+                    if outcome == Outcome::Backfired {
+                        dropped |= pin.raised();
+                        *pin = Tumbler::Down;
+                    } else {
+                        *pin = Tumbler::Sealed(*caster);
+                    }
+                }
+            }
+            news.write(LockNews::Tumbler { dropped });
+            if picking.tumblers.iter().all(|pin| pin.raised()) {
+                news.write(LockNews::Picked);
+                commands.trigger(Overcome { attempt });
+            }
+        }
+        Work::Disarming(trap) => {
+            if workings::disarms(&mut rng, level, trap.difficulty, outcome) {
+                news.write(LockNews::Disarmed { trap: trap.trap });
+                commands.trigger(Overcome { attempt });
+            } else {
+                commands.trigger(Sprung { attempt, by: Some(*caster) });
+            }
+        }
+        Work::Looting => {}
+    }
+}
+
+/// A trap goes off: it discharges at the living of the party, and the
+/// attempt ends. A discharge that destroys the trap leaves the device open.
+fn sprung(
+    sprung: On<Sprung>,
+    attempts: Query<&DeviceInteraction>,
+    roster: Single<&crate::game::party::roster::PartyRoster>,
+    vitals: Query<&Vitals>,
+    content: Res<Catalogs>,
+    mut rng: ResMut<GameRng>,
+    mut news: MessageWriter<LockNews>,
+    mut commands: Commands,
+) {
+    let Sprung { attempt, by } = *sprung;
+    let Ok(DeviceInteraction { work: Work::Disarming(trap) }) = attempts.get(attempt) else {
+        return;
+    };
+    let living =
+        roster.iter().filter(|&member| vitals.get(member).is_ok_and(|v| !v.is_dead())).collect();
+    let (destroyed, discharge) = crate::game::magic::traps::discharge(
+        (trap.trap, trap.difficulty),
+        (living, by),
+        &content,
+        &mut rng,
+    );
+    commands.spawn((discharge, crate::game::magic::landed::Magical));
+    news.write(LockNews::Sprung { trap: trap.trap, destroyed });
+    if destroyed {
+        commands.trigger(Overcome { attempt });
+    } else {
+        commands.entity(attempt).despawn();
+    }
+}
+
+/// A lock or trap overcome no longer guards its device, which runs.
+fn overcome(
+    overcome: On<Overcome>,
+    attempts: Query<&AttemptOn>,
+    mut doors: Query<&mut DoorState>,
+    mut activations: MessageWriter<super::ActivateDevice>,
+    mut commands: Commands,
+) {
+    let Ok(&AttemptOn(device)) = attempts.get(overcome.attempt) else { return };
+    commands.entity(overcome.attempt).despawn();
+    commands.entity(device).remove::<Guarded>();
+    if let Ok(mut door) = doors.get_mut(device) {
+        door.locked = false;
+    }
+    activations.write(super::ActivateDevice { device, player: false });
+}
+
 /// The device attempt magic may be aimed at now: the one under way, unless
 /// the party is looting what it opened. `requested` is the attempt the
 /// caller means; it is refused when another, or none, is under way.
@@ -588,236 +807,57 @@ pub(crate) fn end_attempts(
     }
 }
 
-/// What the player asks of the attempt under way. It names its attempt,
-/// so one left over from an attempt that has ended changes nothing.
-#[derive(Message, Clone, Debug, PartialEq)]
-pub struct DeviceRequest {
-    pub on: Entity,
-    pub act: DeviceAct,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum DeviceAct {
-    Pick {
-        actor: Entity,
-        tumbler: usize,
-    },
-    Force {
-        actor: Entity,
-    },
-    Inspect {
-        actor: Entity,
-    },
-    Disarm {
-        actor: Entity,
-        component: usize,
-    },
-    Spring {
-        actor: Option<Entity>,
-    },
-    /// A spell or item selector opens on the device.
-    PrepareMagic {
-        actor: Entity,
-    },
-    /// A spell or an item's, cast at the lock or trap, has been paid for and
-    /// rolled: it now does what it is for.
-    Spell {
-        actor: Entity,
-        working: Working,
-        outcome: Outcome,
-        level: u32,
-    },
-    Take {
-        /// The items chosen from the container, and how many of each.
-        picks: Vec<(Entity, u16)>,
-        to: super::containers::Recipient,
-    },
-    Leave,
-}
-
 pub(crate) fn plugin(app: &mut App) {
-    app.add_message::<DeviceRequest>().add_observer(device_cast).add_systems(
-        Update,
-        (handle_device_requests, super::containers::take_from_containers)
-            .chain()
-            .after(crate::game::magic::accept_magic)
-            .before(super::activate_devices),
-    );
+    app.add_observer(pick)
+        .add_observer(force)
+        .add_observer(inspect)
+        .add_observer(disarm)
+        .add_observer(spring)
+        .add_observer(release_pins)
+        .add_observer(leave)
+        .add_observer(cast_at)
+        .add_observer(sprung)
+        .add_observer(overcome)
+        .add_observer(super::containers::take);
 }
 
-/// A cast aimed at the attempt under way, paid for and rolled as any other, is
-/// asked of it like the player's other requests, to be carried out with them.
-fn device_cast(
-    worked: On<Worked>,
-    mut requests: MessageWriter<DeviceRequest>,
-    mut news: MessageWriter<MagicNews>,
-) {
-    let Worked { caster, working, report, strength, marked } = worked.event().clone();
-    let Marked::Attempt(on) = marked else { return };
-    let outcome = report.outcome;
-    news.write(MagicNews::Done(report));
-    let act =
-        DeviceAct::Spell { actor: caster, working, outcome, level: workings::level(strength) };
-    requests.write(DeviceRequest { on, act });
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::characters::{Gender, Profession, Race};
 
-/// Carry out what is asked of the attempt under way, in order: the
-/// player's requests, then casts aimed at it. Each names its actor,
-/// validates them and commits its costs and consequences at once. A refused
-/// request changes nothing (retail offers only the controls that can work);
-/// a refused cast is told of. A lock or trap overcome ends the attempt and
-/// the device runs (retail `CompleteItemInteraction` then `Run`); a trap
-/// sprung discharges at the party.
-#[allow(clippy::type_complexity)]
-pub fn handle_device_requests(
-    mut commands: Commands,
-    mut requests: MessageReader<DeviceRequest>,
-    mut attempts: Query<(&mut DeviceInteraction, &AttemptOn)>,
-    mut devices: Query<(Option<&mut Guarded>, Option<&mut DoorState>)>,
-    mut bodies: Query<Body>,
-    roster: Single<&crate::game::party::roster::PartyRoster>,
-    (entering, battle): (Query<(), With<super::level::Destination>>, Query<(), With<Battle>>),
-    (content, definitions, setting): (Res<Catalogs>, Res<Definitions>, Res<Difficulty>),
-    mut rng: ResMut<GameRng>,
-    (mut news, mut activations): (MessageWriter<LockNews>, MessageWriter<super::ActivateDevice>),
-) {
-    let roster = *roster;
-    let occupied = !entering.is_empty() || !battle.is_empty();
-    let asked: Vec<_> = requests.read().map(|request| (request.on, request.act.clone())).collect();
-    for (on, act) in asked {
-        // A request may name an attempt that has since ended.
-        let Ok((mut interaction, &AttemptOn(device))) = attempts.get_mut(on) else {
-            continue;
-        };
-        let Ok((mut guarded, door)) = devices.get_mut(device) else { continue };
-        let work = &mut interaction.bypass_change_detection().work;
-        // A trap whose discharge cannot be resolved stays guarded: nothing
-        // that could set it off is attempted.
-        let ready = |work: &Work, news: &mut MessageWriter<LockNews>| match work {
-            Work::Disarming(trap) if guarded.is_some() => {
-                crate::game::magic::traps::validate(trap.trap, &definitions).inspect_err(|_| {
-                    news.write(LockNews::UnsupportedTrap);
-                })
-            }
-            Work::Disarming(_) => Err(Unable::NotNow),
-            _ => Ok(()),
-        };
-        let step = match (act, &mut *work) {
-            (DeviceAct::Leave, _) => {
-                commands.entity(on).despawn();
-                continue;
-            }
-            (DeviceAct::Pick { actor: by, tumbler }, Work::Picking(picking)) => {
-                member(&mut bodies, by, occupied).and_then(|mut body| {
-                    let guarded = guarded.as_mut().map(|guarded| guarded.reborrow());
-                    pick_tumbler(
-                        picking,
-                        tumbler,
-                        &mut body,
-                        guarded,
-                        *setting,
-                        &mut rng,
-                        (&mut news, &mut commands),
-                    )
-                })
-            }
-            (DeviceAct::Force { actor: by }, Work::Picking(picking)) => {
-                member(&mut bodies, by, occupied).and_then(|mut body| {
-                    force_lock(picking, &mut body, *setting, &mut rng, &mut news)
-                })
-            }
-            (DeviceAct::Inspect { actor: by }, Work::Disarming(_)) => ready(work, &mut news)
-                .and_then(|()| member(&mut bodies, by, occupied))
-                .and_then(|mut body| {
-                    let Work::Disarming(trap) = work else { unreachable!() };
-                    inspect_trap(trap, &mut body, *setting, &mut rng, (&mut news, &mut commands))
-                }),
-            (DeviceAct::Disarm { actor: by, component }, Work::Disarming(_)) => {
-                ready(work, &mut news).and_then(|()| member(&mut bodies, by, occupied)).and_then(
-                    |mut body| {
-                        let Work::Disarming(trap) = work else { unreachable!() };
-                        disarm_component(
-                            trap,
-                            component,
-                            &mut body,
-                            *setting,
-                            &mut rng,
-                            (&mut news, &mut commands),
-                        )
-                    },
-                )
-            }
-            (DeviceAct::Spring { actor }, Work::Disarming(_)) if !occupied => {
-                ready(work, &mut news).map(|()| Step::Sprung(actor))
-            }
-            // Opening a spell or item selector releases this actor's
-            // spell-held pins even if the selector is then cancelled, as
-            // retail `ReleaseOwnedTumblers` does.
-            (DeviceAct::PrepareMagic { actor: by }, Work::Picking(picking)) => {
-                member(&mut bodies, by, occupied).map(|_| {
-                    for pin in &mut picking.tumblers {
-                        if *pin == Tumbler::Sealed(by) {
-                            *pin = Tumbler::Down;
-                        }
-                    }
-                    Step::Stay
-                })
-            }
-            // Knock-Knock and Divine Trap were paid for and rolled as any cast.
-            (DeviceAct::Spell { actor: by, working, outcome, level }, work) => Ok(match work {
-                _ if outcome == Outcome::Fizzled => Step::Stay,
-                Work::Disarming(trap) if working == Working::DivineTrap => {
-                    trap.divine_power = level;
-                    Step::Stay
-                }
-                Work::Picking(picking) => {
-                    knock(picking, by, (level, outcome == Outcome::Backfired), &mut rng, &mut news)
-                }
-                Work::Disarming(trap) => {
-                    if workings::disarms(&mut rng, level, trap.difficulty, outcome) {
-                        news.write(LockNews::Disarmed { trap: trap.trap });
-                        Step::Opened
-                    } else {
-                        Step::Sprung(Some(by))
-                    }
-                }
-                Work::Looting => unreachable!(),
-            }),
-            _ => Err(Unable::NotNow),
-        };
-        // The panel redraws from the attempt: it has changed.
-        interaction.set_changed();
-        let opened = match step {
-            Ok(Step::Stay) => continue,
-            Err(why) => {
-                debug!("device request refused: {why:?}");
-                continue;
-            }
-            Ok(Step::Opened) => true,
-            Ok(Step::Sprung(selected)) => {
-                let Work::Disarming(trap) = &interaction.work else { unreachable!() };
-                let living = roster
-                    .iter()
-                    .filter(|&member| bodies.get(member).is_ok_and(|body| !body.vitals.is_dead()))
-                    .collect();
-                let (destroyed, discharge) = crate::game::magic::traps::discharge(
-                    (trap.trap, trap.difficulty),
-                    (living, selected),
-                    (&content, &definitions),
-                    &mut rng,
-                );
-                commands.trigger(discharge);
-                news.write(LockNews::Sprung { trap: trap.trap, destroyed });
-                destroyed
-            }
-        };
-        commands.entity(on).despawn();
-        if opened {
-            commands.entity(device).remove::<Guarded>();
-            if let Some(mut door) = door {
-                door.locked = false;
-            }
-            activations.write(super::ActivateDevice { device, player: false });
-        }
+    /// A lock of two tumblers, picked by one skilled enough never to drop a
+    /// pin: the first leaves it locked, the second opens it, and the device
+    /// runs.
+    #[test]
+    fn a_lock_opens_once_every_tumbler_is_up_and_its_device_runs() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<GameRng>()
+            .init_resource::<Difficulty>()
+            .init_resource::<Catalogs>()
+            .add_message::<LockNews>()
+            .add_message::<MagicNews>()
+            .add_message::<crate::game::world::ActivateDevice>()
+            .add_plugins((plugin, crate::game::actors::plugin));
+        let world = app.world_mut();
+        let mut thief = Character::new("Thief", Race::Human, Gender::Male, Profession::Rogue);
+        thief.skill_points[Skill::LocksAndTraps] = 100;
+        let member = world.spawn((Vitals::new(&thief), thief)).id();
+        crate::game::party::roster::test_party(world, &[member]);
+        let lock = Lock::Pickable { difficulty: 2 };
+        let door = world.spawn(Guarded::new(lock)).id();
+        let attempt = begin(world, door, Work::Picking(Picking::new(2)));
+        world.flush();
+        world.trigger(Pick { attempt, actor: member, tumbler: 0 });
+        world.flush();
+        assert!(world.get::<Guarded>(door).is_some(), "one pin up of two");
+        world.trigger(Pick { attempt, actor: member, tumbler: 1 });
+        world.flush();
+        assert!(world.get::<Guarded>(door).is_none());
+        assert!(world.get_entity(attempt).is_err(), "the attempt is over");
+        let ran: Vec<_> =
+            world.resource_mut::<Messages<crate::game::world::ActivateDevice>>().drain().collect();
+        assert!(matches!(ran.as_slice(), [run] if run.device == door && !run.player));
     }
 }

@@ -7,14 +7,13 @@ use super::Outcome;
 use super::casting::{MagicNews, Worked};
 use super::reach::Marked;
 use super::workings::{self, Response};
-use crate::content::characters::{Realm, Skill};
+use crate::content::characters::Skill;
 use crate::content::monster::MonsterBody;
 use crate::content::spells::Working;
 use crate::game::data::Catalogs;
 use crate::game::{
     characters::Condition,
     combat::{Battle, Combatant},
-    hits::definitions::Definitions,
     hits::effects::BodyReadOnly,
     rng::GameRng,
     time::{AGING_TICK_MS, GameClock},
@@ -88,8 +87,7 @@ pub(crate) fn cast(
     groups: Query<(&MonsterGroup, &LevelOwned, &GroupMembers)>,
     obstacles: WorldObstacles,
     mut laying: crate::game::actors::Laying,
-    (definitions, spells, body_assets, level_assets, mut configs): (
-        Res<Definitions>,
+    (spells, body_assets, level_assets, mut configs): (
         Res<Catalogs>,
         Res<Assets<MonsterBody>>,
         Res<Assets<crate::content::level::LevelDefinition>>,
@@ -148,27 +146,20 @@ pub(crate) fn cast(
             let Ok(body) = bodies.get(entity) else { continue };
             let group = group.and_then(|group| groups.get(group.0).ok());
             let here = pose.translation();
-            let drawn = workings::Drawn {
-                hostile: body.stance() == Stance::Hostile,
-                resisted: influence.is_some_and(|held| held.response == Response::Resisted),
-                can_fight: body.vitals.can_fight(),
-                blind: body.vitals.conditions.has(Condition::Blind),
-                off: (here - at).abs().max_element(),
-                far,
-                clear: obstacles.clear(monster.eye(here), at),
-            };
-            if !workings::lure_tests(&drawn) {
+            // A lure puts to the test a hostile monster not resisting it
+            // already, able to fight and not blind, within the far clip of
+            // the spot on every axis, with a clear line to it (retail
+            // `ApplyMonsterControlToNearbyMonsters`).
+            let tested = body.stance() == Stance::Hostile
+                && !influence.is_some_and(|held| held.response == Response::Resisted)
+                && body.vitals.can_fight()
+                && !body.vitals.conditions.has(Condition::Blind)
+                && (here - at).abs().max_element() <= far
+                && obstacles.clear(monster.eye(here), at);
+            if !tested {
                 continue;
             }
-            let response = workings::lure_response(
-                &mut rng,
-                &workings::Lured {
-                    kind: body.resistances.kind,
-                    level: body.level.0,
-                    resistance: body.resistances.realms[Realm::Mental],
-                    against: strength.against,
-                },
-            );
+            let response = workings::lure_response(&mut rng, &body, strength.against);
             let affected = match group {
                 Some((.., members)) if !fighting_now => members.iter().collect(),
                 _ => vec![entity],
@@ -189,10 +180,7 @@ pub(crate) fn cast(
                 .map(|skill| character.skill(skill))
         })
     });
-    let summoned = workings::summon(
-        &mut rng,
-        &workings::Summoning { skills, under_water: state.camera_sway, outcome, strength },
-    );
+    let summoned = workings::summon(&mut rng, skills, state.camera_sway, outcome, strength);
     let locations = monsters
         .iter()
         .filter(|(_, _, owner, ..)| owner.0 == root)
@@ -212,9 +200,9 @@ pub(crate) fn cast(
         .buffed
         .then(|| {
             spells.spells.0.iter().find(|candidate| {
-                definitions
-                    .spell(candidate.id)
-                    .is_some_and(|row| definitions.get(row).buffs_elemental == Some(element))
+                spells
+                    .spell_row(candidate.id)
+                    .is_some_and(|row| row.buffs_elemental == Some(element))
             })
         })
         .flatten()
@@ -281,12 +269,12 @@ pub(crate) fn follow_lures(
     for (influence, body, walking, position, mut transform, rotation) in &mut followers {
         let target = lures.get(influence.lure).unwrap().translation;
         let here = position.map_or(transform.translation, |p| p.0);
-        let (follows, walks) = workings::follows_lure(&workings::Following {
-            response: influence.response,
-            can_fight: body.can_fight(),
-            blind: body.conditions.has(Condition::Blind),
-            distance: here.distance(target),
-        });
+        // It follows while it is controlled and can see, and walks to the
+        // lure while it is more than five metres off.
+        let follows = influence.response == Response::Controlled
+            && body.can_fight()
+            && !body.conditions.has(Condition::Blind);
+        let walks = follows && here.distance(target) > workings::LURE_HELD_AT;
         if let Some(mut walking) = walking {
             *walking =
                 if walks { AgentTarget3d::Entity(influence.lure) } else { AgentTarget3d::None };

@@ -17,8 +17,8 @@
 //   kinds        only these kinds of monster
 // Spell... kinds and rolls take what they name from the spell's own record:
 // SpellDice its dice, SpellRounds its duration, SpellEnchant itself.
-// leeches: the damage it deals comes back to its caster, as health (true)
-// or as spell points (false).
+// leeches: the damage it deals comes back to its caster's side, as Health
+// or as (spell) Points.
 // outlasts: the conditions an auto-powered cast must outlast, choosing the
 // cheapest power that lifts the longest of them (retail
 // `ChoosePowerLevelForDuration`).
@@ -497,7 +497,7 @@
         ],
     ),
     LIFESTEAL: (
-        leeches: true,
+        leeches: Health,
         effects: [
             (roll: SpellDice, spell_realm: true),
         ],
@@ -508,7 +508,7 @@
         ],
     ),
     MIGHT_TO_MAGIC: (
-        leeches: false,
+        leeches: Points,
         effects: [
             (roll: SpellDice, spell_realm: true),
         ],

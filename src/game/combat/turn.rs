@@ -25,9 +25,9 @@ use crate::content::spells::SpellId;
 use crate::game::actors::Attacks;
 use crate::game::characters::{Character, Condition, Vitals};
 use crate::game::data::Catalogs;
-use crate::game::hits::definitions::Definitions;
+use crate::game::hits::definitions::Rows;
 use crate::game::hits::effects::{self, Body};
-use crate::game::hits::{Act, Deed, Release};
+use crate::game::hits::{Deed, Landed};
 use crate::game::inventory::WeaponSlot;
 use crate::game::items::Items;
 use crate::game::magic::Strength;
@@ -142,13 +142,12 @@ pub struct Retreats {
     pub quiet: bool,
 }
 
-/// Make a special attack, or a breath: a deed of this definition at this
+/// Make a special attack, or a breath when it is of no kind: a deed at this
 /// strength toward `toward`, catching whoever stands in its cone, or a
 /// summoning of a species; it costs stamina, and a monster's cools down.
 #[derive(Clone, Copy, Debug)]
 pub struct Breathes {
     pub special: Option<SpecialAttackKind>,
-    pub definition: Option<crate::game::hits::definitions::DefinitionId>,
     pub summons: Option<u32>,
     pub strength: Strength,
     pub toward: Vec3,
@@ -383,7 +382,7 @@ pub(super) fn take_turn(
     fight: Single<(&mut Pause, Option<&super::Combatants>), With<Battle>>,
     formation: Single<&Formation>,
     held: Items,
-    (content, definitions): (Res<Catalogs>, Res<Definitions>),
+    content: Res<Catalogs>,
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<CombatNews>,
 ) {
@@ -445,7 +444,6 @@ pub(super) fn take_turn(
             };
             Decision::Special(Breathes {
                 special: None,
-                definition: Some(definitions.breath()),
                 summons: None,
                 strength: crate::game::hits::specials::strength(
                     character.level(),
@@ -464,8 +462,7 @@ pub(super) fn take_turn(
                     fighting: true,
                     sees_party: sight.sees_party(actor),
                 };
-                let records = (&content.spells, &*definitions);
-                let thought = monster::deliberate(&mut rng, &sight, actor, fray, records).unwrap();
+                let thought = monster::deliberate(&mut rng, &sight, actor, fray, &content).unwrap();
                 match (mind.fleeing, thought.fleeing) {
                     (false, true) => {
                         commands.entity(actor).insert(Fleeing);
@@ -499,7 +496,6 @@ pub(super) fn take_turn(
                         let feet = places.of(actor).feet;
                         Decision::Special(Breathes {
                             special: Some(kind),
-                            definition: definitions.special(kind),
                             summons: crate::game::hits::specials::special(kind).summons,
                             strength: crate::game::hits::specials::strength(
                                 own.level.0 as u8,
@@ -674,7 +670,8 @@ pub(super) fn breathe(
     let from = places.of(actor);
     if let Some(species) = breathes.summons {
         commands.trigger(summon::Summon { summoner: actor, species });
-    } else if let Some(definition) = breathes.definition {
+    } else {
+        let rows = Rows::Special(breathes.special.unwrap_or(crate::game::hits::specials::BREATH));
         let cone = content.spells[SpellId::SPECIAL_ATTACK_CONE].reach.metres();
         let toward = breathes.toward - from.eye;
         let victims = combatants
@@ -688,10 +685,24 @@ pub(super) fn breathe(
                         && in_cone(toward, places.of(their.entity).feet - from.eye)
                 })
             })
-            .map(|victim| (victim, None))
-            .collect();
-        let strike = effects::Strike { definition, strength: breathes.strength, blow: None };
-        commands.trigger(Release { deed: Deed::new(Act::Fight, strike), victims });
+            .collect::<Vec<Entity>>();
+        let strike = effects::Strike { rows, strength: breathes.strength, blow: None };
+        commands.spawn((Deed::at(strike, victims), Breath));
+    }
+}
+
+/// A deed that is a breath or another special attack.
+#[derive(Component)]
+pub(super) struct Breath;
+
+/// What a breath did is told as the fight's news.
+pub(super) fn tell_breath(
+    landed: On<Landed>,
+    breaths: Query<(), With<Breath>>,
+    mut news: MessageWriter<CombatNews>,
+) {
+    if breaths.contains(landed.deed) && !landed.effects.is_empty() {
+        news.write(CombatNews::Effects(landed.effects.clone()));
     }
 }
 

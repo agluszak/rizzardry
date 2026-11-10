@@ -8,7 +8,7 @@ use bevy::prelude::*;
 
 use super::applied::{self, Outcome};
 use super::defences;
-use super::definitions::{self, Blow, DefinitionId, Definitions, EffectKind, EffectSpec};
+use super::definitions::{self, Blow, EffectKind, EffectSpec, Rows};
 use super::{Damaged, Effect};
 use crate::content::characters::{Attribute, Skill};
 use crate::content::items::EquipClass;
@@ -67,11 +67,11 @@ impl BodyReadOnlyItem<'_, '_> {
     }
 }
 
-/// One thing landing: a definition's effects at a strength, a weapon's blow
+/// One thing landing: the rows it follows at a strength, a weapon's blow
 /// behind them when it is one.
 #[derive(Clone, Copy, Debug)]
 pub struct Strike {
-    pub definition: DefinitionId,
+    pub rows: Rows,
     pub strength: Strength,
     pub blow: Option<Blow>,
 }
@@ -80,7 +80,6 @@ pub struct Strike {
 #[derive(Clone, Copy)]
 pub struct Rules<'a> {
     pub content: &'a Catalogs,
-    pub definitions: &'a Definitions,
     pub difficulty: Difficulty,
     /// The fight under way, in which a Valkyrie cheats death at full
     /// strength once.
@@ -127,8 +126,8 @@ pub fn land(
     laying: &mut Laying,
 ) {
     let mut previous = None;
-    let effects = &rules.definitions.get(strike.definition).effects;
-    for spec in applied::rows(effects, strike.blow, false) {
+    let spell = strike.rows.spell().map(|spell| &rules.content.spells[spell]);
+    for spec in applied::rows(strike.rows.effects(rules.content), strike.blow, false) {
         let kind = body.resistances.kind;
         if !applied::is_for(&spec, body.member, kind) {
             continue;
@@ -138,27 +137,22 @@ pub fn land(
             continue;
         }
         let spec = spec.pick(rng);
-        let rolled = spec
-            .roll
-            .map_or(0, |roll| definitions::roll(roll, strike.strength, strike.blow.as_ref(), rng));
+        let rolled = spec.roll.map_or(0, |roll| {
+            definitions::roll(roll, strike.strength, strike.blow.as_ref(), spell, rng)
+        });
         let alive = !body.vitals.is_dead();
-        let defending = defences::Defending {
-            row: &spec,
+        let defended = defences::defend(
+            rng,
+            (&spec, spec.realm(spell)),
             rolled,
-            strength: strike.strength,
-            difficulty: rules.difficulty,
-            victim: defences::Victim {
-                dead: !alive,
-                level: body.level.0,
-                stance: body.stance(),
-                resistances: body.resistances,
-            },
-        };
+            strike.strength,
+            rules.difficulty,
+            (!alive, body.level.0, body.stance(), body.resistances),
+        );
         let victim = body.entity;
-        previous = Some(match defences::defend(rng, &defending) {
+        previous = Some(match defended {
             defences::Defended::Through(magnitude) => {
-                let outcome =
-                    apply(&spec, magnitude, strike.strength, body, rules, rng, log, laying);
+                let outcome = apply(&spec, magnitude, strike, body, rules, rng, log, laying);
                 settle(body, alive, rules, rng);
                 outcome
             }
@@ -212,7 +206,7 @@ fn dealt(body: &mut BodyItem, amount: u32, harm: bool, rng: &mut GameRng, log: &
 fn apply(
     spec: &EffectSpec,
     magnitude: u32,
-    strength: Strength,
+    strike: &Strike,
     body: &mut BodyItem,
     rules: &Rules,
     rng: &mut GameRng,
@@ -220,6 +214,8 @@ fn apply(
     laying: &mut Laying,
 ) -> Outcome {
     use EffectKind as K;
+    let strength = strike.strength;
+    let own = || strike.rows.spell().expect("only a spell's row is the spell's own");
     let victim = body.entity;
     let nothing_or = |amount: u32, effect: Effect| {
         if amount == 0 { Effect::Nothing { victim } } else { effect }
@@ -343,15 +339,16 @@ fn apply(
             log.raised.push(victim);
             Effect::Raised { victim }
         }
-        K::Purify { level } => {
-            laying.purify(victim, magnitude + level);
+        K::SpellPurify => {
+            laying.purify(victim, magnitude + rules.content.spells[own()].level);
             Effect::Purified { victim }
         }
-        K::Enchant(spell) => {
+        K::SpellEnchant => {
+            let spell = own();
             // Haste first spends itself on a slowing; wholly spent, it
             // changed something all the same.
-            let definition = rules.definitions.spell(spell).map(|id| rules.definitions.get(id));
-            let answers_slowing = definition.is_some_and(|definition| definition.answers_slowing);
+            let answers_slowing =
+                rules.content.spell_row(spell).is_some_and(|row| row.answers_slowing);
             let turns = if answers_slowing { body.vitals.hasted(magnitude) } else { magnitude };
             let dead = body.vitals.is_dead();
             let laid = !dead && lay(laying, victim, spell, turns, strength, rules, rng);
@@ -369,11 +366,8 @@ fn apply(
         }
         // The party's own: its purse, and its lasting spells.
         K::LoseGold | K::Dispel => return Outcome::Missed,
-        K::Prismic { .. } | K::AfflictAny(_) => {
+        K::SpellPrismic | K::AfflictAny(_) => {
             unreachable!("an either-or is picked before it is applied")
-        }
-        K::SpellPurify | K::SpellEnchant | K::SpellPrismic => {
-            unreachable!("a spell's own effect is made plain with its effects")
         }
     };
     log.effects.push(effect);
@@ -395,15 +389,16 @@ pub fn land_on_party(
     use EffectKind as K;
     let victim = party;
     let mut previous = None;
-    let effects = &rules.definitions.get(strike.definition).effects;
-    for spec in applied::rows(effects, strike.blow, true) {
+    let own = || strike.rows.spell().expect("only a spell's row is the spell's own");
+    let spell = strike.rows.spell().map(|spell| &rules.content.spells[spell]);
+    for spec in applied::rows(strike.rows.effects(rules.content), strike.blow, true) {
         if applied::waits(&spec, previous) {
             previous = Some(Outcome::Missed);
             continue;
         }
-        let magnitude = spec
-            .roll
-            .map_or(0, |roll| definitions::roll(roll, strike.strength, strike.blow.as_ref(), rng));
+        let magnitude = spec.roll.map_or(0, |roll| {
+            definitions::roll(roll, strike.strength, strike.blow.as_ref(), spell, rng)
+        });
         if spec.chance.is_some_and(|chance| rng.below(100) >= chance) {
             previous = Some(Outcome::Missed);
             continue;
@@ -421,11 +416,12 @@ pub fn land_on_party(
                     log.effects.push(Effect::Drained { victim: body.entity, amount });
                 }
             }
-            K::Purify { level } => {
-                laying.purify(party, magnitude + level);
+            K::SpellPurify => {
+                laying.purify(party, magnitude + rules.content.spells[own()].level);
                 log.effects.push(Effect::Purified { victim });
             }
-            K::Enchant(spell) => {
+            K::SpellEnchant => {
+                let spell = own();
                 let laid = lay(laying, party, spell, magnitude, strike.strength, rules, rng);
                 log.effects.push(if laid {
                     Effect::Enchanted { victim, spell }
@@ -460,10 +456,7 @@ fn lay(
     rules: &Rules,
     rng: &mut GameRng,
 ) -> bool {
-    let absorbing = rules
-        .definitions
-        .spell(spell)
-        .is_some_and(|definition| rules.definitions.get(definition).absorbs);
+    let absorbing = rules.content.spell_row(spell).is_some_and(|row| row.absorbs);
     let absorbs = applied::absorbs(
         rng,
         absorbing,

@@ -108,6 +108,8 @@ pub struct Answers {
     pub slowing: bool,
     /// It answers a close blow with its dice.
     pub blows: bool,
+    /// It turns back a spell aimed at enemies that lands on its bearer.
+    pub spells: bool,
 }
 
 impl std::ops::AddAssign for Bonus {
@@ -258,8 +260,9 @@ impl Laying<'_, '_> {
         let answers = Answers {
             slowing: row.is_some_and(|row| row.answers_slowing),
             blows: facts.laid.answers_blows,
+            spells: row.is_some_and(|row| row.turns_back),
         };
-        if answers.slowing || answers.blows {
+        if answers.slowing || answers.blows || answers.spells {
             spell.insert(answers);
         }
         true
@@ -359,10 +362,16 @@ impl Laying<'_, '_> {
         self.spend_point(entity)
     }
 
-    /// A spell on a bearer answers (Eye for an Eye): what it was as it
-    /// answered.
-    pub fn spend(&mut self, bearer: Entity, spell: SpellId) -> Option<Enchantment> {
-        let entity = self.find(bearer, spell)?;
+    /// How strong the spell on a bearer that turns spells back is (Eye for
+    /// an Eye), if it bears one.
+    pub fn turns_back(&self, bearer: Entity) -> Option<u32> {
+        let entity = self.answering(bearer, |answers| answers.spells)?;
+        self.spells.get(entity).ok().map(|(laid, ..)| laid.power)
+    }
+
+    /// That spell turns one back: what it was as it answered.
+    pub fn turn_back(&mut self, bearer: Entity) -> Option<Enchantment> {
+        let entity = self.answering(bearer, |answers| answers.spells)?;
         self.spend_point(entity)
     }
 

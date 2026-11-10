@@ -8,8 +8,8 @@ use super::close::reaches_party;
 use super::sight::{Fray, Sight};
 use super::{special, spell};
 use crate::content::species::Reach;
-use crate::content::spells::{SpellCatalog, SpellId};
-use crate::game::hits::definitions::Definitions;
+use crate::content::spells::SpellId;
+use crate::game::data::Catalogs;
 use crate::game::world::hostility::Stance;
 
 /// How far from the party a group still takes part (retail's 50 m).
@@ -48,11 +48,7 @@ pub fn stands_with(sight: &Sight, members: &[Entity], hostiles: &[Entity]) -> bo
 /// fight, and an arm reaches the party, or it walks and its arms are for
 /// close quarters, or it could cast at its foes, or its special attack is
 /// ready.
-pub fn acts_on_party(
-    sight: &Sight,
-    fighter: Entity,
-    (spells, definitions): (&SpellCatalog, &Definitions),
-) -> bool {
+pub fn acts_on_party(sight: &Sight, fighter: Entity, content: &Catalogs) -> bool {
     let Some((own, mind)) = sight.monster(fighter) else { return false };
     if !own.vitals.can_fight() {
         return false;
@@ -65,13 +61,14 @@ pub fn acts_on_party(
         std::iter::once(fighter).chain(sight.roster().iter().copied()).collect();
     let fray = Fray { bodies: &bodies, fighting: false, sees_party: sight.sees_party(fighter) };
     let breath = || {
-        spells
+        content
+            .spells
             .get(SpellId::SPECIAL_ATTACK_CONE)
-            .map_or(Vec::new(), |cone| spell::aims(sight, &own, cone, definitions, fray))
+            .map_or(Vec::new(), |cone| spell::aims(sight, &own, cone, content, fray))
     };
     reaches_party(own.attacks, gap)
         || (close && mind.monster.body.speed > 0.0)
-        || spell::casts_at_foes(sight, &own, &mind, (spells, definitions), fray)
+        || spell::casts_at_foes(sight, &own, &mind, content, fray)
         || special::ready(&own, &mind, gap, false, &breath())
 }
 
@@ -102,7 +99,7 @@ pub fn comes_in(
     (stance, radius): (Stance, Option<f32>),
     (fight_running, provoked): (bool, bool),
     hostiles: &[Entity],
-    records: (&SpellCatalog, &Definitions),
+    content: &Catalogs,
 ) -> Entered {
     let nearest = fighters.iter().map(|&m| sight.party_gap(m)).fold(f32::INFINITY, f32::min);
     let sees = || fighters.iter().any(|&m| sight.sees_party(m));
@@ -118,7 +115,7 @@ pub fn comes_in(
     let enters = match if turns { Stance::Hostile } else { stance } {
         Stance::Hostile if provoked => true,
         Stance::Hostile if fight_running => sees() && leader_in_reach(),
-        Stance::Hostile => sees() && fighters.iter().any(|&m| acts_on_party(sight, m, records)),
+        Stance::Hostile => sees() && fighters.iter().any(|&m| acts_on_party(sight, m, content)),
         Stance::Neutral if fight_running => stands_with(sight, fighters, hostiles),
         _ => false,
     };

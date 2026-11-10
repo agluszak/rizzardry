@@ -167,9 +167,8 @@ mod tests {
         let table = SpellEffects::default();
         for spell in &catalog.0 {
             let Some(rows) = table.get(spell.id) else { continue };
-            let made =
-                rows.of_spell(spell).unwrap_or_else(|| panic!("{} has no realm", spell.name));
-            assert!(!made.effects.is_empty(), "{}", spell.name);
+            assert!(spell.realm.is_some(), "{} has no realm", spell.name);
+            assert!(!rows.effects.is_empty(), "{}", spell.name);
         }
         assert!(catalog.0.len() > 100);
     }

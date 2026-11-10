@@ -6,49 +6,182 @@
 // record's byte, which also numbers the attack's name for kinds 1 to 11.
 //
 // A row lists only what is not the default.
-//   realm       the realm its victims resist it by
-//   effects     what it does to each victim, one or two of:
-//                 Inflict(c)  the condition c, for rounds rolled by its strength
-//                 Harm        damage
-//                 Drain       spell points: a member's realm, a monster's budget
-//                 Tire        stamina
-//                 Wound       damage, resisted unless the row says otherwise
-//               The first is escaped one time in ten, the second one in two.
-//   unresisted  resistance does not cut its wound
-//   silenced    a silence stops it (retail `MonsterSpecialAttackHonorsCastingBlock`)
-//   summons     it calls a group of this species instead of striking
-//               (retail `SpawnSummonedMonsterGroup`)
+//   effects   what it does to each body it lands on: rows as those of
+//             spell_effects.ron. The first thing it does is escaped one
+//             time in ten, the second one in two (`chance`); a monster and a
+//             member roll most of them differently (`on`). A condition lasts
+//             a third of the attack's bound on a monster and a roll under it
+//             on a member; the rest are three rolls under the bound, summed
+//             (`Three`). Each save's base is its condition's own.
+//   silenced  a silence stops it (retail `MonsterSpecialAttackHonorsCastingBlock`)
+//   summons   it calls a group of this species instead of striking
+//             (retail `SpawnSummonedMonsterGroup`)
 {
-    BlindingWater: (realm: Water, effects: [Inflict(Blind)]),                              // 1
-    BlindingWaterSecond: (realm: Water, effects: [Inflict(Blind)]),                        // 2
-    HarmAndDrainDivine: (realm: Divine, effects: [Harm, Drain]),                           // 3
-    TiringWater: (realm: Water, effects: [Tire]),                                          // 4
-    FearAndInsanityMental: (realm: Mental, effects: [Inflict(Afraid), Inflict(Insane)], silenced: true),   // 5
-    FearAndTurncoatDivine: (realm: Divine, effects: [Inflict(Afraid), Inflict(Turncoat)], silenced: true), // 6
-    FearMental: (realm: Mental, effects: [Inflict(Afraid)], silenced: true),               // 7
-    WoundAndTireFire: (realm: Fire, effects: [Wound, Tire]),                               // 8
-    WoundFire: (realm: Fire, effects: [Wound]),                                            // 9
-    InsanityAndWoundMental: (realm: Mental, effects: [Inflict(Insane), Wound], unresisted: true), // 10
-    InsanityAndTurncoatDivine: (realm: Divine, effects: [Inflict(Insane), Inflict(Turncoat)]),    // 11
-    InsanityMental: (realm: Mental, effects: [Inflict(Insane)]),                           // 12
-    IrritationEarth: (realm: Earth, effects: [Inflict(Irritated)]),                        // 13
-    IrritationAir: (realm: Air, effects: [Inflict(Irritated)]),                            // 14
-    NauseaEarth: (realm: Earth, effects: [Inflict(Nauseated)]),                            // 15
-    NauseaAir: (realm: Air, effects: [Inflict(Nauseated)]),                                // 16
-    ParalysisMental: (realm: Mental, effects: [Inflict(Paralyzed)]),                       // 17
-    ParalysisEarth: (realm: Earth, effects: [Inflict(Paralyzed)]),                         // 18
-    PoisonAndIrritationWater: (realm: Water, effects: [Inflict(Poisoned), Inflict(Irritated)]),   // 19
-    PoisonAndWoundWater: (realm: Water, effects: [Inflict(Poisoned), Wound]),              // 20
-    SleepAir: (realm: Air, effects: [Inflict(Asleep)]),                                    // 21
-    SlowAndParalysisWater: (realm: Water, effects: [Inflict(Slowed), Inflict(Paralyzed)]), // 22
-    SlowEarth: (realm: Earth, effects: [Inflict(Slowed)]),                                 // 23
-    SummonsSpecies153: (summons: 153),                                                     // 24
-    SummonsSpecies149: (summons: 149, silenced: true),                                     // 25
-    SummonsSpecies150: (summons: 150, silenced: true),                                     // 26
-    SummonsSpecies151: (summons: 151),                                                     // 27
-    SummonsSpecies152: (summons: 152, silenced: true),                                     // 28
-    SummonsSpecies148: (summons: 148, silenced: true),                                     // 29
+    BlindingWater: ( // 1
+        effects: [
+            (kind: Afflict(condition: Blind), on: Monsters, roll: ThirdOfBound, chance: 90, save: 12, resist: Water),
+            (kind: Afflict(condition: Blind), on: Members, roll: BelowBound, chance: 90, save: 12, resist: Water),
+        ],
+    ),
+    BlindingWaterSecond: ( // 2
+        effects: [
+            (kind: Afflict(condition: Blind), on: Monsters, roll: ThirdOfBound, chance: 90, save: 12, resist: Water),
+            (kind: Afflict(condition: Blind), on: Members, roll: BelowBound, chance: 90, save: 12, resist: Water),
+        ],
+    ),
+    HarmAndDrainDivine: ( // 3
+        effects: [
+            (roll: Three(divide: 3, plus: 1, times: 1, over: 1), chance: 90, resist: Divine),
+            (kind: DrainBudget, on: Monsters, roll: Three(divide: 6, plus: 1, times: 1, over: 2), chance: 50, resist: Divine),
+            (kind: DrainRealm(Divine), on: Members, roll: Three(divide: 3, plus: 1, times: 6, over: 1), chance: 50, resist: Divine),
+        ],
+    ),
+    TiringWater: ( // 4
+        effects: [
+            (kind: Tire, on: Monsters, roll: Three(divide: 1, plus: 0, times: 1, over: 1), chance: 90, resist: Water),
+            (kind: Tire, on: Members, roll: Three(divide: 1, plus: 1, times: 1, over: 1), chance: 90, resist: Water),
+        ],
+    ),
+    FearAndInsanityMental: ( // 5
+        silenced: true,
+        effects: [
+            (kind: Afflict(condition: Afraid), on: Monsters, roll: ThirdOfBound, chance: 90, save: 5, resist: Mental),
+            (kind: Afflict(condition: Afraid), on: Members, roll: BelowBound, chance: 90, save: 5, resist: Mental),
+            (kind: Afflict(condition: Insane), on: Monsters, roll: ThirdOfBound, chance: 50, save: 10, resist: Mental),
+            (kind: Afflict(condition: Insane), on: Members, roll: BelowBound, chance: 50, save: 10, resist: Mental),
+        ],
+    ),
+    FearAndTurncoatDivine: ( // 6
+        silenced: true,
+        effects: [
+            (kind: Afflict(condition: Afraid), on: Monsters, roll: ThirdOfBound, chance: 90, save: 5, resist: Divine),
+            (kind: Afflict(condition: Afraid), on: Members, roll: BelowBound, chance: 90, save: 5, resist: Divine),
+            (kind: Afflict(condition: Turncoat), on: Monsters, roll: ThirdOfBound, chance: 50, save: 14, resist: Divine),
+            (kind: Afflict(condition: Turncoat), on: Members, roll: BelowBound, chance: 50, save: 14, resist: Divine),
+        ],
+    ),
+    FearMental: ( // 7
+        silenced: true,
+        effects: [
+            (kind: Afflict(condition: Afraid), on: Monsters, roll: ThirdOfBound, chance: 90, save: 5, resist: Mental),
+            (kind: Afflict(condition: Afraid), on: Members, roll: BelowBound, chance: 90, save: 5, resist: Mental),
+        ],
+    ),
+    WoundAndTireFire: ( // 8
+        effects: [
+            (roll: Three(divide: 3, plus: 1, times: 1, over: 1), chance: 90, resist: Fire),
+            (kind: Tire, on: Monsters, roll: Three(divide: 1, plus: 0, times: 1, over: 1), chance: 50, resist: Fire),
+            (kind: Tire, on: Members, roll: Three(divide: 1, plus: 1, times: 1, over: 1), chance: 50, resist: Fire),
+        ],
+    ),
+    WoundFire: ( // 9
+        effects: [
+            (roll: Three(divide: 3, plus: 1, times: 1, over: 1), chance: 90, resist: Fire),
+        ],
+    ),
+    InsanityAndWoundMental: ( // 10
+        effects: [
+            (kind: Afflict(condition: Insane), on: Monsters, roll: ThirdOfBound, chance: 90, save: 10, resist: Mental),
+            (kind: Afflict(condition: Insane), on: Members, roll: BelowBound, chance: 90, save: 10, resist: Mental),
+            (roll: Three(divide: 3, plus: 1, times: 1, over: 1), chance: 50),
+        ],
+    ),
+    InsanityAndTurncoatDivine: ( // 11
+        effects: [
+            (kind: Afflict(condition: Insane), on: Monsters, roll: ThirdOfBound, chance: 90, save: 10, resist: Divine),
+            (kind: Afflict(condition: Insane), on: Members, roll: BelowBound, chance: 90, save: 10, resist: Divine),
+            (kind: Afflict(condition: Turncoat), on: Monsters, roll: ThirdOfBound, chance: 50, save: 14, resist: Divine),
+            (kind: Afflict(condition: Turncoat), on: Members, roll: BelowBound, chance: 50, save: 14, resist: Divine),
+        ],
+    ),
+    InsanityMental: ( // 12
+        effects: [
+            (kind: Afflict(condition: Insane), on: Monsters, roll: ThirdOfBound, chance: 90, save: 10, resist: Mental),
+            (kind: Afflict(condition: Insane), on: Members, roll: BelowBound, chance: 90, save: 10, resist: Mental),
+        ],
+    ),
+    IrritationEarth: ( // 13
+        effects: [
+            (kind: Afflict(condition: Irritated), on: Monsters, roll: ThirdOfBound, chance: 90, save: 3, resist: Earth),
+            (kind: Afflict(condition: Irritated), on: Members, roll: BelowBound, chance: 90, save: 3, resist: Earth),
+        ],
+    ),
+    IrritationAir: ( // 14
+        effects: [
+            (kind: Afflict(condition: Irritated), on: Monsters, roll: ThirdOfBound, chance: 90, save: 3, resist: Air),
+            (kind: Afflict(condition: Irritated), on: Members, roll: BelowBound, chance: 90, save: 3, resist: Air),
+        ],
+    ),
+    NauseaEarth: ( // 15
+        effects: [
+            (kind: Afflict(condition: Nauseated), on: Monsters, roll: ThirdOfBound, chance: 90, save: 4, resist: Earth),
+            (kind: Afflict(condition: Nauseated), on: Members, roll: BelowBound, chance: 90, save: 4, resist: Earth),
+        ],
+    ),
+    NauseaAir: ( // 16
+        effects: [
+            (kind: Afflict(condition: Nauseated), on: Monsters, roll: ThirdOfBound, chance: 90, save: 4, resist: Air),
+            (kind: Afflict(condition: Nauseated), on: Members, roll: BelowBound, chance: 90, save: 4, resist: Air),
+        ],
+    ),
+    ParalysisMental: ( // 17
+        effects: [
+            (kind: Afflict(condition: Paralyzed), on: Monsters, roll: ThirdOfBound, chance: 90, save: 18, resist: Mental),
+            (kind: Afflict(condition: Paralyzed), on: Members, roll: BelowBound, chance: 90, save: 18, resist: Mental),
+        ],
+    ),
+    ParalysisEarth: ( // 18
+        effects: [
+            (kind: Afflict(condition: Paralyzed), on: Monsters, roll: ThirdOfBound, chance: 90, save: 18, resist: Earth),
+            (kind: Afflict(condition: Paralyzed), on: Members, roll: BelowBound, chance: 90, save: 18, resist: Earth),
+        ],
+    ),
+    PoisonAndIrritationWater: ( // 19
+        effects: [
+            (kind: Afflict(condition: Poisoned), on: Monsters, roll: ThirdOfBound, chance: 90, save: 6, resist: Water),
+            (kind: Afflict(condition: Poisoned), on: Members, roll: BelowBound, chance: 90, save: 6, resist: Water),
+            (kind: Afflict(condition: Irritated), on: Monsters, roll: ThirdOfBound, chance: 50, save: 3, resist: Water),
+            (kind: Afflict(condition: Irritated), on: Members, roll: BelowBound, chance: 50, save: 3, resist: Water),
+        ],
+    ),
+    PoisonAndWoundWater: ( // 20
+        effects: [
+            (kind: Afflict(condition: Poisoned), on: Monsters, roll: ThirdOfBound, chance: 90, save: 6, resist: Water),
+            (kind: Afflict(condition: Poisoned), on: Members, roll: BelowBound, chance: 90, save: 6, resist: Water),
+            (roll: Three(divide: 3, plus: 1, times: 1, over: 1), chance: 50, resist: Water),
+        ],
+    ),
+    SleepAir: ( // 21
+        effects: [
+            (kind: Afflict(condition: Asleep), on: Monsters, roll: ThirdOfBound, chance: 90, save: 20, resist: Air),
+            (kind: Afflict(condition: Asleep), on: Members, roll: BelowBound, chance: 90, save: 20, resist: Air),
+        ],
+    ),
+    SlowAndParalysisWater: ( // 22
+        effects: [
+            (kind: Afflict(condition: Slowed), on: Monsters, roll: ThirdOfBound, chance: 90, save: 4, resist: Water),
+            (kind: Afflict(condition: Slowed), on: Members, roll: BelowBound, chance: 90, save: 4, resist: Water),
+            (kind: Afflict(condition: Paralyzed), on: Monsters, roll: ThirdOfBound, chance: 50, save: 18, resist: Water),
+            (kind: Afflict(condition: Paralyzed), on: Members, roll: BelowBound, chance: 50, save: 18, resist: Water),
+        ],
+    ),
+    SlowEarth: ( // 23
+        effects: [
+            (kind: Afflict(condition: Slowed), on: Monsters, roll: ThirdOfBound, chance: 90, save: 4, resist: Earth),
+            (kind: Afflict(condition: Slowed), on: Members, roll: BelowBound, chance: 90, save: 4, resist: Earth),
+        ],
+    ),
+    SummonsSpecies153: (summons: 153), // 24
+    SummonsSpecies149: (silenced: true, summons: 149), // 25
+    SummonsSpecies150: (silenced: true, summons: 150), // 26
+    SummonsSpecies151: (summons: 151), // 27
+    SummonsSpecies152: (silenced: true, summons: 152), // 28
+    SummonsSpecies148: (silenced: true, summons: 148), // 29
     // A member's breath is this row too (retail's entry 30): a Water blast.
-    WoundWater: (realm: Water, effects: [Wound]),                                          // 30
-    SummonsSpecies12: (summons: 12),                                                       // 31
+    WoundWater: ( // 30
+        effects: [
+            (roll: Three(divide: 3, plus: 1, times: 1, over: 1), chance: 90, resist: Water),
+        ],
+    ),
+    SummonsSpecies12: (summons: 12), // 31
 }

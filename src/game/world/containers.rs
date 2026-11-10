@@ -6,7 +6,7 @@
 use bevy::ecs::relationship::RelationshipTarget;
 use bevy::prelude::*;
 
-use super::interaction::{AttemptOn, DeviceAct, DeviceAttempt, DeviceInteraction, Work};
+use super::interaction::{AttemptOn, DeviceAttempt, DeviceInteraction, Work};
 use super::props::PropMotion;
 use super::triggers::TriggerEffect;
 use crate::game::characters::Character;
@@ -114,13 +114,23 @@ pub enum Recipient {
     Member(Entity),
 }
 
+/// The party takes the chosen items, and how many of each, from the
+/// container it is looking through.
+#[derive(EntityEvent, Clone, Debug)]
+pub struct Take {
+    #[event_target]
+    pub attempt: Entity,
+    pub picks: Vec<(Entity, u16)>,
+    pub to: Recipient,
+}
+
 /// Take the chosen items, each whole or `amount` of it, in the order asked
 /// (retail `TransferSelectedItems`). Each goes as far as there is room; what
 /// does not fit stays in the container exactly as it was. A member must be
 /// able to act to receive anything.
-pub(crate) fn take_from_containers(
+pub(crate) fn take(
+    take: On<Take>,
     mut commands: Commands,
-    mut requests: MessageReader<super::interaction::DeviceRequest>,
     attempts: Query<(&DeviceInteraction, &AttemptOn)>,
     party: Single<Entity, With<PartyRoster>>,
     held: Items,
@@ -131,43 +141,40 @@ pub(crate) fn take_from_containers(
     ),
 ) {
     let party = *party;
-    for request in requests.read() {
-        let DeviceAct::Take { picks, to } = &request.act else { continue };
-        let Ok((DeviceInteraction { work: Work::Looting }, &AttemptOn(device))) =
-            attempts.get(request.on)
-        else {
-            continue;
-        };
-        if !entering.is_empty() || !battle.is_empty() {
+    let Ok((DeviceInteraction { work: Work::Looting }, &AttemptOn(device))) =
+        attempts.get(take.attempt)
+    else {
+        return;
+    };
+    if !entering.is_empty() || !battle.is_empty() {
+        return;
+    }
+    let receiver = match take.to {
+        Recipient::Party => None,
+        Recipient::Member(member) => match members.get(member) {
+            Ok(vitals) if vitals.can_act() => Some(member),
+            _ => return,
+        },
+    };
+    let inside = held.stowed(device);
+    for &(item, amount) in &take.picks {
+        let units = held.units(item);
+        if !inside.contains(&item) || amount == 0 || u32::from(amount) > units {
             continue;
         }
-        let receiver = match *to {
-            Recipient::Party => None,
-            Recipient::Member(member) => match members.get(member) {
-                Ok(vitals) if vitals.can_act() => Some(member),
-                _ => continue,
-            },
-        };
-        let inside = held.stowed(device);
-        for &(item, amount) in picks {
-            let units = held.units(item);
-            if !inside.contains(&item) || amount == 0 || u32::from(amount) > units {
-                continue;
-            }
-            // Of a stack, a part is taken as an item of its own; what does
-            // not fit of it goes back to the rest.
-            let part = (u32::from(amount) < units).then(|| split(&mut commands, item, amount));
-            let taking = part.unwrap_or(item);
-            commands.trigger(Give {
-                item: taking,
-                to: receiver,
-                party,
-                pool_first: receiver.is_none(),
-                told: true,
-            });
-            if part.is_some() {
-                commands.trigger(Rejoin { part: taking, whole: item });
-            }
+        // Of a stack, a part is taken as an item of its own; what does
+        // not fit of it goes back to the rest.
+        let part = (u32::from(amount) < units).then(|| split(&mut commands, item, amount));
+        let taking = part.unwrap_or(item);
+        commands.trigger(Give {
+            item: taking,
+            to: receiver,
+            party,
+            pool_first: receiver.is_none(),
+            told: true,
+        });
+        if part.is_some() {
+            commands.trigger(Rejoin { part: taking, whole: item });
         }
     }
 }
