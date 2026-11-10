@@ -11,6 +11,7 @@
 //! view is not ported. Lists use native stepped scrollbars; pool items keep
 //! their shared ownership through selection and payment.
 
+use crate::game::actors::Attributes;
 use crate::presentation::retail_controls::RestoreFocus;
 use bevy::input_focus::InputFocus;
 use bevy::input_focus::tab_navigation::{TabGroup, TabIndex};
@@ -784,7 +785,11 @@ pub(super) fn draw_magic_view(
     };
     let (character, vitals, carried) = members.get(view.caster).unwrap();
     let (learned, points) = casters.get(view.caster).unwrap();
-    let mana_maximum = character.stats(&vitals.enchantments).max_points(learned, spells);
+    let mana_maximum = character.max_points(
+        &Attributes::with_spells(character.attributes, &vitals.enchantments),
+        learned,
+        spells,
+    );
     // Realms: their points, the chosen one latched; the first with points
     // chosen when none is.
     if !view.items {
@@ -1096,7 +1101,11 @@ fn choose_row(
     let (character, vitals, carried) = members.get(view.caster).unwrap();
     let (learned, points) = casters.get(view.caster).unwrap();
     let silenced = vitals.conditions.has(Condition::Silenced);
-    let mana_maximum = character.stats(&vitals.enchantments).max_points(learned, spells);
+    let mana_maximum = character.max_points(
+        &Attributes::with_spells(character.attributes, &vitals.enchantments),
+        learned,
+        spells,
+    );
     let offers = offers(
         &view,
         character,

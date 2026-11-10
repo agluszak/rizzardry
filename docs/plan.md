@@ -25,7 +25,7 @@ ask.
 
 ## Slices
 
-### 1. One kind of actor — in progress
+### 1. One kind of actor — partly done
 
 **Rule.** An actor has attributes, a level, health and stamina, things it can
 strike with, armour, resistances and a side. A member's come from the sheet and
@@ -95,5 +95,5 @@ headless tests do not establish it.
 | Slice | State |
 | --- | --- |
 | Groundwork: combat, effects and magic resolved through messages and plain functions | Done on `refactor/event-driven-combat-and-magic`. An improvement by the old standard only: the functions are still retail routines. Slices 1 and 6 replace them. |
-| 1. One kind of actor | Contract agreed. Not started. |
+| 1. One kind of actor | Stats done: `Attributes`, `Level`, `Resistances`, `Armour`, `Attacks` on every actor, written by one `Refit` observer; `judge_defences`, `judge_fighters`, `CharacterStats` and the member/monster stat pairs are gone; rules read no species record. Still to do: `Side` (`judge_sides`) and where an actor stands (`place_bodies`) are re-derived each step; `Refit` is fired by watching components for writes, and any write to `Vitals` counts until slice 2 moves spells out of it; a few readers outside combat still rebuild `Attributes` from the sheet instead of reading the component (burden, recovery, the spell screens). `Modifier` turned out not to be needed and was not added. |
 | 2–7 | Not started. |

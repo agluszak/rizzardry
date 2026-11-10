@@ -284,12 +284,11 @@ pub fn trap_chance(skill: Option<u32>, difficulty: u8, setting: Difficulty) -> i
 /// A member's chance in 100 to force a lock with this many tumblers, if
 /// they may try (retail `W8LockInteraction::AttemptForce`).
 pub fn force_chance(
-    character: &Character,
+    strength: u32,
     vitals: &Vitals,
     tumblers: usize,
     setting: Difficulty,
 ) -> Option<u32> {
-    let strength = character.stats(&vitals.enchantments).attribute(Attribute::Strength);
     if !vitals.can_act() || vitals.stamina.current < FORCE_STAMINA || strength <= FORCE_STRENGTH {
         return None;
     }
@@ -448,12 +447,16 @@ fn force_lock(
     news: &mut MessageWriter<LockNews>,
 ) -> Result<Step, Unable> {
     let member = body.entity;
-    let character = body.character.as_deref().ok_or(Unable::CannotAct)?;
     if !body.vitals.can_act() {
         return Err(Unable::CannotAct);
     }
-    let chance = force_chance(character, &body.vitals, picking.tumblers.len(), setting)
-        .ok_or(Unable::TooWeak)?;
+    let chance = force_chance(
+        body.attributes[Attribute::Strength],
+        &body.vitals,
+        picking.tumblers.len(),
+        setting,
+    )
+    .ok_or(Unable::TooWeak)?;
     body.vitals.tire(FORCE_STAMINA);
     if rng.below(100) < chance {
         news.write(LockNews::Forced { member });

@@ -131,19 +131,16 @@ pub(super) fn build(commands: &mut Commands, panel: Entity, root: Entity, art: &
 pub(super) fn refresh(
     screen: Single<&InventoryScreen>,
     members: Query<CharacterView>,
-    content: If<Res<crate::game::data::Catalogs>>,
-    party_effects: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
     art: Res<InventoryArt>,
     mut values: Query<(&Value, &mut BitmapText)>,
     mut bars: Query<&mut PictureCrop, With<ExperienceBar>>,
 ) {
     let view = members.get(screen.member).unwrap();
     let load = view.load();
-    let armour = view.armour(&content.items, party_effects.as_deref().copied());
-    let CharacterViewItem { profile: character, vitals, burden, .. } = view;
+    let armour = view.armour();
+    let CharacterViewItem { profile: character, vitals, attributes, burden, .. } = view;
 
     let weight = burden.weight;
-    let stats = character.stats(&vitals.enchantments);
     for (kind, mut text) in &mut values {
         let (value, palette) = match *kind {
             Value::Experience => (format_gold(character.experience), None),
@@ -158,11 +155,11 @@ pub(super) fn refresh(
                     Load::Heavy => Some(art.yellow.clone()),
                     Load::Extreme => Some(art.red.clone()),
                 };
-                (format!("{}/{}", weight / 10, stats.capacity() / 10), palette)
+                (format!("{}/{}", weight / 10, character.capacity(attributes) / 10), palette)
             }
             Value::BaseArmour => (armour.total.to_string(), None),
             Value::AverageArmour => (armour.average().to_string(), None),
-            Value::Attribute(attribute) => (stats.attribute(attribute).to_string(), None),
+            Value::Attribute(attribute) => (attributes[attribute].to_string(), None),
         };
         if text.value != value {
             text.value = value;

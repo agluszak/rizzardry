@@ -393,7 +393,7 @@ pub(super) fn judge_victory(
     >,
     mut members: Query<(&mut Character, &Vitals)>,
     monsters: Query<(
-        &super::fighters::Arms,
+        &crate::game::actors::Attacks,
         &Vitals,
         &Side,
         &Footing,

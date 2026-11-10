@@ -119,7 +119,8 @@ pub fn toggle_search(
 /// most 100. Without search mode only rangers search; while running, those
 /// without Scouting score nothing.
 pub fn search_score(
-    member: &crate::game::characters::CharacterStats<'_>,
+    member: &Character,
+    attributes: &crate::game::actors::Attributes,
     search_mode: bool,
     running: bool,
 ) -> u32 {
@@ -131,7 +132,7 @@ pub fn search_score(
     if base == 0 && !(search_mode && !running) {
         return 0;
     }
-    let senses = member.attribute(Attribute::Senses);
+    let senses = attributes[Attribute::Senses];
     let score = match senses {
         0..=50 => base + senses / 5,
         51..=80 => base + 10 + (senses - 50) / 3,
@@ -156,7 +157,7 @@ pub fn search_pulse(
     movement: Single<&PartyMovement>,
     party: Query<(&Position, &PartyBody)>,
     roster: Single<&PartyRoster>,
-    members: Query<(&Character, &Vitals)>,
+    members: Query<(&Character, &Vitals, &crate::game::actors::Attributes)>,
     mut items: Query<(Entity, &mut WorldItem, &Transform)>,
     obstacles: WorldObstacles,
     content: If<Res<crate::game::data::Catalogs>>,
@@ -172,10 +173,10 @@ pub fn search_pulse(
     let (from, forward) = (PartyBody::eye(position), body.forward());
     let running = movement.running;
     let mut best: Option<(u32, &Character)> = None;
-    for (member, vitals) in members.iter_many(roster.iter()).matched().filter(|(_, v)| v.can_act())
+    for (member, _, attributes) in
+        members.iter_many(roster.iter()).matched().filter(|(_, v, _)| v.can_act())
     {
-        let stats = member.stats(&vitals.enchantments);
-        let score = search_score(&stats, search.on(battle.is_some()), running);
+        let score = search_score(member, attributes, search.on(battle.is_some()), running);
         if score > best.map_or(0, |b| b.0) {
             best = Some((score, member));
         }

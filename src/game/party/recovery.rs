@@ -5,6 +5,7 @@
 //! Whatever passes time applies this at once, with its own pace:
 //! exploring and camping in `game::time`, a combat round when it ends.
 
+use crate::game::actors::Attributes;
 use bevy::prelude::*;
 
 use crate::content::spells::SpellCatalog;
@@ -106,7 +107,11 @@ pub fn elapse(
         }
         sickness = member.sicken(profile, ticks.aging, rng);
         if let Some((known, pool, spells)) = magic {
-            let maximum = profile.stats(&member.enchantments).max_points(known, spells);
+            let maximum = profile.max_points(
+                &Attributes::with_spells(profile.attributes, &member.enchantments),
+                known,
+                spells,
+            );
             pool.recover(ticks.aging, recovery_scale(pace.health_scale()), &maximum);
         }
         member.recover_health(ticks.aging, health);
@@ -244,8 +249,10 @@ mod tests {
             let mut sick = profile.clone();
             let mut member = Vitals::new(&sick);
             member.inflict(Condition::Diseased, Lasting::Indefinite);
-            let (max_hp, max_stamina) =
-                (sick.base_stats().max_hp(), sick.base_stats().max_stamina());
+            let (max_hp, max_stamina) = (
+                sick.max_hp(&Attributes::of_sheet(&sick)),
+                sick.max_stamina(&Attributes::of_sheet(&sick)),
+            );
             let attributes = sick.attributes;
             // A long stretch makes the roll sure.
             let struck = member.sicken(&mut sick, 10_000, &mut rng);
@@ -260,12 +267,12 @@ mod tests {
                 }
                 Some(Sickness::Health(loss)) => {
                     assert!((1..=4).contains(&loss));
-                    assert_eq!(sick.base_stats().max_hp(), max_hp - loss);
+                    assert_eq!(sick.max_hp(&Attributes::of_sheet(&sick)), max_hp - loss);
                     assert_eq!(member.health.current, max_hp - loss);
                     seen.insert(2);
                 }
                 Some(Sickness::Stamina(loss)) => {
-                    assert_eq!(sick.base_stats().max_stamina(), max_stamina - loss);
+                    assert_eq!(sick.max_stamina(&Attributes::of_sheet(&sick)), max_stamina - loss);
                     seen.insert(3);
                 }
                 None => {}
@@ -296,14 +303,14 @@ mod tests {
                 let mut profile = veteran.clone();
                 let mut member = Vitals::new(&profile);
                 member.inflict(Condition::Diseased, Lasting::Indefinite);
-                let max_hp = profile.base_stats().max_hp();
+                let max_hp = profile.max_hp(&Attributes::of_sheet(&profile));
                 member.health.current = if dying { 1 } else { max_hp - 20 };
                 let hp = member.health.current;
                 let struck = member.sicken(&mut profile, 10_000, &mut GameRng::seeded(seed));
                 if struck != Some(Sickness::Weakened(Attribute::Vitality)) {
                     continue;
                 }
-                let lowered = max_hp - profile.base_stats().max_hp();
+                let lowered = max_hp - profile.max_hp(&Attributes::of_sheet(&profile));
                 assert!(lowered > 0, "a veteran's health follows Vitality");
                 if dying {
                     assert!(member.is_dead(), "too little health left to lose");
@@ -324,17 +331,20 @@ mod tests {
     fn drained_health_stays_lost_until_the_drain_is_lifted() {
         let mut profile = Character::new("Brute", Race::Human, Gender::Male, Profession::Fighter);
         let mut member = Vitals::new(&profile);
-        let (max_hp, max_stamina) =
-            (profile.base_stats().max_hp(), profile.base_stats().max_stamina());
+        let (max_hp, max_stamina) = (
+            profile.max_hp(&Attributes::of_sheet(&profile)),
+            profile.max_stamina(&Attributes::of_sheet(&profile)),
+        );
         assert_eq!(member.drain_health(&mut profile, 3), 3);
         assert_eq!(
-            (profile.base_stats().max_hp(), member.health.current),
+            (profile.max_hp(&Attributes::of_sheet(&profile)), member.health.current),
             (max_hp - 3, max_hp - 3)
         );
         assert_eq!(member.stamina.current, max_stamina - 2, "two thirds of it tires");
         assert!(member.conditions.has(Condition::Drained));
         profile.stamina_drained = 4;
-        member.stamina.current = member.stamina.current.min(profile.base_stats().max_stamina());
+        member.stamina.current =
+            member.stamina.current.min(profile.max_stamina(&Attributes::of_sheet(&profile)));
         // Recovery heals only up to the lowered maximum.
         elapse(
             &mut profile,
@@ -347,7 +357,10 @@ mod tests {
         assert_eq!(member.health.current, max_hp - 3);
         let stamina = member.stamina.current;
         assert!(member.lift_drain(&mut profile));
-        assert_eq!((profile.base_stats().max_hp(), member.health.current), (max_hp, max_hp));
+        assert_eq!(
+            (profile.max_hp(&Attributes::of_sheet(&profile)), member.health.current),
+            (max_hp, max_hp)
+        );
         assert_eq!(member.stamina.current, stamina + 4);
         assert!(!member.lift_drain(&mut profile), "nothing left to lift");
         // Draining the last of it kills, and the dead stay Drained.

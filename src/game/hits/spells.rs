@@ -99,7 +99,7 @@ pub fn owners_strength(
 ) -> Strength {
     let figure = owner
         .and_then(|owner| bodies.get(owner).ok())
-        .map_or(0, |body| body.defences.caster_level(spell));
+        .map_or(0, |body| body.resistances.caster_level(spell));
     Strength::at(figure, spell, power, boost)
 }
 
@@ -124,8 +124,7 @@ pub fn drain_back(
         let percent = if leech.lifesteal {
             body.vitals.health.current * 100 / body.vitals.health.max
         } else if let (Some(character), Some((learned, pool))) = (body.character, body.spells) {
-            let maxima =
-                character.stats(&body.vitals.enchantments).max_points(learned, &content.spells);
+            let maxima = character.max_points(body.attributes, learned, &content.spells);
             let maximum: u32 = maxima.values().sum();
             if maximum == 0 {
                 return None;

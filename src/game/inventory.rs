@@ -11,6 +11,7 @@ use crate::content::characters::Skill;
 use crate::content::items::{
     EquipClass, ItemCatalog, ItemDefinition, ItemId, ItemKind, QuantityKind,
 };
+use crate::game::actors::Attributes;
 use bevy::prelude::*;
 use enum_map::{Enum, EnumMap};
 use enumset::EnumSetType;
@@ -924,7 +925,12 @@ pub fn distribute_burden(
         .map(|(character, vitals, carried, _)| {
             (
                 carried_weight(&carried, catalog),
-                (!vitals.is_dead()).then(|| character.stats(&vitals.enchantments).capacity()),
+                (!vitals.is_dead()).then(|| {
+                    character.capacity(&Attributes::with_spells(
+                        character.attributes,
+                        &vitals.enchantments,
+                    ))
+                }),
             )
         })
         .collect();
@@ -939,7 +945,8 @@ pub fn distribute_burden(
         let weight = own + share;
         burden.set_if_neq(Burden {
             weight,
-            load: character.stats(&vitals.enchantments).load(weight),
+            load: character
+                .load(&Attributes::with_spells(character.attributes, &vitals.enchantments), weight),
         });
     }
 }

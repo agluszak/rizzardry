@@ -6,7 +6,10 @@ use super::{
     casting::{Aim, MagicNews, Refusal, UseContext},
 };
 use crate::{
-    content::{characters::Realm, spells::SpellId},
+    content::{
+        characters::{Attribute, Realm},
+        spells::SpellId,
+    },
     game::{
         combat::CombatNews,
         data::Catalogs,
@@ -19,7 +22,7 @@ use crate::{
         },
         rng::GameRng,
         world::level::{Level, LevelOwned},
-        world::population::{self, Monster},
+        world::population::Monster,
         world::triggers::LevelState,
     },
 };
@@ -62,12 +65,11 @@ pub(crate) fn cast(
                 })
                 .filter(|&body| choice.aim == Aim::Body(body))
                 .ok_or(Refusal::NoTarget)?;
-            let kind = &content.species[monsters.get(body).unwrap().0.species];
-            let level = u32::from(kind.level);
-            let resistance =
-                population::resistance(kind, bodies.get(body).unwrap().vitals, Realm::Mental);
-            let notices =
-                (u32::from(kind.attributes.senses) + u32::from(kind.attributes.intelligence)) / 2;
+            let their = bodies.get(body).unwrap();
+            let (level, resistance) = (their.level.0, their.resistances.realms[Realm::Mental]);
+            let notices = (their.attributes[Attribute::Senses]
+                + their.attributes[Attribute::Intelligence])
+                / 2;
             let (mut report, strength) = super::casting::pay(
                 &mut bodies.get_mut(caster).map_err(|_| Refusal::CannotAct)?,
                 &mut inventory,

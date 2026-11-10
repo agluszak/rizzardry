@@ -311,7 +311,7 @@ pub(super) fn open_battle(
         &PartyRoster,
         &crate::game::party::body::PartyMovement,
     )>,
-    members: Query<(&Character, &Vitals)>,
+    members: Query<(&Character, &Vitals, &crate::game::actors::Attributes)>,
     level: PlayedLevel,
     obstacles: WorldObstacles,
     content: If<Res<Catalogs>>,
@@ -353,7 +353,7 @@ pub(super) fn open_battle(
         camp.is_some(),
         movement.running,
         searching,
-        members(),
+        members().map(|(_, vitals, attributes)| (attributes, vitals)),
         &mut rng,
     );
     if camp.is_some() {

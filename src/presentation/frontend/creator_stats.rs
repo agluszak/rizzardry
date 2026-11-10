@@ -3,6 +3,7 @@ use super::{Action, Creation, CreatorChoice, Page};
 use crate::content::characters::{Attribute, Gender, Profession, Realm, Skill};
 use crate::content::items::ItemCatalog;
 use crate::content::ui::SpriteSheet;
+use crate::game::actors::Attributes;
 use crate::game::inventory::Carried;
 use crate::presentation::retail_controls::{ControlSkin, FocusHighlight, set_enabled};
 use crate::presentation::screen_art::visible_if;
@@ -492,7 +493,8 @@ pub(super) fn refresh(
             .unwrap_or_default()
     };
     let resistances = crate::game::characters::resistance::resistances(
-        &profile.base_stats(),
+        &profile,
+        &Attributes::of_sheet(&profile),
         &Carried::default(),
         &ItemCatalog::default(),
     );
@@ -562,7 +564,7 @@ pub(super) fn refresh(
             .to_owned(),
             Value::Attribute(a) => {
                 if session.choices.race {
-                    profile.base_stats().attribute(a).to_string()
+                    Attributes::of_sheet(&profile)[a].to_string()
                 } else {
                     String::new()
                 }
@@ -620,7 +622,7 @@ pub(super) fn refresh(
             },
             Value::Health => {
                 if session.choices.race && session.choices.profession {
-                    profile.base_stats().max_hp().to_string()
+                    profile.max_hp(&Attributes::of_sheet(&profile)).to_string()
                 } else if session.choices.race {
                     "0".into()
                 } else {
@@ -629,14 +631,14 @@ pub(super) fn refresh(
             }
             Value::Stamina => {
                 if session.choices.race {
-                    profile.base_stats().max_stamina().to_string()
+                    profile.max_stamina(&Attributes::of_sheet(&profile)).to_string()
                 } else {
                     String::new()
                 }
             }
             Value::Capacity => {
                 if session.choices.race {
-                    (profile.base_stats().capacity() / 10).to_string()
+                    (profile.capacity(&Attributes::of_sheet(&profile)) / 10).to_string()
                 } else {
                     String::new()
                 }
@@ -644,7 +646,8 @@ pub(super) fn refresh(
             Value::Armour => {
                 if session.choices.race {
                     crate::game::combat::attack::armour(
-                        &profile.base_stats(),
+                        &profile,
+                        &Attributes::of_sheet(&profile),
                         &Carried::default(),
                         &ItemCatalog::default(),
                         crate::game::characters::Load::None,
@@ -659,7 +662,11 @@ pub(super) fn refresh(
             Value::SpellPoints => {
                 if session.choices.race {
                     let learned = crate::game::magic::LearnedSpells(draft.spells());
-                    let points = profile.base_stats().max_points(&learned, &content.spells);
+                    let points = profile.max_points(
+                        &Attributes::of_sheet(&profile),
+                        &learned,
+                        &content.spells,
+                    );
                     points.values().sum::<u32>().to_string()
                 } else {
                     String::new()

@@ -184,7 +184,11 @@ pub fn update_radar(
     camera: Query<(&Projection, &GlobalTransform), With<PartyCamera>>,
     mut rims: Query<&mut UiTransform, With<RadarRim>>,
     layers: Query<Entity, With<RadarBlips>>,
-    members: Query<(&crate::game::characters::Character, &crate::game::characters::Vitals)>,
+    members: Query<(
+        &crate::game::characters::Character,
+        &crate::game::characters::Vitals,
+        &crate::game::actors::Attributes,
+    )>,
     monsters: Query<(
         Entity,
         (&crate::game::world::population::Monster, &crate::game::characters::Vitals),

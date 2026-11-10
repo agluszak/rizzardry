@@ -8,7 +8,6 @@ pub mod attack;
 pub mod breath;
 mod conduct;
 mod engage;
-pub mod fighters;
 mod monster_spells;
 mod orders;
 mod round_end;
@@ -53,13 +52,11 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         use crate::game::characters::settle_deaths;
-        use crate::game::hits::defences::judge_defences;
         use crate::game::world::footing::place_bodies;
         // Deeds land, and what they did is settled: deaths, the fight's
         // kills, the party's defeat, and who stands with whom.
         let settle = || (crate::game::hits::resolve, settle_deaths, settle_defeat).chain();
-        app.add_observer(fighters::leave)
-            .add_observer(credit_death)
+        app.add_observer(credit_death)
             .add_observer(join_party)
             .add_observer(turn::clear_fight)
             .add_observer(approach::end_move)
@@ -81,7 +78,7 @@ impl Plugin for CombatPlugin {
             // frame's gameplay reads them.
             .add_systems(
                 Update,
-                (place_bodies, hostility::judge_sides, judge_defences)
+                (place_bodies, hostility::judge_sides, crate::game::actors::notice_changes)
                     .chain()
                     .in_set(GameplaySet::Bodies),
             )
@@ -115,8 +112,7 @@ impl Plugin for CombatPlugin {
                     (
                         place_bodies,
                         hostility::judge_sides,
-                        judge_defences,
-                        fighters::judge_fighters.run_if(any_with_component::<Battle>),
+                        crate::game::actors::notice_changes,
                         crate::game::hits::fly,
                         settle(),
                     )
@@ -307,7 +303,7 @@ fn opening_surprise<'a>(
     camping: bool,
     running: bool,
     searching: bool,
-    mut members: impl Iterator<Item = (&'a Character, &'a Vitals)>,
+    mut members: impl Iterator<Item = (&'a crate::game::actors::Attributes, &'a Vitals)>,
     rng: &mut GameRng,
 ) -> Option<SurpriseCause> {
     if !shadow_hound {
@@ -316,10 +312,8 @@ fn opening_surprise<'a>(
         }
         if camping {
             let guard = members.find(|(_, v)| v.lucid());
-            let Some((profile, vitals)) = guard else { return Some(SurpriseCause::Ambush) };
-            let senses = profile
-                .stats(&vitals.enchantments)
-                .attribute(crate::content::characters::Attribute::Senses);
+            let Some((attributes, _)) = guard else { return Some(SurpriseCause::Ambush) };
+            let senses = attributes[crate::content::characters::Attribute::Senses];
             rng.below(1);
             if senses / 2 <= rng.below(100) {
                 return Some(SurpriseCause::Ambush);
@@ -508,8 +502,7 @@ pub fn begin_round(
     roster: Single<&PartyRoster>,
     bodies: Query<(
         &Vitals,
-        &fighters::Arms,
-        &fighters::Fighter,
+        &crate::game::actors::Attacks,
         Option<(&Character, &crate::game::party::Order)>,
     )>,
     settings: Res<CombatSettings>,

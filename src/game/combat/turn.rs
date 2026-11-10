@@ -11,14 +11,14 @@ use bevy::prelude::*;
 use enum_map::EnumMap;
 
 use super::attack::phase;
-use super::fighters::{Arms, Fighter, reaches};
 use super::{
     ACTION_SECONDS, Battle, CombatNews, Combatant, Interrupt, PartyMove, Pause, Round, RoundPhase,
     ai, conduct, summon,
 };
-use crate::content::characters::Trait;
+use crate::content::characters::{Attribute, Trait};
 use crate::content::species::SpecialAttackKind;
 use crate::content::spells::SpellId;
+use crate::game::actors::{Attacks, reaches};
 use crate::game::characters::{Character, Condition, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::hits::definitions::Definitions;
@@ -213,7 +213,7 @@ pub fn accept_round(
     (battle, round, party_move): (&mut Battle, &mut Round, &mut PartyMove),
     combatants: &[Entity],
     roster: &PartyRoster,
-    bodies: &Query<(&Vitals, &Arms, &Fighter, Option<(&Character, &Order)>)>,
+    bodies: &Query<(&Vitals, &Attacks, Option<(&Character, &Order)>)>,
     rng: &mut GameRng,
 ) {
     battle.round += 1;
@@ -226,7 +226,7 @@ pub fn accept_round(
     let lightning: Vec<Option<u8>> = roster
         .iter()
         .map(|member| {
-            let Ok((_, arms, _, Some((character, order)))) = bodies.get(member) else {
+            let Ok((_, arms, Some((character, order)))) = bodies.get(member) else {
                 return None;
             };
             (!surprised
@@ -239,7 +239,7 @@ pub fn accept_round(
         .collect();
     for &actor in combatants {
         let lightning = roster.get_index_of(&actor).and_then(|seat| lightning[seat]);
-        let Ok((vitals, arms, fighter, ordered)) = bodies.get(actor) else { continue };
+        let Ok((vitals, arms, ordered)) = bodies.get(actor) else { continue };
         // A member turned on the party attacks, whatever its order; one
         // who can no longer berserk attacks as usual.
         let action = ordered.map(|(character, order)| match *order {
@@ -249,7 +249,7 @@ pub fn accept_round(
             // close quarters (retail `CanCharacterBerserk`).
             Order::Berserk => Action::Attack {
                 berserk: character.has_trait(Trait::Berserk)
-                    && !arms.0.is_empty()
+                    && !arms.arms.is_empty()
                     && arms
                         .of(WeaponSlot::Primary)
                         .all(|arm| arm.reach <= crate::content::species::Reach::Short),
@@ -277,11 +277,11 @@ pub fn accept_round(
                     if let Some(slot) = arms.opening() {
                         turn.due = slot;
                         turn.attacks = EnumMap::from_fn(|slot| arms.attacks(slot));
-                        turn.phase = phase(rng, fighter.initiative + arms.initiative(slot));
+                        turn.phase = phase(rng, arms.initiative + arms.slot_initiative(slot));
                     }
                 }
                 Some(Action::Magic(_) | Action::Breathe(_)) => {
-                    turn.phase = phase(rng, fighter.initiative);
+                    turn.phase = phase(rng, arms.initiative);
                 }
                 Some(Action::Defend) => {}
             }
@@ -306,7 +306,7 @@ pub fn accept_round(
                 .iter()
                 .filter_map(|member| bodies.get(member).ok())
                 .filter(|(vitals, ..)| !vitals.is_dead())
-                .map(|(_, _, fighter, _)| phase(rng, fighter.initiative))
+                .map(|(_, arms, _)| phase(rng, arms.initiative))
                 .max()
                 .unwrap_or(90);
             let phase = (latest + 5) - (latest + 5) % 10;
@@ -332,7 +332,7 @@ pub(super) fn take_turn(
     mut called: MessageReader<Called>,
     mut performs: MessageWriter<Perform>,
     mut bodies: Query<Body>,
-    mut turns: Query<(&mut Turn, Option<&mut Ordered>, &Arms, &Fighter), With<Combatant>>,
+    mut turns: Query<(&mut Turn, Option<&mut Ordered>), With<Combatant>>,
     minds: Query<ai::Mind>,
     conspicuous: Query<&'static crate::game::world::footing::Conspicuous>,
     fight: Single<(&mut Pause, Option<&super::Combatants>), With<Battle>>,
@@ -347,9 +347,10 @@ pub(super) fn take_turn(
     let combatants = combatants.map_or(&[][..], super::Combatants::entities);
     let (roster, formation, inventory) = *party;
     for &Called(actor) in called.read() {
-        let Ok((mut turn, ordered, arms, fighter)) = turns.get_mut(actor) else { continue };
+        let Ok((mut turn, ordered)) = turns.get_mut(actor) else { continue };
         let readonly = bodies.as_readonly();
         let Ok(own) = readonly.get(actor) else { continue };
+        let arms = own.attacks;
         let order = ordered.as_ref().map(|ordered| ordered.0);
         // The weapons accepted, or nothing where one was used up.
         let weapons_hold =
@@ -420,8 +421,7 @@ pub(super) fn take_turn(
                         content: &content,
                         definitions: &definitions,
                     };
-                    let (action, fleeing) =
-                        ai::decide(actor, &mind, (arms, fighter), &fight, &mut rng);
+                    let (action, fleeing) = ai::decide(actor, &mind, &fight, &mut rng);
                     match (mind.fleeing, fleeing) {
                         (false, true) => {
                             commands.entity(actor).insert(Fleeing);
@@ -446,7 +446,7 @@ pub(super) fn take_turn(
         // Whether one of its arms reaches a friend it sees: a living body
         // on its side.
         let mine = (own.side.0, *own.loyalty);
-        let strikes_friend = arms.0.iter().any(|arm| {
+        let strikes_friend = arms.arms.iter().any(|arm| {
             combatants.iter().copied().any(|other| {
                 other != actor
                     && readonly.get(other).is_ok_and(|their| {
@@ -461,7 +461,7 @@ pub(super) fn take_turn(
         let interrupted = conduct::interrupt(
             &mut rng,
             own.vitals,
-            (fighter.brawn, fighter.blind_fighting.is_some(), order.is_none()),
+            (own.attributes[Attribute::Strength], arms.blind_fighting.is_some(), order.is_none()),
             fleeing,
             strikes_friend,
             turn.berserk,
@@ -512,7 +512,7 @@ pub(super) fn take_turn(
 pub(super) fn perform(
     mut commands: Commands,
     mut performs: MessageReader<Perform>,
-    mut actors: Query<(&mut Turn, &Arms, &Fighter, Option<&Walker>)>,
+    mut actors: Query<(&mut Turn, Option<&Walker>)>,
     mut bodies: Query<Body>,
     fight: Single<(&mut Round, &mut Pause, Option<&super::Combatants>), With<Battle>>,
     party: Single<(&PartyRoster, &PartyInventory)>,
@@ -531,7 +531,7 @@ pub(super) fn perform(
     let combatants = combatants.map_or(&[][..], super::Combatants::entities);
     let (roster, inventory) = *party;
     for &Perform { actor, action } in performs.read() {
-        let Ok((mut turn, arms, fighter, walker)) = actors.get_mut(actor) else { continue };
+        let Ok((mut turn, walker)) = actors.get_mut(actor) else { continue };
         let Ok(mut own) = bodies.get_mut(actor) else { continue };
         if matches!(action, Chosen::Fight(_)) {
             continue;
@@ -551,8 +551,11 @@ pub(super) fn perform(
                     continue;
                 }
                 turn.moved = true;
-                let metres =
-                    super::approach::move_metres(&own.vitals, fighter.stride.unwrap_or(0.0), false);
+                let metres = super::approach::move_metres(
+                    &own.vitals,
+                    own.attacks.stride.unwrap_or(0.0),
+                    false,
+                );
                 let feet = own.at.feet;
                 let party_eye =
                     roster.iter().find_map(|member| bodies.get(member).ok()).map(|b| b.at.eye);
@@ -572,7 +575,7 @@ pub(super) fn perform(
             Chosen::Protect(ward) => {
                 commands.entity(actor).insert((
                     Guarding(ward),
-                    Interceptions { taken: 0, allowed: arms.attacks(WeaponSlot::Primary) },
+                    Interceptions { taken: 0, allowed: own.attacks.attacks(WeaponSlot::Primary) },
                 ));
             }
             Chosen::Special(breathes) => {

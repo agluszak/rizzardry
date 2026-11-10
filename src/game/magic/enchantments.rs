@@ -265,6 +265,7 @@ pub fn haste(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::actors::Attributes;
     fn effect(spell: SpellId, power: u32, turns: u32) -> Enchantment {
         Enchantment { spell, power, turns, boost: 0, absorption: 12 }
     }
@@ -348,13 +349,13 @@ mod tests {
         effects.apply(effect(SpellId::HASTE, 3, 5));
         effects.apply(effect(SpellId::SUPERMAN, 2, 2));
         assert_eq!(
-            profile.stats(&effects).attribute(Attribute::Speed),
-            profile.base_stats().attribute(Attribute::Speed) + 40
+            Attributes::with_spells(profile.attributes, &effects)[Attribute::Speed],
+            Attributes::of_sheet(&profile)[Attribute::Speed] + 40
         );
         effects.age(2);
         assert_eq!(
-            profile.stats(&effects).attribute(Attribute::Speed),
-            profile.base_stats().attribute(Attribute::Speed) + 30
+            Attributes::with_spells(profile.attributes, &effects)[Attribute::Speed],
+            Attributes::of_sheet(&profile)[Attribute::Speed] + 30
         );
         assert_eq!(effects.counter_slow(8), 5);
         assert!(effects.0.is_empty());

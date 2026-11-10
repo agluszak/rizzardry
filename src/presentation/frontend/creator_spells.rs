@@ -3,6 +3,7 @@ use super::{Action, Creation, Page, creator_stats};
 use crate::content::characters::Realm;
 use crate::content::spells::SpellId;
 use crate::content::ui::SpriteSheet;
+use crate::game::actors::Attributes;
 use crate::game::data::Catalogs;
 use crate::presentation::retail_controls::set_enabled;
 use crate::presentation::screen_art::visible_if;
@@ -208,7 +209,8 @@ pub(super) fn refresh(
         let skill = role.0.skill();
         let value = if role.1 {
             let learned = crate::game::magic::LearnedSpells(draft.spells());
-            let points = profile.base_stats().max_points(&learned, catalog)[role.0];
+            let points =
+                profile.max_points(&Attributes::of_sheet(&profile), &learned, catalog)[role.0];
             format!("{points}/{points}")
         } else {
             profile.skill_points[skill].to_string()
