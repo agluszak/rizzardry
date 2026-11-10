@@ -74,15 +74,16 @@ pub(super) fn sync_trade_rows(
         };
         let mut rows = Vec::new();
         if state.mode == Mode::Buy {
-            for lot in stock.into_iter().flat_map(|stock| &stock.lots) {
-                let d = &items[lot.item];
-                if trade::on_sale(lot, d) && allows(d) {
+            let shelves = stock.map(|_| trade::shelves(&held, c.actor, items));
+            for shelf in shelves.into_iter().flatten() {
+                let d = &items[shelf.item];
+                if !d.merchant_cannot_sell && allows(d) {
                     rows.push(Listing {
-                        source: TradeSource::Stock(lot.id),
-                        text: format!("{} ({})", d.name, lot.units),
-                        quantity: trade::trade_quantity(d, lot.units),
+                        source: TradeSource::Stock(shelf.items[0]),
+                        text: format!("{} ({})", d.name, shelf.units),
+                        quantity: trade::trade_quantity(d, shelf.units),
                         item: d,
-                        units: lot.units,
+                        units: shelf.units,
                     });
                 }
             }

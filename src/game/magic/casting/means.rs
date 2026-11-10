@@ -44,18 +44,24 @@ pub fn reaches(from: &Place, to: &Place, reach: f32, obstacles: &WorldObstacles)
     reach::reached(from.gap(to), reach, obstacles.clear(from.eye, to.eye))
 }
 
-/// What a cast looks at besides the bodies: where everyone stands, what the
-/// party is doing, what is at hand.
+/// What the party is doing as a cast is asked, which decides which spells
+/// suit the moment.
 #[derive(SystemParam)]
-pub struct Around<'w, 's> {
-    pub places: Places<'w, 's>,
-    pub obstacles: WorldObstacles<'w, 's>,
-    pub held: Items<'w, 's>,
-    memberships: Query<'w, 's, &'static GroupMember>,
-    groups: Query<'w, 's, &'static GroupMembers>,
+pub struct Circumstances<'w, 's> {
     freedom: Freedom<'w, 's>,
     camp: Option<Res<'w, Camp>>,
-    pub states: Query<'w, 's, &'static LevelState, With<Level>>,
+    attempts: Query<'w, 's, &'static DeviceInteraction>,
+    conversation: Option<Single<'w, 's, &'static Conversation>>,
+    states: Query<'w, 's, &'static LevelState, With<Level>>,
+}
+
+/// What a utility spell may be aimed at: an item the party has, a lock or
+/// trap being worked on, the one being talked with, a spot in sight.
+#[derive(SystemParam)]
+pub struct Marks<'w, 's> {
+    places: Places<'w, 's>,
+    obstacles: WorldObstacles<'w, 's>,
+    held: Items<'w, 's>,
     attempts: Query<'w, 's, (&'static DeviceInteraction, &'static AttemptOn)>,
     devices: Query<'w, 's, Has<Guarded>>,
     conversation: Option<Single<'w, 's, &'static Conversation>>,
@@ -64,7 +70,6 @@ pub struct Around<'w, 's> {
     levels: Query<'w, 's, (), With<Level>>,
     portals: Query<'w, 's, &'static Portal>,
     elementals: Query<'w, 's, &'static Elementals>,
-    spellcasting: Query<'w, 's, &'static Spellcasting>,
 }
 
 /// An item a cast uses, and what is known of it.
@@ -248,21 +253,22 @@ impl Stage {
         caster: Entity,
         reach: f32,
         bodies: &Query<BodyReadOnly>,
-        around: &Around,
+        (places, obstacles): (&Places, &WorldObstacles),
+        (memberships, groups_of): (&Query<&GroupMember>, &Query<&GroupMembers>),
         (roster, combatants): (&PartyRoster, &[Entity]),
     ) -> Stage {
         let target = |body| bodies.get(body).ok().filter(|body| !body.untargetable);
-        let from = around.places.of(caster);
+        let from = places.of(caster);
         let mine = target(caster).map(|body| body.standing());
         let mut ids: Vec<Entity> = crate::game::combat::participants(roster, combatants).collect();
         let mut groups: Vec<Vec<Entity>> = Vec::new();
         let mut group_ids: Vec<Entity> = Vec::new();
         let mut group_of = |id: Entity, ids: &mut Vec<Entity>| -> Option<usize> {
-            let group = around.memberships.get(id).ok()?.0;
+            let group = memberships.get(id).ok()?.0;
             if let Some(known) = group_ids.iter().position(|&g| g == group) {
                 return Some(known);
             }
-            let members: Vec<Entity> = around.groups.get(group).ok()?.iter().collect();
+            let members: Vec<Entity> = groups_of.get(group).ok()?.iter().collect();
             for &mate in &members {
                 if !ids.contains(&mate) {
                     ids.push(mate);
@@ -283,7 +289,7 @@ impl Stage {
             .zip(grouped)
             .filter_map(|(&id, group)| {
                 let body = target(id)?;
-                let place = around.places.of(id);
+                let place = places.of(id);
                 Some(Target {
                     id,
                     member: roster.contains(&id),
@@ -291,7 +297,7 @@ impl Stage {
                     stance: body.stance(),
                     toward: mine
                         .map_or(Stance::Neutral, |mine| hostility::between(mine, body.standing())),
-                    reached: reaches(&from, &place, reach, &around.obstacles),
+                    reached: reaches(&from, &place, reach, obstacles),
                     gap: from.gap(&place),
                     feet: place.feet,
                     eye: place.eye,
@@ -310,14 +316,14 @@ impl Stage {
     }
 }
 
-impl Around<'_, '_> {
+impl Circumstances<'_, '_> {
     /// Where the party is, which decides which spells suit the moment: a fight,
     /// the lock or trap being worked on, a conversation (for a spell cast at the
     /// one talked with), a camp, or exploring; and what else it is busy with.
     pub fn moment(&self, spell: &SpellDefinition, fighting: bool) -> may::Moment {
         let context = if fighting {
             UseContext::Combat
-        } else if let Some((attempt, _)) = self.attempts.iter().next() {
+        } else if let Some(attempt) = self.attempts.iter().next() {
             match attempt.work {
                 Work::Disarming(_) => UseContext::Trap,
                 _ => UseContext::Lock,
@@ -341,18 +347,18 @@ impl Around<'_, '_> {
     pub fn underwater(&self) -> bool {
         self.states.single().is_ok_and(|state| state.camera_sway)
     }
+}
 
-    /// Whether a silence leaves a caster their Alchemy: a member with the
-    /// skill, a monster of a kind that keeps it.
-    pub fn keeps_alchemy(&self, caster: &BodyReadOnlyItem) -> bool {
-        match caster.character {
-            Some(character) => character.skill(Skill::Alchemy) > 0,
-            None => {
-                self.spellcasting.get(caster.entity).is_ok_and(|casting| casting.silent_alchemy)
-            }
-        }
+/// Whether a silence leaves a caster their Alchemy: a member with the skill,
+/// a monster of a kind that keeps it.
+pub fn keeps_alchemy(caster: &BodyReadOnlyItem, kinds: &Query<&Spellcasting>) -> bool {
+    match caster.character {
+        Some(character) => character.skill(Skill::Alchemy) > 0,
+        None => kinds.get(caster.entity).is_ok_and(|casting| casting.silent_alchemy),
     }
+}
 
+impl Marks<'_, '_> {
     /// What a utility spell is aimed at, as the party's surroundings offer it.
     pub fn marking(
         &self,
@@ -456,7 +462,7 @@ pub fn power_of(
     (cast, spell): (&Cast, &SpellDefinition),
     (boost, pace): (u32, Pace),
     bodies: &Query<BodyReadOnly>,
-    around: &Around,
+    held: &Items,
     (spells, definitions): (&SpellCatalog, &Definitions),
 ) -> Option<u32> {
     Some(match means {
@@ -479,7 +485,7 @@ pub fn power_of(
             }
             let identify = match (spell.facts.working, cast.choice.aim) {
                 (Some(Working::Identify), Aim::Item(target)) => {
-                    around.held.obscurity(target).map(|difficulty| (difficulty, boost))
+                    held.obscurity(target).map(|difficulty| (difficulty, boost))
                 }
                 _ => None,
             };

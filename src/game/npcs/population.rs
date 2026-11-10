@@ -18,7 +18,7 @@ use std::collections::HashSet;
 
 pub(super) fn initialize(
     content: If<Res<Catalogs>>,
-    mut registry: ResMut<Registry>,
+    peopled: Option<Res<Peopled>>,
     mut commands: Commands,
     mut rng: ResMut<GameRng>,
     clock: Res<GameClock>,
@@ -26,7 +26,7 @@ pub(super) fn initialize(
     characters: Query<&Character>,
     destinations: Query<&Destination>,
 ) {
-    if registry.initialized {
+    if peopled.is_some() {
         return;
     }
     let Ok(destination) = destinations.single() else { return };
@@ -43,11 +43,9 @@ pub(super) fn initialize(
         ),
     };
     for (index, _) in content.npcs.0.iter().enumerate().filter(|(_, d)| !d.monster_bound) {
-        let actor =
-            spawn_record(&mut commands, NpcId(index as u16), &content, average, clock.ms, &mut rng);
-        registry.named.insert(NpcId(index as u16), actor);
+        spawn_record(&mut commands, NpcId(index as u16), &content, average, clock.ms, &mut rng);
     }
-    registry.initialized = true;
+    commands.insert_resource(Peopled);
 }
 fn spawn_record(
     commands: &mut Commands,
@@ -62,14 +60,17 @@ fn spawn_record(
     if let Some(template) = &def.character {
         recruit::character(&mut record, template, content, rng);
     }
+    let actor = record.id();
     if def.owns_stock {
-        record.insert(trade::MerchantStock::new(def, &content.items, average, now, rng));
+        trade::open(commands, actor, def, &content.items, average, now, rng);
     }
-    record.id()
+    actor
 }
 #[derive(SystemParam)]
 pub struct NpcPopulation<'w, 's> {
-    registry: ResMut<'w, Registry>,
+    peopled: Option<Res<'w, Peopled>>,
+    people: Query<'w, 's, (Entity, &'static ActorId, Option<&'static Placed>)>,
+    dead: Query<'w, 's, (), With<crate::game::characters::Dead>>,
     assets: ResMut<'w, NpcAssets>,
     scripts: Res<'w, Assets<DialogueScript>>,
     states: Query<'w, 's, (&'static Npc, Has<PartyMember>, Option<&'static NpcLocation>)>,
@@ -99,7 +100,7 @@ impl NpcPopulation<'_, '_> {
         geometry: &crate::content::level::LevelDefinition,
         server: &AssetServer,
     ) -> bool {
-        if !self.registry.initialized {
+        if self.peopled.is_none() {
             return false;
         }
         let mut ready = true;
@@ -139,23 +140,32 @@ impl NpcPopulation<'_, '_> {
         rng: &mut GameRng,
         roll: impl FnOnce(&mut GameRng) -> Newborn,
     ) -> Option<(Entity, Vec3, f32, ScaledBody, Option<i32>)> {
-        let actor = if content.npcs[p.id].monster_bound {
-            let key = (p.map.to_owned(), p.placed.location);
-            if let Some(&actor) = self.registry.placed.get(&key) {
-                actor
-            } else {
+        // One with a name of their own is the one NPC of that id; one of a
+        // level's placed monsters is made the first time its place is met.
+        let here = Placed { map: p.map.to_owned(), location: p.placed.location };
+        let bound = content.npcs[p.id].monster_bound;
+        let known = self
+            .people
+            .iter()
+            .find(|(_, id, at)| id.0 == p.id && (!bound || *at == Some(&here)))
+            .map(|(actor, ..)| actor);
+        let actor = match known {
+            Some(actor) => actor,
+            None if bound => {
                 let actor = spawn_record(commands, p.id, content, p.average, self.clock.ms, rng);
-                self.registry.placed.insert(key, actor);
+                commands.entity(actor).insert(here);
                 actor
             }
-        } else {
-            *self.registry.named.get(&p.id)?
+            None => return None,
         };
         if !placed.insert(actor) {
             return None;
         }
         if let Ok((npc, member, location)) = self.states.get(actor)
-            && (npc.dead || member || location.is_some_and(|l| l.map != p.map))
+            && (npc.killed
+                || self.dead.contains(actor)
+                || member
+                || location.is_some_and(|l| l.map != p.map))
         {
             return None;
         }
@@ -185,7 +195,7 @@ pub(super) fn bind_triggers(
     levels: Query<&crate::game::world::level::Level>,
     geometry: Res<Assets<crate::content::level::LevelDefinition>>,
     content: If<Res<Catalogs>>,
-    registry: Res<Registry>,
+    people: Query<(Entity, &ActorId)>,
     mut commands: Commands,
 ) {
     for (entity, device, owner) in &devices {
@@ -199,7 +209,8 @@ pub(super) fn bind_triggers(
         }) else {
             continue;
         };
-        if let Some(&actor) = registry.named.get(&NpcId(id as u16)) {
+        let named = people.iter().find(|(_, actor)| actor.0 == NpcId(id as u16));
+        if let Some((actor, _)) = named {
             commands.entity(actor).insert(NpcTrigger(owner.0));
             commands.entity(entity).insert(NpcSpeaker(actor));
         }

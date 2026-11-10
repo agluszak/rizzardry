@@ -67,11 +67,6 @@ pub fn waits(row: &EffectSpec, previous: Option<Outcome>) -> bool {
         || (row.resisted && previous != Some(Outcome::Resisted))
 }
 
-/// Whether a row for the party happens, at its chance.
-pub fn happens(rng: &mut GameRng, chance: Option<u32>) -> bool {
-    !chance.is_some_and(|chance| rng.below(100) >= chance)
-}
-
 /// How long an affliction of `magnitude` lasts: until lifted if the row says
 /// so, whatever the magnitude; a magnitude of 1 becomes 2.
 pub fn lasting(indefinite: bool, magnitude: u32) -> Lasting {
@@ -96,34 +91,11 @@ pub fn afflicts(
     Some(lasting(indefinite, magnitude))
 }
 
-/// What harm gives back to a leech: the magnitude the victim's health could
-/// bear, before a Guardian Angel takes any (retail `DrainTargetsLife`,
-/// `Magic Effects.cpp:1626-1650`).
-pub fn bearable(magnitude: u32, health: u32) -> u32 {
-    magnitude.min(health)
-}
-
-/// What a monster's budget loses of a drain.
-pub fn budget_lost(budget: u32, magnitude: u32) -> u32 {
-    budget.min(magnitude)
-}
-
 /// The health and stamina a dead member lives again with: `(Piety +
 /// Vitality) / 4` percent of each maximum, not under 1 each.
 pub fn raised(health_max: u32, stamina_max: u32, piety: u32, vitality: u32) -> (u32, u32) {
     let share = (piety + vitality) >> 2;
     ((health_max * share / 100).max(1), (stamina_max * share / 100).max(1))
-}
-
-/// The turns a purifying takes off a cloud: the magnitude and the purifier's
-/// level.
-pub fn purified(magnitude: u32, level: u32) -> u32 {
-    magnitude + level
-}
-
-/// What a lost-gold row takes of the purse: that percent, at most 100.
-pub fn gold_lost(gold: u32, magnitude: u32) -> u32 {
-    gold * magnitude.min(100) / 100
 }
 
 /// How many of `units` heat burns, each on its own at `chance` percent.
@@ -145,13 +117,6 @@ pub fn absorbs(
     }
     let rolled = dice.map_or(0, |dice| rng.roll(dice)) * power;
     rolled + rolled * boost / 100
-}
-
-/// Whether an enchantment changed its bearer: it was laid, or it first spent
-/// itself on a slowing and was wholly spent, which changed something all the
-/// same.
-pub fn enchanted(laid: bool, answers_slowing: bool, turns: u32, magnitude: u32) -> bool {
-    laid || (answers_slowing && turns == 0 && magnitude > 0)
 }
 
 #[cfg(test)]

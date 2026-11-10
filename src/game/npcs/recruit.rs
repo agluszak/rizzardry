@@ -99,9 +99,7 @@ pub struct Recruiting;
 pub fn install(app: &mut App) {
     app.add_message::<Join>()
         .add_message::<Joined>()
-        .add_systems(Update, (join, retire_fallen).chain().in_set(Recruiting))
-        .add_observer(died)
-        .add_observer(revived);
+        .add_systems(Update, (join, retire_fallen).chain().in_set(Recruiting));
 }
 fn join(
     mut requests: MessageReader<Join>,
@@ -110,6 +108,7 @@ fn join(
     party: Single<(Entity, &PartyRoster)>,
     members: Query<(&Character, &Vitals, Has<Npc>)>,
     bodies: Query<&Vitals, With<Monster>>,
+    dead: Query<(), With<Dead>>,
     level: Single<&Level>,
     content: Res<Catalogs>,
     story: Res<super::story::StoryFacts>,
@@ -122,7 +121,11 @@ fn join(
         let result = (|| {
             let (id, npc, binding) =
                 records.get(request.actor).map_err(|_| JoinRefusal::Declines)?;
-            if npc.dead || roster.contains(&request.actor) || admitted.contains(&request.actor) {
+            if npc.killed
+                || dead.contains(request.actor)
+                || roster.contains(&request.actor)
+                || admitted.contains(&request.actor)
+            {
                 return Err(JoinRefusal::Declines);
             }
             let d = &content.npcs[id.0];
@@ -202,13 +205,11 @@ pub fn dismiss(
     let feet = PartyBody::feet(at)
         + Quat::from_rotation_y(facing.yaw + std::f32::consts::FRAC_PI_4) * Vec3::NEG_Z * 2.0;
     let wanted = content.npcs[id.0].character.as_ref().map(|t| &t.wanted);
+    // They want what is on their list; an omnigun on it is any omnigun.
+    let omnigun = |id| content.items[id].kind == crate::content::items::ItemKind::OMNIGUN;
     let wants = |item: crate::content::items::ItemId| {
-        wanted.is_some_and(|list| {
-            list.iter().any(|&id| {
-                id == item
-                    || (content.items[id].kind.0 == 0x83 && content.items[item].kind.0 == 0x83)
-            })
-        })
+        wanted
+            .is_some_and(|list| list.iter().any(|&id| id == item || (omnigun(id) && omnigun(item))))
     };
     // What they want, and what a curse binds to them, stays with them; the
     // rest lies where the party stands and is taken into the pool, staying
@@ -275,17 +276,6 @@ fn return_to_pool(
         commands.trigger(Give { item, to: None, party, pool_first: true, told: false });
     }
 }
-fn died(event: On<Add<Dead>>, mut records: Query<&mut Npc, With<PartyMember>>) {
-    if let Ok(mut npc) = records.get_mut(event.entity) {
-        npc.dead = true;
-    }
-}
-fn revived(event: On<Remove<Dead>>, mut records: Query<&mut Npc, With<PartyMember>>) {
-    if let Ok(mut npc) = records.get_mut(event.entity) {
-        npc.dead = false;
-    }
-}
-
 /// Retail removes fallen RPCs outside combat. Until then resurrection can clear
 /// the death mark through the normal character condition lifecycle.
 fn retire_fallen(
