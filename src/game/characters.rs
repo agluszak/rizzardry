@@ -796,7 +796,7 @@ impl Vitals {
     /// of it tire, and health falls by it, to nothing at most (retail
     /// `ApplyDamageToCharacter`, `ApplyDamageToMonster`). The dead take
     /// none. Health run out is death once it is settled
-    /// ([`settle_deaths`]). Returns the health lost. The caller handles
+    /// ([`fall`]). Returns the health lost. The caller handles
     /// waking.
     pub fn hurt(&mut self, amount: u32) -> u32 {
         if self.is_dead() {
@@ -1080,42 +1080,42 @@ pub(crate) fn practise(
     }
 }
 
-/// Someone may have been hurt to death: deaths are settled. Said by whatever
-/// hurt anyone, right after it did ([`Damaged`] tells the screen what was
-/// lost).
+/// An actor's health has run out. Said of that actor by whatever hurt it,
+/// as it does ([`Damaged`] tells the screen what was lost).
 ///
 /// [`Damaged`]: crate::game::hits::Damaged
-#[derive(Event, Clone, Copy, Debug)]
-pub struct Settle;
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Fell {
+    #[event_target]
+    pub body: Entity,
+}
 
-/// Deaths are settled: said once whoever was hurt to death is [`Dead`], for
-/// whatever follows from them (the party's defeat).
+/// A death is settled: said once one who fell is [`Dead`], or has cheated
+/// it, for whatever follows (the party's defeat).
 #[derive(Event, Clone, Copy, Debug)]
 pub struct Settled;
 
-/// Whoever was hurt to death dies: a Valkyrie cheats it
+/// One whose health ran out dies: a Valkyrie cheats it
 /// ([`Vitals::cheats_death`]) in whatever fight is on; anyone else loses
 /// what lasted on them, keeps the side they died on, and is [`Dead`].
-pub fn settle_deaths(
-    _: On<Settle>,
+pub fn fall(
+    fell: On<Fell>,
     mut commands: Commands,
     mut bodies: Query<
-        (Entity, &mut Vitals, &mut crate::game::world::hostility::Side, Option<&Character>),
+        (&mut Vitals, &mut crate::game::world::hostility::Side, Option<&Character>),
         Without<Dead>,
     >,
     fight: Option<Single<Entity, With<crate::game::combat::Battle>>>,
     mut rng: ResMut<GameRng>,
 ) {
+    let Ok((mut vitals, mut side, profile)) = bodies.get_mut(fell.body) else { return };
     let fight = fight.map(|fight| *fight);
-    for (body, mut vitals, mut side, profile) in &mut bodies {
-        if !vitals.is_dead()
-            || profile.is_some_and(|profile| vitals.cheats_death(profile, fight, &mut rng))
-        {
-            continue;
-        }
+    if vitals.is_dead()
+        && !profile.is_some_and(|profile| vitals.cheats_death(profile, fight, &mut rng))
+    {
         side.die(&vitals);
         vitals.die();
-        commands.entity(body).insert(Dead);
+        commands.entity(fell.body).insert(Dead);
     }
     commands.trigger(Settled);
 }

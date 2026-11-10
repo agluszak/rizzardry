@@ -25,7 +25,7 @@ use crate::content::characters::Skill;
 use crate::content::items::AttackEffects;
 use crate::content::spells::SpellId;
 use crate::game::actors::{Laying, Places};
-use crate::game::characters::{Condition, Practise, Settle};
+use crate::game::characters::{Condition, Fell, Practise};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::hits::Damaged;
@@ -419,8 +419,10 @@ pub(super) fn strike(
         }
     }
     log.scorch(&mut commands);
+    for hurt in log.damaged.iter().filter(|hurt| hurt.died) {
+        commands.trigger(Fell { body: hurt.body });
+    }
     damaged.write_batch(log.damaged);
-    commands.trigger(Settle);
     for (member, skill, usage) in log.practised {
         commands.trigger(Practise { member, skill, usage });
     }

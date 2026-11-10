@@ -20,7 +20,7 @@ pub(crate) fn plugin(app: &mut App) {
         .add_observer(spells::age)
         .add_message::<crate::game::characters::Improved>()
         .add_observer(crate::game::characters::practise)
-        .add_observer(crate::game::characters::settle_deaths)
+        .add_observer(crate::game::characters::fall)
         .add_observer(stats::refit_joined)
         .add_observer(stats::refit_left)
         .add_observer(spells::laid)

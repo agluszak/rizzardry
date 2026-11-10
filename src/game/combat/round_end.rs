@@ -6,7 +6,7 @@
 //! ([`Elapsed`]); groups with nothing left to fight leave; those who held
 //! back get their breath and special attacks cool; the clouds pulse, and
 //! what the pulses did lands and its deaths are settled as they do
-//! ([`Settle`]); the spells laid age ([`Aged`]); whether the fight is over;
+//! ([`Fell`]); the spells laid age ([`Aged`]); whether the fight is over;
 //! the party looks again at who it fights; and the round is ended.
 //! Observers are not ordered, so the order is the order the steps are
 //! triggered in, each one's work done before the next is begun.

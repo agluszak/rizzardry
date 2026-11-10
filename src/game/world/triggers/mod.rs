@@ -154,9 +154,11 @@ fn damage_party(
                 &mut laying,
                 &mut damage,
             );
+            if member.is_dead() {
+                commands.trigger(crate::game::characters::Fell { body: entity });
+            }
         }
     }
-    commands.trigger(crate::game::characters::Settle);
 }
 
 fn drink_fountain(
