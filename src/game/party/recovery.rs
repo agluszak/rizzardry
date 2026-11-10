@@ -96,7 +96,11 @@ pub fn pass_time(
     use crate::game::characters::{Condition, Lasting, Sickness};
     for &Elapsed { ticks, pace } in elapsed.read() {
         for (entity, mut vitals, attributes, sheet, member) in &mut actors {
-            if let (Some((mut profile, known, mut pool)), true) = (sheet, member) {
+            // A character without a seat is not carried along by the party's time.
+            if sheet.is_some() && !member {
+                continue;
+            }
+            if let Some((mut profile, known, mut pool)) = sheet {
                 // Poison bites first, past any Guardian Angel.
                 let still = matches!(pace, Pace::Still | Pace::Camping);
                 let poison = laying.absorb(entity, vitals.poison_damage(ticks.aging, still));

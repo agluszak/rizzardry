@@ -476,62 +476,6 @@ pub fn roll_amount(definition: &ItemDefinition, rng: &mut GameRng, maximum: bool
     }) as u16
 }
 
-/// An item that is not in the world as a thing: what a level that was left
-/// kept lying and in its containers, what a character outside the party
-/// holds, what a merchant has. Items in the world are entities; this is the
-/// value they are converted to and from where they cross into a record
-/// ([`unpack`] and [`Items::stack`]).
-#[derive(Clone, Debug, PartialEq)]
-pub struct ItemStack {
-    pub item: ItemId,
-    count: u16,
-    remaining_uses: Option<u16>,
-    pub identified: bool,
-    pub spell_known: bool,
-    pub curse_known: bool,
-}
-
-impl ItemStack {
-    /// Import an authored/generated quantity. Legacy zero physical counts mean
-    /// one object; zero charges are valid.
-    pub fn new(definition: &ItemDefinition, amount: u16, identify: bool) -> Self {
-        Self {
-            item: definition.id,
-            count: if definition.quantity == QuantityKind::Stack { amount.max(1) } else { 1 },
-            remaining_uses: match definition.quantity {
-                QuantityKind::None | QuantityKind::Stack => None,
-                _ => Some(amount),
-            },
-            identified: identify || definition.auto_identify,
-            spell_known: false,
-            curse_known: false,
-        }
-    }
-
-    /// One found or made, its quantity rolled (see [`roll_amount`]).
-    pub fn rolled(
-        definition: &ItemDefinition,
-        rng: &mut GameRng,
-        maximum: bool,
-        identify: bool,
-    ) -> Self {
-        Self::new(definition, roll_amount(definition, rng, maximum), identify)
-    }
-}
-
-/// An item made from the value that stood for it, nowhere until it is
-/// [`Put`] somewhere: what a record keeps becomes a thing again.
-pub fn unpack(commands: &mut Commands, definition: &ItemDefinition, stack: &ItemStack) -> Entity {
-    let amount = stack.remaining_uses.unwrap_or(stack.count);
-    let item = make(commands, definition, amount, stack.identified);
-    commands.entity(item).insert(Known {
-        identified: stack.identified,
-        spell: stack.spell_known,
-        curse: stack.curse_known,
-    });
-    item
-}
-
 /// The items there are and where they are, to read.
 #[derive(SystemParam)]
 pub struct Items<'w, 's> {
@@ -695,21 +639,6 @@ impl Items<'_, '_> {
             Some(Count { of, .. }) if count && *of > 1 => format!("{name} ({of})"),
             _ => name.to_owned(),
         })
-    }
-
-    /// The value that stands for an item in a record (see [`ItemStack`]); the
-    /// item itself is left to be despawned by whoever keeps the record.
-    pub fn stack(&self, item: Entity, catalog: &ItemCatalog) -> Option<ItemStack> {
-        let (&Item(id), count, charges, known, _) = self.items.get(item).ok()?;
-        let mut stack = ItemStack::new(&catalog[id], 1, known.identified);
-        if let Some(count) = count {
-            stack.count = count.of;
-        }
-        if let Some(charges) = charges {
-            stack.remaining_uses = Some(charges.left);
-        }
-        (stack.spell_known, stack.curse_known) = (known.spell, known.curse);
-        Some(stack)
     }
 
     /// Whether two are stacks of the same thing, which meet by joining (if
