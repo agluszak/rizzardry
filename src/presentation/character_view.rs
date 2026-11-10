@@ -1,5 +1,6 @@
 //! Named read-only view of the components needed by character summaries.
 use crate::game::{
+    actors::{Armour, Attributes, Resistances},
     characters::{Character, Vitals},
     inventory::{Burden, Carried},
 };
@@ -9,48 +10,51 @@ use bevy::ecs::query::QueryData;
 pub struct CharacterView {
     pub profile: &'static Character,
     pub vitals: &'static Vitals,
+    pub attributes: &'static Attributes,
+    pub armour: &'static Armour,
+    pub resistances: &'static Resistances,
     pub carried: &'static Carried,
     pub burden: &'static Burden,
-    pub member: Option<&'static crate::game::party::roster::PartyMember>,
     /// The member's action this round, while in a fight.
     pub ordered: Option<&'static crate::game::combat::Ordered>,
 }
 
 impl CharacterViewItem<'_, '_> {
-    /// Derive the sheet from live equipment/stats, spells and the retained
-    /// round action. The party's protections count for its members only.
-    pub fn armour(
-        &self,
-        catalog: &crate::content::items::ItemCatalog,
-        party: Option<&crate::game::magic::enchantments::PartyEffects>,
-    ) -> crate::game::combat::attack::Armour {
-        crate::game::combat::attack::enchanted_armour(
-            &self.profile.stats(&self.vitals.enchantments),
-            self.carried,
-            catalog,
-            self.load(),
-            self.ordered.is_some_and(|ordered| ordered.defends()),
-            &self.vitals.enchantments,
-            party.filter(|_| self.member.is_some()).map(|p| &p.0),
-        )
+    /// The member's armour as it stands, braced while they defend.
+    pub fn armour(&self) -> crate::game::combat::attack::Armour {
+        let braced = match self.ordered {
+            Some(ordered) if ordered.defends() => self.armour.braced.0,
+            _ => 0,
+        };
+        crate::game::combat::attack::Armour {
+            total: self.armour.total + braced,
+            by_location: enum_map::EnumMap::from_fn(|part| {
+                self.armour.at[enum_map::Enum::into_usize(part)] + braced
+            }),
+            speed: 0,
+            shield: 0,
+        }
     }
 
-    /// The member's resistances, the party's protections included for its
-    /// members.
+    /// The member's resistances as they stand, beside what their sheet
+    /// alone gives.
     pub fn resistances(
         &self,
         catalog: &crate::content::items::ItemCatalog,
-        party: Option<&crate::game::magic::enchantments::PartyEffects>,
     ) -> enum_map::EnumMap<
         crate::content::characters::Realm,
         crate::game::characters::resistance::Resistance,
     > {
-        use crate::game::characters::resistance::{member_resistances, resistances};
-        let stats = self.profile.stats(&self.vitals.enchantments);
-        match party.filter(|_| self.member.is_some()) {
-            Some(party) => member_resistances(&stats, self.carried, catalog, &party.0),
-            None => resistances(&stats, self.carried, catalog),
-        }
+        let sheet = crate::game::characters::resistance::resistances(
+            self.profile,
+            self.attributes,
+            self.carried,
+            catalog,
+        );
+        enum_map::EnumMap::from_fn(|realm| crate::game::characters::resistance::Resistance {
+            base: sheet[realm].base,
+            total: self.resistances.realms[realm],
+        })
     }
 
     /// The member's load.

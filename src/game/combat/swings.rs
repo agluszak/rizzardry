@@ -16,13 +16,13 @@ use bevy::prelude::*;
 
 use super::approach::{self, CombatMove};
 use super::attack::{self, Surprise};
-use super::fighters::{Arm, ArmourClass, Arms, Fighter, reaches};
 use super::turn::{Chosen, Fights, Guards, Interceptions, Ordered, Perform, Spotted, Turn};
 use super::{Announcement, Battle, CombatNews, Combatants, Pause, Round, RoundPhase};
 use crate::content::characters::{Attribute, BodyPart, Skill, Trait};
 use crate::content::items::{AttackEffect, AttackEffects, AttackMode, Dice, EquipClass};
 use crate::content::species::Reach;
 use crate::content::spells::SpellId;
+use crate::game::actors::{Arm, Attacks, Stance as Standing, reaches};
 use crate::game::characters::{Condition, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
@@ -60,9 +60,25 @@ struct Attack {
     effects: Vec<Effect>,
 }
 
-/// Everyone a swing may touch, as the fight has judged them.
-type Armed<'w, 's> =
-    Query<'w, 's, (&'static Arms, &'static Fighter, &'static ArmourClass, Has<NpcBody>)>;
+/// How those in the fight stand as blows come at them: who is an NPC's
+/// body, who is walking, and what each member was ordered to do.
+type Bearing<'w, 's> = Query<'w, 's, (Has<NpcBody>, Has<CombatMove>, Option<&'static Ordered>)>;
+
+/// How an actor stands as a blow comes at it: braced when it defends, on
+/// the move while it walks or, for a member, while the party runs.
+fn standing<'a>(
+    actor: Entity,
+    (member, vitals): (bool, &'a Vitals),
+    bearing: &Bearing,
+    running: bool,
+) -> Standing<'a> {
+    let (_, walking, ordered) = bearing.get(actor).unwrap_or((false, false, None));
+    Standing {
+        vitals: Some(vitals),
+        braced: ordered.is_some_and(Ordered::defends),
+        distracted: if member { running } else { walking },
+    }
+}
 
 /// The step of the round being played.
 fn step(round: &Round) -> u32 {
@@ -100,15 +116,15 @@ fn open(
     fights: Fights,
     (turn, ordered, walker): (&mut Turn, bool, Option<&Walker>),
     bodies: &mut Query<Body>,
-    armed: &Armed,
+    bearing: &Bearing,
     (formation, roster, combatants): (&Formation, &PartyRoster, &[Entity]),
     obstacles: &WorldObstacles,
     rng: &mut GameRng,
     news: &mut MessageWriter<CombatNews>,
 ) -> Result<(Attack, u32), Otherwise> {
-    let (arms, fighter, ..) = armed.get(actor).map_err(|_| Otherwise::Stand)?;
     let own = bodies.get(actor).map_err(|_| Otherwise::Stand)?;
-    let (at, mine, level) = (*own.at, (own.side.0, *own.loyalty), own.defences.level);
+    let attacks = own.attacks.clone();
+    let (at, mine, level) = (*own.at, (own.side.0, *own.loyalty), own.level.0);
     let slowed = own.vitals.conditions.has(Condition::Slowed);
     let wanted = if turn.berserk { Stance::Friendly } else { Stance::Hostile };
     // Those a wild attacker's eye misses this time.
@@ -142,10 +158,10 @@ fn open(
         }
         // Whom each of the slot's arms reaches on the side it fights.
         let mut candidates: Vec<(&Arm, AttackMode, Entity)> = Vec::new();
-        for arm in arms.of(slot) {
+        for arm in attacks.of(slot) {
             for &other in combatants {
                 let Some(their) = foe(other) else { continue };
-                let npc = armed.get(other).is_ok_and(|(.., npc)| npc);
+                let npc = bearing.get(other).is_ok_and(|(npc, ..)| npc);
                 if (ordered && npc)
                     || !reaches(formation, (actor, &at), (other, their.at), arm.reach)
                     || (!ordered && !obstacles.clear(at.eye, their.at.centre))
@@ -168,7 +184,7 @@ fn open(
     }
     let Some((slot, candidates)) = chosen else {
         // A body that walks closes in on a foe, hurt ones charging.
-        let stride = fighter.stride.zip(walker).filter(|_| !turn.moved);
+        let stride = attacks.stride.zip(walker).filter(|_| !turn.moved);
         let goal = stride.and_then(|(stride, walker)| match mine.0 {
             Stance::Friendly => combatants
                 .iter()
@@ -183,7 +199,7 @@ fn open(
             Stance::Hostile => {
                 let party = roster.iter().find_map(|member| bodies.get(member).ok())?;
                 approach::move_budget(
-                    (arms.reach(), stride),
+                    (attacks.reach(), stride),
                     own.vitals,
                     Some(walker),
                     at.gap(party.at),
@@ -205,7 +221,7 @@ fn open(
             .map(|&(arm, _, other)| {
                 let their = bodies.get(other).unwrap();
                 let quadrant = at.quadrant(their.at.feet);
-                let armed_foe = armed.get(other).is_ok_and(|(arms, ..)| !arms.0.is_empty());
+                let armed_foe = !their.attacks.arms.is_empty();
                 let in_reach = armed_foe
                     && (quadrant == Row::Rear
                         || (!formation.occupied(quadrant) && formation.occupied(Row::Center)));
@@ -326,7 +342,7 @@ fn catch_unaware(
         && vitals.conditions.worst().is_none_or(|c| c < Condition::Webbed)
         && !vitals.conditions.has(Condition::Blind);
     let notices = alert
-        && target.character.is_some_and(|character| {
+        && target.character.is_some_and(|_| {
             watchful.get_mut(attack.target).is_ok_and(|(ordered, mut spotted)| {
                 ordered.defends()
                     && if spotted.0 == 0 {
@@ -335,8 +351,7 @@ fn catch_unaware(
                     } else {
                         // Retail compares unsigned: once senses fall short,
                         // noticing is certain.
-                        let senses =
-                            character.stats(&vitals.enchantments).attribute(Attribute::Senses);
+                        let senses = target.attributes[Attribute::Senses];
                         let chance = (senses as i32 - spotted.0 as i32 * 25) as u32;
                         spotted.0 += 1;
                         rng.below(100) < chance
@@ -352,11 +367,11 @@ fn catch_unaware(
 
 /// A blind body's aim past 10 is lost, or for one who fights blind scaled
 /// by its level.
-fn cap_blind(aim: i32, vitals: &Vitals, fighter: &Fighter) -> i32 {
+fn cap_blind(aim: i32, vitals: &Vitals, blind_fighting: Option<u8>) -> i32 {
     if aim <= 10 || !vitals.conditions.has(Condition::Blind) {
         return aim;
     }
-    fighter.blind_fighting.map_or(10, |level| {
+    blind_fighting.map_or(10, |level| {
         crate::game::characters::scale_by_level(level, (aim - 10) as f32) as i32 + 10
     })
 }
@@ -369,7 +384,6 @@ fn intercept(
     attack: &mut Attack,
     ward: Entity,
     bodies: &mut Query<Body>,
-    armed: &Armed,
     (guards, interceptions): (&Query<&Guards>, &mut Query<&mut Interceptions>),
     rng: &mut GameRng,
     news: &mut MessageWriter<CombatNews>,
@@ -381,7 +395,7 @@ fn intercept(
     }
     let at = *warded.at;
     let surprise = attack.surprise;
-    let pressing = armed.get(attack.by).map_or(0, |(_, fighter, ..)| fighter.protection)
+    let pressing = bodies.get(attack.by).map_or(0, |by| by.attacks.pressing(by.vitals))
         + 10 * i32::from(surprise.unaware)
         + 10 * i32::from(surprise.natural);
     let stepping: Vec<Entity> = guards
@@ -389,15 +403,14 @@ fn intercept(
         .iter()
         .copied()
         .filter(|&guard| {
-            let (Ok((arms, fighter, ..)), Ok(body), Ok(taken)) =
-                (armed.get(guard), bodies.get(guard), interceptions.get(guard))
-            else {
+            let (Ok(body), Ok(taken)) = (bodies.get(guard), interceptions.get(guard)) else {
                 return false;
             };
-            arms.0.first().is_some_and(|first| body.at.gap(&at) <= first.reach.metres())
+            let protection = body.attacks.pressing(body.vitals);
+            body.attacks.arms.first().is_some_and(|first| body.at.gap(&at) <= first.reach.metres())
                 && body.vitals.can_guard()
                 && taken.taken < taken.allowed
-                && rng.below(100) < (fighter.protection - pressing + 50).clamp(5, 95) as u32
+                && rng.below(100) < (protection - pressing + 50).clamp(5, 95) as u32
         })
         .collect();
     if stepping.is_empty() {
@@ -457,7 +470,7 @@ fn report_blow(
 fn swing(
     attack: &mut Attack,
     bodies: &mut Query<Body>,
-    armed: &Armed,
+    (bearing, running): (&Bearing, bool),
     guards: (&Query<&Guards>, &mut Query<&mut Interceptions>),
     (formation, combatants): (&Formation, &[Entity]),
     rules: &Rules,
@@ -467,11 +480,11 @@ fn swing(
 ) {
     let (by, target, mode) = (attack.by, attack.target, attack.mode);
     let arm = attack.arm.clone();
-    let Ok((_, fighter, ..)) = armed.get(by) else { return };
-    let Ok((_, target_fighter, target_armour, _)) = armed.get(target) else { return };
     let readonly = bodies.as_readonly();
     let (Ok(own), Ok(their)) = (readonly.get(by), readonly.get(target)) else { return };
     let (from, side) = (*own.at, own.side.0);
+    let (agile, blind_fighting) = (own.attributes.agility(), own.attacks.blind_fighting);
+    let (backstab, own_reduction) = (own.attacks.backstab, own.armour.reduction);
     let fatigue = attack::fatigue(own.vitals);
     let blind = own.vitals.conditions.has(Condition::Blind);
     // All aim terms share one view of the two bodies. Fumble odds leave
@@ -482,10 +495,11 @@ fn swing(
         + 10 * i32::from(surprise.unaware)
         + 10 * i32::from(surprise.natural)
         - if arm.modern { fatigue >> 1 } else { fatigue };
-    let agility = (fighter.agility - target_fighter.agility) / 10;
-    let guarded = base - 5 * target_armour.against_aim(mode, surprise, their.vitals) + agility;
-    let aim = rules.difficulty.scale(cap_blind(guarded, own.vitals, fighter), side);
-    let odds = rules.difficulty.scale(cap_blind(base, own.vitals, fighter), side);
+    let agility = (agile - their.attributes.agility()) / 10;
+    let stood = standing(target, (their.member, their.vitals), bearing, running);
+    let guarded = base - 5 * their.armour.against_aim(mode, surprise, stood) + agility;
+    let aim = rules.difficulty.scale(cap_blind(guarded, own.vitals, blind_fighting), side);
+    let odds = rules.difficulty.scale(cap_blind(base, own.vitals, blind_fighting), side);
     let mut victim = target;
     let mut fumbled = false;
     let mut through = false;
@@ -525,10 +539,10 @@ fn swing(
         }
     };
     if let Some((roll, sure)) = landed {
-        victim = intercept(attack, victim, bodies, armed, guards, rng, news);
+        victim = intercept(attack, victim, bodies, guards, rng, news);
         let surprise = attack.surprise;
-        let Ok((_, struck, armour, _)) = armed.get(victim) else { return };
-        let location = match (struck.hit_locations, arm.lands_on_party) {
+        let Ok(armour) = bodies.get(victim).map(|their| *their.armour) else { return };
+        let location = match (armour.hit_locations, arm.lands_on_party) {
             (Some(table), _) => attack::locate(rng, &table, attack::MONSTER_BODY),
             (None, Some(hits)) => attack::locate(rng, hits.as_slice(), BodyPart::Body as usize),
             (None, None) => attack::locate(rng, &attack::MEMBER_LOCATIONS, BodyPart::Body as usize),
@@ -538,44 +552,45 @@ fn swing(
             let (Ok(own), Ok(their)) = (readonly.get(by), readonly.get(victim)) else { return };
             let piercing = arm.loaded.map_or(mode, |loaded| attack::choose_mode(rng, loaded));
             let fatigue = if arm.fatigue_pierces { attack::fatigue(own.vitals) } else { 0 };
-            let agility = (fighter.agility - struck.agility) / 10;
+            let agility = (agile - their.attributes.agility()) / 10;
+            let stood = standing(victim, (their.member, their.vitals), bearing, running);
             let penetration = rules.difficulty.scale(
                 attack::mode_penetration(piercing)
                     - fatigue
-                    - 5 * armour.at(piercing, surprise, their.vitals, location.0)
+                    - 5 * armour.at(piercing, surprise, stood, location.0)
                     + agility,
                 side,
             );
             let deflected = matches!(mode, AttackMode::Shoot | AttackMode::Throw)
-                && struck.missile_shield > 0
-                && rng.below(100) < struck.missile_shield;
+                && armour.missile_shield > 0
+                && rng.below(100) < armour.missile_shield;
             let mut damage = 0;
             let mut chances = arm.effects;
             if !deflected && (through || penetration >= roll as i32) {
                 let close = !attack::keeps_distance(mode);
                 let mut dice_count =
-                    if (surprise.unaware || armour.distracted) && close { 2 } else { 1 };
+                    if (surprise.unaware || stood.distracted) && close { 2 } else { 1 };
                 if surprise.natural && close {
-                    dice_count += attack::backstab_dice(rng, fighter.backstab);
+                    dice_count += attack::backstab_dice(rng, backstab);
                 }
                 if mode == AttackMode::Berserk {
                     dice_count += 1;
                 }
-                if dice_count > 1 && armour.braced && !surprise.unaware {
+                if dice_count > 1 && stood.braced && !surprise.unaware {
                     dice_count -= 1;
                 }
-                if let Some(kind) = their.defences.kind {
+                if let Some(kind) = their.resistances.kind {
                     dice_count += arm.slays.iter().filter(|&&k| k == kind).count() as u32;
                 }
                 let rolled = attack::roll_dice(rng, attack.dice, dice_count);
                 damage = (((100 + arm.percent) * rolled as i32 + 50) / 100).max(1) as u32;
-                damage = attack::reduce(damage as i32, struck.reduction);
+                damage = attack::reduce(damage as i32, armour.reduction);
                 if fumbled && damage > 0 {
                     damage = attack::fumble_cap(damage, their.vitals.health.max);
                 }
                 if !fumbled && let Some(character) = own.character {
                     if let Some(skill) = arm.critical_skill {
-                        let skill = character.stats(&own.vitals.enchantments).skill(skill);
+                        let skill = character.skill(skill);
                         chances.chances[AttackEffect::Kill] = (chances.chances[AttackEffect::Kill]
                             + attack::critical_chance(rng, skill))
                         .min(100);
@@ -614,7 +629,7 @@ fn swing(
             } else if fumbled {
                 news.write(CombatNews::Result { attacker: by, target: victim, hits: 1, damage: 0 });
             }
-            riposte(by, victim, &arm, fighter.reduction, bodies, rules, rng, log, news);
+            riposte(by, victim, &arm, own_reduction, bodies, rules, rng, log, news);
             if !fumbled {
                 attack.hits += 1;
             }
@@ -697,11 +712,12 @@ fn spend_ammunition(arm: &Arm, by: Entity, bodies: &mut Query<Body>, content: &C
 /// `ComputeCharacterActionPhase`): with the other slot while it has
 /// attacks, unless it has fewer and less initiative; spread over the rest
 /// of the round, a switch costing the difference in the slots' initiative.
-fn next_attack(turn: &mut Turn, arms: &Arms, step: u32) {
+fn next_attack(turn: &mut Turn, arms: &Attacks, step: u32) {
     let current = turn.due;
     let other = current.other();
     let (now, then) = (turn.attacks[current], turn.attacks[other]);
-    let chosen = if then != 0 && !(then < now && arms.initiative(other) < arms.initiative(current))
+    let chosen = if then != 0
+        && !(then < now && arms.slot_initiative(other) < arms.slot_initiative(current))
     {
         other
     } else {
@@ -718,7 +734,7 @@ fn next_attack(turn: &mut Turn, arms: &Arms, step: u32) {
     match phase.filter(|&phase| phase <= 100) {
         Some(phase) => {
             let switch = if chosen != current {
-                arms.initiative(current) - arms.initiative(chosen)
+                arms.slot_initiative(current) - arms.slot_initiative(chosen)
             } else {
                 0
             };
@@ -742,7 +758,7 @@ pub(super) fn attack(
     mut performs: MessageReader<Perform>,
     mut turns: Query<(&mut Turn, Has<Ordered>, Option<&Walker>)>,
     mut bodies: Query<Body>,
-    armed: Armed,
+    bearing: Bearing,
     (guards, mut interceptions): (Query<&Guards>, Query<&mut Interceptions>),
     mut watchful: Query<(&Ordered, &mut Spotted)>,
     fight: Single<(Entity, &mut Round, &mut Pause, Option<&Combatants>), With<Battle>>,
@@ -766,6 +782,7 @@ pub(super) fn attack(
         fight: Some(fight),
     };
     let step = step(&round);
+    let running = round.pace == Some(super::PartyPace::Run);
     let mut log = Log::default();
     for &Perform { actor, action } in performs.read() {
         let Chosen::Fight(fights) = action else { continue };
@@ -776,7 +793,7 @@ pub(super) fn attack(
             fights,
             (&mut turn, ordered, walker),
             &mut bodies,
-            &armed,
+            &bearing,
             (&formation, roster, combatants),
             &obstacles,
             &mut rng,
@@ -834,7 +851,7 @@ pub(super) fn attack(
             swing(
                 &mut attack,
                 &mut bodies,
-                &armed,
+                (&bearing, running),
                 (&guards, &mut interceptions),
                 (&formation, combatants),
                 &rules,
@@ -856,8 +873,8 @@ pub(super) fn attack(
         if !attack.effects.is_empty() {
             news.write(CombatNews::Effects(attack.effects));
         }
-        if let Ok((arms, ..)) = armed.get(actor) {
-            next_attack(&mut turn, arms, step);
+        if let Ok(own) = bodies.get(actor) {
+            next_attack(&mut turn, own.attacks, step);
         }
     }
     damaged.write_batch(log.damaged);

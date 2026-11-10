@@ -11,6 +11,7 @@ use enum_map::EnumMap;
 use crate::content::characters::{Attribute, Realm, Skill};
 pub use crate::content::characters::{Gender, Profession, Race};
 use crate::content::items::ItemDefinition;
+use crate::game::actors::Attributes;
 use crate::game::rng::GameRng;
 
 /// Stamina above which an exhausted member comes round.
@@ -579,8 +580,7 @@ impl Character {
         }
     }
 
-    /// The attribute without enchantments, within retail's 1..=125; its
-    /// [`CharacterStats::attribute`] adds them.
+    /// The attribute by the sheet alone, within 1..=125.
     fn base_attribute(&self, attribute: Attribute) -> u32 {
         self.attributes[attribute].clamp(1, 125)
     }
@@ -775,39 +775,15 @@ impl Character {
     }
 }
 
-/// A borrowed view of current attributes. No copy of the profile or temporary
-/// modifiers is stored; creation uses base stats, gameplay supplies live effects.
-#[derive(Clone, Copy)]
-pub struct CharacterStats<'a> {
-    profile: &'a Character,
-    enchantments: Option<&'a crate::game::magic::enchantments::Enchantments>,
-}
-impl std::ops::Deref for CharacterStats<'_> {
-    type Target = Character;
-    fn deref(&self) -> &Character {
-        self.profile
-    }
-}
 impl Character {
-    pub fn stats<'a>(
-        &'a self,
-        effects: &'a crate::game::magic::enchantments::Enchantments,
-    ) -> CharacterStats<'a> {
-        CharacterStats { profile: self, enchantments: Some(effects) }
-    }
-    pub fn base_stats(&self) -> CharacterStats<'_> {
-        CharacterStats { profile: self, enchantments: None }
-    }
-}
-impl CharacterStats<'_> {
     /// Percent taken off every blow that lands on them: a Dwarf's toughness,
-    /// a Monk's training, Iron Skin and Body of Stone (retail
-    /// `RecalculateCharacterState`).
-    pub fn damage_reduction(&self) -> i32 {
+    /// a Monk's training and Iron Skin (retail `RecalculateCharacterState`).
+    /// Body of Stone adds its own where armour is refitted.
+    pub fn damage_reduction(&self, a: &Attributes) -> i32 {
         use crate::content::characters::Trait;
         let mut reduction = 0;
         if self.has_trait(Trait::DwarfDamageResistance) {
-            reduction += self.attribute(Attribute::Vitality) as i32 / 10;
+            reduction += a[Attribute::Vitality] as i32 / 10;
         }
         if self.has_trait(Trait::MonkDamageResistance) {
             reduction += self.scale_by_profession(15.0) as i32;
@@ -815,17 +791,12 @@ impl CharacterStats<'_> {
         if self.skill_available(Skill::IronSkin) {
             reduction += (self.skill(Skill::IronSkin) >> 2) as i32 + 5;
         }
-        reduction += self.enchantments.map_or(0, |e| e.damage_reduction());
-        reduction.min(100)
-    }
-    pub fn attribute(&self, attribute: Attribute) -> u32 {
-        let bonus = self.enchantments.map_or(0, |e| e.attribute_bonus(attribute));
-        (self.profile.base_attribute(attribute) + bonus).min(125)
+        reduction
     }
     /// `round(Σ (0.6 + 0.008·VIT) × factor × levels)`, counting one extra
     /// level for the original profession.
-    pub fn max_hp(&self) -> u32 {
-        let vitality = 0.6 + 0.008 * self.attribute(Attribute::Vitality) as f32;
+    pub fn max_hp(&self, a: &Attributes) -> u32 {
+        let vitality = 0.6 + 0.008 * a[Attribute::Vitality] as f32;
         let total: f32 = self
             .profession_levels
             .iter()
@@ -840,29 +811,26 @@ impl CharacterStats<'_> {
         (total.round() as u32).max(self.hp_drained + 1) - self.hp_drained
     }
     /// `round((STR + PIE + VIT) / 3 × (0.1·level + 2))`.
-    pub fn max_stamina(&self) -> u32 {
-        let sum = [Attribute::Strength, Attribute::Piety, Attribute::Vitality]
-            .map(|a| self.attribute(a))
-            .iter()
-            .sum::<u32>() as f32;
+    pub fn max_stamina(&self, a: &Attributes) -> u32 {
+        let sum = (a[Attribute::Strength] + a[Attribute::Piety] + a[Attribute::Vitality]) as f32;
         let total = (sum / 3.0 * (0.1 * self.level() as f32 + 2.0)).round() as u32;
         total.max(self.stamina_drained) - self.stamina_drained
     }
     /// Tenths of a pound: `(VIT + 2·STR) × 12`, × 8 for a Faerie.
-    pub fn capacity(&self) -> u32 {
+    pub fn capacity(&self, a: &Attributes) -> u32 {
         let factor = if self.race == Race::Faerie { 8 } else { 12 };
-        (self.attribute(Attribute::Vitality) + 2 * self.attribute(Attribute::Strength)) * factor
+        (a[Attribute::Vitality] + 2 * a[Attribute::Strength]) * factor
     }
     /// The load band of carrying `weight` (own plus pool share).
-    pub fn load(&self, weight: u32) -> Load {
-        load_band(weight, self.capacity())
+    pub fn load(&self, a: &Attributes, weight: u32) -> Load {
+        load_band(weight, self.capacity(a))
     }
     /// `(level + 1)/2 + SEN/5 + SPD/5 − 10`, plus Snake Speed, less 1, 2, 4
     /// or 8 by load.
-    pub fn initiative(&self, load: Load) -> i32 {
+    pub fn initiative(&self, a: &Attributes, load: Load) -> i32 {
         let mut initiative = (i32::from(self.level()) + 1) / 2
-            + self.attribute(Attribute::Senses) as i32 / 5
-            + self.attribute(Attribute::Speed) as i32 / 5
+            + a[Attribute::Senses] as i32 / 5
+            + a[Attribute::Speed] as i32 / 5
             - 10;
         if self.skill_points[Skill::SnakeSpeed] > 0 {
             initiative += self.skill(Skill::SnakeSpeed) as i32 / 10 + 1;
@@ -905,7 +873,11 @@ impl Pool {
 #[require(
     crate::game::world::hostility::Side,
     crate::game::world::hostility::Loyalty,
-    crate::game::hits::defences::Defences
+    crate::game::actors::Attributes,
+    crate::game::actors::Level,
+    crate::game::actors::Resistances,
+    crate::game::actors::Armour,
+    crate::game::actors::Attacks
 )]
 pub struct Vitals {
     pub health: Pool,
@@ -930,8 +902,8 @@ pub struct Vitals {
 impl Vitals {
     /// A member as their profile makes them, rested and well.
     pub fn new(profile: &Character) -> Self {
-        let stats = profile.base_stats();
-        Self::full(stats.max_hp(), stats.max_stamina())
+        let a = Attributes::of_sheet(profile);
+        Self::full(profile.max_hp(&a), profile.max_stamina(&a))
     }
 
     /// Full health and stamina at these maxima.
@@ -1152,8 +1124,8 @@ impl Vitals {
 
     /// The member's maxima as their profile and spells make them now.
     fn maxima_of(&self, profile: &Character) -> (u32, u32) {
-        let stats = profile.stats(&self.enchantments);
-        (stats.max_hp(), stats.max_stamina())
+        let a = Attributes::with_spells(profile.attributes, &self.enchantments);
+        (profile.max_hp(&a), profile.max_stamina(&a))
     }
 
     /// Whether a member's maxima are no longer what their stats make them.
@@ -1201,7 +1173,8 @@ impl Vitals {
         if !self.conditions.has(Condition::Diseased) {
             return None;
         }
-        let vitality = profile.stats(&self.enchantments).attribute(Attribute::Vitality);
+        let vitality =
+            Attributes::with_spells(profile.attributes, &self.enchantments)[Attribute::Vitality];
         if rng.below(vitality * 10) >= minutes {
             return None;
         }
@@ -1427,15 +1400,19 @@ mod tests {
     fn a_human_fighter_has_the_worked_example_numbers() {
         let fighter = Character::new("Ragnar", Race::Human, Gender::Male, Profession::Fighter);
         assert_eq!(fighter.attributes, EnumMap::from_array([55, 45, 45, 50, 50, 45, 45]));
-        assert_eq!(fighter.base_stats().max_hp(), 18);
-        assert_eq!(fighter.base_stats().max_stamina(), 105);
-        assert_eq!(fighter.base_stats().capacity(), 1920);
-        assert_eq!(fighter.base_stats().initiative(Load::None), 9);
-        assert_eq!(fighter.base_stats().initiative(Load::Heavy), 5);
-        assert_eq!(fighter.base_stats().load(959), Load::None);
-        assert_eq!(fighter.base_stats().load(960), Load::Light);
-        assert_eq!(fighter.base_stats().load(1939), Load::Heavy, "integer percent: still 100");
-        assert_eq!(fighter.base_stats().load(1940), Load::Extreme);
+        assert_eq!(fighter.max_hp(&Attributes::of_sheet(&fighter)), 18);
+        assert_eq!(fighter.max_stamina(&Attributes::of_sheet(&fighter)), 105);
+        assert_eq!(fighter.capacity(&Attributes::of_sheet(&fighter)), 1920);
+        assert_eq!(fighter.initiative(&Attributes::of_sheet(&fighter), Load::None), 9);
+        assert_eq!(fighter.initiative(&Attributes::of_sheet(&fighter), Load::Heavy), 5);
+        assert_eq!(fighter.load(&Attributes::of_sheet(&fighter), 959), Load::None);
+        assert_eq!(fighter.load(&Attributes::of_sheet(&fighter), 960), Load::Light);
+        assert_eq!(
+            fighter.load(&Attributes::of_sheet(&fighter), 1939),
+            Load::Heavy,
+            "integer percent: still 100"
+        );
+        assert_eq!(fighter.load(&Attributes::of_sheet(&fighter), 1940), Load::Extreme);
         assert_eq!(fighter.experience_goal(), 1000);
         // Profession and bonus skills are seeded; others are not.
         let close_combat = fighter.skill_points[Skill::CloseCombat];
@@ -1506,7 +1483,7 @@ mod tests {
     fn a_valkyrie_cheats_death_unless_long_out_cold() {
         let valkyrie =
             Character::new("Brunhild", Race::Human, Gender::Female, Profession::Valkyrie);
-        let maximum = valkyrie.base_stats().max_hp();
+        let maximum = valkyrie.max_hp(&Attributes::of_sheet(&valkyrie));
         let mut rng = crate::game::rng::GameRng::seeded(9);
         let fight = Entity::from_bits(77);
         let other = Entity::from_bits(78);

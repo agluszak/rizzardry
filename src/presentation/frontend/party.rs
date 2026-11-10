@@ -379,21 +379,21 @@ pub(super) fn refresh_selection_marks(
 /// What the summary panel says of a candidate, line by line.
 fn summary_lines(profile: &Character, strings: &GameStrings) -> [String; 13] {
     use crate::content::characters::Attribute::*;
-    let stats = profile.base_stats();
+    let a = &crate::game::actors::Attributes::of_sheet(profile);
     [
         profile.name.clone(),
         profession_line(strings, profile.profession),
         kind_line(strings, profile.gender, profile.race),
-        format!("Str: {}", stats.attribute(Strength)),
-        format!("Int: {}", stats.attribute(Intelligence)),
-        format!("Pie: {}", stats.attribute(Piety)),
-        format!("Vit: {}", stats.attribute(Vitality)),
-        format!("Dex: {}", stats.attribute(Dexterity)),
-        format!("Spd: {}", stats.attribute(Speed)),
-        format!("Sen: {}", stats.attribute(Senses)),
-        format!("HP: {}", stats.max_hp()),
-        format!("Stam: {}", stats.max_stamina()),
-        format!("Carry: {}", stats.capacity() / 10),
+        format!("Str: {}", a[Strength]),
+        format!("Int: {}", a[Intelligence]),
+        format!("Pie: {}", a[Piety]),
+        format!("Vit: {}", a[Vitality]),
+        format!("Dex: {}", a[Dexterity]),
+        format!("Spd: {}", a[Speed]),
+        format!("Sen: {}", a[Senses]),
+        format!("HP: {}", profile.max_hp(a)),
+        format!("Stam: {}", profile.max_stamina(a)),
+        format!("Carry: {}", profile.capacity(a) / 10),
     ]
 }
 

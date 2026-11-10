@@ -4,6 +4,7 @@ use super::{InventoryArt, InventoryScreen, absolute};
 use crate::content::characters::{Attribute, Skill};
 use crate::content::items::EquipClass;
 use crate::content::ui::SpriteSheet;
+use crate::game::actors::Attributes;
 use crate::game::characters::Character;
 use crate::game::combat::attack::Grip;
 use crate::game::data::Catalogs;
@@ -492,9 +493,8 @@ pub(super) fn refresh(
 ) {
     let view = characters.get(screen.member).unwrap();
     let load = view.load();
-    let CharacterViewItem { profile, vitals, carried, .. } = view;
+    let CharacterViewItem { profile, vitals, attributes, carried, .. } = view;
     // The sheet shows the primary weapon slot's numbers.
-    let stats = profile.stats(&vitals.enchantments);
     let grip = Grip::of(carried, &content.items);
     let primary = crate::game::inventory::WeaponSlot::Primary;
     let armour_view = info.as_ref().is_some_and(|info| info.armour);
@@ -647,9 +647,7 @@ pub(super) fn refresh(
             Field::InfoString(combat, armour) => {
                 (if armour_view { armour } else { combat }).map_or("", string).to_owned()
             }
-            Field::Attribute(attribute) => {
-                profile.stats(&vitals.enchantments).attribute(attribute).to_string()
-            }
+            Field::Attribute(attribute) => attributes[attribute].to_string(),
             Field::Skill(skill) => profile.skill(skill).to_string(),
             Field::SkillName(skill) => {
                 string(crate::content::ui::SKILL_NAMES + skill as usize).to_owned()
@@ -683,23 +681,23 @@ pub(super) fn refresh(
                 } else {
                     match index {
                         1 => {
-                            let dice = grip.dice(&stats, primary);
+                            let dice = grip.dice(profile, primary);
                             let min = dice.base + dice.count;
                             let max = dice.base + dice.count * dice.sides;
-                            let scale = 100 + grip.damage_percent(&stats, primary);
+                            let scale = 100 + grip.damage_percent(attributes, primary);
                             format!(
                                 "{}-{}",
                                 ((min * scale + 50) / 100).max(1),
                                 ((max * scale + 50) / 100).max(1)
                             )
                         }
-                        3 => grip.attacks(&stats, load, primary).to_string(),
-                        4 => grip.swings(&stats, load, primary).to_string(),
-                        5 => format!("{:+}", grip.to_hit(&stats, load, primary)),
-                        7 => format!("{:+}%", grip.damage_percent(&stats, primary)),
-                        8 => {
-                            (stats.initiative(load) + grip.initiative(&stats, primary)).to_string()
-                        }
+                        3 => grip.attacks(profile, attributes, load, primary).to_string(),
+                        4 => grip.swings(profile, attributes, load, primary).to_string(),
+                        5 => format!("{:+}", grip.to_hit(profile, attributes, load, primary)),
+                        7 => format!("{:+}%", grip.damage_percent(attributes, primary)),
+                        8 => (profile.initiative(attributes, load)
+                            + grip.initiative(profile, primary))
+                        .to_string(),
                         _ => String::new(),
                     }
                 }
@@ -771,7 +769,7 @@ pub(super) fn layout_skills(
     for (bar, mut crop) in &mut bars {
         let (start, end) = match *bar {
             Bar::Attribute(attribute) => {
-                (0.0, profile.base_stats().attribute(attribute).min(125) as f32)
+                (0.0, Attributes::of_sheet(profile)[attribute].min(125) as f32)
             }
             Bar::SkillBase(skill) => {
                 (0.0, profile.skill_points[skill].min(profile.skill(skill)).min(125) as f32)

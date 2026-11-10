@@ -214,7 +214,7 @@ fn can_repeat(caster: &BodyReadOnlyItem, spell: &SpellDefinition, content: &Cata
     let (Some(character), Some((learned, pool))) = (caster.character, caster.spells) else {
         return false;
     };
-    let maximum = character.stats(&caster.vitals.enchantments).max_points(learned, &content.spells);
+    let maximum = character.max_points(caster.attributes, learned, &content.spells);
     caster.vitals.stamina.current > spell.level
         && pool.available(spell.realm.unwrap(), &maximum) >= spell.cost
 }
@@ -588,7 +588,7 @@ fn affordable(caster: &BodyReadOnlyItem, spell: &SpellDefinition, content: &Cata
     let (Some(character), Some((learned, pool))) = (caster.character, caster.spells) else {
         return 0;
     };
-    let maximum = character.stats(&caster.vitals.enchantments).max_points(learned, &content.spells);
+    let maximum = character.max_points(caster.attributes, learned, &content.spells);
     pool.affordable_power(spell, &maximum)
 }
 
@@ -1115,7 +1115,7 @@ pub(crate) fn pay(
             else {
                 return Err(Refusal::NotLearned);
             };
-            let maximum = character.stats(&vitals.enchantments).max_points(learned, spells);
+            let maximum = character.max_points(caster.attributes, learned, spells);
             power.min(MAX_POWER).min(pool.affordable_power(spell, &maximum))
         }
         (Source::Innate { .. }, _) | (_, None) => return Err(Refusal::NoItem),

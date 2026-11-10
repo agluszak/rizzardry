@@ -35,7 +35,12 @@ fn app() -> (App, Entity, Entity) {
         .init_resource::<Assets<WalkerMotionConfig>>()
         .add_message::<crate::game::factions::FactionNews>()
         .add_message::<Identified>()
-        .add_plugins((CombatPlugin, magic::MagicPlugin, hits::HitsPlugin));
+        .add_plugins((
+            CombatPlugin,
+            magic::MagicPlugin,
+            hits::HitsPlugin,
+            crate::game::actors::plugin,
+        ));
     let mut spells: Vec<_> = (0..=255)
         .map(|id| SpellDefinition { id: SpellId(id), realm: Some(Realm::Divine), ..default() })
         .collect();
@@ -104,8 +109,8 @@ fn enchantment(spell: SpellId, turns: u32) -> Enchantment {
 fn refresh(world: &mut World) {
     world.run_system_cached(hostility::judge_sides).unwrap();
     world.run_system_cached(footing::place_bodies).unwrap();
-    world.run_system_cached(hits::defences::judge_defences).unwrap();
-    let _ = world.run_system_cached(fighters::judge_fighters);
+    world.run_system_cached(crate::game::actors::notice_changes).unwrap();
+    world.flush();
 }
 
 #[test]
@@ -188,7 +193,7 @@ fn missile_arrival_settles_defeat_before_any_actor_can_start() {
     let actor = monster(world, fight, 3.0);
     world.get_mut::<Round>(fight).unwrap().phase = RoundPhase::Executing(1);
     refresh(world);
-    let arms = world.get::<fighters::Arms>(actor).unwrap();
+    let arms = world.get::<crate::game::actors::Attacks>(actor).unwrap();
     let turn = Turn {
         phase: 1,
         attacks: enum_map::EnumMap::from_fn(|slot| arms.attacks(slot)),

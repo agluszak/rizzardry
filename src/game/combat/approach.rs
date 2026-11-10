@@ -105,7 +105,7 @@ pub(super) fn away_from(feet: Vec3, party_eye: Vec3, metres: f32) -> Vec3 {
 }
 
 /// Metres per unit of a species' `combat_move_range`.
-pub(super) const METRES_PER_MOVE_RANGE: f32 = 20.0;
+pub(crate) const METRES_PER_MOVE_RANGE: f32 = 20.0;
 
 /// Head monsters on their move, at the start of each fixed step before
 /// navigation plans it; the move ends when it is spent, the monster
@@ -117,7 +117,7 @@ pub fn steer_moves(
     party: Query<(Entity, &Position), With<PartyBody>>,
     mut walkers: Query<(
         Entity,
-        (&Monster, &Vitals, &super::fighters::Arms),
+        (&Monster, &Vitals, &crate::game::actors::Attacks),
         ActorPose,
         &Walker,
         &mut AgentTarget3d,

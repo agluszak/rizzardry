@@ -6,12 +6,13 @@
 use bevy::ecs::query::QueryData;
 use bevy::prelude::*;
 
-use super::defences::{self, Defences};
+use super::defences;
 use super::definitions::{self, Blow, DefinitionId, Definitions, EffectKind, EffectSpec};
 use super::{Damaged, Effect};
-use crate::content::characters::{Attribute, Skill, Trait};
+use crate::content::characters::{Attribute, Skill};
 use crate::content::items::{EquipClass, ItemCatalog};
 use crate::content::spells::SpellId;
+use crate::game::actors::{Armour, Attacks, Attributes, Level, Resistances};
 use crate::game::characters::{Character, Condition, Lasting, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
@@ -34,7 +35,11 @@ pub struct Body {
     pub side: &'static Side,
     pub loyalty: &'static Loyalty,
     pub at: &'static Footing,
-    pub defences: &'static Defences,
+    pub attributes: &'static Attributes,
+    pub level: &'static Level,
+    pub resistances: &'static Resistances,
+    pub armour: &'static Armour,
+    pub attacks: &'static Attacks,
     pub character: Option<&'static mut Character>,
     pub spells: Option<(&'static LearnedSpells, &'static mut SpellPoints)>,
     pub budget: Option<&'static mut SpellBudget>,
@@ -123,7 +128,7 @@ fn waits(spec: &EffectSpec, previous: Option<Outcome>) -> bool {
 pub fn land(strike: &Strike, body: &mut BodyItem, rules: &Rules, rng: &mut GameRng, log: &mut Log) {
     let mut previous = None;
     for spec in specs(strike, rules, false) {
-        let kind = body.defences.kind;
+        let kind = body.resistances.kind;
         if (spec.members && !body.member)
             || (spec.monsters && kind.is_none())
             || spec.kinds.is_some_and(|kinds| !kind.is_some_and(|k| kinds.contains(&k)))
@@ -202,13 +207,12 @@ fn defend(
         _ => None,
     };
     let mut resisted = match affliction {
-        Some((condition, _)) => body.defences.immune.contains(&condition),
-        None => matches!(spec.kind, K::Slay) && body.defences.death_immune,
+        Some((condition, _)) => body.resistances.immune.contains(&condition),
+        None => matches!(spec.kind, K::Slay) && body.resistances.death_immune,
     };
     if !resisted && let (Some(save), Some(realm)) = (spec.save, spec.resist) {
-        let defences = body.defences;
-        let chance =
-            defences::condition_chance(defences.level, defences.resistances[realm], against, save);
+        let resistance = body.resistances.realms[realm];
+        let chance = defences::condition_chance(body.level.0, resistance, against, save);
         resisted = defences::save_roll(rng, rules.difficulty.scale(chance, body.side.0));
         if resisted
             && let Some(character) = body.character.as_deref_mut()
@@ -221,31 +225,16 @@ fn defend(
         && spec.roll.is_some()
         && let Some(realm) = spec.resist
     {
-        let defences = body.defences;
-        magnitude =
-            defences::resist(rng, magnitude, defences.resistances[realm], defences.level, against);
+        let resistance = body.resistances.realms[realm];
+        magnitude = defences::resist(rng, magnitude, resistance, body.level.0, against);
         resisted = magnitude == 0;
     }
-    // A member's own immunities are traits, weighed after the save.
+    // What it shrugs off whenever a save is allowed at all.
     if !resisted
         && spec.save.is_some()
-        && let Some((condition, indefinite)) = affliction
-        && let Some(character) = body.character.as_deref()
+        && let Some((condition, _)) = affliction
     {
-        let android = character.has_trait(Trait::AndroidConditionImmunity);
-        resisted = match condition {
-            Condition::Afraid => character.has_trait(Trait::Fearless) || android,
-            Condition::Diseased
-            | Condition::Irritated
-            | Condition::Nauseated
-            | Condition::Poisoned
-            | Condition::Asleep => android,
-            Condition::Insane if indefinite => false,
-            Condition::Insane | Condition::Turncoat => {
-                character.has_trait(Trait::MentalConditionImmunity)
-            }
-            _ => false,
-        };
+        resisted = body.resistances.wards.contains(&condition);
     }
     if resisted {
         log.effects.push(Effect::Resisted { victim });
@@ -263,14 +252,14 @@ fn lasting(indefinite: bool, magnitude: u32) -> Lasting {
     }
 }
 
-/// A member's spell point maxima as their sheet and spells make them now.
+/// A member's spell point maxima as their sheet and attributes make them.
 fn maxima(
     character: &Character,
-    vitals: &Vitals,
+    attributes: &Attributes,
     learned: &LearnedSpells,
     content: &Catalogs,
 ) -> enum_map::EnumMap<crate::content::characters::Realm, u32> {
-    character.stats(&vitals.enchantments).max_points(learned, &content.spells)
+    character.max_points(attributes, learned, &content.spells)
 }
 
 /// Damage dealt and its coupled consequences: it is told of, plain harm
@@ -284,7 +273,7 @@ fn dealt(body: &mut BodyItem, amount: u32, harm: bool, rng: &mut GameRng, log: &
     if harm {
         log.harm += amount;
         if amount > 0 && !body.vitals.is_dead() {
-            body.vitals.conditions.wake_on_hit(body.defences.senses, rng);
+            body.vitals.conditions.wake_on_hit(body.attributes[Attribute::Senses], rng);
         }
     }
 }
@@ -340,7 +329,7 @@ fn apply(
             else {
                 return Outcome::Missed;
             };
-            let maximum = maxima(character, &body.vitals, learned, rules.content);
+            let maximum = maxima(character, body.attributes, learned, rules.content);
             let amount = match spec.kind {
                 K::DrainRealm(realm) => realm
                     .map_or(enumset::EnumSet::all(), enumset::EnumSet::only)
@@ -390,14 +379,15 @@ fn apply(
             }
         }
         K::Raise => {
-            let Some(character) = body.character.as_deref() else { return Outcome::Missed };
+            if body.character.is_none() {
+                return Outcome::Missed;
+            }
             if !body.vitals.is_dead() {
                 log.effects.push(Effect::Nothing { victim });
                 return Outcome::Missed;
             }
-            let stats = character.stats(&body.vitals.enchantments);
             let share =
-                (stats.attribute(Attribute::Piety) + stats.attribute(Attribute::Vitality)) >> 2;
+                (body.attributes[Attribute::Piety] + body.attributes[Attribute::Vitality]) >> 2;
             body.vitals.health.current = (body.vitals.health.max * share / 100).max(1);
             body.vitals.stamina.current = (body.vitals.stamina.max * share / 100).max(1);
             Effect::Raised { victim }
@@ -478,7 +468,7 @@ pub fn land_on_party(
                     else {
                         continue;
                     };
-                    let maximum = maxima(character, &body.vitals, learned, rules.content);
+                    let maximum = maxima(character, body.attributes, learned, rules.content);
                     let amount = pool.drain(magnitude, &maximum, rng);
                     log.effects.push(Effect::Drained { victim: body.entity, amount });
                 }

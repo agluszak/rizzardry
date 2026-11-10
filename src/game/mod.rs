@@ -1,5 +1,6 @@
 //! Gameplay state and rules.
 
+pub mod actors;
 pub mod automap;
 pub mod camp;
 pub mod characters;
@@ -67,6 +68,7 @@ impl Plugin for GamePlugin {
                     .run_if(world::level::level_active)
                     .run_if(not(any_with_component::<combat::Battle>)),
             )
+            .add_plugins(actors::plugin)
             .add_plugins((
                 avian3d::prelude::PhysicsPlugins::default(),
                 world::WorldPlugin,

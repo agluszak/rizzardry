@@ -14,6 +14,7 @@ pub mod portals;
 pub(crate) mod traps;
 pub(crate) mod utilities;
 
+use crate::game::actors::Attributes;
 use std::collections::BTreeSet;
 
 use bevy::prelude::*;
@@ -313,12 +314,13 @@ pub fn starting_picks(profession: Profession) -> usize {
     if profession_caster_level(profession, 1) > 0 { 2 } else { 0 }
 }
 
-impl crate::game::characters::CharacterStats<'_> {
+impl Character {
     /// Spell points per realm (retail `RecalculateRealmSpellPoints`): none in
     /// a realm without a learned spell, and never under its dearest learned
     /// spell.
     pub fn max_points(
         &self,
+        attributes: &Attributes,
         learned: &LearnedSpells,
         spells: &SpellCatalog,
     ) -> EnumMap<Realm, u32> {
@@ -333,7 +335,7 @@ impl crate::game::characters::CharacterStats<'_> {
             + (books[2] / 4) as f32
             + (books[3] / 8) as f32)
             .min(125.0);
-        let piety = character.attribute(Attribute::Piety) as f32;
+        let piety = attributes[Attribute::Piety] as f32;
         EnumMap::from_fn(|realm| {
             let known: Vec<_> = learned
                 .0
@@ -564,7 +566,11 @@ fn test_maximum(world: &World, member: Entity) -> EnumMap<Realm, u32> {
     let vitals = world.get::<crate::game::characters::Vitals>(member).unwrap();
     let learned = world.get::<LearnedSpells>(member).unwrap();
     let spells = &world.resource::<Catalogs>().spells;
-    profile.stats(&vitals.enchantments).max_points(learned, spells)
+    profile.max_points(
+        &Attributes::with_spells(profile.attributes, &vitals.enchantments),
+        learned,
+        spells,
+    )
 }
 
 #[cfg(test)]
@@ -755,7 +761,7 @@ pub(crate) mod tests {
         let catalog =
             SpellCatalog((0..=6).map(|i| if i == 6 { heal_wounds() } else { default() }).collect());
         let learned = LearnedSpells([SpellId::HEAL_WOUNDS].into());
-        let points = priest.base_stats().max_points(&learned, &catalog);
+        let points = priest.max_points(&Attributes::of_sheet(&priest), &learned, &catalog);
         assert!(points[Realm::Divine] >= 3, "never under the dearest learned spell");
         assert_eq!(points[Realm::Fire], 0, "no spell, no points");
     }

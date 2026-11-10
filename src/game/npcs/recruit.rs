@@ -1,5 +1,6 @@
 //! Party transitions for NPCs. A stored profile is inactive data, not an off-party Character.
 use super::{ActorId, Npc, NpcBodies, NpcBody, NpcLocation};
+use crate::game::actors::Attributes;
 use crate::{
     content::npcs::{NpcCharacter, NpcId},
     game::{
@@ -281,7 +282,8 @@ pub fn dismiss(
         );
         kept.vitals.conditions = v.conditions.clone();
         if v.conditions.exhausted() {
-            kept.vitals.stamina.current = v.stamina.current.min(c.base_stats().max_stamina());
+            kept.vitals.stamina.current =
+                v.stamina.current.min(c.max_stamina(&Attributes::of_sheet(c)));
         }
         let mut body = commands.spawn((
             NpcBody(actor),

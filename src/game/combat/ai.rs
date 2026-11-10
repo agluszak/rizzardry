@@ -10,11 +10,12 @@ use bevy::ecs::query::QueryData;
 use bevy::prelude::*;
 
 use super::conduct;
-use super::fighters::{Arms, Fighter};
 use super::monster_spells;
 use super::turn::{Breathes, Chosen, Fights, Fleeing, Retreats, SpecialCooldown};
+use crate::content::characters::Attribute;
 use crate::content::species::{Reach, SpecialAttack};
 use crate::content::spells::SpellId;
+use crate::game::actors::Attacks as Arms;
 use crate::game::characters::{Condition, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::hits::definitions::Definitions;
@@ -96,13 +97,13 @@ pub(super) fn party_gap(at: &Footing, roster: &PartyRoster, bodies: &Query<BodyR
 
 /// Whether one of a body's arms reaches the party.
 fn reaches_party(arms: &Arms, nearest: f32) -> bool {
-    arms.0.iter().any(|arm| nearest <= arm.reach.metres())
+    arms.arms.iter().any(|arm| nearest <= arm.reach.metres())
 }
 
 /// Whether a body would close in to strike rather than cast or breathe:
 /// it prefers blows, has some, and none reaches the party.
 fn closes_in(temper: &Temper, arms: &Arms, nearest: f32) -> bool {
-    !temper.0.prefers_range && !arms.0.is_empty() && !reaches_party(arms, nearest)
+    !temper.0.prefers_range && !arms.arms.is_empty() && !reaches_party(arms, nearest)
 }
 
 /// What a monster decides by, besides what every body in a fight has.
@@ -135,12 +136,12 @@ pub(super) struct Fight<'a, 'w, 's> {
 pub(super) fn decide(
     body: Entity,
     mind: &MindItem,
-    (arms, fighter): (&Arms, &Fighter),
     fight: &Fight,
     rng: &mut GameRng,
 ) -> (Chosen, bool) {
     let Fight { bodies, roster, .. } = *fight;
     let own = bodies.get(body).unwrap();
+    let arms = own.attacks;
     let nearest = party_gap(own.at, roster, bodies);
     // Run, withdraw or hold back, as it stands and fares (retail
     // `UpdateMonsterAI`'s flight test); a flight begun goes on in later
@@ -160,8 +161,8 @@ pub(super) fn decide(
     }
     let chosen = special(body, mind, arms, nearest, fight, rng)
         .or_else(|| spell(body, mind, arms, nearest, fight, rng))
-        .or_else(|| helpless(own.vitals, arms, fighter, nearest))
-        .or_else(|| guard(body, mind, (arms, fighter), nearest, fight, rng))
+        .or_else(|| helpless(own.vitals, arms, nearest))
+        .or_else(|| guard(body, mind, nearest, fight, rng))
         .unwrap_or(Chosen::Fight(Fights { waits: false, berserk: false }));
     (chosen, fleeing)
 }
@@ -213,10 +214,7 @@ fn special(
         special: Some(kind),
         definition: definitions.special(kind),
         summons: kind.summons(),
-        strength: crate::game::hits::specials::strength(
-            own.defences.level as u8,
-            own.vitals.stamina,
-        ),
+        strength: crate::game::hits::specials::strength(own.level.0 as u8, own.vitals.stamina),
         toward,
         cost: own.vitals.stamina.max / 10,
         cooldown: special.cooldown,
@@ -269,16 +267,16 @@ fn spell(
         definitions,
     )?;
     let power = monster_spells::power(rng, budget, &content.spells[spell]);
-    let source = Source::Innate { spell, power, budget, level: own.defences.level as u8 };
+    let source = Source::Innate { spell, power, budget, level: own.level.0 as u8 };
     Some(Chosen::Magic(MagicChoice { source, aim }))
 }
 
 /// One that can strike nobody, having no arm or, blind, nobody in reach,
 /// withdraws (retail `UpdateMonsterAI`'s `RETURN_TO_START`); one that
 /// fights blind fights on.
-fn helpless(vitals: &Vitals, arms: &Arms, fighter: &Fighter, nearest: f32) -> Option<Chosen> {
-    let blind = vitals.conditions.has(Condition::Blind) && fighter.blind_fighting.is_none();
-    (arms.0.is_empty() || (blind && !reaches_party(arms, nearest)))
+fn helpless(vitals: &Vitals, arms: &Arms, nearest: f32) -> Option<Chosen> {
+    let blind = vitals.conditions.has(Condition::Blind) && arms.blind_fighting.is_none();
+    (arms.arms.is_empty() || (blind && !reaches_party(arms, nearest)))
         .then_some(Chosen::Retreat(Retreats { conduct: conduct::Conduct::Withdraw, quiet: false }))
 }
 
@@ -288,21 +286,21 @@ fn helpless(vitals: &Vitals, arms: &Arms, fighter: &Fighter, nearest: f32) -> Op
 fn guard(
     body: Entity,
     mind: &MindItem,
-    (arms, fighter): (&Arms, &Fighter),
     nearest: f32,
     fight: &Fight,
     rng: &mut GameRng,
 ) -> Option<Chosen> {
     let Fight { bodies, combatants, .. } = *fight;
     let own = bodies.get(body).ok()?;
+    let (arms, wit) = (own.attacks, own.attributes[Attribute::Intelligence]);
     let temper = mind.temper.0;
     if !reaches_party(arms, nearest) {
         return None;
     }
-    let able = temper.bodyguard && own.vitals.can_guard() && !arms.0.is_empty();
+    let able = temper.bodyguard && own.vitals.can_guard() && !arms.arms.is_empty();
     let mine = (own.side.0, *own.loyalty);
-    let wards: Vec<Entity> = if able && rng.below(100) < fighter.wit {
-        let reach = arms.0[0].reach.metres();
+    let wards: Vec<Entity> = if able && rng.below(100) < wit {
+        let reach = arms.arms[0].reach.metres();
         combatants
             .iter()
             .copied()
@@ -313,7 +311,7 @@ fn guard(
                         && hostility::between(mine, (fellow.side.0, *fellow.loyalty))
                             == Stance::Friendly
                         && own.at.gap(fellow.at) <= reach
-                        && fellow.defences.level > own.defences.level
+                        && fellow.level > own.level
                         && fellow.vitals.health.current * 100 / fellow.vitals.health.max < 40
                 })
             })
@@ -323,7 +321,7 @@ fn guard(
     };
     if !wards.is_empty() {
         Some(Chosen::Protect(wards[rng.below(wards.len() as u32) as usize]))
-    } else if temper.wary && rng.below(100) < fighter.wit {
+    } else if temper.wary && rng.below(100) < wit {
         Some(Chosen::Fight(Fights { waits: true, berserk: false }))
     } else {
         None

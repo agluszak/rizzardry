@@ -385,7 +385,7 @@ fn draw_device_panel(
     panels: Query<(&PanelOf, &DevicePanel)>,
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
-    members: Query<(&Character, &Vitals)>,
+    members: Query<(&Character, &Vitals, &crate::game::actors::Attributes)>,
     containers: Query<&Container>,
     content: If<Res<crate::game::data::Catalogs>>,
     strings: crate::presentation::screen_art::GameStrings,
@@ -395,8 +395,8 @@ fn draw_device_panel(
     let Ok((panel_of, panel)) = panels.single() else { return };
     let Ok((interaction, on)) = attempts.get(panel_of.0) else { return };
     let member = selected.member(&roster).map(|m| (m, members.get(m).unwrap()));
-    let name = member.map_or(String::new(), |(_, (c, _))| c.name.clone());
-    let skill = member.and_then(|(_, (c, v))| interaction::lock_skill(c, v));
+    let name = member.map_or(String::new(), |(_, (c, ..))| c.name.clone());
+    let skill = member.and_then(|(_, (c, v, _))| interaction::lock_skill(c, v));
     let trap_name = |trap: usize| {
         let name = strings.get(crate::content::ui::TRAP_NAMES + trap);
         if name.is_empty() { "Trap" } else { name }.to_owned()
@@ -413,8 +413,9 @@ fn draw_device_panel(
             (Caption::Title, Work::Disarming(_)) => "Trapped".to_owned(),
             (Caption::Title, Work::Looting) => "Contents".to_owned(),
             (Caption::Status, Work::Picking(picking)) => {
-                let force = member.and_then(|(_, (c, v))| {
-                    interaction::force_chance(c, v, picking.tumblers.len(), *difficulty)
+                let force = member.and_then(|(_, (_, v, a))| {
+                    let strength = a[crate::content::characters::Attribute::Strength];
+                    interaction::force_chance(strength, v, picking.tumblers.len(), *difficulty)
                 });
                 format!("{name}: Locks & Traps {}, Force {}", percent(skill), percent(force))
             }
@@ -487,15 +488,17 @@ fn draw_device_panel(
             (Control::Tumbler(index), Work::Picking(picking)) => {
                 skill.is_some() && picking.tumblers.get(index).is_some_and(|pin| !pin.raised())
             }
-            (Control::Force, Work::Picking(picking)) => member.is_some_and(|(_, (c, v))| {
-                interaction::force_chance(c, v, picking.tumblers.len(), *difficulty).is_some()
+            (Control::Force, Work::Picking(picking)) => member.is_some_and(|(_, (_, v, a))| {
+                let strength = a[crate::content::characters::Attribute::Strength];
+                interaction::force_chance(strength, v, picking.tumblers.len(), *difficulty)
+                    .is_some()
             }),
             (Control::Component(index), Work::Disarming(disarming)) => {
                 skill.is_some() && TRAP_COMPONENTS[panel.guess][index] && !disarming.disarmed[index]
             }
             (Control::Inspect, _) => skill.is_some(),
             (Control::Cast | Control::UseItem, _) => {
-                member.is_some_and(|(_, (_, vitals))| vitals.can_act())
+                member.is_some_and(|(_, (_, vitals, _))| vitals.can_act())
             }
             (Control::Less(id) | Control::More(id), _) => {
                 stacks.iter().find(|s| s.id == id).is_some_and(|s| s.count() > 1)

@@ -51,7 +51,9 @@ impl View {
     /// while blindness, the target's concealment and solid scenery still apply.
     pub fn sees<'a>(
         self,
-        mut members: impl Iterator<Item = (&'a Character, &'a Vitals)>,
+        mut members: impl Iterator<
+            Item = (&'a Character, &'a Vitals, &'a crate::game::actors::Attributes),
+        >,
         shadow_hound: bool,
         (monster, body): (&Monster, &Vitals),
         species: &Species,
@@ -69,17 +71,16 @@ impl View {
             self.forward.with_y(0.0).angle_between((feet - self.eye).with_y(0.0))
         };
         let concealment = if in_combat { 0 } else { u32::from(species.camouflage) };
-        members.any(|(profile, vitals)| {
+        members.any(|(profile, vitals, attributes)| {
             if !vitals.can_fight()
                 || vitals.conditions.has(Condition::Blind) && profile.profession != Profession::Monk
             {
                 return false;
             }
-            let stats = profile.stats(&vitals.enchantments);
             sight_threshold(
                 angle,
-                stats.attribute(Attribute::Senses) as i32,
-                stats.skill(Skill::Scouting),
+                attributes[Attribute::Senses] as i32,
+                profile.skill(Skill::Scouting),
                 i32::from(species.level),
                 concealment,
                 self.far,

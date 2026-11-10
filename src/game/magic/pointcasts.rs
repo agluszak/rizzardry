@@ -206,7 +206,6 @@ pub(crate) fn cast(
             for (_, entity) in order {
                 let (_, monster, _, pose, group, influence) = monsters.get(entity).unwrap();
                 let Ok(body) = bodies.get(entity) else { continue };
-                let kind = &content.species[monster.species];
                 let group = group.and_then(|group| groups.get(group.0).ok());
                 let here = pose.translation();
                 if body.side.0 != Stance::Hostile
@@ -214,19 +213,14 @@ pub(crate) fn cast(
                     || !body.vitals.can_fight()
                     || body.vitals.conditions.has(Condition::Blind)
                     || (here - at).abs().max_element() > far
-                    || kind.kind == MonsterKind::Undead
+                    || body.resistances.kind == Some(MonsterKind::Undead)
                     || !obstacles.clear(monster.eye(here), at)
                 {
                     continue;
                 }
-                let resistance = population::resistance(
-                    kind,
-                    body.vitals,
-                    crate::content::characters::Realm::Mental,
-                );
                 let chance = crate::game::hits::defences::condition_chance(
-                    u32::from(kind.level),
-                    resistance,
+                    body.level.0,
+                    body.resistances.realms[crate::content::characters::Realm::Mental],
                     strength.against,
                     0,
                 );

@@ -49,16 +49,6 @@ impl Monster {
     }
 }
 
-/// A monster's resistance to a realm: its species' and its spells', at most
-/// 100.
-pub fn resistance(
-    kind: &crate::content::species::Species,
-    vitals: &crate::game::characters::Vitals,
-    realm: crate::content::characters::Realm,
-) -> i32 {
-    (i32::from(kind.resistances[realm]) + vitals.enchantments.resistance(realm)).min(100)
-}
-
 /// Blindness takes a monster's sight; a Monk fights on without it.
 pub fn blinded(
     kind: &crate::content::species::Species,
