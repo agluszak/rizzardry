@@ -5,10 +5,10 @@
 //! and fired flag synchronously. A relay also runs its recipients as its action,
 //! preserving retail's double execution when it is marked to fire on commit.
 
-mod records;
+mod spawn;
 mod walk;
 
-pub use records::{DeviceRecords, TriggerMemory, spawn_devices};
+pub use spawn::spawn_devices;
 pub(crate) use walk::walk;
 
 use std::collections::HashMap;

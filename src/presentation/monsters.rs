@@ -33,7 +33,7 @@ fn first_phase(monster: &Monster) -> f32 {
 }
 
 /// Optional visual content retained while its model loads and plays. It is
-/// never captured in a level record or used to size an actor's gameplay body.
+/// never used to size an actor's gameplay body.
 #[derive(Component, Debug)]
 pub struct MonsterVisual(pub Handle<MonsterModel>);
 

@@ -50,12 +50,11 @@ impl Npc {
         }
     }
 }
-/// Remembered placement data, never a retained physics or render entity.
+/// Where an NPC stands, and what their body is: a level's path and a species.
 #[derive(Component, Clone, Debug)]
 pub struct NpcLocation {
     pub map: String,
     pub species: u32,
-    pub dormant: Option<crate::game::world::level::KeptMonster>,
 }
 /// A trigger can provide an interaction binding without a monster.
 #[derive(Component, Debug)]
@@ -69,7 +68,7 @@ pub struct NpcAssets {
 #[derive(Resource, Default)]
 pub(super) struct Registry {
     named: HashMap<NpcId, Entity>,
-    // A level's remembered monster binding, not a definition's global identity.
+    // A level's placed monster binding, not a definition's global identity.
     placed: HashMap<(String, i32), Entity>,
     initialized: bool,
 }

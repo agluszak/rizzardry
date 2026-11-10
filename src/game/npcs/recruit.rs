@@ -18,9 +18,9 @@ use crate::{
         },
         rng::GameRng,
         world::{
-            level::{KeptMonster, Level},
+            level::Level,
             navigation::{LevelNavigation, WalkerMotionConfig},
-            population::Monster,
+            population::{Monster, Newborn},
         },
     },
 };
@@ -295,7 +295,7 @@ pub fn dismiss(
     return_to_pool(party, &returned, (root, PartyBody::feet(at)), &mut commands);
     if !v.is_dead() {
         let kind = &content.species[location.species];
-        let mut kept = KeptMonster::rolled(
+        let mut kept = Newborn::rolled(
             (-1, location.species, None),
             (feet, facing.yaw),
             (kind, shape),
@@ -319,11 +319,9 @@ pub fn dismiss(
             (None, kind),
             (navigation, &mut configs),
         );
-        commands.entity(actor).insert(NpcLocation {
-            map: played.path.clone(),
-            species: location.species,
-            dormant: None,
-        });
+        commands
+            .entity(actor)
+            .insert(NpcLocation { map: played.path.clone(), species: location.species });
     }
     commands
         .entity(actor)

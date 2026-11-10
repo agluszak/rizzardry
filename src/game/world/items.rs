@@ -5,46 +5,8 @@ use bevy::prelude::*;
 
 use crate::content::items::{ItemCatalog, ItemDefinition, ItemId, QuantityKind};
 use crate::content::level::ItemPlacement;
-use crate::game::items::{
-    Bag, Give, Hidden, ItemStack, Items, Lying, Place, Put, Throw, make, roll_amount, unpack,
-};
+use crate::game::items::{Bag, Give, Hidden, Items, Lying, Place, Put, Throw, make, roll_amount};
 use crate::game::rng::GameRng;
-
-/// An item lying in a level as a record keeps it, with what is in it if it is
-/// a bag. A level that was left keeps what lay in it as these values.
-#[derive(Clone, Debug)]
-pub struct KeptItem {
-    pub item: ItemStack,
-    pub at: Vec3,
-    pub hidden: bool,
-    pub holds: Vec<ItemStack>,
-}
-
-impl KeptItem {
-    /// An item lying as it is now, with what a bag holds.
-    pub fn keep(items: &Items, catalog: &ItemCatalog, lying: Entity, at: Vec3) -> Option<Self> {
-        Some(Self {
-            item: items.stack(lying, catalog)?,
-            at,
-            hidden: items.hidden(lying),
-            holds: items
-                .stowed(lying)
-                .iter()
-                .filter_map(|&held| items.stack(held, catalog))
-                .collect(),
-        })
-    }
-
-    /// The item and what a bag holds, lying again where they were.
-    pub fn restore(&self, commands: &mut Commands, level: Entity, catalog: &ItemCatalog) {
-        let item = unpack(commands, &catalog[self.item.item], &self.item);
-        lay(commands, level, (self.at, self.hidden), item);
-        for held in &self.holds {
-            let held = unpack(commands, &catalog[held.item], held);
-            commands.trigger(Put { item: held, at: Place::Container(item) });
-        }
-    }
-}
 
 /// Lay an item at a point of a level, unseen if it is hidden.
 pub fn lay(commands: &mut Commands, level: Entity, (at, hidden): (Vec3, bool), item: Entity) {

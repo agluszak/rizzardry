@@ -5,6 +5,7 @@
 //! in stereo; here only their loudness follows the distance.
 
 use bevy::audio::{AudioPlayer, AudioSink, AudioSinkPlayback, PlaybackSettings, Volume};
+use bevy::ecs::entity_disabling::Disabled;
 use bevy::prelude::*;
 use rand::Rng;
 
@@ -12,6 +13,7 @@ use crate::presentation::PresentationRng;
 
 use super::environment::LevelAppearance;
 use crate::content::level::{AmbientSoundModel, LevelGeometry};
+use crate::game::world::level::SetAside;
 use crate::presentation::party_view::PartyCamera;
 
 /// The inner part of the radius heard at full loudness.
@@ -47,6 +49,22 @@ pub fn place_ambient_sounds(
             ));
         }
         commands.entity(root).insert(AmbiencePlaced);
+    }
+}
+
+/// The party leaves the level: its sounds stop. A sound goes on playing from
+/// an entity that is only disabled, so each is stopped, and starts afresh if
+/// the party is in range when the level wakes.
+pub fn silence_set_aside(
+    add: On<Add<SetAside>>,
+    mut emitters: Query<(Entity, &ChildOf, &mut AmbientEmitter), Allow<Disabled>>,
+    mut commands: Commands,
+) {
+    for (entity, owner, mut emitter) in &mut emitters {
+        if owner.parent() == add.entity {
+            emitter.inside = false;
+            commands.entity(entity).try_remove::<(AudioPlayer, AudioSink, PlaybackSettings)>();
+        }
     }
 }
 

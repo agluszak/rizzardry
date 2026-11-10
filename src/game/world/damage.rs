@@ -14,6 +14,27 @@ use super::population::Monster;
 use crate::game::inventory::PartyInventory;
 use crate::game::rng::GameRng;
 
+/// The dead of a level are gone when the party comes back to it: they stay
+/// dead, and nothing of them lies there any more.
+pub fn clear_the_fallen(
+    woke: On<super::level::Woke>,
+    fallen: Query<
+        (Entity, &super::level::LevelOwned),
+        (
+            With<Monster>,
+            With<crate::game::characters::Dead>,
+            bevy::ecs::query::Allow<bevy::ecs::entity_disabling::Disabled>,
+        ),
+    >,
+    mut commands: Commands,
+) {
+    for (monster, owner) in &fallen {
+        if owner.0 == woke.level {
+            commands.entity(monster).despawn();
+        }
+    }
+}
+
 /// A monster has died: its autonomous work stops, and unless it was
 /// summoned its death counts against its faction (retail
 /// `RecordFactionOffense`), an NPC's body leaves the NPC dead for good, and

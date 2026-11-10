@@ -1,7 +1,8 @@
 //! Small headless scenarios at the level/party ownership boundary: a level
-//! becomes active in one step once its prerequisites exist, and travel
-//! keeps the source authoritative until the destination can commit, or
-//! leaves it untouched when destination preparation fails.
+//! becomes active in one step once its prerequisites exist, travel keeps the
+//! source authoritative until the destination can commit, or leaves it
+//! untouched when destination preparation fails, and a level that is left is
+//! set aside whole and wakes as it was.
 
 use crate::content::items::ItemCatalog;
 use crate::content::level::{CollisionMesh, LevelDefinition, MonsterPlacement};
@@ -14,7 +15,8 @@ use crate::game::party::roster::Party;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::Stance;
 use crate::game::world::level::{
-    Destination, Entry, Level, LevelMemory, LevelOwned, LevelReady, Travel, activate_level, travel,
+    Destination, Entry, Level, LevelOwned, LevelReady, SetAside, Travel, activate_level, set_aside,
+    travel, wake,
 };
 use crate::game::world::population::{Monster, MonsterBodies};
 use crate::game::world::triggers::PendingPartyMove;
@@ -31,7 +33,9 @@ fn app() -> App {
         .init_asset::<crate::content::ui::TextTable>()
         .init_resource::<Assets<PartyMotionConfig>>()
         .init_resource::<Assets<crate::game::world::navigation::WalkerMotionConfig>>()
-        .init_resource::<LevelMemory>()
+        .add_observer(set_aside)
+        .add_observer(wake)
+        .add_observer(crate::game::world::encounters::age_encounters)
         .add_observer(give_bodies)
         .add_observer(crate::game::world::damage::monster_died)
         .add_message::<crate::game::hits::Damaged>()
@@ -144,7 +148,18 @@ fn party_entities(app: &mut App) -> Vec<Entity> {
 }
 
 fn is_played(app: &App, level: Entity) -> bool {
-    app.world().get::<Level>(level).is_some()
+    app.world().get::<Level>(level).is_some() && app.world().get::<SetAside>(level).is_none()
+}
+
+/// Whether a level was left and has not been returned to, with all it holds.
+fn is_set_aside(app: &App, level: Entity) -> bool {
+    use bevy::ecs::entity_disabling::Disabled;
+    app.world().get::<SetAside>(level).is_some() && app.world().get::<Disabled>(level).is_some()
+}
+
+/// The level being played.
+fn played(app: &mut App) -> Entity {
+    app.world_mut().query_filtered::<Entity, With<Level>>().single(app.world()).unwrap()
 }
 
 fn floor() -> CollisionMesh {
@@ -164,19 +179,35 @@ fn playing() -> (App, Entity) {
     (app, level)
 }
 
-/// Leave through the real travel boundary, then come back to the test level
-/// instead of the (unloadable) destination; returns the level played again.
-fn revisit(app: &mut App) -> Entity {
+/// Leave the test level through the real travel boundary for another that the
+/// party has never been to, which commits.
+fn leave(app: &mut App) {
     app.world_mut().write_message(Travel { entrance: "MO204".into() });
     app.world_mut().run_schedule(PreUpdate);
-    let away: Vec<Entity> =
+    // The level the entrance names is not loadable here: the party goes to
+    // another, built from nothing.
+    let unloadable: Vec<Entity> =
         app.world_mut().query_filtered::<Entity, With<Destination>>().iter(app.world()).collect();
-    for destination in away {
+    for destination in unloadable {
         app.world_mut().despawn(destination);
     }
-    let back = spawn_level(app, floor());
+    let mut away = test_level(app, floor());
+    away.path = "levels/away/away.pvl".into();
+    app.world_mut().spawn(Destination::new(away, default(), Entry::Travel));
     app.update();
-    back
+}
+
+/// Come back to the test level, the one played before; returns it.
+fn come_back(app: &mut App) -> Entity {
+    spawn_level(app, floor());
+    app.update();
+    played(app)
+}
+
+/// Leave the test level and come back to it.
+fn revisit(app: &mut App) -> Entity {
+    leave(app);
+    come_back(app)
 }
 
 /// Update until `done`, failing after five seconds of asynchronous loading.
@@ -213,7 +244,8 @@ fn a_walk_through_prop_without_collision_is_entered() {
         trigger: None,
     };
     let enter = |app: &mut App| {
-        let level = test_level(app, floor());
+        let mut level = test_level(app, floor());
+        level.path = "levels/other/other.pvl".into();
         let mut definition = app
             .world()
             .resource::<Assets<LevelDefinition>>()
@@ -350,11 +382,10 @@ fn attaching_visuals_does_not_change_physical_state_or_revisit_placement() {
             assert_eq!(*app.world().get::<Transform>(actor).unwrap(), pose);
             assert_eq!(app.world().get::<Monster>(actor).unwrap().body, body);
         }
-        // Capture through the real travel boundary, then consume that level's
-        // dormant record. The controller offset is gameplay data in both runs.
+        // Leave through the real travel boundary and come back. The controller
+        // offset is gameplay data in both runs.
         let back = revisit(&mut app);
-        assert!(is_played(&app, back));
-        assert!(app.world().get_entity(first).is_err());
+        assert_eq!(back, first, "the level the party left is the level it returns to");
         let world = app.world_mut();
         let (monster, pose, walker) =
             world.query::<(&Monster, &Transform, &Walker)>().single(world).unwrap();
@@ -479,6 +510,14 @@ fn direct_damage_settles_death_once() {
     assert_eq!(units, 2, "death preserves every drop and cannot award it twice");
 }
 
+/// Every monster the party can see in the level played, with whether it is
+/// dead.
+fn deaths(app: &mut App) -> Vec<bool> {
+    let world = app.world_mut();
+    let mut query = world.query_filtered::<&crate::game::characters::Vitals, With<Monster>>();
+    query.iter(world).map(crate::game::characters::Vitals::is_dead).collect()
+}
+
 #[test]
 fn departure_keeps_deaths_made_while_destination_loads() {
     let (mut app, source) = playing();
@@ -493,7 +532,7 @@ fn departure_keeps_deaths_made_while_destination_loads() {
     assert!(is_played(&app, source), "the source stays intact while the entry loads");
     assert!(!is_played(&app, target));
 
-    // What the source holds at the commit is what is remembered.
+    // What the source holds at the commit is what it keeps.
     let world = app.world_mut();
     world
         .query_filtered::<&mut crate::game::characters::Vitals, With<Monster>>()
@@ -507,17 +546,17 @@ fn departure_keeps_deaths_made_while_destination_loads() {
         .unwrap();
     app.update();
     assert!(is_played(&app, target));
-    assert!(app.world().get_entity(source).is_err());
+    assert!(is_set_aside(&app, source));
 
-    let returned = spawn_level(&mut app, floor());
+    spawn_level(&mut app, floor());
     app.update();
-    assert!(is_played(&app, returned));
-    assert!(monsters(&mut app).is_empty(), "departure must remember the kill");
+    assert!(is_played(&app, source), "the party is back in the level it left");
+    assert_eq!(deaths(&mut app), [true], "departure must keep the kill");
     assert_eq!(party_entities(&mut app), [party]);
 }
 
 #[test]
-fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
+fn preparation_keeps_the_source_live_and_the_commit_keeps_its_latest_state() {
     use avian3d::prelude::Position;
     let (mut app, source) = playing();
     let party = party_entities(&mut app)[0];
@@ -540,6 +579,7 @@ fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
     app.world_mut().entity_mut(source).insert(PendingPartyMove(PartyMove::Fly(0)));
     app.world_mut().run_system_once(move_party).unwrap();
     let mut next = app.world().get::<Level>(source).unwrap().clone();
+    next.path = "levels/next/next.pvl".into();
     let geometry =
         app.world().resource::<Assets<LevelDefinition>>().get(&next.definition).unwrap().clone();
     let loading = app.world_mut().resource_mut::<Assets<LevelDefinition>>().reserve_handle();
@@ -550,19 +590,46 @@ fn preparation_keeps_the_source_live_and_commit_captures_its_latest_state() {
     app.update();
     assert!(is_played(&app, source));
     assert_eq!(app.world().get::<Position>(party).unwrap().0, at);
-    // Damage while loading must survive same-path replacement. An early
-    // snapshot would resurrect this monster at the commit boundary.
+    // Damage while loading must survive the commit. An early snapshot would
+    // resurrect this monster at the commit boundary.
     let monster =
         app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
     app.world_mut().get_mut::<crate::game::characters::Vitals>(monster).unwrap().health.current = 0;
     app.world_mut().resource_mut::<Assets<LevelDefinition>>().insert(&loading, geometry).unwrap();
     app.update();
     assert!(is_played(&app, destination));
-    assert!(app.world().get_entity(source).is_err());
-    assert!(monsters(&mut app).is_empty());
+    assert!(is_set_aside(&app, source));
+    assert!(app.world().get::<crate::game::characters::Vitals>(monster).unwrap().is_dead());
     assert_eq!(
         app.world().get::<Position>(party).unwrap().0,
         Vec3::new(9.0, 4.0, 2.0) - Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE
+    );
+}
+
+/// Travel to the level the party is in does not build or wake anything: the
+/// party is placed at the entrance and the level plays on as it was.
+#[test]
+fn travel_within_a_level_places_the_party_and_keeps_the_level() {
+    use avian3d::prelude::Position;
+    let (mut app, source) = playing();
+    let party = party_entities(&mut app)[0];
+    let monster =
+        app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
+    app.world_mut().get_mut::<crate::game::characters::Vitals>(monster).unwrap().health.current = 0;
+    let level = test_level(&mut app, floor());
+    let mut destination = Destination::new(level, default(), Entry::Travel);
+    destination.start.eye = Some(Vec3::new(9.0, 4.0, 2.0));
+    app.world_mut().spawn(destination);
+    app.update();
+    assert_eq!(played(&mut app), source);
+    assert_eq!(deaths(&mut app), [true]);
+    assert_eq!(
+        app.world().get::<Position>(party).unwrap().0,
+        Vec3::new(9.0, 4.0, 2.0) - Vec3::Y * crate::game::party::body::EYE_ABOVE_CENTRE
+    );
+    assert!(
+        app.world_mut().query::<&Destination>().iter(app.world()).next().is_none(),
+        "the entry is spent"
     );
 }
 
@@ -721,4 +788,233 @@ fn an_unborn_group_waits_until_born_and_is_born_once() {
     let root = revisit(&mut app);
     assert_eq!(monsters(&mut app).len(), 2, "born for good");
     assert!(app.world().get::<Unborn>(root).unwrap().0.is_empty());
+}
+
+/// What is in a level is itself when the party returns, not a copy rebuilt from
+/// what someone remembered to keep: a monster with what ails it and the spells
+/// laid on it, an item with what is known of it, a container with what is left
+/// in it. All of it is set aside while the party is away.
+#[test]
+fn what_is_in_a_level_is_itself_when_the_party_returns() {
+    use crate::content::items::ItemId;
+    use crate::game::actors::spells::{LaidOn, Turns};
+    use crate::game::characters::{Condition, Lasting, Vitals};
+    use crate::game::items::{Item, Known, Lying, Stowed, Stows};
+    use crate::game::world::containers::Container;
+    use bevy::ecs::entity_disabling::Disabled;
+    let (mut app, level) = playing();
+    let monster =
+        app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
+    app.world_mut()
+        .get_mut::<Vitals>(monster)
+        .unwrap()
+        .conditions
+        .inflict(Condition::Blind, Lasting::Indefinite);
+    let spell = app.world_mut().spawn((Turns(3), LaidOn(monster))).id();
+    let known = Known { identified: true, spell: false, curse: true };
+    let item = app
+        .world_mut()
+        .spawn((
+            Item(ItemId(1)),
+            known,
+            Lying,
+            LevelOwned(level),
+            Transform::from_xyz(1.0, 0.0, 2.0),
+        ))
+        .id();
+    let chest = app.world_mut().spawn((Container { table: None, gold: 0 }, LevelOwned(level))).id();
+    let coin = app.world_mut().spawn((Item(ItemId(2)), Stowed(chest))).id();
+
+    leave(&mut app);
+    for held in [level, monster, spell, item, chest, coin] {
+        assert!(
+            app.world().get::<Disabled>(held).is_some(),
+            "{held:?} is set aside with its level"
+        );
+    }
+
+    assert_eq!(come_back(&mut app), level);
+    for held in [level, monster, spell, item, chest, coin] {
+        assert!(app.world().get::<Disabled>(held).is_none(), "{held:?} is back with its level");
+    }
+    let world = app.world();
+    assert!(world.get::<Vitals>(monster).unwrap().conditions.has(Condition::Blind));
+    assert_eq!(world.get::<LaidOn>(spell), Some(&LaidOn(monster)));
+    assert_eq!(world.get::<Turns>(spell), Some(&Turns(3)));
+    assert_eq!(world.get::<Known>(item), Some(&known));
+    assert_eq!(world.get::<Stows>(chest).unwrap().iter().collect::<Vec<_>>(), [coin]);
+}
+
+/// A level owes its random encounters the time it was away.
+#[test]
+fn a_level_that_was_away_ages_its_encounters() {
+    use crate::game::world::encounters::{Arrival, EncounterState};
+    let (mut app, level) = playing();
+    assert_eq!(app.world().get::<EncounterState>(level).unwrap().arrival, Some(Arrival::First));
+    leave(&mut app);
+    app.world_mut().resource_mut::<crate::game::time::GameClock>().ms += 2 * 3_600_000;
+    assert_eq!(come_back(&mut app), level);
+    assert_eq!(
+        app.world().get::<EncounterState>(level).unwrap().arrival,
+        Some(Arrival::Returned { away: 7200 })
+    );
+}
+
+/// What a level that is set aside takes part in, with the real physics and
+/// navigation libraries: nothing, and everything again once it wakes.
+mod set_aside_in_the_libraries {
+    use avian3d::prelude::*;
+    use bevy::prelude::*;
+    use bevy::time::TimeUpdateStrategy;
+    use bevy_landmass::prelude::*;
+    use bevy_landmass::{NavMesh3d, NavMeshHandle};
+
+    fn world() -> App {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            bevy::transform::TransformPlugin,
+            PhysicsPlugins::default(),
+            Landmass3dPlugin::default(),
+        ))
+        .init_resource::<crate::game::time::GameClock>()
+        .add_observer(crate::game::world::level::set_aside)
+        .add_observer(crate::game::world::level::wake)
+        .insert_resource(TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f64(1.0 / 64.0),
+        ));
+        app.finish();
+        app.cleanup();
+        app
+    }
+
+    fn steps(app: &mut App, count: usize) {
+        for _ in 0..count {
+            app.update();
+        }
+    }
+
+    fn square() -> NavMesh3d {
+        let mesh = bevy_landmass::NavigationMesh3d {
+            vertices: vec![
+                Vec3::new(-20.0, 0.0, -20.0),
+                Vec3::new(20.0, 0.0, -20.0),
+                Vec3::new(20.0, 0.0, 20.0),
+                Vec3::new(-20.0, 0.0, 20.0),
+            ],
+            polygons: vec![vec![0, 1, 2, 3]],
+            polygon_type_indices: vec![0],
+            height_mesh: None,
+        };
+        NavMesh3d { nav_mesh: std::sync::Arc::new(mesh.validate().unwrap()) }
+    }
+
+    fn ray(app: &mut App, from: Vec3, toward: Dir3) -> bool {
+        use bevy::ecs::system::RunSystemOnce;
+        app.world_mut()
+            .run_system_once(move |spatial: SpatialQuery| {
+                spatial.cast_ray(from, toward, 10.0, true, &SpatialQueryFilter::default()).is_some()
+            })
+            .unwrap()
+    }
+
+    fn velocity(app: &mut App, who: Entity) -> Vec3 {
+        app.world().get::<AgentDesiredVelocity3d>(who).unwrap().velocity()
+    }
+
+    #[test]
+    fn a_level_set_aside_is_out_of_physics_and_navigation_until_it_wakes() {
+        use crate::game::world::level::{LevelOwned, SetAside};
+        let mut app = world();
+        let mesh = app.world_mut().resource_mut::<Assets<NavMesh3d>>().add(square());
+        // The level: ground, a wall under it, and what it owns.
+        let level = app
+            .world_mut()
+            .spawn((
+                RigidBody::Static,
+                Collider::cuboid(40.0, 1.0, 40.0),
+                Position(Vec3::new(0.0, -0.5, 0.0)),
+            ))
+            .id();
+        app.world_mut().spawn((
+            Collider::cuboid(1.0, 4.0, 4.0),
+            Transform::from_xyz(5.0, 2.0, 0.0),
+            ChildOf(level),
+        ));
+        let archipelago = app
+            .world_mut()
+            .spawn((
+                Archipelago3d::new(ArchipelagoOptions::from_agent_radius(0.5)),
+                LevelOwned(level),
+            ))
+            .id();
+        app.world_mut().spawn((
+            Island,
+            ArchipelagoRef3d::new(archipelago),
+            NavMeshHandle(mesh),
+            Transform::default(),
+            LevelOwned(level),
+        ));
+        let monster = app
+            .world_mut()
+            .spawn((
+                RigidBody::Dynamic,
+                Collider::sphere(0.5),
+                Position(Vec3::new(0.0, 0.6, 0.0)),
+                Transform::from_xyz(0.0, 0.6, 0.0),
+                Agent3dBundle {
+                    agent: default(),
+                    settings: AgentSettings { radius: 0.5, desired_speed: 1.0, max_speed: 2.0 },
+                    archipelago_ref: ArchipelagoRef3d::new(archipelago),
+                },
+                AgentTarget3d::Point(Vec3::new(15.0, 0.0, 0.0)),
+                LevelOwned(level),
+            ))
+            .id();
+        // The party, which belongs to no level.
+        let party = app
+            .world_mut()
+            .spawn((
+                RigidBody::Dynamic,
+                Collider::sphere(0.5),
+                Position(Vec3::new(10.0, 0.6, 5.0)),
+                Transform::from_xyz(10.0, 0.6, 5.0),
+            ))
+            .id();
+        steps(&mut app, 40);
+        let standing = app.world().get::<Position>(monster).unwrap().0;
+        assert!(standing.y > 0.4 && standing.y < 0.7, "the monster rests on the floor: {standing}");
+        assert!(velocity(&mut app, monster).x > 0.0, "it heads for its target");
+        assert!(ray(&mut app, Vec3::new(0.0, 2.0, 0.0), Dir3::X), "the wall is there");
+        assert!(ray(&mut app, Vec3::new(8.0, 2.0, 5.0), Dir3::NEG_Y), "so is the floor");
+
+        app.world_mut().entity_mut(level).insert(SetAside { at_ms: 0 });
+        // Told to go the other way, it is not planned for.
+        *app.world_mut().get_mut::<AgentTarget3d>(monster).unwrap() =
+            AgentTarget3d::Point(Vec3::new(-15.0, 0.0, 0.0));
+        steps(&mut app, 1);
+        assert!(!ray(&mut app, Vec3::new(0.0, 2.0, 0.0), Dir3::X), "the wall is gone from queries");
+        assert!(!ray(&mut app, Vec3::new(8.0, 2.0, 5.0), Dir3::NEG_Y), "the floor too");
+        let before = *app.world().entity(monster).get::<Position>().unwrap();
+        steps(&mut app, 64);
+        assert_eq!(
+            *app.world().entity(monster).get::<Position>().unwrap(),
+            before,
+            "a disabled body neither falls nor moves"
+        );
+        assert!(velocity(&mut app, monster).x > 0.0, "a disabled agent is not planned for");
+        let fallen = app.world().get::<Position>(party).unwrap().0;
+        assert!(fallen.y < -2.0, "the party falls through where the level was: {fallen}");
+
+        app.world_mut().entity_mut(level).remove::<SetAside>();
+        app.world_mut().get_mut::<Position>(party).unwrap().0 = Vec3::new(10.0, 0.6, 5.0);
+        app.world_mut().get_mut::<LinearVelocity>(party).unwrap().0 = Vec3::ZERO;
+        steps(&mut app, 40);
+        assert!(ray(&mut app, Vec3::new(0.0, 2.0, 0.0), Dir3::X), "the wall is back");
+        assert!(ray(&mut app, Vec3::new(8.0, 2.0, 5.0), Dir3::NEG_Y), "so is the floor");
+        let rested = app.world().get::<Position>(party).unwrap().0;
+        assert!(rested.y > 0.4, "the party stands on it again: {rested}");
+        assert!(velocity(&mut app, monster).x < 0.0, "the monster heads for its new target");
+    }
 }

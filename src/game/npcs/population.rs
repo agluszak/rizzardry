@@ -2,17 +2,14 @@ use super::*;
 use crate::{
     content::{level::MonsterPlacement, npcs::*},
     game::{
-        characters::{Character, Vitals},
+        characters::Character,
         data::Catalogs,
         party::roster::{PartyMember, PartyRoster},
         rng::GameRng,
         time::GameClock,
         world::{
-            ActorPose,
-            identify::{GroupMember, MonsterGroup},
-            level::{Destination, Entry, KeptMonster, LevelOwned},
-            navigation::{self, Walker},
-            population::{Monster, ScaledBody, SpellBudget},
+            level::{Destination, Entry, LevelOwned},
+            population::{Newborn, ScaledBody},
         },
     },
 };
@@ -75,23 +72,7 @@ pub struct NpcPopulation<'w, 's> {
     registry: ResMut<'w, Registry>,
     assets: ResMut<'w, NpcAssets>,
     scripts: Res<'w, Assets<DialogueScript>>,
-    states: Query<'w, 's, (&'static Npc, Has<PartyMember>, Option<&'static mut NpcLocation>)>,
-    bodies: Query<
-        'w,
-        's,
-        (
-            &'static NpcBody,
-            &'static Monster,
-            &'static Vitals,
-            &'static SpellBudget,
-            ActorPose,
-            Option<&'static Walker>,
-            &'static LevelOwned,
-            Option<&'static GroupMember>,
-        ),
-        Without<crate::game::party::body::PartyBody>,
-    >,
-    groups: Query<'w, 's, &'static MonsterGroup>,
+    states: Query<'w, 's, (&'static Npc, Has<PartyMember>, Option<&'static NpcLocation>)>,
     roster: Query<'w, 's, &'static PartyRoster>,
     characters: Query<'w, 's, &'static Character>,
     clock: Res<'w, GameClock>,
@@ -156,7 +137,7 @@ impl NpcPopulation<'_, '_> {
         content: &Catalogs,
         placed: &mut HashSet<Entity>,
         rng: &mut GameRng,
-        roll: impl FnOnce(&mut GameRng) -> KeptMonster,
+        roll: impl FnOnce(&mut GameRng) -> Newborn,
     ) -> Option<(Entity, Vec3, f32, ScaledBody, Option<i32>)> {
         let actor = if content.npcs[p.id].monster_bound {
             let key = (p.map.to_owned(), p.placed.location);
@@ -173,71 +154,22 @@ impl NpcPopulation<'_, '_> {
         if !placed.insert(actor) {
             return None;
         }
-        let remembered = if let Ok((npc, member, location)) = self.states.get(actor) {
-            if npc.dead || member {
-                return None;
-            }
-            if location.is_some_and(|l| l.map != p.map) {
-                return None;
-            }
-            location.and_then(|l| l.dormant.clone())
-        } else {
-            None
-        };
-        let kept = remembered.unwrap_or_else(|| roll(rng));
-        if kept.vitals.is_dead() {
+        if let Ok((npc, member, location)) = self.states.get(actor)
+            && (npc.dead || member || location.is_some_and(|l| l.map != p.map))
+        {
             return None;
         }
-        commands.entity(actor).insert(NpcLocation {
-            map: p.map.into(),
-            species: kept.monster.species,
-            dormant: None,
-        });
+        let kept = roll(rng);
+        commands
+            .entity(actor)
+            .insert(NpcLocation { map: p.map.into(), species: kept.monster.species });
         Some(bind(commands, actor, kept))
-    }
-    pub fn visitors(
-        &mut self,
-        commands: &mut Commands,
-        map: &str,
-        placed: &mut HashSet<Entity>,
-    ) -> Vec<(Entity, Vec3, f32, ScaledBody, Option<i32>, u32)> {
-        let mut found = vec![];
-        for &actor in self.registry.named.values() {
-            let Ok((npc, member, Some(location))) = self.states.get(actor) else { continue };
-            if npc.dead || member || location.map != map || !placed.insert(actor) {
-                continue;
-            }
-            let Some(kept) = location.dormant.clone() else { continue };
-            let species = location.species;
-            commands.entity(actor).insert(NpcLocation { map: map.into(), species, dormant: None });
-            let (e, at, yaw, body, group) = bind(commands, actor, kept);
-            found.push((e, at, yaw, body, group, species));
-        }
-        found
-    }
-    pub fn depart(&mut self, _commands: &mut Commands, root: Entity) {
-        for (binding, monster, vitals, budget, pose, walker, owner, group) in &self.bodies {
-            if owner.0 != root {
-                continue;
-            }
-            let Ok((_, _, Some(mut location))) = self.states.get_mut(binding.0) else { continue };
-            let body = KeptMonster {
-                monster: monster.clone(),
-                vitals: vitals.clone(),
-                budget: *budget,
-                feet: navigation::feet(pose.translation(), walker),
-                yaw: pose.rotation().to_euler(EulerRot::YXZ).0,
-                group: group.and_then(|g| self.groups.get(g.0).ok()).map(|g| g.authored),
-            };
-            location.dormant = Some(body);
-        }
-        // LevelOwned despawns the physical bindings with the departing level.
     }
 }
 fn bind(
     commands: &mut Commands,
     actor: Entity,
-    kept: KeptMonster,
+    kept: Newborn,
 ) -> (Entity, Vec3, f32, ScaledBody, Option<i32>) {
     let shape = kept.monster.body;
     let e = commands.spawn((NpcBody(actor), kept.monster, kept.vitals, kept.budget)).id();

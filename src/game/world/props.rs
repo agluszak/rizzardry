@@ -48,7 +48,7 @@ pub fn trimesh(
     )
 }
 
-/// Make `entity` the level's prop number `index`, posed at `motion.frame`, with its
+/// Make `entity` the level's prop number `index`, at rest at its first frame, with its
 /// moving parts and their colliders; a door also gets its doorway, from its
 /// closed shape (each part at its first pose), for walkers' links while it
 /// is open.
@@ -57,10 +57,9 @@ pub fn build_prop(
     index: usize,
     prop: &PropModel,
     door: bool,
-    motion: PropMotion,
     colliders: Vec<Option<Collider>>,
 ) {
-    let frame = motion.frame;
+    let frame = 0.0;
     let doorway = door
         .then(|| {
             DoorLink::around(prop.parts.iter().flat_map(|part| {
@@ -72,7 +71,7 @@ pub fn build_prop(
     entity.insert((
         Name::new(prop.name.clone()),
         Prop { definition: index },
-        motion,
+        PropMotion::default(),
         Transform::default(),
     ));
     if let Some(doorway) = doorway {
