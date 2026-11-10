@@ -203,7 +203,12 @@ impl<'a> Hands<'a> {
             ranged: hand.ranged(),
             loaded: hand.shot().map(|missile| missile.modes),
             sure_throw: self.sure_throw(c, slot),
-            critical_skill: self.critical_skill(c, slot),
+            critical: self.critical_skill(c, slot).map(|skill| c.skill(skill)),
+            practises: match (hand.ranged(), c.has_trait(Trait::ThrownCriticals)) {
+                (false, _) => &[Skill::CriticalStrike, Skill::PowerStrike],
+                (true, true) => &[Skill::EagleEye, Skill::CriticalStrike],
+                (true, false) => &[Skill::EagleEye],
+            },
             weight: match hand {
                 Hand::Weapon { weight, .. } => Some(*weight),
                 _ => None,
