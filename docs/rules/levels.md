@@ -37,8 +37,21 @@ A character is an entity whether or not they are in the party. One who is
 dismissed, or has not yet joined, is a character without a seat: they keep
 their sheet, their health and what ails them, and what they wear and pack
 stays worn and packed, as item entities. Joining gives them a seat; nothing is
-unpacked. An NPC who stands in a level is the same entity as the NPC the party
-talks to and the one who may join.
+unpacked.
+
+An NPC who stands in a level stands there in a body: a monster of the species
+that is its likeness, made anew each time, with the health and stamina that
+species rolls. The body is not the character. The character keeps its own
+health across joining and leaving; the body's is lost with the body. What ails
+is the one thing handed across: joining, the body's conditions pass to the
+character and the body is gone; dismissed and alive, a new body is made beside
+the party with the character's conditions, and if they are out cold without
+end, with no more stamina than the character has (retail `NPC Manager.cpp`,
+the join calling `CopyMonsterConditionsToCharacter` and
+`RemoveMonster`; `DismissNpcFromParty` calling `CreateGroup` and
+`CopyCharacterConditionsToTarget`). So a recruit in a level is two things, as
+it is in the original, and the handing over of conditions is the rule, not a
+copy to be designed away.
 
 One who is somewhere the party is not is set aside with that level, or on
 their own if they are nowhere.
