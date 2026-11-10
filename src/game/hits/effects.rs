@@ -7,7 +7,7 @@ use bevy::ecs::query::QueryData;
 use bevy::prelude::*;
 
 use super::defences;
-use super::definitions::{self, Blow, DefinitionId, Definitions, EffectKind, EffectSpec};
+use super::definitions::{self, Blow, DefinitionId, Definitions, EffectKind, EffectSpec, Whom};
 use super::{Damaged, Effect};
 use crate::content::characters::{Attribute, Skill};
 use crate::content::items::EquipClass;
@@ -129,11 +129,13 @@ fn specs<'a>(
     party: bool,
 ) -> impl Iterator<Item = EffectSpec> + 'a {
     let blow = strike.blow;
-    rules.definitions.get(strike.definition).effects.iter().filter_map(move |&spec| {
-        if spec.party != party || (spec.by_monsters && !blow.is_some_and(|b| b.by_monster)) {
+    rules.definitions.get(strike.definition).effects.iter().filter_map(move |spec| {
+        if (spec.on == Whom::Party) != party
+            || (spec.by_monsters && !blow.is_some_and(|b| b.by_monster))
+        {
             return None;
         }
-        let Some(effect) = spec.weapon else { return Some(spec) };
+        let Some(effect) = spec.weapon else { return Some(spec.clone()) };
         let weapon = blow?.effects;
         let chance = weapon.chances[effect];
         let kind = match spec.kind {
@@ -144,9 +146,9 @@ fn specs<'a>(
                     indefinite,
                 }
             }
-            kind => kind,
+            ref kind => kind.clone(),
         };
-        (chance > 0).then_some(EffectSpec { chance: Some(chance), kind, ..spec })
+        (chance > 0).then_some(EffectSpec { chance: Some(chance), kind, ..spec.clone() })
     })
 }
 
@@ -169,9 +171,9 @@ pub fn land(
     let mut previous = None;
     for spec in specs(strike, rules, false) {
         let kind = body.resistances.kind;
-        if (spec.members && !body.member)
-            || (spec.monsters && kind.is_none())
-            || spec.kinds.is_some_and(|kinds| !kind.is_some_and(|k| kinds.contains(&k)))
+        if (spec.on == Whom::Members && !body.member)
+            || (spec.on == Whom::Monsters && kind.is_none())
+            || spec.kinds.as_ref().is_some_and(|kinds| !kind.is_some_and(|k| kinds.contains(&k)))
         {
             continue;
         }
@@ -400,7 +402,7 @@ fn apply(
             let amount = pool.restore_evenly(magnitude);
             nothing_or(amount, Effect::Replenished { victim, amount })
         }
-        K::Cure { conditions, outright } => {
+        K::Cure { ref conditions, outright } => {
             if conditions.contains(&Condition::Poisoned) {
                 body.vitals.weaken_poison(defences::cure_rounds(strength), rng);
             }
@@ -460,6 +462,9 @@ fn apply(
         // The party's own: its purse, and its lasting spells.
         K::LoseGold | K::Dispel => return Outcome::Missed,
         K::Prismic { .. } => unreachable!("Prismic is picked before it is applied"),
+        K::SpellPurify | K::SpellEnchant | K::SpellPrismic => {
+            unreachable!("a spell's own effect is made plain with its effects")
+        }
     };
     log.effects.push(effect);
     Outcome::Landed

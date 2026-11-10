@@ -11,129 +11,164 @@ use super::items::Dice;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SpellId(pub u8);
 
-impl SpellId {
-    // Retail identities: decomp include/wiz8/spell_ids.h. Keep names shared by all rules.
-    pub const NONE: Self = Self(0);
-    pub const ACID_SPLASH: Self = Self(1);
-    pub const BLESS: Self = Self(2);
-    pub const CHARM: Self = Self(3);
-    pub const FROST: Self = Self(4);
-    pub const ENERGY_BLAST: Self = Self(5);
-    pub const HEAL_WOUNDS: Self = Self(6);
-    pub const ITCHING_SKIN: Self = Self(7);
-    pub const LIGHT: Self = Self(8);
-    pub const MAKE_WOUNDS: Self = Self(9);
-    pub const MIND_STAB: Self = Self(10);
-    pub const PARALYZE: Self = Self(11);
-    pub const SLEEP: Self = Self(12);
-    pub const STAMINA: Self = Self(13);
-    pub const TERROR: Self = Self(14);
-    pub const BLINDING_FLASH: Self = Self(15);
-    pub const CURE_LESSER_COND: Self = Self(16);
-    pub const DETECT_SECRETS: Self = Self(17);
-    pub const DIVINE_TRAP: Self = Self(18);
-    pub const DRACON_BREATH: Self = Self(19);
-    pub const ENCHANTED_BLADE: Self = Self(20);
-    pub const GUARDIAN_ANGEL: Self = Self(21);
-    pub const HOLY_WATER: Self = Self(22);
-    pub const IDENTIFY_ITEM: Self = Self(23);
-    pub const INSANITY: Self = Self(24);
-    pub const MAGIC_MISSILES: Self = Self(25);
-    pub const MISSILE_SHIELD: Self = Self(26);
-    pub const RAZOR_CLOAK: Self = Self(27);
-    pub const SHRILL_SOUND: Self = Self(28);
-    pub const SLOW: Self = Self(29);
-    pub const SONIC_BOOM: Self = Self(30);
-    pub const WEB: Self = Self(31);
-    pub const ARMORPLATE: Self = Self(32);
-    pub const CHAMELEON: Self = Self(33);
-    pub const CURE_PARALYSIS: Self = Self(34);
-    pub const CURE_POISON: Self = Self(35);
-    pub const FIREBALL: Self = Self(36);
-    pub const FREEZE_FLESH: Self = Self(37);
-    pub const HYPNOTIC_LURE: Self = Self(38);
-    pub const KNOCK_KNOCK: Self = Self(39);
-    pub const MAGIC_SCREEN: Self = Self(40);
-    pub const MINDREAD: Self = Self(41);
-    pub const NOXIOUS_FUMES: Self = Self(42);
-    pub const PSIONIC_FIRE: Self = Self(43);
-    pub const REST_ALL: Self = Self(44);
-    pub const SHADOW_HOUND: Self = Self(45);
-    pub const SILENCE: Self = Self(46);
-    pub const WHIPPING_ROCKS: Self = Self(47);
-    pub const ACID_BOMB: Self = Self(48);
-    pub const ARMORMELT: Self = Self(49);
-    pub const CRUSH: Self = Self(50);
-    pub const CURE_DISEASE: Self = Self(51);
-    pub const EGO_WHIP: Self = Self(52);
-    pub const ELEMENT_SHIELD: Self = Self(53);
-    pub const EYE_FOR_AN_EYE: Self = Self(54);
-    pub const FIRE_BOMB: Self = Self(55);
-    pub const HASTE: Self = Self(56);
-    pub const ICEBALL: Self = Self(57);
-    pub const REMOVE_CURSE: Self = Self(58);
-    pub const SOUL_SHIELD: Self = Self(59);
-    pub const SUMMON_ELEMENTAL: Self = Self(60);
-    pub const SUPERMAN: Self = Self(61);
-    pub const RING_OF_FIRE: Self = Self(62);
-    pub const WHIRLWIND: Self = Self(63);
-    pub const X_RAY: Self = Self(64);
-    pub const BODY_OF_STONE: Self = Self(65);
-    pub const DEHYDRATE: Self = Self(66);
-    pub const FREEZE_ALL: Self = Self(67);
-    pub const HEAL_ALL: Self = Self(68);
-    pub const HEX: Self = Self(69);
-    pub const INSTANT_DEATH: Self = Self(70);
-    pub const PSIONIC_BLAST: Self = Self(71);
-    pub const PURIFY_AIR: Self = Self(72);
-    pub const RETURN_TO_PORTAL: Self = Self(73);
-    pub const SANE_MIND: Self = Self(74);
-    pub const SET_PORTAL: Self = Self(75);
-    pub const TOXIC_CLOUD: Self = Self(76);
-    pub const BANISH: Self = Self(77);
-    pub const BLIZZARD: Self = Self(78);
-    pub const BOILING_BLOOD: Self = Self(79);
-    pub const DRAINING_CLOUD: Self = Self(80);
-    pub const FIRESTORM: Self = Self(81);
-    pub const LIFESTEAL: Self = Self(82);
-    pub const LIGHTNING: Self = Self(83);
-    pub const MIGHT_TO_MAGIC: Self = Self(84);
-    pub const PANDEMONIUM: Self = Self(85);
-    pub const PRISMIC_RAY: Self = Self(86);
-    pub const QUICKSAND: Self = Self(87);
-    pub const RESURRECTION: Self = Self(88);
-    pub const TURNCOAT: Self = Self(89);
-    pub const ASPHYXIATION: Self = Self(90);
-    pub const CEREBRAL_HEMORRHAGE: Self = Self(91);
-    pub const CONCUSSION: Self = Self(92);
-    pub const DEATH_CLOUD: Self = Self(93);
-    pub const DEATH_WISH: Self = Self(94);
-    pub const EARTHQUAKE: Self = Self(95);
-    pub const FALLING_STARS: Self = Self(96);
-    pub const MIND_FLAY: Self = Self(97);
-    pub const NUCLEAR_BLAST: Self = Self(98);
-    pub const PRISMIC_CHAOS: Self = Self(99);
-    pub const RESTORATION: Self = Self(100);
-    pub const TSUNAMI: Self = Self(101);
-    pub const RESTORE_HEALTH: Self = Self(114);
-    pub const RESTORE_MAGIC: Self = Self(115);
-    pub const SMELLING_SALTS: Self = Self(116);
-    pub const ROUT: Self = Self(117);
-    pub const BOILING_BLOOD_EXPLOSION: Self = Self(118);
-    pub const SPECIAL_ATTACK_CONE: Self = Self(119);
-    pub const RENEWAL: Self = Self(120);
-    pub const DAGGER_SCATTER: Self = Self(121);
-    pub const POISON_DARTS: Self = Self(122);
-    pub const ALARM: Self = Self(123);
-    pub const PHILOSOPHERS_BANE: Self = Self(124);
-    pub const VAMPIRIC_VORTEX: Self = Self(125);
-    pub const HEATWAVE: Self = Self(126);
-    pub const ANTI_MAGIC: Self = Self(127);
-    pub const DEATH_CURSE: Self = Self(128);
-    pub const DISPEL_UNDEAD: Self = Self(129);
-    pub const BOOZE: Self = Self(130);
-    pub const ROCKET_BLAST: Self = Self(131);
+/// Declares the spells' numbers once, and their names to match: the
+/// constants of [`SpellId`], and the names tables are written in.
+macro_rules! spell_ids {
+    ($($name:ident = $number:expr,)*) => {
+        impl SpellId {
+            $(pub const $name: Self = Self($number);)*
+        }
 
+        /// Every spell the game names, by the name of its constant.
+        const NAMED: &[(&str, SpellId)] = &[$((stringify!($name), SpellId::$name),)*];
+    };
+}
+
+// Retail identities: decomp include/wiz8/spell_ids.h. Keep names shared by all rules.
+spell_ids! {
+    NONE = 0,
+    ACID_SPLASH = 1,
+    BLESS = 2,
+    CHARM = 3,
+    FROST = 4,
+    ENERGY_BLAST = 5,
+    HEAL_WOUNDS = 6,
+    ITCHING_SKIN = 7,
+    LIGHT = 8,
+    MAKE_WOUNDS = 9,
+    MIND_STAB = 10,
+    PARALYZE = 11,
+    SLEEP = 12,
+    STAMINA = 13,
+    TERROR = 14,
+    BLINDING_FLASH = 15,
+    CURE_LESSER_COND = 16,
+    DETECT_SECRETS = 17,
+    DIVINE_TRAP = 18,
+    DRACON_BREATH = 19,
+    ENCHANTED_BLADE = 20,
+    GUARDIAN_ANGEL = 21,
+    HOLY_WATER = 22,
+    IDENTIFY_ITEM = 23,
+    INSANITY = 24,
+    MAGIC_MISSILES = 25,
+    MISSILE_SHIELD = 26,
+    RAZOR_CLOAK = 27,
+    SHRILL_SOUND = 28,
+    SLOW = 29,
+    SONIC_BOOM = 30,
+    WEB = 31,
+    ARMORPLATE = 32,
+    CHAMELEON = 33,
+    CURE_PARALYSIS = 34,
+    CURE_POISON = 35,
+    FIREBALL = 36,
+    FREEZE_FLESH = 37,
+    HYPNOTIC_LURE = 38,
+    KNOCK_KNOCK = 39,
+    MAGIC_SCREEN = 40,
+    MINDREAD = 41,
+    NOXIOUS_FUMES = 42,
+    PSIONIC_FIRE = 43,
+    REST_ALL = 44,
+    SHADOW_HOUND = 45,
+    SILENCE = 46,
+    WHIPPING_ROCKS = 47,
+    ACID_BOMB = 48,
+    ARMORMELT = 49,
+    CRUSH = 50,
+    CURE_DISEASE = 51,
+    EGO_WHIP = 52,
+    ELEMENT_SHIELD = 53,
+    EYE_FOR_AN_EYE = 54,
+    FIRE_BOMB = 55,
+    HASTE = 56,
+    ICEBALL = 57,
+    REMOVE_CURSE = 58,
+    SOUL_SHIELD = 59,
+    SUMMON_ELEMENTAL = 60,
+    SUPERMAN = 61,
+    RING_OF_FIRE = 62,
+    WHIRLWIND = 63,
+    X_RAY = 64,
+    BODY_OF_STONE = 65,
+    DEHYDRATE = 66,
+    FREEZE_ALL = 67,
+    HEAL_ALL = 68,
+    HEX = 69,
+    INSTANT_DEATH = 70,
+    PSIONIC_BLAST = 71,
+    PURIFY_AIR = 72,
+    RETURN_TO_PORTAL = 73,
+    SANE_MIND = 74,
+    SET_PORTAL = 75,
+    TOXIC_CLOUD = 76,
+    BANISH = 77,
+    BLIZZARD = 78,
+    BOILING_BLOOD = 79,
+    DRAINING_CLOUD = 80,
+    FIRESTORM = 81,
+    LIFESTEAL = 82,
+    LIGHTNING = 83,
+    MIGHT_TO_MAGIC = 84,
+    PANDEMONIUM = 85,
+    PRISMIC_RAY = 86,
+    QUICKSAND = 87,
+    RESURRECTION = 88,
+    TURNCOAT = 89,
+    ASPHYXIATION = 90,
+    CEREBRAL_HEMORRHAGE = 91,
+    CONCUSSION = 92,
+    DEATH_CLOUD = 93,
+    DEATH_WISH = 94,
+    EARTHQUAKE = 95,
+    FALLING_STARS = 96,
+    MIND_FLAY = 97,
+    NUCLEAR_BLAST = 98,
+    PRISMIC_CHAOS = 99,
+    RESTORATION = 100,
+    TSUNAMI = 101,
+    RESTORE_HEALTH = 114,
+    RESTORE_MAGIC = 115,
+    SMELLING_SALTS = 116,
+    ROUT = 117,
+    BOILING_BLOOD_EXPLOSION = 118,
+    SPECIAL_ATTACK_CONE = 119,
+    RENEWAL = 120,
+    DAGGER_SCATTER = 121,
+    POISON_DARTS = 122,
+    ALARM = 123,
+    PHILOSOPHERS_BANE = 124,
+    VAMPIRIC_VORTEX = 125,
+    HEATWAVE = 126,
+    ANTI_MAGIC = 127,
+    DEATH_CURSE = 128,
+    DISPEL_UNDEAD = 129,
+    BOOZE = 130,
+    ROCKET_BLAST = 131,
+}
+
+/// Written as the name of its constant (`ENERGY_BLAST`), as tables name spells.
+impl<'de> serde::Deserialize<'de> for SpellId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Name;
+        impl serde::de::Visitor<'_> for Name {
+            type Value = SpellId;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("the name of a SpellId constant")
+            }
+            fn visit_str<E: serde::de::Error>(self, name: &str) -> Result<SpellId, E> {
+                NAMED
+                    .iter()
+                    .find_map(|&(named, id)| (named == name).then_some(id))
+                    .ok_or_else(|| E::custom(format!("no spell is named {name}")))
+            }
+        }
+        deserializer.deserialize_identifier(Name)
+    }
+}
+
+impl SpellId {
     /// First spell outside the learnable spellbook range.
     pub const LEARNABLE: u8 = 0x72;
 }

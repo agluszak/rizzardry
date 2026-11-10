@@ -8,7 +8,9 @@ use super::characters::BodyPart;
 use super::items::{AttackEffects, AttackMode, Dice};
 
 /// Retail monster categories, named by StringData entries 0x578..=0x598.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, num_enum::TryFromPrimitive)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, num_enum::TryFromPrimitive, serde::Deserialize,
+)]
 #[repr(u8)]
 pub enum MonsterKind {
     #[default]

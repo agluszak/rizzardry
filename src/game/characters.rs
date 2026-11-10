@@ -19,7 +19,7 @@ pub(crate) const COMES_ROUND_ABOVE: u32 = 9;
 
 /// Retail's conditions, mildest first. Death is not one of them here: a
 /// member is dead exactly when their health is 0.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
 pub enum Condition {
     Drained,
     Diseased,

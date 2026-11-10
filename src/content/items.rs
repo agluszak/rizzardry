@@ -22,7 +22,7 @@ impl ItemId {
 }
 
 /// `count` d `sides` + `base`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct Dice {
     pub count: i32,
     pub sides: i32,
@@ -121,7 +121,7 @@ pub enum AttackMode {
 
 /// What a blow may do besides its damage, in retail's order (its attack
 /// effect slots).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Enum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Enum, serde::Deserialize)]
 pub enum AttackEffect {
     Sleep,
     Paralyze,
