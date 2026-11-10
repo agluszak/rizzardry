@@ -4,17 +4,18 @@ use crate::content::characters::Realm;
 use crate::content::items::{AttackMode, Dice};
 use crate::content::level::LevelDefinition;
 use crate::content::monster::MonsterBody;
-use crate::content::species::{Disposition, MonsterAttack, MonsterCatalog, MonsterWeapon};
+use crate::content::species::{Disposition, MonsterAttack, MonsterCatalog, MonsterWeapon, Species};
 use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
+use crate::game::actors::{Enchantment, Laid, Laying};
 use crate::game::characters::{Gender, Profession, Race};
 use crate::game::hits::definitions::Definitions;
 use crate::game::hits::effects::Strike;
 use crate::game::hits::{self, Act, Deed, Effect, Release};
-use crate::game::magic::enchantments::{Enchantment, PartyEffects};
 use crate::game::magic::{self, LearnedSpells, Strength};
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster;
-use crate::game::world::footing;
+use crate::game::time::GameClock;
+use crate::game::world::hostility::{Loyalty, Side, Stance};
 use crate::game::world::identify::{GroupMember, Identified, MonsterGroup};
 use crate::game::world::level::Level;
 use crate::game::world::navigation::{Walker, WalkerMotionConfig};
@@ -35,6 +36,7 @@ fn app() -> (App, Entity, Entity) {
         .init_resource::<Assets<WalkerMotionConfig>>()
         .add_message::<crate::game::factions::FactionNews>()
         .add_message::<Identified>()
+        .add_message::<crate::game::party::recovery::Elapsed>()
         .add_plugins((
             CombatPlugin,
             magic::MagicPlugin,
@@ -94,6 +96,8 @@ fn monster(world: &mut World, battle: Entity, distance: f32) -> Entity {
             },
             Vitals::full(20, 100),
             Transform::from_xyz(0.0, 0.0, distance),
+            Side::new(Stance::Hostile),
+            Loyalty::None,
             Walker { speed: 1.0, float_height: 0.0 },
             Combatant(battle),
             GroupMember(group),
@@ -102,14 +106,22 @@ fn monster(world: &mut World, battle: Entity, distance: f32) -> Entity {
         .id()
 }
 
-fn enchantment(spell: SpellId, turns: u32) -> Enchantment {
-    Enchantment { spell, power: 1, boost: 0, turns, absorption: 0 }
+/// Lay a spell of power one on a bearer, for `turns`, absorbing `absorbs`.
+fn lay(world: &mut World, bearer: Entity, spell: SpellId, turns: u32, absorbs: u32) {
+    use bevy::ecs::system::RunSystemOnce;
+    let laid = Enchantment { spell, power: 1, boost: 0 };
+    world
+        .run_system_once(move |mut laying: Laying| laying.lay(bearer, laid, turns, absorbs))
+        .unwrap();
+    world.flush();
+}
+
+fn is_laid(world: &mut World, bearer: Entity, spell: SpellId) -> bool {
+    use bevy::ecs::system::RunSystemOnce;
+    world.run_system_once(move |laid: Laid| laid.has(bearer, spell)).unwrap()
 }
 
 fn refresh(world: &mut World) {
-    world.run_system_cached(hostility::judge_sides).unwrap();
-    world.run_system_cached(footing::place_bodies).unwrap();
-    world.run_system_cached(crate::game::actors::notice_changes).unwrap();
     world.flush();
 }
 
@@ -125,7 +137,7 @@ fn anti_magic_drains_once_and_then_dispels_the_party() {
             roster::PartyMember(party),
         ))
         .id();
-    world.get_mut::<PartyEffects>(party).unwrap().0.apply(enchantment(SpellId::MAGIC_SCREEN, 10));
+    lay(world, party, SpellId::MAGIC_SCREEN, 10, 0);
     let definition = world.resource::<Definitions>().spell(SpellId::ANTI_MAGIC).unwrap();
     let strength = Strength { power: 1, against: 1, boost: 0 };
     world.write_message(Release {
@@ -134,7 +146,8 @@ fn anti_magic_drains_once_and_then_dispels_the_party() {
     });
     refresh(world);
     world.run_system_cached(hits::resolve).unwrap();
-    assert!(world.get::<PartyEffects>(party).unwrap().0.get(SpellId::MAGIC_SCREEN).is_none());
+    world.flush();
+    assert!(!is_laid(world, party, SpellId::MAGIC_SCREEN));
     let news: Vec<_> = world.resource_mut::<Messages<CombatNews>>().drain().collect();
     let [CombatNews::Effects(effects)] = news.as_slice() else { panic!("{news:?}") };
     let drained = effects.iter().filter(|e| matches!(e, Effect::Drained { .. })).count();
@@ -149,7 +162,7 @@ fn final_cloud_pulse_settles_and_credits_the_kill_before_victory() {
     world.get_mut::<Round>(fight).unwrap().phase = RoundPhase::Executing(101);
     world.get_mut::<Round>(fight).unwrap().attacked = true;
     let actor = monster(world, fight, 3.0);
-    world.get_mut::<Vitals>(actor).unwrap().enchantments.apply(enchantment(SpellId::FIRESTORM, 1));
+    lay(world, actor, SpellId::FIRESTORM, 1, 0);
     let before = world.get::<Character>(member).unwrap().experience;
     world.run_schedule(FixedUpdate);
     assert!(world.get::<Vitals>(actor).unwrap().is_dead());
@@ -173,16 +186,12 @@ fn a_clouds_last_pulse_still_sees_the_targets_protection() {
     let fight = world.spawn(Battle::default()).id();
     world.get_mut::<Round>(fight).unwrap().phase = RoundPhase::Executing(101);
     let actor = monster(world, fight, 3.0);
-    let mut vitals = world.get_mut::<Vitals>(actor).unwrap();
-    vitals.enchantments.apply(enchantment(SpellId::FIRESTORM, 1));
-    vitals
-        .enchantments
-        .apply(Enchantment { absorption: 100, ..enchantment(SpellId::GUARDIAN_ANGEL, 1) });
+    lay(world, actor, SpellId::FIRESTORM, 1, 0);
+    lay(world, actor, SpellId::GUARDIAN_ANGEL, 1, 100);
     world.run_schedule(FixedUpdate);
     assert_eq!(world.get::<Vitals>(actor).unwrap().health.current, 20);
-    assert!(
-        world.get::<Vitals>(actor).unwrap().enchantments.get(SpellId::GUARDIAN_ANGEL).is_none()
-    );
+    world.flush();
+    assert!(!is_laid(world, actor, SpellId::GUARDIAN_ANGEL));
 }
 
 #[test]
@@ -226,23 +235,26 @@ fn missile_arrival_settles_defeat_before_any_actor_can_start() {
 }
 
 #[test]
-fn killing_a_turned_ally_awards_nothing_but_a_revived_enemy_counts() {
+fn killing_a_turned_ally_awards_nothing_but_an_enemy_counts() {
     use crate::game::characters::{Condition, Lasting};
     let (mut app, _, _) = app();
     let world = app.world_mut();
     let battle = world.spawn(Battle::default()).id();
     let actor = monster(world, battle, 3.0);
     refresh(world);
-    world.get_mut::<Vitals>(actor).unwrap().inflict(Condition::Turncoat, Lasting::Rounds(5));
+    world.get_mut::<Vitals>(actor).unwrap().afflict(Condition::Turncoat, Lasting::Rounds(5));
     refresh(world);
-    world.get_mut::<Vitals>(actor).unwrap().slay();
-    world.run_system_cached(crate::game::characters::settle_deaths).unwrap();
+    let kill = |world: &mut World, body: Entity| {
+        let amount = world.get_mut::<Vitals>(body).unwrap().slay();
+        world.write_message(crate::game::hits::Damaged { body, amount, died: true });
+        world.run_system_cached(crate::game::characters::settle_deaths).unwrap();
+    };
+    kill(world, actor);
     assert_eq!(world.get::<Spoils>(battle).unwrap().experience, 0);
-    world.get_mut::<Vitals>(actor).unwrap().health.current = 1;
-    world.run_system_cached(crate::game::characters::settle_deaths).unwrap();
+    // An enemy never turned counts.
+    let enemy = monster(world, battle, 3.0);
     refresh(world);
-    world.get_mut::<Vitals>(actor).unwrap().slay();
-    world.run_system_cached(crate::game::characters::settle_deaths).unwrap();
+    kill(world, enemy);
     assert_eq!(world.get::<Spoils>(battle).unwrap().kills, 1);
     assert_eq!(world.get::<Spoils>(battle).unwrap().experience, 120);
 }

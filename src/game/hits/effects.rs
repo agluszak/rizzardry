@@ -12,16 +12,15 @@ use super::{Damaged, Effect};
 use crate::content::characters::{Attribute, Skill};
 use crate::content::items::{EquipClass, ItemCatalog};
 use crate::content::spells::SpellId;
+use crate::game::actors::spells::{Enchantment, Laying};
 use crate::game::actors::{Armour, Attacks, Attributes, Level, Resistances};
 use crate::game::characters::{Character, Condition, Lasting, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::inventory::{Burden, Carried, Equipped, ItemStack, PartyInventory};
-use crate::game::magic::enchantments::{self, Enchantment, Enchantments, PartyEffects};
 use crate::game::magic::{LearnedSpells, SpellPoints, Strength};
 use crate::game::party::roster::PartyMember;
 use crate::game::rng::GameRng;
-use crate::game::world::footing::Footing;
 use crate::game::world::hostility::{Loyalty, Side, Stance};
 use crate::game::world::population::{SpellBudget, Untargetable};
 
@@ -34,7 +33,6 @@ pub struct Body {
     pub vitals: &'static mut Vitals,
     pub side: &'static Side,
     pub loyalty: &'static Loyalty,
-    pub at: &'static Footing,
     pub attributes: &'static Attributes,
     pub level: &'static Level,
     pub resistances: &'static Resistances,
@@ -47,6 +45,25 @@ pub struct Body {
     pub burden: Option<&'static Burden>,
     pub member: Has<PartyMember>,
     pub untargetable: Has<Untargetable>,
+}
+
+impl BodyItem<'_, '_> {
+    /// The side it is on now.
+    pub fn stance(&self) -> Stance {
+        self.side.now(&self.vitals)
+    }
+}
+
+impl BodyReadOnlyItem<'_, '_> {
+    /// The side it is on now.
+    pub fn stance(&self) -> Stance {
+        self.side.now(self.vitals)
+    }
+
+    /// The side it is on and the band it keeps to now.
+    pub fn standing(&self) -> (Stance, Loyalty) {
+        (self.stance(), self.loyalty.now(self.vitals))
+    }
 }
 
 /// One thing landing: a definition's effects at a strength, a weapon's blow
@@ -75,6 +92,8 @@ pub struct Log {
     pub effects: Vec<Effect>,
     pub improved: Vec<(Entity, Skill)>,
     pub damaged: Vec<Damaged>,
+    /// The dead brought back.
+    pub raised: Vec<Entity>,
     /// The health plain harm took, which a leeching spell gives back.
     pub harm: u32,
 }
@@ -125,7 +144,14 @@ fn waits(spec: &EffectSpec, previous: Option<Outcome>) -> bool {
 
 /// Land a strike on a body (retail `ApplySpellEffectToTarget`,
 /// `ApplyEffectConditions`): every effect for its kind in order.
-pub fn land(strike: &Strike, body: &mut BodyItem, rules: &Rules, rng: &mut GameRng, log: &mut Log) {
+pub fn land(
+    strike: &Strike,
+    body: &mut BodyItem,
+    rules: &Rules,
+    rng: &mut GameRng,
+    log: &mut Log,
+    laying: &mut Laying,
+) {
     let mut previous = None;
     for spec in specs(strike, rules, false) {
         let kind = body.resistances.kind;
@@ -146,7 +172,8 @@ pub fn land(strike: &Strike, body: &mut BodyItem, rules: &Rules, rng: &mut GameR
         let alive = !body.vitals.is_dead();
         previous = Some(match defend(&spec, rolled, strike.strength, body, rules, rng, log) {
             Ok(magnitude) => {
-                let outcome = apply(&spec, magnitude, strike.strength, body, rules, rng, log);
+                let outcome =
+                    apply(&spec, magnitude, strike.strength, body, rules, rng, log, laying);
                 settle(body, alive, rules, rng);
                 outcome
             }
@@ -155,14 +182,13 @@ pub fn land(strike: &Strike, body: &mut BodyItem, rules: &Rules, rng: &mut GameR
     }
 }
 
-/// A member's maxima follow what the effect changed, and a Valkyrie whose
-/// health it ran out cheats death before anything else lands on her.
+/// A Valkyrie whose health the effect ran out cheats death before anything
+/// else lands on her.
 fn settle(body: &mut BodyItem, was_alive: bool, rules: &Rules, rng: &mut GameRng) {
-    let Some(character) = body.character.as_deref() else { return };
-    if body.vitals.maxima_differ(character) {
-        body.vitals.sync_maxima(character);
-    }
-    if was_alive && body.vitals.is_dead() {
+    if let Some(character) = body.character.as_deref()
+        && was_alive
+        && body.vitals.is_dead()
+    {
         body.vitals.cheats_death(character, rules.fight, rng);
     }
 }
@@ -213,7 +239,7 @@ fn defend(
     if !resisted && let (Some(save), Some(realm)) = (spec.save, spec.resist) {
         let resistance = body.resistances.realms[realm];
         let chance = defences::condition_chance(body.level.0, resistance, against, save);
-        resisted = defences::save_roll(rng, rules.difficulty.scale(chance, body.side.0));
+        resisted = defences::save_roll(rng, rules.difficulty.scale(chance, body.stance()));
         if resisted
             && let Some(character) = body.character.as_deref_mut()
             && character.practise(Skill::IronWill, 2, rng)
@@ -287,6 +313,7 @@ fn apply(
     rules: &Rules,
     rng: &mut GameRng,
     log: &mut Log,
+    laying: &mut Laying,
 ) -> Outcome {
     use EffectKind as K;
     let victim = body.entity;
@@ -295,7 +322,8 @@ fn apply(
     };
     let effect = match spec.kind {
         K::Harm => {
-            let lost = body.vitals.hurt(magnitude);
+            let through = laying.absorb(victim, magnitude);
+            let lost = body.vitals.hurt(through);
             dealt(body, lost, true, rng, log);
             return Outcome::Landed;
         }
@@ -311,14 +339,16 @@ fn apply(
             return Outcome::Landed;
         }
         K::Afflict { condition, poison, indefinite } => {
-            if condition == Condition::Turncoat && body.side.0 == Stance::Neutral {
+            if condition == Condition::Turncoat && body.stance() == Stance::Neutral {
                 return Outcome::Missed;
             }
             let lasting = lasting(indefinite, magnitude);
             if condition == Condition::Poisoned {
                 body.vitals.poison(lasting, poison);
-            } else {
-                body.vitals.inflict(condition, lasting);
+            } else if condition != Condition::Slowed {
+                body.vitals.afflict(condition, lasting);
+            } else if let Some(left) = laying.slow(victim, lasting) {
+                body.vitals.afflict(condition, left);
             }
             Effect::Inflicted { victim, condition }
         }
@@ -390,22 +420,23 @@ fn apply(
                 (body.attributes[Attribute::Piety] + body.attributes[Attribute::Vitality]) >> 2;
             body.vitals.health.current = (body.vitals.health.max * share / 100).max(1);
             body.vitals.stamina.current = (body.vitals.stamina.max * share / 100).max(1);
+            log.raised.push(victim);
             Effect::Raised { victim }
         }
         K::Purify { level } => {
-            purify(&mut body.vitals.enchantments, magnitude, level, rules.content);
+            laying.purify(victim, magnitude + level, rules.content);
             Effect::Purified { victim }
         }
         K::Enchant(spell) => {
-            let rolled = enchantment(spell, magnitude, strength, rules.content, rng);
-            let vitals = &mut *body.vitals;
-            let changed = if vitals.is_dead() {
-                false
-            } else if spell == SpellId::HASTE {
-                enchantments::haste(&mut vitals.conditions, &mut vitals.enchantments, rolled)
-            } else {
-                vitals.enchantments.apply(rolled)
+            // Haste first spends itself on a slowing; wholly spent, it
+            // changed something all the same.
+            let turns = match spell {
+                SpellId::HASTE => body.vitals.hasted(magnitude),
+                _ => magnitude,
             };
+            let changed = !body.vitals.is_dead()
+                && (lay(laying, victim, spell, turns, strength, rules.content, rng)
+                    || (spell == SpellId::HASTE && turns == 0 && magnitude > 0));
             if changed { Effect::Enchanted { victim, spell } } else { Effect::Nothing { victim } }
         }
         K::Burn => {
@@ -439,11 +470,12 @@ fn apply(
 pub fn land_on_party(
     strike: &Strike,
     party: Entity,
-    (effects, inventory): (&mut PartyEffects, &mut PartyInventory),
+    inventory: &mut PartyInventory,
     members: &mut [BodyItem],
     rules: &Rules,
     rng: &mut GameRng,
     log: &mut Log,
+    laying: &mut Laying,
 ) {
     use EffectKind as K;
     let victim = party;
@@ -474,12 +506,13 @@ pub fn land_on_party(
                 }
             }
             K::Purify { level } => {
-                purify(&mut effects.0, magnitude, level, rules.content);
+                laying.purify(party, magnitude + level, rules.content);
                 log.effects.push(Effect::Purified { victim });
             }
             K::Enchant(spell) => {
-                let rolled = enchantment(spell, magnitude, strike.strength, rules.content, rng);
-                log.effects.push(if effects.0.apply(rolled) {
+                let laid =
+                    lay(laying, party, spell, magnitude, strike.strength, rules.content, rng);
+                log.effects.push(if laid {
                     Effect::Enchanted { victim, spell }
                 } else {
                     Effect::Nothing { victim }
@@ -501,42 +534,32 @@ pub fn land_on_party(
                 inventory.gold -= amount;
                 log.effects.push(Effect::GoldLost { amount });
             }
-            K::Dispel => effects.0.0.retain(|e| enchantments::combat_only(e.spell)),
+            K::Dispel => laying.dispel(party),
             _ => unreachable!("not an effect on the party itself"),
         }
         previous = Some(Outcome::Landed);
     }
 }
 
-/// Shorten the offensive clouds among `slots` (retail Purify Air).
-fn purify(slots: &mut Enchantments, amount: u32, level: u32, content: &Catalogs) {
-    slots.0.retain_mut(|slot| {
-        if enchantments::OFFENSIVE.contains(&slot.spell) {
-            let cloud = &content.spells[slot.spell];
-            let removed = (amount + level).max(cloud.level) - cloud.level;
-            slot.turns -= removed.min(slot.turns);
-        }
-        slot.turns > 0
-    });
-}
-
-/// The enchantment a spell lays for `turns`; Guardian Angel's absorption is
-/// rolled as it is laid.
-fn enchantment(
+/// Lay a spell on a bearer for `turns` at a cast's strength; Guardian
+/// Angel's absorption is rolled as it is laid. Whether it took.
+fn lay(
+    laying: &mut Laying,
+    bearer: Entity,
     spell: SpellId,
     turns: u32,
     strength: Strength,
     content: &Catalogs,
     rng: &mut GameRng,
-) -> Enchantment {
-    let power = strength.power;
-    let absorption = if spell == SpellId::GUARDIAN_ANGEL {
-        let rolled = content.spells[spell].dice.map_or(0, |dice| rng.roll(dice)) * power;
+) -> bool {
+    let absorbs = if spell == SpellId::GUARDIAN_ANGEL {
+        let rolled = content.spells[spell].dice.map_or(0, |dice| rng.roll(dice)) * strength.power;
         rolled + rolled * strength.boost / 100
     } else {
         0
     };
-    Enchantment { spell, power, boost: strength.boost, turns, absorption }
+    let laid = Enchantment { spell, power: strength.power, boost: strength.boost };
+    laying.lay(bearer, laid, turns, absorbs)
 }
 
 /// What is left of a stack once heat has taken each potion, scroll or book

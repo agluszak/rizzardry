@@ -24,7 +24,6 @@ use crate::game::data::Catalogs;
 pub use conduct::Interrupt;
 pub use orders::*;
 pub use round_end::{RoundEnding, end_round, judge_round};
-use sight::*;
 pub use turn::{Action, Ordered, Turn};
 
 use crate::game::world::level::LevelOwned;
@@ -35,13 +34,12 @@ use bevy::prelude::*;
 use crate::content::items::AttackMode;
 use crate::content::species::AttackWord;
 
-use crate::content::species::{Reach, Species};
+use crate::content::species::Reach;
 use crate::game::characters::{Character, Dead, Vitals};
 use crate::game::hits::Effect;
 use crate::game::magic::casting::{self};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
-use crate::game::time::GameClock;
 use crate::game::world::hostility::{self, Side, Stance};
 use crate::game::world::identify::{GroupMember, GroupMembers, GroupRecognition, MonsterGroup};
 use crate::game::world::population::Monster;
@@ -52,11 +50,11 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         use crate::game::characters::settle_deaths;
-        use crate::game::world::footing::place_bodies;
         // Deeds land, and what they did is settled: deaths, the fight's
         // kills, the party's defeat, and who stands with whom.
         let settle = || (crate::game::hits::resolve, settle_deaths, settle_defeat).chain();
-        app.add_observer(credit_death)
+        app.add_plugins(hostility::plugin)
+            .add_observer(credit_death)
             .add_observer(join_party)
             .add_observer(turn::clear_fight)
             .add_observer(approach::end_move)
@@ -73,15 +71,6 @@ impl Plugin for CombatPlugin {
             .add_message::<turn::Called>()
             .add_message::<turn::Perform>()
             .init_resource::<CombatSettings>()
-            // Where everyone stands, whose side they are on and what they
-            // are to what lands on them follow their sources before the
-            // frame's gameplay reads them.
-            .add_systems(
-                Update,
-                (place_bodies, hostility::judge_sides, crate::game::actors::notice_changes)
-                    .chain()
-                    .in_set(GameplaySet::Bodies),
-            )
             .add_systems(
                 Update,
                 (
@@ -107,16 +96,8 @@ impl Plugin for CombatPlugin {
             .add_systems(
                 FixedUpdate,
                 (
-                    // Everyone is as their sources make them now, and what
-                    // was in the air has landed, before anyone acts.
-                    (
-                        place_bodies,
-                        hostility::judge_sides,
-                        crate::game::actors::notice_changes,
-                        crate::game::hits::fly,
-                        settle(),
-                    )
-                        .chain(),
+                    // What was in the air has landed before anyone acts.
+                    (crate::game::hits::fly, settle()).chain(),
                     // The actor whose initiative came takes its turn, and
                     // what it does settles within the step.
                     (
@@ -137,18 +118,15 @@ impl Plugin for CombatPlugin {
                         round_end::leave_fight,
                         round_end::rest_the_idle,
                         round_end::cool_specials,
-                        round_end::age_conditions,
-                        round_end::recover_pools,
+                        crate::game::party::recovery::pass_time,
                         round_end::pulse_clouds,
                         settle(),
-                        round_end::age_enchantments,
-                        hostility::judge_sides,
+                        crate::game::actors::spells::age,
                         round_end::judge_victory,
                         round_end::look_again,
                         end_round,
                     )
-                        .chain()
-                        .run_if(any_with_component::<Battle>),
+                        .chain(),
                 )
                     .chain()
                     .in_set(GameplaySet::Combat)
@@ -416,23 +394,13 @@ pub enum CombatNews {
 /// Used before/after combat execution and at the end of environmental damage.
 pub fn settle_defeat(
     mut commands: Commands,
-    battle: Option<Single<(Entity, Option<&Combatants>), With<Battle>>>,
+    battle: Option<Single<Entity, With<Battle>>>,
     roster: Single<&PartyRoster>,
     mut news: MessageWriter<CombatNews>,
-    mut effects: Single<&mut crate::game::magic::enchantments::PartyEffects>,
-    mut bodies: Query<&mut Vitals>,
+    bodies: Query<&Vitals>,
 ) {
-    let Some((battle, combatants)) = battle.map(Single::into_inner) else { return };
+    let Some(battle) = battle.map(Single::into_inner) else { return };
     if roster.iter().all(|m| bodies.get(m).unwrap().is_dead()) {
-        // What lasts a fight ends on the party and on those in it, as when
-        // the party wins.
-        effects.0.end_combat();
-        let combatants = combatants.map_or(&[][..], Combatants::entities);
-        for &monster in combatants {
-            if let Ok(mut monster) = bodies.get_mut(monster) {
-                monster.enchantments.end_combat();
-            }
-        }
         news.write(CombatNews::Lost);
         // Its combatants leave the fight and stop closing in; they remain.
         commands.entity(battle).despawn();
@@ -456,7 +424,7 @@ fn credit_death(
     let actor = died.entity;
     let Ok((side, worth, summoned, true)) = bodies.get(actor) else { return };
     if let Some(worth) = worth
-        && side.0 == Stance::Hostile
+        && side.own() == Stance::Hostile
     {
         spoils.kills += 1;
         if !summoned {
@@ -571,8 +539,8 @@ pub fn begin_round(
 fn call_actor(
     fight: Option<Single<(&mut Round, &mut PartyMove, &Pause, Option<&Combatants>), With<Battle>>>,
     roster: Single<&PartyRoster>,
-    footings: Query<&crate::game::world::footing::Footing>,
-    vitals: Query<&Vitals>,
+    places: crate::game::actors::Places,
+    laid: crate::game::actors::Laid,
     turns: Query<&Turn>,
     in_flight: Query<(), With<crate::game::hits::Flight>>,
     moving: Query<(), With<approach::CombatMove>>,
@@ -598,21 +566,16 @@ fn call_actor(
         if let PartyMove::Pending { pace, phase } = *party_move
             && phase <= step
         {
+            // The party moves further only when every member is hasted: by
+            // a fifth of the Speed Haste adds them, averaged.
             let haste = roster
                 .iter()
                 .try_fold(0, |sum, member| {
-                    let effect = vitals
-                        .get(member)
-                        .unwrap()
-                        .enchantments
-                        .get(crate::content::spells::SpellId::HASTE)?;
+                    let effect = laid.get(member, crate::content::spells::SpellId::HASTE)?;
                     Some(sum + effect.scaled(effect.power * 10))
                 })
                 .map_or(0.0, |sum| (sum / roster.len() as u32) as f32 * 0.2);
-            let last = roster
-                .iter()
-                .find_map(|member| footings.get(member).ok())
-                .map_or(Vec3::ZERO, |at| at.centre);
+            let last = roster.first().map_or(Vec3::ZERO, |&member| places.of(member).centre);
             *party_move =
                 PartyMove::Moving { pace, budget: pace.combat_budget() + haste, moved: 0.0, last };
             news.write(CombatNews::PartyMoves);

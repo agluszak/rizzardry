@@ -151,7 +151,10 @@ pub fn search_score(
 pub fn search_pulse(
     time: Res<Time>,
     mut search: ResMut<Search>,
-    enchantments: Single<&crate::game::magic::enchantments::PartyEffects>,
+    (the_party, laid): (
+        Single<Entity, With<crate::game::party::roster::Party>>,
+        crate::game::actors::Laid,
+    ),
     mut rng: ResMut<crate::game::rng::GameRng>,
     battle: Option<Single<&Battle>>,
     movement: Single<&PartyMovement>,
@@ -180,7 +183,7 @@ pub fn search_pulse(
         if score > best.map_or(0, |b| b.0) {
             best = Some((score, member));
         }
-        if enchantments.0.has(crate::content::spells::SpellId::DETECT_SECRETS)
+        if laid.has(*the_party, crate::content::spells::SpellId::DETECT_SECRETS)
             && !(best.is_some() && rng.below(2) == 0)
         {
             best = Some((100, member));

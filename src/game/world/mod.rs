@@ -3,7 +3,6 @@
 pub mod containers;
 pub mod damage;
 pub mod encounters;
-pub mod footing;
 pub mod hostility;
 pub mod identify;
 pub mod interaction;

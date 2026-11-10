@@ -16,6 +16,7 @@ use crate::content::characters::Attribute;
 use crate::content::species::{Reach, SpecialAttack};
 use crate::content::spells::SpellId;
 use crate::game::actors::Attacks as Arms;
+use crate::game::actors::{Eyes, Hidden, Laid, Places};
 use crate::game::characters::{Condition, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::hits::definitions::Definitions;
@@ -24,7 +25,6 @@ use crate::game::magic::casting::{MagicChoice, Source};
 use crate::game::npcs::NpcBody;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
-use crate::game::world::footing::{Conspicuous, Eyes, Footing};
 use crate::game::world::hostility::{self, Loyalty, Stance};
 use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::population::{Special, Spellcasting, Temper};
@@ -55,23 +55,35 @@ pub(super) fn special_ready(
     })
 }
 
+/// Whether a body's eyes make out the party: the party hides by its
+/// lowest able level and by Chameleon.
+pub(super) fn sees_party(
+    body: Entity,
+    (bodies, places, laid): (&Query<BodyReadOnly>, &Places, &Laid),
+    (party, roster): (Entity, &PartyRoster),
+    far: f32,
+    obstacles: &WorldObstacles,
+) -> bool {
+    let Ok(own) = bodies.get(body) else { return false };
+    let members =
+        bodies.iter_many(roster.iter()).matched().map(|member| (member.level, member.vitals));
+    let hidden = Hidden::party(members, laid.bonus(party).concealment);
+    Eyes::of(own.vitals, own.attributes, own.attacks).see(
+        &places.of(body),
+        (&places.of(party), hidden),
+        far,
+        obstacles,
+    )
+}
+
 /// Whom a body sees of the fight (retail `IsVisibleUnderConditions`,
 /// `CanMonsterSeeMonster`): the living party when its eyes see the party,
 /// and the living monsters in the fight it has a clear line to, itself
 /// among them.
-pub(super) fn seen(
-    body: Entity,
-    (at, eyes): (&Footing, &Eyes),
-    (roster, combatants): (&PartyRoster, &[Entity]),
-    bodies: &Query<BodyReadOnly>,
-    conspicuous: &Query<&Conspicuous>,
-    far: f32,
-    obstacles: &WorldObstacles,
-) -> Vec<Entity> {
-    let party = roster
-        .iter()
-        .find_map(|member| Some((bodies.get(member).ok()?.at, conspicuous.get(member).ok()?)));
-    let sees_party = party.is_some_and(|party| eyes.see(at, party, far, obstacles));
+pub(super) fn seen(body: Entity, fight: &Fight) -> Vec<Entity> {
+    let Fight { bodies, places, laid, party, roster, combatants, far, obstacles, .. } = *fight;
+    let sees_party = sees_party(body, (bodies, places, laid), (party, roster), far, obstacles);
+    let eye = places.of(body).eye;
     combatants
         .iter()
         .copied()
@@ -79,20 +91,11 @@ pub(super) fn seen(
             if roster.contains(&other) {
                 sees_party
             } else {
-                other == body
-                    || bodies.get(other).is_ok_and(|there| obstacles.clear(at.eye, there.at.eye))
+                other == body || obstacles.clear(eye, places.of(other).eye)
             }
         })
         .filter(|&other| bodies.get(other).is_ok_and(|body| !body.vitals.is_dead()))
         .collect()
-}
-
-/// How far the party is from a body.
-pub(super) fn party_gap(at: &Footing, roster: &PartyRoster, bodies: &Query<BodyReadOnly>) -> f32 {
-    roster
-        .iter()
-        .find_map(|member| bodies.get(member).ok())
-        .map_or(f32::INFINITY, |there| at.gap(there.at))
 }
 
 /// Whether one of a body's arms reaches the party.
@@ -112,7 +115,6 @@ pub(super) struct Mind {
     temper: &'static Temper,
     special: &'static Special,
     casting: &'static Spellcasting,
-    eyes: &'static Eyes,
     cooldown: Option<&'static SpecialCooldown>,
     npc: Has<NpcBody>,
     pub fleeing: Has<Fleeing>,
@@ -121,7 +123,10 @@ pub(super) struct Mind {
 /// What the deciding body weighs its choice in.
 pub(super) struct Fight<'a, 'w, 's> {
     pub bodies: &'a Query<'w, 's, BodyReadOnly>,
-    pub conspicuous: &'a Query<'w, 's, &'static Conspicuous>,
+    pub laid: &'a Laid<'w, 's>,
+    pub places: &'a Places<'w, 's>,
+    /// The party, which every member stands in.
+    pub party: Entity,
     pub roster: &'a PartyRoster,
     pub combatants: &'a [Entity],
     /// The far clip, past which nobody sees anybody.
@@ -139,10 +144,10 @@ pub(super) fn decide(
     fight: &Fight,
     rng: &mut GameRng,
 ) -> (Chosen, bool) {
-    let Fight { bodies, roster, .. } = *fight;
+    let Fight { bodies, places, .. } = *fight;
     let own = bodies.get(body).unwrap();
     let arms = own.attacks;
-    let nearest = party_gap(own.at, roster, bodies);
+    let nearest = places.gap(body, fight.party);
     // Run, withdraw or hold back, as it stands and fares (retail
     // `UpdateMonsterAI`'s flight test); a flight begun goes on in later
     // rounds while the party stays off.
@@ -152,7 +157,7 @@ pub(super) fn decide(
         own.vitals,
         &mind.temper.0,
         (mind.npc, *own.loyalty == Loyalty::Bystander),
-        own.side.0,
+        own.stance(),
         &mut fleeing,
         nearest,
     );
@@ -181,30 +186,30 @@ fn special(
     fight: &Fight,
     rng: &mut GameRng,
 ) -> Option<Chosen> {
-    let Fight { bodies, roster, content, definitions, .. } = *fight;
+    let Fight { bodies, content, definitions, .. } = *fight;
     let own = bodies.get(body).ok()?;
     let special = mind.special.0;
     let kind = special.kind?;
     let cooling = mind.cooldown.is_some_and(|cooldown| cooldown.0 > 0);
     if special.chance == 0
         || closes_in(mind.temper, arms, nearest)
-        || !special_ready(own.vitals, &special, cooling, Some((nearest, own.side.0)))
+        || !special_ready(own.vitals, &special, cooling, Some((nearest, own.stance())))
     {
         return None;
     }
     let toward = if kind.summons().is_some() {
-        own.at.feet
+        fight.places.of(body).feet
     } else {
         let cone = content.spells.get(SpellId::SPECIAL_ATTACK_CONE)?;
-        let seen = seen_by(body, mind, fight);
-        let aims = monster_spells::aims(cone, body, &seen, bodies, roster, definitions);
+        let seen = seen(body, fight);
+        let aims = monster_spells::aims(cone, body, &seen, fight);
         if aims.is_empty() {
             return None;
         }
         let aim = aims[rng.below(aims.len() as u32) as usize];
         aim.body()
             .and_then(|aimed| bodies.get(aimed).ok())
-            .map_or(own.at.feet, |there| there.at.feet)
+            .map_or(fight.places.of(body).feet, |there| fight.places.of(there.entity).feet)
     };
     let chance = if reaches_party(arms, nearest) { u32::from(special.chance) } else { 100 };
     if rng.below(100) >= chance {
@@ -221,20 +226,6 @@ fn special(
     }))
 }
 
-/// Whom the deciding body sees of the fight.
-fn seen_by(body: Entity, mind: &MindItem, fight: &Fight) -> Vec<Entity> {
-    let own = fight.bodies.get(body).unwrap();
-    seen(
-        body,
-        (own.at, mind.eyes),
-        (fight.roster, fight.combatants),
-        fight.bodies,
-        fight.conspicuous,
-        fight.far,
-        fight.obstacles,
-    )
-}
-
 /// A body that casts may cast (retail `UpdateMonsterAI`'s spell branch):
 /// always if it cannot strike the party, else at its chance; one that would
 /// close in to strike does that instead.
@@ -246,7 +237,7 @@ fn spell(
     fight: &Fight,
     rng: &mut GameRng,
 ) -> Option<Chosen> {
-    let Fight { bodies, roster, content, definitions, .. } = *fight;
+    let Fight { bodies, content, .. } = *fight;
     let own = bodies.get(body).ok()?;
     let budget = own.budget?.0;
     let casting = mind.casting;
@@ -254,18 +245,8 @@ fn spell(
         return None;
     }
     let chance = if reaches_party(arms, nearest) { u32::from(casting.chance) } else { 100 };
-    let seen = seen_by(body, mind, fight);
-    let (spell, aim) = monster_spells::choose(
-        rng,
-        body,
-        casting,
-        chance,
-        &content.spells,
-        &seen,
-        bodies,
-        roster,
-        definitions,
-    )?;
+    let seen = seen(body, fight);
+    let (spell, aim) = monster_spells::choose(rng, body, casting, chance, &seen, fight)?;
     let power = monster_spells::power(rng, budget, &content.spells[spell]);
     let source = Source::Innate { spell, power, budget, level: own.level.0 as u8 };
     Some(Chosen::Magic(MagicChoice { source, aim }))
@@ -298,7 +279,7 @@ fn guard(
         return None;
     }
     let able = temper.bodyguard && own.vitals.can_guard() && !arms.arms.is_empty();
-    let mine = (own.side.0, *own.loyalty);
+    let mine = own.standing();
     let wards: Vec<Entity> = if able && rng.below(100) < wit {
         let reach = arms.arms[0].reach.metres();
         combatants
@@ -308,9 +289,8 @@ fn guard(
             .filter(|&other| {
                 bodies.get(other).is_ok_and(|fellow| {
                     !fellow.vitals.is_dead()
-                        && hostility::between(mine, (fellow.side.0, *fellow.loyalty))
-                            == Stance::Friendly
-                        && own.at.gap(fellow.at) <= reach
+                        && hostility::between(mine, fellow.standing()) == Stance::Friendly
+                        && fight.places.gap(body, fellow.entity) <= reach
                         && fellow.level > own.level
                         && fellow.vitals.health.current * 100 / fellow.vitals.health.max < 40
                 })

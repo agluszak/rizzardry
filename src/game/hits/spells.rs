@@ -10,12 +10,12 @@ use super::effects::{Body, BodyReadOnly, Strike};
 use super::reach::{Recipients, within};
 use super::{Act, Deed, Effect};
 use crate::content::spells::{SpellDefinition, SpellId, Targeting};
+use crate::game::actors::{Place, Places};
 use crate::game::characters::Vitals;
 use crate::game::data::Catalogs;
 use crate::game::magic::Strength;
 use crate::game::magic::casting::{Aim, MISSILE_SPEED, in_cone};
 use crate::game::party::roster::PartyRoster;
-use crate::game::world::footing::Footing;
 use crate::game::world::hostility::Stance;
 use crate::game::world::identify::{GroupMember, GroupMembers};
 use crate::game::world::obstacles::WorldObstacles;
@@ -73,6 +73,7 @@ pub struct Surroundings<'a, 'w, 's> {
     pub memberships: &'a Query<'w, 's, &'static GroupMember>,
     pub groups: &'a Query<'w, 's, &'static GroupMembers>,
     pub obstacles: &'a WorldObstacles<'w, 's>,
+    pub places: &'a Places<'w, 's>,
     pub content: &'a Catalogs,
     pub definitions: &'a Definitions,
 }
@@ -80,11 +81,12 @@ pub struct Surroundings<'a, 'w, 's> {
 /// The bodies spells may take, as [`within`] reads them.
 pub fn targets<'a>(
     bodies: &'a Query<BodyReadOnly>,
-) -> impl Iterator<Item = (Entity, &'a Vitals, Stance, &'a Footing)> {
+    places: &'a Places,
+) -> impl Iterator<Item = (Entity, &'a Vitals, Stance, Place)> {
     bodies
         .iter()
         .filter(|body| !body.untargetable)
-        .map(|body| (body.entity, body.vitals, body.side.0, body.at))
+        .map(|body| (body.entity, body.vitals, body.stance(), places.of(body.entity)))
 }
 
 /// The strength of a spell that comes from someone other than its caster (a
@@ -166,6 +168,7 @@ pub fn bursts(
     bodies: &Query<BodyReadOnly>,
     around: &Surroundings,
 ) -> Vec<(Deed, Vec<(Entity, Option<f32>)>)> {
+    let places = around.places;
     if spell.id != SpellId::BOILING_BLOOD {
         return vec![];
     }
@@ -173,7 +176,7 @@ pub fn bursts(
         return vec![];
     };
     let Some(definition) = around.definitions.spell(explosion.id) else { return vec![] };
-    let side = spell.owner.and_then(|owner| bodies.get(owner).ok()).map(|body| body.side.0);
+    let side = spell.owner.and_then(|owner| bodies.get(owner).ok()).map(|body| body.stance());
     let recipients = match side {
         Some(side) if spell.backfired => Recipients::Opponents(side).reversed(),
         Some(side) => Recipients::Opponents(side),
@@ -189,11 +192,11 @@ pub fn bursts(
         .filter(|body| !body.untargetable && body.vitals.is_dead())
         .map(|body| {
             let victims = within(
-                body.at.feet,
-                body.at.feet,
+                places.of(body.entity).feet,
+                places.of(body.entity).feet,
                 radius,
                 recipients,
-                targets(bodies),
+                targets(bodies, places),
                 (around.roster, around.combatants),
                 around.obstacles,
             );
@@ -254,10 +257,11 @@ pub fn leader(
 pub fn reflection(
     cast: &Spell,
     strength: Strength,
-    bodies: &mut Query<Body>,
+    bodies: &Query<BodyReadOnly>,
     around: &Surroundings,
+    laying: &mut crate::game::actors::Laying,
 ) -> Option<(Entity, Deed, Vec<(Entity, Option<f32>)>)> {
-    let Surroundings { roster, combatants, memberships, groups, obstacles, .. } = *around;
+    let Surroundings { roster, combatants, memberships, groups, obstacles, places, .. } = *around;
     let spell = &around.content.spells[cast.id];
     let definition = around.definitions.spell(cast.id)?;
     if cast.backfired || cast.reflected || !spell.aimed_at_enemies() {
@@ -272,19 +276,18 @@ pub fn reflection(
         .into_iter()
         .filter_map(|victim| {
             let body = bodies.get(victim).ok()?;
-            let charge = body.vitals.enchantments.get(SpellId::EYE_FOR_AN_EYE)?;
+            let charge = laying.get(victim, SpellId::EYE_FOR_AN_EYE)?;
             (!body.untargetable && !body.vitals.is_dead()).then_some((victim, charge.power))
         })
         .fold(None, |best: Option<(Entity, u32)>, (victim, power)| match best {
             Some((_, most)) if most >= power => best,
             _ => Some((victim, power)),
         })?;
-    bodies.get_mut(charged).unwrap().vitals.enchantments.spend_charge(SpellId::EYE_FOR_AN_EYE);
-    let bodies = bodies.as_readonly();
-    let party_at = roster.iter().find_map(|member| bodies.get(member).ok().map(|body| *body.at));
+    laying.spend(charged, SpellId::EYE_FOR_AN_EYE);
+    let party_at = roster.first().map(|&member| places.of(member));
     let owner = cast.owner;
     let eye = party_at.map_or(cast.from, |at| at.eye);
-    let eye_of = |actor: Entity| bodies.get(actor).map_or(eye, |body| body.at.eye);
+    let eye_of = |actor: Entity| bodies.get(actor).map_or(eye, |body| places.of(body.entity).eye);
     // Whom and where it comes back from.
     let (source, from) = match (spell.targeting, cast.aim) {
         (Targeting::Radius | Targeting::Cone, Aim::Point(at)) => (owner, at),
@@ -303,7 +306,7 @@ pub fn reflection(
         }
     };
     let recipients = match owner.and_then(|owner| bodies.get(owner).ok()) {
-        Some(body) => Recipients::Opponents(body.side.0).reversed(),
+        Some(body) => Recipients::Opponents(body.stance()).reversed(),
         None => Recipients::Everyone,
     };
     let power = strength.power.min(power);
@@ -313,7 +316,7 @@ pub fn reflection(
             origin,
             radius,
             recipients,
-            targets(&bodies),
+            targets(bodies, places),
             (roster, combatants),
             obstacles,
         )
@@ -329,7 +332,9 @@ pub fn reflection(
         Targeting::Radius => {
             let centre = owner
                 .and_then(|owner| bodies.get(owner).ok())
-                .map_or(party_at.map_or(cast.from, |at| at.feet), |body| body.at.feet);
+                .map_or(party_at.map_or(cast.from, |at| at.feet), |body| {
+                    places.of(body.entity).feet
+                });
             reached(centre, cast.from, spell.radius + spell.radius_per_power * power as f32)
         }
         Targeting::Cone => reached(from, from, spell.reach.metres())
@@ -345,7 +350,7 @@ pub fn reflection(
             (victim, spell.missile.map(|_| from.distance(eye_of(victim)) / MISSILE_SPEED))
         })
         .collect();
-    let strength = owners_strength(source, spell, (power, strength.boost), &bodies);
+    let strength = owners_strength(source, spell, (power, strength.boost), bodies);
     let mut deed = Deed::new(
         Act::Missile { caster: cast.caster, spell: spell.id },
         Strike { definition, strength, blow: None },

@@ -18,13 +18,13 @@ use bevy::prelude::*;
 
 use crate::content::items::EquipClass;
 use crate::content::spells::SpellId;
+use crate::game::actors::Laying;
 use crate::game::characters::Condition;
 use crate::game::combat::{Battle, CombatNews, Combatants, Round};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::inventory::PartyInventory;
 use crate::game::magic::casting::{MagicNews, Practice, Recast, Report};
-use crate::game::magic::enchantments::PartyEffects;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::identify::{GroupMember, GroupMembers};
@@ -183,15 +183,11 @@ impl Progress {
     fn advance(
         &mut self,
         bodies: &mut Query<Body>,
-        (party, effects, inventory, roster): (
-            Entity,
-            &mut PartyEffects,
-            &mut PartyInventory,
-            &PartyRoster,
-        ),
+        (party, inventory, roster): (Entity, &mut PartyInventory, &PartyRoster),
         rules: &Rules,
         rng: &mut GameRng,
         log: &mut Log,
+        laying: &mut Laying,
     ) -> bool {
         let strike = self.deed.strike;
         let (due, waiting) = std::mem::take(&mut self.arrivals)
@@ -201,7 +197,7 @@ impl Progress {
         for (victim, _) in due {
             let Ok(mut body) = bodies.get_mut(victim) else { continue };
             let member = body.member;
-            effects::land(&strike, &mut body, rules, rng, log);
+            effects::land(&strike, &mut body, rules, rng, log, laying);
             if member && !self.party_reached {
                 self.party_reached = true;
                 let mut members: Vec<_> =
@@ -209,11 +205,12 @@ impl Progress {
                 effects::land_on_party(
                     &strike,
                     party,
-                    (&mut *effects, &mut *inventory),
+                    &mut *inventory,
                     &mut members,
                     rules,
                     rng,
                     log,
+                    laying,
                 );
             }
         }
@@ -246,17 +243,19 @@ pub fn resolve(
     mut released: ResMut<Messages<Release>>,
     mut flights: Query<(Entity, &mut Flight)>,
     mut bodies: Query<Body>,
-    party: Single<(Entity, &mut PartyEffects, &mut PartyInventory, &PartyRoster)>,
+    party: Single<(Entity, &mut PartyInventory, &PartyRoster)>,
+    mut laying: Laying,
     mut fight: Option<Single<(Entity, &mut Round, Option<&Combatants>), With<Battle>>>,
     (memberships, groups): (Query<&'static GroupMember>, Query<&'static GroupMembers>),
     obstacles: WorldObstacles,
+    places: crate::game::actors::Places,
     (content, definitions, difficulty): (Res<Catalogs>, Res<Definitions>, Res<Difficulty>),
     mut rng: ResMut<GameRng>,
     mut damaged: MessageWriter<Damaged>,
     mut requests: MessageWriter<crate::game::magic::MagicRequest>,
     (mut magic_news, mut combat_news): (MessageWriter<MagicNews>, MessageWriter<CombatNews>),
 ) {
-    let (party, mut party_effects, mut inventory, roster) = party.into_inner();
+    let (party, mut inventory, roster) = party.into_inner();
     let rules = Rules {
         content: &content,
         definitions: &definitions,
@@ -270,16 +269,16 @@ pub fn resolve(
         {
             continue;
         }
-        let party = (party, &mut *party_effects, &mut *inventory, roster);
-        if flight.0.advance(&mut bodies, party, &rules, &mut rng, &mut log) {
+        let party = (party, &mut *inventory, roster);
+        if flight.0.advance(&mut bodies, party, &rules, &mut rng, &mut log, &mut laying) {
             commands.entity(entity).despawn();
             queue.push_back(flight.0.clone());
         }
     }
     queue.extend(released.drain().map(|release| Progress::new(release.deed, release.victims)));
     while let Some(mut progress) = queue.pop_front() {
-        let party = (party, &mut *party_effects, &mut *inventory, roster);
-        if !progress.advance(&mut bodies, party, &rules, &mut rng, &mut log) {
+        let party = (party, &mut *inventory, roster);
+        if !progress.advance(&mut bodies, party, &rules, &mut rng, &mut log, &mut laying) {
             commands.spawn(Flight(progress));
             continue;
         }
@@ -297,6 +296,7 @@ pub fn resolve(
                 memberships: &memberships,
                 groups: &groups,
                 obstacles: &obstacles,
+                places: &places,
                 content: &content,
                 definitions: &definitions,
             };
@@ -306,7 +306,7 @@ pub fn resolve(
                 queue.push_back(Progress::new(burst, victims));
             }
             if let Some((charged, turned, victims)) =
-                spells::reflection(spell, strength, &mut bodies, &around)
+                spells::reflection(spell, strength, &bodies.as_readonly(), &around, &mut laying)
             {
                 effects.push(Effect::Reflected { victim: charged });
                 queue.push_back(Progress::new(turned, victims));
@@ -354,6 +354,9 @@ pub fn resolve(
         }
     }
     damaged.write_batch(log.damaged);
+    for raised in log.raised {
+        commands.entity(raised).remove::<crate::game::characters::Dead>();
+    }
     combat_news.write_batch(
         log.improved.into_iter().map(|(member, skill)| CombatNews::Improved { member, skill }),
     );

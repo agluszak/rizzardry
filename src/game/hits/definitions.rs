@@ -358,7 +358,7 @@ fn define_spell(spell: &SpellDefinition) -> Option<Definition> {
         | S::SUPERMAN
         | S::BODY_OF_STONE => {
             let enchant = EffectSpec::of(EffectKind::Enchant(spell.id)).roll(rounds);
-            if crate::game::magic::enchantments::personal(spell.id) {
+            if crate::game::actors::spells::personal(spell.id) {
                 vec![enchant]
             } else {
                 // The party's own slots hold for all its members at once.
@@ -630,10 +630,10 @@ pub fn define(mut commands: Commands, content: Res<Catalogs>) {
     for spell in content.spells.0.iter() {
         let Some(definition) = define_spell(spell) else { continue };
         spells.insert(spell.id, add(definition));
-        if crate::game::magic::enchantments::personal(spell.id) {
+        if crate::game::actors::spells::personal(spell.id) {
             backfires.insert(spell.id, add(plain(define_backfire(spell))));
         }
-        if crate::game::magic::enchantments::OFFENSIVE.contains(&spell.id)
+        if crate::game::actors::spells::OFFENSIVE.contains(&spell.id)
             || spell.id == SpellId::RING_OF_FIRE
         {
             pulses.insert(spell.id, add(plain(define_pulse(spell))));
@@ -663,7 +663,7 @@ enum Purpose {
     Heals,
     Refreshes,
     Afflicts(Condition),
-    Enchants(SpellId),
+    Enchants,
     Cures(&'static [Condition]),
 }
 
@@ -671,10 +671,16 @@ impl Definitions {
     /// Whether a spell would do anything to `victim` (retail
     /// `MonsterSpellTargetOK`): healing only the hurt, rest only the tired,
     /// cures only what they cure, and no condition or enchantment it
-    /// already has; a spell that does none of these always would. One the
+    /// already has (`enchanted`: the spell is laid on it now); a spell
+    /// that does none of these always would. One the
     /// game does not resolve would not. A follow-up that only comes if the
     /// effect before it landed is not weighed.
-    pub fn worthwhile(&self, spell: SpellId, victim: &crate::game::characters::Vitals) -> bool {
+    pub fn worthwhile(
+        &self,
+        spell: SpellId,
+        victim: &crate::game::characters::Vitals,
+        enchanted: bool,
+    ) -> bool {
         let Some(definition) = self.spell(spell) else { return false };
         let has = |condition| victim.conditions.has(condition);
         let mut purposes = self
@@ -687,7 +693,7 @@ impl Definitions {
                 EffectKind::Afflict { condition, .. } if !effect.landed => {
                     Some(Purpose::Afflicts(condition))
                 }
-                EffectKind::Enchant(spell) => Some(Purpose::Enchants(spell)),
+                EffectKind::Enchant(_) => Some(Purpose::Enchants),
                 EffectKind::Cure { conditions, .. } => Some(Purpose::Cures(conditions)),
                 _ => None,
             })
@@ -697,7 +703,7 @@ impl Definitions {
                 Purpose::Heals => victim.health.current < victim.health.max,
                 Purpose::Refreshes => victim.stamina.current < victim.stamina.max,
                 Purpose::Afflicts(condition) => !has(condition),
-                Purpose::Enchants(spell) => !victim.enchantments.has(spell),
+                Purpose::Enchants => !enchanted,
                 Purpose::Cures(conditions) => conditions.iter().any(|&c| has(c)),
             })
     }

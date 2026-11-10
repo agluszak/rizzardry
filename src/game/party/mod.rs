@@ -50,12 +50,7 @@ impl Plugin for PartyPlugin {
             Update,
             (
                 // A death settles before travel can retire the level it happened on.
-                (
-                    crate::game::characters::sync_member_maxima,
-                    crate::game::characters::settle_deaths,
-                )
-                    .chain()
-                    .before(GameplaySet::LevelActivation),
+                crate::game::characters::settle_deaths.before(GameplaySet::LevelActivation),
                 body::look_around
                     .after(GameplaySet::LevelActivation)
                     .before(GameplaySet::Combat)
@@ -137,15 +132,16 @@ pub fn average_level(levels: impl IntoIterator<Item = u8>) -> u32 {
     sum.max(1) / count.max(1)
 }
 
-/// Hurt a member ([`crate::game::characters::Vitals::hurt`]) and report
-/// what it cost them. Death is settled afterwards, as every death is.
+/// Hurt a member past any Guardian Angel on them
+/// ([`crate::game::characters::Vitals::hurt`]) and report what it cost them. Death is settled afterwards, as every death is.
 pub fn damage_member(
     member: Entity,
     vitals: &mut crate::game::characters::Vitals,
     amount: u32,
+    laying: &mut crate::game::actors::Laying,
     damage: &mut MessageWriter<Damaged>,
 ) -> u32 {
-    let lost = vitals.hurt(amount);
+    let lost = vitals.hurt(laying.absorb(member, amount));
     if lost > 0 {
         damage.write(Damaged { body: member, amount: lost, died: vitals.is_dead() });
     }
@@ -181,35 +177,42 @@ mod tests {
         let first = world.spawn(Vitals::full(10, 20)).id();
         roster::test_party(&mut world, &[first]);
         world.add_observer(formation::vacate_seat);
+        use crate::game::actors::{Enchantment, Laying};
+        use bevy::ecs::system::RunSystemOnce;
+        world
+            .run_system_once(move |mut laying: Laying| {
+                let angel = Enchantment {
+                    spell: crate::content::spells::SpellId::GUARDIAN_ANGEL,
+                    power: 2,
+                    boost: 0,
+                };
+                laying.lay(first, angel, 4, 6)
+            })
+            .unwrap();
+        world.flush();
         let mut operation =
-            SystemState::<(Query<&mut Vitals>, MessageWriter<Damaged>)>::new(&mut world);
+            SystemState::<(Query<&mut Vitals>, Laying, MessageWriter<Damaged>)>::new(&mut world);
         {
-            let (mut members, mut damage) = operation.get_mut(&mut world).unwrap();
+            let (mut members, mut laying, mut damage) = operation.get_mut(&mut world).unwrap();
             let mut vitals = members.get_mut(first).unwrap();
-            vitals.enchantments.apply(crate::game::magic::enchantments::Enchantment {
-                spell: crate::content::spells::SpellId::GUARDIAN_ANGEL,
-                power: 2,
-                boost: 0,
-                turns: 4,
-                absorption: 6,
-            });
-            assert_eq!(damage_member(first, &mut vitals, 6, &mut damage), 0);
+            assert_eq!(damage_member(first, &mut vitals, 6, &mut laying, &mut damage), 0);
             assert_eq!(vitals.stamina.current, 20, "Guardian Angel absorbs before fatigue");
-            assert_eq!(damage_member(first, &mut vitals, 3, &mut damage), 3);
+            assert_eq!(damage_member(first, &mut vitals, 3, &mut laying, &mut damage), 3);
             vitals.heal(3);
         }
+        operation.apply(&mut world);
         let reported: Vec<_> = world.resource_mut::<Messages<Damaged>>().drain().collect();
         assert_eq!(reported, [Damaged { body: first, amount: 3, died: false }]);
         {
-            let (mut members, mut damage) = operation.get_mut(&mut world).unwrap();
+            let (mut members, mut laying, mut damage) = operation.get_mut(&mut world).unwrap();
             let mut vitals = members.get_mut(first).unwrap();
-            assert_eq!(damage_member(first, &mut vitals, 100, &mut damage), 10);
-            assert_eq!(damage_member(first, &mut vitals, 1, &mut damage), 0);
+            assert_eq!(damage_member(first, &mut vitals, 100, &mut laying, &mut damage), 10);
+            assert_eq!(damage_member(first, &mut vitals, 1, &mut laying, &mut damage), 0);
         }
         let reported: Vec<_> = world.resource_mut::<Messages<Damaged>>().drain().collect();
         assert_eq!(reported, [Damaged { body: first, amount: 10, died: true }]);
         // Settling the death gives up the member's seat.
-        use bevy::ecs::system::RunSystemOnce;
+        world.write_message(Damaged { body: first, amount: 10, died: true });
         world.run_system_once(crate::game::characters::settle_deaths).unwrap();
         let formation = world.query::<&formation::Formation>().single(&world).unwrap();
         assert!(formation.row_of(first).is_none(), "the dead give up their seat");

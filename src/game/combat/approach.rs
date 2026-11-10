@@ -16,6 +16,7 @@ use bevy_landmass::prelude::*;
 
 use super::Combatant;
 use crate::content::species::Reach;
+use crate::game::actors::Attacks;
 use crate::game::characters::Condition;
 use crate::game::characters::Vitals;
 use crate::game::party::body::PartyBody;
@@ -65,36 +66,34 @@ pub(super) struct MoveBudget {
     pub charge: bool,
 }
 
-/// How far a body `gap` from the party with nobody in reach may advance
-/// this round: its stride, half again when charging (hurt, at 95% health
-/// or less), halved when slowed (retail `StepMonsterCombatAction`).
+/// How far an actor `gap` from the party with nobody in reach may advance
+/// this round, and whether it charges (hurt, at 95% health or less).
 pub(super) fn move_budget(
-    (reach, stride): (Reach, f32),
+    attacks: &Attacks,
     vitals: &Vitals,
     walker: Option<&Walker>,
     gap: f32,
 ) -> Option<MoveBudget> {
-    if !needs_approach(reach, vitals, walker, gap) {
+    if !needs_approach(attacks.reach(), vitals, walker, gap) {
         return None;
     }
     let charge = vitals.charges();
-    Some(MoveBudget { metres: move_metres(vitals, stride, charge), charge })
+    Some(MoveBudget { metres: move_metres(attacks, vitals, charge), charge })
 }
 
-/// How far a body moves in one combat action (retail `SetUpMonsterTurn`):
-/// its stride, half again when charging, raised by Haste or halved when
-/// slowed.
-pub(super) fn move_metres(vitals: &Vitals, stride: f32, charge: bool) -> f32 {
-    let mut budget = stride;
-    if charge {
-        budget *= 1.5;
-    }
-    if let Some(haste) = vitals.enchantments.get(crate::content::spells::SpellId::HASTE) {
-        budget += stride * haste.power as f32 * 0.1;
+/// How far an actor moves in one combat action: its stride, half again
+/// when charging, further by Haste, or halved when slowed (retail
+/// `SetUpMonsterTurn`).
+pub(super) fn move_metres(attacks: &Attacks, vitals: &Vitals, charge: bool) -> f32 {
+    let stride = attacks.stride.unwrap_or(0.0);
+    let budget = if charge { stride * 1.5 } else { stride };
+    if attacks.hasted > 0.0 {
+        budget + stride * attacks.hasted
     } else if vitals.conditions.has(Condition::Slowed) {
-        budget *= 0.5;
+        budget * 0.5
+    } else {
+        budget
     }
-    budget
 }
 
 /// Where a monster running from the party heads: as far as its move
@@ -117,7 +116,7 @@ pub fn steer_moves(
     party: Query<(Entity, &Position), With<PartyBody>>,
     mut walkers: Query<(
         Entity,
-        (&Monster, &Vitals, &crate::game::actors::Attacks),
+        (&Monster, &Vitals, &Attacks),
         ActorPose,
         &Walker,
         &mut AgentTarget3d,

@@ -22,7 +22,7 @@ use crate::content::characters::{Attribute, BodyPart, Skill, Trait};
 use crate::content::items::{AttackEffect, AttackEffects, AttackMode, Dice, EquipClass};
 use crate::content::species::Reach;
 use crate::content::spells::SpellId;
-use crate::game::actors::{Arm, Attacks, Stance as Standing, reaches};
+use crate::game::actors::{Arm, Attacks, Laying, Places, Stance as Standing, reaches};
 use crate::game::characters::{Condition, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
@@ -115,7 +115,7 @@ fn open(
     actor: Entity,
     fights: Fights,
     (turn, ordered, walker): (&mut Turn, bool, Option<&Walker>),
-    bodies: &mut Query<Body>,
+    (bodies, places): (&mut Query<Body>, &Places),
     bearing: &Bearing,
     (formation, roster, combatants): (&Formation, &PartyRoster, &[Entity]),
     obstacles: &WorldObstacles,
@@ -124,7 +124,7 @@ fn open(
 ) -> Result<(Attack, u32), Otherwise> {
     let own = bodies.get(actor).map_err(|_| Otherwise::Stand)?;
     let attacks = own.attacks.clone();
-    let (at, mine, level) = (*own.at, (own.side.0, *own.loyalty), own.level.0);
+    let (at, mine, level) = (places.of(own.entity), own.standing(), own.level.0);
     let slowed = own.vitals.conditions.has(Condition::Slowed);
     let wanted = if turn.berserk { Stance::Friendly } else { Stance::Hostile };
     // Those a wild attacker's eye misses this time.
@@ -147,7 +147,7 @@ fn open(
         bodies.get(other).ok().filter(|their| {
             other != actor
                 && !their.vitals.is_dead()
-                && hostility::between(mine, (their.side.0, *their.loyalty)) == wanted
+                && hostility::between(mine, their.standing()) == wanted
         })
     };
     let mut evaded = Vec::new();
@@ -163,8 +163,13 @@ fn open(
                 let Some(their) = foe(other) else { continue };
                 let npc = bearing.get(other).is_ok_and(|(npc, ..)| npc);
                 if (ordered && npc)
-                    || !reaches(formation, (actor, &at), (other, their.at), arm.reach)
-                    || (!ordered && !obstacles.clear(at.eye, their.at.centre))
+                    || !reaches(
+                        formation,
+                        (actor, &at),
+                        (other, &places.of(their.entity)),
+                        arm.reach,
+                    )
+                    || (!ordered && !obstacles.clear(at.eye, places.of(their.entity).centre))
                 {
                     continue;
                 }
@@ -185,24 +190,26 @@ fn open(
     let Some((slot, candidates)) = chosen else {
         // A body that walks closes in on a foe, hurt ones charging.
         let stride = attacks.stride.zip(walker).filter(|_| !turn.moved);
-        let goal = stride.and_then(|(stride, walker)| match mine.0 {
+        let goal = stride.and_then(|(_, walker)| match mine.0 {
             Stance::Friendly => combatants
                 .iter()
-                .filter_map(|&other| Some((at.feet.distance_squared(foe(other)?.at.feet), other)))
+                .filter_map(|&other| {
+                    Some((at.feet.distance_squared(places.of(foe(other)?.entity).feet), other))
+                })
                 .min_by(|a, b| a.0.total_cmp(&b.0))
                 .filter(|_| walker.speed > 0.0)
                 .map(|(_, target)| {
                     let charge = own.vitals.charges();
-                    let metres = approach::move_metres(own.vitals, stride, charge);
+                    let metres = approach::move_metres(&attacks, own.vitals, charge);
                     (approach::MoveBudget { metres, charge }, approach::MoveGoal::Attack(target))
                 }),
             Stance::Hostile => {
                 let party = roster.iter().find_map(|member| bodies.get(member).ok())?;
                 approach::move_budget(
-                    (attacks.reach(), stride),
+                    &attacks,
                     own.vitals,
                     Some(walker),
-                    at.gap(party.at),
+                    at.gap(&places.of(party.entity)),
                 )
                 .map(|budget| (budget, approach::MoveGoal::Party))
             }
@@ -220,12 +227,16 @@ fn open(
             .iter()
             .map(|&(arm, _, other)| {
                 let their = bodies.get(other).unwrap();
-                let quadrant = at.quadrant(their.at.feet);
+                let quadrant = at.quadrant(places.of(their.entity).feet);
                 let armed_foe = !their.attacks.arms.is_empty();
                 let in_reach = armed_foe
                     && (quadrant == Row::Rear
                         || (!formation.occupied(quadrant) && formation.occupied(Row::Center)));
-                ((their.vitals.conditions.worst(), !in_reach, at.gap(their.at)), arm, other)
+                (
+                    (their.vitals.conditions.worst(), !in_reach, at.gap(&places.of(their.entity))),
+                    arm,
+                    other,
+                )
             })
             .min_by(|a, b| a.0.0.cmp(&b.0.0).then(a.0.1.cmp(&b.0.1)).then(a.0.2.total_cmp(&b.0.2)))
             .map(|(_, arm, other)| (arm, other))
@@ -320,7 +331,7 @@ fn practise(
 /// harder each time.
 fn catch_unaware(
     attack: &mut Attack,
-    bodies: &Query<effects::BodyReadOnly>,
+    (bodies, places): (&Query<effects::BodyReadOnly>, &Places),
     watchful: &mut Query<(&Ordered, &mut Spotted)>,
     formation: &mut Formation,
     rng: &mut GameRng,
@@ -331,7 +342,7 @@ fn catch_unaware(
     let (Ok(attacker), Ok(target)) = (bodies.get(attack.by), bodies.get(attack.target)) else {
         return;
     };
-    let quadrant = target.at.quadrant(attacker.at.feet);
+    let quadrant = places.of(target.entity).quadrant(places.of(attacker.entity).feet);
     let facing = formation.facing(attack.target).unwrap_or(Row::Front);
     if facing == quadrant {
         return;
@@ -383,7 +394,7 @@ fn cap_blind(aim: i32, vitals: &Vitals, blind_fighting: Option<u8>) -> i32 {
 fn intercept(
     attack: &mut Attack,
     ward: Entity,
-    bodies: &mut Query<Body>,
+    (bodies, places): (&mut Query<Body>, &Places),
     (guards, interceptions): (&Query<&Guards>, &mut Query<&mut Interceptions>),
     rng: &mut GameRng,
     news: &mut MessageWriter<CombatNews>,
@@ -393,7 +404,7 @@ fn intercept(
     if warded.vitals.is_dead() {
         return ward;
     }
-    let at = *warded.at;
+    let at = places.of(warded.entity);
     let surprise = attack.surprise;
     let pressing = bodies.get(attack.by).map_or(0, |by| by.attacks.pressing(by.vitals))
         + 10 * i32::from(surprise.unaware)
@@ -407,7 +418,10 @@ fn intercept(
                 return false;
             };
             let protection = body.attacks.pressing(body.vitals);
-            body.attacks.arms.first().is_some_and(|first| body.at.gap(&at) <= first.reach.metres())
+            body.attacks
+                .arms
+                .first()
+                .is_some_and(|first| places.of(body.entity).gap(&at) <= first.reach.metres())
                 && body.vitals.can_guard()
                 && taken.taken < taken.allowed
                 && rng.below(100) < (protection - pressing + 50).clamp(5, 95) as u32
@@ -434,10 +448,11 @@ fn land_blow(
     rules: &Rules,
     rng: &mut GameRng,
     log: &mut Log,
+    laying: &mut Laying,
 ) -> (u32, Vec<Effect>) {
     let Ok(mut body) = bodies.get_mut(victim) else { return (0, Vec::new()) };
     let strike = Strike { definition: rules.definitions.blow(), strength, blow: Some(blow) };
-    effects::land(&strike, &mut body, rules, rng, log);
+    effects::land(&strike, &mut body, rules, rng, log, laying);
     let (damage, rest): (Vec<Effect>, Vec<Effect>) =
         log.effects.drain(..).partition(|effect| matches!(effect, Effect::Damaged { .. }));
     let damage = damage
@@ -469,20 +484,20 @@ fn report_blow(
 #[allow(clippy::type_complexity)]
 fn swing(
     attack: &mut Attack,
-    bodies: &mut Query<Body>,
+    (bodies, places): (&mut Query<Body>, &Places),
     (bearing, running): (&Bearing, bool),
     guards: (&Query<&Guards>, &mut Query<&mut Interceptions>),
     (formation, combatants): (&Formation, &[Entity]),
     rules: &Rules,
     rng: &mut GameRng,
-    log: &mut Log,
+    (log, laying): (&mut Log, &mut Laying),
     news: &mut MessageWriter<CombatNews>,
 ) {
     let (by, target, mode) = (attack.by, attack.target, attack.mode);
     let arm = attack.arm.clone();
     let readonly = bodies.as_readonly();
     let (Ok(own), Ok(their)) = (readonly.get(by), readonly.get(target)) else { return };
-    let (from, side) = (*own.at, own.side.0);
+    let (from, side) = (places.of(own.entity), own.stance());
     let (agile, blind_fighting) = (own.attributes.agility(), own.attacks.blind_fighting);
     let (backstab, own_reduction) = (own.attacks.backstab, own.armour.reduction);
     let fatigue = attack::fatigue(own.vitals);
@@ -504,7 +519,7 @@ fn swing(
     let mut fumbled = false;
     let mut through = false;
     let landed = if arm.reach >= Reach::Long {
-        let at = their.at;
+        let at = &places.of(their.entity);
         let point = attack::scatter(rng, from.eye, at.centre, aim, blind);
         attack::strikes(at.centre, point, at.radius, at.half_height).then(|| {
             through = arm.sure_throw;
@@ -519,7 +534,12 @@ fn swing(
                 readonly.get(other).is_ok_and(|there| {
                     !there.vitals.is_dead()
                         && (other == by
-                            || reaches(formation, (by, &from), (other, there.at), arm.reach))
+                            || reaches(
+                                formation,
+                                (by, &from),
+                                (other, &places.of(there.entity)),
+                                arm.reach,
+                            ))
                 })
             })
             .collect();
@@ -539,7 +559,7 @@ fn swing(
         }
     };
     if let Some((roll, sure)) = landed {
-        victim = intercept(attack, victim, bodies, guards, rng, news);
+        victim = intercept(attack, victim, (bodies, places), guards, rng, news);
         let surprise = attack.surprise;
         let Ok(armour) = bodies.get(victim).map(|their| *their.armour) else { return };
         let location = match (armour.hit_locations, arm.lands_on_party) {
@@ -606,7 +626,8 @@ fn swing(
             }
             if damage > 0 {
                 let blow = Blow { damage, effects: chances, by_monster: arm.word.is_some() };
-                let done = land_blow(victim, attack.strength, blow, bodies, rules, rng, log);
+                let done =
+                    land_blow(victim, attack.strength, blow, bodies, rules, rng, log, laying);
                 if fumbled {
                     report_blow((by, victim), done, news);
                 } else {
@@ -629,7 +650,7 @@ fn swing(
             } else if fumbled {
                 news.write(CombatNews::Result { attacker: by, target: victim, hits: 1, damage: 0 });
             }
-            riposte(by, victim, &arm, own_reduction, bodies, rules, rng, log, news);
+            riposte(by, victim, &arm, own_reduction, bodies, rules, rng, (log, laying), news);
             if !fumbled {
                 attack.hits += 1;
             }
@@ -644,7 +665,7 @@ fn swing(
         let cost = load.scale_fatigue(
             cost,
             own.vitals.conditions.has(Condition::Slowed),
-            own.vitals.enchantments.has(SpellId::HASTE),
+            own.attacks.hasted > 0.0,
         );
         own.vitals.tire(cost);
     }
@@ -662,19 +683,13 @@ fn riposte(
     bodies: &mut Query<Body>,
     rules: &Rules,
     rng: &mut GameRng,
-    log: &mut Log,
+    (log, laying): (&mut Log, &mut Laying),
     news: &mut MessageWriter<CombatNews>,
 ) {
     if arm.reach >= Reach::Long {
         return;
     }
-    let Some(charge) = bodies
-        .get_mut(victim)
-        .ok()
-        .and_then(|mut body| body.vitals.enchantments.spend_charge(SpellId::RAZOR_CLOAK))
-    else {
-        return;
-    };
+    let Some(charge) = laying.spend(victim, SpellId::RAZOR_CLOAK) else { return };
     let dice = rules.content.spells[SpellId::RAZOR_CLOAK].dice;
     let strength = Strength { power: charge.power, boost: 0, against: 0 };
     let rolled = crate::game::hits::definitions::magnitude(rng, dice, strength);
@@ -683,7 +698,7 @@ fn riposte(
         (0, Vec::new())
     } else {
         let blow = Blow { damage: amount, effects: AttackEffects::default(), by_monster: false };
-        land_blow(by, Strength::default(), blow, bodies, rules, rng, log)
+        land_blow(by, Strength::default(), blow, bodies, rules, rng, log, laying)
     };
     report_blow((victim, by), done, news);
 }
@@ -758,6 +773,8 @@ pub(super) fn attack(
     mut performs: MessageReader<Perform>,
     mut turns: Query<(&mut Turn, Has<Ordered>, Option<&Walker>)>,
     mut bodies: Query<Body>,
+    mut laying: Laying,
+    places: Places,
     bearing: Bearing,
     (guards, mut interceptions): (Query<&Guards>, Query<&mut Interceptions>),
     mut watchful: Query<(&Ordered, &mut Spotted)>,
@@ -792,7 +809,7 @@ pub(super) fn attack(
             actor,
             fights,
             (&mut turn, ordered, walker),
-            &mut bodies,
+            (&mut bodies, &places),
             &bearing,
             (&formation, roster, combatants),
             &obstacles,
@@ -824,7 +841,7 @@ pub(super) fn attack(
         };
         round.attacked(true);
         let readonly = bodies.as_readonly();
-        catch_unaware(&mut attack, &readonly, &mut watchful, &mut formation, &mut rng);
+        catch_unaware(&mut attack, (&readonly, &places), &mut watchful, &mut formation, &mut rng);
         if readonly
             .get(actor)
             .is_ok_and(|body| body.member && !body.vitals.conditions.has(Condition::Turncoat))
@@ -850,13 +867,13 @@ pub(super) fn attack(
             }
             swing(
                 &mut attack,
-                &mut bodies,
+                (&mut bodies, &places),
                 (&bearing, running),
                 (&guards, &mut interceptions),
                 (&formation, combatants),
                 &rules,
                 &mut rng,
-                &mut log,
+                (&mut log, &mut laying),
                 &mut news,
             );
             if spend_ammunition(&attack.arm, actor, &mut bodies, &content) {

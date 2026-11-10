@@ -135,6 +135,7 @@ fn damage_party(
     roster: Single<&PartyRoster>,
     mut members: Query<&mut Vitals, With<Character>>,
     mut rng: ResMut<GameRng>,
+    mut laying: crate::game::actors::Laying,
     mut damage: MessageWriter<Damaged>,
 ) {
     for entity in roster.iter() {
@@ -144,7 +145,13 @@ fn damage_party(
         }
         let rolled = rng.roll(dice);
         if rolled > 0 {
-            crate::game::party::damage_member(entity, &mut member, rolled, &mut damage);
+            crate::game::party::damage_member(
+                entity,
+                &mut member,
+                rolled,
+                &mut laying,
+                &mut damage,
+            );
         }
     }
 }

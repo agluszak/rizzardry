@@ -3,9 +3,9 @@
 
 use bevy::prelude::*;
 
+use crate::game::actors::Place;
 use crate::game::characters::Vitals;
 use crate::game::party::roster::PartyRoster;
-use crate::game::world::footing::Footing;
 use crate::game::world::hostility::Stance;
 use crate::game::world::obstacles::WorldObstacles;
 
@@ -43,7 +43,7 @@ pub fn within<'a>(
     origin: Vec3,
     radius: f32,
     recipients: Recipients,
-    bodies: impl IntoIterator<Item = (Entity, &'a Vitals, Stance, &'a Footing)>,
+    bodies: impl IntoIterator<Item = (Entity, &'a Vitals, Stance, Place)>,
     (roster, combatants): (&PartyRoster, &[Entity]),
     obstacles: &WorldObstacles,
 ) -> Vec<Entity> {

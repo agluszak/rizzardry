@@ -107,6 +107,7 @@ pub(crate) fn cast(
     )>,
     groups: Query<(&MonsterGroup, &LevelOwned, &GroupMembers)>,
     (freedom, obstacles): (Freedom, WorldObstacles),
+    mut laying: crate::game::actors::Laying,
     (definitions, body_assets, mut configs): (
         Res<Assets<crate::content::level::LevelDefinition>>,
         Res<Assets<MonsterBody>>,
@@ -208,7 +209,7 @@ pub(crate) fn cast(
                 let Ok(body) = bodies.get(entity) else { continue };
                 let group = group.and_then(|group| groups.get(group.0).ok());
                 let here = pose.translation();
-                if body.side.0 != Stance::Hostile
+                if body.stance() != Stance::Hostile
                     || influence.is_some_and(|held| held.response == LureResponse::Resisted)
                     || !body.vitals.can_fight()
                     || body.vitals.conditions.has(Condition::Blind)
@@ -263,6 +264,7 @@ pub(crate) fn cast(
         let stance = if outcome == Outcome::Backfired { Stance::Hostile } else { Stance::Friendly };
         // Power Cast may add the element's associated buff, by the same
         // slot and duration rules as the spell itself.
+        let mut buffed = None;
         if strength.boost != 0 && rng.below(100) < strength.boost {
             let buff = [
                 SpellId::HASTE,
@@ -277,13 +279,9 @@ pub(crate) fn cast(
                 definition.duration_per_power,
                 strength,
             );
-            members[0].vitals.enchantments.apply(super::enchantments::Enchantment {
-                spell: buff,
-                power: strength.power,
-                boost: 0,
-                turns,
-                absorption: 0,
-            });
+            let laid =
+                crate::game::actors::Enchantment { spell: buff, power: strength.power, boost: 0 };
+            buffed = Some((laid, turns));
         }
         let (group, spawned) = population::spawn_group(
             &mut commands,
@@ -295,11 +293,11 @@ pub(crate) fn cast(
         );
         // The summoning lasts no longer than the fight.
         commands.entity(group).insert(ChildOf(battle));
-        commands.entity(spawned[0]).insert((
-            Combatant(battle),
-            SummonedBy(caster),
-            ChildOf(battle),
-        ));
+        let elemental = spawned[0];
+        commands.entity(elemental).insert((Combatant(battle), SummonedBy(caster), ChildOf(battle)));
+        if let Some((buff, turns)) = buffed {
+            laying.lay(elemental, buff, turns, 0);
+        }
     }
 }
 

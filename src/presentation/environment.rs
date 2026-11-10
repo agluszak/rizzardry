@@ -7,7 +7,7 @@ use crate::content::level::LevelGeometry;
 use crate::game::time::GameClock;
 use bevy::asset::LoadState;
 
-use crate::game::magic::enchantments::PartyEffects;
+use crate::game::actors::Laid;
 use crate::game::party::body::PartyBody;
 use crate::game::world::level::{Destination, Level, LevelEntities};
 use crate::game::world::props::Prop;
@@ -19,18 +19,15 @@ use crate::presentation::party_view::PartyCamera;
 /// [`spell_light`] at the party's eye.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct PartyTorch<'w, 's> {
-    party: Query<
-        'w,
-        's,
-        (&'static avian3d::prelude::Position, &'static PartyEffects),
-        With<PartyBody>,
-    >,
+    party: Query<'w, 's, (Entity, &'static avian3d::prelude::Position), With<PartyBody>>,
+    laid: Laid<'w, 's>,
 }
 
 impl PartyTorch<'_, '_> {
     pub fn light(&self) -> Option<crate::content::level::PointLightSource> {
-        let (at, effects) = self.party.single().ok()?;
-        spell_light(PartyBody::eye(at), effects)
+        let (party, at) = self.party.single().ok()?;
+        let light = self.laid.get(party, crate::content::spells::SpellId::LIGHT)?;
+        Some(spell_light(PartyBody::eye(at), light))
     }
 }
 
@@ -42,18 +39,17 @@ pub(super) fn sky_now(level: &LevelGeometry, clock: &GameClock) -> Vec3 {
 /// Retail camera light: warm, 4000 retail units, twice adjusted power plus two.
 fn spell_light(
     eye: Vec3,
-    effects: &PartyEffects,
-) -> Option<crate::content::level::PointLightSource> {
-    let effect = effects.0.get(crate::content::spells::SpellId::LIGHT)?;
+    effect: crate::game::actors::Enchantment,
+) -> crate::content::level::PointLightSource {
     let amount = effect.adjusted(effect.power) * 2;
-    Some(crate::content::level::PointLightSource {
+    crate::content::level::PointLightSource {
         name: String::new(),
         runtime: true,
         enabled: true,
         position: eye,
         colour: Vec3::new(1.0, 0.85, 0.39) * (amount as f32 + 2.0),
         range: 4000.0 / crate::content::UNITS_PER_METRE,
-    })
+    }
 }
 
 /// Current fixed lighting sampled for actor materials. Meshes own no
