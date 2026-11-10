@@ -306,7 +306,7 @@ impl<'a, 'c, 'q, 'p> Scene<'a, 'c, 'q, 'p, '_, '_> {
             Means::Learned { asked, .. } => {
                 let affordable = self.affordable(body, spell);
                 if *asked != power::AUTO {
-                    return Some(power::chosen(*asked, affordable));
+                    return Some(power::chosen(*asked, affordable, spell.power));
                 }
                 let identify = (spell.facts.working == Some(Working::Identify))
                     .then(|| self.identify_difficulty(cast))

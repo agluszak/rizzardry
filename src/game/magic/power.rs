@@ -4,7 +4,7 @@
 //! generator; none changes anything.
 
 use crate::content::items::Dice;
-use crate::content::spells::{MAX_POWER, SpellDefinition, Targeting};
+use crate::content::spells::{MAX_POWER, PowerChoice, SpellDefinition, Targeting};
 use crate::game::characters::{Condition, Conditions, Lasting, Pool};
 use crate::game::hits::definitions::Restores;
 use crate::game::magic::Strength;
@@ -48,7 +48,10 @@ pub fn affordable(available: u32, cost: u32) -> u32 {
 }
 
 /// A learned spell's power: the choice cut down to what the points pay for.
-pub fn chosen(asked: u32, affordable: u32) -> u32 {
+/// A spell whose power is fixed is cast at 1 whatever is asked, if the points
+/// pay for that (retail `CastSpellFromSource`, `W8_SPELL_POWER_FIXED`).
+pub fn chosen(asked: u32, affordable: u32, class: PowerChoice) -> u32 {
+    let asked = if class == PowerChoice::Fixed { 1 } else { asked };
     asked.min(MAX_POWER).min(affordable)
 }
 
@@ -270,12 +273,17 @@ mod tests {
 
     #[test]
     fn a_chosen_power_is_cut_down_to_what_the_points_pay_for() {
+        let chosen = |asked, affordable| super::chosen(asked, affordable, PowerChoice::Chosen);
         assert_eq!(chosen(5, 3), 3);
         assert_eq!(chosen(2, 6), 2);
         assert_eq!(chosen(7, 7), 7);
         // The auto choice is resolved before it is chosen; it is held to seven.
         assert_eq!(chosen(AUTO, 9), 7);
         assert_eq!(chosen(5, 0), 0);
+        // A spell of fixed power goes off at 1 whatever was asked, or not at
+        // all when the points do not pay for one.
+        let fixed = |asked, affordable| super::chosen(asked, affordable, PowerChoice::Fixed);
+        assert_eq!((fixed(5, 7), fixed(1, 7), fixed(5, 0)), (1, 1, 0));
     }
 
     fn dice(count: i32, sides: i32) -> Option<Dice> {

@@ -130,7 +130,9 @@ The member chooses a power, or asks for the **auto** power (retail "8", "as
 affordable"). The power cast is the choice cut down to what the realm's spell
 points pay for: `power = min(choice, points left in the spell's realm / cost)`.
 A spell that costs `cost` points per power, cast at `power`, costs
-`cost * power` points. If the points pay for none, the cast is refused.
+`cost * power` points. If the points pay for none, the cast is refused. A
+spell whose record fixes its power is cast at 1 whatever is asked (retail
+`CastSpellFromSource`, `Magic.cpp:2527-2563`).
 
 *Spell points* are kept per realm (Fire, Water, Air, Earth, Mental, Divine). A
 member has points only in a realm in which they have learned a spell.
@@ -873,9 +875,6 @@ into the sections above.
 
 20. **A blind caster's aim** (`CheckSpellBackfire`, `Magic.cpp:3528-3593`): described
     in section 4; not in the Rust.
-21. **Power classes.** A spell whose record says Fixed is cast at power 1; Maximum
-    is cast at the most the points pay for unless a power is given
-    (`Magic.cpp:2527-2563`). The Rust treats all as chosen.
 22. **Set Portal refused** where the level forbids it, the party has no walkable
     ground, or the level moved this update (`Magic.cpp:2157-2160`).
 23. **Party spells reach allied monsters.** A spell aimed at the party also lays on
