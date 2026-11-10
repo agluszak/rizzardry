@@ -6,6 +6,8 @@ use bevy::prelude::*;
 use enum_map::EnumMap;
 use enumset::EnumSet;
 
+use super::Place;
+use super::spells::{Bonus, Laid};
 use crate::content::characters::{Attribute, BodyPart, Realm, Skill, Trait};
 use crate::content::items::{AttackEffects, AttackMode, Dice};
 use crate::content::species::{AttackWord, MonsterKind, Reach, Species};
@@ -15,10 +17,8 @@ use crate::game::characters::{Character, Condition, Vitals, scale_by_level};
 use crate::game::combat::attack::{self, Grip, Surprise};
 use crate::game::data::Catalogs;
 use crate::game::inventory::{Burden, Carried, StackId, WeaponSlot};
-use crate::game::magic::enchantments::{Enchantments, PartyEffects};
 use crate::game::party::formation::Formation;
 use crate::game::party::roster::PartyMember;
-use crate::game::world::footing::Footing;
 use crate::game::world::population::Monster;
 
 /// An actor's attributes as they stand now, spells counted, each 1 to 125.
@@ -41,13 +41,13 @@ impl std::ops::Index<Attribute> for Attributes {
 impl Attributes {
     /// From base values, with what the spells on the actor add (Superman to
     /// each, Haste to Speed).
-    pub fn with_spells(base: EnumMap<Attribute, u32>, spells: &Enchantments) -> Self {
-        Self(EnumMap::from_fn(|a| (base[a].clamp(1, 125) + spells.attribute_bonus(a)).min(125)))
+    fn with_spells(base: EnumMap<Attribute, u32>, spells: &Bonus) -> Self {
+        Self(EnumMap::from_fn(|a| (base[a].clamp(1, 125) + spells.attributes[a]).min(125)))
     }
 
     /// A character's, by their sheet alone: before they are anyone's actor.
     pub fn of_sheet(character: &Character) -> Self {
-        Self::with_spells(character.attributes, &Enchantments::default())
+        Self::with_spells(character.attributes, &Bonus::default())
     }
 
     /// Senses + speed + dexterity + intelligence, which weighs for an
@@ -237,12 +237,16 @@ pub struct Attacks {
     /// monsters): its aim past 10 scales by this level instead of being
     /// held to 10, and its action is not lost to blindness.
     pub blind_fighting: Option<u8>,
+    /// What its kind adds to its Senses when it looks about.
+    pub keen_sight: u32,
     /// The percent chance its natural strikes roll extra dice (retail
     /// `RollBackstabExtraDice`).
     pub backstab: i32,
     /// How far it may walk in one combat move, in metres; the party walks
     /// as one, so a member has none.
     pub stride: Option<f32>,
+    /// The share of its stride Haste adds to a move: a tenth a power.
+    pub hasted: f32,
 }
 
 impl Attacks {
@@ -294,12 +298,12 @@ impl Attacks {
 /// else by the gap between their bodies.
 pub fn reaches(
     formation: &Formation,
-    (a, from): (Entity, &Footing),
-    (b, to): (Entity, &Footing),
+    (a, from): (Entity, &Place),
+    (b, to): (Entity, &Place),
     reach: Reach,
 ) -> bool {
     let seated = |body| formation.row_of(body).is_some();
-    let through_formation = |member, seat: &Footing, other: &Footing| {
+    let through_formation = |member, seat: &Place, other: &Place| {
         let side = seat.quadrant(other.feet);
         formation.reach(member, side, reach).is_some_and(|r| seat.gap(other) <= r.metres())
     };
@@ -319,72 +323,73 @@ pub struct Refit {
     pub entity: Entity,
 }
 
-/// Fire [`Refit`] at each actor whose sources were written since last
-/// time: its sheet, what it wears, its load, the spells on it, its party
-/// membership, or for a member the party's spells. Until spells laid on an
-/// actor are things of their own (`docs/plan.md`, slice 2) they are part of
-/// its `Vitals`, so any change to those refits it.
-#[allow(clippy::type_complexity)]
-pub fn notice_changes(
+/// An actor is refitted as it is made, and as it joins or leaves the party.
+pub(super) fn refit_made<T: Component>(made: On<Add<T>>, mut commands: Commands) {
+    commands.trigger(Refit { entity: made.entity });
+}
+
+pub(super) fn refit_joined(joined: On<Insert<PartyMember>>, mut commands: Commands) {
+    commands.trigger(Refit { entity: joined.entity });
+}
+
+pub(super) fn refit_left(left: On<Remove<PartyMember>>, mut commands: Commands) {
+    commands.trigger(Refit { entity: left.entity });
+}
+
+/// A member whose sheet or worn gear changed is refitted. Nothing says so
+/// when it happens yet (`docs/plan.md`: gear until items are things, the
+/// sheet until advancement and practice announce themselves); this notices
+/// the write.
+pub(super) fn refit_regeared(
+    geared: Query<Entity, Or<(Changed<Carried>, Changed<Character>, Changed<Burden>)>>,
     mut commands: Commands,
-    changed: Query<
-        Entity,
-        Or<(
-            Changed<Vitals>,
-            Changed<Character>,
-            Changed<Carried>,
-            Changed<Burden>,
-            Changed<Monster>,
-            Changed<PartyMember>,
-        )>,
-    >,
-    party: Option<Single<(Ref<PartyEffects>, &crate::game::party::roster::PartyRoster)>>,
-    mut departed: RemovedComponents<PartyMember>,
 ) {
-    let shared = party
-        .as_ref()
-        .filter(|party| party.0.is_changed())
-        .into_iter()
-        .flat_map(|party| party.1.iter());
-    let all: bevy::ecs::entity::EntityHashSet =
-        changed.iter().chain(departed.read()).chain(shared).collect();
-    for entity in all {
+    for entity in &geared {
         commands.trigger(Refit { entity });
     }
 }
 
-pub(crate) fn plugin(app: &mut App) {
-    app.add_observer(refit);
-}
-
 /// Write an actor's components from its sources: a monster's species, or a
 /// member's sheet and what they wear, with the spells on it and, for a
-/// member, on the party.
+/// member, on the party. Fired at a party, it refits every member.
 #[allow(clippy::type_complexity)]
-pub fn refit(
+pub(super) fn refit(
     event: On<Refit>,
     mut actors: Query<(
-        &Vitals,
+        &mut Vitals,
         AnyOf<((&Character, &Carried, Option<&Burden>), &Monster)>,
-        Has<PartyMember>,
+        Option<&PartyMember>,
         (&mut Attributes, &mut Level, &mut Resistances, &mut Armour, &mut Attacks),
     )>,
-    party: Option<Single<&PartyEffects>>,
+    rosters: Query<&crate::game::party::roster::PartyRoster>,
+    laid: Laid,
     content: Option<Res<Catalogs>>,
+    mut commands: Commands,
 ) {
-    let (Some(content), Ok((vitals, (sheet, monster), member, written))) =
-        (content, actors.get_mut(event.entity))
-    else {
+    let Some(content) = content else { return };
+    if let Ok(roster) = rosters.get(event.entity) {
+        roster.iter().for_each(|entity| commands.trigger(Refit { entity }));
+        return;
+    }
+    let Ok((mut vitals, (sheet, monster), member, written)) = actors.get_mut(event.entity) else {
         return;
     };
-    let spells = &vitals.enchantments;
-    let shared = party.as_deref().filter(|_| member).map(|party| &party.0);
+    // A member counts the spells on them and on their party together.
+    let mut spells = laid.bonus(event.entity);
+    if let Some(member) = member {
+        spells += laid.bonus(member.0);
+    }
     let (attributes, level, resistances, armour, attacks) = match (sheet, monster) {
         (Some((character, carried, burden)), _) => {
             let load = burden.map(|burden| burden.load).unwrap_or_default();
-            of_member(character, carried, load, spells, shared, &content)
+            let made = of_member(character, carried, load, &spells, &content);
+            let (health, stamina) = (character.max_hp(&made.0), character.max_stamina(&made.0));
+            if (vitals.health.max, vitals.stamina.max) != (health, stamina) {
+                vitals.refit_maxima(health, stamina);
+            }
+            made
         }
-        (None, Some(monster)) => of_species(&content.species[monster.species], spells),
+        (None, Some(monster)) => of_species(&content.species[monster.species], &spells),
         (None, None) => return,
     };
     let (mut a, mut l, mut r, mut ar, mut at) = written;
@@ -396,10 +401,7 @@ pub fn refit(
 }
 
 /// A monster, from its species record and the spells on it.
-fn of_species(
-    kind: &Species,
-    spells: &Enchantments,
-) -> (Attributes, Level, Resistances, Armour, Attacks) {
+fn of_species(kind: &Species, spells: &Bonus) -> (Attributes, Level, Resistances, Armour, Attacks) {
     let base = EnumMap::from_fn(|attribute| {
         u32::from(match attribute {
             Attribute::Strength => kind.attributes.strength,
@@ -413,7 +415,7 @@ fn of_species(
     let attributes = Attributes::with_spells(base, spells);
     let resistances = Resistances {
         realms: EnumMap::from_fn(|realm| {
-            (i32::from(kind.resistances[realm]) + spells.resistance(realm)).min(100)
+            (i32::from(kind.resistances[realm]) + spells.resistance[realm]).min(100)
         }),
         immune: crate::game::hits::defences::immune(kind.kind),
         wards: Vec::new(),
@@ -421,7 +423,7 @@ fn of_species(
         kind: Some(kind.kind),
         caster: EnumMap::from_fn(|_| u32::from(kind.level)),
     };
-    let laid = spells.armour();
+    let laid = spells.armour;
     let armour = Armour {
         total: 10 - i32::from(kind.evasion) + laid,
         at: std::array::from_fn(|place| 10 + laid - i32::from(kind.armour_by_location[place])),
@@ -429,11 +431,11 @@ fn of_species(
         exposed: 2 * i32::from(kind.vulnerable_from_behind),
         braced: (0, 0),
         tires: true,
-        reduction: (i32::from(kind.damage_reduction) + spells.damage_reduction()).min(100),
-        missile_shield: spells.missile_deflection(),
+        reduction: (i32::from(kind.damage_reduction) + spells.reduction).min(100),
+        missile_shield: spells.missiles,
         hit_locations: Some(kind.hit_locations),
     };
-    let hit_bonus = spells.hit_bonus();
+    let hit_bonus = spells.to_hit;
     let first = kind.attacks.first();
     let attacks = Attacks {
         arms: kind.attacks.iter().map(|swung| monster_arm(kind, swung, hit_bonus)).collect(),
@@ -443,8 +445,10 @@ fn of_species(
             + hit_bonus * 5,
         tires_little: first.is_some_and(crate::content::species::MonsterAttack::tires_little),
         blind_fighting: (kind.kind == MonsterKind::Monk).then_some(kind.level),
+        keen_sight: if kind.level_sight { (u32::from(kind.level) * 5).min(125) } else { 0 },
         backstab: scale_by_level(kind.level, 100.0) as i32,
         stride: Some(kind.combat_move_range * crate::game::combat::approach::METRES_PER_MOVE_RANGE),
+        hasted: spells.stride,
     };
     (attributes, Level(u32::from(kind.level)), resistances, armour, attacks)
 }
@@ -455,8 +459,7 @@ fn of_member(
     character: &Character,
     carried: &Carried,
     load: crate::game::characters::Load,
-    spells: &Enchantments,
-    party: Option<&Enchantments>,
+    spells: &Bonus,
     content: &Catalogs,
 ) -> (Attributes, Level, Resistances, Armour, Attacks) {
     let items = &content.items;
@@ -475,9 +478,7 @@ fn of_member(
         wards.extend([Condition::Insane, Condition::Turncoat]);
     }
     let resistances = Resistances {
-        realms: EnumMap::from_fn(|realm| {
-            (sheet[realm].total + party.map_or(0, |party| party.resistance(realm))).min(100)
-        }),
+        realms: EnumMap::from_fn(|realm| (sheet[realm].total + spells.resistance[realm]).min(100)),
         immune: &[],
         wards,
         death_immune: false,
@@ -486,7 +487,7 @@ fn of_member(
             crate::game::magic::total_caster_level(character, EnumSet::only(book)).max(0) as u32
         }),
     };
-    let laid = spells.armour() + party.map_or(0, Enchantments::armour);
+    let laid = spells.armour;
     let standing = attack::armour(character, a, carried, items, load, false);
     let bracing = attack::armour(character, a, carried, items, load, true);
     let exposed = |armour: &attack::Armour| armour.speed.max(0) + armour.shield.max(0);
@@ -499,12 +500,12 @@ fn of_member(
         exposed: exposed(&standing),
         braced: (bracing.total - standing.total, exposed(&bracing) - exposed(&standing)),
         tires: false,
-        reduction: (character.damage_reduction(a) + spells.damage_reduction()).min(100),
-        missile_shield: party.map_or(0, Enchantments::missile_deflection),
+        reduction: (character.damage_reduction(a) + spells.reduction).min(100),
+        missile_shield: spells.missiles,
         hit_locations: None,
     };
     let grip = Grip::of(carried, items);
-    let hit_bonus = party.map_or(0, Enchantments::hit_bonus);
+    let hit_bonus = spells.to_hit;
     let primary = WeaponSlot::Primary;
     let attacks = Attacks {
         arms: [WeaponSlot::Primary, WeaponSlot::Secondary]
@@ -516,13 +517,15 @@ fn of_member(
         press: a[Attribute::Speed] as i32
             + grip.to_hit(character, a, load, primary) * 5
             + grip.rating(character, a, primary)
-            + spells.hit_bonus() * 5,
+            + hit_bonus * 5,
         tires_little: grip.weapon_skill(primary) == Skill::ModernWeapon,
         blind_fighting: character
             .has_trait(Trait::EffectiveWhileBlind)
             .then(|| character.profession_levels[character.profession]),
+        keen_sight: 0,
         backstab: character.scale_by_profession(100.0) as i32,
         stride: None,
+        hasted: spells.stride,
     };
     (attributes, Level(u32::from(character.level())), resistances, armour, attacks)
 }

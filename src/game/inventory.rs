@@ -905,32 +905,26 @@ pub struct Burden {
 /// fight keeps the loads it began with until it ends.
 pub fn distribute_burden(
     party: Single<(Ref<PartyRoster>, Ref<PartyInventory>)>,
-    mut members: Query<(Ref<Character>, Ref<Vitals>, Ref<Carried>, &mut Burden)>,
+    mut members: Query<(Ref<Character>, Ref<Vitals>, Ref<Carried>, Ref<Attributes>, &mut Burden)>,
     content: If<Res<crate::game::data::Catalogs>>,
 ) {
     let (roster, inventory) = party.into_inner();
     let catalog = &content.items;
     let changed = roster.is_changed()
         || inventory.is_changed()
-        || members
-            .iter_many(roster.iter())
-            .matched()
-            .any(|(c, v, carried, _)| c.is_changed() || v.is_changed() || carried.is_changed());
+        || members.iter_many(roster.iter()).matched().any(|(c, v, carried, attributes, _)| {
+            c.is_changed() || v.is_changed() || carried.is_changed() || attributes.is_changed()
+        });
     if !changed {
         return;
     }
     let own: Vec<_> = members
         .iter_many(roster.iter())
         .matched()
-        .map(|(character, vitals, carried, _)| {
+        .map(|(character, vitals, carried, attributes, _)| {
             (
                 carried_weight(&carried, catalog),
-                (!vitals.is_dead()).then(|| {
-                    character.capacity(&Attributes::with_spells(
-                        character.attributes,
-                        &vitals.enchantments,
-                    ))
-                }),
+                (!vitals.is_dead()).then(|| character.capacity(&attributes)),
             )
         })
         .collect();
@@ -939,15 +933,11 @@ pub fn distribute_burden(
         own.iter().map(|&(weight, capacity)| capacity.map(|c| (weight, c))).collect();
     let shares = pool_shares(pool, &eligible);
     let members = members.iter_many_unique_mut(roster.iter()).matched();
-    for ((character, vitals, _, mut burden), (&(own, _), share)) in
+    for ((character, _, _, attributes, mut burden), (&(own, _), share)) in
         members.zip(own.iter().zip(shares))
     {
         let weight = own + share;
-        burden.set_if_neq(Burden {
-            weight,
-            load: character
-                .load(&Attributes::with_spells(character.attributes, &vitals.enchantments), weight),
-        });
+        burden.set_if_neq(Burden { weight, load: character.load(&attributes, weight) });
     }
 }
 

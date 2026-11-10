@@ -865,10 +865,10 @@ impl Pool {
     }
 }
 
-/// The body of a party member or a monster: health, stamina, conditions
-/// and the spells on it, which damage, rest, magic and death change
-/// together. A monster's maxima were rolled when it was made; a member's
-/// follow their stats ([`Vitals::sync_maxima`]).
+/// The body of a party member or a monster: health, stamina and what ails
+/// it, which damage, rest and death change together. A monster's maxima
+/// were rolled when it was made; a member's are written when they are
+/// refitted.
 #[derive(Component, Clone, Debug, Default, PartialEq)]
 #[require(
     crate::game::world::hostility::Side,
@@ -883,7 +883,6 @@ pub struct Vitals {
     pub health: Pool,
     pub stamina: Pool,
     pub conditions: Conditions,
-    pub enchantments: crate::game::magic::enchantments::Enchantments,
     /// The fight in which a Valkyrie last cheated death, which only the
     /// first time in a fight does at full strength.
     pub cheated_death_in: Option<Entity>,
@@ -946,16 +945,27 @@ impl Vitals {
         self.health.current * 100 <= self.health.max * 95
     }
 
-    /// Inflict a condition, keeping the longer duration if already afflicted.
-    pub fn inflict(&mut self, condition: Condition, lasting: Lasting) {
-        if condition == Condition::Slowed {
-            crate::game::magic::enchantments::slow(
-                &mut self.conditions,
-                &mut self.enchantments,
-                lasting,
-            );
-        } else {
-            self.conditions.inflict(condition, lasting);
+    /// Afflict the body with a condition; a longer duration replaces a
+    /// shorter, never the reverse. Slowing a hasted body is first spent on
+    /// its Haste, which whoever lays the slowing settles.
+    pub fn afflict(&mut self, condition: Condition, lasting: Lasting) {
+        self.conditions.inflict(condition, lasting);
+    }
+
+    /// Haste, as a spell to lay for `turns`, first spends itself on a
+    /// slowing: the turns left to lay, none against a slowing without end.
+    pub fn hasted(&mut self, turns: u32) -> u32 {
+        match self.conditions.lasting_mut(Condition::Slowed) {
+            None => turns,
+            Some(Lasting::Indefinite) => 0,
+            Some(Lasting::Rounds(left)) => {
+                let cancelled = turns.min(*left);
+                *left -= cancelled;
+                if *left == 0 {
+                    self.conditions.lift(Condition::Slowed);
+                }
+                turns - cancelled
+            }
         }
     }
 
@@ -966,7 +976,7 @@ impl Vitals {
         if !self.conditions.has(Condition::Poisoned) {
             self.poison = 0;
         }
-        self.inflict(Condition::Poisoned, lasting);
+        self.conditions.inflict(Condition::Poisoned, lasting);
         self.poison = self.poison.max(strength);
     }
 
@@ -975,7 +985,6 @@ impl Vitals {
     pub fn age_conditions(&mut self, ticks: u32, rng: &mut GameRng) {
         self.weaken_poison(ticks, rng);
         self.conditions.age(ticks);
-        self.enchantments.age(ticks);
     }
 
     /// A poison that `ticks` take off without ending it weakens by their
@@ -1008,17 +1017,16 @@ impl Vitals {
         if still { damage } else { damage + damage / 2 }
     }
 
-    /// Take `amount` health (retail `ApplyDamageToCharacter`,
-    /// `ApplyDamageToMonster`): Guardian Angel absorbs what it can, two
-    /// thirds of the rest tire, and health falls by it, to nothing at most.
-    /// The dead take none. Health run out is death once it is settled
-    /// ([`settle_deaths`]), unless it is cheated first.
-    /// Returns the health lost. The caller handles waking.
+    /// Take `amount` health that got past any Guardian Angel: two thirds
+    /// of it tire, and health falls by it, to nothing at most (retail
+    /// `ApplyDamageToCharacter`, `ApplyDamageToMonster`). The dead take
+    /// none. Health run out is death once it is settled
+    /// ([`settle_deaths`]). Returns the health lost. The caller handles
+    /// waking.
     pub fn hurt(&mut self, amount: u32) -> u32 {
         if self.is_dead() {
             return 0;
         }
-        let amount = self.enchantments.absorb(amount);
         self.tire(amount * 2 / 3);
         let lost = amount.min(self.health.current);
         self.health.current -= lost;
@@ -1067,7 +1075,7 @@ impl Vitals {
         let shortened = profile.scale_by_profession(5.0) as u32;
         let stint = (rounds + 7).max(shortened) - shortened;
         if stint > 0 {
-            self.inflict(Condition::Unconscious, Lasting::Rounds(stint));
+            self.conditions.inflict(Condition::Unconscious, Lasting::Rounds(stint));
         }
         let maximum = self.health.max;
         self.health.current = match fight {
@@ -1083,7 +1091,6 @@ impl Vitals {
 
     /// Death: what lasted on the body goes with it.
     fn die(&mut self) {
-        self.enchantments.0.clear();
         self.conditions.lift_all();
         self.stamina.current = 0;
     }
@@ -1098,65 +1105,51 @@ impl Vitals {
             return 0;
         }
         self.tire(amount * 2 / 3);
-        let hp = self.health.current;
+        let had = self.health.current;
         profile.hp_drained += amount;
-        self.follow_maxima(profile);
-        let lost = hp.max(self.health.current) - self.health.current;
-        if !self.conditions.has(Condition::Drained) {
-            self.inflict(Condition::Drained, Lasting::Indefinite);
+        self.health.follow(self.health.max.max(amount + 1) - amount);
+        if self.is_dead() {
+            self.fell_from = had;
         }
-        lost
+        if !self.conditions.has(Condition::Drained) {
+            self.conditions.inflict(Condition::Drained, Lasting::Indefinite);
+        }
+        had - self.health.current
     }
 
     /// Lift Drained from a member (retail `RemoveCharacterCondition`): the
-    /// maxima get back what draining and disease took, and the pools rise
-    /// with them. Whether it was there to lift.
+    /// maxima get back what draining and disease took, and what is left
+    /// rises with them. Whether it was there to lift.
     pub fn lift_drain(&mut self, profile: &mut Character) -> bool {
         if !self.conditions.has(Condition::Drained) {
             return false;
         }
         self.conditions.lift(Condition::Drained);
-        profile.hp_drained = 0;
-        profile.stamina_drained = 0;
-        self.follow_maxima(profile);
+        let (health, stamina) = (profile.hp_drained, profile.stamina_drained);
+        (profile.hp_drained, profile.stamina_drained) = (0, 0);
+        if self.is_dead() {
+            self.health.max += health;
+            self.stamina.max += stamina;
+        } else {
+            self.health.follow(self.health.max + health);
+            self.stamina.follow(self.stamina.max + stamina);
+        }
         true
     }
 
-    /// The member's maxima as their profile and spells make them now.
-    fn maxima_of(&self, profile: &Character) -> (u32, u32) {
-        let a = Attributes::with_spells(profile.attributes, &self.enchantments);
-        (profile.max_hp(&a), profile.max_stamina(&a))
-    }
-
-    /// Whether a member's maxima are no longer what their stats make them.
-    pub fn maxima_differ(&self, profile: &Character) -> bool {
-        (self.health.max, self.stamina.max) != self.maxima_of(profile)
-    }
-
-    /// Keep a member's maxima to their stats, leaving health and stamina as
-    /// they are. Whatever changes a member's profile or spells keeps them
-    /// so; [`sync_member_maxima`] catches the rest before gameplay reads them.
-    pub fn sync_maxima(&mut self, profile: &Character) {
-        let (health, stamina) = self.maxima_of(profile);
-        self.health.max = health;
-        self.stamina.max = stamina;
-    }
-
-    /// Carry the move of a member's maxima to their profile's present ones
-    /// into health and stamina (retail `RecalculateCharacterHitPoints`,
-    /// `RecalculateCharacterStamina`); health run out is death once settled.
-    /// The dead only keep their maxima.
-    pub fn follow_maxima(&mut self, profile: &Character) {
-        if self.is_dead() {
-            self.sync_maxima(profile);
-            return;
-        }
-        let hp = self.health.current;
-        let (health, stamina) = self.maxima_of(profile);
-        self.health.follow(health);
-        self.stamina.follow(stamina);
-        if self.is_dead() {
-            self.fell_from = hp;
+    /// A member's maxima are these now, their sheet or spells having moved
+    /// them (a refit): what is left moves by as much, but a refit never
+    /// takes the last point of either.
+    pub fn refit_maxima(&mut self, health: u32, stamina: u32) {
+        for (pool, max) in [(&mut self.health, health), (&mut self.stamina, stamina)] {
+            if pool.max == max {
+                continue;
+            }
+            let alive = pool.current > 0;
+            pool.follow(max);
+            if alive {
+                pool.current = pool.current.max(1);
+            }
         }
     }
 
@@ -1167,15 +1160,11 @@ impl Vitals {
     pub fn sicken(
         &mut self,
         profile: &mut Character,
+        vitality: u32,
         minutes: u32,
         rng: &mut GameRng,
     ) -> Option<Sickness> {
-        if !self.conditions.has(Condition::Diseased) {
-            return None;
-        }
-        let vitality =
-            Attributes::with_spells(profile.attributes, &self.enchantments)[Attribute::Vitality];
-        if rng.below(vitality * 10) >= minutes {
+        if !self.conditions.has(Condition::Diseased) || rng.below(vitality * 10) >= minutes {
             return None;
         }
         match rng.below(4) {
@@ -1187,19 +1176,18 @@ impl Vitals {
                     Condition::Blind,
                     Condition::Insane,
                 ][rng.below(5) as usize];
-                self.inflict(condition, Lasting::Indefinite);
+                self.afflict(condition, Lasting::Indefinite);
                 Some(Sickness::Condition(condition))
             }
+            // The sheet loses a point; the member is refitted for it, and
+            // their maxima follow.
             1 => {
                 use enum_map::Enum;
                 let attribute = Attribute::from_usize(rng.below(7) as usize);
                 if profile.attributes[attribute] <= 1 {
                     return None;
                 }
-                // The maxima follow the attribute, and the pools with them
-                // (retail `ApplyAttributeChange`).
                 profile.attributes[attribute] -= 1;
-                self.follow_maxima(profile);
                 Some(Sickness::Weakened(attribute))
             }
             2 => {
@@ -1208,7 +1196,7 @@ impl Vitals {
                 }
                 let loss = rng.below(4) + 1;
                 profile.hp_drained += loss;
-                self.sync_maxima(profile);
+                self.health.max -= loss;
                 if self.health.current > 1 {
                     self.health.current -= loss.min(self.health.current - 1);
                 }
@@ -1220,7 +1208,7 @@ impl Vitals {
                 }
                 let loss = rng.below(4) + 1;
                 profile.stamina_drained += loss;
-                self.sync_maxima(profile);
+                self.stamina.max -= loss;
                 if self.stamina.current > 1 {
                     self.stamina.current -= loss.min(self.stamina.current - 1);
                 }
@@ -1273,44 +1261,33 @@ impl Vitals {
 #[derive(Component, Debug)]
 pub struct Dead;
 
-/// Settle the deaths, once, for every way a body can be hurt: a Valkyrie
-/// whose health ran out cheats death ([`Vitals::cheats_death`]) in whatever
-/// fight is on; anyone else whose health ran out dies, losing what lasted
-/// on them, and is marked [`Dead`]; one raised is alive again.
+/// Whoever was hurt to death dies: a Valkyrie cheats it
+/// ([`Vitals::cheats_death`]) in whatever fight is on; anyone else loses
+/// what lasted on them, keeps the side they died on, and is [`Dead`]. Every
+/// way of being hurt says so with a [`Damaged`], which is all this reads.
+///
+/// [`Damaged`]: crate::game::hits::Damaged
 pub fn settle_deaths(
     mut commands: Commands,
-    mut bodies: Query<(Entity, &mut Vitals, Option<&Character>, Has<Dead>), Changed<Vitals>>,
+    mut damaged: MessageReader<crate::game::hits::Damaged>,
+    mut bodies: Query<
+        (&mut Vitals, &mut crate::game::world::hostility::Side, Option<&Character>),
+        Without<Dead>,
+    >,
     fight: Option<Single<Entity, With<crate::game::combat::Battle>>>,
     mut rng: ResMut<GameRng>,
 ) {
     let fight = fight.map(|fight| *fight);
-    for (body, mut vitals, profile, marked) in &mut bodies {
-        match (vitals.is_dead(), marked) {
-            (true, false) => {
-                if profile.is_some_and(|profile| vitals.cheats_death(profile, fight, &mut rng)) {
-                    continue;
-                }
-                vitals.die();
-                commands.entity(body).insert(Dead);
-            }
-            (false, true) => {
-                commands.entity(body).remove::<Dead>();
-            }
-            _ => {}
+    for hurt in damaged.read().filter(|hurt| hurt.died) {
+        let Ok((mut vitals, mut side, profile)) = bodies.get_mut(hurt.body) else { continue };
+        if !vitals.is_dead()
+            || profile.is_some_and(|profile| vitals.cheats_death(profile, fight, &mut rng))
+        {
+            continue;
         }
-    }
-}
-
-/// Keep members' maxima to their stats ([`Vitals::sync_maxima`]) once their
-/// profile or spells have changed, before gameplay reads them.
-pub fn sync_member_maxima(
-    mut members: Query<(&Character, &mut Vitals), Or<(Changed<Character>, Changed<Vitals>)>>,
-) {
-    for (profile, mut vitals) in &mut members {
-        let (health, stamina) = vitals.maxima_of(profile);
-        if (vitals.health.max, vitals.stamina.max) != (health, stamina) {
-            (vitals.health.max, vitals.stamina.max) = (health, stamina);
-        }
+        side.die(&vitals);
+        vitals.die();
+        commands.entity(hurt.body).insert(Dead);
     }
 }
 
@@ -1521,7 +1498,7 @@ mod tests {
         assert!(member.health.current >= maximum / 2, "{}", member.health.current);
         // Long out cold, she dies; so does anyone without the trait.
         let mut member = Vitals::new(&valkyrie);
-        member.inflict(Condition::Unconscious, Lasting::Rounds(7));
+        member.afflict(Condition::Unconscious, Lasting::Rounds(7));
         struck(&mut member, Some(fight));
         assert!(member.is_dead());
         let mut member = Vitals::new(&valkyrie);
@@ -1568,7 +1545,7 @@ mod tests {
         let mut fighter = Vitals::new(&profile);
         fighter.health.current = 1;
         fighter.stamina.current = 0;
-        fighter.inflict(Condition::Unconscious, Lasting::Indefinite);
+        fighter.afflict(Condition::Unconscious, Lasting::Indefinite);
         // (0.9 × 105 + 20) / 240 × 0.5 ≈ 0.24 a tick: 10 above 9 after 42.
         fighter.recover_stamina(41, 0.5);
         assert!(fighter.conditions.has(Condition::Unconscious));
@@ -1587,8 +1564,8 @@ mod tests {
     fn timed_conditions_run_out() {
         let profile = Character::new("Mira", Race::Elf, Gender::Female, Profession::Mage);
         let mut mage = Vitals::new(&profile);
-        mage.inflict(Condition::Asleep, Lasting::Rounds(3));
-        mage.inflict(Condition::Unconscious, Lasting::Indefinite);
+        mage.afflict(Condition::Asleep, Lasting::Rounds(3));
+        mage.afflict(Condition::Unconscious, Lasting::Indefinite);
         mage.age_conditions(2, &mut crate::game::rng::GameRng::default());
         assert_eq!(
             mage.conditions,
@@ -1598,7 +1575,7 @@ mod tests {
             ])
         );
         mage.age_conditions(1, &mut crate::game::rng::GameRng::default());
-        mage.inflict(Condition::Asleep, Lasting::Rounds(70_000));
+        mage.afflict(Condition::Asleep, Lasting::Rounds(70_000));
         mage.conditions.age(69_999);
         assert_eq!(mage.conditions.lasting(Condition::Asleep), Some(Lasting::Rounds(1)));
         mage.conditions.age(1);

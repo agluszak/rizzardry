@@ -1,22 +1,21 @@
-//! How monster groups stand toward the party (retail `Combat Hostility.cpp`,
-//! `MonsterGroup.cpp`).
+//! Whose side everyone is on (`docs/rules/actors.md`, "Side").
 //!
-//! A group's disposition belongs to the group, and its members stand as it
-//! does: what last set it, and when (retail `ubDisposition`,
-//! `hostility_set_at`). The party's standing with a faction is the
-//! faction's ([`Factions`]); a member's own control effects (Turncoat) are
-//! exceptions read where they matter, never copied onto the group.
+//! An actor's [`Side`] toward the party is stored on it and written only by
+//! what changes it: being made, its group being made to [`Stand`] some way
+//! or that wearing off, and the party's standing with its faction moving.
+//! Turncoat is not written into it: it is a condition, and swaps the side
+//! where the side is read ([`Side::now`]).
 
 use bevy::prelude::*;
 
-use super::identify::{GroupMember, MonsterGroup};
-use super::population::Monster;
+use super::identify::{GroupMember, GroupMembers, MonsterGroup};
 use crate::content::species::{Disposition, Species};
-use crate::game::characters::Condition;
+use crate::game::characters::{Condition, Vitals};
 use crate::game::factions::{Band, Factions, PARTY, UNALIGNED};
+use crate::game::party::recovery::Elapsed;
 use crate::game::time::GameClock;
 
-/// How a group stands toward the party (retail `W8Disposition`).
+/// How someone stands toward the party (retail `W8Disposition`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Stance {
     #[default]
@@ -29,6 +28,150 @@ impl Stance {
     pub fn opposes(self, other: Self) -> bool {
         matches!((self, other), (Self::Hostile, Self::Friendly) | (Self::Friendly, Self::Hostile))
     }
+
+    /// Turned about: Turncoat makes a hostile friendly and a friendly
+    /// hostile (retail `InflictConditionOnMonster`); a neutral shrugs it
+    /// off.
+    pub fn turned(self) -> Self {
+        match self {
+            Self::Hostile => Self::Friendly,
+            Self::Friendly => Self::Hostile,
+            Self::Neutral => Self::Neutral,
+        }
+    }
+}
+
+/// The side an actor is on toward the party, its own turning aside: a
+/// member the party's, a monster its group's while something has set one
+/// and otherwise what its kind and faction make it.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Side(Stance);
+
+impl Side {
+    pub const FRIENDLY: Side = Side(Stance::Friendly);
+
+    pub fn new(stance: Stance) -> Self {
+        Side(stance)
+    }
+
+    /// The side it is on now: its own, turned about while it is Turncoat.
+    /// The dead have no conditions, so they keep the side they died on
+    /// ([`Side::die`]).
+    pub fn now(&self, vitals: &Vitals) -> Stance {
+        if vitals.conditions.has(Condition::Turncoat) { self.0.turned() } else { self.0 }
+    }
+
+    /// The side its group or kind gives it, whatever has turned it.
+    pub fn own(&self) -> Stance {
+        self.0
+    }
+
+    /// Dying fixes the side it was on as it died, since death lifts what
+    /// had turned it.
+    pub fn die(&mut self, vitals: &Vitals) {
+        self.0 = self.now(vitals);
+    }
+}
+
+/// The band an actor keeps to besides its side, which two monsters on
+/// different sides weigh before they quarrel (retail `MonsterHostility`).
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Loyalty {
+    /// Of no faction: a member or an unaligned monster.
+    #[default]
+    None,
+    Faction(i32),
+    /// A bystander, who stays out of every quarrel.
+    Bystander,
+}
+
+impl Loyalty {
+    /// The band it keeps to now: one under Turncoat has broken with its own.
+    pub fn now(self, vitals: &Vitals) -> Self {
+        match self {
+            Loyalty::Faction(_) if vitals.conditions.has(Condition::Turncoat) => Loyalty::None,
+            loyalty => loyalty,
+        }
+    }
+}
+
+/// The species retail keeps out of every quarrel (record 0x224): neutral to
+/// everyone, and only ever waiting in a fight.
+pub const BYSTANDER_SPECIES: u32 = 0x224;
+
+/// What a monster's side comes from when nothing has set one, written from
+/// its species as it is made.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct Allegiance {
+    pub faction: i32,
+    pub disposition: Disposition,
+    /// NPCs keep to their dialogue and start neutral (retail reads their
+    /// disposition band; NPCs do not fight yet).
+    pub npc: bool,
+    /// How long it holds a stance set on its group outside a fight: its
+    /// Intelligence squared, in game minutes (retail
+    /// `RefreshMonsterGroupHostility`).
+    pub grudge: u64,
+}
+
+impl Allegiance {
+    pub fn of(species: &Species) -> Self {
+        let intelligence = u64::from(species.attributes.intelligence);
+        Allegiance {
+            faction: species.faction,
+            disposition: species.disposition,
+            npc: species.npc.is_some(),
+            grudge: intelligence * intelligence * crate::game::time::MINUTE_MS,
+        }
+    }
+
+    /// The band its kind keeps to.
+    pub fn loyalty(&self, species: u32) -> Loyalty {
+        match self.faction {
+            _ if species == BYSTANDER_SPECIES => Loyalty::Bystander,
+            UNALIGNED => Loyalty::None,
+            faction => Loyalty::Faction(faction),
+        }
+    }
+
+    /// Its side before anything sets one (retail
+    /// `MonsterGroupCalcDefaultDisposition`): the unaligned by their
+    /// authored disposition, which a hostility radius leaves neutral until
+    /// the party comes close; the party's own faction friendly; any other
+    /// faction by its band.
+    pub fn default_stance(&self, factions: &Factions) -> Stance {
+        if self.npc {
+            return Stance::Neutral;
+        }
+        match self.faction {
+            UNALIGNED => match self.disposition {
+                Disposition::Hostile => Stance::Hostile,
+                Disposition::Neutral | Disposition::HostileWithin(_) => Stance::Neutral,
+            },
+            PARTY => Stance::Friendly,
+            faction => match factions.band(faction) {
+                Band::Hostile => Stance::Hostile,
+                Band::Neutral => Stance::Neutral,
+                Band::Friendly => Stance::Friendly,
+            },
+        }
+    }
+
+    /// Whether the party has come within an unaligned kind's hostility
+    /// radius, which turns its group hostile (retail
+    /// `RefreshMonsterGroupHostility`, `CheckMonsterGroupsEnterCombat`).
+    pub fn within_radius(&self, nearest: f32) -> bool {
+        !self.npc
+            && self.faction == UNALIGNED
+            && matches!(self.disposition, Disposition::HostileWithin(radius) if nearest <= radius)
+    }
+
+    /// Whether a stance set at `at` has worn off by `now`: its grudge has
+    /// run out, or its faction's band has moved since.
+    fn forgets(&self, at: u64, now: u64, factions: &Factions) -> bool {
+        now - at > self.grudge
+            || (self.faction != UNALIGNED && at < factions.band_changed_at(self.faction))
+    }
 }
 
 /// A stance something set on a group, and when (game milliseconds): the
@@ -39,154 +182,127 @@ pub struct SetStance {
     pub at: u64,
 }
 
-/// A group's stance before anything sets one (retail
-/// `MonsterGroupCalcDefaultDisposition`): unaligned species by their
-/// authored disposition, which a hostility radius leaves neutral until the
-/// party comes close; the party's own faction friendly; any other faction
-/// by its band. NPCs keep to their dialogue and start neutral here (retail
-/// reads their disposition band; NPCs do not fight yet).
-pub fn default_stance(species: &Species, factions: &Factions) -> Stance {
-    if species.npc.is_some() {
-        return Stance::Neutral;
-    }
-    match species.faction {
-        UNALIGNED => match species.disposition {
-            Disposition::Hostile => Stance::Hostile,
-            Disposition::Neutral | Disposition::HostileWithin(_) => Stance::Neutral,
-        },
-        PARTY => Stance::Friendly,
-        faction => match factions.band(faction) {
-            Band::Hostile => Stance::Hostile,
-            Band::Neutral => Stance::Neutral,
-            Band::Friendly => Stance::Friendly,
-        },
-    }
+/// A group is made to stand some way toward the party from now, or, with
+/// no stance, goes back to what its members' kinds make them.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Stand {
+    #[event_target]
+    pub group: Entity,
+    pub stance: Option<Stance>,
 }
 
-/// How long a set stance holds outside a fight: the species' Intelligence
-/// squared, in game minutes (retail `RefreshMonsterGroupHostility`).
-fn holds_for(species: &Species) -> u64 {
-    let intelligence = u64::from(species.attributes.intelligence);
-    intelligence * intelligence * crate::game::time::MINUTE_MS
-}
-
-/// A group's stance now (retail `RefreshMonsterGroupHostility`, which runs
-/// only outside a fight): a set stance holds while the group fights, and
-/// otherwise for its while, unless the faction's band has changed since;
-/// then the default stands again.
-pub fn stance(
-    set: Option<SetStance>,
-    species: &Species,
-    factions: &Factions,
-    now: u64,
-    fighting: bool,
-) -> Stance {
-    match set {
-        Some(set)
-            if fighting
-                || (now - set.at <= holds_for(species)
-                    && (species.faction == UNALIGNED
-                        || set.at >= factions.band_changed_at(species.faction))) =>
-        {
-            set.stance
-        }
-        _ => default_stance(species, factions),
-    }
-}
-
-/// Whether the party has come within an unaligned species' hostility
-/// radius, which turns its group hostile (retail
-/// `RefreshMonsterGroupHostility`, `CheckMonsterGroupsEnterCombat`).
-pub fn within_radius(species: &Species, nearest: f32) -> bool {
-    species.npc.is_none()
-        && species.faction == UNALIGNED
-        && matches!(species.disposition, Disposition::HostileWithin(radius) if nearest <= radius)
-}
-
-/// Which side a body is on toward the party now: a member the party's, a
-/// monster its group's while the group's set stance holds ([`stance`]),
-/// either swapped by its own Turncoat ([`own_stance`]).
-///
-/// Derived, so that every rule reads one fact instead of the group, the
-/// factions and the clock. [`judge_sides`] produces it from those sources
-/// before action selection, after provocation, and between immediate effects.
-/// A living body's next consequence sees changed stance and conditions.
-/// Death freezes its last live side for kill credit; resurrection refreshes it.
-#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Side(pub Stance);
-
-/// Judge every body's side from its group, the factions and the clock.
-pub fn judge_sides(
-    mut bodies: Query<(
-        &mut Side,
-        &mut Loyalty,
-        &crate::game::characters::Vitals,
-        Option<&Monster>,
-        Option<&GroupMember>,
-        Has<crate::game::combat::Combatant>,
-        Has<crate::game::characters::Dead>,
-    )>,
-    groups: Query<&MonsterGroup>,
-    content: If<Res<crate::game::data::Catalogs>>,
+fn stand(
+    event: On<Stand>,
+    mut groups: Query<(&mut MonsterGroup, Option<&GroupMembers>)>,
+    mut monsters: Query<(&Allegiance, &mut Side)>,
     (factions, clock): (Res<Factions>, Res<GameClock>),
 ) {
-    for (mut side, mut loyalty, vitals, monster, member, fighting, dead) in &mut bodies {
-        if dead {
-            continue;
+    let Ok((mut group, members)) = groups.get_mut(event.group) else { return };
+    group.set = event.stance.map(|stance| SetStance { stance, at: clock.ms });
+    for member in members.into_iter().flat_map(GroupMembers::iter) {
+        if let Ok((allegiance, mut side)) = monsters.get_mut(member) {
+            let stance = event.stance.unwrap_or_else(|| allegiance.default_stance(&factions));
+            side.set_if_neq(Side(stance));
         }
-        let turncoat = vitals.conditions.has(Condition::Turncoat);
-        let (own, loyal) = match monster {
-            Some(monster) => {
-                let kind = &content.species[monster.species];
-                let set = member.and_then(|member| groups.get(member.0).ok()).and_then(|g| g.set);
-                let loyal = if monster.species == BYSTANDER_SPECIES {
-                    Loyalty::Bystander
-                } else if turncoat || kind.faction == UNALIGNED {
-                    Loyalty::None
-                } else {
-                    Loyalty::Faction(kind.faction)
-                };
-                (stance(set, kind, &factions, clock.ms, fighting), loyal)
-            }
-            None => (Stance::Friendly, Loyalty::None),
-        };
-        side.set_if_neq(Side(own_stance(own, turncoat)));
-        loyalty.set_if_neq(loyal);
     }
 }
 
-/// The species retail keeps out of every quarrel (record 0x224): neutral to
-/// everyone, and only ever waiting in a fight.
-pub const BYSTANDER_SPECIES: u32 = 0x224;
+/// A monster made, or come into a group, takes the side its group stands
+/// on, or its kind's.
+fn take_side(
+    monster: Entity,
+    monsters: &mut Query<(&Allegiance, &mut Side, Option<&GroupMember>)>,
+    groups: &Query<&MonsterGroup>,
+    factions: &Factions,
+) {
+    let Ok((allegiance, mut side, member)) = monsters.get_mut(monster) else { return };
+    let set = member.and_then(|member| groups.get(member.0).ok()).and_then(|group| group.set);
+    let stance = set.map_or_else(|| allegiance.default_stance(factions), |set| set.stance);
+    side.set_if_neq(Side(stance));
+}
 
-/// A monster's own stance: its group's, swapped by Turncoat, which turns a
-/// hostile monster friendly and a friendly one hostile (retail
-/// `InflictConditionOnMonster`); a neutral one shrugs it off.
-pub fn own_stance(group: Stance, turncoat: bool) -> Stance {
-    match (group, turncoat) {
-        (Stance::Hostile, true) => Stance::Friendly,
-        (Stance::Friendly, true) => Stance::Hostile,
-        (stance, _) => stance,
+fn made(
+    made: On<Insert<Allegiance>>,
+    mut monsters: Query<(&Allegiance, &mut Side, Option<&GroupMember>)>,
+    mut loyalties: Query<(&Allegiance, &super::population::Monster, &mut Loyalty)>,
+    groups: Query<&MonsterGroup>,
+    factions: Res<Factions>,
+) {
+    take_side(made.entity, &mut monsters, &groups, &factions);
+    if let Ok((allegiance, monster, mut loyalty)) = loyalties.get_mut(made.entity) {
+        *loyalty = allegiance.loyalty(monster.species);
     }
 }
 
-/// A member's stance toward the party: on its side, against it under
-/// Turncoat, by the same rule as a monster's.
-pub fn member_stance(turncoat: bool) -> Stance {
-    own_stance(Stance::Friendly, turncoat)
+/// A member raised is the party's again, whatever had turned them as they
+/// died.
+fn raised(
+    raised: On<Remove<crate::game::characters::Dead>>,
+    mut members: Query<&mut Side, With<crate::game::party::roster::PartyMember>>,
+) {
+    if let Ok(mut side) = members.get_mut(raised.entity) {
+        *side = Side::FRIENDLY;
+    }
 }
 
-/// The band a body keeps to besides its side, which two monsters on
-/// different sides weigh before they quarrel (retail `MonsterHostility`).
-#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Loyalty {
-    /// Of no faction: a member, an unaligned monster, or one under Turncoat,
-    /// which has broken with its own.
-    #[default]
-    None,
-    Faction(i32),
-    /// A bystander, who stays out of every quarrel.
-    Bystander,
+/// Whoever joins the party is on its side.
+fn joined(
+    joined: On<Insert<crate::game::party::roster::PartyMember>>,
+    mut sides: Query<&mut Side>,
+) {
+    if let Ok(mut side) = sides.get_mut(joined.entity) {
+        *side = Side::FRIENDLY;
+    }
+}
+
+fn grouped(
+    grouped: On<Insert<GroupMember>>,
+    mut monsters: Query<(&Allegiance, &mut Side, Option<&GroupMember>)>,
+    groups: Query<&MonsterGroup>,
+    factions: Res<Factions>,
+) {
+    take_side(grouped.entity, &mut monsters, &groups, &factions);
+}
+
+/// The party's standing with a faction moved: those nothing has set a
+/// stance on stand as its band has them now.
+fn follow_factions(
+    mut monsters: Query<(&Allegiance, &mut Side, Option<&GroupMember>)>,
+    groups: Query<&MonsterGroup>,
+    factions: Res<Factions>,
+) {
+    for (allegiance, mut side, member) in &mut monsters {
+        let set = member.and_then(|member| groups.get(member.0).ok()).and_then(|group| group.set);
+        if set.is_none() {
+            side.set_if_neq(Side(allegiance.default_stance(&factions)));
+        }
+    }
+}
+
+/// As time passes, a stance set on a group wears off: once its leader's
+/// grudge has run out, or its faction's band has moved since. Never while
+/// the group fights (retail `RefreshMonsterGroupHostility`, which runs only
+/// outside a fight).
+fn forget(
+    mut elapsed: MessageReader<Elapsed>,
+    groups: Query<(Entity, &MonsterGroup, &GroupMembers)>,
+    monsters: Query<(&Allegiance, Has<crate::game::combat::Combatant>)>,
+    (factions, clock): (Res<Factions>, Res<GameClock>),
+    mut commands: Commands,
+) {
+    if elapsed.read().count() == 0 {
+        return;
+    }
+    for (group, kept, members) in &groups {
+        let Some(set) = kept.set else { continue };
+        let members = || members.iter().filter_map(|member| monsters.get(member).ok());
+        let fighting = members().any(|(_, fighting)| fighting);
+        let forgets =
+            members().next().is_none_or(|(leader, _)| leader.forgets(set.at, clock.ms, &factions));
+        if !fighting && forgets {
+            commands.trigger(Stand { group, stance: None });
+        }
+    }
 }
 
 /// How two bodies stand toward each other, by their sides and loyalties
@@ -217,35 +333,41 @@ pub struct Provocation(pub Entity);
 /// before groups engage.
 pub fn take_offence(
     mut provocations: MessageReader<Provocation>,
-    monsters: Query<(&Monster, &crate::game::characters::Vitals, Option<&GroupMember>)>,
-    mut groups: Query<&mut MonsterGroup>,
-    content: If<Res<crate::game::data::Catalogs>>,
-    factions: Res<Factions>,
-    clock: Res<GameClock>,
+    monsters: Query<(&Side, &Vitals, &GroupMember)>,
+    mut commands: Commands,
 ) {
     for &Provocation(provoked) in provocations.read() {
-        let Ok((monster, vitals, member)) = monsters.get(provoked) else { continue };
+        let Ok((side, vitals, member)) = monsters.get(provoked) else { continue };
         if vitals.is_dead() || vitals.conditions.has(Condition::Turncoat) {
             continue;
         }
-        let kind = &content.species[monster.species];
-        if let Some(member) = member
-            && let Ok(mut group) = groups.get_mut(member.0)
-            && stance(group.set, kind, &factions, clock.ms, true) != Stance::Hostile
-        {
-            group.set = Some(SetStance { stance: Stance::Hostile, at: clock.ms });
+        if side.own() != Stance::Hostile {
+            commands.trigger(Stand { group: member.0, stance: Some(Stance::Hostile) });
         }
     }
+}
+
+pub fn plugin(app: &mut App) {
+    app.add_observer(stand)
+        .add_observer(made)
+        .add_observer(grouped)
+        .add_observer(joined)
+        .add_observer(raised)
+        .add_systems(
+            Update,
+            (follow_factions.run_if(resource_changed::<Factions>), forget)
+                .in_set(crate::game::GameplaySet::Bodies),
+        );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn species(disposition: Disposition, faction: i32, intelligence: u8) -> Species {
+    fn allegiance(disposition: Disposition, faction: i32, intelligence: u8) -> Allegiance {
         let mut species = Species { disposition, faction, ..default() };
         species.attributes.intelligence = intelligence;
-        species
+        Allegiance::of(&species)
     }
 
     /// Crabs keep to themselves until the party comes within their fifteen
@@ -253,18 +375,18 @@ mod tests {
     #[test]
     fn the_default_follows_the_record_and_the_faction_band() {
         let factions = Factions::default();
-        let crab = species(Disposition::HostileWithin(15.0), UNALIGNED, 10);
-        assert_eq!(default_stance(&crab, &factions), Stance::Neutral);
-        assert!(within_radius(&crab, 10.0) && !within_radius(&crab, 20.0));
-        let slime = species(Disposition::Hostile, UNALIGNED, 10);
-        assert_eq!(default_stance(&slime, &factions), Stance::Hostile);
-        assert!(!within_radius(&slime, 0.0), "only a radius promotes");
-        let rapax = species(Disposition::Neutral, 15, 10);
-        assert_eq!(default_stance(&rapax, &factions), Stance::Hostile, "common Rapax");
-        let umpani = species(Disposition::Neutral, 4, 10);
-        assert_eq!(default_stance(&umpani, &factions), Stance::Friendly);
-        let allies = species(Disposition::Hostile, PARTY, 10);
-        assert_eq!(default_stance(&allies, &factions), Stance::Friendly);
+        let crab = allegiance(Disposition::HostileWithin(15.0), UNALIGNED, 10);
+        assert_eq!(crab.default_stance(&factions), Stance::Neutral);
+        assert!(crab.within_radius(10.0) && !crab.within_radius(20.0));
+        let slime = allegiance(Disposition::Hostile, UNALIGNED, 10);
+        assert_eq!(slime.default_stance(&factions), Stance::Hostile);
+        assert!(!slime.within_radius(0.0), "only a radius promotes");
+        let rapax = allegiance(Disposition::Neutral, 15, 10);
+        assert_eq!(rapax.default_stance(&factions), Stance::Hostile, "common Rapax");
+        let umpani = allegiance(Disposition::Neutral, 4, 10);
+        assert_eq!(umpani.default_stance(&factions), Stance::Friendly);
+        let allies = allegiance(Disposition::Hostile, PARTY, 10);
+        assert_eq!(allies.default_stance(&factions), Stance::Friendly);
     }
 
     /// Turncoat swaps a monster's side, not a neutral's; monsters alike
@@ -272,12 +394,12 @@ mod tests {
     /// only when Turncoat holds one of them (retail `MonsterHostility`).
     #[test]
     fn monsters_stand_by_their_sides_and_turncoat_swaps_them() {
-        assert_eq!(own_stance(Stance::Hostile, true), Stance::Friendly);
-        assert_eq!(own_stance(Stance::Neutral, true), Stance::Neutral);
+        assert_eq!(Stance::Hostile.turned(), Stance::Friendly);
+        assert_eq!(Stance::Neutral.turned(), Stance::Neutral);
         // A member is of no faction, so a monster turned on its own side
         // quarrels with them and its former fellows alike.
         let foe = (Stance::Hostile, Loyalty::None);
-        let turned = (own_stance(Stance::Hostile, true), Loyalty::None);
+        let turned = (Stance::Hostile.turned(), Loyalty::None);
         assert_eq!(between(foe, foe), Stance::Friendly);
         assert_eq!(between(foe, turned), Stance::Hostile);
         assert_eq!(between(foe, (Stance::Neutral, Loyalty::None)), Stance::Neutral);
@@ -287,26 +409,18 @@ mod tests {
         assert_eq!(between(foe, (Stance::Hostile, Loyalty::Bystander)), Stance::Neutral);
     }
 
-    /// A provocation holds for Intelligence² game minutes outside a fight,
-    /// and for the whole fight; a faction's band moving since releases it.
+    /// A provocation holds for Intelligence² game minutes, and a faction's
+    /// band moving since releases it.
     #[test]
-    fn a_set_stance_holds_for_its_while_unless_the_faction_moves() {
+    fn a_set_stance_wears_off_with_its_grudge_or_when_the_faction_moves() {
         let mut factions = Factions::default();
-        let crab = species(Disposition::HostileWithin(15.0), UNALIGNED, 10);
-        let set = Some(SetStance { stance: Stance::Hostile, at: 1_000 });
+        let crab = allegiance(Disposition::HostileWithin(15.0), UNALIGNED, 10);
         let hold = 10 * 10 * crate::game::time::MINUTE_MS;
-        assert_eq!(stance(set, &crab, &factions, 1_000 + hold, false), Stance::Hostile);
-        assert_eq!(stance(set, &crab, &factions, 1_001 + hold, false), Stance::Neutral);
-        assert_eq!(stance(set, &crab, &factions, 1_001 + hold, true), Stance::Hostile);
-        assert_eq!(stance(None, &crab, &factions, 0, true), Stance::Neutral);
-        let mook = species(Disposition::Neutral, crate::game::factions::MOOK, 10);
-        let calm = Some(SetStance { stance: Stance::Neutral, at: 1_000 });
-        assert_eq!(stance(calm, &mook, &factions, 2_000, false), Stance::Neutral);
+        assert!(!crab.forgets(1_000, 1_000 + hold, &factions));
+        assert!(crab.forgets(1_000, 1_001 + hold, &factions));
+        let mook = allegiance(Disposition::Neutral, crate::game::factions::MOOK, 10);
+        assert!(!mook.forgets(1_000, 2_000, &factions));
         assert!(factions.record_offence(crate::game::factions::MOOK, false, 1_500).is_some());
-        assert_eq!(
-            stance(calm, &mook, &factions, 2_000, false),
-            Stance::Hostile,
-            "the Mook band fell after the stance was set"
-        );
+        assert!(mook.forgets(1_000, 2_000, &factions), "the Mook band fell after it was set");
     }
 }

@@ -178,9 +178,10 @@ pub fn update_radar(
     party: Query<(
         &avian3d::prelude::Position,
         &crate::game::party::body::PartyBody,
-        Option<&crate::game::magic::enchantments::PartyEffects>,
+        Entity,
         Option<&crate::game::party::roster::PartyRoster>,
     )>,
+    laid: crate::game::actors::Laid,
     camera: Query<(&Projection, &GlobalTransform), With<PartyCamera>>,
     mut rims: Query<&mut UiTransform, With<RadarRim>>,
     layers: Query<Entity, With<RadarBlips>>,
@@ -229,7 +230,7 @@ pub fn update_radar(
         _ => (0.0, position.0),
     };
     let catalog = &content.species;
-    let xray = effects.is_some_and(|effects| effects.0.has(crate::content::spells::SpellId::X_RAY));
+    let xray = laid.has(effects, crate::content::spells::SpellId::X_RAY);
     // Each blip's visibility is decided once, so one that stays in view
     // stays clean.
     let mut shown = bevy::ecs::entity::EntityHashSet::default();
@@ -259,8 +260,7 @@ pub fn update_radar(
         far,
         searching: search.as_ref().is_some_and(|s| s.on(!battle.is_empty())),
     };
-    let shadow_hound =
-        effects.is_some_and(|effects| effects.0.has(crate::content::spells::SpellId::SHADOW_HOUND));
+    let shadow_hound = laid.has(effects, crate::content::spells::SpellId::SHADOW_HOUND);
     for (entity, monster, at, walker, in_combat, owner) in &monsters {
         let Some(roster) = roster else { continue };
         let species = &catalog[monster.0.species];
@@ -282,7 +282,7 @@ pub fn update_radar(
             continue;
         }
         let delta = at.translation() - position.0;
-        let class = blip_class(sides.get(entity).ok().map(|side| side.0));
+        let class = blip_class(sides.get(entity).ok().map(|side| side.own()));
         let at = blip_position(delta, body.yaw, false) - Vec2::ONE;
         show(entity, at, class.at(delta.y));
     }

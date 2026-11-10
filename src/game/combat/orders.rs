@@ -31,6 +31,7 @@ pub(super) fn give_orders(
     battle: Option<Single<&Battle>>,
     roster: Single<&crate::game::party::roster::PartyRoster>,
     mut orders: Query<(&mut crate::game::party::Order, &Character, &Vitals)>,
+    laid: crate::game::actors::Laid,
 ) {
     use crate::content::characters::Trait;
     use crate::game::party::Order;
@@ -40,7 +41,7 @@ pub(super) fn give_orders(
             && let Ok((mut current, character, vitals)) = orders.get_mut(member)
             // Only those with the trait go berserk.
             && (order != Order::Berserk || character.has_trait(Trait::Berserk))
-            && (!matches!(order, Order::Breathe(_)) || breath::available(character, vitals))
+            && (!matches!(order, Order::Breathe(_)) || breath::available(member, character, vitals, &laid))
         {
             current.set_if_neq(order);
         }

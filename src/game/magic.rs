@@ -8,7 +8,6 @@
 
 pub mod casting;
 pub(crate) mod dialogue;
-pub mod enchantments;
 pub(crate) mod pointcasts;
 pub mod portals;
 pub(crate) mod traps;
@@ -563,14 +562,11 @@ pub fn accept_magic(
 #[cfg(test)]
 fn test_maximum(world: &World, member: Entity) -> EnumMap<Realm, u32> {
     let profile = world.get::<Character>(member).unwrap();
-    let vitals = world.get::<crate::game::characters::Vitals>(member).unwrap();
     let learned = world.get::<LearnedSpells>(member).unwrap();
     let spells = &world.resource::<Catalogs>().spells;
-    profile.max_points(
-        &Attributes::with_spells(profile.attributes, &vitals.enchantments),
-        learned,
-        spells,
-    )
+    let attributes =
+        world.get::<Attributes>(member).copied().unwrap_or(Attributes::of_sheet(profile));
+    profile.max_points(&attributes, learned, spells)
 }
 
 #[cfg(test)]
@@ -653,16 +649,7 @@ pub(crate) mod tests {
             .add_message::<crate::game::world::hostility::Provocation>()
             .add_message::<crate::game::combat::CombatNews>()
             .add_plugins(crate::game::hits::HitsPlugin)
-            .add_systems(
-                Update,
-                (
-                    crate::game::world::footing::place_bodies,
-                    accept_magic,
-                    casting::cast,
-                    crate::game::hits::resolve,
-                )
-                    .chain(),
-            );
+            .add_systems(Update, (accept_magic, casting::cast, crate::game::hits::resolve).chain());
         let potion = ItemDefinition {
             id: ItemId(0),
             name: "Potion of Light Heal".into(),
@@ -817,6 +804,7 @@ pub(crate) mod tests {
                 .init_resource::<avian3d::collider_tree::ColliderTrees>()
                 .insert_resource(GameRng::seeded(3))
                 .add_message::<MagicRequest>()
+                .add_message::<crate::game::party::recovery::Elapsed>()
                 .add_message::<MagicNews>()
                 .add_message::<casting::Cast>()
                 .add_message::<Utility>()
@@ -825,13 +813,7 @@ pub(crate) mod tests {
                 .add_plugins(crate::game::hits::HitsPlugin)
                 .add_systems(
                     Update,
-                    (
-                        crate::game::world::footing::place_bodies,
-                        accept_magic,
-                        casting::cast,
-                        crate::game::hits::resolve,
-                    )
-                        .chain(),
+                    (accept_magic, casting::cast, crate::game::hits::resolve).chain(),
                 );
             let definition = ItemDefinition {
                 id: ItemId(0),
@@ -881,8 +863,8 @@ pub(crate) mod tests {
             let mut vitals = Vitals::new(&ally);
             vitals.health.current = 1;
             vitals.stamina.current = 1;
-            vitals.inflict(Condition::Asleep, Lasting::Rounds(8));
-            vitals.inflict(Condition::Unconscious, Lasting::Rounds(8));
+            vitals.afflict(Condition::Asleep, Lasting::Rounds(8));
+            vitals.afflict(Condition::Unconscious, Lasting::Rounds(8));
             vitals.poison(Lasting::Rounds(20), 10);
             let ally = world
                 .spawn((
@@ -925,35 +907,58 @@ pub(crate) mod tests {
             let vitals = world.get::<Vitals>(ally).unwrap();
             match id {
                 SpellId::GUARDIAN_ANGEL => {
-                    assert!(world.get::<Vitals>(user).unwrap().enchantments.0.is_empty());
-                    assert_eq!(
-                        vitals
-                            .enchantments
-                            .get(crate::content::spells::SpellId::GUARDIAN_ANGEL)
-                            .unwrap()
-                            .absorption,
-                        4
-                    );
+                    use crate::game::actors::{Laid, Laying};
+                    use bevy::ecs::system::RunSystemOnce;
+                    let laid = world
+                        .run_system_once(move |laid: Laid| {
+                            (laid.listed(user).count(), laid.get(ally, id))
+                        })
+                        .unwrap();
+                    assert_eq!(laid.0, 0);
+                    assert_eq!(laid.1.map(|angel| angel.spell), Some(id));
+                    let absorb = |world: &mut World, amount| {
+                        let through = world
+                            .run_system_once(move |mut laying: Laying| laying.absorb(ally, amount))
+                            .unwrap();
+                        world.flush();
+                        through
+                    };
+                    let stamina = world.get::<Vitals>(ally).unwrap().stamina.current;
+                    let through = absorb(world, 4);
                     let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
-                    let stamina = vitals.stamina.current;
-                    assert_eq!(vitals.hurt(4), 0);
+                    assert_eq!(vitals.hurt(through), 0);
                     assert_eq!(vitals.stamina.current, stamina, "absorbed damage does not fatigue");
-                    assert_eq!(vitals.hurt(2), 1);
+                    let through = absorb(world, 2);
+                    let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
+                    assert_eq!(vitals.hurt(through), 1);
                     assert!(vitals.is_dead());
                 }
                 SpellId::ARMORPLATE => {
-                    assert!(vitals.enchantments.0.is_empty());
+                    use bevy::ecs::system::RunSystemOnce;
                     let party = crate::game::party::roster::the_party(world);
-                    assert_eq!(
-                        world.get::<enchantments::PartyEffects>(party).unwrap().0.armour(),
-                        2
-                    );
+                    let (on_ally, on_party) = world
+                        .run_system_once(move |laid: crate::game::actors::Laid| {
+                            (laid.listed(ally).count(), laid.bonus(party).armour)
+                        })
+                        .unwrap();
+                    assert_eq!((on_ally, on_party), (0, 2));
                 }
                 SpellId::HASTE | SpellId::SUPERMAN | SpellId::BODY_OF_STONE => {
-                    let turns = vitals.enchantments.get(id).unwrap().turns;
-                    let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
-                    vitals.age_conditions(turns, &mut GameRng::default());
-                    assert!(vitals.enchantments.get(id).is_none());
+                    use bevy::ecs::system::RunSystemOnce;
+                    let turns = world
+                        .run_system_once(move |laid: crate::game::actors::Laid| {
+                            laid.listed(ally).find(|(laid, _)| laid.spell == id).unwrap().1.unwrap()
+                        })
+                        .unwrap();
+                    let ticks = crate::game::time::Ticks { stamina: 0, aging: turns };
+                    let pace = crate::game::party::recovery::Pace::Still;
+                    world.write_message(crate::game::party::recovery::Elapsed { ticks, pace });
+                    world.run_system_once(crate::game::actors::spells::age).unwrap();
+                    world.flush();
+                    let left = world
+                        .run_system_once(move |laid: crate::game::actors::Laid| laid.get(ally, id))
+                        .unwrap();
+                    assert!(left.is_none());
                 }
                 SpellId::RESTORE_HEALTH => {
                     assert_eq!(vitals.health.current, 5, "power four heals 4d1");

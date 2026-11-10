@@ -732,7 +732,7 @@ pub(super) fn draw_magic_view(
     mut commands: Commands,
     mut views: Query<(&mut MagicView, &MagicScroll, Option<&CastsAt>, Option<&ConversationTarget>)>,
     sliders: Query<(&SliderValue, &SliderRange)>,
-    members: Query<(&Character, &Vitals, &Carried)>,
+    members: Query<(&Character, &Vitals, &Carried, &Attributes)>,
     casters: Query<(&LearnedSpells, &SpellPoints)>,
     (battle, camp, interaction, pool): (
         Option<Single<&Battle>>,
@@ -783,13 +783,9 @@ pub(super) fn draw_magic_view(
     ) else {
         return;
     };
-    let (character, vitals, carried) = members.get(view.caster).unwrap();
+    let (character, vitals, carried, attributes) = members.get(view.caster).unwrap();
     let (learned, points) = casters.get(view.caster).unwrap();
-    let mana_maximum = character.max_points(
-        &Attributes::with_spells(character.attributes, &vitals.enchantments),
-        learned,
-        spells,
-    );
+    let mana_maximum = character.max_points(attributes, learned, spells);
     // Realms: their points, the chosen one latched; the first with points
     // chosen when none is.
     if !view.items {
@@ -1080,7 +1076,7 @@ fn choose_row(
     click: On<Activate>,
     rows: Query<&Row>,
     mut views: Query<(&mut MagicView, Option<&CastsAt>, Option<&ConversationTarget>)>,
-    members: Query<(&Character, &Vitals, &Carried)>,
+    members: Query<(&Character, &Vitals, &Carried, &Attributes)>,
     casters: Query<(&LearnedSpells, &SpellPoints)>,
     battle: Option<Single<&Battle>>,
     (camp, interaction, pool): (
@@ -1098,14 +1094,10 @@ fn choose_row(
         return;
     };
     let (spells, items) = (&content.spells, &content.items);
-    let (character, vitals, carried) = members.get(view.caster).unwrap();
+    let (character, vitals, carried, attributes) = members.get(view.caster).unwrap();
     let (learned, points) = casters.get(view.caster).unwrap();
     let silenced = vitals.conditions.has(Condition::Silenced);
-    let mana_maximum = character.max_points(
-        &Attributes::with_spells(character.attributes, &vitals.enchantments),
-        learned,
-        spells,
-    );
+    let mana_maximum = character.max_points(attributes, learned, spells);
     let offers = offers(
         &view,
         character,

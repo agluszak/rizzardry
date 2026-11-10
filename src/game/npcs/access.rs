@@ -89,7 +89,7 @@ impl NpcActors<'_, '_> {
             return true;
         }
         let Some(body) = self.active_body(actor) else { return false };
-        self.sides.get(body).is_ok_and(|side| side.0 != Stance::Hostile)
+        self.sides.get(body).is_ok_and(|side| side.own() != Stance::Hostile)
     }
     pub fn turned(&self, actor: Entity) -> bool {
         self.active_body(actor)

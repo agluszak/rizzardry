@@ -17,7 +17,6 @@ use crate::game::rng::GameRng;
 #[require(
     PartyRoster,
     super::formation::Formation,
-    crate::game::magic::enchantments::PartyEffects,
     crate::game::inventory::PartyInventory,
     super::body::PartyMovement
 )]
@@ -28,7 +27,6 @@ pub struct Party;
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 #[relationship(relationship_target = PartyRoster)]
 #[component(on_insert = member_inserted, on_discard = member_removed)]
-#[require(crate::game::world::footing::Footing, crate::game::world::footing::Conspicuous)]
 pub struct PartyMember(pub Entity);
 
 /// The party's members in slot order, maintained by Bevy from

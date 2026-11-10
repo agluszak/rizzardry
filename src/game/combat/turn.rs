@@ -334,9 +334,10 @@ pub(super) fn take_turn(
     mut bodies: Query<Body>,
     mut turns: Query<(&mut Turn, Option<&mut Ordered>), With<Combatant>>,
     minds: Query<ai::Mind>,
-    conspicuous: Query<&'static crate::game::world::footing::Conspicuous>,
+    laid: crate::game::actors::Laid,
+    places: crate::game::actors::Places,
     fight: Single<(&mut Pause, Option<&super::Combatants>), With<Battle>>,
-    party: Single<(&PartyRoster, &Formation, &PartyInventory)>,
+    party: Single<(Entity, &PartyRoster, &Formation, &PartyInventory)>,
     level: crate::game::world::level::PlayedLevel,
     obstacles: WorldObstacles,
     (content, definitions): (Res<Catalogs>, Res<Definitions>),
@@ -345,7 +346,7 @@ pub(super) fn take_turn(
 ) {
     let (mut pause, combatants) = fight.into_inner();
     let combatants = combatants.map_or(&[][..], super::Combatants::entities);
-    let (roster, formation, inventory) = *party;
+    let (party, roster, formation, inventory) = *party;
     for &Called(actor) in called.read() {
         let Ok((mut turn, ordered)) = turns.get_mut(actor) else { continue };
         let readonly = bodies.as_readonly();
@@ -384,11 +385,18 @@ pub(super) fn take_turn(
                 let aimed = readonly.get(target).ok().filter(|their| {
                     combatants.contains(&target)
                         && !their.vitals.is_dead()
-                        && spell_reaches(own.at, their.at, cone.reach.metres(), &obstacles)
+                        && spell_reaches(
+                            &places.of(actor),
+                            &places.of(their.entity),
+                            cone.reach.metres(),
+                            &obstacles,
+                        )
                 });
                 let breathes = own
                     .character
-                    .filter(|character| super::breath::available(character, own.vitals))
+                    .filter(|character| {
+                        super::breath::available(actor, character, own.vitals, &laid)
+                    })
                     .zip(aimed);
                 let Some((character, aimed)) = breathes else {
                     ordered.unwrap().0 = Action::Defend;
@@ -403,7 +411,7 @@ pub(super) fn take_turn(
                         character.level(),
                         own.vitals.stamina,
                     ),
-                    toward: aimed.at.feet,
+                    toward: places.of(aimed.entity).feet,
                     cost: own.vitals.stamina.max / 5,
                     cooldown: 0,
                 })
@@ -413,7 +421,9 @@ pub(super) fn take_turn(
                 Ok(mind) => {
                     let fight = ai::Fight {
                         bodies: &readonly,
-                        conspicuous: &conspicuous,
+                        laid: &laid,
+                        places: &places,
+                        party,
                         roster,
                         combatants,
                         far: level.view_distance().unwrap_or(0.0),
@@ -445,15 +455,19 @@ pub(super) fn take_turn(
         };
         // Whether one of its arms reaches a friend it sees: a living body
         // on its side.
-        let mine = (own.side.0, *own.loyalty);
+        let mine = own.standing();
         let strikes_friend = arms.arms.iter().any(|arm| {
             combatants.iter().copied().any(|other| {
                 other != actor
                     && readonly.get(other).is_ok_and(|their| {
                         !their.vitals.is_dead()
-                            && hostility::between(mine, (their.side.0, *their.loyalty))
-                                == Stance::Friendly
-                            && reaches(formation, (actor, own.at), (other, their.at), arm.reach)
+                            && hostility::between(mine, their.standing()) == Stance::Friendly
+                            && reaches(
+                                formation,
+                                (actor, &places.of(actor)),
+                                (other, &places.of(their.entity)),
+                                arm.reach,
+                            )
                     })
             })
         });
@@ -515,7 +529,8 @@ pub(super) fn perform(
     mut actors: Query<(&mut Turn, Option<&Walker>)>,
     mut bodies: Query<Body>,
     fight: Single<(&mut Round, &mut Pause, Option<&super::Combatants>), With<Battle>>,
-    party: Single<(&PartyRoster, &PartyInventory)>,
+    party: Single<(Entity, &PartyRoster, &PartyInventory)>,
+    places: crate::game::actors::Places,
     obstacles: WorldObstacles,
     content: Res<Catalogs>,
     mut news: MessageWriter<CombatNews>,
@@ -529,7 +544,7 @@ pub(super) fn perform(
 ) {
     let (mut round, mut pause, combatants) = fight.into_inner();
     let combatants = combatants.map_or(&[][..], super::Combatants::entities);
-    let (roster, inventory) = *party;
+    let (party, _roster, inventory) = *party;
     for &Perform { actor, action } in performs.read() {
         let Ok((mut turn, walker)) = actors.get_mut(actor) else { continue };
         let Ok(mut own) = bodies.get_mut(actor) else { continue };
@@ -551,15 +566,9 @@ pub(super) fn perform(
                     continue;
                 }
                 turn.moved = true;
-                let metres = super::approach::move_metres(
-                    &own.vitals,
-                    own.attacks.stride.unwrap_or(0.0),
-                    false,
-                );
-                let feet = own.at.feet;
-                let party_eye =
-                    roster.iter().find_map(|member| bodies.get(member).ok()).map(|b| b.at.eye);
-                let away = super::approach::away_from(feet, party_eye.unwrap_or(feet), metres);
+                let metres = super::approach::move_metres(own.attacks, &own.vitals, false);
+                let feet = places.of(actor).feet;
+                let away = super::approach::away_from(feet, places.of(party).eye, metres);
                 commands.entity(actor).insert(super::approach::CombatMove {
                     budget: metres,
                     moved: 0.0,
@@ -589,7 +598,7 @@ pub(super) fn perform(
                 if breathes.special.is_some() {
                     commands.entity(actor).insert(SpecialCooldown(breathes.cooldown));
                 }
-                let from = *own.at;
+                let from = places.of(actor);
                 if let Some(species) = breathes.summons {
                     summons.write(summon::Summon { summoner: actor, species });
                 } else if let Some(definition) = breathes.definition {
@@ -602,8 +611,13 @@ pub(super) fn perform(
                         .filter(|&other| {
                             bodies.get(other).is_ok_and(|their| {
                                 !their.vitals.is_dead()
-                                    && spell_reaches(&from, their.at, cone, &obstacles)
-                                    && in_cone(toward, their.at.feet - from.eye)
+                                    && spell_reaches(
+                                        &from,
+                                        &places.of(their.entity),
+                                        cone,
+                                        &obstacles,
+                                    )
+                                    && in_cone(toward, places.of(their.entity).feet - from.eye)
                             })
                         })
                         .map(|victim| (victim, None))

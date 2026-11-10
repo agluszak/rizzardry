@@ -476,7 +476,10 @@ pub(super) fn show_pages(
 }
 
 pub(super) fn refresh(
-    enchantments: Option<Single<&crate::game::magic::enchantments::PartyEffects>>,
+    (laid, party): (
+        crate::game::actors::Laid,
+        Option<Single<Entity, With<crate::game::party::roster::Party>>>,
+    ),
     learned_spells: Query<&LearnedSpells>,
     screen: Single<&InventoryScreen>,
     characters: Query<CharacterView>,
@@ -590,14 +593,11 @@ pub(super) fn refresh(
         }
     }
     if effect_filter != EffectFilter::Detrimental && !show_items {
-        for effect in vitals
-            .enchantments
-            .0
-            .iter()
-            .chain(enchantments.as_ref().into_iter().flat_map(|p| p.0.0.iter()))
-        {
+        let shared = party.as_ref().into_iter().flat_map(|party| laid.listed(**party));
+        for (effect, turns) in laid.listed(screen.member).chain(shared) {
             effects.push((spell_catalog[effect.spell].name.clone(), true));
-            effects.push((format!("Power {} · {} turns", effect.power, effect.turns), false));
+            let turns = turns.unwrap_or(0);
+            effects.push((format!("Power {} · {} turns", effect.power, turns), false));
             effects.push((String::new(), false));
         }
     }

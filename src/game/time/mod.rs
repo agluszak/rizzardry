@@ -1,12 +1,8 @@
 //! Simulation time.
 
 use crate::game::camp::Camp;
-use crate::game::characters::{Character, Vitals};
-use crate::game::party::{
-    body::{PartyBody, WALK_SPEED},
-    recovery::{self, Pace},
-    roster::PartyRoster,
-};
+use crate::game::party::body::{PartyBody, WALK_SPEED};
+use crate::game::party::recovery::{Elapsed, Pace};
 use crate::game::rng::GameRng;
 use crate::game::world::{identify::GroupRecognition, level::level_active};
 use avian3d::prelude::LinearVelocity;
@@ -102,35 +98,31 @@ impl Plugin for TimePlugin {
     }
 }
 
-/// Exploring and camping: the clock runs on the fixed step and the party
-/// recovers as it passes. In a fight only its rounds pass time.
+/// Exploring and camping: the clock runs on the fixed step, and says how
+/// much time passed at what pace ([`Elapsed`]); on each aging tick the
+/// party looks again at what is about it. In a fight only its rounds pass
+/// time.
 pub(crate) fn pass_time(
     time: Res<Time>,
     camp: Option<Res<Camp>>,
     search: Res<crate::game::world::search::Search>,
     battle: Option<Single<&crate::game::combat::Battle>>,
-    party: Query<(&Position, &PartyBody, &LinearVelocity)>,
-    roster: Single<&PartyRoster>,
-    mut affected: ParamSet<(
-        Query<(&mut Character, &mut Vitals)>,
-        GroupRecognition,
-        Query<&mut Vitals, With<crate::game::world::population::Monster>>,
-    )>,
-    mut enchantments: Single<&mut crate::game::magic::enchantments::PartyEffects>,
+    party: Single<(Entity, &Position, &PartyBody, &LinearVelocity)>,
+    laid: crate::game::actors::Laid,
+    mut recognition: GroupRecognition,
     mut clock: ResMut<GameClock>,
     mut rng: ResMut<GameRng>,
-    mut points: Query<(&crate::game::magic::LearnedSpells, &mut crate::game::magic::SpellPoints)>,
-    content: If<Res<crate::game::data::Catalogs>>,
+    mut elapsed: MessageWriter<Elapsed>,
 ) {
     if battle.is_some() {
         return;
     }
-    let racing = camp.is_some();
-    let ticks =
-        clock.advance_real(time.delta(), if racing { CAMPING_RATE } else { EXPLORATION_RATE });
+    let (party, position, body, velocity) = *party;
+    let rate = if camp.is_some() { CAMPING_RATE } else { EXPLORATION_RATE };
+    let ticks = clock.advance_real(time.delta(), rate);
     // Retail tells running (fast movement) from walking; here the speed
     // does, horizontally so that falling is not running.
-    let speed = party.single().map_or(0.0, |(_, _, v)| Vec2::new(v.x, v.z).length());
+    let speed = Vec2::new(velocity.x, velocity.z).length();
     let pace = if camp.is_some() {
         Pace::Camping
     } else if speed < RESTING_BELOW {
@@ -140,55 +132,17 @@ pub(crate) fn pass_time(
     } else {
         Pace::Running
     };
-    // Each aging pass settles conditions before its recognition rolls. Do not
-    // collapse passes across fixed steps or inspect the final conditions for all
-    // of them: a blindness duration may expire partway through this interval.
-    // Pass 0 is the stamina-only one, which no stamina ticks leave nothing to do.
-    for pass in u32::from(ticks.stamina == 0)..=ticks.aging {
-        let ticks = if pass == 0 {
-            Ticks { stamina: ticks.stamina, aging: 0 }
-        } else {
-            Ticks { stamina: 0, aging: 1 }
-        };
-        let mut members = affected.p0();
-        for actor in roster.iter() {
-            let (mut profile, mut vitals) = members.get_mut(actor).unwrap();
-            let (known, mut pool) = points.get_mut(actor).unwrap();
-            recovery::pass(
-                &mut profile,
-                &mut vitals,
-                ticks,
-                pace,
-                (known, &mut pool),
-                &content.spells,
-                &mut rng,
-            );
-        }
-        if pass > 0 {
-            if !enchantments.0.0.is_empty() {
-                enchantments.0.age(1);
-            }
-            // Monsters' conditions run out in the world too.
-            for mut monster in &mut affected.p2() {
-                if !monster.enchantments.0.is_empty() {
-                    monster.enchantments.age(1);
-                }
-                if monster.conditions.any_timed() {
-                    monster.conditions.age(1);
-                }
-            }
-        }
-        if pass > 0
-            && let Ok((position, body, _)) = party.single()
-        {
-            affected.p1().detect(
-                PartyBody::eye(position),
-                body.forward(),
-                None,
-                enchantments.0.has(crate::content::spells::SpellId::SHADOW_HOUND),
-                search.on(false),
-                &mut rng,
-            );
-        }
+    if ticks.stamina > 0 || ticks.aging > 0 {
+        elapsed.write(Elapsed { ticks, pace });
+    }
+    for _ in 0..ticks.aging {
+        recognition.detect(
+            PartyBody::eye(position),
+            body.forward(),
+            None,
+            laid.has(party, crate::content::spells::SpellId::SHADOW_HOUND),
+            search.on(false),
+            &mut rng,
+        );
     }
 }

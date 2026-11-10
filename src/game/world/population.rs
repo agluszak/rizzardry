@@ -21,7 +21,6 @@ use crate::game::world::items::{WorldItem, placed_item};
 /// it is and its body. Its health, stamina, conditions and spells are its
 /// [`Vitals`](crate::game::characters::Vitals).
 #[derive(Component, Clone, Debug)]
-#[require(super::footing::Footing, super::footing::Eyes, super::footing::Conspicuous)]
 pub struct Monster {
     pub location: i32,
     pub species: u32,
@@ -216,7 +215,9 @@ pub(crate) fn embody(
     if let Some(group) = group {
         entity.insert(GroupMember(group));
     }
+    let allegiance = super::hostility::Allegiance::of(kind);
     entity.insert((
+        allegiance,
         Worth(kind.experience),
         Temper(kind.temper),
         Special(kind.special),

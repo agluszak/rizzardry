@@ -16,13 +16,17 @@ holds them; nothing else of the original's shape is kept.
 | `Resistances` | Percent per realm; what it cannot suffer; its creature kind; how strongly it casts | refit |
 | `Armour` | Armour overall and by place; what surprise strips; what bracing adds; damage cut; missile deflection | refit |
 | `Attacks` | What it strikes with; when it acts; how hard it presses; how it fares blind or from hiding | refit |
-| `Vitals` | Health and stamina, each what is left and the most there can be | being hurt, tired, healed, rested; refit moves the maxima |
-| `Conditions` | What ails it, each with how long it lasts | being afflicted, cured, aged |
-| `Spells` | The spells laid on it, each with its power and how long it lasts | a spell being laid, lifted, aged, spent |
-| `Side` | Friendly, neutral or hostile to the party | the events listed under *Side* |
+| `Vitals` | Health and stamina, each what is left and the most there can be; what ails it, each condition with how long it lasts | being hurt, tired, healed, rested, afflicted, cured, aged; refit moves the maxima |
+| `Side` | The side its group or kind has it on toward the party | the events listed under *Side* |
+| `Loyalty` | The faction it keeps to, if any | being made |
 
-The party is a bearer of `Spells` too: what is laid on the party holds for
-every member.
+Conditions live with health and stamina because they are one state: running
+out of stamina is a condition, dying lifts them, and what an actor can do is
+read from all three together.
+
+A spell laid is not a component of the actor but a thing of its own, laid on
+it (see *Spells laid*). The party bears spells too: what is laid on the party
+holds for every member.
 
 An actor is made with all of these. A rule that needs one an actor lacks is a
 bug in how the actor was made, not a case for the rule to handle.
@@ -77,7 +81,8 @@ stays as it is, held to the new maximum.
 One operation, `hurt`, is how an actor loses health, whatever the cause:
 
 1. Guardian Angel, if laid on it, takes what it can. An angel exactly spent
-   stays until a blow gets past it, then lifts.
+   stays until a blow gets past it, then lifts. (The angel is a spell laid,
+   so whoever hurts an actor asks it first.)
 2. Two thirds of what gets through tires it.
 3. Health falls by what gets through, to nothing at most.
 4. `Damaged` says how much, to whoever shows it.
@@ -122,52 +127,69 @@ Three operations change conditions, and each says what it did:
 - **age**: timed conditions count down and lift at nothing; a poison weakens as
   it runs its course.
 
-`Afflicted` and `Recovered` are events fired at the actor when a condition
-begins and ends. Whoever cares reacts: its side when it is Turncoat, its eyes
-when it is Blind or cannot fight, the screen.
+Nothing is copied out of a condition when it begins or ends. What depends on
+one reads it where it is needed: the side an actor is on now is its side
+turned about while it is Turncoat; its eyes are shut while it is Blind or
+cannot fight.
 
 ## Spells laid
 
-A spell laid is a spell id, the power and boost it was cast at, the turns it
-lasts, and for Guardian Angel what it can still absorb. A bearer has each spell
-at most once.
+A spell laid is an entity, related to its bearer (an actor, or the party). It
+carries which spell it is and the power and boost it was cast at, and, as
+components, what is true of it: the turns it has left, what it adds to its
+bearer's numbers, what Guardian Angel can still absorb, whether it lasts only
+a fight, whether it pulses each round. A bearer has each spell at most once.
 
 - **lay**: replaces the same spell already there; a personal spell (Dracon
   Breath, Guardian Angel, Razor Cloak, Eye for an Eye, Haste, Superman, Body of
-  Stone) only if at least as strong. Laying refits the bearer.
-- **lift**: refits the bearer.
-- **age**: turns count down; a spell at nothing lifts.
+  Stone) only if at least as strong.
+- **lift**: the entity goes.
+- **age**: as time passes, turns count down; a spell at nothing lifts.
 - **spend**: Razor Cloak and Eye for an Eye lose a point of power each time
   they answer, and lift at nothing. Guardian Angel loses what it absorbs.
-  Spending does not refit: neither changes a number refit writes.
+
+A spell coming onto a bearer or going from it refits the bearer; that is the
+relationship's own event, so no operation has to remember to. Refit sums what
+the spells on an actor, and on its party, add.
 
 What lasts only a fight (Bless, Armormelt, the shields, the clouds, Ring of
-Fire) lifts when the fight ends.
+Fire) lifts when the fight ends. The dead keep no spells.
 
 ## Side
 
-An actor's side toward the party is stored, and changes only when one of these
-happens:
+An actor's side toward the party is stored on it, and written only when one
+of these happens:
 
-- it is made;
-- its group's stance is set, or a stance set for a while runs out;
-- the party's standing with its faction changes;
-- it joins or leaves a fight;
-- it becomes or stops being Turncoat, which swaps hostile and friendly.
+- it is made, or comes into a group: it takes the side its group stands on,
+  or else what its kind and faction make it;
+- its group is made to **stand** some way (the party provokes it, comes within
+  its hostility radius, or its faction's fighting leader is seen), or that
+  wears off: as time passes outside a fight, once the leader's grudge
+  (Intelligence squared, in game minutes) has run out or its faction's band
+  has moved since;
+- the party's standing with its faction changes, for those nothing has set a
+  stance on;
+- it joins the party, which makes it friendly.
 
-A member is friendly unless Turncoat. A dead actor keeps the side it died on,
-which is what its kill is credited by.
+Turncoat is not written into the side. It is a condition, and the side an
+actor is on *now* is its stored side turned about while Turncoat holds: hostile
+for friendly, friendly for hostile, a neutral unmoved. One under Turncoat has
+also broken with its faction.
+
+Dying fixes the side an actor was on as it died, since death lifts what had
+turned it; that is what its kill is credited by. A member raised is the
+party's again.
 
 ## Place
 
 A rule that needs where an actor is asks for its **place**: feet, eye, centre,
 radius, half height and facing. A monster's is its body's position and its
-size. A member's is the party's. It is computed when asked.
+size. A member's is the party's. It is computed when asked; nothing stores it.
 
-Whether a monster's eyes are open (it can fight and is not blind, unless it
-fights blind) and how hard an actor is to make out from behind (a monster by
-its level; a member by the party's lowest able level and Chameleon) are
-likewise computed when asked, from the facts above.
+What an actor's eyes are worth (its Senses and what its kind adds; shut when
+it cannot fight, or is blind and does not fight blind) and how hard someone is
+to make out from behind (a monster by its level; the party by its lowest able
+level and Chameleon) are likewise computed when asked, from the facts above.
 
 ## What is read as it stands
 

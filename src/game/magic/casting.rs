@@ -20,6 +20,7 @@ use crate::content::items::{ItemCatalog, ItemDefinition, UseType};
 use crate::content::spells::{
     MAX_POWER, PowerChoice, SpellDefinition, SpellId, Targeting, Usable, min_caster_level,
 };
+use crate::game::actors::{Place, Places};
 use crate::game::characters::{Character, Condition, Lasting, Profession, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
@@ -31,7 +32,6 @@ use crate::game::hits::{Act, Deed, Effect, Release};
 use crate::game::inventory::{Carried, PartyInventory, StackId};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
-use crate::game::world::footing::Footing;
 use crate::game::world::hostility::{self, Provocation, Stance};
 use crate::game::world::identify::{GroupMember, GroupMembers};
 use crate::game::world::level::Level;
@@ -269,7 +269,7 @@ pub(crate) fn in_cone(aim: Vec3, target: Vec3) -> bool {
 /// Whether a body at `from` reaches one at `to` with a spell of `reach`:
 /// within it, body to body, along a clear line between their eyes (retail
 /// `CharacterActionReachesTarget`, `CanMonsterSeeMonster`'s line).
-pub fn reaches(from: &Footing, to: &Footing, reach: f32, obstacles: &WorldObstacles) -> bool {
+pub fn reaches(from: &Place, to: &Place, reach: f32, obstacles: &WorldObstacles) -> bool {
     from.gap(to) <= reach && obstacles.clear(from.eye, to.eye)
 }
 
@@ -514,6 +514,7 @@ struct Stage<'a, 'w, 's> {
     memberships: &'a Query<'w, 's, &'static GroupMember>,
     groups: &'a Query<'w, 's, &'static GroupMembers>,
     obstacles: &'a WorldObstacles<'w, 's>,
+    places: &'a Places<'w, 's>,
 }
 
 /// Whether the cast can be made at all (retail `ExecuteCharacterSpellCast`,
@@ -607,14 +608,19 @@ impl Stage<'_, '_, '_> {
     /// takes bodies: the party's members, then the fight's monsters.
     fn foes_reached(&self, caster: Entity, reach: f32) -> Vec<Entity> {
         let Some(from) = self.target(caster) else { return vec![] };
-        let mine = (from.side.0, *from.loyalty);
+        let mine = from.standing();
         self.participants()
             .filter(|&other| {
                 other != caster
                     && self.target(other).is_some_and(|to| {
                         !to.vitals.is_dead()
-                            && hostility::between(mine, (to.side.0, *to.loyalty)) == Stance::Hostile
-                            && reaches(from.at, to.at, reach, self.obstacles)
+                            && hostility::between(mine, to.standing()) == Stance::Hostile
+                            && reaches(
+                                &self.places.of(from.entity),
+                                &self.places.of(to.entity),
+                                reach,
+                                self.obstacles,
+                            )
                     })
             })
             .collect()
@@ -623,15 +629,15 @@ impl Stage<'_, '_, '_> {
     /// The foe an aim takes among those reached: the one aimed at, or for
     /// an automatic aim the one nearest the caster's heading, the nearer of
     /// equals.
-    fn aimed_foe(&self, aim: Aim, foes: &[Entity], from: &Footing) -> Option<Entity> {
+    fn aimed_foe(&self, aim: Aim, foes: &[Entity], from: &Place) -> Option<Entity> {
         match aim {
             Aim::Ahead => super::target_ahead(
                 from.eye,
                 from.forward(),
                 f32::INFINITY,
-                foes.iter().filter_map(|&foe| {
-                    let at = self.bodies.get(foe).ok()?.at;
-                    Some((foe, at.feet, from.gap(at)))
+                foes.iter().map(|&foe| {
+                    let at = self.places.of(foe);
+                    (foe, at.feet, from.gap(&at))
                 }),
             ),
             aim => aim.body().filter(|aimed| foes.contains(aimed)),
@@ -652,11 +658,11 @@ impl Stage<'_, '_, '_> {
         spell: &SpellDefinition,
     ) -> Result<(Vec<Entity>, Option<Vec3>), Refusal> {
         let reach_of = spell.reach.metres();
-        let feet = |body: Entity| self.bodies.get(body).map_or(Vec3::ZERO, |body| body.at.feet);
+        let feet = |body: Entity| self.places.of(body).feet;
         let foe = || {
             let foes = self.foes_reached(caster, reach_of);
-            let from = self.bodies.get(caster).map_err(|_| Refusal::NoTarget)?.at;
-            let target = self.aimed_foe(aim, &foes, from).ok_or(Refusal::NoTarget)?;
+            let from = self.places.of(caster);
+            let target = self.aimed_foe(aim, &foes, &from).ok_or(Refusal::NoTarget)?;
             Ok((foes, from, target))
         };
         match targeting {
@@ -665,11 +671,15 @@ impl Stage<'_, '_, '_> {
                 let friend = aim.body().and_then(|aimed| {
                     let (from, to) = (self.target(caster)?, self.target(aimed)?);
                     let friendly = aimed == caster
-                        || hostility::between(
-                            (from.side.0, *from.loyalty),
-                            (to.side.0, *to.loyalty),
-                        ) == Stance::Friendly;
-                    (friendly && reaches(from.at, to.at, reach_of, self.obstacles)).then_some(aimed)
+                        || hostility::between(from.standing(), to.standing()) == Stance::Friendly;
+                    (friendly
+                        && reaches(
+                            &self.places.of(from.entity),
+                            &self.places.of(to.entity),
+                            reach_of,
+                            self.obstacles,
+                        ))
+                    .then_some(aimed)
                 });
                 friend.map(|friend| (vec![friend], None)).ok_or(Refusal::NoTarget)
             }
@@ -696,8 +706,13 @@ impl Stage<'_, '_, '_> {
                     .filter(|&other| {
                         self.target(other).is_some_and(|to| {
                             !to.vitals.is_dead()
-                                && reaches(from, to.at, reach_of, self.obstacles)
-                                && in_cone(toward, to.at.feet - from.eye)
+                                && reaches(
+                                    &from,
+                                    &self.places.of(to.entity),
+                                    reach_of,
+                                    self.obstacles,
+                                )
+                                && in_cone(toward, self.places.of(to.entity).feet - from.eye)
                         })
                     })
                     .collect();
@@ -714,7 +729,7 @@ impl Stage<'_, '_, '_> {
             centre,
             radius,
             recipients,
-            targets(self.bodies),
+            targets(self.bodies, self.places),
             (self.roster, self.combatants),
             self.obstacles,
         )
@@ -812,7 +827,7 @@ fn plan(
     // A blast takes whoever stands within its radius of where it lands,
     // but those on its caster's side.
     let radius = spell.radius + spell.radius_per_power * power as f32;
-    let side = body.side.0;
+    let side = body.stance();
     if let (Targeting::Radius, Some(centre)) = (targeting, target) {
         victims = stage.blasted(centre, radius, Recipients::Opponents(side));
     }
@@ -824,8 +839,10 @@ fn plan(
         },
         _ => attempt(body.character.unwrap(), item, spell, power, difficulty),
     };
-    let stand = *body.at;
-    let eye_of = |body: Entity| stage.bodies.get(body).map_or(stand.eye, |body| body.at.eye);
+    let stand = stage.places.of(body.entity);
+    let eye_of = |body: Entity| {
+        stage.bodies.get(body).map_or(stand.eye, |body| stage.places.of(body.entity).eye)
+    };
     let (owner, from) = match (targeting, aim) {
         (Targeting::Enemy | Targeting::Ally, Aim::Body(entity)) => (entity, eye_of(entity)),
         (Targeting::EnemyGroup, Aim::Body(entity)) => {
@@ -845,9 +862,14 @@ fn plan(
             .filter(|&other| {
                 stage.target(other).is_some_and(|to| {
                     !to.vitals.is_dead()
-                        && to.side.0 == side
+                        && to.stance() == side
                         && (other == caster
-                            || reaches(&stand, to.at, spell.reach.metres(), stage.obstacles))
+                            || reaches(
+                                &stand,
+                                &stage.places.of(to.entity),
+                                spell.reach.metres(),
+                                stage.obstacles,
+                            ))
                 })
             })
             .collect(),
@@ -883,6 +905,7 @@ pub fn cast(
     >,
     party: Single<(&PartyRoster, &mut PartyInventory)>,
     obstacles: WorldObstacles,
+    places: Places,
     states: Query<&crate::game::world::triggers::LevelState, With<Level>>,
     (content, definitions, difficulty): (Res<Catalogs>, Res<Definitions>, Res<Difficulty>),
     mut rng: ResMut<GameRng>,
@@ -916,6 +939,7 @@ pub fn cast(
                 memberships: &memberships,
                 groups: &groups,
                 obstacles: &obstacles,
+                places: &places,
             },
             &inventory,
             (&content, &definitions, *difficulty),
@@ -1003,7 +1027,7 @@ pub fn cast(
                 }
             };
             let slowed = body.vitals.conditions.has(Condition::Slowed);
-            let hasted = body.vitals.enchantments.has(SpellId::HASTE);
+            let hasted = body.attacks.hasted > 0.0;
             let load = body.burden.map(|burden| burden.load).unwrap_or_default();
             body.vitals.tire(load.scale_fatigue(fatigue, slowed, hasted));
         }
@@ -1017,7 +1041,7 @@ pub fn cast(
             }
             continue;
         }
-        let stand = *body.at;
+        let stand = places.of(body.entity);
         let (owner, spell_of, victims) = if backfired {
             let Backfire { owner, from, aim, victims } = backfire;
             (owner, Spell { owner: Some(owner), from, aim, ..Spell::of(spell, caster) }, victims)
@@ -1052,7 +1076,7 @@ pub fn cast(
         let flight = |victim: Entity| {
             let to = match (definition.targeting, target) {
                 (Targeting::Radius, Some(at)) => at,
-                _ => bodies.get(victim).map_or(stand.eye, |body| body.at.feet),
+                _ => bodies.get(victim).map_or(stand.eye, |body| places.of(body.entity).feet),
             };
             flies.then(|| to.distance(stand.eye) / MISSILE_SPEED)
         };

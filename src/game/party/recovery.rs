@@ -61,66 +61,95 @@ impl Pace {
     }
 }
 
-/// [`elapse`] on a tracked member, which counts as changed only when
-/// something did change.
-pub fn pass(
-    profile: &mut Mut<Character>,
-    member: &mut Mut<Vitals>,
-    ticks: Ticks,
-    pace: Pace,
-    (known, pool): (&LearnedSpells, &mut Mut<SpellPoints>),
-    spells: &SpellCatalog,
-    rng: &mut GameRng,
+/// Game time has passed, at some pace: so many stamina ticks and aging
+/// ticks. Exploring and camping say so as the clock runs, a fight as each
+/// round ends. Whatever time wears on reacts to it.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct Elapsed {
+    pub ticks: Ticks,
+    pub pace: Pace,
+}
+
+/// Time passes for every actor: a party member's poison bites, their
+/// disease may strike, and they recover as the pace allows; everyone's
+/// conditions run their course. A member weakened by disease is refitted.
+/// The spells laid wear separately ([`spells::age`]), once a round's last
+/// pulses have landed.
+///
+/// [`spells::age`]: crate::game::actors::spells::age
+#[allow(clippy::type_complexity)]
+pub fn pass_time(
+    mut elapsed: MessageReader<Elapsed>,
+    mut actors: Query<(
+        Entity,
+        &mut Vitals,
+        &Attributes,
+        Option<(&mut Character, &LearnedSpells, &mut SpellPoints)>,
+        Has<crate::game::party::roster::PartyMember>,
+    )>,
+    mut laying: crate::game::actors::Laying,
+    content: Res<crate::game::data::Catalogs>,
+    mut rng: ResMut<GameRng>,
+    mut commands: Commands,
+    mut damaged: MessageWriter<crate::game::hits::Damaged>,
 ) {
-    let magic = (ticks.aging > 0 && pool.needs_recovery()).then(|| (known, &mut **pool, spells));
-    let vitals = member.bypass_change_detection();
-    let before = vitals.clone();
-    if elapse(profile.bypass_change_detection(), vitals, ticks, pace, rng, magic).is_some() {
-        profile.set_changed();
-    }
-    if *vitals != before {
-        member.set_changed();
+    use crate::game::characters::{Condition, Lasting, Sickness};
+    for &Elapsed { ticks, pace } in elapsed.read() {
+        for (entity, mut vitals, attributes, sheet, member) in &mut actors {
+            if let (Some((mut profile, known, mut pool)), true) = (sheet, member) {
+                // Poison bites first, past any Guardian Angel.
+                let still = matches!(pace, Pace::Still | Pace::Camping);
+                let poison = laying.absorb(entity, vitals.poison_damage(ticks.aging, still));
+                let lost = vitals.hurt(poison);
+                if lost > 0 {
+                    let died = vitals.is_dead();
+                    damaged.write(crate::game::hits::Damaged { body: entity, amount: lost, died });
+                }
+                let magic = (known, &mut *pool, &content.spells);
+                match elapse(&mut profile, &mut vitals, attributes, ticks, pace, &mut rng, magic) {
+                    Some(Sickness::Weakened(_)) => {
+                        commands.trigger(crate::game::actors::Refit { entity })
+                    }
+                    // A slowing without end ends Haste.
+                    Some(Sickness::Condition(Condition::Slowed)) => {
+                        laying.slow(entity, Lasting::Indefinite);
+                    }
+                    _ => {}
+                }
+            }
+            if ticks.aging > 0 && vitals.conditions.any_timed() {
+                vitals.age_conditions(ticks.aging, &mut rng);
+            }
+        }
     }
 }
 
-/// What the ticks passed at `pace` do to one member: poison bites first,
-/// then disease, then they recover, then their conditions age (retail
-/// `GameTurnsPassedChar`). Returns what disease did.
+/// What the ticks passed at `pace` do to one party member once poison has
+/// bitten and before their conditions age: disease may strike, then they
+/// recover. Returns what disease did.
 pub fn elapse(
     profile: &mut Character,
     member: &mut Vitals,
+    attributes: &Attributes,
     ticks: Ticks,
     pace: Pace,
     rng: &mut GameRng,
-    magic: Option<(&LearnedSpells, &mut SpellPoints, &SpellCatalog)>,
+    (known, pool, catalog): (&LearnedSpells, &mut SpellPoints, &SpellCatalog),
 ) -> Option<crate::game::characters::Sickness> {
-    let mut sickness = None;
     let (stamina, health) = pace.scales();
     if ticks.stamina > 0 {
         member.recover_stamina(ticks.stamina, stamina);
     }
-    if ticks.aging > 0 {
-        let still = matches!(pace, Pace::Still | Pace::Camping);
-        let poisoned = member.poison_damage(ticks.aging, still);
-        if poisoned > 0 {
-            member.hurt(poisoned);
-        }
-        sickness = member.sicken(profile, ticks.aging, rng);
-        if let Some((known, pool, spells)) = magic {
-            let maximum = profile.max_points(
-                &Attributes::with_spells(profile.attributes, &member.enchantments),
-                known,
-                spells,
-            );
-            pool.recover(ticks.aging, recovery_scale(pace.health_scale()), &maximum);
-        }
-        member.recover_health(ticks.aging, health);
-        member.age_conditions(ticks.aging, rng);
-        // Spells that run out take what they raised the maxima by.
-        member.sync_maxima(profile);
-        member.health.current = member.health.current.min(member.health.max);
-        member.stamina.current = member.stamina.current.min(member.stamina.max);
+    if ticks.aging == 0 {
+        return None;
     }
+    let vitality = attributes[crate::content::characters::Attribute::Vitality];
+    let sickness = member.sicken(profile, vitality, ticks.aging, rng);
+    if pool.needs_recovery() {
+        let maximum = profile.max_points(attributes, known, catalog);
+        pool.recover(ticks.aging, recovery_scale(pace.health_scale()), &maximum);
+    }
+    member.recover_health(ticks.aging, health);
     sickness
 }
 
@@ -129,6 +158,20 @@ mod tests {
     use super::*;
     use crate::game::characters::{Condition, Gender, Lasting, Profession, Race};
     use crate::game::rng::GameRng;
+
+    /// Time passing for one member with no spells to recover.
+    fn pass(
+        profile: &mut Character,
+        member: &mut Vitals,
+        ticks: Ticks,
+        pace: Pace,
+        rng: &mut GameRng,
+    ) -> Option<crate::game::characters::Sickness> {
+        let attributes = Attributes::of_sheet(profile);
+        let magic =
+            (&LearnedSpells::default(), &mut SpellPoints::default(), &SpellCatalog::default());
+        elapse(profile, member, &attributes, ticks, pace, rng, magic)
+    }
 
     #[test]
     fn fighter_rest_uses_current_profession_level_and_stops_scaling_at_twenty() {
@@ -157,26 +200,21 @@ mod tests {
         let mut fighter = Vitals::new(&profile);
         fighter.health.current -= 5;
         fighter.stamina.current -= 5;
-        fighter.inflict(Condition::Afraid, Lasting::Rounds(1));
+        fighter.afflict(Condition::Afraid, Lasting::Rounds(1));
         let (hp, stamina) = (fighter.health.current, fighter.stamina.current);
-        elapse(
-            &mut profile,
-            &mut fighter,
-            Ticks { stamina: 85, aging: 1 },
-            Pace::Fighting,
-            &mut GameRng::default(),
-            None,
-        );
+        let mut rng = GameRng::default();
+        pass(&mut profile, &mut fighter, Ticks { stamina: 85, aging: 1 }, Pace::Fighting, &mut rng);
         assert_eq!((fighter.health.current, fighter.stamina.current), (hp, stamina));
+        // Conditions age as the round ends, in `pass_time`.
+        fighter.age_conditions(1, &mut rng);
         assert!(!fighter.conditions.has(Condition::Afraid));
         // Standing still for two hours heals.
-        elapse(
+        pass(
             &mut profile,
             &mut fighter,
             Ticks { stamina: 85, aging: 60 },
             Pace::Still,
             &mut GameRng::default(),
-            None,
         );
         assert!(fighter.health.current > hp && fighter.stamina.current > stamina);
     }
@@ -186,28 +224,17 @@ mod tests {
     /// `GameTurnsPassedChar`, `TickCharacterCondition`).
     #[test]
     fn poison_bites_harder_on_the_move_and_wears_off() {
-        let mut profile = Character::new("Brute", Race::Human, Gender::Male, Profession::Fighter);
+        let profile = Character::new("Brute", Race::Human, Gender::Male, Profession::Fighter);
         let mut walking = Vitals::new(&profile);
         walking.poison(Lasting::Rounds(10), 4);
         let mut still = walking.clone();
         let hp = walking.health.current;
         let mut rng = GameRng::default();
-        elapse(
-            &mut profile,
-            &mut walking,
-            Ticks { stamina: 0, aging: 1 },
-            Pace::Walking,
-            &mut rng,
-            None,
-        );
-        elapse(
-            &mut profile,
-            &mut still,
-            Ticks { stamina: 0, aging: 1 },
-            Pace::Still,
-            &mut rng,
-            None,
-        );
+        // Poison bites in `pass_time`, then conditions age.
+        walking.hurt(walking.poison_damage(1, false));
+        still.hurt(still.poison_damage(1, true));
+        walking.age_conditions(1, &mut rng);
+        still.age_conditions(1, &mut rng);
         assert_eq!(walking.health.current, hp - 6, "four, half again on the move");
         assert_eq!(still.health.current, hp - 4);
         // A tenth of the course gone takes a tenth of the strength, which
@@ -248,14 +275,16 @@ mod tests {
         for _ in 0..400 {
             let mut sick = profile.clone();
             let mut member = Vitals::new(&sick);
-            member.inflict(Condition::Diseased, Lasting::Indefinite);
+            member.afflict(Condition::Diseased, Lasting::Indefinite);
             let (max_hp, max_stamina) = (
                 sick.max_hp(&Attributes::of_sheet(&sick)),
                 sick.max_stamina(&Attributes::of_sheet(&sick)),
             );
             let attributes = sick.attributes;
             // A long stretch makes the roll sure.
-            let struck = member.sicken(&mut sick, 10_000, &mut rng);
+            let vitality =
+                Attributes::of_sheet(&sick)[crate::content::characters::Attribute::Vitality];
+            let struck = member.sicken(&mut sick, vitality, 10_000, &mut rng);
             match struck {
                 Some(Sickness::Condition(condition)) => {
                     assert!(member.conditions.lasting(condition) == Some(Lasting::Indefinite));
@@ -282,9 +311,9 @@ mod tests {
         assert_eq!(seen.len(), 4, "every blow comes up");
         // Without disease, or with no time, nothing happens.
         let mut well = Vitals::new(&profile);
-        assert_eq!(well.sicken(&mut profile, 10_000, &mut rng), None);
-        well.inflict(Condition::Diseased, Lasting::Indefinite);
-        assert_eq!(well.sicken(&mut profile, 0, &mut rng), None);
+        assert_eq!(well.sicken(&mut profile, 10, 10_000, &mut rng), None);
+        well.afflict(Condition::Diseased, Lasting::Indefinite);
+        assert_eq!(well.sicken(&mut profile, 10, 0, &mut rng), None);
     }
 
     /// A Vitality point lost to disease lowers the health maximum, and a
@@ -302,18 +331,23 @@ mod tests {
             for dying in [false, true] {
                 let mut profile = veteran.clone();
                 let mut member = Vitals::new(&profile);
-                member.inflict(Condition::Diseased, Lasting::Indefinite);
+                member.afflict(Condition::Diseased, Lasting::Indefinite);
                 let max_hp = profile.max_hp(&Attributes::of_sheet(&profile));
                 member.health.current = if dying { 1 } else { max_hp - 20 };
                 let hp = member.health.current;
-                let struck = member.sicken(&mut profile, 10_000, &mut GameRng::seeded(seed));
+                let vitality = Attributes::of_sheet(&profile)[Attribute::Vitality];
+                let struck =
+                    member.sicken(&mut profile, vitality, 10_000, &mut GameRng::seeded(seed));
                 if struck != Some(Sickness::Weakened(Attribute::Vitality)) {
                     continue;
                 }
-                let lowered = max_hp - profile.max_hp(&Attributes::of_sheet(&profile));
+                // The member is refitted for the lost point.
+                let attributes = Attributes::of_sheet(&profile);
+                let lowered = max_hp - profile.max_hp(&attributes);
                 assert!(lowered > 0, "a veteran's health follows Vitality");
+                member.refit_maxima(profile.max_hp(&attributes), profile.max_stamina(&attributes));
                 if dying {
-                    assert!(member.is_dead(), "too little health left to lose");
+                    assert_eq!(member.health.current, 1, "a refit never takes the last point");
                     dying_seen = true;
                 } else {
                     assert_eq!(member.health.current, hp - lowered);
@@ -346,13 +380,12 @@ mod tests {
         member.stamina.current =
             member.stamina.current.min(profile.max_stamina(&Attributes::of_sheet(&profile)));
         // Recovery heals only up to the lowered maximum.
-        elapse(
+        pass(
             &mut profile,
             &mut member,
             Ticks { stamina: 0, aging: 60 },
             Pace::Camping,
             &mut GameRng::default(),
-            None,
         );
         assert_eq!(member.health.current, max_hp - 3);
         let stamina = member.stamina.current;

@@ -35,12 +35,8 @@ fn app() -> App {
         .init_resource::<LevelMemory>()
         .add_observer(give_bodies)
         .add_observer(crate::game::world::damage::monster_died)
-        .add_systems(
-            Update,
-            (crate::game::characters::sync_member_maxima, crate::game::characters::settle_deaths)
-                .chain()
-                .before(activate_level),
-        )
+        .add_message::<crate::game::hits::Damaged>()
+        .add_systems(Update, crate::game::characters::settle_deaths.before(activate_level))
         .init_resource::<crate::game::factions::Factions>()
         .add_message::<crate::game::factions::FactionNews>()
         .init_resource::<ItemIds>()
@@ -455,8 +451,10 @@ fn direct_damage_settles_death_once() {
     let world = app.world_mut();
     let target = world.query_filtered::<Entity, With<Monster>>().single(world).unwrap();
     let hit = |world: &mut World| {
-        let lost = world.get_mut::<crate::game::characters::Vitals>(target).unwrap().hurt(10);
+        let mut vitals = world.get_mut::<crate::game::characters::Vitals>(target).unwrap();
+        let (lost, died) = (vitals.hurt(10), vitals.is_dead());
         // Death settles its consequences.
+        world.write_message(crate::game::hits::Damaged { body: target, amount: lost, died });
         world.run_system_once(crate::game::characters::settle_deaths).unwrap();
         lost
     };

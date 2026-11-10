@@ -394,7 +394,7 @@ impl Progression<'_, '_> {
         self.eligibility(draft.member)?;
         let spells = &self.content.spells;
         let items = &self.content.items;
-        let (mut c, mut v, mut known, mut carried) = self.members.get_mut(draft.member).unwrap();
+        let (mut c, _, mut known, mut carried) = self.members.get_mut(draft.member).unwrap();
         if *c != draft.original || *known != draft.known {
             return Err("This character's training changed. Reopen level-up.");
         }
@@ -420,8 +420,7 @@ impl Progression<'_, '_> {
             }
         }
         // Preserve deficits, conditions and recovery fractions; advancement is not a full heal.
-        // The spells on the member count for both maxima.
-        v.follow_maxima(&next);
+        // Their maxima follow the new sheet when they are refitted.
         *c = next;
         *known = learned;
         *carried = equipment;
