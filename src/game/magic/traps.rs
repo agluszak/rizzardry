@@ -1,14 +1,15 @@
 //! Indirect trap spells: a sprung trap's spell lands on members of the
 //! party as a deed with no caster.
 
-use super::Strength;
+use super::power;
+use super::workings::{self, Springing};
 use crate::content::spells::SpellId;
 use crate::game::data::Catalogs;
 use crate::game::hits::definitions::Definitions;
 use crate::game::hits::effects::Strike;
 use crate::game::hits::{Act, Deed, Release};
 use crate::game::rng::GameRng;
-use crate::game::world::interaction::Unable;
+use crate::game::world::interaction::{TRAP_GRADE, Unable};
 use bevy::prelude::*;
 
 pub const SPELLS: [SpellId; 15] = [
@@ -49,37 +50,23 @@ pub(crate) fn validate(trap: u8, definitions: &Definitions) -> Result<(), Unable
 /// [`validate`] accepted.
 pub(crate) fn discharge(
     (trap, difficulty): (u8, u8),
-    (mut targets, selected): (Vec<Entity>, Option<Entity>),
+    (members, selected): (Vec<Entity>, Option<Entity>),
     (content, definitions): (&Catalogs, &Definitions),
     rng: &mut GameRng,
 ) -> (bool, Release) {
     let id = trap_spell(trap, definitions).expect("a validated trap");
     let spell = &content.spells[id];
-    let difficulty = u32::from(difficulty.clamp(1, 7));
-    let destroyed = rng.below(2) == 0;
-    let mut count = difficulty - rng.below(difficulty / 2);
-    let grade = crate::game::world::interaction::TRAP_GRADE[trap as usize];
-    let extra = difficulty.max(grade) - grade;
-    let power = (extra + 4).min(7);
-    if extra > 3 {
-        count += rng.below(extra - 3);
-    }
-    // Retail deletes random slots from roster order, retaining the selected
-    // living actor. Sleeping/unconscious members can be victims too.
-    while targets.len() > count as usize {
-        let index = rng.below(targets.len() as u32) as usize;
-        if Some(targets[index]) != selected {
-            targets.remove(index);
-        }
-    }
+    let grade = TRAP_GRADE[trap as usize];
+    let sprung =
+        workings::spring(rng, &Springing { difficulty, grade, members: &members, selected });
     let strike = Strike {
         definition: definitions.spell(id).unwrap(),
-        strength: Strength::at(0, spell, power, 0),
+        strength: power::strength(0, sprung.power, 0, spell),
         blow: None,
     };
     let release = Release {
         deed: Deed::new(Act::Triggered { spell: id }, strike),
-        victims: targets.into_iter().map(|victim| (victim, None)).collect(),
+        victims: sprung.victims.into_iter().map(|victim| (victim, None)).collect(),
     };
-    (destroyed, release)
+    (sprung.destroyed, release)
 }

@@ -375,6 +375,58 @@ pub struct SpellFacts {
     pub death_floor: u32,
     /// What it adds while laid.
     pub laid: WhileLaid,
+    /// What it does besides landing on bodies, if it is a utility spell: it is
+    /// cast like any other, and then does this.
+    pub working: Option<Working>,
+    /// Cast by a member on themselves, the figure its failure chance gains.
+    pub harder_on_oneself: u32,
+}
+
+/// What a utility spell does once it comes off (`docs/rules/casting.md`
+/// section 8): not a deed on bodies, but an act of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub enum Working {
+    /// Reveals an item the party has.
+    Identify,
+    /// Saves where the party stands.
+    SetPortal,
+    /// Takes the party back to the place saved.
+    ReturnToPortal,
+    /// Wins over the one the party is talking with.
+    Charm,
+    /// Opens the mind of the one the party is talking with.
+    Mindread,
+    /// Draws the monsters near a spot.
+    Lure,
+    /// Calls an elemental to a spot.
+    Summon,
+    /// Moves a lock's tumblers.
+    Knock,
+    /// Reads the trap being disarmed.
+    DivineTrap,
+}
+
+impl Working {
+    /// Cast at the one the party is talking with.
+    pub fn speaks(self) -> bool {
+        matches!(self, Working::Charm | Working::Mindread)
+    }
+
+    /// Cast at a lock being picked.
+    pub fn at_lock(self) -> bool {
+        self == Working::Knock
+    }
+
+    /// Cast at a trap being disarmed.
+    pub fn at_trap(self) -> bool {
+        matches!(self, Working::DivineTrap | Working::Knock)
+    }
+
+    /// Cast at a spot the party sees, which in a fight is an order like any
+    /// other.
+    pub fn at_a_spot(self) -> bool {
+        matches!(self, Working::Lure | Working::Summon)
+    }
 }
 
 /// How a pulsing spell strikes as each round ends.
@@ -492,6 +544,58 @@ mod tests {
         let heal = with(SpellId::HEAL_WOUNDS, Targeting::Ally);
         assert!(!heal.aimed_at_enemies() && !heal.can_backfire());
         assert!(with(SpellId::HASTE, Targeting::Caster).can_backfire());
+    }
+
+    /// A utility spell is named in its row; where each is cast is a fact of the
+    /// kind of working; a spell harder on oneself names how much.
+    #[test]
+    fn a_utility_spell_names_what_it_does_and_where_it_is_cast() {
+        let working = |id| with(id, Targeting::Enemy).facts.working;
+        assert_eq!(
+            [
+                SpellId::IDENTIFY_ITEM,
+                SpellId::SET_PORTAL,
+                SpellId::RETURN_TO_PORTAL,
+                SpellId::CHARM,
+                SpellId::MINDREAD,
+                SpellId::HYPNOTIC_LURE,
+                SpellId::SUMMON_ELEMENTAL,
+                SpellId::KNOCK_KNOCK,
+                SpellId::DIVINE_TRAP,
+            ]
+            .map(working),
+            [
+                Some(Working::Identify),
+                Some(Working::SetPortal),
+                Some(Working::ReturnToPortal),
+                Some(Working::Charm),
+                Some(Working::Mindread),
+                Some(Working::Lure),
+                Some(Working::Summon),
+                Some(Working::Knock),
+                Some(Working::DivineTrap),
+            ]
+        );
+        assert_eq!(working(SpellId::HEAL_WOUNDS), None);
+        assert_eq!(working(SpellId::FIREBALL), None);
+        let all = [
+            Working::Identify,
+            Working::SetPortal,
+            Working::ReturnToPortal,
+            Working::Charm,
+            Working::Mindread,
+            Working::Lure,
+            Working::Summon,
+            Working::Knock,
+            Working::DivineTrap,
+        ];
+        let kinds = |f: fn(Working) -> bool| all.into_iter().filter(|&w| f(w)).collect::<Vec<_>>();
+        assert_eq!(kinds(Working::speaks), [Working::Charm, Working::Mindread]);
+        assert_eq!(kinds(Working::at_lock), [Working::Knock]);
+        assert_eq!(kinds(Working::at_trap), [Working::Knock, Working::DivineTrap]);
+        assert_eq!(kinds(Working::at_a_spot), [Working::Lure, Working::Summon]);
+        let harder = |id| with(id, Targeting::Caster).facts.harder_on_oneself;
+        assert_eq!((harder(SpellId::SANE_MIND), harder(SpellId::CURE_POISON)), (50, 0));
     }
 
     #[test]

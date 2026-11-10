@@ -23,16 +23,17 @@ use bevy::prelude::*;
 use super::triggers::DoorState;
 use crate::content::characters::{Attribute, Skill};
 use crate::content::level::{Lock, TRAP_TYPES};
-use crate::content::spells::SpellId;
+use crate::content::spells::Working;
 use crate::game::characters::{Character, Practise, Vitals};
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::hits::definitions::Definitions;
 use crate::game::hits::effects::{Body, BodyItem};
-use crate::game::items::Items;
-use crate::game::magic::casting::{Aim, MagicNews, Refusal, Refused, Source, UseContext};
-use crate::game::magic::{Outcome, Utility};
+use crate::game::magic::Outcome;
+use crate::game::magic::casting::{MagicNews, Worked};
+use crate::game::magic::reach::Marked;
+use crate::game::magic::workings;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
 
@@ -518,28 +519,19 @@ fn disarm_component(
     Ok(Step::Stay)
 }
 
-/// Per mille that Knock-Knock moves each tumbler it reaches, by power.
-const KNOCK_CHANCE: [u32; 8] = [0, 344, 459, 516, 550, 573, 589, 602];
-
 /// Knock-Knock reaches a few tumblers at random and seals each it moves; a
-/// backfire drops them instead.
+/// backfire drops them instead (the reaching is [`workings::knock`]).
 fn knock(
     picking: &mut Picking,
     actor: Entity,
-    (power, backfire): (u32, bool),
+    (level, backfire): (u32, bool),
     rng: &mut GameRng,
     news: &mut MessageWriter<LockNews>,
 ) -> Step {
-    let mut order: Vec<_> = (0..picking.tumblers.len()).collect();
-    for _ in 0..order.len() {
-        let a = rng.below(order.len() as u32) as usize;
-        let b = rng.below(order.len() as u32) as usize;
-        order.swap(a, b);
-    }
     let mut dropped = false;
-    for index in order.into_iter().take(power as usize + 1) {
-        if rng.below(1000) < KNOCK_CHANCE[power as usize] {
-            let pin = &mut picking.tumblers[index];
+    for reached in workings::knock(rng, picking.tumblers.len(), level) {
+        if reached.moves {
+            let pin = &mut picking.tumblers[reached.tumbler];
             if backfire {
                 dropped |= pin.raised();
                 *pin = Tumbler::Down;
@@ -621,10 +613,13 @@ pub enum DeviceAct {
     PrepareMagic {
         actor: Entity,
     },
-    /// A spell or an item's is cast at the lock or trap.
-    Cast {
+    /// A spell or an item's, cast at the lock or trap, has been paid for and
+    /// rolled: it now does what it is for.
+    Spell {
         actor: Entity,
-        source: Source,
+        working: Working,
+        outcome: Outcome,
+        level: u32,
     },
     Take {
         /// The items chosen from the container, and how many of each.
@@ -644,13 +639,20 @@ pub(crate) fn plugin(app: &mut App) {
     );
 }
 
-/// A cast aimed at the attempt under way is asked of it like the player's
-/// other requests, to be carried out with them.
-fn device_cast(cast: On<Utility>, mut requests: MessageWriter<DeviceRequest>) {
-    if let Aim::Device(on) = cast.choice.aim {
-        let act = DeviceAct::Cast { actor: cast.caster, source: cast.choice.source };
-        requests.write(DeviceRequest { on, act });
-    }
+/// A cast aimed at the attempt under way, paid for and rolled as any other, is
+/// asked of it like the player's other requests, to be carried out with them.
+fn device_cast(
+    worked: On<Worked>,
+    mut requests: MessageWriter<DeviceRequest>,
+    mut news: MessageWriter<MagicNews>,
+) {
+    let Worked { caster, working, report, strength, marked } = worked.event().clone();
+    let Marked::Attempt(on) = marked else { return };
+    let outcome = report.outcome;
+    news.write(MagicNews::Done(report));
+    let act =
+        DeviceAct::Spell { actor: caster, working, outcome, level: workings::level(strength) };
+    requests.write(DeviceRequest { on, act });
 }
 
 /// Carry out what is asked of the attempt under way, in order: the
@@ -668,16 +670,10 @@ pub fn handle_device_requests(
     mut devices: Query<(Option<&mut Guarded>, Option<&mut DoorState>)>,
     mut bodies: Query<Body>,
     roster: Single<&crate::game::party::roster::PartyRoster>,
-    held: Items,
     (entering, battle): (Query<(), With<super::level::Destination>>, Query<(), With<Battle>>),
-    states: Query<&super::triggers::LevelState, With<super::level::Level>>,
     (content, definitions, setting): (Res<Catalogs>, Res<Definitions>, Res<Difficulty>),
     mut rng: ResMut<GameRng>,
-    (mut news, mut activations, mut magic_news): (
-        MessageWriter<LockNews>,
-        MessageWriter<super::ActivateDevice>,
-        MessageWriter<MagicNews>,
-    ),
+    (mut news, mut activations): (MessageWriter<LockNews>, MessageWriter<super::ActivateDevice>),
 ) {
     let roster = *roster;
     let occupied = !entering.is_empty() || !battle.is_empty();
@@ -685,9 +681,6 @@ pub fn handle_device_requests(
     for (on, act) in asked {
         // A request may name an attempt that has since ended.
         let Ok((mut interaction, &AttemptOn(device))) = attempts.get_mut(on) else {
-            if let DeviceAct::Cast { actor, .. } = act {
-                commands.trigger(Refused { caster: actor, refusal: Refusal::NoTarget });
-            }
             continue;
         };
         let Ok((mut guarded, door)) = devices.get_mut(device) else { continue };
@@ -764,72 +757,26 @@ pub fn handle_device_requests(
                     Step::Stay
                 })
             }
-            // Knock-Knock, Divine Trap and tools share the cast's payment;
-            // the target is settled before anything is spent.
-            (DeviceAct::Cast { actor: by, source }, Work::Picking(_) | Work::Disarming(_)) => {
-                let context = match work {
-                    Work::Picking(_) => UseContext::Lock,
-                    _ => UseContext::Trap,
-                };
-                let paid = match (guarded.is_some(), ready(work, &mut news)) {
-                    (false, _) | (_, Err(Unable::NotNow)) => Err(Refusal::NoTarget),
-                    (_, Err(_)) => Err(Refusal::Unsupported),
-                    (true, Ok(())) => member(&mut bodies, by, occupied)
-                        .map_err(|_| Refusal::CannotAct)
-                        .and_then(|mut body| {
-                            if !body.vitals.can_act() {
-                                return Err(Refusal::CannotAct);
-                            }
-                            crate::game::magic::casting::pay(
-                                &mut body,
-                                &held,
-                                (source, context),
-                                (
-                                    &content,
-                                    *setting,
-                                    crate::game::magic::utilities::underwater(&states),
-                                ),
-                                0, // a lock or a trap is met outside a fight
-                                &mut rng,
-                                &mut commands,
-                            )
-                        }),
-                };
-                let (report, strength) = match paid {
-                    Ok(paid) => paid,
-                    Err(refusal) => {
-                        commands.trigger(Refused { caster: by, refusal });
-                        continue;
+            // Knock-Knock and Divine Trap were paid for and rolled as any cast.
+            (DeviceAct::Spell { actor: by, working, outcome, level }, work) => Ok(match work {
+                _ if outcome == Outcome::Fizzled => Step::Stay,
+                Work::Disarming(trap) if working == Working::DivineTrap => {
+                    trap.divine_power = level;
+                    Step::Stay
+                }
+                Work::Picking(picking) => {
+                    knock(picking, by, (level, outcome == Outcome::Backfired), &mut rng, &mut news)
+                }
+                Work::Disarming(trap) => {
+                    if workings::disarms(&mut rng, level, trap.difficulty, outcome) {
+                        news.write(LockNews::Disarmed { trap: trap.trap });
+                        Step::Opened
+                    } else {
+                        Step::Sprung(Some(by))
                     }
-                };
-                let (outcome, spell) = (report.outcome, report.spell);
-                magic_news.write(MagicNews::Done(report));
-                let power = (strength.power + strength.power * strength.boost / 100).min(7);
-                Ok(match work {
-                    _ if outcome == Outcome::Fizzled => Step::Stay,
-                    Work::Disarming(trap) if spell == SpellId::DIVINE_TRAP => {
-                        trap.divine_power = power;
-                        Step::Stay
-                    }
-                    Work::Picking(picking) => knock(
-                        picking,
-                        by,
-                        (power, outcome == Outcome::Backfired),
-                        &mut rng,
-                        &mut news,
-                    ),
-                    Work::Disarming(trap) => {
-                        let roll = rng.below(100) + u32::from(trap.difficulty) * 6;
-                        if outcome != Outcome::Backfired && roll < power * 5 + 50 {
-                            news.write(LockNews::Disarmed { trap: trap.trap });
-                            Step::Opened
-                        } else {
-                            Step::Sprung(Some(by))
-                        }
-                    }
-                    Work::Looting => unreachable!(),
-                })
-            }
+                }
+                Work::Looting => unreachable!(),
+            }),
             _ => Err(Unable::NotNow),
         };
         // The panel redraws from the attempt: it has changed.

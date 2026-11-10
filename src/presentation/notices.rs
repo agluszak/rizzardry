@@ -349,7 +349,8 @@ fn magic_lines(
     spells: &crate::content::spells::SpellCatalog,
 ) -> Vec<String> {
     use crate::game::magic::Outcome;
-    use crate::game::magic::casting::{MagicNews, Refusal};
+    use crate::game::magic::casting::MagicNews;
+    use crate::game::magic::may::Refusal;
     let name = |entity| names.name(entity).unwrap_or_default();
     let effect_line = |effect| effect_line(names, effect);
     match news {

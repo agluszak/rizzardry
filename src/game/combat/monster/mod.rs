@@ -176,14 +176,14 @@ mod tests {
         assert!(got.fleeing);
         // Even with a special attack ready.
         facts.special = Making { has: true, chance: 100, ..facts.special };
-        facts.special.aims = &[crate::game::magic::casting::Aim::Ahead];
+        facts.special.aims = &[crate::game::magic::reach::Aim::Ahead];
         assert_eq!(think(&facts).deliberated, Deliberated::Conducts(Conduct::Flee));
     }
 
     #[test]
     fn the_special_attack_comes_before_a_spell_and_a_spell_before_withdrawing_or_striking() {
         use crate::content::spells::{SpellDefinition, SpellId, Targeting};
-        use crate::game::magic::casting::Aim;
+        use crate::game::magic::reach::Aim;
         let blast = SpellDefinition {
             id: SpellId(1),
             targeting: Targeting::Enemy,
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn one_that_prefers_blows_and_cannot_reach_closes_in_instead_of_casting_or_breathing() {
-        use crate::game::magic::casting::Aim;
+        use crate::game::magic::reach::Aim;
         let mut facts = plain(10.0);
         facts.special = Making { has: true, chance: 100, aims: &[Aim::Ahead], ..facts.special };
         // The claws reach 2 m: at 10 m the monster closes in, which is striking.

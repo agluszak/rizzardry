@@ -24,6 +24,36 @@ use EffectKind::{DrainBudget, DrainPool, Harm, Sap, Slay, Tire};
 pub struct Definition {
     pub effects: Vec<EffectSpec>,
     pub leeches: Option<bool>,
+    /// What an auto-powered cast must outlast: the conditions it lifts that
+    /// it weighs in choosing its power.
+    pub outlasts: Vec<Condition>,
+    /// What an auto-powered cast restores, if it is a restoring spell.
+    pub restores: Option<Restores>,
+    /// A repeated cast goes on while a victim is short of stamina rather than
+    /// of health.
+    pub watches_stamina: bool,
+    /// Laid, it takes damage in a victim's place; the damage it takes is
+    /// rolled as it is laid.
+    pub absorbs: bool,
+    /// Laid, it first spends itself against a slowing.
+    pub answers_slowing: bool,
+    /// What each of its victims it killed bursts into.
+    pub bursts_into: Option<SpellId>,
+    /// Laid, it turns back the spells aimed at enemies that land on its
+    /// bearer.
+    pub turns_back: bool,
+    /// Cast with Power Cast on a summoned elemental of this element, it may
+    /// be laid on the elemental.
+    pub buffs_elemental: Option<Realm>,
+}
+
+/// What a restoring spell mends, as its auto power measures it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub enum Restores {
+    Health,
+    Stamina,
+    /// Health; stamina once health is full.
+    HealthThenStamina,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -331,6 +361,14 @@ fn condition(afflicted: Condition, rounds: Roll, realm: Realm) -> EffectSpec {
 pub struct SpellRow {
     pub effects: Vec<EffectSpec>,
     pub leeches: Option<bool>,
+    pub outlasts: Vec<Condition>,
+    pub restores: Option<Restores>,
+    pub watches_stamina: bool,
+    pub absorbs: bool,
+    pub answers_slowing: bool,
+    pub bursts_into: Option<SpellId>,
+    pub turns_back: bool,
+    pub buffs_elemental: Option<Realm>,
     pub backfire: Vec<EffectSpec>,
     pub pulse: Vec<EffectSpec>,
 }
@@ -363,17 +401,28 @@ impl SpellRow {
     /// roll, kind and realm in it resolved from the spell's record. `None`
     /// for a spell with no realm, which the game does not resolve.
     pub fn of_spell(&self, spell: &SpellDefinition) -> Option<Definition> {
-        Some(Definition { effects: made(&self.effects, spell)?, leeches: self.leeches })
+        Some(Definition {
+            effects: made(&self.effects, spell)?,
+            leeches: self.leeches,
+            outlasts: self.outlasts.clone(),
+            restores: self.restores,
+            watches_stamina: self.watches_stamina,
+            absorbs: self.absorbs,
+            answers_slowing: self.answers_slowing,
+            bursts_into: self.bursts_into,
+            turns_back: self.turns_back,
+            buffs_elemental: self.buffs_elemental,
+        })
     }
 
     /// What it does turned on its caster.
     pub fn backfire_of(&self, spell: &SpellDefinition) -> Option<Definition> {
-        Some(Definition { effects: made(&self.backfire, spell)?, leeches: None })
+        Some(Definition { effects: made(&self.backfire, spell)?, ..default() })
     }
 
     /// What each of its pulses does.
     pub fn pulse_of(&self, spell: &SpellDefinition) -> Option<Definition> {
-        Some(Definition { effects: made(&self.pulse, spell)?, leeches: None })
+        Some(Definition { effects: made(&self.pulse, spell)?, ..default() })
     }
 }
 
@@ -508,7 +557,7 @@ pub fn define(mut commands: Commands, content: Res<Catalogs>) {
         entries.push(definition);
         DefinitionId(entries.len() - 1)
     };
-    let plain = |effects| Definition { effects, leeches: None };
+    let plain = |effects| Definition { effects, ..default() };
     let mut spells = HashMap::new();
     let mut backfires = HashMap::new();
     let mut pulses = HashMap::new();
@@ -984,6 +1033,178 @@ mod tests {
             );
             assert_eq!(spell.facts.pulse.is_some(), !row.pulse.is_empty(), "{:?}", spell.id);
         }
+    }
+
+    /// What a spell is beyond its effects is in its row: what its auto power
+    /// measures or outlasts, which it watches, what it absorbs, answers, bursts
+    /// into, turns back or buffs.
+    #[test]
+    fn a_row_says_what_a_spell_is_beyond_its_effects() {
+        let table = SpellEffects::default();
+        let row = |id| table.get(id).unwrap().of_spell(&spell(id)).unwrap();
+        assert_eq!(row(SpellId::HEAL_WOUNDS).restores, Some(Restores::Health));
+        assert_eq!(row(SpellId::STAMINA).restores, Some(Restores::Stamina));
+        assert_eq!(row(SpellId::RESTORATION).restores, Some(Restores::HealthThenStamina));
+        assert!(row(SpellId::STAMINA).watches_stamina && row(SpellId::REST_ALL).watches_stamina);
+        assert!(!row(SpellId::HEAL_ALL).watches_stamina);
+        assert_eq!(
+            row(SpellId::SANE_MIND).outlasts,
+            [Condition::Insane, Condition::Turncoat, Condition::Asleep]
+        );
+        assert_eq!(row(SpellId::CURE_POISON).outlasts, [Condition::Poisoned]);
+        assert!(row(SpellId::HEAL_WOUNDS).outlasts.is_empty());
+        assert!(row(SpellId::GUARDIAN_ANGEL).absorbs && row(SpellId::HASTE).answers_slowing);
+        assert_eq!(row(SpellId::BOILING_BLOOD).bursts_into, Some(SpellId::BOILING_BLOOD_EXPLOSION));
+        assert!(row(SpellId::EYE_FOR_AN_EYE).turns_back);
+        assert_eq!(
+            [SpellId::HASTE, SpellId::SUPERMAN, SpellId::MISSILE_SHIELD, SpellId::ARMORPLATE]
+                .map(|id| row(id).buffs_elemental),
+            [Some(Realm::Fire), Some(Realm::Water), Some(Realm::Air), Some(Realm::Earth)]
+        );
+    }
+
+    fn rolled(roll: Roll, power: u32, boost: u32, seed: u64) -> u32 {
+        let strength = Strength { power, against: 0, boost };
+        super::roll(roll, strength, None, &mut GameRng::seeded(seed))
+    }
+
+    /// Dice of 1 side are certain: 3 dice a power at power 2 are 6 dice, each 1,
+    /// and the base 2 makes 8; raised by 50 percent that is 8 + 4 = 12; plain, 8;
+    /// over 2, 4. No dice make nothing.
+    #[test]
+    fn a_roll_of_the_spells_dice_is_count_times_power_dice_plus_base_boosted() {
+        let dice = Some(Dice { base: 2, count: 3, sides: 1 });
+        let with = |plain, over| Roll::Dice { dice, plain, over };
+        assert_eq!(rolled(with(false, 1), 2, 0, 0), 8);
+        assert_eq!(rolled(with(false, 1), 2, 50, 0), 12);
+        assert_eq!(rolled(with(true, 1), 2, 50, 0), 8);
+        assert_eq!(rolled(with(false, 2), 2, 0, 0), 4);
+        assert_eq!(rolled(Roll::Dice { dice: None, plain: false, over: 1 }, 2, 50, 0), 0);
+    }
+
+    /// Rounds are `per power * power + base` plus one, then below(4): on 0 one
+    /// more if over 1; on 1 one more if 2 or under. Power 2 of 3 + 2 is 8, 9 with
+    /// the one, so 9 or 10; of 0 + 0 it is 1 or 2; of 0 + 1 (2) it is 2 or 3. Raised
+    /// by the boost: 50 percent of 9 is 4. 9999 is permanent.
+    #[test]
+    fn a_condition_lasts_its_rounds_with_a_little_luck_and_a_boost() {
+        let rounds = |per_power, base, power, boost| -> std::collections::BTreeSet<u32> {
+            (0..200)
+                .map(|seed| rolled(Roll::Duration { base, per_power }, power, boost, seed))
+                .collect()
+        };
+        assert_eq!(rounds(3, 2, 2, 0), [9, 10].into());
+        assert_eq!(rounds(0, 0, 1, 0), [1, 2].into());
+        assert_eq!(rounds(0, 1, 1, 0), [2, 3].into());
+        assert_eq!(rounds(3, 2, 2, 50), [13, 15].into());
+        assert_eq!(rounds(0, 9999, 1, 50), [9999].into());
+        assert_eq!(rounds(0, -5, 1, 0), [0, 1].into(), "never under nothing, then the luck");
+    }
+
+    /// Purify: power + 1, then below(4): on 0 one more if over 1, on 1 one more
+    /// if under 3. Power 1 (2): 3 on a 0 or 1; 2 otherwise. Power 3 (4): 5 or 4.
+    /// Raised by the boost.
+    #[test]
+    fn purifying_rolls_from_the_power_alone() {
+        let turns = |power, boost| -> std::collections::BTreeSet<u32> {
+            (0..200).map(|seed| rolled(Roll::Purify, power, boost, seed)).collect()
+        };
+        assert_eq!(turns(1, 0), [2, 3].into());
+        assert_eq!(turns(3, 0), [4, 5].into());
+        assert_eq!(turns(3, 100), [8, 10].into());
+    }
+
+    /// Fifty a power raised by the boost; so much a power; a fixed number; a
+    /// third of the power but one at least; below the power.
+    #[test]
+    fn the_simple_rolls_are_fixed_by_the_power() {
+        assert_eq!(rolled(Roll::Fifty, 3, 0, 0), 150);
+        assert_eq!(rolled(Roll::Fifty, 3, 20, 0), 180);
+        assert_eq!(rolled(Roll::PerPower(10), 4, 99, 0), 40);
+        assert_eq!(rolled(Roll::Fixed(7), 4, 99, 0), 7);
+        assert_eq!(
+            (rolled(Roll::ThirdOfBound, 1, 0, 0), rolled(Roll::ThirdOfBound, 7, 0, 0)),
+            (1, 2)
+        );
+        assert!((0..50).all(|seed| rolled(Roll::BelowBound, 3, 0, seed) < 3));
+    }
+
+    /// A gold share is the dice at the power; if that is under 100, a second roll
+    /// is taken in its place, held at 100; if it is 100 or over, 100.
+    #[test]
+    fn a_gold_share_is_the_dice_rolled_again_when_under_a_hundred_and_held_at_a_hundred() {
+        let share = |base| Roll::GoldShare(Some(Dice { base, count: 1, sides: 1 }));
+        assert_eq!(rolled(share(30), 1, 0, 0), 31, "the second roll, 1d1 + 30");
+        assert_eq!(rolled(share(99), 1, 0, 0), 100, "the second, 100, held");
+        assert_eq!(rolled(share(150), 1, 0, 0), 100, "not under 100, so 100");
+        assert_eq!(rolled(Roll::GoldShare(None), 1, 0, 0), 0);
+    }
+
+    /// Three rolls below the power, summed, over `divide`, plus `plus`, times
+    /// `times`, over `over`; at power 1 each is 0.
+    #[test]
+    fn a_special_attacks_sum_is_three_rolls_under_the_power() {
+        let sum = Roll::Three { divide: 3, plus: 1, times: 4, over: 2 };
+        assert_eq!(rolled(sum, 1, 0, 0), 2, "(0 / 3 + 1) * 4 / 2");
+        assert!((0..100).all(|seed| (2..=6).contains(&rolled(sum, 3, 0, seed))));
+    }
+
+    /// Prismic: below(100) from 50 up is damage by the dice; under 50 a condition
+    /// by weight (Nauseated 10, Afraid 10, Hexed 5, Insane 5, Blind 5, Turncoat 1,
+    /// Asleep 10, Paralyzed 3) or death (1) of fifty, each with its own save.
+    #[test]
+    fn a_prismic_ray_is_damage_half_the_time_and_else_a_weighted_condition_or_death() {
+        let ray = EffectSpec {
+            kind: EffectKind::Prismic { dice: Some(DICE), base: 2, per_power: 3 },
+            ..default()
+        };
+        let mut rng = GameRng::seeded(21);
+        let picks: Vec<EffectSpec> = (0..20_000).map(|_| ray.clone().pick(&mut rng)).collect();
+        let count = |f: &dyn Fn(&EffectSpec) -> bool| picks.iter().filter(|p| f(p)).count();
+        let harm = count(&|p| p.kind == EffectKind::Harm);
+        assert!((9_700..=10_300).contains(&harm), "{harm}");
+        let with = |condition: Condition| {
+            count(&|p| matches!(p.kind, EffectKind::Afflict { condition: c, .. } if c == condition))
+        };
+        // Of 20,000: 10 percent is 2,000; 5 percent 1,000; 1 percent 200.
+        assert!((1_800..=2_200).contains(&with(Condition::Nauseated)));
+        assert!((1_800..=2_200).contains(&with(Condition::Asleep)));
+        assert!((800..=1_200).contains(&with(Condition::Hexed)));
+        assert!((100..=300).contains(&with(Condition::Turncoat)));
+        let death = count(&|p| p.kind == EffectKind::Slay);
+        assert!((100..=300).contains(&death), "{death}");
+        for pick in &picks {
+            match pick.kind {
+                EffectKind::Harm => assert_eq!(pick.roll, Some(dice())),
+                EffectKind::Slay => assert_eq!(pick.save, Some(DEATH_SAVE)),
+                EffectKind::Afflict { condition, .. } => {
+                    assert_eq!(pick.save, Some(condition_save(condition)));
+                    assert_eq!(pick.roll, Some(rounds()));
+                }
+                _ => panic!("{pick:?}"),
+            }
+        }
+    }
+
+    /// An either-or condition is one of its list, at random, saved against by its own base.
+    #[test]
+    fn an_either_or_condition_is_one_of_its_list_with_its_own_save() {
+        let any = EffectSpec {
+            kind: EffectKind::AfflictAny(vec![Condition::Blind, Condition::Asleep]),
+            ..default()
+        };
+        let mut rng = GameRng::seeded(22);
+        let picks: Vec<EffectSpec> = (0..400).map(|_| any.clone().pick(&mut rng)).collect();
+        for pick in &picks {
+            let EffectKind::Afflict { condition, .. } = pick.kind else { panic!() };
+            assert!([Condition::Blind, Condition::Asleep].contains(&condition));
+            assert_eq!(pick.save, Some(condition_save(condition)));
+        }
+        let blind = picks
+            .iter()
+            .filter(|p| matches!(p.kind, EffectKind::Afflict { condition: Condition::Blind, .. }))
+            .count();
+        assert!((140..=260).contains(&blind), "{blind}");
     }
 
     fn spell_with_facts(id: SpellId) -> SpellDefinition {

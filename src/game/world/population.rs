@@ -179,7 +179,7 @@ impl MonsterBodies {
             geometry.monsters.iter().map(|placed| placed.species).collect();
         spawnable.extend(encountered);
         spawnable.extend(companions);
-        spawnable.extend(crate::game::magic::pointcasts::ELEMENTALS);
+        spawnable.extend(crate::game::magic::workings::ELEMENTALS);
         let mut next = 0;
         while let Some(&id) = spawnable.get(next) {
             if let Some(called) = species.kind(id).and_then(|kind| kind.special.kind?.summons())

@@ -1,17 +1,31 @@
-//! Spellcasting rules: who can cast what, spell points per realm, whether a
-//! cast comes off, and what the modelled spells do to their victims (retail
-//! `Magic.cpp`, `Magic Effects.cpp`, `Health Stamina Mana.cpp`).
+//! Spellcasting (`docs/rules/casting.md`): the spells a character has learned,
+//! the spell points of each realm, and the rules of a cast, each a function of
+//! the facts it is about.
 //!
-//! A learned spell and an item's spell share effect resolution but keep
-//! their own validation and payment: casting spends spell points, using an
-//! item spends a use (see `game::magic::casting`).
+//! - [`may`]: who may cast what, from what, and when (2)
+//! - [`power`]: the power of a cast and the strength it goes off at (3)
+//! - [`roll`]: how likely a cast is to fail, and what a roll becomes (4)
+//! - [`reach`]: whom a cast reaches, and what a backfire turns it on (5)
+//! - [`cost`]: what a cast costs and trains (7)
+//! - [`workings`]: what a utility spell does once it comes off (8)
+//!
+//! What lands is [`crate::game::hits`]. A cast is one chain, for a learned
+//! spell and an item's, in a fight and out of it: [`casting`] reads the facts,
+//! asks the rules in the order of the page and makes happen what they decide;
+//! a utility spell then does its own thing, one observer to a kind.
 
 pub mod casting;
+pub mod cost;
 pub(crate) mod dialogue;
+pub mod may;
 pub(crate) mod pointcasts;
 pub mod portals;
+pub mod power;
+pub mod reach;
+pub mod roll;
 pub(crate) mod traps;
 pub(crate) mod utilities;
+pub mod workings;
 
 use crate::game::actors::Attributes;
 use std::collections::BTreeSet;
@@ -22,9 +36,7 @@ use enumset::EnumSet;
 
 use crate::content::characters::Trait;
 use crate::content::characters::{Attribute, Realm, Skill};
-use crate::content::spells::{
-    MAX_POWER, SpellCatalog, SpellDefinition, SpellId, Spellbook, Targeting, min_caster_level,
-};
+use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId, Spellbook, min_caster_level};
 use crate::game::GameplaySet;
 use crate::game::characters::{Character, Profession};
 use crate::game::combat::Battle;
@@ -133,15 +145,6 @@ impl SpellPoints {
         restored
     }
 
-    /// The highest power the realm's points pay for, 0 if none.
-    pub fn affordable_power(&self, spell: &SpellDefinition, maximum: &EnumMap<Realm, u32>) -> u32 {
-        let Some(realm) = spell.realm else { return 0 };
-        if spell.cost == 0 {
-            return MAX_POWER;
-        }
-        (self.available(realm, maximum) / spell.cost).min(MAX_POWER)
-    }
-
     /// Whether any realm is short of its maximum.
     pub fn short(&self) -> bool {
         self.spent.values().any(|&spent| spent > 0)
@@ -170,23 +173,6 @@ impl SpellPoints {
             }
         }
     }
-}
-
-/// Select an available target by angle to the heading, then distance.
-pub fn target_ahead(
-    eye: Vec3,
-    forward: Vec3,
-    reach: f32,
-    candidates: impl IntoIterator<Item = (Entity, Vec3, f32)>,
-) -> Option<Entity> {
-    candidates
-        .into_iter()
-        .filter(|(_, _, distance)| *distance <= reach)
-        .map(|(entity, at, distance)| {
-            (entity, (at - eye).with_y(0.0).angle_between(forward.with_y(0.0)), distance)
-        })
-        .min_by(|a, b| a.1.total_cmp(&b.1).then(a.2.total_cmp(&b.2)))
-        .map(|(entity, ..)| entity)
 }
 
 /// The share of spell points recovered while health recovers at
@@ -245,13 +231,6 @@ pub(crate) fn best_book(character: &Character, spell: &SpellDefinition) -> Skill
     let books = spell.books & character_books(character);
     let books = if books.is_empty() { spell.books } else { books };
     books.iter().map(book_skill).max_by_key(|&s| character.skill(s)).unwrap_or(Skill::Wizardry)
-}
-
-/// Retail `GetSpellCastingSkillLevel`: the book counts once, the realm four
-/// times.
-fn casting_skill(character: &Character, spell: &SpellDefinition) -> u32 {
-    let realm = spell.realm.map_or(0, |r| character.skill(r.skill()));
-    (character.skill(best_book(character, spell)) + realm * 4) / 5
 }
 
 /// Whether the character may learn a spell now (retail `CanLearnSpell`): it is
@@ -326,49 +305,6 @@ impl Character {
     }
 }
 
-/// The skill threshold a spell's difficulty band needs at power 7 (retail
-/// `g_combat_effect_slot_spells_and_cast_success`).
-const CAST_THRESHOLDS: [u32; 17] =
-    [30, 40, 50, 58, 64, 70, 76, 81, 86, 90, 94, 97, 100, 102, 105, 107, 110];
-
-/// Retail `GetSpellFailureChance`: the skill a spell's difficulty band
-/// needs at `power`, and up to 70% failure for falling short of it.
-pub(crate) fn spell_failure(skill: u32, spell: &SpellDefinition, power: u32) -> u32 {
-    let band = (spell.cost / 2 + spell.level).min(16) as usize;
-    let need = CAST_THRESHOLDS[band] * power / 7;
-    if skill < need { (need - skill) * 70 / need } else { 0 }
-}
-
-/// The percent chance a learned cast fails (retail `ExecuteCharacterSpellCast`),
-/// before combat pace: the casting skill's shortfall, and the caster levels the
-/// spell's level and power call for. It is not held to 100: a chance past it
-/// still counts for a third of itself in the chance to backfire.
-pub fn fail_chance(character: &Character, spell: &SpellDefinition, power: u32) -> u32 {
-    let mut chance = spell_failure(casting_skill(character, spell), spell, power);
-    let caster = total_caster_level(character, spell.books);
-    let short = min_caster_level(spell.level) - caster - 1 + power as i32;
-    if short > 0 {
-        chance += spell.level * short as u32;
-    }
-    chance
-}
-
-/// Whether a silence stops this caster casting this learned spell (retail
-/// `IsSpellBlockedForCharacter`, `Magic.cpp:138-146`): it stops all but an
-/// Alchemy spell in the hands of someone with the Alchemy skill.
-pub fn silence_stops(character: &Character, spell: &SpellDefinition) -> bool {
-    !(spell.books.contains(Spellbook::Alchemy) && character.skill(Skill::Alchemy) > 0)
-}
-
-/// Retail's Power Cast bonus: `(level >> 2) + 1` while the skill is available.
-fn power_cast(character: &Character) -> u32 {
-    if character.skill_available(Skill::PowerCast) {
-        (character.skill(Skill::PowerCast) >> 2) + 1
-    } else {
-        0
-    }
-}
-
 /// The strength a cast's victims save against, and the percent its rolls are
 /// raised by (retail `CastSpellFromSource`).
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -378,26 +314,6 @@ pub struct Strength {
     pub boost: u32,
 }
 
-impl Strength {
-    /// A character's cast: by their total caster level, raised by Power Cast.
-    pub fn of(character: &Character, spell: &SpellDefinition, power: u32) -> Self {
-        let caster = total_caster_level(character, spell.books).max(0) as u32;
-        Strength::at(caster, spell, power, power_cast(character))
-    }
-
-    /// Retail `GetSpellDifficulty`: `figure/2 + power + (cost/2 + level)/2`,
-    /// three less against all enemies, less the death spells' floors, then
-    /// raised by half the boost.
-    pub fn at(figure: u32, spell: &SpellDefinition, power: u32, boost: u32) -> Self {
-        let mut against = figure / 2 + power + (spell.cost / 2 + spell.level) / 2;
-        let penalty =
-            spell.facts.death_floor + if spell.targeting == Targeting::AllEnemies { 3 } else { 0 };
-        against = against.max(penalty) - penalty;
-        against += against * (boost / 2) / 100;
-        Strength { power, against, boost }
-    }
-}
-
 /// Whether a cast came off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -405,42 +321,6 @@ pub enum Outcome {
     Fizzled,
     /// It turned on the caster.
     Backfired,
-}
-
-/// Roll a cast against its failure chance (retail `CastSpellFromSource`):
-/// the same roll decides failure and backfire. Ordinary failure chances below
-/// 6% cannot backfire; quiet (thrown) uses backfire whenever they fail and can.
-/// Underwater Fire first overrides failure to 100%, then quiet halves it;
-/// either case forbids backfire and keeps the ordinary payment transaction.
-pub fn roll(
-    rng: &mut GameRng,
-    chance: u32,
-    spell: &SpellDefinition,
-    quiet: bool,
-    underwater: bool,
-) -> Outcome {
-    let suppressed = underwater && spell.realm == Some(Realm::Fire);
-    let chance = if suppressed { if quiet { 50 } else { 100 } } else { chance };
-    if chance == 0 {
-        return Outcome::Cast;
-    }
-    let rolled = rng.below(100);
-    if rolled >= chance {
-        return Outcome::Cast;
-    }
-    let backfire = if suppressed || !spell.can_backfire() || (!quiet && chance < 6) {
-        0
-    } else if quiet {
-        chance
-    } else {
-        chance / 3
-    };
-    if rolled < backfire { Outcome::Backfired } else { Outcome::Fizzled }
-}
-
-/// Retail fatigue for a learned cast: the spell's level plus its power.
-fn cast_fatigue(spell: &SpellDefinition, power: u32) -> u32 {
-    spell.level + power
 }
 
 pub struct MagicPlugin;
@@ -474,57 +354,32 @@ pub struct MagicRequest {
     pub choice: casting::MagicChoice,
 }
 
-/// Magic that is not a deed on bodies, accepted: a utility spell (portals,
-/// dialogue, point casts, Identify) or a cast at a device. The observer for
-/// its kind carries it out; the others let it be.
-#[derive(EntityEvent, Clone, Copy, Debug, PartialEq)]
-pub struct Utility {
-    #[event_target]
-    pub caster: Entity,
-    pub spell: SpellId,
-    pub choice: casting::MagicChoice,
-}
-
 /// Accept magic requests (retail `ChooseAction`): in combat only record the
-/// choice; outside it, cast now.
+/// choice, except for a utility spell, which is cast at once, unless it is cast
+/// at a spot, which waits for its turn as any other order; outside combat, cast
+/// now.
 pub fn accept_magic(
     mut requests: MessageReader<MagicRequest>,
     mut commands: Commands,
     battle: Option<Single<&Battle>>,
-    camp: Option<Res<crate::game::camp::Camp>>,
-    interaction: Query<(), With<crate::game::world::interaction::DeviceInteraction>>,
     mut orders: Query<&mut crate::game::party::Order>,
     held: Items,
     content: Res<Catalogs>,
 ) {
     for &MagicRequest { caster, choice } in requests.read() {
-        let spell = choice.source.spell_id(&held, &content.items);
-        // A point cast in a fight waits for its turn, as any other order.
-        let utility = (spell.is_some_and(utilities::spell)
-            && (battle.is_none() || !spell.is_some_and(pointcasts::spell)))
-            || matches!(choice.aim, casting::Aim::Device(_));
-        if let (true, Some(spell)) = (utility, spell) {
-            commands.trigger(Utility { caster, spell, choice });
+        let Some(spell) = choice.source.spell_id(&held, &content.items) else {
+            commands.trigger(casting::Refused { caster, refusal: may::Refusal::NoItem });
             continue;
-        }
-        let refusal = match spell {
-            None => Some(casting::Refusal::NoItem),
-            Some(_) if !interaction.is_empty() => Some(casting::Refusal::WrongTime),
-            Some(_) => None,
         };
-        if let Some(refusal) = refusal {
-            commands.trigger(casting::Refused { caster, refusal });
-            continue;
-        }
-        if battle.is_some() {
+        let working = content.spells[spell].facts.working;
+        let at_once = battle.is_none()
+            || working.is_some_and(|working| !working.at_a_spot())
+            || matches!(choice.aim, reach::Aim::Device(_));
+        if at_once {
+            commands.trigger(casting::Cast { caster, spell, choice });
+        } else {
             orders.get_mut(caster).unwrap().set_if_neq(crate::game::party::Order::Magic(choice));
-            continue;
         }
-        // Outside a fight no monster is a target: the hostile spells are
-        // combat spells.
-        let context =
-            if camp.is_some() { casting::UseContext::Camp } else { casting::UseContext::World };
-        commands.trigger(casting::Cast { caster, spell: spell.unwrap(), context, choice });
     }
 }
 
@@ -552,10 +407,11 @@ pub(crate) fn test_points(world: &World, member: Entity, realm: Realm) -> i32 {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::content::characters::Skill;
     use crate::content::items::Dice;
     use crate::content::items::ItemCatalog;
     use crate::content::species::MonsterCatalog;
-    use crate::content::spells::{PowerChoice, Reach, Usable};
+    use crate::content::spells::{PowerChoice, Reach, Targeting, Usable};
     use crate::game::characters::{Gender, Race};
 
     pub(crate) fn heal_wounds() -> SpellDefinition {
@@ -575,41 +431,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// The out-of-combat use path with real requests: a potion stack and a
-    /// charged wand, each casting its own spell at its own power.
-    #[test]
-    fn underwater_fire_cannot_backfire_even_for_a_quiet_hostile_spell() {
-        let spell = SpellDefinition {
-            id: SpellId::ENERGY_BLAST,
-            targeting: Targeting::Enemy,
-            realm: Some(Realm::Fire),
-            ..default()
-        };
-        assert!(spell.can_backfire());
-        let mut rng = GameRng::seeded(1);
-        for _ in 0..20 {
-            assert_eq!(roll(&mut rng, 0, &spell, false, true), Outcome::Fizzled);
-            assert_ne!(roll(&mut rng, 100, &spell, true, true), Outcome::Backfired);
-        }
-    }
-
-    /// A chance past a hundred counts for a third of itself in the chance to
-    /// backfire: 300 is 100, so every failure backfires (held to 100 first,
-    /// it was 33).
-    #[test]
-    fn a_failure_chance_past_a_hundred_always_backfires() {
-        let spell = SpellDefinition {
-            id: SpellId::ENERGY_BLAST,
-            targeting: Targeting::Enemy,
-            realm: Some(Realm::Fire),
-            ..default()
-        };
-        let mut rng = GameRng::seeded(2);
-        for _ in 0..100 {
-            assert_eq!(roll(&mut rng, 300, &spell, false, false), Outcome::Backfired);
-        }
-    }
-
     #[test]
     fn using_items_spends_a_dose_or_a_charge_and_the_last_dose_still_heals() {
         use crate::content::items::{
@@ -620,7 +441,9 @@ pub(crate) mod tests {
         use crate::game::inventory::EquipSlot;
         use crate::game::items::{Charges, Count, Place, Put, make};
         use bevy::ecs::system::RunSystemOnce;
-        use casting::{Aim, MagicChoice, MagicNews, Refusal, Source};
+        use casting::{MagicChoice, MagicNews, Source};
+        use may::Refusal;
+        use reach::Aim;
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_resource::<crate::game::factions::Factions>()
@@ -729,6 +552,122 @@ pub(crate) mod tests {
         ));
     }
 
+    /// A utility spell is cast like any other up to the point where it lands: it
+    /// is paid for in points and stamina (cost 2 at power 1 is 2 points, and a
+    /// level 1 spell at power 1 tires by 1 + 1 = 2), and then does its own
+    /// thing: Identify Item reveals what the party holds.
+    #[test]
+    fn a_utility_spell_is_paid_for_like_any_cast_and_then_does_its_own_thing() {
+        use crate::content::items::{ItemDefinition, ItemId, LootTables, QuantityKind};
+        use crate::game::characters::Vitals;
+        use crate::game::items::{Known, Place, Put, make};
+        use bevy::ecs::system::RunSystemOnce;
+        use casting::{MagicChoice, MagicNews, Source};
+        use reach::Aim;
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_resource::<crate::game::factions::Factions>()
+            .init_resource::<crate::game::time::GameClock>()
+            .add_message::<crate::game::factions::FactionNews>()
+            .init_resource::<crate::game::difficulty::Difficulty>()
+            .init_resource::<avian3d::collider_tree::ColliderTrees>()
+            .insert_resource(GameRng::seeded(3))
+            .add_message::<MagicRequest>()
+            .add_message::<MagicNews>()
+            .add_message::<crate::game::combat::CombatNews>()
+            .add_plugins((crate::game::hits::HitsPlugin, crate::game::items::plugin))
+            .add_observer(casting::cast)
+            .add_observer(casting::refuse)
+            .add_observer(utilities::identify)
+            .add_systems(Update, accept_magic);
+        let scroll = ItemDefinition {
+            id: ItemId(0),
+            name: "Scroll".into(),
+            quantity: QuantityKind::Stack,
+            stack_limit: 5,
+            identify_difficulty: 3,
+            ..default()
+        };
+        let world = app.world_mut();
+        let mut definitions = vec![SpellDefinition::default(); 117];
+        definitions[usize::from(SpellId::IDENTIFY_ITEM.0)] = SpellDefinition {
+            id: SpellId::IDENTIFY_ITEM,
+            realm: Some(Realm::Divine),
+            level: 1,
+            cost: 2,
+            books: Spellbook::Divinity.into(),
+            targeting: Targeting::Item,
+            ..default()
+        };
+        world.insert_resource(crate::game::data::Catalogs {
+            items: ItemCatalog(vec![scroll]),
+            loot: LootTables::default(),
+            species: MonsterCatalog::default(),
+            spells: SpellCatalog::new(definitions),
+            ..default()
+        });
+        let mut priest = Character::new("Seer", Race::Human, Gender::Male, Profession::Priest);
+        priest.skill_points[Skill::Divinity] = 100;
+        priest.skill_points[Skill::DivineMagic] = 100;
+        let member = world
+            .spawn((
+                Vitals::new(&priest),
+                priest,
+                LearnedSpells([SpellId::IDENTIFY_ITEM].into()),
+                SpellPoints::default(),
+            ))
+            .id();
+        let item = world
+            .run_system_once(|mut commands: Commands, content: Res<crate::game::data::Catalogs>| {
+                make(&mut commands, &content.items[ItemId(0)], 1, false)
+            })
+            .unwrap();
+        world.flush();
+        world.trigger(Put { item, at: Place::Pack { member, slot: 0 } });
+        world.flush();
+        crate::game::party::roster::test_party(world, &[member]);
+        world.spawn(crate::game::world::level::Level::test(default()));
+        world.spawn((
+            crate::game::party::body::PartyBody::default(),
+            avian3d::prelude::Position::default(),
+        ));
+        let before = test_points(world, member, Realm::Divine);
+        let stamina = world.get::<Vitals>(member).unwrap().stamina.current;
+        assert!(!world.get::<Known>(item).unwrap().identified);
+        let source = Source::Spell { spell: SpellId::IDENTIFY_ITEM, power: 1 };
+        world.write_message(MagicRequest {
+            caster: member,
+            choice: MagicChoice { source, aim: Aim::Item(item) },
+        });
+        app.update();
+        let world = app.world_mut();
+        let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
+        assert!(
+            matches!(news.as_slice(), [MagicNews::Done(report)] if report.outcome == Outcome::Cast),
+            "{news:?}"
+        );
+        assert!(
+            world.get::<Known>(item).unwrap().identified,
+            "3 a power reveals a difficulty of 3"
+        );
+        assert_eq!(test_points(world, member, Realm::Divine), before - 2);
+        assert_eq!(world.get::<Vitals>(member).unwrap().stamina.current, stamina - 2);
+        // An item wholly known is no target; the refusal costs nothing.
+        let after = test_points(world, member, Realm::Divine);
+        world.write_message(MagicRequest {
+            caster: member,
+            choice: MagicChoice { source, aim: Aim::Item(item) },
+        });
+        app.update();
+        let world = app.world_mut();
+        let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
+        assert!(
+            matches!(news.as_slice(), [MagicNews::Refused { refusal: may::Refusal::NoTarget, .. }]),
+            "{news:?}"
+        );
+        assert_eq!(test_points(world, member, Realm::Divine), after);
+    }
+
     #[test]
     fn a_priest_picks_two_first_level_divine_spells_and_gains_their_points() {
         let priest = Character::new("Cleric", Race::Human, Gender::Male, Profession::Priest);
@@ -775,7 +714,8 @@ pub(crate) mod tests {
         use crate::game::characters::{Condition, Lasting, Vitals};
         use crate::game::items::{Count, Place, Put, make};
         use bevy::ecs::system::RunSystemOnce;
-        use casting::{Aim, MagicChoice, MagicNews, Source};
+        use casting::{MagicChoice, MagicNews, Source};
+        use reach::Aim;
 
         for id in [
             SpellId::GUARDIAN_ANGEL,
@@ -992,8 +932,7 @@ pub(crate) mod tests {
         assert_eq!(points.current(Realm::Divine, &low), -9);
         assert_eq!(points.available(Realm::Divine, &low), 0);
         assert_eq!(points.drain_realm(Realm::Divine, 5, &low), 0);
-        let spell = SpellDefinition { realm: Some(Realm::Divine), cost: 1, ..default() };
-        assert_eq!(points.affordable_power(&spell, &low), 0);
+        assert_eq!(power::affordable(points.available(Realm::Divine, &low), 1), 0);
         assert_eq!(points.current(Realm::Divine, &high), 1);
     }
 
@@ -1026,27 +965,5 @@ pub(crate) mod tests {
         points.spend(Realm::Divine, 6);
         points.recover(100, 0.5, &maximum);
         assert_eq!(points.current(Realm::Divine, &maximum), 10);
-    }
-
-    #[test]
-    fn affordable_power_is_points_over_cost_within_seven() {
-        let mut points = SpellPoints::default();
-        let mut maximum = EnumMap::default();
-        maximum[Realm::Divine] = 100;
-        points.spent[Realm::Divine] = 90;
-        assert_eq!(points.affordable_power(&heal_wounds(), &maximum), 3);
-        points.spent[Realm::Divine] = 0;
-        assert_eq!(points.affordable_power(&heal_wounds(), &maximum), 7);
-    }
-
-    #[test]
-    fn healing_cannot_backfire_and_an_untrained_caster_fails_more_at_higher_power() {
-        let priest = Character::new("Cleric", Race::Human, Gender::Male, Profession::Priest);
-        let heal = heal_wounds();
-        assert!(fail_chance(&priest, &heal, 7) > fail_chance(&priest, &heal, 1));
-        let mut rng = GameRng::seeded(1);
-        for _ in 0..200 {
-            assert_ne!(roll(&mut rng, 100, &heal, false, false), Outcome::Backfired);
-        }
     }
 }

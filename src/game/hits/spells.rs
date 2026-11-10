@@ -7,14 +7,13 @@ use bevy::prelude::*;
 
 use super::definitions::Definitions;
 use super::effects::{Body, BodyReadOnly, Strike};
-use super::reach::{Recipients, within};
+use super::reach::{Recipients, Struck, order, within};
 use super::{Act, Deed, Effect};
 use crate::content::spells::{SpellDefinition, SpellId, Targeting};
-use crate::game::actors::{Place, Places};
-use crate::game::characters::Vitals;
+use crate::game::actors::Places;
 use crate::game::data::Catalogs;
 use crate::game::magic::Strength;
-use crate::game::magic::casting::{Aim, MISSILE_SPEED, in_cone};
+use crate::game::magic::reach::{self, Aim, flight, in_cone};
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::hostility::Stance;
 use crate::game::world::identify::{GroupMember, GroupMembers};
@@ -23,6 +22,86 @@ use crate::game::world::obstacles::WorldObstacles;
 /// The share of Lifesteal's damage that heals the most wounded party member,
 /// in percent.
 const LIFESTEAL_SHARE: u32 = 70;
+
+/// The share of the spell points Might to Magic drained that a monster gains
+/// as budget, in the denominator of a half.
+const BUDGET_SHARE: u32 = 2;
+
+/// What drained from a victim goes back as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Returned {
+    /// Health, for Lifesteal.
+    Health(u32),
+    /// Spell points given back evenly, for Might to Magic to a member.
+    Points(u32),
+    /// Budget, for Might to Magic to a monster caster.
+    Budget(u32),
+}
+
+/// What a drain gives back (retail `DrainTargetsLife`): Lifesteal 70 percent of
+/// the health taken, cut down; Might to Magic the spell points taken, to a
+/// member with spell points, and half of them to a monster as budget.
+pub fn returned(lifesteal: bool, has_points: bool, drained: u32) -> Returned {
+    if lifesteal {
+        Returned::Health(drained * LIFESTEAL_SHARE / 100)
+    } else if has_points {
+        Returned::Points(drained)
+    } else {
+        Returned::Budget(drained / BUDGET_SHARE)
+    }
+}
+
+/// How far from whole health is, in percent.
+pub fn health_percent(current: u32, max: u32) -> u32 {
+    current * 100 / max
+}
+
+/// How far from whole spell points are, in percent; none for one with no
+/// spell points at all.
+pub fn points_percent(available: u32, maximum: u32) -> Option<u32> {
+    (maximum != 0).then(|| available * 100 / maximum)
+}
+
+/// Who a drain goes back to: the candidate whose health or points are lowest in
+/// proportion, the first of equals, if any is short of whole. A candidate with
+/// no percent (dead, or with no points) is passed over.
+pub fn neediest(needs: &[(Entity, Option<u32>)]) -> Option<Entity> {
+    needs
+        .iter()
+        .filter_map(|&(victim, percent)| percent.filter(|&p| p < 100).map(|p| (victim, p)))
+        .min_by_key(|&(_, percent)| percent)
+        .map(|(victim, _)| victim)
+}
+
+/// The strongest Eye for an Eye among the victims, in the order of the fight:
+/// the first of equal strength.
+pub fn strongest(eyes: impl IntoIterator<Item = (Entity, u32)>) -> Option<(Entity, u32)> {
+    eyes.into_iter().fold(None, |best: Option<(Entity, u32)>, (victim, power)| match best {
+        Some((_, most)) if most >= power => best,
+        _ => Some((victim, power)),
+    })
+}
+
+/// Whether a landed spell may be turned back: one aimed at enemies, that has
+/// not been turned back and is not itself a backfire.
+pub fn turns_back(aimed_at_enemies: bool, backfired: bool, reflected: bool) -> bool {
+    aimed_at_enemies && !backfired && !reflected
+}
+
+/// The power a turned-back spell is cast at: the cast's, or the eye's if less.
+pub fn turned_power(cast: u32, eye: u32) -> u32 {
+    cast.min(eye)
+}
+
+/// Whom a burst is against: the opponents of its owner's side, the owner's own
+/// side if the spell backfired, anyone if it has no owner.
+pub fn burst_against(side: Option<Stance>, backfired: bool) -> Recipients {
+    match side {
+        Some(side) if backfired => Recipients::Opponents(side).reversed(),
+        Some(side) => Recipients::Opponents(side),
+        None => Recipients::Everyone,
+    }
+}
 
 /// Lifesteal or Might to Magic: what the deed's damage drained goes to its
 /// caster's side once all of it has landed, as health or as spell points.
@@ -78,16 +157,36 @@ pub struct Surroundings<'a, 'w, 's> {
     pub definitions: &'a Definitions,
 }
 
-/// The bodies spells may take, as [`within`] reads them: those in the party
-/// and monsters, not a character without a seat.
-pub fn targets<'a>(
-    bodies: &'a Query<BodyReadOnly>,
-    places: &'a Places,
-) -> impl Iterator<Item = (Entity, &'a Vitals, Stance, Place)> {
+/// The bodies a burst may take, as [`within`] finds them from where it went
+/// off: those in the party and monsters, not a character without a seat, with
+/// whether a clear line runs from `origin` to each, in the fight's order.
+pub fn struck(
+    bodies: &Query<BodyReadOnly>,
+    places: &Places,
+    obstacles: &WorldObstacles,
+    origin: Vec3,
+    (roster, combatants): (&PartyRoster, &[Entity]),
+) -> Vec<Struck> {
     bodies
         .iter()
         .filter(|body| !body.untargetable && (body.member || body.character.is_none()))
-        .map(|body| (body.entity, body.vitals, body.stance(), places.of(body.entity)))
+        .map(|body| {
+            let at = places.of(body.entity);
+            let order = order(
+                roster.get_index_of(&body.entity),
+                combatants.iter().position(|&c| c == body.entity),
+            );
+            Struck {
+                id: body.entity,
+                dead: body.vitals.is_dead(),
+                stance: body.stance(),
+                centre: at.centre,
+                radius: at.radius,
+                order,
+                clear: obstacles.clear(origin, at.centre),
+            }
+        })
+        .collect()
 }
 
 /// The strength of a spell that comes from someone other than its caster (a
@@ -97,19 +196,18 @@ pub fn targets<'a>(
 pub fn owners_strength(
     owner: Option<Entity>,
     spell: &SpellDefinition,
-    (power, boost): (u32, u32),
+    (cast_power, boost): (u32, u32),
     bodies: &Query<BodyReadOnly>,
 ) -> Strength {
     let figure = owner
         .and_then(|owner| bodies.get(owner).ok())
         .map_or(0, |body| body.resistances.caster_level(spell));
-    Strength::at(figure, spell, power, boost)
+    crate::game::magic::power::strength(figure, cast_power, boost, spell)
 }
 
 /// What a Lifesteal or Might to Magic deed drained goes to the caster's
 /// side: a party caster's to the member most in need of it (retail chooses
-/// after every victim has been drained), a monster's to itself, 70% of the
-/// health back or half of it as spell points.
+/// after every victim has been drained), a monster's to itself.
 pub fn drain_back(
     leech: Leech,
     drained: u32,
@@ -124,38 +222,35 @@ pub fn drain_back(
         if body.vitals.is_dead() {
             return None;
         }
-        let percent = if leech.lifesteal {
-            body.vitals.health.current * 100 / body.vitals.health.max
+        if leech.lifesteal {
+            Some(health_percent(body.vitals.health.current, body.vitals.health.max))
         } else if let (Some(character), Some((learned, pool))) = (body.character, body.spells) {
             let maxima = character.max_points(body.attributes, learned, &content.spells);
-            let maximum: u32 = maxima.values().sum();
-            if maximum == 0 {
-                return None;
-            }
-            maxima.iter().map(|(realm, _)| pool.available(realm, &maxima)).sum::<u32>() * 100
-                / maximum
+            let available = maxima.iter().map(|(realm, _)| pool.available(realm, &maxima)).sum();
+            points_percent(available, maxima.values().sum())
         } else {
-            0
-        };
-        (percent < 100).then_some(percent)
-    };
-    let victim = candidates
-        .into_iter()
-        .filter_map(|victim| need(victim).map(|percent| (victim, percent)))
-        .min_by_key(|&(_, percent)| percent)
-        .map(|(victim, _)| victim)?;
-    let mut body = bodies.get_mut(victim).ok()?;
-    if leech.lifesteal {
-        let amount = body.vitals.heal(drained * LIFESTEAL_SHARE / 100);
-        Some(Effect::Healed { victim, amount })
-    } else if let Some((_, pool)) = body.spells.as_mut() {
-        let amount = pool.restore_evenly(drained);
-        Some(Effect::Replenished { victim, amount })
-    } else {
-        if let Some(budget) = body.budget.as_mut() {
-            budget.0 += drained / 2;
+            Some(0)
         }
-        None
+    };
+    let needs: Vec<_> = candidates.into_iter().map(|victim| (victim, need(victim))).collect();
+    let victim = neediest(&needs)?;
+    let mut body = bodies.get_mut(victim).ok()?;
+    match returned(leech.lifesteal, body.spells.is_some(), drained) {
+        Returned::Health(health) => {
+            let amount = body.vitals.heal(health);
+            Some(Effect::Healed { victim, amount })
+        }
+        Returned::Points(points) => {
+            let (_, pool) = body.spells.as_mut()?;
+            let amount = pool.restore_evenly(points);
+            Some(Effect::Replenished { victim, amount })
+        }
+        Returned::Budget(budget) => {
+            if let Some(gained) = body.budget.as_mut() {
+                gained.0 += budget;
+            }
+            None
+        }
     }
 }
 
@@ -170,20 +265,20 @@ pub fn bursts(
     around: &Surroundings,
 ) -> Vec<(Deed, Vec<(Entity, Option<f32>)>)> {
     let places = around.places;
-    if spell.id != SpellId::BOILING_BLOOD {
+    let Some(into) = around
+        .definitions
+        .spell(spell.id)
+        .and_then(|definition| around.definitions.get(definition).bursts_into)
+    else {
         return vec![];
-    }
-    let Some(explosion) = around.content.spells.get(SpellId::BOILING_BLOOD_EXPLOSION) else {
+    };
+    let Some(explosion) = around.content.spells.get(into) else {
         return vec![];
     };
     let Some(definition) = around.definitions.spell(explosion.id) else { return vec![] };
     let side = spell.owner.and_then(|owner| bodies.get(owner).ok()).map(|body| body.stance());
-    let recipients = match side {
-        Some(side) if spell.backfired => Recipients::Opponents(side).reversed(),
-        Some(side) => Recipients::Opponents(side),
-        None => Recipients::Everyone,
-    };
-    let radius = explosion.radius + explosion.radius_per_power * strength.power as f32;
+    let recipients = burst_against(side, spell.backfired);
+    let radius = crate::game::magic::reach::blast_radius(explosion, strength.power);
     let strength =
         owners_strength(spell.owner, explosion, (strength.power, strength.boost), bodies);
     spell
@@ -192,15 +287,10 @@ pub fn bursts(
         .filter_map(|&victim| bodies.get(victim).ok())
         .filter(|body| !body.untargetable && body.vitals.is_dead())
         .map(|body| {
-            let victims = within(
-                places.of(body.entity).feet,
-                places.of(body.entity).feet,
-                radius,
-                recipients,
-                targets(bodies, places),
-                (around.roster, around.combatants),
-                around.obstacles,
-            );
+            let at = places.of(body.entity).feet;
+            let found =
+                struck(bodies, places, around.obstacles, at, (around.roster, around.combatants));
+            let victims = within(at, radius, recipients, found);
             let deed = Deed::new(
                 Act::Missile { caster: spell.caster, spell: explosion.id },
                 Strike { definition, strength, blow: None },
@@ -265,7 +355,7 @@ pub fn reflection(
     let Surroundings { roster, combatants, memberships, groups, obstacles, places, .. } = *around;
     let spell = &around.content.spells[cast.id];
     let definition = around.definitions.spell(cast.id)?;
-    if cast.backfired || cast.reflected || !spell.aimed_at_enemies() {
+    if !turns_back(spell.aimed_at_enemies(), cast.backfired, cast.reflected) {
         return None;
     }
     let mut order = cast.victims.clone();
@@ -273,18 +363,15 @@ pub fn reflection(
         Some(seat) => (0, seat),
         None => (1, combatants.iter().position(|&c| c == victim).unwrap_or(usize::MAX)),
     });
-    let (charged, power) = order
-        .into_iter()
-        .filter_map(|victim| {
-            let body = bodies.get(victim).ok()?;
-            let charge = laying.get(victim, SpellId::EYE_FOR_AN_EYE)?;
-            (!body.untargetable && !body.vitals.is_dead()).then_some((victim, charge.power))
-        })
-        .fold(None, |best: Option<(Entity, u32)>, (victim, power)| match best {
-            Some((_, most)) if most >= power => best,
-            _ => Some((victim, power)),
-        })?;
-    laying.spend(charged, SpellId::EYE_FOR_AN_EYE);
+    let eye_spell = around.content.spells.0.iter().map(|laid| laid.id).find(|&laid| {
+        around.definitions.spell(laid).is_some_and(|d| around.definitions.get(d).turns_back)
+    })?;
+    let (charged, eye_power) = strongest(order.into_iter().filter_map(|victim| {
+        let body = bodies.get(victim).ok()?;
+        let charge = laying.get(victim, eye_spell)?;
+        (!body.untargetable && !body.vitals.is_dead()).then_some((victim, charge.power))
+    }))?;
+    laying.spend(charged, eye_spell);
     let party_at = roster.first().map(|&member| places.of(member));
     let owner = cast.owner;
     let eye = party_at.map_or(cast.from, |at| at.eye);
@@ -310,17 +397,10 @@ pub fn reflection(
         Some(body) => Recipients::Opponents(body.stance()).reversed(),
         None => Recipients::Everyone,
     };
-    let power = strength.power.min(power);
+    let power = turned_power(strength.power, eye_power);
     let reached = |centre, origin, radius| {
-        within(
-            centre,
-            origin,
-            radius,
-            recipients,
-            targets(bodies, places),
-            (roster, combatants),
-            obstacles,
-        )
+        let found = struck(bodies, places, obstacles, origin, (roster, combatants));
+        within(centre, radius, recipients, found)
     };
     let victims = match spell.targeting {
         Targeting::Enemy => owner.into_iter().collect(),
@@ -336,7 +416,7 @@ pub fn reflection(
                 .map_or(party_at.map_or(cast.from, |at| at.feet), |body| {
                     places.of(body.entity).feet
                 });
-            reached(centre, cast.from, spell.radius + spell.radius_per_power * power as f32)
+            reached(centre, cast.from, reach::blast_radius(spell, power))
         }
         Targeting::Cone => reached(from, from, spell.reach.metres())
             .into_iter()
@@ -347,9 +427,7 @@ pub fn reflection(
     };
     let flights = victims
         .iter()
-        .map(|&victim| {
-            (victim, spell.missile.map(|_| from.distance(eye_of(victim)) / MISSILE_SPEED))
-        })
+        .map(|&victim| (victim, spell.missile.map(|_| flight(from, eye_of(victim)))))
         .collect();
     let strength = owners_strength(source, spell, (power, strength.boost), bodies);
     let mut deed = Deed::new(
@@ -367,4 +445,81 @@ pub fn reflection(
         victims,
     });
     Some((charged, deed, flights))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(index: u32) -> Entity {
+        Entity::from_raw_u32(index).unwrap()
+    }
+
+    /// Lifesteal gives back 70 percent cut down: 10 -> 7, 9 -> 6 (6.3); Might to
+    /// Magic gives a member the points drained, and a monster half as budget:
+    /// 11 -> 5.
+    #[test]
+    fn a_drain_goes_back_as_health_points_or_budget() {
+        assert_eq!(returned(true, false, 10), Returned::Health(7));
+        assert_eq!(returned(true, true, 9), Returned::Health(6));
+        assert_eq!(returned(true, false, 0), Returned::Health(0));
+        assert_eq!(returned(false, true, 10), Returned::Points(10));
+        assert_eq!(returned(false, false, 11), Returned::Budget(5));
+    }
+
+    #[test]
+    fn health_and_points_are_measured_in_percent_cut_down() {
+        assert_eq!(health_percent(7, 10), 70);
+        assert_eq!(health_percent(1, 3), 33);
+        assert_eq!(health_percent(10, 10), 100);
+        assert_eq!(points_percent(3, 8), Some(37));
+        assert_eq!(points_percent(0, 8), Some(0));
+        assert_eq!(points_percent(0, 0), None, "no points at all");
+    }
+
+    /// The member lowest in proportion, the first of equals; the whole and the
+    /// dead (no percent) are passed over; none short, none.
+    #[test]
+    fn a_drain_goes_to_the_member_lowest_in_proportion() {
+        let (a, b, c, d) = (id(1), id(2), id(3), id(4));
+        assert_eq!(neediest(&[(a, Some(100)), (b, Some(60)), (c, Some(60)), (d, None)]), Some(b));
+        assert_eq!(neediest(&[(a, Some(100)), (b, Some(100))]), None);
+        assert_eq!(neediest(&[(a, None), (b, None)]), None);
+        assert_eq!(neediest(&[(a, Some(99)), (b, Some(0))]), Some(b));
+        assert_eq!(neediest(&[]), None);
+    }
+
+    /// The strongest eye, the first of equal strength, in the order of the fight.
+    #[test]
+    fn the_strongest_eye_turns_a_spell_back_the_first_of_equals() {
+        let (a, b, c, d) = (id(1), id(2), id(3), id(4));
+        assert_eq!(strongest([(a, 2), (b, 2), (c, 3), (d, 3)]), Some((c, 3)));
+        assert_eq!(strongest([(a, 2), (b, 2)]), Some((a, 2)));
+        assert_eq!(strongest([]), None);
+    }
+
+    /// Only a spell aimed at enemies that neither backfired nor was turned back
+    /// already; turned back it is cast at the least of its power and the eye's.
+    #[test]
+    fn only_a_spell_aimed_at_enemies_not_a_backfire_nor_a_reflection_is_turned_back() {
+        assert!(turns_back(true, false, false));
+        assert!(!turns_back(false, false, false));
+        assert!(!turns_back(true, true, false));
+        assert!(!turns_back(true, false, true));
+        assert_eq!((turned_power(5, 3), turned_power(2, 6), turned_power(4, 4)), (3, 2, 4));
+    }
+
+    /// A burst is against the opponents of its owner's side, the owner's own
+    /// side if the spell backfired, and anyone if it has no owner.
+    #[test]
+    fn a_burst_is_against_the_owners_opponents() {
+        let against = |side, backfired| burst_against(side, backfired);
+        let admits = |recipients: Recipients| {
+            [Stance::Hostile, Stance::Friendly, Stance::Neutral].map(|side| recipients.admits(side))
+        };
+        assert_eq!(admits(against(Some(Stance::Friendly), false)), [true, false, false]);
+        assert_eq!(admits(against(Some(Stance::Friendly), true)), [false, true, false]);
+        assert_eq!(admits(against(Some(Stance::Hostile), false)), [false, true, false]);
+        assert_eq!(admits(against(None, false)), [true, true, true]);
+    }
 }

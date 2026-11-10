@@ -13,7 +13,10 @@ use crate::game::characters::{Gender, Profession, Race};
 use crate::game::hits::definitions::Definitions;
 use crate::game::hits::effects::Strike;
 use crate::game::hits::{self, Act, Deed, Effect, Release};
-use crate::game::magic::casting::{Aim, Cast, MagicChoice, MagicNews, Refusal, Source, UseContext};
+use crate::game::magic::casting::{Cast, MagicChoice, MagicNews, Source, learned_chance};
+use crate::game::magic::may::Refusal;
+use crate::game::magic::reach::Aim;
+use crate::game::magic::roll::Pace;
 use crate::game::magic::{self, LearnedSpells, Strength};
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster;
@@ -307,13 +310,13 @@ fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
     let points = magic::test_points(world, member, Realm::Fire);
     assert!(points >= 1);
     let spell = &world.resource::<Catalogs>().spells[SpellId::ENERGY_BLAST];
-    assert_eq!(magic::fail_chance(world.get::<Character>(member).unwrap(), spell, 1), 0);
+    let pace = Pace { difficulty: crate::game::difficulty::Difficulty::Normal, moment: 0 };
+    assert_eq!(learned_chance(world.get::<Character>(member).unwrap(), spell, 1, pace, false), 0);
     let choice = MagicChoice {
         source: Source::Spell { spell: SpellId::ENERGY_BLAST, power: 1 },
         aim: Aim::Body(foe),
     };
-    let context = UseContext::Combat;
-    world.trigger(Cast { caster: member, spell: SpellId::ENERGY_BLAST, context, choice });
+    world.trigger(Cast { caster: member, spell: SpellId::ENERGY_BLAST, choice });
     world.flush();
     assert_eq!(magic::test_points(world, member, Realm::Fire), points - 1);
     let provoked: Vec<_> = world.resource_mut::<Messages<Provoked>>().drain().collect();
@@ -501,12 +504,7 @@ fn a_cast_refused_in_a_fight_falls_back_to_defending() {
         aim: Aim::Body(foe),
     };
     world.entity_mut(member).insert(Ordered(Action::Magic(choice)));
-    world.trigger(Cast {
-        caster: member,
-        spell: SpellId::ENERGY_BLAST,
-        context: UseContext::Combat,
-        choice,
-    });
+    world.trigger(Cast { caster: member, spell: SpellId::ENERGY_BLAST, choice });
     world.flush();
     let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
     assert!(matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::NotLearned, .. }]));
@@ -638,9 +636,9 @@ fn a_provoked_neutral_group_stands_hostile_and_enters_the_fight() {
 /// A utility cast refused in a fight makes its caster defend.
 #[test]
 fn a_utility_cast_refused_in_a_fight_makes_its_caster_defend() {
-    use crate::game::magic::Utility;
     let (mut app, _, member) = app();
     let world = app.world_mut();
+    teach(world, member, 100, &[SpellId::IDENTIFY_ITEM]);
     let fight = world.spawn(Battle::default()).id();
     let _foe = monster(world, fight, 3.0);
     refresh(world);
@@ -650,7 +648,7 @@ fn a_utility_cast_refused_in_a_fight_makes_its_caster_defend() {
         aim: Aim::Point(Vec3::ZERO),
     };
     world.entity_mut(member).insert(Ordered(Action::Magic(choice)));
-    world.trigger(Utility { caster: member, spell: SpellId::IDENTIFY_ITEM, choice });
+    world.trigger(Cast { caster: member, spell: SpellId::IDENTIFY_ITEM, choice });
     world.flush();
     assert!(world.get::<Ordered>(member).unwrap().defends());
     let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
@@ -731,9 +729,8 @@ fn cast_in(
     world: &mut World,
     member: Entity,
     (spell, choice): (SpellId, MagicChoice),
-    context: UseContext,
 ) -> Vec<MagicNews> {
-    world.trigger(Cast { caster: member, spell, context, choice });
+    world.trigger(Cast { caster: member, spell, choice });
     world.flush();
     world.resource_mut::<Messages<MagicNews>>().drain().collect()
 }
@@ -764,7 +761,7 @@ fn a_late_cast_backfires_and_a_backfired_stamina_tires() {
         world.get_mut::<Vitals>(member).unwrap().stamina = crate::game::characters::Pool::full(100);
         magic::test_set_points(world, member, Realm::Divine, 100);
         let choice = spell_choice(SpellId::STAMINA, 7, Aim::Body(member));
-        let news = cast_in(world, member, choice, UseContext::Combat);
+        let news = cast_in(world, member, choice);
         assert!(
             matches!(news.first(), Some(MagicNews::Done(report)) if report.outcome == magic::Outcome::Backfired),
             "{news:?}"
@@ -826,7 +823,7 @@ fn silence_stops_all_but_alchemy_in_the_hands_of_an_alchemist() {
     world.get_mut::<Vitals>(member).unwrap().afflict(Condition::Silenced, Lasting::Rounds(9));
     let casts = |world: &mut World, spell| {
         let choice = spell_choice(spell, 1, Aim::Body(member));
-        let news = cast_in(world, member, choice, UseContext::World);
+        let news = cast_in(world, member, choice);
         matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::Silenced, .. }])
     };
     assert!(casts(world, SpellId::HEAL_WOUNDS), "no Alchemy, no voice");
@@ -844,9 +841,11 @@ fn a_pooled_item_cannot_be_used_in_a_fight() {
     let item = world.spawn(crate::game::items::Pooled(party)).id();
     let choice =
         (SpellId::HEAL_WOUNDS, MagicChoice { source: Source::Item(item), aim: Aim::Body(member) });
-    let news = cast_in(world, member, choice, UseContext::Combat);
+    let fight = world.spawn(Battle::default()).id();
+    let news = cast_in(world, member, choice);
     assert!(matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::CannotUse, .. }]));
-    let news = cast_in(world, member, choice, UseContext::World);
+    world.despawn(fight);
+    let news = cast_in(world, member, choice);
     assert!(!matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::CannotUse, .. }]));
 }
 
@@ -861,7 +860,7 @@ fn a_monsters_cast_tires_it() {
     refresh(world);
     let source = Source::Innate { spell: SpellId::HEAL_WOUNDS, power: 2, budget: 100, level: 5 };
     let choice = (SpellId::HEAL_WOUNDS, MagicChoice { source, aim: Aim::Body(caster) });
-    let news = cast_in(world, caster, choice, UseContext::Combat);
+    let news = cast_in(world, caster, choice);
     assert!(matches!(news.as_slice(), [MagicNews::Done(_)]), "{news:?}");
     assert_eq!(world.get::<Vitals>(caster).unwrap().stamina.current, 100 - 3);
 }
@@ -887,7 +886,7 @@ fn a_group_spell_reaches_the_whole_group_however_far() {
     let far = monster_in(world, fight, 40.0, group);
     refresh(world);
     let choice = spell_choice(SpellId::ENERGY_BLAST, 1, Aim::Body(near));
-    cast_in(world, member, choice, UseContext::Combat);
+    cast_in(world, member, choice);
     assert_eq!(world.get::<Vitals>(near).unwrap().health.current, 15);
     assert_eq!(world.get::<Vitals>(far).unwrap().health.current, 15, "forty metres away");
 }
@@ -914,7 +913,7 @@ fn a_drain_gives_back_what_a_guardian_angel_took() {
     lay(world, foe, SpellId::GUARDIAN_ANGEL, 10, 100);
     world.get_mut::<Vitals>(member).unwrap().health.current = 1;
     let choice = spell_choice(SpellId::LIFESTEAL, 1, Aim::Body(foe));
-    cast_in(world, member, choice, UseContext::Combat);
+    cast_in(world, member, choice);
     assert_eq!(world.get::<Vitals>(foe).unwrap().health.current, 20, "the angel took it");
     assert_eq!(world.get::<Vitals>(member).unwrap().health.current, 1 + 7);
 }
@@ -991,7 +990,7 @@ fn an_instruments_toll_is_scaled_like_other_fatigue() {
     for (music, played) in [(125, true), (0, false)] {
         world.get_mut::<Character>(member).unwrap().skill_points[Skill::Music] = music;
         world.get_mut::<Vitals>(member).unwrap().stamina = Pool::full(100);
-        let news = cast_in(world, member, choice, UseContext::World);
+        let news = cast_in(world, member, choice);
         let badly =
             matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::PlayedBadly, .. }]);
         assert_eq!(badly, !played, "{news:?}");

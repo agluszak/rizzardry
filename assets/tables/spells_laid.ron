@@ -24,6 +24,13 @@
 //   death_floor       a death spell: the difficulty it takes off, as well as
 //                     the three an all-enemies spell loses (retail
 //                     `GetSpellDifficulty`)
+//   working           a utility spell: what it does once it comes off, besides
+//                     or instead of landing on bodies (Identify, SetPortal,
+//                     ReturnToPortal, Charm, Mindread, Lure, Summon, Knock,
+//                     DivineTrap); it is cast like any other until then
+//   harder_on_oneself the figure added to its failure chance when a member casts
+//                     it on themselves, after the round's pace (retail
+//                     `ExecuteCharacterSpellCast`, `Magic.cpp:2656-2658`)
 //   laid              what it adds to its bearer while laid, at the power and
 //                     boost it was cast at (retail `RebuildPartyEffectBlock`,
 //                     `RebuildMonsterDerivedStats`):
@@ -52,12 +59,16 @@
     CHARM: (
         aimed_at_enemies: false,
         can_backfire: true,
+        working: Charm,
     ),
     STAMINA: (
         can_backfire: true,
     ),
     CURE_LESSER_COND: (
         can_backfire: true,
+    ),
+    DIVINE_TRAP: (
+        working: DivineTrap,
     ),
     DRACON_BREATH: (
         personal: true,
@@ -69,6 +80,9 @@
     ),
     GUARDIAN_ANGEL: (
         personal: true,
+    ),
+    IDENTIFY_ITEM: (
+        working: Identify,
     ),
     MISSILE_SHIELD: (
         laid: (
@@ -91,8 +105,12 @@
     CURE_PARALYSIS: (
         can_backfire: true,
     ),
+    HYPNOTIC_LURE: (
+        working: Lure,
+    ),
     KNOCK_KNOCK: (
         can_backfire: true,
+        working: Knock,
     ),
     MAGIC_SCREEN: (
         laid: (
@@ -101,6 +119,7 @@
     ),
     MINDREAD: (
         aimed_at_enemies: false,
+        working: Mindread,
     ),
     REST_ALL: (
         can_backfire: true,
@@ -151,6 +170,9 @@
             ),
         ),
     ),
+    SUMMON_ELEMENTAL: (
+        working: Summon,
+    ),
     SUPERMAN: (
         personal: true,
         laid: (
@@ -172,8 +194,15 @@
     INSTANT_DEATH: (
         death_floor: 2,
     ),
+    RETURN_TO_PORTAL: (
+        working: ReturnToPortal,
+    ),
     SANE_MIND: (
         can_backfire: true,
+        harder_on_oneself: 50,
+    ),
+    SET_PORTAL: (
+        working: SetPortal,
     ),
     TOXIC_CLOUD: (
         only_in_a_fight: true,
