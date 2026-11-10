@@ -15,7 +15,7 @@ use enumset::EnumSet;
 use crate::content::characters::{Attribute, Gender, Profession, Race, Realm, Skill};
 use crate::content::items::{
     AttackEffects, AttackMode, Dice, EquipClass, ItemCatalog, ItemDefinition, ItemId, ItemKind,
-    QuantityKind, Recipe,
+    QuantityKind, Recipe, WEAPONS,
 };
 use crate::content::species::{MonsterKind, Reach};
 use crate::game::actors::{Attributes, Refit};
@@ -175,7 +175,18 @@ pub struct Weapon {
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Launcher {
     pub damage: i32,
+    /// It fires a thrown weapon held in the other hand too, which then
+    /// strikes nothing of its own.
+    pub fires_weapons: bool,
 }
+
+/// What may be held beside it as its ammunition.
+#[derive(Component, Clone, Debug, PartialEq, Eq)]
+pub struct Takes(pub Vec<crate::content::items::Ammunition>);
+
+/// The kind whose shots reload it.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LoadedBy(pub ItemKind);
 
 /// It is shot from a launcher or thrown: what it adds to the launcher's
 /// dice, effects, slaying and rating, and whether it survives the shot.
@@ -376,17 +387,20 @@ pub fn shape(item: &mut EntityCommands, definition: &ItemDefinition) {
     if let Some(weapon) = weapon(definition) {
         item.insert(weapon);
     }
-    // The guns and bows that shoot what the other hand holds (retail
-    // `ItemHasSingledOutGenericName`).
-    if matches!(
-        definition.kind,
-        ItemKind::LONGBOW
-            | ItemKind::CROSSBOW
-            | ItemKind::SLING
-            | ItemKind::GREATBOW
-            | ItemKind::OMNIGUN
-    ) {
-        item.insert(Launcher { damage: definition.damage.base * 10 });
+    // What its kind takes and how it is loaded, from the weapons table.
+    let row = WEAPONS.kind(definition.kind);
+    if let Some(row) = row.filter(|row| row.launcher) {
+        item.insert(Launcher {
+            damage: definition.damage.base * 10,
+            fires_weapons: row.fires_weapons,
+        });
+    }
+    let takes = WEAPONS.takes(definition.id, definition.kind);
+    if !takes.is_empty() {
+        item.insert(Takes(takes.to_vec()));
+    }
+    if let Some(ammunition) = row.and_then(|row| row.loaded_by) {
+        item.insert(LoadedBy(ammunition));
     }
     if matches!(definition.class, EquipClass::Ammunition | EquipClass::ThrownWeapon) {
         item.insert(Missile {
@@ -443,19 +457,13 @@ fn weapon(definition: &ItemDefinition) -> Option<Weapon> {
     };
     // Strength helps what is swung, by half what is only thrown, lashed or
     // shot, and not at all the guns among those.
+    let row = WEAPONS.kind(definition.kind);
     let strength = if !definition
         .attack_modes
         .is_subset(AttackMode::Throw | AttackMode::Lash | AttackMode::Shoot)
     {
         Strength::Full
-    } else if matches!(
-        definition.kind,
-        ItemKind::POWER_GLOVE
-            | ItemKind::PHASER
-            | ItemKind::MUSKET
-            | ItemKind::OMNIGUN
-            | ItemKind::ROCKET_LAUNCHER
-    ) {
+    } else if row.is_some_and(|row| row.unaided) {
         Strength::None
     } else {
         Strength::Half
@@ -472,8 +480,8 @@ fn weapon(definition: &ItemDefinition) -> Option<Weapon> {
         initiative: definition.damage_bonus,
         extra_swings: definition.extra_swings,
         strength,
-        single_swing: definition.kind == ItemKind::ROCKET_LAUNCHER,
-        sling: definition.kind == ItemKind::SLING,
+        single_swing: row.is_some_and(|row| row.single_swing),
+        sling: row.is_some_and(|row| row.sling),
         casts: definition.spell.is_some(),
         shots: definition.quantity == QuantityKind::Shots,
     })
@@ -808,56 +816,24 @@ pub fn fits<'a>(
     }
 }
 
-/// Guns and what loads them (retail `g_compatible_partner_pairs`).
-const LOADED_BY: [(ItemKind, ItemKind); 5] = [
-    (ItemKind::MUSKET, ItemKind::POWDER_SHOT),
-    (ItemKind::PHASER, ItemKind::POWER_PACK),
-    (ItemKind::POWER_GLOVE, ItemKind::POWER_PACK),
-    (ItemKind::ROCKET_LAUNCHER, ItemKind::ROCKET),
-    (ItemKind::FLAME_THROWER, ItemKind::FUEL),
-];
-
-/// What loads an item of this kind (retail `GetItemMergeKind`).
-pub fn loaded_by(kind: ItemKind) -> Option<ItemKind> {
-    LOADED_BY.iter().find(|&&(gun, _)| gun == kind).map(|&(_, ammunition)| ammunition)
-}
-
 /// What the rules of holding things together read of an item.
 #[derive(QueryData)]
 pub struct Fit {
     pub item: &'static Item,
     pub kind: &'static Kind,
     pub wear: &'static Wearable,
+    pub takes: Option<&'static Takes>,
 }
 
-/// Whether `other` may be held with the ranged weapon `ranged` (retail
-/// `CompatiblePartnerItems`): bows, crossbows and slings with their
-/// missiles, guns with what loads them, and each omnigun (by which one it
-/// is) with what it has learnt to fire.
+/// Whether `other` may be held with the ranged weapon `ranged` as what it
+/// shoots (retail `CompatiblePartnerItems`): one of the kinds it takes.
 pub fn partners(ranged: &FitItem, other: &FitItem) -> bool {
-    use ItemKind as K;
-    let kind = other.kind.0;
-    let dagger = other.wear.class == EquipClass::ThrownWeapon && kind == K::DAGGER;
-    let small = matches!(kind, K::SLING_STONE | K::POWDER_SHOT);
-    let stars = matches!(kind, K::DARTS | K::SHURIKEN | K::THROWING_SHURIKEN);
-    match ranged.kind.0 {
-        K::LONGBOW | K::GREATBOW => kind == K::ARROW,
-        K::CROSSBOW => kind == K::QUARREL,
-        K::SLING => kind == K::SLING_STONE,
-        K::POWER_GLOVE | K::PHASER | K::MUSKET => {
-            (u8::from(other.wear.class) > u8::from(EquipClass::RangedWeapon)
-                || ranged.wear.reach == other.wear.reach)
-                && loaded_by(ranged.kind.0).is_none_or(|loads| loads == kind)
-        }
-        K::OMNIGUN => match ranged.item.0.0 {
-            599 => small,
-            600 | 601 => small || kind == K::DARTS,
-            602..=605 => small || stars || dagger,
-            606..=610 => small || stars || dagger || matches!(kind, K::ARROW | K::QUARREL),
-            _ => false,
-        },
-        _ => false,
-    }
+    ranged.takes.is_some_and(|takes| {
+        takes.0.iter().any(|ammunition| {
+            ammunition.kind == other.kind.0
+                && ammunition.class.is_none_or(|class| class == other.wear.class)
+        })
+    })
 }
 
 /// Whether two items can share a weapon set (retail `CanHoldItemsTogether`):
@@ -1214,7 +1190,7 @@ fn swap(
     event: On<Swap>,
     items: Items,
     fit: Query<Fit>,
-    things: Query<(&Kind, Option<&Cursed>, Has<Charges>)>,
+    things: Query<(&Kind, Option<&Cursed>, Has<Charges>, Option<&LoadedBy>)>,
     members: Query<(&Character, &Vitals), With<PartyMember>>,
     mut refused: MessageWriter<Refused>,
     mut commands: Commands,
@@ -1262,15 +1238,16 @@ fn swap(
 
 /// Whether `ammunition` is what loads `gun`.
 fn loads(
-    things: &Query<(&Kind, Option<&Cursed>, Has<Charges>)>,
+    things: &Query<(&Kind, Option<&Cursed>, Has<Charges>, Option<&LoadedBy>)>,
     gun: Entity,
     ammunition: Entity,
 ) -> bool {
-    let (Ok((gun, _, true)), Ok((ammunition, ..))) = (things.get(gun), things.get(ammunition))
+    let (Ok((_, _, true, Some(loaded_by))), Ok((ammunition, ..))) =
+        (things.get(gun), things.get(ammunition))
     else {
         return false;
     };
-    loaded_by(gun.0) == Some(ammunition.0)
+    loaded_by.0 == ammunition.0
 }
 
 /// The hand meets something a member carries: a slot they wear in, or one
@@ -1283,7 +1260,7 @@ fn carry(
     held: Option<Entity>,
     items: &Items,
     fit: &Query<Fit>,
-    things: &Query<(&Kind, Option<&Cursed>, Has<Charges>)>,
+    things: &Query<(&Kind, Option<&Cursed>, Has<Charges>, Option<&LoadedBy>)>,
     members: &Query<(&Character, &Vitals), With<PartyMember>>,
     commands: &mut Commands,
 ) -> Result<(), Refusal> {
@@ -1313,7 +1290,8 @@ fn carry(
     // A cursed thing worn in use holds on while its wearer lives, and the
     // party learns of it by trying.
     let held_fast = |worn: Entity, slot: EquipSlot, commands: &mut Commands| {
-        let cursed = things.get(worn).is_ok_and(|(_, curse, _)| curse.is_some_and(|c| !c.released));
+        let cursed =
+            things.get(worn).is_ok_and(|(_, curse, ..)| curse.is_some_and(|c| !c.released));
         if cursed && slot.is_active() && !vitals.is_dead() {
             commands.entity(worn).entry::<Known>().and_modify(|mut known| known.curse = true);
             return Err(Refusal::Cursed);

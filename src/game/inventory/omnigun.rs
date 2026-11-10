@@ -4,7 +4,7 @@
 use bevy::prelude::*;
 
 use crate::content::characters::{Profession, Trait};
-use crate::content::items::{ItemId, ItemKind};
+use crate::content::items::{ItemKind, WEAPONS};
 use crate::game::characters::Character;
 use crate::game::data::Catalogs;
 use crate::game::items::{
@@ -15,26 +15,6 @@ use crate::game::rng::GameRng;
 
 pub(crate) fn plugin(app: &mut App) {
     app.add_observer(advance);
-}
-
-/// The omnigun tier a Gadgeteer level earns: the item and its tier above the
-/// first (1 to 11), none below level 3.
-pub fn tier(level: u8) -> Option<(ItemId, usize)> {
-    let tier = match level {
-        0..=2 => return None,
-        3 | 4 => 1,
-        5 | 6 => 2,
-        7 | 8 => 3,
-        9 | 10 => 4,
-        11 | 12 => 5,
-        13..=15 => 6,
-        16 | 17 => 7,
-        18..=20 => 8,
-        21 | 22 => 9,
-        23..=25 => 10,
-        _ => 11,
-    };
-    Some((ItemId(599 + tier as u16), tier))
 }
 
 /// A member's advancement has just been committed (retail
@@ -74,7 +54,7 @@ fn advance(
         |tier| ItemNews::Omnigun { member: character.name.clone(), gender: character.gender, tier };
     let level = character.profession_levels[Profession::Gadgeteer];
     if level == 1 {
-        let definition = &content.items[ItemId(599)];
+        let definition = &content.items[WEAPONS.omnigun.first];
         if carries(member).is_some() {
             return;
         }
@@ -95,7 +75,7 @@ fn advance(
         news.write(told(0));
         return;
     }
-    let Some((id, tier)) = tier(level) else { return };
+    let Some((id, tier)) = WEAPONS.omnigun.tier(level) else { return };
     let current = carries(member)
         .or_else(|| items.held(party).filter(omnigun))
         .or_else(|| roster.iter().find_map(carries))
