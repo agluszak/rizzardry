@@ -138,6 +138,7 @@ fn damage_party(
     mut rng: ResMut<GameRng>,
     mut laying: crate::game::actors::Laying,
     mut damage: MessageWriter<Damaged>,
+    mut commands: Commands,
 ) {
     for entity in roster.iter() {
         let mut member = members.get_mut(entity).unwrap();
@@ -155,6 +156,7 @@ fn damage_party(
             );
         }
     }
+    commands.trigger(crate::game::characters::Settle);
 }
 
 fn drink_fountain(

@@ -63,8 +63,12 @@ impl Pace {
 
 /// Game time has passed, at some pace: so many stamina ticks and aging
 /// ticks. Exploring and camping say so as the clock runs, a fight as each
-/// round ends. Whatever time wears on reacts to it.
-#[derive(Message, Clone, Copy, Debug)]
+/// round ends. Whatever time wears on reacts to it: the party's bodies
+/// ([`pass_time`]) and a stance set on a group; the spells laid wear
+/// separately ([`Aged`]).
+///
+/// [`Aged`]: crate::game::actors::spells::Aged
+#[derive(Event, Clone, Copy, Debug)]
 pub struct Elapsed {
     pub ticks: Ticks,
     pub pace: Pace,
@@ -72,14 +76,11 @@ pub struct Elapsed {
 
 /// Time passes for every actor: a party member's poison bites, their
 /// disease may strike, and they recover as the pace allows; everyone's
-/// conditions run their course. A member weakened by disease is refitted.
-/// The spells laid wear separately ([`spells::age`]), once a round's last
-/// pulses have landed.
-///
-/// [`spells::age`]: crate::game::actors::spells::age
+/// conditions run their course. A member weakened by disease is refitted, and
+/// a death is settled.
 #[allow(clippy::type_complexity)]
 pub fn pass_time(
-    mut elapsed: MessageReader<Elapsed>,
+    elapsed: On<Elapsed>,
     mut actors: Query<(
         Entity,
         &mut Vitals,
@@ -93,49 +94,47 @@ pub fn pass_time(
     mut commands: Commands,
     mut damaged: MessageWriter<crate::game::hits::Damaged>,
 ) {
-    use crate::game::characters::{Condition, Lasting, Sickness};
-    for &Elapsed { ticks, pace } in elapsed.read() {
-        for (entity, mut vitals, attributes, sheet, member) in &mut actors {
-            // A character without a seat is not carried along by the party's time.
-            if sheet.is_some() && !member {
-                continue;
+    use crate::game::characters::{Condition, Lasting, Settle, Sickness};
+    let Elapsed { ticks, pace } = *elapsed.event();
+    for (entity, mut vitals, attributes, sheet, member) in &mut actors {
+        // A character without a seat is not carried along by the party's time.
+        if sheet.is_some() && !member {
+            continue;
+        }
+        if let Some((mut profile, known, mut pool)) = sheet {
+            // Poison bites first, past any Guardian Angel.
+            let still = matches!(pace, Pace::Still | Pace::Camping);
+            let poison = laying.absorb(entity, vitals.poison_damage(ticks.aging, still));
+            let lost = vitals.hurt(poison);
+            if lost > 0 {
+                let died = vitals.is_dead();
+                damaged.write(crate::game::hits::Damaged { body: entity, amount: lost, died });
+                commands.trigger(Settle);
             }
-            if let Some((mut profile, known, mut pool)) = sheet {
-                // Poison bites first, past any Guardian Angel.
-                let still = matches!(pace, Pace::Still | Pace::Camping);
-                let poison = laying.absorb(entity, vitals.poison_damage(ticks.aging, still));
-                let lost = vitals.hurt(poison);
-                if lost > 0 {
-                    let died = vitals.is_dead();
-                    damaged.write(crate::game::hits::Damaged { body: entity, amount: lost, died });
-                }
-                let magic = (known, &mut *pool, &content.spells);
-                match elapse(&mut profile, &mut vitals, attributes, ticks, pace, &mut rng, magic) {
-                    // The point lost takes health and stamina with it, and
-                    // may kill.
-                    Some(Sickness::Weakened(lost)) => {
-                        let less = attributes.weakened(lost);
-                        let had = vitals.health.current;
-                        if vitals.weaken(profile.max_hp(&less), profile.max_stamina(&less)) {
-                            let fell = crate::game::hits::Damaged {
-                                body: entity,
-                                amount: had,
-                                died: true,
-                            };
-                            damaged.write(fell);
-                        }
-                        commands.trigger(crate::game::actors::Refit { entity })
+            let magic = (known, &mut *pool, &content.spells);
+            match elapse(&mut profile, &mut vitals, attributes, ticks, pace, &mut rng, magic) {
+                // The point lost takes health and stamina with it, and
+                // may kill.
+                Some(Sickness::Weakened(lost)) => {
+                    let less = attributes.weakened(lost);
+                    let had = vitals.health.current;
+                    if vitals.weaken(profile.max_hp(&less), profile.max_stamina(&less)) {
+                        let fell =
+                            crate::game::hits::Damaged { body: entity, amount: had, died: true };
+                        damaged.write(fell);
+                        commands.trigger(Settle);
                     }
-                    // A slowing without end ends Haste.
-                    Some(Sickness::Condition(Condition::Slowed)) => {
-                        laying.slow(entity, Lasting::Indefinite);
-                    }
-                    _ => {}
+                    commands.trigger(crate::game::actors::Refit { entity })
                 }
+                // A slowing without end ends Haste.
+                Some(Sickness::Condition(Condition::Slowed)) => {
+                    laying.slow(entity, Lasting::Indefinite);
+                }
+                _ => {}
             }
-            if ticks.aging > 0 && vitals.conditions.any_timed() {
-                vitals.age_conditions(ticks.aging, &mut rng);
-            }
+        }
+        if ticks.aging > 0 && vitals.conditions.any_timed() {
+            vitals.age_conditions(ticks.aging, &mut rng);
         }
     }
 }

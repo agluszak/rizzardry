@@ -23,7 +23,7 @@ use crate::content::items::{AttackEffect, AttackEffects, AttackMode, Dice};
 use crate::content::species::Reach;
 use crate::content::spells::SpellId;
 use crate::game::actors::{Arm, Attacks, Laying, Places, Stance as Standing, reaches};
-use crate::game::characters::{Condition, Practise, Vitals};
+use crate::game::characters::{Condition, Practise, Settle, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::hits::definitions::{Blow, Definitions};
@@ -792,11 +792,7 @@ pub(super) fn strike(
     obstacles: WorldObstacles,
     (content, definitions, difficulty): (Res<Catalogs>, Res<Definitions>, Res<Difficulty>),
     mut rng: ResMut<GameRng>,
-    (mut news, mut provocations, mut damaged): (
-        MessageWriter<CombatNews>,
-        MessageWriter<Provocation>,
-        MessageWriter<Damaged>,
-    ),
+    (mut news, mut damaged): (MessageWriter<CombatNews>, MessageWriter<Damaged>),
 ) {
     let Strike { actor, fights } = *strike;
     let (fight, mut round, mut pause, combatants) = fight.into_inner();
@@ -851,8 +847,7 @@ pub(super) fn strike(
         .get(actor)
         .is_ok_and(|body| body.member && !body.vitals.conditions.has(Condition::Turncoat))
     {
-        provocations.write(Provocation(attack.target));
-        commands.run_system_cached(hostility::take_offence);
+        commands.trigger(Provocation { monster: attack.target });
     }
     let how = match attack.arm.word {
         Some((word, named)) => Announcement::Monster { word, mode: attack.mode, named },
@@ -902,6 +897,7 @@ pub(super) fn strike(
     }
     log.scorch(&mut commands);
     damaged.write_batch(log.damaged);
+    commands.trigger(Settle);
     for (member, skill, usage) in log.practised {
         commands.trigger(Practise { member, skill, usage });
     }

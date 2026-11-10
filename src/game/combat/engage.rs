@@ -30,7 +30,7 @@ use avian3d::prelude::Position;
 
 /// Monsters coming into the fight, in placement order.
 #[derive(Message)]
-pub(super) struct Engaged(Vec<Entity>);
+pub(super) struct Engaged(pub(super) Vec<Entity>);
 
 /// While a fight runs, a fighting hostile group alerts the groups of its
 /// faction whose leaders see its own. A group's leader is its first living
@@ -93,7 +93,7 @@ pub(super) fn engage(
     (sight, laid): (Sight, crate::game::actors::Laid),
     party: Single<(Entity, &PartyRoster)>,
     level: PlayedLevel,
-    mut provocations: MessageReader<hostility::Provocation>,
+    mut provocations: MessageReader<hostility::Provoked>,
     content: If<Res<Catalogs>>,
     definitions: Res<crate::game::hits::definitions::Definitions>,
     mut engaged: MessageWriter<Engaged>,
@@ -101,7 +101,7 @@ pub(super) fn engage(
 ) {
     let provoked: Vec<Entity> = provocations
         .read()
-        .filter_map(|&hostility::Provocation(m)| Some(monsters.get(m).ok()?.6?.0))
+        .filter_map(|&hostility::Provoked(m)| Some(monsters.get(m).ok()?.6?.0))
         .collect();
     let running = !battles.is_empty();
     let (the_party, roster) = *party;

@@ -1307,25 +1307,34 @@ pub(crate) fn practise(
     }
 }
 
-/// Whoever was hurt to death dies: a Valkyrie cheats it
-/// ([`Vitals::cheats_death`]) in whatever fight is on; anyone else loses
-/// what lasted on them, keeps the side they died on, and is [`Dead`]. Every
-/// way of being hurt says so with a [`Damaged`], which is all this reads.
+/// Someone may have been hurt to death: deaths are settled. Said by whatever
+/// hurt anyone, right after it did ([`Damaged`] tells the screen what was
+/// lost).
 ///
 /// [`Damaged`]: crate::game::hits::Damaged
+#[derive(Event, Clone, Copy, Debug)]
+pub struct Settle;
+
+/// Deaths are settled: said once whoever was hurt to death is [`Dead`], for
+/// whatever follows from them (the party's defeat).
+#[derive(Event, Clone, Copy, Debug)]
+pub struct Settled;
+
+/// Whoever was hurt to death dies: a Valkyrie cheats it
+/// ([`Vitals::cheats_death`]) in whatever fight is on; anyone else loses
+/// what lasted on them, keeps the side they died on, and is [`Dead`].
 pub fn settle_deaths(
+    _: On<Settle>,
     mut commands: Commands,
-    mut damaged: MessageReader<crate::game::hits::Damaged>,
     mut bodies: Query<
-        (&mut Vitals, &mut crate::game::world::hostility::Side, Option<&Character>),
+        (Entity, &mut Vitals, &mut crate::game::world::hostility::Side, Option<&Character>),
         Without<Dead>,
     >,
     fight: Option<Single<Entity, With<crate::game::combat::Battle>>>,
     mut rng: ResMut<GameRng>,
 ) {
     let fight = fight.map(|fight| *fight);
-    for hurt in damaged.read().filter(|hurt| hurt.died) {
-        let Ok((mut vitals, mut side, profile)) = bodies.get_mut(hurt.body) else { continue };
+    for (body, mut vitals, mut side, profile) in &mut bodies {
         if !vitals.is_dead()
             || profile.is_some_and(|profile| vitals.cheats_death(profile, fight, &mut rng))
         {
@@ -1333,8 +1342,9 @@ pub fn settle_deaths(
         }
         side.die(&vitals);
         vitals.die();
-        commands.entity(hurt.body).insert(Dead);
+        commands.entity(body).insert(Dead);
     }
+    commands.trigger(Settled);
 }
 
 /// What a member regains of health and stamina in parts not yet whole

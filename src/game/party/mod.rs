@@ -48,14 +48,10 @@ impl Plugin for PartyPlugin {
         .add_observer(formation::retake_seat)
         .add_systems(
             Update,
-            (
-                // A death settles before travel can retire the level it happened on.
-                crate::game::characters::settle_deaths.before(GameplaySet::LevelActivation),
-                body::look_around
-                    .after(GameplaySet::LevelActivation)
-                    .before(GameplaySet::Combat)
-                    .run_if(level_active),
-            ),
+            body::look_around
+                .after(GameplaySet::LevelActivation)
+                .before(GameplaySet::Combat)
+                .run_if(level_active),
         )
         // Tnua and Avian step on the fixed timestep; movement input feeds
         // them on the same step.
@@ -133,7 +129,8 @@ pub fn average_level(levels: impl IntoIterator<Item = u8>) -> u32 {
 }
 
 /// Hurt a member past any Guardian Angel on them
-/// ([`crate::game::characters::Vitals::hurt`]) and report what it cost them. Death is settled afterwards, as every death is.
+/// ([`crate::game::characters::Vitals::hurt`]) and report what it cost them.
+/// Whoever hurt them settles the death ([`crate::game::characters::Settle`]).
 pub fn damage_member(
     member: Entity,
     vitals: &mut crate::game::characters::Vitals,
@@ -212,8 +209,9 @@ mod tests {
         let reported: Vec<_> = world.resource_mut::<Messages<Damaged>>().drain().collect();
         assert_eq!(reported, [Damaged { body: first, amount: 10, died: true }]);
         // Settling the death gives up the member's seat.
-        world.write_message(Damaged { body: first, amount: 10, died: true });
-        world.run_system_once(crate::game::characters::settle_deaths).unwrap();
+        world.add_observer(crate::game::characters::settle_deaths);
+        world.trigger(crate::game::characters::Settle);
+        world.flush();
         let formation = world.query::<&formation::Formation>().single(&world).unwrap();
         assert!(formation.row_of(first).is_none(), "the dead give up their seat");
     }

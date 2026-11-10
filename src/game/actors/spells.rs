@@ -14,7 +14,6 @@ use enum_map::EnumMap;
 use super::Refit;
 use crate::content::characters::{Attribute, Realm};
 use crate::content::spells::SpellId;
-use crate::game::party::recovery::Elapsed;
 
 /// A spell laid: which, and the power and boost it was cast at. Razor Cloak
 /// and Eye for an Eye lose a point of power each time they answer.
@@ -390,17 +389,17 @@ pub(super) fn lifted(lifted: On<Discard<LaidOn>>, bearers: Query<&LaidOn>, mut c
     refit_bearer(lifted.entity, &bearers, &mut commands);
 }
 
+/// Time has worn on the spells laid, by so many aging ticks. After the
+/// time that passed ([`Elapsed`](crate::game::party::recovery::Elapsed)): a round's last pulses land between.
+#[derive(Event, Clone, Copy, Debug)]
+pub struct Aged {
+    pub ticks: u32,
+}
+
 /// Every spell laid lasts less by the aging ticks that passed; one with no
 /// turns left is lifted.
-pub fn age(
-    mut elapsed: MessageReader<Elapsed>,
-    mut spells: Query<(Entity, &mut Turns)>,
-    mut commands: Commands,
-) {
-    let ticks: u32 = elapsed.read().map(|elapsed| elapsed.ticks.aging).sum();
-    if ticks == 0 {
-        return;
-    }
+pub fn age(aged: On<Aged>, mut spells: Query<(Entity, &mut Turns)>, mut commands: Commands) {
+    let ticks = aged.ticks;
     for (spell, mut turns) in &mut spells {
         turns.0 -= ticks.min(turns.0);
         if turns.0 == 0 {
@@ -468,7 +467,7 @@ mod tests {
     fn laying_spending_and_ageing_through_the_world() {
         use bevy::ecs::system::RunSystemOnce;
         let mut world = World::new();
-        world.init_resource::<Messages<Elapsed>>();
+        world.add_observer(age);
         let bearer = world.spawn_empty().id();
         let lay = |world: &mut World, spell, power, turns| {
             let laid = world
@@ -495,9 +494,7 @@ mod tests {
         assert_eq!(absorb(&mut world, 3), 3);
         assert_eq!(absorb(&mut world, 3), 3, "the angel is gone");
         let ticks = crate::game::time::Ticks { stamina: 0, aging: 2 };
-        let pace = crate::game::party::recovery::Pace::Still;
-        world.write_message(Elapsed { ticks, pace });
-        world.run_system_once(age).unwrap();
+        world.trigger(Aged { ticks: ticks.aging });
         world.flush();
         let on = world
             .run_system_once(move |laid: Laid| {
