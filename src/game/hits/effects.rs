@@ -97,7 +97,8 @@ pub struct Log {
     pub damaged: Vec<Damaged>,
     /// The dead brought back.
     pub raised: Vec<Entity>,
-    /// The health plain harm took, which a leeching spell gives back.
+    /// The health plain harm would take, before a Guardian Angel, which a
+    /// leeching spell gives back.
     pub harm: u32,
     /// What heat took of the party's items: an item, and how many of it.
     pub burnt: Vec<(Entity, u16)>,
@@ -185,6 +186,7 @@ pub fn land(
         let rolled = spec
             .roll
             .map_or(0, |roll| definitions::roll(roll, strike.strength, strike.blow.as_ref(), rng));
+        let rolled = if spec.half { rolled / 2 } else { rolled };
         let alive = !body.vitals.is_dead();
         previous = Some(match defend(&spec, rolled, strike.strength, body, rules, rng, log) {
             Ok(magnitude) => {
@@ -301,19 +303,16 @@ fn maxima(
     character.max_points(attributes, learned, &content.spells)
 }
 
-/// Damage dealt and its coupled consequences: it is told of, plain harm
-/// counts toward a leech and may wake a sleeper.
+/// Damage dealt and its coupled consequences: it is told of, and plain harm
+/// may wake a sleeper.
 fn dealt(body: &mut BodyItem, amount: u32, harm: bool, rng: &mut GameRng, log: &mut Log) {
     let victim = body.entity;
     log.effects.push(Effect::Damaged { victim, amount });
     if amount > 0 {
         log.damaged.push(Damaged { body: victim, amount, died: body.vitals.is_dead() });
     }
-    if harm {
-        log.harm += amount;
-        if amount > 0 && !body.vitals.is_dead() {
-            body.vitals.conditions.wake_on_hit(body.attributes[Attribute::Senses], rng);
-        }
+    if harm && amount > 0 && !body.vitals.is_dead() {
+        body.vitals.conditions.wake_on_hit(body.attributes[Attribute::Senses], rng);
     }
 }
 
@@ -335,6 +334,10 @@ fn apply(
     };
     let effect = match spec.kind {
         K::Harm => {
+            // A leech gives back the magnitude the victim's health could
+            // bear, before a Guardian Angel takes any (retail
+            // `DrainTargetsLife`, `Magic Effects.cpp:1626-1650`).
+            log.harm += magnitude.min(body.vitals.health.current);
             let through = laying.absorb(victim, magnitude);
             let lost = body.vitals.hurt(through);
             dealt(body, lost, true, rng, log);
@@ -461,7 +464,9 @@ fn apply(
         }
         // The party's own: its purse, and its lasting spells.
         K::LoseGold | K::Dispel => return Outcome::Missed,
-        K::Prismic { .. } => unreachable!("Prismic is picked before it is applied"),
+        K::Prismic { .. } | K::AfflictAny(_) => {
+            unreachable!("an either-or is picked before it is applied")
+        }
         K::SpellPurify | K::SpellEnchant | K::SpellPrismic => {
             unreachable!("a spell's own effect is made plain with its effects")
         }

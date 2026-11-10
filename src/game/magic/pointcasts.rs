@@ -71,6 +71,22 @@ fn release_lured(
     }
 }
 
+/// How a monster answers a lure (retail `MonsterResistsSpellEffect`): an
+/// undead one always resists; the rest save in the Mental realm, their level
+/// against the lure's strength, unscaled by difficulty.
+fn lure_response(
+    kind: Option<MonsterKind>,
+    (level, resistance, against): (u32, i32, u32),
+    rng: &mut GameRng,
+) -> LureResponse {
+    let chance = crate::game::hits::defences::condition_chance(level, resistance, against, 0);
+    if kind == Some(MonsterKind::Undead) || crate::game::hits::defences::save_roll(rng, chance) {
+        LureResponse::Resisted
+    } else {
+        LureResponse::Controlled
+    }
+}
+
 pub fn spell(id: SpellId) -> bool {
     matches!(id, SpellId::HYPNOTIC_LURE | SpellId::SUMMON_ELEMENTAL)
 }
@@ -78,6 +94,14 @@ fn tier(power: u32, realm: usize) -> u32 {
     // Retail g_elemental_summon_group_ids: air, earth, water, fire per tier.
     21 + (power.clamp(1, 7) - 1) * 4 + [3, 2, 0, 1][realm]
 }
+/// The spell Power Cast may lay on a summoned elemental of the element at
+/// `realm` (fire, water, air, earth): Haste, Superman, Missile Shield or
+/// Armorplate (retail `ApplySummonElementalEffect`, `Magic Effects.cpp:840`
+/// and the spells 0x38, 0x3d, 0x1a, 0x20 it names).
+fn element_buff(realm: usize) -> SpellId {
+    [SpellId::HASTE, SpellId::SUPERMAN, SpellId::MISSILE_SHIELD, SpellId::ARMORPLATE][realm]
+}
+
 /// The elementals Summon Elemental may call, four elements to a tier
 /// (retail `g_elemental_summon_group_ids`). Their bodies load with every
 /// level ([`MonsterBodies::for_level`]).
@@ -94,7 +118,7 @@ pub(crate) fn cast(
     mut bodies: Query<Body>,
     (party, held): (Single<&avian3d::prelude::Position, With<PartyBody>>, Items),
     level: Single<(Entity, &Level, &LevelState, &Unborn, &MonsterBodies, &LevelNavigation)>,
-    battle: Option<Single<Entity, With<Battle>>>,
+    battle: Option<Single<(Entity, &crate::game::combat::Round), With<Battle>>>,
     summoned: Query<&Elementals>,
     lures: Query<Entity, With<Lure>>,
     monsters: Query<(
@@ -122,7 +146,8 @@ pub(crate) fn cast(
         return;
     }
     let (root, played, state, unborn, level_bodies, navigation) = *level;
-    let battle = battle.map(|battle| *battle);
+    let moment = battle.as_ref().map_or(0, |battle| battle.1.moment());
+    let battle = battle.map(|battle| battle.0);
     let now = clock.ms;
     let position = *party;
     let spell = &content.spells[id];
@@ -161,6 +186,7 @@ pub(crate) fn cast(
             &held,
             (choice.source, context),
             (&content, *difficulty, state.camera_sway),
+            moment,
             &mut rng,
             &mut commands,
         )?;
@@ -181,9 +207,10 @@ pub(crate) fn cast(
     let fighting_now = battle.is_some();
     let Some(battle) = battle.filter(|_| id == SpellId::SUMMON_ELEMENTAL) else {
         // A Hypnotic Lure stands at `at` in place of any before it. Each
-        // hostile monster able to see it, within the far clip and not
-        // undead, may resist; outside a fight its whole group follows
-        // its choice.
+        // hostile monster able to see it, within the far clip, may resist (an
+        // undead one always does); one that does not qualify is passed over;
+        // outside a fight its whole group follows its choice (retail
+        // `ApplyMonsterControlToNearbyMonsters`).
         for old in &lures {
             commands.entity(old).despawn();
         }
@@ -217,22 +244,19 @@ pub(crate) fn cast(
                 || !body.vitals.can_fight()
                 || body.vitals.conditions.has(Condition::Blind)
                 || (here - at).abs().max_element() > far
-                || body.resistances.kind == Some(MonsterKind::Undead)
                 || !obstacles.clear(monster.eye(here), at)
             {
-                return;
+                continue;
             }
-            let chance = crate::game::hits::defences::condition_chance(
-                body.level.0,
-                body.resistances.realms[crate::content::characters::Realm::Mental],
-                strength.against,
-                0,
+            let response = lure_response(
+                body.resistances.kind,
+                (
+                    body.level.0,
+                    body.resistances.realms[crate::content::characters::Realm::Mental],
+                    strength.against,
+                ),
+                &mut rng,
             );
-            let response = if crate::game::hits::defences::save_roll(&mut rng, chance) {
-                LureResponse::Resisted
-            } else {
-                LureResponse::Controlled
-            };
             let affected = match group {
                 Some((.., members)) if !fighting_now => members.iter().collect(),
                 _ => vec![entity],
@@ -268,9 +292,7 @@ pub(crate) fn cast(
     // slot and duration rules as the spell itself.
     let mut buffed = None;
     if strength.boost != 0 && rng.below(100) < strength.boost {
-        let buff =
-            [SpellId::HASTE, SpellId::BODY_OF_STONE, SpellId::MISSILE_SHIELD, SpellId::ARMORPLATE]
-                [realm];
+        let buff = element_buff(realm);
         let definition = &content.spells[buff];
         let turns = crate::game::hits::definitions::duration(
             &mut rng,
@@ -347,5 +369,33 @@ pub(crate) fn follow_lures(
             }
             transform.rotation = facing;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Retail names spells 0x38, 0x3d, 0x1a and 0x20 for fire, water, air and
+    /// earth: 56 Haste, 61 Superman, 26 Missile Shield, 32 Armorplate.
+    /// Level 1 against a strength of 100, in a realm of resistance -100:
+    /// (1 - 100)*3 + 0 - 100 = -397, held to the least save, 5%.
+    #[test]
+    fn an_undead_monster_always_resists_a_lure_and_the_rest_save_by_the_rule() {
+        let mut rng = GameRng::seeded(7);
+        let weak = (1, -100, 100);
+        let answers = |kind, rng: &mut GameRng| {
+            (0..400).filter(|_| lure_response(kind, weak, rng) == LureResponse::Resisted).count()
+        };
+        assert_eq!(answers(Some(MonsterKind::Undead), &mut rng), 400);
+        // Five in a hundred save: far from all, far from none.
+        let saved = answers(Some(MonsterKind::Beast), &mut rng);
+        assert!((5..=50).contains(&saved), "{saved}");
+    }
+
+    #[test]
+    fn an_elemental_is_buffed_by_the_spell_of_its_element() {
+        let buffs: Vec<u8> = (0..4).map(|realm| element_buff(realm).0).collect();
+        assert_eq!(buffs, [0x38, 0x3d, 0x1a, 0x20]);
     }
 }

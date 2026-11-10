@@ -33,8 +33,9 @@ impl Difficulty {
         }
     }
 
-    /// Retail `ScaleByCombatPace`: an action re-committed late in a round
-    /// (`stamp`, the round's phase then) is harder, past 80/60/40 by setting.
+    /// Retail `ScaleByCombatPace` (`Magic.cpp:833-862`): a failure chance is
+    /// raised for an action made late in a round (`stamp`, the round's moment,
+    /// 0 outside a fight), past 80/60/40 by setting.
     pub fn scale_by_pace(self, value: u32, stamp: u32) -> u32 {
         let pace = match self {
             Difficulty::Novice => 80,

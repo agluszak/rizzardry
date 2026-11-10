@@ -21,10 +21,10 @@ use crate::content::spells::{
     MAX_POWER, PowerChoice, SpellDefinition, SpellId, Targeting, Usable, min_caster_level,
 };
 use crate::game::actors::{Place, Places};
-use crate::game::characters::{Character, Condition, Lasting, Practise, Profession, Vitals};
+use crate::game::characters::{Character, Condition, Lasting, Pool, Practise, Profession, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
-use crate::game::hits::definitions::{Definitions, EffectKind};
+use crate::game::hits::definitions::Definitions;
 use crate::game::hits::effects::{Body, BodyItem, BodyReadOnly, BodyReadOnlyItem, Strike};
 use crate::game::hits::reach::{Recipients, within};
 use crate::game::hits::spells::{Leech, Spell, group_of, leader, owners_strength, targets};
@@ -55,8 +55,9 @@ pub enum Source {
     /// An item the actor carries or the party's pool holds, identified, not
     /// reserved.
     Item(Entity),
-    /// A monster's own casting, which costs nothing: its spell budget
-    /// stands in for a caster's skill, its level sets the strength.
+    /// A monster's own casting, which costs no points or uses but tires it:
+    /// its spell budget stands in for a caster's skill, its level sets the
+    /// strength.
     Innate { spell: SpellId, power: u32, budget: u32, level: u8 },
 }
 
@@ -291,7 +292,7 @@ fn item_failure(
     spell: &SpellDefinition,
     power: u32,
     identified: bool,
-    difficulty: Difficulty,
+    (difficulty, moment): (Difficulty, u32),
 ) -> (u32, bool) {
     let Some(skill) = definition.use_type.skill() else { return (0, false) };
     let level = character.skill(skill);
@@ -319,8 +320,7 @@ fn item_failure(
         }
         _ => {}
     }
-    // Choices are made between rounds, so none is late in one.
-    let mut failure = difficulty.scale_by_pace(failure, 0);
+    let mut failure = difficulty.scale_by_pace(failure, moment);
     if !identified {
         failure += 30;
     }
@@ -328,7 +328,7 @@ fn item_failure(
     if quiet {
         failure /= 2;
     }
-    (failure.min(100), quiet)
+    (failure, quiet)
 }
 
 /// The strength an item's spell is cast at: by the user's level, or their
@@ -348,55 +348,79 @@ fn item_strength(
     Strength::at(figure, spell, power, 0)
 }
 
-/// The power an auto cast takes (retail `ChooseSpellPowerLevelForTarget`):
-/// for healing, the lowest whose average covers what the victim lacks,
-/// stopping short of a failure chance over 10%; for cures, the cheapest to
-/// outlast the condition; otherwise 1.
+/// The power an auto cast takes (retail `ChooseSpellPowerLevelForTarget`,
+/// `Magic.cpp:1707-1880`), for the spells it knows and 1 for any other. A
+/// member lacking health or stamina is healed by the lowest power whose
+/// average roll covers it, stopping short of a failure chance over 10%
+/// (Heal Wounds; Stamina; Restoration, which looks to stamina only once health
+/// is full); a monster is healed at 1. A cure takes the cheapest power to
+/// outlast the longest of the conditions it lifts: Cure Lesser Conditions
+/// Nauseated, Afraid, Asleep and Blind; Cure Paralysis Paralyzed; Cure Poison
+/// Poisoned; Cure Disease Diseased; Sane Mind Insane, Turncoat and Asleep;
+/// Remove Curse Hexed. `failure` is the chance a cast at a power fails.
 fn auto_power(
-    character: &Character,
     spell: &SpellDefinition,
-    victim: Option<&Vitals>,
+    victim: Option<(&Vitals, bool)>,
     affordable: u32,
-    restores: bool,
+    failure: &dyn Fn(u32) -> u32,
 ) -> u32 {
-    let fail = |p| super::fail_chance(character, spell, p);
-    let Some(vitals) = victim else { return 1 };
-    let power = if restores {
-        let pool = if spell.id == SpellId::STAMINA { vitals.stamina } else { vitals.health };
-        let missing = (pool.max as f32 - pool.current as f32).max(0.0);
-        let average = |p: u32| {
-            spell.dice.map_or(0.0, |d| {
-                d.count as f32 * p as f32 * (d.sides as f32 + 1.0) / 2.0 + d.base as f32
-            })
+    let Some((vitals, member)) = victim else { return 1 };
+    let cured: &[Condition] = match spell.id {
+        SpellId::HEAL_WOUNDS | SpellId::STAMINA | SpellId::RESTORATION => &[],
+        SpellId::CURE_LESSER_COND => {
+            &[Condition::Nauseated, Condition::Afraid, Condition::Asleep, Condition::Blind]
+        }
+        SpellId::CURE_PARALYSIS => &[Condition::Paralyzed],
+        SpellId::CURE_POISON => &[Condition::Poisoned],
+        SpellId::CURE_DISEASE => &[Condition::Diseased],
+        SpellId::SANE_MIND => &[Condition::Insane, Condition::Turncoat, Condition::Asleep],
+        SpellId::REMOVE_CURSE => &[Condition::Hexed],
+        _ => return 1,
+    };
+    let power = if cured.is_empty() {
+        let lacks = |pool: Pool| pool.max.max(pool.current) - pool.current;
+        let missing = match spell.id {
+            SpellId::STAMINA => lacks(vitals.stamina),
+            SpellId::RESTORATION if lacks(vitals.health) == 0 => lacks(vitals.stamina),
+            _ => lacks(vitals.health),
         };
-        if missing == 0.0 {
+        // The average roll, cut down to a whole number.
+        let average = |p: u32| {
+            spell.dice.map_or(0, |d| (2 * d.base + d.count * p as i32 * (d.sides + 1)) / 2)
+        };
+        if !member || missing == 0 {
             1
         } else {
             (1..=MAX_POWER)
                 .find_map(|p| {
-                    if fail(p) > 10 {
+                    if failure(p) > 10 {
                         Some((p - 1).max(1))
                     } else {
-                        (missing < average(p)).then_some(p)
+                        ((missing as i32) < average(p)).then_some(p)
                     }
                 })
-                .unwrap_or(MAX_POWER)
+                // Retail's eight: as much as the points pay for.
+                .unwrap_or(MAX_POWER + 1)
         }
     } else {
-        let turns = vitals
-            .conditions
-            .iter()
-            .filter_map(|&(_, lasting)| match lasting {
-                Lasting::Rounds(t) => Some(t),
-                Lasting::Indefinite => None,
-            })
-            .max();
+        let mut turns = None;
+        for &(condition, lasting) in vitals.conditions.iter() {
+            if cured.contains(&condition) {
+                match lasting {
+                    // Nothing outlasts it: the least power.
+                    Lasting::Indefinite => return 1,
+                    Lasting::Rounds(t) => turns = turns.max(Some(t)),
+                }
+            }
+        }
         match turns {
             None => 1,
             Some(turns) => (1..=affordable.max(1))
                 .map(|p| {
+                    // What one cast really delivers: the square of the power,
+                    // less the share the failure chance takes.
                     let square = p.pow(2);
-                    let per = (square - fail(p) * square / 100).max(1);
+                    let per = (square - (failure(p) * square / 100).min(square)).max(1);
                     (spell.cost * turns.div_ceil(per) * p, p)
                 })
                 .min()
@@ -537,11 +561,25 @@ fn check(
     else {
         return Err(Refusal::CannotAct);
     };
+    // In a fight only what a member carries is within reach, not the
+    // party's pool (retail `CanPartySlotUseRecordedItem`).
+    if context == UseContext::Combat
+        && let Source::Item(item) = choice.source
+        && held.pooled(item)
+    {
+        return Err(Refusal::CannotUse);
+    }
     let character = caster.character;
-    if !innate && character.is_some() {
-        let item = item_use(choice.source, caster.entity, held, &content.items);
-        let voiced = item.is_none_or(|item| item.definition.use_type == UseType::Instrument);
-        if voiced && caster.vitals.conditions.has(Condition::Silenced) {
+    if !innate
+        && let Some(character) = character
+        && caster.vitals.conditions.has(Condition::Silenced)
+    {
+        // A learned spell is voiced, and so is an instrument's tune.
+        let stopped = match item_use(choice.source, caster.entity, held, &content.items) {
+            None => super::silence_stops(character, definition),
+            Some(item) => item.definition.use_type == UseType::Instrument,
+        };
+        if stopped {
             return Err(Refusal::Silenced);
         }
     }
@@ -684,11 +722,19 @@ impl Stage<'_, '_, '_> {
             Targeting::Party => Ok((self.roster.iter().collect(), None)),
             Targeting::Enemy => foe().map(|(_, _, target)| (vec![target], Some(feet(target)))),
             Targeting::Radius => foe().map(|(_, _, target)| (vec![], Some(feet(target)))),
+            // The aimed foe's whole group, of its side, however far or out of
+            // sight (retail `PopulateSpellTargetMarkers`, `Magic.cpp:3714-3733`).
             Targeting::EnemyGroup => {
-                let (foes, _, first) = foe()?;
+                let (_, _, first) = foe()?;
+                let side = self.target(first).map(|first| first.stance());
                 let mates = group_of(first, self.roster, self.memberships, self.groups)
                     .into_iter()
-                    .filter(|mate| *mate != first && foes.contains(mate));
+                    .filter(|&mate| {
+                        mate != first
+                            && self.target(mate).is_some_and(|mate| {
+                                !mate.vitals.is_dead() && Some(mate.stance()) == side
+                            })
+                    });
                 Ok((std::iter::once(first).chain(mates).collect(), Some(feet(first))))
             }
             Targeting::AllEnemies => {
@@ -735,7 +781,8 @@ impl Stage<'_, '_, '_> {
 }
 
 /// The power an instrument or gadget is played at: as high as its player
-/// manages, luck allowing (retail `UseItem`); 0 when played badly.
+/// manages, luck allowing (retail `UseItem`, which weighs the item's
+/// difficulty unscaled by the round); 0 when played badly.
 fn played_power(
     character: &Character,
     item: &ItemDefinition,
@@ -743,7 +790,8 @@ fn played_power(
     rng: &mut GameRng,
 ) -> u32 {
     let mut power = MAX_POWER;
-    while power > 0 && item_failure(character, item, spell, power, true, Difficulty::Normal).0 > 15
+    while power > 0
+        && item_failure(character, item, spell, power, true, (Difficulty::Normal, 0)).0 > 15
     {
         power -= 1;
     }
@@ -760,7 +808,7 @@ fn plan(
     cast: &Cast,
     stage: &Stage,
     held: &Items,
-    (content, definitions, difficulty): (&Catalogs, &Definitions, Difficulty),
+    (content, definitions, pace): (&Catalogs, &Definitions, (Difficulty, u32)),
     rng: &mut GameRng,
 ) -> Plan {
     let Cast { caster, choice: MagicChoice { source, aim }, .. } = *cast;
@@ -799,19 +847,15 @@ fn plan(
             let affordable = affordable(&body, spell, content);
             if power == AUTO_POWER {
                 let victim = aim.body().and_then(|body| stage.bodies.get(body).ok());
-                let restores = definitions.spell(spell.id).is_some_and(|id| {
-                    definitions
-                        .get(id)
-                        .effects
-                        .iter()
-                        .any(|e| matches!(e.kind, EffectKind::Heal | EffectKind::Refresh))
-                });
+                let character = body.character.unwrap();
+                let failure = |power| {
+                    pace.0.scale_by_pace(super::fail_chance(character, spell, power), pace.1)
+                };
                 auto_power(
-                    body.character.unwrap(),
                     spell,
-                    victim.map(|victim| victim.vitals),
+                    victim.as_ref().map(|victim| (victim.vitals, victim.member)),
                     affordable,
-                    restores,
+                    &failure,
                 )
             } else {
                 power.min(affordable)
@@ -834,7 +878,7 @@ fn plan(
             quiet: false,
             strength: Strength::at(u32::from(level), spell, power, 0),
         },
-        _ => attempt(body.character.unwrap(), item, spell, power, difficulty),
+        _ => attempt(body.character.unwrap(), item, spell, power, pace, aim.body() == Some(caster)),
     };
     let stand = stage.places.of(body.entity);
     let eye_of = |body: Entity| {
@@ -854,6 +898,12 @@ fn plan(
         Targeting::Radius => {
             stage.blasted(stand.feet, radius, Recipients::Opponents(side).reversed())
         }
+        // Turned back, it takes the caster's whole party or group, however
+        // far or out of sight (retail `RedirectBackfiredSpellTarget`).
+        Targeting::EnemyGroup => group_of(caster, stage.roster, stage.memberships, stage.groups)
+            .into_iter()
+            .filter(|&other| stage.target(other).is_some_and(|to| !to.vitals.is_dead()))
+            .collect(),
         _ => stage
             .participants()
             .filter(|&other| {
@@ -912,6 +962,8 @@ pub fn cast(
 ) {
     let roster = *roster;
     let underwater = states.single().is_ok_and(|state| state.camera_sway);
+    // The caster's moment in the round, which the failure chance reads.
+    let moment = fight.as_ref().map_or(0, |fight| fight.0.moment());
     // An auto cast that fizzles goes again at once, provoking nobody anew.
     let mut pending = vec![(*cast, false)];
     while let Some((cast, retry)) = pending.pop() {
@@ -934,7 +986,7 @@ pub fn cast(
                 places: &places,
             },
             &held,
-            (&content, &definitions, *difficulty),
+            (&content, &definitions, (*difficulty, moment)),
             &mut rng,
         );
         let aimed = match plan {
@@ -943,7 +995,7 @@ pub fn cast(
                 continue;
             }
             Plan::PlayedBadly { fatigue, skill } => {
-                bodies.get_mut(caster).unwrap().vitals.tire(fatigue);
+                tire_by_load(&mut bodies.get_mut(caster).unwrap(), fatigue);
                 if let Some(skill) = skill {
                     commands.trigger(Practise { member: caster, skill, usage: 1 });
                 }
@@ -967,9 +1019,6 @@ pub fn cast(
             attempt.strength
         };
         let mut body = bodies.get_mut(caster).unwrap();
-        if let Some(fatigue) = instrument {
-            body.vitals.tire(fatigue);
-        }
         // A party member's spell aimed at enemies provokes those it is cast
         // at, whatever the roll (retail `MakeTargetGroupHostile` as the
         // action starts); a retry provokes nobody again.
@@ -990,8 +1039,8 @@ pub fn cast(
             effects: Vec::new(),
         };
         // Paid whatever the roll: points for a learned spell, a use for an
-        // item, nothing for an innate cast; then the caster is tired, more
-        // under load (retail `FatigueCharacter`).
+        // item, nothing for an innate cast; then the caster is tired: a
+        // member more under load, a monster by the cast alone.
         match (source, item) {
             (Source::Spell { .. }, _) => {
                 let realm = definition.realm.expect("a cast spell has a realm");
@@ -1000,20 +1049,21 @@ pub fn cast(
             (_, Some(item)) => commands.trigger(Spend { item: item.item, amount: 1 }),
             _ => {}
         }
-        if !innate {
+        if innate {
+            // The spell's level and its power (retail `MonsterCastsSpell`,
+            // `SpellCastFatigueCost`, then `FatigueMonster`).
+            body.vitals.tire(super::cast_fatigue(definition, power));
+        } else {
             let fatigue = match item.map(|item| item.definition.use_type) {
                 None => super::cast_fatigue(definition, power),
                 Some(UseType::Thrown) => 10,
-                Some(UseType::Instrument | UseType::Gadget) => 0,
+                Some(UseType::Instrument | UseType::Gadget) => instrument.unwrap_or_default(),
                 Some(_) => {
                     let base = rng.below(2) + 1;
                     if body.vitals.conditions.has(Condition::Diseased) { base * 2 } else { base }
                 }
             };
-            let slowed = body.vitals.conditions.has(Condition::Slowed);
-            let hasted = body.attacks.hasted > 0.0;
-            let load = body.burden.map(|burden| burden.load).unwrap_or_default();
-            body.vitals.tire(load.scale_fatigue(fatigue, slowed, hasted));
+            tire_by_load(&mut body, fatigue);
         }
         let auto = source == Source::Spell { spell, power: AUTO_POWER };
         if outcome == Outcome::Fizzled {
@@ -1085,15 +1135,26 @@ pub fn cast(
     }
 }
 
+/// Tire a member by `fatigue`, more under load, less when slowed, more when
+/// hasted (retail `FatigueCharacter` with its load scaling).
+fn tire_by_load(body: &mut BodyItem, fatigue: u32) {
+    let slowed = body.vitals.conditions.has(Condition::Slowed);
+    let hasted = body.attacks.hasted > 0.0;
+    let load = body.burden.map(|burden| burden.load).unwrap_or_default();
+    body.vitals.tire(load.scale_fatigue(fatigue, slowed, hasted));
+}
+
 /// A utility or device cast's source, revalidated, rolled and paid at once
 /// by its caster: retail counts these as having done something even when
 /// they fizzle, so the caster practises whatever the roll. `underwater`
-/// quenches Fire.
+/// quenches Fire; `moment` is the caster's in the round of a fight (0 outside
+/// one).
 pub(crate) fn pay(
     caster: &mut BodyItem,
     held: &Items,
     (source, context): (Source, UseContext),
     (content, difficulty, underwater): (&Catalogs, Difficulty, bool),
+    moment: u32,
     rng: &mut GameRng,
     commands: &mut Commands,
 ) -> Result<(Report, Strength), Refusal> {
@@ -1113,7 +1174,8 @@ pub(crate) fn pay(
     let item = item_use(source, caster.entity, held, items);
     let power = match (source, item) {
         (Source::Spell { power, .. }, _) => {
-            if vitals.conditions.has(Condition::Silenced) {
+            if vitals.conditions.has(Condition::Silenced) && super::silence_stops(character, spell)
+            {
                 return Err(Refusal::Silenced);
             }
             let Some((learned, pool)) =
@@ -1130,7 +1192,8 @@ pub(crate) fn pay(
     if power == 0 {
         return Err(Refusal::NoSpellPoints);
     }
-    let Attempt { failure, quiet, strength } = attempt(character, item, spell, power, difficulty);
+    let Attempt { failure, quiet, strength } =
+        attempt(character, item, spell, power, (difficulty, moment), false);
     let report = Report {
         caster: caster.entity,
         spell: spell.id,
@@ -1156,26 +1219,32 @@ pub(crate) fn pay(
 
 /// A sourced attempt at `power`: its failure chance, whether it is quiet (a
 /// thrown item), and the strength it casts with, from a learned spell or an
-/// item.
+/// item. `pace` is the difficulty and the caster's moment in the round;
+/// `on_oneself` is a learned spell aimed at its caster.
 fn attempt(
     character: &Character,
     item: Option<ItemUse>,
     spell: &SpellDefinition,
     power: u32,
-    difficulty: Difficulty,
+    pace: (Difficulty, u32),
+    on_oneself: bool,
 ) -> Attempt {
     match item {
         Some(item) => {
             let (failure, quiet) =
-                item_failure(character, item.definition, spell, power, item.identified, difficulty);
+                item_failure(character, item.definition, spell, power, item.identified, pace);
             Attempt {
                 failure,
                 quiet,
                 strength: item_strength(character, item.definition, spell, power),
             }
         }
+        // Sane Mind is hard to cast on oneself: 50 more in the failure chance,
+        // after the round's pace (retail `ExecuteCharacterSpellCast`,
+        // `Magic.cpp:2656-2658`).
         None => Attempt {
-            failure: difficulty.scale_by_pace(super::fail_chance(character, spell, power), 0),
+            failure: pace.0.scale_by_pace(super::fail_chance(character, spell, power), pace.1)
+                + if spell.id == SpellId::SANE_MIND && on_oneself { 50 } else { 0 },
             quiet: false,
             strength: Strength::of(character, spell, power),
         },
@@ -1258,4 +1327,157 @@ pub fn castable(
     definitions: &Definitions,
 ) -> bool {
     affordable > 0 && resolvable(spell.id, definitions) && usable_now(spell, context) && !silenced
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::characters::Realm;
+    use crate::content::spells::Spellbook;
+    use crate::game::characters::{Gender, Race};
+
+    /// A first-level priest with no skill points: a Divinity of 1 by the
+    /// bonus skill, a casting skill of (1 + 4 * 0) / 5 = 0.
+    fn untrained_priest() -> Character {
+        let mut priest = Character::new("Cleric", Race::Human, Gender::Male, Profession::Priest);
+        priest.skill_points = default();
+        priest
+    }
+
+    fn spell(id: SpellId) -> SpellDefinition {
+        SpellDefinition {
+            id,
+            level: 7,
+            cost: 14,
+            realm: Some(Realm::Divine),
+            books: Spellbook::Divinity.into(),
+            ..default()
+        }
+    }
+
+    /// Band 14 / 2 + 7 = 14 asks 105 at power 7: 70% for a skill of 0. A
+    /// level 7 spell asks caster level 18; the priest has 1: 18 - 1 - 1 + 7
+    /// = 23 short, 7 * 23 = 161 more. 231 in all, not held to 100.
+    #[test]
+    fn a_failure_chance_is_not_held_to_a_hundred_and_grows_late_in_a_round() {
+        let (priest, spell) = (untrained_priest(), spell(SpellId::HEAL_ALL));
+        let failure =
+            |pace: (Difficulty, u32)| attempt(&priest, None, &spell, 7, pace, false).failure;
+        assert_eq!(failure((Difficulty::Normal, 0)), 231);
+        // Normal pace is 60: nothing is added before it, and at it the
+        // factor is (60 + 50 - 60) * 2 / 100 = 1.
+        assert_eq!(failure((Difficulty::Normal, 59)), 231);
+        assert_eq!(failure((Difficulty::Normal, 60)), 231);
+        // At 90: (90 + 50 - 60) = 80; 80 * 231 * 2 / 100 = 369.
+        assert_eq!(failure((Difficulty::Normal, 90)), 369);
+        // Novice's pace is 80; at 100: (100 + 50 - 80) = 70; 70 * 231 * 2 / 100 = 323.
+        assert_eq!(failure((Difficulty::Novice, 100)), 323);
+    }
+
+    /// An item's chance is scaled by the round the same way: 70% for a
+    /// skill of 0, nine tenths of it for a charged item (63), then at
+    /// moment 100 on Normal (100 + 50 - 60) * 63 * 2 / 100 = 113, and 30 more
+    /// unidentified.
+    #[test]
+    fn an_items_failure_chance_grows_late_in_a_round() {
+        let (priest, spell) = (untrained_priest(), spell(SpellId::HEAL_ALL));
+        let wand = ItemDefinition { use_type: UseType::Charged, ..default() };
+        let failure = |identified| {
+            item_failure(&priest, &wand, &spell, 7, identified, (Difficulty::Normal, 100)).0
+        };
+        assert_eq!(failure(true), 113);
+        assert_eq!(failure(false), 143);
+    }
+
+    #[test]
+    fn sane_mind_is_harder_to_cast_on_oneself_by_fifty() {
+        let (priest, sane) = (untrained_priest(), spell(SpellId::SANE_MIND));
+        let pace = (Difficulty::Normal, 90);
+        // 231 at moment 90 is 369 (above); 50 more after the pace, aimed
+        // at oneself.
+        assert_eq!(attempt(&priest, None, &sane, 7, pace, false).failure, 369);
+        assert_eq!(attempt(&priest, None, &sane, 7, pace, true).failure, 419);
+        let other = spell(SpellId::CURE_POISON);
+        assert_eq!(attempt(&priest, None, &other, 7, pace, true).failure, 369);
+    }
+
+    fn cure_poison() -> SpellDefinition {
+        SpellDefinition { cost: 3, ..spell(SpellId::CURE_POISON) }
+    }
+
+    /// Cost 3, a poison of 20 rounds, no failure: power p delivers p * p a
+    /// cast, so it takes ceil(20 / p^2) casts of 3 * p points:
+    /// 60, 30, 27, 24, 15, 18, 21 for powers 1 to 7. Power 5 is cheapest.
+    #[test]
+    fn a_cure_takes_the_cheapest_power_to_outlast_the_poison() {
+        let mut poisoned = Vitals::full(10, 10);
+        poisoned.afflict(Condition::Poisoned, Lasting::Rounds(20));
+        let sure = |_| 0;
+        assert_eq!(auto_power(&cure_poison(), Some((&poisoned, true)), 7, &sure), 5);
+        // Held to what the points pay for: 4 costs 24 of 60, 30, 27, 24.
+        assert_eq!(auto_power(&cure_poison(), Some((&poisoned, true)), 4, &sure), 4);
+        // A failure chance of 50% halves what a cast delivers: p * p - p * p / 2.
+        // Powers 1 to 7 deliver 1, 2, 5, 8, 13, 18, 25 (24 / 2 = 12.5 cut to 12 off 25).
+        let half = |_| 50;
+        // Casts: 20, 10, 4, 3, 2, 2, 1; points 60, 60, 36, 36, 30, 36, 21.
+        assert_eq!(auto_power(&cure_poison(), Some((&poisoned, true)), 7, &half), 7);
+    }
+
+    /// Only the conditions a cure lifts count, and one without end cannot be
+    /// outlasted.
+    #[test]
+    fn a_cure_looks_only_at_the_conditions_it_lifts_and_gives_up_on_one_without_end() {
+        let lesser = SpellDefinition { cost: 3, ..spell(SpellId::CURE_LESSER_COND) };
+        let sure = |_| 0;
+        let mut ill = Vitals::full(10, 10);
+        // Irritated is not among the five it is chosen for.
+        ill.afflict(Condition::Irritated, Lasting::Rounds(60));
+        assert_eq!(auto_power(&lesser, Some((&ill, true)), 7, &sure), 1);
+        // Nauseated for 20 rounds wants power 5 (above); Asleep without end
+        // outweighs it, and the least power is taken.
+        ill.afflict(Condition::Nauseated, Lasting::Rounds(20));
+        assert_eq!(auto_power(&lesser, Some((&ill, true)), 7, &sure), 5);
+        ill.afflict(Condition::Asleep, Lasting::Indefinite);
+        assert_eq!(auto_power(&lesser, Some((&ill, true)), 7, &sure), 1);
+    }
+
+    fn dice(count: i32, sides: i32) -> Option<crate::content::items::Dice> {
+        Some(crate::content::items::Dice { base: 0, count, sides })
+    }
+
+    /// 1d4 averages 2.5, cut to 2: a victim lacking 2 is not covered at power
+    /// 1 (2 < 2 is false) but is at power 2 (5).
+    #[test]
+    fn a_heal_is_chosen_by_the_average_roll_cut_to_a_whole_number() {
+        let heal = SpellDefinition { dice: dice(1, 4), ..spell(SpellId::HEAL_WOUNDS) };
+        let mut hurt = Vitals::full(10, 10);
+        hurt.health.current = 8;
+        let sure = |_| 0;
+        assert_eq!(auto_power(&heal, Some((&hurt, true)), 7, &sure), 2);
+        // A monster is healed at 1, and nobody lacking nothing at more.
+        assert_eq!(auto_power(&heal, Some((&hurt, false)), 7, &sure), 1);
+        assert_eq!(auto_power(&heal, Some((&Vitals::full(10, 10), true)), 7, &sure), 1);
+        // Where no power covers it, retail's 8 is held to what the points pay for.
+        hurt.health.current = 0;
+        let small = SpellDefinition { dice: dice(1, 1), ..heal };
+        assert_eq!(auto_power(&small, Some((&hurt, true)), 5, &sure), 5);
+        // Over 10% failing from power 3 on stops it at 2.
+        let unsure = |power| if power >= 3 { 20 } else { 0 };
+        assert_eq!(auto_power(&small, Some((&hurt, true)), 7, &unsure), 2);
+    }
+
+    /// Restoration looks to stamina only once health is full.
+    #[test]
+    fn restoration_heals_health_first_and_then_stamina() {
+        let restoration = SpellDefinition { dice: dice(1, 1), ..spell(SpellId::RESTORATION) };
+        let sure = |_| 0;
+        // 1d1 averages p. A health of 10 lacking 6 wants power 7; stamina
+        // lacking 2 alone wants 3.
+        let mut hurt = Vitals::full(10, 10);
+        hurt.health.current = 4;
+        hurt.stamina.current = 8;
+        assert_eq!(auto_power(&restoration, Some((&hurt, true)), 7, &sure), 7);
+        hurt.health.current = 10;
+        assert_eq!(auto_power(&restoration, Some((&hurt, true)), 7, &sure), 3);
+    }
 }

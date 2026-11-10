@@ -207,7 +207,8 @@ pub struct EffectSpec {
     /// says `resist` for its spell, made [`resist`](Self::resist) when the
     /// spell's effects are made, and false in every definition.
     pub spell_realm: bool,
-    /// Saved against and resisted at half its strike's strength.
+    /// Saved against and resisted at half its strike's strength, and rolled
+    /// for half the rounds.
     pub half: bool,
     /// Only if the effect before it landed.
     pub landed: bool,
@@ -268,6 +269,9 @@ pub enum EffectKind {
         #[serde(default)]
         indefinite: bool,
     },
+    /// One of these conditions, picked at random for each body, afflicted
+    /// as [`EffectKind::Afflict`] is, saved against by its own base.
+    AfflictAny(Vec<Condition>),
     Slay,
     Tire,
     DrainPool,
@@ -512,7 +516,7 @@ pub fn define(mut commands: Commands, content: Res<Catalogs>) {
         let Some(row) = content.spell_effects.get(spell.id) else { continue };
         let Some(definition) = row.of_spell(spell) else { continue };
         spells.insert(spell.id, add(definition));
-        if spell.facts.personal
+        if (spell.facts.personal || !row.backfire.is_empty())
             && let Some(backfire) = row.backfire_of(spell)
         {
             backfires.insert(spell.id, add(backfire));
@@ -596,6 +600,11 @@ impl Definitions {
 impl EffectSpec {
     /// Prismic's either-or settled into the effect it is this time.
     pub fn pick(mut self, rng: &mut GameRng) -> Self {
+        if let EffectKind::AfflictAny(conditions) = &self.kind {
+            let condition = conditions[rng.below(conditions.len() as u32) as usize];
+            self.save = Some(condition_save(condition));
+            self.kind = EffectKind::Afflict { condition, poison: 0, indefinite: false };
+        }
         if let EffectKind::Prismic { dice, base, per_power } = self.kind {
             let roll = rng.below(100);
             if roll >= 50 {
@@ -770,13 +779,22 @@ mod tests {
     #[test]
     fn a_follow_up_waits_on_the_effect_before_it() {
         let terror = made(SpellId::TERROR).effects;
-        assert_eq!(terror.len(), 2);
+        assert_eq!(terror.len(), 3);
         let knocked_out = &terror[1];
         assert_eq!(knocked_out.on, Whom::Members);
         assert!(knocked_out.landed && knocked_out.half);
         assert_eq!(
             knocked_out.kind,
             EffectKind::Afflict { condition: Condition::Unconscious, poison: 0, indefinite: false }
+        );
+        // A monster that did not resist is frightened a second time, at half
+        // strength and for half as long (`Magic Effects.cpp:1923-1928`).
+        let frightened = &terror[2];
+        assert_eq!(frightened.on, Whom::Monsters);
+        assert!(frightened.landed && frightened.half);
+        assert_eq!(
+            frightened.kind,
+            EffectKind::Afflict { condition: Condition::Afraid, poison: 0, indefinite: false }
         );
     }
 
@@ -889,6 +907,39 @@ mod tests {
             vec![EffectSpec { roll: Some(dice()), resist: Some(REALM), ..default() }]
         );
         assert!(backfire(SpellId::GUARDIAN_ANGEL).is_empty());
+        // The friendly spells that can backfire turn ill instead of well
+        // (`Magic Effects.cpp:3246-3260, 3261-3283, 3378-3385, 3436-3441,
+        // 3467-3475`): tiring, one of five afflictions, paralysis, insanity
+        // and a hex.
+        for id in [SpellId::STAMINA, SpellId::REST_ALL] {
+            assert_eq!(
+                backfire(id),
+                vec![EffectSpec { kind: Tire, roll: Some(dice()), ..default() }],
+                "{id:?}"
+            );
+        }
+        let any = &backfire(SpellId::CURE_LESSER_COND)[0];
+        assert_eq!(
+            any.kind,
+            EffectKind::AfflictAny(vec![
+                Condition::Irritated,
+                Condition::Nauseated,
+                Condition::Afraid,
+                Condition::Asleep,
+                Condition::Blind
+            ])
+        );
+        assert_eq!((any.roll, any.resist), (Some(rounds()), Some(REALM)));
+        for (id, condition) in [
+            (SpellId::CURE_PARALYSIS, Condition::Paralyzed),
+            (SpellId::SANE_MIND, Condition::Insane),
+            (SpellId::REMOVE_CURSE, Condition::Hexed),
+        ] {
+            let ill = &backfire(id)[0];
+            assert_eq!(afflicts(ill), Some(condition), "{id:?}");
+            assert_eq!(ill.save, Some(condition_save(condition)), "{id:?}");
+            assert_eq!((ill.roll, ill.resist), (Some(rounds()), Some(REALM)), "{id:?}");
+        }
         let death = pulse(SpellId::DEATH_CLOUD);
         assert_eq!(
             death,
@@ -918,15 +969,19 @@ mod tests {
         assert_eq!(pulse(SpellId::RING_OF_FIRE).len(), 1);
     }
 
-    /// A row has a backfire only for a spell that is personal, a pulse only
-    /// for one that pulses.
+    /// A row has a backfire only for a spell that is personal or can backfire,
+    /// a pulse only for one that pulses.
     #[test]
     fn a_backfire_or_a_pulse_is_for_a_spell_that_has_one() {
         let table = SpellEffects::default();
         for id in 0..=255 {
             let spell = spell_with_facts(SpellId(id));
             let Some(row) = table.get(spell.id) else { continue };
-            assert!(spell.facts.personal || row.backfire.is_empty(), "{:?}", spell.id);
+            assert!(
+                spell.facts.personal || spell.can_backfire() || row.backfire.is_empty(),
+                "{:?}",
+                spell.id
+            );
             assert_eq!(spell.facts.pulse.is_some(), !row.pulse.is_empty(), "{:?}", spell.id);
         }
     }

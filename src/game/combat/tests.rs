@@ -86,6 +86,10 @@ fn app() -> (App, Entity, Entity) {
 
 fn monster(world: &mut World, battle: Entity, distance: f32) -> Entity {
     let group = world.spawn(MonsterGroup::default()).id();
+    monster_in(world, battle, distance, group)
+}
+
+fn monster_in(world: &mut World, battle: Entity, distance: f32, group: Entity) -> Entity {
     world
         .spawn((
             Monster {
@@ -676,4 +680,319 @@ fn outside_a_fight_time_passing_ages_conditions_spells_and_a_set_stance() {
     assert!(!world.get::<Vitals>(member).unwrap().conditions.has(Condition::Afraid));
     assert!(!is_laid(world, member, SpellId::BLESS));
     assert!(world.get::<MonsterGroup>(group).unwrap().set.is_none(), "the stance wore off");
+}
+
+/// A spell for the member to cast: aimed as `targeting`, of this level,
+/// costing one point, and doing `dice`.
+fn spell_for(
+    world: &mut World,
+    id: SpellId,
+    targeting: crate::content::spells::Targeting,
+    level: u32,
+    dice: Dice,
+) {
+    use crate::content::spells::{Reach, Spellbook, Usable};
+    let mut spells = std::mem::take(&mut world.resource_mut::<Catalogs>().spells.0);
+    spells[id.0 as usize] = SpellDefinition {
+        id,
+        realm: Some(Realm::Divine),
+        level,
+        cost: 1,
+        books: Spellbook::Divinity.into(),
+        targeting,
+        reach: Reach::Long,
+        usable: Usable::Always,
+        dice: Some(dice),
+        ..default()
+    };
+    // With the facts the table gives it (whether it can backfire).
+    world.resource_mut::<Catalogs>().spells = SpellCatalog::new(spells);
+}
+
+/// The member knows these spells, has this skill in Divinity and Divine
+/// magic and a hundred points to cast them with.
+fn teach(world: &mut World, member: Entity, skill: u32, spells: &[SpellId]) {
+    use crate::content::characters::Skill;
+    let mut character = world.get_mut::<Character>(member).unwrap();
+    character.skill_points = default();
+    character.skill_points[Skill::Divinity] = skill;
+    character.skill_points[Realm::Divine.skill()] = skill;
+    world
+        .entity_mut(member)
+        .insert((LearnedSpells(spells.iter().copied().collect()), magic::SpellPoints::default()));
+    world.run_system_cached(hits::definitions::define).unwrap();
+    magic::test_set_points(world, member, Realm::Divine, 100);
+}
+
+/// A cast, resolved in one pass; what it reported.
+fn cast_in(
+    world: &mut World,
+    member: Entity,
+    (spell, choice): (SpellId, MagicChoice),
+    context: UseContext,
+) -> Vec<MagicNews> {
+    world.trigger(Cast { caster: member, spell, context, choice });
+    world.flush();
+    world.resource_mut::<Messages<MagicNews>>().drain().collect()
+}
+
+fn spell_choice(spell: SpellId, power: u32, aim: Aim) -> (SpellId, MagicChoice) {
+    (spell, MagicChoice { source: Source::Spell { spell, power }, aim })
+}
+
+/// A failure chance is raised for a cast late in a round, and is not held to
+/// a hundred. An untrained priest casting a level 7 spell at power 7 fails
+/// 70 + 7 * (18 - 1 - 1 + 7) = 231 in a hundred; on Expert (pace 40) at the
+/// round's last moment that is (100 + 50 - 40) * 231 * 2 / 100 = 508, a third
+/// of it, 169, the chance to backfire: every cast backfires. A Stamina cast
+/// that does tires its caster by the spell's level and power, 7 + 7 = 14, and
+/// then by its dice, 7d1 = 7, instead of restoring (`Magic Effects.cpp:3246`).
+#[test]
+fn a_late_cast_backfires_and_a_backfired_stamina_tires() {
+    use crate::content::spells::Targeting;
+    use crate::game::difficulty::Difficulty;
+    let (mut app, _, member) = app();
+    let world = app.world_mut();
+    world.insert_resource(Difficulty::Expert);
+    spell_for(world, SpellId::STAMINA, Targeting::Ally, 7, Dice { base: 0, count: 1, sides: 1 });
+    teach(world, member, 0, &[SpellId::STAMINA]);
+    let fight = world.spawn(Battle::default()).id();
+    play(world, fight, 100);
+    for _ in 0..10 {
+        world.get_mut::<Vitals>(member).unwrap().stamina = crate::game::characters::Pool::full(100);
+        magic::test_set_points(world, member, Realm::Divine, 100);
+        let choice = spell_choice(SpellId::STAMINA, 7, Aim::Body(member));
+        let news = cast_in(world, member, choice, UseContext::Combat);
+        assert!(
+            matches!(news.first(), Some(MagicNews::Done(report)) if report.outcome == magic::Outcome::Backfired),
+            "{news:?}"
+        );
+        assert_eq!(world.get::<Vitals>(member).unwrap().stamina.current, 100 - 14 - 7);
+    }
+}
+
+/// The friendly spells that can backfire turn ill, not well.
+#[test]
+fn six_restoring_spells_have_backfires_of_their_own() {
+    use crate::game::hits::definitions::EffectKind;
+    let (mut app, ..) = app();
+    let world = app.world_mut();
+    let definitions = world.resource::<Definitions>();
+    for id in [
+        SpellId::STAMINA,
+        SpellId::REST_ALL,
+        SpellId::CURE_LESSER_COND,
+        SpellId::CURE_PARALYSIS,
+        SpellId::SANE_MIND,
+        SpellId::REMOVE_CURSE,
+    ] {
+        let (cast, backfire) = (definitions.spell(id).unwrap(), definitions.backfire(id).unwrap());
+        assert_ne!(cast, backfire, "{id:?}");
+        let kind = &definitions.get(backfire).effects[0].kind;
+        let ill = matches!(
+            (id, kind),
+            (SpellId::STAMINA | SpellId::REST_ALL, EffectKind::Tire)
+                | (SpellId::CURE_LESSER_COND, EffectKind::AfflictAny(_))
+                | (
+                    SpellId::CURE_PARALYSIS | SpellId::SANE_MIND | SpellId::REMOVE_CURSE,
+                    EffectKind::Afflict { .. }
+                )
+        );
+        assert!(ill, "{id:?} {kind:?}");
+    }
+}
+
+/// A silenced member can still cast an Alchemy spell if they have the skill
+/// (`Magic.cpp:138-146`); any other spell, or an Alchemy one without it, is
+/// refused.
+#[test]
+fn silence_stops_all_but_alchemy_in_the_hands_of_an_alchemist() {
+    use crate::content::characters::Skill;
+    use crate::content::spells::Targeting;
+    use crate::game::characters::{Condition, Lasting};
+    let (mut app, _, member) = app();
+    let world = app.world_mut();
+    // Heal Wounds is in the Alchemy book too; this one is Divinity's alone.
+    spell_for(
+        world,
+        SpellId::ENERGY_BLAST,
+        Targeting::Ally,
+        1,
+        Dice { base: 0, count: 0, sides: 1 },
+    );
+    teach(world, member, 100, &[SpellId::HEAL_WOUNDS, SpellId::ENERGY_BLAST]);
+    world.get_mut::<Vitals>(member).unwrap().afflict(Condition::Silenced, Lasting::Rounds(9));
+    let casts = |world: &mut World, spell| {
+        let choice = spell_choice(spell, 1, Aim::Body(member));
+        let news = cast_in(world, member, choice, UseContext::World);
+        matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::Silenced, .. }])
+    };
+    assert!(casts(world, SpellId::HEAL_WOUNDS), "no Alchemy, no voice");
+    world.get_mut::<Character>(member).unwrap().skill_points[Skill::Alchemy] = 5;
+    assert!(!casts(world, SpellId::HEAL_WOUNDS), "an alchemist is not silenced for Alchemy");
+    assert!(casts(world, SpellId::ENERGY_BLAST), "but is for the rest");
+}
+
+/// In a fight only what a member carries is within reach, not the party's
+/// pool (`Magic.cpp:1317-1319`).
+#[test]
+fn a_pooled_item_cannot_be_used_in_a_fight() {
+    let (mut app, party, member) = app();
+    let world = app.world_mut();
+    let item = world.spawn(crate::game::items::Pooled(party)).id();
+    let choice =
+        (SpellId::HEAL_WOUNDS, MagicChoice { source: Source::Item(item), aim: Aim::Body(member) });
+    let news = cast_in(world, member, choice, UseContext::Combat);
+    assert!(matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::CannotUse, .. }]));
+    let news = cast_in(world, member, choice, UseContext::World);
+    assert!(!matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::CannotUse, .. }]));
+}
+
+/// A monster's cast tires it by the spell's level and power, 1 + 2
+/// (`Monster.cpp:3914-3917`); the cast costs it nothing else.
+#[test]
+fn a_monsters_cast_tires_it() {
+    let (mut app, ..) = app();
+    let world = app.world_mut();
+    let fight = world.spawn(Battle::default()).id();
+    let caster = monster(world, fight, 3.0);
+    refresh(world);
+    let source = Source::Innate { spell: SpellId::HEAL_WOUNDS, power: 2, budget: 100, level: 5 };
+    let choice = (SpellId::HEAL_WOUNDS, MagicChoice { source, aim: Aim::Body(caster) });
+    let news = cast_in(world, caster, choice, UseContext::Combat);
+    assert!(matches!(news.as_slice(), [MagicNews::Done(_)]), "{news:?}");
+    assert_eq!(world.get::<Vitals>(caster).unwrap().stamina.current, 100 - 3);
+}
+
+/// A spell at an enemy group takes the whole group of the foe aimed at, near
+/// or far (`Magic.cpp:3714-3733`).
+#[test]
+fn a_group_spell_reaches_the_whole_group_however_far() {
+    use crate::content::spells::Targeting;
+    let (mut app, _, member) = app();
+    let world = app.world_mut();
+    spell_for(
+        world,
+        SpellId::ENERGY_BLAST,
+        Targeting::EnemyGroup,
+        1,
+        Dice { base: 5, count: 0, sides: 1 },
+    );
+    teach(world, member, 100, &[SpellId::ENERGY_BLAST]);
+    let fight = world.spawn(Battle::default()).id();
+    let group = world.spawn(MonsterGroup::default()).id();
+    let near = monster_in(world, fight, 3.0, group);
+    let far = monster_in(world, fight, 40.0, group);
+    refresh(world);
+    let choice = spell_choice(SpellId::ENERGY_BLAST, 1, Aim::Body(near));
+    cast_in(world, member, choice, UseContext::Combat);
+    assert_eq!(world.get::<Vitals>(near).unwrap().health.current, 15);
+    assert_eq!(world.get::<Vitals>(far).unwrap().health.current, 15, "forty metres away");
+}
+
+/// What a leeching spell drained is the magnitude cut to the victim's
+/// health, whether or not a Guardian Angel took the blow (`Magic Effects.cpp:1626-1650`):
+/// a Lifesteal of 10 on a foe the angel guards still heals 70%, 7.
+#[test]
+fn a_drain_gives_back_what_a_guardian_angel_took() {
+    use crate::content::spells::Targeting;
+    let (mut app, _, member) = app();
+    let world = app.world_mut();
+    spell_for(
+        world,
+        SpellId::LIFESTEAL,
+        Targeting::Enemy,
+        1,
+        Dice { base: 10, count: 0, sides: 1 },
+    );
+    teach(world, member, 100, &[SpellId::LIFESTEAL]);
+    let fight = world.spawn(Battle::default()).id();
+    let foe = monster(world, fight, 3.0);
+    refresh(world);
+    lay(world, foe, SpellId::GUARDIAN_ANGEL, 10, 100);
+    world.get_mut::<Vitals>(member).unwrap().health.current = 1;
+    let choice = spell_choice(SpellId::LIFESTEAL, 1, Aim::Body(foe));
+    cast_in(world, member, choice, UseContext::Combat);
+    assert_eq!(world.get::<Vitals>(foe).unwrap().health.current, 20, "the angel took it");
+    assert_eq!(world.get::<Vitals>(member).unwrap().health.current, 1 + 7);
+}
+
+/// A monster that does not resist Terror is frightened a second time, at half
+/// strength (`Magic Effects.cpp:1923-1928`).
+#[test]
+fn terror_frightens_a_monster_a_second_time() {
+    use crate::game::characters::Condition;
+    let (mut app, ..) = app();
+    let world = app.world_mut();
+    let fight = world.spawn(Battle::default()).id();
+    let foes: Vec<_> = (0..10).map(|_| monster(world, fight, 3.0)).collect();
+    refresh(world);
+    let definition = world.resource::<Definitions>().spell(SpellId::TERROR).unwrap();
+    // Against 100, a level 0 monster saves 5% of the time, and 5% again at half.
+    let strength = Strength { power: 1, against: 100, boost: 0 };
+    world.trigger(Release {
+        deed: Deed::new(Act::Fight, Strike { definition, strength, blow: None }),
+        victims: foes.iter().map(|&foe| (foe, None)).collect(),
+    });
+    world.flush();
+    let news: Vec<_> = world.resource_mut::<Messages<CombatNews>>().drain().collect();
+    let frightened = news
+        .iter()
+        .flat_map(|news| match news {
+            CombatNews::Effects(effects) => effects.as_slice(),
+            _ => &[],
+        })
+        .filter(|effect| matches!(effect, Effect::Inflicted { condition: Condition::Afraid, .. }))
+        .count();
+    assert!(frightened > foes.len(), "{frightened} frights for {} foes", foes.len());
+}
+
+/// An instrument's toll, its spell's level times 8 plus 20, tires like any
+/// other fatigue: a Slowed player pays a quarter less (`Combat.cpp:2347-2354`,
+/// `PC Item.cpp:1217`). Level 1 asks 28; slowed that is 28 - 25 * 28 / 100 =
+/// 21. Played well or badly, the toll is the same.
+#[test]
+fn an_instruments_toll_is_scaled_like_other_fatigue() {
+    use crate::content::characters::Skill;
+    use crate::content::items::{EquipClass, ItemCatalog, ItemDefinition, ItemId, UseType};
+    use crate::content::spells::ItemSpell;
+    use crate::game::characters::{Condition, Lasting, Pool};
+    use crate::game::items::{Place, Put, make};
+    use bevy::ecs::system::RunSystemOnce;
+    let (mut app, _, member) = app();
+    app.add_plugins(crate::game::items::plugin);
+    let world = app.world_mut();
+    let lute = ItemDefinition {
+        id: ItemId(0),
+        name: "Lute".into(),
+        class: EquipClass::Instrument,
+        use_type: UseType::Instrument,
+        professions: enumset::EnumSet::all(),
+        races: enumset::EnumSet::all(),
+        genders: enumset::EnumSet::all(),
+        spell: Some(ItemSpell { spell: SpellId::HEAL_WOUNDS, power: 0 }),
+        ..default()
+    };
+    world.resource_mut::<Catalogs>().items = ItemCatalog(vec![lute]);
+    let item = world
+        .run_system_once(|mut commands: Commands, content: Res<Catalogs>| {
+            make(&mut commands, &content.items[ItemId(0)], 1, true)
+        })
+        .unwrap();
+    world.flush();
+    world.trigger(Put { item, at: Place::Pack { member, slot: 0 } });
+    world.flush();
+    world.get_mut::<Vitals>(member).unwrap().afflict(Condition::Slowed, Lasting::Rounds(9));
+    let choice =
+        (SpellId::HEAL_WOUNDS, MagicChoice { source: Source::Item(item), aim: Aim::Body(member) });
+    // A virtuoso plays it, a beginner (with no skill) cannot.
+    for (music, played) in [(125, true), (0, false)] {
+        world.get_mut::<Character>(member).unwrap().skill_points[Skill::Music] = music;
+        world.get_mut::<Vitals>(member).unwrap().stamina = Pool::full(100);
+        let news = cast_in(world, member, choice, UseContext::World);
+        let badly =
+            matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::PlayedBadly, .. }]);
+        assert_eq!(badly, !played, "{news:?}");
+        assert_eq!(world.get::<Vitals>(member).unwrap().stamina.current, 100 - 21, "{news:?}");
+    }
 }

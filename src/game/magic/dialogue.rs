@@ -20,6 +20,7 @@ use crate::{
             conversation::{Conversation, MagicalReply},
         },
         rng::GameRng,
+        world::hostility::Stance,
         world::level::{Level, LevelOwned},
         world::population::Monster,
         world::triggers::LevelState,
@@ -29,6 +30,19 @@ use bevy::prelude::*;
 
 pub(crate) fn spell(id: SpellId) -> bool {
     matches!(id, SpellId::CHARM | SpellId::MINDREAD)
+}
+
+/// Whether the one spoken to saves against Charm or Mindread: the mental
+/// save of its level against the cast's strength, scaled for difficulty by
+/// its side like any other save (retail `TargetResistsCondition`,
+/// `Magic Effects.cpp:461-510`).
+fn saves(
+    (level, resistance, against): (u32, i32, u32),
+    (difficulty, stance): (Difficulty, Stance),
+    rng: &mut GameRng,
+) -> bool {
+    let chance = defences::condition_chance(level, resistance, against, 0);
+    defences::save_roll(rng, difficulty.scale(chance, stance))
 }
 
 /// Charm or Mindread, cast at the one the party is talking with while they
@@ -70,6 +84,7 @@ pub(crate) fn cast(
             .ok_or(Refusal::NoTarget)?;
         let their = bodies.get(body).unwrap();
         let (level, resistance) = (their.level.0, their.resistances.realms[Realm::Mental]);
+        let stance = their.stance();
         let notices =
             (their.attributes[Attribute::Senses] + their.attributes[Attribute::Intelligence]) / 2;
         let (mut report, strength) = super::casting::pay(
@@ -77,6 +92,7 @@ pub(crate) fn cast(
             &held,
             (choice.source, UseContext::Conversation),
             (&content, *difficulty, underwater(&states)),
+            0, // a conversation is outside a fight
             &mut rng,
             &mut commands,
         )?;
@@ -89,8 +105,8 @@ pub(crate) fn cast(
                 }
             }
             Outcome::Cast => {
-                let chance = defences::condition_chance(level, resistance, strength.against, 0);
-                let saved = defences::save_roll(&mut rng, chance);
+                let saved =
+                    saves((level, resistance, strength.against), (*difficulty, stance), &mut rng);
                 if id == SpellId::MINDREAD {
                     reply = MagicalReply::Quote(if saved {
                         0x69
@@ -125,5 +141,27 @@ pub(crate) fn cast(
             news.write(MagicNews::Done(report));
         }
         Err(refusal) => commands.trigger(Refused { caster, refusal }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A save of (10 - 10)*3 + 0 + 90 = 90 percent. A hostile speaker's is
+    /// scaled by 3*20/100 on Novice (54) and by 7*20/100 on Expert (126,
+    /// held to the most a save may be, 95); a neutral one's, or any on
+    /// Normal, is not (90).
+    #[test]
+    fn a_save_against_charm_is_scaled_for_difficulty_by_the_speakers_side() {
+        let mut rng = GameRng::seeded(11);
+        let mut rate = |difficulty, stance| {
+            (0..4000).filter(|_| saves((10, 90, 10), (difficulty, stance), &mut rng)).count() / 40
+        };
+        let near = |percent: usize, expected: usize| percent.abs_diff(expected) <= 4;
+        assert!(near(rate(Difficulty::Novice, Stance::Hostile), 54));
+        assert!(near(rate(Difficulty::Expert, Stance::Hostile), 95));
+        assert!(near(rate(Difficulty::Normal, Stance::Hostile), 90));
+        assert!(near(rate(Difficulty::Novice, Stance::Neutral), 90));
     }
 }
