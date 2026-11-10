@@ -22,7 +22,7 @@ use bevy::ui_widgets::{Activate, Button as UiButton, SliderRange, SliderValue};
 use bevy_enhanced_input::prelude::*;
 use enumset::EnumSet;
 
-use crate::content::characters::Realm;
+use crate::content::characters::{Realm, Skill};
 use crate::content::items::ItemCatalog;
 use crate::content::spells::{MAX_POWER, PowerChoice, SpellCatalog, SpellDefinition, Targeting};
 use crate::content::ui::SpriteSheet;
@@ -30,12 +30,16 @@ use crate::game::characters::Condition;
 use crate::game::characters::{Character, Vitals};
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
+use crate::game::difficulty::Difficulty;
 use crate::game::items::Items;
 use crate::game::magic::casting::{
-    AUTO_POWER, Aim, MagicChoice, Source, UseContext, castable, usable_item, usable_items,
-    usable_now,
+    MagicChoice, Source, learned_chance, resolvable, usable_item, usable_items,
 };
-use crate::game::magic::{LearnedSpells, MagicRequest, SpellPoints, silence_stops};
+use crate::game::magic::may::{UseContext, silence_stops, usable_now};
+use crate::game::magic::power::AUTO as AUTO_POWER;
+use crate::game::magic::reach::Aim;
+use crate::game::magic::roll::Pace;
+use crate::game::magic::{LearnedSpells, MagicRequest, SpellPoints};
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::retail_controls::{
@@ -591,12 +595,13 @@ fn offers<'a>(
             held.pool(party)
                 .iter()
                 .filter_map(|&item| {
-                    let spell = usable_item(character, item, held, items, definitions, false)?;
+                    let spell =
+                        usable_item(character, item, held, (items, spells), definitions, false)?;
                     Some((item, spell))
                 })
                 .collect()
         } else {
-            usable_items(member, character, held, items, definitions)
+            usable_items(member, character, held, items, spells, definitions)
         };
         return sources
             .into_iter()
@@ -636,14 +641,17 @@ fn offers<'a>(
         .map(|&id| &spells[id])
         .filter(|s| s.realm == Some(realm))
         .map(|s| {
-            let affordable = points.affordable_power(s, maximum);
-            let silenced = silenced && silence_stops(character, s);
+            let affordable = affordable(points, s, maximum);
+            let silenced = silenced && silence_stops(s, character.skill(Skill::Alchemy) > 0);
             Offer {
                 source: Source::Spell { spell: s.id, power: 1 },
                 spell: s,
                 label: format!("{} {}", glyph(s.targeting), s.name),
                 cost: s.cost.to_string(),
-                available: castable(s, affordable, context, silenced, definitions),
+                available: affordable > 0
+                    && resolvable(s, definitions)
+                    && usable_now(s, context)
+                    && !silenced,
                 silenced,
             }
         })
@@ -654,6 +662,17 @@ fn offers<'a>(
     // Castable first, then the rest (retail's two passes).
     offers.sort_by_key(|o| !o.available);
     offers
+}
+
+/// The most the points pay for of a spell: its realm's points over its cost.
+fn affordable(
+    points: &SpellPoints,
+    spell: &SpellDefinition,
+    maximum: &enum_map::EnumMap<Realm, u32>,
+) -> u32 {
+    spell.realm.map_or(0, |realm| {
+        crate::game::magic::power::affordable(points.available(realm, maximum), spell.cost)
+    })
 }
 
 /// Retail `GetSpellCastRating`: the pip art by failure chance.
@@ -888,7 +907,7 @@ pub(super) fn draw_magic_view(
     // Pips: as many lit as the chosen power, rated by failure chance;
     // auto pips only where retail offers them.
     if !view.items {
-        let affordable = spell.map_or(0, |s| points.affordable_power(s, &mana_maximum));
+        let affordable = spell.map_or(0, |s| affordable(points, s, &mana_maximum));
         for (pip, hovered, mut picture, mut visibility) in &mut parts.p5() {
             let index = pip.0 as usize;
             let shown = match (pip.0, spell.map(|s| s.power)) {
@@ -903,7 +922,13 @@ pub(super) fn draw_magic_view(
                     let rated = if pip.0 >= 7 {
                         0
                     } else {
-                        rating(crate::game::magic::fail_chance(character, spell, pip.0 + 1))
+                        rating(learned_chance(
+                            character,
+                            spell,
+                            pip.0 + 1,
+                            Pace { difficulty: Difficulty::Normal, moment: 0 },
+                            false,
+                        ))
                     };
                     let lit = match view.power {
                         Some(AUTO_POWER) => pip.0 >= 7,

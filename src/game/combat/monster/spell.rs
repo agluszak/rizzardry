@@ -10,8 +10,8 @@ use bevy::prelude::Entity;
 
 use super::close::{Striking, closes_in, reaches_party};
 use crate::content::spells::{MAX_POWER, SpellDefinition, SpellId, Spellbook, Targeting};
-use crate::game::magic::casting::Aim;
-use crate::game::magic::spell_failure;
+use crate::game::magic::reach::Aim;
+use crate::game::magic::roll::spell_failure;
 use crate::game::rng::{GameRng, weighted};
 use crate::game::world::hostility::Stance;
 

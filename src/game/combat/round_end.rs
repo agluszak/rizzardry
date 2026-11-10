@@ -33,9 +33,9 @@ use crate::game::data::Catalogs;
 use crate::game::hits::definitions::Definitions;
 use crate::game::hits::effects::BodyReadOnly;
 use crate::game::hits::effects::Strike;
-use crate::game::hits::reach::{Recipients, within};
+use crate::game::hits::reach::{Recipients, Struck, within};
 use crate::game::hits::{Act, Deed, Release};
-use crate::game::magic::Strength;
+use crate::game::magic::{Strength, power};
 use crate::game::party::body::PartyBody;
 use crate::game::party::recovery::{self, Elapsed, Pace};
 use crate::game::party::roster::{PartyMember, PartyRoster};
@@ -301,17 +301,22 @@ pub(super) fn pulse_clouds(
             let centre = PartyBody::centre(PartyBody::eye(position));
             let reach =
                 crate::game::party::body::RADIUS + crate::content::species::Reach::Short.metres();
-            within(
-                centre,
-                centre,
-                reach,
-                Recipients::Opponents(Stance::Friendly),
-                bodies.iter().map(|(entity, vitals, side)| {
-                    (entity, vitals, side.now(vitals), places.of(entity))
-                }),
-                (roster, combatants.entities()),
-                &obstacles,
-            )
+            let found = bodies.iter().map(|(entity, vitals, side)| {
+                let at = places.of(entity);
+                Struck {
+                    id: entity,
+                    dead: vitals.is_dead(),
+                    stance: side.now(vitals),
+                    centre: at.centre,
+                    radius: at.radius,
+                    order: crate::game::hits::reach::order(
+                        roster.get_index_of(&entity),
+                        combatants.entities().iter().position(|&c| c == entity),
+                    ),
+                    clear: obstacles.clear(centre, at.centre),
+                }
+            });
+            within(centre, reach, Recipients::Opponents(Stance::Friendly), found)
         } else if bearer == party {
             roster.iter().filter(|&member| alive(member)).collect()
         } else {
@@ -320,7 +325,7 @@ pub(super) fn pulse_clouds(
         let strength = if around {
             Strength { power: laid.power, boost: 0, against: laid.power * 3 }
         } else {
-            Strength::at(0, &content.spells[laid.spell], laid.power, laid.boost)
+            power::strength(0, laid.power, laid.boost, &content.spells[laid.spell])
         };
         commands.trigger(Release {
             deed: Deed::new(

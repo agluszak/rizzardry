@@ -19,6 +19,20 @@
 // SpellDice its dice, SpellRounds its duration, SpellEnchant itself.
 // leeches: the damage it deals comes back to its caster, as health (true)
 // or as spell points (false).
+// outlasts: the conditions an auto-powered cast must outlast, choosing the
+// cheapest power that lifts the longest of them (retail
+// `ChoosePowerLevelForDuration`).
+// restores: what an auto-powered restoring spell measures its victim's lack
+// in, Health, Stamina, or HealthThenStamina (retail `ChoosePowerLevelToRestore`).
+// watches_stamina: an auto recast goes on while a victim is short of stamina
+// rather than of health.
+// absorbs: laid, it takes damage in the bearer's place, rolled as it is laid.
+// answers_slowing: laid, it first spends itself against a slowing.
+// bursts_into: each victim it killed bursts into this spell where it fell.
+// turns_back: laid, it turns back what is aimed at enemies and lands on its
+// bearer.
+// buffs_elemental: Power Cast may lay it on an elemental summoned of this
+// element (retail `ApplySummonElementalEffect`).
 // backfire: what a spell turned on its caster does, in the same rows, for a
 // personal spell (one without it does nothing) or a friendly one that can
 // backfire (retail `CanSpellBackfire`); a hostile spell's is its ordinary
@@ -51,6 +65,7 @@
         ],
     ),
     HEAL_WOUNDS: (
+        restores: Health,
         effects: [
             (kind: Heal, roll: SpellDice),
         ],
@@ -88,6 +103,8 @@
         ],
     ),
     STAMINA: (
+        restores: Stamina,
+        watches_stamina: true,
         effects: [
             (kind: Refresh, roll: SpellDice),
         ],
@@ -108,6 +125,7 @@
         ],
     ),
     CURE_LESSER_COND: (
+        outlasts: [Nauseated, Afraid, Asleep, Blind],
         effects: [
             (kind: Cure(conditions: [Irritated, Nauseated, Afraid, Asleep, Blind])),
         ],
@@ -136,6 +154,7 @@
         ],
     ),
     GUARDIAN_ANGEL: (
+        absorbs: true,
         effects: [
             (kind: SpellEnchant, roll: SpellRounds),
         ],
@@ -156,6 +175,7 @@
         ],
     ),
     MISSILE_SHIELD: (
+        buffs_elemental: Air,
         effects: [
             (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
             (kind: SpellEnchant, on: Party, roll: SpellRounds),
@@ -191,6 +211,7 @@
         ],
     ),
     ARMORPLATE: (
+        buffs_elemental: Earth,
         effects: [
             (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
             (kind: SpellEnchant, on: Party, roll: SpellRounds),
@@ -203,6 +224,7 @@
         ],
     ),
     CURE_PARALYSIS: (
+        outlasts: [Paralyzed],
         effects: [
             (kind: Cure(conditions: [Paralyzed, Webbed])),
         ],
@@ -211,6 +233,7 @@
         ],
     ),
     CURE_POISON: (
+        outlasts: [Poisoned],
         effects: [
             (kind: Cure(conditions: [Poisoned])),
         ],
@@ -244,6 +267,7 @@
         ],
     ),
     REST_ALL: (
+        watches_stamina: true,
         effects: [
             (kind: Refresh, roll: SpellDice),
         ],
@@ -288,6 +312,7 @@
         ],
     ),
     CURE_DISEASE: (
+        outlasts: [Diseased],
         effects: [
             (kind: Cure(conditions: [Diseased])),
         ],
@@ -304,6 +329,7 @@
         ],
     ),
     EYE_FOR_AN_EYE: (
+        turns_back: true,
         effects: [
             (kind: SpellEnchant, roll: SpellRounds),
         ],
@@ -314,6 +340,8 @@
         ],
     ),
     HASTE: (
+        answers_slowing: true,
+        buffs_elemental: Fire,
         effects: [
             (kind: SpellEnchant, roll: SpellRounds),
         ],
@@ -327,6 +355,7 @@
         ],
     ),
     REMOVE_CURSE: (
+        outlasts: [Hexed],
         effects: [
             (kind: Cure(conditions: [Hexed])),
         ],
@@ -341,6 +370,7 @@
         ],
     ),
     SUPERMAN: (
+        buffs_elemental: Water,
         effects: [
             (kind: SpellEnchant, roll: SpellRounds),
         ],
@@ -408,6 +438,7 @@
         ],
     ),
     SANE_MIND: (
+        outlasts: [Insane, Turncoat, Asleep],
         effects: [
             (kind: Cure(conditions: [Insane, Turncoat])),
         ],
@@ -439,6 +470,7 @@
         ],
     ),
     BOILING_BLOOD: (
+        bursts_into: BOILING_BLOOD_EXPLOSION,
         effects: [
             (roll: SpellDice, spell_realm: true),
         ],
@@ -564,6 +596,7 @@
         ],
     ),
     RESTORATION: (
+        restores: HealthThenStamina,
         effects: [
             (kind: Heal, roll: Dice(dice: (base: 0, count: 8, sides: 8))),
             (kind: Refresh, roll: Dice(dice: (base: 0, count: 8, sides: 8))),

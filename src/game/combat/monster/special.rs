@@ -3,7 +3,7 @@
 
 use super::close::{Striking, closes_in, reaches_party};
 use crate::content::species::Reach;
-use crate::game::magic::casting::Aim;
+use crate::game::magic::reach::Aim;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::Stance;
 

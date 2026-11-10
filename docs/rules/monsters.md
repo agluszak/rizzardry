@@ -259,9 +259,11 @@ fight:
 - a **neutral** group leaves unless it still stands with the fight (above);
 - a **friendly** group (on the party's side) stays while one of its members
   sees an enemy of its own;
-- a **hostile** group stays while a living member makes out the party (the
-  original also keeps it while the leader is in reach of the party or the
-  group can still engage, see *Open questions*).
+- a **hostile** group stays while a living member makes out the party or sees
+  another enemy, and counts as engaged only while a living member makes out the
+  party (the original also makes a group that has just come into the fight
+  leave when its leader is out of reach and it cannot engage, see *Open
+  questions*).
 
 When no hostile group is left engaged, everyone leaves at once. A hostile
 fighting monster outside any group keeps the others engaged, and itself stays
@@ -357,8 +359,8 @@ its Intelligence percent, it looks for a **ward**: a living fellow on its side
 than it, and at **less than 40 percent** of its health. If there is one it picks
 one at random and spends its moment guarding for the round: it takes blows
 meant for the ward ([attack](attack.md) *Guards intercepting*). The original
-also counts a fellow "out of formation", and members who have turned (see
-*Open questions*).
+also counts a fellow "out of formation" (see *Open questions*). A party member
+under Turncoat is a friend of the monsters, and is a ward by the same rule.
 
 ### Holding back warily
 
@@ -391,7 +393,7 @@ A monster has ten **spell slots**. Slots weigh in the choice 5, 5, 5, 10, 10,
    | the caster | itself, if the spell would do something to it |
    | a friend | each friend seen and in reach, monster first, then member |
    | an enemy | each foe seen and in reach, monster first, then member |
-   | a group | the party, if at least half of it would feel the spell and the party is in reach |
+   | a group | each other monster group in the fight at least half of whose hostile members would feel the spell and one of which is in reach, aimed at the first such member in reach, with no sight asked of them; then the party, if at least half of the members seen would feel it and one of them is in reach |
    | a cone or a blast | each foe monster seen and in reach; and each hostile member in reach once for each member the monster stands against, if at least half the party would feel it |
    | all enemies | ahead, if any foe is seen and in reach |
 

@@ -269,7 +269,7 @@ fn breathe(
     };
     let spell = &content.spells[crate::content::spells::SpellId::SPECIAL_ATTACK_CONE];
     let eye = PartyBody::eye(position);
-    if let Some(target) = crate::game::magic::target_ahead(
+    if let Some(target) = crate::game::magic::reach::ahead(
         eye,
         body.forward(),
         spell.reach.metres(),

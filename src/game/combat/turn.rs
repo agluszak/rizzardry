@@ -29,10 +29,10 @@ use crate::game::hits::effects::{self, Body};
 use crate::game::hits::{Act, Deed, Release};
 use crate::game::inventory::WeaponSlot;
 use crate::game::items::Items;
-use crate::game::magic::casting::{
-    Aim, Cast, MagicChoice, Refusal, Refused, Source, UseContext, in_cone, reaches as spell_reaches,
-};
-use crate::game::magic::{Strength, Utility};
+use crate::game::magic::Strength;
+use crate::game::magic::casting::{Cast, MagicChoice, Refused, Source, reaches as spell_reaches};
+use crate::game::magic::may::Refusal;
+use crate::game::magic::reach::{Aim, in_cone};
 use crate::game::party::Order;
 use crate::game::party::formation::Formation;
 use crate::game::party::roster::PartyRoster;
@@ -596,16 +596,7 @@ pub(super) fn take_turn(
                 commands.trigger(Refused { caster: actor, refusal: Refusal::NoItem });
                 return;
             };
-            if crate::game::magic::pointcasts::spell(spell) {
-                commands.trigger(Utility { caster: actor, spell, choice });
-            } else {
-                commands.trigger(Cast {
-                    caster: actor,
-                    spell,
-                    context: UseContext::Combat,
-                    choice,
-                });
-            }
+            commands.trigger(Cast { caster: actor, spell, choice });
         }
     }
 }

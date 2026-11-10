@@ -6,8 +6,9 @@
 use bevy::ecs::query::QueryData;
 use bevy::prelude::*;
 
+use super::applied::{self, Outcome};
 use super::defences;
-use super::definitions::{self, Blow, DefinitionId, Definitions, EffectKind, EffectSpec, Whom};
+use super::definitions::{self, Blow, DefinitionId, Definitions, EffectKind, EffectSpec};
 use super::{Damaged, Effect};
 use crate::content::characters::{Attribute, Skill};
 use crate::content::items::EquipClass;
@@ -113,54 +114,10 @@ impl Log {
     }
 }
 
-/// How an effect was settled.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Outcome {
-    Landed,
-    Resisted,
-    /// Nothing to act on: the body was dead, gone, or not of the kind.
-    Missed,
-}
-
-/// The effects of a definition that apply, each with the weapon's chance
-/// and poison when it stands for a weapon effect.
-fn specs<'a>(
-    strike: &'a Strike,
-    rules: &Rules<'a>,
-    party: bool,
-) -> impl Iterator<Item = EffectSpec> + 'a {
-    let blow = strike.blow;
-    rules.definitions.get(strike.definition).effects.iter().filter_map(move |spec| {
-        if (spec.on == Whom::Party) != party
-            || (spec.by_monsters && !blow.is_some_and(|b| b.by_monster))
-        {
-            return None;
-        }
-        let Some(effect) = spec.weapon else { return Some(spec.clone()) };
-        let weapon = blow?.effects;
-        let chance = weapon.chances[effect];
-        let kind = match spec.kind {
-            EffectKind::Afflict { condition: Condition::Poisoned, indefinite, .. } => {
-                EffectKind::Afflict {
-                    condition: Condition::Poisoned,
-                    poison: weapon.strength,
-                    indefinite,
-                }
-            }
-            ref kind => kind.clone(),
-        };
-        (chance > 0).then_some(EffectSpec { chance: Some(chance), kind, ..spec.clone() })
-    })
-}
-
-/// Whether an effect waits on the one before it, which did not come.
-fn waits(spec: &EffectSpec, previous: Option<Outcome>) -> bool {
-    (spec.landed && previous != Some(Outcome::Landed))
-        || (spec.resisted && previous != Some(Outcome::Resisted))
-}
-
 /// Land a strike on a body (retail `ApplySpellEffectToTarget`,
-/// `ApplyEffectConditions`): every effect for its kind in order.
+/// `ApplyEffectConditions`): every effect for its kind in order, each asked of
+/// the rules of [`super::defences`] and [`super::applied`] and made to happen
+/// to the body.
 pub fn land(
     strike: &Strike,
     body: &mut BodyItem,
@@ -170,15 +127,13 @@ pub fn land(
     laying: &mut Laying,
 ) {
     let mut previous = None;
-    for spec in specs(strike, rules, false) {
+    let effects = &rules.definitions.get(strike.definition).effects;
+    for spec in applied::rows(effects, strike.blow, false) {
         let kind = body.resistances.kind;
-        if (spec.on == Whom::Members && !body.member)
-            || (spec.on == Whom::Monsters && kind.is_none())
-            || spec.kinds.as_ref().is_some_and(|kinds| !kind.is_some_and(|k| kinds.contains(&k)))
-        {
+        if !applied::is_for(&spec, body.member, kind) {
             continue;
         }
-        if waits(&spec, previous) {
+        if applied::waits(&spec, previous) {
             previous = Some(Outcome::Missed);
             continue;
         }
@@ -186,16 +141,35 @@ pub fn land(
         let rolled = spec
             .roll
             .map_or(0, |roll| definitions::roll(roll, strike.strength, strike.blow.as_ref(), rng));
-        let rolled = if spec.half { rolled / 2 } else { rolled };
         let alive = !body.vitals.is_dead();
-        previous = Some(match defend(&spec, rolled, strike.strength, body, rules, rng, log) {
-            Ok(magnitude) => {
+        let defending = defences::Defending {
+            row: &spec,
+            rolled,
+            strength: strike.strength,
+            difficulty: rules.difficulty,
+            victim: defences::Victim {
+                dead: !alive,
+                level: body.level.0,
+                stance: body.stance(),
+                resistances: body.resistances,
+            },
+        };
+        let victim = body.entity;
+        previous = Some(match defences::defend(rng, &defending) {
+            defences::Defended::Through(magnitude) => {
                 let outcome =
                     apply(&spec, magnitude, strike.strength, body, rules, rng, log, laying);
                 settle(body, alive, rules, rng);
                 outcome
             }
-            Err(outcome) => outcome,
+            defences::Defended::Missed => Outcome::Missed,
+            defences::Defended::Resisted { saved } => {
+                if saved && body.character.is_some() {
+                    log.practised.push((victim, Skill::IronWill, 2));
+                }
+                log.effects.push(Effect::Resisted { victim });
+                Outcome::Resisted
+            }
         });
     }
 }
@@ -208,88 +182,6 @@ fn settle(body: &mut BodyItem, was_alive: bool, rules: &Rules, rng: &mut GameRng
         && body.vitals.is_dead()
     {
         body.vitals.cheats_death(character, rules.fight, rng);
-    }
-}
-
-/// Validate and resist one effect before it is applied (retail order:
-/// the dead, its chance, immunity, the save, resistance): the magnitude it
-/// lands with, or how it was stopped.
-fn defend(
-    spec: &EffectSpec,
-    mut magnitude: u32,
-    strength: Strength,
-    body: &mut BodyItem,
-    rules: &Rules,
-    rng: &mut GameRng,
-    log: &mut Log,
-) -> Result<u32, Outcome> {
-    use EffectKind as K;
-    let victim = body.entity;
-    let requires_life = matches!(
-        spec.kind,
-        K::Harm
-            | K::Sap
-            | K::Afflict { .. }
-            | K::Slay
-            | K::Tire
-            | K::DrainPool
-            | K::DrainBudget
-            | K::DrainRealm(_)
-            | K::Heal
-            | K::Refresh
-            | K::Replenish
-    );
-    if requires_life && body.vitals.is_dead() {
-        return Err(Outcome::Missed);
-    }
-    if spec.chance.is_some_and(|chance| rng.below(100) >= chance) {
-        return Err(Outcome::Missed);
-    }
-    let against = if spec.half { strength.against / 2 } else { strength.against };
-    let affliction = match spec.kind {
-        K::Afflict { condition, indefinite, .. } => Some((condition, indefinite)),
-        _ => None,
-    };
-    let mut resisted = match affliction {
-        Some((condition, _)) => body.resistances.immune.contains(&condition),
-        None => matches!(spec.kind, K::Slay) && body.resistances.death_immune,
-    };
-    if !resisted && let (Some(save), Some(realm)) = (spec.save, spec.resist) {
-        let resistance = body.resistances.realms[realm];
-        let chance = defences::condition_chance(body.level.0, resistance, against, save);
-        resisted = defences::save_roll(rng, rules.difficulty.scale(chance, body.stance()));
-        if resisted && body.character.is_some() {
-            log.practised.push((victim, Skill::IronWill, 2));
-        }
-    }
-    if !resisted
-        && spec.roll.is_some()
-        && let Some(realm) = spec.resist
-    {
-        let resistance = body.resistances.realms[realm];
-        magnitude = defences::resist(rng, magnitude, resistance, body.level.0, against);
-        resisted = magnitude == 0;
-    }
-    // What it shrugs off whenever a save is allowed at all.
-    if !resisted
-        && spec.save.is_some()
-        && let Some((condition, _)) = affliction
-    {
-        resisted = body.resistances.wards.contains(&condition);
-    }
-    if resisted {
-        log.effects.push(Effect::Resisted { victim });
-        return Err(Outcome::Resisted);
-    }
-    Ok(magnitude)
-}
-
-/// How long an affliction of `magnitude` lasts.
-fn lasting(indefinite: bool, magnitude: u32) -> Lasting {
-    match magnitude {
-        _ if indefinite => Lasting::Indefinite,
-        1 => Lasting::Rounds(2),
-        rounds => Lasting::Rounds(rounds),
     }
 }
 
@@ -337,7 +229,7 @@ fn apply(
             // A leech gives back the magnitude the victim's health could
             // bear, before a Guardian Angel takes any (retail
             // `DrainTargetsLife`, `Magic Effects.cpp:1626-1650`).
-            log.harm += magnitude.min(body.vitals.health.current);
+            log.harm += applied::bearable(magnitude, body.vitals.health.current);
             let through = laying.absorb(victim, magnitude);
             let lost = body.vitals.hurt(through);
             dealt(body, lost, true, rng, log);
@@ -355,10 +247,10 @@ fn apply(
             return Outcome::Landed;
         }
         K::Afflict { condition, poison, indefinite } => {
-            if condition == Condition::Turncoat && body.stance() == Stance::Neutral {
+            let Some(lasting) = applied::afflicts(condition, body.stance(), indefinite, magnitude)
+            else {
                 return Outcome::Missed;
-            }
-            let lasting = lasting(indefinite, magnitude);
+            };
             if condition == Condition::Poisoned {
                 body.vitals.poison(lasting, poison);
             } else if condition != Condition::Slowed {
@@ -388,7 +280,7 @@ fn apply(
         }
         K::DrainBudget => {
             let Some(budget) = body.budget.as_mut() else { return Outcome::Missed };
-            let lost = budget.0.min(magnitude);
+            let lost = applied::budget_lost(budget.0, magnitude);
             budget.0 -= lost;
             Effect::Drained { victim, amount: lost }
         }
@@ -409,9 +301,17 @@ fn apply(
             if conditions.contains(&Condition::Poisoned) {
                 body.vitals.weaken_poison(defences::cure_rounds(strength), rng);
             }
-            let lifted =
-                defences::cure(rng, &mut body.vitals.conditions, conditions, strength, outright);
-            match lifted.first() {
+            let cured =
+                defences::cure(rng, &body.vitals.conditions, conditions, strength, outright);
+            for &(condition, left) in &cured.shortened {
+                if let Some(lasting) = body.vitals.conditions.lasting_mut(condition) {
+                    *lasting = Lasting::Rounds(left);
+                }
+            }
+            for &condition in &cured.lifted {
+                body.vitals.conditions.lift(condition);
+            }
+            match cured.lifted.first() {
                 Some(&condition) => Effect::Cured { victim, condition },
                 None => Effect::Nothing { victim },
             }
@@ -432,27 +332,30 @@ fn apply(
                 log.effects.push(Effect::Nothing { victim });
                 return Outcome::Missed;
             }
-            let share =
-                (body.attributes[Attribute::Piety] + body.attributes[Attribute::Vitality]) >> 2;
-            body.vitals.health.current = (body.vitals.health.max * share / 100).max(1);
-            body.vitals.stamina.current = (body.vitals.stamina.max * share / 100).max(1);
+            let (health, stamina) = applied::raised(
+                body.vitals.health.max,
+                body.vitals.stamina.max,
+                body.attributes[Attribute::Piety],
+                body.attributes[Attribute::Vitality],
+            );
+            body.vitals.health.current = health;
+            body.vitals.stamina.current = stamina;
             log.raised.push(victim);
             Effect::Raised { victim }
         }
         K::Purify { level } => {
-            laying.purify(victim, magnitude + level);
+            laying.purify(victim, applied::purified(magnitude, level));
             Effect::Purified { victim }
         }
         K::Enchant(spell) => {
             // Haste first spends itself on a slowing; wholly spent, it
             // changed something all the same.
-            let turns = match spell {
-                SpellId::HASTE => body.vitals.hasted(magnitude),
-                _ => magnitude,
-            };
-            let changed = !body.vitals.is_dead()
-                && (lay(laying, victim, spell, turns, strength, rules.content, rng)
-                    || (spell == SpellId::HASTE && turns == 0 && magnitude > 0));
+            let definition = rules.definitions.spell(spell).map(|id| rules.definitions.get(id));
+            let answers_slowing = definition.is_some_and(|definition| definition.answers_slowing);
+            let turns = if answers_slowing { body.vitals.hasted(magnitude) } else { magnitude };
+            let dead = body.vitals.is_dead();
+            let laid = !dead && lay(laying, victim, spell, turns, strength, rules, rng);
+            let changed = !dead && applied::enchanted(laid, answers_slowing, turns, magnitude);
             if changed { Effect::Enchanted { victim, spell } } else { Effect::Nothing { victim } }
         }
         K::Burn => {
@@ -490,15 +393,16 @@ pub fn land_on_party(
     use EffectKind as K;
     let victim = party;
     let mut previous = None;
-    for spec in specs(strike, rules, true) {
-        if waits(&spec, previous) {
+    let effects = &rules.definitions.get(strike.definition).effects;
+    for spec in applied::rows(effects, strike.blow, true) {
+        if applied::waits(&spec, previous) {
             previous = Some(Outcome::Missed);
             continue;
         }
         let magnitude = spec
             .roll
             .map_or(0, |roll| definitions::roll(roll, strike.strength, strike.blow.as_ref(), rng));
-        if spec.chance.is_some_and(|chance| rng.below(100) >= chance) {
+        if !applied::happens(rng, spec.chance) {
             previous = Some(Outcome::Missed);
             continue;
         }
@@ -516,12 +420,11 @@ pub fn land_on_party(
                 }
             }
             K::Purify { level } => {
-                laying.purify(party, magnitude + level);
+                laying.purify(party, applied::purified(magnitude, level));
                 log.effects.push(Effect::Purified { victim });
             }
             K::Enchant(spell) => {
-                let laid =
-                    lay(laying, party, spell, magnitude, strike.strength, rules.content, rng);
+                let laid = lay(laying, party, spell, magnitude, strike.strength, rules, rng);
                 log.effects.push(if laid {
                     Effect::Enchanted { victim, spell }
                 } else {
@@ -532,7 +435,7 @@ pub fn land_on_party(
                 burn(rules.held.pool(party).iter().copied(), rules, magnitude, rng, log);
             }
             K::LoseGold => {
-                let amount = inventory.gold * magnitude.min(100) / 100;
+                let amount = applied::gold_lost(inventory.gold, magnitude);
                 inventory.gold -= amount;
                 log.effects.push(Effect::GoldLost { amount });
             }
@@ -543,23 +446,28 @@ pub fn land_on_party(
     }
 }
 
-/// Lay a spell on a bearer for `turns` at a cast's strength; Guardian
-/// Angel's absorption is rolled as it is laid. Whether it took.
+/// Lay a spell on a bearer for `turns` at a cast's strength; the absorption of
+/// a spell that absorbs damage is rolled as it is laid. Whether it took.
 fn lay(
     laying: &mut Laying,
     bearer: Entity,
     spell: SpellId,
     turns: u32,
     strength: Strength,
-    content: &Catalogs,
+    rules: &Rules,
     rng: &mut GameRng,
 ) -> bool {
-    let absorbs = if spell == SpellId::GUARDIAN_ANGEL {
-        let rolled = content.spells[spell].dice.map_or(0, |dice| rng.roll(dice)) * strength.power;
-        rolled + rolled * strength.boost / 100
-    } else {
-        0
-    };
+    let absorbing = rules
+        .definitions
+        .spell(spell)
+        .is_some_and(|definition| rules.definitions.get(definition).absorbs);
+    let absorbs = applied::absorbs(
+        rng,
+        absorbing,
+        rules.content.spells[spell].dice,
+        strength.power,
+        strength.boost,
+    );
     let laid = Enchantment { spell, power: strength.power, boost: strength.boost };
     laying.lay(bearer, laid, turns, absorbs)
 }
@@ -582,7 +490,7 @@ fn burn(
             EquipClass::Spellbook => 2,
             _ => continue,
         };
-        let lost = (0..rules.held.units(item)).filter(|_| rng.below(100) < chance).count() as u16;
+        let lost = applied::burnt(rng, rules.held.units(item), chance);
         if lost > 0 {
             burnt[class] += u32::from(lost);
             log.burnt.push((item, lost));

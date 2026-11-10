@@ -22,7 +22,7 @@ use crate::game::characters::Condition;
 use crate::game::combat::turn::{Fleeing, SpecialCooldown};
 use crate::game::hits::definitions::Definitions;
 use crate::game::hits::effects::BodyReadOnly;
-use crate::game::magic::casting::Aim;
+use crate::game::magic::reach::Aim;
 use crate::game::npcs::NpcBody;
 use crate::game::party::formation::Formation;
 use crate::game::party::roster::PartyRoster;
