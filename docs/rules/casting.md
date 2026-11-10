@@ -941,22 +941,20 @@ into the sections above.
 The sections above are the rules. This says how the code is to be shaped
 around them; where the code differs from it, the code is wrong.
 
-**A rule is a function of the facts it is about.** Each rule above is one
-function that takes plain values and returns a plain value: no query, no
-world, no catalog, no log, and it changes nothing.
+**A rule is a function of the caster, the means and the spell.** What a
+cast comes from is read once: a learned spell at the power asked, an item
+with what it casts and how it is used, or a monster's own casting. Each rule
+above takes the caster itself, those means and the spell, and asks the means
+wherever the three differ: how likely it fails, what it goes off at, what it
+costs. None is handed a struct of facts copied out of the caster, the item's
+record or the spell.
 
-| Rule | Takes | Gives |
-| --- | --- | --- |
-| may it be cast (2) | the caster's conditions, what they know and have points for, the source (a learned spell, or an item with its charges, where it is held and how it is used), where they are (a fight, a camp, neither), the spell's own limits | yes, or the refusal |
-| power (3) | what was asked for, the points or budget at hand, the spell's cost and level | the power, and what it costs |
-| the roll to cast (4) | skill and level against the spell's, power, the caster's moment in the round, what ails them, whether it is on oneself, the difficulty | the chance to fail; and from a roll: cast, fizzle or backfire |
-| whom it reaches (5) | the spell's targeting and reach, the aim, where everyone stands and how they stand toward the caster, what blocks the line | the victims in order, each with when it arrives |
-| what lands (6) | one effect row, its strength, the victim's level, resistances, what ails it and what is laid on it | stopped and how, or the magnitude and what it does |
-| what it costs and trains (7) | the source, the power, the spell, load and conditions | points or charges spent, stamina, skills practised and how much |
+What an item casts, who may use it and how hard it is to identify are on the
+item, written when it is made; no rule looks an item's record up.
 
-The facts each takes are a small struct named for the rule, built in one
-place. Every number on this page is a test of one of these functions, with
-the expected value worked out from the page.
+Whom a cast reaches is still worked out over a list of everyone as the aim
+finds them, taken once as the cast begins. It should read the actors where
+they stand as the other rules do.
 
 **A cast is one chain.** The observer of `Cast` reads what the rules need,
 asks them in the order of this page, and makes happen what they decide: the
@@ -970,8 +968,3 @@ or a fact in its row.
 **A utility spell is a cast like any other** up to the point where it lands;
 what it then does (identify, open a portal, charm, lure, summon) is one
 observer each, of the same event.
-
-**What goes.** `plan`, `attempt`, `pay`, `aim_at` and the `Stage` they share
-as functions that read the world while deciding; the separate paths by which
-a fight's cast, a camp's cast, an item's cast and a utility cast each check,
-roll and pay; tests of a particular spell in the code that casts.

@@ -3,9 +3,8 @@
 //! about and nothing else. A rule that rolls takes the random-number
 //! generator; none changes anything.
 
-use crate::content::items::Dice;
 use crate::content::spells::{MAX_POWER, PowerChoice, SpellDefinition, Targeting};
-use crate::game::characters::{Condition, Conditions, Lasting, Pool};
+use crate::game::characters::{Condition, Lasting, Pool, Vitals};
 use crate::game::hits::definitions::Restores;
 use crate::game::magic::Strength;
 use crate::game::rng::GameRng;
@@ -55,36 +54,6 @@ pub fn chosen(asked: u32, affordable: u32, class: PowerChoice) -> u32 {
     asked.min(MAX_POWER).min(affordable)
 }
 
-/// The victim an auto power is chosen for.
-#[derive(Clone, Copy, Debug)]
-pub struct Victim<'a> {
-    /// A party member: a monster is healed at the least power.
-    pub member: bool,
-    pub health: Pool,
-    pub stamina: Pool,
-    pub conditions: &'a Conditions,
-}
-
-/// What an auto power weighs (retail `ChooseSpellPowerLevelForTarget`).
-#[derive(Clone, Copy, Debug)]
-pub struct Auto<'a> {
-    /// The most the points pay for.
-    pub affordable: u32,
-    /// The aimed victim; without one, the least power.
-    pub victim: Option<Victim<'a>>,
-    pub cost: u32,
-    pub dice: Option<Dice>,
-    /// What the spell mends, if it is a restoring spell.
-    pub restores: Option<Restores>,
-    /// The conditions it must outlast, if it is a cure.
-    pub outlasts: &'a [Condition],
-    /// The failure chance at powers 1 to 7, as the round's pace scales it.
-    pub failure: [u32; MAX_POWER as usize],
-    /// Identify Item: the difficulty of the item to be revealed and the boost
-    /// of the caster; the least power that reveals it is taken.
-    pub identify: Option<(u8, u32)>,
-}
-
 /// The power an auto cast takes, held to what is affordable. A member lacking
 /// health or stamina is healed by the lowest power whose average roll covers
 /// it, stopping one short as soon as the failure chance at a power goes over
@@ -92,14 +61,21 @@ pub struct Auto<'a> {
 /// outlast the longest of the conditions it lifts, each power delivering the
 /// square of itself less the share the failure chance takes; a condition
 /// without end is answered with 1. Any other spell takes 1.
-pub fn auto(facts: &Auto) -> u32 {
-    if let Some((difficulty, boost)) = facts.identify {
-        return identifying(boost, difficulty).min(facts.affordable);
+pub fn auto(
+    spell: &SpellDefinition,
+    (restores, outlasts): (Option<Restores>, &[Condition]),
+    victim: Option<(&Vitals, bool)>,
+    affordable: u32,
+    failure: [u32; MAX_POWER as usize],
+    identify: Option<(u8, u32)>,
+) -> u32 {
+    if let Some((difficulty, boost)) = identify {
+        return identifying(boost, difficulty).min(affordable);
     }
-    let Some(victim) = facts.victim else { return 1 };
-    let failure = |power: u32| facts.failure[power as usize - 1];
-    let power = if facts.outlasts.is_empty() {
-        let Some(restores) = facts.restores else { return 1 };
+    let Some((victim, member)) = victim else { return 1 };
+    let failure = |power: u32| failure[power as usize - 1];
+    let power = if outlasts.is_empty() {
+        let Some(restores) = restores else { return 1 };
         let lacks = |pool: Pool| pool.max.max(pool.current) - pool.current;
         let missing = match restores {
             Restores::Stamina => lacks(victim.stamina),
@@ -108,9 +84,9 @@ pub fn auto(facts: &Auto) -> u32 {
         };
         // The average roll, cut down to a whole number.
         let average = |power: u32| {
-            facts.dice.map_or(0, |d| (2 * d.base + d.count * power as i32 * (d.sides + 1)) / 2)
+            spell.dice.map_or(0, |d| (2 * d.base + d.count * power as i32 * (d.sides + 1)) / 2)
         };
-        if !victim.member || missing == 0 {
+        if !member || missing == 0 {
             1
         } else {
             (1..=MAX_POWER)
@@ -127,7 +103,7 @@ pub fn auto(facts: &Auto) -> u32 {
     } else {
         let mut turns = None;
         for &(condition, lasting) in victim.conditions.iter() {
-            if facts.outlasts.contains(&condition) {
+            if outlasts.contains(&condition) {
                 match lasting {
                     // Nothing outlasts it: the least power.
                     Lasting::Indefinite => return 1,
@@ -137,19 +113,19 @@ pub fn auto(facts: &Auto) -> u32 {
         }
         match turns {
             None => 1,
-            Some(turns) => (1..=facts.affordable.max(1))
+            Some(turns) => (1..=affordable.max(1))
                 .map(|power| {
                     // What one cast really delivers: the square of the power,
                     // less the share the failure chance takes.
                     let square = power.pow(2);
                     let per = (square - (failure(power) * square / 100).min(square)).max(1);
-                    (facts.cost * turns.div_ceil(per) * power, power)
+                    (spell.cost * turns.div_ceil(per) * power, power)
                 })
                 .min()
                 .map_or(1, |(_, power)| power),
         }
     };
-    power.min(facts.affordable)
+    power.min(affordable)
 }
 
 /// The power an instrument or gadget is played at (retail `UseItem`): the
@@ -176,20 +152,6 @@ pub fn goes_again(stamina: u32, level: u32, available: u32, cost: u32) -> bool {
     stamina > level && available >= cost
 }
 
-/// A victim of a repeated cast, as the caster finds it afterwards.
-#[derive(Clone, Copy, Debug)]
-pub struct Mending {
-    pub dead: bool,
-    /// What the spell restores in it: health, or stamina.
-    pub pool: Pool,
-}
-
-/// Whether a victim is not yet whole in what the spell restores: the dead are
-/// let be.
-pub fn unmended(victims: &[Mending]) -> bool {
-    victims.iter().any(|victim| !victim.dead && victim.pool.current < victim.pool.max)
-}
-
 /// The least power at which a cast reveals an item this hard (retail
 /// `ApplyIdentifyAttempt`), 7 if none does.
 pub fn identifying(boost: u32, difficulty: u8) -> u32 {
@@ -207,7 +169,9 @@ pub fn reveals(power: u32, boost: u32, difficulty: u8) -> bool {
 mod tests {
     use super::*;
     use crate::content::characters::Realm;
+    use crate::content::items::Dice;
     use crate::content::spells::SpellId;
+    use crate::game::characters::Conditions;
     use crate::game::hits::definitions::Restores;
 
     fn spell(cost: u32, level: u32, targeting: Targeting) -> SpellDefinition {
@@ -267,6 +231,47 @@ mod tests {
         Some(Dice { base: 0, count, sides })
     }
 
+    /// Someone an auto power is worked out for.
+    #[derive(Clone, Copy)]
+    struct Victim<'a> {
+        member: bool,
+        health: Pool,
+        stamina: Pool,
+        conditions: &'a Conditions,
+    }
+
+    /// An auto cast of a spell that costs 3 a power.
+    struct Auto<'a> {
+        affordable: u32,
+        victim: Option<Victim<'a>>,
+        dice: Option<Dice>,
+        restores: Option<Restores>,
+        outlasts: &'a [Condition],
+        failure: [u32; 7],
+        identify: Option<(u8, u32)>,
+    }
+
+    fn auto(asked: &Auto) -> u32 {
+        let spell = SpellDefinition { cost: 3, dice: asked.dice, ..Default::default() };
+        let victim = asked.victim.map(|victim| {
+            let vitals = Vitals {
+                health: victim.health,
+                stamina: victim.stamina,
+                conditions: victim.conditions.clone(),
+                ..Default::default()
+            };
+            (vitals, victim.member)
+        });
+        super::auto(
+            &spell,
+            (asked.restores, asked.outlasts),
+            victim.as_ref().map(|(vitals, member)| (vitals, *member)),
+            asked.affordable,
+            asked.failure,
+            asked.identify,
+        )
+    }
+
     fn victim(member: bool, health: (u32, u32), stamina: (u32, u32), c: &Conditions) -> Victim<'_> {
         Victim {
             member,
@@ -286,7 +291,6 @@ mod tests {
         Auto {
             affordable,
             victim: Some(victim),
-            cost: 3,
             dice,
             restores: Some(restores),
             outlasts: &[],
@@ -355,7 +359,6 @@ mod tests {
         Auto {
             affordable,
             victim: Some(victim),
-            cost: 3,
             dice: None,
             restores: None,
             outlasts,
