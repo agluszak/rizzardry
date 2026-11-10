@@ -82,6 +82,35 @@ and `combat/attack.rs`; wearing and removing refit by the relationship
 changing, which removes the watch on a member's gear; and burden is worked
 out when what is carried changes.
 
+**Gone.** `StackId`, `ItemIds`, `ItemStack`, `Equipped`, `Carried`, `ItemPool`,
+`Hand`, `PartyInventory` (but for the purse), `Slot`, `MemberSlot`,
+`ItemOwner`, `ItemRef`, `ItemAt`, `PoolPosition`, `WorldItem`/`GroundLoot`
+holding stacks, `Contents` holding stacks; `content.items[..]` in any rule
+outside where an item is made or shown; `Grip`, `Holds`, and
+`combat/attack.rs`'s member half; `distribute_burden` and `refit_regeared`.
+
+**New types, and no others.** On an item: `Item`, `Count`, `Charges`, `Known`,
+and the components its definition becomes (`Weight`, `Wearable`, `Weapon`,
+`Launcher`, `Ammunition`, `Protection`, `Casts`, `Cursed`, `Crucial`). Where it
+is: the relationships `Worn`, `Packed`, `Pooled`, `InHand`, `Stowed`, `Loot`
+and their targets. One read accessor for "what does this member wear and
+pack". The operations of the rule page as events an observer carries out:
+`Take`, `Move`, `Drop`, `Use`, `Load`, `Merge`, `Identify`, each saying what it
+did with `ItemNews`. A destination is one enum (`Place`): a slot of a member, a
+pack slot, the pool before some item or at its end, the hand.
+
+**Not allowed.** An id or index that stands for an item. A value copy of an
+item moved between collections. An operation that takes an item out of one
+place and puts it in another as two steps another rule could see between.
+
+**Order of work.** The item components and relationships and the operations
+over them, with their rules tested through the world; then the party's
+screens over them; then world items, containers, loot and trade; then a
+member's arms and refit from what is worn, which deletes `Grip`; then burden.
+Members out of the party and levels that were left still copy what they hold
+into records until slice 4; that boundary converts to and from item entities
+and is the only place a value copy of an item survives.
+
 ### 4. Levels keep what is in them
 
 A level that is left stays, dormant, with its monsters, items and devices. The
