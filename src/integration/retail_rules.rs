@@ -41,7 +41,7 @@ fn starting_equipment_is_worn() {
         (Race::Faerie, Profession::Ninja),
     ];
     for (race, profession) in professions {
-        let gender = if profession == Profession::Valkyrie { Gender::Female } else { Gender::Male };
+        let gender = profession.row().only_gender.unwrap_or(Gender::Male);
         let character = Character::new("Test", race, gender, profession);
         let mut app = App::new();
         app.add_plugins(crate::game::items::plugin);

@@ -12,7 +12,7 @@ use super::{Arm, Attacks, Attributes};
 use crate::content::characters::{Attribute, BodyPart, Skill, Trait};
 use crate::content::items::{AttackEffect, AttackEffects, AttackMode, Dice, ItemKind};
 use crate::content::species::{MonsterKind, Reach};
-use crate::game::characters::{Character, Load, Race};
+use crate::game::characters::{Character, Load};
 use crate::game::inventory::{EquipSlot, WeaponSlot};
 use crate::game::items::{
     Charges, Fit, Launcher, Missile, Protection, Strength, Weapon, Weight, partners,
@@ -579,8 +579,8 @@ pub fn armour<'a>(
     let speed = i32::from(speed > 79) + i32::from(speed > 89)
         - i32::from(speed < 20)
         - i32::from(speed < 10);
-    let mut total = i32::from(c.race == Race::Faerie) * 2 + speed - load.armour_penalty()
-        + if defending { 2 } else { 0 };
+    let mut total =
+        c.race.row().armour + speed - load.armour_penalty() + if defending { 2 } else { 0 };
     let mut shield = 0;
     // Shields and magic items worn in the misc, cloak and weapon slots.
     for slot in [
@@ -616,7 +616,7 @@ mod tests {
     use super::*;
     use crate::content::characters::Gender;
     use crate::content::items::{EquipClass, ItemDefinition, ItemId};
-    use crate::game::characters::Profession;
+    use crate::game::characters::{Profession, Race};
     use crate::game::items::{Items, Worn, make};
     use bevy::ecs::system::RunSystemOnce;
 

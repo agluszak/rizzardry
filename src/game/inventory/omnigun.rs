@@ -3,7 +3,7 @@
 
 use bevy::prelude::*;
 
-use crate::content::characters::Profession;
+use crate::content::characters::{Profession, Trait};
 use crate::content::items::{ItemId, ItemKind};
 use crate::game::characters::Character;
 use crate::game::data::Catalogs;
@@ -65,7 +65,7 @@ fn advance(
     let (Ok(character), Ok(roster)) = (characters.get(member), rosters.get(party)) else {
         return;
     };
-    if character.profession != Profession::Gadgeteer {
+    if !character.has_trait(Trait::MergeGadgets) {
         return;
     }
     let omnigun = |&item: &Entity| kinds.get(item).is_ok_and(|kind| kind.0 == ItemKind::OMNIGUN);

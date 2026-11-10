@@ -63,7 +63,10 @@ pub const NICKNAME_LIMIT: usize = 9;
 /// The gender a profession gives a character whose gender is not chosen
 /// yet: Valkyries are women.
 pub fn default_gender(profession: Profession, gender: Gender, chosen: bool) -> Gender {
-    if profession == Profession::Valkyrie && !chosen { Gender::Female } else { gender }
+    match profession.row().only_gender {
+        Some(only) if !chosen => only,
+        _ => gender,
+    }
 }
 
 /// Whether the finished draft may join the candidates: it must have a
@@ -119,11 +122,12 @@ impl CharacterDraft {
     }
 
     pub fn budget(race: Race, gender: Gender, profession: Profession) -> Result<u32, &'static str> {
-        let base = race_attributes(race).ok_or("Choose a playable race.")?;
-        if profession == Profession::Valkyrie && gender != Gender::Female {
+        let base = race.row().attributes.ok_or("Choose a playable race.")?;
+        if profession.row().only_gender.is_some_and(|only| only != gender) {
             return Err("Valkyries must be female.");
         }
-        let required: u32 = profession_row(profession)
+        let required: u32 = profession
+            .row()
             .minimums
             .iter()
             .map(|(a, &minimum)| minimum - minimum.min(base[a]))
@@ -145,7 +149,7 @@ impl CharacterDraft {
         if self.spell_points_total() == 0 {
             return EnumSet::empty();
         }
-        crate::game::magic::profession_books(self.profession)
+        self.profession.row().books
     }
 
     pub fn spell_points_total(&self) -> usize {

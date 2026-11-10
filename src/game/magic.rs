@@ -50,7 +50,10 @@ pub fn skill_available(
         return false;
     }
     if let Some(realm) = skill.realm() {
-        if !profession_books(character.profession)
+        if !character
+            .profession
+            .row()
+            .books
             .iter()
             .any(|book| character.skill_available(book_skill(book)))
         {
@@ -192,36 +195,6 @@ pub fn recovery_scale(health_scale: f32) -> f32 {
     health_scale.max(0.5)
 }
 
-/// The books a profession casts from (retail `g_profession_spellbooks`).
-pub fn profession_books(profession: Profession) -> EnumSet<Spellbook> {
-    use Spellbook::*;
-    match profession {
-        Profession::Lord | Profession::Valkyrie | Profession::Priest => Divinity.into(),
-        Profession::Ranger | Profession::Ninja | Profession::Alchemist => Alchemy.into(),
-        Profession::Samurai | Profession::Mage => Wizardry.into(),
-        Profession::Monk | Profession::Psionic => Psionics.into(),
-        Profession::Bishop => EnumSet::all(),
-        Profession::Fighter | Profession::Rogue | Profession::Gadgeteer | Profession::Bard => {
-            EnumSet::empty()
-        }
-    }
-}
-
-/// A profession's caster level offset: 0 for the pure casters, -4 for the
-/// hybrids, none for those who cannot cast (retail
-/// `g_profession_magic_level_offsets`).
-fn caster_offset(profession: Profession) -> Option<i32> {
-    match profession {
-        Profession::Fighter | Profession::Rogue | Profession::Gadgeteer | Profession::Bard => None,
-        Profession::Priest
-        | Profession::Alchemist
-        | Profession::Bishop
-        | Profession::Psionic
-        | Profession::Mage => Some(0),
-        _ => Some(-4),
-    }
-}
-
 /// Retail `GetProfessionCasterLevel`; -1 for a profession that cannot cast.
 pub fn caster_level(character: &Character, profession: Profession) -> i32 {
     profession_caster_level(profession, character.profession_levels[profession])
@@ -229,7 +202,7 @@ pub fn caster_level(character: &Character, profession: Profession) -> i32 {
 
 /// A profession's caster level after `levels` of it; -1 if it cannot cast.
 fn profession_caster_level(profession: Profession, levels: u8) -> i32 {
-    caster_offset(profession).map_or(-1, |offset| i32::from(levels) + offset)
+    profession.row().caster_offset.map_or(-1, |offset| i32::from(levels) + offset)
 }
 
 /// Retail `GetTotalCasterLevel` over `books`: the current profession's caster
@@ -239,7 +212,7 @@ pub fn total_caster_level(character: &Character, books: EnumSet<Spellbook>) -> i
     for (profession, &levels) in &character.profession_levels {
         if levels != 0
             && profession != character.profession
-            && !(profession_books(profession) & books).is_empty()
+            && !(profession.row().books & books).is_empty()
         {
             total += caster_level(character, profession).max(0);
         }
@@ -262,8 +235,8 @@ fn character_books(character: &Character) -> EnumSet<Spellbook> {
         .profession_levels
         .iter()
         .filter(|&(_, &levels)| levels > 0)
-        .map(|(profession, _)| profession_books(profession))
-        .fold(profession_books(character.profession), |all, books| all | books)
+        .map(|(profession, _)| profession.row().books)
+        .fold(character.profession.row().books, |all, books| all | books)
 }
 
 /// The book skill a spell is cast by: the best of the character's (retail
@@ -285,7 +258,7 @@ fn casting_skill(character: &Character, spell: &SpellDefinition) -> u32 {
 /// in one of their books and its level is within both their caster level and
 /// their realm and book training.
 pub fn can_learn(character: &Character, spell: &SpellDefinition) -> bool {
-    let books = profession_books(character.profession);
+    let books = character.profession.row().books;
     if spell.id.0 == 0 || spell.id.0 >= SpellId::LEARNABLE || (spell.books & books).is_empty() {
         return false;
     }

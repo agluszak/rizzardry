@@ -1,0 +1,235 @@
+#![enable(implicit_some)]
+// What each profession is: what it asks of a character, what it gives, what
+// it can do. One row for each, named as `Profession` names it. A row lists
+// only what is not the default (empty, none, false, 0).
+//
+//   minimums              the attribute scores it asks for (none: no minimum)
+//                         (retail `g_profession_table`)
+//   hit_points            hit points a level gives, before the vitality
+//                         factor `0.6 + 0.008 * VIT` (`g_profession_table`)
+//   experience            the experience its first level costs; later levels
+//                         double to level 10, then grow by a fifth
+//   bonus_skill           the skill it trains best: a quarter more than the
+//                         points put in, at least one
+//   skills                the other skills a new member of it starts with
+//   physical              how heavily its levels weigh in a hand's physical
+//                         score
+//   open_skills           the ordinary and book skills it may train
+//                         (`g_profession_skill_availability`); the realm
+//                         skills follow the spells learned, the expert skills
+//                         the attributes
+//   traits                what it can do besides (retail trait description
+//                         order)
+//   books                 the spellbooks it casts from
+//                         (`g_profession_spellbooks`)
+//   caster_offset         added to its levels to give its caster level: 0 for
+//                         the pure casters, -4 for the hybrids, who cast from
+//                         their fifth level; left out, it cannot cast
+//                         (`g_profession_magic_level_offsets`)
+//   picks_from_any_book   the spells it is awarded may be from any book,
+//                         not only its first
+//   only_gender           the only gender it may be
+//   resistance            added to every realm's resistance
+//   starting_items        the items a new member of it carries, by retail
+//                         item number (`g_starting_equipment`); a race may
+//                         have its own set instead
+//   extra_item            and one more (`AddCharacterStartingEquipment`):
+//                         Always(item), or ByTrainedSkill: `then` if the
+//                         member trains `skill` further than `over`,
+//                         otherwise `otherwise`
+{
+    Fighter: (
+        minimums: {Strength: 55, Vitality: 50, Dexterity: 50},
+        hit_points: 9.0,
+        experience: 1000,
+        bonus_skill: CloseCombat,
+        skills: [RangedCombat, Sword, Axe, Shield],
+        physical: 4,
+        open_skills: [Sword, Axe, Polearm, MaceAndFlail, Dagger, StaffAndWand, Shield, ModernWeapon, Bow, ThrowingAndSling, CloseCombat, RangedCombat, DualWeapons, Artifacts, Mythology, Communication],
+        traits: [StaminaRegeneration, Knockout, Berserk],
+        starting_items: [143, 153, 203, 246],
+        extra_item: ByTrainedSkill(skill: Axe, over: Sword, then: 18, otherwise: 7),
+    ),
+    Lord: (
+        minimums: {Strength: 55, Piety: 55, Vitality: 55, Dexterity: 50, Speed: 50},
+        hit_points: 7.5,
+        experience: 1400,
+        bonus_skill: DualWeapons,
+        skills: [CloseCombat, Sword, Dagger],
+        physical: 4,
+        open_skills: [Sword, Axe, Polearm, MaceAndFlail, Dagger, StaffAndWand, Shield, ModernWeapon, Bow, ThrowingAndSling, CloseCombat, RangedCombat, DualWeapons, Artifacts, Mythology, Communication, Divinity],
+        traits: [HealthRegeneration],
+        books: [Divinity],
+        caster_offset: -4,
+        starting_items: [35, 1, 158, 204, 247, 210],
+    ),
+    Valkyrie: (
+        minimums: {Strength: 50, Piety: 55, Vitality: 55, Dexterity: 50, Speed: 50},
+        hit_points: 7.5,
+        experience: 1400,
+        bonus_skill: Polearm,
+        skills: [CloseCombat, Mythology, Axe],
+        physical: 4,
+        open_skills: [Sword, Axe, Polearm, MaceAndFlail, Dagger, StaffAndWand, Shield, ModernWeapon, Bow, ThrowingAndSling, CloseCombat, RangedCombat, DualWeapons, Artifacts, Mythology, Communication, Divinity],
+        traits: [CheatDeath],
+        books: [Divinity],
+        caster_offset: -4,
+        only_gender: Female,
+        starting_items: [75, 170, 197, 246, 215],
+    ),
+    Ranger: (
+        minimums: {Strength: 50, Intelligence: 50, Vitality: 50, Dexterity: 55, Senses: 55},
+        hit_points: 6.5,
+        experience: 1400,
+        bonus_skill: RangedCombat,
+        skills: [Scouting, Bow, Mythology],
+        physical: 4,
+        open_skills: [Sword, Axe, Polearm, MaceAndFlail, Dagger, StaffAndWand, Shield, ModernWeapon, Bow, ThrowingAndSling, Scouting, CloseCombat, RangedCombat, DualWeapons, Artifacts, Mythology, Communication, Alchemy],
+        traits: [RangedCriticals, Search],
+        books: [Alchemy],
+        caster_offset: -4,
+        starting_items: [110, 125, 157, 188, 247],
+    ),
+    Samurai: (
+        minimums: {Strength: 50, Intelligence: 55, Vitality: 50, Dexterity: 55, Speed: 55},
+        hit_points: 7.0,
+        experience: 1400,
+        bonus_skill: Sword,
+        skills: [CloseCombat, DualWeapons, CriticalStrike],
+        physical: 4,
+        open_skills: [Sword, Dagger, StaffAndWand, Shield, Bow, ThrowingAndSling, CloseCombat, RangedCombat, DualWeapons, CriticalStrike, Artifacts, Mythology, Communication, Wizardry],
+        traits: [Fearless, LightningStrike],
+        books: [Wizardry],
+        caster_offset: -4,
+        starting_items: [38, 49, 165, 192, 246],
+    ),
+    Ninja: (
+        minimums: {Strength: 50, Intelligence: 50, Vitality: 50, Dexterity: 55, Speed: 55, Senses: 50},
+        hit_points: 6.5,
+        experience: 1600,
+        bonus_skill: CriticalStrike,
+        skills: [CloseCombat, MartialArts, ThrowingAndSling, Stealth],
+        physical: 4,
+        open_skills: [Sword, Polearm, MaceAndFlail, Dagger, StaffAndWand, Bow, ThrowingAndSling, LocksAndTraps, Stealth, Pickpocket, MartialArts, CloseCombat, RangedCombat, DualWeapons, CriticalStrike, Artifacts, Mythology, Communication, Alchemy],
+        traits: [ThrownCriticals, ThrownAutoPenetrate],
+        books: [Alchemy],
+        caster_offset: -4,
+        starting_items: [105, 230, 180, 209, 253],
+    ),
+    Monk: (
+        minimums: {Intelligence: 50, Piety: 50, Dexterity: 50, Speed: 55, Senses: 55},
+        hit_points: 6.5,
+        experience: 1400,
+        bonus_skill: MartialArts,
+        skills: [CloseCombat, CriticalStrike, StaffAndWand, Stealth],
+        physical: 4,
+        open_skills: [Polearm, MaceAndFlail, StaffAndWand, ThrowingAndSling, Stealth, MartialArts, CloseCombat, RangedCombat, DualWeapons, CriticalStrike, Artifacts, Mythology, Communication, Psionics],
+        traits: [MonkDamageResistance, EffectiveWhileBlind],
+        books: [Psionics],
+        caster_offset: -4,
+        starting_items: [79, 105, 165, 192, 246],
+    ),
+    Rogue: (
+        minimums: {Dexterity: 55, Speed: 50, Senses: 50},
+        hit_points: 6.0,
+        experience: 1000,
+        bonus_skill: LocksAndTraps,
+        skills: [Dagger, DualWeapons, Pickpocket, Stealth],
+        physical: 3,
+        open_skills: [Sword, Dagger, StaffAndWand, Shield, ModernWeapon, Bow, ThrowingAndSling, LocksAndTraps, Stealth, Pickpocket, CloseCombat, RangedCombat, DualWeapons, Artifacts, Mythology, Communication],
+        traits: [Backstab],
+        starting_items: [0, 0, 99, 156, 187, 247],
+    ),
+    Gadgeteer: (
+        minimums: {Strength: 45, Intelligence: 55, Dexterity: 60, Senses: 55},
+        hit_points: 5.5,
+        experience: 1000,
+        bonus_skill: ModernWeapon,
+        skills: [RangedCombat, Engineering, LocksAndTraps],
+        physical: 3,
+        open_skills: [Sword, Dagger, StaffAndWand, Shield, ModernWeapon, Bow, ThrowingAndSling, LocksAndTraps, CloseCombat, RangedCombat, DualWeapons, Artifacts, Mythology, Communication, Engineering],
+        traits: [MergeGadgets],
+        starting_items: [132, 156, 187, 246],
+        extra_item: Always(599),
+    ),
+    Bard: (
+        minimums: {Strength: 45, Intelligence: 50, Dexterity: 55, Senses: 55},
+        hit_points: 6.0,
+        experience: 1000,
+        bonus_skill: Communication,
+        skills: [Music, Mythology, Artifacts],
+        physical: 3,
+        open_skills: [Sword, Dagger, StaffAndWand, Shield, Bow, ThrowingAndSling, LocksAndTraps, Music, Pickpocket, CloseCombat, RangedCombat, DualWeapons, Artifacts, Mythology, Communication],
+        traits: [CampRecovery],
+        starting_items: [769, 116, 132, 156, 187],
+        extra_item: Always(324),
+    ),
+    Priest: (
+        minimums: {Piety: 60, Vitality: 55},
+        hit_points: 5.0,
+        experience: 1200,
+        bonus_skill: Divinity,
+        skills: [MaceAndFlail, StaffAndWand, Communication],
+        physical: 2,
+        open_skills: [MaceAndFlail, StaffAndWand, Shield, ThrowingAndSling, CloseCombat, RangedCombat, Artifacts, Mythology, Communication, Divinity],
+        traits: [Pray, TurnUndead],
+        books: [Divinity],
+        caster_offset: 0,
+        starting_items: [165, 192, 246, 335],
+        extra_item: ByTrainedSkill(skill: MaceAndFlail, over: StaffAndWand, then: 22, otherwise: 82),
+    ),
+    Alchemist: (
+        minimums: {Intelligence: 55, Dexterity: 60},
+        hit_points: 4.5,
+        experience: 1200,
+        bonus_skill: Alchemy,
+        skills: [Mythology, ThrowingAndSling],
+        physical: 2,
+        open_skills: [Dagger, StaffAndWand, Shield, ThrowingAndSling, CloseCombat, RangedCombat, Artifacts, Mythology, Communication, Alchemy],
+        traits: [MakePotions],
+        books: [Alchemy],
+        caster_offset: 0,
+        starting_items: [28, 165, 192, 246, 350],
+    ),
+    Bishop: (
+        minimums: {Intelligence: 55, Piety: 55, Dexterity: 55, Senses: 55},
+        hit_points: 4.0,
+        experience: 1600,
+        bonus_skill: Artifacts,
+        skills: [Alchemy, Wizardry, Divinity, Psionics],
+        physical: 2,
+        open_skills: [MaceAndFlail, StaffAndWand, Shield, ThrowingAndSling, CloseCombat, RangedCombat, Artifacts, Mythology, Communication, Wizardry, Divinity, Alchemy, Psionics],
+        traits: [RemoveCursedItems, TurnUndead],
+        books: [Wizardry, Divinity, Alchemy, Psionics],
+        caster_offset: 0,
+        picks_from_any_book: true,
+        starting_items: [82, 165, 192, 246, 223],
+    ),
+    Psionic: (
+        minimums: {Intelligence: 55, Senses: 60},
+        hit_points: 3.5,
+        experience: 1200,
+        bonus_skill: Psionics,
+        skills: [Communication, Mythology, MentalMagic],
+        physical: 2,
+        open_skills: [Dagger, StaffAndWand, ThrowingAndSling, CloseCombat, RangedCombat, Artifacts, Mythology, Communication, Psionics],
+        traits: [Fearless, MentalConditionImmunity],
+        books: [Psionics],
+        caster_offset: 0,
+        starting_items: [0, 165, 192, 246, 347],
+    ),
+    Mage: (
+        minimums: {Intelligence: 60, Dexterity: 55},
+        hit_points: 3.0,
+        experience: 1200,
+        bonus_skill: Wizardry,
+        skills: [FireMagic, WaterMagic, AirMagic, MentalMagic],
+        physical: 2,
+        open_skills: [Dagger, StaffAndWand, ThrowingAndSling, CloseCombat, RangedCombat, Artifacts, Mythology, Communication, Wizardry],
+        traits: [MagicResistance],
+        books: [Wizardry],
+        caster_offset: 0,
+        resistance: 5,
+        starting_items: [28, 165, 192, 246, 385],
+    ),
+}

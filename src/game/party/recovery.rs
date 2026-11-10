@@ -5,6 +5,7 @@
 //! Whatever passes time applies this at once, with its own pace:
 //! exploring and camping in `game::time`, a combat round when it ends.
 
+use crate::content::characters::Trait;
 use crate::game::actors::Attributes;
 use bevy::prelude::*;
 
@@ -26,8 +27,7 @@ pub fn rest_roll(max_stamina: u32, rng: &mut crate::game::rng::GameRng) -> u32 {
 /// It follows the current profession's level, capped at twenty, and truncates
 /// only after scaling the roll (retail ScaleValueByProfessionLevel).
 pub fn combat_rest_amount(profile: &Character, rolled: u32) -> u32 {
-    use crate::game::characters::Profession;
-    if profile.profession != Profession::Fighter {
+    if !profile.has_trait(Trait::StaminaRegeneration) {
         return rolled;
     }
     (profile.scale_by_profession(3.3) * rolled as f32) as u32

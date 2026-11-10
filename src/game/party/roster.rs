@@ -4,7 +4,7 @@ use bevy::ecs::entity::EntityIndexSet;
 use bevy::prelude::*;
 use serde::Deserialize;
 
-use crate::content::characters::Skill;
+use crate::content::characters::ExtraItem;
 use crate::content::items::ItemId;
 use crate::game::characters::{Character, Gender, Profession, Race};
 use crate::game::data::Catalogs;
@@ -116,41 +116,19 @@ pub fn recruit_character(
     member
 }
 
-/// A new character's starting items (retail `g_starting_equipment` and
-/// `AddCharacterStartingEquipment`): their profession's set (Faeries have
-/// their own), then one extra item for some professions, chosen by their
-/// weapon skills.
+/// A new character's starting items (retail `AddCharacterStartingEquipment`):
+/// their race's set if it has its own, otherwise their profession's, then the
+/// one extra item some professions add, chosen by their weapon skills.
 pub fn starting_items(character: &Character) -> Vec<ItemId> {
-    use Profession::*;
-    let set: &[u16] = match character.profession {
-        _ if character.race == Race::Faerie => &[63, 169, 196, 335, 358, 0],
-        Fighter => &[143, 153, 203, 246],
-        Lord => &[35, 1, 158, 204, 247, 210],
-        Valkyrie => &[75, 170, 197, 246, 215],
-        Ranger => &[110, 125, 157, 188, 247],
-        Samurai => &[38, 49, 165, 192, 246],
-        Ninja => &[105, 230, 180, 209, 253],
-        Monk => &[79, 105, 165, 192, 246],
-        Rogue => &[0, 0, 99, 156, 187, 247],
-        Gadgeteer => &[132, 156, 187, 246],
-        Bard => &[769, 116, 132, 156, 187],
-        Priest => &[165, 192, 246, 335],
-        Alchemist => &[28, 165, 192, 246, 350],
-        Bishop => &[82, 165, 192, 246, 223],
-        Psionic => &[0, 165, 192, 246, 347],
-        Mage => &[28, 165, 192, 246, 385],
-    };
-    let skill = |s| character.skill(s);
-    let extra = match character.profession {
-        Priest if skill(Skill::MaceAndFlail) > skill(Skill::StaffAndWand) => Some(ItemId::MACE),
-        Priest => Some(ItemId::QUARTER_STAFF),
-        Fighter if skill(Skill::Axe) > skill(Skill::Sword) => Some(ItemId::BATTLE_AXE),
-        Fighter => Some(ItemId::LONGSWORD),
-        Gadgeteer => Some(ItemId::OMNIGUN_MK_1),
-        Bard => Some(ItemId::POETS_LUTE),
-        _ => None,
-    };
-    set.iter().copied().map(ItemId).chain(extra).collect()
+    let row = character.profession.row();
+    let set = character.race.row().starting_items.as_deref().unwrap_or(&row.starting_items);
+    let extra = row.extra_item.map(|extra| match extra {
+        ExtraItem::Always(item) => item,
+        ExtraItem::ByTrainedSkill { skill, over, then, otherwise } => {
+            if character.skill(skill) > character.skill(over) { then } else { otherwise }
+        }
+    });
+    set.iter().copied().chain(extra).collect()
 }
 
 fn member_inserted(
@@ -172,5 +150,29 @@ fn member_removed(
     let party = world.get::<PartyMember>(context.entity).unwrap().0;
     if let Some(mut formation) = world.get_mut::<super::formation::Formation>(party) {
         formation.unseat(context.entity);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::characters::{Gender, Profession, Race, Skill};
+
+    /// A Faerie carries their race's set whatever their profession; a
+    /// Fighter's extra weapon follows the better of their axe and sword.
+    #[test]
+    fn starting_items_are_the_races_or_the_professions_with_an_extra_by_skill() {
+        let mut fighter = Character::new("F", Race::Human, Gender::Male, Profession::Fighter);
+        fighter.skill_points[Skill::Axe] = 9;
+        fighter.skill_points[Skill::Sword] = 3;
+        assert_eq!(
+            starting_items(&fighter),
+            [143, 153, 203, 246, 18].map(ItemId),
+            "an axe fighter gets the battle axe"
+        );
+        fighter.skill_points[Skill::Axe] = 3;
+        assert_eq!(starting_items(&fighter)[4], ItemId::LONGSWORD);
+        let faerie = Character::new("P", Race::Faerie, Gender::Female, Profession::Mage);
+        assert_eq!(starting_items(&faerie), [63, 169, 196, 335, 358, 0].map(ItemId));
     }
 }

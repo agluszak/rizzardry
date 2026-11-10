@@ -186,163 +186,6 @@ pub enum Lasting {
     Indefinite,
 }
 
-// Retail g_profession_skill_availability, ordinary and spellbook skills.
-// Bit order is Profession's authored order; realm availability needs learned spells.
-const SKILL_AVAILABILITY: [u16; 28] = [
-    0x03bf, 0x000f, 0x006f, 0x146f, 0x6bbf, 0x7fff, 0x1f9f, 0x018f, 0x03bf, 0x7fff, 0x03a0, 0x00e0,
-    0x0200, 0x02a0, 0x0060, 0x0008, 0x7fff, 0x7fff, 0x03ff, 0x0070, 0x7fff, 0x7fff, 0x7fff, 0x0100,
-    0x5010, 0x1406, 0x1828, 0x3040,
-];
-
-/// A playable race's base attributes (retail `g_race_base_attributes`);
-/// the five monster races have none.
-fn race_attributes(race: Race) -> Option<EnumMap<Attribute, u32>> {
-    let attributes = match race {
-        Race::Human => [45, 45, 45, 45, 45, 45, 45],
-        Race::Elf => [35, 50, 50, 35, 50, 45, 40],
-        Race::Dwarf => [55, 30, 50, 60, 35, 35, 35],
-        Race::Gnome => [35, 50, 40, 50, 50, 35, 45],
-        Race::Hobbit => [40, 40, 30, 45, 55, 50, 50],
-        Race::Faerie => [25, 55, 35, 30, 50, 60, 45],
-        Race::Lizardman => [60, 25, 25, 70, 40, 50, 30],
-        Race::Dracon => [55, 35, 30, 60, 50, 40, 30],
-        Race::Felpurr => [40, 40, 30, 35, 50, 60, 50],
-        Race::Rawulf => [40, 30, 55, 50, 40, 40, 50],
-        Race::Mook => [50, 50, 25, 50, 35, 35, 55],
-        Race::Trynnie | Race::TRang | Race::Umpani | Race::Rapax | Race::Android => return None,
-    };
-    Some(EnumMap::from_array(attributes))
-}
-
-/// What a profession asks and gives (retail `g_profession_table`).
-struct ProfessionRow {
-    /// Attribute minimums; 0 for none.
-    minimums: EnumMap<Attribute, u32>,
-    hp_factor: f32,
-    experience: u64,
-    bonus_skill: Skill,
-    skills: &'static [Skill],
-    /// Weight of its levels in a hand's physical score.
-    physical: i32,
-}
-
-fn profession_row(profession: Profession) -> ProfessionRow {
-    use Profession::*;
-    use Skill::*;
-    let (minimums, hp_factor, experience, bonus_skill, skills, physical): (
-        [u32; 7],
-        f32,
-        _,
-        Skill,
-        &'static [Skill],
-        i32,
-    ) = match profession {
-        Fighter => (
-            [55, 0, 0, 50, 50, 0, 0],
-            9.0,
-            1000,
-            CloseCombat,
-            &[RangedCombat, Sword, Axe, Shield],
-            4,
-        ),
-        Lord => {
-            ([55, 0, 55, 55, 50, 50, 0], 7.5, 1400, DualWeapons, &[CloseCombat, Sword, Dagger], 4)
-        }
-        Valkyrie => {
-            ([50, 0, 55, 55, 50, 50, 0], 7.5, 1400, Polearm, &[CloseCombat, Mythology, Axe], 4)
-        }
-        Ranger => {
-            ([50, 50, 0, 50, 55, 0, 55], 6.5, 1400, RangedCombat, &[Scouting, Bow, Mythology], 4)
-        }
-        Samurai => (
-            [50, 55, 0, 50, 55, 55, 0],
-            7.0,
-            1400,
-            Sword,
-            &[CloseCombat, DualWeapons, CriticalStrike],
-            4,
-        ),
-        Ninja => (
-            [50, 50, 0, 50, 55, 55, 50],
-            6.5,
-            1600,
-            CriticalStrike,
-            &[CloseCombat, MartialArts, ThrowingAndSling, Stealth],
-            4,
-        ),
-        Monk => (
-            [0, 50, 50, 0, 50, 55, 55],
-            6.5,
-            1400,
-            MartialArts,
-            &[CloseCombat, CriticalStrike, StaffAndWand, Stealth],
-            4,
-        ),
-        Rogue => (
-            [0, 0, 0, 0, 55, 50, 50],
-            6.0,
-            1000,
-            LocksAndTraps,
-            &[Dagger, DualWeapons, Pickpocket, Stealth],
-            3,
-        ),
-        Gadgeteer => (
-            [45, 55, 0, 0, 60, 0, 55],
-            5.5,
-            1000,
-            ModernWeapon,
-            &[RangedCombat, Engineering, LocksAndTraps],
-            3,
-        ),
-        Bard => {
-            ([45, 50, 0, 0, 55, 0, 55], 6.0, 1000, Communication, &[Music, Mythology, Artifacts], 3)
-        }
-        Priest => (
-            [0, 0, 60, 55, 0, 0, 0],
-            5.0,
-            1200,
-            Divinity,
-            &[MaceAndFlail, StaffAndWand, Communication],
-            2,
-        ),
-        Alchemist => {
-            ([0, 55, 0, 0, 60, 0, 0], 4.5, 1200, Alchemy, &[Mythology, ThrowingAndSling], 2)
-        }
-        Bishop => (
-            [0, 55, 55, 0, 55, 0, 55],
-            4.0,
-            1600,
-            Artifacts,
-            &[Alchemy, Wizardry, Divinity, Psionics],
-            2,
-        ),
-        Psionic => (
-            [0, 55, 0, 0, 0, 0, 60],
-            3.5,
-            1200,
-            Psionics,
-            &[Communication, Mythology, MentalMagic],
-            2,
-        ),
-        Mage => (
-            [0, 60, 0, 0, 55, 0, 0],
-            3.0,
-            1200,
-            Wizardry,
-            &[FireMagic, WaterMagic, AirMagic, MentalMagic],
-            2,
-        ),
-    };
-    ProfessionRow {
-        minimums: EnumMap::from_array(minimums),
-        hp_factor,
-        experience,
-        bonus_skill,
-        skills,
-        physical,
-    }
-}
-
 /// The two attributes a skill's base level averages (one for spellbooks
 /// and expert skills).
 pub(crate) fn governing(skill: Skill) -> (Attribute, Attribute) {
@@ -543,9 +386,9 @@ impl Character {
     /// is higher; the profession's skills seeded from their base levels;
     /// Vitals initialize separately. Only the eleven playable races have bases.
     pub fn new(name: &str, race: Race, gender: Gender, profession: Profession) -> Self {
-        let row = profession_row(profession);
-        let base = race_attributes(race).unwrap_or(EnumMap::from_fn(|_| 45));
-        let attributes = EnumMap::from_fn(|a| base[a].max(row.minimums[a]));
+        let minimums = &profession.row().minimums;
+        let base = race.row().attributes.unwrap_or(EnumMap::from_fn(|_| 45));
+        let attributes = EnumMap::from_fn(|a| base[a].max(minimums[a]));
         let mut profession_levels = EnumMap::default();
         profession_levels[profession] = 1;
         let mut character = Character {
@@ -574,7 +417,7 @@ impl Character {
 
     /// Seed from the final starting attributes, shared by recipes and drafts.
     fn seed_starting_skills(&mut self) {
-        let row = profession_row(self.profession);
+        let row = self.profession.row();
         self.skill_points = EnumMap::default();
         let share = 60 / (1 + row.skills.len() as u32);
         for &skill in row.skills.iter().chain(std::iter::once(&row.bonus_skill)) {
@@ -599,26 +442,16 @@ impl Character {
         if index >= Skill::FireMagic as usize {
             return false;
         }
-        if SKILL_AVAILABILITY[index] & (1 << self.profession as usize) == 0 {
+        let row = self.profession.row();
+        if !row.open_skills.contains(skill) {
             return false;
         }
-        let row = profession_row(self.profession);
         if skill == row.bonus_skill || row.skills.contains(&skill) {
             return true;
         }
-        if index >= Skill::Wizardry as usize {
-            let delayed = matches!(
-                self.profession,
-                Profession::Lord
-                    | Profession::Valkyrie
-                    | Profession::Ranger
-                    | Profession::Samurai
-                    | Profession::Ninja
-                    | Profession::Monk
-            );
-            if delayed {
-                return self.profession_levels[self.profession] > 4;
-            }
+        // A hybrid's book skills open with its caster level.
+        if index >= Skill::Wizardry as usize && row.caster_offset.is_some_and(|offset| offset < 0) {
+            return self.profession_levels[self.profession] > 4;
         }
         true
     }
@@ -632,9 +465,9 @@ impl Character {
         let allowed = if index >= Skill::PowerStrike as usize {
             self.skill_available(skill)
         } else if index >= Skill::FireMagic as usize {
-            !crate::game::magic::profession_books(self.profession).is_empty()
+            !self.profession.row().books.is_empty()
         } else {
-            SKILL_AVAILABILITY[index] & (1 << self.profession as usize) != 0
+            self.profession.row().open_skills.contains(skill)
         };
         if usage == 0 || !allowed {
             return false;
@@ -661,59 +494,9 @@ impl Character {
         improved
     }
 
-    pub fn bonus_skill(&self) -> Skill {
-        profession_row(self.profession).bonus_skill
-    }
-
-    pub fn profession_skills(&self) -> &'static [Skill] {
-        profession_row(self.profession).skills
-    }
-
     /// Abilities conferred by the current profession and race.
     pub fn traits(&self) -> enumset::EnumSet<crate::content::characters::Trait> {
-        self.profession_traits() | self.racial_traits()
-    }
-
-    pub fn profession_traits(&self) -> enumset::EnumSet<crate::content::characters::Trait> {
-        use crate::content::characters::Trait::*;
-        use Profession::*;
-        let profession: &[crate::content::characters::Trait] = match self.profession {
-            Fighter => &[StaminaRegeneration, Knockout, Berserk],
-            Lord => &[HealthRegeneration],
-            Valkyrie => &[CheatDeath],
-            Ranger => &[RangedCriticals, Search],
-            Samurai => &[Fearless, LightningStrike],
-            Ninja => &[ThrownCriticals, ThrownAutoPenetrate],
-            Monk => &[MonkDamageResistance, EffectiveWhileBlind],
-            Rogue => &[Backstab],
-            Gadgeteer => &[MergeGadgets],
-            Bard => &[CampRecovery],
-            Priest => &[Pray, TurnUndead],
-            Alchemist => &[MakePotions],
-            Bishop => &[RemoveCursedItems, TurnUndead],
-            Psionic => &[Fearless, MentalConditionImmunity],
-            Mage => &[MagicResistance],
-        };
-        profession.iter().copied().collect()
-    }
-
-    pub fn racial_traits(&self) -> enumset::EnumSet<crate::content::characters::Trait> {
-        use crate::content::characters::Trait::*;
-        let racial: &[crate::content::characters::Trait] = match self.race {
-            Race::Dwarf => &[DwarfDamageResistance],
-            Race::Faerie => &[
-                FaerieArmour,
-                UnusualStartingEquipment,
-                FaerieCarryCapacity,
-                EquippableItemWeightLimit,
-                FastMagicRecovery,
-            ],
-            Race::Lizardman => &[LizardmanMagicRecovery],
-            Race::Dracon => &[Breathe],
-            Race::Android => &[AndroidConditionImmunity, CannotLearn],
-            _ => &[],
-        };
-        racial.iter().copied().collect()
+        self.profession.row().traits | self.race.row().traits
     }
 
     pub fn has_trait(&self, ability: crate::content::characters::Trait) -> bool {
@@ -737,11 +520,8 @@ impl Character {
     /// the profession's bonus skill.
     pub fn skill(&self, skill: Skill) -> u32 {
         let points = self.skill_points[skill];
-        let bonus = if profession_row(self.profession).bonus_skill == skill {
-            (points * 25 / 100).max(1)
-        } else {
-            0
-        };
+        let bonus =
+            if self.profession.row().bonus_skill == skill { (points * 25 / 100).max(1) } else { 0 };
         (points + bonus).min(125)
     }
 
@@ -749,7 +529,7 @@ impl Character {
     pub fn physical_levels(&self) -> i32 {
         self.profession_levels
             .iter()
-            .map(|(profession, &levels)| i32::from(levels) * profession_row(profession).physical)
+            .map(|(profession, &levels)| i32::from(levels) * profession.row().physical)
             .sum()
     }
 
@@ -807,7 +587,7 @@ impl Character {
                 if profession == self.original_profession && levels > 0 {
                     levels += 1;
                 }
-                vitality * profession_row(profession).hp_factor * levels as f32
+                vitality * profession.row().hit_points * levels as f32
             })
             .sum();
         (total.round() as u32).max(self.hp_drained + 1) - self.hp_drained
@@ -818,10 +598,9 @@ impl Character {
         let total = (sum / 3.0 * (0.1 * self.level() as f32 + 2.0)).round() as u32;
         total.max(self.stamina_drained) - self.stamina_drained
     }
-    /// Tenths of a pound: `(VIT + 2·STR) × 12`, × 8 for a Faerie.
+    /// Tenths of a pound: `(VIT + 2·STR)` times the race's carry factor.
     pub fn capacity(&self, a: &Attributes) -> u32 {
-        let factor = if self.race == Race::Faerie { 8 } else { 12 };
-        (a[Attribute::Vitality] + 2 * a[Attribute::Strength]) * factor
+        (a[Attribute::Vitality] + 2 * a[Attribute::Strength]) * self.race.row().carry_factor
     }
     /// The load band of carrying `weight` (own plus pool share).
     pub fn load(&self, a: &Attributes, weight: u32) -> Load {
@@ -1506,6 +1285,39 @@ mod tests {
         // Level 1 is one weight; levels 2 to 10 add 1, 2, ..., 256 weights.
         let at_ten = 1200 * (1 + 511);
         assert_eq!(mage.experience_goal(), at_ten + 256 * 1200 * 12 / 10);
+    }
+
+    /// A race's carrying factor and traits are its row's, a profession's
+    /// traits come with it, and a character has both.
+    #[test]
+    fn a_character_has_the_traits_and_carry_factor_of_their_rows() {
+        use crate::content::characters::Trait;
+        let faerie = Character::new("Pip", Race::Faerie, Gender::Female, Profession::Mage);
+        let sheet = Attributes::of_sheet(&faerie);
+        // Faerie 25 STR, Mage 30 VIT (the race's): (30 + 2*25) tenths, 8 each.
+        assert_eq!(faerie.capacity(&sheet), (30 + 2 * 25) * 8);
+        assert!(faerie.has_trait(Trait::FaerieArmour) && faerie.has_trait(Trait::MagicResistance));
+        assert!(!faerie.has_trait(Trait::Breathe));
+        let dracon = Character::new("Drak", Race::Dracon, Gender::Male, Profession::Fighter);
+        assert_eq!(
+            dracon.traits(),
+            Trait::Breathe | Trait::StaminaRegeneration | Trait::Knockout | Trait::Berserk
+        );
+    }
+
+    /// Hybrids cast from their fifth level, so their book skills open then;
+    /// pure casters have theirs at once and the others never.
+    #[test]
+    fn a_hybrids_book_skills_open_with_its_caster_level() {
+        let mut lord = Character::new("L", Race::Human, Gender::Male, Profession::Lord);
+        assert!(!lord.skill_available(Skill::Divinity));
+        lord.profession_levels[Profession::Lord] = 5;
+        assert!(lord.skill_available(Skill::Divinity));
+        assert!(!lord.skill_available(Skill::Wizardry));
+        let priest = Character::new("P", Race::Human, Gender::Male, Profession::Priest);
+        assert!(priest.skill_available(Skill::Divinity));
+        let fighter = Character::new("F", Race::Human, Gender::Male, Profession::Fighter);
+        assert!(!fighter.skill_available(Skill::Divinity));
     }
 
     #[test]

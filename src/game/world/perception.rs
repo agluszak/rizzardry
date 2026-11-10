@@ -2,11 +2,11 @@
 //! scenery remain authoritative; no second current-visibility table is kept.
 use crate::{
     content::{
-        characters::{Attribute, Skill},
+        characters::{Attribute, Skill, Trait},
         species::Species,
     },
     game::{
-        characters::{Character, Condition, Profession, Vitals},
+        characters::{Character, Condition, Vitals},
         world::{obstacles::WorldObstacles, population::Monster},
     },
 };
@@ -73,7 +73,8 @@ impl View {
         let concealment = if in_combat { 0 } else { u32::from(species.camouflage) };
         members.any(|(profile, vitals, attributes)| {
             if !vitals.can_fight()
-                || vitals.conditions.has(Condition::Blind) && profile.profession != Profession::Monk
+                || vitals.conditions.has(Condition::Blind)
+                    && !profile.has_trait(Trait::EffectiveWhileBlind)
             {
                 return false;
             }

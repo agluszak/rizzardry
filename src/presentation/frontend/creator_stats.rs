@@ -688,16 +688,19 @@ pub(super) fn refresh(
                 if session.choices.profession {
                     lines.push(format!(
                         "{} {}",
-                        string(crate::content::ui::SKILL_NAMES + profile.bonus_skill() as usize),
+                        string(
+                            crate::content::ui::SKILL_NAMES
+                                + profile.profession.row().bonus_skill as usize
+                        ),
                         string(0xb2)
                     ));
                 }
                 let mut abilities = enumset::EnumSet::empty();
                 if session.choices.profession {
-                    abilities |= profile.profession_traits();
+                    abilities |= profile.profession.row().traits;
                 }
                 if session.choices.race {
-                    abilities |= profile.racial_traits();
+                    abilities |= profile.race.row().traits;
                 }
                 lines.extend(abilities.iter().map(|ability| {
                     string(crate::content::ui::ABILITY_NAMES + ability as usize).to_owned()
@@ -709,9 +712,9 @@ pub(super) fn refresh(
                     String::new()
                 } else {
                     let skill = if i == 0 {
-                        Some(profile.bonus_skill())
+                        Some(profile.profession.row().bonus_skill)
                     } else {
-                        profile.profession_skills().get(i - 1).copied()
+                        profile.profession.row().skills.get(i - 1).copied()
                     };
                     skill
                         .map(|s| string(crate::content::ui::SKILL_NAMES + s as usize).to_owned())
@@ -723,7 +726,7 @@ pub(super) fn refresh(
             label.value = value;
         }
         if let Value::SkillName(skill) = *field {
-            let palette = (skill == profile.bonus_skill()).then(|| art.blue.clone());
+            let palette = (skill == profile.profession.row().bonus_skill).then(|| art.blue.clone());
             if label.palette != palette {
                 label.palette = palette;
             }
@@ -799,11 +802,11 @@ pub(super) fn refresh(
             }
             Action::Finish => !draft.name.trim().is_empty() && !draft.nickname.trim().is_empty(),
             Action::ChooseProfession(profession) => {
-                let gender = if profession == Profession::Valkyrie && !session.choices.gender {
-                    Gender::Female
-                } else {
-                    draft.gender()
-                };
+                let gender = crate::game::characters::creation::default_gender(
+                    profession,
+                    draft.gender(),
+                    session.choices.gender,
+                );
                 super::CharacterDraft::budget(draft.race(), gender, profession).is_ok()
             }
             Action::ChooseRace(race) => {
