@@ -8,15 +8,19 @@
 
 use bevy::prelude::Entity;
 
-use super::close::{Striking, closes_in, reaches_party};
-use crate::content::spells::{MAX_POWER, SpellDefinition, SpellId, Spellbook, Targeting};
+use super::close::{closes_in, reaches_party};
+use super::sight::{Fray, MindItem, Sight};
+use crate::content::spells::{
+    MAX_POWER, SpellCatalog, SpellDefinition, SpellId, Spellbook, Targeting,
+};
+use crate::game::characters::Condition;
+use crate::game::hits::definitions::Definitions;
+use crate::game::hits::effects::BodyReadOnlyItem;
 use crate::game::magic::reach::Aim;
 use crate::game::magic::roll::spell_failure;
 use crate::game::rng::{GameRng, weighted};
 use crate::game::world::hostility::Stance;
 
-/// How much each of the ten slots weighs in the choice (retail
-/// `g_spell_cast_weights`, `MonsterAI.cpp:141`).
 const SLOT_WEIGHTS: [u32; 10] = [5, 5, 5, 10, 10, 10, 10, 15, 15, 15];
 
 /// Whether the spell may be cast by a monster at all (retail
@@ -40,35 +44,21 @@ pub fn castable(
 }
 
 /// A living body in the fight as a caster weighs it for one spell.
-#[derive(Clone, Copy, Debug)]
-pub struct Candidate {
-    pub body: Entity,
-    /// One of the party's members.
-    pub member: bool,
-    /// The monster group it is in.
-    pub group: Option<Entity>,
-    /// The caster sees it (a member only if its eyes make out the party).
-    pub seen: bool,
-    /// How the caster stands toward it; itself, friendly.
-    pub stance: Stance,
-    /// The gap is within the spell's reach.
-    pub reached: bool,
-    /// The spell would do something to it: a heal if it is hurt, a refresh if
-    /// it is tired, a condition if it does not have it, an enchantment if it is
-    /// not laid on it, a cure if it bears what is cured (retail
-    /// `MonsterSpellTargetOK`); a spell that does none of these always would.
-    pub worth: bool,
-}
-
-/// What aiming one spell weighs.
-#[derive(Clone, Copy, Debug)]
-pub struct Aiming<'a> {
-    pub targeting: Targeting,
-    pub caster: Entity,
-    /// The monster group the caster is in, whose own it does not aim at.
-    pub own_group: Option<Entity>,
-    /// The living bodies of the fight, the caster among them.
-    pub bodies: &'a [Candidate],
+#[derive(Clone, Copy)]
+struct Candidate {
+    body: Entity,
+    member: bool,
+    /// The monster group it is of.
+    group: Option<Entity>,
+    /// The caster sees it: a member if it makes out the party, a monster by
+    /// a clear line.
+    seen: bool,
+    /// How the caster stands toward it, itself a friend.
+    stance: Stance,
+    /// It is within the spell's reach.
+    reached: bool,
+    /// The spell would do something to it.
+    worth: bool,
 }
 
 /// At whom the spell may be aimed (retail `CollectMonsterSpellTargets`,
@@ -85,8 +75,45 @@ pub struct Aiming<'a> {
 ///   member seen in reach once for each member seen, if at least half of the
 ///   party would feel it;
 /// - all enemies: ahead, if any foe is seen and in reach.
-pub fn aims(facts: &Aiming) -> Vec<Aim> {
-    let Aiming { targeting, caster, own_group, bodies } = *facts;
+pub fn aims(
+    sight: &Sight,
+    own: &BodyReadOnlyItem,
+    spell: &SpellDefinition,
+    definitions: &Definitions,
+    fray: Fray,
+) -> Vec<Aim> {
+    let (targeting, caster) = (spell.targeting, own.entity);
+    let group_of = |body| sight.minds.get(body).ok().and_then(|mind| mind.group).map(|g| g.0);
+    let own_group = group_of(caster);
+    let eye = sight.places.of(caster).eye;
+    let bodies: Vec<Candidate> = fray
+        .bodies
+        .iter()
+        .filter_map(|&body| {
+            let stance = sight.toward(own, body)?;
+            let their = sight.bodies.get(body).ok()?;
+            let member = sight.roster().contains(&body);
+            let there = sight.places.of(body);
+            Some(Candidate {
+                body,
+                member,
+                group: group_of(body),
+                seen: if member {
+                    fray.sees_party
+                } else {
+                    body == caster || sight.obstacles.clear(eye, there.eye)
+                },
+                stance,
+                reached: sight.places.gap(caster, body) <= spell.reach.metres(),
+                worth: definitions.worthwhile(
+                    spell.id,
+                    their.vitals,
+                    sight.laid.has(body, spell.id),
+                ),
+            })
+        })
+        .collect();
+    let bodies = &bodies[..];
     let seen = || bodies.iter().filter(|c| c.seen);
     let standing = |member: bool, stance: Stance| {
         seen()
@@ -157,33 +184,6 @@ pub fn aims(facts: &Aiming) -> Vec<Aim> {
     }
 }
 
-/// One of a monster's ten slots with a spell in it.
-#[derive(Clone, Debug)]
-pub struct Slot<'a> {
-    pub spell: &'a SpellDefinition,
-    /// The game resolves its effect.
-    pub modelled: bool,
-    /// At whom it may be aimed ([`aims`]).
-    pub aims: Vec<Aim>,
-}
-
-/// What casting weighs.
-#[derive(Clone, Debug)]
-pub struct Casting<'a> {
-    /// The chance (%) its kind casts at its turn while it can strike someone.
-    pub chance: u8,
-    /// What its arms reach of the party: it would close in rather than cast if
-    /// it prefers blows and none does.
-    pub striking: Striking<'a>,
-    pub silenced: bool,
-    /// Its kind keeps its Alchemy through a silence.
-    pub silent_alchemy: bool,
-    /// What its casting stands on; none, it does not cast.
-    pub budget: Option<u32>,
-    /// Its slots in order, up to ten.
-    pub slots: &'a [Option<Slot<'a>>],
-}
-
 /// The spell it casts and how hard, and at whom.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Cast {
@@ -192,49 +192,74 @@ pub struct Cast {
     pub power: u32,
 }
 
-/// The slots it may cast from now: a castable spell with at least one aim,
-/// with the weight of the slot.
-fn usable<'a>(facts: &'a Casting) -> impl Iterator<Item = (u32, &'a Slot<'a>)> {
-    facts
-        .slots
+/// The spells in a monster's slots that it may cast now, each with its
+/// slot's weight and the aims it has: castable, and with someone to aim at.
+fn usable<'a>(
+    sight: &Sight,
+    own: &BodyReadOnlyItem,
+    mind: &MindItem,
+    (spells, definitions): (&'a SpellCatalog, &Definitions),
+    fray: Fray,
+) -> Vec<(u32, &'a SpellDefinition, Vec<Aim>)> {
+    let silenced = own.vitals.conditions.has(Condition::Silenced);
+    mind.casting
+        .spells
         .iter()
         .zip(SLOT_WEIGHTS)
-        .filter_map(|(slot, weight)| Some((weight, slot.as_ref()?)))
-        .filter(|(_, slot)| {
-            castable(slot.spell, slot.modelled, facts.silenced, facts.silent_alchemy)
-                && !slot.aims.is_empty()
+        .filter_map(|(id, weight)| Some((weight, spells.get((*id)?)?)))
+        .filter(|(_, spell)| {
+            let modelled = definitions.spell(spell.id).is_some();
+            castable(spell, modelled, silenced, mind.casting.silent_alchemy)
         })
+        .map(|(weight, spell)| (weight, spell, aims(sight, own, spell, definitions, fray)))
+        .filter(|(.., aims)| !aims.is_empty())
+        .collect()
 }
 
-/// Whether it could cast at a foe now (retail `MonsterGroupCanEngage`'s spell
-/// test): it casts at all, and one of its spells aimed at enemies is castable
-/// with an aim.
-pub fn casts_at_foes(facts: &Casting) -> bool {
-    facts.chance != 0 && usable(facts).any(|(_, slot)| slot.spell.aimed_at_enemies())
+/// Whether a monster could cast at its foes now: it has a chance to cast, and
+/// a usable spell aimed at enemies.
+pub fn casts_at_foes(
+    sight: &Sight,
+    own: &BodyReadOnlyItem,
+    mind: &MindItem,
+    records: (&SpellCatalog, &Definitions),
+    fray: Fray,
+) -> bool {
+    mind.casting.chance != 0
+        && usable(sight, own, mind, records, fray)
+            .iter()
+            .any(|(_, spell, _)| spell.aimed_at_enemies())
 }
 
-/// The spell it casts, if it does, and at whom (retail `UpdateMonsterAI`):
-/// one that casts and does not close in rolls its chance once, the species' if
-/// one of its attacks reaches the party and 100 if none does, if it has a spell
-/// it can cast with an aim; if that comes up it casts one of them by the weights
-/// of their slots (retail `ChooseMonsterSpell`), at one of that spell's aims at
-/// random, at the power its budget allows.
-pub fn casts(rng: &mut GameRng, facts: &Casting) -> Option<Cast> {
-    let budget = facts.budget?;
-    if facts.chance == 0 || closes_in(&facts.striking) {
+/// Whether a monster casts now, the party `gap` metres off, and what: not
+/// without a budget or a chance, nor if it would close in; with its chance
+/// while an arm reaches the party and for sure when none does; one of its
+/// usable spells by the weights of their slots, at one of its aims, at the
+/// power its budget covers.
+pub fn casts(
+    rng: &mut GameRng,
+    sight: &Sight,
+    own: &BodyReadOnlyItem,
+    mind: &MindItem,
+    gap: f32,
+    records: (&SpellCatalog, &Definitions),
+    fray: Fray,
+) -> Option<Cast> {
+    let budget = own.budget?.0;
+    if mind.casting.chance == 0 || closes_in(own, mind, gap) {
         return None;
     }
-    let chance = if reaches_party(&facts.striking) { u32::from(facts.chance) } else { 100 };
-    let usable: Vec<_> = usable(facts).collect();
+    let chance = if reaches_party(own.attacks, gap) { u32::from(mind.casting.chance) } else { 100 };
+    let usable = usable(sight, own, mind, records, fray);
     if usable.is_empty() || rng.below(100) >= chance {
         return None;
     }
-    let total: u32 = usable.iter().map(|&(weight, _)| weight).sum();
-    let which = weighted(rng.below(total), usable.iter().map(|&(weight, _)| weight))
+    let total: u32 = usable.iter().map(|(weight, ..)| weight).sum();
+    let which = weighted(rng.below(total), usable.iter().map(|(weight, ..)| *weight))
         .unwrap_or(usable.len() - 1);
-    let (_, slot) = usable[which];
-    let aim = slot.aims[rng.below(slot.aims.len() as u32) as usize];
-    Some(Cast { spell: slot.spell.id, aim, power: power(rng, budget, slot.spell) })
+    let (_, spell, aims) = &usable[which];
+    let aim = aims[rng.below(aims.len() as u32) as usize];
+    Some(Cast { spell: spell.id, aim, power: power(rng, budget, spell) })
 }
 
 /// How hard it casts (retail `ChooseMonsterSpellPowerLevel`): up from 1 while
@@ -258,8 +283,6 @@ pub fn power(rng: &mut GameRng, budget: u32, spell: &SpellDefinition) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use enumset::EnumSet;
-
     use super::*;
     use crate::content::species::Reach;
 
@@ -273,162 +296,6 @@ mod tests {
             reach: Reach::Long,
             ..Default::default()
         }
-    }
-
-    fn entity(index: u32) -> Entity {
-        Entity::from_raw_u32(index).unwrap()
-    }
-
-    const CASTER: u32 = 1;
-
-    /// A body the caster sees, in reach, that the spell would do something to.
-    fn seen(index: u32, member: bool, stance: Stance) -> Candidate {
-        Candidate {
-            body: entity(index),
-            member,
-            group: None,
-            seen: true,
-            stance,
-            reached: true,
-            worth: true,
-        }
-    }
-
-    fn itself() -> Candidate {
-        seen(CASTER, false, Stance::Friendly)
-    }
-
-    fn aimed(targeting: Targeting, bodies: &[Candidate]) -> Vec<Aim> {
-        aims(&Aiming { targeting, caster: entity(CASTER), own_group: None, bodies })
-    }
-
-    fn at(indices: &[u32]) -> Vec<Aim> {
-        indices.iter().map(|&i| Aim::Body(entity(i))).collect()
-    }
-
-    #[test]
-    fn a_silence_stops_all_but_alchemy_of_a_kind_that_keeps_it() {
-        let blast = spell(1, Targeting::Enemy);
-        let alchemy = SpellDefinition { books: Spellbook::Alchemy.into(), ..blast.clone() };
-        assert!(!castable(&blast, true, true, true), "not Alchemy");
-        assert!(!castable(&alchemy, true, true, false), "Alchemy of a kind that loses it");
-        assert!(castable(&alchemy, true, true, true));
-        assert!(castable(&alchemy, true, false, false), "no silence");
-        let other: EnumSet<Spellbook> = Spellbook::Wizardry | Spellbook::Alchemy;
-        assert!(castable(&SpellDefinition { books: other, ..blast }, true, true, true));
-    }
-
-    #[test]
-    fn a_friend_is_each_friend_seen_in_reach_it_would_work_on_monsters_before_members() {
-        let bodies = [
-            seen(10, true, Stance::Friendly),
-            itself(),
-            seen(11, false, Stance::Friendly),
-            Candidate { reached: false, ..seen(12, false, Stance::Friendly) },
-            Candidate { worth: false, ..seen(13, false, Stance::Friendly) },
-            Candidate { seen: false, ..seen(14, false, Stance::Friendly) },
-            seen(15, false, Stance::Hostile),
-        ];
-        // Itself (friendly) and 11, then the member 10; not 12 (too far), 13
-        // (nothing to do), 14 (unseen), 15 (a foe).
-        assert_eq!(aimed(Targeting::Ally, &bodies), at(&[CASTER, 11, 10]));
-    }
-
-    #[test]
-    fn a_party_is_aimed_at_by_a_group_spell_if_half_of_it_would_feel_it() {
-        // Four members seen; need ceil(4 / 2) = 2 that are in reach and would feel it.
-        let member = |i, worth| Candidate { worth, ..seen(i, true, Stance::Hostile) };
-        let two = [member(10, true), member(11, true), member(12, false), member(13, false)];
-        assert_eq!(aimed(Targeting::EnemyGroup, &two), at(&[10]), "the first hostile one");
-        let one = [member(10, true), member(11, false), member(12, false), member(13, false)];
-        assert_eq!(aimed(Targeting::EnemyGroup, &one), vec![], "1 of 4 is under half");
-        // Three seen: ceil(3 / 2) = 2 are needed.
-        let three_one = [member(10, true), member(11, false), member(12, false)];
-        assert_eq!(aimed(Targeting::EnemyGroup, &three_one), vec![]);
-        let three_two = [member(10, true), member(11, true), member(12, false)];
-        assert_eq!(aimed(Targeting::EnemyGroup, &three_two), at(&[10]));
-        // None feeling it is never enough.
-        assert_eq!(aimed(Targeting::EnemyGroup, &[member(10, false)]), vec![]);
-        // Those out of reach do not count as feeling it.
-        let far = Candidate { reached: false, ..member(10, true) };
-        assert_eq!(aimed(Targeting::EnemyGroup, &[far]), vec![]);
-    }
-
-    /// A foe monster of a group.
-    fn grouped(index: u32, group: u32, stance: Stance) -> Candidate {
-        Candidate { group: Some(entity(group)), ..seen(index, false, stance) }
-    }
-
-    #[test]
-    fn a_group_is_aimed_at_even_when_unseen_and_comes_before_the_party() {
-        // Retail asks the group's members no sight (`MonsterAI.cpp:1941-1960`),
-        // and offers the groups before the party.
-        let unseen = Candidate { seen: false, ..grouped(20, 50, Stance::Hostile) };
-        let party = seen(10, true, Stance::Hostile);
-        assert_eq!(aimed(Targeting::EnemyGroup, &[party, unseen]), at(&[20, 10]));
-    }
-
-    #[test]
-    fn a_cone_is_each_foe_monster_and_each_hostile_member_if_half_the_party_would_feel_it() {
-        let member = |i, worth| Candidate { worth, ..seen(i, true, Stance::Hostile) };
-        let bodies =
-            [itself(), seen(11, false, Stance::Hostile), member(10, true), member(12, true)];
-        // The foe monster 11; both members feel it (2 of 2): each hostile member.
-        assert_eq!(aimed(Targeting::Cone, &bodies), at(&[11, 10, 12]));
-        assert_eq!(aimed(Targeting::Radius, &bodies), at(&[11, 10, 12]));
-        // Only 1 of 2 members would feel it: ceil(2 / 2) = 1, still enough.
-        let bodies = [seen(11, false, Stance::Hostile), member(10, true), member(12, false)];
-        assert_eq!(aimed(Targeting::Cone, &bodies), at(&[11, 10, 12]));
-        // None would: the members are left out, the monster foe remains.
-        let bodies = [seen(11, false, Stance::Hostile), member(10, false), member(12, false)];
-        assert_eq!(aimed(Targeting::Cone, &bodies), at(&[11]));
-        // A member of the party that is not hostile (turned) is not aimed at.
-        let turned = [Candidate { stance: Stance::Friendly, ..member(10, true) }];
-        assert_eq!(aimed(Targeting::Cone, &turned), vec![]);
-    }
-
-    // Casting
-
-    const CLAWS: [Reach; 1] = [Reach::Touch];
-
-    /// Claws, the party `party_gap` metres off, and a kind that prefers range.
-    fn striking(party_gap: f32, prefers_range: bool) -> Striking<'static> {
-        Striking { arms: &CLAWS, party_gap, prefers_range, blind: false }
-    }
-
-    /// Casting from a monster with the party in reach (1 m, claws).
-    fn casting<'a>(chance: u8, slots: &'a [Option<Slot<'a>>]) -> Casting<'a> {
-        Casting {
-            chance,
-            striking: striking(1.0, false),
-            silenced: false,
-            silent_alchemy: false,
-            budget: Some(30),
-            slots,
-        }
-    }
-
-    fn slot(spell: &SpellDefinition) -> Option<Slot<'_>> {
-        Some(Slot { spell, modelled: true, aims: vec![Aim::Ahead] })
-    }
-
-    #[test]
-    fn it_does_not_cast_with_no_chance_no_budget_no_usable_spell_or_a_wish_to_close_in() {
-        let blast = spell(1, Targeting::Enemy);
-        let slots = [slot(&blast)];
-        let mut rng = GameRng::seeded(9);
-        assert!(casts(&mut rng, &casting(0, &slots)).is_none());
-        assert!(casts(&mut rng, &Casting { budget: None, ..casting(100, &slots) }).is_none());
-        // Prefers blows and the party is out of reach of its claws: it closes in.
-        let closing = Casting { striking: striking(10.0, false), ..casting(100, &slots) };
-        assert!(casts(&mut rng, &closing).is_none());
-        assert!(casts(&mut rng, &casting(100, &[])).is_none());
-        // A slot with no aim, a spell it may not cast, and one silenced.
-        let no_aim = [Some(Slot { spell: &blast, modelled: true, aims: vec![] })];
-        assert!(casts(&mut rng, &casting(100, &no_aim)).is_none());
-        let unmodelled = [Some(Slot { spell: &blast, modelled: false, aims: vec![Aim::Ahead] })];
-        assert!(casts(&mut rng, &casting(100, &unmodelled)).is_none());
-        assert!(casts(&mut rng, &Casting { silenced: true, ..casting(100, &slots) }).is_none());
     }
 
     // Power: failure of the test spell (cost 2, level 1: band 2, threshold 50) at

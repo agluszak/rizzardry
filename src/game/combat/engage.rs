@@ -11,51 +11,31 @@
 
 use super::*;
 
-use super::monster::coming::{self, Acting, Alert, Alerted, Entering, Leader, Looking};
-use super::monster::facts::{Fray, Kind, Records, Sight};
-use super::monster::{special, spell};
+use super::monster::coming;
+use super::monster::sight::Sight;
 use crate::game::actors::{Level, Places};
-use crate::game::hits::effects::BodyReadOnly;
 use crate::game::party::body::PartyBody;
 use crate::game::world::hostility::{Allegiance, Stand};
 use crate::game::world::obstacles::WorldObstacles;
-use crate::game::world::population::{Camouflage, Special, Spellcasting, Temper};
+use crate::game::world::population::Camouflage;
 use avian3d::prelude::Position;
 
 /// Monsters coming into the fight, in placement order.
 #[derive(Message)]
 pub(super) struct Engaged(pub(super) Vec<Entity>);
 
-/// While a fight runs, a fighting hostile group alerts the groups of its
-/// faction whose leaders see its own. A group's leader is its first living
-/// member.
-#[allow(clippy::type_complexity)]
+/// While a fight runs, a group of a faction turns hostile when its leader
+/// sees the leader of another group of its faction that is hostile and
+/// fighting (retail `AlertSameFactionGroups`). An NPC's group, an unaligned
+/// one and one hostile already are not stirred.
 pub(super) fn alert_factions(
     monsters: Query<(&Allegiance, Has<Combatant>), With<Monster>>,
     groups: Query<(Entity, &GroupMembers, &LevelOwned)>,
-    (bodies, places, laid, obstacles, group_members): (
-        Query<BodyReadOnly>,
-        Places,
-        crate::game::actors::Laid,
-        WorldObstacles,
-        Query<&'static GroupMember>,
-    ),
-    party: Single<(Entity, &PartyRoster)>,
+    sight: Sight,
     level: PlayedLevel,
     mut commands: Commands,
 ) {
-    let (Some(root), Some(far)) = (level.entity(), level.view_distance()) else { return };
-    let (party, roster) = *party;
-    let sight = Sight {
-        bodies: &bodies,
-        places: &places,
-        laid: &laid,
-        groups: &group_members,
-        party,
-        roster,
-        far,
-        obstacles: &obstacles,
-    };
+    let Some(root) = level.entity() else { return };
     let hostile = |monster: Entity| sight.side(monster) == Some(Stance::Hostile);
     let leaders: Vec<(Entity, Entity, &Allegiance, bool)> = groups
         .iter()
@@ -67,57 +47,30 @@ pub(super) fn alert_factions(
         })
         .collect();
     for &(group, leader, allegiance, _) in &leaders {
-        let alerts: Vec<Alert> = leaders
-            .iter()
-            .map(|&(other, theirs, their_allegiance, fighting)| {
-                let same_faction = their_allegiance.faction == allegiance.faction;
-                let fighting_hostile = fighting && hostile(theirs);
-                Alert {
-                    other: other != group,
-                    same_faction,
-                    fighting_hostile,
-                    // Looked for only where the rest holds, as nothing else can come of it.
-                    seen: same_faction && fighting_hostile && sight.sees(leader, theirs),
-                }
-            })
-            .collect();
-        let alerted = Alerted {
-            npc: allegiance.npc,
-            unaligned: allegiance.faction == crate::game::factions::UNALIGNED,
-            hostile: hostile(leader),
-            leaders: &alerts,
-        };
-        if coming::is_alerted(&alerted) {
+        let stirred = !allegiance.npc
+            && allegiance.faction != crate::game::factions::UNALIGNED
+            && !hostile(leader)
+            && leaders.iter().any(|&(other, theirs, their_allegiance, fighting)| {
+                other != group
+                    && their_allegiance.faction == allegiance.faction
+                    && fighting
+                    && hostile(theirs)
+                    && sight.sees(leader, theirs)
+            });
+        if stirred {
             commands.trigger(Stand { group, stance: Some(Stance::Hostile) });
         }
     }
 }
 
-/// Each group outside the fight, in authored order, then any monster
-/// without one, comes in when its side and sight of the party call for it.
-#[allow(clippy::type_complexity)]
+/// Each group outside the fight, in authored order, then any monster without
+/// one, comes in or not ([`coming::comes_in`]). Those who come in are told
+/// of together, in the order of their places in the level.
 pub(super) fn engage(
     battles: Query<(), With<Battle>>,
-    monsters: Query<(
-        Entity,
-        &Monster,
-        &Allegiance,
-        &Temper,
-        &Spellcasting,
-        &Special,
-        Option<&GroupMember>,
-        Has<Combatant>,
-        Option<&Camouflage>,
-    )>,
+    monsters: Query<(Entity, &Monster, &Allegiance, Option<&GroupMember>, Has<Combatant>)>,
     groups: Query<(Entity, &MonsterGroup, &GroupMembers, &LevelOwned)>,
-    (bodies, places, laid, obstacles, group_members): (
-        Query<BodyReadOnly>,
-        Places,
-        crate::game::actors::Laid,
-        WorldObstacles,
-        Query<&'static GroupMember>,
-    ),
-    party: Single<(Entity, &PartyRoster)>,
+    sight: Sight,
     level: PlayedLevel,
     mut provocations: MessageReader<hostility::Provoked>,
     content: If<Res<Catalogs>>,
@@ -127,68 +80,27 @@ pub(super) fn engage(
 ) {
     let provoked: Vec<Entity> = provocations
         .read()
-        .filter_map(|&hostility::Provoked(m)| Some(monsters.get(m).ok()?.6?.0))
+        .filter_map(|&hostility::Provoked(m)| Some(monsters.get(m).ok()?.3?.0))
         .collect();
     let running = !battles.is_empty();
-    let (the_party, roster) = *party;
-    let (Some(far), Some(root)) = (level.view_distance(), level.entity()) else { return };
-    let sight = Sight {
-        bodies: &bodies,
-        places: &places,
-        laid: &laid,
-        groups: &group_members,
-        party: the_party,
-        roster,
-        far,
-        obstacles: &obstacles,
-    };
-    if !running && !roster.iter().any(|member| sight.alive(member)) {
+    let (Some(_), Some(root)) = (level.view_distance(), level.entity()) else { return };
+    if !running && !sight.roster().iter().any(|member| sight.alive(member)) {
         return;
     }
-    let records = Records { spells: &content.spells, definitions: &definitions };
+    let records = (&content.spells, &*definitions);
     // Those who fight: alive, and not an NPC.
     let fights = |monster: Entity| {
         sight.alive(monster)
             && monsters.get(monster).is_ok_and(|(_, _, allegiance, ..)| !allegiance.npc)
     };
-    // How far a fighter is, whether it sees the party, and whether it can act
-    // on it, which it sees of the fight-to-be: itself and the party it makes out.
-    let look = |fighter: Entity| -> Option<Looking> {
-        let (_, monster, _, temper, casting, special, ..) = monsters.get(fighter).ok()?;
-        let own = bodies.get(fighter).ok()?;
-        let sees_party = sight.sees_party(fighter);
-        let kind = Kind { temper, special, casting, cooling: false, npc: false, fleeing: false };
-        let fray = std::iter::once(fighter).chain(roster.iter()).collect::<Vec<_>>();
-        let known = sight.know(
-            fighter,
-            kind,
-            Fray { bodies: &fray, fighting: false, sees_party },
-            records,
-        )?;
-        let acting = Acting {
-            can_fight: own.vitals.can_fight(),
-            striking: known.striking(),
-            walks: monster.body.speed > 0.0,
-            casts: spell::casts_at_foes(&known.casting()),
-            breathes: special::ready(&known.special()),
-        };
-        Some(Looking {
-            party_gap: sight.party_gap(fighter),
-            sees_party,
-            acts: coming::acts_on_party(&acting),
-        })
-    };
-    // The fight's hostile fighters in the party's view, whom a neutral group may
-    // stand with.
-    let hostiles: Vec<coming::Standing> = monsters
+    // The fight's hostile fighters, whom a neutral group may stand with.
+    let hostiles: Vec<Entity> = monsters
         .iter()
-        .filter(|&(monster, .., fighting, _)| {
+        .filter(|&(monster, .., fighting)| {
             fighting && sight.alive(monster) && sight.side(monster) == Some(Stance::Hostile)
         })
-        .map(|(monster, _, _, temper, ..)| sight.standing(monster, temper.0.camouflaged))
+        .map(|(monster, ..)| monster)
         .collect();
-    // Each group outside the fight in authored order, then any monster
-    // without one.
     let mut units: Vec<(i32, Option<Entity>, Vec<Entity>)> = groups
         .iter()
         .filter(|(.., owner)| owner.0 == root)
@@ -200,41 +112,20 @@ pub(super) fn engage(
     units.extend(
         monsters
             .iter()
-            .filter(|&(monster, .., group, _, _)| group.is_none() && fights(monster))
+            .filter(|&(monster, .., group, _)| group.is_none() && fights(monster))
             .map(|(monster, ..)| (i32::MAX, None, vec![monster])),
     );
     let mut joined: Vec<(i32, Entity)> = Vec::new();
     for (_, group, fighters) in units {
         // Those already fighting stay; the rest of their group may join them.
         let fighters: Vec<Entity> =
-            fighters.into_iter().filter(|&m| monsters.get(m).is_ok_and(|m| !m.7)).collect();
+            fighters.into_iter().filter(|&m| monsters.get(m).is_ok_and(|m| !m.4)).collect();
         let Some(&first) = fighters.first() else { continue };
         let (_, _, allegiance, ..) = monsters.get(first).unwrap();
-        let looks: Vec<Looking> = fighters.iter().filter_map(|&m| look(m)).collect();
-        let standing: Vec<coming::Standing> = fighters
-            .iter()
-            .filter_map(|&m| {
-                let temper = monsters.get(m).ok()?.3;
-                Some(sight.standing(m, temper.0.camouflaged))
-            })
-            .collect();
-        let leader = bodies.get(first).unwrap();
-        let side = sight.side(first).unwrap_or_default();
-        let entering = Entering {
-            stance: side,
-            fight_running: running,
-            provoked: group.is_some_and(|g| provoked.contains(&g)),
-            radius: allegiance.hostility_radius(),
-            members: &looks,
-            leader: Leader {
-                party_gap: sight.party_gap(first),
-                reach: leader.attacks.arms.iter().map(|arm| arm.reach).max(),
-                stride: leader.attacks.stride.unwrap_or(0.0),
-            },
-            standing: &standing,
-            hostiles: &hostiles,
-        };
-        let came = coming::comes_in(&entering);
+        let side = (sight.side(first).unwrap_or_default(), allegiance.hostility_radius());
+        let provoked = group.is_some_and(|g| provoked.contains(&g));
+        let came =
+            coming::comes_in(&sight, &fighters, side, (running, provoked), &hostiles, records);
         if let Some(group) = group
             && came.turns_hostile
         {

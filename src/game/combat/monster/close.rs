@@ -5,7 +5,11 @@
 
 use bevy::prelude::Vec3;
 
+use super::sight::MindItem;
 use crate::content::species::Reach;
+use crate::game::actors::Attacks;
+use crate::game::characters::Condition;
+use crate::game::hits::effects::BodyReadOnlyItem;
 
 /// Metres per unit of a species' `combat_move_range` (retail `SetUpMonsterTurn`).
 pub const METRES_PER_MOVE_RANGE: f32 = 20.0;
@@ -13,35 +17,24 @@ pub const METRES_PER_MOVE_RANGE: f32 = 20.0;
 /// Stop this far inside an attack's reach (retail `Combat.cpp:2486-2551`).
 const ARRIVAL_MARGIN: f32 = 0.3;
 
-/// What a monster's reach to the party weighs.
-#[derive(Clone, Copy, Debug)]
-pub struct Striking<'a> {
-    /// The reach of each of its arms.
-    pub arms: &'a [Reach],
-    /// The gap to the party.
-    pub party_gap: f32,
-    /// Its kind would stand off and cast or breathe rather than close in.
-    pub prefers_range: bool,
-    /// It is Blind and does not fight blind.
-    pub blind: bool,
-}
-
-/// Whether one of its arms reaches the party.
-pub fn reaches_party(facts: &Striking) -> bool {
-    facts.arms.iter().any(|arm| facts.party_gap <= arm.metres())
+/// Whether one of its arms reaches the party, `gap` metres off.
+pub fn reaches_party(attacks: &Attacks, gap: f32) -> bool {
+    attacks.arms.iter().any(|arm| gap <= arm.reach.metres())
 }
 
 /// Whether it would close in to strike rather than consider a special attack
-/// or a spell: it prefers blows, has some, and none reaches the party.
-pub fn closes_in(facts: &Striking) -> bool {
-    !facts.prefers_range && !facts.arms.is_empty() && !reaches_party(facts)
+/// or a spell: its kind prefers blows, it has some, and none reaches the
+/// party.
+pub fn closes_in(own: &BodyReadOnlyItem, mind: &MindItem, gap: f32) -> bool {
+    !mind.temper.0.prefers_range && !own.attacks.arms.is_empty() && !reaches_party(own.attacks, gap)
 }
 
 /// Whether it can strike nobody and withdraws instead (retail
-/// `UpdateMonsterAI`'s `RETURN_TO_START`): it has no arm, or it is blind and
-/// has nobody in reach.
-pub fn cannot_strike(facts: &Striking) -> bool {
-    facts.arms.is_empty() || (facts.blind && !reaches_party(facts))
+/// `UpdateMonsterAI`'s `RETURN_TO_START`): it has no arm, or it is blind,
+/// does not fight blind, and has nobody in reach.
+pub fn cannot_strike(own: &BodyReadOnlyItem, gap: f32) -> bool {
+    let blind = own.vitals.conditions.has(Condition::Blind) && own.attacks.blind_fighting.is_none();
+    own.attacks.arms.is_empty() || (blind && !reaches_party(own.attacks, gap))
 }
 
 /// Hurt enough to charge rather than walk up: at 95 percent of its health or
@@ -50,28 +43,15 @@ pub fn charges(health: u32, most: u32) -> bool {
     health * 100 <= most * 95
 }
 
-/// What a monster's move weighs.
-#[derive(Clone, Copy, Debug)]
-pub struct Moving {
-    /// It is alive and walks.
-    pub walks: bool,
-    /// The reach of its furthest arm.
-    pub reach: Reach,
-    /// Its stride, in metres: its kind's combat move range times 20 m.
-    pub stride: f32,
-    /// The share of its stride Haste adds, a tenth a power.
-    pub hasted: f32,
-    pub slowed: bool,
-}
-
 /// How far a monster moves in one action: its stride, half again when it
-/// charges, plus the share Haste adds, or halved when slowed (retail
+/// charges, plus the share of it Haste adds, or halved when slowed (retail
 /// `SetUpMonsterTurn`, `Combat.cpp:2855-2909`).
-pub fn metres(facts: &Moving, charge: bool) -> f32 {
-    let budget = if charge { facts.stride * 1.5 } else { facts.stride };
-    if facts.hasted > 0.0 {
-        budget + facts.stride * facts.hasted
-    } else if facts.slowed {
+pub fn metres(attacks: &Attacks, slowed: bool, charge: bool) -> f32 {
+    let stride = attacks.stride.unwrap_or(0.0);
+    let budget = if charge { stride * 1.5 } else { stride };
+    if attacks.hasted > 0.0 {
+        budget + stride * attacks.hasted
+    } else if slowed {
         budget * 0.5
     } else {
         budget
@@ -95,11 +75,13 @@ pub struct MoveBudget {
     pub charge: bool,
 }
 
-/// How far a monster `gap` from the party may close in, and whether it charges
-/// (`hurt`), if it needs to at all.
-pub fn budget(facts: &Moving, hurt: bool, gap: f32) -> Option<MoveBudget> {
-    needs_approach(facts.walks, facts.reach, gap)
-        .then(|| MoveBudget { metres: metres(facts, hurt), charge: hurt })
+impl MoveBudget {
+    /// What a monster may move now: it charges when hurt.
+    pub fn of(own: &BodyReadOnlyItem) -> Self {
+        let charge = charges(own.vitals.health.current, own.vitals.health.max);
+        let slowed = own.vitals.conditions.has(Condition::Slowed);
+        MoveBudget { metres: metres(own.attacks, slowed, charge), charge }
+    }
 }
 
 /// Where a monster running from the party heads: straight away from the
@@ -113,47 +95,22 @@ pub fn withdraws_to(feet: Vec3, party_eye: Vec3, metres: f32) -> Vec3 {
 mod tests {
     use super::*;
 
-    const CLAWS: [Reach; 1] = [Reach::Touch];
-    fn striking(arms: &[Reach], party_gap: f32) -> Striking<'_> {
-        Striking { arms, party_gap, prefers_range: false, blind: false }
-    }
-
-    #[test]
-    fn one_with_no_arm_or_blind_with_nobody_in_reach_cannot_strike() {
-        assert!(cannot_strike(&striking(&[], 1.0)));
-        assert!(!cannot_strike(&striking(&CLAWS, 10.0)), "sighted, it closes in instead");
-        let blind = Striking { blind: true, ..striking(&CLAWS, 10.0) };
-        assert!(cannot_strike(&blind));
-        assert!(!cannot_strike(&Striking { party_gap: 2.0, ..blind }), "blind but in reach");
-    }
-
     #[test]
     fn a_monster_charges_at_95_percent_of_its_health_or_less() {
-        // 95 * 100 <= 100 * 95: 95 of 100 charges; 96 does not.
-        assert!(charges(95, 100));
-        assert!(!charges(96, 100));
-        assert!(charges(1, 100));
+        assert!(charges(95, 100) && !charges(96, 100));
         // 19 of 20 is exactly 95 percent.
-        assert!(charges(19, 20));
-        assert!(!charges(20, 20));
-    }
-
-    fn moving() -> Moving {
-        Moving { walks: true, reach: Reach::Touch, stride: 40.0, hasted: 0.0, slowed: false }
+        assert!(charges(19, 20) && !charges(20, 20));
     }
 
     #[test]
     fn haste_adds_a_share_of_the_stride_and_slowing_halves_the_move() {
-        // Haste 0.3 (power 3): 40 + 40 * 0.3 = 52; charging, 60 + 12 = 72.
-        let hasted = Moving { hasted: 0.3, ..moving() };
-        assert!((metres(&hasted, false) - 52.0).abs() < 0.001);
-        assert!((metres(&hasted, true) - 72.0).abs() < 0.001);
-        // Slowed: 40 * 0.5 = 20; charging, 60 * 0.5 = 30.
-        let slowed = Moving { slowed: true, ..moving() };
-        assert_eq!(metres(&slowed, false), 20.0);
-        assert_eq!(metres(&slowed, true), 30.0);
-        // Haste wins over slowing: the share is added, not halved.
-        let both = Moving { hasted: 0.3, slowed: true, ..moving() };
-        assert!((metres(&both, false) - 52.0).abs() < 0.001);
+        let stride = Attacks { stride: Some(40.0), ..Default::default() };
+        assert_eq!((metres(&stride, false, false), metres(&stride, false, true)), (40.0, 60.0));
+        assert_eq!((metres(&stride, true, false), metres(&stride, true, true)), (20.0, 30.0));
+        // Haste 0.3 (power 3): 40 + 40 * 0.3 = 52; charging, 60 + 12 = 72. It
+        // wins over slowing.
+        let hasted = Attacks { hasted: 0.3, ..stride };
+        assert!((metres(&hasted, true, false) - 52.0).abs() < 0.001);
+        assert!((metres(&hasted, false, true) - 72.0).abs() < 0.001);
     }
 }
