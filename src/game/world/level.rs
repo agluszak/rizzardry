@@ -215,41 +215,59 @@ pub struct Woke {
     pub away_ms: u64,
 }
 
-/// Everything that belongs to a level: its root; whatever it owns; whatever
-/// hangs under any of these in the hierarchy; and whatever any of these hold
-/// by relationship (what is stowed in a container or bag, what a body wears
-/// or packs, the spells laid on it).
-fn belonging(world: &World, root: Entity) -> Vec<Entity> {
-    use crate::game::actors::spells::Spells;
-    use crate::game::items::{Pack, Stows, Wears};
-    fn held<T: RelationshipTarget>(thing: EntityRef) -> Vec<Entity> {
-        thing.get::<T>().map_or_else(Vec::new, |targets| targets.iter().collect())
-    }
-    let mut found = vec![root];
-    let mut next = 0;
-    while let Some(&entity) = found.get(next) {
-        next += 1;
-        let thing = world.entity(entity);
-        let more = [
-            held::<LevelEntities>(thing),
-            held::<Children>(thing),
-            held::<Stows>(thing),
-            held::<Wears>(thing),
-            held::<Pack>(thing),
-            held::<Spells>(thing),
-        ];
-        for entity in more.into_iter().flatten() {
-            if !found.contains(&entity) {
-                found.push(entity);
+/// What belongs to a level: its root; whatever it owns; whatever hangs under
+/// any of these in the hierarchy; and whatever any of these hold (what is
+/// stowed in a container or bag, what a body wears or packs, the spells laid
+/// on it). It sees what is set aside too.
+#[derive(SystemParam)]
+pub struct Belongings<'w, 's> {
+    holds: Query<
+        'w,
+        's,
+        (
+            Option<&'static LevelEntities>,
+            Option<&'static Children>,
+            Option<&'static crate::game::items::Stows>,
+            Option<&'static crate::game::items::Wears>,
+            Option<&'static crate::game::items::Pack>,
+            Option<&'static crate::game::actors::spells::Spells>,
+        ),
+        Allow<Disabled>,
+    >,
+}
+
+impl Belongings<'_, '_> {
+    /// Everything that belongs to the level at `root`, the root first.
+    pub fn of(&self, root: Entity) -> Vec<Entity> {
+        fn held<T: RelationshipTarget>(targets: Option<&T>) -> impl Iterator<Item = Entity> + '_ {
+            targets.into_iter().flat_map(|targets| targets.iter())
+        }
+        let mut found = vec![root];
+        let mut next = 0;
+        while let Some(&entity) = found.get(next) {
+            next += 1;
+            let Ok((owned, children, stowed, worn, packed, laid)) = self.holds.get(entity) else {
+                continue;
+            };
+            let more = held(owned)
+                .chain(held(children))
+                .chain(held(stowed))
+                .chain(held(worn))
+                .chain(held(packed))
+                .chain(held(laid));
+            for entity in more {
+                if !found.contains(&entity) {
+                    found.push(entity);
+                }
             }
         }
+        found
     }
-    found
 }
 
 /// The party leaves a level: all that belongs to it is set aside.
-pub fn set_aside(add: On<Add<SetAside>>, world: &World, mut commands: Commands) {
-    for entity in belonging(world, add.entity) {
+pub fn set_aside(add: On<Add<SetAside>>, belongings: Belongings, mut commands: Commands) {
+    for entity in belongings.of(add.entity) {
         commands.entity(entity).insert(Disabled);
     }
 }
@@ -258,12 +276,13 @@ pub fn set_aside(add: On<Add<SetAside>>, world: &World, mut commands: Commands) 
 /// and it is told how long it was away.
 pub fn wake(
     remove: On<Remove<SetAside>>,
-    world: &World,
+    aside: Query<&SetAside, Allow<Disabled>>,
+    belongings: Belongings,
     clock: Res<GameClock>,
     mut commands: Commands,
 ) {
-    let away_ms = clock.ms - world.get::<SetAside>(remove.entity).expect("it is woken").at_ms;
-    for entity in belonging(world, remove.entity) {
+    let away_ms = clock.ms - aside.get(remove.entity).expect("it is woken").at_ms;
+    for entity in belongings.of(remove.entity) {
         commands.entity(entity).try_remove::<Disabled>();
     }
     commands.trigger(Woke { level: remove.entity, away_ms });
