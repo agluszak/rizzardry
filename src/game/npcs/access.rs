@@ -98,9 +98,7 @@ impl NpcActors<'_, '_> {
             .is_some_and(|r| r.0.conditions.has(crate::game::characters::Condition::Turncoat))
     }
     pub fn species_level(&self, actor: Entity) -> u32 {
-        self.active_body(actor)
-            .and_then(|b| self.bodies.get(b).ok())
-            .map_or(1, |r| r.6.0.max(1))
+        self.active_body(actor).and_then(|b| self.bodies.get(b).ok()).map_or(1, |r| r.6.0.max(1))
     }
 }
 #[derive(SystemParam)]

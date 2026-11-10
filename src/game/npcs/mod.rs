@@ -34,7 +34,9 @@ pub struct Npc {
     pub trade_pool: u16,
     pub charmed_at: Option<u64>,
     pub small_talk_at: Option<u64>,
-    pub dead: bool,
+    /// The body they stood in was killed: they stand nowhere again. One who
+    /// dies seated in the party is dead as any member is.
+    pub killed: bool,
 }
 impl Npc {
     fn from_definition(d: &NpcDefinition) -> Self {
@@ -46,7 +48,7 @@ impl Npc {
             trade_pool: d.trade_pool,
             charmed_at: None,
             small_talk_at: None,
-            dead: false,
+            killed: false,
         }
     }
 }
@@ -65,19 +67,23 @@ pub struct NpcSpeaker(pub Entity);
 pub struct NpcAssets {
     pub scripts: HashMap<NpcId, Handle<DialogueScript>>,
 }
-#[derive(Resource, Default)]
-pub(super) struct Registry {
-    named: HashMap<NpcId, Entity>,
-    // A level's placed monster binding, not a definition's global identity.
-    placed: HashMap<(String, i32), Entity>,
-    initialized: bool,
+/// On an NPC that is one of a level's placed monsters rather than someone
+/// with a name of their own: which placement of which level.
+#[derive(Component, Clone, Debug, PartialEq, Eq)]
+pub(super) struct Placed {
+    map: String,
+    location: i32,
 }
+
+/// The NPCs with names of their own have been made, as the first level is
+/// entered.
+#[derive(Resource)]
+pub(super) struct Peopled;
 
 pub struct NpcPlugin;
 impl Plugin for NpcPlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<DialogueScript>()
-            .init_resource::<Registry>()
             .init_resource::<NpcAssets>()
             .init_resource::<story::StoryFacts>()
             .add_systems(

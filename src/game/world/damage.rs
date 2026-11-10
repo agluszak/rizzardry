@@ -109,7 +109,7 @@ pub fn monster_died(
     let npc = bodies.get(target).ok().and_then(|body| npcs.get_mut(body.0).ok());
     let (found, gold) = match npc {
         Some((mut npc, id)) => {
-            npc.dead = true;
+            npc.killed = true;
             crate::game::loot::npc_loot(&content.npcs[id.npc()], tables, catalog, rng)
         }
         None => {

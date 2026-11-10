@@ -54,12 +54,16 @@ What the player can see of an NPC who may join (retail `NPC Manager.cpp`,
 That is all the original is evidence of. That it keeps a character record and
 makes a separate monster record is its layout, and decides nothing here.
 
-**Not as it should be.** The code has an NPC as two actors, the character and
-a body, each with its own `Vitals`, and copies conditions between them on
-joining and leaving: two authorities for what ails one person. An NPC is one
-actor. What is rightly a thing of its own is only its physical presence in a
-level (where it stands, its collider, its navigation, what is drawn), which
-comes and goes with the level and with joining.
+An NPC who stands in a level is two entities here, for a reason of our own:
+the body has a lifetime the person does not. It is made when they come to
+stand in a level, set aside with that level, and gone when they take a seat,
+and with it go its collider, its navigation and what is drawn of it. The
+person (what was said to them, their sheet, their things, their stock) outlives
+every body and is never set aside. The body is an actor like any monster, and
+ends; what ails it is handed to the person as it ends, and to a new body as
+one is made. Whether an NPC is dead is one fact in each case: one killed where
+they stood stands nowhere again (`Npc::killed`), and one who dies seated is
+dead as any member is.
 
 One who is somewhere the party is not is set aside with that level, or on
 their own if they are nowhere.

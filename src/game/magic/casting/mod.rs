@@ -17,13 +17,15 @@ mod means;
 
 use bevy::prelude::*;
 
-pub use self::means::{Around, goes_again, reaches, resolvable, usable_item, usable_items};
+use self::means::{Circumstances, Marks};
 use self::means::{ItemUse, Means, Payment, Stage};
+pub use self::means::{goes_again, reaches, resolvable, usable_item, usable_items};
 use super::may::{self, Refusal};
 use super::reach::{self, Aim, Falls, Marked};
 pub use super::roll::learned as learned_chance;
 use super::{Outcome, Strength, cost, power, roll};
 use crate::content::spells::{PowerChoice, SpellId, Targeting, Working};
+use crate::game::actors::Places;
 use crate::game::characters::Practise;
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
@@ -32,10 +34,12 @@ use crate::game::hits::effects::{Body, Strike};
 use crate::game::hits::reach::Recipients;
 use crate::game::hits::spells::{Leech, Spell, owners_strength};
 use crate::game::hits::{Act, Deed, Effect, Release};
-use crate::game::items::Spend;
+use crate::game::items::{Items, Spend};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::Provocation;
+use crate::game::world::identify::{GroupMember, GroupMembers};
+use crate::game::world::obstacles::WorldObstacles;
 
 /// What pays for a cast.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,7 +178,13 @@ pub struct Worked {
 pub fn cast(
     cast: On<Cast>,
     mut bodies: Query<Body>,
-    around: Around,
+    (places, obstacles, held): (Places, WorldObstacles, Items),
+    (circumstances, marks): (Circumstances, Marks),
+    (memberships, groups, kinds): (
+        Query<&GroupMember>,
+        Query<&GroupMembers>,
+        Query<&crate::game::world::population::Spellcasting>,
+    ),
     mut fight: Option<
         Single<(&mut crate::game::combat::Round, Option<&crate::game::combat::Combatants>)>,
     >,
@@ -203,16 +213,16 @@ pub fn cast(
             commands.trigger(Refused { caster, refusal: Refusal::CannotAct });
             continue;
         };
-        let moment = around.moment(spell, fighting);
-        let asked = (means::affordable(&body, spell, &content.spells), around.keeps_alchemy(&body));
+        let moment = circumstances.moment(spell, fighting);
+        let asked =
+            (means::affordable(&body, spell, &content.spells), means::keeps_alchemy(&body, &kinds));
         let resolved = resolvable(spell, &definitions);
-        if let Err(refusal) =
-            may::may(spell, &body, choice.source, &around.held, asked, moment, resolved)
+        if let Err(refusal) = may::may(spell, &body, choice.source, &held, asked, moment, resolved)
         {
             commands.trigger(Refused { caster, refusal });
             continue;
         }
-        let Some(means) = Means::of(choice.source, &body, &around.held) else {
+        let Some(means) = Means::of(choice.source, &body, &held) else {
             commands.trigger(Refused { caster, refusal: Refusal::CannotAct });
             continue;
         };
@@ -221,13 +231,19 @@ pub fn cast(
         // `UseItem` aims potions at their user).
         let forced = fighting && item.is_some_and(ItemUse::by_anyone);
         let targeting = if forced { Targeting::Caster } else { spell.targeting };
-        let stage =
-            Stage::of(caster, spell.reach.metres(), &readonly, &around, (roster, combatants));
+        let stage = Stage::of(
+            caster,
+            spell.reach.metres(),
+            &readonly,
+            (&places, &obstacles),
+            (&memberships, &groups),
+            (roster, combatants),
+        );
         let aiming = stage.aiming(caster, targeting, choice.aim);
         let (mut victims, spot, marked) = match spell.facts.working {
             Some(working) => {
                 let marking =
-                    around.marking(working, &cast, spell, (&readonly, roster), &definitions);
+                    marks.marking(working, &cast, spell, (&readonly, roster), &definitions);
                 match reach::mark(&marking) {
                     Ok(marked) => (Vec::new(), None, Some(marked)),
                     Err(refusal) => {
@@ -254,7 +270,7 @@ pub fn cast(
             (&cast, spell),
             (boost, pace),
             &readonly,
-            &around,
+            &held,
             records,
         );
         let Some(power) = power else {
@@ -270,8 +286,8 @@ pub fn cast(
         let struck = |origin: Vec3| {
             crate::game::hits::spells::struck(
                 &readonly,
-                &around.places,
-                &around.obstacles,
+                &places,
+                &obstacles,
                 origin,
                 (roster, combatants),
             )
@@ -287,8 +303,8 @@ pub fn cast(
         let on_oneself = choice.aim.body() == Some(caster);
         let (chance, quiet) = means.failure(spell, power, pace, on_oneself);
         // The party under water casts no Fire.
-        let quenched =
-            spell.realm == Some(crate::content::characters::Realm::Fire) && around.underwater();
+        let quenched = spell.realm == Some(crate::content::characters::Realm::Fire)
+            && circumstances.underwater();
         let outcome = roll::outcome(&mut rng, chance, quiet, quenched, spell.can_backfire());
         let backfired = outcome == Outcome::Backfired;
         let own_side = reach::own_side(&aiming);
@@ -301,7 +317,7 @@ pub fn cast(
         } else {
             power::strength(figure, power, boost, spell)
         };
-        let stand = around.places.of(caster);
+        let stand = places.of(caster);
         let blast_back = (backfired && backfire.falls == Falls::Blast).then(|| {
             let against = Recipients::Opponents(side).reversed();
             reach::blasted(stand.feet, radius, against, &struck(stand.feet))
@@ -319,9 +335,7 @@ pub fn cast(
             caster,
             spell: id,
             power,
-            item: item
-                .and_then(|item| around.held.id(item.item))
-                .map(|id| content.items[id].name.clone()),
+            item: item.and_then(|item| held.id(item.item)).map(|id| content.items[id].name.clone()),
             outcome,
             effects: Vec::new(),
         };
@@ -405,7 +419,7 @@ pub fn cast(
                 _ => bodies
                     .as_readonly()
                     .get(victim)
-                    .map_or(stand.eye, |body| around.places.of(body.entity).feet),
+                    .map_or(stand.eye, |body| places.of(body.entity).feet),
             };
             flies.then(|| reach::flight(stand.eye, to))
         };

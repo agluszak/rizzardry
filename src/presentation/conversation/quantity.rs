@@ -1,7 +1,7 @@
 //! Retail split-item presentation. This edits a quote, never inventory itself.
 use super::*;
 use crate::content::ui::TextTable;
-use crate::game::npcs::trade::MerchantStock;
+use crate::game::npcs::trade;
 use crate::presentation::screen_art::StringTable;
 use bevy::ecs::system::RunSystemOnce;
 use bevy::text::{EditableTextFilter, TextEdit};
@@ -34,12 +34,18 @@ pub(super) enum Control {
 fn stack(world: &mut World, q: TradeQuote) -> Option<(crate::content::items::ItemId, u32)> {
     let c = world.get::<Conversation>(q.conversation)?;
     match q.offer.source {
-        TradeSource::Stock(id) => world
-            .get::<MerchantStock>(c.actor)?
-            .lots
-            .iter()
-            .find(|lot| lot.id == id)
-            .map(|lot| (lot.item, lot.units)),
+        TradeSource::Stock(of) => {
+            let merchant = c.actor;
+            world
+                .run_system_once(
+                    move |held: crate::game::items::Items,
+                          content: Res<crate::game::data::Catalogs>| {
+                        let shelf = trade::shelf(&held, merchant, of, &content.items)?;
+                        Some((shelf.item, shelf.units))
+                    },
+                )
+                .ok()?
+        }
         TradeSource::Party(item) => {
             let id = world
                 .run_system_once(move |held: crate::game::items::Items| {

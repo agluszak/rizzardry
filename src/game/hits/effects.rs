@@ -229,7 +229,7 @@ fn apply(
             // A leech gives back the magnitude the victim's health could
             // bear, before a Guardian Angel takes any (retail
             // `DrainTargetsLife`, `Magic Effects.cpp:1626-1650`).
-            log.harm += applied::bearable(magnitude, body.vitals.health.current);
+            log.harm += magnitude.min(body.vitals.health.current);
             let through = laying.absorb(victim, magnitude);
             let lost = body.vitals.hurt(through);
             dealt(body, lost, true, rng, log);
@@ -280,7 +280,7 @@ fn apply(
         }
         K::DrainBudget => {
             let Some(budget) = body.budget.as_mut() else { return Outcome::Missed };
-            let lost = applied::budget_lost(budget.0, magnitude);
+            let lost = budget.0.min(magnitude);
             budget.0 -= lost;
             Effect::Drained { victim, amount: lost }
         }
@@ -344,7 +344,7 @@ fn apply(
             Effect::Raised { victim }
         }
         K::Purify { level } => {
-            laying.purify(victim, applied::purified(magnitude, level));
+            laying.purify(victim, magnitude + level);
             Effect::Purified { victim }
         }
         K::Enchant(spell) => {
@@ -355,7 +355,9 @@ fn apply(
             let turns = if answers_slowing { body.vitals.hasted(magnitude) } else { magnitude };
             let dead = body.vitals.is_dead();
             let laid = !dead && lay(laying, victim, spell, turns, strength, rules, rng);
-            let changed = !dead && applied::enchanted(laid, answers_slowing, turns, magnitude);
+            // Wholly spent on a slowing, it changed something all the same.
+            let spent = answers_slowing && turns == 0 && magnitude > 0;
+            let changed = !dead && (laid || spent);
             if changed { Effect::Enchanted { victim, spell } } else { Effect::Nothing { victim } }
         }
         K::Burn => {
@@ -402,7 +404,7 @@ pub fn land_on_party(
         let magnitude = spec
             .roll
             .map_or(0, |roll| definitions::roll(roll, strike.strength, strike.blow.as_ref(), rng));
-        if !applied::happens(rng, spec.chance) {
+        if spec.chance.is_some_and(|chance| rng.below(100) >= chance) {
             previous = Some(Outcome::Missed);
             continue;
         }
@@ -420,7 +422,7 @@ pub fn land_on_party(
                 }
             }
             K::Purify { level } => {
-                laying.purify(party, applied::purified(magnitude, level));
+                laying.purify(party, magnitude + level);
                 log.effects.push(Effect::Purified { victim });
             }
             K::Enchant(spell) => {
@@ -435,7 +437,8 @@ pub fn land_on_party(
                 burn(rules.held.pool(party).iter().copied(), rules, magnitude, rng, log);
             }
             K::LoseGold => {
-                let amount = applied::gold_lost(inventory.gold, magnitude);
+                // A percent of the purse, at most all of it.
+                let amount = inventory.gold * magnitude.min(100) / 100;
                 inventory.gold -= amount;
                 log.effects.push(Effect::GoldLost { amount });
             }

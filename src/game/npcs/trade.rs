@@ -9,29 +9,96 @@ use crate::{
         characters::{Character, Vitals},
         data::Catalogs,
         inventory::PartyInventory,
-        items::{Give, Items, Lose, Place, make},
+        items::{Charges, Give, Items, Known, Lose, Place, Put, make, split},
         party::roster::PartyRoster,
         rng::GameRng,
         time::{DAY_MS, GameClock},
     },
 };
 use bevy::{ecs::system::SystemParam, prelude::*};
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StockLotId(pub u64);
-#[derive(Clone, Debug)]
-pub struct StockLot {
-    pub id: StockLotId,
-    pub item: ItemId,
-    pub units: u32,
-    pub available_at: u64,
-}
+/// On a merchant: when its stock was last filled up and last turned over.
+/// What it has to sell is the items stowed with it.
 #[derive(Component, Debug, Default)]
 pub struct MerchantStock {
-    pub lots: Vec<StockLot>,
-    next: u64,
     restocked: u64,
     maintained: u64,
 }
+
+/// What a merchant has of one kind to sell: its items of that kind taken
+/// together, or one bundle of ammunition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shelf {
+    pub item: ItemId,
+    /// The items on it, the first naming it.
+    pub items: Vec<Entity>,
+    pub units: u32,
+}
+
+/// A merchant's shelves, in the order its stock came in.
+pub fn shelves(held: &Items, merchant: Entity, catalog: &ItemCatalog) -> Vec<Shelf> {
+    let mut shelves: Vec<Shelf> = Vec::new();
+    for &item in held.stowed(merchant) {
+        let Some(id) = held.id(item) else { continue };
+        let units = held.units(item);
+        let bundled = catalog[id].class == EquipClass::Ammunition;
+        match shelves.iter_mut().find(|shelf| shelf.item == id).filter(|_| !bundled) {
+            Some(shelf) => {
+                shelf.items.push(item);
+                shelf.units += units;
+            }
+            None => shelves.push(Shelf { item: id, items: vec![item], units }),
+        }
+    }
+    shelves
+}
+
+/// The shelf an item of a merchant's stock is on.
+pub fn shelf(held: &Items, merchant: Entity, of: Entity, catalog: &ItemCatalog) -> Option<Shelf> {
+    shelves(held, merchant, catalog).into_iter().find(|shelf| shelf.items.contains(&of))
+}
+
+/// Put `units` of an item on a merchant's shelves: ammunition come from the
+/// maker in bundles of 25, anything that stacks as one stack, anything else
+/// one by one.
+fn stock(commands: &mut Commands, merchant: Entity, definition: &ItemDefinition, units: u32) {
+    let mut put = |amount: u16| {
+        let item = make(commands, definition, amount, true);
+        commands.trigger(Put { item, at: Place::Container(merchant) });
+    };
+    if definition.class == EquipClass::Ammunition {
+        (0..units).for_each(|_| put(25));
+    } else if definition.quantity == QuantityKind::Stack {
+        if units > 0 {
+            put(units as u16);
+        }
+    } else {
+        let charges = match definition.quantity {
+            QuantityKind::None => 1,
+            _ => definition.initial_quantity.maximum() as u16,
+        };
+        (0..units).for_each(|_| put(charges));
+    }
+}
+
+/// A merchant opens: its stock as its record says, each thing it does not
+/// always keep there with the chance the party's level gives it.
+pub fn open(
+    commands: &mut Commands,
+    merchant: Entity,
+    d: &NpcDefinition,
+    items: &ItemCatalog,
+    level: u32,
+    now: u64,
+    rng: &mut GameRng,
+) {
+    commands.entity(merchant).insert(MerchantStock { restocked: now, maintained: now });
+    for rule in &d.stock {
+        let probability = if rule.persistent { 100 } else { chance(&items[rule.item], level) };
+        let count = (0..rule.quantity).filter(|_| rng.below(100) < probability).count() as u32;
+        stock(commands, merchant, &items[rule.item], count);
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TradeError {
     StaleSelection,
@@ -45,7 +112,8 @@ pub enum TradeError {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TradeSource {
-    Stock(StockLotId),
+    /// Something of the merchant's stock, which names its shelf.
+    Stock(Entity),
     /// An item the party has: in the pool, or packed (not worn) by a member.
     Party(Entity),
 }
@@ -89,82 +157,42 @@ fn chance(item: &ItemDefinition, level: u32) -> u32 {
         75
     }
 }
-impl MerchantStock {
-    pub fn new(
-        d: &NpcDefinition,
-        items: &ItemCatalog,
-        level: u32,
-        now: u64,
-        rng: &mut GameRng,
-    ) -> Self {
-        let mut stock = Self { restocked: now, maintained: now, ..default() };
-        for rule in &d.stock {
-            let probability = if rule.persistent { 100 } else { chance(&items[rule.item], level) };
-            let count = (0..rule.quantity).filter(|_| rng.below(100) < probability).count() as u32;
-            stock.add(rule.item, count, items, true);
+/// What a merchant is short of, by the rules of its record that are
+/// `persistent` or not, comes in: nothing while it has more than half of
+/// what a rule wants (of a thing that stacks, any at all), a thing it does
+/// not always keep only with its chance, and then what it lacks, half as
+/// much again or half as much less a third of the time each. `have` says how
+/// many of an item it has.
+fn replenish(
+    commands: &mut Commands,
+    merchant: Entity,
+    d: &NpcDefinition,
+    items: &ItemCatalog,
+    (level, persistent, templar): (u32, bool, bool),
+    have: impl Fn(ItemId) -> u32,
+    rng: &mut GameRng,
+) {
+    for r in d.stock.iter().filter(|r| r.persistent == persistent) {
+        if !persistent && r.item == ItemId(0x1fc) && !templar {
+            continue;
         }
-        stock
+        let stacks = items[r.item].quantity == QuantityKind::Stack;
+        let have = if stacks { have(r.item).min(1) } else { have(r.item) };
+        let wanted = u32::from(r.quantity);
+        if wanted == 0 || have > wanted / 2 {
+            continue;
+        }
+        if !persistent && rng.below(100) >= chance(&items[r.item], level) {
+            continue;
+        }
+        let n = wanted - have;
+        let n = match rng.below(3) {
+            0 => n + n / 2,
+            1 => n - n / 2,
+            _ => n,
+        };
+        stock(commands, merchant, &items[r.item], n);
     }
-    pub fn lot(&self, id: StockLotId) -> Result<&StockLot, TradeError> {
-        self.lots.iter().find(|l| l.id == id).ok_or(TradeError::StaleSelection)
-    }
-    fn add(&mut self, item: ItemId, units: u32, catalog: &ItemCatalog, bundles: bool) {
-        if units == 0 {
-            return;
-        }
-        let ammo = catalog[item].class == EquipClass::Ammunition;
-        if !ammo
-            && let Some(l) = self.lots.iter_mut().find(|l| l.item == item && l.available_at == 0)
-        {
-            l.units += units;
-            return;
-        }
-        let count = if ammo && bundles { units } else { 1 };
-        for _ in 0..count {
-            self.next += 1;
-            self.lots.push(StockLot {
-                id: StockLotId(self.next),
-                item,
-                units: if ammo && bundles { 25 } else { units },
-                available_at: 0,
-            });
-        }
-    }
-    fn replenish(
-        &mut self,
-        d: &NpcDefinition,
-        items: &ItemCatalog,
-        level: u32,
-        persistent: bool,
-        templar: bool,
-        rng: &mut GameRng,
-    ) {
-        for r in d.stock.iter().filter(|r| r.persistent == persistent) {
-            if !persistent && r.item == ItemId(0x1fc) && !templar {
-                continue;
-            }
-            let have = self.lots.iter().find(|l| l.item == r.item).map_or(0, |l| {
-                if items[r.item].quantity == QuantityKind::Stack { 1 } else { l.units }
-            });
-            let wanted = u32::from(r.quantity);
-            if wanted == 0 || have > wanted / 2 {
-                continue;
-            }
-            if !persistent && rng.below(100) >= chance(&items[r.item], level) {
-                continue;
-            }
-            let n = wanted - have;
-            let n = match rng.below(3) {
-                0 => n + n / 2,
-                1 => n - n / 2,
-                _ => n,
-            };
-            self.add(r.item, n, items, true);
-        }
-    }
-}
-pub fn on_sale(l: &StockLot, d: &ItemDefinition) -> bool {
-    l.units > 0 && l.available_at == 0 && !d.merchant_cannot_sell
 }
 pub fn trade_quantity(d: &ItemDefinition, units: u32) -> u32 {
     if d.class == EquipClass::Ammunition { units } else { 1 }
@@ -232,18 +260,19 @@ impl Pricing<'_, '_> {
         source: TradeSource,
         units: u32,
     ) -> Result<Quote, TradeError> {
-        let (id, stock) = self.stocks.get(merchant).map_err(|_| TradeError::Unavailable)?;
+        let (id, _) = self.stocks.get(merchant).map_err(|_| TradeError::Unavailable)?;
         let roster = *self.roster;
         let skill = communication(roster.iter().filter_map(|m| self.members.get(m).ok()));
         let d = &self.content.npcs[id.0];
         let gold = match source {
-            TradeSource::Stock(id) => {
-                let lot = stock.lot(id)?;
-                let item = &self.content.items[lot.item];
-                if !on_sale(lot, item) {
+            TradeSource::Stock(of) => {
+                let shelf = shelf(&self.held, merchant, of, &self.content.items)
+                    .ok_or(TradeError::StaleSelection)?;
+                let item = &self.content.items[shelf.item];
+                if item.merchant_cannot_sell {
                     return Err(TradeError::Unavailable);
                 }
-                quantity(item, units, lot.units)?;
+                quantity(item, units, shelf.units)?;
                 price(d, item, units, true, true, skill)
             }
             TradeSource::Party(source) => {
@@ -268,7 +297,7 @@ impl Pricing<'_, '_> {
 }
 #[derive(SystemParam)]
 struct Settlement<'w, 's> {
-    stocks: Query<'w, 's, &'static mut MerchantStock>,
+    stocks: Query<'w, 's, (), With<MerchantStock>>,
     party: Single<'w, 's, (Entity, &'static PartyRoster, &'static mut PartyInventory)>,
     held: Items<'w, 's>,
     content: Res<'w, Catalogs>,
@@ -279,13 +308,17 @@ impl Settlement<'_, '_> {
         if current.gold != q.gold {
             return Err(TradeError::PriceChanged);
         }
-        let mut stock = self.stocks.get_mut(q.merchant).map_err(|_| TradeError::Unavailable)?;
+        if !self.stocks.contains(q.merchant) {
+            return Err(TradeError::Unavailable);
+        }
         let (party, roster, inventory) = &mut *self.party;
         match q.source {
-            TradeSource::Stock(id) => {
-                let row =
-                    stock.lots.iter().position(|l| l.id == id).ok_or(TradeError::StaleSelection)?;
-                let item = &self.content.items[stock.lots[row].item];
+            // What is bought is the merchant's own items, handed over: whole
+            // ones first, then part of a stack.
+            TradeSource::Stock(of) => {
+                let shelf = shelf(&self.held, q.merchant, of, &self.content.items)
+                    .ok_or(TradeError::StaleSelection)?;
+                let item = &self.content.items[shelf.item];
                 if inventory.gold < q.gold {
                     return Err(TradeError::Funds);
                 }
@@ -298,18 +331,16 @@ impl Settlement<'_, '_> {
                     return Err(TradeError::Capacity);
                 }
                 let mut remaining = q.quantity;
-                while remaining > 0 {
-                    let units = if item.quantity == QuantityKind::Stack {
-                        remaining.min(u32::from(item.stack_limit).max(1))
+                for &on_shelf in &shelf.items {
+                    if remaining == 0 {
+                        break;
+                    }
+                    let units = self.held.units(on_shelf);
+                    let bought = if units <= remaining {
+                        on_shelf
                     } else {
-                        1
+                        split(&mut self.commands, on_shelf, remaining as u16)
                     };
-                    let count = match item.quantity {
-                        QuantityKind::Stack => units as u16,
-                        QuantityKind::None => 1,
-                        _ => item.initial_quantity.maximum() as u16,
-                    };
-                    let bought = make(&mut self.commands, item, count, true);
                     self.commands.trigger(Give {
                         item: bought,
                         to: None,
@@ -317,17 +348,23 @@ impl Settlement<'_, '_> {
                         pool_first: true,
                         told: false,
                     });
-                    remaining -= units;
+                    remaining -= units.min(remaining);
                 }
                 inventory.gold -= q.gold;
-                stock.lots[row].units -= q.quantity;
-                stock.lots.retain(|l| l.units > 0);
             }
+            // What is sold goes onto the merchant's shelves as the thing it
+            // is, known for what it is and with its charges made up.
             TradeSource::Party(source) => {
                 for_sale(source, roster, &self.held)?;
-                let item = self.held.id(source).ok_or(TradeError::StaleSelection)?;
-                self.commands.trigger(Lose { item: source, amount: q.quantity as u16 });
-                stock.add(item, q.quantity, &self.content.items, false);
+                let sold = if q.quantity < self.held.units(source) {
+                    split(&mut self.commands, source, q.quantity as u16)
+                } else {
+                    source
+                };
+                let mut item = self.commands.entity(sold);
+                item.entry::<Known>().and_modify(|mut known| known.identified = true);
+                item.entry::<Charges>().and_modify(|mut charges| charges.left = charges.full);
+                self.commands.trigger(Put { item: sold, at: Place::Container(q.merchant) });
                 inventory.gold += q.gold;
             }
         }
@@ -346,15 +383,21 @@ fn settle(
         receipts.write(Receipt { reply_to: order.reply_to, result });
     }
 }
+/// A merchant visited keeps shop: after half a day what it always keeps is
+/// made up; after a day what it does not always keep turns over (one of each
+/// stack goes, and all of anything else, but for what is crucial or not for
+/// sale) and what it lacks may come in.
 fn maintain(
     mut visits: MessageReader<Visit>,
     mut stocks: Query<(&ActorId, &mut MerchantStock)>,
+    held: Items,
     content: If<Res<Catalogs>>,
     clock: Res<GameClock>,
     story: Res<super::story::StoryFacts>,
     party: Query<&PartyRoster>,
     members: Query<&Character>,
     mut rng: ResMut<GameRng>,
+    mut commands: Commands,
 ) {
     let average = crate::game::party::average_level(
         party
@@ -363,36 +406,42 @@ fn maintain(
             .filter_map(|m| members.get(m).ok())
             .map(Character::level),
     );
+    let items = &content.items;
     for visit in visits.read() {
-        let Ok((id, mut stock)) = stocks.get_mut(visit.0) else { continue };
+        let merchant = visit.0;
+        let Ok((id, mut stock)) = stocks.get_mut(merchant) else { continue };
         let d = &content.npcs[id.0];
+        let shelves = shelves(&held, merchant, items);
+        let have = |item| shelves.iter().filter(|s| s.item == item).map(|s| s.units).sum::<u32>();
         if clock.ms - stock.restocked > DAY_MS / 2 {
-            stock.replenish(d, &content.items, average, true, false, &mut rng);
+            replenish(&mut commands, merchant, d, items, (average, true, false), have, &mut rng);
             stock.restocked = clock.ms;
         }
         if clock.ms - stock.maintained >= DAY_MS {
-            for lot in &mut stock.lots {
-                let item = &content.items[lot.item];
-                if lot.available_at != 0
-                    || item.crucial
+            let mut gone: Vec<(ItemId, u32)> = Vec::new();
+            for shelf in &shelves {
+                let item = &items[shelf.item];
+                if item.crucial
                     || item.merchant_cannot_sell
-                    || d.stock.iter().any(|r| r.persistent && r.item == lot.item)
+                    || d.stock.iter().any(|r| r.persistent && r.item == shelf.item)
                 {
                     continue;
                 }
-                lot.units -= if item.quantity == QuantityKind::Stack { 1 } else { lot.units };
+                if item.quantity == QuantityKind::Stack {
+                    commands.trigger(Lose { item: shelf.items[0], amount: 1 });
+                    gone.push((shelf.item, 1));
+                } else {
+                    shelf.items.iter().for_each(|&item| commands.entity(item).despawn());
+                    gone.push((shelf.item, shelf.units));
+                }
             }
             let templar = super::story::fact_named(&story, &content.facts, "FACT_TEMPLAR")
                 .is_ok_and(|v| v != 0);
-            stock.replenish(d, &content.items, average, false, templar, &mut rng);
-            stock.lots.retain(|l| l.units > 0);
+            let left =
+                |item| have(item) - gone.iter().filter(|g| g.0 == item).map(|g| g.1).sum::<u32>();
+            replenish(&mut commands, merchant, d, items, (average, false, templar), left, &mut rng);
             stock.maintained = clock.ms;
             stock.restocked = clock.ms;
-        }
-        for l in &mut stock.lots {
-            if l.available_at != 0 && l.available_at < clock.ms {
-                l.available_at = 0;
-            }
         }
     }
 }
