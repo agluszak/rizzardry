@@ -517,7 +517,7 @@ pub(super) fn take_turn(
                         Decision::Special(Breathes {
                             special: Some(kind),
                             definition: definitions.special(kind),
-                            summons: kind.summons(),
+                            summons: crate::game::hits::specials::special(kind).summons,
                             strength: crate::game::hits::specials::strength(
                                 own.level.0 as u8,
                                 own.vitals.stamina,

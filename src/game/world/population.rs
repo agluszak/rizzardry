@@ -182,7 +182,9 @@ impl MonsterBodies {
         spawnable.extend(crate::game::magic::workings::ELEMENTALS);
         let mut next = 0;
         while let Some(&id) = spawnable.get(next) {
-            if let Some(called) = species.kind(id).and_then(|kind| kind.special.kind?.summons())
+            if let Some(called) = species
+                .kind(id)
+                .and_then(|kind| crate::game::hits::specials::special(kind.special.kind?).summons)
                 && !spawnable.contains(&called)
             {
                 spawnable.push(called);
