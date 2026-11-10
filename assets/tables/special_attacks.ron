@@ -1,0 +1,54 @@
+#![enable(implicit_some)]
+// What each special attack (a breath, a gaze, a call) does, by the kind a
+// species' record names (retail `g_special_attack_table`,
+// `g_special_attack_condition_table`, `g_special_attack_realm_table`). The
+// kinds are named for what their rows say; the number after each is the
+// record's byte, which also numbers the attack's name for kinds 1 to 11.
+//
+// A row lists only what is not the default.
+//   realm       the realm its victims resist it by
+//   effects     what it does to each victim, one or two of:
+//                 Inflict(c)  the condition c, for rounds rolled by its strength
+//                 Harm        damage
+//                 Drain       spell points: a member's realm, a monster's budget
+//                 Tire        stamina
+//                 Wound       damage, resisted unless the row says otherwise
+//               The first is escaped one time in ten, the second one in two.
+//   unresisted  resistance does not cut its wound
+//   silenced    a silence stops it (retail `MonsterSpecialAttackHonorsCastingBlock`)
+//   summons     it calls a group of this species instead of striking
+//               (retail `SpawnSummonedMonsterGroup`)
+{
+    BlindingWater: (realm: Water, effects: [Inflict(Blind)]),                              // 1
+    BlindingWaterSecond: (realm: Water, effects: [Inflict(Blind)]),                        // 2
+    HarmAndDrainDivine: (realm: Divine, effects: [Harm, Drain]),                           // 3
+    TiringWater: (realm: Water, effects: [Tire]),                                          // 4
+    FearAndInsanityMental: (realm: Mental, effects: [Inflict(Afraid), Inflict(Insane)], silenced: true),   // 5
+    FearAndTurncoatDivine: (realm: Divine, effects: [Inflict(Afraid), Inflict(Turncoat)], silenced: true), // 6
+    FearMental: (realm: Mental, effects: [Inflict(Afraid)], silenced: true),               // 7
+    WoundAndTireFire: (realm: Fire, effects: [Wound, Tire]),                               // 8
+    WoundFire: (realm: Fire, effects: [Wound]),                                            // 9
+    InsanityAndWoundMental: (realm: Mental, effects: [Inflict(Insane), Wound], unresisted: true), // 10
+    InsanityAndTurncoatDivine: (realm: Divine, effects: [Inflict(Insane), Inflict(Turncoat)]),    // 11
+    InsanityMental: (realm: Mental, effects: [Inflict(Insane)]),                           // 12
+    IrritationEarth: (realm: Earth, effects: [Inflict(Irritated)]),                        // 13
+    IrritationAir: (realm: Air, effects: [Inflict(Irritated)]),                            // 14
+    NauseaEarth: (realm: Earth, effects: [Inflict(Nauseated)]),                            // 15
+    NauseaAir: (realm: Air, effects: [Inflict(Nauseated)]),                                // 16
+    ParalysisMental: (realm: Mental, effects: [Inflict(Paralyzed)]),                       // 17
+    ParalysisEarth: (realm: Earth, effects: [Inflict(Paralyzed)]),                         // 18
+    PoisonAndIrritationWater: (realm: Water, effects: [Inflict(Poisoned), Inflict(Irritated)]),   // 19
+    PoisonAndWoundWater: (realm: Water, effects: [Inflict(Poisoned), Wound]),              // 20
+    SleepAir: (realm: Air, effects: [Inflict(Asleep)]),                                    // 21
+    SlowAndParalysisWater: (realm: Water, effects: [Inflict(Slowed), Inflict(Paralyzed)]), // 22
+    SlowEarth: (realm: Earth, effects: [Inflict(Slowed)]),                                 // 23
+    SummonsSpecies153: (summons: 153),                                                     // 24
+    SummonsSpecies149: (summons: 149, silenced: true),                                     // 25
+    SummonsSpecies150: (summons: 150, silenced: true),                                     // 26
+    SummonsSpecies151: (summons: 151),                                                     // 27
+    SummonsSpecies152: (summons: 152, silenced: true),                                     // 28
+    SummonsSpecies148: (summons: 148, silenced: true),                                     // 29
+    // A member's breath is this row too (retail's entry 30): a Water blast.
+    WoundWater: (realm: Water, effects: [Wound]),                                          // 30
+    SummonsSpecies12: (summons: 12),                                                       // 31
+}

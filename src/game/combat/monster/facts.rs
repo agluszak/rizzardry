@@ -348,12 +348,16 @@ impl Sight<'_, '_, '_> {
         // A breath is aimed as a cone spell is.
         let cone = records.spells.get(SpellId::SPECIAL_ATTACK_CONE);
         let aims = match (special.kind, cone) {
-            (Some(kind), Some(cone)) if kind.summons().is_none() => {
+            (Some(kind), Some(cone))
+                if crate::game::hits::specials::special(kind).summons.is_none() =>
+            {
                 self.aims(monster, cone, records, &surveyed)
             }
             _ => Vec::new(),
         };
-        let summons = special.kind.is_some_and(|kind| kind.summons().is_some());
+        let summons = special
+            .kind
+            .is_some_and(|kind| crate::game::hits::specials::special(kind).summons.is_some());
         let stamina = own.vitals.stamina;
         let making = Making {
             has: special.kind.is_some(),

@@ -362,7 +362,9 @@ pub struct SpecialAttack {
 /// its data (`g_monster_special_attack_name_ids`, for rows 1 to 11 only)
 /// and are not recovered here; two rows with the same definition keep
 /// their order. The discriminant is the record's byte.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, num_enum::TryFromPrimitive)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, num_enum::TryFromPrimitive, serde::Deserialize,
+)]
 #[repr(u8)]
 pub enum SpecialAttackKind {
     BlindingWater = 1,
@@ -408,21 +410,6 @@ impl SpecialAttackKind {
     /// Its row in retail's tables, which also numbers its name.
     pub fn row(self) -> u8 {
         self as u8
-    }
-
-    /// The species a summoning calls (retail `SpawnSummonedMonsterGroup`).
-    pub fn summons(self) -> Option<u32> {
-        use SpecialAttackKind::*;
-        Some(match self {
-            SummonsSpecies153 => 153,
-            SummonsSpecies149 => 149,
-            SummonsSpecies150 => 150,
-            SummonsSpecies151 => 151,
-            SummonsSpecies152 => 152,
-            SummonsSpecies148 => 148,
-            SummonsSpecies12 => 12,
-            _ => return None,
-        })
     }
 }
 

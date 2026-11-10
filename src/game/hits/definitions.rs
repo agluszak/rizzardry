@@ -465,13 +465,13 @@ impl EffectSpec {
 /// A special attack's effects: each of its two may be escaped (the first
 /// one time in ten, the second one in two), each resisted by its realm; a
 /// member and a monster roll them differently.
-fn define_special(definition: crate::game::hits::specials::SpecialDefinition) -> Vec<EffectSpec> {
+fn define_special(row: &crate::game::hits::specials::SpecialRow) -> Vec<EffectSpec> {
     use crate::game::hits::specials::SpecialEffect as E;
-    let realm = definition.realm;
+    // What strikes nobody has no realm and no effects.
+    let Some(realm) = row.realm else { return Vec::new() };
     let three = |divide, plus, times, over| Roll::Three { divide, plus, times, over };
     let mut effects = Vec::new();
-    for (slot, effect) in definition.effects.iter().enumerate() {
-        let Some(effect) = *effect else { continue };
+    for (slot, &effect) in row.effects.iter().enumerate() {
         let chance = if slot == 0 { 90 } else { 50 };
         let of = |kind, roll| EffectSpec::of(kind).roll(roll).resist(realm).chance(chance);
         match effect {
@@ -491,7 +491,7 @@ fn define_special(definition: crate::game::hits::specials::SpecialDefinition) ->
                 effects.push(of(Tire, three(1, 0, 1, 1)).monsters());
                 effects.push(of(Tire, three(1, 1, 1, 1)).members());
             }
-            E::Wound if definition.resisted => effects.push(of(Harm, three(3, 1, 1, 1))),
+            E::Wound if !row.unresisted => effects.push(of(Harm, three(3, 1, 1, 1))),
             E::Wound => {
                 effects.push(EffectSpec::of(Harm).roll(three(3, 1, 1, 1)).chance(chance));
             }
@@ -551,7 +551,7 @@ fn define_blow() -> Vec<EffectSpec> {
 
 /// Decode the definitions once content has loaded.
 pub fn define(mut commands: Commands, content: Res<Catalogs>) {
-    use crate::game::hits::specials::{CHARACTER_BREATH, special};
+    use crate::game::hits::specials::{BREATH, special};
     let mut entries = Vec::new();
     let mut add = |definition: Definition| {
         entries.push(definition);
@@ -580,7 +580,7 @@ pub fn define(mut commands: Commands, content: Res<Catalogs>) {
         .filter_map(|byte| SpecialAttackKind::try_from(byte).ok())
         .map(|kind| (kind, add(plain(define_special(special(kind))))))
         .collect();
-    let breath = add(plain(define_special(CHARACTER_BREATH)));
+    let breath = add(plain(define_special(special(BREATH))));
     let blow = add(plain(define_blow()));
     commands.insert_resource(Definitions {
         entries,
