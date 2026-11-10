@@ -25,41 +25,48 @@ ask.
 
 ## Slices
 
-### 1. One kind of actor — partly done
+### 1 and 2. One kind of actor, and what is on it — in progress
 
-**Rule.** An actor has attributes, a level, health and stamina, things it can
-strike with, armour, resistances and a side. A member's come from the sheet and
-what they wear; a monster's from its species. After it exists, its numbers
-change only when something changes them: gear put on or taken off, a level
-gained, a spell laid or lifted.
+Done together: the stats cannot be changed by events until spells are apart
+from health, and side cannot until conditions are.
 
-**Gone.** `judge_defences`, `judge_fighters`, `judge_sides`, `place_bodies` and
-every per-frame or per-step re-derivation; `CharacterStats`, `.stats(`,
-`.base_stats()`; `member_fighter`/`monster_fighter`,
-`character_defences`/`species_defences` and any other member/monster pair;
-`content.species[..]` in any rule under `game/combat`, `game/hits`,
-`game/magic`; `Monster { species }` as something rules read.
+**Rules.** [rules/actors.md](rules/actors.md).
 
-**New types, and no others.** `Attributes`, `Level`, `Resistances`, `Armour`,
-`Attacks`: components every actor has, written when it is made. `Modifier`: one
-stat change with its source, added and removed with what causes it. `Refit`: the
-one event fired at an actor when its gear, level or modifiers change, and the
-one observer that answers it.
+**Gone.**
+- `judge_defences`, `judge_fighters`, `judge_sides`, `place_bodies`,
+  `sync_member_maxima`, `notice_changes` and every other per-frame or per-step
+  re-derivation of something about an actor.
+- `Footing`, `Eyes`, `Conspicuous` as components copied onto actors.
+- `CharacterStats`, `.stats(`, `.base_stats()`, and `Attributes::with_spells`
+  or `Attributes::of_sheet` anywhere an actor exists to be read.
+- `member_fighter`/`monster_fighter`, `character_defences`/`species_defences`
+  and any other member/monster pair outside refit.
+- `content.species[..]` in any rule under `game/combat`, `game/hits`,
+  `game/magic`.
+- `Vitals::enchantments`, `Vitals::conditions`, `Vitals::poison`,
+  `Vitals::cheated_death_in`, `Vitals::fell_from`; `PartyEffects`.
+- `Stances`, `monster_own`, `monster_stance`.
+- `game/combat/attack.rs` as a port of `CalcAttacks`/`CalcArmorClasses`: the
+  member's numbers are derived in refit from the rule page, with the formulas
+  cited, not from a `Grip` that mirrors the original's hand table.
 
-**Where member and monster formulas differ** in the original (initiative,
-armour, to-hit), the difference lives at creation and at `Refit`, as the source
-of the numbers. No formula is unified where the original differs; that would be
-a gameplay change.
+**New types, and no others.** Components every actor has: `Attributes`,
+`Level`, `Resistances`, `Armour`, `Attacks`, `Vitals`, `Conditions`, `Spells`,
+`Side`. Events: `Refit`, `Afflicted`, `Recovered`, and the existing `Damaged`
+and `Dead`. One accessor that computes an actor's place when asked.
 
-**Size.** `fighters.rs`, `defences.rs`, `footing.rs`, `attack.rs` and the stat
-half of `characters.rs` are about 3,300 lines. The replacement should be under
-1,500.
+**Not allowed.** A component that mirrors another. A system that scans actors
+for changes. A helper that rebuilds a stored fact from its sources outside
+refit.
 
-### 2. Spells and conditions on an actor are things
+**Size.** `characters.rs`, `attack.rs`, `footing.rs`, `hostility.rs`,
+`enchantments.rs`, `recovery.rs` and the actor parts of `hits/` are about 5,500
+lines. The replacement should be under 3,000.
 
-An enchantment or a condition is laid, lasts, and is lifted. Each is an entity
-related to its bearer, with its own duration; laying and lifting it are the
-events that change its bearer. `Vitals` is health and stamina.
+**Behaviour that changes, on purpose.** Conditions and spells are lifted from
+the dead at death rather than at the next settlement. A member's trait
+immunities apply to every affliction that allows a save. Nothing else; where
+the original's member and monster formulas differ, both are kept.
 
 ### 3. Items are things
 
@@ -95,5 +102,5 @@ headless tests do not establish it.
 | Slice | State |
 | --- | --- |
 | Groundwork: combat, effects and magic resolved through messages and plain functions | Done on `refactor/event-driven-combat-and-magic`. An improvement by the old standard only: the functions are still retail routines. Slices 1 and 6 replace them. |
-| 1. One kind of actor | Stats done: `Attributes`, `Level`, `Resistances`, `Armour`, `Attacks` on every actor, written by one `Refit` observer; `judge_defences`, `judge_fighters`, `CharacterStats` and the member/monster stat pairs are gone; rules read no species record. Still to do: `Side` (`judge_sides`) and where an actor stands (`place_bodies`) are re-derived each step; `Refit` is fired by watching components for writes, and any write to `Vitals` counts until slice 2 moves spells out of it; a few readers outside combat still rebuild `Attributes` from the sheet instead of reading the component (burden, recovery, the spell screens). `Modifier` turned out not to be needed and was not added. |
-| 2–7 | Not started. |
+| 1 and 2. One kind of actor, and what is on it | Rules written. First cut landed: the five stat components and `Refit`, written by one observer (`a26d979`). That cut still polls for changes, still copies place and side onto actors, and moved the original's formula code rather than redesigning it; the contract above is what replaces it. |
+| 3–7 | Not started. |
