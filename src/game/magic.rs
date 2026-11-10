@@ -409,13 +409,8 @@ impl Strength {
     /// raised by half the boost.
     pub fn at(figure: u32, spell: &SpellDefinition, power: u32, boost: u32) -> Self {
         let mut against = figure / 2 + power + (spell.cost / 2 + spell.level) / 2;
-        let floor = match spell.id {
-            SpellId::INSTANT_DEATH => 2,
-            SpellId::QUICKSAND => 4,
-            SpellId::ASPHYXIATION | SpellId::DEATH_CLOUD | SpellId::DEATH_WISH => 6,
-            _ => 0,
-        };
-        let penalty = floor + if spell.targeting == Targeting::AllEnemies { 3 } else { 0 };
+        let penalty =
+            spell.facts.death_floor + if spell.targeting == Targeting::AllEnemies { 3 } else { 0 };
         against = against.max(penalty) - penalty;
         against += against * (boost / 2) / 100;
         Strength { power, against, boost }
@@ -840,7 +835,7 @@ pub(crate) mod tests {
                 dice: Some(Dice { base: 0, count: 1, sides: 1 }),
                 ..default()
             };
-            let spells = SpellCatalog(definitions);
+            let spells = SpellCatalog::new(definitions);
             world.insert_resource(crate::game::data::Catalogs {
                 items,
                 loot,

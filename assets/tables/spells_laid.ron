@@ -1,0 +1,213 @@
+#![enable(implicit_some)]
+// What is true of each spell besides what it does when cast, which is in
+// spell_effects.ron; the spells are named as `SpellId` names them, in the
+// order of their numbers. A spell that is nothing special has no row.
+//
+// A row lists only what is not the default:
+//   personal          laid again, it replaces itself only if at least as strong
+//                     (retail `ApplyMonsterCondition`; retail replaces a
+//                     character's only by a stronger one, a difference taken
+//                     here as none)
+//   only_in_a_fight   laid, it lasts only a fight
+//   pulse             laid, it strikes as each round ends, after the pulses
+//                     of lower `order`; `on` is Bearer (whoever it hangs over,
+//                     the default) or AroundParty (the monsters close around
+//                     the party, as Ring of Fire strikes). What a pulse does
+//                     is the spell's `pulse` in spell_effects.ron
+//   aimed_at_enemies  whether it is aimed at enemies, which provokes them, when
+//                     that is not what its targeting says (retail
+//                     `MonsterCanAimSpell`, `CharacterActionTargetsEnemies`)
+//   can_backfire      whether it can turn on its caster, when that is not what
+//                     its targeting says: a spell aimed at enemies can, any
+//                     other cannot (retail `CanSpellBackfire`,
+//                     `Spells.cpp:1483-1531`)
+//   death_floor       a death spell: the difficulty it takes off, as well as
+//                     the three an all-enemies spell loses (retail
+//                     `GetSpellDifficulty`)
+//   laid              what it adds to its bearer while laid, at the power and
+//                     boost it was cast at (retail `RebuildPartyEffectBlock`,
+//                     `RebuildMonsterDerivedStats`):
+//                       armour, to_hit, missiles (percent chance a missile is
+//                       turned aside), reduction (percent cut off damage),
+//                       concealment (sight lost by eyes behind the bearer):
+//                         an Amount;
+//                       resistance, attributes: (amount: an Amount, only:
+//                         the realms or attributes it is added to; all if
+//                         left out);
+//                       stride_per_power: the share of a stride it adds to a
+//                         combat move, for each power.
+//
+// An Amount is
+//   per_power * power + plus, halved (rounding up) if halved_up, then raised
+//   by the boost percent (boost: Rounded, or Scaled to round down; left out,
+//   not at all), then held to cap.
+{
+    BLESS: (
+        only_in_a_fight: true,
+        laid: (
+            armour: (plus: 2, boost: Rounded),
+            to_hit: (plus: 2, boost: Rounded),
+        ),
+    ),
+    CHARM: (
+        aimed_at_enemies: false,
+        can_backfire: true,
+    ),
+    STAMINA: (
+        can_backfire: true,
+    ),
+    CURE_LESSER_COND: (
+        can_backfire: true,
+    ),
+    DRACON_BREATH: (
+        personal: true,
+    ),
+    ENCHANTED_BLADE: (
+        laid: (
+            to_hit: (per_power: 1, halved_up: true, boost: Rounded),
+        ),
+    ),
+    GUARDIAN_ANGEL: (
+        personal: true,
+    ),
+    MISSILE_SHIELD: (
+        laid: (
+            missiles: (per_power: 5, plus: 25, boost: Rounded),
+        ),
+    ),
+    RAZOR_CLOAK: (
+        personal: true,
+    ),
+    ARMORPLATE: (
+        laid: (
+            armour: (per_power: 1, halved_up: true, boost: Rounded),
+        ),
+    ),
+    CHAMELEON: (
+        laid: (
+            concealment: (per_power: 1, boost: Rounded),
+        ),
+    ),
+    CURE_PARALYSIS: (
+        can_backfire: true,
+    ),
+    KNOCK_KNOCK: (
+        can_backfire: true,
+    ),
+    MAGIC_SCREEN: (
+        laid: (
+            resistance: (amount: (per_power: 4, plus: 7, boost: Rounded)),
+        ),
+    ),
+    MINDREAD: (
+        aimed_at_enemies: false,
+    ),
+    REST_ALL: (
+        can_backfire: true,
+    ),
+    ACID_BOMB: (
+        only_in_a_fight: true,
+        pulse: (order: 1),
+    ),
+    // Armormelt takes its raw power off: the boost only lengthens it.
+    ARMORMELT: (
+        only_in_a_fight: true,
+        laid: (
+            armour: (per_power: -1),
+        ),
+    ),
+    ELEMENT_SHIELD: (
+        only_in_a_fight: true,
+        laid: (
+            resistance: (
+                amount: (per_power: 7, boost: Rounded),
+                only: [Fire, Water, Air, Earth],
+            ),
+        ),
+    ),
+    EYE_FOR_AN_EYE: (
+        personal: true,
+    ),
+    HASTE: (
+        personal: true,
+        can_backfire: true,
+        laid: (
+            attributes: (
+                amount: (per_power: 10, boost: Scaled),
+                only: [Speed],
+            ),
+            stride_per_power: 0.1,
+        ),
+    ),
+    REMOVE_CURSE: (
+        can_backfire: true,
+    ),
+    SOUL_SHIELD: (
+        only_in_a_fight: true,
+        laid: (
+            resistance: (
+                amount: (per_power: 10, boost: Rounded),
+                only: [Mental, Divine],
+            ),
+        ),
+    ),
+    SUPERMAN: (
+        personal: true,
+        laid: (
+            attributes: (amount: (per_power: 5, boost: Scaled)),
+        ),
+    ),
+    // Ring of Fire strikes those close around the party, not whom it is laid on.
+    RING_OF_FIRE: (
+        only_in_a_fight: true,
+        pulse: (order: 0, on: AroundParty),
+    ),
+    BODY_OF_STONE: (
+        personal: true,
+        laid: (
+            armour: (per_power: 1, boost: Scaled),
+            reduction: (per_power: 8, boost: Scaled, cap: 100),
+        ),
+    ),
+    INSTANT_DEATH: (
+        death_floor: 2,
+    ),
+    SANE_MIND: (
+        can_backfire: true,
+    ),
+    TOXIC_CLOUD: (
+        only_in_a_fight: true,
+        pulse: (order: 2),
+    ),
+    BANISH: (
+        can_backfire: false,
+    ),
+    DRAINING_CLOUD: (
+        only_in_a_fight: true,
+        pulse: (order: 3),
+    ),
+    FIRESTORM: (
+        only_in_a_fight: true,
+        pulse: (order: 4),
+    ),
+    QUICKSAND: (
+        death_floor: 4,
+    ),
+    ASPHYXIATION: (
+        death_floor: 6,
+    ),
+    DEATH_CLOUD: (
+        only_in_a_fight: true,
+        pulse: (order: 5),
+        death_floor: 6,
+    ),
+    DEATH_WISH: (
+        death_floor: 6,
+    ),
+    BOILING_BLOOD_EXPLOSION: (
+        can_backfire: false,
+    ),
+    ROCKET_BLAST: (
+        can_backfire: false,
+    ),
+}

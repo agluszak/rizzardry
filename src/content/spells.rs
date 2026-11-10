@@ -1,10 +1,13 @@
 //! Spell definitions (`data/databases/spelltables.dbs`): what each spell
 //! costs, whom it may target and the authored numbers its effect scales.
 
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 use enumset::{EnumSet, EnumSetType};
+use serde::Deserialize;
 
-use super::characters::Realm;
+use super::characters::{Attribute, Realm};
 use super::items::Dice;
 
 /// A retail spell number (`W8SpellId`); 0 is none.
@@ -216,6 +219,20 @@ pub enum Targeting {
     LockOrTrap,
 }
 
+impl Targeting {
+    /// Aimed at enemies: an enemy, a group, an area or all of them.
+    fn at_enemies(self) -> bool {
+        matches!(
+            self,
+            Targeting::Enemy
+                | Targeting::EnemyGroup
+                | Targeting::Cone
+                | Targeting::Radius
+                | Targeting::AllEnemies
+        )
+    }
+}
+
 /// When a spell may be cast (record 0x13b).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Usable {
@@ -258,22 +275,17 @@ pub struct SpellDefinition {
     /// Flies to its target as a missile (`MissileTables.dbs` row).
     pub missile: Option<u32>,
     pub monsters_cast: bool,
+    /// What the game says of the spell besides its record, from
+    /// `assets/tables/spells_laid.ron`.
+    pub facts: SpellFacts,
 }
 
 impl SpellDefinition {
     /// Whether it is aimed at enemies, which provokes them (retail
     /// `MonsterCanAimSpell`, `CharacterActionTargetsEnemies`): an enemy,
-    /// group, area or all-enemies spell other than Charm and Mindread.
+    /// group, area or all-enemies spell, unless its row says otherwise.
     pub fn aimed_at_enemies(&self) -> bool {
-        matches!(
-            self.targeting,
-            Targeting::Enemy
-                | Targeting::EnemyGroup
-                | Targeting::Cone
-                | Targeting::Radius
-                | Targeting::AllEnemies
-        ) && self.id != SpellId::CHARM
-            && self.id != SpellId::MINDREAD
+        self.facts.aimed_at_enemies.unwrap_or(self.targeting.at_enemies())
     }
 
     /// Spell points a cast at `power` costs.
@@ -281,32 +293,10 @@ impl SpellDefinition {
         self.cost * power
     }
 
-    /// Retail `CanSpellBackfire` (`Spells.cpp:1483-1531`): spells aimed at
-    /// enemies, but Banish and two creature spells; eight friendly ones; of
-    /// the lock spells, Knock Knock.
+    /// Retail `CanSpellBackfire` (`Spells.cpp:1483-1531`): a spell aimed at
+    /// enemies can, and any other cannot, unless its row says otherwise.
     pub fn can_backfire(&self) -> bool {
-        match self.targeting {
-            Targeting::Enemy
-            | Targeting::EnemyGroup
-            | Targeting::Cone
-            | Targeting::Radius
-            | Targeting::AllEnemies => !matches!(
-                self.id,
-                SpellId::BANISH | SpellId::BOILING_BLOOD_EXPLOSION | SpellId::ROCKET_BLAST
-            ),
-            Targeting::LockOrTrap => self.id == SpellId::KNOCK_KNOCK,
-            _ => matches!(
-                self.id,
-                SpellId::CHARM
-                    | SpellId::STAMINA
-                    | SpellId::CURE_LESSER_COND
-                    | SpellId::CURE_PARALYSIS
-                    | SpellId::REST_ALL
-                    | SpellId::HASTE
-                    | SpellId::REMOVE_CURSE
-                    | SpellId::SANE_MIND
-            ),
-        }
+        self.facts.can_backfire.unwrap_or(self.targeting.at_enemies())
     }
 }
 
@@ -327,6 +317,15 @@ pub fn min_caster_level(spell_level: u32) -> i32 {
 pub struct SpellCatalog(pub Vec<SpellDefinition>);
 
 impl SpellCatalog {
+    /// The spells, each with the facts the game's table gives it.
+    pub fn new(mut spells: Vec<SpellDefinition>) -> Self {
+        let mut table = shipped_facts();
+        for spell in &mut spells {
+            spell.facts = table.remove(&spell.id).unwrap_or_default();
+        }
+        Self(spells)
+    }
+
     pub fn get(&self, id: SpellId) -> Option<&SpellDefinition> {
         self.0.get(usize::from(id.0)).filter(|_| id.0 != 0)
     }
@@ -349,3 +348,159 @@ pub struct ItemSpell {
 /// Localized spell effect and description text, loaded independently of rules.
 #[derive(Asset, TypePath, Debug)]
 pub struct SpellText(pub Vec<Option<String>>);
+
+/// The table the game ships, by spell.
+fn shipped_facts() -> HashMap<SpellId, SpellFacts> {
+    ron::from_str(include_str!("../../assets/tables/spells_laid.ron"))
+        .expect("assets/tables/spells_laid.ron is a table of spell facts")
+}
+
+/// What is true of a spell besides its record: one row of
+/// `assets/tables/spells_laid.ron`, merged into the spell when the catalog is
+/// made. Each field is explained at the head of that file.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SpellFacts {
+    /// Laid again, it replaces itself only if at least as strong.
+    pub personal: bool,
+    /// Laid, it lasts only a fight.
+    pub only_in_a_fight: bool,
+    /// Laid, it strikes as each round ends.
+    pub pulse: Option<Pulse>,
+    /// Whether it is aimed at enemies, where that is not what its targeting says.
+    pub aimed_at_enemies: Option<bool>,
+    /// Whether it can backfire, where that is not what its targeting says.
+    pub can_backfire: Option<bool>,
+    /// A death spell: what it takes off the difficulty its victims save against.
+    pub death_floor: u32,
+    /// What it adds while laid.
+    pub laid: WhileLaid,
+}
+
+/// How a pulsing spell strikes as each round ends.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Pulse {
+    /// Where it comes among the pulses of the same bearer.
+    pub order: u32,
+    #[serde(default)]
+    pub on: Pulsing,
+}
+
+/// Whom a pulse strikes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+pub enum Pulsing {
+    /// Whoever the spell is laid on: the living members of a party it hangs
+    /// over, or the monster.
+    #[default]
+    Bearer,
+    /// The monsters close around the party, sampled anew each pulse.
+    AroundParty,
+}
+
+/// How a spell's boost raises an amount.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+pub enum Boost {
+    /// Not at all.
+    #[default]
+    Unboosted,
+    /// Raised by the boost percent, rounded.
+    Rounded,
+    /// Raised by the boost percent, rounding down.
+    Scaled,
+}
+
+/// An amount a spell adds: `per_power` times the power it was cast at, plus
+/// `plus`, halved (rounding up) if `halved_up`, raised by the boost, then held
+/// to `cap`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Amount {
+    pub per_power: i32,
+    pub plus: i32,
+    pub halved_up: bool,
+    pub boost: Boost,
+    pub cap: Option<i32>,
+}
+
+/// An amount added to everything of a kind, or only to those listed.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields, bound(deserialize = "T: Deserialize<'de>"))]
+pub struct Spread<T> {
+    pub amount: Amount,
+    #[serde(default)]
+    pub only: Option<Vec<T>>,
+}
+
+impl<T: PartialEq> Spread<T> {
+    pub fn covers(&self, kind: T) -> bool {
+        self.only.as_ref().is_none_or(|only| only.contains(&kind))
+    }
+}
+
+/// What a spell adds to its bearer while laid.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WhileLaid {
+    pub armour: Option<Amount>,
+    pub to_hit: Option<Amount>,
+    pub resistance: Option<Spread<Realm>>,
+    pub attributes: Option<Spread<Attribute>>,
+    /// Percent chance a missile is turned aside.
+    pub missiles: Option<Amount>,
+    /// Percent cut off damage.
+    pub reduction: Option<Amount>,
+    pub concealment: Option<Amount>,
+    /// The share of a stride added to a combat move, for each power.
+    pub stride_per_power: f32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with(id: SpellId, targeting: Targeting) -> SpellDefinition {
+        SpellCatalog::new(vec![SpellDefinition { id, targeting, ..default() }]).0.remove(0)
+    }
+
+    /// Every row parses and names a spell the game names.
+    #[test]
+    fn every_row_parses_and_says_something_of_a_spell_that_exists() {
+        let table = shipped_facts();
+        assert!(!table.is_empty());
+        for (id, facts) in &table {
+            assert!(NAMED.iter().any(|&(_, named)| named == *id), "{id:?}");
+            assert_ne!(*id, SpellId::NONE);
+            assert_ne!(*facts, SpellFacts::default(), "{id:?} has an empty row");
+        }
+    }
+
+    /// A spell is aimed at enemies, and can backfire, as its targeting says,
+    /// unless its row says otherwise.
+    #[test]
+    fn who_is_aimed_at_and_who_backfires_follows_targeting_and_the_row() {
+        let blast = with(SpellId::ENERGY_BLAST, Targeting::Enemy);
+        assert!(blast.aimed_at_enemies() && blast.can_backfire());
+        let charm = with(SpellId::CHARM, Targeting::Enemy);
+        assert!(!charm.aimed_at_enemies() && charm.can_backfire());
+        let mindread = with(SpellId::MINDREAD, Targeting::Enemy);
+        assert!(!mindread.aimed_at_enemies());
+        let banish = with(SpellId::BANISH, Targeting::Enemy);
+        assert!(banish.aimed_at_enemies() && !banish.can_backfire());
+        let knock = with(SpellId::KNOCK_KNOCK, Targeting::LockOrTrap);
+        assert!(!knock.aimed_at_enemies() && knock.can_backfire());
+        let heal = with(SpellId::HEAL_WOUNDS, Targeting::Ally);
+        assert!(!heal.aimed_at_enemies() && !heal.can_backfire());
+        assert!(with(SpellId::HASTE, Targeting::Caster).can_backfire());
+    }
+
+    #[test]
+    fn the_death_spells_take_their_floors_off() {
+        let floor = |id| with(id, Targeting::Enemy).facts.death_floor;
+        assert_eq!(
+            [SpellId::INSTANT_DEATH, SpellId::QUICKSAND, SpellId::DEATH_CLOUD, SpellId::FIREBALL]
+                .map(floor),
+            [2, 4, 6, 0]
+        );
+    }
+}

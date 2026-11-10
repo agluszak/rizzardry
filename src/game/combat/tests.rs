@@ -65,7 +65,7 @@ fn app() -> (App, Entity, Entity) {
         ..default()
     };
     app.insert_resource(Catalogs {
-        spells: SpellCatalog(spells),
+        spells: SpellCatalog::new(spells),
         species: MonsterCatalog(vec![kind]),
         ..default()
     });

@@ -437,7 +437,7 @@ fn apply(
             Effect::Raised { victim }
         }
         K::Purify { level } => {
-            laying.purify(victim, magnitude + level, rules.content);
+            laying.purify(victim, magnitude + level);
             Effect::Purified { victim }
         }
         K::Enchant(spell) => {
@@ -511,7 +511,7 @@ pub fn land_on_party(
                 }
             }
             K::Purify { level } => {
-                laying.purify(party, magnitude + level, rules.content);
+                laying.purify(party, magnitude + level);
                 log.effects.push(Effect::Purified { victim });
             }
             K::Enchant(spell) => {

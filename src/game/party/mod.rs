@@ -171,6 +171,17 @@ mod tests {
         let mut world = World::new();
         world.init_resource::<Messages<Damaged>>();
         world.init_resource::<crate::game::rng::GameRng>();
+        world.insert_resource(crate::game::data::Catalogs {
+            spells: crate::content::spells::SpellCatalog::new(
+                (0..=255)
+                    .map(|id| crate::content::spells::SpellDefinition {
+                        id: crate::content::spells::SpellId(id),
+                        ..default()
+                    })
+                    .collect(),
+            ),
+            ..default()
+        });
         let first = world.spawn(Vitals::full(10, 20)).id();
         roster::test_party(&mut world, &[first]);
         world.add_observer(formation::vacate_seat);

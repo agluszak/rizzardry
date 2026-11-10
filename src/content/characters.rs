@@ -132,7 +132,7 @@ pub enum Trait {
     CannotLearn = 31,
 }
 
-#[derive(Debug, Enum, EnumSetType, TryFromPrimitive)]
+#[derive(Debug, Enum, EnumSetType, TryFromPrimitive, Deserialize)]
 #[repr(u8)]
 pub enum Attribute {
     Strength,

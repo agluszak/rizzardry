@@ -13,7 +13,8 @@ use enum_map::EnumMap;
 
 use super::Refit;
 use crate::content::characters::{Attribute, Realm};
-use crate::content::spells::SpellId;
+use crate::content::spells::{Amount, Boost, Pulse, Pulsing, SpellId, Spread, WhileLaid};
+use crate::game::data::Catalogs;
 
 /// A spell laid: which, and the power and boost it was cast at. Razor Cloak
 /// and Eye for an Eye lose a point of power each time they answer.
@@ -33,6 +34,18 @@ impl Enchantment {
     /// An amount raised by the cast's boost, rounded.
     pub fn adjusted(&self, amount: u32) -> u32 {
         ((self.boost + 100) * amount + 50) / 100
+    }
+
+    /// What a row's amount comes to at this power and boost.
+    fn amount(&self, amount: &Amount) -> i32 {
+        let base = amount.per_power * self.power as i32 + amount.plus;
+        let base = if amount.halved_up { (base + 1) / 2 } else { base };
+        let raised = match amount.boost {
+            Boost::Unboosted => base,
+            Boost::Rounded => self.adjusted(base as u32) as i32,
+            Boost::Scaled => self.scaled(base as u32) as i32,
+        };
+        amount.cap.map_or(raised, |cap| raised.min(cap))
     }
 }
 
@@ -55,10 +68,10 @@ pub struct Turns(pub u32);
 #[derive(Component, Debug)]
 pub struct CombatOnly;
 
-/// It pulses on whoever it hangs over as each round ends: the clouds and
-/// burning, and Ring of Fire about the party.
+/// It pulses as each round ends, as its row says: the clouds and burning on
+/// whoever they hang over, and Ring of Fire about the party.
 #[derive(Component, Debug)]
-pub struct Pulses;
+pub struct Pulses(pub Pulse);
 
 /// What Guardian Angel can still absorb, rolled as it was laid.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,85 +112,26 @@ impl std::ops::AddAssign for Bonus {
     }
 }
 
-/// A spell is replaced by the same spell only if at least as strong when it
-/// is one of these (retail `ApplyMonsterCondition`; retail replaces a
-/// character's only by a stronger one, a difference taken here as none).
-pub fn personal(spell: SpellId) -> bool {
-    matches!(
-        spell,
-        SpellId::DRACON_BREATH
-            | SpellId::GUARDIAN_ANGEL
-            | SpellId::RAZOR_CLOAK
-            | SpellId::EYE_FOR_AN_EYE
-            | SpellId::HASTE
-            | SpellId::SUPERMAN
-            | SpellId::BODY_OF_STONE
-    )
-}
-
-/// The clouds and burning that pulse on whoever they hang over each round,
-/// in pulse order (retail `AdvanceTimedEffects`).
-pub const OFFENSIVE: [SpellId; 5] = [
-    SpellId::ACID_BOMB,
-    SpellId::TOXIC_CLOUD,
-    SpellId::DRAINING_CLOUD,
-    SpellId::FIRESTORM,
-    SpellId::DEATH_CLOUD,
-];
-
-fn combat_only(spell: SpellId) -> bool {
-    OFFENSIVE.contains(&spell)
-        || matches!(
-            spell,
-            SpellId::BLESS
-                | SpellId::ARMORMELT
-                | SpellId::ELEMENT_SHIELD
-                | SpellId::SOUL_SHIELD
-                | SpellId::RING_OF_FIRE
-        )
-}
-
-/// What a spell adds while laid, at the power and boost it was cast at
-/// (retail `RebuildPartyEffectBlock`, `RebuildMonsterDerivedStats`).
-/// Armormelt's loss is by its raw power; the boost only lengthens it.
-fn bonus(laid: Enchantment) -> Bonus {
-    let power = laid.power;
-    let mut bonus = Bonus::default();
-    match laid.spell {
-        SpellId::BLESS => {
-            bonus.armour = laid.adjusted(2) as i32;
-            bonus.to_hit = laid.adjusted(2) as i32;
-        }
-        SpellId::ARMORPLATE => bonus.armour = laid.adjusted(power.div_ceil(2)) as i32,
-        SpellId::ARMORMELT => bonus.armour = -(power as i32),
-        SpellId::ENCHANTED_BLADE => bonus.to_hit = laid.adjusted(power.div_ceil(2)) as i32,
-        SpellId::BODY_OF_STONE => {
-            bonus.armour = laid.scaled(power) as i32;
-            bonus.reduction = laid.scaled(power * 8).min(100) as i32;
-        }
-        SpellId::MAGIC_SCREEN => {
-            bonus.resistance = EnumMap::from_fn(|_| laid.adjusted(power * 4 + 7) as i32);
-        }
-        SpellId::SOUL_SHIELD => {
-            for realm in [Realm::Mental, Realm::Divine] {
-                bonus.resistance[realm] = laid.adjusted(power * 10) as i32;
-            }
-        }
-        SpellId::ELEMENT_SHIELD => {
-            for realm in [Realm::Fire, Realm::Water, Realm::Air, Realm::Earth] {
-                bonus.resistance[realm] = laid.adjusted(power * 7) as i32;
-            }
-        }
-        SpellId::MISSILE_SHIELD => bonus.missiles = laid.adjusted((power + 5) * 5),
-        SpellId::SUPERMAN => bonus.attributes = EnumMap::from_fn(|_| laid.scaled(power * 5)),
-        SpellId::HASTE => {
-            bonus.attributes[Attribute::Speed] = laid.scaled(power * 10);
-            bonus.stride = power as f32 * 0.1;
-        }
-        SpellId::CHAMELEON => bonus.concealment = laid.adjusted(power),
-        _ => {}
+/// What a spell adds while laid, at the power and boost it was cast at, from
+/// its row in `assets/tables/spells_laid.ron`.
+fn bonus(laid: Enchantment, row: &WhileLaid) -> Bonus {
+    let amount = |amount: &Option<Amount>| amount.map_or(0, |amount| laid.amount(&amount));
+    fn spread<T: PartialEq>(laid: Enchantment, spread: &Option<Spread<T>>, kind: T) -> i32 {
+        spread
+            .as_ref()
+            .filter(|spread| spread.covers(kind))
+            .map_or(0, |spread| laid.amount(&spread.amount))
     }
-    bonus
+    Bonus {
+        armour: amount(&row.armour),
+        to_hit: amount(&row.to_hit),
+        resistance: EnumMap::from_fn(|realm| spread(laid, &row.resistance, realm)),
+        attributes: EnumMap::from_fn(|attribute| spread(laid, &row.attributes, attribute) as u32),
+        missiles: amount(&row.missiles) as u32,
+        reduction: amount(&row.reduction),
+        stride: laid.power as f32 * row.stride_per_power,
+        concealment: amount(&row.concealment) as u32,
+    }
 }
 
 /// The spells laid, to read.
@@ -222,6 +176,7 @@ impl Laid<'_, '_> {
 #[derive(SystemParam)]
 pub struct Laying<'w, 's> {
     commands: Commands<'w, 's>,
+    content: Res<'w, Catalogs>,
     bearers: Query<'w, 's, &'static Spells>,
     spells: Query<
         'w,
@@ -244,12 +199,13 @@ impl Laying<'_, '_> {
     }
 
     /// Lay a spell on a bearer for `turns`, in place of the same spell
-    /// already there; a [`personal`] one only if at least as strong.
+    /// already there; a personal one only if at least as strong.
     /// `absorbs` is what Guardian Angel takes before it is spent. Whether
     /// it was laid.
     pub fn lay(&mut self, bearer: Entity, laid: Enchantment, turns: u32, absorbs: u32) -> bool {
         let old = self.find(bearer, laid.spell);
-        let weaker = personal(laid.spell)
+        let facts = &self.content.spells[laid.spell].facts;
+        let weaker = facts.personal
             && old.is_some_and(|old| {
                 self.spells.get(old).is_ok_and(|(old, ..)| laid.power < old.power)
             });
@@ -259,12 +215,13 @@ impl Laying<'_, '_> {
         if let Some(old) = old {
             self.commands.entity(old).despawn();
         }
-        let mut spell = self.commands.spawn((laid, bonus(laid), Turns(turns), LaidOn(bearer)));
-        if combat_only(laid.spell) {
+        let mut spell =
+            self.commands.spawn((laid, bonus(laid, &facts.laid), Turns(turns), LaidOn(bearer)));
+        if facts.only_in_a_fight {
             spell.insert(CombatOnly);
         }
-        if OFFENSIVE.contains(&laid.spell) || laid.spell == SpellId::RING_OF_FIRE {
-            spell.insert(Pulses);
+        if let Some(pulse) = facts.pulse {
+            spell.insert(Pulses(pulse));
         }
         if laid.spell == SpellId::GUARDIAN_ANGEL {
             spell.insert(Absorbs(absorbs));
@@ -279,16 +236,6 @@ impl Laying<'_, '_> {
             self.commands.entity(entity).despawn();
         }
         found.is_some()
-    }
-
-    /// Lift every spell on a bearer that `keep` does not keep.
-    pub fn lift_unless(&mut self, bearer: Entity, keep: impl Fn(SpellId) -> bool) {
-        let laid: Vec<Entity> = self.bearers.get(bearer).map_or(vec![], |laid| laid.0.clone());
-        for entity in laid {
-            if self.spells.get(entity).is_ok_and(|(laid, ..)| !keep(laid.spell)) {
-                self.commands.entity(entity).despawn();
-            }
-        }
     }
 
     /// Take `turns` off a spell on a bearer; with none left it is lifted.
@@ -328,16 +275,32 @@ impl Laying<'_, '_> {
 
     /// Purify Air shortens each cloud hanging over a bearer by `strength`
     /// less the cloud's own level.
-    pub fn purify(&mut self, bearer: Entity, strength: u32, content: &crate::game::data::Catalogs) {
-        for cloud in OFFENSIVE {
-            let level = content.spells[cloud].level;
-            self.shorten(bearer, cloud, strength.max(level) - level);
+    pub fn purify(&mut self, bearer: Entity, strength: u32) {
+        let hanging: Vec<Entity> = self.bearers.get(bearer).map_or(vec![], |laid| laid.0.clone());
+        for entity in hanging {
+            let Ok((laid, ..)) = self.spells.get(entity) else { continue };
+            let spell = laid.spell;
+            let cloud = &self.content.spells[spell];
+            let hangs = cloud.facts.pulse.is_some_and(|pulse| pulse.on == Pulsing::Bearer);
+            let by = strength.max(cloud.level) - cloud.level;
+            if hangs {
+                self.shorten(bearer, spell, by);
+            }
         }
     }
 
     /// Anti-Magic ends the spells on a bearer that would outlast a fight.
     pub fn dispel(&mut self, bearer: Entity) {
-        self.lift_unless(bearer, combat_only);
+        let laid: Vec<Entity> = self.bearers.get(bearer).map_or(vec![], |laid| laid.0.clone());
+        for entity in laid {
+            if self
+                .spells
+                .get(entity)
+                .is_ok_and(|(laid, ..)| !self.content.spells[laid.spell].facts.only_in_a_fight)
+            {
+                self.commands.entity(entity).despawn();
+            }
+        }
     }
 
     /// Guardian Angel takes what it can of `amount` of damage to a bearer;
@@ -430,32 +393,137 @@ pub(super) fn lift_from_the_dead(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::spells::SpellCatalog;
+
+    /// The test catalog: every spell has a record, with the facts the game's
+    /// table gives it.
+    pub(crate) fn catalog() -> Catalogs {
+        let spells = (0..=255)
+            .map(|id| crate::content::spells::SpellDefinition {
+                id: SpellId(id),
+                realm: Some(Realm::Divine),
+                ..default()
+            })
+            .collect();
+        Catalogs { spells: SpellCatalog::new(spells), ..default() }
+    }
+
+    /// What a spell adds, laid at this power and boost.
+    fn bonus_at(spell: SpellId, power: u32, boost: u32) -> Bonus {
+        bonus(laid(spell, power, boost), &catalog().spells[spell].facts.laid)
+    }
 
     fn laid(spell: SpellId, power: u32, boost: u32) -> Enchantment {
         Enchantment { spell, power, boost }
     }
 
+    /// The rows give each amount as the rule works it out.
+    #[test]
+    fn what_a_row_adds_is_worked_out_from_the_cast() {
+        // Armorplate: half the power, rounded up, raised by the boost, rounded.
+        assert_eq!(bonus_at(SpellId::ARMORPLATE, 3, 0).armour, 2);
+        assert_eq!(bonus_at(SpellId::ARMORPLATE, 3, 50).armour, 3);
+        // Magic Screen guards every realm by four a power and seven.
+        let screen = bonus_at(SpellId::MAGIC_SCREEN, 2, 0).resistance;
+        assert!(screen.values().all(|&amount| amount == 15));
+        assert_eq!(bonus_at(SpellId::MISSILE_SHIELD, 1, 0).missiles, 30);
+        // Superman raises every attribute five a power, the boost rounding down.
+        let superman = bonus_at(SpellId::SUPERMAN, 3, 50).attributes;
+        assert!(superman.values().all(|&amount| amount == 22));
+        assert_eq!(bonus_at(SpellId::CHAMELEON, 3, 0).concealment, 3);
+        // Haste adds a tenth of a stride a power.
+        assert_eq!(bonus_at(SpellId::HASTE, 4, 0).stride, 4.0 * 0.1);
+        assert_eq!(bonus_at(SpellId::ENCHANTED_BLADE, 5, 0).to_hit, 3);
+        // Body of Stone's cut is held to all of the damage.
+        assert_eq!(bonus_at(SpellId::BODY_OF_STONE, 13, 0).reduction, 100);
+        assert_eq!(bonus_at(SpellId::BODY_OF_STONE, 13, 0).armour, 13);
+        // A spell with no row adds nothing.
+        assert_eq!(bonus_at(SpellId::FIREBALL, 7, 100), Bonus::default());
+    }
+
+    /// Which spells replace only by a stronger, last only a fight, and pulse
+    /// in what order, are in the rows.
+    #[test]
+    fn the_rows_say_which_spells_are_personal_fleeting_or_pulse() {
+        let spells = catalog().spells;
+        let ids = |wanted: fn(&crate::content::spells::SpellFacts) -> bool| {
+            spells
+                .0
+                .iter()
+                .filter(|spell| wanted(&spell.facts))
+                .map(|spell| spell.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ids(|facts| facts.personal),
+            [
+                SpellId::DRACON_BREATH,
+                SpellId::GUARDIAN_ANGEL,
+                SpellId::RAZOR_CLOAK,
+                SpellId::EYE_FOR_AN_EYE,
+                SpellId::HASTE,
+                SpellId::SUPERMAN,
+                SpellId::BODY_OF_STONE,
+            ]
+        );
+        assert_eq!(
+            ids(|facts| facts.only_in_a_fight),
+            [
+                SpellId::BLESS,
+                SpellId::ACID_BOMB,
+                SpellId::ARMORMELT,
+                SpellId::ELEMENT_SHIELD,
+                SpellId::SOUL_SHIELD,
+                SpellId::RING_OF_FIRE,
+                SpellId::TOXIC_CLOUD,
+                SpellId::DRAINING_CLOUD,
+                SpellId::FIRESTORM,
+                SpellId::DEATH_CLOUD,
+            ]
+        );
+        let mut pulsing: Vec<_> = spells
+            .0
+            .iter()
+            .filter_map(|spell| Some((spell.facts.pulse?.order, spell.id)))
+            .collect();
+        pulsing.sort();
+        assert_eq!(
+            pulsing.iter().map(|&(_, id)| id).collect::<Vec<_>>(),
+            [
+                SpellId::RING_OF_FIRE,
+                SpellId::ACID_BOMB,
+                SpellId::TOXIC_CLOUD,
+                SpellId::DRAINING_CLOUD,
+                SpellId::FIRESTORM,
+                SpellId::DEATH_CLOUD,
+            ]
+        );
+        let ring = spells[SpellId::RING_OF_FIRE].facts.pulse.unwrap();
+        assert_eq!(ring.on, Pulsing::AroundParty);
+        assert_eq!(spells[SpellId::FIRESTORM].facts.pulse.unwrap().on, Pulsing::Bearer);
+    }
+
     /// Armormelt takes its raw power off what Bless and Armorplate add.
     #[test]
     fn armormelt_takes_from_what_protections_add() {
-        let mut sum = bonus(laid(SpellId::BLESS, 1, 0));
-        sum += bonus(laid(SpellId::ARMORPLATE, 4, 0));
-        sum += bonus(laid(SpellId::ARMORMELT, 3, 50));
+        let mut sum = bonus_at(SpellId::BLESS, 1, 0);
+        sum += bonus_at(SpellId::ARMORPLATE, 4, 0);
+        sum += bonus_at(SpellId::ARMORMELT, 3, 50);
         assert_eq!((sum.armour, sum.to_hit), (2 + 2 - 3, 2));
     }
 
     /// The boost raises what a spell adds: Haste's Speed, Body of Stone's cut.
     #[test]
     fn the_boost_raises_what_a_spell_adds() {
-        assert_eq!(bonus(laid(SpellId::HASTE, 2, 50)).attributes[Attribute::Speed], 30);
-        assert_eq!(bonus(laid(SpellId::BODY_OF_STONE, 2, 0)).reduction, 16);
+        assert_eq!(bonus_at(SpellId::HASTE, 2, 50).attributes[Attribute::Speed], 30);
+        assert_eq!(bonus_at(SpellId::BODY_OF_STONE, 2, 0).reduction, 16);
     }
 
     /// Soul Shield guards the mind and the soul; Element Shield the rest.
     #[test]
     fn shields_guard_their_own_realms() {
-        let soul = bonus(laid(SpellId::SOUL_SHIELD, 2, 0)).resistance;
-        let element = bonus(laid(SpellId::ELEMENT_SHIELD, 2, 0)).resistance;
+        let soul = bonus_at(SpellId::SOUL_SHIELD, 2, 0).resistance;
+        let element = bonus_at(SpellId::ELEMENT_SHIELD, 2, 0).resistance;
         assert_eq!((soul[Realm::Mental], soul[Realm::Fire]), (20, 0));
         assert_eq!((element[Realm::Mental], element[Realm::Fire]), (0, 14));
     }
@@ -467,6 +535,7 @@ mod tests {
     fn laying_spending_and_ageing_through_the_world() {
         use bevy::ecs::system::RunSystemOnce;
         let mut world = World::new();
+        world.insert_resource(catalog());
         world.add_observer(age);
         let bearer = world.spawn_empty().id();
         let lay = |world: &mut World, spell, power, turns| {
