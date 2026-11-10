@@ -12,11 +12,12 @@ use bevy::prelude::*;
 use enum_map::EnumMap;
 use enumset::EnumSet;
 
-use crate::content::characters::{Attribute, Gender, Profession, Race, Skill};
+use crate::content::characters::{Attribute, Gender, Profession, Race, Realm, Skill};
 use crate::content::items::{
-    EquipClass, ItemCatalog, ItemDefinition, ItemId, ItemKind, QuantityKind, Recipe,
+    AttackEffects, AttackMode, Dice, EquipClass, ItemCatalog, ItemDefinition, ItemId, ItemKind,
+    QuantityKind, Recipe,
 };
-use crate::content::species::Reach;
+use crate::content::species::{MonsterKind, Reach};
 use crate::game::actors::{Attributes, Refit};
 use crate::game::characters::{Character, Practise, Vitals};
 use crate::game::combat::Battle;
@@ -125,6 +126,81 @@ pub struct Wearable {
     /// It is fought with by a skill; a weapon without one fits no hand.
     pub skilled: bool,
     pub users: Users,
+}
+
+/// How much a wielder's strength helps a weapon's blows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Strength {
+    Full,
+    Half,
+    /// Guns and the like.
+    None,
+}
+
+/// It strikes: what a hand holding it fights with.
+#[derive(Component, Clone, Debug, PartialEq)]
+pub struct Weapon {
+    /// The skill it is fought with.
+    pub skill: Skill,
+    /// Its blows are ranged combat, not close combat.
+    pub ranged: bool,
+    pub reach: Reach,
+    pub dice: Dice,
+    /// The ways it strikes.
+    pub modes: EnumSet<AttackMode>,
+    /// What its blows may do besides damage.
+    pub effects: AttackEffects,
+    /// The monster kind it slays for an extra die.
+    pub slays: Option<MonsterKind>,
+    /// What it adds to the rating to hit.
+    pub to_hit: i32,
+    /// What it adds to initiative.
+    pub initiative: i32,
+    /// Swings it adds to each attack.
+    pub extra_swings: i32,
+    pub strength: Strength,
+    /// An attack with it is one swing, whatever the wielder's speed.
+    pub single_swing: bool,
+    /// A sling, which the kill chance of a thrown weapon and of a shot weigh
+    /// differently.
+    pub sling: bool,
+    /// Using it casts its spell, which has its own charges to spend.
+    pub casts: bool,
+    /// It counts shots, and with none left it cannot strike.
+    pub shots: bool,
+}
+
+/// It shoots what the other hand holds: what it adds to the damage of that,
+/// in percent.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Launcher {
+    pub damage: i32,
+}
+
+/// It is shot from a launcher or thrown: what it adds to the launcher's
+/// dice, effects, slaying and rating, and whether it survives the shot.
+#[derive(Component, Clone, Debug, PartialEq)]
+pub struct Missile {
+    pub dice: Dice,
+    pub effects: AttackEffects,
+    pub slays: Option<MonsterKind>,
+    pub to_hit: i32,
+    pub modes: EnumSet<AttackMode>,
+    /// It is not used up when thrown.
+    pub kept: bool,
+}
+
+/// It guards rather than strikes.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Shield;
+
+/// What wearing it in use gives: armour, resistance by realm, and health,
+/// stamina and spell points given back.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Protection {
+    pub armour: i32,
+    pub resistance: EnumMap<Realm, i8>,
+    pub regeneration: [i8; 3],
 }
 
 /// Where a member wears an item.
@@ -265,14 +341,113 @@ pub fn make(
     if definition.cursed {
         item.insert(Cursed { released: false });
     }
-    if let Some(wearable) = wearable(definition) {
-        item.insert(wearable);
-    }
+    shape(&mut item, definition);
     item.id()
 }
 
+/// What an item of this definition is to a hand, a body and a wearer: the
+/// components a rule reads in its place. Written as it is made, and again
+/// when it grows into another definition.
+pub fn shape(item: &mut EntityCommands, definition: &ItemDefinition) {
+    if let Some(wearable) = wearable(definition) {
+        item.insert(wearable);
+    }
+    if let Some(weapon) = weapon(definition) {
+        item.insert(weapon);
+    }
+    // The guns and bows that shoot what the other hand holds (retail
+    // `ItemHasSingledOutGenericName`).
+    if matches!(
+        definition.kind,
+        ItemKind::LONGBOW
+            | ItemKind::CROSSBOW
+            | ItemKind::SLING
+            | ItemKind::GREATBOW
+            | ItemKind::OMNIGUN
+    ) {
+        item.insert(Launcher { damage: definition.damage.base * 10 });
+    }
+    if matches!(definition.class, EquipClass::Ammunition | EquipClass::ThrownWeapon) {
+        item.insert(Missile {
+            dice: definition.damage,
+            effects: definition.effects,
+            slays: definition.slays,
+            to_hit: definition.hit_bonus,
+            modes: definition.attack_modes,
+            kept: definition.never_depletes,
+        });
+    }
+    if definition.class == EquipClass::Shield {
+        item.insert(Shield);
+    }
+    let protection = Protection {
+        armour: definition.armor_class_bonus,
+        resistance: definition.resistance_bonus,
+        regeneration: definition.regeneration,
+    };
+    if protection.armour != 0
+        || protection.resistance.values().any(|&value| value != 0)
+        || protection.regeneration.iter().any(|&value| value != 0)
+    {
+        item.insert(protection);
+    }
+}
+
+/// What strikes, if an item of this definition does: a weapon fought with a
+/// close or ranged combat skill.
+fn weapon(definition: &ItemDefinition) -> Option<Weapon> {
+    use EquipClass::*;
+    if !matches!(definition.class, ShortWeapon | ExtendedWeapon | RangedWeapon | ThrownWeapon) {
+        return None;
+    }
+    let skill = definition.weapon_skill?;
+    let ranged = if skill as usize <= Skill::Shield as usize || skill == Skill::MartialArts {
+        false
+    } else if matches!(skill, Skill::ModernWeapon | Skill::Bow | Skill::ThrowingAndSling) {
+        true
+    } else {
+        return None;
+    };
+    // Strength helps what is swung, by half what is only thrown, lashed or
+    // shot, and not at all the guns among those.
+    let strength = if !definition
+        .attack_modes
+        .is_subset(AttackMode::Throw | AttackMode::Lash | AttackMode::Shoot)
+    {
+        Strength::Full
+    } else if matches!(
+        definition.kind,
+        ItemKind::POWER_GLOVE
+            | ItemKind::PHASER
+            | ItemKind::MUSKET
+            | ItemKind::OMNIGUN
+            | ItemKind::ROCKET_LAUNCHER
+    ) {
+        Strength::None
+    } else {
+        Strength::Half
+    };
+    Some(Weapon {
+        skill,
+        ranged,
+        reach: definition.reach,
+        dice: definition.damage,
+        modes: definition.attack_modes,
+        effects: definition.effects,
+        slays: definition.slays,
+        to_hit: definition.hit_bonus,
+        initiative: definition.damage_bonus,
+        extra_swings: definition.extra_swings,
+        strength,
+        single_swing: definition.kind == ItemKind::ROCKET_LAUNCHER,
+        sling: definition.kind == ItemKind::SLING,
+        casts: definition.spell.is_some(),
+        shots: definition.quantity == QuantityKind::Shots,
+    })
+}
+
 /// Where an item of this definition may be worn, if it is worn at all.
-pub fn wearable(definition: &ItemDefinition) -> Option<Wearable> {
+fn wearable(definition: &ItemDefinition) -> Option<Wearable> {
     definition.requires_worn().then(|| Wearable {
         class: definition.class,
         two_handed: definition.two_handed,
@@ -381,6 +556,7 @@ pub struct Items<'w, 's> {
     hands: Query<'w, 's, &'static Hand>,
     stows: Query<'w, 's, &'static Stows>,
     hidden: Query<'w, 's, (), With<Hidden>>,
+    protections: Query<'w, 's, (&'static Protection, Has<Shield>)>,
 }
 
 impl Items<'_, '_> {
@@ -388,6 +564,11 @@ impl Items<'_, '_> {
     pub fn worn(&self, member: Entity, slot: EquipSlot) -> Option<Entity> {
         let wears = self.wears.get(member).ok()?;
         wears.iter().find(|&item| self.worn.get(item).is_ok_and(|worn| worn.slot == slot))
+    }
+
+    /// What protects, worn in a slot, and whether it is a shield.
+    pub fn protection(&self, member: Entity, slot: EquipSlot) -> Option<(&Protection, bool)> {
+        self.protections.get(self.worn(member, slot)?).ok()
     }
 
     /// Everything a member wears, with its slot.
@@ -871,22 +1052,27 @@ pub struct Spend {
 fn spend(
     event: On<Spend>,
     mut items: Query<(Option<&mut Charges>, Option<&mut Count>, Has<SpentByUse>, Has<KeepsEmpty>)>,
+    worn: Query<&Worn>,
     mut commands: Commands,
 ) {
     let Ok((charges, count, spent_by_use, keeps)) = items.get_mut(event.item) else { return };
-    let gone = match (charges, count) {
+    let (gone, empty) = match (charges, count) {
         (Some(mut charges), _) => {
             charges.left -= charges.left.min(event.amount);
-            charges.left == 0 && !keeps
+            (charges.left == 0 && !keeps, charges.left == 0)
         }
         (None, Some(mut count)) if spent_by_use => {
             count.of -= count.of.min(event.amount);
-            count.of == 0
+            (count.of == 0, count.of == 0)
         }
-        (None, _) => spent_by_use,
+        (None, _) => (spent_by_use, spent_by_use),
     };
     if gone {
+        // A worn item going is what refits its wearer.
         commands.entity(event.item).despawn();
+    } else if empty {
+        // One that stays, out of shots, no longer strikes.
+        refit_wearer(event.item, &worn, &mut commands);
     }
     commands.trigger(Reweigh);
 }
@@ -2068,6 +2254,128 @@ mod tests {
         world.flush();
         // Leaving the stored slot is not a refit; arriving in Misc1 is.
         assert_eq!(refits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// What an item is to a hand and a body is read from its definition as
+    /// it is made, and is its components.
+    #[test]
+    fn an_item_made_from_a_definition_has_the_components_of_what_it_is() {
+        let weapon = |kind, skill, modes: EnumSet<AttackMode>| ItemDefinition {
+            class: EquipClass::RangedWeapon,
+            kind,
+            weapon_skill: Some(skill),
+            attack_modes: modes,
+            damage: Dice { base: 2, count: 1, sides: 4 },
+            ..default()
+        };
+        let made = |definition: ItemDefinition| {
+            let mut world = World::new();
+            let item = world
+                .run_system_once(move |mut commands: Commands| {
+                    make(&mut commands, &definition, 1, true)
+                })
+                .unwrap();
+            world.flush();
+            (world, item)
+        };
+        let shot = AttackMode::Shoot | AttackMode::Throw;
+        // A bow is strong-armed, a launcher worth a fifth of its base.
+        let (bow, item) = made(weapon(ItemKind::LONGBOW, Skill::Bow, AttackMode::Shoot.into()));
+        let strike = bow.get::<Weapon>(item).unwrap();
+        assert_eq!(
+            (strike.strength, strike.ranged, strike.single_swing),
+            (Strength::Half, true, false)
+        );
+        assert_eq!(bow.get::<Launcher>(item), Some(&Launcher { damage: 20 }));
+        // A gun is not helped by strength, a swung blade is helped fully.
+        let (gun, item) = made(weapon(ItemKind::MUSKET, Skill::ModernWeapon, shot));
+        assert_eq!(gun.get::<Weapon>(item).unwrap().strength, Strength::None);
+        assert!(gun.get::<Launcher>(item).is_none());
+        let (blade, item) = made(ItemDefinition {
+            class: EquipClass::ShortWeapon,
+            weapon_skill: Some(Skill::Sword),
+            attack_modes: AttackMode::Swing | AttackMode::Shoot,
+            ..default()
+        });
+        assert_eq!(blade.get::<Weapon>(item).unwrap().strength, Strength::Full);
+        // The rocket launcher swings once.
+        let (rocket, item) =
+            made(weapon(ItemKind::ROCKET_LAUNCHER, Skill::ModernWeapon, AttackMode::Shoot.into()));
+        assert!(rocket.get::<Weapon>(item).unwrap().single_swing);
+        // Arrows are missiles; a thrown weapon is a weapon and a missile, and
+        // a kept one is not used up.
+        let (arrow, item) = made(ItemDefinition {
+            class: EquipClass::Ammunition,
+            weapon_skill: Some(Skill::Bow),
+            ..default()
+        });
+        assert!(arrow.get::<Missile>(item).is_some_and(|missile| !missile.kept));
+        assert!(arrow.get::<Weapon>(item).is_none());
+        let (star, item) = made(ItemDefinition {
+            class: EquipClass::ThrownWeapon,
+            weapon_skill: Some(Skill::ThrowingAndSling),
+            never_depletes: true,
+            ..default()
+        });
+        assert!(star.get::<Missile>(item).is_some_and(|missile| missile.kept));
+        assert!(star.get::<Weapon>(item).is_some());
+        // A shield guards; what protects carries its worth.
+        let (guard, item) = made(ItemDefinition {
+            class: EquipClass::Shield,
+            armor_class_bonus: 3,
+            resistance_bonus: enum_map::enum_map! { Realm::Fire => 5, _ => 0 },
+            ..default()
+        });
+        assert!(guard.get::<Shield>(item).is_some());
+        let protection = guard.get::<Protection>(item).unwrap();
+        assert_eq!((protection.armour, protection.resistance[Realm::Fire]), (3, 5));
+        let (plain, item) = made(ItemDefinition { class: EquipClass::Torso, ..default() });
+        assert!(plain.get::<Protection>(item).is_none());
+    }
+
+    /// A stack of missiles worn in a hand running out ends what the hand
+    /// shoots: the wearer is refitted, and not before.
+    #[test]
+    fn emptying_a_worn_missile_stack_refits_its_wearer() {
+        let (mut world, member, _) = party();
+        let refits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = refits.clone();
+        world.add_observer(move |_: On<Refit>| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        world.add_observer(worn_on);
+        world.add_observer(worn_off);
+        let quiver = new(&mut world, ARROWS, 20);
+        world.entity_mut(quiver).insert(Weight(0));
+        world.trigger(Put { item: quiver, at: Place::Slot { member, slot: EquipSlot::Secondary } });
+        world.flush();
+        let refitted = || refits.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(refitted(), 1, "wearing it refits");
+        world.trigger(Spend { item: quiver, amount: 5 });
+        world.flush();
+        assert_eq!(refitted(), 1, "arrows are still there");
+        world.trigger(Spend { item: quiver, amount: 15 });
+        world.flush();
+        assert!(world.get_entity(quiver).is_err());
+        assert_eq!(refitted(), 2, "the last arrow shot refits");
+        // Losing a stack worn does so as well.
+        let more = new(&mut world, ARROWS, 3);
+        world.entity_mut(more).insert(Weight(0));
+        world.trigger(Put { item: more, at: Place::Slot { member, slot: EquipSlot::Secondary } });
+        world.flush();
+        world.trigger(Lose { item: more, amount: 3 });
+        world.flush();
+        assert_eq!(refitted(), 4);
+        // A gun out of shots stays, and no longer strikes.
+        let gun = new(&mut world, RING, 1);
+        world.entity_mut(gun).insert((Weight(0), Charges { left: 1, full: 1 }, KeepsEmpty));
+        world.trigger(Put { item: gun, at: Place::Slot { member, slot: EquipSlot::Primary } });
+        world.flush();
+        let before = refitted();
+        world.trigger(Spend { item: gun, amount: 1 });
+        world.flush();
+        assert!(world.get_entity(gun).is_ok());
+        assert_eq!(refitted(), before + 1);
     }
 
     /// The pool's weight goes half to the members, a tenth of a pound at a

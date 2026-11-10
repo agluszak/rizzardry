@@ -8,7 +8,7 @@ use crate::content::items::{ItemId, ItemKind};
 use crate::game::characters::Character;
 use crate::game::data::Catalogs;
 use crate::game::items::{
-    Charges, Give, Item, ItemNews, Items, Kind, Known, Weight, make, roll_amount, wearable,
+    Charges, Give, Item, ItemNews, Items, Kind, Known, Weight, make, roll_amount, shape,
 };
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
@@ -108,9 +108,7 @@ fn advance(
     // definition it has risen to.
     let definition = &content.items[id];
     commands.entity(current).insert((Item(id), Weight(definition.weight), Kind(definition.kind)));
-    if let Some(wearable) = wearable(definition) {
-        commands.entity(current).insert(wearable);
-    }
+    shape(&mut commands.entity(current), definition);
     let full = definition.initial_quantity.maximum() as u16;
     commands.entity(current).entry::<Charges>().and_modify(move |mut charges| charges.full = full);
     if let Some(bearer) = items.bearer(current) {

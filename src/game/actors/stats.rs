@@ -7,6 +7,7 @@ use enum_map::EnumMap;
 use enumset::EnumSet;
 
 use super::Place;
+use super::arms::{self, Hands, Held};
 use super::spells::{Bonus, Laid};
 use crate::content::characters::{Attribute, BodyPart, Realm, Skill, Trait};
 use crate::content::items::{AttackEffects, AttackMode, Dice};
@@ -14,10 +15,10 @@ use crate::content::species::{AttackWord, MonsterKind, Reach, Species};
 use crate::content::spells::Spellbook;
 use crate::game::characters::resistance::resistances;
 use crate::game::characters::{Character, Condition, Vitals, scale_by_level};
-use crate::game::combat::attack::{self, Grip, Surprise};
+use crate::game::combat::attack::{self, Surprise};
 use crate::game::data::Catalogs;
 use crate::game::inventory::WeaponSlot;
-use crate::game::items::{Burden, Fit, Items, Reweigh};
+use crate::game::items::{Burden, Items, Reweigh};
 use crate::game::party::formation::Formation;
 use crate::game::party::roster::PartyMember;
 use crate::game::world::population::Monster;
@@ -284,7 +285,11 @@ impl Attacks {
         [WeaponSlot::Primary, WeaponSlot::Secondary]
             .into_iter()
             .filter(|&slot| self.attacks(slot) > 0)
-            .max_by_key(|&slot| (self.attacks(slot), self.slot_initiative(slot)))
+            .reduce(|best, slot| {
+                let rank = |slot| (self.attacks(slot), self.slot_initiative(slot));
+                // The main hand keeps it on a tie.
+                if rank(slot) > rank(best) { slot } else { best }
+            })
     }
 
     /// The weapons its slots hold.
@@ -359,7 +364,7 @@ pub(super) fn refit(
         (&mut Attributes, &mut Level, &mut Resistances, &mut Armour, &mut Attacks),
     )>,
     rosters: Query<&crate::game::party::roster::PartyRoster>,
-    (items, fit): (Items, Query<Fit>),
+    (items, hands): (Items, Query<Held>),
     laid: Laid,
     content: Option<Res<Catalogs>>,
     mut commands: Commands,
@@ -380,7 +385,7 @@ pub(super) fn refit(
     let (attributes, level, resistances, armour, attacks) = match (sheet, monster) {
         (Some((character, burden)), _) => {
             let load = burden.map(|burden| burden.load).unwrap_or_default();
-            let made = of_member(character, (&items, &fit, event.entity), load, &spells, &content);
+            let made = of_member(character, (&items, &hands, event.entity), load, &spells);
             let (health, stamina) = (character.max_hp(&made.0), character.max_stamina(&made.0));
             if (vitals.health.max, vitals.stamina.max) != (health, stamina) {
                 vitals.refit_maxima(health, stamina);
@@ -458,18 +463,14 @@ fn of_species(kind: &Species, spells: &Bonus) -> (Attributes, Level, Resistances
 /// the spells on them and, for a party member, the party's.
 fn of_member(
     character: &Character,
-    (held, fit, member): (&Items, &Query<Fit>, Entity),
+    (held, hands, member): (&Items, &Query<Held>, Entity),
     load: crate::game::characters::Load,
     spells: &Bonus,
-    content: &Catalogs,
 ) -> (Attributes, Level, Resistances, Armour, Attacks) {
-    // What the member wears in a slot, and its definition from the catalog
-    // (until definitions are components).
-    let catalog = &content.items;
-    let definition = |slot| held.worn(member, slot).map(|item| &catalog[held.id(item).unwrap()]);
+    let protection = |slot| held.protection(member, slot);
     let attributes = Attributes::with_spells(character.attributes, spells);
     let a = &attributes;
-    let sheet = resistances(character, a, definition);
+    let sheet = resistances(character, a, protection);
     let mut wards = Vec::new();
     if character.has_trait(Trait::AndroidConditionImmunity) {
         use Condition::*;
@@ -492,9 +493,9 @@ fn of_member(
         }),
     };
     let laid = spells.armour;
-    let standing = attack::armour(character, a, definition, load, false);
-    let bracing = attack::armour(character, a, definition, load, true);
-    let exposed = |armour: &attack::Armour| armour.speed.max(0) + armour.shield.max(0);
+    let standing = arms::armour(character, a, protection, load, false);
+    let bracing = arms::armour(character, a, protection, load, true);
+    let exposed = |armour: &arms::Armour| armour.speed.max(0) + armour.shield.max(0);
     let armour = Armour {
         total: standing.total + laid,
         at: std::array::from_fn(|place| {
@@ -508,21 +509,9 @@ fn of_member(
         missile_shield: spells.missiles,
         hit_locations: None,
     };
-    let grip = Grip::worn_by(member, (held, fit), catalog);
-    let hit_bonus = spells.to_hit;
-    let primary = WeaponSlot::Primary;
+    let hands = Hands::of(|slot| held.worn(member, slot).and_then(|item| hands.get(item).ok()));
     let attacks = Attacks {
-        arms: [WeaponSlot::Primary, WeaponSlot::Secondary]
-            .into_iter()
-            .filter(|&slot| grip.in_play(slot))
-            .map(|slot| member_arm(&grip, character, a, load, hit_bonus, slot))
-            .collect(),
         initiative: character.initiative(a, load),
-        press: a[Attribute::Speed] as i32
-            + grip.to_hit(character, a, load, primary) * 5
-            + grip.rating(character, a, primary)
-            + hit_bonus * 5,
-        tires_little: grip.weapon_skill(primary) == Skill::ModernWeapon,
         blind_fighting: character
             .has_trait(Trait::EffectiveWhileBlind)
             .then(|| character.profession_levels[character.profession]),
@@ -530,52 +519,9 @@ fn of_member(
         backstab: character.scale_by_profession(100.0) as i32,
         stride: None,
         hasted: spells.stride,
+        ..hands.attacks(character, a, load, spells.to_hit)
     };
     (attributes, Level(u32::from(character.level())), resistances, armour, attacks)
-}
-
-/// A member's arm in a slot, as their gear and sheet make it.
-fn member_arm(
-    grip: &Grip,
-    c: &Character,
-    a: &Attributes,
-    load: crate::game::characters::Load,
-    to_hit_bonus: i32,
-    slot: WeaponSlot,
-) -> Arm {
-    let skill = grip.weapon_skill(slot);
-    let reach = grip.reach(slot);
-    Arm {
-        slot,
-        weapon: grip.weapon_item(slot),
-        reach,
-        modes: grip.modes(c, slot),
-        dice: grip.dice(c, slot),
-        punch: grip.dice(c, WeaponSlot::Secondary),
-        kick: grip.dice(c, WeaponSlot::Primary),
-        rating: grip.rating(c, a, slot) + (grip.to_hit(c, a, load, slot) + to_hit_bonus) * 5,
-        percent: grip.damage_percent(a, slot),
-        effects: grip.effects(a, slot),
-        slays: grip.slays(slot),
-        attacks: grip.attacks(c, a, load, slot),
-        initiative: grip.initiative(c, slot),
-        swings: grip.swings(c, a, load, slot),
-        extra_swings: grip.extra_swings(slot),
-        ranged: grip.ranged(slot),
-        loaded: grip.ammunition(slot).map(|ammunition| ammunition.attack_modes),
-        sure_throw: grip.sure_throw(c, slot),
-        critical_skill: grip.critical_skill(c, slot),
-        weight: grip.weapon(slot).map(|weapon| weapon.weight),
-        tires: true,
-        modern: skill == Skill::ModernWeapon,
-        fatigue_pierces: skill != Skill::ModernWeapon,
-        sword: skill == Skill::Sword,
-        ambushes: c.has_trait(Trait::Backstab)
-            && reach <= Reach::Touch
-            && matches!(skill, Skill::Sword | Skill::Dagger),
-        word: None,
-        lands_on_party: None,
-    }
 }
 
 /// A monster's arm: one of its species' attacks.

@@ -5,8 +5,8 @@ use crate::content::characters::{Attribute, Skill};
 use crate::content::items::EquipClass;
 use crate::content::ui::SpriteSheet;
 use crate::game::actors::Attributes;
+use crate::game::actors::arms::{Hands, Held};
 use crate::game::characters::Character;
-use crate::game::combat::attack::Grip;
 use crate::game::data::Catalogs;
 use crate::game::inventory::EquipSlot;
 use crate::game::items::{Cursed, Items};
@@ -477,11 +477,11 @@ pub(super) fn show_pages(
 }
 
 pub(super) fn refresh(
-    (laid, party, held, fit, curses): (
+    (laid, party, held, hands, curses): (
         crate::game::actors::Laid,
         Option<Single<Entity, With<crate::game::party::roster::Party>>>,
         Items,
-        Query<crate::game::items::Fit>,
+        Query<Held>,
         Query<&Cursed>,
     ),
     learned_spells: Query<&LearnedSpells>,
@@ -502,7 +502,7 @@ pub(super) fn refresh(
     let load = view.load();
     let CharacterViewItem { entity: member, profile, vitals, attributes, .. } = view;
     // The sheet shows the primary weapon slot's numbers.
-    let grip = Grip::worn_by(member, (&held, &fit), &content.items);
+    let hands = Hands::of(|slot| held.worn(member, slot).and_then(|item| hands.get(item).ok()));
     let primary = crate::game::inventory::WeaponSlot::Primary;
     let armour_view = info.as_ref().is_some_and(|info| info.armour);
     let effect_filter = info.as_ref().map_or(EffectFilter::All, |info| info.filter);
@@ -690,22 +690,22 @@ pub(super) fn refresh(
                 } else {
                     match index {
                         1 => {
-                            let dice = grip.dice(profile, primary);
+                            let dice = hands.dice(profile, primary);
                             let min = dice.base + dice.count;
                             let max = dice.base + dice.count * dice.sides;
-                            let scale = 100 + grip.damage_percent(attributes, primary);
+                            let scale = 100 + hands.damage_percent(attributes, primary);
                             format!(
                                 "{}-{}",
                                 ((min * scale + 50) / 100).max(1),
                                 ((max * scale + 50) / 100).max(1)
                             )
                         }
-                        3 => grip.attacks(profile, attributes, load, primary).to_string(),
-                        4 => grip.swings(profile, attributes, load, primary).to_string(),
-                        5 => format!("{:+}", grip.to_hit(profile, attributes, load, primary)),
-                        7 => format!("{:+}%", grip.damage_percent(attributes, primary)),
+                        3 => hands.attacks_a_round(profile, attributes, load, primary).to_string(),
+                        4 => hands.swings(profile, attributes, load, primary).to_string(),
+                        5 => format!("{:+}", hands.to_hit(profile, attributes, load, primary)),
+                        7 => format!("{:+}%", hands.damage_percent(attributes, primary)),
                         8 => (profile.initiative(attributes, load)
-                            + grip.initiative(profile, primary))
+                            + hands.initiative(profile, primary))
                         .to_string(),
                         _ => String::new(),
                     }

@@ -642,7 +642,7 @@ pub(super) fn refresh(
             }
             Value::Armour => {
                 if session.choices.race {
-                    crate::game::combat::attack::armour(
+                    crate::game::actors::arms::armour(
                         &profile,
                         &Attributes::of_sheet(&profile),
                         |_| None,

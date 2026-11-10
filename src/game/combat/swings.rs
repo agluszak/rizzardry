@@ -19,7 +19,7 @@ use super::attack::{self, Surprise};
 use super::turn::{Chosen, Fights, Guards, Interceptions, Ordered, Perform, Spotted, Turn};
 use super::{Announcement, Battle, CombatNews, Combatants, Pause, Round, RoundPhase};
 use crate::content::characters::{Attribute, BodyPart, Skill, Trait};
-use crate::content::items::{AttackEffect, AttackEffects, AttackMode, Dice, EquipClass};
+use crate::content::items::{AttackEffect, AttackEffects, AttackMode, Dice};
 use crate::content::species::Reach;
 use crate::content::spells::SpellId;
 use crate::game::actors::{Arm, Attacks, Laying, Places, Stance as Standing, reaches};
@@ -30,7 +30,7 @@ use crate::game::hits::definitions::{Blow, Definitions};
 use crate::game::hits::effects::{self, Body, Log, Rules, Strike};
 use crate::game::hits::{Damaged, Effect};
 use crate::game::inventory::WeaponSlot;
-use crate::game::items::{Items, Spend};
+use crate::game::items::{Items, Missile, Spend, Weapon};
 use crate::game::magic::Strength;
 use crate::game::npcs::NpcBody;
 use crate::game::party::formation::{Formation, Row};
@@ -704,8 +704,8 @@ fn spend_ammunition(
     arm: &Arm,
     by: Entity,
     spent: &mut u16,
-    held: &Items,
-    (content, commands): (&Catalogs, &mut Commands),
+    (held, strikers): (&Items, &Query<(Option<&Weapon>, Option<&Missile>)>),
+    commands: &mut Commands,
 ) -> bool {
     if !arm.ranged || arm.weapon.is_none() {
         return false;
@@ -713,9 +713,11 @@ fn spend_ammunition(
     let loaded = arm.loaded.is_some();
     let slot = if loaded { arm.slot.other() } else { arm.slot }.equip();
     let Some(item) = held.worn(by, slot) else { return false };
-    let definition = &content.items[held.id(item).unwrap()];
-    let thrown = definition.class == EquipClass::ThrownWeapon;
-    if !loaded && (definition.spell.is_some() || (thrown && definition.never_depletes)) {
+    // What casts its spell, or is thrown and kept, is not used up.
+    let kept = strikers.get(item).is_ok_and(|(weapon, missile)| {
+        weapon.is_some_and(|weapon| weapon.casts) || missile.is_some_and(|missile| missile.kept)
+    });
+    if !loaded && kept {
         return false;
     }
     commands.trigger(Spend { item, amount: 1 });
@@ -777,7 +779,11 @@ pub(super) fn attack(
     mut laying: Laying,
     places: Places,
     bearing: Bearing,
-    (guards, mut interceptions): (Query<&Guards>, Query<&mut Interceptions>),
+    (guards, mut interceptions, strikers): (
+        Query<&Guards>,
+        Query<&mut Interceptions>,
+        Query<(Option<&Weapon>, Option<&Missile>)>,
+    ),
     mut watchful: Query<(&Ordered, &mut Spotted)>,
     fight: Single<(Entity, &mut Round, &mut Pause, Option<&Combatants>), With<Battle>>,
     party: Single<(&mut Formation, &PartyRoster)>,
@@ -880,7 +886,7 @@ pub(super) fn attack(
                 (&mut log, &mut laying),
                 (&mut news, &mut commands),
             );
-            if spend_ammunition(&attack.arm, actor, &mut spent, &held, (&content, &mut commands)) {
+            if spend_ammunition(&attack.arm, actor, &mut spent, (&held, &strikers), &mut commands) {
                 turn.attacks[attack.arm.slot] = 0;
                 break;
             }
