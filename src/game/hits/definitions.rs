@@ -49,12 +49,14 @@ pub enum Roll {
     /// This spell's dice (see [`Roll::Dice`]).
     SpellDice,
     /// This spell's dice, their count multiplied by `times`, without the
-    /// cast's boost when `plain`.
+    /// cast's boost when `plain`, over `over`.
     SpellDiceWith {
         #[serde(default)]
         plain: bool,
         #[serde(default = "one::<i32>")]
         times: i32,
+        #[serde(default = "one::<u32>")]
+        over: u32,
     },
     /// This spell's rounds (see [`Roll::Duration`]).
     SpellRounds,
@@ -235,9 +237,6 @@ impl EffectSpec {
     fn resist(self, realm: Realm) -> Self {
         Self { resist: Some(realm), ..self }
     }
-    fn if_landed(self) -> Self {
-        Self { landed: true, ..self }
-    }
     fn members(self) -> Self {
         Self { on: Whom::Members, ..self }
     }
@@ -320,16 +319,28 @@ fn condition(afflicted: Condition, rounds: Roll, realm: Realm) -> EffectSpec {
     afflict(afflicted).roll(rounds).save(condition_save(afflicted)).resist(realm)
 }
 
+/// One spell's row of the table: what it does when cast, and, for a personal
+/// spell, what it does turned on its caster, and for one that pulses, what
+/// each pulse does.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SpellRow {
+    pub effects: Vec<EffectSpec>,
+    pub leeches: Option<bool>,
+    pub backfire: Vec<EffectSpec>,
+    pub pulse: Vec<EffectSpec>,
+}
+
 /// What each spell does to each victim, by spell: the table in
 /// `assets/tables/spell_effects.ron`, which ships with the game (retail keeps
 /// it in its program, not its data). A spell it does not name does nothing
 /// the game resolves.
 #[derive(Debug, Deserialize)]
 #[serde(transparent)]
-pub struct SpellEffects(HashMap<SpellId, Definition>);
+pub struct SpellEffects(HashMap<SpellId, SpellRow>);
 
 impl SpellEffects {
-    pub fn get(&self, spell: SpellId) -> Option<&Definition> {
+    pub fn get(&self, spell: SpellId) -> Option<&SpellRow> {
         self.0.get(&spell)
     }
 }
@@ -343,25 +354,39 @@ impl Default for SpellEffects {
     }
 }
 
-impl Definition {
-    /// A spell's table entry made that spell's own: each `Spell…` roll, kind
-    /// and realm in it resolved from the spell's record. `None` for a spell
-    /// with no realm, which the game does not resolve.
+impl SpellRow {
+    /// What the spell does when cast, made the spell's own: each `Spell…`
+    /// roll, kind and realm in it resolved from the spell's record. `None`
+    /// for a spell with no realm, which the game does not resolve.
     pub fn of_spell(&self, spell: &SpellDefinition) -> Option<Definition> {
-        let realm = spell.realm?;
-        let effects = self.effects.iter().map(|effect| effect.of_spell(spell, realm)).collect();
-        Some(Definition { effects, leeches: self.leeches })
+        Some(Definition { effects: made(&self.effects, spell)?, leeches: self.leeches })
     }
+
+    /// What it does turned on its caster.
+    pub fn backfire_of(&self, spell: &SpellDefinition) -> Option<Definition> {
+        Some(Definition { effects: made(&self.backfire, spell)?, leeches: None })
+    }
+
+    /// What each of its pulses does.
+    pub fn pulse_of(&self, spell: &SpellDefinition) -> Option<Definition> {
+        Some(Definition { effects: made(&self.pulse, spell)?, leeches: None })
+    }
+}
+
+/// A row's effects made the spell's own.
+fn made(effects: &[EffectSpec], spell: &SpellDefinition) -> Option<Vec<EffectSpec>> {
+    let realm = spell.realm?;
+    Some(effects.iter().map(|effect| effect.of_spell(spell, realm)).collect())
 }
 
 impl EffectSpec {
     fn of_spell(&self, spell: &SpellDefinition, realm: Realm) -> EffectSpec {
         let roll = self.roll.map(|roll| match roll {
             Roll::SpellDice => Roll::Dice { dice: spell.dice, plain: false, over: 1 },
-            Roll::SpellDiceWith { plain, times } => Roll::Dice {
+            Roll::SpellDiceWith { plain, times, over } => Roll::Dice {
                 dice: spell.dice.map(|dice| Dice { count: dice.count * times, ..dice }),
                 plain,
-                over: 1,
+                over,
             },
             Roll::SpellRounds => {
                 Roll::Duration { base: spell.duration_base, per_power: spell.duration_per_power }
@@ -382,53 +407,6 @@ impl EffectSpec {
         let resist = if self.spell_realm { Some(realm) } else { self.resist };
         EffectSpec { kind, roll, resist, spell_realm: false, ..self.clone() }
     }
-}
-
-/// What a personal spell turned on its caster's side does: Dracon Breath
-/// nauseates, Haste slows, Razor Cloak harms; the others nothing.
-fn define_backfire(spell: &SpellDefinition) -> Vec<EffectSpec> {
-    let Some(realm) = spell.realm else { return vec![] };
-    let rounds = Roll::Duration { base: spell.duration_base, per_power: spell.duration_per_power };
-    match spell.id {
-        SpellId::DRACON_BREATH => vec![condition(Condition::Nauseated, rounds, realm)],
-        SpellId::HASTE => vec![condition(Condition::Slowed, rounds, realm)],
-        SpellId::RAZOR_CLOAK => vec![
-            EffectSpec::of(Harm)
-                .roll(Roll::Dice { dice: spell.dice, plain: false, over: 1 })
-                .resist(realm),
-        ],
-        _ => vec![],
-    }
-}
-
-/// An offensive cloud's pulse on whoever it hangs over (retail
-/// `TickCombatEffectSlots`): Death Cloud makes a death save; the others
-/// hurt, Draining Cloud then draining spell points and stamina by its own
-/// roll, Toxic Cloud then nauseating, poisoning and knocking out.
-fn define_pulse(spell: &SpellDefinition) -> Vec<EffectSpec> {
-    let Some(realm) = spell.realm else { return vec![] };
-    let dice = |over| Roll::Dice { dice: spell.dice, plain: false, over };
-    if spell.id == SpellId::DEATH_CLOUD {
-        return vec![
-            EffectSpec::of(Slay).roll(Roll::Fixed(INDEFINITE)).save(DEATH_SAVE).resist(realm),
-        ];
-    }
-    let mut effects = vec![EffectSpec::of(Harm).roll(dice(1)).resist(realm)];
-    if spell.id == SpellId::DRAINING_CLOUD {
-        effects.extend([
-            EffectSpec::of(EffectKind::DrainRealm(None)).roll(dice(1)).members().if_landed(),
-            EffectSpec::of(DrainBudget).roll(dice(2)).monsters().if_landed(),
-            EffectSpec::of(Tire).roll(dice(1)).if_landed(),
-        ]);
-    }
-    if spell.id == SpellId::TOXIC_CLOUD {
-        let rounds =
-            Roll::Duration { base: spell.duration_base, per_power: spell.duration_per_power };
-        for afflicted in [Condition::Nauseated, Condition::Poisoned, Condition::Unconscious] {
-            effects.push(condition(afflicted, rounds, realm));
-        }
-    }
-    effects
 }
 
 /// A special attack's effects: each of its two may be escaped (the first
@@ -531,19 +509,18 @@ pub fn define(mut commands: Commands, content: Res<Catalogs>) {
     let mut backfires = HashMap::new();
     let mut pulses = HashMap::new();
     for spell in content.spells.0.iter() {
-        let Some(definition) =
-            content.spell_effects.get(spell.id).and_then(|rows| rows.of_spell(spell))
-        else {
-            continue;
-        };
+        let Some(row) = content.spell_effects.get(spell.id) else { continue };
+        let Some(definition) = row.of_spell(spell) else { continue };
         spells.insert(spell.id, add(definition));
-        if crate::game::actors::spells::personal(spell.id) {
-            backfires.insert(spell.id, add(plain(define_backfire(spell))));
-        }
-        if crate::game::actors::spells::OFFENSIVE.contains(&spell.id)
-            || spell.id == SpellId::RING_OF_FIRE
+        if spell.facts.personal
+            && let Some(backfire) = row.backfire_of(spell)
         {
-            pulses.insert(spell.id, add(plain(define_pulse(spell))));
+            backfires.insert(spell.id, add(backfire));
+        }
+        if spell.facts.pulse.is_some()
+            && let Some(pulse) = row.pulse_of(spell)
+        {
+            pulses.insert(spell.id, add(pulse));
         }
     }
     let specials = (1..=u8::MAX)
@@ -890,5 +867,71 @@ mod tests {
             let made = rows.of_spell(&spell(id)).unwrap();
             assert!(made.effects.iter().all(|effect| !effect.spell_realm), "{id:?}");
         }
+    }
+
+    /// What a personal spell does turned on its caster, and what a pulse
+    /// does, are in the spell's row.
+    #[test]
+    fn backfires_and_pulses_are_rows() {
+        let table = SpellEffects::default();
+        let row = |id| table.get(id).unwrap();
+        let backfire = |id| row(id).backfire_of(&spell_with_facts(id)).unwrap().effects;
+        let pulse = |id| row(id).pulse_of(&spell_with_facts(id)).unwrap().effects;
+        let afflicts = |effect: &EffectSpec| match effect.kind {
+            EffectKind::Afflict { condition, .. } => Some(condition),
+            _ => None,
+        };
+        assert_eq!(afflicts(&backfire(SpellId::DRACON_BREATH)[0]), Some(Condition::Nauseated));
+        let slowed = &backfire(SpellId::HASTE)[0];
+        assert_eq!((afflicts(slowed), slowed.roll), (Some(Condition::Slowed), Some(rounds())));
+        assert_eq!(
+            backfire(SpellId::RAZOR_CLOAK),
+            vec![EffectSpec { roll: Some(dice()), resist: Some(REALM), ..default() }]
+        );
+        assert!(backfire(SpellId::GUARDIAN_ANGEL).is_empty());
+        let death = pulse(SpellId::DEATH_CLOUD);
+        assert_eq!(
+            death,
+            vec![EffectSpec {
+                kind: EffectKind::Slay,
+                roll: Some(Roll::Fixed(INDEFINITE)),
+                save: Some(DEATH_SAVE),
+                resist: Some(REALM),
+                ..default()
+            }]
+        );
+        let draining = pulse(SpellId::DRAINING_CLOUD);
+        assert_eq!(draining.len(), 4);
+        assert!(draining[1..].iter().all(|effect| effect.landed && effect.resist.is_none()));
+        assert_eq!(draining[1].on, Whom::Members);
+        assert_eq!(draining[2].roll, Some(Roll::Dice { dice: Some(DICE), plain: false, over: 2 }));
+        let toxic = pulse(SpellId::TOXIC_CLOUD);
+        assert_eq!(
+            toxic[1..].iter().map(afflicts).collect::<Vec<_>>(),
+            [Some(Condition::Nauseated), Some(Condition::Poisoned), Some(Condition::Unconscious)]
+        );
+        assert_eq!(
+            toxic[2].save,
+            Some(condition_save(Condition::Poisoned)),
+            "a row's save is the condition's own"
+        );
+        assert_eq!(pulse(SpellId::RING_OF_FIRE).len(), 1);
+    }
+
+    /// A row has a backfire only for a spell that is personal, a pulse only
+    /// for one that pulses.
+    #[test]
+    fn a_backfire_or_a_pulse_is_for_a_spell_that_has_one() {
+        let table = SpellEffects::default();
+        for id in 0..=255 {
+            let spell = spell_with_facts(SpellId(id));
+            let Some(row) = table.get(spell.id) else { continue };
+            assert!(spell.facts.personal || row.backfire.is_empty(), "{:?}", spell.id);
+            assert_eq!(spell.facts.pulse.is_some(), !row.pulse.is_empty(), "{:?}", spell.id);
+        }
+    }
+
+    fn spell_with_facts(id: SpellId) -> SpellDefinition {
+        crate::content::spells::SpellCatalog::new(vec![spell(id)]).0.remove(0)
     }
 }

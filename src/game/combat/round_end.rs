@@ -20,11 +20,12 @@ use super::turn::{Ordered, SpecialCooldown, Turn};
 use super::{
     Battle, CombatNews, Combatant, Combatants, PASSIVE_ROUNDS, Pause, ROUND_SECONDS, Round, Spoils,
 };
+use crate::content::spells::Pulsing;
 use crate::content::spells::SpellId;
 use crate::game::actors::Laid;
 use crate::game::actors::Places;
 use crate::game::actors::spells::Aged;
-use crate::game::actors::spells::{Enchantment, LaidOn, OFFENSIVE, Pulses};
+use crate::game::actors::spells::{Enchantment, LaidOn, Pulses};
 use crate::game::characters::Vitals;
 use crate::game::characters::{Character, Condition};
 use crate::game::data::Catalogs;
@@ -237,7 +238,7 @@ pub(super) fn pulse_clouds(
     pulse: On<CloudsPulse>,
     mut commands: Commands,
     fights: Query<&Combatants>,
-    pulsing: Query<(&Enchantment, &LaidOn), With<Pulses>>,
+    pulsing: Query<(&Enchantment, &LaidOn, &Pulses)>,
     bodies: Query<
         (Entity, &Vitals, &Side),
         (Without<Untargetable>, Or<(With<PartyMember>, Without<Character>)>),
@@ -253,13 +254,11 @@ pub(super) fn pulse_clouds(
     let alive = |body: Entity| bodies.get(body).is_ok_and(|(_, vitals, ..)| !vitals.is_dead());
     // The party's first, then each monster's, in the order clouds pulse.
     let mut order: Vec<_> = pulsing.iter().collect();
-    order.sort_by_key(|(laid, on)| {
-        (on.0 != party, OFFENSIVE.iter().position(|&cloud| cloud == laid.spell))
-    });
-    for (laid, &LaidOn(bearer)) in order {
+    order.sort_by_key(|(_, on, pulse)| (on.0 != party, pulse.0.order));
+    for (laid, &LaidOn(bearer), &Pulses(pulse)) in order {
         let Some(definition) = definitions.pulse(laid.spell) else { continue };
-        let ring = laid.spell == SpellId::RING_OF_FIRE;
-        let victims: Vec<Entity> = if ring {
+        let around = pulse.on == Pulsing::AroundParty;
+        let victims: Vec<Entity> = if around {
             let centre = PartyBody::centre(PartyBody::eye(position));
             let reach =
                 crate::game::party::body::RADIUS + crate::content::species::Reach::Short.metres();
@@ -279,7 +278,7 @@ pub(super) fn pulse_clouds(
         } else {
             combatants.entities().iter().copied().filter(|&m| m == bearer && alive(m)).collect()
         };
-        let strength = if ring {
+        let strength = if around {
             Strength { power: laid.power, boost: 0, against: laid.power * 3 }
         } else {
             Strength::at(0, &content.spells[laid.spell], laid.power, laid.boost)

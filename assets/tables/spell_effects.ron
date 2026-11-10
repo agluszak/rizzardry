@@ -18,6 +18,13 @@
 // SpellDice its dice, SpellRounds its duration, SpellEnchant itself.
 // leeches: the damage it deals comes back to its caster, as health (true)
 // or as spell points (false).
+// backfire: what a personal spell turned on its caster does, in the same
+// rows; one without it does nothing.
+// pulse: what a spell laid that pulses (spells_laid.ron) does to each body
+// it strikes as a round ends, in the same rows (retail `TickCombatEffectSlots`
+// for the clouds): Death Cloud makes a death save; the others hurt, Draining
+// Cloud then draining spell points and stamina by its own roll, Toxic Cloud
+// then nauseating, poisoning and knocking out.
 {
     ACID_SPLASH: (
         effects: [
@@ -108,6 +115,9 @@
         effects: [
             (kind: SpellEnchant, roll: SpellRounds),
         ],
+        backfire: [
+            (kind: Afflict(condition: Nauseated), roll: SpellRounds, save: 4, spell_realm: true),
+        ],
     ),
     ENCHANTED_BLADE: (
         effects: [
@@ -144,6 +154,9 @@
     RAZOR_CLOAK: (
         effects: [
             (kind: SpellEnchant, roll: SpellRounds),
+        ],
+        backfire: [
+            (roll: SpellDice, spell_realm: true),
         ],
     ),
     SHRILL_SOUND: (
@@ -243,6 +256,9 @@
             (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
             (kind: SpellEnchant, on: Party, roll: SpellRounds),
         ],
+        pulse: [
+            (roll: SpellDice, spell_realm: true),
+        ],
     ),
     ARMORMELT: (
         effects: [
@@ -285,6 +301,9 @@
         effects: [
             (kind: SpellEnchant, roll: SpellRounds),
         ],
+        backfire: [
+            (kind: Afflict(condition: Slowed), roll: SpellRounds, save: 4, spell_realm: true),
+        ],
     ),
     ICEBALL: (
         effects: [
@@ -311,6 +330,9 @@
         effects: [
             (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
             (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+        pulse: [
+            (roll: SpellDice, spell_realm: true),
         ],
     ),
     WHIRLWIND: (
@@ -376,6 +398,12 @@
             (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
             (kind: SpellEnchant, on: Party, roll: SpellRounds),
         ],
+        pulse: [
+            (roll: SpellDice, spell_realm: true),
+            (kind: Afflict(condition: Nauseated), roll: SpellRounds, save: 4, spell_realm: true),
+            (kind: Afflict(condition: Poisoned), roll: SpellRounds, save: 6, spell_realm: true),
+            (kind: Afflict(condition: Unconscious), roll: SpellRounds, save: 22, spell_realm: true),
+        ],
     ),
     BANISH: (
         effects: [
@@ -398,11 +426,20 @@
             (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
             (kind: SpellEnchant, on: Party, roll: SpellRounds),
         ],
+        pulse: [
+            (roll: SpellDice, spell_realm: true),
+            (kind: DrainRealm(None), on: Members, roll: SpellDice, landed: true),
+            (kind: DrainBudget, on: Monsters, roll: SpellDiceWith(over: 2), landed: true),
+            (kind: Tire, roll: SpellDice, landed: true),
+        ],
     ),
     FIRESTORM: (
         effects: [
             (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
             (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+        pulse: [
+            (roll: SpellDice, spell_realm: true),
         ],
     ),
     LIFESTEAL: (
@@ -469,6 +506,9 @@
         effects: [
             (kind: SpellEnchant, on: Monsters, roll: SpellRounds),
             (kind: SpellEnchant, on: Party, roll: SpellRounds),
+        ],
+        pulse: [
+            (kind: Slay, roll: Fixed(9999), save: 24, spell_realm: true),
         ],
     ),
     DEATH_WISH: (

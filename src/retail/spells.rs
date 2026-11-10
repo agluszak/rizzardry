@@ -81,6 +81,7 @@ fn read_spell(index: usize, record: &[u8]) -> Result<SpellDefinition, DecodeErro
         // until those missiles land; a flight here is that wait itself.
         missile: (r[0x13f] != 0).then(|| u32::try_from(missile).ok()).flatten(),
         monsters_cast: r[0x126] != 0,
+        facts: Default::default(),
     })
 }
 
@@ -92,7 +93,7 @@ pub fn read_spell_catalog(data: &[u8]) -> Result<SpellCatalog, DecodeError> {
         return Err(bytes.invalid("spell database shorter than its count"));
     }
     let records = data[8..8 + count * RECORD].as_chunks::<RECORD>().0;
-    Ok(SpellCatalog(
+    Ok(SpellCatalog::new(
         records.iter().enumerate().map(|(i, r)| read_spell(i, r)).collect::<Result<_, _>>()?,
     ))
 }
