@@ -481,26 +481,16 @@ fn burn(
     rng: &mut GameRng,
     log: &mut Log,
 ) {
+    let classes = [EquipClass::Potion, EquipClass::Scroll, EquipClass::Spellbook];
     let mut burnt = [0; 3];
     for item in items {
-        let Some(id) = rules.held.id(item) else { continue };
-        let class = match rules.content.items[id].class {
-            EquipClass::Potion => 0,
-            EquipClass::Scroll => 1,
-            EquipClass::Spellbook => 2,
-            _ => continue,
-        };
+        let Some(class) = rules.held.flammable(item) else { continue };
         let lost = applied::burnt(rng, rules.held.units(item), chance);
         if lost > 0 {
-            burnt[class] += u32::from(lost);
+            burnt[classes.iter().position(|&burns| burns == class).unwrap()] += u32::from(lost);
             log.burnt.push((item, lost));
         }
     }
-    record_burnt(log, burnt);
-}
-
-fn record_burnt(log: &mut Log, burnt: [u32; 3]) {
-    let classes = [EquipClass::Potion, EquipClass::Scroll, EquipClass::Spellbook];
     for (class, amount) in classes.into_iter().zip(burnt) {
         if amount != 0 {
             log.effects.push(Effect::Destroyed { class, amount });
