@@ -7,9 +7,8 @@ use super::{FighterReadOnly, FighterReadOnlyItem, choose_mode};
 use crate::content::characters::Skill;
 use crate::content::items::AttackMode;
 use crate::game::actors::{Arm, Place, Places, reaches};
-use crate::game::characters::Condition;
 use crate::game::combat::approach::MoveGoal;
-use crate::game::combat::monster::close::{self, MoveBudget, Moving};
+use crate::game::combat::monster::close::{self, MoveBudget};
 use crate::game::combat::turn::{Fights, Turn};
 use crate::game::inventory::WeaponSlot;
 use crate::game::party::formation::{Formation, Row};
@@ -221,17 +220,10 @@ fn close_in(
     roster: &PartyRoster,
 ) -> Chosen {
     let (attacks, vitals) = (own.body.attacks, own.body.vitals);
-    let Some((stride, walker)) = attacks.stride.zip(walker).filter(|_| !turn.moved) else {
+    let Some(walker) = walker.filter(|_| attacks.stride.is_some() && !turn.moved) else {
         return Chosen::Stand;
     };
-    let hurt = close::charges(vitals.health.current, vitals.health.max);
-    let moving = Moving {
-        walks: !vitals.is_dead() && walker.speed > 0.0,
-        reach: attacks.reach(),
-        stride,
-        hasted: attacks.hasted,
-        slowed: own.has(Condition::Slowed),
-    };
+    let walks = !vitals.is_dead() && walker.speed > 0.0;
     let going = match own.body.stance() {
         Stance::Friendly => sought
             .iter()
@@ -239,20 +231,20 @@ fn close_in(
                 at.feet.distance_squared(a.1.feet).total_cmp(&at.feet.distance_squared(b.1.feet))
             })
             .filter(|_| walker.speed > 0.0)
-            .map(|(foe, ..)| {
-                let budget = MoveBudget { metres: close::metres(&moving, hurt), charge: hurt };
-                (MoveGoal::Attack(foe.body.entity), budget)
-            }),
+            .map(|(foe, ..)| MoveGoal::Attack(foe.body.entity)),
         Stance::Hostile => roster
             .iter()
             .copied()
             .find(|&member| fighters.contains(member))
-            .and_then(|member| close::budget(&moving, hurt, at.gap(&places.of(member))))
-            .map(|budget| (MoveGoal::Party, budget)),
+            .filter(|&member| {
+                close::needs_approach(walks, attacks.reach(), at.gap(&places.of(member)))
+            })
+            .map(|_| MoveGoal::Party),
         Stance::Neutral => None,
     };
+    let budget = MoveBudget::of(&own.body);
     let again = (now * 2).min(100);
-    going.map_or(Chosen::Stand, |(goal, budget)| Chosen::Advance { goal, budget, again })
+    going.map_or(Chosen::Stand, |goal| Chosen::Advance { goal, budget, again })
 }
 
 #[cfg(test)]
@@ -262,7 +254,7 @@ mod tests {
     use super::*;
     use crate::content::species::Reach;
     use crate::game::actors::Attacks;
-    use crate::game::characters::{Lasting, Vitals};
+    use crate::game::characters::{Condition, Lasting, Vitals};
     use crate::game::combat::turn::{Action, Ordered};
     use crate::game::npcs::NpcBody;
     use bevy::ecs::system::SystemState;
