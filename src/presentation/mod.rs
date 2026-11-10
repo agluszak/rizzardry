@@ -104,6 +104,7 @@ impl Plugin for PresentationPlugin {
         .add_observer(sky::request_skies)
         .add_observer(dialog::open_travel_question)
         .add_observer(automap::close_ended_map)
+        .add_observer(ambience::silence_set_aside)
         .add_systems(Startup, controls::spawn_exploration_controls)
         .add_systems(PreUpdate, controls::read_controls.after(EnhancedInputSystems::Apply))
         .add_message::<voice::SpeechFinished>()

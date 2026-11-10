@@ -49,16 +49,18 @@ pub struct EncounterState {
     /// How many may be about at once now.
     pub limit: i32,
     pub generators: Vec<GeneratorState>,
-    /// The game second the party left, kept while the level is away; or
-    /// the arrival still to settle (`None` there means a first visit).
+    /// The arrival still to settle, once the level's ground is in place.
     pub arrival: Option<Arrival>,
 }
 
-/// A level's arrival, settled once its ground is in place.
+/// A level's arrival.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arrival {
     First,
-    Returned { left: u64 },
+    /// The party is back after this many game seconds.
+    Returned {
+        away: u64,
+    },
 }
 
 /// A generator's own state: whether it runs, and its timer, in gameplay
@@ -471,6 +473,14 @@ fn admits(
     (rng.below(100) as i32) < chance
 }
 
+/// A level that was away owes its encounters the time that passed: they settle
+/// it as the party's arrival.
+pub fn age_encounters(woke: On<super::level::Woke>, mut levels: Query<&mut EncounterState>) {
+    if let Ok(mut state) = levels.get_mut(woke.level) {
+        state.arrival = Some(Arrival::Returned { away: woke.away_ms / 1000 });
+    }
+}
+
 /// Run the played level's random encounters on the fixed step, once
 /// physics has placed its ground: settle an arrival's budget (rolling
 /// every generator afresh on a first visit or after long away, otherwise
@@ -630,12 +640,11 @@ pub fn run_encounters(
                 state.budget = encounters.limits.largest_budget;
                 STALE_SECONDS + 1
             }
-            Arrival::Returned { left } => {
-                let elapsed = now_s - left;
+            Arrival::Returned { away } => {
                 if encounters.limits.period > 0 {
-                    state.budget += (elapsed / encounters.limits.period as u64) as i32;
+                    state.budget += (away / encounters.limits.period as u64) as i32;
                 }
-                elapsed
+                away
             }
         };
         state.clamp(&encounters.limits);

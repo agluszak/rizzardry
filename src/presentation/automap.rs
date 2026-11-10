@@ -27,7 +27,7 @@ use crate::content::level::CollisionMesh;
 use crate::content::ui::{SpriteSheet, ui_image};
 use crate::game::automap::{CommitNote, MapNote, MapNotes, NoteDraft};
 use crate::game::party::body::PartyBody;
-use crate::game::world::level::{Level, PlayedLevel};
+use crate::game::world::level::{PlayedLevel, SetAside};
 use crate::presentation::screen_art::visible_if;
 use crate::presentation::screen_art::{absolute, centred, screen};
 
@@ -260,9 +260,9 @@ enum ButtonAction {
 #[derive(Message, Debug, Clone, Copy)]
 pub struct OpenAutomap;
 
-/// The map closes with the level it shows.
+/// The map closes when the party leaves the level it shows.
 pub fn close_ended_map(
-    ended: On<Remove<Level>>,
+    ended: On<Add<SetAside>>,
     map: Option<Single<&Automap>>,
     mut next: ResMut<NextState<Screen>>,
 ) {

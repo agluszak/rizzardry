@@ -1,33 +1,30 @@
 //! The active level: one root entity owning everything level-specific.
 //!
 //! The root carries [`Level`]; its geometry, collider and navigation are
-//! built under it as their assets load. Despawning the root unloads the
-//! level. The party is not level-owned and survives travel.
-
-use std::collections::HashMap;
+//! built under it as their assets load. A level the party leaves is set
+//! aside, not unloaded: it and everything it holds stay as they were, taking
+//! no part in anything, until the party comes back and it wakes. The party is
+//! not level-owned and survives travel.
 
 use avian3d::prelude::*;
+use bevy::ecs::entity_disabling::Disabled;
+use bevy::ecs::relationship::RelationshipTarget;
 use bevy::prelude::*;
 use bevy_landmass::NavMesh3d;
 
 use bevy::asset::{LoadState, UntypedAssetId};
 use bevy::ecs::system::SystemParam;
 
-use super::identify::{GroupMember, MonsterGroup};
-use super::items::KeptItem;
-use super::navigation::Walker;
 use super::navigation::bake::SIZE_CLASSES;
-use super::population::{Monster, MonsterBodies};
-use super::props::{Prop, PropMotion};
+use super::population::MonsterBodies;
 use super::scripts::LevelScript;
-use super::triggers::{DeviceRecords, LevelState, TriggerMemory, spawn_devices};
+use super::triggers::spawn_devices;
 use super::{navigation, population};
 use crate::content::items::LootTables;
 use crate::content::level::LevelDefinition;
 use crate::content::levels::LevelInfo;
 use crate::content::monster::MonsterBody;
 use crate::content::navmesh::navmesh_path;
-use crate::content::species::Species;
 use crate::content::ui::TextTable;
 use crate::game::automap::MapNotes;
 use crate::game::characters::Character;
@@ -37,6 +34,7 @@ use crate::game::magic::LearnedSpells;
 use crate::game::party::body::{PartyPlacement, PartyStart};
 use crate::game::party::roster::Party;
 use crate::game::rng::GameRng;
+use crate::game::time::GameClock;
 
 /// The root of the level being played, including during travel preparation. A level
 /// becomes one only by [`activate_level`]; until then its root is a
@@ -198,185 +196,77 @@ pub fn travel(
     ));
 }
 
-/// Levels the party has left, by path, as they will be on its return.
-/// Not yet saved with the game.
-#[derive(Resource, Debug, Default)]
-pub struct LevelMemory(pub(super) HashMap<String, LevelRecord>);
+/// On a level root: the party has left it. It and everything that belongs to
+/// it ([`belonging`]) are [`Disabled`] until the party returns, so no query
+/// sees them, and nothing in them runs, ages or is drawn.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct SetAside {
+    /// The game time, in milliseconds, at which the party left.
+    pub at_ms: u64,
+}
 
-impl LevelMemory {
-    /// No level is remembered.
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+/// A level set aside has woken: the party is back. Whatever time owes a level
+/// that was away, from how long that was, is for the rules that care to react
+/// to.
+#[derive(EntityEvent, Debug, Clone, Copy)]
+pub struct Woke {
+    #[event_target]
+    pub level: Entity,
+    pub away_ms: u64,
+}
+
+/// Everything that belongs to a level: its root; whatever it owns; whatever
+/// hangs under any of these in the hierarchy; and whatever any of these hold
+/// by relationship (what is stowed in a container or bag, what a body wears
+/// or packs, the spells laid on it).
+fn belonging(world: &World, root: Entity) -> Vec<Entity> {
+    use crate::game::actors::spells::Spells;
+    use crate::game::items::{Pack, Stows, Wears};
+    fn held<T: RelationshipTarget>(thing: EntityRef) -> Vec<Entity> {
+        thing.get::<T>().map_or_else(Vec::new, |targets| targets.iter().collect())
     }
-}
-
-/// A level the party has left (retail keeps it in the level's state image):
-/// what its triggers keep, its props’ motion, its monsters (the
-/// dead too, so they stay dead) and those still unborn, the items lying
-/// about, what the party knows of its groups, and its map notes.
-/// Activation consumes it.
-#[derive(Debug)]
-pub struct LevelRecord {
-    triggers: TriggerMemory,
-    /// By prop definition index.
-    prop_motion: HashMap<usize, PropMotion>,
-    pub(super) monsters: Vec<KeptMonster>,
-    pub(super) unborn: Vec<KeptMonster>,
-    pub(super) encounters: super::encounters::EncounterState,
-    pub(super) items: Vec<KeptItem>,
-    pub(super) groups: Vec<MonsterGroup>,
-    notes: MapNotes,
-}
-
-/// A monster as the party left it: where its feet were and which way it
-/// faced.
-#[derive(Clone, Debug)]
-pub struct KeptMonster {
-    pub group: Option<i32>,
-    pub monster: Monster,
-    pub vitals: crate::game::characters::Vitals,
-    pub budget: super::population::SpellBudget,
-    pub feet: Vec3,
-    pub yaw: f32,
-}
-
-impl KeptMonster {
-    /// A placed monster met for the first time (retail `LoadMonsterInfo`).
-    pub fn placed(
-        placed: &crate::content::level::MonsterPlacement,
-        kind: &Species,
-        body: &crate::content::monster::MonsterBody,
-        rng: &mut crate::game::rng::GameRng,
-    ) -> Self {
-        Self::rolled(
-            (placed.location, placed.species, Some(placed.group)),
-            (placed.position, placed.yaw),
-            (kind, body),
-            rng,
-        )
-    }
-
-    /// A monster come into being (retail `CreateMonsterInfo`): health and
-    /// stamina rolled from its species, then its size. Retail draws
-    /// Random(1000) for the size; its left-handed mirror draw, presentation
-    /// only, is not taken from gameplay's stream.
-    pub fn rolled(
-        (location, species, group): (i32, u32, Option<i32>),
-        (feet, yaw): (Vec3, f32),
-        (kind, body): (&Species, &crate::content::monster::MonsterBody),
-        rng: &mut crate::game::rng::GameRng,
-    ) -> Self {
-        let max_hp = rng.roll(kind.hit_points).max(1);
-        let max_stamina = rng.roll(kind.stamina);
-        let body = super::population::ScaledBody::new(body, rng.below(1000));
-        KeptMonster {
-            monster: Monster { location, species, body },
-            vitals: crate::game::characters::Vitals::full(max_hp, max_stamina),
-            budget: super::population::SpellBudget(kind.magic.budget.max(0) as u32),
-            group,
-            feet,
-            yaw,
+    let mut found = vec![root];
+    let mut next = 0;
+    while let Some(&entity) = found.get(next) {
+        next += 1;
+        let thing = world.entity(entity);
+        let more = [
+            held::<LevelEntities>(thing),
+            held::<Children>(thing),
+            held::<Stows>(thing),
+            held::<Wears>(thing),
+            held::<Pack>(thing),
+            held::<Spells>(thing),
+        ];
+        for entity in more.into_iter().flatten() {
+            if !found.contains(&entity) {
+                found.push(entity);
+            }
         }
     }
+    found
+}
 
-    /// A monster as it stands now, to keep while its level is away.
-    pub fn capture(
-        (monster, vitals, budget): (
-            &Monster,
-            &crate::game::characters::Vitals,
-            &super::population::SpellBudget,
-        ),
-        pose: &super::ActorPoseItem,
-        walker: Option<&super::navigation::Walker>,
-        group: Option<i32>,
-    ) -> Self {
-        KeptMonster {
-            group,
-            monster: monster.clone(),
-            vitals: vitals.clone(),
-            budget: *budget,
-            feet: super::navigation::feet(pose.translation(), walker),
-            yaw: pose.rotation().to_euler(EulerRot::YXZ).0,
-        }
+/// The party leaves a level: all that belongs to it is set aside.
+pub fn set_aside(add: On<Add<SetAside>>, world: &World, mut commands: Commands) {
+    for entity in belonging(world, add.entity) {
+        commands.entity(entity).insert(Disabled);
     }
 }
 
-/// What travel reads to remember the level it leaves.
-#[derive(SystemParam)]
-pub struct LevelContents<'w, 's> {
-    devices: DeviceRecords<'w, 's>,
-    lights: Query<'w, 's, &'static super::triggers::LightActivation>,
-    props: Query<'w, 's, (&'static Prop, &'static PropMotion)>,
-    monsters: Query<
-        'w,
-        's,
-        (
-            (
-                &'static Monster,
-                &'static crate::game::characters::Vitals,
-                &'static super::population::SpellBudget,
-            ),
-            super::ActorPose,
-            Option<&'static Walker>,
-            Option<&'static GroupMember>,
-        ),
-        Without<crate::game::npcs::NpcBody>,
-    >,
-    lying: Query<'w, 's, (Entity, &'static Transform), With<crate::game::items::Lying>>,
-    items: crate::game::items::Items<'w, 's>,
-    groups: Query<'w, 's, &'static MonsterGroup>,
-    notes: Query<'w, 's, &'static MapNotes>,
-    unborn: Query<'w, 's, &'static super::population::Unborn>,
-    encounters: Query<'w, 's, &'static super::encounters::EncounterState>,
-    clock: Res<'w, crate::game::time::GameClock>,
-}
-
-impl LevelContents<'_, '_> {
-    fn remember(
-        &self,
-        root: Entity,
-        state: &LevelState,
-        children: &[Entity],
-        catalog: &crate::content::items::ItemCatalog,
-    ) -> LevelRecord {
-        let notes = self.notes.get(root).ok();
-        LevelRecord {
-            triggers: self.devices.remember(
-                children,
-                state,
-                self.lights.get(root).expect("active levels own light state"),
-                catalog,
-            ),
-            prop_motion: self
-                .props
-                .iter_many(children)
-                .matched()
-                .map(|(prop, motion)| (prop.definition, *motion))
-                .collect(),
-            monsters: self
-                .monsters
-                .iter_many(children)
-                .matched()
-                .map(|(monster, at, walker, group)| {
-                    let group = group.and_then(|m| self.groups.get(m.0).ok()).map(|g| g.authored);
-                    KeptMonster::capture(monster, &at, walker, group)
-                })
-                .collect(),
-            unborn: self.unborn.get(root).map_or_else(|_| Vec::new(), |unborn| unborn.0.clone()),
-            encounters: super::encounters::EncounterState {
-                arrival: Some(super::encounters::Arrival::Returned { left: self.clock.ms / 1000 }),
-                ..self.encounters.get(root).cloned().unwrap_or_default()
-            },
-            items: self
-                .lying
-                .iter_many(children)
-                .matched()
-                .filter_map(|(item, at)| KeptItem::keep(&self.items, catalog, item, at.translation))
-                .collect(),
-            groups: self.groups.iter_many(children).matched().copied().collect(),
-            notes: notes.cloned().unwrap_or_default(),
-        }
+/// The party returns to a level set aside: all that belongs to it is back,
+/// and it is told how long it was away.
+pub fn wake(
+    remove: On<Remove<SetAside>>,
+    world: &World,
+    clock: Res<GameClock>,
+    mut commands: Commands,
+) {
+    let away_ms = clock.ms - world.get::<SetAside>(remove.entity).expect("it is woken").at_ms;
+    for entity in belonging(world, remove.entity) {
+        commands.entity(entity).try_remove::<Disabled>();
     }
+    commands.trigger(Woke { level: remove.entity, away_ms });
 }
 
 /// An accepted level entry being prepared (retail's please-wait load). While
@@ -532,49 +422,28 @@ fn prepare_collision(geometry: &LevelDefinition) -> Collision {
 }
 
 /// Build the level's playable world under its root: its collider, its props
-/// (moving parts and their colliders) where it left them, its trigger state
-/// and map notes. What it looks like is presentation's to attach.
+/// (moving parts and their colliders), its trigger state and map notes. What
+/// it looks like is presentation's to attach.
 fn build_world(
     commands: &mut Commands,
     root: Entity,
     geometry: &LevelDefinition,
     collision: Collision,
     script: super::scripts::LevelScript,
-    (tables, catalog): (&LootTables, &crate::content::items::ItemCatalog),
-    mut remembered: Option<&mut LevelRecord>,
+    tables: &LootTables,
 ) {
     let props: Vec<_> =
         geometry.props.iter().map(|_| commands.spawn(LevelOwned(root)).id()).collect();
-    spawn_devices(
-        commands,
-        root,
-        geometry,
-        &props,
-        script,
-        (tables, catalog),
-        remembered.as_deref_mut().map(|r| std::mem::take(&mut r.triggers)),
-    );
+    spawn_devices(commands, root, geometry, &props, script, tables);
     commands.entity(root).insert((
         RigidBody::Static,
         collision.level,
         super::obstacles::scenery(),
-        remembered.as_deref_mut().map_or_else(MapNotes::default, |r| std::mem::take(&mut r.notes)),
+        MapNotes::default(),
     ));
     for ((index, prop), colliders) in geometry.props.iter().enumerate().zip(collision.parts) {
-        let motion = remembered
-            .as_ref()
-            .and_then(|r| r.prop_motion.get(&index))
-            .copied()
-            .unwrap_or_default();
         let door = prop.trigger.is_some_and(|index| geometry.triggers[index].door.is_some());
-        super::props::build_prop(
-            &mut commands.entity(props[index]),
-            index,
-            prop,
-            door,
-            motion,
-            colliders,
-        );
+        super::props::build_prop(&mut commands.entity(props[index]), index, prop, door, colliders);
     }
     info!(
         "level built: {} props, {} collision triangles",
@@ -591,80 +460,84 @@ pub struct SharedData<'w> {
     motion_configs: ResMut<'w, Assets<navigation::WalkerMotionConfig>>,
 }
 
-/// Commit an entry once its gameplay prerequisites exist, in one step:
-/// capture and retire the level being left, build the destination's world,
-/// navigation and population (consuming what was remembered of it), create
-/// a new campaign's party, place the party, make the destination the
-/// [`Level`] and announce it. Gameplay is suspended until then, so nothing
-/// can begin in the meantime. An entry whose geometry, databases or
-/// collision fail is discarded and the party plays on where it was.
+/// Commit an entry once its gameplay prerequisites exist, in one step: set
+/// aside the level being left, make the destination the [`Level`] (waking it
+/// if the party has been there, otherwise building its world, navigation and
+/// population from its definition), create a new campaign's party, place the
+/// party and announce it. Gameplay is suspended until then, so nothing can
+/// begin in the meantime. An entry whose geometry, databases or collision
+/// fail is discarded and the party plays on where it was.
 pub fn activate_level(
     mut commands: Commands,
     mut destinations: Query<(Entity, &mut Destination)>,
-    current: Query<(Entity, &Level, &LevelState, Option<&LevelEntities>)>,
+    played: Query<Entity, With<Level>>,
+    built: Query<(Entity, &Level, Has<SetAside>), Allow<Disabled>>,
     parties: Query<Entity, With<Party>>,
     geometry: Res<Assets<LevelDefinition>>,
     assets: Res<AssetServer>,
     mut shared: SharedData,
     mut npcs: crate::game::npcs::NpcPopulation,
-    mut memory: ResMut<LevelMemory>,
     mut rng: ResMut<GameRng>,
-    mut transition: ParamSet<(LevelContents, PartyPlacement)>,
+    mut placement: PartyPlacement,
+    clock: Res<GameClock>,
     mut ready: MessageWriter<LevelReady>,
 ) {
     for (root, mut destination) in &mut destinations {
         // Polling reads the destination; the commit consumes it.
         let destination = destination.bypass_change_detection();
-        let level = &destination.level;
-        if !prepare(level, &mut destination.bodies, &geometry, &shared, &mut npcs, &assets) {
+        // A level the party has been to is not loaded or built again: it is
+        // the played level already, or it is set aside and wakes.
+        let known = built.iter().find(|(_, level, _)| level.path == destination.level.path);
+        if known.is_none()
+            && !prepare(
+                &destination.level,
+                &mut destination.bodies,
+                &geometry,
+                &shared,
+                &mut npcs,
+                &assets,
+            )
+        {
             continue;
         }
-        let geometry = geometry.get(&level.definition).expect("prepared");
         let catalogs = shared.catalogs.as_deref().expect("prepared");
-        let loot = &catalogs.loot;
-        // Built once, now that nothing else is awaited, and before the
-        // source is touched.
-        let collision = prepare_collision(geometry);
-        // Capture the source's state exactly at departure; it has not
-        // changed since travel was accepted.
-        for (entity, source, state, owned) in &current {
-            let owned = owned.map_or(&[][..], LevelEntities::entities);
-            memory.0.insert(
-                source.path.clone(),
-                transition.p0().remember(entity, state, owned, &catalogs.items),
-            );
-            npcs.depart(&mut commands, entity);
-            commands.entity(entity).despawn();
-        }
-        let mut remembered = memory.0.remove(&level.path);
-        build_world(
-            &mut commands,
-            root,
-            geometry,
-            collision,
-            level.script,
-            (loot, &catalogs.items),
-            remembered.as_mut(),
-        );
-        let navigation = navigation::install(&mut commands, root, level, geometry);
-        population::populate(
-            &mut commands,
-            root,
-            geometry,
-            remembered,
-            catalogs,
-            (&level.path, &mut npcs),
-            (destination.bodies.as_ref().unwrap(), &shared.bodies),
-            (&navigation, &mut shared.motion_configs),
-            &mut rng,
-        );
         let party = match std::mem::replace(&mut destination.entry, Entry::Travel) {
             Entry::Travel => parties.single().expect("a party travels"),
             Entry::NewGame(characters) => {
                 found_party(&mut commands, characters, catalogs, &mut rng)
             }
         };
-        transition.p1().place(&mut commands, party, geometry, &destination.start);
+        for left in played.iter().filter(|&left| known.is_none_or(|(level, ..)| level != left)) {
+            commands.entity(left).insert(SetAside { at_ms: clock.ms });
+        }
+        if let Some((level, definition, asleep)) = known.map(|(e, l, a)| (e, &l.definition, a)) {
+            if asleep {
+                commands.entity(level).remove::<SetAside>();
+            }
+            let geometry = geometry.get(definition).expect("a built level keeps its definition");
+            placement.place(&mut commands, party, geometry, &destination.start);
+            info!("{} is active again", destination.level.path);
+            commands.entity(root).despawn();
+            ready.write(LevelReady);
+            break;
+        }
+        let level = &destination.level;
+        let geometry = geometry.get(&level.definition).expect("prepared");
+        // Built once, now that nothing else is awaited.
+        let collision = prepare_collision(geometry);
+        build_world(&mut commands, root, geometry, collision, level.script, &catalogs.loot);
+        let navigation = navigation::install(&mut commands, root, level, geometry);
+        population::populate(
+            &mut commands,
+            root,
+            geometry,
+            catalogs,
+            (&level.path, &mut npcs),
+            (destination.bodies.as_ref().unwrap(), &shared.bodies),
+            (&navigation, &mut shared.motion_configs),
+            &mut rng,
+        );
+        placement.place(&mut commands, party, geometry, &destination.start);
         navigation::add_party_characters(&mut commands, root, party, &navigation);
         info!("{} is active", level.path);
         let bodies = destination.bodies.take().unwrap();

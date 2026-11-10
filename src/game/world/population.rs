@@ -7,7 +7,6 @@ use crate::game::world::level::LevelOwned;
 use bevy::prelude::*;
 
 use super::identify::{GroupMember, MonsterGroup};
-use super::level::{KeptMonster, LevelRecord};
 use crate::content::level::LevelDefinition;
 use crate::content::monster::MonsterBody;
 use crate::content::species::MonsterCatalog;
@@ -24,6 +23,60 @@ pub struct Monster {
     pub location: i32,
     pub species: u32,
     pub body: ScaledBody,
+}
+
+/// A monster to be made: what its species rolled for it (retail
+/// `LoadMonsterInfo`, `CreateMonsterInfo`), where it will stand and which
+/// group it will be in. It becomes an actor of its level when its group is
+/// born or it is placed, and is then the actor, not this.
+#[derive(Clone, Debug)]
+pub struct Newborn {
+    pub group: Option<i32>,
+    pub monster: Monster,
+    pub vitals: crate::game::characters::Vitals,
+    pub budget: SpellBudget,
+    pub feet: Vec3,
+    pub yaw: f32,
+}
+
+impl Newborn {
+    /// A placed monster met for the first time (retail `LoadMonsterInfo`).
+    pub fn placed(
+        placed: &crate::content::level::MonsterPlacement,
+        kind: &crate::content::species::Species,
+        body: &MonsterBody,
+        rng: &mut GameRng,
+    ) -> Self {
+        Self::rolled(
+            (placed.location, placed.species, Some(placed.group)),
+            (placed.position, placed.yaw),
+            (kind, body),
+            rng,
+        )
+    }
+
+    /// A monster come into being (retail `CreateMonsterInfo`): health and
+    /// stamina rolled from its species, then its size. Retail draws
+    /// Random(1000) for the size; its left-handed mirror draw, presentation
+    /// only, is not taken from gameplay's stream.
+    pub fn rolled(
+        (location, species, group): (i32, u32, Option<i32>),
+        (feet, yaw): (Vec3, f32),
+        (kind, body): (&crate::content::species::Species, &MonsterBody),
+        rng: &mut GameRng,
+    ) -> Self {
+        let max_hp = rng.roll(kind.hit_points).max(1);
+        let max_stamina = rng.roll(kind.stamina);
+        let body = ScaledBody::new(body, rng.below(1000));
+        Newborn {
+            monster: Monster { location, species, body },
+            vitals: crate::game::characters::Vitals::full(max_hp, max_stamina),
+            budget: SpellBudget(kind.magic.budget.max(0) as u32),
+            group,
+            feet,
+            yaw,
+        }
+    }
 }
 
 /// What a monster's casting stands on now (retail
@@ -283,7 +336,7 @@ pub fn scatter(
 pub fn spawn_group(
     commands: &mut Commands,
     root: Entity,
-    members: Vec<KeptMonster>,
+    members: Vec<Newborn>,
     (authored, set): (i32, Option<super::hostility::SetStance>),
     species: &MonsterCatalog,
     (navigation, configs): (&LevelNavigation, &mut Assets<WalkerMotionConfig>),
@@ -302,7 +355,7 @@ pub fn spawn_group(
 fn spawn_member(
     commands: &mut Commands,
     root: Entity,
-    kept: KeptMonster,
+    kept: Newborn,
     group: Entity,
     species: &MonsterCatalog,
     (navigation, configs): (&LevelNavigation, &mut Assets<WalkerMotionConfig>),
@@ -321,10 +374,10 @@ fn spawn_member(
 }
 
 /// On a level root: its monsters still unborn, as rolled with the rest
-/// (retail `plsUnbornMonsterList`). They take no part in anything until
-/// their group is born.
+/// (retail `plsUnbornMonsterList`). They are not in the world, so they take
+/// no part in anything until their group is born.
 #[derive(Component, Clone, Debug, Default)]
-pub struct Unborn(pub Vec<KeptMonster>);
+pub struct Unborn(pub Vec<Newborn>);
 
 /// The next free monster location and group ids of a level: past every
 /// one its monsters and groups hold, the unborn's included.
@@ -348,10 +401,10 @@ pub fn roll_group(
     (id, count): (u32, u32),
     (kind, body): (&crate::content::species::Species, &MonsterBody),
     rng: &mut GameRng,
-) -> Vec<KeptMonster> {
+) -> Vec<Newborn> {
     (0..count.min(9) as i32)
         .map(|i| {
-            KeptMonster::rolled(
+            Newborn::rolled(
                 (location + i, id, Some(authored)),
                 (Vec3::ZERO, 0.0),
                 (kind, body),
@@ -402,17 +455,15 @@ pub fn give_birth(
     }
 }
 
-/// Spawn the level's monsters and items under its root, as part of its
-/// activation: on a first visit every placed monster, idling at its feet
-/// and facing its heading (retail places them all at once on arrival), with
-/// health and stamina rolled from its species in placement order, and the
-/// items as authored; on a return, the monsters as the party left them
-/// (the dead stay gone) and the items where they lay.
+/// Spawn the level's monsters and items under its root, as part of its first
+/// activation: every placed monster, idling at its feet and facing its
+/// heading (retail places them all at once on arrival), with health and
+/// stamina rolled from its species in placement order, and the items as
+/// authored.
 pub fn populate(
     commands: &mut Commands,
     root: Entity,
     geometry: &LevelDefinition,
-    remembered: Option<LevelRecord>,
     catalogs: &Catalogs,
     (map, npcs): (&str, &mut crate::game::npcs::NpcPopulation),
     (handles, bodies): (&MonsterBodies, &Assets<MonsterBody>),
@@ -420,54 +471,31 @@ pub fn populate(
     rng: &mut GameRng,
 ) {
     let (species, items) = (&catalogs.species, &catalogs.items);
-    let (remembered_monsters, remembered_items, groups, encounters) = match remembered {
-        Some(record) => (
-            Some((record.monsters, record.unborn)),
-            Some(record.items),
-            record.groups,
-            Some(record.encounters),
-        ),
-        None => (None, None, default(), None),
-    };
     // Every placed monster is rolled in placement order, the unborn too.
-    let (monsters, unborn): (Vec<KeptMonster>, Vec<KeptMonster>) = match remembered_monsters {
-        Some(monsters) => monsters,
-        None => {
-            let (unborn, born): (Vec<_>, Vec<_>) = geometry
-                .monsters
-                .iter()
-                .filter(|placed| species.0[placed.species as usize].npc.is_none())
-                .map(|placed| {
-                    let kind = &species.0[placed.species as usize];
-                    let body = handles.get(placed.species, bodies).unwrap();
-                    (placed.unborn, KeptMonster::placed(placed, kind, body, rng))
-                })
-                .partition(|&(unborn, _)| unborn);
-            (
-                born.into_iter().map(|(_, k)| k).collect(),
-                unborn.into_iter().map(|(_, k)| k).collect(),
-            )
-        }
-    };
+    let (unborn, monsters): (Vec<_>, Vec<_>) = geometry
+        .monsters
+        .iter()
+        .filter(|placed| species.0[placed.species as usize].npc.is_none())
+        .map(|placed| {
+            let kind = &species.0[placed.species as usize];
+            let body = handles.get(placed.species, bodies).unwrap();
+            (placed.unborn, Newborn::placed(placed, kind, body, rng))
+        })
+        .partition(|&(unborn, _)| unborn);
+    let unborn = unborn.into_iter().map(|(_, newborn)| newborn).collect();
     commands.entity(root).insert(Unborn(unborn));
     // The encounters' timers jitter after the placed monsters' rolls.
-    let encounters = encounters
-        .unwrap_or_else(|| super::encounters::EncounterState::authored(&geometry.encounters, rng));
+    let encounters = super::encounters::EncounterState::authored(&geometry.encounters, rng);
     commands.entity(root).insert(encounters);
-    let mut groups: HashMap<i32, Entity> = groups
-        .into_iter()
-        .map(|group| (group.authored, commands.spawn((group, LevelOwned(root))).id()))
-        .collect();
+    let mut groups: HashMap<i32, Entity> = HashMap::new();
     let mut actors = Vec::new();
-    for kept in monsters {
-        if kept.vitals.is_dead() {
-            continue;
-        }
-        let body = kept.monster.body;
-        let name = actor_name(species, (kept.monster.species, kept.monster.location));
-        let id = kept.monster.species;
-        let entity = commands.spawn((Name::new(name), kept.monster, kept.vitals, kept.budget)).id();
-        actors.push((entity, kept.feet, kept.yaw, body, kept.group, id));
+    for (_, newborn) in monsters {
+        let body = newborn.monster.body;
+        let name = actor_name(species, (newborn.monster.species, newborn.monster.location));
+        let id = newborn.monster.species;
+        let entity =
+            commands.spawn((Name::new(name), newborn.monster, newborn.vitals, newborn.budget)).id();
+        actors.push((entity, newborn.feet, newborn.yaw, body, newborn.group, id));
     }
     let average = npcs.average_level();
     let mut placed_actors = std::collections::HashSet::new();
@@ -478,7 +506,7 @@ pub fn populate(
         let body = handles.get(placed.species, bodies).unwrap();
         let place = crate::game::npcs::Placing { placed, id, map, average };
         let Some(actor) = npcs.place(commands, place, catalogs, &mut placed_actors, rng, |rng| {
-            KeptMonster::placed(placed, kind, body, rng)
+            Newborn::placed(placed, kind, body, rng)
         }) else {
             continue;
         };
@@ -487,7 +515,6 @@ pub fn populate(
         let (entity, feet, yaw, body, group) = actor;
         actors.push((entity, feet, yaw, body, group, placed.species));
     }
-    actors.extend(npcs.visitors(commands, map, &mut placed_actors));
     let monster_count = actors.len();
     for (actor, feet, yaw, body, group, id) in actors {
         let group = group.map(|authored| {
@@ -503,18 +530,8 @@ pub fn populate(
             (navigation, configs),
         );
     }
-    match remembered_items {
-        Some(kept) => {
-            info!("placed {monster_count} monsters and {} items", kept.len());
-            for item in kept {
-                item.restore(commands, root, items);
-            }
-        }
-        None => {
-            info!("placed {monster_count} monsters and {} items", geometry.items.len());
-            for placement in &geometry.items {
-                place_item(commands, root, placement, &items[placement.item]);
-            }
-        }
+    info!("placed {monster_count} monsters and {} items", geometry.items.len());
+    for placement in &geometry.items {
+        place_item(commands, root, placement, &items[placement.item]);
     }
 }

@@ -51,7 +51,7 @@ pub(super) fn plugin(app: &mut App) {
         Update,
         (
             move_particles,
-            // Settled before a departing level is remembered.
+            // Settled before a departing level is set aside.
             emit_particles.before(crate::game::world::particles::switch_off_spent),
             attach_sprites,
             animate_particles,
