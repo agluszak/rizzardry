@@ -329,25 +329,23 @@ pub struct Provocation {
     pub monster: Entity,
 }
 
-/// The party has just acted against this monster, which engagement reads
-/// once: a hostile group so provoked enters the fight at once.
-#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Provoked(pub Entity);
+/// On a group: the party has just acted against one of its monsters. A
+/// hostile group so provoked enters the fight at once; engagement takes
+/// this off as it looks at the group.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Provoked;
 
-/// A monster provoked turns its group hostile as the action starts, before
-/// the blows or spells land (retail `MakeTargetGroupHostile`); a dead
-/// monster, or one under Turncoat, provokes nobody. Whoever acts triggers
-/// the provocation as it acts, so the group is hostile before the blows or
-/// spells land.
+/// A monster's group is provoked as the action against it starts, and
+/// turns hostile before the blows or spells land (retail
+/// `MakeTargetGroupHostile`); a dead monster, or one under Turncoat, turns
+/// nobody.
 pub fn take_offence(
     offence: On<Provocation>,
     monsters: Query<(&Side, &Vitals, &GroupMember)>,
-    mut provoked: MessageWriter<Provoked>,
     mut commands: Commands,
 ) {
-    let monster = offence.monster;
-    provoked.write(Provoked(monster));
-    let Ok((side, vitals, member)) = monsters.get(monster) else { return };
+    let Ok((side, vitals, member)) = monsters.get(offence.monster) else { return };
+    commands.entity(member.0).insert(Provoked);
     if vitals.is_dead() || vitals.conditions.has(Condition::Turncoat) {
         return;
     }
@@ -357,8 +355,7 @@ pub fn take_offence(
 }
 
 pub fn plugin(app: &mut App) {
-    app.add_message::<Provoked>()
-        .add_observer(stand)
+    app.add_observer(stand)
         .add_observer(take_offence)
         .add_observer(forget)
         .add_observer(made)
