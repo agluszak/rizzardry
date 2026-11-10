@@ -9,30 +9,12 @@ use crate::game::hits::definitions::Definitions;
 use crate::game::hits::effects::Strike;
 use crate::game::hits::{Act, Deed, Release};
 use crate::game::rng::GameRng;
-use crate::game::world::interaction::{TRAP_GRADE, Unable};
+use crate::game::world::interaction::{Unable, trap_kind};
 use bevy::prelude::*;
 
-pub const SPELLS: [SpellId; 15] = [
-    SpellId::DAGGER_SCATTER,
-    SpellId::POISON_DARTS,
-    SpellId::ALARM,
-    SpellId::INSANITY,
-    SpellId::WHIPPING_ROCKS,
-    SpellId::FIREBALL,
-    SpellId::FREEZE_FLESH,
-    SpellId::SUMMON_ELEMENTAL,
-    SpellId::INSTANT_DEATH,
-    SpellId::PHILOSOPHERS_BANE,
-    SpellId::VAMPIRIC_VORTEX,
-    SpellId::HEATWAVE,
-    SpellId::PRISMIC_RAY,
-    SpellId::ANTI_MAGIC,
-    SpellId::CEREBRAL_HEMORRHAGE,
-];
-
-/// The spell a trap type discharges, if the game can resolve it.
+/// The spell a kind of trap discharges, if the game can resolve it.
 fn trap_spell(trap: u8, definitions: &Definitions) -> Result<SpellId, Unable> {
-    let id = *SPELLS.get(usize::from(trap)).ok_or(Unable::UnsupportedTrap)?;
+    let id = trap_kind(trap).spell;
     if definitions.spell(id).is_none() {
         return Err(Unable::UnsupportedTrap);
     }
@@ -56,7 +38,7 @@ pub(crate) fn discharge(
 ) -> (bool, Release) {
     let id = trap_spell(trap, definitions).expect("a validated trap");
     let spell = &content.spells[id];
-    let grade = TRAP_GRADE[trap as usize];
+    let grade = trap_kind(trap).grade;
     let sprung =
         workings::spring(rng, &Springing { difficulty, grade, members: &members, selected });
     let strike = Strike {

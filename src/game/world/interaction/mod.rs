@@ -40,31 +40,36 @@ use crate::game::time::GameClock;
 /// The parts a trap is built from; each type uses a few of them.
 pub const COMPONENTS: usize = 8;
 
-/// Each trap type's own grade (retail `g_trap_difficulty`).
-pub(crate) const TRAP_GRADE: [u32; TRAP_TYPES] = [1, 1, 2, 2, 3, 3, 3, 4, 5, 5, 5, 6, 6, 7, 7];
+/// A kind of trap: its row in `assets/tables/traps.ron`.
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrapKind {
+    /// The spell it discharges at the party when it is sprung.
+    pub spell: crate::content::spells::SpellId,
+    /// How hard its kind is.
+    pub grade: u32,
+    /// The components it is built from, counted from 0.
+    parts: Vec<usize>,
+}
 
-/// Which components each trap type is built from (retail `g_table1`).
-pub const TRAP_COMPONENTS: [[bool; COMPONENTS]; TRAP_TYPES] = {
-    const T: bool = true;
-    const F: bool = false;
-    [
-        [F, T, F, F, F, T, F, F],
-        [F, T, F, T, F, F, F, F],
-        [F, F, T, F, F, T, F, F],
-        [F, F, F, F, T, T, F, F],
-        [F, F, T, T, F, F, F, T],
-        [T, T, F, F, T, F, F, F],
-        [F, F, T, F, T, F, T, F],
-        [T, F, F, T, F, T, F, F],
-        [F, F, T, T, T, F, F, F],
-        [T, F, F, F, F, T, F, T],
-        [F, T, T, F, F, F, F, T],
-        [F, F, T, T, F, F, T, F],
-        [F, T, F, F, T, F, T, F],
-        [F, T, F, F, F, T, T, F],
-        [T, F, F, F, F, T, T, F],
-    ]
-};
+impl TrapKind {
+    /// Whether it is built with a component.
+    pub fn has(&self, component: usize) -> bool {
+        self.parts.contains(&component)
+    }
+}
+
+static TRAPS: std::sync::LazyLock<Vec<TrapKind>> = std::sync::LazyLock::new(|| {
+    let kinds: Vec<TrapKind> = ron::from_str(include_str!("../../../../assets/tables/traps.ron"))
+        .expect("assets/tables/traps.ron is a table of traps");
+    assert_eq!(kinds.len(), TRAP_TYPES, "a row for each kind of trap a level can name");
+    kinds
+});
+
+/// A kind of trap by the number a level's record gives it.
+pub fn trap_kind(kind: u8) -> &'static TrapKind {
+    &TRAPS[usize::from(kind)]
+}
 
 /// The skill a trap of each authored grade asks for (retail `g_table2`).
 const GRADE_SKILL: [i32; 11] = [10, 25, 35, 40, 50, 60, 70, 80, 90, 100, 110];
@@ -341,9 +346,10 @@ pub(crate) fn confront(world: &mut World, device: Entity, lock: Lock) {
 fn roll_trap(difficulty: u8, rng: &mut GameRng) -> u8 {
     let budget = u32::from(difficulty).max(1);
     loop {
-        let trap = rng.below(TRAP_TYPES as u32) as usize;
-        if TRAP_GRADE[trap] <= budget && TRAP_GRADE[trap] + 4 >= budget {
-            return trap as u8;
+        let trap = rng.below(TRAP_TYPES as u32) as u8;
+        let grade = trap_kind(trap).grade;
+        if grade <= budget && grade + 4 >= budget {
+            return trap;
         }
     }
 }
@@ -476,7 +482,7 @@ fn inspect_trap(
     let seen = std::array::from_fn(|column| {
         if rng.below(100) >= chance {
             Observation::Unknown
-        } else if TRAP_COMPONENTS[usize::from(trap.trap)][column] {
+        } else if trap_kind(trap.trap).has(column) {
             Observation::Present
         } else {
             Observation::Absent
@@ -505,14 +511,14 @@ fn disarm_component(
         return Err(Unable::Done);
     }
     let chance = trap.disarm_chance(Some(skill(body)?), setting);
-    let parts = TRAP_COMPONENTS[usize::from(trap.trap)];
-    if !parts[component] || rng.below(100) >= chance {
+    if !trap_kind(trap.trap).has(component) || rng.below(100) >= chance {
         return Ok(Step::Sprung(Some(actor)));
     }
     trap.disarmed[component] = true;
     commands.trigger(Practise { member: actor, skill: Skill::LocksAndTraps, usage: 1 });
     news.write(LockNews::ComponentDisarmed { member: actor, component });
-    if parts.iter().zip(trap.disarmed).all(|(&required, disarmed)| !required || disarmed) {
+    let kind = trap_kind(trap.trap);
+    if (0..COMPONENTS).all(|part| !kind.has(part) || trap.disarmed[part]) {
         news.write(LockNews::Disarmed { trap: trap.trap });
         return Ok(Step::Opened);
     }
@@ -813,5 +819,23 @@ pub fn handle_device_requests(
             }
             activations.write(super::ActivateDevice { device, player: false });
         }
+    }
+}
+
+#[cfg(test)]
+mod trap_table {
+    use super::*;
+    use crate::content::spells::SpellId;
+
+    /// Every kind a level can name has a row; the first and the last are as
+    /// the original's tables have them.
+    #[test]
+    fn every_kind_of_trap_has_a_row() {
+        let first = trap_kind(0);
+        assert_eq!((first.spell, first.grade), (SpellId::DAGGER_SCATTER, 1));
+        assert!(first.has(1) && first.has(5) && !first.has(0));
+        let last = trap_kind(TRAP_TYPES as u8 - 1);
+        assert_eq!((last.spell, last.grade), (SpellId::CEREBRAL_HEMORRHAGE, 7));
+        assert_eq!((0..COMPONENTS).filter(|&part| last.has(part)).count(), 3);
     }
 }

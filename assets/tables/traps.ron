@@ -1,0 +1,23 @@
+// The fifteen kinds of trap, in the order a level's record numbers them.
+//   spell  what it discharges at the party when it is sprung
+//   grade  how hard its kind is (retail `g_trap_difficulty`); a trap rolled
+//          for a lock is of a kind within four grades below the lock's own
+//   parts  which of the eight components it is built from, counted from 0
+//          (retail `g_table1`); disarming it is taking each of them out
+[
+    (spell: DAGGER_SCATTER, grade: 1, parts: [1, 5]),
+    (spell: POISON_DARTS, grade: 1, parts: [1, 3]),
+    (spell: ALARM, grade: 2, parts: [2, 5]),
+    (spell: INSANITY, grade: 2, parts: [4, 5]),
+    (spell: WHIPPING_ROCKS, grade: 3, parts: [2, 3, 7]),
+    (spell: FIREBALL, grade: 3, parts: [0, 1, 4]),
+    (spell: FREEZE_FLESH, grade: 3, parts: [2, 4, 6]),
+    (spell: SUMMON_ELEMENTAL, grade: 4, parts: [0, 3, 5]),
+    (spell: INSTANT_DEATH, grade: 5, parts: [2, 3, 4]),
+    (spell: PHILOSOPHERS_BANE, grade: 5, parts: [0, 5, 7]),
+    (spell: VAMPIRIC_VORTEX, grade: 5, parts: [1, 2, 7]),
+    (spell: HEATWAVE, grade: 6, parts: [2, 3, 6]),
+    (spell: PRISMIC_RAY, grade: 6, parts: [1, 4, 6]),
+    (spell: ANTI_MAGIC, grade: 7, parts: [1, 5, 6]),
+    (spell: CEREBRAL_HEMORRHAGE, grade: 7, parts: [0, 5, 6]),
+]
