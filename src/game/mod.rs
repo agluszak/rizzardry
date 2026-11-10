@@ -11,6 +11,7 @@ pub mod factions;
 pub mod freedom;
 pub mod hits;
 pub mod inventory;
+pub mod items;
 pub mod loot;
 pub mod magic;
 pub mod npcs;
