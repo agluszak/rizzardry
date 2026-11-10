@@ -103,7 +103,8 @@ Then, for an actor **under orders** (a party member):
 
 - The target is the candidate body that is lowest by, in order: its worst
   condition (the worst condition is the greatest in the order of conditions in
-  [actors](actors.md); no condition at all counts lowest); then whether it is
+  [actors](actors.md); no condition at all counts lowest, so a sound foe is struck
+  before a hurt one, as in the original); then whether it is
   "in reach of the party" (those that are come first); then the smaller gap from
   the attacker. "In reach of the party" means: the body is armed (has any arm) and
   the side of the attacker's frame it stands on is the rear, or is an unoccupied
@@ -174,8 +175,8 @@ asleep, paralyzed, unconscious), and not blind, **may notice**:
 - The first time this round that a member tries, they notice for certain.
 - Each later time, they notice with chance `Senses - 25 * (tries so far)` percent.
   The count of tries is kept for the round and rises every time, whether they notice
-  or not. If this figure is negative the member notices for certain (see *Open
-  questions*).
+  or not. If this figure is negative the member notices for certain (the original
+  compares it as an unsigned number: retail `CharacterNoticesAttacker`).
 
 A member who notices turns to face the attacker's side and is not caught.
 Anyone else (a monster, an undefending member, one who fails to notice) is caught
@@ -259,8 +260,10 @@ A member's arm:
   100)/divisor` above 50, `-(50-Strength)/divisor` below; none for guns.
 - **Dice**: a weapon's own, or a launcher's missile's; a fist's by Martial Arts /
   11 from a table (`1d2`, `1d3`, `2d2`, `2d3`, `2d4`, `3d3`, `3d3+1`, `3d3+2`, `3d5`,
-  `4d4`, `4d4+2`, `4d4+4`), main hand two more on the base. A punch is struck with
-  the off hand's fist dice; a kick with the main hand's.
+  `4d4`, `4d4+2`, `4d4+4`), main hand two more on the base. A punch rolls the off
+  hand's dice: those of whatever it holds, as the item's record gives them (a shield
+  has none, so a punch past a shield does the minimum), or an empty off hand's fist
+  dice; a kick rolls the main hand's fist dice.
 - **Modes**: the weapon's, or a fist's punch (and kick if Martial Arts is above 4).
 - **Effects**: a weapon's with its missile's added (each chance added, to 100; the
   strengths added); a fist has a Knock Out chance of `(Strength-50)/5` percent when
@@ -281,8 +284,8 @@ A monster's arm, from its species:
   0; initiative 0 (the monster's own initiative comes with it); attacks a round
   and swings (at least 1) from the species; effects from the attack; no slays;
   ambushes if a rogue's touch attack; modern and fatigue-in-penetration both when
-  the attack is of the kind that "tires little" (see *Open questions*); it costs
-  no stamina; it never uses up anything.
+  the attack's weapon is a modern one (the original's list of eighteen weapon
+  names, from the Musket to the Plasma Bolt); it costs no stamina; it never uses up anything.
 - press: `Speed + first attack's score + spell to-hit bonus * 5`.
 
 ### The roll to hit
@@ -487,7 +490,8 @@ Count the dice rolled for the blow, `dice count`:
 
 Roll the arm's dice that many times, summing every full roll (the base is added to
 each roll, so it is counted `dice count` times). The arm's dice are the punch dice
-for a punch, the kick dice for a kick, otherwise the arm's.
+for a punch, the kick dice for a kick, otherwise the arm's. (Retail
+`ResolveCharacterAttackDamage`.)
 
 ```
 damage = max(1, ((100 + damage percent) * rolled + 50) / 100)
@@ -720,7 +724,7 @@ no longer holds a weapon they were accepted with loses that attack.
   monster of the rogue kind with a touch attack. Backstab chance scales by the
   member's profession level or the monster's level.
 - **Catching unaware, noticing**: only a defending member notices; a monster does
-  not. A monster target is caught unaware only from its rear.
+  not (the original lets a waiting monster notice; see *Open questions*). A monster target is caught unaware only from its rear.
 - **Provocation**: only a member's attack provokes.
 - **Armour**: a monster's armour is "10 less the species value" by place with a
   separate figure per mode and a table of hit locations, its guard rises with its
@@ -738,7 +742,8 @@ no longer holds a weapon they were accepted with loses that attack.
 - **Weapon effects**: the Possess effect only from a monster's blow; a monster has no
   critical skill.
 - **Interception**: only monsters can be guarded or guard; a member's blow is
-  intercepted only because its ward is a monster.
+  intercepted only because its ward is a monster (the original lets members protect
+  too; see *Open questions*).
 - **Blind fighting**: a member with the Effective While Blind trait (scaled by their
   profession level); a Monk monster (by its level).
 - **Effect power**: the attacker's level (a member's the sum of profession levels).
@@ -750,106 +755,27 @@ no longer holds a weapon they were accepted with loses that attack.
 
 ## 9. Open questions
 
-Lines are in `src/game/combat/swings.rs` unless marked `attack.rs`, `stats.rs` or
-`arms.rs`.
+Each place the page once could not explain was checked against the original
+(`Combat Attack.cpp`, `Targeting.cpp`, `Combat.cpp`, `FormationAndFacing.cpp`).
+Those that were the original's own rule are now stated as rules above; one was a
+defect and is fixed (the punch dice). Two remain, both missing behaviour of the
+original, not understood rules.
 
-1. **Penetration leaves out the attacker's rating** (`swing`, lines 570-576). The
-   code's penetration is `mode - fatigue - 5*armour + agility`; the retail routines
-   it cites (`ResolveCharacterAttack`, `ContinueMonsterAttack`) also add the arm's
-   attack score and bonuses (`attack_score + hit_bonus*5 ...`). Without them a
-   penetration roll is almost always below the d100 roll for any armour of 10
-   or more. This looks like a defect, not a rule.
-2. **"Most afflicted" picks the least afflicted** (`open`, lines 236-243; comment at
-   line 105). The key is `conditions.worst()`, an `Option` whose "no condition" sorts
-   lowest, and `min_by` takes the lowest, so a foe with no condition is chosen before
-   one that is hurt. The comment says the most afflicted foe is struck.
-3. **"In reach of the party"** (`open`, lines 232-235). A foe counts as "in reach"
-   when it is armed and stands at the rear, or at an unoccupied side while the center
-   rank is occupied. No rule is stated for this; it may be an artefact of retail's
-   formation screening.
-4. **A slot "gives up its attacks"** (`open` doc comment, line 110) is not what the
-   code does: a slot with no candidate is skipped and keeps its count; only running
-   out of ammunition (`strike`, line 882) zeroes a slot.
-5. **Noticing, unsigned** (`catch_unaware`, lines 355-361). `senses - tries*25`
-   goes negative and is cast to unsigned, so past three or four tries noticing is
-   certain, not impossible. The comment calls this retail's unsigned comparison. The
-   first try is certain by the other branch.
-6. **Natural attacks need no hiding** (`Arm::ambushes`, `arms.rs` 202-204 and
-   `monster_arm` in `stats.rs`; `open`, line 282). Every blow of a Backstab member's
-   sword or dagger at touch reach, and of a rogue monster's touch attack, is
-   "natural": +10 aim, +10 press, backstab dice, and the armour strip. The field's
-   doc says "from hiding", and the surprise's says "a rogue's backstab", but nothing
-   asks whether the attacker is hidden or the target is facing it.
-7. **Surprise is cleared for the rest of the attack** (`swing` lines 546 and 428,
-   `intercept`). An interception or a fumble sets both flags false on the attack, so
-   later swings of the same attack also lose them. This follows retail's attack
-   state, but a swing-by-swing rule would clear it for that swing only.
-8. **Fatigue in penetration is opposite for members and monsters** (`arms.rs` lines
-   199-200; `monster_arm`, `stats.rs`). A member: halved in the aim for modern
-   weapons and *absent* from penetration for them. A monster: halved in the aim for an
-   attack that "tires little" and counted in the penetration *only* for those. The
-   monster list (`g_low_fatigue_attack_verbs`) is described in the decompilation as
-   "the unarmed and natural strikes", but `MonsterAttack::tires_little` in
-   `species.rs` is a list of modern weapons (Musket, laser, blaster, ...). Which the
-   list is, and whether the member and monster polarities are meant to differ, is
-   not explained.
-9. **Punch dice come from the off hand** (`arms.rs` lines 177-178). A punch uses
-   `dice(Secondary)`, a kick `dice(Primary)` (which has two more on the base). With a
-   fist in the main hand and a shield in the off hand, the off hand is idle and its
-   dice are 0d0+0, so a punch deals the minimum 1 damage before reduction. The doc on
-   `Arm.punch` says this is retail's way; the consequence is not stated.
-10. **`roll_dice` adds the base once per die rolled** (`attack.rs` 198-200). Extra
-    dice (unaware, backstab, berserk, slays) each roll `count d sides + base`, so the
-    base multiplies by the number of rolls. Retail's `RollDice` with a roll count
-    behaves so, but the page cannot say whether it is a rule or an accident.
-11. **Backstab thresholds** (`backstab_dice`, `attack.rs` 192-195). The constants 15,
-    75, 95 and the comparison `roll + over < chance` are unexplained; with a chance
-    of 100 the chances of 1, 2, 3 extra dice are about 85, 25, 5 percent.
-12. **Fumble chance truncates to nothing** (`fumble_chance`, `attack.rs` 150-156).
-    `bystanders * chance * 10 / 100` is 0 for most aims above about 40 unless there
-    are many bystanders; the band `roll > 100 - fumble` also overlaps the miss band
-    (96-100) and wins. Bystanders include the attacker itself and every other body in
-    reach, friend or foe. The page records it; whether it is intended is unclear.
-13. **Lightning Strike is used up by any main-slot attack** (`open`, lines 268-274):
-    `turn.lightning.take()` runs before the sword and slowed tests, so an attack
-    with a non-sword main arm, or while slowed, loses it without adding swings.
-14. **Swing count is random** (`open`, line 264): `below(swings) + 1`, though
-    `Arm.swings` is documented as "most swings an attack makes". Whether the
-    number should vary is a rule the code states but the arms page does not.
-15. **Ammunition of an item with neither charges nor count** (`spend_ammunition`,
-    lines 727-728). `held.charges(item).or(held.count(item)).is_some_and(..)` is
-    false for a single thrown item that is counted by neither, so the attack
-    continues with later swings against an item already spent by an earlier command
-    (spending is deferred to after the system runs).
-16. **Interception reach ignores formation** (`intercept`, lines 413-416). It uses the
-    gap between bodies and the guard's *first* arm's reach, unlike the rule
-    for who is reached when attacking (section 2).
-17. **Guard interceptions allowed** (`turn.rs`, `guard`): a guard may take as many
-    blows a round as its main slot has attacks. Not explained in a comment.
-18. **A riposte on every swing that reached** (`swing`, lines 646-651, `riposte`). A
-    Razor Cloak charge is spent even if the blow did not get through armour or was
-    deflected by Missile Shield, and even if the swing was a fumble onto the cloak's
-    wearer. A fumble onto oneself (the attacker is among the bystanders) would also
-    spend a charge of its own cloak.
-19. **Armour sign** (`stats.rs` `Armour`; `actors.md`). The docs say a monster's
-    armour is 10 less the species value so "lower is always better guarded", but the
-    swing subtracts `5 * armour` from the aim, so a higher figure is harder to hit
-    (better guarded). The two statements disagree; the arithmetic here is the code's.
-20. **`Guarding` is for monsters only** (`intercept`, `guards.get(ward)`; `turn.rs`
-    "A monster guarding a fellow"). A member struck by a monster is never
-    intercepted. No comment says whether a member can be guarded.
-21. **Comment vs code on fatigue in armour** (`Armour::guard`, `stats.rs`). The
-    comment says fatigue "adds a tenth of itself" and `Armour.tires` says "as it does
-    to a monster's", but members have `tires: false`, so only monsters are affected.
-22. **`Surprise.unaware` for a target the attacker is not in front of**
-    (`catch_unaware`, line 367): for a monster target, `formation.facing` is absent and
-    `Front` is assumed; a monster is therefore taken to face its own front. Whether retail asks
-    that, or whether the monster looks away, is not shown by the Rust.
-23. **Lightning Strike's readiness** (`turn.rs` `accept_round`, 12.0 scaled by
-    profession level, `as u8`): the constant 12 and the scaling are unexplained.
-24. **Missile scatter constants** (`scatter`, `attack.rs` 225-266): `0.08`, `0.2`,
-    `1.75`, `300`, `0x5f`, `0.002`, and the form of the offset are retail's and are
-    not explained, nor is the construction of the two perpendicular axes.
-25. **Target stance of a berserk member** (`open`, line 130): `wanted` is friendly only
-    when `turn.berserk` (insanity) is set; a Berserk *order* leaves it hostile and
-    only changes the mode and `Attack.berserk`. The word "berserk" names two things.
+1. **A waiting monster may notice an attack** (`catch_unaware`, `swings.rs`). In the
+   original (`StartCharacterAttack` for a member's blow, `AnnounceMonsterAttack`
+   for a monster's), a monster target that is not facing the attacker, is alive,
+   has stamina, is not worse than Turncoat and not blind, and whose action this
+   round is to wait, notices exactly as a member does: certain the first time
+   in the round, then by `Senses - 25 * tries` (as an unsigned number), keeping its
+   own count of tries; a monster that notices turns to face the attacker. Only
+   otherwise is it caught unaware, from its rear. Here a monster never notices.
+   Defect, not fixed: it needs each monster's action for the round to be known
+   before its moment (the original decides it as the round opens; here a monster
+   decides at its moment), a count of tries on monsters, and a monster turning.
+2. **Members that protect** (`turn.rs`, `Guarding`, `Guards`; `intercept`). In the
+   original a member whose order is Protect (retail `ACTION_PROTECT`) takes blows
+   meant for the one it protects, a member or a monster, by the same protection
+   score against the blow's press, up to its main hand's attacks a round
+   (`ResolveGuardianInterception`). Here only monsters guard, and only monsters
+   are guarded; there is no Protect order. Defect (missing), not fixed: it needs
+   the order itself and members to be guarded.

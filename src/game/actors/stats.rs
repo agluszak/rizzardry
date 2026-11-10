@@ -100,9 +100,9 @@ impl Resistances {
     }
 }
 
-/// An actor's armour against blows: lower is better guarded (retail
-/// `GetTargetArmorClass`, `TargetArmorClassAtLocation`,
-/// `GetTargetArmorClassModifier`).
+/// An actor's armour against blows: higher is better guarded, five off the
+/// aim for each point (retail `GetTargetArmorClass`,
+/// `TargetArmorClassAtLocation`, `GetTargetArmorClassModifier`).
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
 pub struct Armour {
     /// Against being struck at all.
@@ -180,8 +180,8 @@ pub struct Arm {
     pub weapon: Option<Entity>,
     pub reach: Reach,
     pub modes: EnumSet<AttackMode>,
-    /// The dice its blows roll; a punch strikes with the secondary slot's
-    /// fist, a kick with the primary's.
+    /// The dice its blows roll; a punch rolls the off hand's (what it holds,
+    /// else its fist), a kick the main hand's fist.
     pub dice: Dice,
     pub punch: Dice,
     pub kick: Dice,

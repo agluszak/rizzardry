@@ -108,6 +108,10 @@ pub struct Hands<'a> {
     hands: EnumMap<WeaponSlot, Hand<'a>>,
     /// Both hands hold weapons and both strike.
     dual_wielding: bool,
+    /// What a punch from the main hand rolls when the off hand holds
+    /// something, whether or not it strikes: the item's own dice, none for
+    /// a shield. An empty off hand punches with its fist's.
+    held_dice: Option<Dice>,
 }
 
 impl<'a> Hands<'a> {
@@ -126,7 +130,13 @@ impl<'a> Hands<'a> {
             hands[WeaponSlot::Secondary] = Hand::Idle;
         }
         let dual_wielding = hands.values().all(|hand| matches!(hand, Hand::Weapon { .. }));
-        Self { hands, dual_wielding }
+        let held_dice = off.as_ref().map(|item| {
+            item.weapon
+                .map(|weapon| weapon.dice)
+                .or_else(|| item.missile.map(|missile| missile.dice))
+                .unwrap_or_default()
+        });
+        Self { hands, dual_wielding, held_dice }
     }
 
     /// What a member strikes with: an arm for each hand that strikes, and
@@ -174,7 +184,10 @@ impl<'a> Hands<'a> {
             reach,
             modes: self.modes(c, slot),
             dice: self.dice(c, slot),
-            punch: self.dice(c, WeaponSlot::Secondary),
+            // A punch rolls the off hand's dice: what is held there as its
+            // record gives them, else the fist's (retail
+            // `ResolveCharacterAttackDamage`).
+            punch: self.held_dice.unwrap_or_else(|| self.dice(c, WeaponSlot::Secondary)),
             kick: self.dice(c, WeaponSlot::Primary),
             rating: self.rating(c, a, slot) + (self.to_hit(c, a, load, slot) + to_hit_bonus) * 5,
             percent: self.damage_percent(a, slot),
@@ -689,6 +702,41 @@ mod tests {
         bearer.skill_points[Skill::Shield] = 125;
         assert_eq!(gain(&bearer), 2 + (6 - 4));
         assert_eq!(armours(bearer, false).shield, 4 + 4);
+    }
+
+    #[test]
+    fn a_punch_rolls_the_dice_of_whatever_the_off_hand_holds() {
+        let shield = ItemDefinition {
+            id: ItemId(1),
+            class: EquipClass::Shield,
+            ..ItemDefinition::default()
+        };
+        let mut arrows = weapon(3, EquipClass::Ammunition, Skill::Bow);
+        arrows.kind = ItemKind::ARROW;
+        arrows.damage = Dice { base: 0, count: 1, sides: 8 };
+        let mut knife = weapon(4, EquipClass::ThrownWeapon, Skill::ThrowingAndSling);
+        knife.damage = Dice { base: 1, count: 2, sides: 3 };
+        let monk = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
+        let attributes = Attributes::of_sheet(&monk);
+        let punch = |worn: &[(EquipSlot, &ItemDefinition)]| {
+            let monk = monk.clone();
+            in_hands(worn, move |hands| {
+                let arm = hands.arm(&monk, &attributes, Load::None, 0, WeaponSlot::Primary);
+                (arm.modes, arm.punch, arm.kick)
+            })
+        };
+        // Empty hands: both fists roll Martial Arts 0's 1d2, the main hand's
+        // two more on the base.
+        let (modes, bare, kick) = punch(&[]);
+        assert_eq!(modes, EnumSet::only(AttackMode::Punch));
+        assert_eq!(bare, Dice { base: 0, count: 1, sides: 2 });
+        assert_eq!(kick, Dice { base: 2, count: 1, sides: 2 });
+        // A shield's record has no dice, and does not strike; arrows and a
+        // thrown knife do not strike beside a fist either, yet a punch rolls
+        // their record's dice (retail reads `Hand[1]`'s item).
+        assert_eq!(punch(&[(EquipSlot::Secondary, &shield)]).1, Dice::default());
+        assert_eq!(punch(&[(EquipSlot::Secondary, &arrows)]).1, arrows.damage);
+        assert_eq!(punch(&[(EquipSlot::Secondary, &knife)]).1, knife.damage);
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! An actor that fights ([`Strike`]) strikes with one of its arms: a
 //! member's weapon slot or a monster's natural attack, judged alike on
 //! every body ([`Arms`]). One rule opens the attack ([`open`]): a body
-//! under orders strikes the most afflicted foe its arm reaches, one
+//! under orders strikes the least afflicted foe its arm reaches, one
 //! deciding for itself picks at random among what it reaches and sees. Its
 //! swings then follow at once ([`swing`]), each blow landing and settling
 //! before the next is aimed, and the attack is told of as a whole.
@@ -102,13 +102,14 @@ enum Otherwise {
 /// Open the acting body's attack (retail `StartCharacterAttack`,
 /// `StartMonsterAttack`): with the slot due, at someone it may attack and
 /// reaches, by one of the slot's arms and modes. One under orders strikes
-/// the most afflicted foe, then one "in reach" of the party, then the
-/// nearest; ties keep the fight's order. One deciding for itself picks at
+/// the foe in the lowest condition (a sound one before a hurt one; retail
+/// `CompareMonsterTargetCandidates`), then one "in reach" of the party, then
+/// the nearest; ties keep the fight's order. One deciding for itself picks at
 /// random among what it reaches and sees, a wary one's wait among them
 /// (retail `ChooseMonsterTarget`, `BuildMonsterActionQueue`); a member's
 /// Stealth may keep them out of its eye this time, and one that stayed
-/// out of it may learn from it. A slot that cannot strike (out of shots,
-/// or nobody in reach) gives up its attacks and the other takes over. With
+/// out of it may learn from it. A slot with nobody in reach is passed over
+/// for the other; one out of shots strikes no more (see [`strike`]). With
 /// nobody to strike, a body that walks closes in on a foe; anyone else is
 /// done for the round.
 #[allow(clippy::type_complexity)]
