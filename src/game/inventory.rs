@@ -18,6 +18,7 @@ use enumset::EnumSetType;
 use std::num::NonZeroU16;
 
 pub(crate) fn plugin(app: &mut App) {
+    app.add_plugins(super::items::plugin);
     app.init_resource::<ItemIds>()
         .add_message::<ItemNews>()
         .add_observer(operations::put_away_held)
@@ -236,6 +237,14 @@ pub enum EquipSlot {
     AlternateSecondary,
     Legs,
     Feet,
+}
+
+/// Bevy builds a relationship from its holder alone before the slot is set,
+/// which needs some slot to start from; no rule reads this.
+impl Default for EquipSlot {
+    fn default() -> Self {
+        Self::Head
+    }
 }
 
 /// The two slots of the weapon set in use, which attack.
