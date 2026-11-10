@@ -36,6 +36,7 @@ fn app() -> App {
         .add_observer(set_aside)
         .add_observer(wake)
         .add_observer(crate::game::world::encounters::age_encounters)
+        .add_observer(crate::game::actors::age_the_woken)
         .add_observer(give_bodies)
         .add_observer(crate::game::world::damage::monster_died)
         .add_observer(crate::game::characters::fall)
@@ -830,6 +831,31 @@ fn what_is_in_a_level_is_itself_when_the_party_returns() {
     assert_eq!(world.get::<Turns>(spell), Some(&Turns(3)));
     assert_eq!(world.get::<Known>(item), Some(&known));
     assert_eq!(world.get::<Stows>(chest).unwrap().iter().collect::<Vec<_>>(), [coin]);
+}
+
+/// A level that was away owes those in it the time that passed: ten game
+/// minutes are five aging ticks, off what ails a monster and off the spells
+/// laid on it.
+#[test]
+fn a_level_that_was_away_ages_what_ails_and_what_is_laid() {
+    use crate::game::actors::spells::{LaidOn, Turns};
+    use crate::game::characters::{Condition, Lasting, Vitals};
+    let (mut app, level) = playing();
+    let monster =
+        app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
+    let mut vitals = app.world_mut().get_mut::<Vitals>(monster).unwrap();
+    vitals.afflict(Condition::Afraid, Lasting::Rounds(3));
+    vitals.afflict(Condition::Blind, Lasting::Rounds(9));
+    let brief = app.world_mut().spawn((Turns(3), LaidOn(monster))).id();
+    let lasting = app.world_mut().spawn((Turns(9), LaidOn(monster))).id();
+    leave(&mut app);
+    app.world_mut().resource_mut::<crate::game::time::GameClock>().ms += 10 * 60_000;
+    assert_eq!(come_back(&mut app), level);
+    let world = app.world();
+    let conditions = &world.get::<Vitals>(monster).unwrap().conditions;
+    assert!(!conditions.has(Condition::Afraid) && conditions.has(Condition::Blind));
+    assert!(world.get_entity(brief).is_err(), "it wore off while the party was away");
+    assert_eq!(world.get::<Turns>(lasting), Some(&Turns(4)));
 }
 
 /// What a level that is set aside takes part in, with the real physics and

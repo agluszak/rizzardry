@@ -1,0 +1,8 @@
+# The tests that build the game or read the retail installation each hold
+# gigabytes; all of them at once run a 32 GB machine out of memory.
+[test-groups]
+heavy = { max-threads = 2 }
+
+[[profile.default.overrides]]
+filter = 'test(/^integration::/) | test(/^retail::/)'
+test-group = 'heavy'

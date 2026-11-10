@@ -362,10 +362,17 @@ pub struct Aged {
 /// Every spell laid lasts less by the aging ticks that passed; one with no
 /// turns left is lifted.
 pub fn age(aged: On<Aged>, mut spells: Query<(Entity, &mut Turns)>, mut commands: Commands) {
-    let ticks = aged.ticks;
     for (spell, mut turns) in &mut spells {
-        turns.0 -= ticks.min(turns.0);
-        if turns.0 == 0 {
+        turns.wear(spell, aged.ticks, &mut commands);
+    }
+}
+
+impl Turns {
+    /// The spell lasts less by so many aging ticks; with no turns left it is
+    /// lifted.
+    pub(super) fn wear(&mut self, spell: Entity, ticks: u32, commands: &mut Commands) {
+        self.0 -= ticks.min(self.0);
+        if self.0 == 0 {
             commands.entity(spell).despawn();
         }
     }
