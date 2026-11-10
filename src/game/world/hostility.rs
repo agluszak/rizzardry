@@ -328,9 +328,10 @@ pub struct Provocation(pub Entity);
 
 /// A monster provoked turns its group hostile as the action starts, before
 /// the blows or spells land (retail `MakeTargetGroupHostile`); a dead
-/// monster, or one under Turncoat, provokes nobody. Runs wherever
-/// provocations are made: in the swing and cast stages, and on the frame
-/// before groups engage.
+/// monster, or one under Turncoat, provokes nobody. Whoever makes a
+/// provocation runs this as it is made (`Commands::run_system_cached`), so
+/// the group is hostile before the blows or spells land; groups engage on
+/// the same messages.
 pub fn take_offence(
     mut provocations: MessageReader<Provocation>,
     monsters: Query<(&Side, &Vitals, &GroupMember)>,

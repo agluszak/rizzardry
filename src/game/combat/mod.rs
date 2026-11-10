@@ -37,7 +37,6 @@ use crate::content::species::AttackWord;
 use crate::content::species::Reach;
 use crate::game::characters::{Character, Dead, Vitals};
 use crate::game::hits::Effect;
-use crate::game::magic::casting::{self};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::{self, Side, Stance};
@@ -50,33 +49,36 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         use crate::game::characters::settle_deaths;
-        // Deeds land, and what they did is settled: deaths, the fight's
-        // kills, the party's defeat, and who stands with whom.
-        let settle = || (crate::game::hits::resolve, settle_deaths, settle_defeat).chain();
+        // What deeds did is settled: deaths, the fight's kills, and the
+        // party's defeat.
+        let settle = || (settle_deaths, settle_defeat).chain();
         app.add_plugins(hostility::plugin)
             .add_observer(credit_death)
             .add_observer(join_party)
             .add_observer(turn::clear_fight)
             .add_observer(approach::end_move)
             .add_observer(approach::stop_walking)
+            .add_observer(turn::take_turn)
+            .add_observer(swings::strike)
+            .add_observer(turn::breathe)
+            .add_observer(turn::guard)
+            .add_observer(turn::retreat)
+            .add_observer(turn::hold)
+            .add_observer(summon::summon)
             .add_message::<CombatNews>()
             .add_message::<hostility::Provocation>()
             .add_message::<CyclePartyMove>()
             .add_message::<StartRound>()
-            .add_message::<summon::Summon>()
             .add_message::<CombatControl>()
             .add_message::<crate::game::camp::CampNews>()
             .add_message::<GiveOrder>()
             .add_message::<engage::Engaged>()
-            .add_message::<turn::Called>()
-            .add_message::<turn::Perform>()
             .init_resource::<CombatSettings>()
             .add_systems(
                 Update,
                 (
                     give_orders,
-                    // provocations and alerts, then engagement, then the opening,
-                    hostility::take_offence,
+                    // alerts, then engagement, then the opening,
                     engage::alert_factions.run_if(any_with_component::<Battle>),
                     engage::engage,
                     engage::open_battle,
@@ -98,18 +100,10 @@ impl Plugin for CombatPlugin {
                 (
                     // What was in the air has landed before anyone acts.
                     (crate::game::hits::fly, settle()).chain(),
-                    // The actor whose initiative came takes its turn, and
-                    // what it does settles within the step.
-                    (
-                        (stop_party_move, begin_round, call_actor).chain(),
-                        turn::take_turn,
-                        (turn::perform, swings::attack),
-                        casting::cast,
-                        hostility::take_offence,
-                        turn::defend_instead,
-                        summon::summon,
-                        settle(),
-                    )
+                    // The earliest moment comes: its actor decides and acts,
+                    // what the act did lands as it is done, and deaths are
+                    // settled before the next moment.
+                    (stop_party_move, begin_round, next_moment, turn::defend_instead, settle())
                         .chain()
                         .run_if(any_with_component::<Battle>),
                     // Once everyone has acted the round ends.
@@ -158,6 +152,8 @@ impl Plugin for CombatPlugin {
 /// Seconds of simulation between actors (retail `combat_delay_ms`, 1000 by
 /// default).
 const ACTION_SECONDS: f32 = 1.0;
+/// The last moment of a round's timeline.
+const LAST_MOMENT: u32 = 100;
 /// Seconds of simulation between rounds, so that a round in which nobody
 /// can strike still lets monsters close in.
 const ROUND_SECONDS: f32 = 1.0;
@@ -198,27 +194,21 @@ pub struct Battle {
 /// The round being played, on the fight.
 #[derive(Component, Debug, Default)]
 pub struct Round {
-    phase: RoundPhase,
+    /// A round is accepted or being played.
+    playing: bool,
+    /// The moment the round has come to, 1 to 100: 0 while it is accepted
+    /// and not begun, past 100 once no moment is left.
+    moment: u32,
     /// How the party moves this round.
     pub(crate) pace: Option<PartyPace>,
     /// Someone has attacked this round.
     attacked: bool,
 }
 
-/// Accepted work survives pacing/content waits without pretending the round
-/// has already initialized its actors. Waiting cannot retain an executing phase.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-enum RoundPhase {
-    #[default]
-    Waiting,
-    Accepted,
-    Executing(u32),
-}
-
 impl Round {
     /// A round is accepted or running, including its pacing delay.
     pub fn executing(&self) -> bool {
-        self.phase != RoundPhase::Waiting
+        self.playing
     }
 
     /// Something in this round counts as an attack, keeping the fight going.
@@ -229,11 +219,7 @@ impl Round {
     /// How far through the round its play is, 0 to 1, while a round is
     /// being played.
     pub fn progress(&self) -> Option<f32> {
-        match self.phase {
-            RoundPhase::Waiting => None,
-            RoundPhase::Accepted => Some(0.0),
-            RoundPhase::Executing(step) => Some(step.min(100) as f32 / 100.0),
-        }
+        self.playing.then(|| self.moment.min(100) as f32 / 100.0)
     }
 }
 
@@ -526,12 +512,15 @@ pub fn begin_round(
     }
 }
 
-/// Call the actor whose initiative has come, one per pause, once nothing
-/// is in flight: the party's move when its phase comes, then the members in
-/// accepted order, then the monsters in theirs. A step with nobody due
-/// passes to the next.
+/// Play the earliest moment still to come, once the pace allows it (the
+/// last act's pause over, nothing in flight, nobody walking): the party's
+/// move when its moment comes, else the actor whose moment is earliest,
+/// who is given it. Two at the same moment go in the fight's order, the
+/// party's move first; members do not act before the party's move. When
+/// no moment is left the timeline is over.
 #[allow(clippy::type_complexity)]
-fn call_actor(
+fn next_moment(
+    mut commands: Commands,
     fight: Option<Single<(&mut Round, &mut PartyMove, &Pause, Option<&Combatants>), With<Battle>>>,
     roster: Single<&PartyRoster>,
     places: crate::game::actors::Places,
@@ -539,55 +528,53 @@ fn call_actor(
     turns: Query<&Turn>,
     in_flight: Query<(), With<crate::game::hits::Flight>>,
     moving: Query<(), With<approach::CombatMove>>,
-    mut called: MessageWriter<turn::Called>,
     mut news: MessageWriter<CombatNews>,
 ) {
     let Some((mut round, mut party_move, pause, combatants)) = fight.map(Single::into_inner) else {
         return;
     };
     let combatants = combatants.map_or(&[][..], Combatants::entities);
-    if !round.executing() || !pause.0.is_finished() || !in_flight.is_empty() || !moving.is_empty() {
+    if !round.executing()
+        || !pause.0.is_finished()
+        || !in_flight.is_empty()
+        || !moving.is_empty()
+        || matches!(*party_move, PartyMove::Moving { .. })
+    {
         return;
     }
-    if round.phase == RoundPhase::Accepted {
-        round.phase = RoundPhase::Executing(1);
-    }
-    while let RoundPhase::Executing(step) = round.phase
-        && step <= 100
+    // Nobody in the party acts while its move is still to come.
+    let party_waits = matches!(*party_move, PartyMove::Pending { .. });
+    let next = combatants
+        .iter()
+        .copied()
+        .filter(|actor| !party_waits || !roster.contains(actor))
+        .filter_map(|actor| Some((actor, turns.get(actor).ok()?.when?)))
+        .min_by_key(|&(_, when)| when);
+    if let PartyMove::Pending { pace, phase } = *party_move
+        && next.is_none_or(|(_, when)| phase <= when)
     {
-        if matches!(*party_move, PartyMove::Moving { .. }) {
-            return;
-        }
-        if let PartyMove::Pending { pace, phase } = *party_move
-            && phase <= step
-        {
-            // The party moves further only when every member is hasted: by
-            // a fifth of the Speed Haste adds them, averaged.
-            let haste = roster
-                .iter()
-                .try_fold(0, |sum, member| {
-                    let effect = laid.get(member, crate::content::spells::SpellId::HASTE)?;
-                    Some(sum + effect.scaled(effect.power * 10))
-                })
-                .map_or(0.0, |sum| (sum / roster.len() as u32) as f32 * 0.2);
-            let last = roster.first().map_or(Vec3::ZERO, |&member| places.of(member).centre);
-            *party_move =
-                PartyMove::Moving { pace, budget: pace.combat_budget() + haste, moved: 0.0, last };
-            news.write(CombatNews::PartyMoves);
-            return;
-        }
-        // Nobody in the party acts while its move is still to come.
-        let party_waits = matches!(*party_move, PartyMove::Pending { .. });
-        let due = combatants
+        round.moment = round.moment.max(phase);
+        // The party moves further only when every member is hasted: by
+        // a fifth of the Speed Haste adds them, averaged.
+        let haste = roster
             .iter()
-            .copied()
-            .filter(|actor| !party_waits || !roster.contains(actor))
-            .find(|&actor| turns.get(actor).is_ok_and(|turn| turn.phase == step));
-        if let Some(actor) = due {
-            called.write(turn::Called(actor));
-            return;
+            .try_fold(0, |sum, member| {
+                let effect = laid.get(member, crate::content::spells::SpellId::HASTE)?;
+                Some(sum + effect.scaled(effect.power * 10))
+            })
+            .map_or(0.0, |sum| (sum / roster.len() as u32) as f32 * 0.2);
+        let last = roster.first().map_or(Vec3::ZERO, |&member| places.of(member).centre);
+        *party_move =
+            PartyMove::Moving { pace, budget: pace.combat_budget() + haste, moved: 0.0, last };
+        news.write(CombatNews::PartyMoves);
+        return;
+    }
+    match next {
+        Some((actor, when)) => {
+            round.moment = round.moment.max(when);
+            commands.trigger(turn::Moment { actor });
         }
-        round.phase = RoundPhase::Executing(step + 1);
+        None => round.moment = LAST_MOMENT + 1,
     }
 }
 

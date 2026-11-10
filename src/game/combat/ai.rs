@@ -11,7 +11,7 @@ use bevy::prelude::*;
 
 use super::conduct;
 use super::monster_spells;
-use super::turn::{Breathes, Chosen, Fights, Fleeing, Retreats, SpecialCooldown};
+use super::turn::{Breathes, Decision, Fights, Fleeing, Retreats, SpecialCooldown};
 use crate::content::characters::Attribute;
 use crate::content::species::{Reach, SpecialAttack};
 use crate::content::spells::SpellId;
@@ -143,7 +143,7 @@ pub(super) fn decide(
     mind: &MindItem,
     fight: &Fight,
     rng: &mut GameRng,
-) -> (Chosen, bool) {
+) -> (Decision, bool) {
     let Fight { bodies, places, .. } = *fight;
     let own = bodies.get(body).unwrap();
     let arms = own.attacks;
@@ -162,13 +162,13 @@ pub(super) fn decide(
         nearest,
     );
     if conduct != conduct::Conduct::Fight {
-        return (Chosen::Retreat(Retreats { conduct, quiet: false }), fleeing);
+        return (Decision::Retreat(Retreats { conduct, quiet: false }), fleeing);
     }
     let chosen = special(body, mind, arms, nearest, fight, rng)
         .or_else(|| spell(body, mind, arms, nearest, fight, rng))
         .or_else(|| helpless(own.vitals, arms, nearest))
         .or_else(|| guard(body, mind, nearest, fight, rng))
-        .unwrap_or(Chosen::Fight(Fights { waits: false, berserk: false }));
+        .unwrap_or(Decision::Fight(Fights { waits: false, berserk: false }));
     (chosen, fleeing)
 }
 
@@ -185,7 +185,7 @@ fn special(
     nearest: f32,
     fight: &Fight,
     rng: &mut GameRng,
-) -> Option<Chosen> {
+) -> Option<Decision> {
     let Fight { bodies, content, definitions, .. } = *fight;
     let own = bodies.get(body).ok()?;
     let special = mind.special.0;
@@ -215,7 +215,7 @@ fn special(
     if rng.below(100) >= chance {
         return None;
     }
-    Some(Chosen::Special(Breathes {
+    Some(Decision::Special(Breathes {
         special: Some(kind),
         definition: definitions.special(kind),
         summons: kind.summons(),
@@ -236,7 +236,7 @@ fn spell(
     nearest: f32,
     fight: &Fight,
     rng: &mut GameRng,
-) -> Option<Chosen> {
+) -> Option<Decision> {
     let Fight { bodies, content, .. } = *fight;
     let own = bodies.get(body).ok()?;
     let budget = own.budget?.0;
@@ -249,16 +249,17 @@ fn spell(
     let (spell, aim) = monster_spells::choose(rng, body, casting, chance, &seen, fight)?;
     let power = monster_spells::power(rng, budget, &content.spells[spell]);
     let source = Source::Innate { spell, power, budget, level: own.level.0 as u8 };
-    Some(Chosen::Magic(MagicChoice { source, aim }))
+    Some(Decision::Magic(MagicChoice { source, aim }))
 }
 
 /// One that can strike nobody, having no arm or, blind, nobody in reach,
 /// withdraws (retail `UpdateMonsterAI`'s `RETURN_TO_START`); one that
 /// fights blind fights on.
-fn helpless(vitals: &Vitals, arms: &Arms, nearest: f32) -> Option<Chosen> {
+fn helpless(vitals: &Vitals, arms: &Arms, nearest: f32) -> Option<Decision> {
     let blind = vitals.conditions.has(Condition::Blind) && arms.blind_fighting.is_none();
-    (arms.arms.is_empty() || (blind && !reaches_party(arms, nearest)))
-        .then_some(Chosen::Retreat(Retreats { conduct: conduct::Conduct::Withdraw, quiet: false }))
+    (arms.arms.is_empty() || (blind && !reaches_party(arms, nearest))).then_some(Decision::Retreat(
+        Retreats { conduct: conduct::Conduct::Withdraw, quiet: false },
+    ))
 }
 
 /// A bodyguard with someone in reach, as clever as it is, may guard a
@@ -270,7 +271,7 @@ fn guard(
     nearest: f32,
     fight: &Fight,
     rng: &mut GameRng,
-) -> Option<Chosen> {
+) -> Option<Decision> {
     let Fight { bodies, combatants, .. } = *fight;
     let own = bodies.get(body).ok()?;
     let (arms, wit) = (own.attacks, own.attributes[Attribute::Intelligence]);
@@ -300,9 +301,9 @@ fn guard(
         Vec::new()
     };
     if !wards.is_empty() {
-        Some(Chosen::Protect(wards[rng.below(wards.len() as u32) as usize]))
+        Some(Decision::Protect(wards[rng.below(wards.len() as u32) as usize]))
     } else if temper.wary && rng.below(100) < wit {
-        Some(Chosen::Fight(Fights { waits: true, berserk: false }))
+        Some(Decision::Fight(Fights { waits: true, berserk: false }))
     } else {
         None
     }
