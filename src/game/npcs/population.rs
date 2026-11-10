@@ -60,7 +60,7 @@ fn spawn_record(
     let def = &content.npcs[id];
     let mut record = commands.spawn((ActorId(id), Npc::from_definition(def)));
     if let Some(template) = &def.character {
-        record.insert(recruit::character(template, content, rng));
+        recruit::character(&mut record, template, content, rng);
     }
     if def.owns_stock {
         record.insert(trade::MerchantStock::new(def, &content.items, average, now, rng));

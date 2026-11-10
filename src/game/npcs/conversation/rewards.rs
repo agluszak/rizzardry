@@ -120,3 +120,44 @@ pub(super) fn deliver(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::characters::Race;
+    use crate::game::characters::{Gender, Profession};
+    use crate::game::party::roster::{PartyMember, test_party};
+    use bevy::ecs::system::RunSystemOnce;
+
+    /// Experience is for the members of the party; a character with no seat
+    /// in it is given none.
+    #[test]
+    fn experience_is_for_those_with_a_seat() {
+        let mut app = App::new();
+        app.add_message::<Reward>()
+            .insert_resource(Catalogs::default())
+            .insert_resource(GameRng::seeded(1));
+        let world = app.world_mut();
+        let character = || {
+            let sheet = Character::new("A", Race::Human, Gender::Female, Profession::Fighter);
+            let vitals = Vitals::new(&sheet);
+            (sheet, vitals)
+        };
+        let (seated, seatless) = (world.spawn(character()).id(), world.spawn(character()).id());
+        let party = test_party(world, &[seated]);
+        world.entity_mut(party).insert(Position(Vec3::ZERO));
+        world.spawn(Level {
+            path: String::new(),
+            definition: default(),
+            navmeshes: vec![],
+            script: default(),
+            messages: None,
+        });
+        assert!(!world.entity(seatless).contains::<PartyMember>());
+        let session = world.spawn_empty().id();
+        world.write_message(Reward { session, kind: Kind::Experience(500) });
+        world.run_system_once(deliver).unwrap();
+        assert_eq!(world.get::<Character>(seated).unwrap().experience, 500);
+        assert_eq!(world.get::<Character>(seatless).unwrap().experience, 0);
+    }
+}

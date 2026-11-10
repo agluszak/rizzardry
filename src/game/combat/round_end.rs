@@ -32,7 +32,7 @@ use crate::game::hits::{Act, Deed, Release};
 use crate::game::magic::Strength;
 use crate::game::party::body::PartyBody;
 use crate::game::party::recovery;
-use crate::game::party::roster::PartyRoster;
+use crate::game::party::roster::{PartyMember, PartyRoster};
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
 use crate::game::world::hostility::{Side, Stance};
@@ -192,12 +192,16 @@ pub(super) fn cool_specials(
 /// `AdvanceTimedEffects`; a spell's last turn still pulses): one on the
 /// party on its living members, one on a monster on it, and Ring of Fire
 /// on the monsters close around the party, sampled anew each pulse. A pulse
-/// is a deed with no caster.
+/// is a deed with no caster. A character without a seat is not among those
+/// close around the party.
 pub(super) fn pulse_clouds(
     mut released: MessageWriter<Release>,
     fight: Single<&Combatants, With<RoundEnding>>,
     pulsing: Query<(&Enchantment, &LaidOn), With<Pulses>>,
-    bodies: Query<(Entity, &Vitals, &Side), Without<Untargetable>>,
+    bodies: Query<
+        (Entity, &Vitals, &Side),
+        (Without<Untargetable>, Or<(With<PartyMember>, Without<Character>)>),
+    >,
     places: Places,
     party: Single<(Entity, &Position, &PartyRoster)>,
     obstacles: WorldObstacles,

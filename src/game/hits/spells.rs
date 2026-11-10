@@ -78,14 +78,15 @@ pub struct Surroundings<'a, 'w, 's> {
     pub definitions: &'a Definitions,
 }
 
-/// The bodies spells may take, as [`within`] reads them.
+/// The bodies spells may take, as [`within`] reads them: those in the party
+/// and monsters, not a character without a seat.
 pub fn targets<'a>(
     bodies: &'a Query<BodyReadOnly>,
     places: &'a Places,
 ) -> impl Iterator<Item = (Entity, &'a Vitals, Stance, Place)> {
     bodies
         .iter()
-        .filter(|body| !body.untargetable)
+        .filter(|body| !body.untargetable && (body.member || body.character.is_none()))
         .map(|body| (body.entity, body.vitals, body.stance(), places.of(body.entity)))
 }
 
