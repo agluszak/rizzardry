@@ -1,47 +1,56 @@
-//! Items lying in the world. Each is an entity owning one item until the
-//! party takes it (retail `W8WorldItem`, `ItemManager.cpp`).
+//! Items lying in the world. Each is an item entity with a position under its
+//! level, until the party takes it (retail `W8WorldItem`, `ItemManager.cpp`).
 
-use crate::game::world::level::LevelOwned;
 use bevy::prelude::*;
-
-use crate::game::data::Catalogs;
 
 use crate::content::items::{ItemCatalog, ItemDefinition, ItemId, QuantityKind};
 use crate::content::level::ItemPlacement;
-use crate::game::items::{Crucial, ItemNews, ItemStack, Items, Place, Put, receive, unpack};
+use crate::game::items::{
+    Bag, Give, Hidden, ItemStack, Items, Lying, Place, Put, Throw, make, roll_amount, unpack,
+};
+use crate::game::rng::GameRng;
 
-/// An item lying in the level.
-#[derive(Component, Debug, Clone)]
-pub struct WorldItem {
-    pub loot: GroundLoot,
+/// An item lying in a level as a record keeps it, with what is in it if it is
+/// a bag. A level that was left keeps what lay in it as these values.
+#[derive(Clone, Debug)]
+pub struct KeptItem {
+    pub item: ItemStack,
+    pub at: Vec3,
     pub hidden: bool,
+    pub holds: Vec<ItemStack>,
 }
-#[derive(Debug, Clone)]
-pub enum GroundLoot {
-    Loose(ItemStack),
-    Pile { appearance: ItemId, identified: bool, contents: Vec<ItemStack> },
+
+impl KeptItem {
+    /// An item lying as it is now, with what a bag holds.
+    pub fn keep(items: &Items, catalog: &ItemCatalog, lying: Entity, at: Vec3) -> Option<Self> {
+        Some(Self {
+            item: items.stack(lying, catalog)?,
+            at,
+            hidden: items.hidden(lying),
+            holds: items
+                .stowed(lying)
+                .iter()
+                .filter_map(|&held| items.stack(held, catalog))
+                .collect(),
+        })
+    }
+
+    /// The item and what a bag holds, lying again where they were.
+    pub fn restore(&self, commands: &mut Commands, level: Entity, catalog: &ItemCatalog) {
+        let item = unpack(commands, &catalog[self.item.item], &self.item);
+        lay(commands, level, (self.at, self.hidden), item);
+        for held in &self.holds {
+            let held = unpack(commands, &catalog[held.item], held);
+            commands.trigger(Put { item: held, at: Place::Container(item) });
+        }
+    }
 }
-impl WorldItem {
-    pub fn loose(item: ItemStack, hidden: bool) -> Self {
-        Self { loot: GroundLoot::Loose(item), hidden }
-    }
-    pub fn appearance(&self) -> ItemId {
-        match &self.loot {
-            GroundLoot::Loose(s) => s.item,
-            GroundLoot::Pile { appearance, .. } => *appearance,
-        }
-    }
-    pub fn display_name(&self, definition: &ItemDefinition, count: bool) -> String {
-        match &self.loot {
-            GroundLoot::Loose(s) => s.display_name(definition, count),
-            GroundLoot::Pile { identified, .. } => definition.known_name(*identified).to_owned(),
-        }
-    }
-    pub fn stacks(&self) -> &[ItemStack] {
-        match &self.loot {
-            GroundLoot::Loose(s) => std::slice::from_ref(s),
-            GroundLoot::Pile { contents, .. } => contents,
-        }
+
+/// Lay an item at a point of a level, unseen if it is hidden.
+pub fn lay(commands: &mut Commands, level: Entity, (at, hidden): (Vec3, bool), item: Entity) {
+    commands.trigger(Put { item, at: Place::Ground { level, at } });
+    if hidden {
+        commands.entity(item).insert(Hidden);
     }
 }
 
@@ -57,53 +66,53 @@ pub fn drop_loot(
     commands: &mut Commands,
     level: Entity,
     feet: Vec3,
-    mut items: Vec<ItemStack>,
-    catalog: &ItemCatalog,
+    found: &[ItemId],
+    (catalog, rng): (&ItemCatalog, &mut GameRng),
 ) {
-    if !items.is_empty() {
-        info!("loot: {} item(s) at {feet:.1}", items.len());
+    if !found.is_empty() {
+        info!("loot: {} item(s) at {feet:.1}", found.len());
     }
-    let mut lay = |lying| {
-        lay(commands, level, feet, lying);
+    let at = (feet + Vec3::Y * CLEARANCE, false);
+    let mut rolled = |commands: &mut Commands, id: ItemId| {
+        let definition = &catalog[id];
+        make(commands, definition, roll_amount(definition, rng, false), false)
     };
-    match items.len() {
-        0 => {}
-        1 => lay(WorldItem::loose(items.remove(0), false)),
-        _ => lay(WorldItem {
-            loot: GroundLoot::Pile {
-                appearance: BAG_OF_ITEMS,
-                identified: catalog[BAG_OF_ITEMS].auto_identify,
-                contents: items,
-            },
-            hidden: false,
-        }),
+    match found {
+        [] => {}
+        &[id] => {
+            let item = rolled(commands, id);
+            lay(commands, level, at, item);
+        }
+        _ => {
+            let bag = make(commands, &catalog[BAG_OF_ITEMS], 1, false);
+            lay(commands, level, at, bag);
+            for &id in found {
+                let item = rolled(commands, id);
+                commands.trigger(Put { item, at: Place::Container(bag) });
+            }
+        }
     }
-}
-
-/// Lay an item on the ground at `feet`, resting as dropped items do.
-pub fn lay(commands: &mut Commands, level: Entity, feet: Vec3, item: WorldItem) -> Entity {
-    commands
-        .spawn((
-            Name::new("dropped item"),
-            item,
-            Transform::from_translation(feet + Vec3::Y * CLEARANCE),
-            LevelOwned(level),
-        ))
-        .id()
 }
 
 /// Retail takes an item from at most this far from the eye
 /// (`PickNearestItemUnderCursor(..., 5000.0)`), in metres.
 pub const REACH: f32 = 10.0;
 
-/// The item an authored placement describes.
-pub fn placed_item(placement: &ItemPlacement, definition: &ItemDefinition) -> ItemStack {
+/// The item an authored placement describes, lying where it was placed: a
+/// bag of the kind that holds things is placed empty.
+pub fn place_item(
+    commands: &mut Commands,
+    level: Entity,
+    placement: &ItemPlacement,
+    definition: &ItemDefinition,
+) {
     let amount = match definition.quantity {
         QuantityKind::None => 1,
         QuantityKind::Stack => placement.stack,
         _ => placement.uses,
     };
-    ItemStack::new(definition, u16::from(amount), placement.identified)
+    let item = make(commands, definition, u16::from(amount), placement.identified);
+    lay(commands, level, (placement.position, placement.hidden), item);
 }
 
 /// The player takes an item lying in the world.
@@ -121,85 +130,66 @@ pub struct DropHeld {
 
 /// Take items the party can reach from its eye (retail measures to the
 /// model bounds' centre, `ItemDistanceToCamera`; the gameplay placement
-/// stands in, so pickup never needs artwork): a loose item into the hand,
-/// a pile's contents into the pool as far as there is room.
+/// stands in, so pickup never needs artwork): a lone item into the hand,
+/// a bag's contents into the pool as far as there is room.
 pub fn take_items(
     mut requests: MessageReader<TakeItem>,
     freedom: crate::game::freedom::Freedom,
     party: Single<(Entity, &avian3d::prelude::Position)>,
     held: Items,
-    mut lying: Query<(&mut WorldItem, super::ActorPose)>,
-    content: If<Res<Catalogs>>,
-    mut news: MessageWriter<ItemNews>,
+    lying: Query<(super::ActorPose, Has<Bag>), (With<Lying>, Without<Hidden>)>,
     mut commands: Commands,
 ) {
     let (party, position) = *party;
     let eye = crate::game::party::body::PartyBody::eye(position);
     let mut taken = Vec::new();
-    // The hand fills as a loose item is taken, though it shows only once
+    // The hand fills as a lone item is taken, though it shows only once
     // the takings are carried out.
     let mut handful = held.held(party).is_some();
-    for &TakeItem { item: target } in requests.read() {
+    for &TakeItem { item } in requests.read() {
         // A second take of an item already taken finds nothing.
-        let Ok((mut item, at)) = lying.get_mut(target) else { continue };
+        let Ok((at, bag)) = lying.get(item) else { continue };
         if !freedom.free()
-            || taken.contains(&target)
-            || item.hidden
+            || taken.contains(&item)
             || eye.distance(at.translation()) > REACH
             || handful
         {
             continue;
         }
-        match &mut item.loot {
-            GroundLoot::Pile { contents, .. } => {
-                let taken =
-                    receive(&held, &mut commands, &content.items, (party, None), (contents, true));
-                let left = std::mem::take(contents)
-                    .into_iter()
-                    .zip(taken)
-                    .filter_map(|(stack, taken)| stack.without(taken))
-                    .collect();
-                *contents = left;
-                if !contents.is_empty() {
-                    news.write(ItemNews::NoRoom);
-                    continue;
-                }
-            }
-            GroundLoot::Loose(stack) => {
-                let thing = unpack(&mut commands, &content.items[stack.item], stack);
-                commands.trigger(Put { item: thing, at: Place::Hand { party } });
-                handful = true;
-            }
+        taken.push(item);
+        let inside = held.stowed(item);
+        if !bag {
+            commands.trigger(Put { item, at: Place::Hand { party } });
+            handful = true;
+        } else if inside.is_empty() {
+            commands.entity(item).despawn();
         }
-        taken.push(target);
-        commands.entity(target).despawn();
+        // What the pool has no room for stays in the bag, which is gone once
+        // it is empty.
+        for &inside in inside {
+            commands.trigger(Give { item: inside, to: None, party, pool_first: true, told: true });
+        }
     }
 }
 
 /// Throw the held item: it stops short of what it hits and rests above the
-/// ground below, or stays in hand if there is no ground. A crucial item is
-/// never thrown away.
+/// ground below, or stays in hand if there is no ground.
 pub fn drop_held(
     mut requests: MessageReader<DropHeld>,
     freedom: crate::game::freedom::Freedom,
     party: Single<(Entity, &avian3d::prelude::Position)>,
     held: Items,
-    crucial: Query<(), With<Crucial>>,
     obstacles: super::obstacles::WorldObstacles,
-    content: If<Res<Catalogs>>,
     mut commands: Commands,
 ) {
     let (party, position) = *party;
     let eye = crate::game::party::body::PartyBody::eye(position);
     for &DropHeld { level, aim } in requests.read() {
-        let Some(item) = held.held(party) else { continue };
-        if !freedom.free() || crucial.contains(item) {
+        if !freedom.free() || held.held(party).is_none() {
             continue;
         }
         let Some(ground) = landing(eye, aim, &obstacles) else { continue };
-        let Some(stack) = held.stack(item, &content.items) else { continue };
-        commands.entity(item).despawn();
-        lay(&mut commands, level, ground, WorldItem::loose(stack, false));
+        commands.trigger(Throw { party, level, at: ground + Vec3::Y * CLEARANCE });
     }
 }
 
@@ -214,4 +204,5 @@ fn landing(eye: Vec3, aim: Dir3, obstacles: &super::obstacles::WorldObstacles) -
 /// Retail throws a dropped item at most 2500 units, stops it 125 short of
 /// what it hits, and rests it 125 above the ground below (`DropHeldItem`).
 const THROW: f32 = 5.0;
-const CLEARANCE: f32 = 0.25;
+/// How far above the ground an item rests.
+pub const CLEARANCE: f32 = 0.25;

@@ -149,7 +149,7 @@ const ITEM_GLOW_SECONDS: f32 = 10.0;
 /// but disappears with the item or level. It is never part of a save record.
 pub fn track_radar_items(
     time: Res<Time>,
-    mut items: Query<&mut RadarItem, With<crate::game::world::items::WorldItem>>,
+    mut items: Query<&mut RadarItem, With<crate::game::items::Lying>>,
     mut news: MessageReader<crate::game::world::search::SearchNews>,
 ) {
     for mut known in &mut items {
@@ -201,7 +201,10 @@ pub fn update_radar(
     views: Query<&RadarView>,
     mut blips: Query<(Entity, &mut Node, &mut BackgroundColor, &mut Visibility), With<RadarBlip>>,
     (mut items, obstacles): (
-        Query<(Entity, &crate::game::world::items::WorldItem, &GlobalTransform, &mut RadarItem)>,
+        Query<
+            (Entity, Has<crate::game::items::Hidden>, &GlobalTransform, &mut RadarItem),
+            With<crate::game::items::Lying>,
+        >,
         WorldObstacles,
     ),
     (content, sides): (
@@ -287,8 +290,8 @@ pub fn update_radar(
         show(entity, at, class.at(delta.y));
     }
     // Items: once the eye has had them in sight, within the far clip.
-    for (entity, item, at, mut known) in &mut items {
-        if item.hidden {
+    for (entity, hidden, at, mut known) in &mut items {
+        if hidden {
             continue;
         }
         let delta = at.translation() - position.0;

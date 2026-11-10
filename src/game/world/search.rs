@@ -11,9 +11,9 @@ use crate::game::characters::{Character, Profession, Vitals};
 use crate::game::combat::Battle;
 use avian3d::prelude::Position;
 
+use crate::game::items::{Hidden, Items, Lying};
 use crate::game::party::body::{PartyBody, PartyMovement};
 use crate::game::party::roster::PartyRoster;
-use crate::game::world::items::WorldItem;
 
 /// Searchables farther than this from the eye are not considered (10000
 /// units).
@@ -161,10 +161,12 @@ pub fn search_pulse(
     party: Query<(&Position, &PartyBody)>,
     roster: Single<&PartyRoster>,
     members: Query<(&Character, &Vitals, &crate::game::actors::Attributes)>,
-    mut items: Query<(Entity, &mut WorldItem, &Transform)>,
+    hidden: Query<(Entity, &Transform), (With<Lying>, With<Hidden>)>,
+    items: Items,
     obstacles: WorldObstacles,
     content: If<Res<crate::game::data::Catalogs>>,
     mut news: MessageWriter<SearchNews>,
+    mut commands: Commands,
 ) {
     if !search.pulse.tick(time.delta()).just_finished() {
         return;
@@ -191,10 +193,7 @@ pub fn search_pulse(
     }
     let Some((score, searcher)) = best else { return };
     let catalog = &content.items;
-    for (target, mut item, at) in &mut items {
-        if !item.hidden {
-            continue;
-        }
+    for (target, at) in &hidden {
         let to = at.translation;
         let distance = from.distance(to);
         let ahead = (to - from).with_y(0.0).dot(forward) > 0.0;
@@ -204,11 +203,11 @@ pub fn search_pulse(
         if !obstacles.clear(from, to) {
             continue;
         }
-        item.hidden = false;
+        commands.entity(target).remove::<Hidden>();
         news.write(SearchNews::Spotted {
             target,
             member: searcher.name.clone(),
-            item: item.display_name(&catalog[item.appearance()], false),
+            item: items.name(target, catalog, false).unwrap_or_default(),
         });
     }
 }

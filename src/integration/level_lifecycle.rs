@@ -428,7 +428,7 @@ fn direct_damage_settles_death_once() {
     use crate::content::items::{Dice, ItemDefinition, ItemId};
     use crate::content::species::{Drop, Treasure};
     use crate::game::inventory::PartyInventory;
-    use crate::game::world::items::WorldItem;
+    use crate::game::items::{Count, Item, Lying};
     use bevy::ecs::system::RunSystemOnce;
     let mut app = app();
     with_data(&mut app);
@@ -464,18 +464,17 @@ fn direct_damage_settles_death_once() {
     assert!(world.get::<crate::game::characters::Vitals>(target).unwrap().is_dead());
     assert!(
         world
-            .query_filtered::<&Transform, With<WorldItem>>()
+            .query_filtered::<&Transform, With<Lying>>()
             .iter(world)
             .all(|at| { at.translation == physical - Vec3::Y + Vec3::Y * 0.25 })
     );
     hit(world);
     assert_eq!(world.query::<&PartyInventory>().single(world).unwrap().gold, 7);
     let units = world
-        .query::<&WorldItem>()
+        .query::<(&Item, Option<&Count>)>()
         .iter(world)
-        .flat_map(|w| w.stacks().iter())
-        .filter(|i| i.item == ItemId(0))
-        .map(|i| i.units())
+        .filter(|(item, _)| item.0 == ItemId(0))
+        .map(|(_, count)| count.map_or(1, |count| u32::from(count.of)))
         .sum::<u32>();
     assert_eq!(units, 2, "death preserves every drop and cannot award it twice");
 }

@@ -99,6 +99,7 @@ impl Plugin for PresentationPlugin {
         .add_observer(retail_controls::give_focus_back)
         .add_observer(party_view::attach_camera)
         .add_observer(monsters::remove_monster_visuals)
+        .add_observer(world_items::hide_taken_items)
         .add_observer(environment::request_level_visuals)
         .add_observer(sky::request_skies)
         .add_observer(dialog::open_travel_question)

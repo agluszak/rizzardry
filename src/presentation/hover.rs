@@ -7,9 +7,10 @@ use bevy::time::Stopwatch;
 
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, Vitals};
+use crate::game::items::{Hidden, Items, Lying};
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::identify::{GroupMember, MonsterGroup, health_known};
-use crate::game::world::items::{REACH, WorldItem};
+use crate::game::world::items::REACH;
 use crate::game::world::population::Monster;
 use crate::presentation::screen_art::{BitmapText, absolute};
 
@@ -34,13 +35,13 @@ impl Hover {
 pub fn hover(
     time: Res<Time>,
     selection: Res<super::selection::WorldSelection>,
-    items: Query<&WorldItem>,
+    items: Query<Has<Hidden>, With<Lying>>,
     monsters: Query<&crate::game::characters::Vitals, With<Monster>>,
     mut hovered: ResMut<Hover>,
 ) {
     let under = selection.hit.and_then(|hit| {
         let wanted = match (items.get(hit.entity), monsters.get(hit.entity)) {
-            (Ok(item), _) => hit.distance < REACH && !item.hidden,
+            (Ok(hidden), _) => hit.distance < REACH && !hidden,
             (_, Ok(vitals)) => !vitals.is_dead(),
             _ => false,
         };
@@ -67,7 +68,7 @@ pub fn show_tooltip(
     mut commands: Commands,
     hovered: Res<Hover>,
     (items, monsters, groups, memberships, roster, members): (
-        Query<&WorldItem>,
+        Items,
         Query<(&Monster, &crate::game::characters::Vitals)>,
         Query<&MonsterGroup>,
         Query<&GroupMember>,
@@ -99,10 +100,9 @@ pub fn show_tooltip(
             hovered.entity.filter(|_| hovered.held.elapsed_secs() >= TOOLTIP_DELAY).zip(cursor)?;
         let target = cameras.single().ok()?.logical_target_size()? / scale.0;
         let sheet = sheets.get(&*font)?;
-        let text = if let Ok(item) = items.get(entity) {
+        let text = if let Some(name) = items.name(entity, &content.items, true) {
             // "Bullets (Unidentified) (16)".
-            let catalog = &content.items;
-            item.display_name(&catalog[item.appearance()], true)
+            name
         } else if let Ok((monster, vitals)) = monsters.get(entity) {
             // "Crustacean (?/12)" (retail `SetCombatSelection`).
             let catalog = &content.species;

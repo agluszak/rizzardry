@@ -29,8 +29,9 @@ use super::screen_art::{BitmapText, visible_if};
 use crate::content::level::TRAP_TYPES;
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, Vitals};
+use crate::game::items::Items;
 use crate::game::party::roster::PartyRoster;
-use crate::game::world::containers::{Container, Recipient};
+use crate::game::world::containers::Recipient;
 use crate::game::world::interaction::{
     self, AttemptOn, COMPONENTS, DeviceInteraction, DeviceRequest, Observation, TRAP_COMPONENTS,
     Work,
@@ -79,7 +80,7 @@ struct DevicePanel {
     /// names): it picks which components can be worked on.
     guess: usize,
     /// Stacks chosen to take, and how much of each.
-    chosen: Vec<(usize, u16)>,
+    chosen: Vec<(Entity, u16)>,
 }
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,9 +94,9 @@ enum Control {
     Component(usize),
     Inspect,
     Spring,
-    Row(usize),
-    Less(usize),
-    More(usize),
+    Row(Entity),
+    Less(Entity),
+    More(Entity),
     All,
     TakeToParty,
     TakeToMember,
@@ -120,7 +121,7 @@ struct LootRows {
 
 /// One stack's row, kept while the stack stays in the container.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
-struct LootRow(usize);
+struct LootRow(Entity);
 
 /// Build an attempt's panel when the attempt begins.
 fn open_panel(
@@ -315,19 +316,17 @@ fn sync_loot_rows(
     rows: Query<&LootRow>,
     controls: Query<(Entity, &Control)>,
     children: Query<&Children>,
-    containers: Query<Ref<Container>>,
+    held: Items,
     mut focus: Option<ResMut<InputFocus>>,
     art: Res<DevicePanelArt>,
 ) {
     for (list, rows_of, existing) in &lists {
         let Ok((panel_of, mut panel)) = panels.get_mut(rows_of.panel) else { continue };
         let Ok(on) = attempts.get(panel_of.0) else { continue };
-        let Ok(container) = containers.get(on.0) else { continue };
-        let existing: Vec<(Entity, usize)> = existing
+        let existing: Vec<(Entity, Entity)> = existing
             .map(|c| c.iter().filter_map(|r| rows.get(r).ok().map(|row| (r, row.0))).collect())
             .unwrap_or_default();
-        // A container's contents are values, listed by position.
-        let stacks: Vec<usize> = (0..container.contents.items.len()).collect();
+        let stacks: Vec<Entity> = held.stowed(on.0).to_vec();
         if existing.iter().map(|(_, id)| *id).eq(stacks.iter().copied()) {
             continue;
         }
@@ -386,7 +385,7 @@ fn draw_device_panel(
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
     members: Query<(&Character, &Vitals, &crate::game::actors::Attributes)>,
-    containers: Query<&Container>,
+    held: Items,
     content: If<Res<crate::game::data::Catalogs>>,
     strings: crate::presentation::screen_art::GameStrings,
     mut captions: Query<(&Caption, &mut BitmapText)>,
@@ -402,7 +401,7 @@ fn draw_device_panel(
         if name.is_empty() { "Trap" } else { name }.to_owned()
     };
     let catalog = &content.items;
-    let stacks = containers.get(on.0).map_or(&[][..], |c| &c.contents.items[..]);
+    let stacks = held.stowed(on.0);
     let percent = |value: Option<u32>| value.map_or("-".to_owned(), |v| format!("{v}%"));
 
     let text = |role: Caption| -> String {
@@ -446,16 +445,14 @@ fn draw_device_panel(
                     format!("{} {mark}", index + 1)
                 }
                 (Control::Row(id), Work::Looting) => {
-                    let Some(stack) = stacks.get(id) else {
+                    let Some(item) = held.name(id, catalog, false) else {
                         return String::new();
                     };
-                    let item = stack.display_name(&catalog[stack.item], false);
+                    let count = held.units(id);
                     match panel.chosen.iter().find(|(c, _)| *c == id) {
-                        Some((_, amount)) if stack.count() > 1 => {
-                            format!("[{amount}/{}] {item}", stack.count())
-                        }
+                        Some((_, amount)) if count > 1 => format!("[{amount}/{count}] {item}"),
                         Some(_) => format!("[x] {item}"),
-                        None if stack.count() > 1 => format!("[ ] {item} ({})", stack.count()),
+                        None if count > 1 => format!("[ ] {item} ({count})"),
                         None => format!("[ ] {item}"),
                     }
                 }
@@ -501,7 +498,7 @@ fn draw_device_panel(
                 member.is_some_and(|(_, (_, vitals, _))| vitals.can_act())
             }
             (Control::Less(id) | Control::More(id), _) => {
-                stacks.get(id).is_some_and(|s| s.count() > 1)
+                stacks.contains(&id) && held.units(id) > 1
             }
             (Control::TakeToParty | Control::TakeToMember, _) => !panel.chosen.is_empty(),
             _ => true,
@@ -529,7 +526,7 @@ fn press(
     controls: Query<&Control, Without<InteractionDisabled>>,
     mut panels: Query<(&PanelOf, &mut DevicePanel)>,
     attempts: Query<&AttemptOn>,
-    containers: Query<&Container>,
+    held: Items,
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
     mut commands: Commands,
@@ -542,9 +539,7 @@ fn press(
     };
     let Ok(&AttemptOn(device)) = attempts.get(on) else { return };
     let actor = selected.member(&roster);
-    let count = |id: usize| {
-        containers.get(device).ok().and_then(|c| c.contents.items.get(id)).map_or(0, |s| s.count())
-    };
+    let count = |id: Entity| held.units(id) as u16;
     match control {
         Control::Cast | Control::UseItem => {
             if let (Some(actor), Some(art)) = (actor, magic_art.as_deref()) {
@@ -620,10 +615,8 @@ fn press(
             }
         }
         Control::All => {
-            let ids: Vec<(usize, u16)> = containers
-                .get(device)
-                .map(|c| c.contents.items.iter().enumerate().map(|(i, s)| (i, s.count())).collect())
-                .unwrap_or_default();
+            let ids: Vec<(Entity, u16)> =
+                held.stowed(device).iter().map(|&item| (item, count(item))).collect();
             panel.chosen = if panel.chosen.len() == ids.len() { vec![] } else { ids };
         }
         Control::TakeToParty | Control::TakeToMember => {
