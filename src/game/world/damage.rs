@@ -48,6 +48,7 @@ pub fn monster_died(
         ActorPose,
         Option<&Walker>,
         &LevelOwned,
+        &super::hostility::Allegiance,
         Has<crate::game::magic::pointcasts::SummonedBy>,
     )>,
     mut motion: Query<(
@@ -75,7 +76,9 @@ pub fn monster_died(
     mut faction_news: MessageWriter<crate::game::factions::FactionNews>,
 ) {
     let target = death.entity;
-    let Ok((monster, at, walker, owner, summoned)) = monsters.get(target) else { return };
+    let Ok((monster, at, walker, owner, allegiance, summoned)) = monsters.get(target) else {
+        return;
+    };
     // Stop autonomous work, not the body's geometry or vertical physics.
     let (targeting, controller, motor, velocity, navigation_velocity) =
         motion.get_mut(target).unwrap();
@@ -99,8 +102,7 @@ pub fn monster_died(
         return;
     }
     let (catalog, tables) = (&content.items, &content.loot);
-    let kind = &content.species[monster.species];
-    if let Some(news) = factions.record_offence(kind.faction, kind.npc.is_some(), clock.ms) {
+    if let Some(news) = factions.record_offence(allegiance.faction, allegiance.npc, clock.ms) {
         faction_news.write(news);
     }
     let rng = &mut *rng;
@@ -114,6 +116,8 @@ pub fn monster_died(
             let party_level = crate::game::party::average_level(
                 roster.iter().map(|member| characters.get(member).unwrap().level()),
             );
+            // Its loot is made now, from what its species drops.
+            let kind = &content.species[monster.species];
             crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng)
         }
     };
