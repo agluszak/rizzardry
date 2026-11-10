@@ -93,6 +93,21 @@ pub struct Bonus {
     pub stride: f32,
     /// Sight percentage points lost by eyes behind the bearer.
     pub concealment: u32,
+    /// The bearer is warned of what is about.
+    pub warns: bool,
+    /// The bearer finds what is hidden as they search.
+    pub reveals: bool,
+    /// The bearer can breathe as a Dracon does.
+    pub breath: bool,
+}
+
+/// How a laid spell answers what comes at its bearer, as its rows say.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Answers {
+    /// A slowing first spends itself against it.
+    pub slowing: bool,
+    /// It answers a close blow with its dice.
+    pub blows: bool,
 }
 
 impl std::ops::AddAssign for Bonus {
@@ -103,6 +118,9 @@ impl std::ops::AddAssign for Bonus {
         self.reduction += other.reduction;
         self.stride += other.stride;
         self.concealment += other.concealment;
+        self.warns |= other.warns;
+        self.reveals |= other.reveals;
+        self.breath |= other.breath;
         for (realm, amount) in other.resistance {
             self.resistance[realm] += amount;
         }
@@ -131,6 +149,9 @@ fn bonus(laid: Enchantment, row: &WhileLaid) -> Bonus {
         reduction: amount(&row.reduction),
         stride: laid.power as f32 * row.stride_per_power,
         concealment: amount(&row.concealment) as u32,
+        warns: row.warns,
+        reveals: row.reveals,
+        breath: row.breath,
     }
 }
 
@@ -183,9 +204,16 @@ pub struct Laying<'w, 's> {
         's,
         (&'static mut Enchantment, Option<&'static mut Turns>, Option<&'static mut Absorbs>),
     >,
+    answers: Query<'w, 's, &'static Answers>,
 }
 
 impl Laying<'_, '_> {
+    /// The spell on a bearer that answers in this way.
+    fn answering(&self, bearer: Entity, how: fn(&Answers) -> bool) -> Option<Entity> {
+        let laid = self.bearers.get(bearer).ok()?;
+        laid.0.iter().copied().find(|&entity| self.answers.get(entity).is_ok_and(how))
+    }
+
     fn find(&self, bearer: Entity, spell: SpellId) -> Option<Entity> {
         let laid = self.bearers.get(bearer).ok()?;
         laid.0
@@ -223,25 +251,23 @@ impl Laying<'_, '_> {
         if let Some(pulse) = facts.pulse {
             spell.insert(Pulses(pulse));
         }
-        if laid.spell == SpellId::GUARDIAN_ANGEL {
+        let row = self.content.spell_effects.get(laid.spell);
+        if row.is_some_and(|row| row.absorbs) {
             spell.insert(Absorbs(absorbs));
+        }
+        let answers = Answers {
+            slowing: row.is_some_and(|row| row.answers_slowing),
+            blows: facts.laid.answers_blows,
+        };
+        if answers.slowing || answers.blows {
+            spell.insert(answers);
         }
         true
     }
 
-    /// Lift a spell from a bearer.
-    pub fn lift(&mut self, bearer: Entity, spell: SpellId) -> bool {
-        let found = self.find(bearer, spell);
-        if let Some(entity) = found {
-            self.commands.entity(entity).despawn();
-        }
-        found.is_some()
-    }
-
-    /// Take `turns` off a spell on a bearer; with none left it is lifted.
-    /// The turns it had.
-    pub fn shorten(&mut self, bearer: Entity, spell: SpellId, turns: u32) -> u32 {
-        let Some(entity) = self.find(bearer, spell) else { return 0 };
+    /// Take `turns` off a spell laid; with none left it is lifted. The turns
+    /// it had.
+    fn shorten(&mut self, entity: Entity, turns: u32) -> u32 {
         let Ok((_, Some(mut left), _)) = self.spells.get_mut(entity) else { return 0 };
         let had = left.0;
         left.0 -= turns.min(had);
@@ -251,9 +277,9 @@ impl Laying<'_, '_> {
         had
     }
 
-    /// A slowing for `lasting` first spends itself on the bearer's Haste:
-    /// only what is left of it slows, and one without end ends Haste
-    /// outright (retail `InflictCharacterCondition`,
+    /// A slowing for `lasting` first spends itself on a spell of the bearer's
+    /// that answers one (Haste): only what is left of it slows, and one
+    /// without end ends that spell outright (retail `InflictCharacterCondition`,
     /// `InflictMonsterCondition`). What is left of the slowing, if any.
     pub fn slow(
         &mut self,
@@ -261,13 +287,16 @@ impl Laying<'_, '_> {
         lasting: crate::game::characters::Lasting,
     ) -> Option<crate::game::characters::Lasting> {
         use crate::game::characters::Lasting;
+        let Some(haste) = self.answering(bearer, |answers| answers.slowing) else {
+            return Some(lasting);
+        };
         match lasting {
             Lasting::Indefinite => {
-                self.lift(bearer, SpellId::HASTE);
+                self.commands.entity(haste).despawn();
                 Some(lasting)
             }
             Lasting::Rounds(turns) => {
-                let spent = self.shorten(bearer, SpellId::HASTE, turns).min(turns);
+                let spent = self.shorten(haste, turns).min(turns);
                 (turns > spent).then_some(Lasting::Rounds(turns - spent))
             }
         }
@@ -284,7 +313,7 @@ impl Laying<'_, '_> {
             let hangs = cloud.facts.pulse.is_some_and(|pulse| pulse.on == Pulsing::Bearer);
             let by = strength.max(cloud.level) - cloud.level;
             if hangs {
-                self.shorten(bearer, spell, by);
+                self.shorten(entity, by);
             }
         }
     }
@@ -303,11 +332,15 @@ impl Laying<'_, '_> {
         }
     }
 
-    /// Guardian Angel takes what it can of `amount` of damage to a bearer;
-    /// what gets through is returned. An angel exactly spent stays until a
-    /// blow gets past it, then lifts (as retail keeps it).
+    /// A spell that absorbs (Guardian Angel) takes what it can of `amount`
+    /// of damage to a bearer; what gets through is returned. One exactly
+    /// spent stays until a blow gets past it, then lifts (as retail keeps
+    /// it).
     pub fn absorb(&mut self, bearer: Entity, amount: u32) -> u32 {
-        let Some(entity) = self.find(bearer, SpellId::GUARDIAN_ANGEL) else { return amount };
+        let absorbing = self.bearers.get(bearer).ok().and_then(|laid| {
+            laid.0.iter().copied().find(|&e| self.spells.get(e).is_ok_and(|s| s.2.is_some()))
+        });
+        let Some(entity) = absorbing else { return amount };
         let Ok((.., Some(mut angel))) = self.spells.get_mut(entity) else { return amount };
         if amount <= angel.0 {
             angel.0 -= amount;
@@ -319,10 +352,22 @@ impl Laying<'_, '_> {
         through
     }
 
-    /// Razor Cloak or Eye for an Eye on a bearer answers: it loses a point
-    /// of power and lifts at none. What it was as it answered.
+    /// A spell on a bearer that answers close blows (Razor Cloak) answers
+    /// one: what it was as it answered.
+    pub fn answer_blow(&mut self, bearer: Entity) -> Option<Enchantment> {
+        let entity = self.answering(bearer, |answers| answers.blows)?;
+        self.spend_point(entity)
+    }
+
+    /// A spell on a bearer answers (Eye for an Eye): what it was as it
+    /// answered.
     pub fn spend(&mut self, bearer: Entity, spell: SpellId) -> Option<Enchantment> {
         let entity = self.find(bearer, spell)?;
+        self.spend_point(entity)
+    }
+
+    /// A spell that answers loses a point of power and lifts at none.
+    fn spend_point(&mut self, entity: Entity) -> Option<Enchantment> {
         let mut laid = self.spells.get_mut(entity).ok()?.0;
         let before = *laid;
         if before.power == 0 {

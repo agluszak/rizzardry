@@ -145,7 +145,7 @@ pub(crate) fn pass_time(
             PartyBody::eye(position),
             body.forward(),
             None,
-            laid.has(party, crate::content::spells::SpellId::SHADOW_HOUND),
+            laid.bonus(party).warns,
             search.on(false),
             &mut rng,
         );

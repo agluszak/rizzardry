@@ -185,9 +185,7 @@ pub fn search_pulse(
         if score > best.map_or(0, |b| b.0) {
             best = Some((score, member));
         }
-        if laid.has(*the_party, crate::content::spells::SpellId::DETECT_SECRETS)
-            && !(best.is_some() && rng.below(2) == 0)
-        {
+        if laid.bonus(*the_party).reveals && !(best.is_some() && rng.below(2) == 0) {
             best = Some((100, member));
         }
     }

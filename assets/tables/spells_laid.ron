@@ -38,6 +38,14 @@
 //                       turned aside), reduction (percent cut off damage),
 //                       concealment (sight lost by eyes behind the bearer):
 //                         an Amount;
+//                       warns: the bearer is never surprised and makes out
+//                         who comes (Shadow Hound);
+//                       reveals: the bearer finds what is hidden as they
+//                         search (Detect Secrets);
+//                       breath: the bearer can breathe as a Dracon does;
+//                       answers_blows: it answers a close blow at its bearer
+//                         with its dice, losing a point of power each time
+//                         (Razor Cloak);
 //                       resistance, attributes: (amount: an Amount, only:
 //                         the realms or attributes it is added to; all if
 //                         left out);
@@ -67,11 +75,19 @@
     CURE_LESSER_COND: (
         can_backfire: true,
     ),
+    DETECT_SECRETS: (
+        laid: (
+            reveals: true,
+        ),
+    ),
     DIVINE_TRAP: (
         working: DivineTrap,
     ),
     DRACON_BREATH: (
         personal: true,
+        laid: (
+            breath: true,
+        ),
     ),
     ENCHANTED_BLADE: (
         laid: (
@@ -91,6 +107,9 @@
     ),
     RAZOR_CLOAK: (
         personal: true,
+        laid: (
+            answers_blows: true,
+        ),
     ),
     ARMORPLATE: (
         laid: (
@@ -123,6 +142,11 @@
     ),
     REST_ALL: (
         can_backfire: true,
+    ),
+    SHADOW_HOUND: (
+        laid: (
+            warns: true,
+        ),
     ),
     ACID_BOMB: (
         only_in_a_fight: true,
