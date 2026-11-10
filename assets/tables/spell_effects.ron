@@ -10,7 +10,8 @@
 //   chance       the percent chance it happens at all
 //   save         the base of the save the body may make against it
 //   spell_realm  the body resists it, and saves, in the spell's own realm
-//   half         saved against and resisted at half strength
+//   half         saved against and resisted at half strength, and lasting half
+//                as long (retail `InflictConditionAttack`, `Magic Effects.cpp:1923-1928`)
 //   landed       only if the row before it landed
 //   resisted     only if the row before it was resisted
 //   kinds        only these kinds of monster
@@ -18,8 +19,10 @@
 // SpellDice its dice, SpellRounds its duration, SpellEnchant itself.
 // leeches: the damage it deals comes back to its caster, as health (true)
 // or as spell points (false).
-// backfire: what a personal spell turned on its caster does, in the same
-// rows; one without it does nothing.
+// backfire: what a spell turned on its caster does, in the same rows, for a
+// personal spell (one without it does nothing) or a friendly one that can
+// backfire (retail `CanSpellBackfire`); a hostile spell's is its ordinary
+// effect.
 // pulse: what a spell laid that pulses (spells_laid.ron) does to each body
 // it strikes as a round ends, in the same rows (retail `TickCombatEffectSlots`
 // for the clouds): Death Cloud makes a death save; the others hurt, Draining
@@ -88,11 +91,15 @@
         effects: [
             (kind: Refresh, roll: SpellDice),
         ],
+        backfire: [
+            (kind: Tire, roll: SpellDice),
+        ],
     ),
     TERROR: (
         effects: [
             (kind: Afflict(condition: Afraid), roll: SpellRounds, save: 5, spell_realm: true),
             (kind: Afflict(condition: Unconscious), on: Members, roll: SpellRounds, save: 22, spell_realm: true, half: true, landed: true),
+            (kind: Afflict(condition: Afraid), on: Monsters, roll: SpellRounds, save: 5, spell_realm: true, half: true, landed: true),
         ],
     ),
     BLINDING_FLASH: (
@@ -103,6 +110,9 @@
     CURE_LESSER_COND: (
         effects: [
             (kind: Cure(conditions: [Irritated, Nauseated, Afraid, Asleep, Blind])),
+        ],
+        backfire: [
+            (kind: AfflictAny([Irritated, Nauseated, Afraid, Asleep, Blind]), roll: SpellRounds, spell_realm: true),
         ],
     ),
     DETECT_SECRETS: (
@@ -196,6 +206,9 @@
         effects: [
             (kind: Cure(conditions: [Paralyzed, Webbed])),
         ],
+        backfire: [
+            (kind: Afflict(condition: Paralyzed), roll: SpellRounds, save: 18, spell_realm: true),
+        ],
     ),
     CURE_POISON: (
         effects: [
@@ -233,6 +246,9 @@
     REST_ALL: (
         effects: [
             (kind: Refresh, roll: SpellDice),
+        ],
+        backfire: [
+            (kind: Tire, roll: SpellDice),
         ],
     ),
     SHADOW_HOUND: (
@@ -314,6 +330,9 @@
         effects: [
             (kind: Cure(conditions: [Hexed])),
         ],
+        backfire: [
+            (kind: Afflict(condition: Hexed), roll: SpellRounds, save: 8, spell_realm: true),
+        ],
     ),
     SOUL_SHIELD: (
         effects: [
@@ -391,6 +410,9 @@
     SANE_MIND: (
         effects: [
             (kind: Cure(conditions: [Insane, Turncoat])),
+        ],
+        backfire: [
+            (kind: Afflict(condition: Insane), roll: SpellRounds, save: 10, spell_realm: true),
         ],
     ),
     TOXIC_CLOUD: (

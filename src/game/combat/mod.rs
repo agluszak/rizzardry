@@ -205,6 +205,11 @@ impl Round {
         self.playing
     }
 
+    /// The moment the round has come to, 1 to 100; 0 before it begins.
+    pub fn moment(&self) -> u32 {
+        self.moment.min(LAST_MOMENT)
+    }
+
     /// Something in this round counts as an attack, keeping the fight going.
     pub fn attacked(&mut self, attacked: bool) {
         self.attacked |= attacked;

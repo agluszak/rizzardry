@@ -8,7 +8,7 @@ use crate::game::magic::Strength;
 use crate::game::rng::GameRng;
 
 /// Retail's marker for a condition without end (`W8_CONDITION_INDEFINITE`),
-/// which resistance cuts like any other duration.
+/// which resistance does not cut.
 pub const INDEFINITE: u32 = 9999;
 
 /// Each condition's base save (retail `g_condition_resist_base`), by retail
@@ -48,8 +48,12 @@ pub fn save_roll(rng: &mut GameRng, chance: i32) -> bool {
 }
 
 /// Retail `ReduceMagnitudeByResistance`: resistance and the victim's level
-/// over the attack's strength take a random share off.
+/// over the attack's strength take a random share off; what is without end
+/// (`Magic Effects.cpp:430-432`) is left whole.
 pub fn resist(rng: &mut GameRng, amount: u32, resistance: i32, level: u32, against: u32) -> u32 {
+    if amount == INDEFINITE {
+        return amount;
+    }
     let mut c = resistance + (level as i32 - against as i32) * 3;
     if c <= 0 {
         return amount;
@@ -96,4 +100,21 @@ pub fn cure(
         }
     }
     lifted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// With resistance 1000 against a level-50 victim and strength 0 the cut
+    /// is the whole of any ordinary amount (the share is held to 100), yet a
+    /// condition without end is left whole (`Magic Effects.cpp:430-432`).
+    #[test]
+    fn resistance_cuts_a_duration_but_not_what_has_no_end() {
+        let mut rng = GameRng::seeded(5);
+        for _ in 0..50 {
+            assert_eq!(resist(&mut rng, INDEFINITE, 1000, 50, 0), INDEFINITE);
+            assert!(resist(&mut rng, 40, 1000, 50, 0) < 40);
+        }
+    }
 }

@@ -789,6 +789,7 @@ pub fn handle_device_requests(
                                     *setting,
                                     crate::game::magic::utilities::underwater(&states),
                                 ),
+                                0, // a lock or a trap is met outside a fight
                                 &mut rng,
                                 &mut commands,
                             )

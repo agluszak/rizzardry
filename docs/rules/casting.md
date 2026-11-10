@@ -72,8 +72,9 @@ A cast is refused, and nothing is spent, for the first of these that holds:
    caster.
 2. **Silenced.** A cast that is voiced is refused while the caster is Silenced:
    a learned spell, or an instrument. Any other item is not voiced and is not
-   stopped. The original lets a silenced member cast an Alchemy spell if they
-   have any Alchemy skill (`IsSpellBlockedForCharacter`); see *Open questions*.
+   stopped. A silenced member can still cast an Alchemy spell, one in the
+   Alchemy book, if their Alchemy skill is above 0
+   (`IsSpellBlockedForCharacter`); an instrument is stopped whatever it plays.
    A monster is stopped by Silence unless the spell is an Alchemy spell and the
    monster is of one of the kinds that keep their Alchemy (Ranger, Alchemist,
    Ninja; `IsSpellBlockedForMonster`).
@@ -81,8 +82,9 @@ A cast is refused, and nothing is spent, for the first of these that holds:
 4. **Power 0.** A learned spell chosen at power 0 is refused.
 5. **No spell points.** A learned spell needs points for at least power 1 in
    its realm (section 3).
-6. **An item.** The item must still be there, carried by the caster or in the
-   party's pool. It must carry a spell, of a power above 0 (an instrument or
+6. **An item.** The item must still be there, carried by the caster or, outside
+   a fight, in the party's pool (in a fight the pool is out of reach,
+   `CanPartySlotUseRecordedItem`). It must carry a spell, of a power above 0 (an instrument or
    gadget has none of its own, section 3). The user must be one who may
    activate it: not an item with no use, nor a spellbook; worn in a slot in use
    if it must be worn (weapons, armour, misc worn things, and anything marked);
@@ -255,9 +257,11 @@ four (retail `g_profession_spellbooks`, `GetProfessionCasterLevel`,
 
 In a fight the chance is also scaled by how late the caster's moment is
 (retail `ScaleByCombatPace`). With `pace` = 80 on Novice, 60 on Normal, 40 on
-Expert, and `moment` the caster's moment in the round (1 to 100): if `moment >=
-pace`, `chance = (50 - pace + moment) * chance * 2 / 100`; otherwise unchanged.
-Nothing caps the chance before this. See *Open questions*.
+Expert, and `moment` the caster's moment in the round (1 to 100; 0 outside a
+fight): if `moment >= pace`, `chance = (50 - pace + moment) * chance * 2 / 100`;
+otherwise unchanged. Nothing caps the chance, before this or after: a chance
+past 100 counts for a third of itself in the chance to backfire (below). Sane
+Mind cast by a member on themselves adds its 50 after the pace.
 
 ### The failure chance of an item
 
@@ -278,7 +282,9 @@ chance = chance + 30                          if the item is not identified
 thrown: chance = chance / 2 (a "quiet" use)
 ```
 
-(retail `GetItemUseDifficulty`, `CastItemSpell`). It is held at 100 at most.
+(retail `GetItemUseDifficulty`, `CastItemSpell`). It is not held at 100. How well
+an instrument or gadget is played (section 3) asks the item's chance without
+the pace.
 
 ### A monster's failure chance
 
@@ -317,8 +323,7 @@ the caster the victim; its strength is the aimed body's:
   caster; except Charm and Mindread, whose backfire is told in section 8;
 - aimed at a group: the group's leader casts it, and it falls on the caster's
   side: the whole party if a member cast it, the caster's own group if a
-  monster did (the original takes all of them; the Rust code takes those of the
-  caster's side within the spell's reach, see *Open questions*);
+  monster did, however far or out of sight;
 - a cone or a blast: it falls on the caster's side where the spell was to go
   off (a blast centred on the caster, a cone toward the aimed spot);
 - aimed at all enemies, the party, or an item: it is cast as it was, but
@@ -372,7 +377,7 @@ then the monsters as they joined it.
 | a friend | the body aimed at, if it is the caster or a friend, and reached |
 | the party | every member of the party (the dead too: the rows decide) |
 | an enemy | the foe aimed at; or, aimed "ahead", the foe reached whose direction from the caster's eye is nearest to the way the caster faces, the nearer of two equal; a foe must be reached |
-| an enemy group | the foe aimed at, then every other foe reached of its group |
+| an enemy group | the foe aimed at, then every other of its group, reached or not (`PopulateSpellTargetMarkers`) |
 | a cone | every living body but the caster, reached, inside the cone toward the aimed foe |
 | a radius | every foe whose body is within the spell's radius of the spot (see below) and that has a clear line to the spot |
 | all enemies | every foe reached |
@@ -471,9 +476,9 @@ For one victim and one row, in order:
     row is **applied**, and the next row sees it landed.
 
 What "half" and "if resisted" mean, then: *half* halves the strength the save
-and the resistance weigh against (not the magnitude); a row marked *landed*
+and the resistance weigh against, and the rounds rolled (`InflictConditionAttack`); a row marked *landed*
 needs the row before it to have landed on this victim (Terror's Unconscious
-for members, Sonic Boom's second Afraid for monsters); a row marked *resisted*
+for members, Terror's and Sonic Boom's second Afraid for monsters); a row marked *resisted*
 needs the row before it to have been resisted (Pandemonium's Afraid comes only
 if the Insane was resisted).
 
@@ -583,8 +588,8 @@ health is lowest in proportion (if any is hurt); a monster caster heals
 itself. After **Might to Magic**, what it took is given back as spell points
 evenly to the party member whose points are lowest in proportion; a monster
 caster gains half of it in budget. The amount drained from each victim is its
-magnitude, cut down to the health the victim had (the original takes this before
-Guardian Angel; see *Open questions*). (retail `DrainTargetsLife`)
+magnitude, cut down to the health the victim had, taken before any Guardian
+Angel the victim bears takes its share. (retail `DrainTargetsLife`)
 
 ## 7. What a cast costs and trains
 
@@ -596,7 +601,7 @@ Guardian Angel; see *Open questions*). (retail `DrainTargetsLife`)
   it is single. A potion or scroll used up is gone, but its cast still lands
   (the cast keeps its own copy). An emptied wand stays and refuses. Paid on a
   fizzle and a backfire. An item that is refused costs nothing.
-- **Nothing** for a monster's own spell: but see *Open questions*.
+- **Nothing** for a monster's own spell, but the stamina below.
 
 ### Stamina
 
@@ -604,16 +609,16 @@ After the cast the caster is tired:
 
 | The cast | Stamina cost |
 | --- | --- |
-| a learned spell | spell level + power |
+| a learned spell, or a monster's own spell | spell level + power |
 | a thrown item | 10 |
 | an instrument or gadget | `8 * spell level + 20`, even if played badly or not at all |
 | any other item | below(2) + 1, doubled if Diseased |
 
-For a member the cost, except for the instrument or gadget, is then scaled by
+For a member the cost, the instrument's or gadget's too, is then scaled by
 load and pace as for an attack: `cost + load% * cost / 100`, with load 0, 25,
 50, 100, 200 for none, light, medium, heavy, extreme, less 25 if slowed,
-otherwise plus 25 if hasted ([attack](attack.md) section 6). The original
-scales the instrument's cost likewise. At 0 stamina the caster is exhausted
+otherwise plus 25 if hasted ([attack](attack.md) section 6); a monster's is
+taken as it stands (`FatigueCharacter`, `FatigueMonster`). At 0 stamina the caster is exhausted
 ([actors](actors.md)).
 
 ### Practice
@@ -688,7 +693,8 @@ practice even if it fizzles.
   fizzle or backfire does nothing.
 - **Charm.** Cast at the one the party is talking with, while they wait for the
   party's word. On a cast that comes off the victim saves: `(level - against) *
-  3 + resistance in Mental`, held within 5 and 95. If it fails, `amount = 7 *
+  3 + resistance in Mental`, scaled for difficulty by the speaker's side as any
+  save is (section 6), held within 5 and 95. If it fails, `amount = 7 *
   power`, raised by the boost, then cut by resistance as in section 6 (step 8);
   if the amount is above what the speaker already has been charmed by, the
   speaker is charmed by that amount, and leaves the menu as its script next
@@ -701,10 +707,12 @@ practice even if it fizzles.
 - **Hypnotic Lure.** Cast at a spot the party sees within the spell's reach
   plus eye height. It replaces any lure already standing. A lure stands for its
   rounds. Each hostile monster within the far clip of the spot, not blind, not
-  asleep or worse, with a clear line from its eye to the spot, and not undead,
-  rolls a save (its level against the cast's strength, 5 to 95 percent, no
-  difficulty scaling): if it fails to resist, it is **controlled**; else it
-  **resisted**, and does not roll for this lure again. Outside a fight a
+  asleep or worse, with a clear line from its eye to the spot, rolls a save
+  (its level against the cast's strength, 5 to 95 percent, no difficulty
+  scaling; an undead monster always resists): if it fails to resist, it is
+  **controlled**; else it **resisted**, and does not roll for this lure again.
+  A monster that does not qualify is passed over, and the rest are still
+  taken (`ApplyMonsterControlToNearbyMonsters`). Outside a fight a
   controlled monster's whole group follows its choice. A controlled monster
   outside a fight, which can fight and is not blind, walks to the lure while it
   is more than 5 m from it and turns to face it; when the lure goes, so does
@@ -782,9 +790,8 @@ practice even if it fizzles.
   fight; a monster's from its budget alone (section 4).
 - **Strength**: a member's from total caster level, with Power Cast; a
   monster's from its level, with no boost.
-- **Silence**: a member is stopped unless (in the original) the spell is
-  Alchemy and they have the skill; a monster, unless Alchemy and of the three
-  kinds.
+- **Silence**: a member is stopped unless the spell is Alchemy and they have
+  the skill; a monster, unless Alchemy and of the three kinds.
 - **Items**: only members use items. Potions and food are usable by anyone, and
   in a fight a potion or food is always taken by its user.
 - **What it is cast at**: a monster's own cast is aimed from the bodies it
@@ -792,8 +799,8 @@ practice even if it fizzles.
   spell, an item spell or a lock spell, and a spell it casts at a group needs
   at least half the party to feel it.
 - **Provocation, practice, Power Cast, instruments**: members only.
-- **Stamina**: a member pays level + power; a monster's own cast pays nothing
-  in the code (the original charges it level + power).
+- **Stamina**: both pay level + power; a member's is scaled by load, a
+  monster's is not.
 - **Spell points**: members have them in realms; a monster has only its budget.
 - **Summon Elemental**: a member's is friendly unless Turncoat (the original);
   a monster's is hostile unless the monster is on the party's side.
@@ -812,102 +819,55 @@ from the original. **Missing**: the original has a rule the Rust lacks.
 
 ### Defects
 
-1. **Pace is never applied.** The original scales a cast's failure chance by the
-   caster's moment in the round (`ScaleByCombatPace`, `Magic.cpp:833-862`;
-   applied at `Magic.cpp:2650-2652` for a learned spell and `PC Item.cpp:3735-3737`
-   for an item). The Rust passes a moment of 0 (`magic/casting.rs` in
-   `item_failure` and `attempt`, `Difficulty::scale_by_pace` in `difficulty.rs`),
-   so it never scales; its comment says choices are made between rounds, but the
-   cast is made at the caster's moment. It also caps the chance at 100 first
-   (`magic.rs`, `fail_chance`); the original does not.
-2. **Silence stops alchemy.** `IsSpellBlockedForCharacter` (`Magic.cpp:138-146`,
-   and `Magic.cpp:2568-2570`) lets a Silenced member cast an Alchemy spell if
-   their Alchemy skill is above 0. The Rust refuses every voiced cast of a
-   silenced member (`magic/casting.rs` `check`).
-3. **Sane Mind on oneself.** The original adds 50 to the failure chance when a
-   member casts Sane Mind at themselves (`Magic.cpp:2656-2658`). Not in the Rust
-   (`magic.rs` `fail_chance`).
-4. **Wrong backfires.** The original gives Stamina and Rest All a backfire that
-   tires, Cure Lesser Conditions a random affliction of five, Cure Paralysis
-   paralysis, Sane Mind insanity, Remove Curse a hex (`Magic Effects.cpp:3246-3260,
-   3261-3283, 3378-3385, 3436-3441, 3467-3475`). In the Rust a spell without a
-   personal backfire falls back to its ordinary effect
-   (`hits/definitions.rs` `Definitions::backfire`), so a backfired Stamina or
-   Rest All restores. (The Rust's backfire for Dracon Breath and Razor Cloak is
-   unreachable; so is the original's: neither can backfire,
-   `Spells.cpp:1483-1531`.)
-5. **Practice is tied to the wrong thing.** The original asks `SpellAffectedTarget`
-   (`Magic.cpp:2194-2490`) before the roll and practises if it holds, whatever
-   the roll (`Magic.cpp:2680-2695`; items `PC Item.cpp:3792-3796`). The Rust
-   practises only when a cast came off and its landing affected a victim
-   (`magic/casting.rs` fizzle branch `continue`s before `practice`;
-   `hits/mod.rs` `affected`), so a fizzle trains nothing, a heal on a full
-   party trains something less often, and the three-minute clocks and
-   remaining-duration tests are missing.
-6. **A monster's cast costs no stamina.** The original tires the monster by
-   spell level + power when its spell is released (`MonsterCastsSpell`,
-   `Magic.cpp:1967-2002`, `Monster.cpp:3914-3917`,
-   `Health Stamina Mana.cpp:854-860`). The Rust pays nothing for an innate cast
-   (`magic/casting.rs`, `if !innate`).
-7. **An instrument's toll is not scaled.** The original passes it through
-   `FatigueCharacter` like any fatigue (`Combat.cpp:2347-2354`, `PC Item.cpp:1217`);
-   the Rust tires directly (`magic/casting.rs`, `body.vitals.tire(fatigue)`).
-8. **Terror's second Afraid on monsters.** For both Terror and Sonic Boom a monster
-   that did not resist rolls the condition again at half power and half duration
-   (`Magic Effects.cpp:1923-1928`); for members only Terror, and the second is
-   Unconscious (`:1883-1889`). The table has Terror's Unconscious for members only
-   (`assets/tables/spell_effects.ron` TERROR): monsters get no second roll.
-9. **Summon Elemental's Water buff.** The original lays Superman (spell 0x3d) on a
-   Water elemental (`Magic Effects.cpp:840`); the Rust lays Body of Stone
-   (`magic/pointcasts.rs`, the buff table).
-10. **Hypnotic Lure stops at the first monster that does not qualify.** The
-    original skips it (`continue`, `Magic Effects.cpp:2506-2526`); the Rust
-    `return`s from the whole loop (`magic/pointcasts.rs`, the `return` after the
-    stance, influence, condition, distance, kind and sight tests). It also leaves
-    undead out; the original lets an undead monster *resist* (always,
-    `MonsterResistsSpellEffect`, `Magic Effects.cpp:320-343`), which marks it
-    resisted.
-11. **Camp.** `SpellUsableNow` (`Magic.cpp:224-282`) lets a camped party cast only
-    spells usable while camped, plus Identify Item and Remove Curse; spells
-    usable at any time or out of combat are refused in camp. The Rust allows
-    them (`magic/casting.rs` `usable_now`).
-12. **A pooled item in a fight.** The original refuses an item taken from the
-    party's pool during a fight (`Magic.cpp:1317-1319`); the Rust allows it
-    (`magic/casting.rs` `item_use`).
-13. **Charm, Mindread and the lure's saves.** Charm's and Mindread's saves are scaled
-    for difficulty (`TargetResistsCondition`, `Magic Effects.cpp:461-510`); the
-    Rust's are not (`magic/dialogue.rs`). The lure's are not scaled in the original
-    either.
-14. **Auto power is generalised.** The original handles only the spells listed in
-    section 3 (`Magic.cpp:1707-1880`); the Rust applies a restoring rule to every
-    spell with a Heal or Refresh row aimed at a body, and the duration rule to
-    every other spell using the longest timed condition of the victim rather
-    than those the spell cures (`magic/casting.rs` `auto_power`). It ignores
-    Remove Curse's item binding, takes Rest All, Heal All and Restore Health as
-    1 only by accident (they have no aimed body), compares the average as a
-    decimal (the original cuts it down), and falls to 7 where the original
-    returns 8 (to be cut to what is affordable).
-15. **Permanent magnitudes are cut by resistance.** `ReduceMagnitudeByResistance`
-    returns at once for 9999 (`Magic Effects.cpp:430-432`); the Rust cuts it
-    (`hits/defences.rs` `resist`).
-16. **Drain-back counts health actually lost.** The original gives back the
-    magnitude cut to the victim's health, before Guardian Angel
-    (`Magic Effects.cpp:1626-1650, 1680-1690`); the Rust counts what was lost
-    after the angel (`hits/effects.rs` `dealt`). The original picks the member by
-    lowest hit points, the Rust by lowest share (`Magic Effects.cpp:1668`,
-    `hits/spells.rs` `drain_back`).
-17. **An enemy-group spell reaches its whole group.** The original takes every
-    member of the group of the group's side with no reach or sight asked
-    (`Magic.cpp:3714-3733`); the Rust takes only those reached
-    (`magic/casting.rs` `aim_at`). The backfire of such a spell takes the whole
-    party or group in the original (`Magic.cpp:3250-3300`); the Rust, those of
-    the caster's side within the reach.
-18. *Moved to Unknown 34.*
+Each entry here was checked against the decompilation a second time; those
+that were real defects and could be fixed locally have been, and are folded
+into the sections above.
 
-19. **Enemies not at war.** In the original, a member's cone, blast or
-    all-enemies spell cast outside a fight with no monster engaged also takes
-    neutral monsters if no foe is found (`Magic.cpp:3785-3790, 3830-3860`). The Rust
-    takes only hostile ones.
+5. **Practice is tied to the wrong thing.** Checked (`Magic.cpp:2194-2490,
+   2680-2695`, `PC Item.cpp:3792-3796`): confirmed, not fixed. The original asks
+   `SpellAffectedTarget` before the roll and practises if it holds, whatever
+   the roll: `cast_result` is the power even for a fizzle
+   (`Magic.cpp:3201`), so a fizzle trains. The Rust practises only when a cast
+   came off and its landing affected a victim (`magic/casting.rs` fizzle
+   branch `continue`s before `practice`; `hits/mod.rs` `affected`), so a fizzle
+   trains nothing and a heal on a full party trains by what it landed on. Doing
+   it as the original does needs the per-spell test of section 7 asked of the
+   aimed victim before the roll, and the three-minute clocks of the handful
+   of spells (new state on the party), and the remaining-duration tests of the
+   laid spells.
+11. **Camp.** Checked (`Magic.cpp:224-282`): unsure. `SpellUsableNow` refuses in
+    camp mode every spell not usable while camped, but every place that raises
+    that flag in the decompilation is the NPC dialogue or the journal opened
+    from one (`NPCInteractionSubscreen.cpp:3347-3368, 4713`,
+    `MainGameScreen.cpp:7041`, `MGSPortraitCombat.cpp:313`), which is where
+    Charm and Mindread (usable while camped) are cast. Whether the Rust's
+    camping (resting) is that mode is not settled, and the rule would refuse
+    healing there. Not changed (`magic/casting.rs` `usable_now`).
+14. **Auto power is generalised: what is left.** Checked (`Magic.cpp:1690-1880`):
+    the list of spells, the conditions each cure counts, the average cut down,
+    a monster healed at 1, indefinite conditions answered with 1, and the
+    failure chance with the pace and no cap are now as the original has them;
+    retail's 8 at the end of the restoring walk comes to the same as the Rust's
+    7 once cut to what is affordable (at most 7). What is left: Remove Curse's
+    power is not raised to the binding difficulty of the victim's worn items
+    (`GetEquipmentBindingDifficulty`, `PC Item.cpp:2906`: a third, rounded up,
+    of the worst identify difficulty among worn cursed items whose binding has
+    not been announced), which needs the equipment and the curses' announced
+    state read at that point.
+16. **Drain-back.** Checked: the amount is now the magnitude cut to the victim's
+    health, before Guardian Angel. The choice of member is the original's too
+    (`FindPartySlotWithLowestHitPoints` compares hit-point *percent*,
+    `Health Stamina Mana.cpp:1379-1397`): there was no defect there.
+18. *Moved to Unknown 34.*
+19. **Enemies not at war.** Checked (`Magic.cpp:3785-3790, 3830-3860`):
+    confirmed, not fixed. In the original, a member's cone, blast or
+    all-enemies spell cast outside a fight with no monster engaged takes the
+    monsters of any disposition (neutral and friendly too, `W8_SIDE_ANY`) if
+    no hostile one is found. The Rust takes only hostile ones, and a
+    non-hostile monster cannot be aimed at at all (`magic/casting.rs`
+    `foes_reached`). It needs a monster that is not a foe to be aimable
+    outside a fight, and a blast and an all-enemies spell with a recipients
+    rule that takes monsters only, not the party.
 
 ### Missing
 
@@ -958,7 +918,9 @@ from the original. **Missing**: the original has a rule the Rust lacks.
     (`hits/reach.rs`). Only visible where order matters.
 31. **Spell points and their recovery** (section 3) are taken from the Rust's
     comments naming `RecalculateRealmSpellPoints` and aging; the formulas were not
-    re-read in the original. Likewise the ordinary item fatigue (`below(2) + 1`).
+    re-read in the original. The ordinary item fatigue (`below(2) + 1`, doubled
+    when Diseased) was: it is `CharacterActionFatigueCost`'s for using an item
+    (`Health Stamina Mana.cpp:1037-1085`).
 32. **Provocation.** The original provokes the aimed group as the cast starts
     (`Combat.cpp:2271-2275`) and every group the effect lists as it is processed
     (`Magic.cpp:651-653`); the Rust provokes the planned victims at the start.

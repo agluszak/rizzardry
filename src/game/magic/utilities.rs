@@ -93,6 +93,7 @@ pub(crate) fn identify(
             &held,
             (source, UseContext::World),
             (&content, *difficulty, underwater(&states)),
+            0, // identifying is refused in a fight
             &mut rng,
             &mut commands,
         )?;

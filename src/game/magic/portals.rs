@@ -77,6 +77,7 @@ pub(crate) fn cast(
             &held,
             (choice.source, UseContext::World),
             (&content, *difficulty, state.camera_sway),
+            0, // portals are refused in a fight
             &mut rng,
             &mut commands,
         )?;

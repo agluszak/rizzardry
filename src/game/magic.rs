@@ -341,7 +341,8 @@ pub(crate) fn spell_failure(skill: u32, spell: &SpellDefinition, power: u32) -> 
 
 /// The percent chance a learned cast fails (retail `ExecuteCharacterSpellCast`),
 /// before combat pace: the casting skill's shortfall, and the caster levels the
-/// spell's level and power call for.
+/// spell's level and power call for. It is not held to 100: a chance past it
+/// still counts for a third of itself in the chance to backfire.
 pub fn fail_chance(character: &Character, spell: &SpellDefinition, power: u32) -> u32 {
     let mut chance = spell_failure(casting_skill(character, spell), spell, power);
     let caster = total_caster_level(character, spell.books);
@@ -349,7 +350,14 @@ pub fn fail_chance(character: &Character, spell: &SpellDefinition, power: u32) -
     if short > 0 {
         chance += spell.level * short as u32;
     }
-    chance.min(100)
+    chance
+}
+
+/// Whether a silence stops this caster casting this learned spell (retail
+/// `IsSpellBlockedForCharacter`, `Magic.cpp:138-146`): it stops all but an
+/// Alchemy spell in the hands of someone with the Alchemy skill.
+pub fn silence_stops(character: &Character, spell: &SpellDefinition) -> bool {
+    !(spell.books.contains(Spellbook::Alchemy) && character.skill(Skill::Alchemy) > 0)
 }
 
 /// Retail's Power Cast bonus: `(level >> 2) + 1` while the skill is available.
@@ -582,6 +590,23 @@ pub(crate) mod tests {
         for _ in 0..20 {
             assert_eq!(roll(&mut rng, 0, &spell, false, true), Outcome::Fizzled);
             assert_ne!(roll(&mut rng, 100, &spell, true, true), Outcome::Backfired);
+        }
+    }
+
+    /// A chance past a hundred counts for a third of itself in the chance to
+    /// backfire: 300 is 100, so every failure backfires (held to 100 first,
+    /// it was 33).
+    #[test]
+    fn a_failure_chance_past_a_hundred_always_backfires() {
+        let spell = SpellDefinition {
+            id: SpellId::ENERGY_BLAST,
+            targeting: Targeting::Enemy,
+            realm: Some(Realm::Fire),
+            ..default()
+        };
+        let mut rng = GameRng::seeded(2);
+        for _ in 0..100 {
+            assert_eq!(roll(&mut rng, 300, &spell, false, false), Outcome::Backfired);
         }
     }
 

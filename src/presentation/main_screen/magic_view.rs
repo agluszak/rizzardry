@@ -35,7 +35,7 @@ use crate::game::magic::casting::{
     AUTO_POWER, Aim, MagicChoice, Source, UseContext, castable, usable_item, usable_items,
     usable_now,
 };
-use crate::game::magic::{LearnedSpells, MagicRequest, SpellPoints};
+use crate::game::magic::{LearnedSpells, MagicRequest, SpellPoints, silence_stops};
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::retail_controls::{
@@ -637,6 +637,7 @@ fn offers<'a>(
         .filter(|s| s.realm == Some(realm))
         .map(|s| {
             let affordable = points.affordable_power(s, maximum);
+            let silenced = silenced && silence_stops(character, s);
             Offer {
                 source: Source::Spell { spell: s.id, power: 1 },
                 spell: s,
