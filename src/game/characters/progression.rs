@@ -370,6 +370,7 @@ pub struct Progression<'w, 's> {
     ids: ResMut<'w, crate::game::inventory::ItemIds>,
     rng: ResMut<'w, crate::game::rng::GameRng>,
     news: MessageWriter<'w, crate::game::inventory::ItemNews>,
+    commands: Commands<'w, 's>,
 }
 impl Progression<'_, '_> {
     pub fn eligibility(&self, member: Entity) -> Result<(), &'static str> {
@@ -439,6 +440,8 @@ impl Progression<'_, '_> {
             (&mut self.ids, &mut self.rng),
         );
         self.news.write_batch(told);
+        // The new level, attributes and skill points are the member's now.
+        self.commands.trigger(crate::game::actors::Refit { entity: draft.member });
         Ok(())
     }
 }

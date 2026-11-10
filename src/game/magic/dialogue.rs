@@ -11,7 +11,6 @@ use crate::{
         spells::SpellId,
     },
     game::{
-        combat::CombatNews,
         data::Catalogs,
         difficulty::Difficulty,
         hits::{Effect, defences, effects::Body},
@@ -45,7 +44,8 @@ pub(crate) fn cast(
     (levels, states): (Query<(), With<Level>>, Query<&LevelState, With<Level>>),
     (content, difficulty): (Res<Catalogs>, Res<Difficulty>),
     mut rng: ResMut<GameRng>,
-    (mut news, mut improved): (MessageWriter<MagicNews>, MessageWriter<CombatNews>),
+    mut news: MessageWriter<MagicNews>,
+    mut commands: Commands,
 ) {
     for &Utility { caster, spell: id, choice } in accepted.read().filter(|cast| spell(cast.spell)) {
         let mut cast = || -> Result<_, Refusal> {
@@ -76,7 +76,7 @@ pub(crate) fn cast(
                 (choice.source, UseContext::Conversation),
                 (&content, *difficulty, underwater(&states)),
                 &mut rng,
-                &mut improved,
+                &mut commands,
             )?;
             let mut reply = MagicalReply::Unnoticed;
             match report.outcome {

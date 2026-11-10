@@ -4,7 +4,7 @@ use super::{
     casting::{MagicNews, Refusal, UseContext},
 };
 use crate::content::spells::SpellId;
-use crate::game::combat::{Battle, CombatNews};
+use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::freedom::Freedom;
@@ -54,7 +54,7 @@ pub(crate) fn cast(
     assets: Res<AssetServer>,
     (content, difficulty): (Res<Catalogs>, Res<Difficulty>),
     mut rng: ResMut<GameRng>,
-    (mut news, mut improved): (MessageWriter<MagicNews>, MessageWriter<CombatNews>),
+    mut news: MessageWriter<MagicNews>,
 ) {
     for &Utility { caster, spell: id, choice } in accepted.read().filter(|cast| spell(cast.spell)) {
         let (body, at, transform, velocity, movement, inventory) = &mut *party;
@@ -75,7 +75,7 @@ pub(crate) fn cast(
                 (choice.source, UseContext::World),
                 (&content, *difficulty, state.camera_sway),
                 &mut rng,
-                &mut improved,
+                &mut commands,
             )?;
             if report.outcome != Outcome::Cast {
                 return Ok(report);

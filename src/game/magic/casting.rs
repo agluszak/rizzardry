@@ -21,7 +21,7 @@ use crate::content::spells::{
     MAX_POWER, PowerChoice, SpellDefinition, SpellId, Targeting, Usable, min_caster_level,
 };
 use crate::game::actors::{Place, Places};
-use crate::game::characters::{Character, Condition, Lasting, Profession, Vitals};
+use crate::game::characters::{Character, Condition, Lasting, Practise, Profession, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::hits::definitions::{Definitions, EffectKind};
@@ -131,10 +131,8 @@ pub enum Refusal {
     NoTarget,
     /// An instrument or gadget that could not be brought to play: its
     /// fatigue is paid, the item is not (retail string 0x1f3). The attempt
-    /// is practice, and `improved` is the skill it raised, if any.
-    PlayedBadly {
-        improved: Option<Skill>,
-    },
+    /// is practice.
+    PlayedBadly,
 }
 
 /// What became of a magic action, for whoever tells the player.
@@ -914,6 +912,7 @@ pub fn cast(
         MessageWriter<Provocation>,
         MessageWriter<Release>,
     ),
+    mut commands: Commands,
 ) {
     let (roster, mut inventory) = party.into_inner();
     let underwater = states.single().is_ok_and(|state| state.camera_sway);
@@ -951,13 +950,11 @@ pub fn cast(
                 continue;
             }
             Plan::PlayedBadly { fatigue, skill } => {
-                let mut body = bodies.get_mut(caster).unwrap();
-                body.vitals.tire(fatigue);
-                let improved = skill.filter(|&skill| {
-                    body.character.as_deref_mut().unwrap().practise(skill, 1, &mut rng)
-                });
-                let refusal = Refusal::PlayedBadly { improved };
-                news.write(MagicNews::Refused { caster, refusal });
+                bodies.get_mut(caster).unwrap().vitals.tire(fatigue);
+                if let Some(skill) = skill {
+                    commands.trigger(Practise { member: caster, skill, usage: 1 });
+                }
+                news.write(MagicNews::Refused { caster, refusal: Refusal::PlayedBadly });
                 continue;
             }
             Plan::Aimed(aimed) => aimed,
@@ -1111,7 +1108,7 @@ pub(crate) fn pay(
     (source, context): (Source, UseContext),
     (content, difficulty, underwater): (&Catalogs, Difficulty, bool),
     rng: &mut GameRng,
-    news: &mut MessageWriter<crate::game::combat::CombatNews>,
+    commands: &mut Commands,
 ) -> Result<(Report, Strength), Refusal> {
     let (spells, items) = (&content.spells, &content.items);
     let (Some(character), Some(carried), true) =
@@ -1168,11 +1165,7 @@ pub(crate) fn pay(
     }
     vitals.tire(super::cast_fatigue(spell, power));
     for (skill, usage) in skills {
-        if character.practise(skill, usage, rng) {
-            let improved =
-                crate::game::combat::CombatNews::Improved { member: caster.entity, skill };
-            news.write(improved);
-        }
+        commands.trigger(Practise { member: caster.entity, skill, usage });
     }
     Ok((report, strength))
 }

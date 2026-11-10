@@ -40,6 +40,7 @@ pub struct InventoryOperations<'w, 's> {
     content: If<Res<'w, crate::game::data::Catalogs>>,
     battle: Option<Single<'w, 's, &'static crate::game::combat::Battle>>,
     news: MessageWriter<'w, ItemNews>,
+    commands: Commands<'w, 's>,
 }
 
 impl InventoryOperations<'_, '_> {
@@ -117,9 +118,16 @@ impl InventoryOperations<'_, '_> {
         (ids, rng): (&mut ItemIds, &mut GameRng),
     ) -> Result<merge::Merged, Refusal> {
         let catalog = &self.content.items;
-        let (mut character, _, mut carried) =
+        let (character, _, mut carried) =
             self.members.get_mut(member).map_err(|_| Refusal::Nothing)?;
-        let merged = self.party.merge(&mut character, &mut carried, target, catalog, (ids, rng))?;
+        let merged = self.party.merge(
+            (member, &character),
+            &mut carried,
+            target,
+            catalog,
+            (ids, rng),
+            &mut self.commands,
+        )?;
         match merged {
             merge::Merged::Unidentified => {
                 self.news.write(ItemNews::Unidentified);
@@ -138,12 +146,7 @@ impl InventoryOperations<'_, '_> {
     /// The party tries to identify an item within the member's reach
     /// (retail `PartyAttemptsToIdentifyItem`): everyone alive and sane tries
     /// in turn, by their Artifacts skill. Returns whether anyone did.
-    pub fn identify(
-        &mut self,
-        member: Entity,
-        item: ItemAt,
-        rng: &mut GameRng,
-    ) -> Result<bool, Refusal> {
+    pub fn identify(&mut self, member: Entity, item: ItemAt) -> Result<bool, Refusal> {
         let catalog = &self.content.items;
         let stack = match item {
             ItemAt::Hand => self.party.hand.held.as_ref(),
@@ -158,15 +161,19 @@ impl InventoryOperations<'_, '_> {
         }
         let difficulty = catalog[stack.item].identify_difficulty;
         let (mut identified, mut binding) = (false, false);
-        let attempts = self.members.iter_many_unique_mut(self.roster.iter()).matched();
-        for (mut character, vitals, _) in attempts {
-            let Some(attempt) = super::identify_attempt(&character, vitals, difficulty) else {
+        for attempting in self.roster.iter() {
+            let Ok((character, vitals, _)) = self.members.get(attempting) else { continue };
+            let Some(attempt) = super::identify_attempt(character, vitals, difficulty) else {
                 continue;
             };
             identified = true;
             binding |= attempt.binding;
             if attempt.practises {
-                character.practise(crate::content::characters::Skill::Artifacts, 2, rng);
+                self.commands.trigger(Practise {
+                    member: attempting,
+                    skill: crate::content::characters::Skill::Artifacts,
+                    usage: 2,
+                });
             }
         }
         if identified {

@@ -19,7 +19,7 @@ use bevy::prelude::*;
 use crate::content::items::EquipClass;
 use crate::content::spells::SpellId;
 use crate::game::actors::Laying;
-use crate::game::characters::Condition;
+use crate::game::characters::{Condition, Practise};
 use crate::game::combat::{Battle, CombatNews, Combatants, Round};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
@@ -314,13 +314,9 @@ pub fn resolve(
         }
         if let Some(practice) = &deed.practice
             && (practice.sure || affected(&effects))
-            && let Ok(mut body) = bodies.get_mut(practice.caster)
-            && let Some(character) = body.character.as_deref_mut()
         {
             for &(skill, usage) in &practice.skills {
-                if character.practise(skill, usage, &mut rng) {
-                    log.improved.push((practice.caster, skill));
-                }
+                commands.trigger(Practise { member: practice.caster, skill, usage });
             }
         }
         if let Some(recast) = &deed.recast
@@ -357,9 +353,9 @@ pub fn resolve(
     for raised in log.raised {
         commands.entity(raised).remove::<crate::game::characters::Dead>();
     }
-    combat_news.write_batch(
-        log.improved.into_iter().map(|(member, skill)| CombatNews::Improved { member, skill }),
-    );
+    for (member, skill, usage) in log.practised {
+        commands.trigger(Practise { member, skill, usage });
+    }
 }
 
 pub struct HitsPlugin;

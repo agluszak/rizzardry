@@ -23,7 +23,7 @@ use crate::content::items::{AttackEffect, AttackEffects, AttackMode, Dice, Equip
 use crate::content::species::Reach;
 use crate::content::spells::SpellId;
 use crate::game::actors::{Arm, Attacks, Laying, Places, Stance as Standing, reaches};
-use crate::game::characters::{Condition, Vitals};
+use crate::game::characters::{Condition, Practise, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::hits::definitions::{Blow, Definitions};
@@ -120,7 +120,7 @@ fn open(
     (formation, roster, combatants): (&Formation, &PartyRoster, &[Entity]),
     obstacles: &WorldObstacles,
     rng: &mut GameRng,
-    news: &mut MessageWriter<CombatNews>,
+    commands: &mut Commands,
 ) -> Result<(Attack, u32), Otherwise> {
     let own = bodies.get(actor).map_err(|_| Otherwise::Stand)?;
     let attacks = own.attacks.clone();
@@ -215,7 +215,7 @@ fn open(
             }
             Stance::Neutral => None,
         });
-        practise_stealth(evaded, bodies, rng, news);
+        practise_stealth(evaded, bodies, rng, commands);
         return Err(
             goal.map_or(Otherwise::Stand, |(budget, goal)| Otherwise::Advance(budget, goal))
         );
@@ -254,7 +254,7 @@ fn open(
         })
     };
     let arm = picked.map(|(arm, ..)| arm.clone());
-    practise_stealth(evaded, bodies, rng, news);
+    practise_stealth(evaded, bodies, rng, commands);
     let (Some(arm), Some((_, mode, target))) = (arm, picked) else {
         return Err(Otherwise::Wait);
     };
@@ -296,31 +296,22 @@ fn open(
 /// A member who stayed out of a wild attacker's eye may learn from it.
 fn practise_stealth(
     evaded: Vec<Entity>,
-    bodies: &mut Query<Body>,
+    bodies: &Query<Body>,
     rng: &mut GameRng,
-    news: &mut MessageWriter<CombatNews>,
+    commands: &mut Commands,
 ) {
     for member in evaded {
         if rng.below(2) == 0 {
-            practise(member, Skill::Stealth, bodies, rng, news);
+            practise(member, Skill::Stealth, bodies, commands);
         }
     }
 }
 
-/// A member practises a skill it may train, and is told when it improved.
-fn practise(
-    actor: Entity,
-    skill: Skill,
-    bodies: &mut Query<Body>,
-    rng: &mut GameRng,
-    news: &mut MessageWriter<CombatNews>,
-) {
-    if let Ok(mut body) = bodies.get_mut(actor)
-        && let Some(character) = body.character.as_deref_mut()
-        && character.skill_available(skill)
-        && character.practise(skill, 1, rng)
+/// A member practises a skill it may train.
+fn practise(actor: Entity, skill: Skill, bodies: &Query<Body>, commands: &mut Commands) {
+    if bodies.get(actor).is_ok_and(|body| body.character.is_some_and(|c| c.skill_available(skill)))
     {
-        news.write(CombatNews::Improved { member: actor, skill });
+        commands.trigger(Practise { member: actor, skill, usage: 1 });
     }
 }
 
@@ -491,7 +482,7 @@ fn swing(
     rules: &Rules,
     rng: &mut GameRng,
     (log, laying): (&mut Log, &mut Laying),
-    news: &mut MessageWriter<CombatNews>,
+    (news, commands): (&mut MessageWriter<CombatNews>, &mut Commands),
 ) {
     let (by, target, mode) = (attack.by, attack.target, attack.mode);
     let arm = attack.arm.clone();
@@ -622,7 +613,7 @@ fn swing(
                             .min(100);
                     }
                 }
-                practise(victim, Skill::IronSkin, bodies, rng, news);
+                practise(victim, Skill::IronSkin, bodies, commands);
             }
             if damage > 0 {
                 let blow = Blow { damage, effects: chances, by_monster: arm.word.is_some() };
@@ -644,7 +635,7 @@ fn swing(
                         (true, false) => &[Skill::EagleEye],
                     };
                     for &skill in skills {
-                        practise(by, skill, bodies, rng, news);
+                        practise(by, skill, bodies, commands);
                     }
                 }
             } else if fumbled {
@@ -814,7 +805,7 @@ pub(super) fn attack(
             (&formation, roster, combatants),
             &obstacles,
             &mut rng,
-            &mut news,
+            &mut commands,
         );
         let (mut attack, swings) = match opened {
             Ok(opened) => opened,
@@ -874,7 +865,7 @@ pub(super) fn attack(
                 &rules,
                 &mut rng,
                 (&mut log, &mut laying),
-                &mut news,
+                (&mut news, &mut commands),
             );
             if spend_ammunition(&attack.arm, actor, &mut bodies, &content) {
                 turn.attacks[attack.arm.slot] = 0;
@@ -895,7 +886,7 @@ pub(super) fn attack(
         }
     }
     damaged.write_batch(log.damaged);
-    news.write_batch(
-        log.improved.into_iter().map(|(member, skill)| CombatNews::Improved { member, skill }),
-    );
+    for (member, skill, usage) in log.practised {
+        commands.trigger(Practise { member, skill, usage });
+    }
 }

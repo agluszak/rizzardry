@@ -50,6 +50,13 @@ impl Attributes {
         Self::with_spells(character.attributes, &Bonus::default())
     }
 
+    /// These with a point of one lost for good, as disease takes it.
+    pub fn weakened(&self, attribute: Attribute) -> Self {
+        let mut less = *self;
+        less.0[attribute] = (less.0[attribute] - 1).max(1);
+        less
+    }
+
     /// Senses + speed + dexterity + intelligence, which weighs for an
     /// actor's blows and against those at it (retail SSDI).
     pub fn agility(&self) -> i32 {
@@ -336,12 +343,12 @@ pub(super) fn refit_left(left: On<Remove<PartyMember>>, mut commands: Commands) 
     commands.trigger(Refit { entity: left.entity });
 }
 
-/// A member whose sheet or worn gear changed is refitted. Nothing says so
-/// when it happens yet (`docs/plan.md`: gear until items are things, the
-/// sheet until advancement and practice announce themselves); this notices
-/// the write.
+/// A member whose worn gear or load changed is refitted. Nothing says so
+/// when it happens yet (`docs/plan.md`: gear until items are things); this
+/// notices the write. The sheet is not polled: whatever changes it fires
+/// [`Refit`] itself.
 pub(super) fn refit_regeared(
-    geared: Query<Entity, Or<(Changed<Carried>, Changed<Character>, Changed<Burden>)>>,
+    geared: Query<Entity, Or<(Changed<Carried>, Changed<Burden>)>>,
     mut commands: Commands,
 ) {
     for entity in &geared {

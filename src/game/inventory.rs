@@ -4,7 +4,7 @@ pub mod merge;
 pub mod omnigun;
 pub mod operations;
 
-use super::characters::{Character, Load, Vitals};
+use super::characters::{Character, Load, Practise, Vitals};
 use super::party::roster::PartyRoster;
 use super::rng::GameRng;
 use crate::content::characters::Skill;

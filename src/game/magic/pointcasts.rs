@@ -8,7 +8,7 @@ use crate::{
     content::{characters::Skill, monster::MonsterBody, species::MonsterKind, spells::SpellId},
     game::{
         characters::Condition,
-        combat::{Battle, CombatNews, Combatant},
+        combat::{Battle, Combatant},
         difficulty::Difficulty,
         freedom::Freedom,
         hits::effects::Body,
@@ -115,7 +115,7 @@ pub(crate) fn cast(
     ),
     (content, difficulty, clock): (Res<Catalogs>, Res<Difficulty>, Res<GameClock>),
     mut rng: ResMut<GameRng>,
-    (mut news, mut improved): (MessageWriter<MagicNews>, MessageWriter<CombatNews>),
+    mut news: MessageWriter<MagicNews>,
 ) {
     let (root, played, state, unborn, level_bodies, navigation) = *level;
     let battle = battle.map(|battle| *battle);
@@ -159,7 +159,7 @@ pub(crate) fn cast(
                 (choice.source, context),
                 (&content, *difficulty, state.camera_sway),
                 &mut rng,
-                &mut improved,
+                &mut commands,
             )?;
             Ok((report, strength, at, weights.unwrap_or_default()))
         };

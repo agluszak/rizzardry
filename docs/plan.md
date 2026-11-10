@@ -70,9 +70,17 @@ the original's member and monster formulas differ, both are kept.
 
 ### 3. Items are things
 
+**Rules.** [rules/items.md](rules/items.md).
+
 An item is an entity. It is in a pack, worn in a slot, lying in the world or in
 a container, by relationship. `StackId`, `ItemIds` and the addressing enums go.
 An item's definition becomes components when it is made.
+
+This slice also takes what slices 1 and 2 could not finish without it: a
+member's arms are read from the weapons in their hands, which replaces `Grip`
+and `combat/attack.rs`; wearing and removing refit by the relationship
+changing, which removes the watch on a member's gear; and burden is worked
+out when what is carried changes.
 
 ### 4. Levels keep what is in them
 
@@ -102,5 +110,5 @@ headless tests do not establish it.
 | Slice | State |
 | --- | --- |
 | Groundwork: combat, effects and magic resolved through messages and plain functions | Done on `refactor/event-driven-combat-and-magic`. An improvement by the old standard only: the functions are still retail routines. Slices 1 and 6 replace them. |
-| 1 and 2. One kind of actor, and what is on it | Mostly landed. Gone: the per-step judges, `place_bodies`, `Footing`/`Eyes`/`Conspicuous`, `judge_sides`, `sync_member_maxima`, `notice_changes`, `Vitals::enchantments`, `PartyEffects`. Spells laid are entities related to their bearer; place and sight are computed on read; side is stored and changed by `Stand`, faction changes and joining. Where the contract was changed while designing, the rule page says why: conditions stay in `Vitals`; Turncoat is read where the side is read, so there are no `Afflicted`/`Recovered` events; `Loyalty` and `Allegiance` are written when a monster is made. **Still owed:** `combat/attack.rs` is still the port of `CalcAttacks`/`CalcArmorClasses` (`Grip`); refit after a sheet or load change is noticed by a write to `Character`/`Burden` rather than fired by the operation; deaths are settled by scanning changed `Vitals` rather than from `Damaged`; the party's own sight (`world/perception.rs`) still reads species records; `engage`, `leave_fight` and the monster AI are redesigned only as far as place and side, their shape is slice 6's. |
+| 1 and 2. One kind of actor, and what is on it | Mostly landed. Gone: the per-step judges, `place_bodies`, `Footing`/`Eyes`/`Conspicuous`, `judge_sides`, `sync_member_maxima`, `notice_changes`, `Vitals::enchantments`, `PartyEffects`. Spells laid are entities related to their bearer; place and sight are computed on read; side is stored and changed by `Stand`, faction changes and joining. Where the contract was changed while designing, the rule page says why: conditions stay in `Vitals`; Turncoat is read where the side is read, so there are no `Afflicted`/`Recovered` events; `Loyalty` and `Allegiance` are written when a monster is made. Deaths settle from `Damaged`; practice is one `Practise` event whose `Improved` refits the member, and advancement refits when it is accepted. **Still owed:** `combat/attack.rs` is still the port of `CalcAttacks`/`CalcArmorClasses` (`Grip`), and refit after gear or load changes is still noticed by a write to `Carried`/`Burden`: both go with slice 3, where items are things. The party's own sight (`world/perception.rs`) still reads species records; `engage`, `leave_fight` and the monster AI are redesigned only as far as place and side, their shape is slice 6's. |
 | 3–7 | Not started. |

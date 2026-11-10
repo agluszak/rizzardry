@@ -4,7 +4,7 @@
 use super::casting::{Aim, MagicNews, Refusal, Source, UseContext};
 use super::{Outcome, Strength, Utility};
 use crate::content::spells::{MAX_POWER, SpellId};
-use crate::game::combat::{Battle, CombatNews};
+use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::freedom::Freedom;
@@ -47,7 +47,8 @@ pub(crate) fn identify(
     states: Query<&LevelState, With<Level>>,
     (content, difficulty): (Res<Catalogs>, Res<Difficulty>),
     mut rng: ResMut<GameRng>,
-    (mut news, mut improved): (MessageWriter<MagicNews>, MessageWriter<CombatNews>),
+    mut news: MessageWriter<MagicNews>,
+    mut commands: Commands,
 ) {
     let (roster, mut inventory) = party.into_inner();
     for &Utility { caster, choice, .. } in
@@ -93,7 +94,7 @@ pub(crate) fn identify(
                 (source, UseContext::World),
                 (&content, *difficulty, underwater(&states)),
                 &mut rng,
-                &mut improved,
+                &mut commands,
             )?;
             if report.outcome == Outcome::Cast && identifies(strength, hard) {
                 let reveal = |stack: &mut ItemStack| {

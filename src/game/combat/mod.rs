@@ -331,11 +331,6 @@ pub enum CombatNews {
     },
     /// What blows did besides damage.
     Effects(Vec<Effect>),
-    /// A member's training paid off.
-    Improved {
-        member: Entity,
-        skill: crate::content::characters::Skill,
-    },
     /// What it did: hits (that landed, damage or not) and damage dealt.
     Result {
         attacker: Entity,
