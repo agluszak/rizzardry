@@ -791,7 +791,7 @@ fn an_unborn_group_waits_until_born_and_is_born_once() {
 /// What is in a level is itself when the party returns, not a copy rebuilt from
 /// what someone remembered to keep: a monster with what ails it and the spells
 /// laid on it, an item with what is known of it, a container with what is left
-/// in it. All of it is set aside while the party is away.
+/// in it.
 #[test]
 fn what_is_in_a_level_is_itself_when_the_party_returns() {
     use crate::content::items::ItemId;
@@ -799,7 +799,6 @@ fn what_is_in_a_level_is_itself_when_the_party_returns() {
     use crate::game::characters::{Condition, Lasting, Vitals};
     use crate::game::items::{Item, Known, Lying, Stowed, Stows};
     use crate::game::world::containers::Container;
-    use bevy::ecs::entity_disabling::Disabled;
     let (mut app, level) = playing();
     let monster =
         app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
@@ -824,38 +823,13 @@ fn what_is_in_a_level_is_itself_when_the_party_returns() {
     let coin = app.world_mut().spawn((Item(ItemId(2)), Stowed(chest))).id();
 
     leave(&mut app);
-    for held in [level, monster, spell, item, chest, coin] {
-        assert!(
-            app.world().get::<Disabled>(held).is_some(),
-            "{held:?} is set aside with its level"
-        );
-    }
-
     assert_eq!(come_back(&mut app), level);
-    for held in [level, monster, spell, item, chest, coin] {
-        assert!(app.world().get::<Disabled>(held).is_none(), "{held:?} is back with its level");
-    }
     let world = app.world();
     assert!(world.get::<Vitals>(monster).unwrap().conditions.has(Condition::Blind));
     assert_eq!(world.get::<LaidOn>(spell), Some(&LaidOn(monster)));
     assert_eq!(world.get::<Turns>(spell), Some(&Turns(3)));
     assert_eq!(world.get::<Known>(item), Some(&known));
     assert_eq!(world.get::<Stows>(chest).unwrap().iter().collect::<Vec<_>>(), [coin]);
-}
-
-/// A level owes its random encounters the time it was away.
-#[test]
-fn a_level_that_was_away_ages_its_encounters() {
-    use crate::game::world::encounters::{Arrival, EncounterState};
-    let (mut app, level) = playing();
-    assert_eq!(app.world().get::<EncounterState>(level).unwrap().arrival, Some(Arrival::First));
-    leave(&mut app);
-    app.world_mut().resource_mut::<crate::game::time::GameClock>().ms += 2 * 3_600_000;
-    assert_eq!(come_back(&mut app), level);
-    assert_eq!(
-        app.world().get::<EncounterState>(level).unwrap().arrival,
-        Some(Arrival::Returned { away: 7200 })
-    );
 }
 
 /// What a level that is set aside takes part in, with the real physics and

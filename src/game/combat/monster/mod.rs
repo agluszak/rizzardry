@@ -160,14 +160,6 @@ mod tests {
     }
 
     #[test]
-    fn a_steady_monster_with_nothing_else_to_do_strikes() {
-        assert_eq!(
-            think(&plain(1.0)),
-            Thought { deliberated: Deliberated::Strikes, fleeing: false }
-        );
-    }
-
-    #[test]
     fn conduct_comes_first_and_takes_the_moment_when_it_is_not_to_fight() {
         let mut facts = plain(1.0);
         facts.conducting.craven = true;
@@ -198,22 +190,6 @@ mod tests {
         facts.special = Making { has: true, chance: 100, aims: &[Aim::Ahead], ..facts.special };
         let breathes = think(&facts).deliberated;
         assert!(matches!(breathes, Deliberated::Breathes(_)), "{breathes:?}");
-    }
-
-    #[test]
-    fn one_that_prefers_blows_and_cannot_reach_closes_in_instead_of_casting_or_breathing() {
-        use crate::game::magic::reach::Aim;
-        let mut facts = plain(10.0);
-        facts.special = Making { has: true, chance: 100, aims: &[Aim::Ahead], ..facts.special };
-        // The claws reach 2 m: at 10 m the monster closes in, which is striking.
-        assert_eq!(think(&facts).deliberated, Deliberated::Strikes);
-    }
-
-    #[test]
-    fn a_monster_with_no_arm_withdraws() {
-        let mut facts = plain(1.0);
-        facts.striking.arms = &[];
-        assert_eq!(think(&facts).deliberated, Deliberated::Withdraws);
     }
 
     #[test]

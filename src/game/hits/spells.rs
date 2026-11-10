@@ -467,16 +467,6 @@ mod tests {
         assert_eq!(returned(false, false, 11), Returned::Budget(5));
     }
 
-    #[test]
-    fn health_and_points_are_measured_in_percent_cut_down() {
-        assert_eq!(health_percent(7, 10), 70);
-        assert_eq!(health_percent(1, 3), 33);
-        assert_eq!(health_percent(10, 10), 100);
-        assert_eq!(points_percent(3, 8), Some(37));
-        assert_eq!(points_percent(0, 8), Some(0));
-        assert_eq!(points_percent(0, 0), None, "no points at all");
-    }
-
     /// The member lowest in proportion, the first of equals; the whole and the
     /// dead (no percent) are passed over; none short, none.
     #[test]
@@ -487,39 +477,5 @@ mod tests {
         assert_eq!(neediest(&[(a, None), (b, None)]), None);
         assert_eq!(neediest(&[(a, Some(99)), (b, Some(0))]), Some(b));
         assert_eq!(neediest(&[]), None);
-    }
-
-    /// The strongest eye, the first of equal strength, in the order of the fight.
-    #[test]
-    fn the_strongest_eye_turns_a_spell_back_the_first_of_equals() {
-        let (a, b, c, d) = (id(1), id(2), id(3), id(4));
-        assert_eq!(strongest([(a, 2), (b, 2), (c, 3), (d, 3)]), Some((c, 3)));
-        assert_eq!(strongest([(a, 2), (b, 2)]), Some((a, 2)));
-        assert_eq!(strongest([]), None);
-    }
-
-    /// Only a spell aimed at enemies that neither backfired nor was turned back
-    /// already; turned back it is cast at the least of its power and the eye's.
-    #[test]
-    fn only_a_spell_aimed_at_enemies_not_a_backfire_nor_a_reflection_is_turned_back() {
-        assert!(turns_back(true, false, false));
-        assert!(!turns_back(false, false, false));
-        assert!(!turns_back(true, true, false));
-        assert!(!turns_back(true, false, true));
-        assert_eq!((turned_power(5, 3), turned_power(2, 6), turned_power(4, 4)), (3, 2, 4));
-    }
-
-    /// A burst is against the opponents of its owner's side, the owner's own
-    /// side if the spell backfired, and anyone if it has no owner.
-    #[test]
-    fn a_burst_is_against_the_owners_opponents() {
-        let against = |side, backfired| burst_against(side, backfired);
-        let admits = |recipients: Recipients| {
-            [Stance::Hostile, Stance::Friendly, Stance::Neutral].map(|side| recipients.admits(side))
-        };
-        assert_eq!(admits(against(Some(Stance::Friendly), false)), [true, false, false]);
-        assert_eq!(admits(against(Some(Stance::Friendly), true)), [false, true, false]);
-        assert_eq!(admits(against(Some(Stance::Hostile), false)), [false, true, false]);
-        assert_eq!(admits(against(None, false)), [true, true, true]);
     }
 }

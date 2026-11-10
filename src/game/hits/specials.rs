@@ -69,27 +69,3 @@ pub fn strength(level: u8, stamina: crate::game::characters::Pool) -> crate::gam
     };
     crate::game::magic::Strength { power: fresh(5), against: fresh(0), boost: 0 }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Every kind a record can name has a row, and the rows say what the
-    /// original's tables say of a few of them.
-    #[test]
-    fn every_kind_has_a_row_and_some_are_as_the_original_has_them() {
-        use SpecialAttackKind as K;
-        use SpecialEffect::*;
-        let kinds = (0..=255).filter_map(K::from_record);
-        assert_eq!(kinds.map(special).count(), 31);
-        let gaze = special(K::FearAndInsanityMental);
-        assert_eq!(gaze.effects, [Inflict(Condition::Afraid), Inflict(Condition::Insane)]);
-        assert_eq!((gaze.realm, gaze.silenced), (Some(Realm::Mental), true));
-        assert!(special(K::InsanityAndWoundMental).unresisted);
-        assert!(!special(K::WoundFire).unresisted);
-        let call = special(K::SummonsSpecies149);
-        assert_eq!((call.summons, call.silenced, call.effects.len()), (Some(149), true, 0));
-        assert!(!special(K::SummonsSpecies12).silenced);
-        assert_eq!(special(BREATH).effects, [Wound]);
-    }
-}

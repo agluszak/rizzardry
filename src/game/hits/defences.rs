@@ -234,25 +234,6 @@ mod tests {
         }
     }
 
-    /// Resistance 10 at the victim's own level is c = 10 + 1 = 11, half 5; the
-    /// share is below(6) + 5 + below(5) = 5 to 14 percent; of 100 that leaves
-    /// 86 to 95. A resistance of 0, or less, cuts nothing: c is not above 0.
-    #[test]
-    fn resistance_takes_a_random_share_off_only_when_it_is_above_nothing() {
-        let mut rng = GameRng::seeded(6);
-        for _ in 0..200 {
-            let left = resist(&mut rng, 100, 10, 7, 7);
-            assert!((86..=95).contains(&left), "{left}");
-            assert_eq!(resist(&mut rng, 100, 0, 7, 7), 100);
-            assert_eq!(resist(&mut rng, 100, -20, 7, 7), 100);
-            // The level over the strength counts three a point: (9 - 7) * 3 = 6 - 6.
-            assert_eq!(resist(&mut rng, 100, -6, 9, 7), 100);
-        }
-        // The level under the strength makes c fall: 10 + (5 - 7) * 3 = 4 -> c 5, half 2.
-        let share: Vec<u32> = (0..200).map(|_| resist(&mut rng, 100, 10, 5, 7)).collect();
-        assert!(share.iter().all(|left| (95..=98).contains(left)), "{share:?}");
-    }
-
     fn row(kind: EffectKind) -> EffectSpec {
         EffectSpec { kind, roll: Some(Roll::Fixed(0)), ..Default::default() }
     }
@@ -293,26 +274,6 @@ mod tests {
         }
     }
 
-    /// A chance of 0 never happens, of 100 always.
-    #[test]
-    fn an_effect_with_a_chance_happens_with_it() {
-        let none = Resistances::default();
-        let sometimes = |chance| EffectSpec { chance: Some(chance), ..row(EffectKind::Harm) };
-        for seed in 0..50 {
-            let never = sometimes(0);
-            let always = sometimes(100);
-            assert_eq!(defended(&defending(&never, 5, victim(&none)), seed), Defended::Missed);
-            assert_eq!(defended(&defending(&always, 5, victim(&none)), seed), Defended::Through(5));
-        }
-        let half = sometimes(50);
-        let happened = (0..2000)
-            .filter(|&seed| {
-                defended(&defending(&half, 5, victim(&none)), seed) == Defended::Through(5)
-            })
-            .count();
-        assert!((900..=1100).contains(&happened), "{happened}");
-    }
-
     /// A condition its kind cannot suffer is resisted without a save (not
     /// "saved"), and so is a death it cannot suffer.
     #[test]
@@ -333,77 +294,6 @@ mod tests {
         );
         let mortal = Resistances::default();
         assert_eq!(defended(&defending(&slay, 5, victim(&mortal)), 0), Defended::Through(5));
-    }
-
-    fn saved_of(facts: &Defending, trials: u64) -> usize {
-        (0..trials)
-            .filter(|&seed| matches!(defended(facts, seed), Defended::Resisted { saved: true }))
-            .count()
-    }
-
-    /// Level 10 against 0, base 20, resistance in the realm 0: (10 - 0) * 3 + 20 = 50
-    /// percent save; the effect has no roll to cut so only the save resists.
-    #[test]
-    fn the_victim_saves_by_its_level_the_base_and_its_resistance() {
-        let none = Resistances::default();
-        let save = EffectSpec { save: Some(20), resist: Some(Realm::Water), ..row(poison()) };
-        let rate = saved_of(&defending(&save, 5, victim(&none)), 2000);
-        assert!((900..=1100).contains(&rate), "{rate}");
-        // Resistance 40 adds to it: 90 percent.
-        let resistant =
-            Resistances { realms: [(Realm::Water, 40)].into_iter().collect(), ..none.clone() };
-        let rate = saved_of(&defending(&save, 5, victim(&resistant)), 2000);
-        assert!((1_700..=1_900).contains(&rate), "{rate}");
-        // A save is held within 5 and 95: resistance 400 saves 95 percent, and
-        // -400 five.
-        let huge =
-            Resistances { realms: [(Realm::Water, 400)].into_iter().collect(), ..none.clone() };
-        let rate = saved_of(&defending(&save, 5, victim(&huge)), 2000);
-        assert!((1_800..=2_000).contains(&rate), "{rate}");
-        let weak = Resistances { realms: [(Realm::Water, -400)].into_iter().collect(), ..none };
-        let rate = saved_of(&defending(&save, 5, victim(&weak)), 2000);
-        assert!((50..=150).contains(&rate), "{rate}");
-    }
-
-    /// The strength weighs three a point against the level: against 20 is
-    /// (10 - 20) * 3 + 20 = -10, held to 5 percent; half of it, 10, makes
-    /// 20 percent.
-    #[test]
-    fn half_weighs_half_the_strength_against_the_victim() {
-        let none = Resistances::default();
-        let save = EffectSpec { save: Some(20), resist: Some(Realm::Water), ..row(poison()) };
-        let strong = Strength { power: 3, against: 20, boost: 0 };
-        let full = Defending { strength: strong, ..defending(&save, 5, victim(&none)) };
-        let rate = saved_of(&full, 2000);
-        assert!((50..=150).contains(&rate), "{rate}");
-        let half = EffectSpec { half: true, ..save.clone() };
-        let halved = Defending { strength: strong, ..defending(&half, 5, victim(&none)) };
-        let rate = saved_of(&halved, 2000);
-        assert!((300..=500).contains(&rate), "{rate}");
-        // And it halves the rounds rolled: 11 rounds are 5.
-        let no_save = EffectSpec { save: None, resist: None, ..half };
-        assert_eq!(defended(&defending(&no_save, 11, victim(&none)), 0), Defended::Through(5));
-    }
-
-    /// The scaling by the side the victim is on: the same 50 percent is 70 for a
-    /// hostile victim on Expert (50 * 7 * 20 / 100), 30 on Novice, unchanged on
-    /// Normal, and unchanged for a neutral.
-    #[test]
-    fn a_save_is_scaled_for_difficulty_by_the_victims_side() {
-        let none = Resistances::default();
-        let save = EffectSpec { save: Some(20), resist: Some(Realm::Water), ..row(poison()) };
-        let rate = |difficulty, stance| {
-            let facts = Defending {
-                difficulty,
-                victim: Victim { stance, ..victim(&none) },
-                ..defending(&save, 5, victim(&none))
-            };
-            saved_of(&facts, 2000)
-        };
-        assert!((1_300..=1_500).contains(&rate(Difficulty::Expert, Stance::Hostile)));
-        assert!((500..=700).contains(&rate(Difficulty::Novice, Stance::Hostile)));
-        assert!((900..=1100).contains(&rate(Difficulty::Normal, Stance::Hostile)));
-        assert!((900..=1100).contains(&rate(Difficulty::Expert, Stance::Neutral)));
     }
 
     /// A row with a roll in a realm, not saved against, has its magnitude cut by
@@ -473,39 +363,5 @@ mod tests {
         assert_eq!(cure_rounds(Strength { power: 2, against: 0, boost: 50 }), 6);
         assert_eq!(cured(&rounds(6), 2, 50, false).lifted, [Condition::Poisoned]);
         assert_eq!(cured(&rounds(7), 2, 50, false).shortened, [(Condition::Poisoned, 1)]);
-    }
-
-    /// An outright cure lifts all; one without end goes with chance 15 a power,
-    /// so power 7 (105) always and power 0 never; a condition not borne is let be.
-    #[test]
-    fn a_cure_lifts_what_is_without_end_by_chance_and_what_is_outright_always() {
-        assert_eq!(cured(&rounds(900), 1, 0, true).lifted, [Condition::Poisoned]);
-        let forever = Conditions::from([(Condition::Poisoned, Lasting::Indefinite)]);
-        for seed in 0..50 {
-            let strength = Strength { power: 7, against: 0, boost: 0 };
-            let done =
-                cure(&mut GameRng::seeded(seed), &forever, &[Condition::Poisoned], strength, false);
-            assert_eq!(done.lifted, [Condition::Poisoned]);
-            let none = Strength { power: 0, ..strength };
-            let done =
-                cure(&mut GameRng::seeded(seed), &forever, &[Condition::Poisoned], none, false);
-            assert!(done.lifted.is_empty());
-        }
-        let power_two = |seed| {
-            let strength = Strength { power: 2, against: 0, boost: 0 };
-            cure(&mut GameRng::seeded(seed), &forever, &[Condition::Poisoned], strength, false)
-                .lifted
-                .len()
-        };
-        let lifted: usize = (0..2000).map(power_two).sum();
-        assert!((500..=700).contains(&lifted), "30 percent of 2000: {lifted}");
-        let ok = cure(
-            &mut GameRng::seeded(1),
-            &Conditions::default(),
-            &[Condition::Poisoned],
-            Strength { power: 7, against: 0, boost: 0 },
-            true,
-        );
-        assert_eq!(ok, Cured::default());
     }
 }

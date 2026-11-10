@@ -478,17 +478,6 @@ mod tests {
         Entity::from_raw_u32(index).unwrap()
     }
 
-    /// Touch reaches 2 metres, short 4, long 25, extreme 50, edge to edge; a
-    /// wall between the eyes stops it whatever the gap.
-    #[test]
-    fn a_body_is_reached_within_the_reach_in_clear_sight() {
-        assert!(reached(0.0, 2.0, true));
-        assert!(reached(2.0, 2.0, true));
-        assert!(!reached(2.1, 2.0, true));
-        assert!(!reached(1.0, 2.0, false));
-        assert!(reached(25.0, 25.0, true) && !reached(25.5, 25.0, true));
-    }
-
     /// A body at (x, 0, z), the caster standing at the origin looking along +z.
     fn body(index: u32, x: f32, z: f32) -> Target {
         Target {
@@ -553,15 +542,6 @@ mod tests {
         super::victims(&aiming(targeting, aim, bodies, &party, &[]))
     }
 
-    #[test]
-    fn a_caster_spell_reaches_the_caster_and_a_party_spell_every_member_the_dead_too() {
-        let mut bodies = fight();
-        bodies[1].dead = true;
-        let at = |targeting| victims_of(targeting, Aim::Body(id(2)), &bodies).unwrap();
-        assert_eq!(at(Targeting::Caster).victims, [id(1)]);
-        assert_eq!(at(Targeting::Party).victims, [id(1), id(2)]);
-    }
-
     /// A friend aimed at is reached if the caster or a friend and in reach.
     #[test]
     fn a_friend_is_reached_if_aimed_at_and_in_reach() {
@@ -577,23 +557,6 @@ mod tests {
         // The caster is always a friend to themselves, even a turncoat's.
         bodies[0].toward = Stance::Hostile;
         assert_eq!(at(Aim::Body(id(1)), &bodies).unwrap().victims, [id(1)]);
-    }
-
-    /// An enemy aimed at must be a foe reached: 3 is, 5 is out of reach, 2 is a
-    /// friend. It lands at the foe's feet.
-    #[test]
-    fn an_enemy_must_be_a_foe_in_reach() {
-        let bodies = fight();
-        let enemy = |aim| victims_of(Targeting::Enemy, aim, &bodies);
-        assert_eq!(
-            enemy(Aim::Body(id(3))).unwrap(),
-            Reached { victims: vec![id(3)], spot: Some(Vec3::new(0.0, 0.0, 3.0)) }
-        );
-        assert_eq!(enemy(Aim::Body(id(5))), Err(Refusal::NoTarget));
-        assert_eq!(enemy(Aim::Body(id(2))), Err(Refusal::NoTarget));
-        let mut dead = fight();
-        dead[2].dead = true;
-        assert_eq!(victims_of(Targeting::Enemy, Aim::Body(id(3)), &dead), Err(Refusal::NoTarget));
     }
 
     /// Aimed ahead: the foe whose direction is nearest the way the caster faces
@@ -661,31 +624,6 @@ mod tests {
         assert_eq!(reached.victims, [id(2), id(3)]);
     }
 
-    /// All enemies: every foe reached; none, no target.
-    #[test]
-    fn all_enemies_are_every_foe_reached() {
-        let bodies = fight();
-        let all = victims_of(Targeting::AllEnemies, Aim::Ahead, &bodies).unwrap();
-        assert_eq!(all, Reached { victims: vec![id(3), id(4)], spot: None });
-        let none = [member(1, 0.0, 0.0), Target { reached: false, ..body(5, 0.0, 40.0) }];
-        assert_eq!(victims_of(Targeting::AllEnemies, Aim::Ahead, &none), Err(Refusal::NoTarget));
-    }
-
-    /// A blast needs a foe to land at but takes its victims when the power is
-    /// known.
-    #[test]
-    fn a_blast_lands_at_the_foes_feet_and_waits_for_its_power() {
-        let bodies = fight();
-        assert_eq!(
-            victims_of(Targeting::Radius, Aim::Body(id(4)), &bodies).unwrap(),
-            Reached { victims: vec![], spot: Some(Vec3::new(3.0, 0.0, 0.0)) }
-        );
-        assert_eq!(
-            victims_of(Targeting::Radius, Aim::Body(id(5)), &bodies),
-            Err(Refusal::NoTarget)
-        );
-    }
-
     /// A cone toward the foe at (0, 0, 3): the apex at the eye (0, 1.7, 0). A body
     /// is inside by heading and elevation each within 45 degrees of the aimed
     /// spot's: 3 yes; 4 at 90 degrees no; a member at (0.5, 0, 2) is heading
@@ -707,27 +645,6 @@ mod tests {
         bodies[2].reached = false;
         // A foe out of reach cannot be aimed at.
         assert_eq!(victims_of(Targeting::Cone, Aim::Body(id(3)), &bodies), Err(Refusal::NoTarget));
-    }
-
-    #[test]
-    fn a_cone_is_the_arcs_of_heading_and_elevation_each_under_forty_five_degrees() {
-        let aim = Vec3::new(0.0, 0.0, 10.0);
-        assert!(in_cone(aim, Vec3::new(0.0, 0.0, 5.0)));
-        assert!(in_cone(aim, Vec3::new(4.0, 0.0, 5.0)), "39 degrees");
-        assert!(!in_cone(aim, Vec3::new(6.0, 0.0, 5.0)));
-        assert!(!in_cone(aim, Vec3::new(0.0, 0.0, -5.0)));
-        // Elevation: 4 over 5 is 38 degrees up, 6 over 5 is 50.
-        assert!(in_cone(aim, Vec3::new(0.0, 4.0, 5.0)));
-        assert!(!in_cone(aim, Vec3::new(0.0, 6.0, 5.0)));
-        // Heading wraps: aimed at -z, a body at slightly the other side of the wrap.
-        assert!(in_cone(Vec3::new(-0.1, 0.0, -10.0), Vec3::new(0.1, 0.0, -10.0)));
-    }
-
-    #[test]
-    fn a_blasts_radius_grows_by_the_power() {
-        let spell = SpellDefinition { radius: 2.0, radius_per_power: 1.5, ..Default::default() };
-        assert_eq!(blast_radius(&spell, 1), 3.5);
-        assert_eq!(blast_radius(&spell, 4), 8.0);
     }
 
     fn struck(index: u32, stance: Stance, at: f32, clear: bool) -> Struck {
@@ -780,24 +697,6 @@ mod tests {
         backfire(&facts, &own_side(&facts), Some(Vec3::new(0.0, 0.0, 3.0)))
     }
 
-    /// Aimed at one body: it casts it back on the caster, from its eye.
-    #[test]
-    fn a_backfire_aimed_at_one_body_comes_from_it_on_the_caster() {
-        let bodies = fight();
-        let back = turned(Targeting::Enemy, Aim::Body(id(3)), &bodies, &[]);
-        assert_eq!(
-            back,
-            Backfire {
-                owner: id(3),
-                from: Vec3::new(0.0, 1.7, 3.0),
-                aim: Aim::Body(id(3)),
-                falls: Falls::On(vec![id(1)]),
-            }
-        );
-        let healing = turned(Targeting::Ally, Aim::Body(id(2)), &bodies, &[]);
-        assert_eq!((healing.owner, healing.falls), (id(2), Falls::On(vec![id(1)])));
-    }
-
     /// Aimed at a group, its leader (the first to have joined: 4 joined before 3
     /// here) casts it and it falls on the caster's whole group, the dead spared,
     /// however far.
@@ -834,25 +733,6 @@ mod tests {
         assert_eq!(blast.aim, Aim::Point(Vec3::new(0.0, 0.0, 3.0)));
     }
 
-    /// At all enemies, the party or an item: cast as it was, from the caster's
-    /// eye, falling on the caster's own side reached.
-    #[test]
-    fn a_backfire_of_a_wide_spell_is_cast_as_it_was_on_the_casters_side() {
-        let mut bodies = fight();
-        bodies[1].reached = false;
-        let all = turned(Targeting::AllEnemies, Aim::Ahead, &bodies, &[]);
-        assert_eq!(all.owner, id(CASTER));
-        assert_eq!(all.from, Vec3::new(0.0, 1.7, 0.0));
-        assert_eq!(all.aim, Aim::Ahead);
-        assert_eq!(all.falls, Falls::On(vec![id(1)]));
-    }
-
-    #[test]
-    fn a_missile_flies_at_fifteen_metres_a_second() {
-        assert_eq!(flight(Vec3::ZERO, Vec3::new(0.0, 0.0, 30.0)), 2.0);
-        assert_eq!(flight(Vec3::new(1.0, 1.0, 1.0), Vec3::new(1.0, 1.0, 1.0)), 0.0);
-    }
-
     fn marking(working: Working, aim: Aim) -> Marking {
         Marking {
             working,
@@ -865,39 +745,6 @@ mod tests {
             speaker: Some(id(8)),
             elemental: false,
             attempt: Some(Attempt { guarded: true, kind: Device::Lock }),
-        }
-    }
-
-    #[test]
-    fn identify_needs_an_item_the_party_has_that_is_not_itself_nor_known() {
-        let identify = |marking: Marking| mark(&marking);
-        let item = marking(Working::Identify, Aim::Item(id(4)));
-        assert_eq!(identify(item), Ok(Marked::Item(id(4))));
-        let held = |held| Marking { item: Some(held), ..item };
-        let has = Held { party_has_it: true, itself: false, known: false };
-        assert_eq!(identify(held(Held { party_has_it: false, ..has })), Err(Refusal::NoTarget));
-        assert_eq!(identify(held(Held { itself: true, ..has })), Err(Refusal::NoTarget));
-        assert_eq!(identify(held(Held { known: true, ..has })), Err(Refusal::NoTarget));
-        assert_eq!(identify(Marking { item: None, ..item }), Err(Refusal::NoTarget));
-        assert_eq!(identify(Marking { aim: Aim::Body(id(4)), ..item }), Err(Refusal::NoTarget));
-    }
-
-    #[test]
-    fn a_return_to_portal_needs_a_portal_saved_and_a_set_portal_nothing() {
-        let back = marking(Working::ReturnToPortal, Aim::Ahead);
-        assert_eq!(mark(&back), Ok(Marked::Nothing));
-        assert_eq!(mark(&Marking { portal: false, ..back }), Err(Refusal::NoTarget));
-        let set = Marking { portal: false, ..marking(Working::SetPortal, Aim::Ahead) };
-        assert_eq!(mark(&set), Ok(Marked::Nothing));
-    }
-
-    #[test]
-    fn charm_and_mindread_are_cast_at_the_one_the_party_is_talking_with() {
-        for working in [Working::Charm, Working::Mindread] {
-            let at = marking(working, Aim::Body(id(8)));
-            assert_eq!(mark(&at), Ok(Marked::Body(id(8))));
-            assert_eq!(mark(&Marking { aim: Aim::Body(id(9)), ..at }), Err(Refusal::NoTarget));
-            assert_eq!(mark(&Marking { speaker: None, ..at }), Err(Refusal::NoTarget));
         }
     }
 

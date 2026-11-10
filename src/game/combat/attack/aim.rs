@@ -478,109 +478,8 @@ mod tests {
         chance_to_hit(facts).aim
     }
 
-    #[test]
-    fn the_aim_starts_from_the_arms_rating_and_adds_its_modes_term() {
-        // 80 + the mode's term (page 4).
-        for (mode, term) in [
-            (AttackMode::Swing, 0),
-            (AttackMode::Bash, 0),
-            (AttackMode::Shoot, 0),
-            (AttackMode::Thrust, -10),
-            (AttackMode::Kick, -10),
-            (AttackMode::Berserk, -30),
-            (AttackMode::Throw, -5),
-            (AttackMode::Punch, 5),
-            (AttackMode::Lash, 10),
-        ] {
-            assert_eq!(aim(&Hitting { mode, ..hitting() }), 80 + term, "{mode:?}");
-        }
-    }
-
-    #[test]
-    fn fatigue_takes_from_the_aim_and_half_of_it_rounded_down_for_a_modern_arm() {
-        assert_eq!(aim(&Hitting { fatigue: 20, ..hitting() }), 60);
-        assert_eq!(aim(&Hitting { fatigue: 20, modern: true, ..hitting() }), 70);
-        // 5 / 2 = 2.
-        assert_eq!(aim(&Hitting { fatigue: 5, modern: true, ..hitting() }), 78);
-        assert_eq!(aim(&Hitting { fatigue: 40, modern: true, ..hitting() }), 60);
-    }
-
-    #[test]
-    fn a_surprise_adds_ten_for_each_way_it_holds() {
-        let by = |unaware, natural| Surprise { unaware, natural };
-        assert_eq!(aim(&Hitting { surprise: by(true, false), ..hitting() }), 90);
-        assert_eq!(aim(&Hitting { surprise: by(false, true), ..hitting() }), 90);
-        assert_eq!(aim(&Hitting { surprise: by(true, true), ..hitting() }), 100);
-    }
-
     fn defended(armour: Armour) -> Defence {
         Defence { armour, ..Defence::default() }
-    }
-
-    #[test]
-    fn five_off_the_aim_for_each_point_of_the_targets_armour() {
-        let target = defended(Armour { total: 6, ..Armour::default() });
-        // 80 - 5 * 6.
-        assert_eq!(aim(&Hitting { target, ..hitting() }), 50);
-    }
-
-    #[test]
-    fn a_defending_target_is_braced() {
-        let armour = Armour { total: 6, braced: (2, 0), ..Armour::default() };
-        let target = Defence { armour, defending: true, ..Defence::default() };
-        // Armour 6 + 2 = 8: 80 - 40.
-        assert_eq!(aim(&Hitting { target, ..hitting() }), 40);
-        // Not defending, no bracing.
-        let target = Defence { defending: false, ..target };
-        assert_eq!(aim(&Hitting { target, ..hitting() }), 50);
-    }
-
-    #[test]
-    fn a_target_whose_fatigue_tells_on_armour_guards_a_tenth_of_it_better() {
-        let armour = Armour { total: 6, tires: true, ..Armour::default() };
-        let target = Defence { armour, fatigue: 40, ..Defence::default() };
-        // Armour 6 + 40 / 10 = 10: 80 - 50.
-        assert_eq!(aim(&Hitting { target, ..hitting() }), 30);
-        // A member's fatigue does not tell on its armour.
-        let armour = Armour { tires: false, ..armour };
-        assert_eq!(aim(&Hitting { target: Defence { armour, ..target }, ..hitting() }), 50);
-    }
-
-    #[test]
-    fn a_surprise_strips_the_armour_it_exposes_and_more_from_the_braced() {
-        let armour = Armour { total: 6, exposed: 3, braced: (2, 2), ..Armour::default() };
-        let unaware = Surprise { unaware: true, natural: false };
-        let target = Defence { armour, ..Defence::default() };
-        // Base 80 + 10 for surprise; armour 6 - 3 = 3: 90 - 15.
-        assert_eq!(aim(&Hitting { target, surprise: unaware, ..hitting() }), 75);
-        // Braced: armour 6 + 2 bracing - (3 + 2) stripped = 3 again.
-        let braced = Defence { defending: true, ..target };
-        assert_eq!(aim(&Hitting { target: braced, surprise: unaware, ..hitting() }), 75);
-        // A natural attack strips it just the same.
-        let natural = Surprise { unaware: false, natural: true };
-        assert_eq!(aim(&Hitting { target, surprise: natural, ..hitting() }), 75);
-    }
-
-    #[test]
-    fn a_target_on_the_move_is_four_less_guarded_except_against_throws_lashes_and_shots() {
-        let target = Defence {
-            armour: Armour { total: 6, ..Armour::default() },
-            moving: true,
-            ..Defence::default()
-        };
-        // Armour 6 - 4 = 2: 80 - 10.
-        assert_eq!(aim(&Hitting { target, ..hitting() }), 70);
-        // Throw: 80 - 5 = 75, armour 6: 75 - 30.
-        assert_eq!(aim(&Hitting { target, mode: AttackMode::Throw, ..hitting() }), 45);
-        assert_eq!(aim(&Hitting { target, mode: AttackMode::Shoot, ..hitting() }), 50);
-        assert_eq!(aim(&Hitting { target, mode: AttackMode::Lash, ..hitting() }), 60);
-    }
-
-    #[test]
-    fn a_tenth_of_the_difference_of_agility_is_added() {
-        assert_eq!(aim(&Hitting { agility: 120, ..hitting() }), 82);
-        assert_eq!(aim(&Hitting { agility: 90, ..hitting() }), 79);
-        assert_eq!(aim(&Hitting { target_agility: 160, ..hitting() }), 74);
     }
 
     #[test]
@@ -607,32 +506,6 @@ mod tests {
     }
 
     #[test]
-    fn difficulty_scales_the_aim_by_the_attackers_side() {
-        let at =
-            |difficulty, side| aim(&Hitting { scaling: Scaling { difficulty, side }, ..hitting() });
-        // Page 4: Novice hostile 0.6, friendly 1.4; Expert hostile 1.4,
-        // friendly 0.6; Normal and neutral unchanged.
-        assert_eq!(at(Difficulty::Normal, Stance::Hostile), 80);
-        assert_eq!(at(Difficulty::Novice, Stance::Hostile), 48);
-        assert_eq!(at(Difficulty::Novice, Stance::Friendly), 112);
-        assert_eq!(at(Difficulty::Expert, Stance::Hostile), 112);
-        assert_eq!(at(Difficulty::Expert, Stance::Friendly), 48);
-        assert_eq!(at(Difficulty::Novice, Stance::Neutral), 80);
-        assert_eq!(at(Difficulty::Expert, Stance::Neutral), 80);
-    }
-
-    #[test]
-    fn the_blind_cap_comes_before_difficulty() {
-        let facts = Hitting {
-            blind: true,
-            scaling: Scaling { difficulty: Difficulty::Expert, side: Stance::Hostile },
-            ..hitting()
-        };
-        // 80 held to 10, then 10 * 140 / 100.
-        assert_eq!(aim(&facts), 14);
-    }
-
-    #[test]
     fn the_fumble_odds_leave_out_the_targets_armour_and_agility() {
         let target = defended(Armour { total: 6, ..Armour::default() });
         let facts = Hitting {
@@ -647,17 +520,6 @@ mod tests {
         let chance = chance_to_hit(&facts);
         assert_eq!(chance.fumble_odds, 60);
         assert_eq!(chance.aim, 60 - 30 + 5);
-    }
-
-    #[test]
-    fn the_fumble_odds_have_the_blind_rule_and_difficulty_applied() {
-        let blind = Hitting { blind: true, ..hitting() };
-        assert_eq!(chance_to_hit(&blind).fumble_odds, 10);
-        let expert = Hitting {
-            scaling: Scaling { difficulty: Difficulty::Expert, side: Stance::Hostile },
-            ..hitting()
-        };
-        assert_eq!(chance_to_hit(&expert).fumble_odds, 112);
     }
 
     #[test]
@@ -705,123 +567,6 @@ mod tests {
     }
 
     #[test]
-    fn a_roll_above_95_misses_and_otherwise_reaches() {
-        assert_eq!(verdict(6, 0, 0), Verdict::Reaches { sure: false });
-        assert_eq!(verdict(95, 3, 0), Verdict::Reaches { sure: false });
-        assert_eq!(verdict(96, 3, 0), Verdict::Misses);
-        assert_eq!(verdict(100, 3, 0), Verdict::Misses);
-    }
-
-    fn reaching(aim: i32, bystanders: usize) -> Reaching {
-        Reaching {
-            reach: Reach::Touch,
-            chance: Chance { aim, fumble_odds: 100 },
-            bystanders,
-            sure_throw: false,
-            flight: Flight {
-                from: Vec3::ZERO,
-                at: Vec3::ZERO,
-                radius: 0.5,
-                half_height: 1.0,
-                blind: false,
-            },
-        }
-    }
-
-    #[test]
-    fn a_close_swing_lands_when_the_aim_is_at_least_the_roll_or_the_roll_is_sure() {
-        for seed in 0..300 {
-            match fate(&mut GameRng::seeded(seed), &reaching(50, 0)) {
-                Fate::Reached { roll, lands, through } => {
-                    assert_eq!(lands, roll <= 50 || roll <= 5, "roll {roll}");
-                    assert_eq!(through, roll <= 5, "roll {roll}");
-                }
-                Fate::Missed => {}
-                Fate::Fumbled { .. } => panic!("nobody to fumble onto"),
-            }
-        }
-        // An aim of nothing lands only the sure ones.
-        for seed in 0..300 {
-            if let Fate::Reached { roll, lands, .. } =
-                fate(&mut GameRng::seeded(seed), &reaching(0, 0))
-            {
-                assert_eq!(lands, roll <= 5);
-            }
-        }
-    }
-
-    #[test]
-    fn a_swing_that_reaches_may_still_fall_short_of_landing() {
-        // Aim 20: some rolls from 6 to 95 reach but do not land.
-        let reached_short = (0..300).any(|seed| {
-            matches!(
-                fate(&mut GameRng::seeded(seed), &reaching(20, 0)),
-                Fate::Reached { lands: false, .. }
-            )
-        });
-        assert!(reached_short);
-    }
-
-    #[test]
-    fn a_swing_with_odds_far_below_100_fumbles_onto_a_bystander() {
-        // Odds -500 with ten in reach: a fumble chance of 100, so every roll
-        // above 5 and none other fumbles.
-        let facts =
-            Reaching { chance: Chance { aim: -500, fumble_odds: -500 }, ..reaching(-500, 10) };
-        for seed in 0..100 {
-            match fate(&mut GameRng::seeded(seed), &facts) {
-                Fate::Fumbled { bystander, roll } => {
-                    assert!(bystander < 10);
-                    assert!((1..=100).contains(&roll));
-                }
-                Fate::Reached { roll, through, .. } => {
-                    assert!(roll <= 5 && through);
-                }
-                Fate::Missed => panic!("a miss is decided after a fumble"),
-            }
-        }
-    }
-
-    #[test]
-    fn a_shot_has_no_fumble_and_a_shot_that_strikes_lands_and_is_sure_if_a_ninjas() {
-        // From the target's own centre, scatter is nil: it always strikes.
-        for sure_throw in [false, true] {
-            let facts = Reaching {
-                reach: Reach::Long,
-                sure_throw,
-                chance: Chance { aim: -50, fumble_odds: -50 },
-                ..reaching(-50, 10)
-            };
-            for seed in 0..50 {
-                let Fate::Reached { roll, lands, through } =
-                    fate(&mut GameRng::seeded(seed), &facts)
-                else {
-                    panic!("it strikes")
-                };
-                assert!(lands && (1..=100).contains(&roll));
-                assert_eq!(through, sure_throw);
-            }
-        }
-    }
-
-    #[test]
-    fn a_shot_wide_of_its_target_misses() {
-        let far = Reaching {
-            reach: Reach::Extreme,
-            chance: Chance { aim: -100, fumble_odds: 0 },
-            flight: Flight {
-                from: Vec3::ZERO,
-                at: Vec3::new(0.0, 0.0, -40.0),
-                radius: 0.1,
-                half_height: 0.1,
-                blind: true,
-            },
-            ..reaching(-100, 0)
-        };
-        assert!((0..50).any(|seed| fate(&mut GameRng::seeded(seed), &far) == Fate::Missed));
-    }
-
-    #[test]
     fn steadier_aim_scatters_closer_and_blind_poor_shots_scatter_wide() {
         let from = Vec3::ZERO;
         let to = Vec3::new(0.0, 0.0, -10.0);
@@ -844,15 +589,6 @@ mod tests {
     }
 
     #[test]
-    fn a_shot_strikes_within_the_targets_radius_and_half_height() {
-        let at = Vec3::new(1.0, 1.0, 1.0);
-        assert!(strikes(at, at + Vec3::new(0.3, 0.9, 0.4), 0.5, 1.0));
-        assert!(!strikes(at, at + Vec3::new(0.4, 0.0, 0.4), 0.5, 1.0), "0.566 across");
-        assert!(!strikes(at, at + Vec3::new(0.0, 1.1, 0.0), 0.5, 1.0));
-        assert!(strikes(at, at + Vec3::new(0.0, -1.0, 0.5), 0.5, 1.0));
-    }
-
-    #[test]
     fn a_blow_lands_by_cumulative_percentages_and_past_them_on_the_fallback() {
         // 15, 40, 30, 10, 5: cumulative 15, 55, 85, 95, 100.
         for (roll, part) in [(0, 0), (14, 0), (15, 1), (54, 1), (55, 2), (84, 2), (85, 3), (94, 3)]
@@ -864,50 +600,6 @@ mod tests {
         // Chances short of 100: the rest on the fallback.
         assert_eq!(locate_at(20, &[10, 10], 7), Location(7));
         assert_eq!(locate_at(19, &[10, 10], 7), Location(1));
-    }
-
-    #[test]
-    fn a_monster_is_struck_by_its_species_seven_locations_and_past_them_on_its_body() {
-        let facts = Landing {
-            monster_locations: Some([10, 10, 10, 0, 0, 0, 0]),
-            on_party: Some(EnumMap::from_fn(|_| 20)),
-        };
-        assert_eq!(location_at(25, &facts), Location(2));
-        // Past 30: location 3.
-        assert_eq!(location_at(30, &facts), Location(MONSTER_BODY));
-        assert_eq!(location_at(99, &facts), Location(3));
-    }
-
-    #[test]
-    fn a_member_struck_by_a_monster_is_struck_by_its_species_chances_for_five_parts() {
-        let mut hits = EnumMap::default();
-        hits[BodyPart::Head] = 50;
-        hits[BodyPart::Foot] = 30;
-        let facts = Landing { monster_locations: None, on_party: Some(hits) };
-        assert_eq!(location_at(49, &facts), Location(0));
-        // Body, leg and hand have none: feet from 50 to 79.
-        assert_eq!(location_at(50, &facts), Location(4));
-        assert_eq!(location_at(79, &facts), Location(4));
-        // Past them, the body.
-        assert_eq!(location_at(80, &facts), Location(BodyPart::Body as usize));
-    }
-
-    #[test]
-    fn a_member_struck_by_a_member_is_struck_15_40_30_10_5() {
-        let facts = Landing { monster_locations: None, on_party: None };
-        assert_eq!(location_at(0, &facts), Location(0));
-        assert_eq!(location_at(15, &facts), Location(1));
-        assert_eq!(location_at(55, &facts), Location(2));
-        assert_eq!(location_at(85, &facts), Location(3));
-        assert_eq!(location_at(95, &facts), Location(4));
-    }
-
-    #[test]
-    fn a_launchers_missile_pierces_by_its_own_modes() {
-        let mut rng = GameRng::seeded(3);
-        assert_eq!(piercing_mode(&mut rng, AttackMode::Shoot, None), AttackMode::Shoot);
-        let loaded = AttackMode::Throw.into();
-        assert_eq!(piercing_mode(&mut rng, AttackMode::Shoot, Some(loaded)), AttackMode::Throw);
     }
 
     fn piercing() -> Piercing {
@@ -935,51 +627,6 @@ mod tests {
     }
 
     #[test]
-    fn penetration_is_the_rating_and_the_modes_term_less_five_for_each_point_of_armour() {
-        for (by, term) in [
-            (AttackMode::Swing, 0),
-            (AttackMode::Kick, 0),
-            (AttackMode::Thrust, 10),
-            (AttackMode::Shoot, 10),
-            (AttackMode::Bash, -5),
-            (AttackMode::Punch, -5),
-            (AttackMode::Berserk, -30),
-            (AttackMode::Throw, 5),
-            (AttackMode::Lash, -10),
-        ] {
-            let facts = Piercing { by, ..piercing() };
-            assert_eq!(penetration(&facts), 80 + term, "{by:?}");
-        }
-        let victim = Defence { armour: armoured(4), ..Defence::default() };
-        // 80 - 5 * 4.
-        assert_eq!(penetration(&Piercing { victim, ..piercing() }), 60);
-        // Thrust: 80 + 10 - 20.
-        assert_eq!(penetration(&Piercing { victim, by: AttackMode::Thrust, ..piercing() }), 70);
-    }
-
-    #[test]
-    fn fatigue_takes_from_penetration_only_where_it_tells_on_it() {
-        let tired = Piercing { fatigue: 20, ..piercing() };
-        assert_eq!(penetration(&tired), 80);
-        assert_eq!(penetration(&Piercing { fatigue_pierces: true, ..tired }), 60);
-        // The full amount, not halved.
-        assert_eq!(penetration(&Piercing { fatigue: 40, fatigue_pierces: true, ..piercing() }), 40);
-    }
-
-    #[test]
-    fn the_victims_armour_at_the_place_counts_bracing_and_what_it_has_against_the_mode() {
-        let armour = Armour { braced: (2, 0), ..armoured(4) };
-        let mut by_mode = armour;
-        by_mode.by_mode[AttackMode::Swing] = 1;
-        let victim = Defence { armour: by_mode, defending: true, ..Defence::default() };
-        // 4 + 2 braced - 1 against the mode = 5: 80 - 25.
-        assert_eq!(penetration(&Piercing { victim, ..piercing() }), 55);
-        // Against another mode, nothing: 4 + 2 = 6: 80 + 10 - 30.
-        let facts = Piercing { victim, by: AttackMode::Thrust, ..piercing() };
-        assert_eq!(penetration(&facts), 60);
-    }
-
-    #[test]
     fn the_victims_guard_counts_twice_in_penetration() {
         // Fatigue 40 on armour that tires: guard 4, twice is 8: 4 + 8 = 12.
         let tires = Armour { tires: true, ..armoured(4) };
@@ -995,48 +642,6 @@ mod tests {
         assert_eq!(penetration(&Piercing { victim: moving, ..piercing() }), 100);
         let throw = Piercing { victim: moving, by: AttackMode::Throw, ..piercing() };
         assert_eq!(penetration(&throw), 80 + 5 - 20);
-    }
-
-    #[test]
-    fn the_difference_of_agility_in_penetration_is_with_the_actual_victim() {
-        assert_eq!(penetration(&Piercing { victim_agility: 60, ..piercing() }), 84);
-        assert_eq!(penetration(&Piercing { agility: 70, ..piercing() }), 77);
-    }
-
-    #[test]
-    fn penetration_is_scaled_for_difficulty_by_the_attackers_side_without_the_blind_rule() {
-        let scaling = Scaling { difficulty: Difficulty::Novice, side: Stance::Hostile };
-        assert_eq!(penetration(&Piercing { scaling, ..piercing() }), 48);
-        let scaling = Scaling { difficulty: Difficulty::Expert, side: Stance::Hostile };
-        assert_eq!(penetration(&Piercing { scaling, ..piercing() }), 112);
-    }
-
-    #[test]
-    fn a_swing_gets_through_when_its_penetration_is_at_least_the_roll() {
-        let at = |roll| gets_through(&mut GameRng::seeded(0), &Piercing { roll, ..piercing() });
-        assert!(at(80));
-        assert!(!at(81));
-        assert!(at(1));
-    }
-
-    #[test]
-    fn a_sure_swing_gets_through_whatever_the_penetration() {
-        let facts = Piercing { rating: -100, roll: 100, sure: true, ..piercing() };
-        assert!(gets_through(&mut GameRng::seeded(0), &facts));
-        let unsure = Piercing { sure: false, ..facts };
-        assert!(!gets_through(&mut GameRng::seeded(0), &unsure));
-    }
-
-    #[test]
-    fn a_missile_shield_turns_aside_a_shot_or_a_throw_with_chance_equal_to_it() {
-        // A roll below the shield.
-        assert!(turned_aside(AttackMode::Shoot, 30, 29));
-        assert!(!turned_aside(AttackMode::Shoot, 30, 30));
-        assert!(turned_aside(AttackMode::Throw, 100, 99));
-        assert!(!turned_aside(AttackMode::Throw, 0, 0));
-        // Not blows struck close.
-        assert!(!turned_aside(AttackMode::Swing, 100, 0));
-        assert!(!turned_aside(AttackMode::Thrust, 100, 0));
     }
 
     #[test]

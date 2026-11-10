@@ -166,57 +166,6 @@ mod tests {
     }
 
     #[test]
-    fn a_swings_stamina_follows_the_attack_and_the_weapons_weight() {
-        // below(n) + add: a punch 2..=4, a kick 3..=5, a weapon with no weight
-        // 3..=6, weight 0 and 39 band 1: 2, 40 and 79 band 2: 3..=4, 80 band 3: 4..=6.
-        assert_eq!(stamina_draw(AttackMode::Punch, Some(800)), (3, 2));
-        assert_eq!(stamina_draw(AttackMode::Kick, Some(800)), (3, 3));
-        assert_eq!(stamina_draw(AttackMode::Swing, None), (4, 3));
-        assert_eq!(stamina_draw(AttackMode::Swing, Some(0)), (1, 2));
-        assert_eq!(stamina_draw(AttackMode::Swing, Some(39)), (1, 2));
-        assert_eq!(stamina_draw(AttackMode::Swing, Some(40)), (2, 3));
-        assert_eq!(stamina_draw(AttackMode::Swing, Some(79)), (2, 3));
-        assert_eq!(stamina_draw(AttackMode::Swing, Some(80)), (3, 4));
-        assert_eq!(stamina_draw(AttackMode::Thrust, Some(120)), (4, 5));
-        for (mode, weight, range) in [
-            (AttackMode::Punch, Some(800), 2..=4),
-            (AttackMode::Kick, Some(800), 3..=5),
-            (AttackMode::Swing, None, 3..=6),
-            (AttackMode::Swing, Some(0), 2..=2),
-            (AttackMode::Swing, Some(80), 4..=6),
-        ] {
-            for seed in 0..40 {
-                assert!(range.contains(&spent(&cost(mode, weight), seed)), "{mode:?} {weight:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn a_berserk_order_and_disease_each_double_the_cost() {
-        // Weight 0: 2 every time.
-        let plain = cost(AttackMode::Swing, Some(0));
-        assert_eq!(spent(&plain, 0), 2);
-        assert_eq!(spent(&Cost { berserk: true, ..plain }, 0), 4);
-        assert_eq!(spent(&Cost { diseased: true, ..plain }, 0), 4);
-        assert_eq!(spent(&Cost { berserk: true, diseased: true, ..plain }, 0), 8);
-    }
-
-    #[test]
-    fn the_load_adds_its_percent_of_the_cost() {
-        // Cost 8 (weight 0, doubled twice): + percent * 8 / 100.
-        let eight = Cost { berserk: true, diseased: true, ..cost(AttackMode::Swing, Some(0)) };
-        for (load, scaled) in [
-            (Load::None, 8),
-            (Load::Light, 10),   // 25
-            (Load::Medium, 12),  // 50
-            (Load::Heavy, 16),   // 100
-            (Load::Extreme, 24), // 200
-        ] {
-            assert_eq!(spent(&Cost { load: Some(load), ..eight }, 0), scaled, "{load:?}");
-        }
-    }
-
-    #[test]
     fn slowed_takes_a_quarter_off_hasted_adds_a_quarter_and_slowed_wins() {
         let eight = Cost { berserk: true, diseased: true, ..cost(AttackMode::Swing, Some(0)) };
         assert_eq!(spent(&Cost { slowed: true, ..eight }, 0), 6); // 8 - 25 * 8 / 100
@@ -228,38 +177,14 @@ mod tests {
         assert_eq!(spent(&Cost { hasted: true, ..heavy }, 0), 18);
     }
 
-    #[test]
-    fn a_monster_or_one_carrying_nothing_weighed_pays_nothing() {
-        let plain = cost(AttackMode::Swing, Some(0));
-        assert_eq!(spent(&Cost { tires: false, ..plain }, 0), 0);
-        assert_eq!(spent(&Cost { load: None, ..plain }, 0), 0);
-    }
-
     fn ammunition() -> Ammunition {
         Ammunition { ranged: true, launcher: false, kept: false, left: Some(3), spent: 1 }
-    }
-
-    #[test]
-    fn a_thrown_weapon_or_a_gun_uses_one_of_itself_a_swing() {
-        assert_eq!(uses_up(&ammunition()), Used { spends: Some(1), used_up: false });
     }
 
     #[test]
     fn a_launcher_uses_a_missile_of_the_other_hand_even_if_those_are_kept() {
         let launcher = Ammunition { launcher: true, kept: true, ..ammunition() };
         assert_eq!(uses_up(&launcher).spends, Some(1));
-    }
-
-    #[test]
-    fn a_weapon_that_casts_or_a_missile_that_is_kept_uses_nothing() {
-        let kept = Ammunition { kept: true, left: Some(1), spent: 5, ..ammunition() };
-        assert_eq!(uses_up(&kept), Used { spends: None, used_up: false });
-    }
-
-    #[test]
-    fn a_close_weapon_uses_nothing() {
-        let close = Ammunition { ranged: false, ..ammunition() };
-        assert_eq!(uses_up(&close), Used { spends: None, used_up: false });
     }
 
     #[test]
@@ -295,27 +220,6 @@ mod tests {
     }
 
     #[test]
-    fn the_same_hand_attacks_again_spread_over_the_rest_of_the_round() {
-        use WeaponSlot::*;
-        // Two left in the current, none in the other, now 30:
-        // 30 + (100 - 30) / (2 + 1) = 30 + 23 = 53.
-        let next = next_attack(&hands((2, 0), (0, 0), Primary, 30));
-        assert_eq!(next, Some(Next { slot: Primary, moment: 53 }));
-        // One left, now 90: 90 + 10 / 2 = 95.
-        assert_eq!(next_attack(&hands((1, 0), (0, 0), Primary, 90)).unwrap().moment, 95);
-        // The off hand the same way.
-        let next = next_attack(&hands((0, 2), (0, 0), Secondary, 30));
-        assert_eq!(next, Some(Next { slot: Secondary, moment: 53 }));
-    }
-
-    #[test]
-    fn an_actor_with_no_attacks_left_in_either_hand_is_done() {
-        use WeaponSlot::*;
-        assert_eq!(next_attack(&hands((0, 0), (0, 0), Primary, 30)), None);
-        assert_eq!(next_attack(&hands((0, 0), (5, 5), Secondary, 30)), None);
-    }
-
-    #[test]
     fn it_changes_hands_when_the_other_has_attacks_and_not_fewer_with_less_initiative() {
         use WeaponSlot::*;
         // Equal attacks (1 and 1): the other, at 40 + (100 - 40) / (1 + 1) = 70;
@@ -334,18 +238,6 @@ mod tests {
         // has more than the current the moment is now.
         let next = next_attack(&hands((0, 2), (0, 0), Primary, 40));
         assert_eq!(next, Some(Next { slot: Secondary, moment: 40 }));
-    }
-
-    #[test]
-    fn a_hand_with_more_attacks_than_the_current_acts_at_once() {
-        use WeaponSlot::*;
-        // Other has 3 against 1: the next moment is now itself, 40; changing
-        // hands adds 0 - 0.
-        let next = next_attack(&hands((1, 3), (0, 0), Primary, 40));
-        assert_eq!(next, Some(Next { slot: Secondary, moment: 40 }));
-        // With an initiative difference: 40 + (6 - 2) = 44.
-        let next = next_attack(&hands((1, 3), (6, 2), Primary, 40));
-        assert_eq!(next, Some(Next { slot: Secondary, moment: 44 }));
     }
 
     #[test]

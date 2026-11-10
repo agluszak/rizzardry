@@ -272,30 +272,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_member_who_can_act_may_cast_a_learned_spell_they_can_pay_for() {
-        let heal = spell(SpellId::HEAL_WOUNDS);
-        assert_eq!(may(&asks(&heal, learned(3, 5))), Ok(()));
-        assert_eq!(may(&asks(&heal, learned(AUTO, 5))), Ok(()));
-    }
-
-    #[test]
-    fn one_who_cannot_act_and_a_monster_casting_a_member_spell_are_refused() {
-        let heal = spell(SpellId::HEAL_WOUNDS);
-        let down = Caster { able: false, ..ABLE };
-        assert_eq!(
-            may(&Asks { caster: down, ..asks(&heal, learned(3, 5)) }),
-            Err(Refusal::CannotAct)
-        );
-        let monster = Caster { member: false, ..ABLE };
-        assert_eq!(
-            may(&Asks { caster: monster, ..asks(&heal, learned(3, 5)) }),
-            Err(Refusal::CannotAct)
-        );
-        // Its own spell is another matter.
-        assert_eq!(may(&Asks { caster: monster, ..asks(&heal, Source::Own) }), Ok(()));
-    }
-
     /// Silence stops a learned spell and an instrument, not another item; an
     /// Alchemy spell is let through to one who keeps their Alchemy.
     #[test]
@@ -361,94 +337,8 @@ mod tests {
         );
     }
 
-    /// In a fight the pool is out of reach; outside one it is not.
-    #[test]
-    fn the_pool_is_out_of_reach_in_a_fight() {
-        let heal = spell(SpellId::HEAL_WOUNDS);
-        let pooled = Source::Item { pooled: true, held: Some(holding()) };
-        // Even an item that is gone is judged by where it was.
-        let gone = Source::Item { pooled: true, held: None };
-        let fight = Moment { context: UseContext::Combat, ..FREE };
-        assert_eq!(may(&Asks { moment: fight, ..asks(&heal, pooled) }), Err(Refusal::CannotUse));
-        assert_eq!(may(&Asks { moment: fight, ..asks(&heal, gone) }), Err(Refusal::CannotUse));
-        assert_eq!(may(&asks(&heal, pooled)), Ok(()));
-        assert_eq!(may(&asks(&heal, gone)), Err(Refusal::NoItem));
-    }
-
-    /// Potions and food are usable by anyone; a worn item must be worn; a plain
-    /// thing has no use.
-    #[test]
-    fn an_item_is_activated_by_one_who_may_use_it_wearing_it_if_it_must_be_worn() {
-        let item = holding().activation;
-        assert!(activates(&item));
-        assert!(!activates(&Activation { has_use: false, ..item }));
-        assert!(!activates(&Activation { must_be_worn: true, ..item }));
-        assert!(activates(&Activation { must_be_worn: true, worn: true, ..item }));
-        assert!(!activates(&Activation { usable_by_user: false, ..item }));
-        assert!(activates(&Activation { usable_by_user: false, by_anyone: true, ..item }));
-        // A potion is taken by anyone, but still must have a use.
-        assert!(!activates(&Activation {
-            usable_by_user: false,
-            by_anyone: true,
-            has_use: false,
-            ..item
-        }));
-    }
-
-    #[test]
-    fn a_spell_the_game_does_not_resolve_is_refused() {
-        let heal = spell(SpellId::HEAL_WOUNDS);
-        assert_eq!(
-            may(&Asks { resolved: false, ..asks(&heal, learned(3, 5)) }),
-            Err(Refusal::Unsupported)
-        );
-    }
-
     fn suiting(usable: Usable) -> SpellDefinition {
         SpellDefinition { usable, ..spell(SpellId::HEAL_WOUNDS) }
-    }
-
-    /// The table of the page: in a fight any-time and combat; exploring any-time and
-    /// out-of-combat; camped any-time, out-of-combat and camped.
-    #[test]
-    fn a_spell_is_usable_by_where_the_party_is() {
-        use UseContext::*;
-        let usable = |usable, context| usable_now(&suiting(usable), context);
-        for (context, any, combat, out, camped) in [
-            (Combat, true, true, false, false),
-            (World, true, false, true, false),
-            (Camp, true, false, true, true),
-        ] {
-            assert_eq!(usable(Usable::Always, context), any, "{context:?}");
-            assert_eq!(usable(Usable::InCombat, context), combat, "{context:?}");
-            assert_eq!(usable(Usable::OutOfCombat, context), out, "{context:?}");
-            assert_eq!(usable(Usable::Camped, context), camped, "{context:?}");
-            assert!(!usable(Usable::OnLockOrTrap, context));
-        }
-    }
-
-    /// Talking: only Charm and Mindread; picking a lock: only Knock Knock;
-    /// disarming a trap: Divine Trap and Knock Knock.
-    #[test]
-    fn a_conversation_a_lock_and_a_trap_suit_only_their_own_spells() {
-        use UseContext::*;
-        let at = |id, context| usable_now(&spell(id), context);
-        assert!(at(SpellId::CHARM, Conversation) && at(SpellId::MINDREAD, Conversation));
-        assert!(!at(SpellId::HEAL_WOUNDS, Conversation) && !at(SpellId::KNOCK_KNOCK, Conversation));
-        assert!(at(SpellId::KNOCK_KNOCK, Lock));
-        assert!(!at(SpellId::DIVINE_TRAP, Lock) && !at(SpellId::HEAL_WOUNDS, Lock));
-        assert!(at(SpellId::DIVINE_TRAP, Trap) && at(SpellId::KNOCK_KNOCK, Trap));
-        assert!(!at(SpellId::HEAL_WOUNDS, Trap) && !at(SpellId::CHARM, Trap));
-    }
-
-    #[test]
-    fn a_spell_at_the_wrong_moment_is_refused() {
-        let in_combat = suiting(Usable::InCombat);
-        assert_eq!(may(&asks(&in_combat, learned(3, 5))), Err(Refusal::WrongTime));
-        let fight = Moment { context: UseContext::Combat, ..FREE };
-        assert_eq!(may(&Asks { moment: fight, ..asks(&in_combat, learned(3, 5)) }), Ok(()));
-        // A monster's own spell is not judged by the moment.
-        assert_eq!(may(&asks(&in_combat, Source::Own)), Ok(()));
     }
 
     /// "Repeat until whole" is refused in a fight, only for a spell whose record

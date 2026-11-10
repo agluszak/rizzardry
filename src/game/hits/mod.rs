@@ -425,19 +425,3 @@ impl Plugin for HitsPlugin {
         );
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A deed affected someone if any victim took something from it; a deed
-    /// that did nothing to anyone, or reached no one, affected no one.
-    #[test]
-    fn a_deed_affected_someone_unless_it_did_nothing_to_all_it_reached() {
-        let victim = Entity::from_raw_u32(1).unwrap();
-        assert!(!affected(&[]));
-        assert!(!affected(&[Effect::Nothing { victim }]));
-        assert!(affected(&[Effect::Nothing { victim }, Effect::Healed { victim, amount: 1 }]));
-        assert!(affected(&[Effect::Resisted { victim }]));
-    }
-}

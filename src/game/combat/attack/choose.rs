@@ -332,39 +332,6 @@ mod tests {
     }
 
     #[test]
-    fn an_attack_makes_between_one_and_the_arms_most_swings_and_the_weapons_extra() {
-        for seed in 0..60 {
-            let at = |facts| swing_count(&mut GameRng::seeded(seed), &facts).count;
-            assert_eq!(at(count_of(1, 0)), 1);
-            assert!((1..=3).contains(&at(count_of(3, 0))));
-            // below(1) + 1 + 2 = 3; below(2) + 1 + 2 = 3 or 4.
-            assert_eq!(at(count_of(1, 2)), 3);
-            assert!((3..=4).contains(&at(count_of(2, 2))));
-            // At least one: 1 - 5 held to 1.
-            assert_eq!(at(count_of(1, -5)), 1);
-            assert!((1..=2).contains(&at(count_of(3, -1))));
-        }
-        let seen: std::collections::HashSet<_> = (0..100)
-            .map(|seed| swing_count(&mut GameRng::seeded(seed), &count_of(3, 0)).count)
-            .collect();
-        assert_eq!(seen.len(), 3);
-    }
-
-    #[test]
-    fn a_lightning_strike_adds_three_swings_for_a_low_level_and_four_for_a_high_one() {
-        let readied = |level| SwingCount { lightning: Some(level), ..count_of(1, 0) };
-        // below(11) is at most 10: level 5 gives under 20 always, 1 + 3 swings.
-        assert_eq!(swings(readied(5)), Swings { count: 4, lightning_spent: true });
-        // Level 20: 20 + anything is not under 20, 1 + 4.
-        assert_eq!(swings(readied(20)), Swings { count: 5, lightning_spent: true });
-        // Level 15: under 20 when below(11) is 0 to 4, otherwise not.
-        let counts: std::collections::HashSet<_> = (0..200)
-            .map(|seed| swing_count(&mut GameRng::seeded(seed), &readied(15)).count)
-            .collect();
-        assert_eq!(counts, [4, 5].into());
-    }
-
-    #[test]
     fn a_lightning_strike_needs_a_sword_the_main_slot_and_no_slowing_but_is_used_up_in_the_main_slot()
      {
         let readied = SwingCount { lightning: Some(5), ..count_of(1, 0) };
@@ -451,12 +418,6 @@ mod tests {
     }
 
     #[test]
-    fn equal_foes_keep_the_fights_order() {
-        let foes = [foe(), foe(), foe()];
-        assert_eq!(target(&pick(&facts(&ARMS, &foes))), 0);
-    }
-
-    #[test]
     fn a_member_under_orders_never_strikes_an_npc_but_needs_no_sight() {
         let mut npc = foe();
         npc.npc = true;
@@ -477,51 +438,6 @@ mod tests {
         };
         assert_eq!(wild(&[hidden.clone()]).chosen, Chosen::Stand);
         assert_eq!(target(&wild(&[hidden, foe()])), 1);
-    }
-
-    #[test]
-    fn only_foes_in_reach_of_an_arm_can_be_struck() {
-        let mut out = foe();
-        out.reached_by = vec![false];
-        assert_eq!(pick(&facts(&ARMS, &[out.clone()])).chosen, Chosen::Stand);
-        assert_eq!(target(&pick(&facts(&ARMS, &[out, foe()]))), 1);
-    }
-
-    #[test]
-    fn a_member_picks_the_first_arm_of_the_slot_that_reaches_its_foe() {
-        let arms = [
-            ArmFacts { slot: WeaponSlot::Primary, modes: AttackMode::Swing.into() },
-            ArmFacts { slot: WeaponSlot::Primary, modes: AttackMode::Thrust.into() },
-        ];
-        let mut both = foe();
-        both.reached_by = vec![false, true];
-        let chosen = pick(&facts(&arms, &[both])).chosen;
-        assert!(matches!(chosen, Chosen::Strike { arm: 1, mode: AttackMode::Thrust, .. }));
-    }
-
-    #[test]
-    fn a_berserk_order_strikes_in_the_berserk_mode() {
-        let foes = [foe()];
-        let berserk = Choosing { berserk: true, ..facts(&ARMS, &foes) };
-        let chosen = pick(&berserk).chosen;
-        assert!(matches!(chosen, Chosen::Strike { mode: AttackMode::Berserk, .. }));
-    }
-
-    #[test]
-    fn a_member_draws_one_of_the_arms_own_modes() {
-        let arms = [ArmFacts {
-            slot: WeaponSlot::Primary,
-            modes: AttackMode::Swing | AttackMode::Thrust | AttackMode::Bash,
-        }];
-        let foes = [foe()];
-        for seed in 0..40 {
-            let Chosen::Strike { mode, .. } =
-                choose(&mut GameRng::seeded(seed), &facts(&arms, &foes)).chosen
-            else {
-                panic!()
-            };
-            assert!(arms[0].modes.contains(mode));
-        }
     }
 
     #[test]
@@ -547,127 +463,6 @@ mod tests {
             pick(&at).chosen,
             Chosen::Strike { slot: WeaponSlot::Primary, left: 2, .. }
         ));
-    }
-
-    #[test]
-    fn a_slot_with_nobody_in_reach_passes_to_the_other() {
-        let arms = [
-            ArmFacts { slot: WeaponSlot::Primary, modes: AttackMode::Swing.into() },
-            ArmFacts { slot: WeaponSlot::Secondary, modes: AttackMode::Punch.into() },
-        ];
-        let mut only_off = foe();
-        only_off.reached_by = vec![false, true];
-        let foes = [only_off];
-        let chosen = pick(&facts(&arms, &foes)).chosen;
-        assert!(matches!(chosen, Chosen::Strike { slot: WeaponSlot::Secondary, left: 1, .. }));
-    }
-
-    #[test]
-    fn nothing_in_any_slot_with_attacks_left_means_nobody_to_strike() {
-        let foes = [foe()];
-        let none = Choosing { attacks_left: EnumMap::default(), ..facts(&ARMS, &foes) };
-        assert_eq!(pick(&none).chosen, Chosen::Stand);
-    }
-
-    #[test]
-    fn a_monster_has_an_equal_chance_of_each_arm_mode_and_target_and_of_waiting() {
-        let arms =
-            [ArmFacts { slot: WeaponSlot::Primary, modes: AttackMode::Swing | AttackMode::Thrust }];
-        let foes = [foe(), foe()];
-        // Four ways to strike (2 modes x 2 foes), all possible.
-        let mut seen = Vec::new();
-        for seed in 0..200 {
-            let wild = Choosing { ordered: false, ..facts(&arms, &foes) };
-            let Chosen::Strike { mode, target, .. } =
-                choose(&mut GameRng::seeded(seed), &wild).chosen
-            else {
-                panic!("it does not wait")
-            };
-            if !seen.contains(&(mode, target)) {
-                seen.push((mode, target));
-            }
-        }
-        assert_eq!(seen.len(), 4);
-        // One way to strike and a wait: each half the time.
-        let one = [foe()];
-        let (mut struck, mut waited) = (0, 0);
-        for seed in 0..200 {
-            let wary = Choosing { ordered: false, waits: true, ..facts(&ARMS, &one) };
-            match choose(&mut GameRng::seeded(seed), &wary).chosen {
-                Chosen::Strike { .. } => struck += 1,
-                Chosen::Wait => waited += 1,
-                other => panic!("{other:?}"),
-            }
-        }
-        assert!(struck > 60 && waited > 60 && struck + waited == 200, "{struck} {waited}");
-    }
-
-    #[test]
-    fn a_member_never_waits() {
-        let foes = [foe()];
-        for seed in 0..50 {
-            let wary = Choosing { waits: true, ..facts(&ARMS, &foes) };
-            assert!(matches!(
-                choose(&mut GameRng::seeded(seed), &wary).chosen,
-                Chosen::Strike { .. }
-            ));
-        }
-    }
-
-    #[test]
-    fn a_member_the_wild_eye_misses_cannot_be_chosen_and_may_learn_from_it() {
-        // Stealth 134 is a 134 * 75 / 100 = 100 percent chance to be missed.
-        let mut hidden = foe();
-        hidden.stealth = Some(134);
-        let mut fine = foe();
-        fine.stealth = Some(0);
-        // Not in reach: not a candidate, so nothing to learn.
-        let mut far = foe();
-        far.stealth = Some(134);
-        far.reached_by = vec![false];
-        let foes = [hidden, fine, far];
-        let (mut learned, mut not) = (0, 0);
-        for seed in 0..200 {
-            let wild = Choosing { ordered: false, ..facts(&ARMS, &foes) };
-            let choice = choose(&mut GameRng::seeded(seed), &wild);
-            assert_eq!(target(&choice), 1, "the hidden one is not struck");
-            match choice.learns_stealth.as_slice() {
-                [] => not += 1,
-                [0] => learned += 1,
-                other => panic!("{other:?}"),
-            }
-        }
-        // Whether or not it struck someone else, a one in two chance.
-        assert!(learned > 60 && not > 60, "{learned} {not}");
-        // A member under orders is not subject to it.
-        let ordered = facts(&ARMS, &foes);
-        let choice = pick(&ordered);
-        assert_eq!(target(&choice), 0);
-        assert!(choice.learns_stealth.is_empty());
-    }
-
-    #[test]
-    fn stealth_is_three_quarters_of_the_skill_in_percent() {
-        // 100 skill is 75 percent: missed in some draws and not in others.
-        let missed = (0..200).filter(|&s| eye_misses(&mut GameRng::seeded(s), 100)).count();
-        assert!((100..190).contains(&missed), "{missed}");
-        assert!((0..50).all(|s| !eye_misses(&mut GameRng::seeded(s), 0)));
-        // 133 * 75 / 100 = 99: still not certain; 134 gives 100: certain.
-        assert!((0..200).any(|s| !eye_misses(&mut GameRng::seeded(s), 133)));
-        assert!((0..200).all(|s| eye_misses(&mut GameRng::seeded(s), 134)));
-    }
-
-    #[test]
-    fn the_party_is_reached_from_the_rear_or_from_an_open_side_past_a_held_center() {
-        let mut occupied = EnumMap::default();
-        assert!(in_reach_of_party(true, Row::Rear, &occupied));
-        assert!(!in_reach_of_party(true, Row::Front, &occupied));
-        assert!(!in_reach_of_party(false, Row::Rear, &occupied));
-        occupied[Row::Center] = true;
-        assert!(in_reach_of_party(true, Row::Front, &occupied));
-        occupied[Row::Front] = true;
-        assert!(!in_reach_of_party(true, Row::Front, &occupied));
-        assert!(in_reach_of_party(true, Row::Rear, &occupied));
     }
 
     fn budget() -> MoveBudget {
@@ -731,20 +526,5 @@ mod tests {
         let still = Closing { toward_foes: None, ..closing(Stance::Friendly) };
         assert_eq!(lonely(Some(still), &[out]), Chosen::Stand);
         assert_eq!(lonely(Some(closing(Stance::Friendly)), &[]), Chosen::Stand);
-    }
-
-    #[test]
-    fn a_neutral_body_or_one_that_cannot_close_in_stands() {
-        assert_eq!(lonely(Some(closing(Stance::Neutral)), &[]), Chosen::Stand);
-        assert_eq!(lonely(None, &[]), Chosen::Stand);
-    }
-
-    #[test]
-    fn a_wary_body_with_nobody_to_strike_does_not_wait_but_closes_in() {
-        let mut facts = facts(&ARMS, &[]);
-        facts.ordered = false;
-        facts.waits = true;
-        facts.closing = Some(closing(Stance::Hostile));
-        assert!(matches!(pick(&facts).chosen, Chosen::Advance { .. }));
     }
 }

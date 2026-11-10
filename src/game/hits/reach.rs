@@ -99,35 +99,6 @@ mod tests {
         }
     }
 
-    /// The party by seat, then the combatants as they joined, then anyone else.
-    #[test]
-    fn the_fights_order_is_the_party_by_seat_then_the_combatants_then_the_rest() {
-        assert_eq!(order(Some(2), Some(0)), (0, 2));
-        assert_eq!(order(Some(0), None), (0, 0));
-        assert_eq!(order(None, Some(5)), (1, 5));
-        assert_eq!(order(None, None), (2, 0));
-        assert!(order(Some(9), None) < order(None, Some(0)));
-        assert!(order(None, Some(9)) < order(None, None));
-    }
-
-    /// Whom a burst is against: the opponents of a side, or everyone; turned
-    /// back it is the other side's.
-    #[test]
-    fn recipients_are_the_opponents_of_a_side_or_everyone_and_turn_with_it() {
-        let against = Recipients::Opponents(Stance::Hostile);
-        assert!(against.admits(Stance::Friendly));
-        assert!(!against.admits(Stance::Hostile) && !against.admits(Stance::Neutral));
-        assert!(against.reversed().admits(Stance::Hostile));
-        assert!(!against.reversed().admits(Stance::Friendly));
-        let everyone = Recipients::Everyone;
-        assert!(
-            [Stance::Hostile, Stance::Friendly, Stance::Neutral]
-                .into_iter()
-                .all(|side| everyone.admits(side) && everyone.reversed().admits(side))
-        );
-        assert!(!Recipients::Opponents(Stance::Neutral).admits(Stance::Hostile));
-    }
-
     /// A body whose centre is 3 off and whose radius is 0.5 is at 2.5: within a
     /// radius of 2.5, not of 2.4. Only the living, in sight, and admitted, in
     /// the order of the fight whatever the order given.

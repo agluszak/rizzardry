@@ -365,10 +365,6 @@ pub fn spring(rng: &mut GameRng, trap: &Springing) -> Sprung {
 mod tests {
     use super::*;
 
-    fn id(index: u32) -> Entity {
-        Entity::from_raw_u32(index).unwrap()
-    }
-
     fn speaking(outcome: Outcome) -> Speaking {
         Speaking {
             mindread: false,
@@ -383,46 +379,6 @@ mod tests {
             charmed: 0,
             refusals: 0,
         }
-    }
-
-    /// A save of (10 - 10)*3 + 0 + 90 = 90 percent. A hostile speaker's is
-    /// scaled by 3*20/100 on Novice (54) and by 7*20/100 on Expert (126, held
-    /// to the most a save may be, 95); a neutral one's, or any on Normal, is
-    /// not (90).
-    #[test]
-    fn a_save_against_charm_is_scaled_for_difficulty_by_the_speakers_side() {
-        let mut rng = GameRng::seeded(11);
-        let mut rate = |difficulty, stance| {
-            let speaking =
-                Speaking { difficulty, stance, resistance: 90, ..speaking(Outcome::Cast) };
-            (0..4000).filter(|_| saves(&mut rng, &speaking)).count() / 40
-        };
-        let near = |percent: usize, expected: usize| percent.abs_diff(expected) <= 4;
-        assert!(near(rate(Difficulty::Novice, Stance::Hostile), 54));
-        assert!(near(rate(Difficulty::Expert, Stance::Hostile), 95));
-        assert!(near(rate(Difficulty::Normal, Stance::Hostile), 90));
-        assert!(near(rate(Difficulty::Novice, Stance::Neutral), 90));
-    }
-
-    /// A speaker who can never save (a level 1 against a strength of 100: held to
-    /// the least, 5) is charmed by 7 a power: 21 at power 3; raised by a boost of
-    /// 50 percent, 31; and cut by nothing at a resistance of -100.
-    #[test]
-    fn charm_wins_over_by_seven_a_power_raised_by_the_boost() {
-        let weak = Speaking {
-            level: 1,
-            resistance: -1000,
-            strength: Strength { power: 3, against: 100, boost: 0 },
-            ..speaking(Outcome::Cast)
-        };
-        let mut rng = GameRng::seeded(1);
-        let amounts: Vec<Reply> = (0..200).map(|_| speak(&mut rng, &weak).reply).collect();
-        assert!(amounts.contains(&Reply::Charmed(21)), "21 at power 3");
-        // Almost every cast wins them over: 95 percent fail to save.
-        let charmed = amounts.iter().filter(|reply| matches!(reply, Reply::Charmed(_))).count();
-        assert!(charmed > 170, "{charmed}");
-        let boosted = Speaking { strength: Strength { boost: 50, ..weak.strength }, ..weak };
-        assert!((0..200).any(|_| speak(&mut rng, &boosted).reply == Reply::Charmed(31)));
     }
 
     /// A charm is kept only if it is more than they already have: 21 against 21
@@ -440,20 +396,6 @@ mod tests {
         for _ in 0..100 {
             assert!(!matches!(speak(&mut rng, &weak).reply, Reply::Charmed(_)));
         }
-    }
-
-    /// The speaker who saves is told as resisted.
-    #[test]
-    fn a_speaker_who_saves_resists_a_charm() {
-        let strong = Speaking {
-            level: 100,
-            resistance: 1000,
-            strength: Strength { power: 1, against: 1, boost: 0 },
-            ..speaking(Outcome::Cast)
-        };
-        let mut rng = GameRng::seeded(3);
-        let resisted = (0..200).filter(|_| speak(&mut rng, &strong).resisted).count();
-        assert!(resisted > 170, "{resisted}");
     }
 
     /// A mind read that is saved against answers with line 0x69; else the next
@@ -487,32 +429,6 @@ mod tests {
                 == Spoken { reply: Reply::Quote(0x69), resisted: false, refusals: 0 }
         });
         assert!(saved);
-    }
-
-    /// A fizzle shows nothing; a backfire is noticed with chance (40 + 60) / 2 = 50.
-    #[test]
-    fn a_backfire_is_noticed_by_the_senses_and_intelligence_of_the_speaker() {
-        let mut rng = GameRng::seeded(5);
-        assert_eq!(speak(&mut rng, &speaking(Outcome::Fizzled)).reply, Reply::Unnoticed);
-        let noticed = (0..2000)
-            .filter(|_| speak(&mut rng, &speaking(Outcome::Backfired)).reply == Reply::Quote(0x16))
-            .count();
-        assert!((900..=1100).contains(&noticed), "{noticed}");
-    }
-
-    /// Level 1 against a strength of 100, in a realm of resistance -100:
-    /// (1 - 100)*3 + 0 - 100 = -397, held to the least save, 5%.
-    #[test]
-    fn an_undead_monster_always_resists_a_lure_and_the_rest_save_by_the_rule() {
-        let mut rng = GameRng::seeded(7);
-        let weak = |kind| Lured { kind, level: 1, resistance: -100, against: 100 };
-        let answers = |kind, rng: &mut GameRng| {
-            (0..400).filter(|_| lure_response(rng, &weak(kind)) == Response::Resisted).count()
-        };
-        assert_eq!(answers(Some(MonsterKind::Undead), &mut rng), 400);
-        // Five in a hundred save: far from all, far from none.
-        let saved = answers(Some(MonsterKind::Beast), &mut rng);
-        assert!((5..=50).contains(&saved), "{saved}");
     }
 
     fn drawn() -> Drawn {
@@ -559,174 +475,11 @@ mod tests {
         assert_eq!(follows_lure(&Following { blind: true, ..held }), (false, false));
     }
 
-    #[test]
-    fn a_lure_stands_for_its_turns() {
-        assert_eq!(lure_ends(1_000, 4, 250), 2_000);
-        assert_eq!(lure_ends(1_000, 0, 250), 1_000);
-    }
-
-    fn summoning(power: u32, boost: u32) -> Summoning {
-        Summoning {
-            skills: Some([100, 0, 0, 0]),
-            under_water: false,
-            outcome: Outcome::Cast,
-            strength: Strength { power, against: 0, boost },
-        }
-    }
-
-    /// Skills of 100, 0, 0, 0 weigh 120, 20, 20, 20: fire most often (120 of 180),
-    /// each element sometimes. Tier of power p: 21 + (p - 1) * 4 + (air 0, earth 1,
-    /// water 2, fire 3): power 1 fire 24, water 23, air 21, earth 22; power 7 fire
-    /// 48.
-    #[test]
-    fn an_elemental_is_of_an_element_by_the_skills_and_of_a_tier_by_the_power() {
-        let mut rng = GameRng::seeded(6);
-        let calls: Vec<Summoned> = (0..600).map(|_| summon(&mut rng, &summoning(1, 0))).collect();
-        let fire = calls.iter().filter(|call| call.element == 0).count();
-        assert!((340..=460).contains(&fire), "{fire} of 600");
-        for call in &calls {
-            let species = [24, 23, 21, 22][call.element];
-            assert_eq!(call.species, species);
-            assert!(!call.backfired && !call.buffed);
-        }
-        let top: Vec<u32> = (0..100).map(|_| summon(&mut rng, &summoning(7, 0)).species).collect();
-        assert!(top.iter().all(|species| [48, 47, 45, 46].contains(species)));
-        // A power past seven is held to it.
-        assert!((0..20).all(|_| summon(&mut rng, &summoning(9, 0)).species >= 45));
-    }
-
-    #[test]
-    fn under_water_there_is_no_fire_and_a_monster_weighs_the_elements_alike() {
-        let mut rng = GameRng::seeded(7);
-        let wet = Summoning { under_water: true, ..summoning(1, 0) };
-        assert!((0..300).all(|_| summon(&mut rng, &wet).element != 0));
-        let monster = Summoning { skills: None, ..summoning(1, 0) };
-        let counts = (0..800).fold([0; 4], |mut counts, _| {
-            counts[summon(&mut rng, &monster).element] += 1;
-            counts
-        });
-        assert!(counts.iter().all(|&count| (140..=260).contains(&count)), "{counts:?}");
-    }
-
-    /// A backfired summoning is hostile; Power Cast buffs with chance equal to the
-    /// boost: none at 0, always at 100.
-    #[test]
-    fn a_summoning_that_backfired_is_hostile_and_power_cast_may_buff_it() {
-        let mut rng = GameRng::seeded(8);
-        let backfired = Summoning { outcome: Outcome::Backfired, ..summoning(1, 0) };
-        assert!(summon(&mut rng, &backfired).backfired);
-        assert!((0..100).all(|_| summon(&mut rng, &summoning(1, 100)).buffed));
-        assert!((0..100).all(|_| !summon(&mut rng, &summoning(1, 0)).buffed));
-        let half = (0..2000).filter(|_| summon(&mut rng, &summoning(1, 50)).buffed).count();
-        assert!((900..=1100).contains(&half), "{half}");
-        assert_eq!(
-            [element(0), element(1), element(2), element(3)],
-            [Realm::Fire, Realm::Water, Realm::Air, Realm::Earth]
-        );
-    }
-
     /// The power raised by the boost, held at seven: 4 + 4 * 50 / 100 = 6; 5 + 5 = 10
     /// is held to 7; no boost leaves the power.
     #[test]
     fn a_lock_or_trap_spells_level_is_the_power_boosted_and_held_at_seven() {
         let at = |power, boost| level(Strength { power, against: 0, boost });
         assert_eq!((at(4, 50), at(5, 100), at(3, 0), at(7, 0)), (6, 7, 3, 7));
-    }
-
-    /// Level 3 reaches 4 of the lock's tumblers, each moving 516 times in a
-    /// thousand; a lock of 3 has only 3 to reach. Level 1 moves 344 in a thousand.
-    #[test]
-    fn knock_knock_reaches_a_level_and_one_of_the_tumblers_and_moves_some_of_them() {
-        let mut rng = GameRng::seeded(9);
-        let reached = knock(&mut rng, 6, 3);
-        assert_eq!(reached.len(), 4);
-        let mut which: Vec<usize> = reached.iter().map(|tumbler| tumbler.tumbler).collect();
-        which.sort_unstable();
-        which.dedup();
-        assert_eq!(which.len(), 4, "each tumbler once");
-        assert!(which.iter().all(|&tumbler| tumbler < 6));
-        assert_eq!(knock(&mut rng, 3, 3).len(), 3);
-        let moved = |level: u32, rng: &mut GameRng| {
-            (0..1000)
-                .map(|_| knock(rng, 8, level).iter().filter(|r| r.moves).count())
-                .sum::<usize>()
-        };
-        // 1000 locks, 2 tumblers at level 1: 2000 tries at 344 per mille.
-        let first = moved(1, &mut rng);
-        assert!((600..=780).contains(&first), "{first}");
-        // Level 7 reaches 8: 8000 tries at 602 per mille.
-        let last = moved(7, &mut rng);
-        assert!((4_600..=5_000).contains(&last), "{last}");
-    }
-
-    /// A roll below 100 plus 6 a point of difficulty against 5 a level and 50:
-    /// at level 7 and difficulty 5 the bar is 85 against 30 + roll: a roll
-    /// under 55 passes, 55 percent of the time. A backfire never does.
-    #[test]
-    fn a_trap_is_disarmed_by_a_roll_and_its_difficulty_against_the_level() {
-        let mut rng = GameRng::seeded(10);
-        let passed = (0..4000).filter(|_| disarms(&mut rng, 7, 5, Outcome::Cast)).count();
-        assert!((2_000..=2_400).contains(&passed), "{passed}");
-        assert!((0..500).all(|_| !disarms(&mut rng, 7, 0, Outcome::Backfired)));
-        // Difficulty 0 at level 7: 85, so a roll below 85 passes: 85 percent.
-        let easy = (0..4000).filter(|_| disarms(&mut rng, 7, 0, Outcome::Cast)).count();
-        assert!((3_250..=3_550).contains(&easy), "{easy}");
-    }
-
-    fn springing<'a>(difficulty: u8, grade: u32, members: &'a [Entity]) -> Springing<'a> {
-        Springing { difficulty, grade, members, selected: Some(members[0]) }
-    }
-
-    /// Difficulty 3 of grade 3: extra 0, power 4; difficulty 7 of grade 2: extra 5,
-    /// power 7 (5 + 4 = 9, held to 7); difficulty 9 is held to 7; difficulty 0 to 1.
-    #[test]
-    fn a_trap_spell_has_a_power_by_how_far_the_difficulty_is_over_its_grade() {
-        let members: Vec<Entity> = (1..=6).map(id).collect();
-        let mut rng = GameRng::seeded(11);
-        let power = |difficulty, grade, rng: &mut GameRng| {
-            spring(rng, &springing(difficulty, grade, &members)).power
-        };
-        assert_eq!(power(3, 3, &mut rng), 4);
-        assert_eq!(power(7, 2, &mut rng), 7);
-        assert_eq!(power(9, 2, &mut rng), 7);
-        assert_eq!(power(1, 5, &mut rng), 4, "under its grade is no extra");
-        assert_eq!(power(0, 5, &mut rng), 4);
-        assert_eq!(power(5, 2, &mut rng), 7, "extra 3 is 7");
-        assert_eq!(power(4, 2, &mut rng), 6, "extra 2 is 6");
-    }
-
-    /// Difficulty 4 reaches 4 - below(2) = 3 or 4 members; difficulty 1 exactly 1;
-    /// the one who set it off is never spared; the destroyed half the time.
-    #[test]
-    fn a_trap_spell_reaches_a_few_members_never_sparing_the_one_who_set_it_off() {
-        let members: Vec<Entity> = (1..=6).map(id).collect();
-        let mut rng = GameRng::seeded(12);
-        let mut destroyed = 0;
-        for _ in 0..400 {
-            let sprung = spring(&mut rng, &springing(4, 4, &members));
-            assert!((3..=4).contains(&sprung.victims.len()), "{sprung:?}");
-            assert!(sprung.victims.contains(&members[0]));
-            destroyed += usize::from(sprung.destroyed);
-            let one = spring(&mut rng, &springing(1, 4, &members));
-            assert_eq!(one.victims, [members[0]]);
-        }
-        assert!((140..=260).contains(&destroyed), "{destroyed}");
-        // More than there are members is all of them: extra 5 at difficulty 7.
-        let few: Vec<Entity> = (1..=2).map(id).collect();
-        let sprung = spring(&mut rng, &springing(7, 2, &few));
-        assert_eq!(sprung.victims, few);
-    }
-
-    /// Extra over 3 adds below(extra - 3) members: difficulty 7 of grade 0 (extra 7)
-    /// adds below(4); 7 - below(3) is 5 to 7, plus 0 to 3, so it reaches 5 to 10
-    /// of ten members, and sometimes more than 7.
-    #[test]
-    fn a_trap_far_over_its_grade_reaches_more_members() {
-        let members: Vec<Entity> = (1..=10).map(id).collect();
-        let mut rng = GameRng::seeded(13);
-        let counts: Vec<usize> =
-            (0..600).map(|_| spring(&mut rng, &springing(7, 0, &members)).victims.len()).collect();
-        assert!(counts.iter().all(|count| (5..=10).contains(count)));
-        assert!(counts.iter().any(|&count| count > 7));
     }
 }

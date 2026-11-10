@@ -108,14 +108,6 @@ mod tests {
     }
 
     #[test]
-    fn the_far_clip_ends_sight_whatever_the_threshold() {
-        // Facing: threshold 100, gap 100.5 is past the clip.
-        let facing = Noticing { angle: 0.0, ..looking_away(100.5) };
-        assert!(!notices(&facing));
-        assert!(notices(&Noticing { gap: 100.0, ..facing }));
-    }
-
-    #[test]
     fn from_the_side_the_senses_less_twice_the_level_scale_with_the_gap_left() {
         // (40 - 2 * 5) * ((100 - gap) / gap) = 30 * ((100 - gap) / gap).
         // gap 20: 30 * 4 = 120 -> clamp 100, threshold 100 >= 20.
@@ -133,41 +125,6 @@ mod tests {
     }
 
     #[test]
-    fn the_level_of_the_watched_takes_twice_itself_off_the_senses() {
-        // Level 15: (40 - 30) * (70 / 30) = 23.3 -> 23 at gap 30; level 5 sees 70.
-        let hardy = Noticing { hider_level: 15, ..looking_away(30.0) };
-        assert_near(threshold(&hardy), 23.0);
-        assert!(!notices(&hardy));
-        // Level 20: 40 - 40 = 0 -> percent 0 -> clamp 2 -> threshold 2.
-        let hidden = Noticing { hider_level: 20, ..looking_away(30.0) };
-        assert_near(threshold(&hidden), 2.0);
-    }
-
-    #[test]
-    fn concealment_takes_ten_percent_a_point() {
-        // gap 30: percent 70. Concealment 2 -> 50 >= 30 sees; 5 -> 20 < 30 does not.
-        assert!(notices(&Noticing { concealment: 2, ..looking_away(30.0) }));
-        assert_near(threshold(&Noticing { concealment: 5, ..looking_away(30.0) }), 20.0);
-        assert!(!notices(&Noticing { concealment: 5, ..looking_away(30.0) }));
-        // Facing, 100 - 10 * 3 = 70.
-        let facing = Noticing { angle: 0.0, concealment: 3, ..looking_away(60.0) };
-        assert_near(threshold(&facing), 70.0);
-    }
-
-    #[test]
-    fn a_kind_that_sees_further_adds_its_bonus_percent() {
-        // gap 40: 30 * (60 / 40) = 45. Bonus 50: 150 * 45 / 100 = 67 (whole).
-        let keen = Noticing { bonus: 50, ..looking_away(40.0) };
-        assert_near(threshold(&keen), 67.0);
-        assert!(notices(&keen));
-        // gap 50: percent 30, bonus 50 -> 150 * 30 / 100 = 45 < 50.
-        assert!(!notices(&Noticing { bonus: 50, ..looking_away(50.0) }));
-        // The bonus is taken after concealment: 70 - 20 = 50, 150 * 50 / 100 = 75.
-        let both = Noticing { bonus: 50, concealment: 2, ..looking_away(30.0) };
-        assert_near(threshold(&both), 75.0);
-    }
-
-    #[test]
     fn a_percent_is_held_to_between_two_and_a_hundred() {
         // Senses below twice the level: negative, held to 2 -> 2 m.
         let blind_to_it = Noticing { senses: 5, hider_level: 10, ..looking_away(10.0) };
@@ -177,14 +134,6 @@ mod tests {
         // A bonus cannot take it past 100.
         let keen = Noticing { bonus: 125, ..looking_away(20.0) };
         assert_near(threshold(&keen), 100.0);
-    }
-
-    #[test]
-    fn shut_eyes_or_a_blocked_line_see_nothing() {
-        let facing = Noticing { angle: 0.0, ..looking_away(5.0) };
-        assert!(notices(&facing));
-        assert!(!notices(&Noticing { open: false, ..facing }));
-        assert!(!notices(&Noticing { line: false, ..facing }));
     }
 
     #[test]

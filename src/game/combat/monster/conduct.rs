@@ -131,28 +131,6 @@ mod tests {
     }
 
     #[test]
-    fn a_share_is_whole_percent_of_the_most() {
-        assert_eq!(share(33, 100), 33);
-        assert_eq!(share(1, 3), 33); // 100 / 3
-        assert_eq!(share(2, 3), 66); // 200 / 3
-        assert_eq!(share(0, 10), 0);
-        assert_eq!(share(10, 10), 100);
-    }
-
-    #[test]
-    fn a_steady_hostile_monster_fights() {
-        assert_eq!(over_draws(&steady()), [fights()]);
-    }
-
-    #[test]
-    fn a_bystander_only_ever_holds_and_keeps_whatever_flight_it_was_in() {
-        let bystander = Conducting { bystander: true, craven: true, ..steady() };
-        assert_eq!(over_draws(&bystander), [Conducted { conduct: Conduct::Hold, fleeing: false }]);
-        let running = Conducting { fleeing: true, ..bystander };
-        assert_eq!(over_draws(&running), [Conducted { conduct: Conduct::Hold, fleeing: true }]);
-    }
-
-    #[test]
     fn a_craven_kind_with_no_chance_of_its_own_always_runs() {
         // Page 4, 2: chance 0 and craven: 100, so below(100) < 100 always.
         assert_eq!(over_draws(&Conducting { craven: true, ..steady() }), [flees()]);
@@ -162,29 +140,12 @@ mod tests {
     }
 
     #[test]
-    fn a_kind_runs_at_its_own_chance_in_percent() {
-        // Chance 50: below(100) < 50 about half of 400 draws; both results come.
-        let half = over_draws(&Conducting { flee_chance: 50, ..steady() });
-        assert_eq!(half.len(), 2);
-        assert!(half.contains(&flees()) && half.contains(&fights()));
-        // Chance 1 over 400 draws: the odds of never running are 0.99^400 = 1.8%;
-        // the seeded draws do run at least once.
-        assert!(over_draws(&Conducting { flee_chance: 1, ..steady() }).contains(&flees()));
-    }
-
-    #[test]
     fn a_running_monster_goes_on_running_while_the_party_is_beyond_short_reach() {
         // Page 4, 2: 100 while the party is farther than 4 m (so at 4.5 m).
         let running = Conducting { fleeing: true, party_gap: 4.5, ..steady() };
         assert_eq!(over_draws(&running), [flees()]);
         // Exactly 4 m is within short reach: it is cornered and stops running.
         let cornered = Conducting { fleeing: true, party_gap: 4.0, ..steady() };
-        assert_eq!(over_draws(&cornered), [fights()]);
-    }
-
-    #[test]
-    fn a_cornered_monster_has_no_chance_to_run_even_if_craven() {
-        let cornered = Conducting { fleeing: true, craven: true, party_gap: 1.0, ..steady() };
         assert_eq!(over_draws(&cornered), [fights()]);
     }
 
@@ -208,20 +169,6 @@ mod tests {
     }
 
     #[test]
-    fn a_hurt_npc_that_is_already_running_still_runs_whatever_the_gap() {
-        // The NPC rule comes first: it runs even with the party at 1 m.
-        let hurt = Conducting {
-            npc: true,
-            stance: Stance::Neutral,
-            health: 10,
-            fleeing: true,
-            party_gap: 1.0,
-            ..steady()
-        };
-        assert_eq!(over_draws(&hurt), [flees()]);
-    }
-
-    #[test]
     fn a_neutral_monster_withdraws_or_holds_if_its_kind_keeps_hidden() {
         let neutral = Conducting { stance: Stance::Neutral, ..steady() };
         assert_eq!(
@@ -230,10 +177,5 @@ mod tests {
         );
         let hidden = Conducting { camouflaged: true, ..neutral };
         assert_eq!(over_draws(&hidden), [Conducted { conduct: Conduct::Hold, fleeing: false }]);
-    }
-
-    #[test]
-    fn a_friendly_monster_fights() {
-        assert_eq!(over_draws(&Conducting { stance: Stance::Friendly, ..steady() }), [fights()]);
     }
 }

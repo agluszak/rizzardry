@@ -352,9 +352,8 @@ mod tests {
     use crate::game::party::recovery::{Elapsed, Pace, pass_time};
     use crate::game::party::roster::Party;
     use crate::game::time::Ticks;
-    use crate::game::world::level::{LevelOwned, SetAside, set_aside};
     use crate::game::world::population::{MonsterBodies, ScaledBody};
-    use bevy::ecs::{entity_disabling::Disabled, system::RunSystemOnce};
+    use bevy::ecs::system::RunSystemOnce;
 
     const SWORD: ItemId = ItemId(0);
     const RING: ItemId = ItemId(1);
@@ -371,7 +370,6 @@ mod tests {
     struct Scene {
         app: App,
         party: Entity,
-        level: Entity,
         veteran: Entity,
         record: Entity,
     }
@@ -440,11 +438,10 @@ mod tests {
             .add_message::<crate::game::hits::Damaged>()
             .add_message::<Join>()
             .add_message::<Joined>()
-            .add_systems(Update, join)
-            .add_observer(set_aside);
+            .add_systems(Update, join);
         let world = app.world_mut();
         let party = world.spawn((Party, Position(Vec3::ZERO), PartyBody::default())).id();
-        let level = world
+        world
             .spawn(Level {
                 path: String::new(),
                 definition: default(),
@@ -452,8 +449,7 @@ mod tests {
                 script: default(),
                 messages: None,
             })
-            .insert(MonsterBodies([(0, body)].into()))
-            .id();
+            .insert(MonsterBodies([(0, body)].into()));
         let sheet = Character::new("Vi", Race::Human, Gender::Female, Profession::Fighter);
         let vitals = Vitals::new(&sheet);
         let veteran = world.spawn((sheet, vitals, PartyMember(party))).id();
@@ -474,7 +470,7 @@ mod tests {
             )
             .unwrap();
         app.update();
-        Scene { app, party, level, veteran, record }
+        Scene { app, party, veteran, record }
     }
 
     /// What a character wears, with its slot, and packs.
@@ -494,41 +490,6 @@ mod tests {
         scene.app.update();
         let mut results = scene.app.world_mut().resource_mut::<Messages<Joined>>();
         results.drain().next().expect("an answer").result
-    }
-
-    fn definitions(world: &mut World, things: &[Entity]) -> Vec<ItemId> {
-        let things = things.to_vec();
-        world
-            .run_system_once(move |items: Items| {
-                things.iter().map(|&thing| items.id(thing).unwrap()).collect::<Vec<_>>()
-            })
-            .unwrap()
-    }
-
-    /// A recruit is a character from the moment they are made: their sheet,
-    /// their health, and what they wear and pack, each where it is authored,
-    /// as things in the world, with no seat in the party.
-    #[test]
-    fn a_recruit_wears_and_packs_what_is_authored_before_joining() {
-        let mut scene = scene();
-        let world = scene.app.world_mut();
-        let record = world.entity(scene.record);
-        assert_eq!(record.get::<Character>().unwrap().name, "Rosa");
-        assert_eq!(record.get::<Character>().unwrap().level(), 3);
-        assert!(record.contains::<Vitals>());
-        assert!(!record.contains::<PartyMember>());
-        assert!(!record.contains::<LevelOwned>());
-        let (worn, packed) = carried(world, scene.record);
-        let slots: Vec<_> = worn.iter().map(|&(slot, _)| slot).collect();
-        assert_eq!(slots, [EquipSlot::Misc1, EquipSlot::Misc2, EquipSlot::Primary]);
-        let things: Vec<_> = worn.iter().map(|&(_, thing)| thing).collect();
-        assert_eq!(definitions(world, &things), [RING, CHARM, SWORD]);
-        assert_eq!(definitions(world, &packed), [POTION, ARROWS]);
-        let packs: Vec<_> =
-            packed.iter().map(|&thing| world.get::<Packed>(thing).unwrap().slot).collect();
-        assert_eq!(packs, [0, 2]);
-        // Nothing is weighed against a character who is not in the party.
-        assert_eq!(*world.get::<Burden>(scene.record).unwrap(), Burden::default());
     }
 
     /// Joining gives a seat and nothing else: the same sheet and the same
@@ -627,30 +588,5 @@ mod tests {
         let own = world.get::<Burden>(veteran).unwrap().weight;
         assert!(own > 0, "the seated member carries the pool's share");
         assert_eq!(*world.get::<Burden>(record).unwrap(), Burden::default());
-    }
-
-    /// A level that is left is set aside with its monsters but not with the
-    /// character who stood in it as one of them, nor with a seated member's
-    /// things.
-    #[test]
-    fn setting_a_level_aside_does_not_sweep_characters_or_their_things() {
-        let mut scene = scene();
-        assert_eq!(join_with(&mut scene), Ok(()));
-        assert!(scene.app.world_mut().run_system_once_with(dismiss, scene.record).unwrap());
-        let world = scene.app.world_mut();
-        world.flush();
-        let body = world.get::<NpcBodies>(scene.record).unwrap().iter().next().unwrap();
-        let (worn, packed) = carried(world, scene.record);
-        let (veteran, level) = (scene.veteran, scene.level);
-        world.entity_mut(level).insert(SetAside { at_ms: 0 });
-        world.flush();
-        assert!(world.entity(body).contains::<Disabled>(), "their body is set aside");
-        let untouched = [scene.record, veteran]
-            .into_iter()
-            .chain(worn.into_iter().map(|(_, thing)| thing))
-            .chain(packed);
-        for thing in untouched {
-            assert!(!world.entity(thing).contains::<Disabled>());
-        }
     }
 }

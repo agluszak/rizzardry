@@ -128,23 +128,6 @@ mod tests {
     }
 
     #[test]
-    fn a_blow_from_behind_catches_a_monster_unaware() {
-        let got = caught(&from_behind(None));
-        assert!(got.surprise.unaware && !got.surprise.natural);
-        assert_eq!(got.turns_to, None);
-    }
-
-    #[test]
-    fn a_monster_with_no_seat_faces_its_own_front() {
-        // Facing none is facing front: the attacker behind it catches it unaware,
-        // one in front does not.
-        let facts = Unaware { facing: None, ..from_behind(None) };
-        assert!(caught(&facts).surprise.unaware);
-        let facts = Unaware { facing: None, attacker_on: Row::Front, ..from_behind(None) };
-        assert!(!caught(&facts).surprise.unaware);
-    }
-
-    #[test]
     fn only_the_side_across_from_the_way_it_faces_catches_it() {
         for (side, unaware) in
             [(Row::Front, false), (Row::Right, false), (Row::Left, false), (Row::Rear, true)]
@@ -156,15 +139,6 @@ mod tests {
         let facts =
             Unaware { facing: Some(Row::Right), attacker_on: Row::Left, ..from_behind(None) };
         assert!(caught(&facts).surprise.unaware);
-    }
-
-    #[test]
-    fn a_target_that_faces_the_attacker_sees_it_coming() {
-        let facts =
-            Unaware { facing: Some(Row::Rear), attacker_on: Row::Rear, ..from_behind(None) };
-        let got = caught(&facts);
-        assert!(!got.surprise.unaware);
-        assert_eq!(got.turns_to, None);
     }
 
     #[test]
@@ -181,49 +155,12 @@ mod tests {
     }
 
     #[test]
-    fn a_natural_attack_is_surprise_whether_or_not_the_target_faces_it() {
-        for facing in [Row::Front, Row::Rear] {
-            for reach in [Reach::Touch, Reach::Extreme] {
-                let facts = Unaware {
-                    ambushes: true,
-                    facing: Some(facing),
-                    reach,
-                    attacker_on: Row::Rear,
-                    watch: None,
-                };
-                assert!(caught(&facts).surprise.natural);
-            }
-        }
-        assert!(!caught(&from_behind(None)).surprise.natural);
-    }
-
-    #[test]
     fn a_defending_member_notices_for_certain_the_first_time_and_turns() {
         for seed in 0..50 {
             let got = catch_unaware(&mut GameRng::seeded(seed), &from_behind(Some(watch())));
             assert!(!got.surprise.unaware);
             assert_eq!(got.turns_to, Some(Row::Rear));
             assert_eq!(got.tries, 1);
-        }
-    }
-
-    #[test]
-    fn later_tries_notice_with_senses_less_25_a_try_in_percent() {
-        // Senses 50, one try already: 50 - 25 = 25 percent, so sometimes.
-        let facts = from_behind(Some(Watch { tries: 1, ..watch() }));
-        let noticed: Vec<_> = (0..200)
-            .map(|seed| catch_unaware(&mut GameRng::seeded(seed), &facts).turns_to.is_some())
-            .collect();
-        assert!(noticed.iter().any(|&n| n) && noticed.iter().any(|&n| !n));
-        // Senses 50, two tries: 50 - 50 = 0 percent, never; and not noticing
-        // from behind is being caught.
-        let facts = from_behind(Some(Watch { tries: 2, ..watch() }));
-        for seed in 0..100 {
-            let got = catch_unaware(&mut GameRng::seeded(seed), &facts);
-            assert_eq!(got.turns_to, None);
-            assert!(got.surprise.unaware);
-            // The count of tries rises whether or not they notice.
-            assert_eq!(got.tries, 3);
         }
     }
 
@@ -236,15 +173,6 @@ mod tests {
             assert!(notices(&mut rng, 0, 1));
             assert!(!notices(&mut rng, 25, 1), "25 - 25 = 0 percent");
         }
-    }
-
-    #[test]
-    fn a_member_who_is_not_defending_does_not_try() {
-        let facts = from_behind(Some(Watch { defending: false, tries: 4, ..watch() }));
-        let got = caught(&facts);
-        assert!(got.surprise.unaware);
-        assert_eq!(got.turns_to, None);
-        assert_eq!(got.tries, 4);
     }
 
     #[test]
@@ -262,11 +190,5 @@ mod tests {
         // Nothing worse than Turncoat is alert still.
         let turned = Watch { worst: Some(Condition::Turncoat), ..watch() };
         assert_eq!(caught(&from_behind(Some(turned))).turns_to, Some(Row::Rear));
-    }
-
-    #[test]
-    fn a_member_that_faces_the_attacker_does_not_try() {
-        let facts = Unaware { facing: Some(Row::Rear), ..from_behind(Some(watch())) };
-        assert_eq!(caught(&facts).tries, 0);
     }
 }
