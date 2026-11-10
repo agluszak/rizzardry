@@ -134,9 +134,23 @@ see of it.
 
 ### 5. Tables are content
 
+**Rules.** [rules/tables.md](rules/tables.md).
+
 Professions, races, traits, spell effects, special attacks and trap types are
 data in `content`, loaded like the rest. The code that reads them is written
 once per kind of rule, not once per row.
+
+**Gone.** `profession_row`, `race_attributes`, the trait lists, `define_spell`,
+the special-attack and trap `match`es, `spells::bonus`/`personal`/
+`combat_only`/`OFFENSIVE`, `LOADED_BY`, `partners`, and every arm that names a
+spell, profession, race or item kind outside the loader.
+
+**New types, and no others.** One row type per table, deserialised from its
+file; the catalogs gain one field per table.
+
+**Order of work.** Spell effects first (the largest, and `EffectSpec` is
+already nearly a row), then spells laid, then professions and races, then the
+small ones.
 
 ### 6. A round
 
