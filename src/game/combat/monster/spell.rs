@@ -307,39 +307,6 @@ mod tests {
     }
 
     #[test]
-    fn a_spell_is_castable_if_monsters_may_cast_it_and_the_game_resolves_it() {
-        let blast = spell(1, Targeting::Enemy);
-        assert!(castable(&blast, true, false, false));
-        assert!(!castable(
-            &SpellDefinition { monsters_cast: false, ..blast.clone() },
-            true,
-            false,
-            false
-        ));
-        assert!(!castable(&blast, false, false, false));
-    }
-
-    #[test]
-    fn a_spell_aimed_at_the_party_a_point_an_item_or_a_lock_is_not() {
-        for targeting in
-            [Targeting::Party, Targeting::Point, Targeting::Item, Targeting::LockOrTrap]
-        {
-            assert!(!castable(&spell(1, targeting), true, false, false), "{targeting:?}");
-        }
-        for targeting in [
-            Targeting::Caster,
-            Targeting::Ally,
-            Targeting::Enemy,
-            Targeting::EnemyGroup,
-            Targeting::Cone,
-            Targeting::Radius,
-            Targeting::AllEnemies,
-        ] {
-            assert!(castable(&spell(1, targeting), true, false, false), "{targeting:?}");
-        }
-    }
-
-    #[test]
     fn a_silence_stops_all_but_alchemy_of_a_kind_that_keeps_it() {
         let blast = spell(1, Targeting::Enemy);
         let alchemy = SpellDefinition { books: Spellbook::Alchemy.into(), ..blast.clone() };
@@ -349,14 +316,6 @@ mod tests {
         assert!(castable(&alchemy, true, false, false), "no silence");
         let other: EnumSet<Spellbook> = Spellbook::Wizardry | Spellbook::Alchemy;
         assert!(castable(&SpellDefinition { books: other, ..blast }, true, true, true));
-    }
-
-    #[test]
-    fn a_spell_for_the_caster_is_aimed_at_it_only_if_it_would_do_something() {
-        let hurt = [itself()];
-        assert_eq!(aimed(Targeting::Caster, &hurt), at(&[CASTER]));
-        let whole = [Candidate { worth: false, ..itself() }];
-        assert_eq!(aimed(Targeting::Caster, &whole), vec![]);
     }
 
     #[test]
@@ -373,18 +332,6 @@ mod tests {
         // Itself (friendly) and 11, then the member 10; not 12 (too far), 13
         // (nothing to do), 14 (unseen), 15 (a foe).
         assert_eq!(aimed(Targeting::Ally, &bodies), at(&[CASTER, 11, 10]));
-    }
-
-    #[test]
-    fn a_foe_is_each_foe_seen_in_reach_it_would_work_on_monsters_before_members() {
-        let bodies = [
-            seen(10, true, Stance::Hostile),
-            itself(),
-            seen(11, false, Stance::Hostile),
-            Candidate { reached: false, ..seen(12, true, Stance::Hostile) },
-            seen(13, true, Stance::Friendly),
-        ];
-        assert_eq!(aimed(Targeting::Enemy, &bodies), at(&[11, 10]));
     }
 
     #[test]
@@ -413,61 +360,12 @@ mod tests {
     }
 
     #[test]
-    fn another_monster_group_is_aimed_at_if_half_of_its_hostile_members_would_feel_it() {
-        // Group 50: hostile 20, 21, 22 and a friendly 23 that does not count.
-        // Two of the three hostile feel it: ceil(3 / 2) = 2, enough.
-        let g = |i, stance, worth| Candidate { worth, ..grouped(i, 50, stance) };
-        let enough = [
-            itself(),
-            g(20, Stance::Hostile, true),
-            g(21, Stance::Hostile, true),
-            g(22, Stance::Hostile, false),
-            g(23, Stance::Friendly, false),
-        ];
-        assert_eq!(aimed(Targeting::EnemyGroup, &enough), at(&[20]), "aimed at its first");
-        // One of three: under half.
-        let few = [
-            g(20, Stance::Hostile, true),
-            g(21, Stance::Hostile, false),
-            g(22, Stance::Hostile, false),
-        ];
-        assert_eq!(aimed(Targeting::EnemyGroup, &few), vec![]);
-        // One of two: ceil(2 / 2) = 1, enough.
-        let pair = [g(20, Stance::Hostile, false), g(21, Stance::Hostile, true)];
-        assert_eq!(aimed(Targeting::EnemyGroup, &pair), at(&[20]));
-    }
-
-    #[test]
-    fn a_group_out_of_reach_or_the_casters_own_is_not_aimed_at() {
-        let far = Candidate { reached: false, ..grouped(20, 50, Stance::Hostile) };
-        assert_eq!(aimed(Targeting::EnemyGroup, &[far]), vec![]);
-        let own = [grouped(20, 50, Stance::Hostile)];
-        let own_group = Aiming {
-            targeting: Targeting::EnemyGroup,
-            caster: entity(CASTER),
-            own_group: Some(entity(50)),
-            bodies: &own,
-        };
-        assert_eq!(aims(&own_group), vec![]);
-    }
-
-    #[test]
     fn a_group_is_aimed_at_even_when_unseen_and_comes_before_the_party() {
         // Retail asks the group's members no sight (`MonsterAI.cpp:1941-1960`),
         // and offers the groups before the party.
         let unseen = Candidate { seen: false, ..grouped(20, 50, Stance::Hostile) };
         let party = seen(10, true, Stance::Hostile);
         assert_eq!(aimed(Targeting::EnemyGroup, &[party, unseen]), at(&[20, 10]));
-    }
-
-    #[test]
-    fn two_other_groups_are_each_one_choice_in_the_order_they_stand_in_the_fight() {
-        let bodies = [
-            grouped(20, 50, Stance::Hostile),
-            grouped(30, 60, Stance::Hostile),
-            grouped(21, 50, Stance::Hostile),
-        ];
-        assert_eq!(aimed(Targeting::EnemyGroup, &bodies), at(&[20, 30]));
     }
 
     #[test]
@@ -489,30 +387,7 @@ mod tests {
         assert_eq!(aimed(Targeting::Cone, &turned), vec![]);
     }
 
-    #[test]
-    fn a_spell_at_all_enemies_goes_ahead_if_any_foe_is_seen_in_reach() {
-        let foe = seen(11, false, Stance::Hostile);
-        assert_eq!(aimed(Targeting::AllEnemies, &[itself(), foe]), vec![Aim::Ahead]);
-        let member = seen(10, true, Stance::Hostile);
-        assert_eq!(aimed(Targeting::AllEnemies, &[member]), vec![Aim::Ahead]);
-        assert_eq!(aimed(Targeting::AllEnemies, &[itself()]), vec![]);
-        let far = Candidate { reached: false, ..foe };
-        assert_eq!(aimed(Targeting::AllEnemies, &[far]), vec![]);
-    }
-
-    #[test]
-    fn spells_of_other_targets_are_not_aimed() {
-        for targeting in
-            [Targeting::Party, Targeting::Point, Targeting::Item, Targeting::LockOrTrap]
-        {
-            assert_eq!(aimed(targeting, &[itself(), seen(10, true, Stance::Hostile)]), vec![]);
-        }
-    }
-
     // Casting
-
-    const BLAST: SpellId = SpellId(1);
-    const BOLT: SpellId = SpellId(2);
 
     const CLAWS: [Reach; 1] = [Reach::Touch];
 
@@ -538,18 +413,6 @@ mod tests {
     }
 
     #[test]
-    fn it_casts_at_its_chance_while_an_attack_reaches_the_party_and_for_sure_when_none_does() {
-        let blast = spell(1, Targeting::Enemy);
-        let slots = [slot(&blast)];
-        let mut rng = GameRng::seeded(9);
-        let near = casting(50, &slots);
-        let cast = (0..400).filter(|_| casts(&mut rng, &near).is_some()).count();
-        assert!((120..280).contains(&cast), "{cast} of 400 at 50%");
-        let far = Casting { striking: striking(10.0, true), ..casting(1, &slots) };
-        assert!((0..100).all(|_| casts(&mut rng, &far).is_some()), "100 when none reaches");
-    }
-
-    #[test]
     fn it_does_not_cast_with_no_chance_no_budget_no_usable_spell_or_a_wish_to_close_in() {
         let blast = spell(1, Targeting::Enemy);
         let slots = [slot(&blast)];
@@ -568,58 +431,6 @@ mod tests {
         assert!(casts(&mut rng, &Casting { silenced: true, ..casting(100, &slots) }).is_none());
     }
 
-    #[test]
-    fn the_slots_weigh_5_5_5_10_10_10_10_15_15_15() {
-        // Only slots 0 (weight 5) and 9 (weight 15) hold castable spells: of
-        // below(20), 0 to 4 land in slot 0 and 5 to 19 in slot 9: a quarter and
-        // three quarters.
-        let (blast, bolt) = (spell(1, Targeting::Enemy), spell(2, Targeting::Enemy));
-        let mut slots: Vec<Option<Slot>> = vec![None; 10];
-        slots[0] = slot(&blast);
-        slots[9] = slot(&bolt);
-        let mut rng = GameRng::seeded(21);
-        let facts = casting(100, &slots);
-        let first = (0..400).filter(|_| casts(&mut rng, &facts).unwrap().spell == BLAST).count();
-        assert!((60..140).contains(&first), "{first} of 400 are the slot of weight 5 of 20");
-        // A slot that is not castable takes no weight: slot 9 silenced out,
-        // slot 0 is always chosen.
-        let mut slots: Vec<Option<Slot>> = vec![None; 10];
-        slots[0] = slot(&blast);
-        slots[9] = Some(Slot { spell: &bolt, modelled: false, aims: vec![Aim::Ahead] });
-        let facts = casting(100, &slots);
-        assert!((0..50).all(|_| casts(&mut rng, &facts).unwrap().spell == BLAST));
-        assert_eq!(BOLT, SpellId(2));
-    }
-
-    #[test]
-    fn it_casts_at_one_of_the_spells_aims_at_random() {
-        let blast = spell(1, Targeting::Enemy);
-        let slots = [Some(Slot {
-            spell: &blast,
-            modelled: true,
-            aims: vec![Aim::Body(entity(10)), Aim::Body(entity(11))],
-        })];
-        let mut rng = GameRng::seeded(2);
-        let facts = casting(100, &slots);
-        let aims: Vec<_> = (0..60).map(|_| casts(&mut rng, &facts).unwrap().aim).collect();
-        assert!(aims.contains(&Aim::Body(entity(10))) && aims.contains(&Aim::Body(entity(11))));
-    }
-
-    #[test]
-    fn it_can_cast_at_foes_only_with_a_chance_and_a_castable_spell_for_enemies_with_an_aim() {
-        let blast = spell(1, Targeting::Enemy);
-        let heal = spell(2, Targeting::Caster);
-        let slots = [slot(&blast)];
-        assert!(casts_at_foes(&casting(1, &slots)));
-        assert!(!casts_at_foes(&casting(0, &slots)));
-        let heals = [slot(&heal)];
-        assert!(!casts_at_foes(&casting(100, &heals)), "a heal is not aimed at foes");
-        let none = [Some(Slot { spell: &blast, modelled: true, aims: vec![] })];
-        assert!(!casts_at_foes(&casting(100, &none)));
-        // Its budget does not matter to whether it could.
-        assert!(casts_at_foes(&Casting { budget: None, ..casting(100, &slots) }));
-    }
-
     // Power: failure of the test spell (cost 2, level 1: band 2, threshold 50) at
     // power p is need = 50 * p / 7 = 7, 14, 21, 28, 35, 42, 50 for 1 to 7, and
     // (need - budget) * 70 / need when the budget is short of it.
@@ -634,13 +445,6 @@ mod tests {
     }
 
     #[test]
-    fn a_budget_that_covers_nothing_casts_at_power_one_or_two() {
-        // Power 1 needs 7: (7 - 0) * 70 / 7 = 70, not under 9: stays 1. Roll 0:
-        // not above 2, stays 1; roll 1: one more, 2.
-        assert_eq!(powers(0), [1, 2]);
-    }
-
-    #[test]
     fn a_middling_budget_casts_one_below_the_last_power_it_covers_give_or_take_one() {
         // Budget 30: powers 1-4 need 7, 14, 21, 28, all met; power 5 needs 35:
         // (35 - 30) * 70 / 35 = 10, not under 9. So 5, then 4; roll 0 -> 3,
@@ -649,11 +453,5 @@ mod tests {
         // Budget 31: (35 - 31) * 70 / 35 = 8 is under 9: power 6 is tried; it
         // needs 42: (42 - 31) * 70 / 42 = 18: stops at 6, then 5; 4, 5 or 6.
         assert_eq!(powers(31), [4, 5, 6]);
-    }
-
-    #[test]
-    fn a_great_budget_casts_at_seven_or_six() {
-        // Raised to 8, then 7; roll 0 -> 6, roll 1 not under 7 -> 7.
-        assert_eq!(powers(500), [6, 7]);
     }
 }

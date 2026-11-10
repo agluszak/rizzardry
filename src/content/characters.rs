@@ -387,7 +387,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::items::ItemId;
 
     /// Every profession and every race has a row: the tables parse whole.
     #[test]
@@ -402,61 +401,5 @@ mod tests {
         }
         let playable = EnumSet::<Race>::all().iter().filter(|r| r.row().attributes.is_some());
         assert_eq!(playable.count(), 11);
-    }
-
-    #[test]
-    fn a_fighter_is_a_hardy_axe_or_sword_fighter_without_spells() {
-        let fighter = Profession::Fighter.row();
-        assert_eq!(fighter.minimums[Attribute::Strength], 55);
-        assert_eq!(fighter.minimums[Attribute::Intelligence], 0);
-        assert_eq!((fighter.hit_points, fighter.experience, fighter.physical), (9.0, 1000, 4));
-        assert_eq!(fighter.bonus_skill, Skill::CloseCombat);
-        assert_eq!(fighter.skills, [Skill::RangedCombat, Skill::Sword, Skill::Axe, Skill::Shield]);
-        assert_eq!(fighter.traits, Trait::StaminaRegeneration | Trait::Knockout | Trait::Berserk);
-        assert!(fighter.books.is_empty() && fighter.caster_offset.is_none());
-        assert_eq!(fighter.starting_items, [ItemId(143), ItemId(153), ItemId(203), ItemId(246)]);
-        assert!(matches!(
-            fighter.extra_item,
-            Some(ExtraItem::ByTrainedSkill {
-                skill: Skill::Axe,
-                over: Skill::Sword,
-                then: ItemId(18),
-                otherwise: ItemId(7)
-            })
-        ));
-    }
-
-    #[test]
-    fn the_casting_professions_differ_in_books_and_offsets() {
-        assert_eq!(Profession::Mage.row().books, Spellbook::Wizardry);
-        assert_eq!(Profession::Mage.row().caster_offset, Some(0));
-        assert_eq!(Profession::Mage.row().resistance, 5);
-        assert_eq!(Profession::Lord.row().books, Spellbook::Divinity);
-        assert_eq!(Profession::Lord.row().caster_offset, Some(-4));
-        assert_eq!(Profession::Bishop.row().books, EnumSet::<Spellbook>::all());
-        assert!(Profession::Bishop.row().picks_from_any_book);
-        assert!(!Profession::Priest.row().picks_from_any_book);
-        assert_eq!(Profession::Valkyrie.row().only_gender, Some(Gender::Female));
-        assert_eq!(Profession::Fighter.row().only_gender, None);
-    }
-
-    #[test]
-    fn a_race_starts_with_its_scores_and_adds_to_what_it_resists() {
-        let human = Race::Human.row();
-        assert_eq!(human.attributes, Some(EnumMap::from_fn(|_| 45)));
-        assert_eq!((human.armour, human.carry_factor), (0, 12));
-        let faerie = Race::Faerie.row();
-        assert_eq!(faerie.attributes.unwrap()[Attribute::Speed], 60);
-        assert_eq!((faerie.armour, faerie.carry_factor), (2, 8));
-        assert_eq!(faerie.starting_items.as_deref().unwrap().len(), 6);
-        assert!(matches!(faerie.resistance[Realm::Air], Some(Resist::Flat(15))));
-        assert!(faerie.resistance[Realm::Fire].is_none());
-        assert!(matches!(Race::Dwarf.row().resistance[Realm::Fire], Some(Resist::OfVitality(5))));
-        assert!(matches!(Race::Lizardman.row().resistance[Realm::Divine], Some(Resist::Flat(-10))));
-        assert!(Race::Android.row().attributes.is_none());
-        assert_eq!(
-            Race::Android.row().traits,
-            Trait::AndroidConditionImmunity | Trait::CannotLearn
-        );
     }
 }

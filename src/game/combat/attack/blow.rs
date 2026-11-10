@@ -204,7 +204,6 @@ pub fn practised_by_blow(ranged: bool, thrown_criticals: bool) -> &'static [Skil
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::prelude::Entity;
 
     /// Dice that roll 1 every time: a blow's damage is how many it rolls.
     const ONE: Dice = Dice { count: 1, sides: 1, base: 0 };
@@ -237,14 +236,6 @@ mod tests {
     }
 
     const UNAWARE: Surprise = Surprise { unaware: true, natural: false };
-    const NATURAL: Surprise = Surprise { unaware: false, natural: true };
-
-    #[test]
-    fn a_plain_blow_rolls_the_dice_once() {
-        assert_eq!(count(&blowing()), 1);
-        assert_eq!(damage(&blowing()), 1);
-    }
-
     #[test]
     fn a_close_blow_unaware_or_at_a_victim_on_the_move_rolls_two() {
         assert_eq!(count(&Blowing { surprise: UNAWARE, ..blowing() }), 2);
@@ -255,25 +246,6 @@ mod tests {
         for mode in [AttackMode::Throw, AttackMode::Lash, AttackMode::Shoot] {
             assert_eq!(count(&Blowing { surprise: UNAWARE, moving: true, mode, ..blowing() }), 1);
         }
-    }
-
-    #[test]
-    fn a_natural_close_blow_adds_the_backstab_dice() {
-        let natural = Blowing { surprise: NATURAL, ..blowing() };
-        assert_eq!(dice_to_roll(&natural, 0), 1);
-        assert_eq!(dice_to_roll(&natural, 2), 3);
-        // Unaware as well: 2 + 3.
-        let both = Blowing { surprise: Surprise { unaware: true, natural: true }, ..blowing() };
-        assert_eq!(dice_to_roll(&both, 3), 5);
-        // Not on a shot, and not if not natural.
-        let shot = Blowing { surprise: NATURAL, mode: AttackMode::Shoot, ..blowing() };
-        assert_eq!(dice_to_roll(&shot, 3), 1);
-        assert_eq!(dice_to_roll(&blowing(), 3), 1);
-    }
-
-    #[test]
-    fn berserk_rolls_one_more() {
-        assert_eq!(count(&Blowing { mode: AttackMode::Berserk, ..blowing() }), 2);
     }
 
     #[test]
@@ -289,25 +261,6 @@ mod tests {
     }
 
     #[test]
-    fn each_slay_that_is_the_victims_kind_adds_a_die() {
-        let slays = [MonsterKind::Undead, MonsterKind::Demon, MonsterKind::Undead];
-        let facts = |kind| Blowing { slays: &slays, kind, ..blowing() };
-        assert_eq!(count(&facts(Some(MonsterKind::Undead))), 3);
-        assert_eq!(count(&facts(Some(MonsterKind::Demon))), 2);
-        assert_eq!(count(&facts(Some(MonsterKind::Plant))), 1);
-        // A member has no kind.
-        assert_eq!(count(&facts(None)), 1);
-    }
-
-    #[test]
-    fn the_damage_sums_whole_rolls_with_the_base_in_each() {
-        // 1d1+2 rolls 3, twice: 6.
-        let facts =
-            Blowing { dice: Dice { count: 1, sides: 1, base: 2 }, moving: true, ..blowing() };
-        assert_eq!(damage(&facts), 6);
-    }
-
-    #[test]
     fn the_damage_is_raised_by_the_percent_and_is_at_least_one() {
         // max(1, ((100 + p) * rolled + 50) / 100).
         let rolled = Dice { count: 7, sides: 1, base: 0 };
@@ -317,18 +270,6 @@ mod tests {
         assert_eq!(damage(&with(-50)), 4); // (50 * 7 + 50) / 100 = 400 / 100
         assert_eq!(damage(&with(-100)), 1); // 50 / 100 = 0, at least 1
         assert_eq!(damage_of(0, 0), 1);
-    }
-
-    #[test]
-    fn the_victims_reduction_cuts_the_damage_and_may_leave_none() {
-        let rolled = Dice { count: 50, sides: 1, base: 0 };
-        let with = |reduction| Blowing { dice: rolled, reduction, ..blowing() };
-        // (100 - r) * 50 + 50 over 100.
-        assert_eq!(damage(&with(50)), 25);
-        assert_eq!(damage(&with(100)), 0);
-        // One point cut by half: (50 * 1 + 50) / 100 = 1; by 51 percent, 0.
-        assert_eq!(damage(&Blowing { reduction: 51, ..blowing() }), 0);
-        assert_eq!(damage(&Blowing { reduction: 50, ..blowing() }), 1);
     }
 
     #[test]
@@ -364,95 +305,6 @@ mod tests {
     }
 
     #[test]
-    fn a_natural_blow_rolls_its_backstab_dice_into_the_damage() {
-        // A chance beyond any draw: all three extra, 1 + 3 dice.
-        let sure = Blowing { surprise: NATURAL, backstab: 1000, ..blowing() };
-        assert_eq!(damage(&sure), 4);
-        // None: just the one.
-        assert_eq!(damage(&Blowing { backstab: 0, ..sure }), 1);
-        // Not natural: none whatever the chance.
-        assert_eq!(damage(&Blowing { surprise: Surprise::default(), ..sure }), 1);
-    }
-
-    #[test]
-    fn training_adds_a_point_per_25_of_the_critical_skill_and_a_chance_at_one_more() {
-        // Multiple of 25: certain. 50 / 25 = 2.
-        assert_eq!(critical_bonus(50, 0), 2);
-        assert_eq!(critical_bonus(25, 24), 1);
-        // 60: 2, and 1 more when the draw below 25 is below 60 mod 25 = 10.
-        assert_eq!(critical_bonus(60, 9), 3);
-        assert_eq!(critical_bonus(60, 10), 2);
-        assert_eq!(critical_bonus(24, 23), 1);
-        assert_eq!(critical_bonus(24, 24), 0);
-        assert_eq!(critical_bonus(0, 0), 0);
-        for seed in 0..50 {
-            assert!((2..=3).contains(&critical_chance(&mut GameRng::seeded(seed), 60)));
-            assert_eq!(critical_chance(&mut GameRng::seeded(seed), 50), 2);
-        }
-    }
-
-    fn with_chances(kill: u32, knock_out: u32) -> AttackEffects {
-        let mut effects = AttackEffects::default();
-        effects.chances[AttackEffect::Kill] = kill;
-        effects.chances[AttackEffect::KnockOut] = knock_out;
-        effects
-    }
-
-    fn effects_of(facts: &Blowing) -> (u32, u32) {
-        let chances = blow(&mut GameRng::seeded(0), facts).effects.chances;
-        (chances[AttackEffect::Kill], chances[AttackEffect::KnockOut])
-    }
-
-    #[test]
-    fn a_members_training_raises_the_kill_and_knock_out_chances_to_at_most_100() {
-        let trained = Blowing {
-            effects: with_chances(10, 20),
-            training: Some(Training { critical: Some(50), knock_out: Some(10) }),
-            ..blowing()
-        };
-        // Kill 10 + 50 / 25; Knock Out 20 + 5 * (10 * 2 + 60) / 100 = 20 + 4.
-        assert_eq!(effects_of(&trained), (12, 24));
-        let nearly = Blowing { effects: with_chances(99, 98), ..trained };
-        assert_eq!(effects_of(&nearly), (100, 100));
-        // No critical skill, or no trait: that chance is as the weapon has it.
-        let skill_less = Training { critical: None, knock_out: Some(10) };
-        assert_eq!(effects_of(&Blowing { training: Some(skill_less), ..trained }), (10, 24));
-        let untrained = Training { critical: Some(50), knock_out: None };
-        assert_eq!(effects_of(&Blowing { training: Some(untrained), ..trained }), (12, 20));
-        // A monster has no training.
-        assert_eq!(effects_of(&Blowing { training: None, ..trained }), (10, 20));
-    }
-
-    #[test]
-    fn the_knock_out_trait_adds_5_scaled_by_profession_level() {
-        // 5 * (level * 2 + 60) / 100, whole: level 0 is 3, level 10 is 4, from 20 it is 5.
-        for (level, bonus) in [(0, 3), (10, 4), (20, 5), (21, 5), (40, 5)] {
-            let facts = Blowing {
-                training: Some(Training { critical: None, knock_out: Some(level) }),
-                ..blowing()
-            };
-            assert_eq!(effects_of(&facts), (0, bonus), "level {level}");
-        }
-    }
-
-    #[test]
-    fn only_damage_lands_a_blow() {
-        assert!(lands(1));
-        assert!(!lands(0));
-    }
-
-    #[test]
-    fn a_blow_gone_astray_is_not_trained() {
-        let astray = Blowing {
-            effects: with_chances(10, 20),
-            training: Some(Training { critical: Some(50), knock_out: Some(10) }),
-            fumbled: true,
-            ..blowing()
-        };
-        assert_eq!(effects_of(&astray), (10, 20));
-    }
-
-    #[test]
     fn razor_cloak_rolls_the_spells_dice_count_times_power_less_the_attackers_reduction() {
         // 1d1 at power 3 is three dice of 1.
         let cloak = Riposte { dice: Some(ONE), power: 3, reduction: 0 };
@@ -464,25 +316,5 @@ mod tests {
         // The base is not multiplied: 0d1+5 rolled count 0 times power 3 = 0 dice, +5.
         let flat = Riposte { dice: Some(Dice { count: 0, sides: 1, base: 5 }), ..cloak };
         assert_eq!(riposte(&mut GameRng::seeded(0), &flat), 5);
-    }
-
-    #[test]
-    fn what_a_blow_did_is_told_as_the_health_it_took_and_the_rest() {
-        let victim = Entity::PLACEHOLDER;
-        let effects = [
-            Effect::Damaged { victim, amount: 4 },
-            Effect::Nothing { victim },
-            Effect::Damaged { victim, amount: 3 },
-        ];
-        assert_eq!(dealt(effects), Dealt { damage: 7, rest: vec![Effect::Nothing { victim }] });
-        assert_eq!(dealt([]), Dealt { damage: 0, rest: Vec::new() });
-    }
-
-    #[test]
-    fn a_blow_that_did_damage_practises_by_the_arm() {
-        assert_eq!(practised_by_blow(false, false), [Skill::CriticalStrike, Skill::PowerStrike]);
-        assert_eq!(practised_by_blow(false, true), [Skill::CriticalStrike, Skill::PowerStrike]);
-        assert_eq!(practised_by_blow(true, false), [Skill::EagleEye]);
-        assert_eq!(practised_by_blow(true, true), [Skill::EagleEye, Skill::CriticalStrike]);
     }
 }

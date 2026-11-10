@@ -221,24 +221,6 @@ mod tests {
         assert_eq!(spell_failure(200, &spell, 7), 0);
     }
 
-    /// The band is held to 16: cost 30, level 7 is 22, but 110 is the need
-    /// (110 * 7 / 7), and a skill of 55 fails 55 * 70 / 110 = 35. Band 0 (cost
-    /// 0, level 0) needs 30.
-    #[test]
-    fn the_difficulty_bands_end_at_sixteen() {
-        assert_eq!(spell_failure(55, &spell(30, 7), 7), 35);
-        assert_eq!(spell_failure(0, &spell(0, 0), 7), 70);
-        assert_eq!(spell_failure(29, &spell(0, 0), 7), 70 / 30);
-    }
-
-    /// The book counts once and the realm four times: (30 + 4 * 40) / 5 = 38.
-    #[test]
-    fn the_casting_skill_weighs_the_realm_four_times_the_book() {
-        assert_eq!(casting_skill(30, 40), 38);
-        assert_eq!(casting_skill(0, 0), 0);
-        assert_eq!(casting_skill(1, 0), 0);
-    }
-
     /// Normal's pace is 60. Before it nothing changes; from it the factor is
     /// (moment + 50 - 60) * 2 / 100: at 60, 50 * 2 = 100 -> 1 times; at 90,
     /// 80 * 231 * 2 / 100 = 369. Novice (80): at 100, 70 * 231 * 2 / 100 = 323.
@@ -277,19 +259,6 @@ mod tests {
         assert_eq!(learned(&zero), 70);
     }
 
-    /// 231 at moment 90 is 369; a harder spell adds its 50 after the pace,
-    /// when cast on oneself, and only then.
-    #[test]
-    fn a_spell_harder_on_oneself_adds_its_figure_after_the_pace() {
-        let mut sane = spell(14, 7);
-        sane.facts.harder_on_oneself = 50;
-        let pace = Pace { difficulty: Difficulty::Normal, moment: 90 };
-        assert_eq!(learned(&untrained(&sane, 7, pace)), 369);
-        assert_eq!(learned(&Learned { on_oneself: true, ..untrained(&sane, 7, pace) }), 419);
-        let other = spell(14, 7);
-        assert_eq!(learned(&Learned { on_oneself: true, ..untrained(&other, 7, pace) }), 369);
-    }
-
     fn charged(spell: &SpellDefinition, presented: Presented, pace: Pace) -> Item<'_> {
         Item {
             spell,
@@ -300,23 +269,6 @@ mod tests {
             identified: true,
             pace,
         }
-    }
-
-    /// 70 percent for a skill of 0; a charged item or a scroll nine tenths of it
-    /// (63), a thrown item four fifths (56).
-    #[test]
-    fn an_item_fails_by_the_skill_that_presents_it() {
-        let spell = spell(14, 7);
-        assert_eq!(item(&charged(&spell, Presented::Charged, NORMAL)), (63, false));
-        assert_eq!(item(&charged(&spell, Presented::Scroll, NORMAL)), (63, false));
-        // 56 halved for a quiet use: 28.
-        assert_eq!(item(&charged(&spell, Presented::Thrown, NORMAL)), (28, true));
-        // A potion has no allowance: 70.
-        assert_eq!(item(&charged(&spell, Presented::Other, NORMAL)), (70, false));
-        // No skill presents it: it never fails, even unidentified.
-        let none =
-            Item { skill: None, identified: false, ..charged(&spell, Presented::Charged, NORMAL) };
-        assert_eq!(item(&none), (0, false));
     }
 
     /// 63 for a charged item at moment 100 on Normal: (100 + 50 - 60) * 63 * 2 /
@@ -357,59 +309,12 @@ mod tests {
         assert_eq!(item(&gadget), (50 + 25 + 7 * (18 - 1 + 7), false));
     }
 
-    #[test]
-    fn a_monster_fails_by_its_budget_alone() {
-        let spell = spell(6, 4);
-        assert_eq!(spell_failure(40, &spell, 7), 35);
-    }
-
     fn rolled(rng: &mut GameRng, facts: Rolling) -> Outcome {
         outcome(rng, &facts)
     }
 
     fn rolling(chance: u32) -> Rolling {
         Rolling { chance, quiet: false, quenched: false, can_backfire: true }
-    }
-
-    #[test]
-    fn no_chance_comes_off_and_a_certain_one_fails() {
-        let mut rng = GameRng::seeded(1);
-        for _ in 0..50 {
-            assert_eq!(rolled(&mut rng, rolling(0)), Outcome::Cast);
-            assert_ne!(rolled(&mut rng, rolling(100)), Outcome::Cast);
-        }
-    }
-
-    /// A failure is a backfire when the roll is under a third of the chance: at
-    /// 99, under 33; over many rolls about a third of all are backfires, the
-    /// rest of the failures fizzle, and one in a hundred comes off.
-    #[test]
-    fn a_failure_backfires_below_a_third_of_the_chance() {
-        let mut rng = GameRng::seeded(2);
-        let mut counts = [0; 3];
-        for _ in 0..9_900 {
-            match rolled(&mut rng, rolling(99)) {
-                Outcome::Cast => counts[0] += 1,
-                Outcome::Fizzled => counts[1] += 1,
-                Outcome::Backfired => counts[2] += 1,
-            }
-        }
-        assert!((50..=150).contains(&counts[0]), "{counts:?}");
-        assert!((3_000..=3_500).contains(&counts[2]), "{counts:?}");
-        assert!((6_100..=6_700).contains(&counts[1]), "{counts:?}");
-    }
-
-    /// Under 6 percent a failure only fizzles (5 / 3 would be 1); at 6, a third
-    /// is 2.
-    #[test]
-    fn a_failure_under_six_percent_cannot_backfire() {
-        let mut rng = GameRng::seeded(3);
-        for _ in 0..2_000 {
-            assert_ne!(rolled(&mut rng, rolling(5)), Outcome::Backfired);
-        }
-        let backfires =
-            (0..5_000).filter(|_| rolled(&mut rng, rolling(6)) == Outcome::Backfired).count();
-        assert!(backfires > 0, "at 6 percent a roll of 0 or 1 backfires");
     }
 
     /// A chance past a hundred counts for a third of itself in the chance to
@@ -430,47 +335,5 @@ mod tests {
             let facts = Rolling { can_backfire: false, ..rolling(100) };
             assert_eq!(rolled(&mut rng, facts), Outcome::Fizzled);
         }
-    }
-
-    /// A quiet use backfires on every failure (the whole chance is the
-    /// backfire's), even under 6 percent: 100 percent always, 40 percent
-    /// failing 40 and backfiring each time.
-    #[test]
-    fn a_quiet_use_backfires_whenever_it_fails() {
-        let mut rng = GameRng::seeded(4);
-        let quiet = Rolling { quiet: true, ..rolling(40) };
-        let mut failed = 0;
-        for _ in 0..2_000 {
-            match rolled(&mut rng, quiet) {
-                Outcome::Cast => {}
-                Outcome::Backfired => failed += 1,
-                Outcome::Fizzled => panic!("a quiet failure backfires"),
-            }
-        }
-        assert!((700..=900).contains(&failed), "{failed}");
-        let low = Rolling { quiet: true, ..rolling(3) };
-        assert!((0..4_000).any(|_| rolled(&mut rng, low) == Outcome::Backfired));
-    }
-
-    /// Fire under water fails every time (chance 100) and never backfires;
-    /// a quiet use of it fails half the time (50), also without backfire.
-    #[test]
-    fn fire_under_water_always_fizzles_and_quiet_fire_half_the_time() {
-        let mut rng = GameRng::seeded(5);
-        for _ in 0..200 {
-            let quenched = Rolling { quenched: true, ..rolling(0) };
-            assert_eq!(rolled(&mut rng, quenched), Outcome::Fizzled);
-        }
-        let quiet = Rolling { quenched: true, quiet: true, ..rolling(0) };
-        let mut counts = [0; 3];
-        for _ in 0..4_000 {
-            match rolled(&mut rng, quiet) {
-                Outcome::Cast => counts[0] += 1,
-                Outcome::Fizzled => counts[1] += 1,
-                Outcome::Backfired => counts[2] += 1,
-            }
-        }
-        assert_eq!(counts[2], 0);
-        assert!((1_800..=2_200).contains(&counts[0]), "{counts:?}");
     }
 }

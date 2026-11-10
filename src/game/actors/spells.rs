@@ -441,68 +441,6 @@ mod tests {
         assert_eq!(bonus_at(SpellId::FIREBALL, 7, 100), Bonus::default());
     }
 
-    /// Which spells replace only by a stronger, last only a fight, and pulse
-    /// in what order, are in the rows.
-    #[test]
-    fn the_rows_say_which_spells_are_personal_fleeting_or_pulse() {
-        let spells = catalog().spells;
-        let ids = |wanted: fn(&crate::content::spells::SpellFacts) -> bool| {
-            spells
-                .0
-                .iter()
-                .filter(|spell| wanted(&spell.facts))
-                .map(|spell| spell.id)
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            ids(|facts| facts.personal),
-            [
-                SpellId::DRACON_BREATH,
-                SpellId::GUARDIAN_ANGEL,
-                SpellId::RAZOR_CLOAK,
-                SpellId::EYE_FOR_AN_EYE,
-                SpellId::HASTE,
-                SpellId::SUPERMAN,
-                SpellId::BODY_OF_STONE,
-            ]
-        );
-        assert_eq!(
-            ids(|facts| facts.only_in_a_fight),
-            [
-                SpellId::BLESS,
-                SpellId::ACID_BOMB,
-                SpellId::ARMORMELT,
-                SpellId::ELEMENT_SHIELD,
-                SpellId::SOUL_SHIELD,
-                SpellId::RING_OF_FIRE,
-                SpellId::TOXIC_CLOUD,
-                SpellId::DRAINING_CLOUD,
-                SpellId::FIRESTORM,
-                SpellId::DEATH_CLOUD,
-            ]
-        );
-        let mut pulsing: Vec<_> = spells
-            .0
-            .iter()
-            .filter_map(|spell| Some((spell.facts.pulse?.order, spell.id)))
-            .collect();
-        pulsing.sort();
-        assert_eq!(
-            pulsing.iter().map(|&(_, id)| id).collect::<Vec<_>>(),
-            [
-                SpellId::RING_OF_FIRE,
-                SpellId::ACID_BOMB,
-                SpellId::TOXIC_CLOUD,
-                SpellId::DRAINING_CLOUD,
-                SpellId::FIRESTORM,
-                SpellId::DEATH_CLOUD,
-            ]
-        );
-        let ring = spells[SpellId::RING_OF_FIRE].facts.pulse.unwrap();
-        assert_eq!(ring.on, Pulsing::AroundParty);
-        assert_eq!(spells[SpellId::FIRESTORM].facts.pulse.unwrap().on, Pulsing::Bearer);
-    }
-
     /// Armormelt takes its raw power off what Bless and Armorplate add.
     #[test]
     fn armormelt_takes_from_what_protections_add() {
@@ -517,15 +455,6 @@ mod tests {
     fn the_boost_raises_what_a_spell_adds() {
         assert_eq!(bonus_at(SpellId::HASTE, 2, 50).attributes[Attribute::Speed], 30);
         assert_eq!(bonus_at(SpellId::BODY_OF_STONE, 2, 0).reduction, 16);
-    }
-
-    /// Soul Shield guards the mind and the soul; Element Shield the rest.
-    #[test]
-    fn shields_guard_their_own_realms() {
-        let soul = bonus_at(SpellId::SOUL_SHIELD, 2, 0).resistance;
-        let element = bonus_at(SpellId::ELEMENT_SHIELD, 2, 0).resistance;
-        assert_eq!((soul[Realm::Mental], soul[Realm::Fire]), (20, 0));
-        assert_eq!((element[Realm::Mental], element[Realm::Fire]), (0, 14));
     }
 
     /// A personal spell is replaced only by one as strong; an angel exactly

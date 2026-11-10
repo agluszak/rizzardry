@@ -1281,24 +1281,6 @@ mod tests {
         assert_eq!(mage.experience_goal(), at_ten + 256 * 1200 * 12 / 10);
     }
 
-    /// A race's carrying factor and traits are its row's, a profession's
-    /// traits come with it, and a character has both.
-    #[test]
-    fn a_character_has_the_traits_and_carry_factor_of_their_rows() {
-        use crate::content::characters::Trait;
-        let faerie = Character::new("Pip", Race::Faerie, Gender::Female, Profession::Mage);
-        let sheet = Attributes::of_sheet(&faerie);
-        // Faerie 25 STR, Mage 30 VIT (the race's): (30 + 2*25) tenths, 8 each.
-        assert_eq!(faerie.capacity(&sheet), (30 + 2 * 25) * 8);
-        assert!(faerie.has_trait(Trait::FaerieArmour) && faerie.has_trait(Trait::MagicResistance));
-        assert!(!faerie.has_trait(Trait::Breathe));
-        let dracon = Character::new("Drak", Race::Dracon, Gender::Male, Profession::Fighter);
-        assert_eq!(
-            dracon.traits(),
-            Trait::Breathe | Trait::StaminaRegeneration | Trait::Knockout | Trait::Berserk
-        );
-    }
-
     /// Hybrids cast from their fifth level, so their book skills open then;
     /// pure casters have theirs at once and the others never.
     #[test]

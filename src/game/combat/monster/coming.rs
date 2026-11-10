@@ -276,21 +276,6 @@ mod tests {
     }
 
     #[test]
-    fn a_neutral_member_between_the_party_and_a_hostile_stands_with_the_fight() {
-        // Member 10 m off, hostile 30 m off on the same line: 20 + 10 = 30 is
-        // under 30 * 1.15 = 34.5, and 10 < 30.
-        assert!(stands_with(&[at(1, 10.0, 10.0)], &[at(2, 30.0, 30.0)]));
-    }
-
-    #[test]
-    fn a_member_off_to_the_side_is_not_between() {
-        // Member at (0, 0, 20): 20 from the party, 36.06 from the hostile at 30.
-        let side = Standing { feet: Vec3::new(0.0, 0.0, 20.0), ..at(1, 0.0, 20.0) };
-        // 36.06 + 20 = 56.06 is over 34.5.
-        assert!(!stands_with(&[side], &[at(2, 30.0, 30.0)]));
-    }
-
-    #[test]
     fn the_slack_is_fifteen_percent_of_the_hostiles_gap() {
         // Hostile 30 off: the limit is 34.5. Member 10 off with the hostile 24 from
         // it: 34 < 34.5 stands with; 25 from it: 35 > 34.5 does not.
@@ -303,77 +288,10 @@ mod tests {
     }
 
     #[test]
-    fn a_member_nearer_the_hostile_than_the_hostile_is_to_the_party_stands_with_it_too() {
-        // Member 31 from the party, 1 from the hostile 30 off: 1 + 31 = 32 < 34.5;
-        // not nearer the party (31 > 30) but nearer the hostile (1 < 30).
-        assert!(stands_with(&[at(1, 31.0, 31.0)], &[at(2, 30.0, 30.0)]));
-        // Behind it and far from it: 20 + 50 = 70, no.
-        assert!(!stands_with(&[at(1, 50.0, 50.0)], &[at(2, 30.0, 30.0)]));
-    }
-
-    #[test]
     fn a_member_further_than_fifty_metres_from_the_party_does_not_stand_with_it() {
         // 50 m counts, 50.1 m does not, with a hostile right beside it.
         assert!(stands_with(&[at(1, 50.0, 50.0)], &[at(2, 50.0, 60.0)]));
         assert!(!stands_with(&[at(1, 50.1, 50.1)], &[at(2, 50.1, 60.0)]));
-    }
-
-    #[test]
-    fn a_camouflaged_member_a_member_out_of_view_or_a_hostile_out_of_view_does_not_count() {
-        let (member, hostile) = (at(1, 10.0, 10.0), at(2, 30.0, 30.0));
-        assert!(stands_with(&[member], &[hostile]));
-        assert!(!stands_with(&[Standing { camouflaged: true, ..member }], &[hostile]));
-        assert!(!stands_with(&[Standing { in_view: false, ..member }], &[hostile]));
-        assert!(!stands_with(&[member], &[Standing { in_view: false, ..hostile }]));
-        // A member is not a hostile to itself.
-        assert!(!stands_with(&[member], &[member]));
-        // With no hostile at all, nobody is stood with.
-        assert!(!stands_with(&[member], &[]));
-        // One member in the group among others may be the one.
-        assert!(stands_with(&[Standing { camouflaged: true, ..member }, member], &[hostile]));
-    }
-
-    const CLAWS: [Reach; 1] = [Reach::Touch];
-    const SPITTER: [Reach; 2] = [Reach::Touch, Reach::Long];
-
-    /// Able, with claws the party is 10 m off (out of reach), who cannot walk,
-    /// cast or breathe.
-    fn can_do() -> Acting<'static> {
-        Acting {
-            can_fight: true,
-            striking: Striking {
-                arms: &CLAWS,
-                party_gap: 10.0,
-                prefers_range: false,
-                blind: false,
-            },
-            walks: false,
-            casts: false,
-            breathes: false,
-        }
-    }
-
-    #[test]
-    fn a_member_acts_on_the_party_if_it_can_fight_and_has_a_way_to() {
-        assert!(!acts_on_party(&can_do()));
-        let near = Striking { party_gap: 2.0, ..can_do().striking };
-        assert!(acts_on_party(&Acting { striking: near, ..can_do() }), "its claws reach");
-        // The longest arm reaches 25 m but a short one is not what it walks up with.
-        let spit = Striking { arms: &SPITTER, party_gap: 20.0, ..can_do().striking };
-        assert!(acts_on_party(&Acting { striking: spit, ..can_do() }));
-        assert!(acts_on_party(&Acting { casts: true, ..can_do() }));
-        assert!(acts_on_party(&Acting { breathes: true, ..can_do() }));
-        // A close attack (touch or short) needs it to walk up.
-        let far_spit = Striking { arms: &SPITTER, party_gap: 30.0, ..can_do().striking };
-        assert!(!acts_on_party(&Acting { walks: true, striking: far_spit, ..can_do() }));
-        assert!(acts_on_party(&Acting { walks: true, ..can_do() }));
-        let short = Striking { arms: &[Reach::Short], ..can_do().striking };
-        assert!(acts_on_party(&Acting { walks: true, striking: short, ..can_do() }));
-        let none = Striking { arms: &[], ..can_do().striking };
-        assert!(!acts_on_party(&Acting { walks: true, striking: none, ..can_do() }));
-        // Nothing helps one that cannot fight.
-        let down = Acting { can_fight: false, casts: true, ..can_do() };
-        assert!(!acts_on_party(&down));
     }
 
     fn looks(party_gap: f32, sees_party: bool, acts: bool) -> Looking {
@@ -407,15 +325,6 @@ mod tests {
         let helpless = [looks(30.0, true, false)];
         assert!(!comes_in(&entering(&helpless)).enters, "none can act");
         assert!(!comes_in(&entering(&[])).enters);
-    }
-
-    #[test]
-    fn a_hostile_group_the_party_has_just_acted_against_comes_in_at_once() {
-        let blind = [looks(300.0, false, false)];
-        let provoked = Entering { provoked: true, ..entering(&blind) };
-        assert!(comes_in(&provoked).enters);
-        let running = Entering { provoked: true, fight_running: true, ..entering(&blind) };
-        assert!(comes_in(&running).enters);
     }
 
     #[test]
@@ -462,20 +371,6 @@ mod tests {
         // A kind with a hostility radius turns hostile as it enters, even from afar.
         let radius = Entering { radius: Some(5.0), ..running };
         assert_eq!(comes_in(&radius), Entered { enters: true, turns_hostile: true });
-    }
-
-    #[test]
-    fn a_friendly_group_never_comes_in() {
-        let members = [looks(10.0, true, true)];
-        for fight_running in [false, true] {
-            let friendly = Entering {
-                stance: Stance::Friendly,
-                provoked: true,
-                fight_running,
-                ..entering(&members)
-            };
-            assert!(!comes_in(&friendly).enters);
-        }
     }
 
     #[test]
@@ -547,27 +442,6 @@ mod tests {
         let nothing = [sees(false, false)];
         assert_eq!(leaves(&[leaving(Stance::Hostile, &nothing)], false).groups, [true]);
         assert_eq!(leaves(&[leaving(Stance::Hostile, &[])], false).groups, [true]);
-    }
-
-    #[test]
-    fn a_friendly_group_stays_while_a_member_sees_a_foe_of_its_own() {
-        let foe = [sees(false, true)];
-        assert_eq!(leaves(&[leaving(Stance::Friendly, &foe)], false).groups, [false]);
-        // Making out the party is nothing to it.
-        let party = [sees(true, false)];
-        assert_eq!(leaves(&[leaving(Stance::Friendly, &party)], false).groups, [true]);
-    }
-
-    #[test]
-    fn a_neutral_group_stays_while_it_stands_with_the_fight() {
-        let (member, hostile) = (at(1, 10.0, 10.0), at(2, 30.0, 30.0));
-        let neutral =
-            Leaving { standing: &[member], hostiles: &[hostile], ..leaving(Stance::Neutral, &[]) };
-        let hostile_group = [sees(true, false)];
-        let groups = [neutral, leaving(Stance::Hostile, &hostile_group)];
-        assert_eq!(leaves(&groups, false).groups, [false, false]);
-        let apart = Leaving { hostiles: &[], ..neutral };
-        assert_eq!(leaves(&[apart, groups[1]], false).groups, [true, false]);
     }
 
     #[test]

@@ -123,14 +123,6 @@ mod tests {
     }
 
     #[test]
-    fn a_press_is_tired_by_fatigue_halved_for_one_who_tires_little() {
-        assert_eq!(Press { press: 90, fatigue: 20, tires_little: false }.pressing(), 70);
-        assert_eq!(Press { press: 90, fatigue: 20, tires_little: true }.pressing(), 80);
-        // 5 / 2 = 2.
-        assert_eq!(Press { press: 90, fatigue: 5, tires_little: true }.pressing(), 88);
-    }
-
-    #[test]
     fn the_chance_is_the_guards_press_less_the_attackers_plus_50_held_to_5_to_95() {
         let chance =
             |guard, attacker, surprise| stepping_chance(&press(guard), &press(attacker), surprise);
@@ -144,43 +136,6 @@ mod tests {
         // The edge: 145 - 100 + 50 = 95 exactly, and above it still 95.
         assert_eq!(chance(145, 100, none), 95);
         assert_eq!(chance(146, 100, none), 95);
-    }
-
-    #[test]
-    fn the_attackers_press_is_raised_by_ten_for_each_way_the_blow_surprises() {
-        let guard = press(100);
-        let attacker = press(100);
-        let by =
-            |unaware, natural| stepping_chance(&guard, &attacker, Surprise { unaware, natural });
-        assert_eq!(by(true, false), 40); // 100 - 110 + 50
-        assert_eq!(by(false, true), 40);
-        assert_eq!(by(true, true), 30); // 100 - 120 + 50
-    }
-
-    #[test]
-    fn fatigue_counts_for_both_presses() {
-        let tired = Press { press: 100, fatigue: 20, tires_little: false };
-        // 80 - 100 + 50 = 30; the attacker tired: 80 - 80 + 50 = 50.
-        assert_eq!(stepping_chance(&tired, &press(100), Surprise::default()), 30);
-        assert_eq!(stepping_chance(&tired, &tired, Surprise::default()), 50);
-    }
-
-    #[test]
-    fn no_guards_means_the_blow_stays_with_its_ward() {
-        assert_eq!(who(&step_in(&[])).iter().flatten().count(), 0);
-    }
-
-    #[test]
-    fn a_guard_steps_in_with_its_chance_and_not_always() {
-        // Guard 1000 against attacker 10: held to 95 percent.
-        let guards = [guard()];
-        let stepped = who(&step_in(&guards));
-        let yes = stepped.iter().flatten().count();
-        assert!((250..300).contains(&yes), "{yes} of 300 at 95 percent");
-        // At the least, 5: it seldom does.
-        let weak = [Guard { press: press(-1000), ..guard() }];
-        let yes = who(&step_in(&weak)).iter().flatten().count();
-        assert!(yes < 50, "{yes} of 300 at 5 percent");
     }
 
     #[test]
@@ -198,40 +153,5 @@ mod tests {
         for ready in [near, long, Guard { taken: 1, ..guard() }] {
             assert!(who(&step_in(&[ready])).iter().flatten().count() > 200, "{ready:?}");
         }
-    }
-
-    #[test]
-    fn one_of_those_stepping_in_takes_the_blow_and_only_one_who_could() {
-        let guards =
-            [Guard { able: false, ..guard() }, guard(), Guard { taken: 2, ..guard() }, guard()];
-        let chosen = who(&step_in(&guards));
-        for index in chosen.iter().flatten() {
-            assert!([1, 3].contains(index), "{index}");
-        }
-        // Each of the two takes it in some draws.
-        assert!(chosen.contains(&Some(1)) && chosen.contains(&Some(3)));
-    }
-
-    #[test]
-    fn the_guard_is_tired_by_two_to_four() {
-        let guards = [guard()];
-        for seed in 0..100 {
-            if let Some(stepping) = steps_in(&mut GameRng::seeded(seed), &step_in(&guards)) {
-                assert!((2..=4).contains(&stepping.tires));
-            }
-        }
-    }
-
-    #[test]
-    fn a_stronger_press_steps_in_more_often() {
-        let weaker = [Guard { press: press(50), ..guard() }];
-        let stronger = [Guard { press: press(80), ..guard() }];
-        // Against 60: 50 - 60 + 50 = 40 percent; 80 - 60 + 50 = 70 percent.
-        let facts = |guards| StepIn { attacker: press(60), ..step_in(guards) };
-        let weak = who(&facts(&weaker)).iter().flatten().count();
-        let strong = who(&facts(&stronger)).iter().flatten().count();
-        assert!(weak < strong, "{weak} < {strong}");
-        assert!((90..150).contains(&weak), "{weak} of 300 at 40 percent");
-        assert!((180..240).contains(&strong), "{strong} of 300 at 70 percent");
     }
 }

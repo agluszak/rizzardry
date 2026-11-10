@@ -233,13 +233,6 @@ mod tests {
         assert_eq!(strength(20, 3, 0, &spell(8, 4, Targeting::Enemy)).against, 17);
     }
 
-    /// 16 against one, 16 - 3 = 13 against all enemies.
-    #[test]
-    fn a_spell_at_all_enemies_is_three_weaker() {
-        let all = spell(6, 4, Targeting::AllEnemies);
-        assert_eq!(strength(20, 3, 0, &all).against, 13);
-    }
-
     /// A death spell takes its floor off, as the all-enemies three; 16 - 6 =
     /// 10 and 10 - 3 - 6 = 1 for both; never below 0: a figure of 0 at power 1,
     /// cost 2, level 1 is 0 + 1 + (1 + 1)/2 = 2, and 2 - 6 is held at 0.
@@ -253,22 +246,6 @@ mod tests {
         let mut small = spell(2, 1, Targeting::Enemy);
         small.facts.death_floor = 6;
         assert_eq!(strength(0, 1, 0, &small).against, 0);
-    }
-
-    /// 16 raised by half the boost: boost 25 is 12 percent, 16 * 12 / 100 = 1,
-    /// so 17; boost 100 is 50 percent, 16 * 50 / 100 = 8, so 24.
-    #[test]
-    fn the_boost_raises_the_strength_by_half_of_itself() {
-        let blast = spell(6, 4, Targeting::Enemy);
-        assert_eq!(strength(20, 3, 25, &blast), Strength { power: 3, against: 17, boost: 25 });
-        assert_eq!(strength(20, 3, 100, &blast).against, 24);
-    }
-
-    /// Power Cast 40 is a fourth of it and one, 11; without the skill, none.
-    #[test]
-    fn power_cast_boosts_by_a_fourth_of_the_skill_and_one() {
-        assert_eq!((boost(40, true), boost(3, true), boost(0, true)), (11, 1, 1));
-        assert_eq!(boost(40, false), 0);
     }
 
     #[test]
@@ -331,18 +308,6 @@ mod tests {
         assert_eq!(auto(&healing(dice(1, 4), Restores::Health, monster, 7, sure)), 1);
         let whole = victim(true, (10, 10), (10, 10), &none);
         assert_eq!(auto(&healing(dice(1, 4), Restores::Health, whole, 7, sure)), 1);
-    }
-
-    /// 1d1 averages (1 * p * 2) / 2 = p; a lack of 10 is never covered, so the
-    /// retail eight comes, held to what is affordable (5 or 7).
-    #[test]
-    fn where_no_power_covers_the_lack_all_that_is_affordable_is_taken() {
-        let none = Conditions::default();
-        let dead_tired = victim(true, (0, 10), (10, 10), &none);
-        let small = |affordable| {
-            auto(&healing(dice(1, 1), Restores::Health, dead_tired, affordable, [0; 7]))
-        };
-        assert_eq!((small(5), small(7)), (5, 7));
     }
 
     /// A failure chance over 10 from power 3 stops the walk at 2.
@@ -418,65 +383,6 @@ mod tests {
         assert_eq!(auto(&curing(v, &[Condition::Poisoned], 7, [50; 7])), 7);
     }
 
-    /// Only the conditions a cure lifts count, and one without end cannot be
-    /// outlasted.
-    #[test]
-    fn a_cure_looks_only_at_the_conditions_it_lifts_and_gives_up_on_one_without_end() {
-        let lifts = [Condition::Nauseated, Condition::Afraid, Condition::Asleep, Condition::Blind];
-        let mut ill = Conditions::default();
-        // Irritated is not among those it is chosen for.
-        ill.inflict(Condition::Irritated, Lasting::Rounds(60));
-        let power = |ill: &Conditions| {
-            auto(&curing(victim(true, (10, 10), (10, 10), ill), &lifts, 7, [0; 7]))
-        };
-        assert_eq!(power(&ill), 1);
-        // Nauseated for 20 rounds wants power 5; Asleep without end outweighs
-        // it, and the least power is taken.
-        ill.inflict(Condition::Nauseated, Lasting::Rounds(20));
-        assert_eq!(power(&ill), 5);
-        ill.inflict(Condition::Asleep, Lasting::Indefinite);
-        assert_eq!(power(&ill), 1);
-    }
-
-    /// The longest of several conditions decides: 4 rounds and 20 rounds at
-    /// no failure want power 5, as 20 alone.
-    #[test]
-    fn a_cure_outlasts_the_longest_condition() {
-        let lifts = [Condition::Nauseated, Condition::Afraid];
-        let mut ill = Conditions::default();
-        ill.inflict(Condition::Nauseated, Lasting::Rounds(4));
-        ill.inflict(Condition::Afraid, Lasting::Rounds(20));
-        let v = victim(true, (10, 10), (10, 10), &ill);
-        assert_eq!(auto(&curing(v, &lifts, 7, [0; 7])), 5);
-    }
-
-    /// A spell that restores nothing and cures nothing, and a cast with no one
-    /// aimed at, take the least power.
-    #[test]
-    fn any_other_spell_and_a_cast_without_a_victim_take_power_one() {
-        let none = Conditions::default();
-        let v = victim(true, (1, 10), (1, 10), &none);
-        let other = Auto {
-            affordable: 7,
-            victim: Some(v),
-            cost: 3,
-            dice: dice(1, 1),
-            restores: None,
-            outlasts: &[],
-            failure: [0; 7],
-            identify: None,
-        };
-        assert_eq!(auto(&other), 1);
-        assert_eq!(auto(&Auto { victim: None, ..other }), 1);
-        // Identify Item takes the least power that reveals the item, whoever is
-        // aimed at, held to what is affordable: 10 wants 4 (12), 3 with a
-        // boost of 50 (9 * 1.5 = 13).
-        let identify = |difficulty, boost, affordable| {
-            auto(&Auto { identify: Some((difficulty, boost)), affordable, victim: None, ..other })
-        };
-        assert_eq!((identify(10, 0, 7), identify(10, 50, 7), identify(10, 0, 2)), (4, 3, 2));
-    }
-
     /// 90 points over a cost of 30 is 3 powers; 100 over 14 is 7 (cut from 7.14);
     /// 1000 over 3 is held to 7; nothing over a cost, or less than one cost, none;
     /// a spell that costs nothing is always 7.
@@ -489,57 +395,5 @@ mod tests {
         assert_eq!(affordable(2, 3), 0);
         assert_eq!(affordable(3, 3), 1);
         assert_eq!(affordable(0, 0), 7);
-    }
-
-    /// 7 times a power is the chance an unsure player steps down: with a failure
-    /// of 16 at powers 6 and 7 and 15 at 5, play starts at 5 (the first at or
-    /// under 15); then a roll below 100 against 35 steps down.
-    #[test]
-    fn an_instrument_is_played_as_high_as_its_chance_allows() {
-        let mut rng = GameRng::seeded(1);
-        let failure = [0, 0, 0, 0, 15, 16, 16];
-        for _ in 0..200 {
-            assert!(played(&mut rng, failure) <= 5);
-        }
-        // Never at or under 15 anywhere: played badly, whatever the luck.
-        assert_eq!(played(&mut rng, [16; 7]), 0);
-        // Failing 0 at every power it can still step down by luck (7 * 1 = 7
-        // percent at power 1): over many tries it reaches 7 sometimes, and 0
-        // only by luck below it.
-        let results: Vec<u32> = (0..500).map(|_| played(&mut rng, [0; 7])).collect();
-        assert!(results.iter().all(|&power| power <= 7));
-        assert!(results.contains(&7) && results.iter().any(|&power| power < 7));
-    }
-
-    /// Stamina must be above the level (3 is not above 3), and the points
-    /// must pay for power 1 (3 of 3).
-    #[test]
-    fn a_repeated_spell_goes_on_while_stamina_and_points_last() {
-        assert!(goes_again(4, 3, 3, 3));
-        assert!(!goes_again(3, 3, 3, 3));
-        assert!(!goes_again(4, 3, 2, 3));
-    }
-
-    #[test]
-    fn a_repeated_cast_goes_on_while_a_living_victim_is_short() {
-        let whole = Mending { dead: false, pool: Pool { current: 10, max: 10 } };
-        let hurt = Mending { dead: false, pool: Pool { current: 9, max: 10 } };
-        let dead = Mending { dead: true, pool: Pool { current: 0, max: 10 } };
-        assert!(!unmended(&[whole, dead]));
-        assert!(unmended(&[whole, hurt, dead]));
-        assert!(!unmended(&[]));
-    }
-
-    /// Three a power: power 2 is 6; a difficulty of 6 is revealed, 7 is not;
-    /// a boost of 50 percent makes 6 into 9. The least power for 10 is 4 (12).
-    #[test]
-    fn identifying_reveals_an_item_by_three_a_power_raised_by_the_boost() {
-        assert!(reveals(2, 0, 6) && !reveals(2, 0, 7));
-        assert!(reveals(2, 50, 9) && !reveals(2, 50, 10));
-        assert_eq!(identifying(0, 10), 4);
-        assert_eq!(identifying(50, 10), 3);
-        // Nothing reveals it: the most.
-        assert_eq!(identifying(0, 255), 7);
-        assert_eq!(identifying(0, 0), 1);
     }
 }

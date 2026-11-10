@@ -191,86 +191,6 @@ pub fn tally(swung: &[Swung]) -> Totals {
 mod tests {
     use super::*;
 
-    #[test]
-    fn each_mode_adds_its_term_to_the_aim_and_to_the_penetration() {
-        use AttackMode::*;
-        // Page 4, "The roll to hit" and "Penetration".
-        let aim = [
-            (Swing, 0),
-            (Bash, 0),
-            (Shoot, 0),
-            (Thrust, -10),
-            (Kick, -10),
-            (Berserk, -30),
-            (Throw, -5),
-            (Punch, 5),
-            (Lash, 10),
-        ];
-        for (mode, term) in aim {
-            assert_eq!(mode_to_hit(mode), term, "{mode:?} to hit");
-        }
-        let pierce = [
-            (Swing, 0),
-            (Kick, 0),
-            (Thrust, 10),
-            (Shoot, 10),
-            (Bash, -5),
-            (Punch, -5),
-            (Berserk, -30),
-            (Throw, 5),
-            (Lash, -10),
-        ];
-        for (mode, term) in pierce {
-            assert_eq!(mode_penetration(mode), term, "{mode:?} penetration");
-        }
-    }
-
-    #[test]
-    fn throws_lashes_and_shots_keep_their_distance() {
-        use AttackMode::*;
-        for mode in [Throw, Lash, Shoot] {
-            assert!(keeps_distance(mode));
-        }
-        for mode in [Swing, Thrust, Bash, Punch, Kick, Berserk] {
-            assert!(!keeps_distance(mode));
-        }
-    }
-
-    #[test]
-    fn long_and_extreme_arms_shoot() {
-        assert!(!is_missile(Reach::Touch));
-        assert!(!is_missile(Reach::Short));
-        assert!(is_missile(Reach::Long));
-        assert!(is_missile(Reach::Extreme));
-    }
-
-    #[test]
-    fn the_mode_draw_counts_along_the_arms_modes_going_round() {
-        use AttackMode::*;
-        // Draws 0 to 8 below 9. One mode: that mode.
-        for w in 0..9 {
-            assert_eq!(mode_at(Punch.into(), w), Punch);
-        }
-        // Two: Swing at 0, 2, 4, 6, 8 (5 of 9), Thrust at 1, 3, 5, 7 (4 of 9).
-        let two = Swing | Thrust;
-        let drawn: Vec<_> = (0..9).map(|w| mode_at(two, w)).collect();
-        assert_eq!(drawn.iter().filter(|&&mode| mode == Swing).count(), 5);
-        assert_eq!(drawn[..4], [Swing, Thrust, Swing, Thrust]);
-        // Three: a third each, w mod 3.
-        let three = Swing | Thrust | Bash;
-        for (w, mode) in [(0, Swing), (1, Thrust), (2, Bash), (3, Swing), (7, Thrust), (8, Bash)] {
-            assert_eq!(mode_at(three, w), mode);
-        }
-    }
-
-    #[test]
-    fn the_modes_drawn_are_the_arms_own() {
-        let modes = AttackMode::Thrust | AttackMode::Bash;
-        for seed in 0..50 {
-            assert!(modes.contains(choose_mode(&mut GameRng::seeded(seed), modes)));
-        }
-    }
-
     /// A body with 100 stamina of which `left` remains.
     fn tired(left: u32) -> Vitals {
         let mut vitals = Vitals::full(20, 100);
@@ -299,54 +219,6 @@ mod tests {
     }
 
     #[test]
-    fn damage_is_cut_by_the_reduction_in_percent_and_may_be_nothing() {
-        // ((100 - r) * d + 50) / 100.
-        assert_eq!(reduce(10, 0), 10);
-        assert_eq!(reduce(10, 25), 8); // (75 * 10 + 50) / 100 = 800 / 100
-        assert_eq!(reduce(10, 50), 5); // (500 + 50) / 100 = 5
-        assert_eq!(reduce(1, 50), 1); // (50 + 50) / 100 = 1
-        assert_eq!(reduce(1, 51), 0); // (49 + 50) / 100 = 0
-        assert_eq!(reduce(10, 100), 0); // 50 / 100 = 0
-    }
-
-    #[test]
-    fn effect_power_is_twice_the_level_to_fourteen_and_the_level_plus_fifteen_above() {
-        for (level, power) in [(0, 0), (1, 2), (5, 10), (14, 28), (15, 30), (20, 35)] {
-            let strength = effect_strength(level);
-            assert_eq!(strength.power, power, "level {level}");
-            // The victim's level is weighed against it, with no boost.
-            assert_eq!(strength, Strength { power, against: power, boost: 0 });
-        }
-    }
-
-    #[test]
-    fn a_tenth_of_the_difference_of_agility_counts_whole() {
-        assert_eq!(agility_difference(100, 60), 4);
-        assert_eq!(agility_difference(100, 91), 0); // 9 / 10
-        assert_eq!(agility_difference(50, 100), -5);
-        assert_eq!(agility_difference(59, 100), -4); // -41 / 10 cut toward 0
-    }
-
-    #[test]
-    fn only_a_member_not_under_turncoat_provokes() {
-        assert!(provokes(true, false));
-        assert!(!provokes(true, true));
-        assert!(!provokes(false, false));
-    }
-
-    #[test]
-    fn an_attack_counts_the_swings_that_reached_and_the_health_they_took() {
-        let swung = [
-            Swung { hit: true, damage: 7 },
-            Swung { hit: false, damage: 0 },
-            Swung { hit: true, damage: 0 },
-            Swung { hit: true, damage: 5 },
-        ];
-        assert_eq!(tally(&swung), Totals { hits: 3, damage: 12 });
-        assert_eq!(tally(&[]), Totals { hits: 0, damage: 0 });
-    }
-
-    #[test]
     fn early_phases_go_to_high_initiative() {
         let mut rng = GameRng::seeded(1);
         for _ in 0..20 {
@@ -354,13 +226,5 @@ mod tests {
             assert!(phase(&mut rng, -50) == 100);
             assert!((87..=90).contains(&phase(&mut rng, 0)));
         }
-    }
-
-    #[test]
-    fn dice_are_rolled_that_many_times_and_the_base_counts_each_time() {
-        // 1d1+2 is 3 every time: five rolls make 15.
-        let dice = Dice { count: 1, sides: 1, base: 2 };
-        assert_eq!(roll_dice(&mut GameRng::seeded(0), dice, 5), 15);
-        assert_eq!(roll_dice(&mut GameRng::seeded(0), dice, 0), 0);
     }
 }

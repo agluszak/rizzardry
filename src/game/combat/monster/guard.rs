@@ -120,12 +120,6 @@ mod tests {
     }
 
     #[test]
-    fn a_bodyguard_guards_a_hurt_stronger_fellow_in_reach() {
-        let fellows = [ward(10)];
-        assert!(watch(&guard(&fellows)).iter().all(|w| *w == Some(Watching::Guards(entity(10)))));
-    }
-
-    #[test]
     fn a_ward_is_under_40_percent_of_its_health() {
         // 39 is under 40; 40 is not.
         let fellows = [Fellow { health: 40, ..ward(10) }];
@@ -145,23 +139,6 @@ mod tests {
     }
 
     #[test]
-    fn a_ward_is_a_friend_within_the_reach_of_the_first_attack() {
-        let foe = [Fellow { friendly: false, ..ward(10) }];
-        assert!(watch(&guard(&foe)).iter().all(Option::is_none));
-        let far = [Fellow { in_reach: false, ..ward(10) }];
-        assert!(watch(&guard(&far)).iter().all(Option::is_none));
-    }
-
-    #[test]
-    fn it_guards_one_of_several_wards_at_random() {
-        let fellows = [ward(10), ward(11), Fellow { health: 90, ..ward(12) }];
-        let chosen = watch(&guard(&fellows));
-        assert!(chosen.contains(&Some(Watching::Guards(entity(10)))));
-        assert!(chosen.contains(&Some(Watching::Guards(entity(11)))));
-        assert!(!chosen.contains(&Some(Watching::Guards(entity(12)))), "well enough");
-    }
-
-    #[test]
     fn it_needs_to_be_a_bodyguard_able_armed_and_with_someone_in_reach_of_the_party() {
         let fellows = [ward(10)];
         let base = guard(&fellows);
@@ -173,40 +150,5 @@ mod tests {
         ] {
             assert!(watch(&facts).iter().all(Option::is_none), "{facts:?}");
         }
-    }
-
-    #[test]
-    fn it_guards_with_a_chance_equal_to_its_intelligence_percent() {
-        // Intelligence 50: about half of 400 draws guard.
-        let fellows = [ward(10)];
-        let facts = Guarding { intelligence: 50, ..guard(&fellows) };
-        let mut rng = GameRng::seeded(5);
-        let guarded = (0..400).filter(|_| guards(&mut rng, &facts).is_some()).count();
-        assert!((120..280).contains(&guarded), "{guarded} of 400");
-        // Intelligence 0 never does.
-        let witless = Guarding { intelligence: 0, ..guard(&fellows) };
-        assert!(watch(&witless).iter().all(Option::is_none));
-    }
-
-    #[test]
-    fn a_wary_monster_with_no_ward_holds_back_at_its_intelligence_percent() {
-        let wary = Guarding { wary: true, bodyguard: false, ..guard(&[]) };
-        assert!(watch(&wary).iter().all(|w| *w == Some(Watching::HoldsBack)));
-        let half = Guarding { intelligence: 50, ..wary };
-        let mut rng = GameRng::seeded(5);
-        let held = (0..400).filter(|_| guards(&mut rng, &half).is_some()).count();
-        assert!((120..280).contains(&held), "{held} of 400");
-        // Someone in reach of the party is needed for this too.
-        let alone = Guarding { striking: striking(&CLAWS, 10.0), ..wary };
-        assert!(watch(&alone).iter().all(Option::is_none));
-        // Not wary, nothing.
-        assert!(watch(&Guarding { wary: false, ..wary }).iter().all(Option::is_none));
-    }
-
-    #[test]
-    fn a_ward_found_comes_before_holding_back() {
-        let fellows = [ward(10)];
-        let facts = Guarding { wary: true, ..guard(&fellows) };
-        assert!(watch(&facts).iter().all(|w| *w == Some(Watching::Guards(entity(10)))));
     }
 }

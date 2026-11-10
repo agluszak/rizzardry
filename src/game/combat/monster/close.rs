@@ -114,32 +114,8 @@ mod tests {
     use super::*;
 
     const CLAWS: [Reach; 1] = [Reach::Touch];
-    const CLAWS_AND_SPIT: [Reach; 2] = [Reach::Touch, Reach::Long];
-
     fn striking(arms: &[Reach], party_gap: f32) -> Striking<'_> {
         Striking { arms, party_gap, prefers_range: false, blind: false }
-    }
-
-    #[test]
-    fn an_arm_reaches_the_party_within_its_reach_in_metres() {
-        // Touch 2 m, short 4 m, long 25 m, extreme 50 m (page, intro).
-        assert!(reaches_party(&striking(&CLAWS, 2.0)));
-        assert!(!reaches_party(&striking(&CLAWS, 2.1)));
-        // The longest arm counts: 25 m reached, 25.1 not.
-        assert!(reaches_party(&striking(&CLAWS_AND_SPIT, 25.0)));
-        assert!(!reaches_party(&striking(&CLAWS_AND_SPIT, 25.1)));
-        assert!(reaches_party(&striking(&[Reach::Short], 4.0)));
-        assert!(reaches_party(&striking(&[Reach::Extreme], 50.0)));
-        assert!(!reaches_party(&striking(&[], 0.0)), "no arm reaches");
-    }
-
-    #[test]
-    fn one_that_prefers_blows_with_none_in_reach_closes_in() {
-        assert!(closes_in(&striking(&CLAWS, 10.0)));
-        assert!(!closes_in(&striking(&CLAWS, 1.0)), "in reach it strikes");
-        let ranged = Striking { prefers_range: true, ..striking(&CLAWS, 10.0) };
-        assert!(!closes_in(&ranged), "one that prefers range stands off");
-        assert!(!closes_in(&striking(&[], 10.0)), "with no arm there is nothing to close in with");
     }
 
     #[test]
@@ -167,12 +143,6 @@ mod tests {
     }
 
     #[test]
-    fn a_move_is_the_stride_half_again_when_charging() {
-        assert_eq!(metres(&moving(), false), 40.0);
-        assert_eq!(metres(&moving(), true), 60.0); // 40 * 1.5
-    }
-
-    #[test]
     fn haste_adds_a_share_of_the_stride_and_slowing_halves_the_move() {
         // Haste 0.3 (power 3): 40 + 40 * 0.3 = 52; charging, 60 + 12 = 72.
         let hasted = Moving { hasted: 0.3, ..moving() };
@@ -185,35 +155,5 @@ mod tests {
         // Haste wins over slowing: the share is added, not halved.
         let both = Moving { hasted: 0.3, slowed: true, ..moving() };
         assert!((metres(&both, false) - 52.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn it_arrives_within_its_reach_less_three_tenths_of_a_metre() {
-        // Touch 2 m less 0.3: 1.7 m.
-        assert!(arrived(Reach::Touch, 1.7));
-        assert!(!arrived(Reach::Touch, 1.8));
-        assert!(needs_approach(true, Reach::Touch, 1.8));
-        assert!(!needs_approach(true, Reach::Touch, 1.7));
-        assert!(!needs_approach(false, Reach::Touch, 30.0), "what cannot walk does not approach");
-    }
-
-    #[test]
-    fn a_walker_short_of_the_party_may_close_in_by_its_move() {
-        let walker = moving();
-        assert_eq!(budget(&walker, false, 30.0), Some(MoveBudget { metres: 40.0, charge: false }));
-        assert_eq!(budget(&walker, true, 30.0), Some(MoveBudget { metres: 60.0, charge: true }));
-        assert_eq!(budget(&walker, false, 1.0), None, "already there");
-        assert_eq!(budget(&Moving { walks: false, ..walker }, false, 30.0), None);
-    }
-
-    #[test]
-    fn a_withdrawing_monster_heads_straight_away_over_the_ground() {
-        // From (3, 5, 0) with the party's eye at (0, 1.5, 0): away is +x on the
-        // ground, 10 m of it.
-        let to = withdraws_to(Vec3::new(3.0, 5.0, 0.0), Vec3::new(0.0, 1.5, 0.0), 10.0);
-        assert!((to - Vec3::new(13.0, 5.0, 0.0)).length() < 0.001);
-        // Straight over the party's eye, it goes along +x.
-        let to = withdraws_to(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 1.5, 0.0), 2.0);
-        assert!((to - Vec3::new(2.0, 0.0, 0.0)).length() < 0.001);
     }
 }

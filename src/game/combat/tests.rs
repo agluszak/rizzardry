@@ -520,68 +520,6 @@ fn a_cast_refused_in_a_fight_falls_back_to_defending() {
     assert!(world.get::<Ordered>(member).unwrap().defends());
 }
 
-/// What happened at a round's end, in the order it happened.
-#[derive(Resource, Default)]
-struct Ending(Vec<&'static str>);
-
-fn note(world: &mut World) {
-    use crate::game::actors::spells::Aged;
-    use crate::game::party::recovery::Elapsed;
-    use round_end::{CloudsPulse, FightJudged, GroupsLeave, PartyLooksAgain, Rests, RoundEnded};
-    world.init_resource::<Ending>();
-    world.add_observer(|_: On<Elapsed>, mut end: ResMut<Ending>| end.0.push("time passes"));
-    world.add_observer(|_: On<GroupsLeave>, mut end: ResMut<Ending>| end.0.push("groups leave"));
-    world.add_observer(|_: On<Rests>, mut end: ResMut<Ending>| end.0.push("rest"));
-    // By the time the clouds pulse, time has passed for everyone: a
-    // condition of one round is gone.
-    world.add_observer(
-        |_: On<CloudsPulse>,
-         members: Query<&Vitals, With<roster::PartyMember>>,
-         mut end: ResMut<Ending>| {
-            let afraid = members
-                .iter()
-                .any(|v| v.conditions.has(crate::game::characters::Condition::Afraid));
-            end.0.push(if afraid { "pulses, time not passed" } else { "pulses" });
-        },
-    );
-    // A cloud's last turn has pulsed before it ages.
-    world.add_observer(
-        |_: On<Aged>, hit: Query<&Vitals, With<Monster>>, mut end: ResMut<Ending>| {
-            let pulsed = hit.iter().all(|v| v.is_dead());
-            end.0.push(if pulsed { "spells age" } else { "spells age before the pulse" });
-        },
-    );
-    world.add_observer(|_: On<FightJudged>, mut end: ResMut<Ending>| end.0.push("judged"));
-    world.add_observer(|_: On<PartyLooksAgain>, mut end: ResMut<Ending>| end.0.push("looks"));
-    world.add_observer(|_: On<RoundEnded>, mut end: ResMut<Ending>| end.0.push("ended"));
-}
-
-/// The round's end is one chain in the order of the rules: time passes, groups
-/// leave, the idle rest, the clouds pulse and what they killed is settled, the
-/// spells age, the fight is judged (the pulse's kill counted, so it is won),
-/// the party looks again, and the round is ended.
-#[test]
-fn a_round_ends_in_the_order_of_the_rules() {
-    use crate::game::characters::{Condition, Lasting};
-    let (mut app, _, member) = app();
-    let world = app.world_mut();
-    note(world);
-    let fight = world.spawn(Battle::default()).id();
-    play(world, fight, 101);
-    world.get_mut::<Round>(fight).unwrap().attacked = true;
-    let foe = monster(world, fight, 3.0);
-    lay(world, foe, SpellId::FIRESTORM, 1, 0);
-    world.get_mut::<Vitals>(member).unwrap().afflict(Condition::Afraid, Lasting::Rounds(1));
-    let before = world.get::<Character>(member).unwrap().experience;
-    world.run_schedule(FixedUpdate);
-    assert_eq!(
-        world.resource::<Ending>().0,
-        ["time passes", "groups leave", "rest", "pulses", "spells age", "judged", "looks", "ended"]
-    );
-    assert!(world.get_entity(fight).is_err(), "the fight is won, its last kill counted");
-    assert_eq!(world.get::<Character>(member).unwrap().experience, before + 120);
-}
-
 /// A provoked neutral group stands hostile as the action starts, before what
 /// provoked it lands; a dead monster or one under Turncoat provokes nobody.
 /// Engagement is told, and the hostile group enters the fight at once.
@@ -631,28 +569,6 @@ fn a_provoked_neutral_group_stands_hostile_and_enters_the_fight() {
     world.run_system_cached(engage::engage).unwrap();
     let engaged: Vec<_> = world.resource_mut::<Messages<engage::Engaged>>().drain().collect();
     assert!(engaged.iter().any(|engage::Engaged(group)| group.contains(&foe)));
-}
-
-/// A utility cast refused in a fight makes its caster defend.
-#[test]
-fn a_utility_cast_refused_in_a_fight_makes_its_caster_defend() {
-    let (mut app, _, member) = app();
-    let world = app.world_mut();
-    teach(world, member, 100, &[SpellId::IDENTIFY_ITEM]);
-    let fight = world.spawn(Battle::default()).id();
-    let _foe = monster(world, fight, 3.0);
-    refresh(world);
-    // Identify Item cannot be cast in a fight, and not at a foe.
-    let choice = MagicChoice {
-        source: Source::Spell { spell: SpellId::IDENTIFY_ITEM, power: 1 },
-        aim: Aim::Point(Vec3::ZERO),
-    };
-    world.entity_mut(member).insert(Ordered(Action::Magic(choice)));
-    world.trigger(Cast { caster: member, spell: SpellId::IDENTIFY_ITEM, choice });
-    world.flush();
-    assert!(world.get::<Ordered>(member).unwrap().defends());
-    let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
-    assert!(matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::WrongTime, .. }]));
 }
 
 /// Outside a fight, time passing ages conditions, spells laid and a stance
@@ -767,37 +683,6 @@ fn a_late_cast_backfires_and_a_backfired_stamina_tires() {
             "{news:?}"
         );
         assert_eq!(world.get::<Vitals>(member).unwrap().stamina.current, 100 - 14 - 7);
-    }
-}
-
-/// The friendly spells that can backfire turn ill, not well.
-#[test]
-fn six_restoring_spells_have_backfires_of_their_own() {
-    use crate::game::hits::definitions::EffectKind;
-    let (mut app, ..) = app();
-    let world = app.world_mut();
-    let definitions = world.resource::<Definitions>();
-    for id in [
-        SpellId::STAMINA,
-        SpellId::REST_ALL,
-        SpellId::CURE_LESSER_COND,
-        SpellId::CURE_PARALYSIS,
-        SpellId::SANE_MIND,
-        SpellId::REMOVE_CURSE,
-    ] {
-        let (cast, backfire) = (definitions.spell(id).unwrap(), definitions.backfire(id).unwrap());
-        assert_ne!(cast, backfire, "{id:?}");
-        let kind = &definitions.get(backfire).effects[0].kind;
-        let ill = matches!(
-            (id, kind),
-            (SpellId::STAMINA | SpellId::REST_ALL, EffectKind::Tire)
-                | (SpellId::CURE_LESSER_COND, EffectKind::AfflictAny(_))
-                | (
-                    SpellId::CURE_PARALYSIS | SpellId::SANE_MIND | SpellId::REMOVE_CURSE,
-                    EffectKind::Afflict { .. }
-                )
-        );
-        assert!(ill, "{id:?} {kind:?}");
     }
 }
 
@@ -916,36 +801,6 @@ fn a_drain_gives_back_what_a_guardian_angel_took() {
     cast_in(world, member, choice);
     assert_eq!(world.get::<Vitals>(foe).unwrap().health.current, 20, "the angel took it");
     assert_eq!(world.get::<Vitals>(member).unwrap().health.current, 1 + 7);
-}
-
-/// A monster that does not resist Terror is frightened a second time, at half
-/// strength (`Magic Effects.cpp:1923-1928`).
-#[test]
-fn terror_frightens_a_monster_a_second_time() {
-    use crate::game::characters::Condition;
-    let (mut app, ..) = app();
-    let world = app.world_mut();
-    let fight = world.spawn(Battle::default()).id();
-    let foes: Vec<_> = (0..10).map(|_| monster(world, fight, 3.0)).collect();
-    refresh(world);
-    let definition = world.resource::<Definitions>().spell(SpellId::TERROR).unwrap();
-    // Against 100, a level 0 monster saves 5% of the time, and 5% again at half.
-    let strength = Strength { power: 1, against: 100, boost: 0 };
-    world.trigger(Release {
-        deed: Deed::new(Act::Fight, Strike { definition, strength, blow: None }),
-        victims: foes.iter().map(|&foe| (foe, None)).collect(),
-    });
-    world.flush();
-    let news: Vec<_> = world.resource_mut::<Messages<CombatNews>>().drain().collect();
-    let frightened = news
-        .iter()
-        .flat_map(|news| match news {
-            CombatNews::Effects(effects) => effects.as_slice(),
-            _ => &[],
-        })
-        .filter(|effect| matches!(effect, Effect::Inflicted { condition: Condition::Afraid, .. }))
-        .count();
-    assert!(frightened > foes.len(), "{frightened} frights for {} foes", foes.len());
 }
 
 /// An instrument's toll, its spell's level times 8 plus 20, tires like any

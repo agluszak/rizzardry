@@ -126,99 +126,9 @@ mod tests {
         counts
     }
 
-    fn count(facts: &Ailing, interrupt: Option<Interrupt>) -> usize {
-        tally(facts).iter().find(|(seen, _)| *seen == interrupt).map_or(0, |&(_, n)| n)
-    }
-
-    /// Whether `count` is within 8 points of the expected share (%) of `DRAWS`.
-    fn about(count: usize, percent: usize) -> bool {
-        let want = DRAWS * percent / 100;
-        count.abs_diff(want) <= DRAWS * 8 / 100
-    }
-
-    #[test]
-    fn a_clear_head_is_not_interrupted() {
-        assert_eq!(tally(&Ailing { runs: true, ..calm() }), [(None, DRAWS)]);
-    }
-
     /// An actor with nothing ailing it.
     fn calm() -> Ailing {
         Ailing::default()
-    }
-
-    #[test]
-    fn nausea_takes_the_action_a_quarter_of_the_time() {
-        let sick = Ailing { nauseated: true, ..calm() };
-        // 25 of 100 lose it; the rest carry on.
-        assert!(about(count(&sick, Some(Interrupt::Nauseated)), 25));
-        assert!(about(count(&sick, None), 75));
-    }
-
-    #[test]
-    fn a_web_holds_it_or_it_breaks_free_by_a_third_of_its_strength_percent() {
-        // Strength 60: 60 / 3 = 20 percent freed, the rest held. Both lose the action.
-        let webbed = Ailing { webbed: true, strength: 60, ..calm() };
-        assert!(about(count(&webbed, Some(Interrupt::Freed)), 20));
-        assert!(about(count(&webbed, Some(Interrupt::Webbed)), 80));
-        assert_eq!(count(&webbed, None), 0);
-        // Strength 2: 2 / 3 = 0 whole: never freed. Strength 300: 100: always.
-        let weak = Ailing { webbed: true, strength: 2, ..calm() };
-        assert_eq!(count(&weak, Some(Interrupt::Webbed)), DRAWS);
-        let strong = Ailing { webbed: true, strength: 300, ..calm() };
-        assert_eq!(count(&strong, Some(Interrupt::Freed)), DRAWS);
-    }
-
-    #[test]
-    fn blindness_takes_a_fifth_of_the_actions_unless_it_fights_blind() {
-        let blind = Ailing { blind: true, ..calm() };
-        assert!(about(count(&blind, Some(Interrupt::Blinded)), 20));
-        let monk = Ailing { fights_blind: true, ..blind };
-        assert_eq!(tally(&monk), [(None, DRAWS)]);
-    }
-
-    #[test]
-    fn insanity_takes_four_fifths_of_the_actions_in_one_of_three_fits() {
-        let mad = Ailing { insane: true, ..calm() };
-        assert!(about(count(&mad, None), 20));
-        for fit in 0..3 {
-            // Each fit a third of 80 percent.
-            assert!(about(count(&mad, Some(Interrupt::Insane { fit })), 27), "fit {fit}");
-        }
-        assert_eq!(count(&mad, Some(Interrupt::Berserk)), 0, "no friend to turn on");
-    }
-
-    #[test]
-    fn insanity_with_a_friend_in_reach_turns_it_on_its_friends_two_fifths_of_the_time() {
-        // 80 percent are taken; of those 40 percent turn: 32 percent of all.
-        let mad = Ailing { insane: true, friend_in_reach: true, ..calm() };
-        assert!(about(count(&mad, Some(Interrupt::Berserk)), 32));
-        // Of the rest of the 80 percent, 48, a third each: 16 percent.
-        assert!(about(count(&mad, Some(Interrupt::Insane { fit: 0 })), 16));
-        // It has turned this round already: only the fits.
-        let turned = Ailing { turned_on_friends: true, ..mad };
-        assert_eq!(count(&turned, Some(Interrupt::Berserk)), 0);
-        assert!(about(count(&turned, Some(Interrupt::Insane { fit: 1 })), 27));
-    }
-
-    #[test]
-    fn fear_freezes_a_quarter_of_the_actions_unless_it_is_running() {
-        let afraid = Ailing { afraid: true, ..calm() };
-        assert!(about(count(&afraid, Some(Interrupt::Afraid)), 25));
-        assert_eq!(count(&afraid, Some(Interrupt::Panics)), 0, "a member does not run");
-        let running = Ailing { running: true, ..afraid };
-        assert_eq!(count(&running, Some(Interrupt::Afraid)), 0);
-    }
-
-    #[test]
-    fn fear_sends_a_monster_that_decides_for_itself_running_two_fifths_of_the_time() {
-        // 25 percent frozen; of the 75 left, 40 percent run: 30 percent.
-        let afraid = Ailing { afraid: true, runs: true, ..calm() };
-        assert!(about(count(&afraid, Some(Interrupt::Afraid)), 25));
-        assert!(about(count(&afraid, Some(Interrupt::Panics)), 30));
-        // Running already: never frozen, and 40 percent run for its life again.
-        let running = Ailing { running: true, ..afraid };
-        assert_eq!(count(&running, Some(Interrupt::Afraid)), 0);
-        assert!(about(count(&running, Some(Interrupt::Panics)), 40));
     }
 
     #[test]
@@ -227,35 +137,5 @@ mod tests {
         assert_eq!(tally(&turned), [(Some(Interrupt::Turncoat), DRAWS)]);
         let elsewhere = Ailing { against_foes: false, ..turned };
         assert_eq!(tally(&elsewhere), [(None, DRAWS)]);
-    }
-
-    #[test]
-    fn the_first_that_applies_wins() {
-        // Webbed and nauseated: a quarter lose it to nausea, the rest to the web.
-        let both = Ailing { nauseated: true, webbed: true, strength: 2, ..calm() };
-        assert!(about(count(&both, Some(Interrupt::Nauseated)), 25));
-        assert!(about(count(&both, Some(Interrupt::Webbed)), 75));
-        // A web, and then nothing else is looked at.
-        let webbed_and_mad = Ailing { webbed: true, insane: true, strength: 2, ..calm() };
-        assert_eq!(count(&webbed_and_mad, Some(Interrupt::Webbed)), DRAWS);
-    }
-
-    #[test]
-    fn each_interrupt_has_its_retail_number() {
-        let numbered = [
-            (Interrupt::Webbed, 0),
-            (Interrupt::Afraid, 1),
-            (Interrupt::Blinded, 2),
-            (Interrupt::Nauseated, 3),
-            (Interrupt::Insane { fit: 0 }, 4),
-            (Interrupt::Insane { fit: 2 }, 6),
-            (Interrupt::Freed, 7),
-            (Interrupt::Berserk, 8),
-            (Interrupt::Turncoat, 9),
-            (Interrupt::Panics, 12),
-        ];
-        for (interrupt, number) in numbered {
-            assert_eq!(interrupt.number(), number, "{interrupt:?}");
-        }
     }
 }

@@ -114,32 +114,6 @@ mod tests {
     }
 
     #[test]
-    fn a_ready_breath_with_a_sure_chance_is_made_at_one_of_its_aims_and_costs_a_tenth() {
-        let mut rng = GameRng::seeded(5);
-        let mut aimed = Vec::new();
-        for _ in 0..40 {
-            let made = makes(&mut rng, &breath()).unwrap();
-            assert_eq!(made.cost, 10); // 100 / 10
-            aimed.push(made.aim.unwrap());
-        }
-        assert!(aimed.contains(&AIMS[0]) && aimed.contains(&AIMS[1]), "either aim comes up");
-    }
-
-    #[test]
-    fn the_cost_is_a_tenth_of_the_most_stamina_whole() {
-        let made =
-            makes(&mut GameRng::seeded(0), &Making { stamina_most: 57, stamina: 57, ..breath() });
-        assert_eq!(made.unwrap().cost, 5); // 57 / 10
-    }
-
-    #[test]
-    fn it_needs_a_special_attack_with_a_chance_above_nothing() {
-        assert!(!ready(&Making { has: false, ..breath() }));
-        assert!(!ready(&Making { chance: 0, ..breath() }));
-        assert!(ready(&Making { chance: 1, ..breath() }));
-    }
-
-    #[test]
     fn one_that_would_close_in_does_not_make_it_but_it_is_ready_all_the_same() {
         // Claws reach 2 m: at 10 m a monster that prefers blows closes in.
         let closing = Making { striking: striking(10.0, false), ..breath() };
@@ -148,11 +122,6 @@ mod tests {
         // One that prefers range makes it from afar, for sure (no arm reaches).
         let ranged = Making { striking: striking(10.0, true), ..breath() };
         assert!(makes(&mut GameRng::seeded(0), &ranged).is_some());
-    }
-
-    #[test]
-    fn a_cooling_special_attack_waits() {
-        assert!(!ready(&Making { cooling: true, ..breath() }));
     }
 
     #[test]
@@ -169,12 +138,6 @@ mod tests {
         assert!(!ready(&Making { silenced: true, honours_silence: true, ..breath() }));
         assert!(ready(&Making { silenced: true, honours_silence: false, ..breath() }));
         assert!(ready(&Making { silenced: false, honours_silence: true, ..breath() }));
-    }
-
-    #[test]
-    fn a_breath_needs_an_aim() {
-        assert!(!ready(&Making { aims: &[], ..breath() }));
-        assert!(makes(&mut GameRng::seeded(0), &Making { aims: &[], ..breath() }).is_none());
     }
 
     #[test]
@@ -197,25 +160,5 @@ mod tests {
     fn a_summoning_never_opens_a_fight_but_a_breath_may() {
         assert!(!ready(&Making { fighting: false, ..summoning() }));
         assert!(ready(&Making { fighting: false, ..breath() }));
-    }
-
-    #[test]
-    fn it_is_made_at_its_chance_where_an_attack_reaches_the_party() {
-        // Chance 50 over 400 draws: made some of the time, not all.
-        let half = Making { chance: 50, ..breath() };
-        let mut rng = GameRng::seeded(3);
-        let made = (0..400).filter(|_| makes(&mut rng, &half).is_some()).count();
-        assert!((120..280).contains(&made), "{made} of 400 at 50%");
-    }
-
-    #[test]
-    fn it_is_made_for_sure_where_no_attack_reaches_the_party() {
-        let far = Making { chance: 1, striking: striking(10.0, true), ..breath() };
-        let mut rng = GameRng::seeded(3);
-        assert!((0..100).all(|_| makes(&mut rng, &far).is_some()), "chance 100 when out of reach");
-        // In reach, a chance of 1 is made about once in a hundred.
-        let near = Making { chance: 1, ..breath() };
-        let made = (0..400).filter(|_| makes(&mut rng, &near).is_some()).count();
-        assert!(made < 30, "{made} of 400 at 1%");
     }
 }

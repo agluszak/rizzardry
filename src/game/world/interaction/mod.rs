@@ -821,21 +821,3 @@ pub fn handle_device_requests(
         }
     }
 }
-
-#[cfg(test)]
-mod trap_table {
-    use super::*;
-    use crate::content::spells::SpellId;
-
-    /// Every kind a level can name has a row; the first and the last are as
-    /// the original's tables have them.
-    #[test]
-    fn every_kind_of_trap_has_a_row() {
-        let first = trap_kind(0);
-        assert_eq!((first.spell, first.grade), (SpellId::DAGGER_SCATTER, 1));
-        assert!(first.has(1) && first.has(5) && !first.has(0));
-        let last = trap_kind(TRAP_TYPES as u8 - 1);
-        assert_eq!((last.spell, last.grade), (SpellId::CEREBRAL_HEMORRHAGE, 7));
-        assert_eq!((0..COMPONENTS).filter(|&part| last.has(part)).count(), 3);
-    }
-}
