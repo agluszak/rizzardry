@@ -38,7 +38,7 @@ fn app() -> App {
         .add_observer(crate::game::world::encounters::age_encounters)
         .add_observer(give_bodies)
         .add_observer(crate::game::world::damage::monster_died)
-        .add_observer(crate::game::characters::settle_deaths)
+        .add_observer(crate::game::characters::fall)
         .init_resource::<crate::game::factions::Factions>()
         .add_message::<crate::game::factions::FactionNews>()
         .init_resource::<GameRng>()
@@ -481,7 +481,7 @@ fn direct_damage_settles_death_once() {
         let mut vitals = world.get_mut::<crate::game::characters::Vitals>(target).unwrap();
         let lost = vitals.hurt(10);
         // Death settles its consequences.
-        world.trigger(crate::game::characters::Settle);
+        world.trigger(crate::game::characters::Fell { body: target });
         world.flush();
         lost
     };

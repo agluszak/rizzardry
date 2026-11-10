@@ -94,7 +94,7 @@ pub fn pass_time(
     mut commands: Commands,
     mut damaged: MessageWriter<crate::game::hits::Damaged>,
 ) {
-    use crate::game::characters::{Condition, Lasting, Settle, Sickness};
+    use crate::game::characters::{Condition, Fell, Lasting, Sickness};
     let Elapsed { ticks, pace } = *elapsed.event();
     for (entity, mut vitals, attributes, sheet, member) in &mut actors {
         // A character without a seat is not carried along by the party's time.
@@ -109,7 +109,9 @@ pub fn pass_time(
             if lost > 0 {
                 let died = vitals.is_dead();
                 damaged.write(crate::game::hits::Damaged { body: entity, amount: lost, died });
-                commands.trigger(Settle);
+                if died {
+                    commands.trigger(Fell { body: entity });
+                }
             }
             let magic = (known, &mut *pool, &content.spells);
             match elapse(&mut profile, &mut vitals, attributes, ticks, pace, &mut rng, magic) {
@@ -122,7 +124,7 @@ pub fn pass_time(
                         let fell =
                             crate::game::hits::Damaged { body: entity, amount: had, died: true };
                         damaged.write(fell);
-                        commands.trigger(Settle);
+                        commands.trigger(Fell { body: entity });
                     }
                     commands.trigger(crate::game::actors::Refit { entity })
                 }

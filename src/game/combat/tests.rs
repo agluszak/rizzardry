@@ -259,7 +259,7 @@ fn killing_a_turned_ally_awards_nothing_but_an_enemy_counts() {
     refresh(world);
     let kill = |world: &mut World, body: Entity| {
         world.get_mut::<Vitals>(body).unwrap().slay();
-        world.trigger(crate::game::characters::Settle);
+        world.trigger(crate::game::characters::Fell { body });
         world.flush();
     };
     kill(world, actor);

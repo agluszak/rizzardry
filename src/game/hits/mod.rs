@@ -400,8 +400,10 @@ impl Landing<'_, '_> {
             }
         }
         log.scorch(commands);
+        for hurt in log.damaged.iter().filter(|hurt| hurt.died) {
+            commands.trigger(crate::game::characters::Fell { body: hurt.body });
+        }
         damaged.write_batch(log.damaged);
-        commands.trigger(crate::game::characters::Settle);
         for raised in log.raised {
             commands.entity(raised).remove::<crate::game::characters::Dead>();
         }

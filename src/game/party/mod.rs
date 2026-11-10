@@ -130,7 +130,7 @@ pub fn average_level(levels: impl IntoIterator<Item = u8>) -> u32 {
 
 /// Hurt a member past any Guardian Angel on them
 /// ([`crate::game::characters::Vitals::hurt`]) and report what it cost them.
-/// Whoever hurt them settles the death ([`crate::game::characters::Settle`]).
+/// Whoever hurt them says so if they fell ([`crate::game::characters::Fell`]).
 pub fn damage_member(
     member: Entity,
     vitals: &mut crate::game::characters::Vitals,
@@ -220,8 +220,8 @@ mod tests {
         let reported: Vec<_> = world.resource_mut::<Messages<Damaged>>().drain().collect();
         assert_eq!(reported, [Damaged { body: first, amount: 10, died: true }]);
         // Settling the death gives up the member's seat.
-        world.add_observer(crate::game::characters::settle_deaths);
-        world.trigger(crate::game::characters::Settle);
+        world.add_observer(crate::game::characters::fall);
+        world.trigger(crate::game::characters::Fell { body: first });
         world.flush();
         let formation = world.query::<&formation::Formation>().single(&world).unwrap();
         assert!(formation.row_of(first).is_none(), "the dead give up their seat");
