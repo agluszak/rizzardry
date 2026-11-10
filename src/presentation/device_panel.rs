@@ -29,7 +29,6 @@ use super::screen_art::{BitmapText, visible_if};
 use crate::content::level::TRAP_TYPES;
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::{Character, Vitals};
-use crate::game::inventory::StackId;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::containers::{Container, Recipient};
 use crate::game::world::interaction::{
@@ -80,7 +79,7 @@ struct DevicePanel {
     /// names): it picks which components can be worked on.
     guess: usize,
     /// Stacks chosen to take, and how much of each.
-    chosen: Vec<(StackId, u16)>,
+    chosen: Vec<(usize, u16)>,
 }
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,9 +93,9 @@ enum Control {
     Component(usize),
     Inspect,
     Spring,
-    Row(StackId),
-    Less(StackId),
-    More(StackId),
+    Row(usize),
+    Less(usize),
+    More(usize),
     All,
     TakeToParty,
     TakeToMember,
@@ -121,7 +120,7 @@ struct LootRows {
 
 /// One stack's row, kept while the stack stays in the container.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
-struct LootRow(StackId);
+struct LootRow(usize);
 
 /// Build an attempt's panel when the attempt begins.
 fn open_panel(
@@ -324,10 +323,11 @@ fn sync_loot_rows(
         let Ok((panel_of, mut panel)) = panels.get_mut(rows_of.panel) else { continue };
         let Ok(on) = attempts.get(panel_of.0) else { continue };
         let Ok(container) = containers.get(on.0) else { continue };
-        let existing: Vec<(Entity, StackId)> = existing
+        let existing: Vec<(Entity, usize)> = existing
             .map(|c| c.iter().filter_map(|r| rows.get(r).ok().map(|row| (r, row.0))).collect())
             .unwrap_or_default();
-        let stacks: Vec<StackId> = container.contents.items.iter().map(|s| s.id).collect();
+        // A container's contents are values, listed by position.
+        let stacks: Vec<usize> = (0..container.contents.items.len()).collect();
         if existing.iter().map(|(_, id)| *id).eq(stacks.iter().copied()) {
             continue;
         }
@@ -446,7 +446,7 @@ fn draw_device_panel(
                     format!("{} {mark}", index + 1)
                 }
                 (Control::Row(id), Work::Looting) => {
-                    let Some(stack) = stacks.iter().find(|s| s.id == id) else {
+                    let Some(stack) = stacks.get(id) else {
                         return String::new();
                     };
                     let item = stack.display_name(&catalog[stack.item], false);
@@ -501,7 +501,7 @@ fn draw_device_panel(
                 member.is_some_and(|(_, (_, vitals, _))| vitals.can_act())
             }
             (Control::Less(id) | Control::More(id), _) => {
-                stacks.iter().find(|s| s.id == id).is_some_and(|s| s.count() > 1)
+                stacks.get(id).is_some_and(|s| s.count() > 1)
             }
             (Control::TakeToParty | Control::TakeToMember, _) => !panel.chosen.is_empty(),
             _ => true,
@@ -542,12 +542,8 @@ fn press(
     };
     let Ok(&AttemptOn(device)) = attempts.get(on) else { return };
     let actor = selected.member(&roster);
-    let count = |id: StackId| {
-        containers
-            .get(device)
-            .ok()
-            .and_then(|c| c.contents.items.iter().find(|s| s.id == id))
-            .map_or(0, |s| s.count())
+    let count = |id: usize| {
+        containers.get(device).ok().and_then(|c| c.contents.items.get(id)).map_or(0, |s| s.count())
     };
     match control {
         Control::Cast | Control::UseItem => {
@@ -624,9 +620,9 @@ fn press(
             }
         }
         Control::All => {
-            let ids: Vec<(StackId, u16)> = containers
+            let ids: Vec<(usize, u16)> = containers
                 .get(device)
-                .map(|c| c.contents.items.iter().map(|s| (s.id, s.count())).collect())
+                .map(|c| c.contents.items.iter().enumerate().map(|(i, s)| (i, s.count())).collect())
                 .unwrap_or_default();
             panel.chosen = if panel.chosen.len() == ids.len() { vec![] } else { ids };
         }

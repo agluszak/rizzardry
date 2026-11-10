@@ -28,10 +28,11 @@ use crate::content::level::{
 };
 use crate::game::characters::{Character, Vitals};
 use crate::game::hits::Damaged;
-use crate::game::inventory::PartyInventory;
+use crate::game::items::Items;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
+use bevy::ecs::system::RunSystemOnce;
 
 const MAX_DEPTH: usize = 16;
 
@@ -554,7 +555,9 @@ fn execute(
         return Ran::Committed;
     }
     let party = crate::game::party::roster::the_party(world);
-    let offered = world.get::<PartyInventory>(party).unwrap().hand.held.as_ref().map(|h| h.item);
+    let offered = world
+        .run_system_once(move |items: Items| items.held(party).and_then(|held| items.id(held)))
+        .unwrap();
     let chosen = select_use(
         &world.entity(entity),
         world.get::<LevelState>(level).unwrap(),

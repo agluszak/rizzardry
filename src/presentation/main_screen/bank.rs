@@ -13,7 +13,8 @@ use crate::content::ui::SpriteSheet;
 use crate::game::camp::CampRequest;
 use crate::game::characters::{Character, Vitals};
 use crate::game::combat::{Battle, CombatSettings, Round};
-use crate::game::inventory::{Carried, EquipSlot};
+use crate::game::inventory::EquipSlot;
+use crate::game::items::Items;
 use crate::game::party::Order;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::search::{Search, ToggleSearch};
@@ -274,10 +275,10 @@ pub fn show_round_progress(
 
 /// Captions are two stable text controls, independent of button input.
 pub fn draw_caption(
-    pool: Single<&crate::game::inventory::PartyInventory>,
+    held: Items,
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
-    members: Query<(&Character, &Vitals, &Carried)>,
+    members: Query<(Entity, &Character, &Vitals)>,
     content: If<Res<crate::game::data::Catalogs>>,
     battle: Option<Single<&Round, With<Battle>>>,
     orders: Query<&Order>,
@@ -288,7 +289,7 @@ pub fn draw_caption(
     let catalog = &content.items;
     let (first, second) = match selected.member(&roster).map(|m| members.get(m).unwrap()) {
         None => (String::new(), String::new()),
-        Some((profile, vitals, carried)) => {
+        Some((member, profile, vitals)) => {
             let first = format!(
                 "{} - {}",
                 profile.name,
@@ -302,9 +303,10 @@ pub fn draw_caption(
                     Order::Defend => "Defend".into(),
                     Order::Breathe(_) => "Breathe".into(),
                     order @ (Order::Attack | Order::Berserk) => {
-                        let weapon = carried
-                            .worn(EquipSlot::Primary)
-                            .map(|i| &catalog[i.item])
+                        let weapon = held
+                            .worn(member, EquipSlot::Primary)
+                            .and_then(|i| held.id(i))
+                            .map(|id| &catalog[id])
                             .map_or("Unarmed", |d| d.name.as_str());
                         let verb = if order == Order::Berserk { "Berserk" } else { "Attack" };
                         format!("{verb} - {weapon}")
@@ -314,22 +316,16 @@ pub fn draw_caption(
                         | crate::game::magic::casting::Source::Innate { spell, power, .. } => {
                             format!("Cast {} ({power})", spells[spell].name)
                         }
-                        crate::game::magic::casting::Source::PoolItem(id) => {
-                            let name = pool
-                                .pool
-                                .stacks
-                                .iter()
-                                .find(|s| s.id == id)
-                                .map(|s| &catalog[s.item])
+                        crate::game::magic::casting::Source::Item(item) => {
+                            let name = held
+                                .id(item)
+                                .map(|id| &catalog[id])
                                 .map_or("", |d| d.name.as_str());
-                            format!("Use {name} from party pool")
-                        }
-                        crate::game::magic::casting::Source::Item(id) => {
-                            let name = carried
-                                .find_stack(id)
-                                .map(|i| &catalog[i.item])
-                                .map_or("", |d| d.name.as_str());
-                            format!("Use {name}")
+                            if held.pooled(item) {
+                                format!("Use {name} from party pool")
+                            } else {
+                                format!("Use {name}")
+                            }
                         }
                     },
                 }

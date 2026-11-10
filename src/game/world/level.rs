@@ -33,7 +33,6 @@ use crate::game::automap::MapNotes;
 use crate::game::characters::Character;
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
-use crate::game::inventory::ItemIds;
 use crate::game::magic::LearnedSpells;
 use crate::game::party::body::{PartyPlacement, PartyStart};
 use crate::game::party::roster::Party;
@@ -601,7 +600,7 @@ pub fn activate_level(
     mut shared: SharedData,
     mut npcs: crate::game::npcs::NpcPopulation,
     mut memory: ResMut<LevelMemory>,
-    (mut ids, mut rng): (ResMut<ItemIds>, ResMut<GameRng>),
+    mut rng: ResMut<GameRng>,
     mut transition: ParamSet<(LevelContents, PartyPlacement)>,
     mut ready: MessageWriter<LevelReady>,
 ) {
@@ -614,7 +613,7 @@ pub fn activate_level(
         }
         let geometry = geometry.get(&level.definition).expect("prepared");
         let catalogs = shared.catalogs.as_deref().expect("prepared");
-        let (items, loot) = (&catalogs.items, &catalogs.loot);
+        let loot = &catalogs.loot;
         // Built once, now that nothing else is awaited, and before the
         // source is touched.
         let collision = prepare_collision(geometry);
@@ -646,13 +645,12 @@ pub fn activate_level(
             (&level.path, &mut npcs),
             (destination.bodies.as_ref().unwrap(), &shared.bodies),
             (&navigation, &mut shared.motion_configs),
-            &mut ids,
             &mut rng,
         );
         let party = match std::mem::replace(&mut destination.entry, Entry::Travel) {
             Entry::Travel => parties.single().expect("a party travels"),
             Entry::NewGame(characters) => {
-                found_party(&mut commands, characters, items, (&mut ids, &mut rng))
+                found_party(&mut commands, characters, catalogs, &mut rng)
             }
         };
         transition.p1().place(&mut commands, party, geometry, &destination.start);
@@ -706,18 +704,12 @@ fn prepare(
 fn found_party(
     commands: &mut Commands,
     characters: Vec<(Character, LearnedSpells)>,
-    items: &crate::content::items::ItemCatalog,
-    (ids, rng): (&mut ItemIds, &mut GameRng),
+    content: &crate::game::data::Catalogs,
+    rng: &mut GameRng,
 ) -> Entity {
     let party = commands.spawn((Name::new("Party"), Party)).id();
     for member in characters {
-        crate::game::party::roster::recruit_character(
-            commands,
-            party,
-            member,
-            items,
-            (&mut *ids, &mut *rng),
-        );
+        crate::game::party::roster::recruit_character(commands, party, member, content, rng);
     }
     party
 }

@@ -10,14 +10,15 @@ use super::defences;
 use super::definitions::{self, Blow, DefinitionId, Definitions, EffectKind, EffectSpec};
 use super::{Damaged, Effect};
 use crate::content::characters::{Attribute, Skill};
-use crate::content::items::{EquipClass, ItemCatalog};
+use crate::content::items::EquipClass;
 use crate::content::spells::SpellId;
 use crate::game::actors::spells::{Enchantment, Laying};
 use crate::game::actors::{Armour, Attacks, Attributes, Level, Resistances};
 use crate::game::characters::{Character, Condition, Lasting, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
-use crate::game::inventory::{Burden, Carried, Equipped, ItemStack, PartyInventory};
+use crate::game::inventory::PartyInventory;
+use crate::game::items::{Burden, Items, Lose};
 use crate::game::magic::{LearnedSpells, SpellPoints, Strength};
 use crate::game::party::roster::PartyMember;
 use crate::game::rng::GameRng;
@@ -41,7 +42,6 @@ pub struct Body {
     pub character: Option<&'static mut Character>,
     pub spells: Option<(&'static LearnedSpells, &'static mut SpellPoints)>,
     pub budget: Option<&'static mut SpellBudget>,
-    pub carried: Option<&'static mut Carried>,
     pub burden: Option<&'static Burden>,
     pub member: Has<PartyMember>,
     pub untargetable: Has<Untargetable>,
@@ -84,6 +84,8 @@ pub struct Rules<'a> {
     /// The fight under way, in which a Valkyrie cheats death at full
     /// strength once.
     pub fight: Option<Entity>,
+    /// What the party has, which heat burns.
+    pub held: &'a Items<'a, 'a>,
 }
 
 /// What strikes did, for whoever tells of it.
@@ -97,6 +99,17 @@ pub struct Log {
     pub raised: Vec<Entity>,
     /// The health plain harm took, which a leeching spell gives back.
     pub harm: u32,
+    /// What heat took of the party's items: an item, and how many of it.
+    pub burnt: Vec<(Entity, u16)>,
+}
+
+impl Log {
+    /// The items heat took are gone.
+    pub fn scorch(&mut self, commands: &mut Commands) {
+        for (item, amount) in self.burnt.drain(..) {
+            commands.trigger(Lose { item, amount });
+        }
+    }
 }
 
 /// How an effect was settled.
@@ -438,21 +451,10 @@ fn apply(
             if changed { Effect::Enchanted { victim, spell } } else { Effect::Nothing { victim } }
         }
         K::Burn => {
-            let Some(carried) = body.carried.as_deref_mut() else { return Outcome::Missed };
-            let items = &rules.content.items;
-            let mut burnt = [0; 3];
-            for (_, slot) in &mut carried.equipment {
-                if let Some(equipped) = slot.take() {
-                    *slot = burn(equipped.stack, items, magnitude, rng, &mut burnt)
-                        .map(|stack| Equipped { stack, ..equipped });
-                }
+            if body.character.is_none() {
+                return Outcome::Missed;
             }
-            for slot in &mut carried.backpack {
-                if let Some(stack) = slot.take() {
-                    *slot = burn(stack, items, magnitude, rng, &mut burnt);
-                }
-            }
-            record_burnt(log, burnt);
+            burn(rules.held.carried(victim), rules, magnitude, rng, log);
             return Outcome::Landed;
         }
         // The party's own: its purse, and its lasting spells.
@@ -517,15 +519,7 @@ pub fn land_on_party(
                 });
             }
             K::Burn => {
-                let mut burnt = [0; 3];
-                let pool = &mut inventory.pool.stacks;
-                *pool = std::mem::take(pool)
-                    .into_iter()
-                    .filter_map(|stack| {
-                        burn(stack, &rules.content.items, magnitude, rng, &mut burnt)
-                    })
-                    .collect();
-                record_burnt(log, burnt);
+                burn(rules.held.pool(party).iter().copied(), rules, magnitude, rng, log);
             }
             K::LoseGold => {
                 let amount = inventory.gold * magnitude.min(100) / 100;
@@ -560,24 +554,31 @@ fn lay(
     laying.lay(bearer, laid, turns, absorbs)
 }
 
-/// What is left of a stack once heat has taken each potion, scroll or book
-/// in it at `chance` percent, counted by class.
+/// Heat takes each potion, scroll or book among `items` at `chance` percent,
+/// each of a stack on its own, and tells what it took by class.
 fn burn(
-    stack: ItemStack,
-    items: &ItemCatalog,
+    items: impl IntoIterator<Item = Entity>,
+    rules: &Rules,
     chance: u32,
     rng: &mut GameRng,
-    burnt: &mut [u32; 3],
-) -> Option<ItemStack> {
-    let class = match items[stack.item].class {
-        EquipClass::Potion => 0,
-        EquipClass::Scroll => 1,
-        EquipClass::Spellbook => 2,
-        _ => return Some(stack),
-    };
-    let lost = (0..stack.count()).filter(|_| rng.below(100) < chance).count() as u16;
-    burnt[class] += u32::from(lost);
-    stack.remove_units(lost)
+    log: &mut Log,
+) {
+    let mut burnt = [0; 3];
+    for item in items {
+        let Some(id) = rules.held.id(item) else { continue };
+        let class = match rules.content.items[id].class {
+            EquipClass::Potion => 0,
+            EquipClass::Scroll => 1,
+            EquipClass::Spellbook => 2,
+            _ => continue,
+        };
+        let lost = (0..rules.held.units(item)).filter(|_| rng.below(100) < chance).count() as u16;
+        if lost > 0 {
+            burnt[class] += u32::from(lost);
+            log.burnt.push((item, lost));
+        }
+    }
+    record_burnt(log, burnt);
 }
 
 fn record_burnt(log: &mut Log, burnt: [u32; 3]) {

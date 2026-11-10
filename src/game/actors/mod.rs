@@ -23,6 +23,5 @@ pub(crate) fn plugin(app: &mut App) {
         .add_observer(spells::laid)
         .add_observer(spells::lifted)
         .add_observer(spells::lift_from_the_dead)
-        .add_observer(spells::end_fight)
-        .add_systems(Update, stats::refit_regeared.in_set(crate::game::GameplaySet::Bodies));
+        .add_observer(spells::end_fight);
 }

@@ -13,7 +13,6 @@ use crate::content::monster::MonsterBody;
 use crate::content::species::MonsterCatalog;
 use crate::game::characters::Condition;
 use crate::game::data::Catalogs;
-use crate::game::inventory::ItemIds;
 use crate::game::rng::GameRng;
 use crate::game::world::items::{WorldItem, placed_item};
 
@@ -418,7 +417,6 @@ pub fn populate(
     (map, npcs): (&str, &mut crate::game::npcs::NpcPopulation),
     (handles, bodies): (&MonsterBodies, &Assets<MonsterBody>),
     (navigation, configs): (&LevelNavigation, &mut Assets<WalkerMotionConfig>),
-    ids: &mut ItemIds,
     rng: &mut GameRng,
 ) {
     let (species, items) = (&catalogs.species, &catalogs.items);
@@ -479,11 +477,9 @@ pub fn populate(
         let Some(id) = kind.npc else { continue };
         let body = handles.get(placed.species, bodies).unwrap();
         let place = crate::game::npcs::Placing { placed, id, map, average };
-        let Some(actor) =
-            npcs.place(commands, place, catalogs, &mut placed_actors, ids, rng, |rng| {
-                KeptMonster::placed(placed, kind, body, rng)
-            })
-        else {
+        let Some(actor) = npcs.place(commands, place, catalogs, &mut placed_actors, rng, |rng| {
+            KeptMonster::placed(placed, kind, body, rng)
+        }) else {
             continue;
         };
         let name = actor_name(species, (placed.species, placed.location));
@@ -521,7 +517,7 @@ pub fn populate(
                         contents: vec![],
                     }
                 } else {
-                    super::items::GroundLoot::Loose(placed_item(placement, definition, ids))
+                    super::items::GroundLoot::Loose(placed_item(placement, definition))
                 };
                 (WorldItem { loot, hidden: placement.hidden }, placement.position)
             })

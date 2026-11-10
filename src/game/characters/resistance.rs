@@ -1,13 +1,12 @@
 //! Resistance from a character's profile and currently worn equipment.
 use crate::content::characters::{Attribute, Realm, Skill};
-use crate::content::items::ItemCatalog;
+use crate::content::items::ItemDefinition;
 #[cfg(test)]
 use crate::game::characters::Character;
 use crate::game::characters::{Profession, Race};
-use crate::game::inventory::Carried;
-#[cfg(test)]
 use crate::game::inventory::EquipSlot;
 use enum_map::{EnumMap, enum_map};
+use enumset::EnumSet;
 
 /// Base resistance and its current value, before unmodelled spell effects.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -18,11 +17,13 @@ pub struct Resistance {
 
 /// Retail `RecalculateCharacterResistances` and equipment modifier accumulation.
 /// Other temporary effects are not represented yet.
-pub fn resistances(
+///
+/// `worn` is the definition of what the character wears in a slot, looked
+/// up from the catalog until definitions are components.
+pub fn resistances<'a>(
     character: &crate::game::characters::Character,
     a: &crate::game::actors::Attributes,
-    carried: &Carried,
-    items: &ItemCatalog,
+    worn: impl Fn(EquipSlot) -> Option<&'a ItemDefinition>,
 ) -> EnumMap<Realm, Resistance> {
     use Realm::*;
     let mut racial: EnumMap<Realm, i32> = enum_map! { _ => 0 };
@@ -65,10 +66,10 @@ pub fn resistances(
             + racial[realm]
             + mental
             + divine;
-        let equipment: i32 = carried
-            .active_equipment()
-            .map(|(_, equipped)| &equipped.stack)
-            .map(|item| &items[item.item])
+        let equipment: i32 = EnumSet::<EquipSlot>::all()
+            .iter()
+            .filter(|slot| slot.is_active())
+            .filter_map(&worn)
             .map(|item| i32::from(item.resistance_bonus[realm]))
             .sum::<i32>()
             .clamp(-125, 125);
@@ -81,25 +82,22 @@ mod tests {
     use super::*;
     use crate::content::characters::{Gender, Profession};
     use crate::content::items::ItemDefinition;
-    use crate::game::inventory::{Equipped, ItemIds, ItemStack};
-
     #[test]
     fn racial_and_worn_item_resistances_apply_without_alternate_weapons() {
         let elf = Character::new("Elf", Race::Elf, Gender::Female, Profession::Mage);
-        let items = ItemCatalog(vec![ItemDefinition {
+        let charm = ItemDefinition {
             resistance_bonus: enum_map! { Realm::Air => 12, Realm::Fire => -7, _ => 0 },
             ..Default::default()
-        }]);
-        let item = ItemStack::new(&items.0[0], &mut ItemIds::default(), 1, false);
-        let mut carried = Carried::default();
-        carried.equipment[EquipSlot::AlternatePrimary] = Some(Equipped::new(item.clone()));
-        let base =
-            resistances(&elf, &crate::game::actors::Attributes::of_sheet(&elf), &carried, &items);
+        };
+        let sheet = crate::game::actors::Attributes::of_sheet(&elf);
+        let base = resistances(&elf, &sheet, |slot| {
+            (slot == EquipSlot::AlternatePrimary).then_some(&charm)
+        });
         assert_eq!(base[Realm::Air], Resistance { base: 40, total: 40 });
         assert_eq!(base[Realm::Mental], Resistance { base: 50, total: 50 });
-        carried.equipment[EquipSlot::Primary] = Some(Equipped::new(item));
-        let worn =
-            resistances(&elf, &crate::game::actors::Attributes::of_sheet(&elf), &carried, &items);
+        let worn = resistances(&elf, &sheet, |slot| {
+            matches!(slot, EquipSlot::AlternatePrimary | EquipSlot::Primary).then_some(&charm)
+        });
         assert_eq!(worn[Realm::Air], Resistance { base: 40, total: 52 });
         assert_eq!(worn[Realm::Fire], Resistance { base: 30, total: 23 });
     }

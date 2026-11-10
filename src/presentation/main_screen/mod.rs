@@ -57,7 +57,7 @@ impl Plugin for MainScreenPlugin {
                             party::draw_party,
                         )
                             .chain()
-                            .after(GameplaySet::Burden),
+                            .after(GameplaySet::Bodies),
                         (party::record_splats, party::play_splats).chain(),
                         (text_box::draw_text_box, text_box::sync_channels, text_box::repeat_arrows)
                             .chain(),

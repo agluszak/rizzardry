@@ -30,6 +30,7 @@ use crate::game::hits::definitions::{Blow, Definitions};
 use crate::game::hits::effects::{self, Body, Log, Rules, Strike};
 use crate::game::hits::{Damaged, Effect};
 use crate::game::inventory::WeaponSlot;
+use crate::game::items::{Items, Spend};
 use crate::game::magic::Strength;
 use crate::game::npcs::NpcBody;
 use crate::game::party::formation::{Formation, Row};
@@ -696,22 +697,31 @@ fn riposte(
 
 /// What is shot or thrown is spent with the swing. Whether the slot has
 /// nothing left to strike with, which ends its attacks.
-fn spend_ammunition(arm: &Arm, by: Entity, bodies: &mut Query<Body>, content: &Catalogs) -> bool {
+///
+/// `spent` is how many this attack has spent so far, which the item (spent
+/// by a command, after the swings) does not show yet.
+fn spend_ammunition(
+    arm: &Arm,
+    by: Entity,
+    spent: &mut u16,
+    held: &Items,
+    (content, commands): (&Catalogs, &mut Commands),
+) -> bool {
     if !arm.ranged || arm.weapon.is_none() {
         return false;
     }
     let loaded = arm.loaded.is_some();
     let slot = if loaded { arm.slot.other() } else { arm.slot }.equip();
-    let Ok(mut body) = bodies.get_mut(by) else { return false };
-    let Some(carried) = body.carried.as_deref_mut() else { return false };
-    let Some(stack) = carried.worn(slot) else { return false };
-    let (id, definition) = (stack.id, &content.items[stack.item]);
+    let Some(item) = held.worn(by, slot) else { return false };
+    let definition = &content.items[held.id(item).unwrap()];
     let thrown = definition.class == EquipClass::ThrownWeapon;
     if !loaded && (definition.spell.is_some() || (thrown && definition.never_depletes)) {
         return false;
     }
-    carried.consume_use(id, definition, definition.keeps_empty());
-    carried.worn(slot).is_none_or(|stack| stack.remaining_uses() == Some(0))
+    commands.trigger(Spend { item, amount: 1 });
+    *spent += 1;
+    // What counts its uses or its units is used up with the last of them.
+    held.charges(item).or(held.count(item)).is_some_and(|left| left <= *spent)
 }
 
 /// When the attacker's next attack follows (retail
@@ -771,6 +781,7 @@ pub(super) fn attack(
     mut watchful: Query<(&Ordered, &mut Spotted)>,
     fight: Single<(Entity, &mut Round, &mut Pause, Option<&Combatants>), With<Battle>>,
     party: Single<(&mut Formation, &PartyRoster)>,
+    held: Items,
     obstacles: WorldObstacles,
     (content, definitions, difficulty): (Res<Catalogs>, Res<Definitions>, Res<Difficulty>),
     mut rng: ResMut<GameRng>,
@@ -788,6 +799,7 @@ pub(super) fn attack(
         definitions: &definitions,
         difficulty: *difficulty,
         fight: Some(fight),
+        held: &held,
     };
     let step = step(&round);
     let running = round.pace == Some(super::PartyPace::Run);
@@ -850,6 +862,7 @@ pub(super) fn attack(
             swings,
             surprise: attack.surprise,
         });
+        let mut spent = 0;
         for _ in 0..swings {
             let able = bodies.get(actor).is_ok_and(|body| body.vitals.can_fight());
             let alive = bodies.get(attack.target).is_ok_and(|body| !body.vitals.is_dead());
@@ -867,7 +880,7 @@ pub(super) fn attack(
                 (&mut log, &mut laying),
                 (&mut news, &mut commands),
             );
-            if spend_ammunition(&attack.arm, actor, &mut bodies, &content) {
+            if spend_ammunition(&attack.arm, actor, &mut spent, &held, (&content, &mut commands)) {
                 turn.attacks[attack.arm.slot] = 0;
                 break;
             }
@@ -885,6 +898,7 @@ pub(super) fn attack(
             next_attack(&mut turn, own.attacks, step);
         }
     }
+    log.scorch(&mut commands);
     damaged.write_batch(log.damaged);
     for (member, skill, usage) in log.practised {
         commands.trigger(Practise { member, skill, usage });

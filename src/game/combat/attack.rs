@@ -9,7 +9,7 @@
 //! whatever else it meets on the way.
 
 use bevy::math::Vec3Swizzles;
-use bevy::prelude::{Component, Vec3};
+use bevy::prelude::{Component, Entity, Query, Vec3};
 use enum_map::{EnumMap, enum_map};
 use enumset::EnumSet;
 
@@ -21,7 +21,7 @@ use crate::content::items::{
 use crate::content::species::{MonsterKind, Reach};
 use crate::game::actors::Attributes;
 use crate::game::characters::{Character, Load, Race, Vitals};
-use crate::game::inventory::{Carried, EquipSlot, ItemStack, WeaponSlot};
+use crate::game::inventory::{EquipSlot, WeaponSlot};
 use crate::game::rng::GameRng;
 
 /// The to-hit term of a mode (retail `AttackModeMod` for the aim).
@@ -193,7 +193,7 @@ fn unarmed_dice(martial_arts: u32) -> Dice {
 /// (close or ranged), and never with a shield or ammunition. Its methods
 /// are the rules that read it with the member's attributes and skills.
 pub struct Grip<'a> {
-    worn: EnumMap<WeaponSlot, Option<(&'a ItemStack, &'a ItemDefinition)>>,
+    worn: EnumMap<WeaponSlot, Option<(Entity, &'a ItemDefinition, Option<u16>)>>,
     holds: EnumMap<WeaponSlot, Holds>,
     /// Ranged or close combat, or neither for a slot that cannot strike.
     ranged: EnumMap<WeaponSlot, Option<bool>>,
@@ -202,11 +202,39 @@ pub struct Grip<'a> {
 }
 
 impl<'a> Grip<'a> {
-    pub fn of(carried: &'a Carried, items: &'a ItemCatalog) -> Self {
+    /// The grip of what a member wears now (the definitions are looked up
+    /// in the catalog until they are components).
+    pub fn worn_by(
+        member: Entity,
+        (held, fit): (&crate::game::items::Items, &Query<crate::game::items::Fit>),
+        catalog: &'a ItemCatalog,
+    ) -> Self {
+        Self::of(
+            |slot| {
+                let item = held.worn(member, slot)?;
+                Some((item, &catalog[held.id(item)?], held.charges(item)))
+            },
+            |launcher, other| {
+                matches!((fit.get(launcher), fit.get(other)),
+                    (Ok(launcher), Ok(other)) if crate::game::items::partners(&launcher, &other))
+            },
+        )
+    }
+
+    /// `wearing` says what the member wears in a slot: the item, its
+    /// definition (looked up from the catalog, until definitions are
+    /// components) and the shots it has left, if it counts them.
+    ///
+    /// `partnered` says whether the second may be held with the first, a
+    /// launcher, as its ammunition.
+    pub fn of(
+        wearing: impl Fn(EquipSlot) -> Option<(Entity, &'a ItemDefinition, Option<u16>)>,
+        partnered: impl Fn(Entity, Entity) -> bool,
+    ) -> Self {
         use WeaponSlot::*;
-        let worn: EnumMap<WeaponSlot, Option<(&ItemStack, &ItemDefinition)>> =
-            enum_map! { slot => carried.worn(slot.equip()).map(|s| (s, &items[s.item])) };
-        let definition = |slot: WeaponSlot| worn[slot].map(|(_, d)| d);
+        let worn: EnumMap<WeaponSlot, Option<(Entity, &ItemDefinition, Option<u16>)>> =
+            enum_map! { slot => wearing(slot.equip()) };
+        let definition = |slot: WeaponSlot| worn[slot].map(|(_, d, _)| d);
         let holds = enum_map! { slot => match definition(slot) {
             None => Holds::Nothing,
             Some(d) => match d.class {
@@ -240,10 +268,10 @@ impl<'a> Grip<'a> {
         // ammunition, or a gun out of shots; it keeps its combat skill all
         // the same.
         let loaded = |slot: WeaponSlot| {
-            let Some((stack, d)) = worn[slot] else { return true };
-            let other = definition(slot.other());
-            (!is_launcher(d.kind) || other.is_some_and(|o| crate::game::inventory::partners(d, o)))
-                && !(d.quantity == QuantityKind::Shots && stack.remaining_uses() == Some(0))
+            let Some((item, d, shots)) = worn[slot] else { return true };
+            let other = worn[slot.other()];
+            (!is_launcher(d.kind) || other.is_some_and(|(other, ..)| partnered(item, other)))
+                && !(d.quantity == QuantityKind::Shots && shots == Some(0))
         };
         let mut in_play = enum_map! { slot => match ranged[slot] {
             None => false,
@@ -264,12 +292,12 @@ impl<'a> Grip<'a> {
 
     /// The weapon worn in a slot.
     pub fn weapon(&self, slot: WeaponSlot) -> Option<&'a ItemDefinition> {
-        self.worn[slot].map(|(_, d)| d)
+        self.worn[slot].map(|(_, d, _)| d)
     }
 
-    /// The stack worn in a slot, by its identity.
-    pub fn weapon_id(&self, slot: WeaponSlot) -> Option<crate::game::inventory::StackId> {
-        self.worn[slot].map(|(stack, _)| stack.id)
+    /// The item worn in a slot.
+    pub fn weapon_item(&self, slot: WeaponSlot) -> Option<Entity> {
+        self.worn[slot].map(|(item, ..)| item)
     }
 
     /// The slot can attack.
@@ -641,15 +669,13 @@ impl Armour {
 
 /// A character's armour (retail `CalcArmorClasses`). Defending adds 2
 /// everywhere and lets Shield skill count for more.
-pub fn armour(
+pub fn armour<'a>(
     c: &Character,
     a: &Attributes,
-    carried: &Carried,
-    catalog: &ItemCatalog,
+    definition: impl Fn(EquipSlot) -> Option<&'a ItemDefinition>,
     load: Load,
     defending: bool,
 ) -> Armour {
-    let definition = |slot| carried.worn(slot).map(|i| &catalog[i.item]);
     let speed = a[Attribute::Speed];
     let speed = i32::from(speed > 79) + i32::from(speed > 89)
         - i32::from(speed < 20)
@@ -858,11 +884,25 @@ pub fn phase(rng: &mut GameRng, initiative: i32) -> u32 {
 mod tests {
     use super::*;
     use crate::game::characters::{Gender, Profession};
-    use crate::game::inventory::{Equipped, ItemIds, ItemStack};
 
-    fn wield(carried: &mut Carried, slot: EquipSlot, definition: &ItemDefinition, count: u16) {
-        let stack = ItemStack::new(definition, &mut ItemIds::default(), count, true);
-        carried.equipment[slot] = Some(Equipped::new(stack));
+    fn wield(
+        worn: &mut EnumMap<EquipSlot, Option<ItemDefinition>>,
+        slot: EquipSlot,
+        definition: &ItemDefinition,
+    ) {
+        worn[slot] = Some(definition.clone());
+    }
+
+    /// The grip of a member wearing these, any launcher holding with any
+    /// partner.
+    fn grip(worn: &EnumMap<EquipSlot, Option<ItemDefinition>>) -> Grip<'_> {
+        Grip::of(
+            |slot| {
+                let item = Entity::from_raw_u32(slot as u32 + 1).unwrap();
+                worn[slot].as_ref().map(|definition| (item, definition, None))
+            },
+            |_, _| true,
+        )
     }
 
     fn weapon(id: u16, class: EquipClass, skill: Skill) -> ItemDefinition {
@@ -902,21 +942,15 @@ mod tests {
             armor_class_bonus: 4,
             ..ItemDefinition::default()
         };
-        let catalog = ItemCatalog(vec![shield.clone()]);
-        let mut carried = Carried::default();
-        wield(&mut carried, EquipSlot::Secondary, &shield, 1);
+        let mut worn = EnumMap::<EquipSlot, Option<ItemDefinition>>::default();
+        wield(&mut worn, EquipSlot::Secondary, &shield);
         let mut bearer = Character::new("A", Race::Human, Gender::Male, Profession::Mage);
         let gain = |bearer: &Character| {
-            let standing = armour(
-                bearer,
-                &Attributes::of_sheet(bearer),
-                &carried,
-                &catalog,
-                Load::None,
-                false,
-            );
+            let wearing = |slot| worn[slot].as_ref();
+            let standing =
+                armour(bearer, &Attributes::of_sheet(bearer), wearing, Load::None, false);
             let defending =
-                armour(bearer, &Attributes::of_sheet(bearer), &carried, &catalog, Load::None, true);
+                armour(bearer, &Attributes::of_sheet(bearer), wearing, Load::None, true);
             for (part, armour) in &defending.by_location {
                 assert_eq!(armour - standing.by_location[part], defending.total - standing.total);
             }
@@ -929,8 +963,14 @@ mod tests {
         bearer.skill_points[Skill::Shield] = 125;
         assert_eq!(gain(&bearer), 2 + (6 - 4));
         assert_eq!(
-            armour(&bearer, &Attributes::of_sheet(&bearer), &carried, &catalog, Load::None, false)
-                .shield,
+            armour(
+                &bearer,
+                &Attributes::of_sheet(&bearer),
+                |slot| worn[slot].as_ref(),
+                Load::None,
+                false
+            )
+            .shield,
             4 + 4
         );
     }
@@ -949,18 +989,17 @@ mod tests {
     fn two_weapons_each_attack_with_their_dual_wielding_penalty() {
         let sword = weapon(0, EquipClass::ShortWeapon, Skill::Sword);
         let dagger = weapon(1, EquipClass::ShortWeapon, Skill::Dagger);
-        let catalog = ItemCatalog(vec![sword.clone(), dagger.clone()]);
         let mut fighter = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
         fighter.skill_points[Skill::DualWeapons] = 40;
-        let mut carried = Carried::default();
+        let mut worn = EnumMap::<EquipSlot, Option<ItemDefinition>>::default();
         use WeaponSlot::*;
         let (c, a) = (&fighter, &Attributes::of_sheet(&fighter));
-        wield(&mut carried, EquipSlot::Primary, &sword, 1);
-        let alone = Grip::of(&carried, &catalog);
+        wield(&mut worn, EquipSlot::Primary, &sword);
+        let alone = grip(&worn);
         // An empty secondary slot beside a weapon does not punch.
         assert!(alone.in_play(Primary) && !alone.in_play(Secondary));
-        wield(&mut carried, EquipSlot::Secondary, &dagger, 1);
-        let both = Grip::of(&carried, &catalog);
+        wield(&mut worn, EquipSlot::Secondary, &dagger);
+        let both = grip(&worn);
         assert!(both.in_play(Primary) && both.in_play(Secondary));
         assert_eq!(both.weapon_skill(Secondary), Skill::Dagger);
         // Each slot pays −10 per slot number and a quarter of the Dual
@@ -985,20 +1024,19 @@ mod tests {
         arrows.kind = ItemKind::ARROW;
         arrows.damage = Dice { base: 0, count: 1, sides: 8 };
         arrows.effects.chances[AttackEffect::Poison] = 10;
-        let catalog = ItemCatalog(vec![sword.clone(), shield.clone(), bow.clone(), arrows.clone()]);
         use WeaponSlot::*;
         let ranger = Character::new("A", Race::Human, Gender::Male, Profession::Ranger);
         let (c, a) = (&ranger, &Attributes::of_sheet(&ranger));
-        let mut carried = Carried::default();
-        wield(&mut carried, EquipSlot::Primary, &sword, 1);
-        wield(&mut carried, EquipSlot::Secondary, &shield, 1);
-        assert!(!Grip::of(&carried, &catalog).in_play(Secondary));
+        let mut worn = EnumMap::<EquipSlot, Option<ItemDefinition>>::default();
+        wield(&mut worn, EquipSlot::Primary, &sword);
+        wield(&mut worn, EquipSlot::Secondary, &shield);
+        assert!(!grip(&worn).in_play(Secondary));
         // A bow without arrows cannot shoot; with them it shoots theirs.
-        let mut carried = Carried::default();
-        wield(&mut carried, EquipSlot::Primary, &bow, 1);
-        assert!(!Grip::of(&carried, &catalog).in_play(Primary));
-        wield(&mut carried, EquipSlot::Secondary, &arrows, 20);
-        let grip = Grip::of(&carried, &catalog);
+        let mut worn = EnumMap::<EquipSlot, Option<ItemDefinition>>::default();
+        wield(&mut worn, EquipSlot::Primary, &bow);
+        assert!(!grip(&worn).in_play(Primary));
+        wield(&mut worn, EquipSlot::Secondary, &arrows);
+        let grip = grip(&worn);
         assert!(grip.in_play(Primary) && grip.paired(Primary) && grip.ranged(Primary));
         assert!(!grip.in_play(Secondary));
         // The bow shoots the arrows, which pierce by their own modes.

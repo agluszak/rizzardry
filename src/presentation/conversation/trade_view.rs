@@ -35,8 +35,9 @@ pub(super) fn sync_trade_rows(
     content: If<Res<crate::game::data::Catalogs>>,
     sessions: Query<&Conversation>,
     stocks: Query<&MerchantStock>,
-    parties: Query<(&PartyRoster, &PartyInventory), With<crate::game::party::roster::Party>>,
-    members: Query<(&crate::game::characters::Character, &Carried)>,
+    parties: Query<(Entity, &PartyRoster), With<crate::game::party::roster::Party>>,
+    members: Query<&crate::game::characters::Character>,
+    held: crate::game::items::Items,
     selection: Res<SelectedMember>,
     widgets: TradeWidgets,
 ) {
@@ -52,7 +53,7 @@ pub(super) fn sync_trade_rows(
         mut gifts,
     } = widgets;
     let items = &content.items;
-    let Ok((roster, party)) = parties.single() else { return };
+    let Ok((party, roster)) = parties.single() else { return };
     for (list, children) in &lists {
         let session = views.session();
         let (state, c) = (views.state(), sessions.get(session).unwrap());
@@ -65,9 +66,9 @@ pub(super) fn sync_trade_rows(
             state.item_group.is_none_or(|group| group == ItemGroup::of(d.class))
                 && state.usability.is_none_or(|party_wide| {
                     if party_wide {
-                        roster.iter().any(|e| members.get(e).unwrap().0.can_use(d))
+                        roster.iter().any(|e| members.get(e).unwrap().can_use(d))
                     } else {
-                        member.is_some_and(|e| members.get(e).unwrap().0.can_use(d))
+                        member.is_some_and(|e| members.get(e).unwrap().can_use(d))
                     }
                 })
         };
@@ -86,27 +87,18 @@ pub(super) fn sync_trade_rows(
                 }
             }
         } else {
-            let carried = member.map(|e| members.get(e).unwrap().1);
-            let pool = party.pool.stacks.iter().filter(|_| state.pool);
-            let backpack = carried
-                .into_iter()
-                .flat_map(|c| c.backpack.iter().flatten())
-                .filter(|_| !state.pool);
-            for item in pool.chain(backpack) {
-                let d = &items[item.item];
+            let pool = held.pool(party).iter().copied().filter(|_| state.pool);
+            let packed =
+                member.into_iter().flat_map(|e| held.pack(e)).flatten().filter(|_| !state.pool);
+            for item in pool.chain(packed) {
+                let Some(d) = held.id(item).map(|id| &items[id]) else { continue };
                 if allows(d) {
-                    let owner = if state.pool {
-                        ItemOwner::Pool
-                    } else {
-                        let Some(member) = member else { continue };
-                        ItemOwner::Member(member)
-                    };
                     rows.push(Listing {
-                        source: TradeSource::Party(ItemRef { owner, id: item.id }),
-                        text: item.display_name(d, true),
-                        quantity: trade::trade_quantity(d, item.units()),
+                        source: TradeSource::Party(item),
+                        text: held.name(item, items, true).unwrap_or_default(),
+                        quantity: trade::trade_quantity(d, held.units(item)),
                         item: d,
-                        units: item.units(),
+                        units: held.units(item),
                     });
                 }
             }

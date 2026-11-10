@@ -9,7 +9,7 @@ use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::freedom::Freedom;
 use crate::game::hits::effects::Body;
-use crate::game::inventory::PartyInventory;
+use crate::game::items::Items;
 use crate::game::party::body::{PartyBody, PartyMovement, PartyStart};
 use crate::game::rng::GameRng;
 use crate::game::world::level::{Destination, Entry, Level};
@@ -47,8 +47,8 @@ pub(crate) fn cast(
         &mut Transform,
         Option<&mut LinearVelocity>,
         &mut PartyMovement,
-        &mut PartyInventory,
     )>,
+    held: Items,
     mut level: Single<(&Level, &mut LevelState)>,
     (freedom, battle): (Freedom, Query<(), With<Battle>>),
     assets: Res<AssetServer>,
@@ -57,7 +57,7 @@ pub(crate) fn cast(
     mut news: MessageWriter<MagicNews>,
 ) {
     for &Utility { caster, spell: id, choice } in accepted.read().filter(|cast| spell(cast.spell)) {
-        let (body, at, transform, velocity, movement, inventory) = &mut *party;
+        let (body, at, transform, velocity, movement) = &mut *party;
         let (level, state) = &mut *level;
         let mut cast = || -> Result<_, Refusal> {
             if !battle.is_empty() || !freedom.unoccupied() {
@@ -71,7 +71,7 @@ pub(crate) fn cast(
             };
             let (report, _) = super::casting::pay(
                 &mut bodies.get_mut(caster).map_err(|_| Refusal::CannotAct)?,
-                inventory,
+                &held,
                 (choice.source, UseContext::World),
                 (&content, *difficulty, state.camera_sway),
                 &mut rng,

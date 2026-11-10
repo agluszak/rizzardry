@@ -3,6 +3,7 @@ use super::*;
 use crate::content::ui::TextTable;
 use crate::game::npcs::trade::MerchantStock;
 use crate::presentation::screen_art::StringTable;
+use bevy::ecs::system::RunSystemOnce;
 use bevy::text::{EditableTextFilter, TextEdit};
 use bevy::ui_widgets::ModalDialog;
 
@@ -39,24 +40,14 @@ fn stack(world: &mut World, q: TradeQuote) -> Option<(crate::content::items::Ite
             .iter()
             .find(|lot| lot.id == id)
             .map(|lot| (lot.item, lot.units)),
-        TradeSource::Party(item) => match item.owner {
-            ItemOwner::Pool => {
-                let party = crate::game::party::roster::the_party(world);
-                world
-                    .get::<PartyInventory>(party)
-                    .unwrap()
-                    .pool
-                    .stacks
-                    .iter()
-                    .find(|stack| stack.id == item.id)
-                    .map(|s| (s.item, s.units()))
-            }
-            ItemOwner::Member(member) => world
-                .get::<Carried>(member)
-                .unwrap()
-                .find_stack(item.id)
-                .map(|s| (s.item, s.units())),
-        },
+        TradeSource::Party(item) => {
+            let id = world
+                .run_system_once(move |held: crate::game::items::Items| {
+                    Some((held.id(item)?, held.units(item)))
+                })
+                .ok()??;
+            Some(id)
+        }
     }
 }
 

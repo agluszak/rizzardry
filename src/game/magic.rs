@@ -29,7 +29,7 @@ use crate::game::GameplaySet;
 use crate::game::characters::{Character, Profession};
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
-use crate::game::inventory::PartyInventory;
+use crate::game::items::Items;
 use crate::game::rng::GameRng;
 
 /// The spells a character has learned. Creation picks the first ones.
@@ -488,7 +488,7 @@ impl Plugin for MagicPlugin {
                     pointcasts::follow_lures,
                 )
                     .chain()
-                    .after(GameplaySet::Burden)
+                    .after(GameplaySet::Bodies)
                     .before(GameplaySet::Combat)
                     .run_if(crate::game::world::level::level_active),
             );
@@ -522,14 +522,12 @@ pub fn accept_magic(
     camp: Option<Res<crate::game::camp::Camp>>,
     interaction: Query<(), With<crate::game::world::interaction::DeviceInteraction>>,
     mut orders: Query<&mut crate::game::party::Order>,
-    carried: Query<&crate::game::inventory::Carried>,
-    inventory: Single<&PartyInventory>,
+    held: Items,
     content: Res<Catalogs>,
     mut news: MessageWriter<casting::MagicNews>,
 ) {
     for &MagicRequest { caster, choice } in requests.read() {
-        let spell =
-            choice.source.spell_id(carried.get(caster).unwrap(), &inventory, &content.items);
+        let spell = choice.source.spell_id(&held, &content.items);
         // A point cast in a fight waits for its turn, as any other order.
         let utility = (spell.is_some_and(utilities::spell)
             && (battle.is_none() || !spell.is_some_and(pointcasts::spell)))
@@ -631,14 +629,15 @@ pub(crate) mod tests {
         };
         use crate::content::spells::ItemSpell;
         use crate::game::characters::Vitals;
-        use crate::game::inventory::{Carried, EquipSlot, Equipped, ItemIds, ItemStack};
+        use crate::game::inventory::EquipSlot;
+        use crate::game::items::{Charges, Count, Place, Put, make};
+        use bevy::ecs::system::RunSystemOnce;
         use casting::{Aim, MagicChoice, MagicNews, Refusal, Source};
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_resource::<crate::game::factions::Factions>()
             .init_resource::<crate::game::time::GameClock>()
             .add_message::<crate::game::factions::FactionNews>()
-            .init_resource::<ItemIds>()
             .init_resource::<crate::game::difficulty::Difficulty>()
             .init_resource::<avian3d::collider_tree::ColliderTrees>()
             .insert_resource(GameRng::seeded(3))
@@ -648,7 +647,7 @@ pub(crate) mod tests {
             .add_message::<Utility>()
             .add_message::<crate::game::world::hostility::Provocation>()
             .add_message::<crate::game::combat::CombatNews>()
-            .add_plugins(crate::game::hits::HitsPlugin)
+            .add_plugins((crate::game::hits::HitsPlugin, crate::game::items::plugin))
             .add_systems(Update, (accept_magic, casting::cast, crate::game::hits::resolve).chain());
         let potion = ItemDefinition {
             id: ItemId(0),
@@ -673,10 +672,6 @@ pub(crate) mod tests {
             spell: Some(ItemSpell { spell: SpellId::HEAL_WOUNDS, power: 1 }),
             ..default()
         };
-        let mut ids = ItemIds::default();
-        let potions = ItemStack::new(&potion, &mut ids, 2, true);
-        let charged = ItemStack::new(&wand, &mut ids, 1, true);
-        let (potion_id, wand_id) = (potions.id, charged.id);
         let world = app.world_mut();
         let items = ItemCatalog(vec![potion, wand]);
         let species = MonsterCatalog::default();
@@ -693,10 +688,22 @@ pub(crate) mod tests {
         let profile = Character::new("Drinker", Race::Human, Gender::Male, Profession::Fighter);
         let mut vitals = Vitals::new(&profile);
         vitals.health.current = 1;
-        let mut carried = Carried::default();
-        carried.backpack[0] = Some(potions);
-        carried.equipment[EquipSlot::Misc1] = Some(Equipped::new(charged));
-        let member = world.spawn((profile, vitals, carried)).id();
+        let member = world.spawn((profile, vitals)).id();
+        let made = |world: &mut World, id: ItemId, amount: u16, at: Place| {
+            let item = world
+                .run_system_once(
+                    move |mut commands: Commands, content: Res<crate::game::data::Catalogs>| {
+                        make(&mut commands, &content.items[id], amount, true)
+                    },
+                )
+                .unwrap();
+            world.flush();
+            world.trigger(Put { item, at });
+            world.flush();
+            item
+        };
+        let potion_id = made(world, ItemId(0), 2, Place::Pack { member, slot: 0 });
+        let wand_id = made(world, ItemId(1), 1, Place::Slot { member, slot: EquipSlot::Misc1 });
         crate::game::party::roster::test_party(world, &[member]);
         world.spawn(crate::game::world::level::Level::test(default()));
         world.spawn((
@@ -712,15 +719,15 @@ pub(crate) mod tests {
             news.last().cloned()
         };
         let hp = |app: &App| app.world().get::<Vitals>(member).unwrap().health.current;
-        let backpack = |app: &App| app.world().get::<Carried>(member).unwrap().backpack[0].clone();
+        let doses = |app: &App| app.world().get::<Count>(potion_id).map(|count| count.of);
         assert!(matches!(request(&mut app, Source::Item(potion_id)), Some(MagicNews::Done(_))));
-        assert_eq!(backpack(&app).unwrap().count(), 1);
+        assert_eq!(doses(&app), Some(1));
         let before = hp(&app);
         assert!(before > 1, "4d4 heals at power 1");
         // Hurt again, and drink the last one: it is gone, and it heals.
         app.world_mut().get_mut::<Vitals>(member).unwrap().health.current = 1;
         assert!(matches!(request(&mut app, Source::Item(potion_id)), Some(MagicNews::Done(_))));
-        assert!(backpack(&app).is_none(), "the last dose is used up");
+        assert_eq!(doses(&app), None, "the last dose is used up");
         assert!(hp(&app) > 1, "the effect outlives the potion");
         assert!(matches!(
             request(&mut app, Source::Item(potion_id)),
@@ -728,8 +735,7 @@ pub(crate) mod tests {
         ));
         // A charged item keeps its body when emptied, and refuses then.
         assert!(matches!(request(&mut app, Source::Item(wand_id)), Some(MagicNews::Done(_))));
-        let carried = app.world().get::<Carried>(member).unwrap();
-        assert_eq!(carried.worn(EquipSlot::Misc1).unwrap().remaining_uses(), Some(0));
+        assert_eq!(app.world().get::<Charges>(wand_id).unwrap().left, 0);
         assert!(matches!(
             request(&mut app, Source::Item(wand_id)),
             Some(MagicNews::Refused { refusal: Refusal::NoCharges, .. })
@@ -780,7 +786,8 @@ pub(crate) mod tests {
         };
         use crate::content::spells::ItemSpell;
         use crate::game::characters::{Condition, Lasting, Vitals};
-        use crate::game::inventory::{Carried, ItemIds, ItemStack};
+        use crate::game::items::{Count, Place, Put, make};
+        use bevy::ecs::system::RunSystemOnce;
         use casting::{Aim, MagicChoice, MagicNews, Source};
 
         for id in [
@@ -799,7 +806,6 @@ pub(crate) mod tests {
                 .init_resource::<crate::game::factions::Factions>()
                 .init_resource::<crate::game::time::GameClock>()
                 .add_message::<crate::game::factions::FactionNews>()
-                .init_resource::<ItemIds>()
                 .init_resource::<crate::game::difficulty::Difficulty>()
                 .init_resource::<avian3d::collider_tree::ColliderTrees>()
                 .insert_resource(GameRng::seeded(3))
@@ -810,7 +816,7 @@ pub(crate) mod tests {
                 .add_message::<Utility>()
                 .add_message::<crate::game::world::hostility::Provocation>()
                 .add_message::<crate::game::combat::CombatNews>()
-                .add_plugins(crate::game::hits::HitsPlugin)
+                .add_plugins((crate::game::hits::HitsPlugin, crate::game::items::plugin))
                 .add_systems(
                     Update,
                     (accept_magic, casting::cast, crate::game::hits::resolve).chain(),
@@ -831,8 +837,6 @@ pub(crate) mod tests {
                 spell: Some(ItemSpell { spell: id, power: 4 }),
                 ..default()
             };
-            let stack = ItemStack::new(&definition, &mut ItemIds::default(), 2, true);
-            let stack_id = stack.id;
             let world = app.world_mut();
             let items = ItemCatalog(vec![definition]);
             let species = MonsterCatalog::default();
@@ -856,9 +860,17 @@ pub(crate) mod tests {
             });
             let mut user = Character::new("User", Race::Human, Gender::Male, Profession::Priest);
             user.skill_points[Skill::ThrowingAndSling] = 100;
-            let mut carried = Carried::default();
-            carried.backpack[0] = Some(stack);
-            let user = world.spawn((Vitals::new(&user), user, carried)).id();
+            let user = world.spawn((Vitals::new(&user), user)).id();
+            let stack_id = world
+                .run_system_once(
+                    |mut commands: Commands, content: Res<crate::game::data::Catalogs>| {
+                        make(&mut commands, &content.items[ItemId(0)], 2, true)
+                    },
+                )
+                .unwrap();
+            world.flush();
+            world.trigger(Put { item: stack_id, at: Place::Pack { member: user, slot: 0 } });
+            world.flush();
             let ally = Character::new("Ally", Race::Human, Gender::Male, Profession::Priest);
             let mut vitals = Vitals::new(&ally);
             vitals.health.current = 1;
@@ -870,7 +882,6 @@ pub(crate) mod tests {
                 .spawn((
                     ally,
                     vitals,
-                    Carried::default(),
                     LearnedSpells([SpellId::HEAL_WOUNDS].into()),
                     SpellPoints::default(),
                 ))
@@ -891,10 +902,7 @@ pub(crate) mod tests {
             let world = app.world_mut();
             let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
             assert!(matches!(news.as_slice(), [MagicNews::Done(_)]), "{id:?}: {news:?}");
-            assert_eq!(
-                world.get::<Carried>(user).unwrap().backpack[0].as_ref().unwrap().count(),
-                1
-            );
+            assert_eq!(world.get::<Count>(stack_id).unwrap().of, 1);
             let user_after = world.get::<Vitals>(user).unwrap();
             assert_eq!(user_after.health.current, user_before.health.current);
             assert_eq!(user_after.conditions, user_before.conditions);

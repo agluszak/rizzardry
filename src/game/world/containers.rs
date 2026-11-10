@@ -10,7 +10,8 @@ use super::props::PropMotion;
 use super::triggers::TriggerEffect;
 use crate::game::characters::Character;
 use crate::game::data::Catalogs;
-use crate::game::inventory::{Carried, ItemIds, ItemNews, ItemStack, PartyInventory, make_item};
+use crate::game::inventory::PartyInventory;
+use crate::game::items::{ItemNews, ItemStack, Items, Place, Put, receive, unpack};
 use crate::game::loot::roll_loot;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
@@ -52,15 +53,18 @@ pub(crate) fn use_container(
     mut containers: Query<(&mut Container, &PropMotion)>,
     content: If<Res<crate::game::data::Catalogs>>,
     attempts: Query<&DeviceAttempt>,
-    mut party: Single<&mut PartyInventory>,
-    (roster, profiles): (Single<&PartyRoster>, Query<&Character>),
-    mut ids: ResMut<ItemIds>,
+    mut purse: Single<&mut PartyInventory>,
+    party: Single<(Entity, &PartyRoster)>,
+    (profiles, held): (Query<&Character>, Items),
     mut rng: ResMut<GameRng>,
     mut outcomes: MessageWriter<TriggerEffect>,
+    mut commands: Commands,
 ) -> ContainerUse {
+    let (party, roster) = *party;
     let (mut container, motion) = containers.get_mut(entity).unwrap();
-    if let Some(held) = party.hand.held.take() {
-        container.contents.items.push(held);
+    if let Some(item) = held.held(party) {
+        container.contents.items.extend(held.stack(item, &content.items));
+        commands.entity(item).despawn();
         return ContainerUse::Deposited;
     }
     if attempts.contains(entity) {
@@ -81,21 +85,23 @@ pub(crate) fn use_container(
         let (found, gold) = roll_loot(&loot.0[table], catalog, party_level, &mut rng);
         let contents = &mut container.contents;
         contents.items.extend(
-            found.into_iter().map(|id| make_item(&catalog[id], &mut ids, &mut rng, false, false)),
+            found.into_iter().map(|id| ItemStack::rolled(&catalog[id], &mut rng, false, false)),
         );
         contents.gold += gold;
         container.table = None;
     }
     let contents = &mut container.contents;
     if contents.gold > 0 {
-        party.gold += contents.gold;
+        purse.gold += contents.gold;
         outcomes.write(TriggerEffect::Gold(contents.gold));
         contents.gold = 0;
     }
     match contents.items.len() {
         0 => ContainerUse::Toggle,
         1 => {
-            party.hand.held = contents.items.pop();
+            let stack = contents.items.pop().unwrap();
+            let item = unpack(&mut commands, &catalog[stack.item], &stack);
+            commands.trigger(Put { item, at: Place::Hand { party } });
             ContainerUse::Toggle
         }
         _ => ContainerUse::Look { open: motion.target > 0.0 },
@@ -120,17 +126,18 @@ pub(crate) fn take_from_containers(
     mut requests: MessageReader<super::interaction::DeviceRequest>,
     attempts: Query<(&DeviceInteraction, &AttemptOn)>,
     mut containers: Query<&mut Container>,
-    mut inventory: Single<&mut PartyInventory>,
-    mut members: Query<(&Character, &crate::game::characters::Vitals, &mut Carried)>,
+    party: Single<Entity, With<PartyRoster>>,
+    held: Items,
+    members: Query<&crate::game::characters::Vitals, With<Character>>,
     (entering, battle): (
         Query<(), With<super::level::Destination>>,
         Query<(), With<crate::game::combat::Battle>>,
     ),
     content: Res<Catalogs>,
-    mut ids: ResMut<ItemIds>,
     mut news: MessageWriter<ItemNews>,
 ) {
     use super::interaction::DeviceAct;
+    let party = *party;
     for request in requests.read() {
         let DeviceAct::Take { picks, to } = &request.act else { continue };
         let Ok((DeviceInteraction { work: Work::Looting }, &AttemptOn(device))) =
@@ -141,44 +148,43 @@ pub(crate) fn take_from_containers(
         if !entering.is_empty() || !battle.is_empty() {
             continue;
         }
-        let mut receiver = match *to {
+        let receiver = match *to {
             Recipient::Party => None,
-            Recipient::Member(member) => match members.get_mut(member) {
-                Ok((character, vitals, carried)) if vitals.can_act() => {
-                    Some((character.name.clone(), carried))
-                }
+            Recipient::Member(member) => match members.get(member) {
+                Ok(vitals) if vitals.can_act() => Some(member),
                 _ => continue,
             },
         };
         let Ok(mut container) = containers.get_mut(device) else { continue };
         let catalog = &content.items;
         let items = &mut container.contents.items;
-        let mut refused = false;
-        for &(id, amount) in picks {
-            let Some(index) = items.iter().position(|s| s.id == id) else { continue };
-            let definition = &catalog[items[index].item];
-            let name = items[index].display_name(definition, false);
-            let mut receive = |part: ItemStack| match receiver.as_mut() {
-                None => inventory.pool.receive(part, catalog),
-                Some((_, carried)) => carried.receive(part, catalog),
-            };
-            let moved = if amount == items[index].count() {
-                let whole = items.remove(index);
-                let units = whole.count();
-                let rest = receive(whole);
-                let left = rest.as_ref().map_or(0, ItemStack::count);
-                if let Some(rest) = rest {
-                    items.insert(index, rest);
+        // What is asked of each pick, and how much of it would be taken.
+        let wanted: Vec<(usize, ItemStack)> = picks
+            .iter()
+            .filter_map(|&(index, amount)| {
+                let mut stack = items.get(index)?.clone();
+                match amount {
+                    0 => None,
+                    amount if amount == stack.count() => Some((index, stack)),
+                    amount => Some((index, stack.split_off(amount)?)),
                 }
-                units - left
-            } else {
-                items[index].give_part(amount, &mut ids, receive)
-            };
-            if moved > 0 {
-                let member = receiver.as_ref().map(|(name, _)| name.clone());
-                news.write(ItemNews::Takes { member, item: name });
+            })
+            .collect();
+        let stacks: Vec<_> = wanted.iter().map(|(_, stack)| stack.clone()).collect();
+        let taken = receive(&held, &mut commands, catalog, (party, receiver), (&stacks, true));
+        let mut emptied = Vec::new();
+        let mut refused = false;
+        for ((index, asked), taking) in wanted.into_iter().zip(taken) {
+            refused |= taking < asked.count();
+            if taking == items[index].count() {
+                emptied.push(index);
+            } else if taking > 0 {
+                items[index].split_off(taking);
             }
-            refused |= moved < amount;
+        }
+        emptied.sort_unstable();
+        for index in emptied.into_iter().rev() {
+            items.remove(index);
         }
         if refused {
             news.write(ItemNews::NoRoom);

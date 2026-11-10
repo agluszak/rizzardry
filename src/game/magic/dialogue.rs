@@ -14,7 +14,7 @@ use crate::{
         data::Catalogs,
         difficulty::Difficulty,
         hits::{Effect, defences, effects::Body},
-        inventory::PartyInventory,
+        items::Items,
         npcs::{
             Npc, NpcBodies,
             conversation::{Conversation, MagicalReply},
@@ -40,7 +40,7 @@ pub(crate) fn cast(
     mut speakers: Query<(&mut Npc, Option<&NpcBodies>)>,
     monsters: Query<(&Monster, &LevelOwned)>,
     mut bodies: Query<Body>,
-    mut inventory: Single<&mut PartyInventory>,
+    held: Items,
     (levels, states): (Query<(), With<Level>>, Query<&LevelState, With<Level>>),
     (content, difficulty): (Res<Catalogs>, Res<Difficulty>),
     mut rng: ResMut<GameRng>,
@@ -72,7 +72,7 @@ pub(crate) fn cast(
                 / 2;
             let (mut report, strength) = super::casting::pay(
                 &mut bodies.get_mut(caster).map_err(|_| Refusal::CannotAct)?,
-                &mut inventory,
+                &held,
                 (choice.source, UseContext::Conversation),
                 (&content, *difficulty, underwater(&states)),
                 &mut rng,

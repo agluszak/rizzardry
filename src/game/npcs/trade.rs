@@ -8,7 +8,8 @@ use crate::{
     game::{
         characters::{Character, Vitals},
         data::Catalogs,
-        inventory::{Carried, ItemIds, ItemOwner, ItemRef, ItemStack, PartyInventory},
+        inventory::PartyInventory,
+        items::{Give, Items, Lose, Place, make},
         party::roster::PartyRoster,
         rng::GameRng,
         time::{DAY_MS, GameClock},
@@ -45,7 +46,8 @@ pub enum TradeError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TradeSource {
     Stock(StockLotId),
-    Party(ItemRef),
+    /// An item the party has: in the pool, or packed (not worn) by a member.
+    Party(Entity),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Quote {
@@ -197,16 +199,14 @@ fn price(
     };
     (if identified { amount } else { amount / 4 }).clamp(1, u64::from(u32::MAX)) as u32
 }
-pub fn sale_item<'a>(
-    source: ItemRef,
-    inventory: &'a PartyInventory,
-    pack: Option<&'a Carried>,
-) -> Result<&'a ItemStack, TradeError> {
-    match source.owner {
-        ItemOwner::Pool => inventory.pool.stacks.iter().find(|s| s.id == source.id),
-        ItemOwner::Member(_) => pack.and_then(|p| p.backpack_stack(source.id)),
+/// Whether the party has the item to sell or give: in its pool, or in a
+/// pack of one of its members (worn items are not for sale).
+pub fn for_sale(item: Entity, roster: &PartyRoster, held: &Items) -> Result<(), TradeError> {
+    match held.place(item) {
+        Some(Place::Pool { .. }) => Ok(()),
+        Some(Place::Pack { member, .. }) if roster.contains(&member) => Ok(()),
+        _ => Err(TradeError::StaleSelection),
     }
-    .ok_or(TradeError::StaleSelection)
 }
 fn quantity(d: &ItemDefinition, asked: u32, available: u32) -> Result<(), TradeError> {
     if asked == 0 || asked > available || (d.class == EquipClass::Ammunition && asked != available)
@@ -220,9 +220,9 @@ fn quantity(d: &ItemDefinition, asked: u32, available: u32) -> Result<(), TradeE
 #[derive(SystemParam)]
 pub struct Pricing<'w, 's> {
     stocks: Query<'w, 's, (&'static ActorId, &'static MerchantStock)>,
-    party: Single<'w, 's, (&'static PartyRoster, &'static PartyInventory)>,
+    roster: Single<'w, 's, &'static PartyRoster>,
     members: Query<'w, 's, (&'static Character, &'static Vitals)>,
-    packs: Query<'w, 's, &'static Carried>,
+    held: Items<'w, 's>,
     content: Res<'w, Catalogs>,
 }
 impl Pricing<'_, '_> {
@@ -233,7 +233,7 @@ impl Pricing<'_, '_> {
         units: u32,
     ) -> Result<Quote, TradeError> {
         let (id, stock) = self.stocks.get(merchant).map_err(|_| TradeError::Unavailable)?;
-        let (roster, inventory) = &*self.party;
+        let roster = *self.roster;
         let skill = communication(roster.iter().filter_map(|m| self.members.get(m).ok()));
         let d = &self.content.npcs[id.0];
         let gold = match source {
@@ -247,25 +247,20 @@ impl Pricing<'_, '_> {
                 price(d, item, units, true, true, skill)
             }
             TradeSource::Party(source) => {
-                let pack = match source.owner {
-                    ItemOwner::Pool => None,
-                    ItemOwner::Member(m) => {
-                        if !roster.contains(&m) {
-                            return Err(TradeError::StaleSelection);
-                        }
-                        self.packs.get(m).ok()
-                    }
+                for_sale(source, roster, &self.held)?;
+                let (Some(id), Some(known)) = (self.held.id(source), self.held.known(source))
+                else {
+                    return Err(TradeError::StaleSelection);
                 };
-                let stack = sale_item(source, inventory, pack)?;
-                let item = &self.content.items[stack.item];
+                let item = &self.content.items[id];
                 if item.crucial
                     || !item.class.merchant_class()
                     || !d.accepted_classes.contains(item.class)
                 {
                     return Err(TradeError::Rejected);
                 }
-                quantity(item, units, stack.units())?;
-                price(d, item, units, stack.identified, false, skill)
+                quantity(item, units, self.held.units(source))?;
+                price(d, item, units, known.identified, false, skill)
             }
         };
         Ok(Quote { merchant, source, quantity: units, gold })
@@ -274,10 +269,10 @@ impl Pricing<'_, '_> {
 #[derive(SystemParam)]
 struct Settlement<'w, 's> {
     stocks: Query<'w, 's, &'static mut MerchantStock>,
-    inventory: Single<'w, 's, &'static mut PartyInventory>,
-    packs: Query<'w, 's, &'static mut Carried>,
+    party: Single<'w, 's, (Entity, &'static PartyRoster, &'static mut PartyInventory)>,
+    held: Items<'w, 's>,
     content: Res<'w, Catalogs>,
-    ids: ResMut<'w, ItemIds>,
+    commands: Commands<'w, 's>,
 }
 impl Settlement<'_, '_> {
     fn settle(&mut self, q: Quote, current: Quote) -> Result<(), TradeError> {
@@ -285,7 +280,7 @@ impl Settlement<'_, '_> {
             return Err(TradeError::PriceChanged);
         }
         let mut stock = self.stocks.get_mut(q.merchant).map_err(|_| TradeError::Unavailable)?;
-        let inventory = &mut *self.inventory;
+        let (party, roster, inventory) = &mut *self.party;
         match q.source {
             TradeSource::Stock(id) => {
                 let row =
@@ -294,7 +289,12 @@ impl Settlement<'_, '_> {
                 if inventory.gold < q.gold {
                     return Err(TradeError::Funds);
                 }
-                if inventory.pool.room_for(item, true) < q.quantity {
+                let per_row = if item.quantity == QuantityKind::Stack {
+                    u32::from(item.stack_limit).max(1)
+                } else {
+                    1
+                };
+                if self.held.pool_room(*party, item.id, true, per_row) < q.quantity {
                     return Err(TradeError::Capacity);
                 }
                 let mut remaining = q.quantity;
@@ -309,8 +309,14 @@ impl Settlement<'_, '_> {
                         QuantityKind::None => 1,
                         _ => item.initial_quantity.maximum() as u16,
                     };
-                    let stack = ItemStack::new(item, &mut self.ids, count, true);
-                    inventory.pool.receive(stack, &self.content.items);
+                    let bought = make(&mut self.commands, item, count, true);
+                    self.commands.trigger(Give {
+                        item: bought,
+                        to: None,
+                        party: *party,
+                        pool_first: true,
+                        told: false,
+                    });
                     remaining -= units;
                 }
                 inventory.gold -= q.gold;
@@ -318,19 +324,9 @@ impl Settlement<'_, '_> {
                 stock.lots.retain(|l| l.units > 0);
             }
             TradeSource::Party(source) => {
-                let pack = match source.owner {
-                    ItemOwner::Pool => None,
-                    ItemOwner::Member(m) => self.packs.get(m).ok(),
-                };
-                let item = sale_item(source, inventory, pack)?.item;
-                match source.owner {
-                    ItemOwner::Pool => inventory.pool.consume_units(source.id, q.quantity as u16),
-                    ItemOwner::Member(m) => self
-                        .packs
-                        .get_mut(m)
-                        .map_err(|_| TradeError::StaleSelection)?
-                        .consume_backpack_units(source.id, q.quantity as u16),
-                };
+                for_sale(source, roster, &self.held)?;
+                let item = self.held.id(source).ok_or(TradeError::StaleSelection)?;
+                self.commands.trigger(Lose { item: source, amount: q.quantity as u16 });
                 stock.add(item, q.quantity, &self.content.items, false);
                 inventory.gold += q.gold;
             }

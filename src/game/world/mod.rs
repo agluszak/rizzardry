@@ -110,7 +110,7 @@ impl Plugin for WorldPlugin {
                         crate::game::automap::commit_notes,
                     )
                         .chain()
-                        .after(GameplaySet::Burden)
+                        .after(GameplaySet::Bodies)
                         .before(GameplaySet::Combat),
                     particles::switch_off_spent.before(GameplaySet::LevelActivation),
                     population::give_birth.run_if(level::level_active).before(GameplaySet::Combat),

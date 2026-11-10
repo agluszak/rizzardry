@@ -4,7 +4,6 @@ use crate::{
     game::{
         characters::{Character, Vitals},
         data::Catalogs,
-        inventory::ItemIds,
         party::roster::{PartyMember, PartyRoster},
         rng::GameRng,
         time::GameClock,
@@ -24,7 +23,6 @@ pub(super) fn initialize(
     content: If<Res<Catalogs>>,
     mut registry: ResMut<Registry>,
     mut commands: Commands,
-    mut ids: ResMut<ItemIds>,
     mut rng: ResMut<GameRng>,
     clock: Res<GameClock>,
     party: Query<&PartyRoster>,
@@ -48,15 +46,8 @@ pub(super) fn initialize(
         ),
     };
     for (index, _) in content.npcs.0.iter().enumerate().filter(|(_, d)| !d.monster_bound) {
-        let actor = spawn_record(
-            &mut commands,
-            NpcId(index as u16),
-            &content,
-            average,
-            clock.ms,
-            &mut ids,
-            &mut rng,
-        );
+        let actor =
+            spawn_record(&mut commands, NpcId(index as u16), &content, average, clock.ms, &mut rng);
         registry.named.insert(NpcId(index as u16), actor);
     }
     registry.initialized = true;
@@ -67,13 +58,12 @@ fn spawn_record(
     content: &Catalogs,
     average: u32,
     now: u64,
-    ids: &mut ItemIds,
     rng: &mut GameRng,
 ) -> Entity {
     let def = &content.npcs[id];
     let mut record = commands.spawn((ActorId(id), Npc::from_definition(def)));
     if let Some(template) = &def.character {
-        record.insert(recruit::character(template, content, ids, rng));
+        record.insert(recruit::character(template, content, rng));
     }
     if def.owns_stock {
         record.insert(trade::MerchantStock::new(def, &content.items, average, now, rng));
@@ -165,7 +155,6 @@ impl NpcPopulation<'_, '_> {
         p: Placing,
         content: &Catalogs,
         placed: &mut HashSet<Entity>,
-        ids: &mut ItemIds,
         rng: &mut GameRng,
         roll: impl FnOnce(&mut GameRng) -> KeptMonster,
     ) -> Option<(Entity, Vec3, f32, ScaledBody, Option<i32>)> {
@@ -174,8 +163,7 @@ impl NpcPopulation<'_, '_> {
             if let Some(&actor) = self.registry.placed.get(&key) {
                 actor
             } else {
-                let actor =
-                    spawn_record(commands, p.id, content, p.average, self.clock.ms, ids, rng);
+                let actor = spawn_record(commands, p.id, content, p.average, self.clock.ms, rng);
                 self.registry.placed.insert(key, actor);
                 actor
             }

@@ -435,7 +435,7 @@ pub fn stop_party_move(
     fight: Option<Single<(&Round, &mut PartyMove), With<Battle>>>,
     mut rng: ResMut<GameRng>,
     roster: Single<&PartyRoster>,
-    mut movers: Query<(&mut Vitals, &crate::game::inventory::Burden), With<Turn>>,
+    mut movers: Query<(&mut Vitals, &crate::game::items::Burden), With<Turn>>,
     mut turns: Query<&mut Turn>,
     mut news: MessageWriter<CombatNews>,
     mut starts: MessageReader<StartRound>,

@@ -17,10 +17,7 @@ use crate::game::npcs::{
     story::StoryFacts,
     trade::{self, TradeSource},
 };
-use crate::game::{
-    inventory::{Carried, ItemOwner, ItemRef, PartyInventory},
-    party::roster::PartyRoster,
-};
+use crate::game::{inventory::PartyInventory, party::roster::PartyRoster};
 use bevy::ui::{InteractionDisabled, ScrollPosition};
 use bevy::{
     input::keyboard::{Key, KeyboardInput},
@@ -70,7 +67,7 @@ impl DialogueState {
 #[derive(Clone, Copy)]
 enum Selection {
     /// One of the item, to give: a gift has no price.
-    Gift(ItemRef),
+    Gift(Entity),
     Priced(TradeQuote),
     /// The trade the pick asked for is unavailable.
     Refused(trade::TradeError),
