@@ -779,3 +779,47 @@ original, not understood rules.
    (`ResolveGuardianInterception`). Here only monsters guard, and only monsters
    are guarded; there is no Protect order. Defect (missing), not fixed: it needs
    the order itself and members to be guarded.
+
+## 10. How this is built
+
+The sections above are the rules. This section says how the code is to be
+shaped around them; where the code differs from it, the code is wrong.
+
+**A rule is a function of the facts it is about.** Each numbered rule above is
+one function that takes plain values and returns a plain value. None of them
+takes a query, a world, a catalog or a log, and none of them changes anything.
+
+| Rule | Takes | Gives |
+| --- | --- | --- |
+| who may be struck, and with what (2) | for each candidate: how the attacker stands toward it, which arms reach it, whether it is seen, its worst condition, whether it is in reach of the party, the gap | the arm and target, or what to do instead (close in on whom, wait, stand) |
+| catching unaware (3) | the reach, where the attacker stands about the target, what the target is doing, its Senses and how often it has tried this round | whether the blow is unaware, whether it is natural, whether the target turned |
+| the roll to hit (4) | the arm's rating, the mode, the attacker's fatigue and blindness, the surprise, the target's armour and what it is doing, both agilities, the difficulty | the chance |
+| the swing's fate (4) | the chance, the bystanders in reach | reaches (and whether surely), misses, or fumbles onto which bystander |
+| who steps in (4) | the guards in the order they took it up, each one's reach and blows left, the attacker's press | the body the blow lands on |
+| getting through armour (4) | the arm's rating, the mode it pierces by, fatigue, armour at the place struck, both agilities, the difficulty | the chance |
+| the blow (5) | the arm's dice and percent, slaying, backstab, the kill skill, the weapon's effects | the damage and what else it does |
+| what a swing costs (6) | the mode, the weapon's weight, berserk, disease, load, slowed, hasted | the stamina |
+| the next attack's moment (7) | attacks left with each hand, each hand's initiative, the moment now | which hand and when, or none |
+
+The facts each takes are a small struct named for the rule, built in one
+place. Every number on this page is a test of one of these functions, with
+the expected value worked out from the page, not from running the code.
+
+**The attack itself is one piece that only arranges.** The observer of
+`Strike` reads what the rules need about the attacker, the target and those
+around them, calls the rules in the order of this page, and makes happen what
+they decide by saying so: the blow is released and lands (`Release`), what was
+shot is spent (`Spend`), skills are practised (`Practise`), a group is provoked
+(`Provocation`), the player is told (`CombatNews`). It holds no rule of its
+own: no arithmetic, no constant.
+
+**What is read of an actor is one view.** The attacker and the target are read
+through the same view of an actor (health and what ails it, attributes, level,
+`Attacks`, `Armour`, side, place), whichever of member and monster they are.
+The places section 8 lists where the two differ are differences in the facts
+refit wrote, never a branch in a rule here.
+
+**What goes.** `open`, `swing`, `intercept`, `catch_unaware`, `land_blow`,
+`riposte`, `next_attack` as functions that take the world's queries and a
+mutable attack and do several rules each; the `Attack` value threaded mutably
+through them; arithmetic and constants inside the observer.
