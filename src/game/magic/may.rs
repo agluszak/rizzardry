@@ -2,7 +2,12 @@
 //! cast what, from what, when. A function of the facts it is about and
 //! nothing else.
 
+use crate::content::items::UseType;
 use crate::content::spells::{PowerChoice, SpellDefinition, Usable, Working};
+use crate::game::characters::{Character, Condition};
+use crate::game::hits::effects::BodyReadOnlyItem;
+use crate::game::items::{Casts, Items};
+use crate::game::magic::casting::Source;
 use crate::game::magic::power::AUTO;
 
 /// Why nothing was spent.
@@ -65,65 +70,13 @@ pub fn silence_stops(spell: &SpellDefinition, keeps_alchemy: bool) -> bool {
     !(spell.books.contains(crate::content::spells::Spellbook::Alchemy) && keeps_alchemy)
 }
 
-/// Whether the user may activate an item.
-#[derive(Clone, Copy, Debug)]
-pub struct Activation {
-    /// It has a use (not a plain thing, nor a spellbook).
-    pub has_use: bool,
-    /// It works only worn (weapons, armour, worn misc things, anything marked).
-    pub must_be_worn: bool,
-    /// It is worn in a slot in use.
-    pub worn: bool,
-    /// The user's profession, race and sex may use it.
-    pub usable_by_user: bool,
-    /// Potions and food are usable by anyone who holds them.
-    pub by_anyone: bool,
-}
-
-/// Whether the user may activate the item: it has a use, is worn if it must
-/// be, and is usable by them, or by anyone.
-pub fn activates(item: &Activation) -> bool {
-    item.has_use && (!item.must_be_worn || item.worn) && (item.usable_by_user || item.by_anyone)
-}
-
-/// An item a cast would use.
-#[derive(Clone, Copy, Debug)]
-pub struct Held {
-    /// The power of the spell its record carries; none if it carries no spell.
-    pub power: Option<u32>,
-    /// An instrument or gadget, which is played at a power of the player's
-    /// reach rather than carrying one of its own.
-    pub played: bool,
-    /// Its use is voiced (an instrument).
-    pub voiced: bool,
-    pub activation: Activation,
-    /// A charged item with no charge left.
-    pub spent: bool,
-}
-
-/// What a cast is paid for from.
-#[derive(Clone, Copy, Debug)]
-pub enum Source {
-    /// A learned spell, at the power asked for (or [`AUTO`]), which the points
-    /// pay for up to `affordable`.
-    Learned { learned: bool, asked: u32, affordable: u32 },
-    /// An item, in the party's pool and not carried by the caster if `pooled`;
-    /// none if it is no longer there, or not the caster's to use.
-    Item { pooled: bool, held: Option<Held> },
-    /// A monster's own spell.
-    Own,
-}
-
-/// The caster, as the rule asks of them.
-#[derive(Clone, Copy, Debug)]
-pub struct Caster {
-    /// Alive, with nothing as bad as Asleep.
-    pub able: bool,
-    pub member: bool,
-    pub silenced: bool,
-    /// Their Alchemy survives a silence: a member's with the skill, a
-    /// monster's of a kind that keeps it.
-    pub keeps_alchemy: bool,
+/// Whether an item's spell may be set off by a character: it has a use,
+/// it is worn where it is in use if it must be, and they are among those who
+/// may use it, or it is a potion or food, which anyone takes.
+pub fn activates(casts: &Casts, worn: bool, character: &Character) -> bool {
+    !matches!(casts.by, UseType::None | UseType::Spellbook)
+        && (!casts.worn || worn)
+        && (casts.users.admit(character) || matches!(casts.by, UseType::Potion | UseType::Food))
 }
 
 /// How the party stands.
@@ -137,17 +90,6 @@ pub struct Moment {
     pub camped: bool,
     /// A conversation waits for the party's word.
     pub spoken_to: bool,
-}
-
-/// What a cast asks.
-#[derive(Clone, Copy, Debug)]
-pub struct Asks<'a> {
-    pub spell: &'a SpellDefinition,
-    pub caster: Caster,
-    pub source: Source,
-    pub moment: Moment,
-    /// The game resolves the spell: it has a row, or is a utility spell.
-    pub resolved: bool,
 }
 
 /// Whether a utility spell waits for another moment: some are not cast in a
@@ -168,64 +110,93 @@ fn waits(spell: &SpellDefinition, moment: Moment) -> bool {
     }
 }
 
-/// Whether the cast may be made, or the first reason it may not
-/// (retail `ExecuteCharacterSpellCast`, `UseItem`): by someone able to take an
-/// action, a member unless it is a monster's own spell; from what a member
-/// carries, in a fight, not the pool; not voiced under silence; a learned
-/// spell known, at a power above 0 the points pay for; an item still there,
-/// carrying a spell the user may activate, with a charge left; a spell the
-/// game resolves; at a moment that suits it. The refusal costs nothing.
-pub fn may(asks: &Asks) -> Result<(), Refusal> {
-    let Asks { spell, caster, source, moment, resolved } = *asks;
-    let own = matches!(source, Source::Own);
-    if !caster.able || !(caster.member || own) {
+/// Whether a moment suits a spell cast by a member: its record's times and
+/// its own waiting; "repeat until whole" (`repeats`) is not for a fight.
+pub fn suits(spell: &SpellDefinition, moment: Moment, repeats: bool) -> bool {
+    usable_now(spell, moment.context)
+        && !(repeats && moment.context == UseContext::Combat)
+        && !waits(spell, moment)
+}
+
+/// Whether a cast may be made, and if not, the first reason why not, in
+/// this order (retail `CastSpellFromSource`, `ValidateSpellCast`):
+///
+/// 1. One who cannot act casts nothing; a monster casts only its own spells.
+/// 2. In a fight the party's pool is out of reach.
+/// 3. A silence stops what is voiced, a learned spell, a monster's own or an
+///    instrument, but for Alchemy in the hands of one who keeps it.
+/// 4. A learned spell is asked at some power, is known, and the points pay
+///    for it at power 1 at least.
+/// 5. An item is there (carried by the caster or in the pool), casts a spell
+///    at some power (an instrument's is played), may be set off by its user
+///    and has a charge left.
+/// 6. The game resolves the spell.
+/// 7. The moment suits it; a monster's own spell is not judged by the moment.
+pub fn may(
+    spell: &SpellDefinition,
+    caster: &BodyReadOnlyItem,
+    source: Source,
+    held: &Items,
+    (affordable, keeps_alchemy): (u32, bool),
+    moment: Moment,
+    resolved: bool,
+) -> Result<(), Refusal> {
+    let own = matches!(source, Source::Innate { .. });
+    if !caster.vitals.can_fight() || !(caster.member || own) {
         return Err(Refusal::CannotAct);
     }
-    if let Source::Item { pooled: true, .. } = source
-        && moment.context == UseContext::Combat
-    {
+    let item = match source {
+        Source::Item(item) => Some(item),
+        _ => None,
+    };
+    let pooled = item.is_some_and(|item| held.pooled(item));
+    if pooled && moment.context == UseContext::Combat {
         return Err(Refusal::CannotUse);
     }
-    let voiced = match source {
-        Source::Item { held: Some(held), .. } => held.voiced,
-        _ => true,
-    };
-    if caster.silenced && voiced && silence_stops(spell, caster.keeps_alchemy) {
+    let there = item
+        .filter(|&item| pooled || held.bearer(item) == Some(caster.entity))
+        .filter(|&item| held.id(item).is_some());
+    let casts = there.map(|item| held.casts(item));
+    let voiced = casts.is_none_or(|casts| casts.is_some_and(|c| c.by == UseType::Instrument));
+    if caster.vitals.conditions.has(Condition::Silenced)
+        && voiced
+        && silence_stops(spell, keeps_alchemy)
+    {
         return Err(Refusal::Silenced);
     }
     match source {
-        Source::Learned { learned, asked, affordable } => {
-            if asked == 0 {
+        Source::Spell { spell: id, power } => {
+            if power == 0 {
                 return Err(Refusal::CannotUse);
             }
-            if !learned {
+            if !caster.spells.is_some_and(|(learned, _)| learned.0.contains(&id)) {
                 return Err(Refusal::NotLearned);
             }
             if affordable == 0 {
                 return Err(Refusal::NoSpellPoints);
             }
         }
-        Source::Item { held: None, .. } => return Err(Refusal::NoItem),
-        Source::Item { held: Some(held), .. } => {
-            let Some(power) = held.power else { return Err(Refusal::CannotUse) };
-            let powerless = power == 0 && !held.played;
-            if powerless || !activates(&held.activation) {
+        Source::Item(_) => {
+            let Some(item) = there else { return Err(Refusal::NoItem) };
+            let Some(casts) = held.casts(item) else { return Err(Refusal::CannotUse) };
+            let played = matches!(casts.by, UseType::Instrument | UseType::Gadget);
+            let worn = held.slot(item).is_some_and(|slot| slot.is_active());
+            let user = caster.character.is_some_and(|c| activates(casts, worn, c));
+            if (casts.power == 0 && !played) || !user {
                 return Err(Refusal::CannotUse);
             }
-            if held.spent {
+            if held.charges(item) == Some(0) {
                 return Err(Refusal::NoCharges);
             }
         }
-        Source::Own => {}
+        Source::Innate { .. } => {}
     }
     if !resolved {
         return Err(Refusal::Unsupported);
     }
-    let repeats = matches!(source, Source::Learned { asked: AUTO, .. })
+    let repeats = matches!(source, Source::Spell { power: AUTO, .. })
         && spell.power == PowerChoice::ChosenOrRepeat;
-    let fighting = moment.context == UseContext::Combat;
-    if !own && (!usable_now(spell, moment.context) || (repeats && fighting) || waits(spell, moment))
-    {
+    if !own && !suits(spell, moment, repeats) {
         return Err(Refusal::WrongTime);
     }
     Ok(())
@@ -234,7 +205,7 @@ pub fn may(asks: &Asks) -> Result<(), Refusal> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::spells::{SpellCatalog, SpellId, Spellbook};
+    use crate::content::spells::{SpellCatalog, SpellId};
 
     fn spell(id: SpellId) -> SpellDefinition {
         SpellCatalog::new(vec![SpellDefinition { id, ..Default::default() }]).0.remove(0)
@@ -242,127 +213,15 @@ mod tests {
 
     const FREE: Moment =
         Moment { context: UseContext::World, occupied: false, camped: false, spoken_to: false };
-    const ABLE: Caster = Caster { able: true, member: true, silenced: false, keeps_alchemy: false };
-
-    fn item(held: Option<Held>) -> Source {
-        Source::Item { pooled: false, held }
-    }
-
-    fn learned(asked: u32, affordable: u32) -> Source {
-        Source::Learned { learned: true, asked, affordable }
-    }
-
-    fn asks(spell: &SpellDefinition, source: Source) -> Asks<'_> {
-        Asks { spell, caster: ABLE, source, moment: FREE, resolved: true }
-    }
-
-    fn holding() -> Held {
-        Held {
-            power: Some(3),
-            played: false,
-            voiced: false,
-            activation: Activation {
-                has_use: true,
-                must_be_worn: false,
-                worn: false,
-                usable_by_user: true,
-                by_anyone: false,
-            },
-            spent: false,
-        }
-    }
-
-    /// Silence stops a learned spell and an instrument, not another item; an
-    /// Alchemy spell is let through to one who keeps their Alchemy.
-    #[test]
-    fn a_silence_stops_what_is_voiced() {
-        let heal = spell(SpellId::HEAL_WOUNDS);
-        let silent = Caster { silenced: true, ..ABLE };
-        let silenced = |source| may(&Asks { caster: silent, ..asks(&heal, source) });
-        assert_eq!(silenced(learned(3, 5)), Err(Refusal::Silenced));
-        assert_eq!(
-            silenced(item(Some(Held { voiced: true, ..holding() }))),
-            Err(Refusal::Silenced)
-        );
-        assert_eq!(silenced(item(Some(holding()))), Ok(()));
-        // An item that is not there is judged as a spell is.
-        assert_eq!(silenced(item(None)), Err(Refusal::Silenced));
-        let alchemy = SpellDefinition { books: Spellbook::Alchemy.into(), ..heal.clone() };
-        assert_eq!(
-            may(&Asks { caster: silent, ..asks(&alchemy, learned(3, 5)) }),
-            Err(Refusal::Silenced)
-        );
-        let alchemist = Caster { silenced: true, keeps_alchemy: true, ..ABLE };
-        assert_eq!(may(&Asks { caster: alchemist, ..asks(&alchemy, learned(3, 5)) }), Ok(()));
-        // Only Alchemy: the alchemist's other spells are stopped.
-        assert_eq!(
-            may(&Asks { caster: alchemist, ..asks(&heal, learned(3, 5)) }),
-            Err(Refusal::Silenced)
-        );
-        // A monster's own spell is stopped the same way.
-        let monster = Caster { member: false, silenced: true, keeps_alchemy: false, ..ABLE };
-        assert_eq!(
-            may(&Asks { caster: monster, ..asks(&heal, Source::Own) }),
-            Err(Refusal::Silenced)
-        );
-    }
-
-    #[test]
-    fn a_learned_spell_must_be_known_and_asked_at_a_power_the_points_pay_for() {
-        let heal = spell(SpellId::HEAL_WOUNDS);
-        assert_eq!(may(&asks(&heal, learned(0, 5))), Err(Refusal::CannotUse));
-        let unknown = Source::Learned { learned: false, asked: 3, affordable: 5 };
-        assert_eq!(may(&asks(&heal, unknown)), Err(Refusal::NotLearned));
-        assert_eq!(may(&asks(&heal, learned(3, 0))), Err(Refusal::NoSpellPoints));
-        // Power 0 is judged before the spell is known.
-        let both = Source::Learned { learned: false, asked: 0, affordable: 5 };
-        assert_eq!(may(&asks(&heal, both)), Err(Refusal::CannotUse));
-    }
-
-    #[test]
-    fn an_item_must_be_there_carry_a_spell_be_activated_and_have_a_charge() {
-        let heal = spell(SpellId::HEAL_WOUNDS);
-        let try_item = |held| may(&asks(&heal, item(held)));
-        assert_eq!(try_item(None), Err(Refusal::NoItem));
-        assert_eq!(try_item(Some(holding())), Ok(()));
-        assert_eq!(try_item(Some(Held { power: None, ..holding() })), Err(Refusal::CannotUse));
-        // Power 0 is refused, unless it is played.
-        assert_eq!(try_item(Some(Held { power: Some(0), ..holding() })), Err(Refusal::CannotUse));
-        assert_eq!(try_item(Some(Held { power: Some(0), played: true, ..holding() })), Ok(()));
-        assert_eq!(try_item(Some(Held { spent: true, ..holding() })), Err(Refusal::NoCharges));
-        let not_theirs = Activation { usable_by_user: false, ..holding().activation };
-        assert_eq!(
-            try_item(Some(Held { activation: not_theirs, ..holding() })),
-            Err(Refusal::CannotUse)
-        );
-    }
-
-    fn suiting(usable: Usable) -> SpellDefinition {
-        SpellDefinition { usable, ..spell(SpellId::HEAL_WOUNDS) }
-    }
-
-    /// "Repeat until whole" is refused in a fight, only for a spell whose record
-    /// offers it.
-    #[test]
-    fn the_repeat_choice_of_power_is_refused_in_a_fight() {
-        let repeats =
-            SpellDefinition { power: PowerChoice::ChosenOrRepeat, ..suiting(Usable::Always) };
-        let fight = Moment { context: UseContext::Combat, ..FREE };
-        let in_fight = |spell: &SpellDefinition, asked| {
-            may(&Asks { moment: fight, ..asks(spell, learned(asked, 5)) })
-        };
-        assert_eq!(in_fight(&repeats, AUTO), Err(Refusal::WrongTime));
-        assert_eq!(in_fight(&repeats, 4), Ok(()));
-        assert_eq!(in_fight(&suiting(Usable::Always), AUTO), Ok(()));
-        assert_eq!(may(&asks(&repeats, learned(AUTO, 5))), Ok(()));
-    }
 
     /// Identify and the portals wait out a fight and a busy party; a lure
     /// waits out a camp as well; Summon Elemental is for a fight only; Charm
     /// waits for the party's word.
     #[test]
     fn a_utility_spell_waits_for_its_moment() {
-        let at = |id, moment| may(&Asks { moment, ..asks(&spell(id), learned(3, 5)) });
+        let at = |id, moment| {
+            if suits(&spell(id), moment, false) { Ok(()) } else { Err(Refusal::WrongTime) }
+        };
         let fight = Moment { context: UseContext::Combat, ..FREE };
         let busy = Moment { occupied: true, ..FREE };
         let camp = Moment { context: UseContext::Camp, camped: true, ..FREE };

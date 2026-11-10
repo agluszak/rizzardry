@@ -1,9 +1,9 @@
 //! Casting a learned spell, using an item's spell, or a monster's own spell
-//! (`docs/rules/casting.md`). An accepted cast ([`Cast`]) is arranged here and
-//! nothing more: the observer reads the facts each rule of [`super::may`],
-//! [`super::reach`], [`super::power`], [`super::roll`] and [`super::cost`]
-//! takes ([`facts`]), asks them in the order of the page, and makes happen what
-//! they decide: the cast is refused, or provokes, is rolled, paid for and
+//! (`docs/rules/casting.md`). An accepted cast ([`Cast`]) is carried out here
+//! as one moment: the observer asks the rules of [`super::may`],
+//! [`super::reach`], [`super::power`], [`super::roll`] and [`super::cost`] in
+//! the order of the page, of the caster, what the cast comes from
+//! ([`means::Means`]) and the spell, and makes happen what they decide: the cast is refused, or provokes, is rolled, paid for and
 //! released as a deed that lands ([`crate::game::hits`]), or is told to the
 //! utility spell that does its own thing ([`Worked`]).
 //!
@@ -13,16 +13,15 @@
 //! own copy of the spell and victims, so using the last potion still heals, and
 //! a missile in flight still lands after its caster falls.
 
-mod facts;
+mod means;
 
 use bevy::prelude::*;
 
-pub use self::facts::{
-    Around, goes_again, learned_chance, reaches, resolvable, usable_item, usable_items,
-};
-use self::facts::{ItemUse, Payment, Scene};
+pub use self::means::{Around, goes_again, reaches, resolvable, usable_item, usable_items};
+use self::means::{ItemUse, Means, Payment, Stage};
 use super::may::{self, Refusal};
 use super::reach::{self, Aim, Falls, Marked};
+pub use super::roll::learned as learned_chance;
 use super::{Outcome, Strength, cost, power, roll};
 use crate::content::spells::{PowerChoice, SpellId, Targeting, Working};
 use crate::game::characters::Practise;
@@ -192,49 +191,51 @@ pub fn cast(
         let Cast { caster, spell: id, choice } = cast;
         let spell = &content.spells[id];
         let readonly = bodies.as_readonly();
-        let scene = Scene {
-            bodies: &readonly,
-            around: &around,
-            roster,
-            combatants: fight
-                .as_ref()
-                .and_then(|fight| fight.1)
-                .map_or(&[][..], |fight| fight.entities()),
-            content: &content,
-            definitions: &definitions,
+        let combatants =
+            fight.as_ref().and_then(|fight| fight.1).map_or(&[][..], |fight| fight.entities());
+        let fighting = fight.is_some();
+        let pace = roll::Pace {
             difficulty: *difficulty,
             moment: fight.as_ref().map_or(0, |fight| fight.0.moment()),
-            fighting: fight.is_some(),
         };
+        let records = (&content.spells, &*definitions);
         let Ok(body) = readonly.get(caster) else {
             commands.trigger(Refused { caster, refusal: Refusal::CannotAct });
             continue;
         };
-        let asks = scene.asks(&cast, &body, spell);
-        if let Err(refusal) = may::may(&asks) {
+        let moment = around.moment(spell, fighting);
+        let asked = (means::affordable(&body, spell, &content.spells), around.keeps_alchemy(&body));
+        let resolved = resolvable(spell, &definitions);
+        if let Err(refusal) =
+            may::may(spell, &body, choice.source, &around.held, asked, moment, resolved)
+        {
             commands.trigger(Refused { caster, refusal });
             continue;
         }
-        let context = asks.moment.context;
-        let Some(means) = scene.means(choice.source, &body) else {
+        let Some(means) = Means::of(choice.source, &body, &around.held) else {
             commands.trigger(Refused { caster, refusal: Refusal::CannotAct });
             continue;
         };
         let item = means.item();
         // A potion or food used in a fight is taken by its user (retail
         // `UseItem` aims potions at their user).
-        let forced = context == may::UseContext::Combat && item.is_some_and(ItemUse::by_anyone);
+        let forced = fighting && item.is_some_and(ItemUse::by_anyone);
         let targeting = if forced { Targeting::Caster } else { spell.targeting };
-        let stage = scene.stage(caster, spell.reach.metres());
+        let stage =
+            Stage::of(caster, spell.reach.metres(), &readonly, &around, (roster, combatants));
         let aiming = stage.aiming(caster, targeting, choice.aim);
         let (mut victims, spot, marked) = match spell.facts.working {
-            Some(working) => match reach::mark(&scene.marking(working, &cast, spell)) {
-                Ok(marked) => (Vec::new(), None, Some(marked)),
-                Err(refusal) => {
-                    commands.trigger(Refused { caster, refusal });
-                    continue;
+            Some(working) => {
+                let marking =
+                    around.marking(working, &cast, spell, (&readonly, roster), &definitions);
+                match reach::mark(&marking) {
+                    Ok(marked) => (Vec::new(), None, Some(marked)),
+                    Err(refusal) => {
+                        commands.trigger(Refused { caster, refusal });
+                        continue;
+                    }
                 }
-            },
+            }
             None => match reach::victims(&aiming) {
                 Ok(reached) => (reached.victims, reached.spot, None),
                 Err(refusal) => {
@@ -243,30 +244,52 @@ pub fn cast(
                 }
             },
         };
-        let (figure, boost) = scene.figure(&means, spell);
+        let (figure, boost) = means.figure(spell);
         // The power it goes off at. An instrument played too badly to sound
         // tires and trains its player all the same, and that is the end of it.
-        let Some(power) = scene.power(&mut rng, &means, &body, (&cast, spell), boost) else {
-            let skill = item.and_then(|item| item.casts.by.skill());
-            let tired = cost::stamina(&mut rng, &scene.tiring(&body, item, spell, 0));
+        let power = means::power_of(
+            &mut rng,
+            &means,
+            &body,
+            (&cast, spell),
+            (boost, pace),
+            &readonly,
+            &around,
+            records,
+        );
+        let Some(power) = power else {
+            let tired = cost::stamina(&mut rng, &body, means.used(), spell, 0);
+            let skill = means.used().and_then(|used| used.skill());
             bodies.get_mut(caster).unwrap().vitals.tire(tired);
-            for (skill, usage) in cost::practice(&cost::Training::PlayedBadly { skill }) {
-                commands.trigger(Practise { member: caster, skill, usage });
+            if let Some(skill) = skill {
+                commands.trigger(Practise { member: caster, skill, usage: 1 });
             }
             commands.trigger(Refused { caster, refusal: Refusal::PlayedBadly });
             continue;
+        };
+        let struck = |origin: Vec3| {
+            crate::game::hits::spells::struck(
+                &readonly,
+                &around.places,
+                &around.obstacles,
+                origin,
+                (roster, combatants),
+            )
         };
         // A blast takes whoever stands within its radius of where it lands,
         // but those on its caster's side.
         let side = body.stance();
         let radius = reach::blast_radius(spell, power);
         if let (Targeting::Radius, Some(centre)) = (targeting, spot) {
-            victims =
-                reach::blasted(centre, radius, Recipients::Opponents(side), &scene.struck(centre));
+            victims = reach::blasted(centre, radius, Recipients::Opponents(side), &struck(centre));
         }
         // The roll to cast.
         let on_oneself = choice.aim.body() == Some(caster);
-        let outcome = roll::outcome(&mut rng, &scene.rolling(&means, spell, power, on_oneself));
+        let (chance, quiet) = means.failure(spell, power, pace, on_oneself);
+        // The party under water casts no Fire.
+        let quenched =
+            spell.realm == Some(crate::content::characters::Realm::Fire) && around.underwater();
+        let outcome = roll::outcome(&mut rng, chance, quiet, quenched, spell.can_backfire());
         let backfired = outcome == Outcome::Backfired;
         let own_side = reach::own_side(&aiming);
         let backfire = reach::backfire(&aiming, &own_side, spot);
@@ -281,12 +304,12 @@ pub fn cast(
         let stand = around.places.of(caster);
         let blast_back = (backfired && backfire.falls == Falls::Blast).then(|| {
             let against = Recipients::Opponents(side).reversed();
-            reach::blasted(stand.feet, radius, against, &scene.struck(stand.feet))
+            reach::blasted(stand.feet, radius, against, &struck(stand.feet))
         });
         // A party member's spell aimed at enemies provokes those it is cast
         // at, whatever the roll (retail `MakeTargetGroupHostile` as the
         // action starts); a retry provokes nobody again.
-        if cost::provokes(body.member, spell.aimed_at_enemies(), retry) {
+        if body.member && spell.aimed_at_enemies() && !retry {
             // They are hostile before the cast lands.
             for &victim in &victims {
                 commands.trigger(Provocation { monster: victim });
@@ -304,10 +327,10 @@ pub fn cast(
         };
         let auto = choice.source == Source::Spell { spell: id, power: power::AUTO };
         let repeats = auto && spell.power == PowerChoice::ChosenOrRepeat;
-        let tiring = scene.tiring(&body, item, spell, power);
+        let tired = cost::stamina(&mut rng, &body, means.used(), spell, power);
         let practice = means
             .character()
-            .map(|character| cost::practice(&scene.training(character, item, spell, power)));
+            .map(|character| cost::practice(character, means.used(), spell, power));
         // Paid whatever the roll: points for a learned spell, a use for an
         // item, nothing for a monster's own; then the caster is tired.
         let payment = means.payment();
@@ -315,12 +338,11 @@ pub fn cast(
         match payment {
             Payment::Points => {
                 let realm = spell.realm.expect("a cast spell has a realm");
-                paying.spells.as_mut().unwrap().1.spend(realm, cost::points(spell.cost, power));
+                paying.spells.as_mut().unwrap().1.spend(realm, spell.cost * power);
             }
             Payment::Use(item) => commands.trigger(Spend { item, amount: 1 }),
             Payment::Nothing => {}
         }
-        let tired = cost::stamina(&mut rng, &tiring);
         paying.vitals.tire(tired);
         // A utility spell does its own thing, whatever the roll; it counts as an
         // act for practice even if it fizzles.
@@ -337,7 +359,7 @@ pub fn cast(
             let again = bodies
                 .as_readonly()
                 .get(caster)
-                .is_ok_and(|body| facts::goes_again(&body, spell, &content));
+                .is_ok_and(|body| goes_again(&body, spell, &content));
             if auto && again {
                 pending.push((cast, true));
             }
