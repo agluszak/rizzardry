@@ -599,3 +599,38 @@ lines are in `src/game/`.
     fellows included (`combat/turn.rs` `breathe`). The function that carries the
     breath out in the original (`ExecuteMonsterSpecialAttack`) was not read, so
     whether the breath uses that rule is not settled.
+
+## How this is built
+
+The sections above are the rules. This says how the code is to be shaped
+around them; where the code differs from it, the code is wrong.
+
+**A choice is a function of what the monster knows.** Each decision above is
+one function that takes plain values and returns a plain value: no query, no
+world, no catalog, and it changes nothing.
+
+| Decision | Takes | Gives |
+| --- | --- | --- |
+| conduct | its health and stamina as shares, its temper, whether it is an NPC or a bystander, its side, whether it was already fleeing, how far the party is | fight, hold back, withdraw or flee, and whether it flees from now on |
+| a special attack | what its kind can do and how often, whether it is cooling, silenced, its stamina, whether it would rather close in, whom it sees that the attack could catch | make it and toward where, or not |
+| a spell | the spells it has and their slot weights, which it may cast now (silence, budget), for each the aims worth taking among those it sees, its chance | which spell, at what power, at whom; or none |
+| guarding | its fellows in reach, each one's health, its own attacks a round | whom it guards, or nobody |
+| closing in | its reach, how far the nearest foe is, how far it can move | strike, close in on whom, wait, or stand |
+| what ails it | its conditions, Strength, whether it fights blind, what it was about to do, whether a friend is in reach | carry on, turn on its friends, run, or lose the moment and why |
+| whether a group comes into a fight, or leaves it | for each member: how it stands, whether it sees the party, whether it can act on it, how far it is | comes in or not; stays or leaves |
+| noticing | the watcher's Senses and what its kind adds, the angle and distance to the one watched, how hard that one is to make out | whether it makes them out |
+
+The facts each takes are a small struct named for the decision, built in one
+place from the monster's components. Every number on this page is a test of
+one of these functions, with the expected value worked out from the page.
+
+**Deciding is separate from doing.** At a monster's moment one piece gathers
+what it knows, asks the decisions in the order of section 4, and says what it
+will do; what it does is the same event a member's order leads to.
+
+**What a monster knows is read from its own components.** What its kind can do
+was written onto it when it was made. No decision asks the species record.
+
+**What goes.** Functions that take the fight's queries and decide while
+reading them; `Mind` as a bundle the decisions reach into; decisions that
+return early from the middle of reading the world.
