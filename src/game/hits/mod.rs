@@ -1,8 +1,9 @@
 //! Deeds and what they do to those they reach. Whoever does something to
 //! others (a cast, a breath, a cloud's pulse, a trap) releases a [`Deed`] at
-//! its victims ([`Release`]); [`resolve`] lands it on each as it arrives and,
-//! once all of it has landed, settles what follows and tells of it. Only a
-//! deed with missiles still in the air lives on as an entity ([`Flight`]).
+//! its victims ([`Release`]); it lands on each as it arrives and, once all
+//! of it has landed, settles what follows and tells of it, within the
+//! release. Only a deed with missiles still in the air lives on as an
+//! entity ([`Flight`]).
 //! A weapon's blows land the same way, swing by swing, within their attack.
 
 pub mod defences;
@@ -14,6 +15,7 @@ pub mod spells;
 
 use std::collections::VecDeque;
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::content::items::EquipClass;
@@ -149,7 +151,7 @@ impl Deed {
 
 /// A deed let go at its victims, each reached at once or after its
 /// missile's flight in seconds.
-#[derive(Message, Clone, Debug)]
+#[derive(Event, Clone, Debug)]
 pub struct Release {
     pub deed: Deed,
     pub victims: Vec<(Entity, Option<f32>)>,
@@ -225,140 +227,185 @@ impl Progress {
 #[derive(Component, Debug)]
 pub struct Flight(Progress);
 
-/// Missiles fly on: each step brings them nearer those they are aimed at.
-pub fn fly(mut flights: Query<&mut Flight>, time: Res<Time>) {
-    for mut flight in &mut flights {
-        for timer in flight.0.arrivals.iter_mut().filter_map(|(_, timer)| timer.as_mut()) {
+/// A deed's missiles have reached some of their victims.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+struct Arrival {
+    #[event_target]
+    flight: Entity,
+}
+
+/// Missiles fly on: each step brings them nearer those they are aimed at,
+/// and those that arrive land.
+pub fn fly(mut commands: Commands, mut flights: Query<(Entity, &mut Flight)>, time: Res<Time>) {
+    for (flight, mut deed) in &mut flights {
+        let arrivals = &mut deed.0.arrivals;
+        for timer in arrivals.iter_mut().filter_map(|(_, timer)| timer.as_mut()) {
             timer.tick(time.delta());
+        }
+        if arrivals.iter().any(|(_, timer)| timer.as_ref().is_none_or(Timer::is_finished)) {
+            commands.trigger(Arrival { flight });
         }
     }
 }
 
-/// Land what has arrived and settle what is complete (retail
-/// `FinishSpellEffectTargets`): new deeds, missiles reaching their victims,
-/// and whatever a finished deed sets off in turn (a drain's share, Boiling
-/// Blood's bursts, Eye for an Eye), until only missiles in the air remain.
-/// Each deed's consequences are settled before the next lands.
-pub fn resolve(
-    mut commands: Commands,
-    mut released: ResMut<Messages<Release>>,
-    mut flights: Query<(Entity, &mut Flight)>,
-    mut bodies: Query<Body>,
-    party: Single<(Entity, &mut PartyInventory, &PartyRoster)>,
-    mut laying: Laying,
-    held: Items,
-    mut fight: Option<Single<(Entity, &mut Round, Option<&Combatants>), With<Battle>>>,
-    (memberships, groups): (Query<&'static GroupMember>, Query<&'static GroupMembers>),
-    obstacles: WorldObstacles,
-    places: crate::game::actors::Places,
-    (content, definitions, difficulty): (Res<Catalogs>, Res<Definitions>, Res<Difficulty>),
-    mut rng: ResMut<GameRng>,
-    mut damaged: MessageWriter<Damaged>,
-    mut requests: MessageWriter<crate::game::magic::MagicRequest>,
-    (mut magic_news, mut combat_news): (MessageWriter<MagicNews>, MessageWriter<CombatNews>),
-) {
-    let (party, mut inventory, roster) = party.into_inner();
-    let rules = Rules {
-        content: &content,
-        definitions: &definitions,
-        difficulty: *difficulty,
-        fight: fight.as_ref().map(|fight| fight.0),
-        held: &held,
-    };
-    let mut log = Log::default();
-    let mut queue = VecDeque::new();
-    for (entity, mut flight) in &mut flights {
-        if !flight.0.arrivals.iter().any(|(_, timer)| timer.as_ref().is_none_or(Timer::is_finished))
-        {
-            continue;
-        }
-        let party = (party, &mut *inventory, roster);
-        if flight.0.advance(&mut bodies, party, &rules, &mut rng, &mut log, &mut laying) {
-            commands.entity(entity).despawn();
-            queue.push_back(flight.0.clone());
-        }
-    }
-    queue.extend(released.drain().map(|release| Progress::new(release.deed, release.victims)));
-    while let Some(mut progress) = queue.pop_front() {
-        let party = (party, &mut *inventory, roster);
-        if !progress.advance(&mut bodies, party, &rules, &mut rng, &mut log, &mut laying) {
-            commands.spawn(Flight(progress));
-            continue;
-        }
-        let Progress { deed, mut effects, harm, .. } = progress;
-        if let Some(leech) = deed.leech {
-            effects.extend(spells::drain_back(leech, harm, roster, &mut bodies, &content));
-        }
-        if let Some(spell) = &deed.spell {
-            let around = spells::Surroundings {
-                roster,
-                combatants: fight
-                    .as_ref()
-                    .and_then(|fight| fight.2)
-                    .map_or(&[][..], Combatants::entities),
-                memberships: &memberships,
-                groups: &groups,
-                obstacles: &obstacles,
-                places: &places,
-                content: &content,
-                definitions: &definitions,
-            };
-            let strength = deed.strike.strength;
-            for (burst, victims) in spells::bursts(spell, strength, &bodies.as_readonly(), &around)
-            {
-                queue.push_back(Progress::new(burst, victims));
+/// What deeds land on and what they set off.
+#[derive(SystemParam)]
+struct Landing<'w, 's> {
+    commands: Commands<'w, 's>,
+    bodies: Query<'w, 's, Body>,
+    party: Single<'w, 's, (Entity, &'static mut PartyInventory, &'static PartyRoster)>,
+    laying: Laying<'w, 's>,
+    held: Items<'w, 's>,
+    fight: Option<
+        Single<'w, 's, (Entity, &'static mut Round, Option<&'static Combatants>), With<Battle>>,
+    >,
+    memberships: Query<'w, 's, &'static GroupMember>,
+    groups: Query<'w, 's, &'static GroupMembers>,
+    obstacles: WorldObstacles<'w, 's>,
+    places: crate::game::actors::Places<'w, 's>,
+    content: Res<'w, Catalogs>,
+    definitions: Res<'w, Definitions>,
+    difficulty: Res<'w, Difficulty>,
+    rng: ResMut<'w, GameRng>,
+    damaged: MessageWriter<'w, Damaged>,
+    requests: MessageWriter<'w, crate::game::magic::MagicRequest>,
+    magic_news: MessageWriter<'w, MagicNews>,
+    combat_news: MessageWriter<'w, CombatNews>,
+}
+
+/// A deed is let go (retail `FinishSpellEffectTargets`): it lands on those
+/// it reaches at once, and a missile in the air waits for its arrival.
+fn release(release: On<Release>, mut landing: Landing) {
+    let Release { deed, victims } = release.event().clone();
+    landing.land(Progress::new(deed, victims));
+}
+
+/// Missiles reach their victims: the deed lands on them.
+fn arrive(arrival: On<Arrival>, mut flights: Query<&mut Flight>, mut landing: Landing) {
+    let Ok(flight) = flights.get_mut(arrival.flight) else { return };
+    landing.commands.entity(arrival.flight).despawn();
+    landing.land(flight.0.clone());
+}
+
+impl Landing<'_, '_> {
+    /// Land a deed on those it has reached, and settle what a finished deed
+    /// sets off in turn (a drain's share, Boiling Blood's bursts, Eye for an
+    /// Eye), until only missiles in the air remain. Each deed's
+    /// consequences are settled before the next lands.
+    fn land(&mut self, progress: Progress) {
+        let Landing {
+            commands,
+            bodies,
+            party,
+            laying,
+            held,
+            fight,
+            memberships,
+            groups,
+            obstacles,
+            places,
+            content,
+            definitions,
+            difficulty,
+            rng,
+            damaged,
+            requests,
+            magic_news,
+            combat_news,
+        } = self;
+        let (party, inventory, roster) = &mut **party;
+        let (party, roster) = (*party, *roster);
+        let rules = Rules {
+            content,
+            definitions,
+            difficulty: **difficulty,
+            fight: fight.as_ref().map(|fight| fight.0),
+            held,
+        };
+        let mut log = Log::default();
+        let mut queue = VecDeque::from([progress]);
+        while let Some(mut progress) = queue.pop_front() {
+            let landed = (party, &mut **inventory, roster);
+            if !progress.advance(bodies, landed, &rules, rng, &mut log, laying) {
+                commands.spawn(Flight(progress));
+                continue;
             }
-            if let Some((charged, turned, victims)) =
-                spells::reflection(spell, strength, &bodies.as_readonly(), &around, &mut laying)
-            {
-                effects.push(Effect::Reflected { victim: charged });
-                queue.push_back(Progress::new(turned, victims));
+            let Progress { deed, mut effects, harm, .. } = progress;
+            if let Some(leech) = deed.leech {
+                effects.extend(spells::drain_back(leech, harm, roster, bodies, content));
             }
-        }
-        if let Some(practice) = &deed.practice
-            && (practice.sure || affected(&effects))
-        {
-            for &(skill, usage) in &practice.skills {
-                commands.trigger(Practise { member: practice.caster, skill, usage });
-            }
-        }
-        if let Some(recast) = &deed.recast
-            && recast.wanted(&bodies.as_readonly(), &content)
-        {
-            requests.write(crate::game::magic::MagicRequest {
-                caster: recast.caster,
-                choice: recast.choice,
-            });
-        }
-        match deed.act {
-            Act::Cast(mut report) => {
-                report.effects.extend(effects);
-                magic_news.write(MagicNews::Done(report));
-            }
-            Act::Missile { caster, spell } => {
-                magic_news.write(MagicNews::Landed { caster, spell, effects });
-            }
-            Act::Triggered { spell } => {
-                // A cloud's pulse keeps the fight going as an attack would.
-                if let Some(fight) = fight.as_mut() {
-                    fight.1.attacked(affected(&effects));
+            if let Some(spell) = &deed.spell {
+                let around = spells::Surroundings {
+                    roster,
+                    combatants: fight
+                        .as_ref()
+                        .and_then(|fight| fight.2)
+                        .map_or(&[][..], Combatants::entities),
+                    memberships,
+                    groups,
+                    obstacles,
+                    places,
+                    content,
+                    definitions,
+                };
+                let strength = deed.strike.strength;
+                for (burst, victims) in
+                    spells::bursts(spell, strength, &bodies.as_readonly(), &around)
+                {
+                    queue.push_back(Progress::new(burst, victims));
                 }
-                magic_news.write(MagicNews::Triggered { spell, effects });
-            }
-            Act::Fight => {
-                if !effects.is_empty() {
-                    combat_news.write(CombatNews::Effects(effects));
+                if let Some((charged, turned, victims)) =
+                    spells::reflection(spell, strength, &bodies.as_readonly(), &around, laying)
+                {
+                    effects.push(Effect::Reflected { victim: charged });
+                    queue.push_back(Progress::new(turned, victims));
                 }
             }
+            if let Some(practice) = &deed.practice
+                && (practice.sure || affected(&effects))
+            {
+                for &(skill, usage) in &practice.skills {
+                    commands.trigger(Practise { member: practice.caster, skill, usage });
+                }
+            }
+            if let Some(recast) = &deed.recast
+                && recast.wanted(&bodies.as_readonly(), content)
+            {
+                requests.write(crate::game::magic::MagicRequest {
+                    caster: recast.caster,
+                    choice: recast.choice,
+                });
+            }
+            match deed.act {
+                Act::Cast(mut report) => {
+                    report.effects.extend(effects);
+                    magic_news.write(MagicNews::Done(report));
+                }
+                Act::Missile { caster, spell } => {
+                    magic_news.write(MagicNews::Landed { caster, spell, effects });
+                }
+                Act::Triggered { spell } => {
+                    // A cloud's pulse keeps the fight going as an attack would.
+                    if let Some(fight) = fight.as_mut() {
+                        fight.1.attacked(affected(&effects));
+                    }
+                    magic_news.write(MagicNews::Triggered { spell, effects });
+                }
+                Act::Fight => {
+                    if !effects.is_empty() {
+                        combat_news.write(CombatNews::Effects(effects));
+                    }
+                }
+            }
         }
-    }
-    log.scorch(&mut commands);
-    damaged.write_batch(log.damaged);
-    for raised in log.raised {
-        commands.entity(raised).remove::<crate::game::characters::Dead>();
-    }
-    for (member, skill, usage) in log.practised {
-        commands.trigger(Practise { member, skill, usage });
+        log.scorch(commands);
+        damaged.write_batch(log.damaged);
+        for raised in log.raised {
+            commands.entity(raised).remove::<crate::game::characters::Dead>();
+        }
+        for (member, skill, usage) in log.practised {
+            commands.trigger(Practise { member, skill, usage });
+        }
     }
 }
 
@@ -366,7 +413,7 @@ pub struct HitsPlugin;
 
 impl Plugin for HitsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<Release>().add_message::<Damaged>().add_systems(
+        app.add_observer(release).add_observer(arrive).add_message::<Damaged>().add_systems(
             PreUpdate,
             definitions::define
                 .run_if(resource_exists::<Catalogs>)

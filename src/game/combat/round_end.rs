@@ -14,8 +14,8 @@ use super::approach::{self, CombatMove};
 use super::sight::Sight;
 use super::turn::{Ordered, SpecialCooldown, Turn};
 use super::{
-    Battle, CombatNews, Combatant, Combatants, PASSIVE_ROUNDS, PartyMove, Pause, ROUND_SECONDS,
-    Round, RoundPhase, Spoils,
+    Battle, CombatNews, Combatant, Combatants, LAST_MOMENT, PASSIVE_ROUNDS, PartyMove, Pause,
+    ROUND_SECONDS, Round, Spoils,
 };
 use crate::content::spells::SpellId;
 use crate::game::actors::Laid;
@@ -67,8 +67,7 @@ pub fn judge_round(
     mut elapsed: MessageWriter<recovery::Elapsed>,
 ) {
     let Some((fight, round, party_move, pause)) = battle.map(Single::into_inner) else { return };
-    let RoundPhase::Executing(step) = round.phase else { return };
-    if step <= 100
+    if round.moment <= LAST_MOMENT
         || matches!(party_move, PartyMove::Moving { .. })
         || !pause.0.is_finished()
         || !busy.0.is_empty()
@@ -195,7 +194,7 @@ pub(super) fn cool_specials(
 /// is a deed with no caster. A character without a seat is not among those
 /// close around the party.
 pub(super) fn pulse_clouds(
-    mut released: MessageWriter<Release>,
+    mut commands: Commands,
     fight: Single<&Combatants, With<RoundEnding>>,
     pulsing: Query<(&Enchantment, &LaidOn), With<Pulses>>,
     bodies: Query<
@@ -243,7 +242,7 @@ pub(super) fn pulse_clouds(
         } else {
             Strength::at(0, &content.spells[laid.spell], laid.power, laid.boost)
         };
-        released.write(Release {
+        commands.trigger(Release {
             deed: Deed::new(
                 Act::Triggered { spell: laid.spell },
                 Strike { definition, strength, blow: None },
@@ -347,7 +346,8 @@ pub fn end_round(
     for monster in &leaving {
         commands.entity(monster).remove::<(Leaves, Combatant)>();
     }
-    round.phase = RoundPhase::Waiting;
+    round.playing = false;
+    round.moment = 0;
     commands.entity(fight).remove::<(RoundEnding, FightOver)>();
     if over {
         commands.entity(fight).despawn();

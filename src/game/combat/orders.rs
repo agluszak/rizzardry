@@ -169,10 +169,6 @@ pub(super) fn finish_party_move(
     turns: &mut Query<&mut Turn>,
 ) {
     let PartyMove::Moving { pace, budget, moved, .. } = *party_move else { return };
-    let step = match round.phase {
-        RoundPhase::Executing(step) => step,
-        _ => 1,
-    };
     *party_move = PartyMove::None;
     let mut spent = (moved / budget.max(0.01) * 100.0).min(100.0);
     if pace == PartyPace::Run {
@@ -181,11 +177,9 @@ pub(super) fn finish_party_move(
     let keep = 100 - (spent as u32).min(100);
     for member in roster.iter() {
         let Ok(mut work) = turns.get_mut(member) else { continue };
-        if work.phase == 0 {
-            continue;
-        }
+        let Some(when) = work.when else { continue };
         if rng.below(100) < keep {
-            work.phase = work.phase.max(step);
+            work.when = Some(when.max(round.moment));
         } else {
             work.end();
         }

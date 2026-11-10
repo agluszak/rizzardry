@@ -51,11 +51,11 @@ impl Plugin for GamePlugin {
                 Update,
                 (GameplaySet::LevelActivation, GameplaySet::Bodies, GameplaySet::Combat).chain(),
             )
-            // Outside a fight deeds land as the frame's gameplay ends; a fight
-            // settles its own on the fixed step.
+            // Outside a fight missiles fly and deaths settle as the frame's
+            // gameplay ends; a fight does its own on the fixed step.
             .add_systems(
                 Update,
-                (hits::fly, hits::resolve, characters::settle_deaths)
+                (hits::fly, characters::settle_deaths)
                     .chain()
                     .after(GameplaySet::Combat)
                     .run_if(world::level::level_active)

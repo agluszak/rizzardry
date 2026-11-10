@@ -11,6 +11,7 @@ use crate::game::characters::{Gender, Profession, Race};
 use crate::game::hits::definitions::Definitions;
 use crate::game::hits::effects::Strike;
 use crate::game::hits::{self, Act, Deed, Effect, Release};
+use crate::game::magic::casting::{Aim, Cast, MagicChoice, MagicNews, Refusal, Source, UseContext};
 use crate::game::magic::{self, LearnedSpells, Strength};
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster;
@@ -124,6 +125,13 @@ fn refresh(world: &mut World) {
     world.flush();
 }
 
+/// The fight's round is being played, at this moment.
+fn play(world: &mut World, fight: Entity, moment: u32) {
+    let mut round = world.get_mut::<Round>(fight).unwrap();
+    round.playing = true;
+    round.moment = moment;
+}
+
 #[test]
 fn anti_magic_drains_once_and_then_dispels_the_party() {
     let (mut app, party, member) = app();
@@ -139,12 +147,10 @@ fn anti_magic_drains_once_and_then_dispels_the_party() {
     lay(world, party, SpellId::MAGIC_SCREEN, 10, 0);
     let definition = world.resource::<Definitions>().spell(SpellId::ANTI_MAGIC).unwrap();
     let strength = Strength { power: 1, against: 1, boost: 0 };
-    world.write_message(Release {
+    world.trigger(Release {
         deed: Deed::new(Act::Fight, Strike { definition, strength, blow: None }),
         victims: vec![(member, None), (second, None)],
     });
-    refresh(world);
-    world.run_system_cached(hits::resolve).unwrap();
     world.flush();
     assert!(!is_laid(world, party, SpellId::MAGIC_SCREEN));
     let news: Vec<_> = world.resource_mut::<Messages<CombatNews>>().drain().collect();
@@ -158,7 +164,7 @@ fn final_cloud_pulse_settles_and_credits_the_kill_before_victory() {
     let (mut app, _, member) = app();
     let world = app.world_mut();
     let fight = world.spawn(Battle::default()).id();
-    world.get_mut::<Round>(fight).unwrap().phase = RoundPhase::Executing(101);
+    play(world, fight, 101);
     world.get_mut::<Round>(fight).unwrap().attacked = true;
     let actor = monster(world, fight, 3.0);
     lay(world, actor, SpellId::FIRESTORM, 1, 0);
@@ -183,7 +189,7 @@ fn a_clouds_last_pulse_still_sees_the_targets_protection() {
     let (mut app, _, _) = app();
     let world = app.world_mut();
     let fight = world.spawn(Battle::default()).id();
-    world.get_mut::<Round>(fight).unwrap().phase = RoundPhase::Executing(101);
+    play(world, fight, 101);
     let actor = monster(world, fight, 3.0);
     lay(world, actor, SpellId::FIRESTORM, 1, 0);
     lay(world, actor, SpellId::GUARDIAN_ANGEL, 1, 100);
@@ -199,11 +205,11 @@ fn missile_arrival_settles_defeat_before_any_actor_can_start() {
     let world = app.world_mut();
     let fight = world.spawn(Battle::default()).id();
     let actor = monster(world, fight, 3.0);
-    world.get_mut::<Round>(fight).unwrap().phase = RoundPhase::Executing(1);
+    play(world, fight, 1);
     refresh(world);
     let arms = world.get::<crate::game::actors::Attacks>(actor).unwrap();
     let turn = Turn {
-        phase: 1,
+        when: Some(1),
         attacks: enum_map::EnumMap::from_fn(|slot| arms.attacks(slot)),
         due: crate::game::inventory::WeaponSlot::Primary,
         weapons: arms.weapons(),
@@ -216,7 +222,7 @@ fn missile_arrival_settles_defeat_before_any_actor_can_start() {
     world.entity_mut(actor).insert(turn);
     let definition = world.resource::<Definitions>().pulse(SpellId::FIRESTORM).unwrap();
     let strength = Strength { power: 1, against: 100, boost: 0 };
-    world.write_message(Release {
+    world.trigger(Release {
         deed: Deed::new(Act::Fight, Strike { definition, strength, blow: None }),
         victims: vec![(member, Some(1.0))],
     });
@@ -265,9 +271,6 @@ fn killing_a_turned_ally_awards_nothing_but_an_enemy_counts() {
 fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
     use crate::content::characters::Skill;
     use crate::content::spells::{Reach, Spellbook, Targeting, Usable};
-    use crate::game::magic::casting::{
-        self, Aim, Cast, MagicChoice, MagicNews, Source, UseContext,
-    };
     use crate::game::magic::{Outcome, SpellPoints};
     use crate::game::world::hostility::Provocation;
     let (mut app, _, member) = app();
@@ -293,7 +296,7 @@ fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
         SpellPoints::default(),
     ));
     let fight = world.spawn(Battle::default()).id();
-    world.get_mut::<Round>(fight).unwrap().phase = RoundPhase::Executing(1);
+    play(world, fight, 1);
     let foe = monster(world, fight, 3.0);
     refresh(world);
     let points = magic::test_points(world, member, Realm::Fire);
@@ -305,8 +308,8 @@ fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
         aim: Aim::Body(foe),
     };
     let context = UseContext::Combat;
-    world.write_message(Cast { caster: member, spell: SpellId::ENERGY_BLAST, context, choice });
-    world.run_system_cached(casting::cast).unwrap();
+    world.trigger(Cast { caster: member, spell: SpellId::ENERGY_BLAST, context, choice });
+    world.flush();
     assert_eq!(magic::test_points(world, member, Realm::Fire), points - 1);
     let provoked: Vec<_> = world.resource_mut::<Messages<Provocation>>().drain().collect();
     assert_eq!(provoked, vec![Provocation(foe)]);
@@ -315,7 +318,6 @@ fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
         matches!(news.as_slice(), [MagicNews::Done(report)] if report.outcome == Outcome::Cast),
         "{news:?}"
     );
-    world.run_system_cached(hits::resolve).unwrap();
     assert_eq!(
         world.query::<&hits::Flight>().iter(world).count(),
         1,
@@ -331,4 +333,187 @@ fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
         matches!(news.as_slice(), [MagicNews::Landed { caster, spell: SpellId::ENERGY_BLAST, .. }] if *caster == member),
         "{news:?}"
     );
+}
+
+/// Who had a moment, in order, and whether they were dead when it came.
+#[derive(Resource, Default)]
+struct Moments(Vec<(Entity, bool)>);
+
+fn record(
+    moment: On<turn::Moment>,
+    dead: Query<(), With<crate::game::characters::Dead>>,
+    mut moments: ResMut<Moments>,
+) {
+    moments.0.push((moment.actor, dead.contains(moment.actor)));
+}
+
+/// A turn due at `when` with `attacks` left in the primary slot.
+fn due_at(world: &World, actor: Entity, when: u32, attacks: u32) -> Turn {
+    let arms = world.get::<crate::game::actors::Attacks>(actor).unwrap();
+    let mut due = Turn {
+        when: Some(when),
+        attacks: enum_map::EnumMap::default(),
+        due: crate::game::inventory::WeaponSlot::Primary,
+        weapons: arms.weapons(),
+        lightning: None,
+        moved: false,
+        special: false,
+        berserk: false,
+        waited: false,
+    };
+    due.attacks[crate::game::inventory::WeaponSlot::Primary] = attacks;
+    due
+}
+
+/// Let the fight's pause run out and the fixed step come.
+fn step(world: &mut World) {
+    world.resource_mut::<Time>().advance_by(std::time::Duration::from_millis(1500));
+    world.run_schedule(FixedUpdate);
+}
+
+#[test]
+fn the_earliest_moment_comes_first_and_ties_go_by_the_fights_order() {
+    let (mut app, ..) = app();
+    let world = app.world_mut();
+    world.init_resource::<Moments>();
+    world.add_observer(record);
+    let fight = world.spawn(Battle::default()).id();
+    let late = monster(world, fight, 3.0);
+    let early = monster(world, fight, 3.0);
+    let tied = monster(world, fight, 3.0);
+    refresh(world);
+    for (actor, when) in [(late, 30), (early, 10), (tied, 30)] {
+        let turn = due_at(world, actor, when, 0);
+        world.entity_mut(actor).insert((turn, Ordered(Action::Defend)));
+    }
+    play(world, fight, 0);
+    for _ in 0..3 {
+        step(world);
+    }
+    let order: Vec<_> = world.resource::<Moments>().0.iter().map(|&(actor, _)| actor).collect();
+    assert_eq!(order, [early, late, tied]);
+    assert_eq!(world.get::<Round>(fight).unwrap().progress(), Some(0.3));
+    // Nothing is left to come: the round is over.
+    step(world);
+    assert!(world.get::<Round>(fight).is_none_or(|round| !round.executing()));
+}
+
+#[test]
+fn an_actor_with_two_attacks_acts_again_after_those_whose_moments_fall_between() {
+    let (mut app, _, member) = app();
+    let world = app.world_mut();
+    world.init_resource::<Moments>();
+    world.add_observer(record);
+    let fight = world.spawn(Battle::default()).id();
+    let striker = monster(world, fight, 0.8);
+    let between = monster(world, fight, 3.0);
+    let last = monster(world, fight, 3.0);
+    refresh(world);
+    let turn = due_at(world, striker, 10, 2);
+    world.entity_mut(striker).insert(turn);
+    for (actor, when) in [(between, 30), (last, 60)] {
+        let turn = due_at(world, actor, when, 0);
+        world.entity_mut(actor).insert((turn, Ordered(Action::Defend)));
+    }
+    play(world, fight, 0);
+    let before = world.get::<Vitals>(member).unwrap().health.current;
+    for _ in 0..4 {
+        step(world);
+    }
+    let order: Vec<_> = world.resource::<Moments>().0.iter().map(|&(actor, _)| actor).collect();
+    assert_eq!(order, [striker, between, striker, last]);
+    let attacks = world
+        .resource_mut::<Messages<CombatNews>>()
+        .drain()
+        .filter(|news| matches!(news, CombatNews::Attack { attacker, .. } if *attacker == striker))
+        .count();
+    assert_eq!(attacks, 2);
+    assert!(world.get::<Vitals>(member).unwrap().health.current <= before);
+}
+
+/// A member's cast of a spell that kills, ordered for the moment it comes.
+fn deadly_order(world: &mut World, member: Entity, foe: Entity) -> Ordered {
+    use crate::content::characters::Skill;
+    use crate::content::spells::{Reach, Spellbook, Targeting, Usable};
+    world.resource_mut::<Catalogs>().spells.0[SpellId::ENERGY_BLAST.0 as usize] = SpellDefinition {
+        id: SpellId::ENERGY_BLAST,
+        realm: Some(Realm::Fire),
+        level: 1,
+        cost: 1,
+        books: Spellbook::Divinity.into(),
+        targeting: Targeting::Enemy,
+        reach: Reach::Long,
+        usable: Usable::Always,
+        dice: Some(Dice { base: 100, count: 0, sides: 1 }),
+        ..default()
+    };
+    let mut character = world.get_mut::<Character>(member).unwrap();
+    character.skill_points[Skill::Divinity] = 100;
+    character.skill_points[Skill::FireMagic] = 100;
+    world.entity_mut(member).insert((
+        LearnedSpells([SpellId::HEAL_WOUNDS, SpellId::ENERGY_BLAST].into()),
+        magic::SpellPoints::default(),
+    ));
+    world.run_system_cached(hits::definitions::define).unwrap();
+    Ordered(Action::Magic(MagicChoice {
+        source: Source::Spell { spell: SpellId::ENERGY_BLAST, power: 1 },
+        aim: Aim::Body(foe),
+    }))
+}
+
+#[test]
+fn what_a_moment_did_has_landed_and_its_deaths_are_settled_before_the_next_moment() {
+    let (mut app, _, member) = app();
+    let world = app.world_mut();
+    world.init_resource::<Moments>();
+    world.add_observer(record);
+    let fight = world.spawn(Battle::default()).id();
+    let foe = monster(world, fight, 3.0);
+    refresh(world);
+    let order = deadly_order(world, member, foe);
+    let (turn, foes) = (due_at(world, member, 5, 0), due_at(world, foe, 10, 0));
+    world.entity_mut(member).insert((turn, order));
+    world.entity_mut(foe).insert((foes, Ordered(Action::Defend)));
+    play(world, fight, 0);
+    step(world);
+    assert_eq!(world.get::<Vitals>(foe).unwrap().health.current, 0, "the blast has landed");
+    assert!(world.get::<crate::game::characters::Dead>(foe).is_some(), "and the death is settled");
+    assert_eq!(world.get::<Spoils>(fight).unwrap().kills, 1);
+    step(world);
+    assert_eq!(world.resource::<Moments>().0, [(member, false), (foe, true)]);
+}
+
+#[test]
+fn a_cast_refused_in_a_fight_falls_back_to_defending() {
+    let (mut app, _, member) = app();
+    let world = app.world_mut();
+    let fight = world.spawn(Battle::default()).id();
+    let foe = monster(world, fight, 3.0);
+    refresh(world);
+    // Not a spell the member has learned.
+    let choice = MagicChoice {
+        source: Source::Spell { spell: SpellId::ENERGY_BLAST, power: 1 },
+        aim: Aim::Body(foe),
+    };
+    world.entity_mut(member).insert(Ordered(Action::Magic(choice)));
+    world.trigger(Cast {
+        caster: member,
+        spell: SpellId::ENERGY_BLAST,
+        context: UseContext::Combat,
+        choice,
+    });
+    world.flush();
+    world.run_system_cached(super::turn::defend_instead).unwrap();
+    let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
+    assert!(matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::NotLearned, .. }]));
+    assert!(world.get::<Ordered>(member).unwrap().defends());
+    // The same when the item it would use is no longer there.
+    let gone = world.spawn_empty().id();
+    let choice = MagicChoice { source: Source::Item(gone), aim: Aim::Body(foe) };
+    world.entity_mut(member).insert(Ordered(Action::Magic(choice)));
+    play(world, fight, 1);
+    let turn = due_at(world, member, 1, 0);
+    world.entity_mut(member).insert(turn);
+    step(world);
+    assert!(world.get::<Ordered>(member).unwrap().defends());
 }

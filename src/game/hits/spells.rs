@@ -1,6 +1,6 @@
 //! What follows once all of a spell has landed: a drain's share
 //! ([`drain_back`]), Boiling Blood's bursts ([`bursts`]) and Eye for an Eye
-//! ([`reflection`]). Each is settled by [`super::resolve`] as the deed
+//! ([`reflection`]). Each is settled by the release that lands it as the deed
 //! completes; a burst or a reflection is a deed of its own.
 
 use bevy::prelude::*;

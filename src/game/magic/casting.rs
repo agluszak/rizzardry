@@ -433,8 +433,9 @@ fn item_use<'d>(
 
 /// An accepted cast: the spell, when it is cast, and what the caster
 /// chose. [`cast`] carries it out or refuses it.
-#[derive(Message, Clone, Copy, Debug)]
+#[derive(EntityEvent, Clone, Copy, Debug)]
 pub struct Cast {
+    #[event_target]
     pub caster: Entity,
     pub spell: SpellId,
     pub context: UseContext,
@@ -869,7 +870,7 @@ fn plan(
     })
 }
 
-/// Carry out every accepted cast (retail `CastSpellFromSource`): aim and
+/// Carry out an accepted cast (retail `CastSpellFromSource`): aim and
 /// judge it without spending; refuse it with a word to the player, or
 /// provoke whom a member aims at, roll it, pay for it whatever the roll,
 /// tire the caster, and release it as a deed ([`crate::game::hits`]). A
@@ -878,7 +879,7 @@ fn plan(
 /// that went off takes its victims, its missiles landing as they arrive.
 /// In a fight it counts as an attack.
 pub fn cast(
-    mut casts: ResMut<Messages<Cast>>,
+    cast: On<Cast>,
     mut bodies: Query<Body>,
     (memberships, groups): (Query<&'static GroupMember>, Query<&'static GroupMembers>),
     mut fight: Option<
@@ -891,20 +892,13 @@ pub fn cast(
     states: Query<&crate::game::world::triggers::LevelState, With<Level>>,
     (content, definitions, difficulty): (Res<Catalogs>, Res<Definitions>, Res<Difficulty>),
     mut rng: ResMut<GameRng>,
-    (mut news, mut provocations, mut released): (
-        MessageWriter<MagicNews>,
-        MessageWriter<Provocation>,
-        MessageWriter<Release>,
-    ),
+    (mut news, mut provocations): (MessageWriter<MagicNews>, MessageWriter<Provocation>),
     mut commands: Commands,
 ) {
     let roster = *roster;
     let underwater = states.single().is_ok_and(|state| state.camera_sway);
     // An auto cast that fizzles goes again at once, provoking nobody anew.
-    // Casts are taken, not read: whichever schedule carries casts out now
-    // (the frame's outside a fight, the fixed step's within one) does so once.
-    let mut pending: Vec<(Cast, bool)> = casts.drain().map(|cast| (cast, false)).collect();
-    pending.reverse();
+    let mut pending = vec![(*cast, false)];
     while let Some((cast, retry)) = pending.pop() {
         let Cast { caster, spell, context, choice } = cast;
         let source = choice.source;
@@ -966,6 +960,8 @@ pub fn cast(
         // action starts); a retry provokes nobody again.
         if !retry && body.member && definition.aimed_at_enemies() {
             provocations.write_batch(victims.iter().map(|&victim| Provocation(victim)));
+            // They are hostile before the cast lands.
+            commands.run_system_cached(hostility::take_offence);
         }
         let innate = matches!(source, Source::Innate { .. });
         let item = item_use(source, caster, &held, &content.items);
@@ -1052,7 +1048,7 @@ pub fn cast(
             };
             flies.then(|| to.distance(stand.eye) / MISSILE_SPEED)
         };
-        released.write(Release {
+        commands.trigger(Release {
             victims: victims.iter().map(|&victim| (victim, flight(victim))).collect(),
             deed: Deed {
                 act,

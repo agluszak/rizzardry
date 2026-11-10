@@ -1,7 +1,7 @@
 //! Weapon attacks in a fight, swing by swing (retail `StartCharacterAttack`,
 //! `ResolveCharacterAttack`, `StartMonsterAttack`, `ContinueMonsterAttack`).
 //!
-//! An actor that fights ([`Chosen::Fight`]) strikes with one of its arms: a
+//! An actor that fights ([`Strike`]) strikes with one of its arms: a
 //! member's weapon slot or a monster's natural attack, judged alike on
 //! every body ([`Arms`]). One rule opens the attack ([`open`]): a body
 //! under orders strikes the most afflicted foe its arm reaches, one
@@ -16,8 +16,8 @@ use bevy::prelude::*;
 
 use super::approach::{self, CombatMove};
 use super::attack::{self, Surprise};
-use super::turn::{Chosen, Fights, Guards, Interceptions, Ordered, Perform, Spotted, Turn};
-use super::{Announcement, Battle, CombatNews, Combatants, Pause, Round, RoundPhase};
+use super::turn::{Fights, Guards, Interceptions, Ordered, Spotted, Turn};
+use super::{Announcement, Battle, CombatNews, Combatants, Pause, Round};
 use crate::content::characters::{Attribute, BodyPart, Skill, Trait};
 use crate::content::items::{AttackEffect, AttackEffects, AttackMode, Dice};
 use crate::content::species::Reach;
@@ -27,7 +27,7 @@ use crate::game::characters::{Condition, Practise, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::hits::definitions::{Blow, Definitions};
-use crate::game::hits::effects::{self, Body, Log, Rules, Strike};
+use crate::game::hits::effects::{self, Body, Log, Rules};
 use crate::game::hits::{Damaged, Effect};
 use crate::game::inventory::WeaponSlot;
 use crate::game::items::{Items, Missile, Spend, Weapon};
@@ -81,12 +81,12 @@ fn standing<'a>(
     }
 }
 
-/// The step of the round being played.
-fn step(round: &Round) -> u32 {
-    match round.phase {
-        RoundPhase::Executing(step) => step,
-        _ => 1,
-    }
+/// An actor that fights makes its attack ([`strike`]).
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Strike {
+    #[event_target]
+    pub actor: Entity,
+    pub fights: Fights,
 }
 
 /// What an actor with nobody to strike does instead.
@@ -443,7 +443,8 @@ fn land_blow(
     laying: &mut Laying,
 ) -> (u32, Vec<Effect>) {
     let Ok(mut body) = bodies.get_mut(victim) else { return (0, Vec::new()) };
-    let strike = Strike { definition: rules.definitions.blow(), strength, blow: Some(blow) };
+    let strike =
+        effects::Strike { definition: rules.definitions.blow(), strength, blow: Some(blow) };
     effects::land(&strike, &mut body, rules, rng, log, laying);
     let (damage, rest): (Vec<Effect>, Vec<Effect>) =
         log.effects.drain(..).partition(|effect| matches!(effect, Effect::Damaged { .. }));
@@ -757,7 +758,7 @@ fn next_attack(turn: &mut Turn, arms: &Attacks, step: u32) {
                 0
             };
             turn.due = chosen;
-            turn.phase = (phase as i32 + switch).clamp(step as i32, 100) as u32;
+            turn.when = Some((phase as i32 + switch).clamp(step as i32, 100) as u32);
         }
         None => turn.end(),
     }
@@ -771,9 +772,9 @@ fn next_attack(turn: &mut Turn, arms: &Attacks, step: u32) {
 /// (retail `ReportCharacterAttackResult`). Attacking holds the fight for
 /// the action's pause.
 #[allow(clippy::type_complexity)]
-pub(super) fn attack(
+pub(super) fn strike(
+    strike: On<Strike>,
     mut commands: Commands,
-    mut performs: MessageReader<Perform>,
     mut turns: Query<(&mut Turn, Has<Ordered>, Option<&Walker>)>,
     mut bodies: Query<Body>,
     mut laying: Laying,
@@ -797,6 +798,7 @@ pub(super) fn attack(
         MessageWriter<Damaged>,
     ),
 ) {
+    let Strike { actor, fights } = *strike;
     let (fight, mut round, mut pause, combatants) = fight.into_inner();
     let combatants = combatants.map_or(&[][..], Combatants::entities);
     let (mut formation, roster) = party.into_inner();
@@ -807,102 +809,96 @@ pub(super) fn attack(
         fight: Some(fight),
         held: &held,
     };
-    let step = step(&round);
+    let step = round.moment;
     let running = round.pace == Some(super::PartyPace::Run);
     let mut log = Log::default();
-    for &Perform { actor, action } in performs.read() {
-        let Chosen::Fight(fights) = action else { continue };
-        let Ok((mut turn, ordered, walker)) = turns.get_mut(actor) else { continue };
-        pause.0 = Timer::from_seconds(super::ACTION_SECONDS, TimerMode::Once);
-        let opened = open(
-            actor,
-            fights,
-            (&mut turn, ordered, walker),
+    let Ok((mut turn, ordered, walker)) = turns.get_mut(actor) else { return };
+    pause.0 = Timer::from_seconds(super::ACTION_SECONDS, TimerMode::Once);
+    let opened = open(
+        actor,
+        fights,
+        (&mut turn, ordered, walker),
+        (&mut bodies, &places),
+        &bearing,
+        (&formation, roster, combatants),
+        &obstacles,
+        &mut rng,
+        &mut commands,
+    );
+    let (mut attack, swings) = match opened {
+        Ok(opened) => opened,
+        Err(Otherwise::Advance(budget, goal)) => {
+            turn.moved = true;
+            turn.when = Some((step * 2).min(100));
+            commands.entity(actor).insert(CombatMove { budget: budget.metres, moved: 0.0, goal });
+            news.write(CombatNews::Moves { monster: actor, charge: budget.charge });
+            return;
+        }
+        Err(Otherwise::Wait) => {
+            turn.waited = true;
+            turn.end();
+            return;
+        }
+        Err(Otherwise::Stand) => {
+            turn.end();
+            return;
+        }
+    };
+    round.attacked(true);
+    let readonly = bodies.as_readonly();
+    catch_unaware(&mut attack, (&readonly, &places), &mut watchful, &mut formation, &mut rng);
+    if readonly
+        .get(actor)
+        .is_ok_and(|body| body.member && !body.vitals.conditions.has(Condition::Turncoat))
+    {
+        provocations.write(Provocation(attack.target));
+        commands.run_system_cached(hostility::take_offence);
+    }
+    let how = match attack.arm.word {
+        Some((word, named)) => Announcement::Monster { word, mode: attack.mode, named },
+        None => Announcement::Mode(attack.mode),
+    };
+    news.write(CombatNews::Attack {
+        attacker: actor,
+        target: attack.target,
+        how,
+        swings,
+        surprise: attack.surprise,
+    });
+    let mut spent = 0;
+    for _ in 0..swings {
+        let able = bodies.get(actor).is_ok_and(|body| body.vitals.can_fight());
+        let alive = bodies.get(attack.target).is_ok_and(|body| !body.vitals.is_dead());
+        if !able || !alive {
+            break;
+        }
+        swing(
+            &mut attack,
             (&mut bodies, &places),
-            &bearing,
-            (&formation, roster, combatants),
-            &obstacles,
+            (&bearing, running),
+            (&guards, &mut interceptions),
+            (&formation, combatants),
+            &rules,
             &mut rng,
-            &mut commands,
+            (&mut log, &mut laying),
+            (&mut news, &mut commands),
         );
-        let (mut attack, swings) = match opened {
-            Ok(opened) => opened,
-            Err(Otherwise::Advance(budget, goal)) => {
-                turn.moved = true;
-                turn.phase = (step * 2).min(100);
-                commands.entity(actor).insert(CombatMove {
-                    budget: budget.metres,
-                    moved: 0.0,
-                    goal,
-                });
-                news.write(CombatNews::Moves { monster: actor, charge: budget.charge });
-                continue;
-            }
-            Err(Otherwise::Wait) => {
-                turn.waited = true;
-                turn.end();
-                continue;
-            }
-            Err(Otherwise::Stand) => {
-                turn.end();
-                continue;
-            }
-        };
-        round.attacked(true);
-        let readonly = bodies.as_readonly();
-        catch_unaware(&mut attack, (&readonly, &places), &mut watchful, &mut formation, &mut rng);
-        if readonly
-            .get(actor)
-            .is_ok_and(|body| body.member && !body.vitals.conditions.has(Condition::Turncoat))
-        {
-            provocations.write(Provocation(attack.target));
+        if spend_ammunition(&attack.arm, actor, &mut spent, (&held, &strikers), &mut commands) {
+            turn.attacks[attack.arm.slot] = 0;
+            break;
         }
-        let how = match attack.arm.word {
-            Some((word, named)) => Announcement::Monster { word, mode: attack.mode, named },
-            None => Announcement::Mode(attack.mode),
-        };
-        news.write(CombatNews::Attack {
-            attacker: actor,
-            target: attack.target,
-            how,
-            swings,
-            surprise: attack.surprise,
-        });
-        let mut spent = 0;
-        for _ in 0..swings {
-            let able = bodies.get(actor).is_ok_and(|body| body.vitals.can_fight());
-            let alive = bodies.get(attack.target).is_ok_and(|body| !body.vitals.is_dead());
-            if !able || !alive {
-                break;
-            }
-            swing(
-                &mut attack,
-                (&mut bodies, &places),
-                (&bearing, running),
-                (&guards, &mut interceptions),
-                (&formation, combatants),
-                &rules,
-                &mut rng,
-                (&mut log, &mut laying),
-                (&mut news, &mut commands),
-            );
-            if spend_ammunition(&attack.arm, actor, &mut spent, (&held, &strikers), &mut commands) {
-                turn.attacks[attack.arm.slot] = 0;
-                break;
-            }
-        }
-        news.write(CombatNews::Result {
-            attacker: actor,
-            target: attack.target,
-            hits: attack.hits,
-            damage: attack.damage,
-        });
-        if !attack.effects.is_empty() {
-            news.write(CombatNews::Effects(attack.effects));
-        }
-        if let Ok(own) = bodies.get(actor) {
-            next_attack(&mut turn, own.attacks, step);
-        }
+    }
+    news.write(CombatNews::Result {
+        attacker: actor,
+        target: attack.target,
+        hits: attack.hits,
+        damage: attack.damage,
+    });
+    if !attack.effects.is_empty() {
+        news.write(CombatNews::Effects(attack.effects));
+    }
+    if let Ok(own) = bodies.get(actor) {
+        next_attack(&mut turn, own.attacks, step);
     }
     log.scorch(&mut commands);
     damaged.write_batch(log.damaged);

@@ -473,17 +473,14 @@ impl Plugin for MagicPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<MagicRequest>()
             .add_message::<casting::MagicNews>()
-            .add_message::<casting::Cast>()
             .add_message::<Utility>()
             .add_message::<crate::game::world::hostility::Provocation>()
+            .add_observer(casting::cast)
             .add_systems(
                 Update,
                 (
                     accept_magic,
                     (utilities::identify, dialogue::cast, portals::cast, pointcasts::cast),
-                    casting::cast.run_if(not(any_with_component::<Battle>)),
-                    // Whom a member's cast provoked is hostile before it lands.
-                    crate::game::world::hostility::take_offence,
                     pointcasts::expire_lures,
                     pointcasts::follow_lures,
                 )
@@ -517,7 +514,8 @@ pub struct Utility {
 /// choice; outside it, cast now.
 pub fn accept_magic(
     mut requests: MessageReader<MagicRequest>,
-    (mut casts, mut utilities): (MessageWriter<casting::Cast>, MessageWriter<Utility>),
+    mut utilities: MessageWriter<Utility>,
+    mut commands: Commands,
     battle: Option<Single<&Battle>>,
     camp: Option<Res<crate::game::camp::Camp>>,
     interaction: Query<(), With<crate::game::world::interaction::DeviceInteraction>>,
@@ -553,7 +551,7 @@ pub fn accept_magic(
         // combat spells.
         let context =
             if camp.is_some() { casting::UseContext::Camp } else { casting::UseContext::World };
-        casts.write(casting::Cast { caster, spell: spell.unwrap(), context, choice });
+        commands.trigger(casting::Cast { caster, spell: spell.unwrap(), context, choice });
     }
 }
 
@@ -643,12 +641,12 @@ pub(crate) mod tests {
             .insert_resource(GameRng::seeded(3))
             .add_message::<MagicRequest>()
             .add_message::<casting::MagicNews>()
-            .add_message::<casting::Cast>()
             .add_message::<Utility>()
             .add_message::<crate::game::world::hostility::Provocation>()
             .add_message::<crate::game::combat::CombatNews>()
             .add_plugins((crate::game::hits::HitsPlugin, crate::game::items::plugin))
-            .add_systems(Update, (accept_magic, casting::cast, crate::game::hits::resolve).chain());
+            .add_observer(casting::cast)
+            .add_systems(Update, accept_magic);
         let potion = ItemDefinition {
             id: ItemId(0),
             name: "Potion of Light Heal".into(),
@@ -812,15 +810,12 @@ pub(crate) mod tests {
                 .add_message::<MagicRequest>()
                 .add_message::<crate::game::party::recovery::Elapsed>()
                 .add_message::<MagicNews>()
-                .add_message::<casting::Cast>()
                 .add_message::<Utility>()
                 .add_message::<crate::game::world::hostility::Provocation>()
                 .add_message::<crate::game::combat::CombatNews>()
                 .add_plugins((crate::game::hits::HitsPlugin, crate::game::items::plugin))
-                .add_systems(
-                    Update,
-                    (accept_magic, casting::cast, crate::game::hits::resolve).chain(),
-                );
+                .add_observer(casting::cast)
+                .add_systems(Update, accept_magic);
             let definition = ItemDefinition {
                 id: ItemId(0),
                 class: EquipClass::Potion,

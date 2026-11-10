@@ -28,7 +28,6 @@ use crate::game::characters::{Character, Practise, Vitals};
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
-use crate::game::hits::Release;
 use crate::game::hits::definitions::Definitions;
 use crate::game::hits::effects::{Body, BodyItem};
 use crate::game::items::Items;
@@ -679,10 +678,9 @@ pub fn handle_device_requests(
     states: Query<&super::triggers::LevelState, With<super::level::Level>>,
     (content, definitions, setting): (Res<Catalogs>, Res<Definitions>, Res<Difficulty>),
     mut rng: ResMut<GameRng>,
-    (mut news, mut activations, mut released, mut magic_news): (
+    (mut news, mut activations, mut magic_news): (
         MessageWriter<LockNews>,
         MessageWriter<super::ActivateDevice>,
-        MessageWriter<Release>,
         MessageWriter<MagicNews>,
     ),
 ) {
@@ -864,7 +862,7 @@ pub fn handle_device_requests(
                     (&content, &definitions),
                     &mut rng,
                 );
-                released.write(discharge);
+                commands.trigger(discharge);
                 news.write(LockNews::Sprung { trap: trap.trap, destroyed });
                 destroyed
             }
