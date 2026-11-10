@@ -610,11 +610,8 @@ mod tests {
             vitals.afflict(Condition::Poisoned, Lasting::Rounds(50));
         }
         let mut seatless = world.get::<Vitals>(record).unwrap().clone();
-        world.write_message(Elapsed {
-            ticks: Ticks { stamina: 30, aging: 30 },
-            pace: Pace::Camping,
-        });
-        world.run_system_once(pass_time).unwrap();
+        world.add_observer(pass_time);
+        world.trigger(Elapsed { ticks: Ticks { stamina: 30, aging: 30 }, pace: Pace::Camping });
         let after = world.get::<Vitals>(record).unwrap();
         seatless.regeneration = after.regeneration;
         assert_eq!(*after, seatless, "nothing passed for them");

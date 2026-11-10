@@ -23,7 +23,7 @@ use crate::game::GameplaySet;
 use crate::game::data::Catalogs;
 pub use conduct::Interrupt;
 pub use orders::*;
-pub use round_end::{RoundEnding, end_round, judge_round};
+pub use round_end::{RoundEnds, end_round};
 pub use turn::{Action, Ordered, Turn};
 
 use crate::game::world::level::LevelOwned;
@@ -48,12 +48,18 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
-        use crate::game::characters::settle_deaths;
-        // What deeds did is settled: deaths, the fight's kills, and the
-        // party's defeat.
-        let settle = || (settle_deaths, settle_defeat).chain();
         app.add_plugins(hostility::plugin)
             .add_observer(credit_death)
+            .add_observer(settle_defeat)
+            .add_observer(turn::defend_instead)
+            .add_observer(round_end::end_the_round)
+            .add_observer(round_end::leave_fight)
+            .add_observer(round_end::rest_the_idle)
+            .add_observer(round_end::cool_specials)
+            .add_observer(round_end::pulse_clouds)
+            .add_observer(round_end::judge_victory)
+            .add_observer(round_end::look_again)
+            .add_observer(round_end::end_round)
             .add_observer(join_party)
             .add_observer(turn::clear_fight)
             .add_observer(approach::end_move)
@@ -66,7 +72,6 @@ impl Plugin for CombatPlugin {
             .add_observer(turn::hold)
             .add_observer(summon::summon)
             .add_message::<CombatNews>()
-            .add_message::<hostility::Provocation>()
             .add_message::<CyclePartyMove>()
             .add_message::<StartRound>()
             .add_message::<CombatControl>()
@@ -93,34 +98,19 @@ impl Plugin for CombatPlugin {
             // come. Requests made in Update wait for the next step, and a
             // move the round starts or ends governs the party's input on
             // that same step. Spell missiles fly on it too: one lands at
-            // the step its flight ends, and a defeat it causes is settled
-            // before anyone else acts.
+            // the step its flight ends, its deaths and a defeat it causes
+            // settled before anyone else acts.
             .add_systems(
                 FixedUpdate,
                 (
                     // What was in the air has landed before anyone acts.
-                    (crate::game::hits::fly, settle()).chain(),
+                    crate::game::hits::fly,
                     // The earliest moment comes: its actor decides and acts,
-                    // what the act did lands as it is done, and deaths are
-                    // settled before the next moment.
-                    (stop_party_move, begin_round, next_moment, turn::defend_instead, settle())
+                    // and what the act did lands, its deaths settled, before
+                    // the next moment. When none is left the round ends.
+                    (stop_party_move, begin_round, next_moment)
                         .chain()
                         .run_if(any_with_component::<Battle>),
-                    // Once everyone has acted the round ends.
-                    (
-                        judge_round,
-                        round_end::leave_fight,
-                        round_end::rest_the_idle,
-                        round_end::cool_specials,
-                        crate::game::party::recovery::pass_time,
-                        round_end::pulse_clouds,
-                        settle(),
-                        crate::game::actors::spells::age,
-                        round_end::judge_victory,
-                        round_end::look_again,
-                        end_round,
-                    )
-                        .chain(),
                 )
                     .chain()
                     .in_set(GameplaySet::Combat)
@@ -203,6 +193,10 @@ pub struct Round {
     pub(crate) pace: Option<PartyPace>,
     /// Someone has attacked this round.
     attacked: bool,
+    /// Those who leave the fight as the round ends.
+    leaving: Vec<Entity>,
+    /// The fight is over as the round ends.
+    over: bool,
 }
 
 impl Round {
@@ -371,9 +365,10 @@ pub enum CombatNews {
     PartyStops,
 }
 
-/// Terminal state is settled independently of whose action dealt the damage.
-/// Used before/after combat execution and at the end of environmental damage.
+/// Once deaths are settled, the party is defeated if none of it lives,
+/// whoever's action dealt the damage.
 pub fn settle_defeat(
+    _: On<crate::game::characters::Settled>,
     mut commands: Commands,
     battle: Option<Single<Entity, With<Battle>>>,
     roster: Single<&PartyRoster>,
@@ -517,11 +512,13 @@ pub fn begin_round(
 /// move when its moment comes, else the actor whose moment is earliest,
 /// who is given it. Two at the same moment go in the fight's order, the
 /// party's move first; members do not act before the party's move. When
-/// no moment is left the timeline is over.
+/// no moment is left the timeline is over and the round ends.
 #[allow(clippy::type_complexity)]
 fn next_moment(
     mut commands: Commands,
-    fight: Option<Single<(&mut Round, &mut PartyMove, &Pause, Option<&Combatants>), With<Battle>>>,
+    fight: Option<
+        Single<(Entity, &mut Round, &mut PartyMove, &Pause, Option<&Combatants>), With<Battle>>,
+    >,
     roster: Single<&PartyRoster>,
     places: crate::game::actors::Places,
     laid: crate::game::actors::Laid,
@@ -530,7 +527,8 @@ fn next_moment(
     moving: Query<(), With<approach::CombatMove>>,
     mut news: MessageWriter<CombatNews>,
 ) {
-    let Some((mut round, mut party_move, pause, combatants)) = fight.map(Single::into_inner) else {
+    let Some((fight, mut round, mut party_move, pause, combatants)) = fight.map(Single::into_inner)
+    else {
         return;
     };
     let combatants = combatants.map_or(&[][..], Combatants::entities);
@@ -574,7 +572,10 @@ fn next_moment(
             round.moment = round.moment.max(when);
             commands.trigger(turn::Moment { actor });
         }
-        None => round.moment = LAST_MOMENT + 1,
+        None => {
+            round.moment = LAST_MOMENT + 1;
+            commands.trigger(RoundEnds { fight });
+        }
     }
 }
 

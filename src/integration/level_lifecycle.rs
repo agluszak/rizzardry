@@ -38,8 +38,7 @@ fn app() -> App {
         .add_observer(crate::game::world::encounters::age_encounters)
         .add_observer(give_bodies)
         .add_observer(crate::game::world::damage::monster_died)
-        .add_message::<crate::game::hits::Damaged>()
-        .add_systems(Update, crate::game::characters::settle_deaths.before(activate_level))
+        .add_observer(crate::game::characters::settle_deaths)
         .init_resource::<crate::game::factions::Factions>()
         .add_message::<crate::game::factions::FactionNews>()
         .init_resource::<GameRng>()
@@ -460,7 +459,6 @@ fn direct_damage_settles_death_once() {
     use crate::content::species::{Drop, Treasure};
     use crate::game::inventory::PartyInventory;
     use crate::game::items::{Count, Item, Lying};
-    use bevy::ecs::system::RunSystemOnce;
     let mut app = app();
     with_data(&mut app);
     {
@@ -481,10 +479,10 @@ fn direct_damage_settles_death_once() {
     let target = world.query_filtered::<Entity, With<Monster>>().single(world).unwrap();
     let hit = |world: &mut World| {
         let mut vitals = world.get_mut::<crate::game::characters::Vitals>(target).unwrap();
-        let (lost, died) = (vitals.hurt(10), vitals.is_dead());
+        let lost = vitals.hurt(10);
         // Death settles its consequences.
-        world.write_message(crate::game::hits::Damaged { body: target, amount: lost, died });
-        world.run_system_once(crate::game::characters::settle_deaths).unwrap();
+        world.trigger(crate::game::characters::Settle);
+        world.flush();
         lost
     };
     use crate::game::world::navigation::Walker;

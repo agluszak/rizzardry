@@ -147,6 +147,21 @@ pub enum MagicNews {
     },
 }
 
+/// A cast was refused, by whoever checked it: the caster is told
+/// ([`MagicNews::Refused`]), and a member who was ordered to cast defends
+/// instead.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Refused {
+    #[event_target]
+    pub caster: Entity,
+    pub refusal: Refusal,
+}
+
+/// The caster is told their cast was refused.
+pub fn refuse(refused: On<Refused>, mut news: MessageWriter<MagicNews>) {
+    news.write(MagicNews::Refused { caster: refused.caster, refusal: refused.refusal });
+}
+
 /// What a cast did.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Report {
@@ -892,7 +907,7 @@ pub fn cast(
     states: Query<&crate::game::world::triggers::LevelState, With<Level>>,
     (content, definitions, difficulty): (Res<Catalogs>, Res<Definitions>, Res<Difficulty>),
     mut rng: ResMut<GameRng>,
-    (mut news, mut provocations): (MessageWriter<MagicNews>, MessageWriter<Provocation>),
+    mut news: MessageWriter<MagicNews>,
     mut commands: Commands,
 ) {
     let roster = *roster;
@@ -924,7 +939,7 @@ pub fn cast(
         );
         let aimed = match plan {
             Plan::Refused(refusal) => {
-                news.write(MagicNews::Refused { caster, refusal });
+                commands.trigger(Refused { caster, refusal });
                 continue;
             }
             Plan::PlayedBadly { fatigue, skill } => {
@@ -932,7 +947,7 @@ pub fn cast(
                 if let Some(skill) = skill {
                     commands.trigger(Practise { member: caster, skill, usage: 1 });
                 }
-                news.write(MagicNews::Refused { caster, refusal: Refusal::PlayedBadly });
+                commands.trigger(Refused { caster, refusal: Refusal::PlayedBadly });
                 continue;
             }
             Plan::Aimed(aimed) => aimed,
@@ -959,9 +974,10 @@ pub fn cast(
         // at, whatever the roll (retail `MakeTargetGroupHostile` as the
         // action starts); a retry provokes nobody again.
         if !retry && body.member && definition.aimed_at_enemies() {
-            provocations.write_batch(victims.iter().map(|&victim| Provocation(victim)));
             // They are hostile before the cast lands.
-            commands.run_system_cached(hostility::take_offence);
+            for &victim in &victims {
+                commands.trigger(Provocation { monster: victim });
+            }
         }
         let innate = matches!(source, Source::Innate { .. });
         let item = item_use(source, caster, &held, &content.items);

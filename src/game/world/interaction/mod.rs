@@ -31,7 +31,7 @@ use crate::game::difficulty::Difficulty;
 use crate::game::hits::definitions::Definitions;
 use crate::game::hits::effects::{Body, BodyItem};
 use crate::game::items::Items;
-use crate::game::magic::casting::{Aim, MagicNews, Refusal, Source, UseContext};
+use crate::game::magic::casting::{Aim, MagicNews, Refusal, Refused, Source, UseContext};
 use crate::game::magic::{Outcome, Utility};
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
@@ -635,7 +635,7 @@ pub enum DeviceAct {
 }
 
 pub(crate) fn plugin(app: &mut App) {
-    app.add_message::<DeviceRequest>().add_systems(
+    app.add_message::<DeviceRequest>().add_observer(device_cast).add_systems(
         Update,
         (handle_device_requests, super::containers::take_from_containers)
             .chain()
@@ -644,18 +644,13 @@ pub(crate) fn plugin(app: &mut App) {
     );
 }
 
-/// A cast aimed at the attempt under way, to be carried out with the
-/// player's other requests on it.
-fn device_casts(accepted: &mut MessageReader<Utility>) -> Vec<(Entity, DeviceAct)> {
-    accepted
-        .read()
-        .filter_map(|cast| match cast.choice.aim {
-            Aim::Device(on) => {
-                Some((on, DeviceAct::Cast { actor: cast.caster, source: cast.choice.source }))
-            }
-            _ => None,
-        })
-        .collect()
+/// A cast aimed at the attempt under way is asked of it like the player's
+/// other requests, to be carried out with them.
+fn device_cast(cast: On<Utility>, mut requests: MessageWriter<DeviceRequest>) {
+    if let Aim::Device(on) = cast.choice.aim {
+        let act = DeviceAct::Cast { actor: cast.caster, source: cast.choice.source };
+        requests.write(DeviceRequest { on, act });
+    }
 }
 
 /// Carry out what is asked of the attempt under way, in order: the
@@ -668,7 +663,7 @@ fn device_casts(accepted: &mut MessageReader<Utility>) -> Vec<(Entity, DeviceAct
 #[allow(clippy::type_complexity)]
 pub fn handle_device_requests(
     mut commands: Commands,
-    (mut requests, mut accepted): (MessageReader<DeviceRequest>, MessageReader<Utility>),
+    mut requests: MessageReader<DeviceRequest>,
     mut attempts: Query<(&mut DeviceInteraction, &AttemptOn)>,
     mut devices: Query<(Option<&mut Guarded>, Option<&mut DoorState>)>,
     mut bodies: Query<Body>,
@@ -686,17 +681,12 @@ pub fn handle_device_requests(
 ) {
     let roster = *roster;
     let occupied = !entering.is_empty() || !battle.is_empty();
-    let asked: Vec<_> = requests
-        .read()
-        .map(|request| (request.on, request.act.clone()))
-        .chain(device_casts(&mut accepted))
-        .collect();
+    let asked: Vec<_> = requests.read().map(|request| (request.on, request.act.clone())).collect();
     for (on, act) in asked {
         // A request may name an attempt that has since ended.
         let Ok((mut interaction, &AttemptOn(device))) = attempts.get_mut(on) else {
             if let DeviceAct::Cast { actor, .. } = act {
-                let refusal = Refusal::NoTarget;
-                magic_news.write(MagicNews::Refused { caster: actor, refusal });
+                commands.trigger(Refused { caster: actor, refusal: Refusal::NoTarget });
             }
             continue;
         };
@@ -807,7 +797,7 @@ pub fn handle_device_requests(
                 let (report, strength) = match paid {
                     Ok(paid) => paid,
                     Err(refusal) => {
-                        magic_news.write(MagicNews::Refused { caster: by, refusal });
+                        commands.trigger(Refused { caster: by, refusal });
                         continue;
                     }
                 };

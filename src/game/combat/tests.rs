@@ -36,7 +36,6 @@ fn app() -> (App, Entity, Entity) {
         .init_resource::<Assets<WalkerMotionConfig>>()
         .add_message::<crate::game::factions::FactionNews>()
         .add_message::<Identified>()
-        .add_message::<crate::game::party::recovery::Elapsed>()
         .add_plugins((
             CombatPlugin,
             magic::MagicPlugin,
@@ -250,9 +249,9 @@ fn killing_a_turned_ally_awards_nothing_but_an_enemy_counts() {
     world.get_mut::<Vitals>(actor).unwrap().afflict(Condition::Turncoat, Lasting::Rounds(5));
     refresh(world);
     let kill = |world: &mut World, body: Entity| {
-        let amount = world.get_mut::<Vitals>(body).unwrap().slay();
-        world.write_message(crate::game::hits::Damaged { body, amount, died: true });
-        world.run_system_cached(crate::game::characters::settle_deaths).unwrap();
+        world.get_mut::<Vitals>(body).unwrap().slay();
+        world.trigger(crate::game::characters::Settle);
+        world.flush();
     };
     kill(world, actor);
     assert_eq!(world.get::<Spoils>(battle).unwrap().experience, 0);
@@ -272,7 +271,7 @@ fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
     use crate::content::characters::Skill;
     use crate::content::spells::{Reach, Spellbook, Targeting, Usable};
     use crate::game::magic::{Outcome, SpellPoints};
-    use crate::game::world::hostility::Provocation;
+    use crate::game::world::hostility::Provoked;
     let (mut app, _, member) = app();
     let world = app.world_mut();
     world.resource_mut::<Catalogs>().spells.0[SpellId::ENERGY_BLAST.0 as usize] = SpellDefinition {
@@ -311,8 +310,8 @@ fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
     world.trigger(Cast { caster: member, spell: SpellId::ENERGY_BLAST, context, choice });
     world.flush();
     assert_eq!(magic::test_points(world, member, Realm::Fire), points - 1);
-    let provoked: Vec<_> = world.resource_mut::<Messages<Provocation>>().drain().collect();
-    assert_eq!(provoked, vec![Provocation(foe)]);
+    let provoked: Vec<_> = world.resource_mut::<Messages<Provoked>>().drain().collect();
+    assert_eq!(provoked, vec![Provoked(foe)]);
     let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
     assert!(
         matches!(news.as_slice(), [MagicNews::Done(report)] if report.outcome == Outcome::Cast),
@@ -503,7 +502,6 @@ fn a_cast_refused_in_a_fight_falls_back_to_defending() {
         choice,
     });
     world.flush();
-    world.run_system_cached(super::turn::defend_instead).unwrap();
     let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
     assert!(matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::NotLearned, .. }]));
     assert!(world.get::<Ordered>(member).unwrap().defends());
@@ -516,4 +514,166 @@ fn a_cast_refused_in_a_fight_falls_back_to_defending() {
     world.entity_mut(member).insert(turn);
     step(world);
     assert!(world.get::<Ordered>(member).unwrap().defends());
+}
+
+/// What happened at a round's end, in the order it happened.
+#[derive(Resource, Default)]
+struct Ending(Vec<&'static str>);
+
+fn note(world: &mut World) {
+    use crate::game::actors::spells::Aged;
+    use crate::game::party::recovery::Elapsed;
+    use round_end::{CloudsPulse, FightJudged, GroupsLeave, PartyLooksAgain, Rests, RoundEnded};
+    world.init_resource::<Ending>();
+    world.add_observer(|_: On<Elapsed>, mut end: ResMut<Ending>| end.0.push("time passes"));
+    world.add_observer(|_: On<GroupsLeave>, mut end: ResMut<Ending>| end.0.push("groups leave"));
+    world.add_observer(|_: On<Rests>, mut end: ResMut<Ending>| end.0.push("rest"));
+    // By the time the clouds pulse, time has passed for everyone: a
+    // condition of one round is gone.
+    world.add_observer(
+        |_: On<CloudsPulse>,
+         members: Query<&Vitals, With<roster::PartyMember>>,
+         mut end: ResMut<Ending>| {
+            let afraid = members
+                .iter()
+                .any(|v| v.conditions.has(crate::game::characters::Condition::Afraid));
+            end.0.push(if afraid { "pulses, time not passed" } else { "pulses" });
+        },
+    );
+    // A cloud's last turn has pulsed before it ages.
+    world.add_observer(
+        |_: On<Aged>, hit: Query<&Vitals, With<Monster>>, mut end: ResMut<Ending>| {
+            let pulsed = hit.iter().all(|v| v.is_dead());
+            end.0.push(if pulsed { "spells age" } else { "spells age before the pulse" });
+        },
+    );
+    world.add_observer(|_: On<FightJudged>, mut end: ResMut<Ending>| end.0.push("judged"));
+    world.add_observer(|_: On<PartyLooksAgain>, mut end: ResMut<Ending>| end.0.push("looks"));
+    world.add_observer(|_: On<RoundEnded>, mut end: ResMut<Ending>| end.0.push("ended"));
+}
+
+/// The round's end is one chain in the order of the rules: time passes, groups
+/// leave, the idle rest, the clouds pulse and what they killed is settled, the
+/// spells age, the fight is judged (the pulse's kill counted, so it is won),
+/// the party looks again, and the round is ended.
+#[test]
+fn a_round_ends_in_the_order_of_the_rules() {
+    use crate::game::characters::{Condition, Lasting};
+    let (mut app, _, member) = app();
+    let world = app.world_mut();
+    note(world);
+    let fight = world.spawn(Battle::default()).id();
+    play(world, fight, 101);
+    world.get_mut::<Round>(fight).unwrap().attacked = true;
+    let foe = monster(world, fight, 3.0);
+    lay(world, foe, SpellId::FIRESTORM, 1, 0);
+    world.get_mut::<Vitals>(member).unwrap().afflict(Condition::Afraid, Lasting::Rounds(1));
+    let before = world.get::<Character>(member).unwrap().experience;
+    world.run_schedule(FixedUpdate);
+    assert_eq!(
+        world.resource::<Ending>().0,
+        ["time passes", "groups leave", "rest", "pulses", "spells age", "judged", "looks", "ended"]
+    );
+    assert!(world.get_entity(fight).is_err(), "the fight is won, its last kill counted");
+    assert_eq!(world.get::<Character>(member).unwrap().experience, before + 120);
+}
+
+/// A provoked neutral group stands hostile as the action starts, before what
+/// provoked it lands; a dead monster or one under Turncoat provokes nobody.
+/// Engagement is told, and the hostile group enters the fight at once.
+#[test]
+fn a_provoked_neutral_group_stands_hostile_and_enters_the_fight() {
+    use crate::game::characters::{Condition, Lasting};
+    use crate::game::world::hostility::{Allegiance, Provocation, Provoked, Stand};
+    use crate::game::world::level::LevelOwned;
+    use crate::game::world::population::{Special, Spellcasting, Temper};
+    let (mut app, ..) = app();
+    let world = app.world_mut();
+    let level = world.query_filtered::<Entity, With<Level>>().single(world).unwrap();
+    let fight = world.spawn(Battle::default()).id();
+    play(world, fight, 1);
+    let neutral = |world: &mut World| {
+        let foe = monster(world, fight, 500.0);
+        let group = world.get::<GroupMember>(foe).unwrap().0;
+        world.entity_mut(group).insert(LevelOwned(level));
+        world.entity_mut(foe).remove::<Combatant>().insert((
+            Allegiance::of(&Species::default()),
+            Temper(default()),
+            Special(default()),
+            Spellcasting { chance: 0, spells: [None; 10], silent_alchemy: false },
+        ));
+        world.trigger(Stand { group, stance: Some(Stance::Neutral) });
+        world.flush();
+        assert_eq!(world.get::<Side>(foe).unwrap().own(), Stance::Neutral);
+        (foe, group)
+    };
+    // Under Turncoat, or dead, it provokes nobody.
+    let (turned, _) = neutral(world);
+    world.get_mut::<Vitals>(turned).unwrap().afflict(Condition::Turncoat, Lasting::Rounds(5));
+    world.trigger(Provocation { monster: turned });
+    world.flush();
+    assert_eq!(world.get::<Side>(turned).unwrap().own(), Stance::Neutral);
+    let (foe, _) = neutral(world);
+    world.trigger(Provocation { monster: foe });
+    world.flush();
+    assert_eq!(world.get::<Side>(foe).unwrap().own(), Stance::Hostile);
+    let provoked: Vec<_> = world.resource_mut::<Messages<Provoked>>().drain().collect();
+    assert_eq!(provoked, [Provoked(turned), Provoked(foe)]);
+    // Engagement is told the same step: the provoked hostile group enters,
+    // far off as it is, which nothing else brings it to do.
+    world.run_system_cached(engage::engage).unwrap();
+    assert!(world.resource_mut::<Messages<engage::Engaged>>().drain().next().is_none());
+    world.resource_mut::<Messages<Provoked>>().write(Provoked(foe));
+    world.run_system_cached(engage::engage).unwrap();
+    let engaged: Vec<_> = world.resource_mut::<Messages<engage::Engaged>>().drain().collect();
+    assert!(engaged.iter().any(|engage::Engaged(group)| group.contains(&foe)));
+}
+
+/// A utility cast refused in a fight makes its caster defend.
+#[test]
+fn a_utility_cast_refused_in_a_fight_makes_its_caster_defend() {
+    use crate::game::magic::Utility;
+    let (mut app, _, member) = app();
+    let world = app.world_mut();
+    let fight = world.spawn(Battle::default()).id();
+    let _foe = monster(world, fight, 3.0);
+    refresh(world);
+    // Identify Item cannot be cast in a fight, and not at a foe.
+    let choice = MagicChoice {
+        source: Source::Spell { spell: SpellId::IDENTIFY_ITEM, power: 1 },
+        aim: Aim::Point(Vec3::ZERO),
+    };
+    world.entity_mut(member).insert(Ordered(Action::Magic(choice)));
+    world.trigger(Utility { caster: member, spell: SpellId::IDENTIFY_ITEM, choice });
+    world.flush();
+    assert!(world.get::<Ordered>(member).unwrap().defends());
+    let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
+    assert!(matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::WrongTime, .. }]));
+}
+
+/// Outside a fight, time passing ages conditions, spells laid and a stance
+/// set on a group, each by its own observer of what time did.
+#[test]
+fn outside_a_fight_time_passing_ages_conditions_spells_and_a_set_stance() {
+    use crate::game::characters::{Condition, Lasting};
+    use crate::game::world::hostility::{Allegiance, Stand};
+    let (mut app, party, member) = app();
+    let world = app.world_mut();
+    world.init_resource::<crate::game::world::search::Search>();
+    world.entity_mut(party).insert(avian3d::prelude::LinearVelocity::default());
+    *world.resource_mut::<GameClock>() = GameClock::at(10 * crate::game::time::DAY_MS);
+    let group = world.spawn(MonsterGroup::default()).id();
+    world.spawn((Vitals::full(20, 100), Allegiance::of(&Species::default()), GroupMember(group)));
+    world.trigger(Stand { group, stance: Some(Stance::Hostile) });
+    world.flush();
+    assert!(world.get::<MonsterGroup>(group).unwrap().set.is_some());
+    lay(world, member, SpellId::BLESS, 1, 0);
+    world.get_mut::<Vitals>(member).unwrap().afflict(Condition::Afraid, Lasting::Rounds(1));
+    // A whole aging tick of game time, at twelve times real time.
+    world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs(10));
+    world.run_system_cached(crate::game::time::pass_time).unwrap();
+    world.flush();
+    assert!(!world.get::<Vitals>(member).unwrap().conditions.has(Condition::Afraid));
+    assert!(!is_laid(world, member, SpellId::BLESS));
+    assert!(world.get::<MonsterGroup>(group).unwrap().set.is_none(), "the stance wore off");
 }

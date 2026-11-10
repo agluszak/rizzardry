@@ -279,20 +279,17 @@ fn follow_factions(
     }
 }
 
-/// As time passes, a stance set on a group wears off: once its leader's
+/// As time passes ([`Elapsed`]), a stance set on a group wears off: once its leader's
 /// grudge has run out, or its faction's band has moved since. Never while
 /// the group fights (retail `RefreshMonsterGroupHostility`, which runs only
 /// outside a fight).
 fn forget(
-    mut elapsed: MessageReader<Elapsed>,
+    _: On<Elapsed>,
     groups: Query<(Entity, &MonsterGroup, &GroupMembers)>,
     monsters: Query<(&Allegiance, Has<crate::game::combat::Combatant>)>,
     (factions, clock): (Res<Factions>, Res<GameClock>),
     mut commands: Commands,
 ) {
-    if elapsed.read().count() == 0 {
-        return;
-    }
     for (group, kept, members) in &groups {
         let Some(set) = kept.set else { continue };
         let members = || members.iter().filter_map(|member| monsters.get(member).ok());
@@ -323,40 +320,52 @@ pub fn between(first: (Stance, Loyalty), second: (Stance, Loyalty)) -> Stance {
 /// The party acted against this monster: a blow aimed at it, a hostile
 /// spell aimed at it or catching it, whatever came of them (retail
 /// `MakeTargetGroupHostile`, `ProvokeListedMonsterGroups`).
+#[derive(EntityEvent, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Provocation {
+    #[event_target]
+    pub monster: Entity,
+}
+
+/// The party has just acted against this monster, which engagement reads
+/// once: a hostile group so provoked enters the fight at once.
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Provocation(pub Entity);
+pub struct Provoked(pub Entity);
 
 /// A monster provoked turns its group hostile as the action starts, before
 /// the blows or spells land (retail `MakeTargetGroupHostile`); a dead
-/// monster, or one under Turncoat, provokes nobody. Whoever makes a
-/// provocation runs this as it is made (`Commands::run_system_cached`), so
-/// the group is hostile before the blows or spells land; groups engage on
-/// the same messages.
+/// monster, or one under Turncoat, provokes nobody. Whoever acts triggers
+/// the provocation as it acts, so the group is hostile before the blows or
+/// spells land.
 pub fn take_offence(
-    mut provocations: MessageReader<Provocation>,
+    offence: On<Provocation>,
     monsters: Query<(&Side, &Vitals, &GroupMember)>,
+    mut provoked: MessageWriter<Provoked>,
     mut commands: Commands,
 ) {
-    for &Provocation(provoked) in provocations.read() {
-        let Ok((side, vitals, member)) = monsters.get(provoked) else { continue };
-        if vitals.is_dead() || vitals.conditions.has(Condition::Turncoat) {
-            continue;
-        }
-        if side.own() != Stance::Hostile {
-            commands.trigger(Stand { group: member.0, stance: Some(Stance::Hostile) });
-        }
+    let monster = offence.monster;
+    provoked.write(Provoked(monster));
+    let Ok((side, vitals, member)) = monsters.get(monster) else { return };
+    if vitals.is_dead() || vitals.conditions.has(Condition::Turncoat) {
+        return;
+    }
+    if side.own() != Stance::Hostile {
+        commands.trigger(Stand { group: member.0, stance: Some(Stance::Hostile) });
     }
 }
 
 pub fn plugin(app: &mut App) {
-    app.add_observer(stand)
+    app.add_message::<Provoked>()
+        .add_observer(stand)
+        .add_observer(take_offence)
+        .add_observer(forget)
         .add_observer(made)
         .add_observer(grouped)
         .add_observer(joined)
         .add_observer(raised)
         .add_systems(
             Update,
-            (follow_factions.run_if(resource_changed::<Factions>), forget)
+            follow_factions
+                .run_if(resource_changed::<Factions>)
                 .in_set(crate::game::GameplaySet::Bodies),
         );
 }

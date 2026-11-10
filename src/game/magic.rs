@@ -473,17 +473,15 @@ impl Plugin for MagicPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<MagicRequest>()
             .add_message::<casting::MagicNews>()
-            .add_message::<Utility>()
-            .add_message::<crate::game::world::hostility::Provocation>()
             .add_observer(casting::cast)
+            .add_observer(casting::refuse)
+            .add_observer(utilities::identify)
+            .add_observer(dialogue::cast)
+            .add_observer(portals::cast)
+            .add_observer(pointcasts::cast)
             .add_systems(
                 Update,
-                (
-                    accept_magic,
-                    (utilities::identify, dialogue::cast, portals::cast, pointcasts::cast),
-                    pointcasts::expire_lures,
-                    pointcasts::follow_lures,
-                )
+                (accept_magic, pointcasts::expire_lures, pointcasts::follow_lures)
                     .chain()
                     .after(GameplaySet::Bodies)
                     .before(GameplaySet::Combat)
@@ -501,10 +499,11 @@ pub struct MagicRequest {
 }
 
 /// Magic that is not a deed on bodies, accepted: a utility spell (portals,
-/// dialogue, point casts, Identify) or a cast at a device. The system for
-/// its kind carries it out.
-#[derive(Message, Clone, Copy, Debug, PartialEq)]
+/// dialogue, point casts, Identify) or a cast at a device. The observer for
+/// its kind carries it out; the others let it be.
+#[derive(EntityEvent, Clone, Copy, Debug, PartialEq)]
 pub struct Utility {
+    #[event_target]
     pub caster: Entity,
     pub spell: SpellId,
     pub choice: casting::MagicChoice,
@@ -514,7 +513,6 @@ pub struct Utility {
 /// choice; outside it, cast now.
 pub fn accept_magic(
     mut requests: MessageReader<MagicRequest>,
-    mut utilities: MessageWriter<Utility>,
     mut commands: Commands,
     battle: Option<Single<&Battle>>,
     camp: Option<Res<crate::game::camp::Camp>>,
@@ -522,7 +520,6 @@ pub fn accept_magic(
     mut orders: Query<&mut crate::game::party::Order>,
     held: Items,
     content: Res<Catalogs>,
-    mut news: MessageWriter<casting::MagicNews>,
 ) {
     for &MagicRequest { caster, choice } in requests.read() {
         let spell = choice.source.spell_id(&held, &content.items);
@@ -531,7 +528,7 @@ pub fn accept_magic(
             && (battle.is_none() || !spell.is_some_and(pointcasts::spell)))
             || matches!(choice.aim, casting::Aim::Device(_));
         if let (true, Some(spell)) = (utility, spell) {
-            utilities.write(Utility { caster, spell, choice });
+            commands.trigger(Utility { caster, spell, choice });
             continue;
         }
         let refusal = match spell {
@@ -540,7 +537,7 @@ pub fn accept_magic(
             Some(_) => None,
         };
         if let Some(refusal) = refusal {
-            news.write(casting::MagicNews::Refused { caster, refusal });
+            commands.trigger(casting::Refused { caster, refusal });
             continue;
         }
         if battle.is_some() {
@@ -641,11 +638,10 @@ pub(crate) mod tests {
             .insert_resource(GameRng::seeded(3))
             .add_message::<MagicRequest>()
             .add_message::<casting::MagicNews>()
-            .add_message::<Utility>()
-            .add_message::<crate::game::world::hostility::Provocation>()
             .add_message::<crate::game::combat::CombatNews>()
             .add_plugins((crate::game::hits::HitsPlugin, crate::game::items::plugin))
             .add_observer(casting::cast)
+            .add_observer(casting::refuse)
             .add_systems(Update, accept_magic);
         let potion = ItemDefinition {
             id: ItemId(0),
@@ -808,13 +804,12 @@ pub(crate) mod tests {
                 .init_resource::<avian3d::collider_tree::ColliderTrees>()
                 .insert_resource(GameRng::seeded(3))
                 .add_message::<MagicRequest>()
-                .add_message::<crate::game::party::recovery::Elapsed>()
                 .add_message::<MagicNews>()
-                .add_message::<Utility>()
-                .add_message::<crate::game::world::hostility::Provocation>()
                 .add_message::<crate::game::combat::CombatNews>()
                 .add_plugins((crate::game::hits::HitsPlugin, crate::game::items::plugin))
                 .add_observer(casting::cast)
+                .add_observer(casting::refuse)
+                .add_observer(crate::game::actors::spells::age)
                 .add_systems(Update, accept_magic);
             let definition = ItemDefinition {
                 id: ItemId(0),
@@ -953,10 +948,7 @@ pub(crate) mod tests {
                             laid.listed(ally).find(|(laid, _)| laid.spell == id).unwrap().1.unwrap()
                         })
                         .unwrap();
-                    let ticks = crate::game::time::Ticks { stamina: 0, aging: turns };
-                    let pace = crate::game::party::recovery::Pace::Still;
-                    world.write_message(crate::game::party::recovery::Elapsed { ticks, pace });
-                    world.run_system_once(crate::game::actors::spells::age).unwrap();
+                    world.trigger(crate::game::actors::spells::Aged { ticks: turns });
                     world.flush();
                     let left = world
                         .run_system_once(move |laid: crate::game::actors::Laid| laid.get(ally, id))

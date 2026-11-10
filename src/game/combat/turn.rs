@@ -30,7 +30,7 @@ use crate::game::hits::{Act, Deed, Release};
 use crate::game::inventory::WeaponSlot;
 use crate::game::items::Items;
 use crate::game::magic::casting::{
-    Cast, MagicChoice, MagicNews, Refusal, UseContext, in_cone, reaches as spell_reaches,
+    Cast, MagicChoice, Refusal, Refused, UseContext, in_cone, reaches as spell_reaches,
 };
 use crate::game::magic::{Strength, Utility};
 use crate::game::party::Order;
@@ -377,7 +377,6 @@ pub(super) fn take_turn(
     (content, definitions): (Res<Catalogs>, Res<Definitions>),
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<CombatNews>,
-    (mut magic_news, mut utilities): (MessageWriter<MagicNews>, MessageWriter<Utility>),
 ) {
     let actor = moment.actor;
     let (mut pause, combatants) = fight.into_inner();
@@ -548,12 +547,11 @@ pub(super) fn take_turn(
             turn.end();
             pause.0 = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
             let Some(spell) = choice.source.spell_id(&held, &content.items) else {
-                let refusal = Refusal::NoItem;
-                magic_news.write(MagicNews::Refused { caster: actor, refusal });
+                commands.trigger(Refused { caster: actor, refusal: Refusal::NoItem });
                 return;
             };
             if crate::game::magic::pointcasts::spell(spell) {
-                utilities.write(Utility { caster: actor, spell, choice });
+                commands.trigger(Utility { caster: actor, spell, choice });
             } else {
                 commands.trigger(Cast {
                     caster: actor,
@@ -687,13 +685,10 @@ pub(super) fn breathe(
 
 /// A member whose cast was refused, whoever refused it, defends instead
 /// (retail `ExecuteCharacterAction`), the turn spent.
-pub(super) fn defend_instead(mut news: MessageReader<MagicNews>, mut orders: Query<&mut Ordered>) {
-    for news in news.read() {
-        if let MagicNews::Refused { caster, .. } = *news
-            && let Ok(mut ordered) = orders.get_mut(caster)
-            && matches!(ordered.0, Action::Magic(_))
-        {
-            ordered.0 = Action::Defend;
-        }
+pub(super) fn defend_instead(refused: On<Refused>, mut orders: Query<&mut Ordered>) {
+    if let Ok(mut ordered) = orders.get_mut(refused.caster)
+        && matches!(ordered.0, Action::Magic(_))
+    {
+        ordered.0 = Action::Defend;
     }
 }

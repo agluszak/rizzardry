@@ -1,5 +1,6 @@
 //! Simulation time.
 
+use crate::game::actors::spells::Aged;
 use crate::game::camp::Camp;
 use crate::game::party::body::{PartyBody, WALK_SPEED};
 use crate::game::party::recovery::{Elapsed, Pace};
@@ -99,8 +100,9 @@ impl Plugin for TimePlugin {
 }
 
 /// Exploring and camping: the clock runs on the fixed step, and says how
-/// much time passed at what pace ([`Elapsed`]); on each aging tick the
-/// party looks again at what is about it. In a fight only its rounds pass
+/// much time passed at what pace ([`Elapsed`]), and how much it wore on the
+/// spells laid ([`Aged`]); on each aging tick the party looks again at what
+/// is about it. In a fight only its rounds pass
 /// time.
 pub(crate) fn pass_time(
     time: Res<Time>,
@@ -112,7 +114,7 @@ pub(crate) fn pass_time(
     mut recognition: GroupRecognition,
     mut clock: ResMut<GameClock>,
     mut rng: ResMut<GameRng>,
-    mut elapsed: MessageWriter<Elapsed>,
+    mut commands: Commands,
 ) {
     if battle.is_some() {
         return;
@@ -133,7 +135,10 @@ pub(crate) fn pass_time(
         Pace::Running
     };
     if ticks.stamina > 0 || ticks.aging > 0 {
-        elapsed.write(Elapsed { ticks, pace });
+        commands.trigger(Elapsed { ticks, pace });
+    }
+    if ticks.aging > 0 {
+        commands.trigger(Aged { ticks: ticks.aging });
     }
     for _ in 0..ticks.aging {
         recognition.detect(

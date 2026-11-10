@@ -3,7 +3,7 @@
 use super::utilities::underwater;
 use super::{
     Outcome, Utility,
-    casting::{Aim, MagicNews, Refusal, UseContext},
+    casting::{Aim, MagicNews, Refusal, Refused, UseContext},
 };
 use crate::{
     content::{
@@ -35,7 +35,7 @@ pub(crate) fn spell(id: SpellId) -> bool {
 /// wait for the party's word: a failed save charms them by the cast's
 /// amount or opens their mind; a backfire may be noticed.
 pub(crate) fn cast(
-    mut accepted: MessageReader<Utility>,
+    accepted: On<Utility>,
     mut conversation: Single<&mut Conversation>,
     mut speakers: Query<(&mut Npc, Option<&NpcBodies>)>,
     monsters: Query<(&Monster, &LevelOwned)>,
@@ -47,80 +47,83 @@ pub(crate) fn cast(
     mut news: MessageWriter<MagicNews>,
     mut commands: Commands,
 ) {
-    for &Utility { caster, spell: id, choice } in accepted.read().filter(|cast| spell(cast.spell)) {
-        let mut cast = || -> Result<_, Refusal> {
-            if !conversation.ready() {
-                return Err(Refusal::WrongTime);
-            }
-            let (mut npc, their_bodies) =
-                speakers.get_mut(conversation.actor).map_err(|_| Refusal::NoTarget)?;
-            // The speaker's living body in the level played, as dialogues
-            // read it.
-            let body = their_bodies
-                .and_then(|theirs| {
-                    theirs.iter().find(|&body| {
-                        monsters.get(body).is_ok_and(|(_, level)| levels.contains(level.0))
-                            && bodies.get(body).is_ok_and(|body| !body.vitals.is_dead())
-                    })
+    let Utility { caster, spell: id, choice } = *accepted;
+    if !spell(id) {
+        return;
+    }
+    let mut cast = || -> Result<_, Refusal> {
+        if !conversation.ready() {
+            return Err(Refusal::WrongTime);
+        }
+        let (mut npc, their_bodies) =
+            speakers.get_mut(conversation.actor).map_err(|_| Refusal::NoTarget)?;
+        // The speaker's living body in the level played, as dialogues
+        // read it.
+        let body = their_bodies
+            .and_then(|theirs| {
+                theirs.iter().find(|&body| {
+                    monsters.get(body).is_ok_and(|(_, level)| levels.contains(level.0))
+                        && bodies.get(body).is_ok_and(|body| !body.vitals.is_dead())
                 })
-                .filter(|&body| choice.aim == Aim::Body(body))
-                .ok_or(Refusal::NoTarget)?;
-            let their = bodies.get(body).unwrap();
-            let (level, resistance) = (their.level.0, their.resistances.realms[Realm::Mental]);
-            let notices = (their.attributes[Attribute::Senses]
-                + their.attributes[Attribute::Intelligence])
-                / 2;
-            let (mut report, strength) = super::casting::pay(
-                &mut bodies.get_mut(caster).map_err(|_| Refusal::CannotAct)?,
-                &held,
-                (choice.source, UseContext::Conversation),
-                (&content, *difficulty, underwater(&states)),
-                &mut rng,
-                &mut commands,
-            )?;
-            let mut reply = MagicalReply::Unnoticed;
-            match report.outcome {
-                Outcome::Fizzled => {}
-                Outcome::Backfired => {
-                    if rng.below(100) < notices {
-                        reply = MagicalReply::Quote(0x16);
-                    }
+            })
+            .filter(|&body| choice.aim == Aim::Body(body))
+            .ok_or(Refusal::NoTarget)?;
+        let their = bodies.get(body).unwrap();
+        let (level, resistance) = (their.level.0, their.resistances.realms[Realm::Mental]);
+        let notices =
+            (their.attributes[Attribute::Senses] + their.attributes[Attribute::Intelligence]) / 2;
+        let (mut report, strength) = super::casting::pay(
+            &mut bodies.get_mut(caster).map_err(|_| Refusal::CannotAct)?,
+            &held,
+            (choice.source, UseContext::Conversation),
+            (&content, *difficulty, underwater(&states)),
+            &mut rng,
+            &mut commands,
+        )?;
+        let mut reply = MagicalReply::Unnoticed;
+        match report.outcome {
+            Outcome::Fizzled => {}
+            Outcome::Backfired => {
+                if rng.below(100) < notices {
+                    reply = MagicalReply::Quote(0x16);
                 }
-                Outcome::Cast => {
-                    let chance = defences::condition_chance(level, resistance, strength.against, 0);
-                    let saved = defences::save_roll(&mut rng, chance);
-                    if id == SpellId::MINDREAD {
-                        reply = MagicalReply::Quote(if saved {
-                            0x69
-                        } else {
-                            let quote = 0x67 + u16::from(npc.mindread_refusals);
-                            npc.mindread_refusals = (npc.mindread_refusals + 1).min(2);
-                            quote
-                        });
-                    } else if saved {
-                        report.effects.push(Effect::Resisted { victim: body });
+            }
+            Outcome::Cast => {
+                let chance = defences::condition_chance(level, resistance, strength.against, 0);
+                let saved = defences::save_roll(&mut rng, chance);
+                if id == SpellId::MINDREAD {
+                    reply = MagicalReply::Quote(if saved {
+                        0x69
                     } else {
-                        let amount = strength.power * 7;
-                        let amount = defences::resist(
-                            &mut rng,
-                            amount + amount * strength.boost / 100,
-                            resistance.min(100),
-                            level,
-                            strength.against,
-                        );
-                        if amount > conversation.charm() {
-                            reply = MagicalReply::Charmed(amount);
-                        }
+                        let quote = 0x67 + u16::from(npc.mindread_refusals);
+                        npc.mindread_refusals = (npc.mindread_refusals + 1).min(2);
+                        quote
+                    });
+                } else if saved {
+                    report.effects.push(Effect::Resisted { victim: body });
+                } else {
+                    let amount = strength.power * 7;
+                    let amount = defences::resist(
+                        &mut rng,
+                        amount + amount * strength.boost / 100,
+                        resistance.min(100),
+                        level,
+                        strength.against,
+                    );
+                    if amount > conversation.charm() {
+                        reply = MagicalReply::Charmed(amount);
                     }
                 }
             }
-            // An NPC won over leaves its menu as its script next runs.
-            conversation.magical_reply(reply);
-            Ok(report)
-        };
-        news.write(match cast() {
-            Ok(report) => MagicNews::Done(report),
-            Err(refusal) => MagicNews::Refused { caster, refusal },
-        });
+        }
+        // An NPC won over leaves its menu as its script next runs.
+        conversation.magical_reply(reply);
+        Ok(report)
+    };
+    match cast() {
+        Ok(report) => {
+            news.write(MagicNews::Done(report));
+        }
+        Err(refusal) => commands.trigger(Refused { caster, refusal }),
     }
 }
