@@ -567,8 +567,10 @@ fn swing(
             let fatigue = if arm.fatigue_pierces { attack::fatigue(own.vitals) } else { 0 };
             let agility = (agile - their.attributes.agility()) / 10;
             let stood = standing(victim, (their.member, their.vitals), bearing, running);
+            // The arm's rating counts against armour as it does for the aim
+            // (retail `GetTargetHitAttackAttributes`, `ContinueMonsterAttack`).
             let penetration = rules.difficulty.scale(
-                attack::mode_penetration(piercing)
+                arm.rating + attack::mode_penetration(piercing)
                     - fatigue
                     - 5 * armour.at(piercing, surprise, stood, location.0)
                     + agility,
