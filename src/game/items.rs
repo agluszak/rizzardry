@@ -315,6 +315,10 @@ pub struct Casts {
     pub users: Users,
 }
 
+/// Heat can take it: a potion, a scroll or a book, told of by its class.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Flammable(pub EquipClass);
+
 /// How hard an item is to identify.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Obscure(pub u8);
@@ -396,6 +400,9 @@ pub fn shape(item: &mut EntityCommands, definition: &ItemDefinition) {
     }
     if definition.class == EquipClass::Shield {
         item.insert(Shield);
+    }
+    if matches!(definition.class, EquipClass::Potion | EquipClass::Scroll | EquipClass::Spellbook) {
+        item.insert(Flammable(definition.class));
     }
     if let Some(cast) = definition.spell {
         item.insert(Casts {
@@ -521,7 +528,7 @@ pub struct Items<'w, 's> {
             &'static Weight,
         ),
     >,
-    uses: Query<'w, 's, (Option<&'static Casts>, &'static Obscure)>,
+    uses: Query<'w, 's, (Option<&'static Casts>, &'static Obscure, Option<&'static Flammable>)>,
     worn: Query<'w, 's, &'static Worn>,
     packed: Query<'w, 's, &'static Packed>,
     pooled: Query<'w, 's, &'static Pooled>,
@@ -643,7 +650,12 @@ impl Items<'_, '_> {
 
     /// How hard an item is to identify.
     pub fn obscurity(&self, item: Entity) -> Option<u8> {
-        self.uses.get(item).ok().map(|(_, obscure)| obscure.0)
+        self.uses.get(item).ok().map(|(_, obscure, _)| obscure.0)
+    }
+
+    /// The class heat destroys it as, if it burns.
+    pub fn flammable(&self, item: Entity) -> Option<EquipClass> {
+        self.uses.get(item).ok()?.2.map(|flammable| flammable.0)
     }
 
     /// What the party knows of an item.
