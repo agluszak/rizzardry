@@ -39,19 +39,27 @@ their sheet, their health and what ails them, and what they wear and pack
 stays worn and packed, as item entities. Joining gives them a seat; nothing is
 unpacked.
 
-An NPC who stands in a level stands there in a body: a monster of the species
-that is its likeness, made anew each time, with the health and stamina that
-species rolls. The body is not the character. The character keeps its own
-health across joining and leaving; the body's is lost with the body. What ails
-is the one thing handed across: joining, the body's conditions pass to the
-character and the body is gone; dismissed and alive, a new body is made beside
-the party with the character's conditions, and if they are out cold without
-end, with no more stamina than the character has (retail `NPC Manager.cpp`,
-the join calling `CopyMonsterConditionsToCharacter` and
-`RemoveMonster`; `DismissNpcFromParty` calling `CreateGroup` and
-`CopyCharacterConditionsToTarget`). So a recruit in a level is two things, as
-it is in the original, and the handing over of conditions is the rule, not a
-copy to be designed away.
+What the player can see of an NPC who may join (retail `NPC Manager.cpp`,
+`DismissNpcFromParty` and the join beside it):
+
+- Standing in a level they fight and are hurt as a monster of the species that
+  is their likeness, with the health and stamina that species rolls, rolled
+  anew each time they come to stand there.
+- Seated in the party they have their sheet's health and stamina, as they left
+  them when last seated.
+- What ails them goes with them both ways. Dismissed out cold without end,
+  they stand with no more stamina than they had seated.
+- Dismissed dead, they do not stand at all.
+
+That is all the original is evidence of. That it keeps a character record and
+makes a separate monster record is its layout, and decides nothing here.
+
+**Not as it should be.** The code has an NPC as two actors, the character and
+a body, each with its own `Vitals`, and copies conditions between them on
+joining and leaving: two authorities for what ails one person. An NPC is one
+actor. What is rightly a thing of its own is only its physical presence in a
+level (where it stands, its collider, its navigation, what is drawn), which
+comes and goes with the level and with joining.
 
 One who is somewhere the party is not is set aside with that level, or on
 their own if they are nowhere.
