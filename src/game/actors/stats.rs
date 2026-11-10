@@ -15,7 +15,6 @@ use crate::content::species::{AttackWord, MonsterKind, Reach, Species};
 use crate::content::spells::Spellbook;
 use crate::game::characters::resistance::resistances;
 use crate::game::characters::{Character, Condition, Vitals, scale_by_level};
-use crate::game::combat::attack::{self, Surprise};
 use crate::game::data::Catalogs;
 use crate::game::inventory::WeaponSlot;
 use crate::game::items::{Burden, Items, Reweigh};
@@ -127,48 +126,6 @@ pub struct Armour {
     pub hit_locations: Option<[u8; 7]>,
 }
 
-/// How an actor stands as a blow comes at it, read as it stands.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Stance<'a> {
-    pub vitals: Option<&'a Vitals>,
-    /// Defending this round.
-    pub braced: bool,
-    /// On the move, its guard down to blows that close in.
-    pub distracted: bool,
-}
-
-impl Armour {
-    /// What its guard comes to against a blow: fatigue adds a tenth of
-    /// itself, a surprise strips what it exposes, and four go to a blow
-    /// that closes in on it on the move.
-    fn guard(&self, mode: AttackMode, surprise: Surprise, stance: Stance) -> i32 {
-        let tired = stance.vitals.filter(|_| self.tires).map_or(0, attack::fatigue) / 10;
-        let mut guard = tired;
-        if surprise.any() {
-            guard -= self.exposed + if stance.braced { self.braced.1 } else { 0 };
-        }
-        if stance.distracted && !attack::keeps_distance(mode) {
-            guard -= 4;
-        }
-        guard
-    }
-
-    fn bracing(&self, stance: Stance) -> i32 {
-        if stance.braced { self.braced.0 } else { 0 }
-    }
-
-    /// Its armour against a blow's aim; its guard counts once.
-    pub fn against_aim(&self, mode: AttackMode, surprise: Surprise, stance: Stance) -> i32 {
-        self.total + self.bracing(stance) + self.guard(mode, surprise, stance)
-    }
-
-    /// Its armour where a blow struck; its guard counts twice.
-    pub fn at(&self, mode: AttackMode, surprise: Surprise, stance: Stance, place: usize) -> i32 {
-        self.at[place] + self.bracing(stance) - self.by_mode[mode]
-            + 2 * self.guard(mode, surprise, stance)
-    }
-}
-
 /// One thing an actor strikes with: one of a member's weapon slots as their gear
 /// and stats make it now, or one of a monster's species' attacks. A
 /// member's two slots are its two arms; a monster's attacks all belong to
@@ -228,6 +185,18 @@ pub struct Arm {
     pub word: Option<(AttackWord, bool)>,
     /// Where its blows land on a member, by its species' chances.
     pub lands_on_party: Option<EnumMap<BodyPart, u8>>,
+}
+
+impl Arm {
+    /// The dice a blow of `mode` rolls: a punch the off hand's, a kick the
+    /// main hand's fist, anything else the arm's own.
+    pub fn rolls(&self, mode: AttackMode) -> Dice {
+        match mode {
+            AttackMode::Punch => self.punch,
+            AttackMode::Kick => self.kick,
+            _ => self.dice,
+        }
+    }
 }
 
 /// What an actor strikes with, and how it fights.
@@ -295,12 +264,6 @@ impl Attacks {
     /// The weapons its slots hold.
     pub fn weapons(&self) -> EnumMap<WeaponSlot, Option<Entity>> {
         EnumMap::from_fn(|slot| self.of(slot).find_map(|arm| arm.weapon))
-    }
-
-    /// How well it presses past a guard now, tired as it is.
-    pub fn pressing(&self, vitals: &Vitals) -> i32 {
-        let fatigue = attack::fatigue(vitals);
-        self.press - if self.tires_little { fatigue >> 1 } else { fatigue }
     }
 }
 
