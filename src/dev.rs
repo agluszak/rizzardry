@@ -37,6 +37,18 @@ pub fn open_automap(
     }
 }
 
+/// Ask for the first member's review (their inventory and sheet) until it
+/// has opened once, through the request the portrait makes.
+pub(crate) fn open_inventory(
+    mut opened: Local<bool>,
+    roster: Single<&crate::game::party::roster::PartyRoster>,
+    mut review: crate::presentation::inventory::OpenReview,
+) {
+    if !*opened && let Some(&member) = roster.first() {
+        *opened = review.open(member);
+    }
+}
+
 pub fn screenshot_and_exit(
     mut commands: Commands,
     time: Res<Time>,
