@@ -1,6 +1,7 @@
 //! What every actor is, a party member or a monster alike
 //! (`docs/rules/actors.md`).
 
+pub mod arms;
 pub mod place;
 pub mod spells;
 mod stats;

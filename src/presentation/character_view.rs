@@ -22,12 +22,12 @@ pub struct CharacterView {
 
 impl CharacterViewItem<'_, '_> {
     /// The member's armour as it stands, braced while they defend.
-    pub fn armour(&self) -> crate::game::combat::attack::Armour {
+    pub fn armour(&self) -> crate::game::actors::arms::Armour {
         let braced = match self.ordered {
             Some(ordered) if ordered.defends() => self.armour.braced.0,
             _ => 0,
         };
-        crate::game::combat::attack::Armour {
+        crate::game::actors::arms::Armour {
             total: self.armour.total + braced,
             by_location: enum_map::EnumMap::from_fn(|part| {
                 self.armour.at[enum_map::Enum::into_usize(part)] + braced
@@ -42,7 +42,6 @@ impl CharacterViewItem<'_, '_> {
     pub fn resistances(
         &self,
         held: &Items,
-        catalog: &crate::content::items::ItemCatalog,
     ) -> enum_map::EnumMap<
         crate::content::characters::Realm,
         crate::game::characters::resistance::Resistance,
@@ -50,9 +49,7 @@ impl CharacterViewItem<'_, '_> {
         let sheet = crate::game::characters::resistance::resistances(
             self.profile,
             self.attributes,
-            |slot| {
-                held.worn(self.entity, slot).and_then(|item| held.id(item)).map(|id| &catalog[id])
-            },
+            |slot| held.protection(self.entity, slot),
         );
         enum_map::EnumMap::from_fn(|realm| crate::game::characters::resistance::Resistance {
             base: sheet[realm].base,

@@ -1,10 +1,10 @@
 //! Resistance from a character's profile and currently worn equipment.
 use crate::content::characters::{Attribute, Realm, Skill};
-use crate::content::items::ItemDefinition;
 #[cfg(test)]
 use crate::game::characters::Character;
 use crate::game::characters::{Profession, Race};
 use crate::game::inventory::EquipSlot;
+use crate::game::items::Protection;
 use enum_map::{EnumMap, enum_map};
 use enumset::EnumSet;
 
@@ -18,12 +18,11 @@ pub struct Resistance {
 /// Retail `RecalculateCharacterResistances` and equipment modifier accumulation.
 /// Other temporary effects are not represented yet.
 ///
-/// `worn` is the definition of what the character wears in a slot, looked
-/// up from the catalog until definitions are components.
+/// `worn` is what protects, worn in a slot, and whether it is a shield.
 pub fn resistances<'a>(
     character: &crate::game::characters::Character,
     a: &crate::game::actors::Attributes,
-    worn: impl Fn(EquipSlot) -> Option<&'a ItemDefinition>,
+    worn: impl Fn(EquipSlot) -> Option<(&'a Protection, bool)>,
 ) -> EnumMap<Realm, Resistance> {
     use Realm::*;
     let mut racial: EnumMap<Realm, i32> = enum_map! { _ => 0 };
@@ -70,7 +69,7 @@ pub fn resistances<'a>(
             .iter()
             .filter(|slot| slot.is_active())
             .filter_map(&worn)
-            .map(|item| i32::from(item.resistance_bonus[realm]))
+            .map(|(protection, _)| i32::from(protection.resistance[realm]))
             .sum::<i32>()
             .clamp(-125, 125);
         Resistance { base, total: (base + equipment).min(100) }
@@ -81,22 +80,23 @@ pub fn resistances<'a>(
 mod tests {
     use super::*;
     use crate::content::characters::{Gender, Profession};
-    use crate::content::items::ItemDefinition;
     #[test]
     fn racial_and_worn_item_resistances_apply_without_alternate_weapons() {
         let elf = Character::new("Elf", Race::Elf, Gender::Female, Profession::Mage);
-        let charm = ItemDefinition {
-            resistance_bonus: enum_map! { Realm::Air => 12, Realm::Fire => -7, _ => 0 },
-            ..Default::default()
+        let charm = Protection {
+            armour: 0,
+            resistance: enum_map! { Realm::Air => 12, Realm::Fire => -7, _ => 0 },
+            regeneration: [0; 3],
         };
         let sheet = crate::game::actors::Attributes::of_sheet(&elf);
         let base = resistances(&elf, &sheet, |slot| {
-            (slot == EquipSlot::AlternatePrimary).then_some(&charm)
+            (slot == EquipSlot::AlternatePrimary).then_some((&charm, false))
         });
         assert_eq!(base[Realm::Air], Resistance { base: 40, total: 40 });
         assert_eq!(base[Realm::Mental], Resistance { base: 50, total: 50 });
         let worn = resistances(&elf, &sheet, |slot| {
-            matches!(slot, EquipSlot::AlternatePrimary | EquipSlot::Primary).then_some(&charm)
+            matches!(slot, EquipSlot::AlternatePrimary | EquipSlot::Primary)
+                .then_some((&charm, false))
         });
         assert_eq!(worn[Realm::Air], Resistance { base: 40, total: 52 });
         assert_eq!(worn[Realm::Fire], Resistance { base: 30, total: 23 });

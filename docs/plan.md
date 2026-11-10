@@ -113,9 +113,24 @@ and is the only place a value copy of an item survives.
 
 ### 4. Levels keep what is in them
 
-A level that is left stays, dormant, with its monsters, items and devices. The
+**Rules.** [rules/levels.md](rules/levels.md).
+
+A level that is left stays, set aside, with its monsters, items and devices. The
 mirror records and the code that copies entities into and out of them go. The
 same for NPCs who are not present and members who are not in the party.
+
+**Gone.** `LevelMemory`, `LevelRecord`, `LevelContents`, `KeptMonster` as a
+record, `KeptItem`, `TriggerMemory`, `KeptDevice`, `DeviceRecords`, `Profile`,
+`StoredCharacter`, `NpcPopulation::depart`, `ItemStack`, `unpack`,
+`Items::stack`.
+
+**New types, and no others.** None for the levels themselves: setting aside is
+`Disabled`. One event for a level waking, carrying how long it was away, which
+the rules that owe it time react to.
+
+**First step.** An experiment, not a design: disable a level's entities with
+the party elsewhere and find out what physics, navigation and drawing still
+see of it.
 
 ### 5. Tables are content
 
@@ -140,5 +155,6 @@ headless tests do not establish it.
 | --- | --- |
 | Groundwork: combat, effects and magic resolved through messages and plain functions | Done on `refactor/event-driven-combat-and-magic`. An improvement by the old standard only: the functions are still retail routines. Slices 1 and 6 replace them. |
 | 1 and 2. One kind of actor, and what is on it | Mostly landed. Gone: the per-step judges, `place_bodies`, `Footing`/`Eyes`/`Conspicuous`, `judge_sides`, `sync_member_maxima`, `notice_changes`, `Vitals::enchantments`, `PartyEffects`. Spells laid are entities related to their bearer; place and sight are computed on read; side is stored and changed by `Stand`, faction changes and joining. Where the contract was changed while designing, the rule page says why: conditions stay in `Vitals`; Turncoat is read where the side is read, so there are no `Afflicted`/`Recovered` events; `Loyalty` and `Allegiance` are written when a monster is made. Deaths settle from `Damaged`; practice is one `Practise` event whose `Improved` refits the member, and advancement refits when it is accepted. **Still owed:** `combat/attack.rs` is still the port of `CalcAttacks`/`CalcArmorClasses` (`Grip`), and refit after gear or load changes is still noticed by a write to `Carried`/`Burden`: both go with slice 3, where items are things. The party's own sight (`world/perception.rs`) still reads species records; `engage`, `leave_fight` and the monster AI are redesigned only as far as place and side, their shape is slice 6's. |
-| 3. Items are things | First phase landed: everything the party holds is item entities placed by relationship (`game/items.rs`), changed by events with one observer each; `Carried`, `ItemPool`, `StackId`, `ItemIds` and the addressing enums are gone; wearing refits and holdings reweigh by the relationships changing. Then what lies in the world, sits in a container or falls as loot became item entities too (`Lying`, `Stowed`), taken by `Give` and thrown by `Throw`. **Still owed:** rules still look definitions up for weapons, armour, spells cast and recipes (`Grip`, `of_member`, `casting`, `Merge`, `Identify`); that goes with [rules/arms.md](rules/arms.md), when definitions become `Weapon`/`Protection`/`Casts` components. Plain item values (`ItemStack`) survive only in the records of levels that were left and of characters out of the party, which slice 4 removes. No test yet for `Identify`, burning, or the omnigun. The screens were not checked in the running game. |
-| 4–7 | Not started. |
+| 3. Items are things | First phase landed: everything the party holds is item entities placed by relationship (`game/items.rs`), changed by events with one observer each; `Carried`, `ItemPool`, `StackId`, `ItemIds` and the addressing enums are gone; wearing refits and holdings reweigh by the relationships changing. Then what lies in the world, sits in a container or falls as loot became item entities too (`Lying`, `Stowed`), taken by `Give` and thrown by `Throw`. Then a member's arms and armour: what an item is to a hand is components set when it is made (`Weapon`, `Launcher`, `Missile`, `Shield`, `Protection`), and refit reads the two hands ([rules/arms.md](rules/arms.md)); `Grip` and the member half of `combat/attack.rs` are gone. **Still owed:** rules still look definitions up for the spell an item casts (`magic/casting.rs`), recipes, identify difficulty, burning by class, trade values and the omnigun's tiers; plain item values (`ItemStack`) survive only in the records of levels that were left and of characters out of the party, which slice 4 removes; no test yet for `Identify`, burning, or the omnigun. The screens were not checked in the running game. |
+| 4. Levels keep what is in them | Rules and contract written; not started. |
+| 5–7 | Not started. |
