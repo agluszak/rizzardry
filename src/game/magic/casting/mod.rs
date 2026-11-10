@@ -56,14 +56,10 @@ pub enum Source {
 impl Source {
     /// Resolve an item source by its stable stack identity. This is routing,
     /// not acceptance: the cast revalidates eligibility and payment.
-    pub fn spell_id(
-        self,
-        held: &crate::game::items::Items,
-        catalog: &crate::content::items::ItemCatalog,
-    ) -> Option<SpellId> {
+    pub fn spell_id(self, held: &crate::game::items::Items) -> Option<SpellId> {
         match self {
             Self::Spell { spell, .. } | Self::Innate { spell, .. } => Some(spell),
-            Self::Item(item) => catalog[held.id(item)?].spell.map(|s| s.spell),
+            Self::Item(item) => held.casts(item).map(|casts| casts.spell),
         }
     }
 }
@@ -251,7 +247,7 @@ pub fn cast(
         // The power it goes off at. An instrument played too badly to sound
         // tires and trains its player all the same, and that is the end of it.
         let Some(power) = scene.power(&mut rng, &means, &body, (&cast, spell), boost) else {
-            let skill = item.and_then(|item| item.definition.use_type.skill());
+            let skill = item.and_then(|item| item.casts.by.skill());
             let tired = cost::stamina(&mut rng, &scene.tiring(&body, item, spell, 0));
             bodies.get_mut(caster).unwrap().vitals.tire(tired);
             for (skill, usage) in cost::practice(&cost::Training::PlayedBadly { skill }) {
@@ -300,7 +296,9 @@ pub fn cast(
             caster,
             spell: id,
             power,
-            item: item.map(|item| item.definition.name.clone()),
+            item: item
+                .and_then(|item| around.held.id(item.item))
+                .map(|id| content.items[id].name.clone()),
             outcome,
             effects: Vec::new(),
         };

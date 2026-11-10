@@ -9,7 +9,7 @@ use bevy::prelude::*;
 
 use super::{Cast, Recast, Source};
 use crate::content::characters::{Realm, Skill};
-use crate::content::items::{ItemCatalog, ItemDefinition, UseType};
+use crate::content::items::UseType;
 use crate::content::spells::{SpellDefinition, SpellId, Targeting, Working};
 use crate::game::actors::{Place, Places};
 use crate::game::camp::Camp;
@@ -21,7 +21,7 @@ use crate::game::hits::definitions::Definitions;
 use crate::game::hits::effects::{BodyReadOnly, BodyReadOnlyItem};
 use crate::game::hits::reach::Struck;
 use crate::game::hits::spells::struck;
-use crate::game::items::{Items, Place as Stowed};
+use crate::game::items::{Casts, Items, Place as Stowed};
 use crate::game::magic::pointcasts::Elementals;
 use crate::game::magic::portals::Portal;
 use crate::game::magic::reach::{self, Aim, Marking, Target};
@@ -95,7 +95,7 @@ pub struct Around<'w, 's> {
 #[derive(Clone, Copy)]
 pub struct ItemUse<'d> {
     pub item: Entity,
-    pub definition: &'d ItemDefinition,
+    pub casts: &'d Casts,
     pub identified: bool,
     worn: bool,
     spent: bool,
@@ -104,12 +104,12 @@ pub struct ItemUse<'d> {
 impl ItemUse<'_> {
     /// Potions and food are usable by anyone who holds them.
     pub fn by_anyone(&self) -> bool {
-        matches!(self.definition.use_type, UseType::Potion | UseType::Food)
+        matches!(self.casts.by, UseType::Potion | UseType::Food)
     }
 
     /// An instrument or gadget is played at the player's reach.
     pub fn played(&self) -> bool {
-        matches!(self.definition.use_type, UseType::Instrument | UseType::Gadget)
+        matches!(self.casts.by, UseType::Instrument | UseType::Gadget)
     }
 }
 
@@ -247,15 +247,15 @@ impl<'a, 'c, 'q, 'p> Scene<'a, 'c, 'q, 'p, '_, '_> {
 
     /// The item a source uses, if it is one and is still there: carried by the
     /// caster, or in the party's pool.
-    pub fn item_use(&self, source: Source, caster: Entity) -> Option<ItemUse<'c>> {
+    pub fn item_use(&self, source: Source, caster: Entity) -> Option<ItemUse<'a>> {
         let Source::Item(item) = source else { return None };
-        let held = &self.around.held;
+        let held: &'a Items = &self.around.held;
         if held.bearer(item) != Some(caster) && !held.pooled(item) {
             return None;
         }
         Some(ItemUse {
             item,
-            definition: &self.content.items[held.id(item)?],
+            casts: held.casts(item)?,
             identified: held.known(item)?.identified,
             worn: held.slot(item).is_some_and(|slot| slot.is_active()),
             spent: held.charges(item) == Some(0),
@@ -267,7 +267,7 @@ impl<'a, 'c, 'q, 'p> Scene<'a, 'c, 'q, 'p, '_, '_> {
     /// already.
     pub fn means<'b>(&self, source: Source, body: &BodyReadOnlyItem<'b, '_>) -> Option<Means<'b>>
     where
-        'c: 'b,
+        'a: 'b,
     {
         Some(match source {
             Source::Innate { power, budget, level, .. } => Means::Own { power, budget, level },
@@ -302,7 +302,7 @@ impl<'a, 'c, 'q, 'p> Scene<'a, 'c, 'q, 'p, '_, '_> {
                     power => power,
                 }
             }
-            Means::Item { item, .. } => item.definition.spell.map_or(0, |uses| uses.power),
+            Means::Item { item, .. } => item.casts.power,
             Means::Learned { asked, .. } => {
                 let affordable = self.affordable(body, spell);
                 if *asked != power::AUTO {
@@ -398,16 +398,16 @@ impl<'a, 'c, 'q, 'p> Scene<'a, 'c, 'q, 'p, '_, '_> {
     }
 
     fn held(&self, item: &ItemUse, body: &BodyReadOnlyItem) -> may::Held {
-        let definition = item.definition;
+        let casts = item.casts;
         may::Held {
-            power: definition.spell.map(|uses| uses.power),
+            power: Some(casts.power),
             played: item.played(),
-            voiced: definition.use_type == UseType::Instrument,
+            voiced: casts.by == UseType::Instrument,
             activation: may::Activation {
-                has_use: !matches!(definition.use_type, UseType::None | UseType::Spellbook),
-                must_be_worn: definition.requires_worn(),
+                has_use: !matches!(casts.by, UseType::None | UseType::Spellbook),
+                must_be_worn: casts.worn,
                 worn: item.worn,
-                usable_by_user: body.character.is_some_and(|c| c.can_use(definition)),
+                usable_by_user: body.character.is_some_and(|c| casts.users.admit(c)),
                 by_anyone: item.by_anyone(),
             },
             spent: item.spent,
@@ -516,7 +516,7 @@ impl<'a, 'c, 'q, 'p> Scene<'a, 'c, 'q, 'p, '_, '_> {
         match means {
             Means::Own { level, .. } => (u32::from(*level), 0),
             Means::Item { character, item } => {
-                let figure = match item.definition.use_type {
+                let figure = match item.casts.by {
                     UseType::Instrument => character.profession_levels[Profession::Bard],
                     UseType::Gadget => character.profession_levels[Profession::Gadgeteer],
                     _ => character.level(),
@@ -541,7 +541,7 @@ impl<'a, 'c, 'q, 'p> Scene<'a, 'c, 'q, 'p, '_, '_> {
         power: u32,
         pace: Pace,
     ) -> (u32, bool) {
-        let use_type = item.definition.use_type;
+        let use_type = item.casts.by;
         let presented = match use_type {
             UseType::Thrown => Presented::Thrown,
             UseType::Charged => Presented::Charged,
@@ -622,7 +622,7 @@ impl<'a, 'c, 'q, 'p> Scene<'a, 'c, 'q, 'p, '_, '_> {
         spell: &SpellDefinition,
         power: u32,
     ) -> cost::Tiring {
-        let toll = match item.map(|item| item.definition.use_type) {
+        let toll = match item.map(|item| item.casts.by) {
             None => cost::Toll::Spell { level: spell.level, power },
             Some(UseType::Thrown) => cost::Toll::Thrown,
             Some(UseType::Instrument | UseType::Gadget) => {
@@ -656,11 +656,9 @@ impl<'a, 'c, 'q, 'p> Scene<'a, 'c, 'q, 'p, '_, '_> {
                 realm: spell.realm.map(Realm::skill),
                 power_cast: character.skill_available(Skill::PowerCast),
             },
-            Some(item) => cost::Training::Item {
-                level: spell.level,
-                power,
-                skill: item.definition.use_type.skill(),
-            },
+            Some(item) => {
+                cost::Training::Item { level: spell.level, power, skill: item.casts.by.skill() }
+            }
         }
     }
 
@@ -689,8 +687,7 @@ impl<'a, 'c, 'q, 'p> Scene<'a, 'c, 'q, 'p, '_, '_> {
     /// How hard the item aimed at is to identify.
     pub fn identify_difficulty(&self, cast: &Cast) -> Option<u8> {
         let Aim::Item(target) = cast.choice.aim else { return None };
-        let id = self.around.held.id(target)?;
-        Some(self.content.items[id].identify_difficulty)
+        self.around.held.obscurity(target)
     }
 
     /// The living body of the one the party is talking with, in the level
@@ -794,14 +791,13 @@ pub fn usable_items(
     member: Entity,
     character: &Character,
     held: &Items,
-    catalog: &ItemCatalog,
     spells: &crate::content::spells::SpellCatalog,
     definitions: &Definitions,
 ) -> Vec<(Entity, SpellId)> {
     held.carried(member)
         .filter_map(|item| {
             let worn = held.slot(item).is_some_and(|slot| slot.is_active());
-            Some((item, usable_item(character, item, held, (catalog, spells), definitions, worn)?))
+            Some((item, usable_item(character, item, held, spells, definitions, worn)?))
         })
         .collect()
 }
@@ -813,18 +809,17 @@ pub fn usable_item(
     character: &Character,
     item: Entity,
     held: &Items,
-    (catalog, spells): (&ItemCatalog, &crate::content::spells::SpellCatalog),
+    spells: &crate::content::spells::SpellCatalog,
     definitions: &Definitions,
     worn: bool,
 ) -> Option<SpellId> {
-    let definition = &catalog[held.id(item)?];
-    let cast = definition.spell?;
+    let cast = held.casts(item)?;
     let activation = may::Activation {
-        has_use: !matches!(definition.use_type, UseType::None | UseType::Spellbook),
-        must_be_worn: definition.requires_worn(),
+        has_use: !matches!(cast.by, UseType::None | UseType::Spellbook),
+        must_be_worn: cast.worn,
         worn,
-        usable_by_user: character.can_use(definition),
-        by_anyone: matches!(definition.use_type, UseType::Potion | UseType::Food),
+        usable_by_user: cast.users.admit(character),
+        by_anyone: matches!(cast.by, UseType::Potion | UseType::Food),
     };
     (may::activates(&activation)
         && held.charges(item) != Some(0)

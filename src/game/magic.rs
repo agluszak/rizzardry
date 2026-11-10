@@ -367,7 +367,7 @@ pub fn accept_magic(
     content: Res<Catalogs>,
 ) {
     for &MagicRequest { caster, choice } in requests.read() {
-        let Some(spell) = choice.source.spell_id(&held, &content.items) else {
+        let Some(spell) = choice.source.spell_id(&held) else {
             commands.trigger(casting::Refused { caster, refusal: may::Refusal::NoItem });
             continue;
         };
