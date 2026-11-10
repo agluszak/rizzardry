@@ -100,6 +100,21 @@ impl Factions {
         self.shift(faction as usize, i32::from(delta), now)
     }
 
+    /// A faction is put in a band by the story (retail
+    /// `SetFactionDispositionBand`): its score goes to the band's anchor,
+    /// 25, 55 or 75. It is news only if the band changed.
+    pub fn set_band(&mut self, faction: Faction, band: Band, now: u64) -> Option<FactionNews> {
+        let index = faction as usize;
+        let before = self.band(index as i32);
+        let anchor = match band {
+            Band::Hostile => 25,
+            Band::Neutral => 55,
+            Band::Friendly => 75,
+        };
+        let news = self.set_score(index, anchor, now);
+        news.filter(|_| band != before)
+    }
+
     /// The party killed one of the faction's (retail `RecordFactionOffense`).
     /// Mook, the Rattkin mafia and the Higardi turn hostile at once; anyone
     /// already hostile, and every other faction, loses standing by the

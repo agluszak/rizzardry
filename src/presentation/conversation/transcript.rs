@@ -17,26 +17,36 @@ pub(super) fn sync_transcript(
     mut commands: Commands,
     assets: Res<AssetServer>,
     strings: crate::presentation::screen_art::GameStrings,
-    sessions: Query<Ref<Conversation>>,
+    sessions: Query<(Ref<Conversation>, Has<Speaking>, Option<Ref<Blocked>>)>,
+    mut ended: RemovedComponents<Speaking>,
     lists: Query<(Entity, Ref<Summary>, Option<&Children>)>,
     mut rows: Query<&mut BitmapText, With<TranscriptRow>>,
 ) {
     for (list, summary, children) in &lists {
         let (_, session) = (views.root(), views.session());
-        let c = sessions.get(session).unwrap();
-        if !summary.is_added() && !c.is_changed() && !strings.is_changed() {
+        let (c, speaking, blocked) = sessions.get(session).unwrap();
+        // A line that has been heard out joins the transcript.
+        let heard = ended.read().count() > 0;
+        let blocked_now = blocked.as_ref().is_some_and(|blocked| blocked.is_added());
+        if !summary.is_added() && !c.is_changed() && !strings.is_changed() && !heard && !blocked_now
+        {
             continue;
         }
         // The current line is still in its speech bubble. Do not print it a
         // second time in the transcript before playback has finished.
-        let count = c.transcript.len()
-            - usize::from(
-                !c.transcript.is_empty() && matches!(c.wait, ConversationWait::Line { .. }),
-            );
+        let count = c.transcript.len() - usize::from(!c.transcript.is_empty() && speaking);
         let lines: Vec<_> = c.transcript[..count]
             .iter()
             .map(|line| match line {
                 TranscriptLine::Npc(text) => (std::borrow::Cow::Borrowed(text.as_str()), None),
+                TranscriptLine::Told(outcome) => (
+                    std::borrow::Cow::Owned(match outcome {
+                        Outcome::Traded => "Trade complete.".into(),
+                        Outcome::TradeRefused(error) => format!("Trade refused: {error:?}"),
+                        Outcome::GiftRefused(error) => format!("Gift refused: {error:?}"),
+                    }),
+                    Some("retail://data/fonts/palettebronze.sti"),
+                ),
                 // Retail alternates its two answers for having nothing to say.
                 TranscriptLine::NoAnswer { npc, second } => (
                     std::borrow::Cow::Owned(
@@ -83,20 +93,11 @@ pub(super) fn sync_transcript(
             .filter(|(text, _)| !text.is_empty())
             .collect();
         let mut trailing = Vec::new();
-        if let ConversationWait::Blocked { quote, entry, reason } = &c.wait {
+        if let Some(Blocked { quote, entry, reason }) = blocked.as_deref() {
             trailing.push((
                 format!("Content gap at quote {quote}, entry {entry:?}: {reason}"),
                 Some("retail://data/fonts/palettered.sti"),
             ));
-        }
-        if let Some(outcome) = c.outcome() {
-            let text = match outcome {
-                Outcome::NoTopic => "No supported topic matches that input.".into(),
-                Outcome::Traded => "Trade complete.".into(),
-                Outcome::TradeRefused(error) => format!("Trade refused: {error:?}"),
-                Outcome::GiftRefused(error) => format!("Gift refused: {error:?}"),
-            };
-            trailing.push((text, Some("retail://data/fonts/palettebronze.sti")));
         }
         let old = children.map_or(&[][..], |children| &children[..]);
         let length = lines.len() + trailing.len();

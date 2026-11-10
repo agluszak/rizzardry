@@ -1,6 +1,6 @@
 //! The factions whose standing scripts change by name (retail
 //! `W8Faction`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
 #[repr(u8)]
 pub enum Faction {
     Unaligned = 0,

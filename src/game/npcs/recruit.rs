@@ -23,6 +23,7 @@ use crate::{
     },
 };
 use avian3d::prelude::Position;
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use enum_map::Enum;
 use enumset::EnumSet;
@@ -84,48 +85,38 @@ pub enum JoinRefusal {
     NoRoom,
     Declines,
 }
-#[derive(Message)]
-pub struct Join {
-    pub actor: Entity,
-    pub reply_to: Entity,
-}
-#[derive(Message)]
-pub struct Joined {
-    pub reply_to: Entity,
-    pub result: Result<(), JoinRefusal>,
-}
-#[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Recruiting;
 pub fn install(app: &mut App) {
-    app.add_message::<Join>()
-        .add_message::<Joined>()
-        .add_systems(Update, (join, retire_fallen).chain().in_set(Recruiting));
+    app.add_systems(Update, retire_fallen);
 }
-fn join(
-    mut requests: MessageReader<Join>,
-    mut results: MessageWriter<Joined>,
-    records: Query<(&ActorId, &Npc, Option<&NpcBodies>), With<Character>>,
-    party: Single<(Entity, &PartyRoster)>,
-    members: Query<(&Character, &Vitals, Has<Npc>)>,
-    bodies: Query<&Vitals, With<Monster>>,
-    dead: Query<(), With<Dead>>,
-    level: Single<&Level>,
-    content: Res<Catalogs>,
-    story: Res<super::story::StoryFacts>,
-    mut commands: Commands,
-) {
-    let (party_id, roster) = *party;
-    let mut occupied = roster.iter().filter(|&e| members.get(e).is_ok_and(|r| r.2)).count();
-    let mut admitted = std::collections::HashSet::new();
-    for request in requests.read() {
-        let result = (|| {
-            let (id, npc, binding) =
-                records.get(request.actor).map_err(|_| JoinRefusal::Declines)?;
-            if npc.killed
-                || dead.contains(request.actor)
-                || roster.contains(&request.actor)
-                || admitted.contains(&request.actor)
-            {
+/// Who may join the party, and their joining it.
+#[derive(SystemParam)]
+pub struct Recruiter<'w, 's> {
+    records: Query<
+        'w,
+        's,
+        (&'static ActorId, &'static Npc, Option<&'static NpcBodies>),
+        With<Character>,
+    >,
+    party: Single<'w, 's, (Entity, &'static PartyRoster)>,
+    members: Query<'w, 's, (&'static Character, &'static Vitals, Has<Npc>)>,
+    bodies: Query<'w, 's, &'static Vitals, With<Monster>>,
+    dead: Query<'w, 's, (), With<Dead>>,
+    level: Single<'w, 's, &'static Level>,
+    content: Res<'w, Catalogs>,
+    story: Res<'w, super::story::StoryFacts>,
+    commands: Commands<'w, 's>,
+}
+impl Recruiter<'_, '_> {
+    /// Someone asked to join does, or says why not: the party has room for
+    /// two such; they keep to a post in a region they serve, wait on what
+    /// the story owes them, and want a party of their level.
+    pub fn admit(&mut self, actor: Entity) -> Result<(), JoinRefusal> {
+        let Self { records, party, members, bodies, dead, level, content, story, commands } = self;
+        let (party_id, roster) = **party;
+        let occupied = roster.iter().filter(|&e| members.get(e).is_ok_and(|r| r.2)).count();
+        {
+            let (id, npc, binding) = records.get(actor).map_err(|_| JoinRefusal::Declines)?;
+            if npc.killed || dead.contains(actor) || roster.contains(&actor) {
                 return Err(JoinRefusal::Declines);
             }
             let d = &content.npcs[id.0];
@@ -141,10 +132,8 @@ fn join(
                 .fold((0u32, 0u32), |(sum, count), (c, _, _)| {
                     (sum + u32::from(c.level()), count + 1)
                 });
-            // It keeps to its post in a region it serves, waits on what the
-            // story owes it, and wants a party of its level.
             let waiting = d.joins_when.is_some_and(|(fact, set)| {
-                !super::story::fact_named(&story, &content.facts, fact)
+                !super::story::fact_named(story, &content.facts, fact)
                     .is_ok_and(|value| (value != 0) == set)
             });
             if d.posts.contains(&region)
@@ -160,19 +149,16 @@ fn join(
                     if let Ok(v) = bodies.get(b) {
                         let conditions = v.conditions.clone();
                         commands
-                            .entity(request.actor)
+                            .entity(actor)
                             .entry::<Vitals>()
                             .and_modify(move |mut vitals| vitals.conditions = conditions);
                     }
                     commands.entity(b).despawn();
                 }
             }
-            commands.entity(request.actor).insert(PartyMember(party_id));
-            occupied += 1;
-            admitted.insert(request.actor);
+            commands.entity(actor).insert(PartyMember(party_id));
             Ok(())
-        })();
-        results.write(Joined { reply_to: request.reply_to, result });
+        }
     }
 }
 /// Dismissal is a complete ownership transfer; the caller does not edit formation.
@@ -397,10 +383,7 @@ mod tests {
             })
             .insert_resource(GameRng::seeded(1))
             .init_resource::<super::super::story::StoryFacts>()
-            .add_message::<crate::game::hits::Damaged>()
-            .add_message::<Join>()
-            .add_message::<Joined>()
-            .add_systems(Update, join);
+            .add_message::<crate::game::hits::Damaged>();
         let world = app.world_mut();
         let party = world.spawn((Party, Position(Vec3::ZERO), PartyBody::default())).id();
         world
@@ -447,11 +430,14 @@ mod tests {
     }
 
     fn join_with(scene: &mut Scene) -> Result<(), JoinRefusal> {
-        let reply_to = scene.veteran;
-        scene.app.world_mut().write_message(Join { actor: scene.record, reply_to });
+        let actor = scene.record;
+        let result = scene
+            .app
+            .world_mut()
+            .run_system_once(move |mut recruiter: Recruiter| recruiter.admit(actor))
+            .unwrap();
         scene.app.update();
-        let mut results = scene.app.world_mut().resource_mut::<Messages<Joined>>();
-        results.drain().next().expect("an answer").result
+        result
     }
 
     /// Joining gives a seat and nothing else: the same sheet and the same

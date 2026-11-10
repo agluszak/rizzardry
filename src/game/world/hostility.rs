@@ -16,7 +16,7 @@ use crate::game::party::recovery::Elapsed;
 use crate::game::time::GameClock;
 
 /// How someone stands toward the party (retail `W8Disposition`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 pub enum Stance {
     #[default]
     Neutral,

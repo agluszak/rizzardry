@@ -1,0 +1,261 @@
+#![enable(implicit_some)]
+// The story's facts that are not simply what was last set (retail
+// `InitializeFactState`, `EvaluateFact`), by the fact's own name.
+//
+//   begins   the facts a new game begins with set
+//   derived  the facts read off the world when asked:
+//     Is(f)            as another fact is
+//     Has(i)           the party holds item i
+//     Held(of, at_least, at_most)
+//                      how many of these items the party holds, each counted once
+//     EveryoneHas(i)   every member holds item i
+//     Friendly(f)      the faction is friendly
+//     Joined(n)        person n is in the party, and awake
+//     Companions(n)    exactly n people have joined the party
+//     FitMember(r)     a member of race r is awake
+//     Not, All, Any    of other readings
+//     SetAnd(r)        what was last set, but only while r holds
+//     Unported         read off something this game does not have yet
+(
+    begins: ["FACT_VIRGIN", "FACT_QUEST_VIRGIN_1", "FACT_QUEST_VIRGIN_2", "FACT_QUEST_VIRGIN_3"],
+    derived: {
+        // The three devices: Astral Dominae, Chaos Moliri, Destinae Dominus.
+        "FACT_DEVICE_ONE": Held(of: [0x243, 0x242, 0x244], at_least: 1, at_most: 1),
+        "FACT_DEVICE_TWO": Held(of: [0x243, 0x242, 0x244], at_least: 2, at_most: 2),
+        "FACT_DEVICE_THREE": Held(of: [0x243, 0x242, 0x244], at_least: 3, at_most: 3),
+        "FACT_RAPAX_AWAY_CAMP_EXISTS": Held(of: [0x243, 0x242, 0x244], at_least: 2, at_most: 3),
+
+        "FACT_ARNIKA_PARTY_HAS_MARTEN_BADGE": Has(0x27b),
+        "FACT_TRYNNIE_PC_HAS_HELM": Has(0x239),
+        "FACT_QUEST_SHAMAN_GET_HELM": Not(Has(0x239)),
+        "FACT_UMISSION_IUFPASS_LEVEL2": Has(0x268),
+        "FACT_PARTY_HAS_BLOODLUST_SWORD": Has(0x294),
+        "FACT_UMISSION_TRAIN_WETSUIT": EveryoneHas(0x1e5),
+        "FACT_UMISSION_TRAIN_FIRE_NOAMMO": All([
+            Not(Is("FACT_UMISSION_TRAIN_COVERT_ASSIGN")),
+            Is("FACT_UMISSION_TRAIN_FIRE_ASSIGN"),
+            Not(Has(0x271)),
+            Not(Has(0x272)),
+        ]),
+
+        "FACT_FACTION_HIGARDI_BANK_FRIENDLY": Friendly(HigardiBank),
+        "FACT_FACTION_HIGARDI_COMMON_FRIENDLY": Friendly(HigardiCommon),
+        "FACT_FACTION_HIGARDI_HLL_FRIENDLY": Friendly(HigardiLunarLegion),
+        "FACT_FACTION_HIGARDI_FELLOW_FRIENDLY": Friendly(Brotherhood),
+        "FACT_FACTION_TRYNNIE_COMMON_FRIENDLY": Friendly(Trynnie),
+        "FACT_FACTION_UMPANI_COMMON_FRIENDLY": Friendly(Umpani),
+        "FACT_FACTION_TRANG_COMMON_FRIENDLY": Friendly(Trang),
+        "FACT_FACTION_RAPAX_COMMON_FRIENDLY": Friendly(RapaxCommon),
+        "FACT_FACTION_RAPAX_TEMPLAR_FRIENDLY": Friendly(RapaxTemplar),
+
+        "FACT_MYLES_IN_PARTY": Joined(0x07),
+        "FACT_PEACE_DRAZIC_IN_PARTY": Joined(0x10),
+        "FACT_PEACE_RODAN_IN_PARTY": Joined(0x11),
+        "FACT_VI_IN_PARTY": Joined(0x18),
+        "FACT_TRYNNIE_SPARKLE_IN_PARTY": Joined(0x38),
+        "FACT_TWO_IN_PARTY": Companions(2),
+        "FACT_PEACE_TWO_IN_PARTY": SetAnd(All([Joined(0x11), Joined(0x10)])),
+        "FACT_MOOK_MOOK_IN_PARTY": SetAnd(FitMember(Mook)),
+
+        "FACT_ALIGNMENT_NONE": Not(Any([Is("FACT_ALIGNMENT_TRANG"), Is("FACT_ALIGNMENT_UMPANI")])),
+        "FACT_RAPAX_SAVANT_ALLIANCE": Any([
+            Is("FACT_ASTRAL_POSSESS"),
+            Is("FACT_DESTINAE_POSSESS"),
+            Is("FACT_CHAOS_POSSESS"),
+        ]),
+        "FACT_QUEST_SHAMAN_DESTINY_TWO": Not(All([
+            Is("FACT_QUEST_MARTEN_DIARY"),
+            Is("FACT_QUEST_MARTEN_IDOL"),
+        ])),
+        "FACT_QUEST_PEACE_UNLOCK_CAGES": Any([
+            Is("FACT_RODAN_LOCKED_IN_CAGE"),
+            Is("FACT_DRAZIC_LOCKED_IN_CAGE"),
+        ]),
+        "FACT_PARTY_DEACTIVATED_BOMB": Is("FACT_DS_BOMB_DEACTIVATED"),
+
+        // Whether Glumph was ever met; five grenades once seen; Vi lying
+        // unconscious in the party; the member Al-Sedexus took.
+        "FACT_GLUMPH_DEAD": Unported,
+        "FACT_UMISSION_TRAIN_COVERT_DONE": Unported,
+        "FACT_VI_IS_DEAD": Unported,
+        "FACT_FATHER_IN_PARTY": Unported,
+    },
+    // What setting a fact sets off (retail `HandleFactChange`): when it is
+    // Set, when it is Cleared, or Always.
+    //   Fact(f, v)             another fact is set to v
+    //   If(reading, [..])      these, if the reading holds
+    //   Faction(f, stance)     the faction becomes friendly or hostile
+    //   FactionMet(f)          the faction is marked as met
+    //   Group(species, stance) the first group of a species turns
+    //   SkillFloor(skill, n)   each living member who may have the skill has at least n in it
+    //   Raise(attribute, by, tells)
+    //                          each member fit to act gains up to `by`, to 100 at most,
+    //                          and the party is told string `tells`
+    //   Returns                the member who was taken is back
+    //   Trigger(name)          a named device of the level runs; TriggerOnce, if it never has
+    //   TriggerOff(name)       a named device is switched off
+    //   LevelVar(name, v)      a variable of the level is made; LevelVarOr sets bits in one
+    //   Stock(npc, item, count, after)
+    //                          a merchant gets items, `after` seconds from now
+    //   Unstock(npc, item)     an item a merchant was to get is cancelled
+    //   Mark(npc)              the person's turn comes when the party is next where they are
+    //   Gone(npc)              the person's body leaves where it stood; GoneUnmet, if never greeted
+    //   Stands(npc, level, at) the person stands at a named spot of another level
+    //   Script(npc, script)    the person's body follows a script
+    //   Reload(npc)            the person's lines are read anew and they greet the party
+    //   SpawnItem(item, at)    an item appears at a named spot
+    //   SpawnMonster(species, at)
+    //   LookAt(x, y, z)        the party looks at a point
+    //   EndTalk                the conversation under way ends
+    //   Scene(name)            one of the story's scenes plays after what is being said
+    follows: {
+        "FACT_ANTONE_ZYNARYX_ALL_INGREDIENTS": [Set([Stock(0x03, 0x28a, 1, 86400)])],
+        "FACT_ANTONE_STEELHIDE_ALL_INGREDIENTS": [Set([Stock(0x03, 0x28b, 1, 86400)])],
+        "FACT_ANTONE_FEATHERWEIGHT_ALL_INGREDIENTS": [Set([Stock(0x03, 0x28c, 1, 86400)])],
+        "FACT_ANTONE_BEASTSLAYER_ALL_INGREDIENTS": [Set([Stock(0x03, 0x28d, 1, 86400)])],
+        "FACT_ANTONE_EBON_STAFF_ALL_INGREDIENTS": [Set([Stock(0x03, 0x28e, 1, 86400)])],
+        "FACT_FERRO_MIRROR_ARMOR_ALL_INGREDIENTS": [Set([Stock(0x39, 500, 1, 86400)])],
+        "FACT_FERRO_IVORY_BLADE_ALL_INGREDIENTS": [Set([Stock(0x39, 0x1f5, 1, 86400)])],
+        "FACT_FERRO_VAMPIRE_CHAIN_ALL_INGREDIENTS": [Set([Stock(0x39, 0x1f8, 1, 86400)])],
+        "FACT_TRYNNIE_FUZZFAS_POTION": [Set([Stock(0x49, 0x1b0, 1, 86400)])],
+        "FACT_RATTKIN_HAVE_AD": [Set([Stock(0x48, 0x242, 1, 0)])],
+        "FACT_ASTRAL_POSSESS": [Set([Unstock(0x48, 0x242)])],
+
+        "FACT_FACTION_HIGARDI_HLL_FRIENDLY": [Set([Faction(HigardiLunarLegion, Friendly)]), Cleared([Faction(HigardiLunarLegion, Hostile)])],
+        "FACT_FACTION_HIGARDI_COMMON_FRIENDLY": [Set([Faction(HigardiCommon, Friendly)]), Cleared([Faction(HigardiCommon, Hostile)])],
+        "FACT_FACTION_HIGARDI_BANK_FRIENDLY": [Set([Faction(HigardiBank, Friendly)]), Cleared([Faction(HigardiBank, Hostile)])],
+        "FACT_FACTION_HIGARDI_FELLOW_FRIENDLY": [Set([Faction(Brotherhood, Friendly)]), Cleared([Faction(Brotherhood, Hostile)])],
+        "FACT_FACTION_TRANG_COMMON_FRIENDLY": [Set([Faction(Trang, Friendly)]), Cleared([Faction(Trang, Hostile)])],
+        "FACT_FACTION_UMPANI_COMMON_FRIENDLY": [Set([Faction(Umpani, Friendly)]), Cleared([Faction(Umpani, Hostile)])],
+        "FACT_FACTION_RAPAX_COMMON_FRIENDLY": [Set([Faction(RapaxCommon, Friendly)]), Cleared([Faction(RapaxCommon, Hostile)])],
+        "FACT_FACTION_RAPAX_TEMPLAR_FRIENDLY": [
+            Set([Faction(RapaxTemplar, Friendly), Faction(RapaxCommon, Friendly)]),
+            Cleared([Faction(RapaxTemplar, Hostile), Faction(RapaxCommon, Hostile)]),
+        ],
+        "FACT_TEMPLAR": [Set([Mark(0x3b), FactionMet(RapaxTemplar)])],
+
+        "FACT_MOOK_MOOK_PC_SWAP_COMPLETE": [Set([Fact("FACT_QUEST_MOOK_BUDDY_TELLS_OF_CM", 1)])],
+        "FACT_TRYNNIE_KILL_RATS_DONE": [Set([Fact("FACT_QUEST_MADRAS_OPEXTERM", 1)])],
+        "FACT_ARNIKA_VAULT_TELEPORT": [Set([
+            If(Is("FACT_MYLES_IN_PARTY"), [Fact("FACT_MYLES_IN_PARTY_WHEN_BANK_DONE", 1)]),
+            Fact("FACT_QUEST_MYLES_BANK_VAULT", 0),
+        ])],
+        "FACT_ARNIKA_VAULT_ENTERED": [Set([
+            If(Is("FACT_MYLES_IN_PARTY"), [Fact("FACT_MYLES_IN_PARTY_WHEN_BANK_DONE", 1)]),
+            Fact("FACT_QUEST_MYLES_BANK_VAULT", 0),
+        ])],
+
+        "FACT_ARNIKA_MYLES_TROOPERS_HOSTILE": [Always([Group(0x13, Hostile)])],
+        "FACT_ENDGAME_JOIN_SAVANT": [Set([
+            Scene("ViStage"),
+            Group(0x234, Friendly),
+            Group(0x1b4, Hostile),
+            Group(0x1b9, Hostile),
+        ])],
+
+        "FACT_UMISSION_TRAIN_COVERT_ASSIGN": [Set([SkillFloor(ModernWeapon, 10)])],
+        "FACT_TRYNNIE_FOUNTAIN_ANSWERED_CORRECT": [Set([Raise(Intelligence, 5, 0x1dc), TriggerOff("FOUNT_RIDDLE")])],
+        "FACT_CROCK_PLAYER_RETURNED_TO_PARTY": [Set([Returns])],
+
+        "FACT_ALIGNMENT_TRANG": [Always([Trigger("ZaHealthDoor")])],
+        "FACT_UMISSION_TRAIN_COVERT_OPEN": [Set([TriggerOnce("Door08")])],
+        "FACT_UMISSION_TRAIN_GUNNARY_OPEN": [Set([TriggerOnce("Door07")])],
+        "FACT_UMISSION_TRAIN_UTU_OPEN": [Set([TriggerOnce("Door06")])],
+        "FACT_LOCATION_GIGAS_MOTION_SENSORS_OFF": [Set([Trigger("SecurityLasers"), LevelVar("LasersOff", 1)])],
+        "FACT_LOCATION_GIGAS_OUTER_GATE_OPEN": [Set([Trigger("ewaxxdoortrigger01")])],
+        "FACT_LOCATION_GIGAS_TELEPORT_OPEN": [Set([Trigger("greenLight23MeansOpen"), Trigger("greenLight23MeansOpen01")])],
+        "FACT_LOCATION_GIGAS_TOGGLE_LIFT3": [Set([Trigger("greenLightMeansGo")])],
+        "FACT_LOCATION_GIGAS_TOGGLE_LIFT2": [Set([Trigger("greenLightMeansGo")])],
+        "FACT_LOCATION_GIGAS_TOGGLE_LIFT1": [Set([Trigger("greenLightMeansGo01")])],
+        "FACT_LOCATION_GIGAS_OFFICERS_QUARTERS_GATE_OPEN2": [Set([
+            Trigger("Door18"),
+            Trigger("greenLightEwaxx02"),
+            Trigger("greenLightEwaxx03"),
+            LevelVarOr("ObstacleDoors", 2),
+        ])],
+        "FACT_LOCATION_GIGAS_OFFICERS_QUARTERS_GATE_OPEN1": [Set([
+            Trigger("Door19"),
+            Trigger("greenLightEwaxx"),
+            Trigger("greenLightEwaxx01"),
+            LevelVarOr("ObstacleDoors", 1),
+        ])],
+        "FACT_LOCATION_GIGAS_TOP_DOOR_OPEN1": [Set([Trigger("greenLightMeansOpen02"), Trigger("greenLightMeansOpen03")])],
+        "FACT_LOCATION_GIGAS_TOP_DOOR_OPEN2": [Set([Trigger("greenLightMeansOpen02"), Trigger("greenLightMeansOpen03")])],
+        "FACT_ARNIKA_HLL_OPEN": [Always([Trigger("scannerdoor"), TriggerOff("Scanner_Trigger_Plane")])],
+        "FACT_MOOK_HALL_OPEN": [Always([Trigger("MookFrontDoor"), Trigger("Mookoff-01")])],
+        "FACT_ARNIKA_BLACKBOX_RECEIVED": [Always([Trigger("blackboxrecorder")])],
+        "FACT_ARNIKA_SAFETY_DEPOSIT_OPEN": [Always([Trigger("redbutton")])],
+        "FACT_MURAL_OPEN": [
+            Set([Trigger("MartenMural"), TriggerOff("Muraltrigger")]),
+            Cleared([Trigger("Muraltrigger")]),
+        ],
+        "FACT_CM_RIDDLE2": [Always([TriggerOff("ChaosBTrigger"), Trigger("ChaosDoor01"), Scene("RemoveAletheidesAd")])],
+        "FACT_DD_RIDDLE2": [Always([TriggerOff("KnowBTrigger"), Trigger("DoorKnow03"), Scene("RemoveAletheidesDd")])],
+        "FACT_AD_RIDDLE2": [Always([TriggerOff("LifeBTrigger"), Trigger("DoorLife03"), Scene("RemoveAletheidesCm")])],
+        "FACT_RAPAX_INITIATES": [Set([Mark(0x3c), Trigger("templargate07")])],
+        "FACT_RAPAX_OPEN_TEMPLE": [Set([Mark(0x3a), Trigger("templargate10")])],
+        "FACT_UMPANI_INITIATE_LANDING": [Set([
+            LookAt(53550.0, 3516.0, 36936.0),
+            If(Not(Is("FACT_TMISSION_KILL_UMPANI_CORD_SEVERED")), [Trigger("TR2ShipTrigger")]),
+            If(Is("FACT_TMISSION_KILL_UMPANI_CORD_SEVERED"), [Trigger("glassTrigger")]),
+        ])],
+
+        "FACT_UMISSION_OBCOURSE_DONE": [Set([Mark(0x29)])],
+        "FACT_UMISSION_IUFPASS_LEVEL4": [Set([Mark(0x29)])],
+        "FACT_UMISSION_MOVE_RUBBLE_COVERT": [Set([Mark(0x29)])],
+        "FACT_UMISSION_SCUBA_SOLVED_NO_ALIGN": [Set([Mark(0x2b)])],
+        "FACT_RIFT_RAFE_FREE": [Set([Mark(0x44)])],
+        "FACT_QUEEN_IS_FREE": [Set([Mark(0x56)])],
+        "FACT_RATTUS_BANK_ROBBERY": [Set([Mark(0x52)])],
+        "FACT_INTRO_VI_DISAPPEARS": [Set([Mark(0x18), EndTalk])],
+        "FACT_KUNAR_IS_DEAD": [Always([Gone(0x2c)])],
+        "FACT_PRINCE_NOT_IN_CASTLE": [Set([Gone(0x55), Scene("PrinceNotHome")])],
+        "FACT_QUEST_SAVANT_BOMB_DEACTIVATED": [Always([GoneUnmet(0x57)])],
+        "FACT_RAPAX_MYLES_IN_JAIL": [Set([If(Not(Joined(0x07)), [Stands(0x07, 0x11, "NP_MylesCell")])])],
+        "FACT_MYLES_MISSION_RESCUE_VI_ASSIGNED": [Always([Script(0x07, "Guard.msf")])],
+        "FACT_RFS81_HAS_BEEN_FIXED": [Set([Reload(0x20)])],
+
+        "FACT_CROCK_KIDNAPPED_PLAYER": [Set([SpawnItem(0x2eb, "NP_BlueFlowers"), SpawnItem(0x2eb, "NP_BlueFlowers")])],
+        "FACT_CROCK_BREKEK_ASSIGN": [Always([If(Not(Is("FACT_CROCK_BREKEK_DEAD")), [SpawnMonster(0x131, "Brekek")])])],
+
+        "FACT_PEACE_SAVANT_BLOWUP_DONE": [Set([Scene("TriggerFix")])],
+        "FACT_MOOK_MOOK_PC_REMOVED": [Set([Scene("MookComment")])],
+        "FACT_AP_GOLEM_ATTACK": [Always([Scene("MoveGolem")])],
+        "FACT_AP_SAVANT_DISAPPEARS": [Always([Scene("MoveSavant")])],
+        "FACT_AP_BELA_DONE": [Always([Scene("MoveBela")])],
+        "FACT_BAYJIN_JANETTE_DEAD": [Set([Scene("RemoveJanette")])],
+        "FACT_MARTEN_FINISHED": [Set([Scene("RemoveMarten")])],
+        "FACT_RATTKIN_WHO_LOOKING_FOR": [Always([Scene("MilanoRatDoor")])],
+        "FACT_TRYNNIE_KILL_RATS_ASSIGNED": [Always([Scene("MoveGari")])],
+        "FACT_TRYNNIE_GOT_DESTINY": [Set([Scene("RemoveShaman")])],
+        "FACT_RAPAX_RIDDLE1": [Set([Scene("PillargateAsaiz")])],
+        "FACT_RAPAX_RIDDLE2": [Set([Scene("PillargateMadeus")])],
+        "FACT_RAPAX_RIDDLE3": [Set([Scene("PillargateLure")])],
+        "FACT_ALSEDEXUS_SACRIFICE_SELECT": [Set([Scene("SacrificeSelect")])],
+        "FACT_ALSEDEXUS_PARTY_PASSOUT": [Set([Scene("SedexusCapture")]), Cleared([Scene("SedexusPassout")])],
+        "FACT_ALSEDEXUS_DISAPPEAR": [Set([Scene("SedexusLeaves")])],
+        "FACT_ALSEDEXUS_DISAPPEARS_RIFT": [Set([Scene("RemoveSedexusRift")])],
+        "FACT_QUEST_KILL_ALSEDEXUS": [Set([Scene("Spacer")])],
+        "FACT_ALETHEIDES_DISAPPEARS": [Always([Scene("AletheidesLeaves")])],
+        "FACT_ALETHEIDES_CALLS_HENCHMAN": [Always([Scene("CallHenchman")])],
+        "FACT_HENCHMAN_DISAPPEARS": [Always([Scene("HenchmanLeaves")])],
+        "FACT_PRINCE_DISAPPEARS": [Always([Scene("PrinceDisappears")])],
+        "FACT_SAVANT_HACK_ALETHEIDES": [Set([Scene("SavantHack")])],
+        "FACT_TRANG_INTRO_DISAPPEAR_GUARD": [Always([Scene("RemoveSelf")])],
+        "FACT_UMPANI_BALBRAK_INTRO_DISAPPEAR": [Set([Scene("BalbrakHome")])],
+        "FACT_UMPANI_MOVE_RUBBLE": [Always([Scene("MoveRubble")])],
+        "FACT_FUZZFAS_BOOM1": [Always([Scene("FuzzfasBoom")])],
+        "FACT_FUZZFAS_BOOM2": [Always([Scene("FuzzfasBoom")])],
+        "FACT_CC_REMOVE_RPC_VI": [Always([Scene("RemoveRpcVi")])],
+        "FACT_ENDGAME_MOVE_TO_BOOK": [Always([Scene("MoveToBook")])],
+        "FACT_MOVE_TO_BOOK2": [Always([Scene("MoveToBook2")])],
+        "FACT_ENDGAME_TURN_TOWARD_BOOK_WRITE": [Always([Scene("TurnToBook")])],
+        "FACT_ENDGAME_SAVANT_APPEARS": [Always([Scene("SavantAppears")])],
+        "FACT_ENDGAME_SAVANT_PHOON_SPLIT": [Always([Scene("PhoonzangSplit")])],
+        "FACT_QUE_ENDGAME2": [Always([Scene("QueueEndgame2")])],
+        "FACT_QUE_ENDGAME3": [Always([Scene("QueueEndgame3")])],
+        "FACT_ENDGAME_QUE_CONGRAT_TWO": [Always([Scene("BeginEndgame")])],
+        "FACT_ENDGAME_QUE_CONGRAT_THREE": [Always([Scene("BeginEndgame")])],
+        "FACT_ENDGAME_QUE_CONGRAT_FOUR": [Always([Scene("EndgameQuake")])],
+    },
+)

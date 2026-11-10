@@ -124,25 +124,14 @@ pub struct Quote {
     pub quantity: u32,
     pub gold: u32,
 }
-#[derive(Message)]
-pub struct Visit(pub Entity);
-#[derive(Message)]
-pub struct Order {
-    pub reply_to: Entity,
-    pub quote: Quote,
+/// The party visits someone, who keeps shop if a merchant.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Visit {
+    #[event_target]
+    pub merchant: Entity,
 }
-#[derive(Message)]
-pub struct Receipt {
-    pub reply_to: Entity,
-    pub result: Result<(), TradeError>,
-}
-#[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Trading;
 pub fn install(app: &mut App) {
-    app.add_message::<Visit>()
-        .add_message::<Order>()
-        .add_message::<Receipt>()
-        .add_systems(Update, (maintain, settle).chain().in_set(Trading));
+    app.add_observer(maintain);
 }
 fn chance(item: &ItemDefinition, level: u32) -> u32 {
     let centre = level * 2 / 3;
@@ -296,7 +285,7 @@ impl Pricing<'_, '_> {
     }
 }
 #[derive(SystemParam)]
-struct Settlement<'w, 's> {
+pub struct Settlement<'w, 's> {
     stocks: Query<'w, 's, (), With<MerchantStock>>,
     party: Single<'w, 's, (Entity, &'static PartyRoster, &'static mut PartyInventory)>,
     held: Items<'w, 's>,
@@ -371,24 +360,17 @@ impl Settlement<'_, '_> {
         Ok(())
     }
 }
-fn settle(
-    mut orders: MessageReader<Order>,
-    mut receipts: MessageWriter<Receipt>,
-    mut market: ParamSet<(Pricing, Settlement)>,
-) {
-    for order in orders.read() {
-        let q = order.quote;
-        let priced = market.p0().quote(q.merchant, q.source, q.quantity);
-        let result = priced.and_then(|current| market.p1().settle(q, current));
-        receipts.write(Receipt { reply_to: order.reply_to, result });
-    }
+/// Buy or sell at a quoted price, if it is still the price.
+pub fn settle(market: &mut ParamSet<(Pricing, Settlement)>, q: Quote) -> Result<(), TradeError> {
+    let current = market.p0().quote(q.merchant, q.source, q.quantity)?;
+    market.p1().settle(q, current)
 }
 /// A merchant visited keeps shop: after half a day what it always keeps is
 /// made up; after a day what it does not always keep turns over (one of each
 /// stack goes, and all of anything else, but for what is crucial or not for
 /// sale) and what it lacks may come in.
 fn maintain(
-    mut visits: MessageReader<Visit>,
+    visit: On<Visit>,
     mut stocks: Query<(&ActorId, &mut MerchantStock)>,
     held: Items,
     content: If<Res<Catalogs>>,
@@ -407,9 +389,9 @@ fn maintain(
             .map(Character::level),
     );
     let items = &content.items;
-    for visit in visits.read() {
-        let merchant = visit.0;
-        let Ok((id, mut stock)) = stocks.get_mut(merchant) else { continue };
+    {
+        let merchant = visit.merchant;
+        let Ok((id, mut stock)) = stocks.get_mut(merchant) else { return };
         let d = &content.npcs[id.0];
         let shelves = shelves(&held, merchant, items);
         let have = |item| shelves.iter().filter(|s| s.item == item).map(|s| s.units).sum::<u32>();

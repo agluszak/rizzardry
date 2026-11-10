@@ -252,8 +252,9 @@ pub fn open(
             Some(ViewTarget::Conversation(entity)) => {
                 if current(world).is_some()
                     || !world
-                        .get::<crate::game::npcs::conversation::Conversation>(entity)
-                        .is_some_and(|c| c.ready())
+                        .query::<crate::game::npcs::conversation::DialogueReadOnly>()
+                        .get(world, entity)
+                        .is_ok_and(|talk| talk.idle())
                 {
                     return;
                 }
@@ -531,7 +532,7 @@ struct Offer<'a> {
 fn context(
     attempt: Option<Entity>,
     dialogue: Option<Entity>,
-    conversations: &Query<&crate::game::npcs::conversation::Conversation>,
+    conversations: &Query<crate::game::npcs::conversation::DialogueReadOnly>,
     fighting: bool,
     camped: bool,
     attempts: &Query<&crate::game::world::interaction::DeviceInteraction>,
@@ -541,7 +542,7 @@ fn context(
         return conversations
             .get(entity)
             .ok()
-            .filter(|c| c.ready())
+            .filter(|c| c.idle())
             .map(|_| UseContext::Conversation);
     }
     match attempt {
@@ -690,7 +691,7 @@ pub(super) fn follow_caster(
         Option<Single<&Battle>>,
         Option<Res<crate::game::camp::Camp>>,
         Query<&crate::game::world::interaction::DeviceInteraction>,
-        Query<&crate::game::npcs::conversation::Conversation>,
+        Query<crate::game::npcs::conversation::DialogueReadOnly>,
     ),
 ) {
     let Ok((root, mut view, casts_at, conversation_target)) = views.single_mut() else {
@@ -744,7 +745,7 @@ pub(super) fn draw_magic_view(
         (Single<Entity, With<PartyRoster>>, Items),
     ),
     content: If<Res<Catalogs>>,
-    conversations: Query<&crate::game::npcs::conversation::Conversation>,
+    conversations: Query<crate::game::npcs::conversation::DialogueReadOnly>,
     (art, assets, strings): (
         Res<MagicViewArt>,
         Res<AssetServer>,
@@ -982,7 +983,7 @@ pub(super) fn commit_magic_choice(
     (the_party, held): (Single<Entity, With<PartyRoster>>, Items),
     content: If<Res<Catalogs>>,
     (conversations, speakers, monsters, party): (
-        Query<&crate::game::npcs::conversation::Conversation>,
+        Query<crate::game::npcs::conversation::DialogueReadOnly>,
         Query<&crate::game::npcs::NpcBody>,
         Query<
             (Entity, &crate::game::characters::Vitals, crate::game::world::ActorPose),
@@ -1013,7 +1014,9 @@ pub(super) fn commit_magic_choice(
         let Ok(conversation) = conversations.get(relation.0) else { return };
         let Some((body, _, _)) = monsters.iter().find(|(entity, vitals, _)| {
             !vitals.is_dead()
-                && speakers.get(*entity).is_ok_and(|binding| binding.0 == conversation.actor)
+                && speakers
+                    .get(*entity)
+                    .is_ok_and(|binding| binding.0 == conversation.conversation.actor)
         }) else {
             return;
         };
@@ -1088,7 +1091,7 @@ fn choose_row(
         (Single<Entity, With<PartyRoster>>, Items),
     ),
     content: If<Res<Catalogs>>,
-    conversations: Query<&crate::game::npcs::conversation::Conversation>,
+    conversations: Query<crate::game::npcs::conversation::DialogueReadOnly>,
 ) {
     let (Ok(row), Ok((mut view, casts_at, conversation_target))) =
         (rows.get(click.entity), views.single_mut())

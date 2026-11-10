@@ -247,8 +247,7 @@ impl Plugin for ConversationViewPlugin {
                     ),
                     (sync_bubble_geometry, sync_topic_geometry, route_mode_focus, paint_wells),
                 )
-                    .chain()
-                    .after(crate::game::npcs::conversation::Conversing),
+                    .chain(),
             )
             .add_systems(
                 PostUpdate,
@@ -324,21 +323,18 @@ fn create_view(event: On<Add<Conversation>>, mut commands: Commands) {
 fn advance_bubble(
     _: On<Activate>,
     views: ViewScope,
-    sessions: Query<&Conversation>,
-    mut spoken: MessageWriter<LineSpoken>,
+    speaking: Query<&Speaking>,
+    mut commands: Commands,
 ) {
-    let (_, session) = (views.root(), views.session());
-    if let Ok(conversation) = sessions.get(session)
-        && let ConversationWait::Line { speech, .. } = conversation.wait
-    {
-        spoken.write(LineSpoken { conversation: session, speech });
+    if let Ok(speaking) = speaking.get(views.session()) {
+        commands.trigger(Spoken { speech: speaking.line() });
     }
 }
 
 fn project_text(
     views: ViewScope,
     sessions: Query<&Conversation>,
-    speech: Query<&ConversationSpeech>,
+    (speaking, speech): (Query<&Speaking>, Query<&ConversationSpeech>),
     npcs: Query<&crate::game::npcs::ActorId>,
     catalogs: If<Res<Catalogs>>,
     parties: Query<&PartyInventory, With<crate::game::party::roster::Party>>,
@@ -362,11 +358,8 @@ fn project_text(
             }
             .into(),
             Caption::Quote => {
-                if let ConversationWait::Line { speech: entity, .. } = c.wait {
-                    speech.get(entity).map(|s| s.text.clone()).unwrap_or_default()
-                } else {
-                    String::new()
-                }
+                let line = speaking.get(session).ok().and_then(|s| speech.get(s.line()).ok());
+                line.map(|line| line.text.clone()).unwrap_or_default()
             }
         };
         if text.value != value {
@@ -377,7 +370,7 @@ fn project_text(
 fn project_modes(
     views: ViewScope,
     mut commands: Commands,
-    sessions: Query<&Conversation>,
+    (sessions, speaking): (Query<&Conversation>, Query<(), With<Speaking>>),
     npcs: Query<(&crate::game::npcs::ActorId, &Npc)>,
     catalogs: If<Res<Catalogs>>,
     clock: Res<crate::game::time::GameClock>,
@@ -412,7 +405,7 @@ fn project_modes(
         let session = views.session();
         let (state, c) = (views.state(), sessions.get(session).unwrap());
         let visible = if bubble {
-            state.mode == Mode::Talk && matches!(c.wait, ConversationWait::Line { .. })
+            state.mode == Mode::Talk && speaking.contains(session)
         } else if menu {
             state.mode == Mode::Talk && c.menu
         } else {
@@ -571,18 +564,15 @@ fn activate_choice(
     event: On<Activate>,
     views: ViewScope,
     choices: Query<&Choice>,
-    mut requests: MessageWriter<ConversationRequest>,
+    mut commands: Commands,
 ) {
     let Ok(choice) = choices.get(event.entity) else { return };
-    let (_, session) = (views.root(), views.session());
-    requests.write(match &choice.answer {
-        Answer::Reply(text) => {
-            ConversationRequest::new(session, Talk::Reply { text: text.clone() })
-        }
-        Answer::Price(accept) => {
-            ConversationRequest::new(session, Talk::PriceAnswer { accept: *accept })
-        }
-    });
+    let reply = match &choice.answer {
+        Answer::Reply(text) => Reply::Word(text.clone()),
+        Answer::Price(accept) => Reply::Accept(*accept),
+    };
+    commands
+        .trigger(crate::game::npcs::conversation::Answer { conversation: views.session(), reply });
 }
 fn activate_trade(
     event: On<Activate>,
@@ -612,7 +602,7 @@ fn sync_choices(
     mut commands: Commands,
     sheets: Res<Assets<SpriteSheet>>,
     strings: super::screen_art::GameStrings,
-    sessions: Query<&Conversation>,
+    questions: Query<&Asked>,
     parties: Query<&PartyInventory, With<crate::game::party::roster::Party>>,
     focus: Res<InputFocus>,
     mut overlays: Query<(Entity, &mut Node), (With<ChoiceOverlay>, Without<Choices>)>,
@@ -632,18 +622,18 @@ fn sync_choices(
             strings.table().and_then(|s| s.get(id)).unwrap_or(fallback).to_owned()
         };
         let (_, session) = (views.root(), views.session());
-        let c = sessions.get(session).unwrap();
-        let answers: Vec<(String, Answer)> = match &c.wait {
+        let asked = questions.get(session).ok();
+        let answers: Vec<(String, Answer)> = match asked {
             // A typed answer goes through the topic input instead.
-            ConversationWait::Options { words, typed: false, .. } => {
+            Some(Asked::Options { words, typed: false, .. }) => {
                 words.iter().map(|w| (w.clone(), Answer::Reply(w.clone()))).collect()
             }
-            ConversationWait::Price { .. } => vec![
+            Some(Asked::Price { .. }) => vec![
                 (string(0x7df, "Pay"), Answer::Price(true)),
                 (string(0x7e0, "Decline"), Answer::Price(false)),
             ],
             // Retail's confirmation dialog for giving all the party's gold.
-            ConversationWait::GiveAll { .. } => {
+            Some(Asked::GiveAll { .. }) => {
                 vec![("OK".into(), Answer::Price(true)), ("Cancel".into(), Answer::Price(false))]
             }
             _ => vec![],
@@ -669,7 +659,7 @@ fn sync_choices(
                 )>();
             }
         }
-        let price = matches!(c.wait, ConversationWait::Price { .. });
+        let price = matches!(asked, Some(Asked::Price { .. }));
         let button_width = sheets.get(font).map_or(70., |f| {
             answers.iter().map(|(t, _)| f.text_width(t)).max().unwrap_or(0) as f32 + 6.
         });
@@ -697,9 +687,9 @@ fn sync_choices(
                         } else {
                             String::new()
                         }
-                    } else if let ConversationWait::Price { gold, .. } = c.wait {
+                    } else if let Some(Asked::Price { gold, .. }) = asked {
                         string(0x7e5, "Price: %d gold").replace("%d", &gold.to_string())
-                    } else if matches!(c.wait, ConversationWait::GiveAll { .. }) {
+                    } else if matches!(asked, Some(Asked::GiveAll { .. })) {
                         string(0x7d6, "Give all your gold?")
                     } else {
                         string(0x7e4, "Choose a response")
@@ -940,9 +930,7 @@ fn submit_topic(
     views: ViewScope,
     mut commands: Commands,
     inputs: Query<(Entity, &EditableText, &SubmitTopic)>,
-    sessions: Query<&Conversation>,
-    mut requests: MessageWriter<ConversationRequest>,
-    mut notebook: MessageWriter<EditNotebook>,
+    questions: Query<&Asked>,
 ) {
     for (entity, text, submit) in &inputs {
         if !text.pending_edits.is_empty() || text.pending_paste.is_some() {
@@ -953,15 +941,19 @@ fn submit_topic(
             let text = text.value().to_string();
             match *submit {
                 SubmitTopic::Ask => {
-                    let typed = matches!(
-                        sessions.get(session).unwrap().wait,
-                        ConversationWait::Options { typed: true, .. }
-                    );
-                    let talk = if typed { Talk::Reply { text } } else { Talk::Topic { text } };
-                    requests.write(ConversationRequest::new(session, talk));
+                    // A typed answer to a question, or a topic.
+                    if let Ok(Asked::Options { typed: true, .. }) = questions.get(session) {
+                        let reply = Reply::Word(text);
+                        commands.trigger(crate::game::npcs::conversation::Answer {
+                            conversation: session,
+                            reply,
+                        });
+                    } else {
+                        commands.trigger(Ask { conversation: session, text });
+                    }
                 }
                 SubmitTopic::Edit(edit) => {
-                    notebook.write(EditNotebook { edit, text });
+                    commands.trigger(EditNotebook { edit, text });
                 }
             }
         }
