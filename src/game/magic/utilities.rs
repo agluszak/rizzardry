@@ -5,7 +5,6 @@
 use super::casting::{MagicNews, Worked};
 use super::{Outcome, power, reach::Marked};
 use crate::content::spells::Working;
-use crate::game::data::Catalogs;
 use crate::game::items::{Items, Known};
 use bevy::prelude::*;
 
@@ -15,7 +14,6 @@ use bevy::prelude::*;
 pub(crate) fn identify(
     worked: On<Worked>,
     held: Items,
-    content: Res<Catalogs>,
     mut news: MessageWriter<MagicNews>,
     mut commands: Commands,
 ) {
@@ -24,7 +22,7 @@ pub(crate) fn identify(
         return;
     }
     let Marked::Item(target) = marked else { return };
-    let hard = held.id(target).map(|id| content.items[id].identify_difficulty);
+    let hard = held.obscurity(target);
     if report.outcome == Outcome::Cast
         && hard.is_some_and(|hard| power::reveals(strength.power, strength.boost, hard))
     {

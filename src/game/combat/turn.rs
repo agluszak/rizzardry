@@ -522,7 +522,7 @@ pub(super) fn take_turn(
     let against_foes = match action {
         Decision::Magic(choice) => choice
             .source
-            .spell_id(&held, &content.items)
+            .spell_id(&held)
             .is_some_and(|spell| content.spells[spell].aimed_at_enemies()),
         _ => matches!(action, Decision::Special(_) | Decision::Fight(_)),
     };
@@ -566,7 +566,7 @@ pub(super) fn take_turn(
         Decision::Magic(choice) => {
             turn.end();
             pause.0 = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
-            let Some(spell) = choice.source.spell_id(&held, &content.items) else {
+            let Some(spell) = choice.source.spell_id(&held) else {
                 commands.trigger(Refused { caster: actor, refusal: Refusal::NoItem });
                 return;
             };

@@ -303,6 +303,22 @@ pub enum Place {
     },
 }
 
+/// What using an item does: it casts a spell at its own power.
+#[derive(Component, Clone, Debug, PartialEq, Eq)]
+pub struct Casts {
+    pub spell: crate::content::spells::SpellId,
+    pub power: u32,
+    /// How it is used: read, drunk, played, thrown.
+    pub by: crate::content::items::UseType,
+    /// It works only worn where it is in use.
+    pub worn: bool,
+    pub users: Users,
+}
+
+/// How hard an item is to identify.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Obscure(pub u8);
+
 /// Make an item from its definition: `amount` of it, or that many charges,
 /// as its kind counts them. A count of nothing means one (retail's legacy
 /// zero counts); no charges is a valid state. It is nowhere until it is
@@ -319,6 +335,7 @@ pub fn make(
         Known { identified: identified || definition.auto_identify, ..default() },
         Weight(definition.weight),
         Kind(definition.kind),
+        Obscure(definition.identify_difficulty),
     ));
     if counted {
         item.insert(Count { of: amount.max(1), limit: u16::from(definition.stack_limit) });
@@ -379,6 +396,15 @@ pub fn shape(item: &mut EntityCommands, definition: &ItemDefinition) {
     }
     if definition.class == EquipClass::Shield {
         item.insert(Shield);
+    }
+    if let Some(cast) = definition.spell {
+        item.insert(Casts {
+            spell: cast.spell,
+            power: cast.power,
+            by: definition.use_type,
+            worn: definition.requires_worn(),
+            users: users(definition),
+        });
     }
     let protection = Protection {
         armour: definition.armor_class_bonus,
@@ -454,14 +480,19 @@ fn wearable(definition: &ItemDefinition) -> Option<Wearable> {
         off_hand: definition.off_hand,
         reach: definition.reach,
         skilled: definition.weapon_skill.is_some(),
-        users: Users {
-            professions: definition.professions,
-            races: definition.races,
-            genders: definition.genders,
-            attributes: definition.attribute_minimums,
-            skills: definition.skill_minimums,
-        },
+        users: users(definition),
     })
+}
+
+/// Who may wear or use an item of this definition.
+fn users(definition: &ItemDefinition) -> Users {
+    Users {
+        professions: definition.professions,
+        races: definition.races,
+        genders: definition.genders,
+        attributes: definition.attribute_minimums,
+        skills: definition.skill_minimums,
+    }
 }
 
 /// How many an item of this definition is made with when it is found or
@@ -490,6 +521,7 @@ pub struct Items<'w, 's> {
             &'static Weight,
         ),
     >,
+    uses: Query<'w, 's, (Option<&'static Casts>, &'static Obscure)>,
     worn: Query<'w, 's, &'static Worn>,
     packed: Query<'w, 's, &'static Packed>,
     pooled: Query<'w, 's, &'static Pooled>,
@@ -602,6 +634,16 @@ impl Items<'_, '_> {
     /// Which definition an item was made from.
     pub fn id(&self, item: Entity) -> Option<ItemId> {
         self.items.get(item).ok().map(|(&Item(id), ..)| id)
+    }
+
+    /// The spell using an item casts, if it casts one.
+    pub fn casts(&self, item: Entity) -> Option<&Casts> {
+        self.uses.get(item).ok()?.0
+    }
+
+    /// How hard an item is to identify.
+    pub fn obscurity(&self, item: Entity) -> Option<u8> {
+        self.uses.get(item).ok().map(|(_, obscure)| obscure.0)
     }
 
     /// What the party knows of an item.
@@ -1556,20 +1598,19 @@ pub struct Identify {
 
 fn identify(
     event: On<Identify>,
-    shown: Query<(&Item, &Known)>,
+    shown: Query<(&Known, &Obscure)>,
     rosters: Query<&PartyRoster>,
     members: Query<(&Character, &Vitals)>,
-    content: Res<Catalogs>,
     mut commands: Commands,
 ) {
-    let (Ok((&Item(id), &known)), Ok(roster)) = (shown.get(event.item), rosters.get(event.party))
+    let (Ok((&known, &Obscure(difficulty))), Ok(roster)) =
+        (shown.get(event.item), rosters.get(event.party))
     else {
         return;
     };
     if known.identified {
         return;
     }
-    let difficulty = content.items[id].identify_difficulty;
     let (mut identified, mut binding) = (false, false);
     for attempting in roster.iter() {
         let Ok((character, vitals)) = members.get(attempting) else { continue };

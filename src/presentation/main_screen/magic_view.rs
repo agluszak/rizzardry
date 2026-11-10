@@ -141,9 +141,7 @@ pub struct SourceTargeting<'w, 's> {
 
 impl SourceTargeting<'_, '_> {
     pub fn of(&self, source: Source) -> Option<Targeting> {
-        let (spells, items) = (&self.content.spells, &self.content.items);
-        let id = source.spell_id(&self.held, items)?;
-        Some(spells[id].targeting)
+        Some(self.content.spells[source.spell_id(&self.held)?].targeting)
     }
 }
 
@@ -595,21 +593,19 @@ fn offers<'a>(
             held.pool(party)
                 .iter()
                 .filter_map(|&item| {
-                    let spell =
-                        usable_item(character, item, held, (items, spells), definitions, false)?;
+                    let spell = usable_item(character, item, held, spells, definitions, false)?;
                     Some((item, spell))
                 })
                 .collect()
         } else {
-            usable_items(member, character, held, items, spells, definitions)
+            usable_items(member, character, held, spells, definitions)
         };
         return sources
             .into_iter()
             .filter_map(|(item, id)| {
                 let spell = &spells[id];
-                let definition = &items[held.id(item)?];
                 let silenced =
-                    silenced && definition.use_type == crate::content::items::UseType::Instrument;
+                    silenced && held.casts(item)?.by == crate::content::items::UseType::Instrument;
                 let available = usable_now(spell, context) && !silenced;
                 if matches!(
                     context,
@@ -1010,7 +1006,7 @@ pub(super) fn commit_magic_choice(
     };
     let attempt = casts_at.map(|casts_at| casts_at.0);
     let Some(source) = view.source else { return };
-    let Some(id) = source.spell_id(&held, &content.items) else { return };
+    let Some(id) = source.spell_id(&held) else { return };
     let spell = &content.spells[id];
     if !view.items && view.power.is_none() {
         match spell.power {
