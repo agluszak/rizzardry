@@ -10,8 +10,8 @@ use avian3d::prelude::SpatialQuery;
 use super::environment::LevelAppearance;
 use crate::content::items::ItemModel;
 use crate::content::level::LevelGeometry;
+use crate::game::items::{Hidden, Items, Lying};
 use crate::game::time::GameClock;
-use crate::game::world::items::WorldItem;
 use crate::presentation::monsters::sunlit;
 
 /// Retail turns a lying item a sixteenth of a turn every 50 ms (the main
@@ -32,15 +32,16 @@ pub struct ItemShown {
 /// shows retail's question mark.
 pub fn show_world_items(
     mut commands: Commands,
-    items: Query<(Entity, &WorldItem, Option<&ItemShown>)>,
+    lying: Query<(Entity, Option<&ItemShown>), (With<Lying>, Without<Hidden>)>,
+    items: Items,
     content: If<Res<crate::game::data::Catalogs>>,
     assets: Res<AssetServer>,
 ) {
     let catalog = &content.items;
-    for (entity, item, shown) in &items {
+    for (entity, shown) in &lying {
+        let Some(id) = items.id(entity) else { continue };
         let model = match shown {
-            _ if item.hidden => continue,
-            None => Some(catalog[item.appearance()].model.as_str()),
+            None => Some(catalog[id].model.as_str()),
             Some(shown) if assets.get_load_state(&shown.model).is_some_and(|s| s.is_failed()) => {
                 Some("data/items3d/questionmark.itm")
             }
@@ -55,13 +56,30 @@ pub fn show_world_items(
     }
 }
 
+/// An item taken up, or thrown into hiding, is no longer shown in the world:
+/// its model and its light go.
+pub fn hide_taken_items(
+    taken: On<Remove<Lying>>,
+    visuals: Query<Entity, With<ItemVisual>>,
+    children: Query<&Children>,
+    mut commands: Commands,
+) {
+    let item = taken.entity;
+    for visual in children.get(item).iter().flat_map(|children| children.iter()) {
+        if visuals.contains(visual) {
+            commands.entity(visual).try_despawn();
+        }
+    }
+    commands.entity(item).try_remove::<(ItemShown, ActorLight, Visibility)>();
+}
+
 /// Cosmetic pose belongs to the visual child, never the world-placement root.
 #[derive(Component, Debug)]
 pub struct ItemVisual;
 
 pub fn build_world_items(
     mut commands: Commands,
-    items: Query<(Entity, &ItemShown, Option<&Children>), With<WorldItem>>,
+    items: Query<(Entity, &ItemShown, Option<&Children>), With<Lying>>,
     visuals: Query<(), With<ItemVisual>>,
     models: Res<Assets<ItemModel>>,
     mut materials: ResMut<Assets<StandardMaterial>>,

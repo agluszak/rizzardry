@@ -12,7 +12,6 @@ use super::items::drop_loot;
 use super::navigation::{Walker, feet};
 use super::population::Monster;
 use crate::game::inventory::PartyInventory;
-use crate::game::items::ItemStack;
 use crate::game::rng::GameRng;
 
 /// A monster has died: its autonomous work stops, and unless it was
@@ -98,8 +97,6 @@ pub fn monster_died(
         }
     };
     purse.gold += gold;
-    let items =
-        found.into_iter().map(|id| ItemStack::rolled(&catalog[id], rng, false, false)).collect();
     let position = feet(at.translation(), walker);
-    drop_loot(&mut commands, owner.0, position, items, catalog);
+    drop_loot(&mut commands, owner.0, position, &found, (catalog, rng));
 }

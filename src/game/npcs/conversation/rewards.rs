@@ -6,13 +6,10 @@ use crate::{
         characters::{Character, Practise, Vitals},
         data::Catalogs,
         inventory::PartyInventory,
-        items::{ItemStack, Items, Lose, Place, Put, receive, unpack},
+        items::{Give, Items, Lose, Place, Put, make, roll_amount},
         party::{body::PartyBody, roster::PartyRoster},
         rng::GameRng,
-        world::{
-            items::{self, WorldItem},
-            level::Level,
-        },
+        world::{items::CLEARANCE, level::Level},
     },
 };
 use avian3d::prelude::Position;
@@ -80,30 +77,22 @@ pub(super) fn deliver(
             }
             Kind::Give(id) => {
                 let d = &content.items[*id];
-                let stack = ItemStack::rolled(d, &mut rng, true, true);
+                let item = make(&mut commands, d, roll_amount(d, &mut rng, true), true);
                 // The pool takes what it has room for; what it cannot is
                 // held in the hand if it is crucial, else lies at their feet.
-                let taken = receive(
-                    &held,
-                    &mut commands,
-                    &content.items,
-                    (*party, None),
-                    (std::slice::from_ref(&stack), false),
-                );
-                let rest = stack.without(taken[0]);
-                if let Some(rest) = rest {
-                    if d.crucial && held.held(*party).is_none() {
-                        let item = unpack(&mut commands, d, &rest);
-                        commands.trigger(Put { item, at: Place::Hand { party: *party } });
-                    } else {
-                        items::lay(
-                            &mut commands,
-                            *level,
-                            PartyBody::feet(at),
-                            WorldItem::loose(rest, false),
-                        );
-                    }
-                }
+                let rests = if d.crucial && held.held(*party).is_none() {
+                    Place::Hand { party: *party }
+                } else {
+                    Place::Ground { level: *level, at: PartyBody::feet(at) + Vec3::Y * CLEARANCE }
+                };
+                commands.trigger(Put { item, at: rests });
+                commands.trigger(Give {
+                    item,
+                    to: None,
+                    party: *party,
+                    pool_first: true,
+                    told: false,
+                });
                 Some(QuestReward::Item { name: d.name.clone() })
             }
             Kind::Take(id) => {

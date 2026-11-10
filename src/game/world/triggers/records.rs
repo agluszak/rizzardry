@@ -10,9 +10,10 @@ use super::{
     Device, DialState, DoorState, FountainState, LevelState, LightActivation, PositionedDevices,
     TriggerState,
 };
-use crate::content::items::LootTables;
+use crate::content::items::{ItemCatalog, LootTables};
 use crate::content::level::{LevelDefinition, TriggerAction, VariableName};
-use crate::game::world::containers::{Container, Contents};
+use crate::game::items::{ItemStack, Items, Place, Put, unpack};
+use crate::game::world::containers::Container;
 use crate::game::world::interaction::Guarded;
 use crate::game::world::level::LevelOwned;
 use crate::game::world::scripts::LevelScript;
@@ -33,7 +34,8 @@ struct KeptDevice {
     trigger: TriggerState,
     door: Option<DoorState>,
     dial: Option<DialState>,
-    container: Option<Container>,
+    /// The container with what was in it.
+    container: Option<(Container, Vec<ItemStack>)>,
     guarded: Option<Guarded>,
     fountain: Option<FountainState>,
 }
@@ -42,10 +44,12 @@ struct KeptDevice {
 #[derive(SystemParam)]
 pub struct DeviceRecords<'w, 's> {
     particles: Query<'w, 's, &'static super::super::particles::Emitter>,
+    items: Items<'w, 's>,
     devices: Query<
         'w,
         's,
         (
+            Entity,
             &'static Device,
             &'static TriggerState,
             Option<&'static DoorState>,
@@ -64,19 +68,26 @@ impl DeviceRecords<'_, '_> {
         owned: &[Entity],
         state: &LevelState,
         lights: &LightActivation,
+        catalog: &ItemCatalog,
     ) -> TriggerMemory {
         let devices = self
             .devices
             .iter_many(owned)
             .matched()
-            .map(|(device, state, door, dial, container, guarded, fountain)| {
+            .map(|(entity, device, state, door, dial, container, guarded, fountain)| {
                 (
                     device.definition,
                     KeptDevice {
                         trigger: state.clone(),
                         door: door.cloned(),
                         dial: dial.cloned(),
-                        container: container.cloned(),
+                        container: container.map(|container| {
+                            let inside = self.items.stowed(entity).iter();
+                            let kept = inside
+                                .filter_map(|&item| self.items.stack(item, catalog))
+                                .collect();
+                            (container.clone(), kept)
+                        }),
                         guarded: guarded.cloned(),
                         fountain: fountain.cloned(),
                     },
@@ -101,7 +112,7 @@ pub fn spawn_devices(
     geometry: &LevelDefinition,
     props: &[Entity],
     script: LevelScript,
-    tables: &LootTables,
+    (tables, catalog): (&LootTables, &ItemCatalog),
     mut memory: Option<TriggerMemory>,
 ) -> Vec<Entity> {
     super::super::particles::spawn_emitters(
@@ -156,6 +167,7 @@ pub fn spawn_devices(
     let mut positioned = PositionedDevices::default();
     for (index, definition) in geometry.triggers.iter().enumerate() {
         let kept = memory.as_mut().and_then(|m| m.devices.remove(&index));
+        let mut stowed = Vec::new();
         let mut entity = commands.entity(devices[index]);
         entity.insert(Device {
             definition: index,
@@ -169,8 +181,9 @@ pub fn spawn_devices(
             if let Some(value) = kept.dial {
                 entity.insert(value);
             }
-            if let Some(value) = kept.container {
-                entity.insert(value);
+            if let Some((container, kept)) = kept.container {
+                entity.insert(container);
+                stowed = kept;
             }
             if let Some(value) = kept.guarded {
                 entity.insert(value);
@@ -207,11 +220,16 @@ pub fn spawn_devices(
                 if table.is_none() {
                     warn!("trigger {}: no loot table {name}; it holds nothing", definition.name);
                 }
-                entity.insert(Container { table, contents: Contents::default() });
+                entity.insert(Container { table, gold: 0 });
             }
             if let Some(guarded) = definition.lock.map(Guarded::new) {
                 entity.insert(guarded);
             }
+        }
+        // What a container held is in it again.
+        for stack in &stowed {
+            let item = unpack(commands, &catalog[stack.item], stack);
+            commands.trigger(Put { item, at: Place::Container(devices[index]) });
         }
         if definition.place.is_some() {
             positioned.0.push(devices[index]);

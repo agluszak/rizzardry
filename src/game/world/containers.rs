@@ -3,32 +3,30 @@
 //! part of one, to the party's pool or a member, and whatever does not fit
 //! stays where it was.
 
+use bevy::ecs::relationship::RelationshipTarget;
 use bevy::prelude::*;
 
-use super::interaction::{AttemptOn, DeviceAttempt, DeviceInteraction, Work};
+use super::interaction::{AttemptOn, DeviceAct, DeviceAttempt, DeviceInteraction, Work};
 use super::props::PropMotion;
 use super::triggers::TriggerEffect;
 use crate::game::characters::Character;
-use crate::game::data::Catalogs;
 use crate::game::inventory::PartyInventory;
-use crate::game::items::{ItemNews, ItemStack, Items, Place, Put, receive, unpack};
+use crate::game::items::{
+    Bag, Give, Items, Lying, Place, Put, Rejoin, Stows, make, roll_amount, split,
+};
 use crate::game::loot::roll_loot;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 
-/// A container's contents, drawn from its loot table the first time it is
-/// opened and kept from then on (retail `GenerateItemGroup`); whatever the
-/// party leaves or puts in it stays.
+/// A container: its contents are items stowed in it, drawn from its loot
+/// table the first time it is opened and kept from then on (retail
+/// `GenerateItemGroup`); whatever the party leaves or puts in it stays.
 #[derive(Component, Clone, Debug)]
 pub struct Container {
     /// The loot table still to be drawn; the first opening uses it up.
     pub(crate) table: Option<usize>,
-    pub contents: Contents,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct Contents {
-    pub items: Vec<ItemStack>,
+    /// The gold drawn with it, which goes to the party's purse when it is
+    /// opened.
     pub gold: u32,
 }
 
@@ -63,8 +61,7 @@ pub(crate) fn use_container(
     let (party, roster) = *party;
     let (mut container, motion) = containers.get_mut(entity).unwrap();
     if let Some(item) = held.held(party) {
-        container.contents.items.extend(held.stack(item, &content.items));
-        commands.entity(item).despawn();
+        commands.trigger(Put { item, at: Place::Container(entity) });
         return ContainerUse::Deposited;
     }
     if attempts.contains(entity) {
@@ -72,6 +69,7 @@ pub(crate) fn use_container(
     }
     // Devices with containers run only once the databases have loaded.
     let catalog = &content.items;
+    let mut inside = held.stowed(entity).to_vec();
     if let Some(table) = container.table {
         let loot = &content.loot;
         // Level-scaled tables draw for the party's average level (retail
@@ -83,24 +81,24 @@ pub(crate) fn use_container(
             profiles.iter_many(roster.iter()).matched().map(|c| c.level()),
         );
         let (found, gold) = roll_loot(&loot.0[table], catalog, party_level, &mut rng);
-        let contents = &mut container.contents;
-        contents.items.extend(
-            found.into_iter().map(|id| ItemStack::rolled(&catalog[id], &mut rng, false, false)),
-        );
-        contents.gold += gold;
+        for id in found {
+            let definition = &catalog[id];
+            let item =
+                make(&mut commands, definition, roll_amount(definition, &mut rng, false), false);
+            commands.trigger(Put { item, at: Place::Container(entity) });
+            inside.push(item);
+        }
+        container.gold += gold;
         container.table = None;
     }
-    let contents = &mut container.contents;
-    if contents.gold > 0 {
-        purse.gold += contents.gold;
-        outcomes.write(TriggerEffect::Gold(contents.gold));
-        contents.gold = 0;
+    if container.gold > 0 {
+        purse.gold += container.gold;
+        outcomes.write(TriggerEffect::Gold(container.gold));
+        container.gold = 0;
     }
-    match contents.items.len() {
-        0 => ContainerUse::Toggle,
-        1 => {
-            let stack = contents.items.pop().unwrap();
-            let item = unpack(&mut commands, &catalog[stack.item], &stack);
+    match inside[..] {
+        [] => ContainerUse::Toggle,
+        [item] => {
             commands.trigger(Put { item, at: Place::Hand { party } });
             ContainerUse::Toggle
         }
@@ -116,16 +114,14 @@ pub enum Recipient {
     Member(Entity),
 }
 
-/// Take the chosen stacks, each whole or `amount` of it, in the container's
-/// order (retail `TransferSelectedItems`). Each stack goes as far as there
-/// is room; what does not fit stays in the container exactly as it was, and
-/// when nothing is left the container is done with. A member must be able
-/// to act to receive anything.
+/// Take the chosen items, each whole or `amount` of it, in the order asked
+/// (retail `TransferSelectedItems`). Each goes as far as there is room; what
+/// does not fit stays in the container exactly as it was. A member must be
+/// able to act to receive anything.
 pub(crate) fn take_from_containers(
     mut commands: Commands,
     mut requests: MessageReader<super::interaction::DeviceRequest>,
     attempts: Query<(&DeviceInteraction, &AttemptOn)>,
-    mut containers: Query<&mut Container>,
     party: Single<Entity, With<PartyRoster>>,
     held: Items,
     members: Query<&crate::game::characters::Vitals, With<Character>>,
@@ -133,10 +129,7 @@ pub(crate) fn take_from_containers(
         Query<(), With<super::level::Destination>>,
         Query<(), With<crate::game::combat::Battle>>,
     ),
-    content: Res<Catalogs>,
-    mut news: MessageWriter<ItemNews>,
 ) {
-    use super::interaction::DeviceAct;
     let party = *party;
     for request in requests.read() {
         let DeviceAct::Take { picks, to } = &request.act else { continue };
@@ -155,42 +148,48 @@ pub(crate) fn take_from_containers(
                 _ => continue,
             },
         };
-        let Ok(mut container) = containers.get_mut(device) else { continue };
-        let catalog = &content.items;
-        let items = &mut container.contents.items;
-        // What is asked of each pick, and how much of it would be taken.
-        let wanted: Vec<(usize, ItemStack)> = picks
-            .iter()
-            .filter_map(|&(index, amount)| {
-                let mut stack = items.get(index)?.clone();
-                match amount {
-                    0 => None,
-                    amount if amount == stack.count() => Some((index, stack)),
-                    amount => Some((index, stack.split_off(amount)?)),
-                }
-            })
-            .collect();
-        let stacks: Vec<_> = wanted.iter().map(|(_, stack)| stack.clone()).collect();
-        let taken = receive(&held, &mut commands, catalog, (party, receiver), (&stacks, true));
-        let mut emptied = Vec::new();
-        let mut refused = false;
-        for ((index, asked), taking) in wanted.into_iter().zip(taken) {
-            refused |= taking < asked.count();
-            if taking == items[index].count() {
-                emptied.push(index);
-            } else if taking > 0 {
-                items[index].split_off(taking);
+        let inside = held.stowed(device);
+        for &(item, amount) in picks {
+            let units = held.units(item);
+            if !inside.contains(&item) || amount == 0 || u32::from(amount) > units {
+                continue;
+            }
+            // Of a stack, a part is taken as an item of its own; what does
+            // not fit of it goes back to the rest.
+            let part = (u32::from(amount) < units).then(|| split(&mut commands, item, amount));
+            let taking = part.unwrap_or(item);
+            commands.trigger(Give {
+                item: taking,
+                to: receiver,
+                party,
+                pool_first: receiver.is_none(),
+                told: true,
+            });
+            if part.is_some() {
+                commands.trigger(Rejoin { part: taking, whole: item });
             }
         }
-        emptied.sort_unstable();
-        for index in emptied.into_iter().rev() {
-            items.remove(index);
-        }
-        if refused {
-            news.write(ItemNews::NoRoom);
-        }
-        if items.is_empty() {
-            commands.entity(request.on).despawn();
-        }
+    }
+}
+
+/// A looked-through container with nothing left in it is done with.
+pub(crate) fn emptied(
+    event: On<Remove<Stows>>,
+    containers: Query<&DeviceAttempt, With<Container>>,
+    mut commands: Commands,
+) {
+    for attempt in containers.get(event.entity).iter().flat_map(|attempts| attempts.iter()) {
+        commands.entity(attempt).try_despawn();
+    }
+}
+
+/// A bag lying in the world with nothing left in it is gone.
+pub(crate) fn bag_emptied(
+    event: On<Remove<Stows>>,
+    bags: Query<(), (With<Bag>, With<Lying>)>,
+    mut commands: Commands,
+) {
+    if bags.contains(event.entity) {
+        commands.entity(event.entity).try_despawn();
     }
 }

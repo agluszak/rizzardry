@@ -628,8 +628,8 @@ pub enum DeviceAct {
         source: Source,
     },
     Take {
-        /// Positions in the container's contents, and how many of each.
-        picks: Vec<(usize, u16)>,
+        /// The items chosen from the container, and how many of each.
+        picks: Vec<(Entity, u16)>,
         to: super::containers::Recipient,
     },
     Leave,

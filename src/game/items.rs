@@ -24,6 +24,7 @@ use crate::game::data::Catalogs;
 use crate::game::inventory::EquipSlot;
 use crate::game::party::roster::{PartyMember, PartyRoster};
 use crate::game::rng::GameRng;
+use crate::game::world::level::LevelOwned;
 
 /// How many things a member's pack holds.
 pub const PACK_SLOTS: usize = 8;
@@ -184,8 +185,23 @@ pub struct Stowed(pub Entity);
 #[relationship_target(relationship = Stowed, linked_spawn)]
 pub struct Stows(Vec<Entity>);
 
+/// An item lying in the world, where anyone can take it. Its position is its
+/// `Transform`, and it belongs to the level it lies in.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Lying;
+
+/// A lying item the party has not found yet: it cannot be seen, pointed at or
+/// taken until a search spots it.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Hidden;
+
+/// It holds other things, and taking it takes what is in it instead (retail
+/// `W8Item::container`): a bag lying in the world.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Bag;
+
 /// Somewhere an item can be put.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Place {
     Slot {
         member: Entity,
@@ -204,6 +220,11 @@ pub enum Place {
         party: Entity,
     },
     Container(Entity),
+    /// Lying in a level at a point.
+    Ground {
+        level: Entity,
+        at: Vec3,
+    },
 }
 
 /// Make an item from its definition: `amount` of it, or that many charges,
@@ -237,6 +258,9 @@ pub fn make(
     }
     if definition.crucial {
         item.insert(Crucial);
+    }
+    if definition.container {
+        item.insert(Bag);
     }
     if definition.cursed {
         item.insert(Cursed { released: false });
@@ -277,11 +301,11 @@ pub fn roll_amount(definition: &ItemDefinition, rng: &mut GameRng, maximum: bool
     }) as u16
 }
 
-/// An item that is not in the world as a thing: what a stored character
-/// holds, what lies on the ground, in a container, in a monster's loot or
-/// in a merchant's hands. The party's own items are entities; this is the
-/// value they are converted to and from where they cross into those places
-/// ([`unpack`] and [`Items::stack`]), until those become things too.
+/// An item that is not in the world as a thing: what a level that was left
+/// kept lying and in its containers, what a character outside the party
+/// holds, what a merchant has. Items in the world are entities; this is the
+/// value they are converted to and from where they cross into a record
+/// ([`unpack`] and [`Items::stack`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ItemStack {
     pub item: ItemId,
@@ -318,47 +342,10 @@ impl ItemStack {
     ) -> Self {
         Self::new(definition, roll_amount(definition, rng, maximum), identify)
     }
-
-    pub fn count(&self) -> u16 {
-        self.count
-    }
-
-    pub fn units(&self) -> u32 {
-        u32::from(self.count)
-    }
-
-    pub fn remaining_uses(&self) -> Option<u16> {
-        self.remaining_uses
-    }
-
-    pub fn display_name(&self, definition: &ItemDefinition, count: bool) -> String {
-        let name = definition.known_name(self.identified);
-        if count && self.count > 1 { format!("{name} ({})", self.count) } else { name.to_owned() }
-    }
-
-    /// Take `amount` units off this stack as a stack of their own, when that
-    /// is a proper part of it.
-    pub fn split_off(&mut self, amount: u16) -> Option<Self> {
-        if amount == 0 || amount >= self.count {
-            return None;
-        }
-        self.count -= amount;
-        Some(Self { count: amount, ..self.clone() })
-    }
-
-    /// What is left of this once `taken` of its units have gone, if any.
-    pub fn without(mut self, taken: u16) -> Option<Self> {
-        if taken >= self.count {
-            return None;
-        }
-        self.count -= taken;
-        Some(self)
-    }
 }
 
 /// An item made from the value that stood for it, nowhere until it is
-/// [`Put`] somewhere: what the party takes from the world, a merchant or a
-/// record becomes a thing.
+/// [`Put`] somewhere: what a record keeps becomes a thing again.
 pub fn unpack(commands: &mut Commands, definition: &ItemDefinition, stack: &ItemStack) -> Entity {
     let amount = stack.remaining_uses.unwrap_or(stack.count);
     let item = make(commands, definition, amount, stack.identified);
@@ -368,35 +355,6 @@ pub fn unpack(commands: &mut Commands, definition: &ItemDefinition, stack: &Item
         curse: stack.curse_known,
     });
     item
-}
-
-/// Values come to the party, in order: to a member if one is named, else
-/// to the pool (see [`ItemStack`]). Each becomes a thing as far as there is
-/// room for it, a proper part of it if not all. How many units of each were
-/// taken; the rest are the caller's still.
-pub fn receive(
-    items: &Items,
-    commands: &mut Commands,
-    catalog: &ItemCatalog,
-    (party, to): (Entity, Option<Entity>),
-    (stacks, told): (&[ItemStack], bool),
-) -> Vec<u16> {
-    let accepts = match to {
-        Some(member) => items.pack_accepts(member, stacks),
-        None => items.pool_accepts(party, stacks),
-    };
-    for (stack, &taking) in stacks.iter().zip(&accepts) {
-        if taking == 0 {
-            continue;
-        }
-        let mut part = stack.clone();
-        if taking < part.count() {
-            part = part.split_off(taking).unwrap();
-        }
-        let item = unpack(commands, &catalog[part.item], &part);
-        commands.trigger(Give { item, to, party, pool_first: to.is_none(), told });
-    }
-    accepts
 }
 
 /// The items there are and where they are, to read.
@@ -421,6 +379,8 @@ pub struct Items<'w, 's> {
     packs: Query<'w, 's, &'static Pack>,
     pools: Query<'w, 's, &'static Pool>,
     hands: Query<'w, 's, &'static Hand>,
+    stows: Query<'w, 's, &'static Stows>,
+    hidden: Query<'w, 's, (), With<Hidden>>,
 }
 
 impl Items<'_, '_> {
@@ -462,6 +422,16 @@ impl Items<'_, '_> {
     /// A party's pool, top row first.
     pub fn pool(&self, party: Entity) -> &[Entity] {
         self.pools.get(party).map_or(&[], |pool| pool.0.as_slice())
+    }
+
+    /// What a container, or a bag lying in the world, holds.
+    pub fn stowed(&self, container: Entity) -> &[Entity] {
+        self.stows.get(container).map_or(&[], |stows| stows.0.as_slice())
+    }
+
+    /// Whether a lying item has not been found yet.
+    pub fn hidden(&self, item: Entity) -> bool {
+        self.hidden.contains(item)
     }
 
     /// What a party has in hand.
@@ -546,9 +516,8 @@ impl Items<'_, '_> {
         })
     }
 
-    /// The value that stands for an item where it is not a thing (see
-    /// [`ItemStack`]); the item itself is left to be despawned by whoever
-    /// moves it.
+    /// The value that stands for an item in a record (see [`ItemStack`]); the
+    /// item itself is left to be despawned by whoever keeps the record.
     pub fn stack(&self, item: Entity, catalog: &ItemCatalog) -> Option<ItemStack> {
         let (&Item(id), count, charges, known, _) = self.items.get(item).ok()?;
         let mut stack = ItemStack::new(&catalog[id], 1, known.identified);
@@ -620,60 +589,6 @@ impl Items<'_, '_> {
     pub fn pack_room(&self, member: Entity, id: ItemId, identified: bool, wanted: u32) -> u32 {
         let alike = self.room_among(self.carried(member), id, identified);
         if self.pack(member).iter().any(Option::is_none) { alike.max(wanted) } else { alike }
-    }
-
-    /// How many units of each of these stacks, taken in order, a party's
-    /// pool would take: into the rows alike, then a row of its own for what
-    /// is left.
-    pub fn pool_accepts(&self, party: Entity, stacks: &[ItemStack]) -> Vec<u16> {
-        let mut rows = self.pool(party).len();
-        let mut used = Vec::new();
-        stacks
-            .iter()
-            .map(|stack| {
-                let alike =
-                    self.room_among(self.pool(party).iter().copied(), stack.item, stack.identified);
-                let taking = Self::fill(&mut used, stack, alike, rows < POOL_LIMIT);
-                rows += usize::from(taking == stack.count() && taking > 0 && alike < stack.units());
-                taking
-            })
-            .collect()
-    }
-
-    /// How many units of each of these stacks, taken in order, a member
-    /// would take: into what they carry alike, then a free pack slot for
-    /// what is left.
-    pub fn pack_accepts(&self, member: Entity, stacks: &[ItemStack]) -> Vec<u16> {
-        let mut free = self.pack(member).iter().filter(|slot| slot.is_none()).count();
-        let mut used = Vec::new();
-        stacks
-            .iter()
-            .map(|stack| {
-                let alike = self.room_among(self.carried(member), stack.item, stack.identified);
-                let taking = Self::fill(&mut used, stack, alike, free > 0);
-                free -= usize::from(taking == stack.count() && taking > 0 && alike < stack.units());
-                taking
-            })
-            .collect()
-    }
-
-    /// How much of a stack goes where: the room already alike that earlier
-    /// stacks have not used, and all of it if there is a place of its own.
-    fn fill(
-        used: &mut Vec<(ItemId, bool, u32)>,
-        stack: &ItemStack,
-        alike: u32,
-        own_place: bool,
-    ) -> u16 {
-        let key = (stack.item, stack.identified);
-        let at = used.iter().position(|&(item, known, _)| (item, known) == key);
-        let spent = at.map_or(0, |at| used[at].2);
-        let from_alike = (alike.max(spent) - spent).min(stack.units());
-        match at {
-            Some(at) => used[at].2 += from_alike,
-            None => used.push((key.0, key.1, from_alike)),
-        }
-        if from_alike < stack.units() && own_place { stack.count() } else { from_alike as u16 }
     }
 }
 
@@ -828,6 +743,23 @@ fn stack(event: On<Stack>, mut stacks: Query<(&Item, &mut Count, &Known)>, mut c
     commands.trigger(Reweigh);
 }
 
+/// What is left of a part taken from a stack, still stowed beside the stack
+/// it was taken from, joins it again. A part that went elsewhere stays there.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Rejoin {
+    /// The part.
+    #[event_target]
+    pub part: Entity,
+    pub whole: Entity,
+}
+
+fn rejoin(event: On<Rejoin>, stowed: Query<&Stowed>, mut commands: Commands) {
+    let (Ok(part), Ok(whole)) = (stowed.get(event.part), stowed.get(event.whole)) else { return };
+    if part == whole {
+        commands.trigger(Stack { onto: event.whole, from: event.part });
+    }
+}
+
 /// An item goes to a place, leaving wherever it was. Whoever asks has
 /// checked that it may (see [`fits`]); this only moves it.
 #[derive(EntityEvent, Clone, Copy, Debug)]
@@ -839,7 +771,17 @@ pub struct Put {
 
 fn put(event: On<Put>, mut curses: Query<&mut Cursed>, mut commands: Commands) {
     let item = event.item;
-    commands.entity(item).remove::<(Worn, Packed, Pooled, InHand, Stowed)>();
+    commands.entity(item).remove::<(
+        Worn,
+        Packed,
+        Pooled,
+        InHand,
+        Stowed,
+        Lying,
+        Hidden,
+        LevelOwned,
+        Transform,
+    )>();
     match event.at {
         Place::Slot { member, slot } => {
             // A curse takes hold anew each time it is put on.
@@ -860,8 +802,25 @@ fn put(event: On<Put>, mut curses: Query<&mut Cursed>, mut commands: Commands) {
         Place::Container(container) => {
             commands.entity(item).insert(Stowed(container));
         }
+        Place::Ground { level, at } => {
+            commands.entity(item).insert((
+                Lying,
+                LevelOwned(level),
+                Transform::from_translation(at),
+            ));
+        }
     }
     commands.trigger(Reweigh);
+}
+
+/// A part of a stack, taken as an item of its own: `amount` of it, with the
+/// facts of the whole copied and in the same place. The whole is left with
+/// the rest. A proper part only.
+pub fn split(commands: &mut Commands, stack: Entity, amount: u16) -> Entity {
+    let part = commands.entity(stack).clone_and_spawn().id();
+    commands.entity(part).entry::<Count>().and_modify(move |mut count| count.of = amount);
+    commands.trigger(Lose { item: stack, amount });
+    part
 }
 
 /// A gun or a charged thing is loaded from what loads it (retail
@@ -1020,13 +979,16 @@ fn give(
         return;
     }
     let name = content.items[id].known_name(known.identified).to_owned();
-    news.write(match taker {
-        Some(member) => ItemNews::Takes {
+    if let Some(member) = taker {
+        news.write(ItemNews::Takes {
             member: member.and_then(|member| names.get(member).ok()).map(|c| c.name.clone()),
             item: name,
-        },
-        None => ItemNews::NoRoom,
-    });
+        });
+    }
+    // What nobody had room for stays where it was, and the party is told.
+    if left > 0 {
+        news.write(ItemNews::NoRoom);
+    }
 }
 
 /// A member takes what they can of an item: into what they carry alike,
@@ -1122,7 +1084,7 @@ fn swap(
         Place::Slot { member, .. } | Place::Pack { member, .. } => {
             carry(member, party, at, held, &items, &fit, &things, &members, &mut commands)
         }
-        Place::Hand { .. } | Place::Container(_) => Err(Refusal::Nothing),
+        Place::Hand { .. } | Place::Container(_) | Place::Ground { .. } => Err(Refusal::Nothing),
     };
     if let Err(refusal) = outcome {
         refused.write(Refused(refusal));
@@ -1279,6 +1241,32 @@ fn pass(
     commands.trigger(Give { item, to: eligible.then_some(to), party, pool_first, told: true });
 }
 
+/// The party throws what it has in hand, and it comes to rest at a point of a
+/// level. A crucial item is never thrown away: it stays in hand, and the
+/// party is told.
+#[derive(Event, Clone, Copy, Debug)]
+pub struct Throw {
+    pub party: Entity,
+    pub level: Entity,
+    pub at: Vec3,
+}
+
+fn throw(
+    event: On<Throw>,
+    items: Items,
+    crucial: Query<(), With<Crucial>>,
+    mut news: MessageWriter<ItemNews>,
+    mut commands: Commands,
+) {
+    let Throw { party, level, at } = *event;
+    let Some(item) = items.held(party) else { return };
+    if crucial.contains(item) {
+        news.write(ItemNews::CannotDrop);
+        return;
+    }
+    commands.trigger(Put { item, at: Place::Ground { level, at } });
+}
+
 /// What the party is told of items coming to it and being put together.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum ItemNews {
@@ -1288,7 +1276,7 @@ pub enum ItemNews {
     },
     NoRoom,
     /// An item the party may not part with stays in hand instead of being
-    /// dropped (retail string 0x4ef).
+    /// thrown away (retail string 0x4ef).
     CannotDrop,
     /// Merging needs both items identified.
     Unidentified,
@@ -1711,12 +1699,14 @@ pub(crate) fn plugin(app: &mut App) {
         .add_message::<ItemNews>()
         .add_observer(stack)
         .add_observer(put)
+        .add_observer(rejoin)
         .add_observer(load)
         .add_observer(spend)
         .add_observer(lose)
         .add_observer(give)
         .add_observer(swap)
         .add_observer(pass)
+        .add_observer(throw)
         .add_observer(merge)
         .add_observer(identify)
         .add_observer(outfit)
@@ -1843,16 +1833,20 @@ mod tests {
         for observer in [
             Observer::new(stack),
             Observer::new(put),
+            Observer::new(rejoin),
             Observer::new(load),
             Observer::new(spend),
             Observer::new(lose),
             Observer::new(give),
             Observer::new(swap),
             Observer::new(pass),
+            Observer::new(throw),
             Observer::new(merge),
             Observer::new(identify),
             Observer::new(outfit),
             Observer::new(reweigh),
+            Observer::new(crate::game::world::containers::emptied),
+            Observer::new(crate::game::world::containers::bag_emptied),
         ] {
             world.spawn(observer);
         }
@@ -2127,5 +2121,248 @@ mod tests {
         });
         world.flush();
         assert_eq!(world.get::<Burden>(member).unwrap().weight, 0);
+    }
+
+    /// Fill every row of the party's pool, so that it takes nothing more.
+    fn fill_pool(world: &mut World, party: Entity) {
+        for _ in 0..POOL_LIMIT {
+            let bow = new(world, BOW, 1);
+            world.trigger(Put { item: bow, at: Place::Pool { party, row: 0 } });
+        }
+        world.flush();
+    }
+
+    /// Lay an item on the ground of a level.
+    fn lay_down(world: &mut World, item: Entity) -> Entity {
+        let level = world.spawn_empty().id();
+        world.trigger(Put { item, at: Place::Ground { level, at: Vec3::new(1.0, 2.0, 3.0) } });
+        world.flush();
+        level
+    }
+
+    /// A member whose pack is full, with `arrows` in the first slot.
+    fn full_pack(world: &mut World, member: Entity, arrows: u16) -> Entity {
+        let quiver = new(world, ARROWS, arrows);
+        world.trigger(Put { item: quiver, at: Place::Pack { member, slot: 0 } });
+        for slot in 1..PACK_SLOTS {
+            let bow = new(world, BOW, 1);
+            world.trigger(Put { item: bow, at: Place::Pack { member, slot } });
+        }
+        world.flush();
+        quiver
+    }
+
+    /// A stack lying on the ground that only partly fits is partly taken, and
+    /// the rest still lies where it was; what does not fit anywhere is told.
+    #[test]
+    fn a_stack_on_the_ground_is_taken_as_far_as_it_fits() {
+        let (mut world, member, party) = party();
+        let quiver = full_pack(&mut world, member, 90);
+        fill_pool(&mut world, party);
+        let lying = new(&mut world, ARROWS, 30);
+        let level = lay_down(&mut world, lying);
+        world.trigger(Give { item: lying, to: Some(member), party, pool_first: false, told: true });
+        world.flush();
+        assert_eq!(world.get::<Count>(quiver).unwrap().of, 100);
+        assert_eq!(world.get::<Count>(lying).unwrap().of, 20, "the rest is left");
+        assert!(world.get::<Lying>(lying).is_some());
+        assert_eq!(world.get::<LevelOwned>(lying), Some(&LevelOwned(level)));
+        assert_eq!(world.get::<Transform>(lying).unwrap().translation, Vec3::new(1.0, 2.0, 3.0));
+        let told: Vec<_> = world.resource_mut::<Messages<ItemNews>>().drain().collect();
+        assert_eq!(
+            told,
+            [
+                ItemNews::Takes { member: Some("Vi".to_owned()), item: "Arrows".to_owned() },
+                ItemNews::NoRoom
+            ]
+        );
+        // With nothing to take it into, all of it stays.
+        let more = new(&mut world, BOW, 1);
+        lay_down(&mut world, more);
+        world.trigger(Give { item: more, to: Some(member), party, pool_first: false, told: true });
+        world.flush();
+        assert!(world.get::<Lying>(more).is_some());
+    }
+
+    /// An item taken from the ground no longer lies there.
+    #[test]
+    fn an_item_taken_up_stops_lying() {
+        let (mut world, member, party) = party();
+        let bow = new(&mut world, BOW, 1);
+        lay_down(&mut world, bow);
+        world.trigger(Give { item: bow, to: Some(member), party, pool_first: false, told: false });
+        world.flush();
+        assert!(world.get::<Lying>(bow).is_none() && world.get::<Transform>(bow).is_none());
+        assert!(world.get::<LevelOwned>(bow).is_none());
+        let pack = world.run_system_once(move |items: Items| items.pack(member)).unwrap();
+        assert_eq!(pack[0], Some(bow));
+    }
+
+    /// A bag lying in the world is gone once the pool has taken all of it.
+    #[test]
+    fn a_bag_is_gone_once_it_is_emptied() {
+        let (mut world, _, party) = party();
+        let bag = world.spawn((Bag, Weight(0))).id();
+        lay_down(&mut world, bag);
+        let (bow, quiver) = (new(&mut world, BOW, 1), new(&mut world, ARROWS, 5));
+        for item in [bow, quiver] {
+            world.trigger(Put { item, at: Place::Container(bag) });
+        }
+        world.flush();
+        assert_eq!(world.run_system_once(move |items: Items| items.stowed(bag).len()).unwrap(), 2);
+        for item in [bow, quiver] {
+            world.trigger(Give { item, to: None, party, pool_first: true, told: true });
+        }
+        world.flush();
+        assert!(world.get_entity(bag).is_err());
+        let pool = world.run_system_once(move |items: Items| items.pool(party).to_vec()).unwrap();
+        assert_eq!(pool.len(), 2);
+    }
+
+    /// The chosen items are taken from a container, a stack in part; what a
+    /// member has no room for stays in it, joined to the rest of its stack,
+    /// and the looking ends when it is empty.
+    #[test]
+    fn items_are_taken_from_a_container() {
+        use crate::game::world::containers::{Container, Recipient, take_from_containers};
+        use crate::game::world::interaction::{
+            AttemptOn, DeviceAct, DeviceInteraction, DeviceRequest, Work,
+        };
+        let (mut world, member, party) = party();
+        world.init_resource::<Messages<DeviceRequest>>();
+        let chest = world.spawn(Container { table: None, gold: 0 }).id();
+        let attempt =
+            world.spawn((DeviceInteraction { work: Work::Looting }, AttemptOn(chest))).id();
+        let (arrows, bow) = (new(&mut world, ARROWS, 10), new(&mut world, BOW, 1));
+        for item in [arrows, bow] {
+            world.trigger(Put { item, at: Place::Container(chest) });
+        }
+        world.flush();
+        let take = |world: &mut World, picks: Vec<(Entity, u16)>| {
+            world.write_message(DeviceRequest {
+                on: attempt,
+                act: DeviceAct::Take { picks, to: Recipient::Member(member) },
+            });
+            world.run_system_once(take_from_containers).unwrap();
+            world.resource_mut::<Messages<DeviceRequest>>().clear();
+            world.flush();
+        };
+        let inside = |world: &mut World| {
+            world.run_system_once(move |items: Items| items.stowed(chest).to_vec()).unwrap()
+        };
+        // Part of the stack is taken; the rest is still in the chest.
+        take(&mut world, vec![(arrows, 4)]);
+        assert_eq!(world.get::<Count>(arrows).unwrap().of, 6);
+        let pack = world.run_system_once(move |items: Items| items.pack(member)).unwrap();
+        let part = pack[0].expect("the part is in their pack");
+        assert_eq!(world.get::<Count>(part).unwrap().of, 4);
+        assert_eq!(inside(&mut world), [arrows, bow]);
+        // With a full pack and pool, only what joins what they carry goes.
+        world.entity_mut(part).insert(Count { of: 97, limit: 100 });
+        for slot in 1..PACK_SLOTS {
+            let spare = new(&mut world, BOW, 1);
+            world.trigger(Put { item: spare, at: Place::Pack { member, slot } });
+        }
+        fill_pool(&mut world, party);
+        take(&mut world, vec![(arrows, 5)]);
+        assert_eq!(world.get::<Count>(part).unwrap().of, 100);
+        assert_eq!(world.get::<Count>(arrows).unwrap().of, 1 + 2, "what did not fit rejoined");
+        assert_eq!(inside(&mut world), [arrows, bow]);
+        // A pick that names something not in the chest takes nothing.
+        take(&mut world, vec![(part, 1), (bow, 2)]);
+        assert_eq!(inside(&mut world), [arrows, bow]);
+        // When the last of it is taken the look is over.
+        assert!(world.get_entity(attempt).is_ok());
+        world.trigger(Put { item: arrows, at: Place::Hand { party } });
+        world.trigger(Put { item: bow, at: Place::Pool { party, row: 0 } });
+        world.flush();
+        assert!(world.get_entity(attempt).is_err());
+    }
+
+    /// What is held is thrown to lie where it lands; a crucial item stays in
+    /// hand and the party is told.
+    #[test]
+    fn a_held_item_is_thrown_but_not_a_crucial_one() {
+        let (mut world, _, party) = party();
+        let level = world.spawn_empty().id();
+        let at = Vec3::new(4.0, 0.25, -2.0);
+        let (ring, bow) = (new(&mut world, RING, 1), new(&mut world, BOW, 1));
+        world.entity_mut(ring).insert(Crucial);
+        hold(&mut world, party, ring);
+        world.trigger(Throw { party, level, at });
+        world.flush();
+        assert_eq!(held(&mut world, party), Some(ring));
+        assert!(world.get::<Lying>(ring).is_none());
+        let told: Vec<_> = world.resource_mut::<Messages<ItemNews>>().drain().collect();
+        assert_eq!(told, [ItemNews::CannotDrop]);
+        world.trigger(Put { item: ring, at: Place::Pool { party, row: 0 } });
+        world.flush();
+        hold(&mut world, party, bow);
+        world.trigger(Throw { party, level, at });
+        world.flush();
+        assert_eq!(held(&mut world, party), None);
+        assert!(world.get::<Lying>(bow).is_some());
+        assert_eq!(world.get::<Transform>(bow).unwrap().translation, at);
+        assert_eq!(world.get::<LevelOwned>(bow), Some(&LevelOwned(level)));
+    }
+
+    /// What lay in a level that is left is kept as values and lies again,
+    /// where it was, when the level is entered: a hidden item stays hidden,
+    /// and a bag holds what it held.
+    #[test]
+    fn what_lay_in_a_level_lies_again_when_it_is_entered() {
+        use crate::game::world::items::KeptItem;
+        let (mut world, _, _) = party();
+        let (bow, bag, quiver) =
+            (new(&mut world, BOW, 1), new(&mut world, SHIELD, 1), new(&mut world, ARROWS, 12));
+        let level = world.spawn_empty().id();
+        let (bow_at, bag_at) = (Vec3::new(1.0, 0.0, 2.0), Vec3::new(5.0, 0.0, 6.0));
+        for (item, at) in [(bow, bow_at), (bag, bag_at)] {
+            world.trigger(Put { item, at: Place::Ground { level, at } });
+        }
+        world.trigger(Put { item: quiver, at: Place::Container(bag) });
+        world.flush();
+        world.entity_mut(bow).insert(Hidden);
+        let kept: Vec<KeptItem> = world
+            .run_system_once(move |items: Items, content: Res<Catalogs>| -> Vec<KeptItem> {
+                [(bow, bow_at), (bag, bag_at)]
+                    .into_iter()
+                    .filter_map(|(item, at)| KeptItem::keep(&items, &content.items, item, at))
+                    .collect()
+            })
+            .unwrap();
+        world.entity_mut(level).despawn();
+        world.flush();
+        let level = world.spawn_empty().id();
+        world
+            .run_system_once(move |mut commands: Commands, content: Res<Catalogs>| {
+                for item in &kept {
+                    item.restore(&mut commands, level, &content.items);
+                }
+            })
+            .unwrap();
+        world.flush();
+        let lying = world
+            .run_system_once(|items: Items, lying: Query<(Entity, &Transform), With<Lying>>| {
+                let mut seen: Vec<_> = lying
+                    .iter()
+                    .map(|(item, at)| {
+                        let inside = items.stowed(item).iter().map(|&held| items.units(held));
+                        (
+                            items.id(item),
+                            at.translation,
+                            items.hidden(item),
+                            inside.collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect();
+                seen.sort_by(|a, b| a.1.x.total_cmp(&b.1.x));
+                seen
+            })
+            .unwrap();
+        assert_eq!(
+            lying,
+            [(Some(BOW), bow_at, true, vec![]), (Some(SHIELD), bag_at, false, vec![12])]
+        );
     }
 }

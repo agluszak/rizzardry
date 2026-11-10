@@ -14,7 +14,7 @@ use crate::content::species::MonsterCatalog;
 use crate::game::characters::Condition;
 use crate::game::data::Catalogs;
 use crate::game::rng::GameRng;
-use crate::game::world::items::{WorldItem, placed_item};
+use crate::game::world::items::place_item;
 
 /// A monster in the level: which one (its level-unique location id), what
 /// it is and its body. Its health, stamina, conditions and spells are its
@@ -503,29 +503,18 @@ pub fn populate(
             (navigation, configs),
         );
     }
-    let lying: Vec<(WorldItem, Vec3)> = match remembered_items {
-        Some(items) => items,
-        None => geometry
-            .items
-            .iter()
-            .map(|placement| {
-                let definition = &items[placement.item];
-                let loot = if definition.container {
-                    super::items::GroundLoot::Pile {
-                        appearance: definition.id,
-                        identified: placement.identified || definition.auto_identify,
-                        contents: vec![],
-                    }
-                } else {
-                    super::items::GroundLoot::Loose(placed_item(placement, definition))
-                };
-                (WorldItem { loot, hidden: placement.hidden }, placement.position)
-            })
-            .collect(),
-    };
-    info!("placed {monster_count} monsters and {} items", lying.len());
-    for (item, at) in lying {
-        let name = items[item.appearance()].name.clone();
-        commands.spawn((Name::new(name), item, Transform::from_translation(at), LevelOwned(root)));
+    match remembered_items {
+        Some(kept) => {
+            info!("placed {monster_count} monsters and {} items", kept.len());
+            for item in kept {
+                item.restore(commands, root, items);
+            }
+        }
+        None => {
+            info!("placed {monster_count} monsters and {} items", geometry.items.len());
+            for placement in &geometry.items {
+                place_item(commands, root, placement, &items[placement.item]);
+            }
+        }
     }
 }

@@ -10,7 +10,7 @@ use crate::{
         characters::{Character, Dead, Vitals},
         data::Catalogs,
         inventory::EquipSlot,
-        items::{Cursed, ItemStack, Items, Place, Put, receive, unpack},
+        items::{Cursed, Give, ItemStack, Items, Place, Put, unpack},
         magic::{LearnedSpells, SpellPoints},
         party::{
             body::PartyBody,
@@ -260,29 +260,29 @@ pub fn dismiss(
             })
         })
     };
-    // What they keep goes into their record; the rest returns to the party,
-    // or lies where the party stands if its pool is full.
+    // What they keep goes into their record; the rest lies where the party
+    // stands and is taken into the pool, staying there if the pool is full.
     let (mut worn, mut packed, mut returned) = (vec![], vec![], vec![]);
     for slot in EnumSet::<EquipSlot>::all() {
         let Some(item) = held.worn(actor, slot) else { continue };
-        let Some(stack) = held.stack(item, &content.items) else { continue };
         let binds = cursed.get(item).is_ok_and(|curse| !curse.released);
-        if wants(stack.item) || binds {
-            worn.push((slot, stack));
-        } else {
-            returned.push(stack);
+        match held.stack(item, &content.items) {
+            Some(stack) if held.id(item).is_some_and(wants) || binds => {
+                worn.push((slot, stack));
+                commands.entity(item).despawn();
+            }
+            _ => returned.push(item),
         }
-        commands.entity(item).despawn();
     }
     for (slot, item) in held.pack(actor).into_iter().enumerate() {
         let Some(item) = item else { continue };
-        let Some(stack) = held.stack(item, &content.items) else { continue };
-        if wants(stack.item) {
-            packed.push((slot, stack));
-        } else {
-            returned.push(stack);
+        match held.stack(item, &content.items) {
+            Some(stack) if held.id(item).is_some_and(wants) => {
+                packed.push((slot, stack));
+                commands.entity(item).despawn();
+            }
+            _ => returned.push(item),
         }
-        commands.entity(item).despawn();
     }
     let profile = Profile {
         character: c.clone(),
@@ -292,14 +292,7 @@ pub fn dismiss(
         spells: spells.clone(),
         points: points.clone(),
     };
-    let overflow = return_to_pool(party, returned, &held, &content, &mut commands);
-    crate::game::world::items::drop_loot(
-        &mut commands,
-        root,
-        PartyBody::feet(at),
-        overflow,
-        &content.items,
-    );
+    return_to_pool(party, &returned, (root, PartyBody::feet(at)), &mut commands);
     if !v.is_dead() {
         let kind = &content.species[location.species];
         let mut kept = KeptMonster::rolled(
@@ -340,17 +333,19 @@ pub fn dismiss(
     true
 }
 
-/// What someone leaving gives back to the party's pool; what the pool has
-/// no room for is returned.
+/// What someone leaving gives back to the party's pool: it lies where the
+/// party stands, and is taken from there as far as the pool has room.
 fn return_to_pool(
     party: Entity,
-    stacks: Vec<ItemStack>,
-    held: &Items,
-    content: &Catalogs,
+    returned: &[Entity],
+    (level, feet): (Entity, Vec3),
     commands: &mut Commands,
-) -> Vec<ItemStack> {
-    let taken = receive(held, commands, &content.items, (party, None), (&stacks, false));
-    stacks.into_iter().zip(taken).filter_map(|(stack, taken)| stack.without(taken)).collect()
+) {
+    let at = feet + Vec3::Y * crate::game::world::items::CLEARANCE;
+    for &item in returned {
+        commands.trigger(Put { item, at: Place::Ground { level, at } });
+        commands.trigger(Give { item, to: None, party, pool_first: true, told: false });
+    }
 }
 fn died(event: On<Add<Dead>>, mut records: Query<&mut Npc, With<PartyMember>>) {
     if let Ok(mut npc) = records.get_mut(event.entity) {
@@ -374,7 +369,6 @@ fn retire_fallen(
     party: Single<(Entity, &Position)>,
     held: Items,
     level: Single<Entity, With<Level>>,
-    content: If<Res<Catalogs>>,
     mut commands: Commands,
 ) {
     if !battles.is_empty() {
@@ -383,21 +377,8 @@ fn retire_fallen(
     let (party, at) = *party;
     for (entity, character, vitals, spells, points) in &members {
         // Everything they carried returns to the party.
-        let returned: Vec<_> = held
-            .carried(entity)
-            .filter_map(|item| {
-                commands.entity(item).despawn();
-                held.stack(item, &content.items)
-            })
-            .collect();
-        let overflow = return_to_pool(party, returned, &held, &content, &mut commands);
-        crate::game::world::items::drop_loot(
-            &mut commands,
-            *level,
-            PartyBody::feet(at),
-            overflow,
-            &content.items,
-        );
+        let returned: Vec<_> = held.carried(entity).collect();
+        return_to_pool(party, &returned, (*level, PartyBody::feet(at)), &mut commands);
         commands
             .entity(entity)
             .remove::<(PartyMember, Character, Vitals, LearnedSpells, SpellPoints)>()

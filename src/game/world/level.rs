@@ -14,7 +14,7 @@ use bevy::asset::{LoadState, UntypedAssetId};
 use bevy::ecs::system::SystemParam;
 
 use super::identify::{GroupMember, MonsterGroup};
-use super::items::WorldItem;
+use super::items::KeptItem;
 use super::navigation::Walker;
 use super::navigation::bake::SIZE_CLASSES;
 use super::population::{Monster, MonsterBodies};
@@ -223,7 +223,7 @@ pub struct LevelRecord {
     pub(super) monsters: Vec<KeptMonster>,
     pub(super) unborn: Vec<KeptMonster>,
     pub(super) encounters: super::encounters::EncounterState,
-    pub(super) items: Vec<(WorldItem, Vec3)>,
+    pub(super) items: Vec<KeptItem>,
     pub(super) groups: Vec<MonsterGroup>,
     notes: MapNotes,
 }
@@ -322,7 +322,8 @@ pub struct LevelContents<'w, 's> {
         ),
         Without<crate::game::npcs::NpcBody>,
     >,
-    items: Query<'w, 's, (&'static WorldItem, &'static Transform)>,
+    lying: Query<'w, 's, (Entity, &'static Transform), With<crate::game::items::Lying>>,
+    items: crate::game::items::Items<'w, 's>,
     groups: Query<'w, 's, &'static MonsterGroup>,
     notes: Query<'w, 's, &'static MapNotes>,
     unborn: Query<'w, 's, &'static super::population::Unborn>,
@@ -331,13 +332,20 @@ pub struct LevelContents<'w, 's> {
 }
 
 impl LevelContents<'_, '_> {
-    fn remember(&self, root: Entity, state: &LevelState, children: &[Entity]) -> LevelRecord {
+    fn remember(
+        &self,
+        root: Entity,
+        state: &LevelState,
+        children: &[Entity],
+        catalog: &crate::content::items::ItemCatalog,
+    ) -> LevelRecord {
         let notes = self.notes.get(root).ok();
         LevelRecord {
             triggers: self.devices.remember(
                 children,
                 state,
                 self.lights.get(root).expect("active levels own light state"),
+                catalog,
             ),
             prop_motion: self
                 .props
@@ -360,10 +368,10 @@ impl LevelContents<'_, '_> {
                 ..self.encounters.get(root).cloned().unwrap_or_default()
             },
             items: self
-                .items
+                .lying
                 .iter_many(children)
                 .matched()
-                .map(|(item, at)| (item.clone(), at.translation))
+                .filter_map(|(item, at)| KeptItem::keep(&self.items, catalog, item, at.translation))
                 .collect(),
             groups: self.groups.iter_many(children).matched().copied().collect(),
             notes: notes.cloned().unwrap_or_default(),
@@ -532,7 +540,7 @@ fn build_world(
     geometry: &LevelDefinition,
     collision: Collision,
     script: super::scripts::LevelScript,
-    tables: &LootTables,
+    (tables, catalog): (&LootTables, &crate::content::items::ItemCatalog),
     mut remembered: Option<&mut LevelRecord>,
 ) {
     let props: Vec<_> =
@@ -543,7 +551,7 @@ fn build_world(
         geometry,
         &props,
         script,
-        tables,
+        (tables, catalog),
         remembered.as_deref_mut().map(|r| std::mem::take(&mut r.triggers)),
     );
     commands.entity(root).insert((
@@ -621,7 +629,10 @@ pub fn activate_level(
         // changed since travel was accepted.
         for (entity, source, state, owned) in &current {
             let owned = owned.map_or(&[][..], LevelEntities::entities);
-            memory.0.insert(source.path.clone(), transition.p0().remember(entity, state, owned));
+            memory.0.insert(
+                source.path.clone(),
+                transition.p0().remember(entity, state, owned, &catalogs.items),
+            );
             npcs.depart(&mut commands, entity);
             commands.entity(entity).despawn();
         }
@@ -632,7 +643,7 @@ pub fn activate_level(
             geometry,
             collision,
             level.script,
-            loot,
+            (loot, &catalogs.items),
             remembered.as_mut(),
         );
         let navigation = navigation::install(&mut commands, root, level, geometry);

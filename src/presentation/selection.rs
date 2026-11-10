@@ -3,9 +3,8 @@
 use super::controls::Interact;
 use super::morph_picking::MorphRayCast;
 use super::party_view::PartyCamera;
-use crate::game::items::Items;
+use crate::game::items::{Items, Lying};
 use crate::game::world::ActivateDevice;
-use crate::game::world::items::WorldItem;
 use crate::game::world::items::{DropHeld, TakeItem};
 use crate::game::world::level::Level;
 use crate::game::world::population::Monster;
@@ -39,7 +38,7 @@ pub fn select_world_target(
     mut morphs: MorphRayCast,
     sky: Query<(), With<RenderLayers>>,
     parents: Query<&ChildOf>,
-    owners: Query<(), Or<(With<Prop>, With<WorldItem>, With<Monster>)>>,
+    owners: Query<(), Or<(With<Prop>, With<Lying>, With<Monster>)>>,
     levels: Query<Entity, With<Level>>,
     (hovers, ui): (Option<Res<HoverMap>>, Query<(), With<Node>>),
     mut selection: ResMut<WorldSelection>,
