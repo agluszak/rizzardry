@@ -13,13 +13,13 @@ use bevy::prelude::*;
 use super::{Attacks, Attributes, Level};
 use crate::content::characters::Attribute;
 use crate::game::characters::{Condition, Vitals};
+use crate::game::combat::monster::noticing::{Noticing, notices};
 use crate::game::party::body::{self as party_body, PartyBody};
 use crate::game::party::formation::{self, Row};
 use crate::game::party::roster::PartyMember;
 use crate::game::world::ActorPose;
 use crate::game::world::navigation::{Walker, feet};
 use crate::game::world::obstacles::WorldObstacles;
-use crate::game::world::perception::sight_threshold;
 use crate::game::world::population::Monster;
 
 /// Where an actor stands and how big it is.
@@ -131,10 +131,8 @@ impl Eyes {
         }
     }
 
-    /// Whether these eyes, at `from`, make out someone at `to`: within the
-    /// far clip, a clear line to their eyes, and the sight threshold,
-    /// narrower from behind the harder they are to make out, covering the
-    /// gap.
+    /// Whether these eyes, at `from`, make out someone at `to`
+    /// ([`notices`]).
     pub fn see(
         &self,
         from: &Place,
@@ -142,22 +140,20 @@ impl Eyes {
         far: f32,
         obstacles: &WorldObstacles,
     ) -> bool {
-        let distance = from.gap(to);
-        if !self.open || distance > far {
-            return false;
-        }
+        let gap = from.gap(to);
         let forward = from.forward().with_y(0.0);
-        let angle = forward.angle_between((to.eye - from.eye).with_y(0.0));
-        let threshold = sight_threshold(
-            angle,
-            self.senses,
-            self.bonus,
-            hidden.level,
-            hidden.concealment,
+        notices(&Noticing {
+            open: self.open,
+            line: self.open && gap <= far && obstacles.clear(from.eye, to.eye),
+            senses: self.senses,
+            bonus: self.bonus,
+            angle: forward.angle_between((to.eye - from.eye).with_y(0.0)),
+            gap,
+            hider_level: hidden.level,
+            concealment: hidden.concealment,
             far,
-            distance,
-        );
-        obstacles.clear(from.eye, to.eye) && threshold >= distance
+            searching: false,
+        })
     }
 }
 

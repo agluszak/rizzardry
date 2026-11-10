@@ -157,13 +157,16 @@ impl Allegiance {
         }
     }
 
-    /// Whether the party has come within an unaligned kind's hostility
-    /// radius, which turns its group hostile (retail
-    /// `RefreshMonsterGroupHostility`, `CheckMonsterGroupsEnterCombat`).
-    pub fn within_radius(&self, nearest: f32) -> bool {
-        !self.npc
-            && self.faction == UNALIGNED
-            && matches!(self.disposition, Disposition::HostileWithin(radius) if nearest <= radius)
+    /// How near the party must come to turn an unaligned kind's group
+    /// hostile (retail `RefreshMonsterGroupHostility`,
+    /// `CheckMonsterGroupsEnterCombat`); a kind with no such radius has none.
+    pub fn hostility_radius(&self) -> Option<f32> {
+        match self.disposition {
+            Disposition::HostileWithin(radius) if !self.npc && self.faction == UNALIGNED => {
+                Some(radius)
+            }
+            _ => None,
+        }
     }
 
     /// Whether a stance set at `at` has worn off by `now`: its grudge has
@@ -387,10 +390,10 @@ mod tests {
         let factions = Factions::default();
         let crab = allegiance(Disposition::HostileWithin(15.0), UNALIGNED, 10);
         assert_eq!(crab.default_stance(&factions), Stance::Neutral);
-        assert!(crab.within_radius(10.0) && !crab.within_radius(20.0));
+        assert_eq!(crab.hostility_radius(), Some(15.0));
         let slime = allegiance(Disposition::Hostile, UNALIGNED, 10);
         assert_eq!(slime.default_stance(&factions), Stance::Hostile);
-        assert!(!slime.within_radius(0.0), "only a radius promotes");
+        assert_eq!(slime.hostility_radius(), None, "only a radius promotes");
         let rapax = allegiance(Disposition::Neutral, 15, 10);
         assert_eq!(rapax.default_stance(&factions), Stance::Hostile, "common Rapax");
         let umpani = allegiance(Disposition::Neutral, 4, 10);

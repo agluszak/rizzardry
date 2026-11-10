@@ -15,16 +15,12 @@ use bevy::prelude::*;
 use bevy_landmass::prelude::*;
 
 use super::Combatant;
-use crate::content::species::Reach;
+use super::monster::close;
 use crate::game::actors::Attacks;
-use crate::game::characters::Condition;
 use crate::game::characters::Vitals;
 use crate::game::party::body::PartyBody;
 use crate::game::world::navigation::Walker;
 use crate::game::world::population::Monster;
-
-/// Stop this far inside an attack's reach.
-const REACH_MARGIN: f32 = 0.3;
 
 /// A monster's move this round: how far it may go, and how far its walking
 /// has taken it. Retail counts time at walking speed, not ground covered
@@ -43,69 +39,6 @@ pub enum MoveGoal {
     Retreat(Vec3),
     Attack(Entity),
 }
-
-/// Whether a living walker `gap` from its foe still needs to close to
-/// attack range, its arms reaching `reach`. Combat's passive-round decision
-/// and navigation use the same current actor state.
-pub(super) fn needs_approach(
-    reach: Reach,
-    vitals: &Vitals,
-    walker: Option<&Walker>,
-    gap: f32,
-) -> bool {
-    let Some(walker) = walker else { return false };
-    if vitals.is_dead() || walker.speed <= 0.0 {
-        return false;
-    }
-    gap > reach.metres() - REACH_MARGIN
-}
-
-/// A body's move this round, and whether it is a charge.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct MoveBudget {
-    pub metres: f32,
-    pub charge: bool,
-}
-
-/// How far an actor `gap` from the party with nobody in reach may advance
-/// this round, and whether it charges (hurt, at 95% health or less).
-pub(super) fn move_budget(
-    attacks: &Attacks,
-    vitals: &Vitals,
-    walker: Option<&Walker>,
-    gap: f32,
-) -> Option<MoveBudget> {
-    if !needs_approach(attacks.reach(), vitals, walker, gap) {
-        return None;
-    }
-    let charge = vitals.charges();
-    Some(MoveBudget { metres: move_metres(attacks, vitals, charge), charge })
-}
-
-/// How far an actor moves in one combat action: its stride, half again
-/// when charging, further by Haste, or halved when slowed (retail
-/// `SetUpMonsterTurn`).
-pub(super) fn move_metres(attacks: &Attacks, vitals: &Vitals, charge: bool) -> f32 {
-    let stride = attacks.stride.unwrap_or(0.0);
-    let budget = if charge { stride * 1.5 } else { stride };
-    if attacks.hasted > 0.0 {
-        budget + stride * attacks.hasted
-    } else if vitals.conditions.has(Condition::Slowed) {
-        budget * 0.5
-    } else {
-        budget
-    }
-}
-
-/// Where a monster running from the party heads: as far as its move
-/// takes it, straight away from the party over the ground.
-pub(super) fn away_from(feet: Vec3, party_eye: Vec3, metres: f32) -> Vec3 {
-    let away = (feet - party_eye).with_y(0.0).normalize_or(Vec3::X);
-    feet + away * metres
-}
-
-/// Metres per unit of a species' `combat_move_range`.
-pub(crate) const METRES_PER_MOVE_RANGE: f32 = 20.0;
 
 /// Head monsters on their move, at the start of each fixed step before
 /// navigation plans it; the move ends when it is spent, the monster
@@ -134,7 +67,11 @@ pub fn steer_moves(
                 let here = crate::game::world::navigation::feet(at.translation(), Some(walker));
                 let gap = crate::game::world::perception::party_distance(party_eye, monster, here);
                 (
-                    needs_approach(arms.reach(), vitals, Some(walker), gap),
+                    close::needs_approach(
+                        !vitals.is_dead() && walker.speed > 0.0,
+                        arms.reach(),
+                        gap,
+                    ),
                     AgentTarget3d::Entity(party),
                 )
             }
@@ -148,8 +85,7 @@ pub fn steer_moves(
                             target_walker,
                         );
                         !target_vitals.is_dead()
-                            && monster.gap(here, target, there)
-                                > arms.reach().metres() - REACH_MARGIN
+                            && !close::arrived(arms.reach(), monster.gap(here, target, there))
                     },
                 );
                 (needed, AgentTarget3d::Entity(entity))

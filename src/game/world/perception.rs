@@ -1,13 +1,15 @@
 //! Shared, stateless sight checks. Profiles, effects, physical poses and
 //! scenery remain authoritative; no second current-visibility table is kept.
 use crate::{
-    content::{
-        characters::{Attribute, Skill, Trait},
-        species::Species,
-    },
+    content::characters::{Attribute, Skill, Trait},
     game::{
+        actors::Level,
         characters::{Character, Condition, Vitals},
-        world::{obstacles::WorldObstacles, population::Monster},
+        combat::monster::noticing::{Noticing, notices},
+        world::{
+            obstacles::WorldObstacles,
+            population::{Camouflage, Monster},
+        },
     },
 };
 use bevy::prelude::*;
@@ -47,8 +49,10 @@ impl View {
     pub fn in_range(self, (monster, vitals): (&Monster, &Vitals), feet: Vec3) -> bool {
         !vitals.is_dead() && party_distance(self.eye, monster, feet) <= self.far
     }
-    /// Retail party-side sight. Shadow Hound supplies the full-range override,
-    /// while blindness, the target's concealment and solid scenery still apply.
+    /// Whether the party makes out a monster ([`notices`]): it hides by its
+    /// level and, outside a fight, by its kind's camouflage. Shadow Hound
+    /// supplies the full-range override, while blindness, the target's
+    /// concealment and solid scenery still apply.
     pub fn sees<'a>(
         self,
         mut members: impl Iterator<
@@ -56,7 +60,7 @@ impl View {
         >,
         shadow_hound: bool,
         (monster, body): (&Monster, &Vitals),
-        species: &Species,
+        (level, camouflage): (Level, Option<Camouflage>),
         feet: Vec3,
         in_combat: bool,
         obstacles: &WorldObstacles,
@@ -64,55 +68,29 @@ impl View {
         if body.is_dead() || !in_view((self.eye, self.far), monster, feet, obstacles) {
             return false;
         }
-        let distance = party_distance(self.eye, monster, feet);
         let angle = if shadow_hound {
             0.0
         } else {
             self.forward.with_y(0.0).angle_between((feet - self.eye).with_y(0.0))
         };
-        let concealment = if in_combat { 0 } else { u32::from(species.camouflage) };
+        let concealment = if in_combat { 0 } else { camouflage.map_or(0, |c| u32::from(c.0)) };
+        let gap = party_distance(self.eye, monster, feet);
+        let level = level.0 as i32;
         members.any(|(profile, vitals, attributes)| {
-            if !vitals.can_fight()
-                || vitals.conditions.has(Condition::Blind)
-                    && !profile.has_trait(Trait::EffectiveWhileBlind)
-            {
-                return false;
-            }
-            sight_threshold(
+            notices(&Noticing {
+                open: vitals.can_fight()
+                    && !(vitals.conditions.has(Condition::Blind)
+                        && !profile.has_trait(Trait::EffectiveWhileBlind)),
+                line: true,
+                senses: attributes[Attribute::Senses] as i32,
+                bonus: profile.skill(Skill::Scouting),
                 angle,
-                attributes[Attribute::Senses] as i32,
-                profile.skill(Skill::Scouting),
-                i32::from(species.level),
+                gap,
+                hider_level: level,
                 concealment,
-                self.far,
-                distance,
-            ) * if self.searching { 0.6667 } else { 1.0 }
-                >= distance
+                far: self.far,
+                searching: self.searching,
+            })
         })
     }
-}
-
-/// Retail `ComputeSightThreshold`: how far an observer facing away by
-/// `angle` (radians) sees, given its senses, a ranged bonus percent and the
-/// penalty source (the party's lowest level, doubled); within 45 degrees, or
-/// at no distance, the whole `far` clip.
-pub(crate) fn sight_threshold(
-    angle: f32,
-    senses: i32,
-    bonus: u32,
-    penalty: i32,
-    concealment: u32,
-    far: f32,
-    distance: f32,
-) -> f32 {
-    let mut percent = if angle < std::f32::consts::FRAC_PI_4 || distance == 0.0 {
-        100
-    } else {
-        ((senses - penalty * 2) as f32 * ((far - distance) / distance)) as i32
-    };
-    percent -= concealment as i32 * 10;
-    if bonus != 0 {
-        percent = (bonus as i32 + 100) * percent / 100;
-    }
-    percent.clamp(2, 100) as f32 * far * 0.01
 }

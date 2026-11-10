@@ -3,7 +3,7 @@
 //! order becomes what they are [`Ordered`] to do. When an actor's moment
 //! comes ([`Moment`]) it takes its turn ([`take_turn`]): revalidated, one
 //! under orders follows them, one without decides for itself
-//! ([`super::ai`]), and its conditions may take the action off it. What it
+//! ([`super::monster`]), and its conditions may take the action off it. What it
 //! then does is an event at it with one observer that does all of it: a
 //! weapon attack [`super::swings::Strike`], a cast
 //! [`crate::game::magic::casting::Cast`], and here [`Breathe`], [`Guard`],
@@ -13,15 +13,15 @@ use bevy::prelude::*;
 use enum_map::EnumMap;
 
 use super::attack::phase;
+use super::monster::conduct::Conduct;
+use super::monster::facts::{Fray, Nature, Plans, Records, Sight};
+use super::monster::{self, Deliberated, Interrupt, ailments, close};
 use super::swings::Strike;
-use super::{
-    ACTION_SECONDS, Battle, CombatNews, Combatant, Interrupt, PartyMove, Pause, Round, ai, conduct,
-    summon,
-};
-use crate::content::characters::{Attribute, Trait};
+use super::{ACTION_SECONDS, Battle, CombatNews, Combatant, PartyMove, Pause, Round, summon};
+use crate::content::characters::Trait;
 use crate::content::species::SpecialAttackKind;
 use crate::content::spells::SpellId;
-use crate::game::actors::{Attacks, reaches};
+use crate::game::actors::Attacks;
 use crate::game::characters::{Character, Condition, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::hits::definitions::Definitions;
@@ -30,14 +30,14 @@ use crate::game::hits::{Act, Deed, Release};
 use crate::game::inventory::WeaponSlot;
 use crate::game::items::Items;
 use crate::game::magic::casting::{
-    Cast, MagicChoice, Refusal, Refused, UseContext, in_cone, reaches as spell_reaches,
+    Aim, Cast, MagicChoice, Refusal, Refused, Source, UseContext, in_cone, reaches as spell_reaches,
 };
 use crate::game::magic::{Strength, Utility};
 use crate::game::party::Order;
 use crate::game::party::formation::Formation;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
-use crate::game::world::hostility::{self, Stance};
+use crate::game::world::identify::GroupMember;
 use crate::game::world::navigation::Walker;
 use crate::game::world::obstacles::WorldObstacles;
 
@@ -138,7 +138,7 @@ pub struct Fights {
 /// retail does not announce.
 #[derive(Clone, Copy, Debug)]
 pub struct Retreats {
-    pub conduct: conduct::Conduct,
+    pub conduct: Conduct,
     pub quiet: bool,
 }
 
@@ -379,7 +379,8 @@ pub(super) fn take_turn(
     mut commands: Commands,
     mut bodies: Query<Body>,
     mut turns: Query<(&mut Turn, Option<&mut Ordered>), With<Combatant>>,
-    minds: Query<ai::Mind>,
+    natures: Query<Nature>,
+    groups: Query<&'static GroupMember>,
     laid: crate::game::actors::Laid,
     places: crate::game::actors::Places,
     fight: Single<(&mut Pause, Option<&super::Combatants>), With<Battle>>,
@@ -462,22 +463,27 @@ pub(super) fn take_turn(
             })
         }
         Some(Action::Defend) => unreachable!("defending takes no turn"),
-        None => match minds.get(actor) {
-            Ok(mind) => {
-                let fight = ai::Fight {
+        None => match natures.get(actor) {
+            Ok(nature) => {
+                let sight = Sight {
                     bodies: &readonly,
-                    laid: &laid,
                     places: &places,
+                    laid: &laid,
+                    groups: &groups,
                     party,
                     roster,
-                    combatants,
                     far: level.view_distance().unwrap_or(0.0),
                     obstacles: &obstacles,
-                    content: &content,
-                    definitions: &definitions,
                 };
-                let (action, fleeing) = ai::decide(actor, &mind, &fight, &mut rng);
-                match (mind.fleeing, fleeing) {
+                let fray = Fray {
+                    bodies: combatants,
+                    fighting: true,
+                    sees_party: sight.sees_party(actor),
+                };
+                let records = Records { spells: &content.spells, definitions: &definitions };
+                let known = sight.know(actor, nature.kind(), fray, records).unwrap();
+                let thought = monster::deliberate(&mut rng, &known.deliberation());
+                match (nature.fleeing, thought.fleeing) {
                     (false, true) => {
                         commands.entity(actor).insert(Fleeing);
                     }
@@ -486,7 +492,46 @@ pub(super) fn take_turn(
                     }
                     _ => {}
                 }
-                action
+                let retreat = |conduct| Decision::Retreat(Retreats { conduct, quiet: false });
+                match thought.deliberated {
+                    Deliberated::Conducts(conduct) => retreat(conduct),
+                    Deliberated::Withdraws => retreat(Conduct::Withdraw),
+                    Deliberated::Guards(ward) => Decision::Protect(ward),
+                    Deliberated::HoldsBack => {
+                        Decision::Fight(Fights { waits: true, berserk: false })
+                    }
+                    Deliberated::Strikes => fights_on,
+                    Deliberated::Casts(cast) => Decision::Magic(MagicChoice {
+                        source: Source::Innate {
+                            spell: cast.spell,
+                            power: cast.power,
+                            budget: own.budget.map_or(0, |budget| budget.0),
+                            level: own.level.0 as u8,
+                        },
+                        aim: cast.aim,
+                    }),
+                    Deliberated::Breathes(made) => {
+                        let special = nature.kind().special.0;
+                        let kind = special.kind.unwrap();
+                        let feet = places.of(actor).feet;
+                        Decision::Special(Breathes {
+                            special: Some(kind),
+                            definition: definitions.special(kind),
+                            summons: kind.summons(),
+                            strength: crate::game::hits::specials::strength(
+                                own.level.0 as u8,
+                                own.vitals.stamina,
+                            ),
+                            toward: made
+                                .aim
+                                .and_then(Aim::body)
+                                .and_then(|aimed| readonly.get(aimed).ok())
+                                .map_or(feet, |there| places.of(there.entity).feet),
+                            cost: made.cost,
+                            cooldown: special.cooldown,
+                        })
+                    }
+                }
             }
             Err(_) => fights_on,
         },
@@ -498,34 +543,22 @@ pub(super) fn take_turn(
             .is_some_and(|spell| content.spells[spell].aimed_at_enemies()),
         _ => matches!(action, Decision::Special(_) | Decision::Fight(_)),
     };
-    // Whether one of its arms reaches a friend it sees: a living body
-    // on its side.
-    let mine = own.standing();
-    let strikes_friend = arms.arms.iter().any(|arm| {
-        combatants.iter().copied().any(|other| {
-            other != actor
-                && readonly.get(other).is_ok_and(|their| {
-                    !their.vitals.is_dead()
-                        && hostility::between(mine, their.standing()) == Stance::Friendly
-                        && reaches(
-                            formation,
-                            (actor, &places.of(actor)),
-                            (other, &places.of(their.entity)),
-                            arm.reach,
-                        )
-                })
-        })
-    });
-    let fleeing = matches!(action, Decision::Retreat(r) if r.conduct == conduct::Conduct::Flee);
-    let interrupted = conduct::interrupt(
-        &mut rng,
-        own.vitals,
-        (own.attributes[Attribute::Strength], arms.blind_fighting.is_some(), order.is_none()),
-        fleeing,
-        strikes_friend,
-        turn.berserk,
-        against_foes,
-    );
+    let sight = Sight {
+        bodies: &readonly,
+        places: &places,
+        laid: &laid,
+        groups: &groups,
+        party,
+        roster,
+        far: level.view_distance().unwrap_or(0.0),
+        obstacles: &obstacles,
+    };
+    let running = matches!(action, Decision::Retreat(r) if r.conduct == Conduct::Flee);
+    let plans =
+        Plans { runs: order.is_none(), running, turned_on_friends: turn.berserk, against_foes };
+    let interrupted = sight
+        .ailing(actor, (combatants, formation), plans)
+        .and_then(|ailing| ailments::interrupt(&mut rng, &ailing));
     let action = match interrupted {
         None | Some(Interrupt::Turncoat) => action,
         // Insanity turns it on its friends this round.
@@ -536,7 +569,7 @@ pub(super) fn take_turn(
         // Fear sends it running, without its flight's notice.
         Some(Interrupt::Panics) => {
             commands.entity(actor).insert(Fleeing);
-            Decision::Retreat(Retreats { conduct: conduct::Conduct::Flee, quiet: true })
+            Decision::Retreat(Retreats { conduct: Conduct::Flee, quiet: true })
         }
         Some(interrupt) => {
             if interrupt == Interrupt::Freed {
@@ -550,7 +583,7 @@ pub(super) fn take_turn(
     };
     match action {
         Decision::Fight(fights) => commands.trigger(Strike { actor, fights }),
-        Decision::Retreat(retreats) if retreats.conduct == conduct::Conduct::Hold => {
+        Decision::Retreat(retreats) if retreats.conduct == Conduct::Hold => {
             commands.trigger(Hold { actor });
         }
         Decision::Retreat(retreats) => commands.trigger(Retreat { actor, retreats }),
@@ -598,9 +631,16 @@ pub(super) fn retreat(
         return;
     }
     turn.moved = true;
-    let metres = super::approach::move_metres(attacks, vitals, false);
+    let moving = close::Moving {
+        walks: true,
+        reach: attacks.reach(),
+        stride: attacks.stride.unwrap_or(0.0),
+        hasted: attacks.hasted,
+        slowed: vitals.conditions.has(Condition::Slowed),
+    };
+    let metres = close::metres(&moving, false);
     let feet = places.of(actor).feet;
-    let away = super::approach::away_from(feet, places.of(*party).eye, metres);
+    let away = close::withdraws_to(feet, places.of(*party).eye, metres);
     commands.entity(actor).insert(super::approach::CombatMove {
         budget: metres,
         moved: 0.0,
@@ -608,7 +648,7 @@ pub(super) fn retreat(
     });
     if !retreats.quiet {
         news.write(match retreats.conduct {
-            conduct::Conduct::Flee => CombatNews::Flees { monster: actor },
+            Conduct::Flee => CombatNews::Flees { monster: actor },
             _ => CombatNews::Withdraws { monster: actor },
         });
     }

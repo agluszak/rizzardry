@@ -510,26 +510,28 @@ lines are in `src/game/`.
 
 ### Defects
 
-1. **A hostile group's leaving is simplified.** In the original a hostile group
-   stays while a living member has *any* visible enemy (including other monsters,
-   for a turncoat fight); it counts as engaged only if a member has a visible
-   party target; and it leaves if the leader's reach plus one combat move (never
-   under 65 m) is less than the group's nearest distance and the group cannot
-   engage (`MonsterAI.cpp:2065-2152`, `MonsterGroupCanEngage`
-   `:948-1031`). The Rust leaves a hostile group unless a living member makes out
-   the party (`combat/round_end.rs` `leave_fight`).
-2. **A ward may be out of formation, or a member.** In the original a monster
-   guards a friendly *combatant* - a monster or a party member who is its friend
-   (a turned member, `MonsterVsCharDisposition`) - of a higher level and at under
-   40 percent of its health **or out of formation** (`CanMonsterProtectCombatant`,
-   `Combat Attack.cpp:406-456`). The Rust considers monsters at under 40 percent
-   only (`combat/ai.rs` `guard`).
+1. **A hostile group leaves under a leader-reach clause the Rust lacks.** In the
+   original a hostile group that has just come into a fight also leaves if the
+   leader's reach plus one combat move (never under 65 m) is less than the
+   group's nearest distance and the group cannot engage
+   (`MonsterAI.cpp:2065-2152`, `MonsterGroupCanEngage` `:948-1031`). That clause
+   runs only while the group's *engagement state* is set, a stored flag the
+   original raises for the first moments of a group's fight and shares with its
+   allied groups (`SetMonsterGroupEngagementState`, `MonsterGroup.cpp:1666-1695`,
+   `MonsterAI.cpp:2570-2616`); the Rust has no such state. (The rest of the
+   defect is fixed: a hostile group stays while a living member makes out the
+   party or sees any other enemy, and counts as engaged only while a member makes
+   out the party.)
+2. **A ward may be out of formation.** In the original a monster guards a friendly
+   combatant of a higher level and at under 40 percent of its health **or out of
+   formation** (`CanMonsterProtectCombatant`, `Combat Attack.cpp:406-456`; it
+   reads the *guard's own* modifier for a monster ward, `:448`). The Rust has no
+   out-of-formation modifier on a body (the original sets it from spell effects,
+   `Gameplay Mods.cpp:178-179, 419, 433`), so it considers health only. (The
+   party-member half of the entry is not a defect: members are fight bodies like
+   monsters, and one under Turncoat is a friend of the monsters, so it is a ward
+   by the same rule.)
 3. *Moved to Unknown 14.*
-
-4. **A cast spell's group target is only the party.** A monster's spell aimed at
-   a group is offered for every other group in the fight that half-feels it,
-   as well as the party (`CollectMonsterSpellTargets`, `MonsterAI.cpp:1941-1960`);
-   the Rust offers the party alone (`combat/monster_spells.rs` `aims`).
 
 ### Missing
 

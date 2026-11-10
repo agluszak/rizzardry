@@ -720,12 +720,6 @@ impl Vitals {
         !self.is_dead() && self.conditions.below(Condition::Blind)
     }
 
-    /// Hurt enough for a monster to charge rather than walk up (retail
-    /// `SetUpMonsterTurn`: at 95% of its health or less).
-    pub fn charges(&self) -> bool {
-        self.health.current * 100 <= self.health.max * 95
-    }
-
     /// Afflict the body with a condition; a longer duration replaces a
     /// shorter, never the reverse. Slowing a hasted body is first spent on
     /// its Haste, which whoever lays the slowing settles.

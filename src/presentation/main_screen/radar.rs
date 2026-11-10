@@ -193,6 +193,7 @@ pub fn update_radar(
     monsters: Query<(
         Entity,
         (&crate::game::world::population::Monster, &crate::game::characters::Vitals),
+        (&crate::game::actors::Level, Option<&crate::game::world::population::Camouflage>),
         crate::game::world::ActorPose,
         Option<&crate::game::world::navigation::Walker>,
         Has<crate::game::combat::Combatant>,
@@ -207,10 +208,7 @@ pub fn update_radar(
         >,
         WorldObstacles,
     ),
-    (content, sides): (
-        If<Res<crate::game::data::Catalogs>>,
-        Query<&crate::game::world::hostility::Side>,
-    ),
+    sides: Query<&crate::game::world::hostility::Side>,
     (search, battle, levels): (
         Option<Res<crate::game::world::search::Search>>,
         Query<(), With<crate::game::combat::Battle>>,
@@ -232,7 +230,6 @@ pub fn update_radar(
         Ok((p, eye)) => (bevy::camera::CameraProjection::far(&**p), eye.translation()),
         _ => (0.0, position.0),
     };
-    let catalog = &content.species;
     let xray = laid.has(effects, crate::content::spells::SpellId::X_RAY);
     // Each blip's visibility is decided once, so one that stays in view
     // stays clean.
@@ -264,9 +261,8 @@ pub fn update_radar(
         searching: search.as_ref().is_some_and(|s| s.on(!battle.is_empty())),
     };
     let shadow_hound = laid.has(effects, crate::content::spells::SpellId::SHADOW_HOUND);
-    for (entity, monster, at, walker, in_combat, owner) in &monsters {
+    for (entity, monster, (level, camouflage), at, walker, in_combat, owner) in &monsters {
         let Some(roster) = roster else { continue };
-        let species = &catalog[monster.0.species];
         let feet = crate::game::world::navigation::feet(at.translation(), walker);
         if !levels.contains(owner.0) || !view.in_range(monster, feet) {
             continue;
@@ -276,7 +272,7 @@ pub fn update_radar(
                 members.iter_many(roster.iter()).matched(),
                 shadow_hound,
                 monster,
-                species,
+                (*level, camouflage.copied()),
                 feet,
                 in_combat,
                 &obstacles,
