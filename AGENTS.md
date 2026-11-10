@@ -1,112 +1,103 @@
 # Agent guidelines
 
-Rizzardry rewrites Wizardry 8 in Rust and Bevy. Preserve its gameplay and
-character, not its C++ architecture. See [README.md](README.md) for running the
-game and [CI](.github/workflows/ci.yml) for exact automated check commands.
+Rizzardry is Wizardry 8's game, rebuilt as a Bevy game. It is not Wizardry 8's
+program translated into Rust.
 
-## Start with the behavior
+[docs/design.md](docs/design.md) is the design rulebook; read it before
+touching `src/game`. [docs/rules/](docs/rules/) holds the game's rules as they
+have been worked out, and [docs/plan.md](docs/plan.md) the rewrite's slices.
+[README.md](README.md) says how to run the game. This file is about how to
+work here.
 
-- Trace authoritative state, writers, consumers and scheduling before changing a
-  feature. Check nearby code for useful patterns, not templates to copy blindly.
-- Establish behavior from the original game and decomp; modernized source is
-  supporting evidence. Record deliberate deviations in the PR. Check Bevy APIs
-  against this repository's version.
-- Prefer deletion, ordinary Rust and existing Bevy features. Fix ownership instead
-  of adding flags or synchronization. Abstractions and dependencies must simplify
-  a real use case; avoid speculative frameworks and one-use forwarding layers.
-- Decode categorical bytes/masks into named types and use shared content IDs in
-  rules. Keep raw encodings at the retail boundary; investigate uncertain meanings.
-- Implement shared rules against shared capabilities. Translate actor-specific
-  source data at a clear boundary; separate implementations by actor kind only
-  where the game rules differ.
+## Where the game's rules come from
 
-## Model state and ownership
+- Look a rule up before writing it: the decomp (`../wizardry-8-decomp`) first,
+  then Whizzardry (`../whizzardry-8`). Never invent a stand-in rule, distance
+  or constant. If the references do not answer, say so; do not guess silently.
+- Take formulas, constants, tables and what the player can observe. Do not take
+  procedures, record layouts, managers, schedulers or the order of unobservable
+  work. No function exists because a retail function does.
+- The original's order of random draws need not be reproduced. Presentation
+  never draws from gameplay's random numbers.
+- A comment names a retail routine only beside the formula or constant it is
+  the source of.
 
-- Give each fact one authority and explicit mutation operations. Distinguish current
-  state, draft intent, accepted work, historical snapshots and derived values.
-  Use cohesive structs/enums for coupled invariants and mutually exclusive choices.
-- Entities provide independent identity/lifetime or relationships; components hold
-  their state; resources hold genuinely global state, not duplicate actor registries.
-  Keep nested values ordinary Rust unless independent querying/lifetime warrants ECS
-  representation. A singleton domain actor can still be an entity.
-- Store shared definitions in immutable catalogs or assets. Use assets when loading,
-  handles or lifecycle provide a concrete benefit.
-- Split components by behavior, access or lifetime, not to make them smaller; do not
-  combine unrelated state to reduce component count. Single-field components are
-  appropriate for independently used capabilities. Keep coupled invariants together.
-- Share rule functions before storing results. Derived storage needs a concrete
-  cost, query or integration benefit; name its sources, producer, invalidation paths
-  (initialization, missing inputs, removal, restoration) and consumer trust boundary.
-  Consumers must not patch it independently. Historical snapshots stay historical.
-- Use relationships for actual relationships. Bevy maintains inverses, not dependent
-  gameplay facts. Required components ensure insertion, not freshness; hooks observe
-  lifecycle operations, not in-place writes. Scene cleanup may despawn visuals,
-  never unrelated party members, targets or group members.
-- `PartyMember` represents membership; Bevy maintains `PartyRoster` as its ordered
-  inverse. Change membership through relationship APIs, not a second list. Querying
-  `Character` alone does not establish membership. Retained NPC profiles imply
-  neither active membership nor identical role stats.
+## Design, not rearrangement
 
-## Write systems with explicit access and order
+- Start from what the thing is in the game and what happens to it. Then fix the
+  data model. Splitting a function into systems, threading a parameter through
+  call sites, or renaming types is moving code around, and is not the job.
+- Be ambitious. When the honest fix is a big rewrite, do the big rewrite. No
+  half-conversions, wrapper systems or `*_in_world` helpers.
+- Simplify deeply. When a better model makes something redundant, delete it:
+  forks by actor kind, structs that mirror components, forwarding getters,
+  gatherers that copy components into "facts" for a rule to read.
+- One rule, one piece of code. Never a member version and a monster version of
+  a rule; what differs between them is data, written where the actor is made or
+  refitted.
+- A rule reads the things it is about. Do not put a struct of copied values
+  between an actor's components and the rule.
+- A struct or `SystemParam` that bundles unrelated queries just to pass them
+  around should not exist. A cohesive accessor (who stands where, what is laid
+  on whom, what is held) is fine. A narrow `&mut World` interpreter is fine; a
+  broad one that reaches into other domains is not.
+- Content is read where things are made. A catalog record becomes components
+  when its thing is spawned; rules do not look the record up again.
+- Data is data. A table is a file under `assets/tables/`, not a `match` and
+  not a list of ids in game code. Raw retail encodings (bit flags, magic ids)
+  are decoded in `retail`, never tested in `game`.
+- Judge a refactor by what it removed: lines, mechanisms, mirrors, places where
+  two things can disagree.
 
-- Introduce system boundaries for independently scheduled behavior or meaningful
-  synchronization. Keep intermediate calculations and immediate sequences in local
-  values/functions. Give work an entity when other systems need its identity,
-  progress or independent lifetime; do not split an invariant just to shorten code.
-- Prefer typed queries/resources exposing actual reads/writes; request mutable
-  access only where needed. Filters express populations and disjoint access.
-  Use `SystemParam` for cohesive dependencies, not to hide unrelated access.
-- Use exclusive `World` access when a cohesive operation needs it, not as every
-  rule's interface. Resolve borrowing through ownership/access design, not cloning
-  live state into another writable model to write back later.
-- Order real producer/consumer dependencies and specify when deferred `Commands`
-  become visible. Registration order and conflicting mutable access do not define
-  execution order. Do not chain an entire plugin to fix one missing dependency.
-- Validate authoritative state and commit required consequences within one cohesive
-  operation or explicitly ordered boundary. Damage/death, transfers and acceptance
-  must not depend on loosely ordered observer chains. Use buffered `Message`s for
-  scheduled consumers and observer `Event`s for triggered reactions. Specify timing
-  and retention; store work explicitly when it must survive delayed consumption.
-- Change detection signals current state, not transition history or complete
-  invalidation. Handle removal/restoration explicitly. When publishing derived state,
-  avoid marking unchanged results as changed; use equality-aware updates as appropriate.
+## Use Bevy and Rust as they are meant
 
-## Preserve gameplay across lifetimes
+- Bevy's own types before hand-made ones: timers, quaternions and its math,
+  colours as colours, the entity-keyed maps and sets, relationships, observers,
+  scenes (BSN) instead of repeated spawn code.
+- Enums for choices, never `Option<u8>` or a sentinel. No hand-kept `ALL` lists
+  of an enum's variants.
+- No type aliases of our own: a newtype, or the full type written out.
+- Plain arithmetic. Never `saturating_*`, `checked_*` or `wrapping_*`; clamp
+  where the rule clamps and say so.
+- No home-made random-number generators. Gameplay and presentation each have
+  their own resource.
+- No test-only code in the main source.
+- Files are split by what they are about, not by how the C++ was laid out.
+  `clippy::too_many_arguments` is allowed; systems have many parameters.
 
-- Separate editing, acceptance, execution and presentation. Accepted work retains
-  actor identity and paid costs despite roster/UI edits. Preserve whether stored
-  data means now, at acceptance, at round start or after redistribution (including
-  combat burden). Retained entity references need removal/despawn/cancellation
-  policies; revalidate as rules require without silently retargeting roster slots
-  or defaulting away broken invariants.
-- Preparation is not activation. Reject missing mandatory content; preserve dormant
-  map state and restore it on revisit. Views cannot initialize campaign state or
-  make readiness depend on artwork. Gameplay runs without rendering/UI plugins.
-- Keep time domains explicit; settle under the originating policy/level and retain
-  remainders. Retail RNG draw order need not be reproduced; UI/cosmetics never use
-  gameplay RNG. System-local caches are not game history.
-- Dependency direction: retail decodes into content; game owns rules; presentation
-  observes game state; app composes them. No reverse imports, giant Game object or
-  second position authority alongside physics.
-- Reuse native Bevy input, focus, widgets, assets and lifecycle. Keep views alive
-  across value changes. UI owns presentation and uncommitted drafts; gameplay
-  revalidates commits. Gate shortcuts behind focused UI.
+## Do the work yourself
 
-## Verification and workflow
+- Write the code yourself, and read every diff you commit. A green check and a
+  subagent's report are not a review.
+- Subagents are for narrow mechanical sweeps whose every edit is already
+  decided. Never for surveys, reviews, design, or rebuilding a rule module.
+- Fix forward on the current branch. No worktrees, and no building `main` to
+  find out whether a failure was already there.
+- Report what was actually run and what it showed. If something was skipped or
+  is unverified, say that.
 
-- State refactor PRs include a short ownership note: meaning, authority/mutations,
-  justification and validity of derived storage, and affected cancellation/removal/
-  restoration paths checked. Judge simplification by remaining mirrors, mutation
-  paths, invalidation, cleanup, ordering and opportunities for consumers to disagree.
-- Test important rules, regressions and ownership/lifecycle boundaries. Choose the
-  cheapest convincing evidence: a pure rule test, real-schedule scenario or game
-  check. When ordering/deferred visibility matters, exercise observable behavior
-  through the production schedule; calling functions in the desired order is not
-  enough. Avoid assertions that merely freeze component layouts or scheduler stages.
-- Check affected failure paths, not only initial spawn and happy paths. Keep testing
-  proportional; avoid elaborate fixtures or production changes solely for tests.
-  Docs-only changes need no engine rebuild. Report only checks actually run;
-  headless tests do not establish visual parity.
-- Keep usage in README, project rules here, and research/plans in issues or PRs.
-  The ECS redesign skill supplies procedure/examples, not a second rulebook.
-- Always open a non-draft PR for completed changes. Merge only when requested.
+## Tests
+
+- A test states a rule of the game by its outcome, pins a number or threshold
+  taken from the original, or drives the real plugins through something the
+  player would see. Nothing else earns its place.
+- Delete, do not maintain: a test per term of a formula; a test that copies a
+  table row back out of the table; a test that draws thousands of seeded rolls
+  to check a rate; a test that pins a component layout, a schedule, an event
+  count or an internal step.
+- Spend little time on tests during a refactor. When a refactor removes the
+  types a test was written against, delete the test unless it pins a real rule
+  cheaply. Fewer tests is not no tests.
+- Run the unit suite once per slice, not after every edit. Run the retail
+  tests (`RIZZARDRY_RETAIL=<install> cargo nextest run --run-ignored only`)
+  before committing a change to gameplay. The heavy tests are limited to two at
+  a time in `.config/nextest.toml`; all at once run the machine out of memory.
+
+## Git
+
+- Commit and push only when asked. Check that the checks passed before the
+  commit, not in the same command.
+- Stage by explicit path. Never `git add -A`, `git add .` or `git commit -a`:
+  the working tree holds private notes that must never be committed.
+- Never send anything upstream: no issues, pull requests, comments or pushes to
+  third-party repositories. Fixes to third-party code stay in `third_party/`.
