@@ -13,6 +13,7 @@ use crate::content::items::AttackMode;
 use crate::content::species::AttackWord;
 use crate::content::ui::{SpriteSheet, TextTable};
 use crate::game::camp::CampNews;
+use crate::game::characters::Improved;
 use crate::game::combat::{Announcement, CombatNews};
 use crate::game::factions::FactionNews;
 use crate::game::inventory::ItemNews;
@@ -284,18 +285,21 @@ fn condition_word(condition: crate::game::characters::Condition) -> String {
     format!("{condition:?}").to_lowercase()
 }
 
-/// A member's skill improving.
-fn improves(
-    names: &super::names::ActorNames,
-    string: &impl Fn(usize) -> String,
-    member: Entity,
-    skill: crate::content::characters::Skill,
-) -> String {
-    format!(
-        "{}'s {} improves.",
-        names.name(member).unwrap_or_default(),
-        string(crate::content::ui::SKILL_NAMES + skill as usize)
-    )
+/// A member's skill improving, wherever it was practised.
+fn post_improved(
+    mut improved: MessageReader<Improved>,
+    names: super::names::ActorNames,
+    strings: GameStrings,
+    mut notices: Notices,
+) {
+    for &Improved { member, skill } in improved.read() {
+        let text = format!(
+            "{}'s {} improves.",
+            names.name(member).unwrap_or_default(),
+            strings.get(crate::content::ui::SKILL_NAMES + skill as usize)
+        );
+        notices.post(&text);
+    }
 }
 
 /// What a spell or a blow did to someone. Retail's own strings for these
@@ -361,13 +365,9 @@ fn magic_lines(
                 Refusal::Unsupported => "cannot do that yet",
                 Refusal::WrongTime => "cannot do that now",
                 Refusal::NoTarget => "has no target in reach",
-                Refusal::PlayedBadly { .. } => "fails to play it",
+                Refusal::PlayedBadly => "fails to play it",
             };
-            let mut lines = vec![format!("{} {why}.", name(*caster))];
-            if let Refusal::PlayedBadly { improved: Some(skill) } = refusal {
-                lines.push(format!("{}'s {skill:?} improves.", name(*caster)));
-            }
-            lines
+            vec![format!("{} {why}.", name(*caster))]
         }
         MagicNews::Triggered { effects, .. } | MagicNews::Landed { effects, .. } => {
             effects.iter().map(|&e| effect_line(e)).collect()
@@ -443,6 +443,7 @@ pub fn queue_notices() -> bevy::ecs::schedule::ScheduleConfigs<bevy::ecs::system
         post_locks,
         post_camp,
         post_combat,
+        post_improved,
     )
         .chain()
         .in_set(QueueNotices)
@@ -615,9 +616,6 @@ fn post_locks(
             LockNews::Sprung { trap: kind, destroyed } => {
                 format!("{} {}", trap(kind), string(if *destroyed { 0x7b3 } else { 0x7b4 }))
             }
-            LockNews::SkillImproved { member: who } => {
-                format!("{}'s Locks & Traps improves.", member(who))
-            }
             LockNews::Forced { member: who } => format!("{} {}", member(who), string(LOCK_FORCED)),
             LockNews::NotForced { member: who } => {
                 format!("{} {}", member(who), string(LOCK_NOT_FORCED))
@@ -748,9 +746,6 @@ fn post_combat(
             }
             CombatNews::Effects(effects) => {
                 effects.iter().map(|&effect| effect_line(&names, effect)).collect()
-            }
-            CombatNews::Improved { member, skill } => {
-                vec![improves(&names, &string, *member, *skill)]
             }
             // Retail's summary (`ReportCharacterAttackResult`).
             CombatNews::Result { attacker, hits, damage, .. } => {

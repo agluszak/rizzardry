@@ -107,7 +107,19 @@ pub fn pass_time(
                 }
                 let magic = (known, &mut *pool, &content.spells);
                 match elapse(&mut profile, &mut vitals, attributes, ticks, pace, &mut rng, magic) {
-                    Some(Sickness::Weakened(_)) => {
+                    // The point lost takes health and stamina with it, and
+                    // may kill.
+                    Some(Sickness::Weakened(lost)) => {
+                        let less = attributes.weakened(lost);
+                        let had = vitals.health.current;
+                        if vitals.weaken(profile.max_hp(&less), profile.max_stamina(&less)) {
+                            let fell = crate::game::hits::Damaged {
+                                body: entity,
+                                amount: had,
+                                died: true,
+                            };
+                            damaged.write(fell);
+                        }
                         commands.trigger(crate::game::actors::Refit { entity })
                     }
                     // A slowing without end ends Haste.
@@ -341,13 +353,14 @@ mod tests {
                 if struck != Some(Sickness::Weakened(Attribute::Vitality)) {
                     continue;
                 }
-                // The member is refitted for the lost point.
+                // The lost point takes health with it.
                 let attributes = Attributes::of_sheet(&profile);
                 let lowered = max_hp - profile.max_hp(&attributes);
                 assert!(lowered > 0, "a veteran's health follows Vitality");
-                member.refit_maxima(profile.max_hp(&attributes), profile.max_stamina(&attributes));
+                let died =
+                    member.weaken(profile.max_hp(&attributes), profile.max_stamina(&attributes));
                 if dying {
-                    assert_eq!(member.health.current, 1, "a refit never takes the last point");
+                    assert!(died && member.is_dead(), "too little health left to lose");
                     dying_seen = true;
                 } else {
                     assert_eq!(member.health.current, hp - lowered);

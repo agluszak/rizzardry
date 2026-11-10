@@ -45,11 +45,12 @@ impl PartyInventory {
     /// and it takes the row's place in the pool.
     pub fn merge(
         &mut self,
-        character: &mut Character,
+        (member, character): (Entity, &Character),
         carried: &mut Carried,
         target: ItemAt,
         catalog: &ItemCatalog,
         (ids, rng): (&mut ItemIds, &mut GameRng),
+        commands: &mut Commands,
     ) -> Result<Merged, Refusal> {
         let held = self.hand.held.as_ref().ok_or(Refusal::Nothing)?;
         let row = match target {
@@ -104,7 +105,7 @@ impl PartyInventory {
                 _ => false,
             };
         if let Some((skill, level)) = recipe.skill {
-            character.practise(skill, u32::from(level / 10), rng);
+            commands.trigger(Practise { member, skill, usage: u32::from(level / 10) });
         }
         let spend = |stack: ItemStack, quantity: QuantityKind| match quantity {
             QuantityKind::Stack => stack.remove_units(units),

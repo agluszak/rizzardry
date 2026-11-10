@@ -16,6 +16,8 @@ pub(crate) fn plugin(app: &mut App) {
         .add_observer(stats::refit_made::<crate::game::characters::Character>)
         .add_observer(stats::refit_made::<crate::game::world::population::Monster>)
         .add_message::<crate::game::party::recovery::Elapsed>()
+        .add_message::<crate::game::characters::Improved>()
+        .add_observer(crate::game::characters::practise)
         .add_observer(stats::refit_joined)
         .add_observer(stats::refit_left)
         .add_observer(spells::laid)

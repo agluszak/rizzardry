@@ -3,7 +3,7 @@ use super::*;
 use crate::{
     content::{characters::Skill, items::ItemId},
     game::{
-        characters::{Character, Vitals},
+        characters::{Character, Practise, Vitals},
         data::Catalogs,
         inventory::{Carried, ItemIds, PartyInventory, make_item},
         party::{body::PartyBody, roster::PartyRoster},
@@ -34,18 +34,18 @@ pub(super) enum Practice {
 pub(super) fn practise(
     mut requests: MessageReader<Practice>,
     party: Single<&PartyRoster>,
-    mut members: Query<(&mut Character, &Vitals)>,
-    mut rng: ResMut<GameRng>,
+    members: Query<&Vitals>,
+    mut commands: Commands,
 ) {
     for request in requests.read() {
         for member in party.iter() {
-            let Ok((mut c, v)) = members.get_mut(member) else { continue };
+            let Ok(v) = members.get(member) else { continue };
             let n = match request {
                 Practice::Greeting if v.can_fight() => 15,
                 Practice::Member(e, n) if *e == member => *n,
                 _ => continue,
             };
-            c.practise(Skill::Communication, n, &mut rng);
+            commands.trigger(Practise { member, skill: Skill::Communication, usage: n });
         }
     }
 }

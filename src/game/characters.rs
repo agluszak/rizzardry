@@ -1137,20 +1137,31 @@ impl Vitals {
         true
     }
 
-    /// A member's maxima are these now, their sheet or spells having moved
-    /// them (a refit): what is left moves by as much, but a refit never
-    /// takes the last point of either.
+    /// A member's maxima are these now, their gear, sheet or spells having
+    /// moved them (a refit): what is left stays as it is, held to the new
+    /// maximum.
     pub fn refit_maxima(&mut self, health: u32, stamina: u32) {
         for (pool, max) in [(&mut self.health, health), (&mut self.stamina, stamina)] {
-            if pool.max == max {
-                continue;
-            }
-            let alive = pool.current > 0;
-            pool.follow(max);
-            if alive {
-                pool.current = pool.current.max(1);
-            }
+            pool.max = max;
+            pool.current = pool.current.min(max);
         }
+    }
+
+    /// An attribute lost for good moves a member's maxima to these, and
+    /// what is left falls by as much (retail `ApplyAttributeChange`,
+    /// `RecalculateCharacterHitPoints`, `RecalculateCharacterStamina`): one
+    /// with too little health left dies of it. Whether they did.
+    pub fn weaken(&mut self, health: u32, stamina: u32) -> bool {
+        if self.is_dead() {
+            return false;
+        }
+        let had = self.health.current;
+        self.health.follow(health);
+        self.stamina.follow(stamina);
+        if self.is_dead() {
+            self.fell_from = had;
+        }
+        self.is_dead()
     }
 
     /// What disease does to a member as `minutes` pass (retail
@@ -1260,6 +1271,39 @@ impl Vitals {
 /// blow came from.
 #[derive(Component, Debug)]
 pub struct Dead;
+
+/// A member used a skill. Use may raise it a point
+/// ([`Character::practise`]), which refits them.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Practise {
+    #[event_target]
+    pub member: Entity,
+    pub skill: Skill,
+    pub usage: u32,
+}
+
+/// A member's skill went up a point.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Improved {
+    pub member: Entity,
+    pub skill: Skill,
+}
+
+/// A member's skill is practised; one that rose is announced and its
+/// member refitted. Anyone without a sheet practises nothing.
+pub(crate) fn practise(
+    event: On<Practise>,
+    mut sheets: Query<&mut Character>,
+    mut rng: ResMut<GameRng>,
+    mut improved: MessageWriter<Improved>,
+    mut commands: Commands,
+) {
+    let Ok(mut sheet) = sheets.get_mut(event.member) else { return };
+    if sheet.practise(event.skill, event.usage, &mut rng) {
+        improved.write(Improved { member: event.member, skill: event.skill });
+        commands.trigger(crate::game::actors::Refit { entity: event.member });
+    }
+}
 
 /// Whoever was hurt to death dies: a Valkyrie cheats it
 /// ([`Vitals::cheats_death`]) in whatever fight is on; anyone else loses
@@ -1371,6 +1415,30 @@ mod tests {
         mage.skill_points[Skill::FireMagic] = 100;
         assert!(!mage.practise(Skill::FireMagic, 400, &mut rng));
         assert_eq!(mage.skill_points[Skill::FireMagic], 100);
+    }
+
+    /// Use announces itself: a skill that rose says so and refits the member.
+    #[test]
+    fn practice_announces_a_skill_that_rose() {
+        #[derive(Resource, Default)]
+        struct Refitted(Vec<Entity>);
+        let mut app = App::new();
+        app.insert_resource(crate::game::rng::GameRng::seeded(4))
+            .init_resource::<Refitted>()
+            .add_message::<Improved>()
+            .add_observer(practise)
+            .add_observer(|refit: On<crate::game::actors::Refit>, mut seen: ResMut<Refitted>| {
+                seen.0.push(refit.entity);
+            });
+        let mage = app
+            .world_mut()
+            .spawn(Character::new("Mage", Race::Human, Gender::Male, Profession::Mage))
+            .id();
+        app.world_mut().trigger(Practise { member: mage, skill: Skill::FireMagic, usage: 400 });
+        app.world_mut().flush();
+        let told: Vec<_> = app.world_mut().resource_mut::<Messages<Improved>>().drain().collect();
+        assert!(told.contains(&Improved { member: mage, skill: Skill::FireMagic }));
+        assert!(app.world().resource::<Refitted>().0.contains(&mage));
     }
 
     #[test]

@@ -118,7 +118,6 @@ fn press_item_action(
     buttons: Query<&ItemActionButton>,
     screen: Option<Single<(&InventoryScreen, &mut ItemAction)>>,
     mut inventory: crate::game::inventory::operations::InventoryOperations,
-    mut rng: ResMut<crate::game::rng::GameRng>,
 ) {
     let (Ok(&ItemActionButton(pressed)), Some(screen)) = (buttons.get(click.entity), screen) else {
         return;
@@ -127,7 +126,7 @@ fn press_item_action(
     *action = if *action == pressed {
         ItemAction::None
     } else if pressed == ItemAction::Identify && inventory.holds() {
-        if let Err(refusal) = inventory.identify(screen.member, ItemAt::Hand, &mut rng) {
+        if let Err(refusal) = inventory.identify(screen.member, ItemAt::Hand) {
             info!("identifying refused: {refusal:?}");
         }
         ItemAction::None
@@ -1126,7 +1125,7 @@ fn click_cell(
     match *action {
         ItemAction::Identify => {
             if let Some(at) = target
-                && let Err(refusal) = inventory.identify(screen.member, at, &mut rng)
+                && let Err(refusal) = inventory.identify(screen.member, at)
                 && refusal != Refusal::Nothing
             {
                 info!("identifying refused: {refusal:?}");

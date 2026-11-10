@@ -24,7 +24,7 @@ use super::triggers::DoorState;
 use crate::content::characters::{Attribute, Skill};
 use crate::content::level::{Lock, TRAP_TYPES};
 use crate::content::spells::SpellId;
-use crate::game::characters::{Character, Vitals};
+use crate::game::characters::{Character, Practise, Vitals};
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
@@ -242,9 +242,6 @@ pub enum LockNews {
     },
     /// The device stays guarded because discharge cannot yet be resolved.
     UnsupportedTrap,
-    SkillImproved {
-        member: Entity,
-    },
     Sprung {
         trap: u8,
         destroyed: bool,
@@ -370,13 +367,6 @@ enum Step {
     Sprung(Option<Entity>),
 }
 
-/// A member practises Locks & Traps, and is told when it improved.
-fn practise_locks(body: &mut BodyItem, rng: &mut GameRng, news: &mut MessageWriter<LockNews>) {
-    if body.character.as_deref_mut().is_some_and(|c| c.practise(Skill::LocksAndTraps, 1, rng)) {
-        news.write(LockNews::SkillImproved { member: body.entity });
-    }
-}
-
 /// A member's Locks & Traps level if they can use it now.
 fn skill(body: &BodyItem) -> Result<u32, Unable> {
     if !body.vitals.can_act() {
@@ -396,7 +386,7 @@ fn pick_tumbler(
     guarded: Option<Mut<Guarded>>,
     setting: Difficulty,
     rng: &mut GameRng,
-    news: &mut MessageWriter<LockNews>,
+    (news, commands): (&mut MessageWriter<LockNews>, &mut Commands),
 ) -> Result<Step, Unable> {
     let actor = body.entity;
     let skill = skill(body)?;
@@ -427,7 +417,7 @@ fn pick_tumbler(
         && guarded.practice_left > 0
     {
         guarded.practice_left -= 1;
-        practise_locks(body, rng, news);
+        commands.trigger(Practise { member: actor, skill: Skill::LocksAndTraps, usage: 1 });
     }
     news.write(LockNews::Tumbler { dropped });
     if picking.tumblers.iter().all(|pin| pin.raised()) {
@@ -473,7 +463,7 @@ fn inspect_trap(
     body: &mut BodyItem,
     setting: Difficulty,
     rng: &mut GameRng,
-    news: &mut MessageWriter<LockNews>,
+    (news, commands): (&mut MessageWriter<LockNews>, &mut Commands),
 ) -> Result<Step, Unable> {
     let actor = body.entity;
     let chance = trap.inspection_chance(Some(skill(body)?), setting);
@@ -481,7 +471,7 @@ fn inspect_trap(
         return Ok(Step::Sprung(Some(actor)));
     }
     // Practice may increase this very inspection's observation chance.
-    practise_locks(body, rng, news);
+    commands.trigger(Practise { member: actor, skill: Skill::LocksAndTraps, usage: 1 });
     let chance = trap.inspection_chance(skill(body).ok(), setting);
     let seen = std::array::from_fn(|column| {
         if rng.below(100) >= chance {
@@ -508,7 +498,7 @@ fn disarm_component(
     body: &mut BodyItem,
     setting: Difficulty,
     rng: &mut GameRng,
-    news: &mut MessageWriter<LockNews>,
+    (news, commands): (&mut MessageWriter<LockNews>, &mut Commands),
 ) -> Result<Step, Unable> {
     let actor = body.entity;
     if component >= COMPONENTS || trap.disarmed[component] {
@@ -520,7 +510,7 @@ fn disarm_component(
         return Ok(Step::Sprung(Some(actor)));
     }
     trap.disarmed[component] = true;
-    practise_locks(body, rng, news);
+    commands.trigger(Practise { member: actor, skill: Skill::LocksAndTraps, usage: 1 });
     news.write(LockNews::ComponentDisarmed { member: actor, component });
     if parts.iter().zip(trap.disarmed).all(|(&required, disarmed)| !required || disarmed) {
         news.write(LockNews::Disarmed { trap: trap.trap });
@@ -687,12 +677,11 @@ pub fn handle_device_requests(
     states: Query<&super::triggers::LevelState, With<super::level::Level>>,
     (content, definitions, setting): (Res<Catalogs>, Res<Definitions>, Res<Difficulty>),
     mut rng: ResMut<GameRng>,
-    (mut news, mut activations, mut released, mut magic_news, mut improved): (
+    (mut news, mut activations, mut released, mut magic_news): (
         MessageWriter<LockNews>,
         MessageWriter<super::ActivateDevice>,
         MessageWriter<Release>,
         MessageWriter<MagicNews>,
-        MessageWriter<crate::game::combat::CombatNews>,
     ),
 ) {
     let (roster, mut inventory) = party.into_inner();
@@ -733,7 +722,13 @@ pub fn handle_device_requests(
                 member(&mut bodies, by, occupied).and_then(|mut body| {
                     let guarded = guarded.as_mut().map(|guarded| guarded.reborrow());
                     pick_tumbler(
-                        picking, tumbler, &mut body, guarded, *setting, &mut rng, &mut news,
+                        picking,
+                        tumbler,
+                        &mut body,
+                        guarded,
+                        *setting,
+                        &mut rng,
+                        (&mut news, &mut commands),
                     )
                 })
             }
@@ -746,13 +741,20 @@ pub fn handle_device_requests(
                 .and_then(|()| member(&mut bodies, by, occupied))
                 .and_then(|mut body| {
                     let Work::Disarming(trap) = work else { unreachable!() };
-                    inspect_trap(trap, &mut body, *setting, &mut rng, &mut news)
+                    inspect_trap(trap, &mut body, *setting, &mut rng, (&mut news, &mut commands))
                 }),
             (DeviceAct::Disarm { actor: by, component }, Work::Disarming(_)) => {
                 ready(work, &mut news).and_then(|()| member(&mut bodies, by, occupied)).and_then(
                     |mut body| {
                         let Work::Disarming(trap) = work else { unreachable!() };
-                        disarm_component(trap, component, &mut body, *setting, &mut rng, &mut news)
+                        disarm_component(
+                            trap,
+                            component,
+                            &mut body,
+                            *setting,
+                            &mut rng,
+                            (&mut news, &mut commands),
+                        )
                     },
                 )
             }
@@ -798,7 +800,7 @@ pub fn handle_device_requests(
                                     crate::game::magic::utilities::underwater(&states),
                                 ),
                                 &mut rng,
-                                &mut improved,
+                                &mut commands,
                             )
                         }),
                 };

@@ -90,7 +90,8 @@ pub struct Rules<'a> {
 #[derive(Debug, Default)]
 pub struct Log {
     pub effects: Vec<Effect>,
-    pub improved: Vec<(Entity, Skill)>,
+    /// Skills a member used: who, which, and how often.
+    pub practised: Vec<(Entity, Skill, u32)>,
     pub damaged: Vec<Damaged>,
     /// The dead brought back.
     pub raised: Vec<Entity>,
@@ -240,11 +241,8 @@ fn defend(
         let resistance = body.resistances.realms[realm];
         let chance = defences::condition_chance(body.level.0, resistance, against, save);
         resisted = defences::save_roll(rng, rules.difficulty.scale(chance, body.stance()));
-        if resisted
-            && let Some(character) = body.character.as_deref_mut()
-            && character.practise(Skill::IronWill, 2, rng)
-        {
-            log.improved.push((victim, Skill::IronWill));
+        if resisted && body.character.is_some() {
+            log.practised.push((victim, Skill::IronWill, 2));
         }
     }
     if !resisted
