@@ -37,7 +37,7 @@ pub const AMMUNITION_BUNDLE: u32 = 25;
 /// Where an item can be worn or wielded, and what it is (retail equipment
 /// class; labels 1087..1119 in the string table).
 /// Declared in retail's order, so its retail number converts both ways.
-#[derive(Debug, Default, EnumSetType, IntoPrimitive, TryFromPrimitive)]
+#[derive(Debug, Default, EnumSetType, IntoPrimitive, TryFromPrimitive, serde::Deserialize)]
 #[enumset(repr = "u32")]
 #[repr(u8)]
 pub enum EquipClass {
@@ -174,8 +174,89 @@ pub struct Recipe {
 /// (`unidentified_name_index`), which picks its unidentified name, picture
 /// and model, and which a few rules single out. Retail has 147 kinds; only
 /// those rules name are named here.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Deserialize)]
+#[serde(transparent)]
 pub struct ItemKind(pub u16);
+
+/// What may be held beside a ranged weapon as its ammunition: a kind, of a
+/// class when the kind alone does not tell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct Ammunition {
+    pub kind: ItemKind,
+    #[serde(default)]
+    pub class: Option<EquipClass>,
+}
+
+/// What a kind of ranged weapon takes and how it strikes: its row of
+/// `assets/tables/weapons.ron`.
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WeaponKind {
+    pub launcher: bool,
+    pub fires_weapons: bool,
+    pub takes: Vec<Ammunition>,
+    pub loaded_by: Option<ItemKind>,
+    pub unaided: bool,
+    pub single_swing: bool,
+    pub sling: bool,
+}
+
+/// The omnigun's tiers.
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Omnigun {
+    /// The item of its first tier; each later tier is the next item.
+    pub first: ItemId,
+    /// The Gadgeteer level at which each later tier is reached.
+    pub levels: Vec<u8>,
+    takes: Vec<OmnigunTakes>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OmnigunTakes {
+    through: ItemId,
+    takes: Vec<Ammunition>,
+}
+
+impl Omnigun {
+    /// The tier a Gadgeteer of this level has reached, and its item; none
+    /// below the first level that raises it.
+    pub fn tier(&self, level: u8) -> Option<(ItemId, usize)> {
+        let tier = self.levels.iter().take_while(|&&reached| reached <= level).count();
+        (tier > 0).then(|| (ItemId(self.first.0 + tier as u16), tier))
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Weapons {
+    kinds: std::collections::HashMap<ItemKind, WeaponKind>,
+    pub omnigun: Omnigun,
+}
+
+/// The table of ranged weapon kinds, which ships with the game.
+pub static WEAPONS: std::sync::LazyLock<Weapons> = std::sync::LazyLock::new(|| {
+    ron::from_str(include_str!("../../assets/tables/weapons.ron"))
+        .expect("assets/tables/weapons.ron is a weapons table")
+});
+
+impl Weapons {
+    /// What is said of a kind of weapon.
+    pub fn kind(&self, kind: ItemKind) -> Option<&WeaponKind> {
+        self.kinds.get(&kind)
+    }
+
+    /// What an item takes beside it as ammunition: its kind's, or its tier's
+    /// if it is an omnigun.
+    pub fn takes(&self, item: ItemId, kind: ItemKind) -> &[Ammunition] {
+        let tier = self.omnigun.takes.iter().find(|tier| item <= tier.through);
+        match tier.filter(|_| item >= self.omnigun.first) {
+            Some(tier) => &tier.takes,
+            None => self.kind(kind).map_or(&[], |row| &row.takes),
+        }
+    }
+}
 
 impl ItemKind {
     pub const DAGGER: Self = Self(0x00);

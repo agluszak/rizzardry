@@ -10,7 +10,7 @@ use enumset::EnumSet;
 
 use super::{Arm, Attacks, Attributes};
 use crate::content::characters::{Attribute, BodyPart, Skill, Trait};
-use crate::content::items::{AttackEffect, AttackEffects, AttackMode, Dice, ItemKind};
+use crate::content::items::{AttackEffect, AttackEffects, AttackMode, Dice};
 use crate::content::species::{MonsterKind, Reach};
 use crate::game::characters::{Character, Load};
 use crate::game::inventory::{EquipSlot, WeaponSlot};
@@ -125,7 +125,8 @@ impl<'a> Hands<'a> {
             None => Some(false),
             Some(item) => item.weapon.map(|weapon| weapon.ranged),
         };
-        let omnigun = main.as_ref().is_some_and(|main| main.fit.kind.0 == ItemKind::OMNIGUN);
+        let omnigun =
+            main.as_ref().is_some_and(|main| main.launcher.is_some_and(|l| l.fires_weapons));
         if combat(main) != combat(off) || omnigun || (off.is_none() && main.is_some()) {
             hands[WeaponSlot::Secondary] = Hand::Idle;
         }
@@ -506,7 +507,7 @@ fn hand<'a>(slot: WeaponSlot, held: &EnumMap<WeaponSlot, Option<HeldItem<'a, '_>
     let Some(item) = &held[slot] else { return Hand::Fist };
     let Some(weapon) = item.weapon else { return Hand::Idle };
     let other = held[slot.other()].as_ref();
-    let omnigun = item.fit.kind.0 == ItemKind::OMNIGUN;
+    let omnigun = item.launcher.is_some_and(|launcher| launcher.fires_weapons);
     // What the other hand holds as ammunition: a missile that is not itself
     // a weapon, or what an omnigun in the main hand fires.
     let missile = other.and_then(|other| {
@@ -620,6 +621,7 @@ pub fn armour<'a>(
 mod tests {
     use super::*;
     use crate::content::characters::Gender;
+    use crate::content::items::ItemKind;
     use crate::content::items::{EquipClass, ItemDefinition, ItemId};
     use crate::game::characters::{Profession, Race};
     use crate::game::items::{Items, Worn, make};

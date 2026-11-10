@@ -1,0 +1,63 @@
+#![enable(implicit_some)]
+// What the kinds of ranged weapon take and how they strike, by item kind
+// (retail's generic item types, by number). A kind with no row is nothing
+// special.
+//
+//   launcher      it shoots what the other hand holds (retail
+//                 `ItemHasSingledOutGenericName`); with `fires_weapons`, a
+//                 thrown weapon held there too, and that hand strikes nothing
+//                 of its own
+//   takes         what may be held beside it as its ammunition (retail
+//                 `CompatiblePartnerItems`): a kind, of a class when the
+//                 kind alone does not tell
+//   loaded_by     the kind whose shots reload it (retail
+//                 `g_compatible_partner_pairs`, `GetItemMergeKind`)
+//   unaided       strength adds nothing to its blows
+//   single_swing  it swings once an attack
+//   sling         it is a sling
+//
+// The omnigun grows with its owner: `first` is the item of its first tier,
+// `levels` the Gadgeteer level at which each later tier is reached (retail
+// `UpgradeProfessionClassItem`), and `takes` what each run of tiers fires.
+(
+    kinds: {
+        // Longbow, Greatbow: arrows.
+        0x0b: (launcher: true, takes: [(kind: 0x16)]),
+        0x25: (launcher: true, takes: [(kind: 0x16)]),
+        // Crossbow: quarrels.
+        0x0c: (launcher: true, takes: [(kind: 0x53)]),
+        // Sling: sling stones.
+        0x0d: (launcher: true, sling: true, takes: [(kind: 0x17)]),
+        // Musket: powder and shot.
+        0x72: (unaided: true, takes: [(kind: 0x71)], loaded_by: 0x71),
+        // Phaser, Power Glove: power packs.
+        0x6e: (unaided: true, takes: [(kind: 0x84)], loaded_by: 0x84),
+        0x68: (unaided: true, takes: [(kind: 0x84)], loaded_by: 0x84),
+        // Rocket Launcher: rockets.
+        0x90: (unaided: true, single_swing: true, loaded_by: 0x8f),
+        // Flame Thrower: fuel.
+        0x91: (loaded_by: 0x92),
+        // Omnigun: by its tier, below.
+        0x83: (launcher: true, fires_weapons: true, unaided: true),
+    },
+    omnigun: (
+        first: 599,
+        levels: [3, 5, 7, 9, 11, 13, 16, 18, 21, 23, 26],
+        takes: [
+            // Sling stones, powder and shot.
+            (through: 599, takes: [(kind: 0x17), (kind: 0x71)]),
+            // And darts.
+            (through: 601, takes: [(kind: 0x17), (kind: 0x71), (kind: 0x70)]),
+            // And shuriken and thrown daggers.
+            (through: 605, takes: [
+                (kind: 0x17), (kind: 0x71), (kind: 0x70), (kind: 0x15), (kind: 0x7e),
+                (kind: 0x00, class: ThrownWeapon),
+            ]),
+            // And arrows and quarrels.
+            (through: 610, takes: [
+                (kind: 0x17), (kind: 0x71), (kind: 0x70), (kind: 0x15), (kind: 0x7e),
+                (kind: 0x00, class: ThrownWeapon), (kind: 0x16), (kind: 0x53),
+            ]),
+        ],
+    ),
+)
