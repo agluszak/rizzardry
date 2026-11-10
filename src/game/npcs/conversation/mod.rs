@@ -16,8 +16,8 @@ use bevy::ecs::query::QueryData;
 use bevy::prelude::*;
 
 pub use self::acts::{
-    Answer, Ask, Begin, EditNotebook, Invite, Leave, NotebookEdit, Offer, OfferGold, Reply, Sway,
-    approach_ready, quote_trade,
+    Answer, Ask, Begin, EditNotebook, Invite, Leave, NotebookEdit, Offer, OfferGold, Overheard,
+    Reply, Sway, approach_ready, quote_trade,
 };
 pub use self::say::Spoken;
 pub(crate) use self::say::{Continue, Script};
@@ -213,6 +213,7 @@ pub fn install(app: &mut App) {
         .add_observer(say::deliver)
         .add_observer(say::interrupt)
         .add_observer(acts::begin)
+        .add_observer(acts::overhear)
         .add_observer(acts::ask)
         .add_observer(acts::answer)
         .add_observer(acts::offer)

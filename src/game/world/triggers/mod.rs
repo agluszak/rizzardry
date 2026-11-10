@@ -344,6 +344,10 @@ pub enum Bidding {
     /// Run it if it never has.
     RunOnce(String),
     SwitchOff(String),
+    /// Switch it on and run it.
+    SwitchOn(String),
+    /// Overcome its lock or trap, as if it had been picked or disarmed.
+    Unlock(String),
     Set(VariableName, bool),
 }
 
@@ -384,6 +388,22 @@ pub fn bid(world: &mut World, bidding: Bidding) {
                 && let Some(mut state) = world.get_mut::<TriggerState>(device)
             {
                 state.on = false;
+            }
+        }
+        Bidding::SwitchOn(name) => {
+            if let Some(device) = named(world, &name) {
+                if let Some(mut state) = world.get_mut::<TriggerState>(device) {
+                    state.on = true;
+                }
+                activate(world, device, false);
+            }
+        }
+        Bidding::Unlock(name) => {
+            if let Some(device) = named(world, &name) {
+                world.entity_mut(device).remove::<Guarded>();
+                if let Some(mut door) = world.get_mut::<DoorState>(device) {
+                    door.locked = false;
+                }
             }
         }
         Bidding::Set(name, value) => {
@@ -614,7 +634,7 @@ fn execute(
     }
     if let Some(speaker) = world.get::<crate::game::npcs::NpcSpeaker>(entity) {
         let actor = speaker.0;
-        world.commands().trigger(crate::game::npcs::conversation::Begin { actor });
+        world.commands().trigger(crate::game::npcs::conversation::Begin { actor, quote: None });
         return Ran::Committed;
     }
     let party = crate::game::party::roster::the_party(world);

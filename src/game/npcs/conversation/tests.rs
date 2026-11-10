@@ -84,7 +84,10 @@ fn scene(definition: NpcDefinition) -> Scene {
         .add_message::<crate::game::factions::FactionNews>()
         .add_message::<crate::game::hits::Damaged>();
     install(&mut app);
-    app.add_observer(crate::game::npcs::story::follow);
+    app.add_message::<crate::game::world::bidden::ScriptShow>()
+        .add_message::<crate::game::npcs::story::StoryLook>()
+        .add_observer(crate::game::npcs::story::follow)
+        .add_observer(crate::game::npcs::story::befalls_the_story);
     crate::game::npcs::trade::install(&mut app);
     let world = app.world_mut();
     let party = world.spawn((Party, Position(Vec3::ZERO), PartyBody::default())).id();
@@ -146,7 +149,7 @@ impl Scene {
 
     fn begin(&mut self) -> Vec<String> {
         let actor = self.person;
-        self.world().trigger(Begin { actor });
+        self.world().trigger(Begin { actor, quote: None });
         self.world().flush();
         self.hear()
     }

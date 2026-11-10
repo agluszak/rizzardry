@@ -17,6 +17,8 @@ pub struct Placement {
     pub yaw: f32,
     /// Frozen until a script births it.
     pub unborn: bool,
+    /// The script it is placed with, by its file's name.
+    pub script: Option<String>,
 }
 
 const GROUP_VERSION_AT: usize = 0xc4;
@@ -199,8 +201,13 @@ fn read_monsters(data: &[u8]) -> Result<Vec<Placement>, DecodeError> {
             fields.take(MONSTER_POSITION_AT - fields.offset())?;
             let position = fields.f32s::<3>()?;
             let yaw = fields.f32()?;
+            let mut script = None;
             if bytes.u8()? != 0 {
-                bytes.take(64 + 4 + 4)?; // script name, wait, line
+                let name = bytes.take(64)?;
+                let end = name.iter().position(|&byte| byte == 0).unwrap_or(name.len());
+                script = Some(String::from_utf8_lossy(&name[..end]).into_owned())
+                    .filter(|name| !name.is_empty());
+                bytes.take(4 + 4)?; // wait, line
                 let conditions = bytes.i32()?.max(0) as usize;
                 bytes.take(conditions)?;
             }
@@ -222,7 +229,7 @@ fn read_monsters(data: &[u8]) -> Result<Vec<Placement>, DecodeError> {
                     bytes.u8()?; // stay home
                 }
             }
-            Ok(Placement { location, group, species, position, yaw, unborn })
+            Ok(Placement { location, group, species, position, yaw, unborn, script })
         })
         .collect()
 }

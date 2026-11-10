@@ -85,7 +85,7 @@ pub fn activate_selection(
         && let Some(hit) = selection.hit
         && let Ok(npc) = npcs.get(hit.entity)
     {
-        commands.trigger(crate::game::npcs::conversation::Begin { actor: npc.0 });
+        commands.trigger(crate::game::npcs::conversation::Begin { actor: npc.0, quote: None });
         return;
     }
     if let Some(hit) = selection.hit

@@ -10,6 +10,7 @@ pub mod music;
 pub mod navmesh;
 pub mod npcs;
 pub mod paths;
+pub mod scripts;
 pub mod species;
 pub mod spells;
 pub mod surface;

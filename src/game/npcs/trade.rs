@@ -124,6 +124,18 @@ pub struct Quote {
     pub quantity: u32,
     pub gold: u32,
 }
+/// Something a merchant is to have on its shelves from a time on (retail
+/// `AddNpcItemWithDelay`): it is there when the merchant is next visited
+/// after that time.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Delivery {
+    pub merchant: Entity,
+    pub item: ItemId,
+    pub units: u32,
+    /// Game milliseconds.
+    pub due: u64,
+}
+
 /// The party visits someone, who keeps shop if a merchant.
 #[derive(EntityEvent, Clone, Copy, Debug)]
 pub struct Visit {
@@ -371,6 +383,7 @@ pub fn settle(market: &mut ParamSet<(Pricing, Settlement)>, q: Quote) -> Result<
 /// sale) and what it lacks may come in.
 fn maintain(
     visit: On<Visit>,
+    deliveries: Query<(Entity, &Delivery)>,
     mut stocks: Query<(&ActorId, &mut MerchantStock)>,
     held: Items,
     content: If<Res<Catalogs>>,
@@ -392,6 +405,13 @@ fn maintain(
     {
         let merchant = visit.merchant;
         let Ok((id, mut stock)) = stocks.get_mut(merchant) else { return };
+        // What was to come has come.
+        for (delivery, due) in &deliveries {
+            if due.merchant == merchant && due.due <= clock.ms {
+                self::stock(&mut commands, merchant, &items[due.item], due.units);
+                commands.entity(delivery).despawn();
+            }
+        }
         let d = &content.npcs[id.0];
         let shelves = shelves(&held, merchant, items);
         let have = |item| shelves.iter().filter(|s| s.item == item).map(|s| s.units).sum::<u32>();

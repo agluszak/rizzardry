@@ -37,9 +37,18 @@ pub struct Newborn {
     pub budget: SpellBudget,
     pub feet: Vec3,
     pub yaw: f32,
+    /// The script it is placed with.
+    pub script: Option<String>,
 }
 
 impl Newborn {
+    /// What it is told to do from where it stands, if it was placed with a
+    /// script.
+    fn bidden(&self) -> Option<(super::bidden::Script, super::bidden::Home)> {
+        let script = self.script.clone()?;
+        Some((super::bidden::Script(script), super::bidden::Home(self.feet)))
+    }
+
     /// A placed monster met for the first time (retail `LoadMonsterInfo`).
     pub fn placed(
         placed: &crate::content::level::MonsterPlacement,
@@ -47,12 +56,13 @@ impl Newborn {
         body: &MonsterBody,
         rng: &mut GameRng,
     ) -> Self {
-        Self::rolled(
+        let rolled = Self::rolled(
             (placed.location, placed.species, Some(placed.group)),
             (placed.position, placed.yaw),
             (kind, body),
             rng,
-        )
+        );
+        Self { script: placed.script.clone(), ..rolled }
     }
 
     /// A monster come into being (retail `CreateMonsterInfo`): health and
@@ -75,6 +85,7 @@ impl Newborn {
             group,
             feet,
             yaw,
+            script: None,
         }
     }
 }
@@ -371,6 +382,7 @@ fn spawn_member(
 ) -> Entity {
     let name = actor_name(species, (kept.monster.species, kept.monster.location));
     let (body, kind) = (kept.monster.body, &species[kept.monster.species]);
+    let bidden = kept.bidden();
     let mut entity = commands.spawn((Name::new(name), kept.monster, kept.vitals, kept.budget));
     embody(
         &mut entity,
@@ -379,6 +391,9 @@ fn spawn_member(
         (Some(group), kind),
         (navigation, configs),
     );
+    if let Some(bidden) = bidden {
+        entity.insert(bidden);
+    }
     entity.id()
 }
 
@@ -502,9 +517,10 @@ pub fn populate(
         let body = newborn.monster.body;
         let name = actor_name(species, (newborn.monster.species, newborn.monster.location));
         let id = newborn.monster.species;
+        let bidden = newborn.bidden();
         let entity =
             commands.spawn((Name::new(name), newborn.monster, newborn.vitals, newborn.budget)).id();
-        actors.push((entity, newborn.feet, newborn.yaw, body, newborn.group, id));
+        actors.push((entity, newborn.feet, newborn.yaw, body, newborn.group, id, bidden));
     }
     let average = npcs.average_level();
     let mut placed_actors = std::collections::HashSet::new();
@@ -522,10 +538,14 @@ pub fn populate(
         let name = actor_name(species, (placed.species, placed.location));
         commands.entity(actor.0).insert(Name::new(name));
         let (entity, feet, yaw, body, group) = actor;
-        actors.push((entity, feet, yaw, body, group, placed.species));
+        let bidden = placed
+            .script
+            .clone()
+            .map(|script| (super::bidden::Script(script), super::bidden::Home(placed.position)));
+        actors.push((entity, feet, yaw, body, group, placed.species, bidden));
     }
     let monster_count = actors.len();
-    for (actor, feet, yaw, body, group, id) in actors {
+    for (actor, feet, yaw, body, group, id, bidden) in actors {
         let group = group.map(|authored| {
             *groups.entry(authored).or_insert_with(|| {
                 commands.spawn((MonsterGroup { authored, ..default() }, LevelOwned(root))).id()
@@ -538,6 +558,9 @@ pub fn populate(
             (group, &species[id]),
             (navigation, configs),
         );
+        if let Some(bidden) = bidden {
+            commands.entity(actor).insert(bidden);
+        }
     }
     info!("placed {monster_count} monsters and {} items", geometry.items.len());
     for placement in &geometry.items {

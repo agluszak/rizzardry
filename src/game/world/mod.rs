@@ -1,5 +1,6 @@
 //! The active level and its local objects.
 
+pub mod bidden;
 pub mod containers;
 pub mod damage;
 pub mod encounters;
@@ -137,7 +138,14 @@ impl Plugin for WorldPlugin {
                     .run_if(level::level_active),
             )
             // Sweeps follow gameplay time, however many steps a frame runs.
-            .add_systems(FixedUpdate, search::search_pulse.run_if(level::level_active));
+            .add_systems(FixedUpdate, search::search_pulse.run_if(level::level_active))
+            .add_message::<bidden::ScriptShow>()
+            .add_observer(bidden::begin)
+            .add_observer(bidden::jump)
+            .add_systems(
+                FixedUpdate,
+                (bidden::run, bidden::face_party).chain().run_if(level::level_active),
+            );
     }
 }
 

@@ -163,6 +163,7 @@ impl NpcPopulation<'_, '_> {
         }
         if let Ok((npc, member, location)) = self.states.get(actor)
             && (npc.killed
+                || npc.gone
                 || self.dead.contains(actor)
                 || member
                 || location.is_some_and(|l| l.map != p.map))

@@ -36,11 +36,21 @@ use crate::game::world::facing;
 /// with, again.
 const APPROACH_AGAIN_MS: u64 = 43_200_000;
 
-/// The party walks up to someone and talks.
+/// The party walks up to someone and talks, or they to it. One who has
+/// only a voice, or is bound to a monster, begins with `quote` if given.
 #[derive(EntityEvent, Clone, Copy, Debug)]
 pub struct Begin {
     #[event_target]
     pub actor: Entity,
+    pub quote: Option<u16>,
+}
+
+/// Someone says one of their lines as they stand, heard and not answered.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Overheard {
+    #[event_target]
+    pub actor: Entity,
+    pub quote: u16,
 }
 
 /// The party asks about a topic.
@@ -294,10 +304,11 @@ pub(super) fn begin(
     } else {
         Band::Friendly
     };
-    let quote = match standing {
-        Band::Hostile => 0x18,
-        Band::Neutral => 2,
-        Band::Friendly => greeting(npc, d),
+    let quote = match (standing, begin.quote) {
+        (Band::Hostile, _) => 0x18,
+        (Band::Neutral, _) => 2,
+        (Band::Friendly, Some(quote)) if d.voice_script || d.monster_bound => quote,
+        (Band::Friendly, _) => greeting(npc, d),
     };
     let mut script = super::Script::default();
     script.say(quote);
@@ -314,6 +325,29 @@ pub(super) fn begin(
     if standing != Band::Hostile {
         commands.trigger(trade::Visit { merchant: actor });
     }
+    commands.trigger(Continue { conversation });
+}
+
+/// A line said as someone stands (retail `SpeakNpcSubquote` outside a
+/// dialogue): a conversation the party is not in, over when the line is.
+pub(super) fn overhear(
+    heard: On<Overheard>,
+    conversations: Query<(), With<Conversation>>,
+    (actors, scripts): (NpcActors, Scripts),
+    battles: Query<(), With<Battle>>,
+    mut commands: Commands,
+) {
+    if !conversations.is_empty()
+        || !battles.is_empty()
+        || !actors.available(heard.actor)
+        || scripts.get(heard.actor).is_none()
+    {
+        return;
+    }
+    let mut script = super::Script::default();
+    script.say_free(heard.quote);
+    let conversation =
+        commands.spawn((Conversation::new(heard.actor, false), script, Closing)).id();
     commands.trigger(Continue { conversation });
 }
 

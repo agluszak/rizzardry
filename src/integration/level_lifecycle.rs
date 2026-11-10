@@ -110,6 +110,7 @@ fn test_level(app: &mut App, collision: CollisionMesh) -> Level {
         position: Vec3::ZERO,
         yaw: 0.0,
         unborn: false,
+        script: None,
     };
     let geometry = app.world_mut().resource_mut::<Assets<LevelDefinition>>().add(LevelDefinition {
         collision,
@@ -757,6 +758,7 @@ fn an_unborn_group_waits_until_born_and_is_born_once() {
             position: Vec3::X,
             yaw: 0.0,
             unborn: true,
+            script: None,
         });
     }
     let new_game = Entry::NewGame(vec![(

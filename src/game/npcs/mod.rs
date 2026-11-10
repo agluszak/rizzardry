@@ -37,6 +37,8 @@ pub struct Npc {
     /// The body they stood in was killed: they stand nowhere again. One who
     /// dies seated in the party is dead as any member is.
     pub killed: bool,
+    /// The story has taken them from the world: they stand nowhere again.
+    pub gone: bool,
 }
 impl Npc {
     fn from_definition(d: &NpcDefinition) -> Self {
@@ -49,6 +51,7 @@ impl Npc {
             charmed_at: None,
             small_talk_at: None,
             killed: false,
+            gone: false,
         }
     }
 }
@@ -93,7 +96,12 @@ impl Plugin for NpcPlugin {
                     population::bind_triggers.after(crate::game::GameplaySet::LevelActivation),
                 ),
             );
-        app.add_observer(story::follow);
+        app.add_message::<story::StoryLook>()
+            .add_observer(story::follow)
+            .add_observer(story::happens)
+            .add_observer(story::befalls_the_story)
+            .add_observer(story::befalls_the_level)
+            .add_observer(story::befalls_someone);
         conversation::install(app);
         recruit::install(app);
         trade::install(app);

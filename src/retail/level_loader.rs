@@ -32,7 +32,7 @@ use crate::content::items::ItemId;
 use crate::content::level::{
     AmbientSoundModel, Animation, CameraPathModel, DoorLock, Fountain, ItemPlacement,
     LevelDefinition, LevelEnvironment, LevelGeometry, LevelPart, Lock, MonsterPlacement, PropModel,
-    PropModelPart, PropVisual, PropVisualPart, Restores, StateChange, TriggerAction,
+    PropModelPart, PropVisual, PropVisualPart, Restores, Spot, StateChange, TriggerAction,
     TriggerDefinition, TriggerSound, TriggerUse, VertexLighting,
 };
 
@@ -255,6 +255,7 @@ fn monster_placements(placements: &[Placement]) -> Vec<MonsterPlacement> {
             position: retail_position(placement.position),
             yaw: retail_yaw(placement.yaw, [0.0, 1.0, 0.0]),
             unborn: placement.unborn,
+            script: placement.script.clone(),
         })
         .collect()
 }
@@ -849,6 +850,14 @@ impl AssetLoader for PvlDefinitionLoader {
                 .as_ref()
                 .map(|e| e.view_distance / UNITS_PER_METRE),
             entrances: level_entrances(&sections),
+            spots: sections
+                .positions
+                .iter()
+                .map(|(name, at)| Spot {
+                    name: name.clone(),
+                    position: retail_position(at.position),
+                })
+                .collect(),
             triggers,
             monsters,
             items,

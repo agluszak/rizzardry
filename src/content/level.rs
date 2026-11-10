@@ -116,6 +116,7 @@ pub struct LevelDefinition {
     /// The authored sight limit, independent of any rendering camera.
     pub sight_distance: Option<f32>,
     pub entrances: Vec<Entrance>,
+    pub spots: Vec<Spot>,
     pub triggers: Vec<TriggerDefinition>,
     pub camera_paths: Vec<CameraPathModel>,
     pub monsters: Vec<MonsterPlacement>,
@@ -123,6 +124,16 @@ pub struct LevelDefinition {
     pub props: Vec<PropModel>,
     pub links: Vec<LevelLink>,
     pub encounters: Encounters,
+}
+
+impl LevelDefinition {
+    /// Where a named spot is.
+    pub fn spot(&self, name: &str) -> Option<Vec3> {
+        self.spots
+            .iter()
+            .find(|spot| spot.name.eq_ignore_ascii_case(name))
+            .map(|spot| spot.position)
+    }
 }
 
 /// A level's random encounters as authored (retail `MonGen.cpp`: the
@@ -275,6 +286,15 @@ pub struct MonsterPlacement {
     pub yaw: f32,
     /// Waits unborn until something births its group.
     pub unborn: bool,
+    /// The script it is placed with, by its file's name.
+    pub script: Option<String>,
+}
+
+/// A named spot of the level, which scripts and the story send things to.
+#[derive(Clone, Debug)]
+pub struct Spot {
+    pub name: String,
+    pub position: Vec3,
 }
 
 /// An item lying in the level as authored (retail `.sts` `ITEM`).

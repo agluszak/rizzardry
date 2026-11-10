@@ -28,6 +28,7 @@ pub mod prop;
 pub mod prop_loader;
 pub mod pvl;
 pub mod record;
+pub mod scripts;
 pub mod sections;
 pub mod sky_loader;
 pub mod slf;
@@ -107,6 +108,8 @@ impl Plugin for RetailPlugin {
             .init_asset_loader::<npcs::NpcCatalogLoader>()
             .init_asset::<crate::content::npcs::DialogueScript>()
             .init_asset_loader::<npcs::DialogueLoader>()
+            .init_asset::<crate::content::scripts::MonsterScript>()
+            .init_asset_loader::<scripts::MonsterScriptLoader>()
             .init_asset::<crate::content::spells::SpellCatalog>()
             .init_asset_loader::<spells::SpellCatalogLoader>()
             .init_asset::<crate::content::spells::SpellText>()

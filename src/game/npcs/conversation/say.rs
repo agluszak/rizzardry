@@ -22,11 +22,13 @@ use crate::game::inventory::PartyInventory;
 use crate::game::items::{Give, Items, Lose, Place, Put, make, roll_amount};
 use crate::game::npcs::Npc;
 use crate::game::npcs::access::{NpcActors, Scripts};
+use crate::game::npcs::recruit;
 use crate::game::npcs::story::{self, Readings, StoryFacts};
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
+use crate::game::world::bidden::Jump;
 use crate::game::world::items::CLEARANCE;
 use crate::game::world::level::{Destination, Level};
 
@@ -157,10 +159,6 @@ pub(super) fn unsupported(q: &Quote, content: &Catalogs) -> Option<(usize, Strin
             DialogueOp::Conditional { facts, .. } => {
                 facts.iter().find_map(|(id, _)| story::unreadable(*id, &content.facts))
             }
-            DialogueOp::MonsterScriptLabel(Some(label)) => {
-                Some(format!("unimplemented monster script label {label}"))
-            }
-            DialogueOp::LeaveParty { .. } => Some("unimplemented scripted departure".into()),
             DialogueOp::Unsupported { opcode, .. } => {
                 Some(format!("unimplemented opcode {opcode}"))
             }
@@ -329,6 +327,25 @@ pub(super) fn carry_on(
                     DialogueOp::AdjustFaction { faction: Some(f), delta } => {
                         if let Some(change) = factions.adjust(*f, *delta, clock.ms) {
                             news.write(change);
+                        }
+                        None
+                    }
+                    // The person's body carries on from a label of its
+                    // script.
+                    DialogueOp::MonsterScriptLabel(Some(label)) => {
+                        if let Some(body) = actors.active_body(actor) {
+                            commands.trigger(Jump { body, label: label.clone() });
+                        }
+                        None
+                    }
+                    // The named person, or the one speaking, leaves the
+                    // party if they are in it.
+                    DialogueOp::LeaveParty { npc } => {
+                        let leaver = npc.as_deref().map_or(Some(actor), |name| actors.shown(name));
+                        if let Some(leaver) = leaver {
+                            commands.queue(move |world: &mut World| {
+                                let _ = world.run_system_cached_with(recruit::dismiss, leaver);
+                            });
                         }
                         None
                     }

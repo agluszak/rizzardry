@@ -2,27 +2,38 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::LazyLock;
 
+use bevy::ecs::query::QueryData;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use serde::Deserialize;
 
-use super::ActorId;
+use super::conversation::{Begin, Conversation};
+use super::trade::Delivery;
+use super::{ActorId, Npc, NpcBodies};
 use crate::content::characters::{Attribute, Race, Skill};
 use crate::content::factions::Faction;
 use crate::content::items::ItemId;
+use crate::content::level::LevelDefinition;
 use crate::content::npcs::*;
+use crate::game::actors::Places;
 use crate::game::actors::Refit;
-use crate::game::characters::{Character, Vitals};
+use crate::game::characters::{Character, Condition, Lasting, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::factions::{Band, FactionNews, Factions};
-use crate::game::items::Items;
+use crate::game::items::{Items, Place, Put, make, roll_amount};
+use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
+use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
+use crate::game::world::bidden::{Script, ScriptAction, ScriptShow};
+use crate::game::world::facing;
+use crate::game::world::hostility::Provocation;
 use crate::game::world::hostility::{Stance, Stand};
 use crate::game::world::identify::GroupMember;
 use crate::game::world::level::Level;
 use crate::game::world::population::Monster;
 use crate::game::world::triggers::{self, Bidding};
+use avian3d::prelude::{Position, Rotation};
 #[derive(Resource, Debug, Default)]
 pub struct StoryFacts {
     values: BTreeMap<FactId, u8>,
@@ -72,16 +83,16 @@ impl StoryFacts {
                         })
                 }
                 Consequence::If(_, rows) => ported(rows, catalog, depth),
-                Consequence::Faction(..)
-                | Consequence::FactionMet(_)
-                | Consequence::Group(..)
-                | Consequence::SkillFloor(..)
-                | Consequence::Trigger(_)
-                | Consequence::TriggerOnce(_)
-                | Consequence::TriggerOff(_)
-                | Consequence::LevelVar(..)
-                | Consequence::LevelVarOr(..) => true,
-                _ => false,
+                // What this game cannot carry out yet.
+                Consequence::Raise(..)
+                | Consequence::Returns
+                | Consequence::Unstock(..)
+                | Consequence::Mark(_)
+                | Consequence::Stands(..)
+                | Consequence::Reload(_)
+                | Consequence::SpawnMonster(..)
+                | Consequence::Scene(_) => false,
+                _ => true,
             })
         }
         catalog.get(id).is_some_and(|fact| follows(fact).all(|rows| ported(rows, catalog, 0)))
@@ -171,6 +182,22 @@ pub enum Consequence {
     SpawnMonster(u32, String),
     LookAt(f32, f32, f32),
     EndTalk,
+    GroupScript(u32, String),
+    GroupGone(u32),
+    SelfGone,
+    Moved(u16, String),
+    GroupMoved(u32, String),
+    Says(u16, u16),
+    Unlock(String),
+    TriggerOn(String),
+    Shows(u16, String),
+    GroupShows(u32, String),
+    LookAtSpot(String),
+    BodyGone,
+    BodyScript(String),
+    BodyAsleep(u32),
+    BodyFacesParty,
+    Engages(u32),
     Scene(String),
 }
 
@@ -190,6 +217,8 @@ struct FactTable {
     begins: Vec<String>,
     derived: HashMap<String, Reading>,
     follows: HashMap<String, Vec<Follows>>,
+    /// What each named happening of a monster's script does.
+    happenings: HashMap<String, Vec<Consequence>>,
 }
 
 /// Everything setting a fact may set off, whatever it is set to.
@@ -206,23 +235,27 @@ pub struct FactSet {
     pub value: u8,
 }
 
-/// What setting a fact sets off is carried out: another fact set, a
-/// faction put in a band or marked as met, a group turned, a skill raised
-/// to a floor, a device of the level run or switched off, a variable of the
-/// level set.
+/// One thing a fact set off, to be carried out by whoever it concerns.
+#[derive(Event, Clone, Debug)]
+pub(super) struct Befalls(Consequence);
+
+/// The party is to look somewhere, for the screen to turn it.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct StoryLook {
+    pub at: Vec3,
+}
+
+/// What setting a fact sets off begins (retail `HandleFactChange`): each
+/// consequence that follows now, its conditions asked of the world as it
+/// is, befalls in the order the table gives.
 pub(super) fn follow(
     set: On<FactSet>,
-    mut world: ParamSet<(Readings, Query<(&mut Character, &Vitals)>)>,
-    (mut story, mut factions): (ResMut<StoryFacts>, ResMut<Factions>),
-    monsters: Query<(&Monster, &GroupMember)>,
-    (roster, levels): (Single<&PartyRoster>, Query<&Level>),
-    (content, clock): (Res<Catalogs>, Res<GameClock>),
-    mut news: MessageWriter<FactionNews>,
+    readings: Readings,
+    (story, factions): (Res<StoryFacts>, Res<Factions>),
+    content: Res<Catalogs>,
     mut commands: Commands,
 ) {
     let Some(fact) = content.facts.get(set.fact) else { return };
-    // What follows now, the conditions asked of the world as it is.
-    let mut now: Vec<&Consequence> = Vec::new();
     let mut pending: Vec<&Consequence> = FACTS
         .follows
         .get(&fact.symbol)
@@ -237,7 +270,6 @@ pub(super) fn follow(
         .flatten()
         .rev()
         .collect();
-    let readings = world.p0();
     while let Some(row) = pending.pop() {
         match row {
             Consequence::If(reading, rows) => {
@@ -245,67 +277,283 @@ pub(super) fn follow(
                     pending.extend(rows.iter().rev());
                 }
             }
-            row => now.push(row),
-        }
-    }
-    let level = levels.iter().next().map_or("", |level| level.path.as_str());
-    for row in now {
-        match row {
-            Consequence::Fact(name, value) => {
-                let Some(other) = content.facts.0.iter().find(|d| &d.symbol == name) else {
-                    continue;
-                };
-                if story.set(other.id, *value, &content.facts, level).is_ok() {
-                    commands.trigger(FactSet { fact: other.id, value: *value });
-                }
-            }
-            Consequence::Faction(faction, stance) => {
-                let band = match stance {
-                    Stance::Hostile => Band::Hostile,
-                    Stance::Neutral => Band::Neutral,
-                    Stance::Friendly => Band::Friendly,
-                };
-                news.write_batch(factions.set_band(*faction, band, clock.ms));
-            }
-            Consequence::FactionMet(faction) => factions.encounter(*faction as i32),
-            Consequence::Group(species, stance) => {
-                let first = monsters.iter().find(|(monster, _)| monster.species == *species);
-                if let Some((_, member)) = first {
-                    commands.trigger(Stand { group: member.0, stance: Some(*stance) });
-                }
-            }
-            Consequence::SkillFloor(skill, points) => {
-                let mut members = world.p1();
-                for member in roster.iter() {
-                    if let Ok((mut character, vitals)) = members.get_mut(member)
-                        && !vitals.is_dead()
-                        && character.skill_available(*skill)
-                        && character.skill_points[*skill] < *points
-                    {
-                        character.skill_points[*skill] = *points;
-                        commands.trigger(Refit { entity: member });
-                    }
-                }
-            }
-            // A level's variables are set or not; the original's numbers
-            // only ever ask whether one is.
-            Consequence::Trigger(name) => works(&mut commands, Bidding::Run(name.clone())),
-            Consequence::TriggerOnce(name) => works(&mut commands, Bidding::RunOnce(name.clone())),
-            Consequence::TriggerOff(name) => works(&mut commands, Bidding::SwitchOff(name.clone())),
-            Consequence::LevelVar(name, value) => {
-                works(&mut commands, Bidding::Set(name.as_str().into(), *value != 0));
-            }
-            Consequence::LevelVarOr(name, _) => {
-                works(&mut commands, Bidding::Set(name.as_str().into(), true));
-            }
-            _ => {}
+            row => commands.trigger(Befalls(row.clone())),
         }
     }
 }
 
-/// The story works a device of the level, once what set it off is done.
-fn works(commands: &mut Commands, bidding: Bidding) {
-    commands.queue(move |world: &mut World| triggers::bid(world, bidding));
+/// A monster's script comes to one of the story's named happenings
+/// (retail `ProcessScript`, `DOACTION`): what befalls the monster itself is
+/// done here, and the rest befalls as anything a fact sets off does.
+pub(super) fn happens(
+    action: On<ScriptAction>,
+    mut bodies: Query<&mut Vitals, With<Monster>>,
+    (places, party): (Places, Single<Entity, With<PartyBody>>),
+    monsters: Query<(Entity, &Monster)>,
+    mut commands: Commands,
+) {
+    let body = action.body;
+    for row in FACTS.happenings.get(&action.action).into_iter().flatten() {
+        match row {
+            Consequence::BodyGone => commands.entity(body).despawn(),
+            Consequence::BodyScript(script) => {
+                commands.entity(body).insert(Script(script.clone()));
+            }
+            Consequence::BodyAsleep(rounds) => {
+                if let Ok(mut vitals) = bodies.get_mut(body) {
+                    vitals.afflict(Condition::Asleep, Lasting::Rounds(*rounds));
+                }
+            }
+            Consequence::BodyFacesParty => {
+                let turned = facing(places.of(body).feet, places.of(*party).feet);
+                if let Some(turned) = turned {
+                    commands.entity(body).insert(Rotation(turned));
+                }
+            }
+            Consequence::Engages(species) => {
+                let first = monsters.iter().find(|(_, monster)| monster.species == *species);
+                if let Some((monster, _)) = first {
+                    commands.trigger(Provocation { monster });
+                }
+            }
+            row => commands.trigger(Befalls(row.clone())),
+        }
+    }
+}
+
+/// What befalls the story itself and the party: another fact set, a
+/// faction put in a band or marked as met, a skill raised to a floor.
+pub(super) fn befalls_the_story(
+    befalls: On<Befalls>,
+    (mut story, mut factions): (ResMut<StoryFacts>, ResMut<Factions>),
+    mut members: Query<(&mut Character, &Vitals)>,
+    (roster, levels): (Single<&PartyRoster>, Query<&Level>),
+    (content, clock): (Res<Catalogs>, Res<GameClock>),
+    mut news: MessageWriter<FactionNews>,
+    mut commands: Commands,
+) {
+    match &befalls.0 {
+        Consequence::Fact(name, value) => {
+            let Some(other) = content.facts.0.iter().find(|d| &d.symbol == name) else { return };
+            let level = levels.iter().next().map_or("", |level| level.path.as_str());
+            if story.set(other.id, *value, &content.facts, level).is_ok() {
+                commands.trigger(FactSet { fact: other.id, value: *value });
+            }
+        }
+        Consequence::Faction(faction, stance) => {
+            let band = match stance {
+                Stance::Hostile => Band::Hostile,
+                Stance::Neutral => Band::Neutral,
+                Stance::Friendly => Band::Friendly,
+            };
+            news.write_batch(factions.set_band(*faction, band, clock.ms));
+        }
+        Consequence::FactionMet(faction) => factions.encounter(*faction as i32),
+        Consequence::SkillFloor(skill, points) => {
+            for member in roster.iter() {
+                if let Ok((mut character, vitals)) = members.get_mut(member)
+                    && !vitals.is_dead()
+                    && character.skill_available(*skill)
+                    && character.skill_points[*skill] < *points
+                {
+                    character.skill_points[*skill] = *points;
+                    commands.trigger(Refit { entity: member });
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// What befalls the level the party is in: a device run, switched or
+/// unlocked, a variable set, and what happens to the first group of a
+/// species there: it turns, follows a script, or its leader is moved,
+/// leaves or plays an animation; an item appearing at a spot; the party
+/// made to look somewhere.
+pub(super) fn befalls_the_level(
+    befalls: On<Befalls>,
+    monsters: Query<(Entity, &Monster, &GroupMember)>,
+    spots: Spots,
+    (content, mut rng): (Res<Catalogs>, ResMut<GameRng>),
+    mut shows: MessageWriter<ScriptShow>,
+    mut looks: MessageWriter<StoryLook>,
+    mut commands: Commands,
+) {
+    let first = |species: &u32| monsters.iter().find(|(_, monster, _)| monster.species == *species);
+    let mut bid = |bidding: Bidding| {
+        commands.queue(move |world: &mut World| triggers::bid(world, bidding));
+    };
+    match &befalls.0 {
+        // A level's variables are set or not; the original's numbers only
+        // ever ask whether one is.
+        Consequence::Trigger(name) => bid(Bidding::Run(name.clone())),
+        Consequence::TriggerOnce(name) => bid(Bidding::RunOnce(name.clone())),
+        Consequence::TriggerOff(name) => bid(Bidding::SwitchOff(name.clone())),
+        Consequence::TriggerOn(name) => bid(Bidding::SwitchOn(name.clone())),
+        Consequence::Unlock(name) => bid(Bidding::Unlock(name.clone())),
+        Consequence::LevelVar(name, value) => {
+            bid(Bidding::Set(name.as_str().into(), *value != 0));
+        }
+        Consequence::LevelVarOr(name, _) => bid(Bidding::Set(name.as_str().into(), true)),
+        Consequence::Group(species, stance) => {
+            if let Some((_, _, member)) = first(species) {
+                commands.trigger(Stand { group: member.0, stance: Some(*stance) });
+            }
+        }
+        Consequence::GroupScript(species, script) => {
+            if let Some((leader, ..)) = first(species) {
+                commands.entity(leader).insert(Script(script.clone()));
+            }
+        }
+        Consequence::GroupGone(species) => {
+            if let Some((leader, ..)) = first(species) {
+                commands.entity(leader).despawn();
+            }
+        }
+        Consequence::GroupMoved(species, spot) => {
+            if let (Some((leader, ..)), Some(at)) = (first(species), spots.named(spot)) {
+                commands.entity(leader).insert(Position(at));
+            }
+        }
+        Consequence::GroupShows(species, cycle) => {
+            if let Some((body, ..)) = first(species) {
+                shows.write(ScriptShow { body, command: format!("CYCLE {cycle}") });
+            }
+        }
+        Consequence::LookAtSpot(spot) => {
+            looks.write_batch(spots.named(spot).map(|at| StoryLook { at }));
+        }
+        // The point is given in the original's units.
+        Consequence::LookAt(x, y, z) => {
+            let at = Vec3::new(*x, *y, -*z) / crate::content::UNITS_PER_METRE;
+            looks.write(StoryLook { at });
+        }
+        Consequence::SpawnItem(item, spot) => {
+            if let (Some(at), Some(level)) = (spots.named(spot), spots.level()) {
+                let definition = &content.items[ItemId(*item)];
+                let amount = roll_amount(definition, &mut rng, true);
+                let item = make(&mut commands, definition, amount, true);
+                commands.trigger(Put { item, at: Place::Ground { level, at } });
+            }
+        }
+        _ => {}
+    }
+}
+
+/// What befalls a person: they leave where they stood for good, are moved,
+/// follow a script, speak up or play an animation; a merchant is to get
+/// something; the conversation under way ends.
+pub(super) fn befalls_someone(
+    befalls: On<Befalls>,
+    mut people: Query<Person>,
+    conversations: Query<(Entity, &Conversation)>,
+    spots: Spots,
+    (content, clock): (Res<Catalogs>, Res<GameClock>),
+    mut shows: MessageWriter<ScriptShow>,
+    mut commands: Commands,
+) {
+    let of_kind = |kind: &u16, people: &Query<Person>| one_of_kind(*kind, people, &content);
+    match &befalls.0 {
+        Consequence::EndTalk => {
+            for (conversation, _) in &conversations {
+                commands.entity(conversation).despawn();
+            }
+        }
+        Consequence::Gone(kind) => {
+            if let Some((actor, _)) = of_kind(kind, &people) {
+                leave(actor, &mut people, &mut commands);
+            }
+        }
+        Consequence::GoneUnmet(kind) => {
+            if let Some((actor, _)) = of_kind(kind, &people)
+                && people.get(actor).is_ok_and(|person| person.npc.greeting_pending)
+            {
+                leave(actor, &mut people, &mut commands);
+            }
+        }
+        Consequence::SelfGone => {
+            if let Some((_, talk)) = conversations.iter().next() {
+                leave(talk.actor, &mut people, &mut commands);
+            }
+        }
+        Consequence::Moved(kind, spot) => {
+            if let (Some((_, Some(body))), Some(at)) = (of_kind(kind, &people), spots.named(spot)) {
+                commands.entity(body).insert(Position(at));
+            }
+        }
+        Consequence::Script(kind, script) => {
+            if let Some((_, Some(body))) = of_kind(kind, &people) {
+                commands.entity(body).insert(Script(script.clone()));
+            }
+        }
+        Consequence::Says(kind, quote) => {
+            if let Some((actor, _)) = of_kind(kind, &people) {
+                commands.trigger(Begin { actor, quote: Some(*quote) });
+            }
+        }
+        Consequence::Shows(kind, cycle) => {
+            if let Some((_, Some(body))) = of_kind(kind, &people) {
+                shows.write(ScriptShow { body, command: format!("CYCLE {cycle}") });
+            }
+        }
+        // The original counts the wait in seconds.
+        Consequence::Stock(kind, item, units, after) => {
+            if let Some((merchant, _)) = of_kind(kind, &people) {
+                let due = clock.ms + u64::from(*after) * 1000;
+                commands.spawn(Delivery { merchant, item: ItemId(*item), units: *units, due });
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A person as the story finds them.
+#[derive(QueryData)]
+#[query_data(mutable)]
+pub(super) struct Person {
+    entity: Entity,
+    id: &'static ActorId,
+    npc: &'static mut Npc,
+    bodies: Option<&'static NpcBodies>,
+}
+
+/// The one of a kind, by the kind their record gives, and the body they
+/// stand in.
+fn one_of_kind(
+    kind: u16,
+    people: &Query<Person>,
+    content: &Catalogs,
+) -> Option<(Entity, Option<Entity>)> {
+    let found = people.iter().find(|person| content.npcs[person.id.0].kind == i32::from(kind));
+    found.map(|person| (person.entity, person.bodies.and_then(|bodies| bodies.first().copied())))
+}
+
+/// Someone leaves where they stood, for good.
+fn leave(actor: Entity, people: &mut Query<Person>, commands: &mut Commands) {
+    if let Ok(mut person) = people.get_mut(actor) {
+        person.npc.gone = true;
+        for body in person.bodies.into_iter().flat_map(|bodies| bodies.iter()) {
+            commands.entity(body).despawn();
+        }
+    }
+}
+
+/// The named spots of the level the party is in.
+#[derive(SystemParam)]
+pub(super) struct Spots<'w, 's> {
+    levels: Query<'w, 's, (Entity, &'static Level)>,
+    definitions: Res<'w, Assets<LevelDefinition>>,
+}
+
+impl Spots<'_, '_> {
+    fn level(&self) -> Option<Entity> {
+        self.levels.iter().next().map(|(level, _)| level)
+    }
+
+    fn named(&self, name: &str) -> Option<Vec3> {
+        let (_, level) = self.levels.iter().next()?;
+        self.definitions.get(&level.definition)?.spot(name)
+    }
 }
 
 static FACTS: LazyLock<FactTable> = LazyLock::new(|| {
