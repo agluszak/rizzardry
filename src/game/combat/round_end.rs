@@ -29,20 +29,20 @@ use crate::game::actors::spells::{Enchantment, LaidOn, Pulses};
 use crate::game::characters::Vitals;
 use crate::game::characters::{Character, Condition};
 use crate::game::data::Catalogs;
-use crate::game::hits::definitions::Definitions;
+use crate::game::hits::definitions::Rows;
+use crate::game::hits::effects::BodyReadOnly;
 use crate::game::hits::effects::Strike;
-use crate::game::hits::reach::{Recipients, Struck, within};
-use crate::game::hits::{Act, Deed, Release};
+use crate::game::hits::reach::{Field, Recipients};
+use crate::game::hits::{Deed, Landed};
 use crate::game::magic::{Strength, power};
 use crate::game::party::body::PartyBody;
 use crate::game::party::recovery::{self, Elapsed, Pace};
-use crate::game::party::roster::{PartyMember, PartyRoster};
+use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::{AGING_TICK_MS, GameClock};
 use crate::game::world::hostility::{Side, Stance};
-use crate::game::world::identify::{GroupMembers, GroupRecognition};
+use crate::game::world::identify::{GroupMember, GroupMembers, GroupRecognition};
 use crate::game::world::obstacles::WorldObstacles;
-use crate::game::world::population::Untargetable;
 use bevy::ecs::relationship::RelationshipTarget;
 
 /// The timeline is empty and nothing is in the air or walking: the round
@@ -225,45 +225,39 @@ pub(super) fn pulse_clouds(
     mut commands: Commands,
     fights: Query<&Combatants>,
     pulsing: Query<(&Enchantment, &LaidOn, &Pulses)>,
-    bodies: Query<
-        (Entity, &Vitals, &Side),
-        (Without<Untargetable>, Or<(With<PartyMember>, Without<Character>)>),
-    >,
+    bodies: Query<BodyReadOnly>,
+    grouping: (Query<&'static GroupMember>, Query<&'static GroupMembers>),
     places: Places,
     party: Single<(Entity, &Position, &PartyRoster)>,
     obstacles: WorldObstacles,
     content: Res<Catalogs>,
-    definitions: Res<Definitions>,
 ) {
     let (party, position, roster) = *party;
     let Ok(combatants) = fights.get(pulse.fight) else { return };
-    let alive = |body: Entity| bodies.get(body).is_ok_and(|(_, vitals, ..)| !vitals.is_dead());
+    let alive = |body: Entity| bodies.get(body).is_ok_and(|body| !body.vitals.is_dead());
+    let field = Field {
+        bodies: &bodies,
+        places: &places,
+        obstacles: &obstacles,
+        roster,
+        combatants: combatants.entities(),
+        memberships: &grouping.0,
+        groups: &grouping.1,
+    };
     // The party's first, then each monster's, in the order clouds pulse.
     let mut order: Vec<_> = pulsing.iter().collect();
     order.sort_by_key(|(_, on, pulse)| (on.0 != party, pulse.0.order));
     for (laid, &LaidOn(bearer), &Pulses(pulse)) in order {
-        let Some(definition) = definitions.pulse(laid.spell) else { continue };
+        let rows = Rows::Pulse(laid.spell);
+        if rows.effects(&content).is_empty() {
+            continue;
+        }
         let around = pulse.on == Pulsing::AroundParty;
         let victims: Vec<Entity> = if around {
             let centre = PartyBody::centre(PartyBody::eye(position));
             let reach =
                 crate::game::party::body::RADIUS + crate::content::species::Reach::Short.metres();
-            let found = bodies.iter().map(|(entity, vitals, side)| {
-                let at = places.of(entity);
-                Struck {
-                    id: entity,
-                    dead: vitals.is_dead(),
-                    stance: side.now(vitals),
-                    centre: at.centre,
-                    radius: at.radius,
-                    order: crate::game::hits::reach::order(
-                        roster.get_index_of(&entity),
-                        combatants.entities().iter().position(|&c| c == entity),
-                    ),
-                    clear: obstacles.clear(centre, at.centre),
-                }
-            });
-            within(centre, reach, Recipients::Opponents(Stance::Friendly), found)
+            field.within(centre, centre, reach, Recipients::Opponents(Stance::Friendly))
         } else if bearer == party {
             roster.iter().filter(|&member| alive(member)).collect()
         } else {
@@ -274,13 +268,29 @@ pub(super) fn pulse_clouds(
         } else {
             power::strength(0, laid.power, laid.boost, &content.spells[laid.spell])
         };
-        commands.trigger(Release {
-            deed: Deed::new(
-                Act::Triggered { spell: laid.spell },
-                Strike { definition, strength, blow: None },
-            ),
-            victims: victims.into_iter().map(|victim| (victim, None)).collect(),
-        });
+        commands.spawn((
+            Deed::at(Strike { rows, strength, blow: None }, victims),
+            crate::game::magic::landed::Magical,
+            Pulse,
+        ));
+    }
+}
+
+/// A deed that is a cloud's pulse.
+#[derive(Component)]
+pub(super) struct Pulse;
+
+/// A cloud's pulse that did something to someone keeps the fight going as
+/// an attack would.
+pub(super) fn count_pulse(
+    landed: On<Landed>,
+    pulses: Query<(), With<Pulse>>,
+    mut rounds: Query<&mut Round, With<Battle>>,
+) {
+    if pulses.contains(landed.deed)
+        && let Ok(mut round) = rounds.single_mut()
+    {
+        round.attacked(landed.affected());
     }
 }
 

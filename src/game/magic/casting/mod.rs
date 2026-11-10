@@ -18,7 +18,7 @@ mod means;
 use bevy::prelude::*;
 
 use self::means::{Circumstances, Marks};
-use self::means::{ItemUse, Means, Payment, Stage};
+use self::means::{ItemUse, Means, Payment};
 pub use self::means::{goes_again, reaches, resolvable, usable_item, usable_items};
 use super::may::{self, Refusal};
 use super::reach::{self, Aim, Falls, Marked};
@@ -29,12 +29,12 @@ use crate::game::actors::Places;
 use crate::game::characters::Practise;
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
-use crate::game::hits::definitions::Definitions;
+use crate::game::hits::definitions::Rows;
 use crate::game::hits::effects::{Body, Strike};
-use crate::game::hits::reach::Recipients;
-use crate::game::hits::spells::{Leech, Spell, owners_strength};
-use crate::game::hits::{Act, Deed, Effect, Release};
+use crate::game::hits::reach::{Field, Recipients};
+use crate::game::hits::{Deed, Effect};
 use crate::game::items::{Items, Spend};
+use crate::game::magic::landed::{Leech, Spell, owners_strength};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::Provocation;
@@ -78,15 +78,8 @@ pub struct MagicChoice {
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum MagicNews {
     Done(Report),
-    /// An indirect trap source has no character caster or payment.
-    Triggered {
-        spell: SpellId,
-        effects: Vec<Effect>,
-    },
-    /// A missile reached its victims.
+    /// What a deed of magic did, once all of it has landed.
     Landed {
-        caster: Entity,
-        spell: SpellId,
         effects: Vec<Effect>,
     },
     Refused {
@@ -119,14 +112,15 @@ pub struct Report {
     /// The item it came from, already spent.
     pub item: Option<String>,
     pub outcome: Outcome,
-    /// What landed at once; missiles land later as [`MagicNews::Landed`].
+    /// What a utility spell did; what a deed does is told as it lands
+    /// ([`MagicNews::Landed`]).
     pub effects: Vec<Effect>,
 }
 
 /// A cast's practice, owed once its deed has landed: its caster practises
 /// these skills if the cast affected anyone (retail `SpellAffectedTarget`),
 /// or whatever came of it once a missile is on its way.
-#[derive(Clone, Debug)]
+#[derive(Component, Clone, Debug)]
 pub struct Practice {
     pub caster: Entity,
     pub skills: Vec<(crate::content::characters::Skill, u32)>,
@@ -135,7 +129,7 @@ pub struct Practice {
 
 /// An auto recast (retail's "repeat" power): once it has landed, its caster
 /// casts again while its victims are not whole and stamina and points last.
-#[derive(Clone, Debug)]
+#[derive(Component, Clone, Debug)]
 pub struct Recast {
     pub caster: Entity,
     pub choice: MagicChoice,
@@ -174,22 +168,20 @@ pub struct Worked {
 /// or tell the utility spell it is for. A fizzle leaves only its report, and an
 /// auto cast tries again while stamina and points last; a backfire turns on the
 /// caster's side; a cast that went off takes its victims, its missiles landing
-/// as they arrive. In a fight it counts as an attack.
+/// as they arrive.
 pub fn cast(
     cast: On<Cast>,
     mut bodies: Query<Body>,
     (places, obstacles, held): (Places, WorldObstacles, Items),
     (circumstances, marks): (Circumstances, Marks),
     (memberships, groups, kinds): (
-        Query<&GroupMember>,
-        Query<&GroupMembers>,
+        Query<&'static GroupMember>,
+        Query<&'static GroupMembers>,
         Query<&crate::game::world::population::Spellcasting>,
     ),
-    mut fight: Option<
-        Single<(&mut crate::game::combat::Round, Option<&crate::game::combat::Combatants>)>,
-    >,
+    fight: Option<Single<(&crate::game::combat::Round, Option<&crate::game::combat::Combatants>)>>,
     roster: Single<&PartyRoster>,
-    (content, definitions, difficulty): (Res<Catalogs>, Res<Definitions>, Res<Difficulty>),
+    (content, difficulty): (Res<Catalogs>, Res<Difficulty>),
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<MagicNews>,
     mut commands: Commands,
@@ -208,7 +200,6 @@ pub fn cast(
             difficulty: *difficulty,
             moment: fight.as_ref().map_or(0, |fight| fight.0.moment()),
         };
-        let records = (&content.spells, &*definitions);
         let Ok(body) = readonly.get(caster) else {
             commands.trigger(Refused { caster, refusal: Refusal::CannotAct });
             continue;
@@ -216,7 +207,7 @@ pub fn cast(
         let moment = circumstances.moment(spell, fighting);
         let asked =
             (means::affordable(&body, spell, &content.spells), means::keeps_alchemy(&body, &kinds));
-        let resolved = resolvable(spell, &definitions);
+        let resolved = resolvable(spell, &content);
         if let Err(refusal) = may::may(spell, &body, choice.source, &held, asked, moment, resolved)
         {
             commands.trigger(Refused { caster, refusal });
@@ -231,34 +222,34 @@ pub fn cast(
         // `UseItem` aims potions at their user).
         let forced = fighting && item.is_some_and(ItemUse::by_anyone);
         let targeting = if forced { Targeting::Caster } else { spell.targeting };
-        let stage = Stage::of(
+        let field = Field {
+            bodies: &readonly,
+            places: &places,
+            obstacles: &obstacles,
+            roster,
+            combatants,
+            memberships: &memberships,
+            groups: &groups,
+        };
+        let aiming = reach::Aiming {
+            field: &field,
             caster,
-            spell.reach.metres(),
-            &readonly,
-            (&places, &obstacles),
-            (&memberships, &groups),
-            (roster, combatants),
-        );
-        let aiming = stage.aiming(caster, targeting, choice.aim);
-        let (mut victims, spot, marked) = match spell.facts.working {
-            Some(working) => {
-                let marking =
-                    marks.marking(working, &cast, spell, (&readonly, roster), &definitions);
-                match reach::mark(&marking) {
-                    Ok(marked) => (Vec::new(), None, Some(marked)),
-                    Err(refusal) => {
-                        commands.trigger(Refused { caster, refusal });
-                        continue;
-                    }
-                }
+            targeting,
+            aim: choice.aim,
+            reach: spell.reach.metres(),
+        };
+        let aimed = match spell.facts.working {
+            Some(working) => marks
+                .mark(working, &cast, spell, (&readonly, roster), &content)
+                .map(|marked| (Vec::new(), None, Some(marked))),
+            None => aiming.victims().map(|reached| (reached.victims, reached.spot, None)),
+        };
+        let (mut victims, spot, marked) = match aimed {
+            Ok(aimed) => aimed,
+            Err(refusal) => {
+                commands.trigger(Refused { caster, refusal });
+                continue;
             }
-            None => match reach::victims(&aiming) {
-                Ok(reached) => (reached.victims, reached.spot, None),
-                Err(refusal) => {
-                    commands.trigger(Refused { caster, refusal });
-                    continue;
-                }
-            },
         };
         let (figure, boost) = means.figure(spell);
         // The power it goes off at. An instrument played too badly to sound
@@ -271,7 +262,7 @@ pub fn cast(
             (boost, pace),
             &readonly,
             &held,
-            records,
+            &content,
         );
         let Some(power) = power else {
             let tired = cost::stamina(&mut rng, &body, means.used(), spell, 0);
@@ -283,21 +274,12 @@ pub fn cast(
             commands.trigger(Refused { caster, refusal: Refusal::PlayedBadly });
             continue;
         };
-        let struck = |origin: Vec3| {
-            crate::game::hits::spells::struck(
-                &readonly,
-                &places,
-                &obstacles,
-                origin,
-                (roster, combatants),
-            )
-        };
         // A blast takes whoever stands within its radius of where it lands,
         // but those on its caster's side.
         let side = body.stance();
         let radius = reach::blast_radius(spell, power);
         if let (Targeting::Radius, Some(centre)) = (targeting, spot) {
-            victims = reach::blasted(centre, radius, Recipients::Opponents(side), &struck(centre));
+            victims = field.within(centre, centre, radius, Recipients::Opponents(side));
         }
         // The roll to cast.
         let on_oneself = choice.aim.body() == Some(caster);
@@ -307,8 +289,7 @@ pub fn cast(
             && circumstances.underwater();
         let outcome = roll::outcome(&mut rng, chance, quiet, quenched, spell.can_backfire());
         let backfired = outcome == Outcome::Backfired;
-        let own_side = reach::own_side(&aiming);
-        let backfire = reach::backfire(&aiming, &own_side, spot);
+        let backfire = aiming.backfire(spot);
         // What a backfire is as strong as, judged before anything changes: as
         // strong as the one it comes from, but a utility spell is as strong as
         // its caster.
@@ -320,7 +301,7 @@ pub fn cast(
         let stand = places.of(caster);
         let blast_back = (backfired && backfire.falls == Falls::Blast).then(|| {
             let against = Recipients::Opponents(side).reversed();
-            reach::blasted(stand.feet, radius, against, &struck(stand.feet))
+            field.within(stand.feet, stand.feet, radius, against)
         });
         // A party member's spell aimed at enemies provokes those it is cast
         // at, whatever the roll (retail `MakeTargetGroupHostile` as the
@@ -399,20 +380,16 @@ pub fn cast(
             let from = stand.eye;
             (caster, Spell { owner: Some(caster), from, aim, ..Spell::of(id, caster) }, victims)
         };
-        if let Some(fight) = fight.as_mut() {
-            fight.0.attacked(true);
-        }
-        let uses = if backfired { definitions.backfire(id) } else { definitions.spell(id) };
-        let uses = uses.expect("a checked spell is defined");
-        let flies = spell.missile.is_some() && !backfired && !victims.is_empty();
-        let practice = practice.map(|skills| Practice { caster, skills, sure: flies });
-        // A missile cast is reported as it leaves; its impacts when they land.
-        let act = if flies {
-            news.write(MagicNews::Done(report));
-            Act::Missile { caster, spell: id }
-        } else {
-            Act::Cast(report)
+        let row = content.spell_row(id).expect("a checked spell has a row");
+        // Turned on its caster's side it gives nothing back when it follows
+        // rows of its own.
+        let (rows, leeches) = match backfired {
+            true if row.backfires_apart(spell) => (Rows::Backfire(id), None),
+            true => (Rows::Backfire(id), row.leeches),
+            false => (Rows::Spell(id), row.leeches),
         };
+        let flies = spell.missile.is_some() && !backfired && !victims.is_empty();
+        news.write(MagicNews::Done(report));
         let flight = |victim: Entity| {
             let to = match (spell.targeting, spot) {
                 (Targeting::Radius, Some(at)) => at,
@@ -423,24 +400,19 @@ pub fn cast(
             };
             flies.then(|| reach::flight(stand.eye, to))
         };
-        let row = definitions.get(uses);
-        commands.trigger(Release {
-            victims: victims.iter().map(|&victim| (victim, flight(victim))).collect(),
-            deed: Deed {
-                act,
-                strike: Strike { definition: uses, strength, blow: None },
-                leech: row.leeches.map(|lifesteal| Leech { caster: owner, lifesteal }),
-                practice,
-                recast: repeats.then(|| Recast {
-                    caster,
-                    choice,
-                    victims: victims.clone(),
-                    watches_stamina: definitions
-                        .spell(id)
-                        .is_some_and(|row| definitions.get(row).watches_stamina),
-                }),
-                spell: Some(Spell { backfired, victims, ..spell_of }),
-            },
-        });
+        let strike = Strike { rows, strength, blow: None };
+        // What follows the deed is put beside it before it is let go.
+        let arrivals: Vec<_> = victims.iter().map(|&victim| (victim, flight(victim))).collect();
+        let mut deed = commands.spawn(Spell { backfired, victims: victims.clone(), ..spell_of });
+        if let Some(gives) = leeches {
+            deed.insert(Leech { caster: owner, gives });
+        }
+        if let Some(skills) = practice {
+            deed.insert(Practice { caster, skills, sure: flies });
+        }
+        if repeats {
+            deed.insert(Recast { caster, choice, victims, watches_stamina: row.watches_stamina });
+        }
+        deed.insert(Deed::flying(strike, arrivals));
     }
 }

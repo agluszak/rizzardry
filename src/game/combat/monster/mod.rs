@@ -34,8 +34,8 @@ use self::guard::Watching;
 use self::sight::{Fray, Sight};
 use self::special::Made;
 use self::spell::Cast;
-use crate::content::spells::{SpellCatalog, SpellId};
-use crate::game::hits::definitions::Definitions;
+use crate::content::spells::SpellId;
+use crate::game::data::Catalogs;
 use crate::game::rng::GameRng;
 
 /// What a monster decided.
@@ -69,7 +69,7 @@ pub fn deliberate(
     sight: &Sight,
     monster: Entity,
     fray: Fray,
-    (spells, definitions): (&SpellCatalog, &Definitions),
+    content: &Catalogs,
 ) -> Option<Thought> {
     let (own, mind) = sight.monster(monster)?;
     let gap = sight.party_gap(monster);
@@ -78,14 +78,14 @@ pub fn deliberate(
     if conducted.conduct != Conduct::Fight {
         return thought(Deliberated::Conducts(conducted.conduct));
     }
-    let breath = match spells.get(SpellId::SPECIAL_ATTACK_CONE) {
-        Some(cone) if !special::summons(&mind) => spell::aims(sight, &own, cone, definitions, fray),
+    let breath = match content.spells.get(SpellId::SPECIAL_ATTACK_CONE) {
+        Some(cone) if !special::summons(&mind) => spell::aims(sight, &own, cone, content, fray),
         _ => Vec::new(),
     };
     if let Some(made) = special::makes(rng, &own, &mind, gap, fray.fighting, &breath) {
         return thought(Deliberated::Breathes(made));
     }
-    if let Some(cast) = spell::casts(rng, sight, &own, &mind, gap, (spells, definitions), fray) {
+    if let Some(cast) = spell::casts(rng, sight, &own, &mind, gap, content, fray) {
         return thought(Deliberated::Casts(cast));
     }
     if close::cannot_strike(&own, gap) {

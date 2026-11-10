@@ -1,0 +1,29 @@
+#![enable(implicit_some)]
+// What a blow does to the body it lands on, in order: its damage, then each
+// effect its weapon carries (retail `ApplyWeaponSpecialEffects`). The rows
+// are those of spell_effects.ron, with:
+//   weapon       the weapon effect the row stands for; it lands only when
+//                the blow carries that effect
+//   by_monsters  only from a monster's blow
+// A condition lasts `BlowRounds`; a drain takes `Blow(times, sides, base)`.
+// Each save's base is its condition's own; a drain's is none.
+[
+    (roll: Damage),
+    (kind: Afflict(condition: Asleep), roll: BlowRounds, save: 20, resist: Air, weapon: Sleep),
+    (kind: Afflict(condition: Paralyzed), roll: BlowRounds, save: 18, resist: Water, weapon: Paralyze),
+    // Poison bites by the weapon's strength.
+    (kind: Afflict(condition: Poisoned), roll: Blow(times: 3, sides: 2, base: Weapon), save: 6, resist: Water, weapon: Poison),
+    (kind: Afflict(condition: Hexed), roll: BlowRounds, save: 8, resist: Divine, weapon: Hex),
+    (kind: Afflict(condition: Diseased, indefinite: true), roll: Fixed(9999), save: 2, resist: Divine, weapon: Disease),
+    (kind: Slay, roll: Fixed(9999), save: 24, resist: Divine, weapon: Kill),
+    (kind: Afflict(condition: Unconscious), roll: BlowRounds, save: 22, resist: Earth, weapon: KnockOut),
+    (kind: Afflict(condition: Blind), roll: BlowRounds, save: 12, resist: Fire, weapon: Blind),
+    (kind: Afflict(condition: Afraid), roll: BlowRounds, save: 5, resist: Mental, weapon: Frighten),
+    // Only a monster's blow turns a member.
+    (kind: Afflict(condition: Turncoat), on: Members, roll: BlowRounds, save: 14, resist: Divine, by_monsters: true, weapon: Possess),
+    (kind: Sap, on: Members, roll: Blow(times: 1, sides: 2, base: Zero), save: 0, resist: Earth, weapon: DrainHealth),
+    (kind: Tire, roll: Blow(times: 2, sides: 5, base: Count(3)), save: 0, resist: Water, weapon: DrainStamina),
+    (kind: DrainPool, on: Members, roll: Blow(times: 1, sides: 6, base: Count(1)), save: 0, resist: Divine, weapon: DrainSpellPoints),
+    (kind: Afflict(condition: Nauseated), roll: BlowRounds, save: 4, resist: Air, weapon: Nauseate),
+    (kind: Afflict(condition: Insane), roll: BlowRounds, save: 10, resist: Mental, weapon: Insane),
+]

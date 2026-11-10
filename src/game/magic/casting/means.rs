@@ -9,28 +9,26 @@ use bevy::prelude::*;
 use super::{Cast, Recast, Source};
 use crate::content::characters::Skill;
 use crate::content::items::UseType;
-use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId, Targeting, Working};
+use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId, Working};
 use crate::game::actors::{Place, Places};
 use crate::game::camp::Camp;
 use crate::game::characters::{Character, Profession};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::freedom::Freedom;
-use crate::game::hits::definitions::Definitions;
 use crate::game::hits::effects::{BodyReadOnly, BodyReadOnlyItem};
 use crate::game::items::{Casts, Items, Place as Stowed};
+use crate::game::magic::may::Refusal;
 use crate::game::magic::may::{self, UseContext};
 use crate::game::magic::pointcasts::Elementals;
 use crate::game::magic::portals::Portal;
-use crate::game::magic::reach::{self, Aim, Marking, Target};
+use crate::game::magic::reach::{Aim, Marked};
 use crate::game::magic::roll::{self, Pace};
 use crate::game::magic::{power, total_caster_level, traps};
 use crate::game::npcs::conversation::Conversation;
 use crate::game::npcs::{Npc, NpcBodies};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
-use crate::game::world::hostility::{self, Stance};
-use crate::game::world::identify::{GroupMember, GroupMembers};
 use crate::game::world::interaction::{AttemptOn, DeviceInteraction, Guarded, Work};
 use crate::game::world::level::{Level, LevelOwned};
 use crate::game::world::obstacles::WorldObstacles;
@@ -41,7 +39,7 @@ use crate::game::world::triggers::LevelState;
 /// within it, body to body, along a clear line between their eyes (retail
 /// `CharacterActionReachesTarget`, `CanMonsterSeeMonster`'s line).
 pub fn reaches(from: &Place, to: &Place, reach: f32, obstacles: &WorldObstacles) -> bool {
-    reach::reached(from.gap(to), reach, obstacles.clear(from.eye, to.eye))
+    from.gap(to) <= reach && obstacles.clear(from.eye, to.eye)
 }
 
 /// What the party is doing as a cast is asked, which decides which spells
@@ -219,103 +217,6 @@ impl<'b> Means<'b> {
     }
 }
 
-/// Everyone a spell may take, as the aim finds them.
-pub struct Stage {
-    bodies: Vec<Target>,
-    party: Vec<Entity>,
-    groups: Vec<Vec<Entity>>,
-    eye: Vec3,
-    forward: Vec3,
-}
-
-impl Stage {
-    /// The facts the aim rules take.
-    pub fn aiming(&self, caster: Entity, targeting: Targeting, aim: Aim) -> reach::Aiming<'_> {
-        reach::Aiming {
-            targeting,
-            caster,
-            aim,
-            eye: self.eye,
-            forward: self.forward,
-            bodies: &self.bodies,
-            party: &self.party,
-            groups: &self.groups,
-        }
-    }
-}
-
-impl Stage {
-    /// The party and the monsters of the fight, in its order, as an aim finds
-    /// them from `caster`: how it stands toward each, whether each is reached
-    /// within `reach`, and the groups of the monsters, whose members are
-    /// counted in whether they fight or not.
-    pub fn of(
-        caster: Entity,
-        reach: f32,
-        bodies: &Query<BodyReadOnly>,
-        (places, obstacles): (&Places, &WorldObstacles),
-        (memberships, groups_of): (&Query<&GroupMember>, &Query<&GroupMembers>),
-        (roster, combatants): (&PartyRoster, &[Entity]),
-    ) -> Stage {
-        let target = |body| bodies.get(body).ok().filter(|body| !body.untargetable);
-        let from = places.of(caster);
-        let mine = target(caster).map(|body| body.standing());
-        let mut ids: Vec<Entity> = crate::game::combat::participants(roster, combatants).collect();
-        let mut groups: Vec<Vec<Entity>> = Vec::new();
-        let mut group_ids: Vec<Entity> = Vec::new();
-        let mut group_of = |id: Entity, ids: &mut Vec<Entity>| -> Option<usize> {
-            let group = memberships.get(id).ok()?.0;
-            if let Some(known) = group_ids.iter().position(|&g| g == group) {
-                return Some(known);
-            }
-            let members: Vec<Entity> = groups_of.get(group).ok()?.iter().collect();
-            for &mate in &members {
-                if !ids.contains(&mate) {
-                    ids.push(mate);
-                }
-            }
-            group_ids.push(group);
-            groups.push(members);
-            Some(group_ids.len() - 1)
-        };
-        let mut grouped = Vec::new();
-        let mut at = 0;
-        while at < ids.len() {
-            grouped.push(group_of(ids[at], &mut ids));
-            at += 1;
-        }
-        let bodies = ids
-            .iter()
-            .zip(grouped)
-            .filter_map(|(&id, group)| {
-                let body = target(id)?;
-                let place = places.of(id);
-                Some(Target {
-                    id,
-                    member: roster.contains(&id),
-                    dead: body.vitals.is_dead(),
-                    stance: body.stance(),
-                    toward: mine
-                        .map_or(Stance::Neutral, |mine| hostility::between(mine, body.standing())),
-                    reached: reaches(&from, &place, reach, obstacles),
-                    gap: from.gap(&place),
-                    feet: place.feet,
-                    eye: place.eye,
-                    group,
-                    joined: combatants.iter().position(|&c| c == id).unwrap_or(usize::MAX),
-                })
-            })
-            .collect();
-        Stage {
-            bodies,
-            party: roster.iter().collect(),
-            groups,
-            eye: from.eye,
-            forward: from.forward(),
-        }
-    }
-}
-
 impl Circumstances<'_, '_> {
     /// Where the party is, which decides which spells suit the moment: a fight,
     /// the lock or trap being worked on, a conversation (for a spell cast at the
@@ -359,77 +260,86 @@ pub fn keeps_alchemy(caster: &BodyReadOnlyItem, kinds: &Query<&Spellcasting>) ->
 }
 
 impl Marks<'_, '_> {
-    /// What a utility spell is aimed at, as the party's surroundings offer it.
-    pub fn marking(
+    /// Whether a utility spell has a target, and which
+    /// (`docs/rules/casting.md` section 8): Identify Item an item the party
+    /// has, not the item casting it, not wholly known; Return to Portal a
+    /// portal saved; Charm and Mindread the living one the party is talking
+    /// with; Lure and Summon Elemental a spot within the spell's reach and
+    /// an eye's height that the caster sees, an elemental of the caster's
+    /// not standing; Knock Knock and Divine Trap the attempt under way, on a
+    /// device still guarded, a trap the game resolves.
+    pub fn mark(
         &self,
         working: Working,
         cast: &Cast,
         spell: &SpellDefinition,
         (bodies, roster): (&Query<BodyReadOnly>, &PartyRoster),
-        definitions: &Definitions,
-    ) -> Marking {
+        content: &Catalogs,
+    ) -> Result<Marked, Refusal> {
         let alive = |body| bodies.get(body).is_ok_and(|body| !body.vitals.is_dead());
-        let eye = self.places.of(cast.caster).eye;
-        let aim = cast.choice.aim;
-        let attempt = match aim {
-            Aim::Device(on) => {
-                self.attempts.get(on).ok().map(|(attempt, &AttemptOn(device))| reach::Attempt {
-                    guarded: self.devices.get(device).unwrap_or(false),
-                    kind: match &attempt.work {
-                        Work::Picking(_) => reach::Device::Lock,
-                        Work::Disarming(trap) => reach::Device::Trap {
-                            resolved: traps::validate(trap.trap, definitions).is_ok(),
-                        },
-                        Work::Looting => reach::Device::Container,
-                    },
-                })
-            }
-            _ => None,
-        };
-        // Something the party has: in hand, in the pool, or with a member.
-        let item = match aim {
-            Aim::Item(target) => self
-                .held
-                .place(target)
-                .filter(|place| match place {
+        let caster = cast.caster;
+        match (working, cast.choice.aim) {
+            (Working::Identify, Aim::Item(item)) => {
+                // Something the party has: in hand, in the pool, or with a
+                // member.
+                let ours = self.held.place(item).is_some_and(|place| match place {
                     Stowed::Slot { member, .. } | Stowed::Pack { member, .. } => {
-                        roster.contains(member)
+                        roster.contains(&member)
                     }
                     _ => true,
-                })
-                .and(self.held.known(target))
-                .map(|known| reach::Held {
-                    party_has_it: true,
-                    itself: cast.choice.source == Source::Item(target),
-                    known: known.identified && known.spell && known.curse,
-                }),
-            _ => None,
-        };
-        // The living body of the one the party is talking with, in the level played.
-        let speaker = self.conversation.as_ref().and_then(|conversation| {
-            let (_, standing) = self.speakers.get(conversation.actor).ok()?;
-            standing?.iter().find(|&body| {
-                self.monsters.get(body).is_ok_and(|level| self.levels.contains(level.0))
-                    && alive(body)
-            })
-        });
-        Marking {
-            working,
-            aim,
-            spot: match aim {
-                Aim::Point(at) => Some((eye.distance(at), self.obstacles.clear(eye, at))),
-                _ => None,
-            },
-            reach: spell.reach.metres(),
-            eye_height: crate::content::EYE_HEIGHT,
-            item,
-            portal: self.portals.contains(cast.caster),
-            speaker,
-            elemental: self
-                .elementals
-                .get(cast.caster)
-                .is_ok_and(|summons| summons.iter().any(alive)),
-            attempt,
+                });
+                let known = self
+                    .held
+                    .known(item)
+                    .is_some_and(|known| known.identified && known.spell && known.curse);
+                let itself = cast.choice.source == Source::Item(item);
+                if ours && self.held.known(item).is_some() && !itself && !known {
+                    Ok(Marked::Item(item))
+                } else {
+                    Err(Refusal::NoTarget)
+                }
+            }
+            (Working::SetPortal, _) => Ok(Marked::Nothing),
+            (Working::ReturnToPortal, _) if self.portals.contains(caster) => Ok(Marked::Nothing),
+            (Working::Charm | Working::Mindread, Aim::Body(aimed)) => {
+                // The living body of the one talked with, in the level played.
+                let speaker = self.conversation.as_ref().and_then(|conversation| {
+                    let (_, standing) = self.speakers.get(conversation.actor).ok()?;
+                    standing?.iter().find(|&body| {
+                        self.monsters.get(body).is_ok_and(|level| self.levels.contains(level.0))
+                            && alive(body)
+                    })
+                });
+                if speaker == Some(aimed) {
+                    Ok(Marked::Body(aimed))
+                } else {
+                    Err(Refusal::NoTarget)
+                }
+            }
+            (Working::Lure | Working::Summon, Aim::Point(at)) => {
+                let eye = self.places.of(caster).eye;
+                let seen = eye.distance(at) <= spell.reach.metres() + crate::content::EYE_HEIGHT
+                    && self.obstacles.clear(eye, at);
+                let elemental = working == Working::Summon
+                    && self.elementals.get(caster).is_ok_and(|summons| summons.iter().any(alive));
+                if seen && !elemental { Ok(Marked::Spot(at)) } else { Err(Refusal::NoTarget) }
+            }
+            (Working::Knock | Working::DivineTrap, Aim::Device(on)) => {
+                let Ok((attempt, &AttemptOn(device))) = self.attempts.get(on) else {
+                    return Err(Refusal::NoTarget);
+                };
+                if !self.devices.get(device).unwrap_or(false) {
+                    return Err(Refusal::NoTarget);
+                }
+                match &attempt.work {
+                    Work::Picking(_) => Ok(Marked::Attempt(on)),
+                    Work::Disarming(trap) => traps::validate(trap.trap, content)
+                        .map(|()| Marked::Attempt(on))
+                        .map_err(|_| Refusal::Unsupported),
+                    Work::Looting => Err(Refusal::NoTarget),
+                }
+            }
+            _ => Err(Refusal::NoTarget),
         }
     }
 }
@@ -463,7 +373,7 @@ pub fn power_of(
     (boost, pace): (u32, Pace),
     bodies: &Query<BodyReadOnly>,
     held: &Items,
-    (spells, definitions): (&SpellCatalog, &Definitions),
+    content: &Catalogs,
 ) -> Option<u32> {
     Some(match means {
         Means::Own { power, .. } => *power,
@@ -479,7 +389,7 @@ pub fn power_of(
         }
         Means::Item { item, .. } => item.casts.power,
         Means::Learned { character, asked } => {
-            let affordable = affordable(caster, spell, spells);
+            let affordable = affordable(caster, spell, &content.spells);
             if *asked != power::AUTO {
                 return Some(power::chosen(*asked, affordable, spell.power));
             }
@@ -490,7 +400,7 @@ pub fn power_of(
                 _ => None,
             };
             let victim = cast.choice.aim.body().and_then(|aimed| bodies.get(aimed).ok());
-            let row = definitions.spell(spell.id).map(|id| definitions.get(id));
+            let row = content.spell_row(spell.id);
             let failure = std::array::from_fn(|power| {
                 roll::learned(character, spell, power as u32 + 1, pace, false)
             });
@@ -543,8 +453,8 @@ pub fn goes_again(caster: &BodyReadOnlyItem, spell: &SpellDefinition, content: &
 
 /// Whether the game resolves a spell it is asked about: it has a row, or is a
 /// utility spell (what menus offer).
-pub fn resolvable(spell: &SpellDefinition, definitions: &Definitions) -> bool {
-    definitions.spell(spell.id).is_some() || spell.facts.working.is_some()
+pub fn resolvable(spell: &SpellDefinition, content: &Catalogs) -> bool {
+    content.spell_row(spell.id).is_some() || spell.facts.working.is_some()
 }
 
 /// The spells and items an actor could use: what menus offer. Execution
@@ -553,13 +463,12 @@ pub fn usable_items(
     member: Entity,
     character: &Character,
     held: &Items,
-    spells: &crate::content::spells::SpellCatalog,
-    definitions: &Definitions,
+    content: &Catalogs,
 ) -> Vec<(Entity, SpellId)> {
     held.carried(member)
         .filter_map(|item| {
             let worn = held.slot(item).is_some_and(|slot| slot.is_active());
-            Some((item, usable_item(character, item, held, spells, definitions, worn)?))
+            Some((item, usable_item(character, item, held, content, worn)?))
         })
         .collect()
 }
@@ -571,13 +480,12 @@ pub fn usable_item(
     character: &Character,
     item: Entity,
     held: &Items,
-    spells: &crate::content::spells::SpellCatalog,
-    definitions: &Definitions,
+    content: &Catalogs,
     worn: bool,
 ) -> Option<SpellId> {
     let cast = held.casts(item)?;
     (may::activates(cast, worn, character)
         && held.charges(item) != Some(0)
-        && resolvable(spells.get(cast.spell)?, definitions))
+        && resolvable(content.spells.get(cast.spell)?, content))
     .then_some(cast.spell)
 }

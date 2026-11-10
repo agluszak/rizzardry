@@ -952,18 +952,32 @@ record or the spell.
 What an item casts, who may use it and how hard it is to identify are on the
 item, written when it is made; no rule looks an item's record up.
 
-Whom a cast reaches is still worked out over a list of everyone as the aim
-finds them, taken once as the cast begins. It should read the actors where
-they stand as the other rules do.
+Whom a cast reaches is read from the actors where they stand: who is in the
+fight and in what order, who is of whose group, who is reached. The same
+reading serves a blast, a burst where a victim fell, a spell turned back and
+a cloud's pulse.
 
 **A cast is one chain.** The observer of `Cast` reads what the rules need,
-asks them in the order of this page, and makes happen what they decide: the
-deed is released and lands, points and charges are spent, skills practised,
-a group provoked, the player told. It holds no arithmetic and no constant.
+asks them in the order of this page, and makes happen what they decide:
+points and charges are spent, a group provoked, the player told, and the
+deed made. It holds no arithmetic and no constant.
+
+**A deed is a thing.** What a cast does to others is an entity (`Deed`): the
+rows it follows, its strength, and whom it has yet to reach. It lands on each
+as it arrives, says `Landed` once all of it has, and is gone. What follows a
+deed is whatever its maker put beside it, read by the maker's own observer of
+`Landed`: a drain's share, the spell that may burst or be turned back, the
+caster's practice, an auto recast. The code that lands a deed knows nothing
+of spells, casters or fights; a breath, a cloud's pulse and a trap are deeds
+too, each followed by its own maker. A cast is told as it is made, and what
+its deed did as it lands.
 
 **What a spell does is its rows.** The code that applies an effect row never
 names a spell. Where one spell truly behaves alone, that is a kind of effect
-or a fact in its row.
+or a fact in its row. A strike names whose rows it follows (a spell's, its
+backfire's, its pulse's, a special attack's, a blow's); a row that says "the
+spell's own" dice, rounds or realm is read against the spell as it lands.
+Nothing is built from the tables beforehand.
 
 **A utility spell is a cast like any other** up to the point where it lands;
 what it then does (identify, open a portal, charm, lure, summon) is one

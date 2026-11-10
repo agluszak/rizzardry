@@ -4,7 +4,7 @@
 //! of the fighters as they stand, and what they decide is made to happen. It
 //! holds no rule of its own.
 //!
-//! A blow lands as it is struck rather than by a [`crate::game::hits::Release`]:
+//! A blow lands as it is struck rather than as a [`crate::game::hits::Deed`]:
 //! the next swing, and the attack's result, depend on what the blow did to its
 //! victim.
 //!
@@ -25,7 +25,7 @@ use crate::game::characters::{Condition, Fell, Practise};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::hits::Damaged;
-use crate::game::hits::definitions::{Blow, Definitions};
+use crate::game::hits::definitions::{Blow, Rows};
 use crate::game::hits::effects::{self, Log, Rules};
 use crate::game::items::{Items, Missile, Spend, Weapon};
 use crate::game::magic::Strength;
@@ -65,8 +65,7 @@ fn deal(
     (log, laying): (&mut Log, &mut Laying),
 ) -> attack::Dealt {
     let Ok(mut fighter) = fighters.get_mut(victim) else { return attack::Dealt::default() };
-    let strike =
-        effects::Strike { definition: rules.definitions.blow(), strength, blow: Some(blow) };
+    let strike = effects::Strike { rows: Rows::Blow, strength, blow: Some(blow) };
     effects::land(&strike, &mut fighter.body, rules, rng, log, laying);
     attack::dealt(log.effects.drain(..))
 }
@@ -127,20 +126,15 @@ pub(super) fn strike(
     party: Single<(&mut Formation, &PartyRoster)>,
     held: Items,
     obstacles: WorldObstacles,
-    (content, definitions, difficulty): (Res<Catalogs>, Res<Definitions>, Res<Difficulty>),
+    (content, difficulty): (Res<Catalogs>, Res<Difficulty>),
     mut rng: ResMut<GameRng>,
     (mut news, mut damaged): (MessageWriter<CombatNews>, MessageWriter<Damaged>),
 ) {
     let Strike { actor, fights } = *strike;
     let (fight, mut round, mut pause, combatants) = fight.into_inner();
     let (mut formation, roster) = party.into_inner();
-    let rules = Rules {
-        content: &content,
-        definitions: &definitions,
-        difficulty: *difficulty,
-        fight: Some(fight),
-        held: &held,
-    };
+    let rules =
+        Rules { content: &content, difficulty: *difficulty, fight: Some(fight), held: &held };
     let setting =
         Setting { difficulty: *difficulty, running: round.pace == Some(super::PartyPace::Run) };
     let combatants = combatants.map_or(&[][..], Combatants::entities);

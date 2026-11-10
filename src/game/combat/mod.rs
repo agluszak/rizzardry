@@ -52,6 +52,8 @@ impl Plugin for CombatPlugin {
             .add_observer(round_end::rest_the_idle)
             .add_observer(round_end::cool_specials)
             .add_observer(round_end::pulse_clouds)
+            .add_observer(round_end::count_pulse)
+            .add_observer(count_cast)
             .add_observer(round_end::judge_victory)
             .add_observer(round_end::look_again)
             .add_observer(round_end::end_round)
@@ -62,6 +64,7 @@ impl Plugin for CombatPlugin {
             .add_observer(turn::take_turn)
             .add_observer(swings::strike)
             .add_observer(turn::breathe)
+            .add_observer(turn::tell_breath)
             .add_observer(turn::guard)
             .add_observer(turn::retreat)
             .add_observer(turn::hold)
@@ -450,7 +453,7 @@ pub fn begin_round(
         Option<(&Character, &crate::game::party::Order)>,
     )>,
     settings: Res<CombatSettings>,
-    in_flight: Query<(), With<crate::game::hits::Flight>>,
+    in_flight: Query<(), With<crate::game::hits::Deed>>,
     moving: Query<(), With<approach::CombatMove>>,
     mut starts: MessageReader<StartRound>,
     mut moves: MessageReader<CyclePartyMove>,
@@ -523,7 +526,7 @@ fn next_moment(
     places: crate::game::actors::Places,
     laid: crate::game::actors::Laid,
     turns: Query<&Turn>,
-    in_flight: Query<(), With<crate::game::hits::Flight>>,
+    in_flight: Query<(), With<crate::game::hits::Deed>>,
     moving: Query<(), With<approach::CombatMove>>,
     mut news: MessageWriter<CombatNews>,
 ) {
@@ -600,4 +603,15 @@ pub(crate) fn participants<'a>(
     combatants: &'a [Entity],
 ) -> impl Iterator<Item = Entity> + 'a {
     combatants.iter().copied().chain(roster.iter().filter(|_| combatants.is_empty()))
+}
+
+/// A spell that goes off in a fight counts as an attack, keeping the fight
+/// going.
+fn count_cast(
+    _: On<Add<crate::game::magic::landed::Spell>>,
+    mut rounds: Query<&mut Round, With<Battle>>,
+) {
+    if let Ok(mut round) = rounds.single_mut() {
+        round.attacked(true);
+    }
 }

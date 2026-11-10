@@ -10,10 +10,11 @@ use crate::content::species::{
 use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
 use crate::game::actors::{Enchantment, Laid, Laying};
 use crate::game::characters::{Gender, Profession, Race};
-use crate::game::hits::definitions::Definitions;
+use crate::game::hits::definitions::Rows;
 use crate::game::hits::effects::Strike;
-use crate::game::hits::{self, Act, Deed, Effect, Release};
+use crate::game::hits::{self, Deed, Effect};
 use crate::game::magic::casting::{Cast, MagicChoice, MagicNews, Source, learned_chance};
+use crate::game::magic::landed::Magical;
 use crate::game::magic::may::Refusal;
 use crate::game::magic::reach::Aim;
 use crate::game::magic::roll::Pace;
@@ -84,7 +85,6 @@ fn app() -> (App, Entity, Entity) {
     let definition =
         world.resource_mut::<Assets<LevelDefinition>>().add(LevelDefinition::default());
     world.spawn(Level::test(definition));
-    world.run_system_cached(hits::definitions::define).unwrap();
     world.flush();
     (app, party, member)
 }
@@ -153,16 +153,13 @@ fn anti_magic_drains_once_and_then_dispels_the_party() {
         ))
         .id();
     lay(world, party, SpellId::MAGIC_SCREEN, 10, 0);
-    let definition = world.resource::<Definitions>().spell(SpellId::ANTI_MAGIC).unwrap();
+    let rows = Rows::Spell(SpellId::ANTI_MAGIC);
     let strength = Strength { power: 1, against: 1, boost: 0 };
-    world.trigger(Release {
-        deed: Deed::new(Act::Fight, Strike { definition, strength, blow: None }),
-        victims: vec![(member, None), (second, None)],
-    });
+    world.spawn((Deed::at(Strike { rows, strength, blow: None }, [member, second]), Magical));
     world.flush();
     assert!(!is_laid(world, party, SpellId::MAGIC_SCREEN));
-    let news: Vec<_> = world.resource_mut::<Messages<CombatNews>>().drain().collect();
-    let [CombatNews::Effects(effects)] = news.as_slice() else { panic!("{news:?}") };
+    let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
+    let [MagicNews::Landed { effects }] = news.as_slice() else { panic!("{news:?}") };
     let drained = effects.iter().filter(|e| matches!(e, Effect::Drained { .. })).count();
     assert_eq!(drained, 2, "each pool is drained once, not once per body reached");
 }
@@ -228,16 +225,12 @@ fn missile_arrival_settles_defeat_before_any_actor_can_start() {
         waited: false,
     };
     world.entity_mut(actor).insert(turn);
-    let definition = world.resource::<Definitions>().pulse(SpellId::FIRESTORM).unwrap();
+    let rows = Rows::Pulse(SpellId::FIRESTORM);
     let strength = Strength { power: 1, against: 100, boost: 0 };
-    world.trigger(Release {
-        deed: Deed::new(Act::Fight, Strike { definition, strength, blow: None }),
-        victims: vec![(member, Some(1.0))],
-    });
+    world.spawn(Deed::flying(Strike { rows, strength, blow: None }, [(member, Some(1.0))]));
     let before = world.get::<Vitals>(member).unwrap().health.current;
-    // Released this step, it flies for the next two.
+    // A second's flight is two steps of half a second.
     world.resource_mut::<Time>().advance_by(std::time::Duration::from_millis(500));
-    world.run_schedule(FixedUpdate);
     world.run_schedule(FixedUpdate);
     assert_eq!(world.get::<Vitals>(member).unwrap().health.current, before);
     world.run_schedule(FixedUpdate);
@@ -327,7 +320,7 @@ fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
         "{news:?}"
     );
     assert_eq!(
-        world.query::<&hits::Flight>().iter(world).count(),
+        world.query::<&hits::Deed>().iter(world).count(),
         1,
         "a missile flies to its victim"
     );
@@ -338,7 +331,7 @@ fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
     world.run_schedule(FixedUpdate);
     let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
     assert!(
-        matches!(news.as_slice(), [MagicNews::Landed { caster, spell: SpellId::ENERGY_BLAST, .. }] if *caster == member),
+        matches!(news.as_slice(), [MagicNews::Landed { effects }] if !effects.is_empty()),
         "{news:?}"
     );
 }
@@ -462,7 +455,6 @@ fn deadly_order(world: &mut World, member: Entity, foe: Entity) -> Ordered {
         LearnedSpells([SpellId::HEAL_WOUNDS, SpellId::ENERGY_BLAST].into()),
         magic::SpellPoints::default(),
     ));
-    world.run_system_cached(hits::definitions::define).unwrap();
     Ordered(Action::Magic(MagicChoice {
         source: Source::Spell { spell: SpellId::ENERGY_BLAST, power: 1 },
         aim: Aim::Body(foe),
@@ -633,7 +625,6 @@ fn teach(world: &mut World, member: Entity, skill: u32, spells: &[SpellId]) {
     world
         .entity_mut(member)
         .insert((LearnedSpells(spells.iter().copied().collect()), magic::SpellPoints::default()));
-    world.run_system_cached(hits::definitions::define).unwrap();
     magic::test_set_points(world, member, Realm::Divine, 100);
 }
 
@@ -743,7 +734,7 @@ fn a_monsters_cast_tires_it() {
     let source = Source::Innate { spell: SpellId::HEAL_WOUNDS, power: 2, budget: 100, level: 5 };
     let choice = (SpellId::HEAL_WOUNDS, MagicChoice { source, aim: Aim::Body(caster) });
     let news = cast_in(world, caster, choice);
-    assert!(matches!(news.as_slice(), [MagicNews::Done(_)]), "{news:?}");
+    assert!(matches!(news.first(), Some(MagicNews::Done(_))), "{news:?}");
     assert_eq!(world.get::<Vitals>(caster).unwrap().stamina.current, 100 - 3);
 }
 

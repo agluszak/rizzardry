@@ -1,44 +1,21 @@
 //! Special attacks, a breath or a gaze or a call: what each kind does is a
-//! row of `assets/tables/special_attacks.ron`, which
-//! [`super::definitions`] turns into effects.
+//! row of `assets/tables/special_attacks.ron`.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use serde::Deserialize;
 
-use crate::content::characters::Realm;
+use super::definitions::EffectSpec;
 use crate::content::species::SpecialAttackKind;
-use crate::game::characters::Condition;
-
-/// What one of a special attack's effects does to a victim.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-pub enum SpecialEffect {
-    /// A condition, for rounds rolled by its strength.
-    Inflict(Condition),
-    /// Damage.
-    Harm,
-    /// Spell points: a member's realm six times over, a monster's budget
-    /// by a sixth.
-    Drain,
-    /// Stamina.
-    Tire,
-    /// Damage, resisted unless its row says otherwise.
-    Wound,
-}
 
 /// What a kind of special attack does: its row in the table.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct SpecialRow {
-    /// The realm victims resist it by; a summoning strikes nobody and has
-    /// none.
-    pub realm: Option<Realm>,
-    /// What it does to each victim: the first is escaped one time in ten,
-    /// the second one in two.
-    pub effects: Vec<SpecialEffect>,
-    /// Resistance does not cut its wound.
-    pub unresisted: bool,
+    /// What it does to each body it lands on; a summoning strikes nobody
+    /// and has none.
+    pub effects: Vec<EffectSpec>,
     /// A silence stops it.
     pub silenced: bool,
     /// The species it calls a group of, rather than striking.
