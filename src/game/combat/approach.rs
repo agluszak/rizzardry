@@ -61,7 +61,8 @@ pub(super) fn needs_approach(
 }
 
 /// A body's move this round, and whether it is a charge.
-pub(super) struct MoveBudget {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MoveBudget {
     pub metres: f32,
     pub charge: bool,
 }

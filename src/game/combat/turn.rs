@@ -72,6 +72,12 @@ impl Turn {
         self.when = None;
         self.attacks = EnumMap::default();
     }
+
+    /// Nothing is left to strike with in a slot (a launcher out of shots):
+    /// it has no attacks left this round.
+    pub fn run_out(&mut self, slot: WeaponSlot) {
+        self.attacks[slot] = 0;
+    }
 }
 
 /// What a member was ordered to do this round, accepted as the round
@@ -192,6 +198,13 @@ pub struct Guarding(pub Entity);
 pub struct Interceptions {
     pub taken: u32,
     pub allowed: u32,
+}
+
+impl Interceptions {
+    /// A blow taken in its ward's place.
+    pub fn take(&mut self) {
+        self.taken += 1;
+    }
 }
 
 /// A monster's guards this round, in the order they took it up, which also
