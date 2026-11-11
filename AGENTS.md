@@ -5,7 +5,8 @@ program translated into Rust.
 
 [docs/design.md](docs/design.md) is the design rulebook; read it before
 touching `src/game`. [docs/rules/](docs/rules/) holds the game's rules as they
-have been worked out, and [docs/plan.md](docs/plan.md) the rewrite's slices.
+have been worked out, [docs/plan.md](docs/plan.md) the rewrite's slices, and
+[docs/survey.md](docs/survey.md) what of the original is not here yet.
 [README.md](README.md) says how to run the game. This file is about how to
 work here.
 
