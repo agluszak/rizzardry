@@ -67,6 +67,7 @@ fn app() -> (App, Entity, Entity) {
             modes: AttackMode::Swing.into(),
             damage: Dice { count: 1, sides: 1, base: 0 },
             effects: default(),
+            sound_class: None,
         }],
         ..default()
     };

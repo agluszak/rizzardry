@@ -80,28 +80,34 @@ fn sampling() -> PointSampleDistance3d {
     }
 }
 
-/// How far one would walk from one point to another over a navigation
-/// mesh, if there is a way at all.
-pub fn walking_distance(archipelago: &Archipelago3d, from: Vec3, to: Vec3) -> Option<f32> {
+/// The way one would walk from one point to another over a navigation
+/// mesh, as the points it passes, the first and last included; none if
+/// there is no way.
+pub fn walking_path(archipelago: &Archipelago3d, from: Vec3, to: Vec3) -> Option<Vec<Vec3>> {
     let start = archipelago.sample_point(from, &sampling()).ok()?;
     let end = archipelago.sample_point(to, &sampling()).ok()?;
     let costs = std::collections::HashMap::new();
     let steps = archipelago
         .find_path(&start, &end, &costs, bevy_landmass::PermittedAnimationLinks::All)
         .ok()?;
-    let mut at = from;
-    let mut walked = 0.0;
+    let mut points = vec![from];
     for step in steps {
-        let (reach, then) = match step {
-            bevy_landmass::PathStep::Waypoint(point) => (point, point),
+        match step {
+            bevy_landmass::PathStep::Waypoint(point) => points.push(point),
             bevy_landmass::PathStep::AnimationLink { start_point, end_point, .. } => {
-                (start_point, end_point)
+                points.extend([start_point, end_point]);
             }
-        };
-        walked += at.distance(reach) + reach.distance(then);
-        at = then;
+        }
     }
-    Some(walked + at.distance(to))
+    points.push(to);
+    Some(points)
+}
+
+/// How far one would walk from one point to another over a navigation
+/// mesh, if there is a way at all.
+pub fn walking_distance(archipelago: &Archipelago3d, from: Vec3, to: Vec3) -> Option<f32> {
+    let points = walking_path(archipelago, from, to)?;
+    Some(points.windows(2).map(|pair| pair[0].distance(pair[1])).sum())
 }
 
 impl LevelNavigation {

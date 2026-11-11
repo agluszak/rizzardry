@@ -2,6 +2,7 @@
 
 pub mod characters;
 pub mod factions;
+pub mod hit_sounds;
 pub mod items;
 pub mod level;
 pub mod levels;

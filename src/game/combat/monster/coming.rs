@@ -91,7 +91,9 @@ pub struct Entered {
 /// can act on it; into a running fight it comes when a member sees the party
 /// and its leader is in reach of it: within its longest reach and a stride,
 /// 65 m at the least, both as the crow flies and by the way it would walk
-/// (`walks`, the leader and the metres). A neutral group joins only a running fight it stands
+/// (`walks`, the leader and the metres), or when one of its members the
+/// party can see, not of a kind that keeps hidden, stands within extreme
+/// reach (50 m) of it (`MonsterGroupHasRenderableMember`). A neutral group joins only a running fight it stands
 /// with, turning hostile as it does if its kind has a radius. A friendly
 /// group never comes in.
 pub fn comes_in(
@@ -115,9 +117,15 @@ pub fn comes_in(
             sight.party_gap(leader.entity) <= reach && walks(leader.entity, reach)
         })
     };
+    let hidden = |m: Entity| sight.minds.get(m).is_ok_and(|mind| mind.temper.0.camouflaged);
+    let in_sight_near = || {
+        fighters.iter().any(|&m| {
+            sight.in_party_view(m) && !hidden(m) && sight.party_gap(m) <= Reach::Extreme.metres()
+        })
+    };
     let enters = match if turns { Stance::Hostile } else { stance } {
         Stance::Hostile if provoked => true,
-        Stance::Hostile if fight_running => sees() && leader_in_reach(),
+        Stance::Hostile if fight_running => (sees() && leader_in_reach()) || in_sight_near(),
         Stance::Hostile => sees() && fighters.iter().any(|&m| acts_on_party(sight, m, content)),
         Stance::Neutral if fight_running => stands_with(sight, fighters, hostiles),
         _ => false,

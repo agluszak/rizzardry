@@ -217,6 +217,8 @@ pub struct MonsterAttack {
     pub damage: Dice,
     /// What its blows may do besides damage.
     pub effects: AttackEffects,
+    /// How it sounds striking (a row of the hit-sound table), if at all.
+    pub sound_class: Option<u8>,
 }
 
 impl MonsterAttack {
@@ -320,6 +322,9 @@ pub struct Species {
     /// Authored disposition (retail `hostility_radius`): hostile on sight,
     /// neutral, or neutral until the party comes within this many metres.
     pub disposition: Disposition,
+    /// What it is made of, for the sound of a blow on it (a column of the
+    /// hit-sound table, 0 to 11).
+    pub material: u8,
     /// Retail faction (0 is unaligned); only unaligned species use the
     /// hostility radius.
     pub faction: i32,

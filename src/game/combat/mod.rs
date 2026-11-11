@@ -310,6 +310,18 @@ pub enum CombatNews {
         swings: u32,
         surprise: attack::Surprise,
     },
+    /// A member swings a weapon of this sound class.
+    Swung {
+        sound_class: Option<u8>,
+    },
+    /// A blow gets through to a body, at a place of it (for a member, head,
+    /// body, legs, hands or feet in that order), by an arm of this sound
+    /// class.
+    Struck {
+        victim: Entity,
+        place: usize,
+        sound_class: Option<u8>,
+    },
     /// A swing goes astray onto someone else (retail
     /// `AnnounceAccidentalStrike`).
     Fumble {

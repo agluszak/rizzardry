@@ -576,15 +576,17 @@ lines are in `src/game/`.
    point a metre of reach left, unless it has a louder one in mind; its
    Sonic Boom and Alarm are heard too, 50 m and 30 m more a point of
    power, where they are aimed (`assets/tables/noises.ron`). Its
-   members walk to a noise within one and a half times its reach (250 m at
-   most) and otherwise turn to it, and forget it once the leader is within
-   3 m. A round of fighting is a noise too, 100 m about the party, for
+   members walk to a noise if their leader has a way there over the navmesh
+   shorter than the noise's reach, 50 m more for each step of the way that
+   passes through a closed door, looked for no farther than one and a half
+   times that reach and 250 m (`TestNoiseLineOfSight`, `NoiseHearingMargin`);
+   otherwise they turn to it. They forget it once the leader is within 3 m. A round of fighting is a noise too, 100 m about the party, for
    every group not in the fight that is within two of its moves of it; the
    original brings a group that hears it
    straight into the fight if it could walk there in its move, where here
-   it walks toward it and joins by the fight's own rule. Not there: the
-   two-region penalty on how
-   far a noise is walked to, the 30-tick wait. One at a fifth of its health
+   it walks toward it and joins by the fight's own rule. Not there: after reaching a
+   noise the original waits 30 of its thinking ticks, a rate it ties to its
+   frame rate. One at a fifth of its health
    or less shadows the party instead of charging: it follows, keeping within
    twice the far clip of it (`MonsterLinkToStartupNavigator`). Resting turns and retiring an
    encounter that cannot patrol are there ([scripts.md](scripts.md)).
@@ -594,12 +596,13 @@ lines are in `src/game/`.
    seconds" (`DoMonsterRTAI`), and a group here remembers when it last saw
    the party for that. Coming into a fight reads "now" alone
    (`MonsterGroupCanEngage` through `MonsterHasVisibleTarget`), as here.
-7. *Done, in part:* a hostile group joins a running fight only if its
+7. *Done:* a hostile group joins a running fight only if its
    leader is within reach of the party both as the crow flies and by the way
-   it would walk over its navmesh (`FindNavigatorPathDistance`). Not here:
-   the original also lets a hostile group with a member on screen within
-   50 m join (`MonsterGroupHasRenderableMember`); gameplay here does not know
-   what is on screen.
+   it would walk over its navmesh (`FindNavigatorPathDistance`), or if one of
+   its members the party can see stands within extreme reach (50 m) of it
+   (`MonsterGroupHasRenderableMember`, which despite its name asks whether
+   the party sees the member, not the screen). A kind that keeps hidden is
+   not counted; the original counts it once the party has detected it.
 8. *Done:* a lured monster in a fight walks toward the lure at half its
    stride, haste and slowness aside, in place of its action (interrupt 11,
    after fear and before Turncoat).

@@ -708,6 +708,42 @@ greater initiative, and the main hand on a tie. (retail `AssignCombatPhases`)
 An order is accepted when the round begins (see [round](round.md)); a member who
 no longer holds a weapon they were accepted with loses that attack.
 
+### How a blow sounds
+
+A member's weapon is heard as an attack begins: the swing sound of its sound
+class, or a fist's (class 9) when the hand is empty (retail
+`MakePCAttackSound`). Each blow that gets through armour is heard where it
+lands: the sound the original's table (`HitSounds.txt`) gives for the
+arm's sound class against what is struck there is made of. A monster is
+struck in its species' own material; a member in the material of what is
+worn at the place struck (head, body, legs, hands, feet), or in material 0
+when nothing is. A class the table has no sound for takes the first class's;
+one past the table, a plain hit (`GetMaterialImpactSound`). A monster's
+swing is not heard; a missile's hit uses its launcher's class, not the
+missile's own.
+
+### What the party says in a fight
+
+A member still standing and awake, wounded below half their health, cries
+out a moment and a half later; below a fifth, says they are going down
+(retail `QueueDamageReactionEvents`). When a member dies another, at random
+among those who can speak, reacts three seconds later: to a man's death, a
+woman's, or, if the dead was one of the first two in the order, by an
+event of its own and from past those two (`QueuePartyDeathReaction`). As a
+round begins after members fell in the last, the last one standing speaks,
+or someone does if more than one fell (`QueueLastSurvivorEvent`,
+`QueueTurnReactionEvent`). Presentation's own random numbers choose who
+speaks. A member speaks as a condition becomes their worst (each condition
+its own line, or one of a few; another member speaks for one gone
+missing) and as one lifts: raised, back, fully recovered, or better while
+something remains (`QueueConditionChangeReaction`,
+`QueueConditionClearedReaction`). After any wound one of three remarks
+follows, unless the same is already waiting for that member; one that
+comes while someone is speaking is dropped. Wounds taken while the party
+camps are not remarked on (retail's `fSurprisePossible`, set as camping
+begins). Not here: the quiet the original keeps during Al-Sedexus's capture
+and after some scripted changes of condition.
+
 ## 8. Where member and monster differ
 
 - **Arm figures**: a member's from their sheet and gear (section 4); a monster's from

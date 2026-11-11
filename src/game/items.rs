@@ -158,6 +158,8 @@ pub struct Weapon {
     pub initiative: i32,
     /// Swings it adds to each attack.
     pub extra_swings: i32,
+    /// How it sounds swung and striking, if at all.
+    pub sound_class: Option<u8>,
     pub strength: Strength,
     /// An attack with it is one swing, whatever the wielder's speed.
     pub single_swing: bool,
@@ -479,6 +481,7 @@ fn weapon(definition: &ItemDefinition) -> Option<Weapon> {
         to_hit: definition.hit_bonus,
         initiative: definition.damage_bonus,
         extra_swings: definition.extra_swings,
+        sound_class: definition.sound_class,
         strength,
         single_swing: row.is_some_and(|row| row.single_swing),
         sling: row.is_some_and(|row| row.sling),

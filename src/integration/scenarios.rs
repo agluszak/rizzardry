@@ -205,3 +205,151 @@ fn a_monster_has_a_walk_to_the_party() {
         );
     }
 }
+
+/// Marten's Bluff's arrow trap shoots along each launcher's facing: a party
+/// stood in front of one is struck.
+#[test]
+#[ignore = "requires a retail installation"]
+fn the_arrow_trap_strikes_a_party_in_its_way() {
+    use crate::content::level::LevelDefinition;
+    use crate::game::characters::Vitals;
+    use crate::game::party::body::PartyBody;
+    use crate::game::party::roster::PartyRoster;
+    use crate::game::world::triggers::activate;
+    use avian3d::prelude::Position;
+    let mut app = game(&["--continuous"]);
+    app.world_mut().write_message(Travel { entrance: "MR201".into() });
+    wait_for_level(&mut app, "levels/marten/marten2.pvl");
+    for _ in 0..64 {
+        app.update();
+    }
+    let world = app.world_mut();
+    let handle = world.query::<&Level>().iter(world).next().unwrap().definition.clone();
+    let definition = world.resource::<Assets<LevelDefinition>>().get(&handle).unwrap();
+    let (start, aim) =
+        (definition.spot("Arrowlauncher1").unwrap(), definition.aim("Arrowlauncher1").unwrap());
+    let eye = start + *aim * 6.0;
+    let mut party = world.query::<(&mut PartyBody, &mut Position, &mut Transform)>();
+    let (mut body, mut position, mut transform) = party.single_mut(world).unwrap();
+    body.stand(&mut position, &mut transform, eye, 0.0);
+    let health = |world: &mut World| -> u32 {
+        let roster: Vec<Entity> =
+            world.query::<&PartyRoster>().single(world).unwrap().iter().collect();
+        roster.iter().filter_map(|&m| world.get::<Vitals>(m)).map(|v| v.health.current).sum()
+    };
+    let before = health(app.world_mut());
+    let trap = device(app.world_mut(), "Arrowtraptrigger");
+    for _ in 0..8 {
+        activate(app.world_mut(), trap, false);
+        app.update();
+    }
+    assert!(health(app.world_mut()) < before, "the party stood in the arrows' way was struck");
+}
+
+/// Arnika's first lift, called, goes through its turn one part after the
+/// other: the first call opens its gate above, the next shuts it, sends the
+/// lift down and opens the gate below.
+#[test]
+#[ignore = "requires a retail installation"]
+fn an_arnika_lift_goes_through_its_turn() {
+    use crate::game::world::triggers::{LevelState, activate};
+    let mut app = game(&["--continuous"]);
+    app.world_mut().write_message(Travel { entrance: "ARN01".into() });
+    wait_for_level(&mut app, "levels/arnika/arnika2.pvl");
+    for _ in 0..64 {
+        app.update();
+    }
+    let state = |world: &mut World| {
+        let mut levels = world.query::<&LevelState>();
+        levels.iter(world).next().map_or(0, |state| state.value(&"El01State".into()))
+    };
+    assert_eq!(state(app.world_mut()), 1, "the lift waits above, its gate shut");
+    let call = device(app.world_mut(), "El1-TopButtons");
+    activate(app.world_mut(), call, false);
+    step_until(&mut app, "the gate above opening", |w| state(w) == 3);
+    // The button is pressed again once it has come back up.
+    step_until(&mut app, "the button coming back", |w| {
+        w.get::<crate::game::world::props::PropMotion>(call).is_none_or(|m| m.frame == m.target)
+    });
+    activate(app.world_mut(), call, false);
+    step_until(&mut app, "the lift down with the gate below open", |w| state(w) == 7);
+}
+
+/// The crusher under Marten's Bluff closes its plates on what stands between
+/// them: a monster there is pushed clear or dies, and the crusher is still
+/// again once they have stopped.
+#[test]
+#[ignore = "requires a retail installation"]
+fn the_crusher_closes_on_what_stands_between_its_plates() {
+    use crate::game::characters::Vitals;
+    use crate::game::world::triggers::{LevelState, activate};
+    use avian3d::prelude::{ColliderAabb, Position};
+    let mut app = game(&["--continuous"]);
+    app.world_mut().write_message(Travel { entrance: "MR201".into() });
+    wait_for_level(&mut app, "levels/marten/marten2.pvl");
+    for _ in 0..64 {
+        app.update();
+    }
+    let crusher = |world: &mut World| {
+        let mut levels = world.query::<&LevelState>();
+        levels.iter(world).next().map_or(0, |state| state.value(&"MonsterCrusher".into()))
+    };
+    let bounds = |world: &mut World, device: Entity| {
+        let children: Vec<Entity> = world.get::<Children>(device).unwrap().iter().collect();
+        children
+            .iter()
+            .filter_map(|&part| world.get::<ColliderAabb>(part).map(|b| (b.min, b.max)))
+            .reduce(|(lo, hi), (min, max)| (lo.min(min), hi.max(max)))
+            .unwrap()
+    };
+    let (low, high) =
+        (device(app.world_mut(), "Squisher-3"), device(app.world_mut(), "Squisher-4"));
+    let (lower, upper) = (bounds(app.world_mut(), low), bounds(app.world_mut(), high));
+    // A monster of the level stood between the plates.
+    let between = Vec3::new(
+        (lower.1.x + upper.0.x) / 2.0,
+        (lower.0.y.max(upper.0.y) + lower.1.y.min(upper.1.y)) / 2.0,
+        (lower.0.z.max(upper.0.z) + lower.1.z.min(upper.1.z)) / 2.0,
+    );
+    let world = app.world_mut();
+    let victim = world.query_filtered::<Entity, With<Monster>>().iter(world).next().unwrap();
+    world.get_mut::<Position>(victim).unwrap().0 = between;
+    let controls = device(app.world_mut(), "SquisherControls");
+    activate(app.world_mut(), controls, false);
+    step_until(&mut app, "the crusher closing", |w| crusher(w) == 1);
+    step_until(&mut app, "the plates stopping", |w| crusher(w) == 0);
+    let world = app.world_mut();
+    let at = world.get::<Position>(victim).map(|p| p.0);
+    let dead = world.get::<Vitals>(victim).is_none_or(|v| v.is_dead());
+    let pushed = at.is_some_and(|at| at.x != between.x);
+    assert!(dead || pushed, "the monster between the plates was neither crushed nor pushed");
+}
+
+/// The game ends as the story says: once the party has joined the Savant,
+/// the congratulation that closes the game ends it with his ending, and the
+/// party can do nothing more.
+#[test]
+#[ignore = "requires a retail installation"]
+fn the_game_ends_with_the_ending_the_story_chose() {
+    use crate::game::data::Catalogs;
+    use crate::game::npcs::scenes::{Ended, Ending};
+    use crate::game::npcs::story::{FactSet, StoryFacts};
+    let mut app = game(&["--continuous"]);
+    step_until(&mut app, "the Monastery becoming active", |w| playing(w).is_some());
+    let world = app.world_mut();
+    let id = |world: &World, symbol: &str| {
+        let facts = &world.resource::<Catalogs>().facts;
+        facts.0.iter().find(|fact| fact.symbol == symbol).unwrap().id
+    };
+    let (joined, congratulated) =
+        (id(world, "FACT_ENDGAME_JOIN_SAVANT"), id(world, "FACT_ENDGAME_QUE_CONGRAT_TWO"));
+    world.resource_scope(|world, mut story: Mut<StoryFacts>| {
+        let catalog = &world.resource::<Catalogs>().facts;
+        story.set(joined, 1, catalog, "");
+        story.set(congratulated, 1, catalog, "");
+    });
+    world.trigger(FactSet { fact: congratulated, value: 1 });
+    step_until(&mut app, "the game ending", |w| w.contains_resource::<Ended>());
+    assert_eq!(*app.world().resource::<Ended>(), Ended(Ending::Savant));
+    assert!(!crate::game::freedom::free_in(app.world_mut()), "the party can do nothing more");
+}

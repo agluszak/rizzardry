@@ -53,6 +53,7 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
                     chances: EnumMap::from_array(std::array::from_fn(|i| attack[5 + i] as u32)),
                     strength: attack[0x1b] as u32,
                 },
+                sound_class: u8::try_from(attack[0x1c] as i8).ok().filter(|&class| class < 28),
             })
         })
         .collect::<Result<_, DecodeError>>()?;
@@ -123,6 +124,7 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
             _ => Disposition::Hostile,
         },
         faction: i32_at(record, 0x25f)?,
+        material: u8::try_from(i32_at(record, 0x263)?).ok().filter(|&m| m < 12).unwrap_or(0),
         combat_move_range: f32_at(record, 0x1ba)?.max(0.0),
         pronouns: record[0xcc].min(3),
         group_size: dice_at(record, 0xc1)?,

@@ -679,6 +679,8 @@ fn post_combat(
                 notices.log.selected = 1;
                 vec![string(COMBAT)]
             }
+            // Heard, not told.
+            CombatNews::Swung { .. } | CombatNews::Struck { .. } => vec![],
             CombatNews::Breathed { actor } => {
                 names.name(*actor).map(|name| vec![format!("{name} breathes!")]).unwrap_or_default()
             }

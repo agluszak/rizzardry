@@ -6,7 +6,7 @@ use super::{
 use crate::{
     content::{npcs::DialogueScript, ui::TextTable},
     game::{
-        characters::{Character, Condition, Vitals},
+        characters::{Character, Condition, Gender, Vitals},
         npcs::{ActorId, NpcAssets},
         party::roster::PartyRoster,
         world::{
@@ -178,6 +178,238 @@ pub(super) fn queue_dialogue_remarks(
             },
             ChildOf(*level),
         ));
+    }
+}
+
+/// Below this percent of their health a wounded member says they are going
+/// down (retail `g_portrait_low_health_percent`), and below half they may cry
+/// out (`g_flee_hp_fraction`).
+const GOING_DOWN_BELOW: u32 = 20;
+const CRIES_OUT_BELOW: u32 = 50;
+
+/// What a member says: going down (3), crying out (2 or 28); another
+/// reacting to a man's death (18), a woman's (19), or one of the first two
+/// in the order (20); a lone survivor (22); someone after more than one
+/// death (21).
+const GOING_DOWN: u16 = 3;
+const CRIES_OUT: [u16; 2] = [2, 28];
+const MOURNS: [u16; 3] = [18, 19, 20];
+const LAST_STANDING: u16 = 22;
+/// What a wounded member may say after, one of three at random (retail
+/// special events 7, 17 and 18 past the first remapped one).
+const AFTER_A_WOUND: [u16; 3] = [507, 517, 518];
+const AFTER_LOSSES: u16 = 21;
+
+/// Members who fell since the round began.
+#[derive(Resource, Default)]
+pub(super) struct Fallen(u32);
+
+fn say(
+    commands: &mut Commands,
+    level: Entity,
+    (actor, voice): (Entity, Voice),
+    event: u16,
+    after: f32,
+) {
+    commands.spawn((
+        PendingRemark {
+            actor,
+            requested: event,
+            voice,
+            delay: Timer::from_seconds(after, TimerMode::Once),
+            audio: None,
+            dialogue: false,
+        },
+        ChildOf(level),
+    ));
+}
+
+/// The party reacts to its wounds and its dead (retail
+/// `QueueDamageReactionEvents`, `QueuePartyDeathReaction`): a member still
+/// standing below a fifth of their health says they are going down, below
+/// half may cry out, a moment and a half later; and whatever the wound, one
+/// of three remarks follows, unless the same is already waiting for them.
+/// When one dies, another member reacts three seconds later, one past the
+/// first two of the order if it was one of those.
+pub(super) fn react_to_wounds(
+    mut commands: Commands,
+    mut damaged: MessageReader<crate::game::hits::Damaged>,
+    speakers: Speakers,
+    order: Single<&PartyRoster>,
+    members: Query<(&Character, &Vitals)>,
+    level: Single<Entity, With<Level>>,
+    mut fallen: ResMut<Fallen>,
+    waiting: Query<&PendingRemark>,
+    camp: Option<Res<crate::game::camp::Camp>>,
+    mut rng: ResMut<PresentationRng>,
+) {
+    for hurt in damaged.read() {
+        let Some(seat) = order.get_index_of(&hurt.body) else { continue };
+        let Ok((character, vitals)) = members.get(hurt.body) else { continue };
+        if hurt.died {
+            fallen.0 += 1;
+            let first_two = seat < 2;
+            let event = if first_two {
+                MOURNS[2]
+            } else if character.gender == Gender::Male {
+                MOURNS[0]
+            } else {
+                MOURNS[1]
+            };
+            let mut others: Vec<(Entity, Voice)> = speakers
+                .eligible(Some(hurt.body))
+                .into_iter()
+                .filter(|(other, _)| {
+                    !first_two || order.get_index_of(other).is_some_and(|s| s >= 2)
+                })
+                .collect();
+            if !others.is_empty() {
+                let mourner = others.swap_remove(rng.0.random_range(0..others.len()));
+                say(&mut commands, *level, mourner, event, 3.0);
+            }
+            continue;
+        }
+        // Wounds taken in camp, which the original keeps as its "surprise",
+        // are not remarked on.
+        if camp.is_some() {
+            continue;
+        }
+        let asleep = vitals.conditions.has(Condition::Asleep)
+            || vitals.conditions.has(Condition::Unconscious);
+        let percent = vitals.health.current * 100 / vitals.health.max.max(1);
+        let event = if asleep || percent >= CRIES_OUT_BELOW {
+            None
+        } else if percent < GOING_DOWN_BELOW {
+            Some(GOING_DOWN)
+        } else {
+            Some(CRIES_OUT[rng.0.random_range(0..2)])
+        };
+        let voice = speakers.eligible(None).into_iter().find(|(actor, _)| *actor == hurt.body);
+        if let (Some(event), Some(voice)) = (event, voice.clone()) {
+            say(&mut commands, *level, voice, event, 1.5);
+        }
+        let after = AFTER_A_WOUND[rng.0.random_range(0..AFTER_A_WOUND.len())];
+        let already = waiting.iter().any(|w| w.actor == hurt.body && w.requested == after);
+        if let (false, Some(voice)) = (already, voice) {
+            say(&mut commands, *level, voice, after, 0.0);
+        }
+    }
+}
+
+/// As a round begins after members fell in the last (retail
+/// `QueueLastSurvivorEvent`, `QueueTurnReactionEvent`): the last one standing
+/// speaks, or, when more than one fell, someone does.
+pub(super) fn react_to_losses(
+    _: On<crate::game::combat::RoundBegan>,
+    mut commands: Commands,
+    speakers: Speakers,
+    level: Single<Entity, With<Level>>,
+    mut fallen: ResMut<Fallen>,
+    mut rng: ResMut<PresentationRng>,
+) {
+    let fell = std::mem::take(&mut fallen.0);
+    if fell == 0 {
+        return;
+    }
+    let mut standing = speakers.eligible(None);
+    match standing.len() {
+        0 => {}
+        1 => say(&mut commands, *level, standing.remove(0), LAST_STANDING, 0.0),
+        _ if fell > 1 => {
+            let one = standing.swap_remove(rng.0.random_range(0..standing.len()));
+            say(&mut commands, *level, one, AFTER_LOSSES, 0.0);
+        }
+        _ => {}
+    }
+}
+
+/// What a member says as a condition becomes their worst (retail
+/// `QueueConditionChangeReaction`), if anything: one of several at random
+/// where the original picks.
+fn on_taking(condition: Condition) -> &'static [u16] {
+    use Condition::*;
+    match condition {
+        Slowed => &[515],
+        Silenced => &[510],
+        Irritated | Nauseated => &[502],
+        Diseased | Poisoned | Hexed | Infatuated => &[5, 6],
+        Blind => &[7],
+        Webbed | Paralyzed => &[9],
+        Afraid => &[501],
+        Insane => &[500],
+        Unconscious => &[508, 519, 520],
+        Drained | Turncoat | Asleep | Missing => &[],
+    }
+}
+
+/// What another member says when one goes missing.
+const ONE_MISSING: u16 = 40;
+/// What a member says once raised, once back or free of an infatuation,
+/// and once a condition lifts with nothing left or with something left
+/// (retail `QueueConditionClearedReaction`).
+const RAISED: u16 = 12;
+const BACK: u16 = 11;
+const RECOVERED: u16 = 0x55;
+const BETTER: u16 = 0x54;
+
+/// What each member's conditions were when last looked at, and whether they
+/// were alive.
+#[derive(Default)]
+pub(super) struct Afflictions(bevy::ecs::entity::EntityHashMap<(Vec<Condition>, bool)>);
+
+/// The party speaks of what takes hold of it and what lifts: as a condition
+/// becomes a member's worst, and as one lifts (retail
+/// `QueueConditionChangeReaction`, `QueueConditionClearedReaction`).
+pub(super) fn react_to_conditions(
+    mut commands: Commands,
+    members: Query<(Entity, &Vitals), Changed<Vitals>>,
+    speakers: Speakers,
+    order: Single<&PartyRoster>,
+    level: Single<Entity, With<Level>>,
+    mut known: Local<Afflictions>,
+    mut rng: ResMut<PresentationRng>,
+) {
+    for (member, vitals) in &members {
+        if !order.contains(&member) {
+            continue;
+        }
+        let now: Vec<Condition> = vitals.conditions.iter().map(|&(c, _)| c).collect();
+        let alive = !vitals.is_dead();
+        let Some((before, was_alive)) = known.0.insert(member, (now.clone(), alive)) else {
+            continue;
+        };
+        let voice = |who: Entity| speakers.eligible(None).into_iter().find(|(a, _)| *a == who);
+        let worst = vitals.conditions.worst();
+        let mut said = None;
+        if alive && !was_alive {
+            said = Some((member, RAISED));
+        } else if let Some(worst) = worst.filter(|w| !before.contains(w)) {
+            if worst == Condition::Missing {
+                let others = speakers.eligible(Some(member));
+                if !others.is_empty() {
+                    let one = &others[rng.0.random_range(0..others.len())];
+                    said = Some((one.0, ONE_MISSING));
+                }
+            } else {
+                let lines = on_taking(worst);
+                if !lines.is_empty() {
+                    said = Some((member, lines[rng.0.random_range(0..lines.len())]));
+                }
+            }
+        } else if let Some(&lifted) = before.iter().find(|c| !now.contains(c)) {
+            let line = match lifted {
+                Condition::Infatuated | Condition::Missing => Some(BACK),
+                Condition::Drained | Condition::Turncoat | Condition::Asleep => None,
+                _ if worst.is_none() => Some(RECOVERED),
+                _ => Some(BETTER),
+            };
+            said = line.map(|line| (member, line));
+        }
+        if let Some((speaker, event)) = said
+            && let Some(voice) = voice(speaker)
+        {
+            say(&mut commands, *level, voice, event, 0.0);
+        }
     }
 }
 

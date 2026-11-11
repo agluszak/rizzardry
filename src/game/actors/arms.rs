@@ -18,6 +18,9 @@ use crate::game::items::{
     Charges, Fit, Launcher, Missile, Protection, Strength, Weapon, Weight, partners,
 };
 
+/// The sound class of a blow with nothing in hand (retail's class 9).
+const FIST_SOUND: u8 = 9;
+
 /// What the rules of a hand read of the item in it.
 #[derive(QueryData)]
 pub struct Held {
@@ -200,6 +203,11 @@ impl<'a> Hands<'a> {
             extra_swings: match hand {
                 Hand::Weapon { weapon, .. } => weapon.extra_swings,
                 _ => 0,
+            },
+            // An empty hand sounds as a fist (retail `MakePCAttackSound`).
+            sound_class: match hand {
+                Hand::Weapon { weapon, .. } => weapon.sound_class,
+                _ => Some(FIST_SOUND),
             },
             ranged: hand.ranged(),
             loaded: hand.shot().map(|missile| missile.modes),

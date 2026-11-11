@@ -212,6 +212,10 @@ pub(super) fn strike(
     };
     let surprise = caught.surprise;
     news.write(CombatNews::Attack { attacker: actor, target, how, swings: swings.count, surprise });
+    // A member's weapon is heard swung (retail `MakePCAttackSound`).
+    if arm.word.is_none() {
+        news.write(CombatNews::Swung { sound_class: arm.sound_class });
+    }
 
     // The swings.
     let mut on = Attack { arm: &arm, mode, berserk: fights.berserk, surprise };
@@ -259,13 +263,25 @@ pub(super) fn strike(
         if let Some((roll, true, through)) = reached {
             hits += u32::from(!fumbled);
             let seen = fighters.as_readonly();
+            let mut landed = None;
             let blow = seen.get(actor).ok().zip(seen.get(victim).ok()).and_then(|(me, struck)| {
                 let place = attack::where_it_lands(&mut rng, &arm, &struck);
                 let by = attack::piercing_mode(&mut rng, mode, arm.loaded);
                 let sure = (roll, through);
-                attack::gets_through(&mut rng, &on, (place, by), sure, &me, &struck, setting)
-                    .then(|| attack::blow(&mut rng, &on, &me, &struck, setting, fumbled))
+                let through =
+                    attack::gets_through(&mut rng, &on, (place, by), sure, &me, &struck, setting);
+                landed = through.then_some(place);
+                through.then(|| attack::blow(&mut rng, &on, &me, &struck, setting, fumbled))
             });
+            // The blow is heard where it lands (retail `MakePCMeleeHitSound`,
+            // `MakeMonsterHitSound`).
+            if let Some(place) = landed {
+                news.write(CombatNews::Struck {
+                    victim,
+                    place: place.0,
+                    sound_class: arm.sound_class,
+                });
+            }
             if blow.is_some() {
                 practise(victim, Skill::IronSkin, &fighters, &mut commands);
             }

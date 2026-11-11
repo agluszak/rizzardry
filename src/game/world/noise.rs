@@ -43,6 +43,8 @@ pub struct Heard {
     pub reach: f32,
     /// How much of the noise's reach was left where it was heard.
     margin: f32,
+    /// Whether the way there is short enough to walk, once looked at.
+    walks: Option<bool>,
 }
 
 /// On a monster making for a noise.
@@ -89,8 +91,34 @@ pub(super) fn hear(
         {
             continue;
         }
-        commands.entity(group).insert(Heard { at: noise.at, reach: noise.reach, margin: left });
+        let heard = Heard { at: noise.at, reach: noise.reach, margin: left, walks: None };
+        commands.entity(group).insert(heard);
     }
+}
+
+/// What a closed door on the way to a noise adds to it (retail's 25000
+/// units a hop, `NoiseHearingMargin`).
+const DOOR_COST: f32 = 50.0;
+
+/// Whether the straight step from one point to another passes through a box.
+fn crosses(from: Vec3, to: Vec3, min: Vec3, max: Vec3) -> bool {
+    let way = to - from;
+    let (mut enter, mut leave) = (0.0_f32, 1.0_f32);
+    for axis in 0..3 {
+        if way[axis] == 0.0 {
+            if from[axis] < min[axis] || from[axis] > max[axis] {
+                return false;
+            }
+            continue;
+        }
+        let (a, b) = ((min[axis] - from[axis]) / way[axis], (max[axis] - from[axis]) / way[axis]);
+        enter = enter.max(a.min(b));
+        leave = leave.min(a.max(b));
+        if enter > leave {
+            return false;
+        }
+    }
+    true
 }
 
 /// A monster within this of a noise has been to it (retail's 1500 units).
@@ -98,20 +126,64 @@ const AT_THE_NOISE: f32 = 3.0;
 /// The farthest a noise is walked to (retail's 125000 units).
 const FARTHEST: f32 = 250.0;
 
-/// The members of a group that has heard a noise walk to it while it is
-/// near enough (one and a half times its reach, 250 m at most), and
-/// otherwise turn to it; once the leader has been to it, it is forgotten.
-/// Those fighting or charging do neither.
+/// The members of a group that has heard a noise walk to it if its leader
+/// has a way there shorter than the noise's reach, looked for no farther
+/// than one and a half times that reach and 250 m (retail
+/// `TestNoiseLineOfSight`, `NoiseHearingMargin`); otherwise they turn to it.
+/// Once the leader has been to it, it is forgotten. Those fighting or
+/// charging do neither.
 pub(super) fn investigate(
-    groups: Query<(Entity, &GroupMembers, Option<&Heard>), With<MonsterGroup>>,
+    mut groups: Query<(Entity, &GroupMembers, Option<&mut Heard>), With<MonsterGroup>>,
     mut walkers: Query<
         (&Position, &mut AgentTarget3d, Has<Investigating>),
         (With<Monster>, Without<Combatant>, Without<Charging>),
     >,
+    (navigation, archipelagos): (
+        Option<Single<&super::navigation::LevelNavigation>>,
+        Query<&bevy_landmass::Archipelago3d>,
+    ),
+    bodies: Query<&Monster>,
+    doors: Query<(&super::triggers::DoorState, &Children)>,
+    parts: Query<&avian3d::prelude::ColliderAabb>,
     sight: Sight,
     mut commands: Commands,
 ) {
-    for (group, members, heard) in &groups {
+    // The bounds of each closed door's prop.
+    let closed: Vec<(Vec3, Vec3)> = doors
+        .iter()
+        .filter(|(door, _)| !door.open)
+        .filter_map(|(_, children)| {
+            let boxes = children.iter().filter_map(|part| parts.get(part).ok());
+            boxes.map(|b| (b.min, b.max)).reduce(|(lo, hi), (min, max)| (lo.min(min), hi.max(max)))
+        })
+        .collect();
+    for (group, members, heard) in &mut groups {
+        // Whether the way to it is walked, decided once, by the leader.
+        let mut heard = heard;
+        if let (Some(heard), Some(leader)) = (heard.as_deref_mut(), members.iter().next())
+            && heard.walks.is_none()
+        {
+            let from = walkers.get(leader).map(|(at, ..)| at.0).unwrap_or(heard.at);
+            let archipelago = bodies.get(leader).ok().zip(navigation.as_deref()).and_then(
+                |(body, navigation)| {
+                    archipelagos.get(navigation.archipelago_for(body.body.radius)).ok()
+                },
+            );
+            let way = archipelago.and_then(|archipelago| {
+                super::navigation::walking_path(archipelago, from, heard.at)
+            });
+            let looked = (heard.reach * 1.5).min(FARTHEST);
+            heard.walks = Some(way.is_some_and(|way| {
+                let walked: f32 = way.windows(2).map(|pair| pair[0].distance(pair[1])).sum();
+                // Each step of the way through a closed door counts 50 m more.
+                let through = |pair: &[Vec3]| {
+                    closed.iter().any(|&(min, max)| crosses(pair[0], pair[1], min, max))
+                };
+                let doors = way.windows(2).filter(|pair| through(pair)).count();
+                walked <= looked && walked + DOOR_COST * (doors as f32) < heard.reach
+            }));
+        }
+        let heard = heard.as_deref().copied();
         let leader_at = members.iter().next().and_then(|leader| walkers.get(leader).ok());
         let been = heard
             .zip(leader_at)
@@ -120,11 +192,12 @@ pub(super) fn investigate(
             commands.entity(group).remove::<Heard>();
         }
         let heard = heard.filter(|_| !been);
+        let walks = heard.is_some_and(|heard| heard.walks == Some(true));
         for member in members.iter() {
             let Ok((at, mut target, investigating)) = walkers.get_mut(member) else { continue };
             let fit = sight.monster(member).is_some_and(|(body, _)| body.vitals.can_fight());
             match heard.filter(|_| fit) {
-                Some(heard) if at.0.distance(heard.at) < (heard.reach * 1.5).min(FARTHEST) => {
+                Some(heard) if walks => {
                     *target = AgentTarget3d::Point(heard.at);
                     if !investigating {
                         commands.entity(member).insert(Investigating);

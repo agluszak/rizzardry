@@ -188,6 +188,8 @@ pub struct Arm {
     pub word: Option<(AttackWord, bool)>,
     /// Where its blows land on a member, by its species' chances.
     pub lands_on_party: Option<EnumMap<BodyPart, u8>>,
+    /// How its blows sound (a row of the hit-sound table), if at all.
+    pub sound_class: Option<u8>,
 }
 
 impl Arm {
@@ -534,5 +536,6 @@ fn monster_arm(
         ambushes: kind.kind == MonsterKind::Rogue && swung.reach <= Reach::Touch,
         word: Some((swung.word, swung.named())),
         lands_on_party: Some(kind.hits_on_party),
+        sound_class: swung.sound_class,
     }
 }
