@@ -14,7 +14,7 @@ use crate::content::spells::{MAX_POWER, SpellDefinition, SpellId, Spellbook, Tar
 use crate::game::characters::Condition;
 use crate::game::data::Catalogs;
 use crate::game::hits::effects::BodyReadOnlyItem;
-use crate::game::magic::reach::Aim;
+use crate::game::magic::reach::{Aim, blast_radius, in_cone};
 use crate::game::magic::roll::spell_failure;
 use crate::game::rng::{GameRng, weighted};
 use crate::game::world::hostility::Stance;
@@ -246,7 +246,21 @@ pub fn casts(
         return None;
     }
     let chance = if reaches_party(own.attacks, gap) { u32::from(mind.casting.chance) } else { 100 };
-    let usable = usable(sight, own, mind, content, fray);
+    // A cone or a blast that would take in a monster standing with neither
+    // side is not cast there, judged at a power it might cast at (retail
+    // `SpellAreaHitsNeutralMonster`, which picks its own).
+    let usable: Vec<_> = usable(sight, own, mind, content, fray)
+        .into_iter()
+        .map(|(weight, spell, aims)| {
+            let at = power(rng, budget, spell);
+            let aims: Vec<Aim> = aims
+                .into_iter()
+                .filter(|&aim| spares_neutrals(sight, own, spell, aim, at))
+                .collect();
+            (weight, spell, aims)
+        })
+        .filter(|(.., aims)| !aims.is_empty())
+        .collect();
     if usable.is_empty() || rng.below(100) >= chance {
         return None;
     }
@@ -256,6 +270,47 @@ pub fn casts(
     let (_, spell, aims) = &usable[which];
     let aim = aims[rng.below(aims.len() as u32) as usize];
     Some(Cast { spell: spell.id, aim, power: power(rng, budget, spell) })
+}
+
+/// Whether a cone or a blast at an aim, at a power, leaves alone every
+/// monster that stands with neither side: a blast within its radius of where
+/// it lands, a cone within the spell's reach and its arc.
+fn spares_neutrals(
+    sight: &Sight,
+    own: &BodyReadOnlyItem,
+    spell: &SpellDefinition,
+    aim: Aim,
+    power: u32,
+) -> bool {
+    let Aim::Body(target) = aim else { return true };
+    let caster = own.entity;
+    let target_at = sight.places.of(target);
+    let eye = sight.places.of(caster).eye;
+    let neutrals = sight.bodies.iter().filter(|body| {
+        body.entity != caster
+            && !body.member
+            && !body.vitals.is_dead()
+            && sight.side(body.entity) == Some(Stance::Neutral)
+    });
+    let mut neutrals = neutrals.map(|body| (body.entity, sight.places.of(body.entity)));
+    let hits = match spell.targeting {
+        Targeting::Radius => {
+            let radius = blast_radius(spell, power);
+            neutrals.any(|(_, at)| {
+                at.centre.distance(target_at.feet) - at.radius <= radius
+                    && sight.obstacles.clear(target_at.feet, at.centre)
+            })
+        }
+        Targeting::Cone => {
+            let toward = target_at.feet - eye;
+            neutrals.any(|(body, at)| {
+                sight.places.gap(caster, body) <= spell.reach.metres()
+                    && in_cone(toward, at.feet - eye)
+            })
+        }
+        _ => false,
+    };
+    !hits
 }
 
 /// How hard it casts (retail `ChooseMonsterSpellPowerLevel`): up from 1 while

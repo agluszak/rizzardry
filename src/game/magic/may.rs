@@ -90,6 +90,8 @@ pub struct Moment {
     pub camped: bool,
     /// A conversation waits for the party's word.
     pub spoken_to: bool,
+    /// The party is in the air or standing on a prop.
+    pub unsteady: bool,
 }
 
 /// Whether a utility spell waits for another moment: some are not cast in a
@@ -98,7 +100,11 @@ pub struct Moment {
 /// waiting for the party's word.
 fn waits(spell: &SpellDefinition, moment: Moment) -> bool {
     match spell.facts.working {
-        Some(Working::Identify | Working::SetPortal | Working::ReturnToPortal) => {
+        // A portal is not set where the party is not on steady ground.
+        Some(Working::SetPortal) => {
+            moment.context == UseContext::Combat || moment.occupied || moment.unsteady
+        }
+        Some(Working::Identify | Working::ReturnToPortal) => {
             moment.context == UseContext::Combat || moment.occupied
         }
         Some(Working::Lure) => moment.occupied || moment.camped,
@@ -211,8 +217,13 @@ mod tests {
         SpellCatalog::new(vec![SpellDefinition { id, ..Default::default() }]).0.remove(0)
     }
 
-    const FREE: Moment =
-        Moment { context: UseContext::World, occupied: false, camped: false, spoken_to: false };
+    const FREE: Moment = Moment {
+        context: UseContext::World,
+        occupied: false,
+        camped: false,
+        spoken_to: false,
+        unsteady: false,
+    };
 
     /// Identify and the portals wait out a fight and a busy party; a lure
     /// waits out a camp as well; Summon Elemental is for a fight only; Charm

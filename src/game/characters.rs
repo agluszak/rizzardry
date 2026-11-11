@@ -38,6 +38,9 @@ pub enum Condition {
     Asleep,
     Paralyzed,
     Unconscious,
+    /// Taken from the party, which keeps their place: they do nothing and
+    /// nothing reaches them until they are back.
+    Missing,
 }
 
 /// A value by a level: full past twenty levels, 60% at none and two points
@@ -120,7 +123,7 @@ impl Conditions {
     /// Lift every condition but infatuation, which only its own cure ends
     /// (retail `Die`, `RemoveAllConditionsFromParty`).
     pub fn lift_all(&mut self) {
-        self.0.retain(|&(c, _)| c == Condition::Infatuated);
+        self.0.retain(|&(c, _)| matches!(c, Condition::Infatuated | Condition::Missing));
     }
 
     /// Count timed conditions down by aging ticks, lifting those that run

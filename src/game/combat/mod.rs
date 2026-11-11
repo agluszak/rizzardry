@@ -287,6 +287,10 @@ fn opening_surprise<'a>(
     None
 }
 
+/// A round of the fight has begun.
+#[derive(Event, Clone, Copy, Debug)]
+pub struct RoundBegan;
+
 /// What the fight tells the player.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum CombatNews {

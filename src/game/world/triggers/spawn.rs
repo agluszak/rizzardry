@@ -3,15 +3,14 @@
 use bevy::prelude::*;
 
 use super::{
-    Device, DialState, DoorState, FountainState, LevelState, LightActivation, PositionedDevices,
-    TriggerState,
+    Device, DeviceNames, DialState, DoorState, FountainState, LevelState, LightActivation,
+    PositionedDevices, TriggerState,
 };
 use crate::content::items::LootTables;
 use crate::content::level::{LevelDefinition, TriggerAction};
 use crate::game::world::containers::Container;
 use crate::game::world::interaction::Guarded;
 use crate::game::world::level::LevelOwned;
-use crate::game::world::scripts::LevelScript;
 
 /// Allocate identities before linking devices or building prop children.
 pub fn spawn_devices(
@@ -19,7 +18,6 @@ pub fn spawn_devices(
     level: Entity,
     geometry: &LevelDefinition,
     props: &[Entity],
-    script: LevelScript,
     tables: &LootTables,
 ) -> Vec<Entity> {
     super::super::particles::spawn_emitters(commands, level, geometry);
@@ -40,7 +38,7 @@ pub fn spawn_devices(
     for definition in &geometry.triggers {
         if let (Some((name, _)), Some(value)) = (&definition.state_change, definition.initial_state)
         {
-            state.variables.entry(name.clone()).or_insert(value);
+            state.variables.entry(name.clone()).or_insert(i32::from(value));
         }
     }
     for prop in &geometry.props {
@@ -50,7 +48,7 @@ pub fn spawn_devices(
             (&definition.initial.action, &definition.state_change)
         {
             for position in 0..prop.slots.len() {
-                state.variables.entry(name.numbered(position)).or_insert(position == 0);
+                state.variables.entry(name.numbered(position)).or_insert(i32::from(position == 0));
             }
         }
     }
@@ -100,7 +98,13 @@ pub fn spawn_devices(
             positioned.0.push(devices[index]);
         }
     }
-    commands.entity(level).insert((state, LightActivation::default(), positioned));
-    script.bind(commands, geometry, &devices);
+    let names = geometry.triggers.iter().zip(&devices);
+    let names = names.map(|(definition, &device)| (definition.name.to_ascii_lowercase(), device));
+    commands.entity(level).insert((
+        state,
+        LightActivation::default(),
+        positioned,
+        DeviceNames(names.collect()),
+    ));
     devices
 }

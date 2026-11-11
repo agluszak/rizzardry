@@ -71,9 +71,18 @@ pub enum ScriptStep {
     Trigger(String),
     /// Wait so many seconds.
     Delay(f32),
-    /// An animation, a sound, the camera or a death played out: told to
-    /// the screen as the command was written.
-    Show(String),
+    /// An animation played once.
+    Cycle {
+        name: String,
+        waits: bool,
+    },
+    /// A sound heard from where it stands: its file, and how loud of 127.
+    Sound {
+        path: String,
+        volume: f32,
+    },
+    /// The party turns to look at it.
+    LookHere,
     /// It is gone from the level.
     Vanish,
     /// One of the story's named happenings.
@@ -208,7 +217,16 @@ impl MonsterScript {
             "TRIGGER" => ScriptStep::Trigger(argument?.to_owned()),
             // Retail scales the number by a thousandth.
             "DELAY" => ScriptStep::Delay(argument?.parse::<f32>().ok()? / 1000.0),
-            "CYCLE" | "PLAY" | "LOOKHERE" | "DIE" => ScriptStep::Show(words.join(" ")),
+            "CYCLE" => ScriptStep::Cycle { name: argument?.to_ascii_uppercase(), waits },
+            "DIE" => ScriptStep::Cycle { name: "DIE".into(), waits: false },
+            // Retail reads a volume, then how far it carries, then the file,
+            // whose name may have spaces.
+            "PLAY" => {
+                let volume = argument?.parse::<f32>().ok()?;
+                let path = words.get(3..)?.join(" ").replace('\\', "/").to_lowercase();
+                ScriptStep::Sound { path, volume }
+            }
+            "LOOKHERE" => ScriptStep::LookHere,
             "DISAPPEAR" | "FADEOUT" => ScriptStep::Vanish,
             "DOACTION" => ScriptStep::DoAction(argument?.to_ascii_uppercase()),
             "END" => ScriptStep::End,

@@ -10,12 +10,13 @@ pub mod interaction;
 pub mod items;
 pub mod level;
 pub mod navigation;
+pub mod noise;
 pub mod obstacles;
 pub mod particles;
 pub mod perception;
 pub mod population;
 pub mod props;
-pub mod scripts;
+pub mod pursuit;
 pub mod search;
 pub mod triggers;
 
@@ -103,6 +104,7 @@ impl Plugin for WorldPlugin {
             .add_observer(level::set_aside)
             .add_observer(level::wake)
             .add_observer(encounters::age_encounters)
+            .add_observer(encounters::retire)
             .add_observer(search::suspend_search)
             .add_observer(search::resume_search)
             .add_systems(
@@ -120,6 +122,7 @@ impl Plugin for WorldPlugin {
                         .before(GameplaySet::Combat),
                     particles::switch_off_spent.before(GameplaySet::LevelActivation),
                     population::give_birth.run_if(level::level_active).before(GameplaySet::Combat),
+                    population::come.run_if(level::level_active).before(GameplaySet::Combat),
                     search::toggle_search.run_if(level::level_active).after(level::activate_level),
                 ),
             )
@@ -139,12 +142,25 @@ impl Plugin for WorldPlugin {
             )
             // Sweeps follow gameplay time, however many steps a frame runs.
             .add_systems(FixedUpdate, search::search_pulse.run_if(level::level_active))
-            .add_message::<bidden::ScriptShow>()
             .add_observer(bidden::begin)
             .add_observer(bidden::jump)
+            .add_observer(bidden::played)
+            .add_observer(noise::hear)
+            .add_observer(noise::spells_are_heard)
+            .add_observer(noise::fights_are_heard)
             .add_systems(
                 FixedUpdate,
-                (bidden::run, bidden::face_party).chain().run_if(level::level_active),
+                (
+                    bidden::run,
+                    bidden::face_party,
+                    bidden::look_about,
+                    noise::footsteps,
+                    pursuit::charge,
+                    noise::investigate,
+                    bidden::keep_orders,
+                )
+                    .chain()
+                    .run_if(level::level_active),
             );
     }
 }

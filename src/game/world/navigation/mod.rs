@@ -68,6 +68,42 @@ pub struct LevelNavigation {
     pub archipelagos: Vec<Entity>,
 }
 
+/// How far from a point its navmesh is looked for: actor origins float
+/// above the ground, so mostly beneath.
+fn sampling() -> PointSampleDistance3d {
+    PointSampleDistance3d {
+        horizontal_distance: 1.0,
+        distance_above: 0.5,
+        distance_below: FLOAT_HEIGHT + 2.0,
+        vertical_preference_ratio: 2.0,
+        animation_link_max_vertical_distance: 1.0,
+    }
+}
+
+/// How far one would walk from one point to another over a navigation
+/// mesh, if there is a way at all.
+pub fn walking_distance(archipelago: &Archipelago3d, from: Vec3, to: Vec3) -> Option<f32> {
+    let start = archipelago.sample_point(from, &sampling()).ok()?;
+    let end = archipelago.sample_point(to, &sampling()).ok()?;
+    let costs = std::collections::HashMap::new();
+    let steps = archipelago
+        .find_path(&start, &end, &costs, bevy_landmass::PermittedAnimationLinks::All)
+        .ok()?;
+    let mut at = from;
+    let mut walked = 0.0;
+    for step in steps {
+        let (reach, then) = match step {
+            bevy_landmass::PathStep::Waypoint(point) => (point, point),
+            bevy_landmass::PathStep::AnimationLink { start_point, end_point, .. } => {
+                (start_point, end_point)
+            }
+        };
+        walked += at.distance(reach) + reach.distance(then);
+        at = then;
+    }
+    Some(walked + at.distance(to))
+}
+
 impl LevelNavigation {
     /// The archipelago a walker of `radius` metres navigates in.
     pub fn archipelago_for(&self, radius: f32) -> Entity {
@@ -182,13 +218,7 @@ pub fn install(
         let radius = bake::SIZE_CLASSES[class];
         let mut options = ArchipelagoOptions::from_agent_radius(radius);
         // Actor origins float above the ground; sample the navmesh beneath.
-        options.point_sample_distance = PointSampleDistance3d {
-            horizontal_distance: 1.0,
-            distance_above: 0.5,
-            distance_below: FLOAT_HEIGHT + 2.0,
-            vertical_preference_ratio: 2.0,
-            animation_link_max_vertical_distance: 1.0,
-        };
+        options.point_sample_distance = sampling();
         let archipelago = commands
             .spawn((
                 Name::new(format!("Archipelago for {radius} m walkers")),

@@ -30,7 +30,7 @@ use crate::game::characters::Practise;
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::hits::definitions::Rows;
-use crate::game::hits::effects::{Body, Strike};
+use crate::game::hits::effects::{Body, BodyReadOnlyItem, Strike};
 use crate::game::hits::reach::{Field, Recipients};
 use crate::game::hits::{Deed, Effect};
 use crate::game::items::{Items, Spend};
@@ -78,6 +78,10 @@ pub struct MagicChoice {
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum MagicNews {
     Done(Report),
+    /// A blind caster's spell went astray.
+    Astray {
+        caster: Entity,
+    },
     /// What a deed of magic did, once all of it has landed.
     Landed {
         effects: Vec<Effect>,
@@ -96,6 +100,21 @@ pub struct Refused {
     #[event_target]
     pub caster: Entity,
     pub refusal: Refusal,
+}
+
+/// Whether a blind caster's aim strays: one time in five. A member with
+/// the Effective While Blind trait first escapes it at 50 scaled by
+/// profession level in a hundred.
+fn blind_aim_strays(body: &BodyReadOnlyItem, rng: &mut GameRng) -> bool {
+    use crate::content::characters::Trait;
+    if !body.vitals.conditions.has(crate::game::characters::Condition::Blind) {
+        return false;
+    }
+    let sees_anyway = body.character.is_some_and(|character| {
+        character.has_trait(Trait::EffectiveWhileBlind)
+            && rng.below(100) < character.scale_by_profession(50.0) as u32
+    });
+    !sees_anyway && rng.below(100) < 20
 }
 
 /// The caster is told their cast was refused.
@@ -244,7 +263,7 @@ pub fn cast(
                 .map(|marked| (Vec::new(), None, Some(marked))),
             None => aiming.victims().map(|reached| (reached.victims, reached.spot, None)),
         };
-        let (mut victims, spot, marked) = match aimed {
+        let (mut victims, mut spot, marked) = match aimed {
             Ok(aimed) => aimed,
             Err(refusal) => {
                 commands.trigger(Refused { caster, refusal });
@@ -281,6 +300,16 @@ pub fn cast(
         if let (Targeting::Radius, Some(centre)) = (targeting, spot) {
             victims = field.within(centre, centre, radius, Recipients::Opponents(side));
         }
+        // A member's spell aimed at the party also reaches the monsters on
+        // its side within the spell's radius of the party, widened by the
+        // party's own (retail `PopulateSpellTargetMarkers`).
+        if targeting == Targeting::Party && body.member && radius > 0.0 {
+            let at = places.of(caster);
+            let reach = radius + crate::game::party::body::RADIUS;
+            let own_side = Recipients::Opponents(side).reversed();
+            let allies = field.within(at.centre, at.eye, reach, own_side);
+            victims.extend(allies.into_iter().filter(|ally| !roster.contains(ally)));
+        }
         // The roll to cast.
         let on_oneself = choice.aim.body() == Some(caster);
         let (chance, quiet) = means.failure(spell, power, pace, on_oneself);
@@ -289,6 +318,26 @@ pub fn cast(
             && circumstances.underwater();
         let outcome = roll::outcome(&mut rng, chance, quiet, quenched, spell.can_backfire());
         let backfired = outcome == Outcome::Backfired;
+        // A blind caster's spell that came off may go astray, unless it is
+        // aimed at the caster, of the Mental realm, Rocket Blast or an
+        // automatic recast (retail `CheckSpellBackfire` and its caller).
+        let guarded = retry
+            || on_oneself
+            || spell.realm == Some(crate::content::characters::Realm::Mental)
+            || id == SpellId::ROCKET_BLAST;
+        if outcome == Outcome::Cast
+            && !guarded
+            && blind_aim_strays(&body, &mut rng)
+            && let Some(aim) = aiming.astray(&mut rng)
+            && let Ok(reached) = (reach::Aiming { aim, ..aiming }).victims()
+        {
+            victims = reached.victims;
+            spot = reached.spot;
+            if let (Targeting::Radius, Some(centre)) = (targeting, spot) {
+                victims = field.within(centre, centre, radius, Recipients::Opponents(side));
+            }
+            news.write(MagicNews::Astray { caster });
+        }
         let backfire = aiming.backfire(spot);
         // What a backfire is as strong as, judged before anything changes: as
         // strong as the one it comes from, but a utility spell is as strong as

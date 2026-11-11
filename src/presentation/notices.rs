@@ -371,6 +371,7 @@ fn magic_lines(
             vec![format!("{} {why}.", name(*caster))]
         }
         MagicNews::Landed { effects } => effects.iter().map(|&e| effect_line(e)).collect(),
+        MagicNews::Astray { caster } => vec![format!("{}'s spell goes astray!", name(*caster))],
         MagicNews::Done(report) => {
             let spell = &spells[report.spell].name;
             let mut lines = vec![match &report.item {
@@ -434,6 +435,7 @@ pub fn queue_notices() -> bevy::ecs::schedule::ScheduleConfigs<bevy::ecs::system
         post_remarks,
         post_magic,
         post_speech,
+        post_story,
         post_factions,
         post_trigger_effects,
         post_identified,
@@ -488,6 +490,16 @@ fn post_speech(
     }
 }
 
+fn post_story(
+    mut told: MessageReader<crate::game::npcs::story::StoryTold>,
+    strings: GameStrings,
+    mut notices: Notices,
+) {
+    for line in told.read() {
+        notices.post(strings.get(line.string));
+    }
+}
+
 fn post_factions(
     mut factions: MessageReader<FactionNews>,
     strings: GameStrings,
@@ -524,7 +536,6 @@ fn post_trigger_effects(
             }
             TriggerEffect::Sound { .. }
             | TriggerEffect::FountainUsed { .. }
-            | TriggerEffect::BellRang(_)
             | TriggerEffect::Shake { .. } => None,
         };
         if let Some(text) = text.filter(|t| !t.trim().is_empty()) {

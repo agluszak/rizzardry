@@ -57,18 +57,21 @@ do. What they set off is of a few kinds:
 
 A scene is played after whatever is being said.
 
-## 4. What this needs that the game does not have
+## 4. The party's own in the story
 
-Each is a prerequisite of some kind above and is built before it.
-
-- **Named triggers run from outside their level's script**, and switched off.
-- **A faction set to a band** rather than nudged.
-- **A merchant's stock added to later.**
-- **A person's presence in the world changed by the story**: marked, removed,
-  stood elsewhere, and what each marked person then does.
-- **Monster scripts** (`.msf`): the paths and poses a body is put through.
-  Most scenes are one of these on a named group.
-- **The endgame.**
+- **The one Al-Sedexus is offered.** The player picks a member. A woman is
+  refused while the party has anyone who is not one. A companion, or a
+  member not fit to act, cannot be offered. One of the party's own who
+  carries the three things she asks (items 0x1fd to 0x1ff) is chosen;
+  otherwise they are "not dressed". The chosen one is smitten with her,
+  for good, once the party is out of battle and outside the Rapax castle
+  and the Rift, unless the person who spares them stands in the level.
+- **Her capture.** Everyone living but the chosen one lies senseless while
+  the screen is dark, and wakes as it returns.
+- **Missing.** A member taken from the party keeps their place, does
+  nothing, and is back only when the story says so.
+- **The ending.** The first of the table's endings whose reading holds; the
+  party can do nothing more.
 
 ## How this is built
 
@@ -81,7 +84,5 @@ the fact's own name. No fact is named in game code.
 is where. Nothing stores a copy of what it would answer.
 
 **Setting a fact is an event.** What it sets off is carried out by the
-observer of each kind of consequence, which the table names. A fact whose
-consequences this game cannot yet carry out is refused before it is set, and
-the conversation that needs it says so; when every kind is built, that
-refusal and the conversation's check for it are deleted.
+observer of each kind of consequence, which the table names. Every fact can be read and set; one the
+game's records do not name reads as unset.

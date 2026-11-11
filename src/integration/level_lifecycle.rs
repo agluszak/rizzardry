@@ -121,7 +121,6 @@ fn test_level(app: &mut App, collision: CollisionMesh) -> Level {
         path: "levels/test/test.pvl".into(),
         definition: geometry,
         navmeshes: vec![],
-        script: default(),
         messages: None,
     }
 }

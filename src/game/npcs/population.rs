@@ -73,7 +73,11 @@ pub struct NpcPopulation<'w, 's> {
     dead: Query<'w, 's, (), With<crate::game::characters::Dead>>,
     assets: ResMut<'w, NpcAssets>,
     scripts: Res<'w, Assets<DialogueScript>>,
-    states: Query<'w, 's, (&'static Npc, Has<PartyMember>, Option<&'static NpcLocation>)>,
+    states: Query<
+        'w,
+        's,
+        (Has<Killed>, Has<Gone>, Has<PartyMember>, Option<&'static NpcLocation>, Has<Post>),
+    >,
     roster: Query<'w, 's, &'static PartyRoster>,
     characters: Query<'w, 's, &'static Character>,
     clock: Res<'w, GameClock>,
@@ -120,14 +124,22 @@ impl NpcPopulation<'_, '_> {
                 .map(|(i, _)| NpcId(i as u16)),
         );
         for id in ids {
+            let definition = &content.npcs[id];
             let handle = self.assets.scripts.entry(id).or_insert_with(|| {
-                server.load(crate::content::paths::retail(&content.npcs[id].script_path()))
+                server.load(crate::content::paths::retail(&definition.script_path(None)))
             });
             assert!(
                 !matches!(server.get_load_state(&*handle), Some(bevy::asset::LoadState::Failed(_))),
                 "NPC script failed to load"
             );
             ready &= self.scripts.contains(&*handle);
+            // The lines of one the story may rename are ready with their
+            // own.
+            if let Some(name) = story::alias_of(definition.kind) {
+                let path = crate::content::paths::retail(&definition.script_path(Some(name)));
+                let handle = self.assets.renamed.entry(id).or_insert_with(|| server.load(path));
+                ready &= self.scripts.contains(&*handle);
+            }
         }
         ready
     }
@@ -161,9 +173,12 @@ impl NpcPopulation<'_, '_> {
         if !placed.insert(actor) {
             return None;
         }
-        if let Ok((npc, member, location)) = self.states.get(actor)
-            && (npc.killed
-                || npc.gone
+        // One the story has stood somewhere stands there, not where a
+        // level placed them.
+        if let Ok((killed, gone, member, location, posted)) = self.states.get(actor)
+            && (killed
+                || posted
+                || gone
                 || self.dead.contains(actor)
                 || member
                 || location.is_some_and(|l| l.map != p.map))
@@ -214,6 +229,73 @@ pub(super) fn bind_triggers(
         if let Some((actor, _)) = named {
             commands.entity(actor).insert(NpcTrigger(owner.0));
             commands.entity(entity).insert(NpcSpeaker(actor));
+        }
+    }
+}
+
+/// Where the story has stood someone: a named spot of a level, in place of
+/// wherever the level placed them.
+#[derive(Component, Clone, Debug, PartialEq, Eq)]
+pub struct Post {
+    pub map: String,
+    pub spot: String,
+}
+
+/// One the story has greet the party, who was not there to do it: they do
+/// as they take their place.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct GreetsOnArrival;
+
+/// Someone the story has stood in the level the party is in takes their
+/// place there (retail `RestoreNpcMonster`): a body of the species that is
+/// theirs, at the spot named, once that body is loaded.
+pub(super) fn station(
+    posted: Query<
+        (Entity, &ActorId, &Post, Option<&NpcBodies>, Has<GreetsOnArrival>),
+        Without<PartyMember>,
+    >,
+    level: Single<(
+        Entity,
+        &crate::game::world::level::Level,
+        &crate::game::world::navigation::LevelNavigation,
+        &mut crate::game::world::population::MonsterBodies,
+    )>,
+    definitions: Res<Assets<crate::content::level::LevelDefinition>>,
+    (bodies, server): (Res<Assets<crate::content::monster::MonsterBody>>, Res<AssetServer>),
+    content: If<Res<Catalogs>>,
+    mut configs: ResMut<Assets<crate::game::world::navigation::WalkerMotionConfig>>,
+    mut rng: ResMut<GameRng>,
+    mut commands: Commands,
+) {
+    let (root, played, navigation, mut handles) = level.into_inner();
+    let Some(definition) = definitions.get(&played.definition) else { return };
+    for (actor, id, post, standing, greets) in &posted {
+        if post.map != played.path || standing.is_some_and(|bodies| !bodies.is_empty()) {
+            continue;
+        }
+        let species = content.species.0.iter().position(|kind| kind.npc == Some(id.0));
+        let (Some(species), Some(feet)) = (species, definition.spot(&post.spot)) else { continue };
+        let kind = &content.species.0[species];
+        let species = species as u32;
+        handles
+            .0
+            .entry(species)
+            .or_insert_with(|| server.load(crate::content::paths::monster(&kind.model)));
+        let Some(shape) = handles.get(species, &bodies) else { continue };
+        let kept = Newborn::rolled((-1, species, None), (feet, 0.0), (kind, shape), &mut rng);
+        let scaled = kept.monster.body;
+        let mut body = commands.spawn((NpcBody(actor), kept.monster, kept.vitals, kept.budget));
+        crate::game::world::population::embody(
+            &mut body,
+            root,
+            (feet, 0.0, scaled),
+            (None, kind),
+            (navigation, &mut configs),
+        );
+        commands.entity(actor).insert(NpcLocation { map: played.path.clone(), species });
+        if greets {
+            commands.entity(actor).remove::<GreetsOnArrival>();
+            commands.trigger(conversation::Begin { actor, quote: None, with_held: false });
         }
     }
 }

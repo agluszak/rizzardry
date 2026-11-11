@@ -1,0 +1,10 @@
+// The spells that are heard (retail `AlertMonsterGroupsToNoise` in the
+// spells' effects): by the spell's number, how far its noise carries in
+// metres, and how much farther for each point of the power it is cast at.
+// Only groups that stand against the party come to it.
+{
+    // Sonic Boom
+    30: (carries: 50.0, a_power: 30.0),
+    // Alarm
+    123: (carries: 50.0, a_power: 30.0),
+}

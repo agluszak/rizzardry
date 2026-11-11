@@ -9,6 +9,7 @@ mod acts;
 mod say;
 #[cfg(test)]
 mod tests;
+mod topics;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -16,8 +17,8 @@ use bevy::ecs::query::QueryData;
 use bevy::prelude::*;
 
 pub use self::acts::{
-    Answer, Ask, Begin, EditNotebook, Invite, Leave, NotebookEdit, Offer, OfferGold, Overheard,
-    Reply, Sway, approach_ready, quote_trade,
+    Answer, Ask, Attack, Begin, EditNotebook, Invite, Leave, NotebookEdit, Offer, OfferGold,
+    Overheard, Reply, Sway, approach_ready, quote_trade,
 };
 pub use self::say::Spoken;
 pub(crate) use self::say::{Continue, Script};
@@ -27,6 +28,10 @@ use super::trade::{self, TradeError};
 /// said is finished and nothing more is begun.
 #[derive(Component, Debug)]
 pub struct Closing;
+
+/// The party has taken its leave of a friend, who says farewell.
+#[derive(Component, Debug)]
+pub struct Parting;
 
 /// A question the person has put to the party; only an answer is taken
 /// while it stands.
@@ -38,15 +43,8 @@ pub enum Asked {
     Price { quote: u16, gold: u32, always: bool },
     /// Whether to give everything the party has.
     GiveAll { gold: u32 },
-}
-
-/// The person's script asks for something this game cannot do: nothing more
-/// is said, and the party can only leave.
-#[derive(Component, Clone, Debug, PartialEq)]
-pub struct Blocked {
-    pub quote: u16,
-    pub entry: usize,
-    pub reason: String,
+    /// Whether to turn on the person.
+    Attack,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -103,6 +101,10 @@ pub struct NpcSpeech {
 #[derive(Message, Clone, Copy, Debug)]
 pub struct PartyRemark {
     pub event: u16,
+    /// How many seconds from now.
+    pub after: f32,
+    /// The member who says it; anyone fit, if none is named.
+    pub speaker: Option<Entity>,
 }
 
 /// A line being spoken, until the screen says it has ended ([`Spoken`]).
@@ -179,29 +181,27 @@ pub struct Dialogue {
     script: &'static mut Script,
     pub speaking: Option<&'static Speaking>,
     pub asked: Option<&'static Asked>,
-    pub blocked: Option<&'static Blocked>,
     pub closing: Has<Closing>,
+    pub parting: Has<Parting>,
 }
 
 /// Nothing is being said, asked or still to come, and the party has not
 /// left: the party may act.
-fn idle(script: &Script, speaking: bool, asked: bool, blocked: bool, closing: bool) -> bool {
-    script.is_empty() && !speaking && !asked && !blocked && !closing
+fn idle(script: &Script, speaking: bool, asked: bool, closing: bool) -> bool {
+    script.is_empty() && !speaking && !asked && !closing
 }
 
 impl DialogueItem<'_, '_> {
     /// Whether the party may act now.
     pub fn idle(&self) -> bool {
-        let waits = (self.speaking.is_some(), self.asked.is_some(), self.blocked.is_some());
-        idle(&self.script, waits.0, waits.1, waits.2, self.closing)
+        idle(&self.script, self.speaking.is_some(), self.asked.is_some(), self.closing)
     }
 }
 
 impl DialogueReadOnlyItem<'_, '_> {
     /// Whether the party may act now.
     pub fn idle(&self) -> bool {
-        let waits = (self.speaking.is_some(), self.asked.is_some(), self.blocked.is_some());
-        idle(self.script, waits.0, waits.1, waits.2, self.closing)
+        idle(self.script, self.speaking.is_some(), self.asked.is_some(), self.closing)
     }
 }
 
@@ -214,7 +214,7 @@ pub fn install(app: &mut App) {
         .add_observer(say::interrupt)
         .add_observer(acts::begin)
         .add_observer(acts::overhear)
-        .add_observer(acts::ask)
+        .add_observer(topics::ask)
         .add_observer(acts::answer)
         .add_observer(acts::offer)
         .add_observer(acts::offer_gold)
@@ -222,5 +222,6 @@ pub fn install(app: &mut App) {
         .add_observer(acts::invite)
         .add_observer(acts::trade)
         .add_observer(acts::leave)
+        .add_observer(acts::attack)
         .add_observer(acts::edit_notebook);
 }

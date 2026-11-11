@@ -89,6 +89,7 @@ pub fn read_generators(
         default_chance,
         default_interval,
         generators,
+        tables: tables.to_vec(),
     }))
 }
 

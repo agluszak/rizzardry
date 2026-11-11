@@ -1,8 +1,10 @@
 //! NPC state outlives its current world binding; a binding is not its identity.
 pub mod access;
 pub mod conversation;
+pub mod devices;
 mod population;
 pub mod recruit;
+pub mod scenes;
 pub mod story;
 pub mod trade;
 use crate::content::npcs::{DialogueScript, NpcDefinition, NpcId};
@@ -34,12 +36,17 @@ pub struct Npc {
     pub trade_pool: u16,
     pub charmed_at: Option<u64>,
     pub small_talk_at: Option<u64>,
-    /// The body they stood in was killed: they stand nowhere again. One who
-    /// dies seated in the party is dead as any member is.
-    pub killed: bool,
-    /// The story has taken them from the world: they stand nowhere again.
-    pub gone: bool,
 }
+
+/// The body a person stood in was killed: they stand nowhere again. One who
+/// dies seated in the party is dead as any member is.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Killed;
+
+/// The story has taken a person from the world: they stand nowhere until it
+/// stands them somewhere.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Gone;
 impl Npc {
     fn from_definition(d: &NpcDefinition) -> Self {
         Self {
@@ -50,8 +57,6 @@ impl Npc {
             trade_pool: d.trade_pool,
             charmed_at: None,
             small_talk_at: None,
-            killed: false,
-            gone: false,
         }
     }
 }
@@ -69,7 +74,14 @@ pub struct NpcSpeaker(pub Entity);
 #[derive(Resource, Default)]
 pub struct NpcAssets {
     pub scripts: HashMap<NpcId, Handle<DialogueScript>>,
+    /// The lines of those the story may rename, under their other name.
+    pub renamed: HashMap<NpcId, Handle<DialogueScript>>,
 }
+
+/// The name the story has given someone in place of their own; their lines
+/// and voice are that name's.
+#[derive(Component, Clone, Debug, PartialEq, Eq)]
+pub struct Alias(pub String);
 /// On an NPC that is one of a level's placed monsters rather than someone
 /// with a name of their own: which placement of which level.
 #[derive(Component, Clone, Debug, PartialEq, Eq)]
@@ -94,11 +106,48 @@ impl Plugin for NpcPlugin {
                 (
                     population::initialize.before(crate::game::GameplaySet::LevelActivation),
                     population::bind_triggers.after(crate::game::GameplaySet::LevelActivation),
+                    devices::gate_devices.after(crate::game::GameplaySet::LevelActivation),
+                    devices::enter.after(crate::game::GameplaySet::LevelActivation),
+                    population::station
+                        .after(crate::game::GameplaySet::LevelActivation)
+                        .run_if(crate::game::world::level::level_active),
+                    story::marked_slip_away
+                        .after(crate::game::GameplaySet::LevelActivation)
+                        .run_if(crate::game::world::level::level_active)
+                        .run_if(any_with_component::<story::Marked>),
                 ),
             );
-        app.add_message::<story::StoryLook>()
+        app.add_message::<story::StoryTold>()
             .add_observer(story::follow)
             .add_observer(story::happens)
+            .add_observer(story::follows_cycle)
+            .add_observer(story::faded)
+            .add_observer(story::befalls_if)
+            .add_observer(devices::ask)
+            .add_observer(devices::watch)
+            .add_observer(devices::shoots)
+            .add_observer(devices::crush_begins)
+            .add_observer(devices::befalls_at_a_device)
+            .add_observer(scenes::picked)
+            .add_observer(scenes::befalls_the_party)
+            .add_observer(scenes::ends)
+            .add_systems(
+                FixedUpdate,
+                (
+                    scenes::pine,
+                    scenes::awaited,
+                    scenes::recur,
+                    scenes::parted,
+                    devices::still,
+                    devices::crush,
+                )
+                    .run_if(crate::game::world::level::level_active),
+            )
+            .add_systems(
+                FixedUpdate,
+                story::come_due.run_if(crate::game::world::level::level_active),
+            )
+            .add_observer(story::marked_leave)
             .add_observer(story::befalls_the_story)
             .add_observer(story::befalls_the_level)
             .add_observer(story::befalls_someone);

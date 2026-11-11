@@ -16,7 +16,7 @@ use super::population::Monster;
 use super::triggers::{self, Bidding};
 use crate::content::level::LevelDefinition;
 use crate::content::scripts::{
-    MonsterScript, ScriptCondition, ScriptPlace, ScriptStance, ScriptStep, StandingOrders,
+    Duty, MonsterScript, ScriptCondition, ScriptPlace, ScriptStance, ScriptStep, StandingOrders,
 };
 use crate::game::actors::Places;
 use crate::game::combat::Combatant;
@@ -42,10 +42,29 @@ pub struct Home(pub Vec3);
 #[derive(Component, Clone, Debug, PartialEq)]
 pub struct Orders(pub StandingOrders);
 
+/// A body plays an animation once, by its name among the body's cycles.
+/// The screen plays it and says when it is over ([`Played`]).
+#[derive(Component, Clone, Debug, PartialEq, Eq)]
+pub struct Cycle(pub String);
+
+/// An animation a body was playing has been played out.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Played {
+    #[event_target]
+    pub body: Entity,
+}
+
+/// An animation played out is over.
+pub(super) fn played(played: On<Played>, mut commands: Commands) {
+    commands.entity(played.body).try_remove::<Cycle>();
+}
+
 /// What a script waits for before it goes on.
 #[derive(Debug)]
 enum Wait {
     Arrival,
+    /// The animation it plays to be over.
+    Cycle,
     /// A conversation, or a line it said, to be over.
     Talk,
     Delay(Timer),
@@ -59,15 +78,6 @@ pub struct Running {
     at: usize,
     conditions: Vec<bool>,
     wait: Option<Wait>,
-}
-
-/// A script shows something that is for the screen alone: an animation, a
-/// sound, the camera turned to it, a death played out.
-#[derive(Message, Clone, Debug)]
-pub struct ScriptShow {
-    pub body: Entity,
-    /// The command as it was written.
-    pub command: String,
 }
 
 /// A script comes to one of the story's named happenings.
@@ -132,7 +142,10 @@ pub(super) fn begin(
 pub(super) fn run(
     mut commands: Commands,
     mut running: Query<
-        (Entity, &mut Running, &LevelOwned, Option<&GroupMember>, Option<&NpcBody>, Option<&Home>),
+        (
+            (Entity, &mut Running, &LevelOwned),
+            (Option<&GroupMember>, Option<&NpcBody>, Option<&Home>, Has<Cycle>),
+        ),
         (With<Monster>, Without<Combatant>),
     >,
     (scripts, definitions): (Res<Assets<MonsterScript>>, Res<Assets<LevelDefinition>>),
@@ -143,14 +156,14 @@ pub(super) fn run(
     mut walkers: Query<(&mut AgentTarget3d, &AgentState)>,
     time: Res<Time>,
     mut rng: ResMut<GameRng>,
-    mut shows: MessageWriter<ScriptShow>,
+    mut effects: MessageWriter<super::triggers::TriggerEffect>,
 ) {
     // The world waits while the party talks.
     if !conversations.is_empty() {
         return;
     }
     let party_at = places.of(*party);
-    for (body, mut running, owner, member, npc, home) in &mut running {
+    for ((body, mut running, owner), (member, npc, home, cycling)) in &mut running {
         let Some(script) = scripts.get(&running.script) else { continue };
         let here = places.of(body);
         match &mut running.wait {
@@ -159,6 +172,8 @@ pub(super) fn run(
                 Ok((mut target, _)) => *target = AgentTarget3d::None,
                 Err(_) => {}
             },
+            Some(Wait::Cycle) if cycling => continue,
+            Some(Wait::Cycle) => {}
             Some(Wait::Delay(timer)) => {
                 if !timer.tick(time.delta()).is_finished() {
                     continue;
@@ -238,7 +253,7 @@ pub(super) fn run(
                 }
                 ScriptStep::Talk { quote } => {
                     if let Some(&NpcBody(actor)) = npc {
-                        commands.trigger(Begin { actor, quote: *quote });
+                        commands.trigger(Begin { actor, quote: *quote, with_held: false });
                     }
                     running.wait = Some(Wait::Talk);
                     break;
@@ -281,8 +296,22 @@ pub(super) fn run(
                         Some(Wait::Delay(Timer::from_seconds(*seconds, TimerMode::Once)));
                     break;
                 }
-                ScriptStep::Show(command) => {
-                    shows.write(ScriptShow { body, command: command.clone() });
+                ScriptStep::Cycle { name, waits } => {
+                    commands.entity(body).insert(Cycle(name.clone()));
+                    if *waits {
+                        running.wait = Some(Wait::Cycle);
+                    }
+                    break;
+                }
+                ScriptStep::Sound { path, volume } => {
+                    effects.write(super::triggers::TriggerEffect::Sound {
+                        path: path.clone(),
+                        volume: volume / 127.0,
+                        at: Some(here.feet),
+                    });
+                }
+                ScriptStep::LookHere => {
+                    commands.trigger(crate::game::party::body::LookAt { at: here.feet });
                 }
                 ScriptStep::Vanish => {
                     commands.entity(body).despawn();
@@ -313,6 +342,178 @@ pub(super) fn face_party(
             && let Some(turned) = facing(here.feet, party_at.feet)
         {
             commands.entity(body).insert(Rotation(turned));
+        }
+    }
+}
+
+/// Which of its patrol's places a monster heads for.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct Beat(usize);
+
+/// A monster within this of a place of its orders is at it (retail's 1500
+/// units).
+const AT_ITS_PLACE: f32 = 3.0;
+
+/// A monster keeps its orders while it is not fighting (retail
+/// `ChooseMonsterRTAIMode`): a guard walks back to its post when it is far
+/// from it; a patrol over places heads for each in turn, or for another at
+/// random; a patrol of an area wanders within its range of home and turns
+/// back when beyond it. A monster not fit to act keeps none, and neither
+/// does one whose group has a member not fit.
+pub(super) fn keep_orders(
+    mut ordered: Query<
+        (
+            (Entity, &Orders, &LevelOwned, Option<&Home>, Option<&mut Beat>, Option<&Glances>),
+            (&mut AgentTarget3d, &AgentState, Option<&GroupMember>),
+        ),
+        (
+            With<Monster>,
+            Without<Combatant>,
+            Without<super::pursuit::Charging>,
+            Without<super::noise::Investigating>,
+        ),
+    >,
+    bodies: Query<(&crate::game::characters::Vitals, Option<&GroupMember>), With<Monster>>,
+    groups: Query<&super::identify::MonsterGroup>,
+    (levels, definitions): (Query<&Level>, Res<Assets<LevelDefinition>>),
+    (places, party): (Places, Single<Entity, With<PartyBody>>),
+    conversations: Query<(), With<Conversation>>,
+    mut rng: ResMut<GameRng>,
+    mut commands: Commands,
+) {
+    if !conversations.is_empty() {
+        return;
+    }
+    let unfit: Vec<Entity> = bodies
+        .iter()
+        .filter(|(vitals, _)| !vitals.can_fight())
+        .filter_map(|(_, member)| member.map(|member| member.0))
+        .collect();
+    for ((body, Orders(orders), owner, home, beat, glances), (mut target, state, member)) in
+        &mut ordered
+    {
+        // A resting monster stands.
+        if glances.is_some_and(|glances| glances.resting) {
+            *target = AgentTarget3d::None;
+            continue;
+        }
+        let Some(duty) = &orders.duty else { continue };
+        let fit = bodies.get(body).is_ok_and(|(vitals, _)| vitals.can_fight());
+        if !fit || member.is_some_and(|member| unfit.contains(&member.0)) {
+            continue;
+        }
+        let here = places.of(body).feet;
+        let spot = |place: &ScriptPlace| match place {
+            ScriptPlace::Party => Some(places.of(*party).feet),
+            ScriptPlace::Home => home.map(|home| home.0),
+            ScriptPlace::Spot(name) => levels
+                .get(owner.0)
+                .ok()
+                .and_then(|level| definitions.get(&level.definition))
+                .and_then(|definition| definition.spot(name)),
+        };
+        let heads = match duty {
+            Duty::Guard(place) => spot(place).filter(|post| post.distance(here) >= AT_ITS_PLACE),
+            Duty::PointPatrol { places: beat_places, random } => {
+                let Some(mut beat) = beat else {
+                    commands.entity(body).insert(Beat::default());
+                    continue;
+                };
+                let count = beat_places.len();
+                let at = beat_places.get(beat.0).and_then(spot);
+                if at.is_none_or(|at| at.distance(here) < AT_ITS_PLACE) {
+                    beat.0 = if !random {
+                        (beat.0 + 1) % count
+                    } else if count < 2 {
+                        0
+                    } else {
+                        // Another of them, each as likely.
+                        let other = rng.below(count as u32 - 1) as usize;
+                        if other >= beat.0 { other + 1 } else { other }
+                    };
+                }
+                beat_places.get(beat.0).and_then(spot)
+            }
+            // The original walks a path of its own choosing between the two
+            // lengths; here it makes for a point as far.
+            Duty::Patrol { distance, variation } => {
+                let Some(home) = home.map(|home| home.0) else { continue };
+                let aimed = !matches!(*target, AgentTarget3d::None);
+                // One that can find no way where its patrol sends it: an
+                // encounter leaves the level; another tries elsewhere
+                // (retail `HandleMonsterPatrolFailure`).
+                if aimed && matches!(*state, AgentState::NoPath | AgentState::TargetNotOnNavMesh) {
+                    let group = member.map(|member| member.0);
+                    let encounter = group.and_then(|group| groups.get(group).ok());
+                    if let (Some(group), Some(true)) =
+                        (group, encounter.map(|group| group.encounter.is_some()))
+                    {
+                        commands.trigger(super::encounters::Retire { group });
+                        continue;
+                    }
+                } else if aimed && *state != AgentState::ReachedTarget {
+                    continue;
+                }
+                if home.distance(here) > *variation {
+                    Some(home)
+                } else {
+                    let turn = rng.below(360) as f32 * std::f32::consts::PI / 180.0;
+                    let span = (*variation - *distance).max(0.0);
+                    let far = *distance + span * rng.below(1000) as f32 / 1000.0;
+                    Some(here + Quat::from_rotation_y(turn) * Vec3::NEG_Z * far)
+                }
+            }
+        };
+        *target = heads.map_or(AgentTarget3d::None, AgentTarget3d::Point);
+    }
+}
+
+/// A monster ordered to look about keeps its orders for some minutes, then
+/// rests for some, by turns (retail `LOOKABOUT`, kept in game minutes): each
+/// spell of either lasts from half to one and a half times what the order
+/// gives, the first its full length.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Glances {
+    resting: bool,
+    /// Game milliseconds at which the spell ends.
+    until: u64,
+    step: u32,
+}
+
+const A_MINUTE: u64 = 60_000;
+
+/// While resting a monster stands, and now and then turns to a heading at
+/// random: one time in twenty that it thinks, which it does every fifth
+/// step. (The original thinks every fifth frame; its frame rate is not
+/// fixed, so how often it turns is this game's own.)
+pub(super) fn look_about(
+    mut ordered: Query<
+        (Entity, &Orders, Option<&mut Glances>),
+        (With<Monster>, Without<Combatant>),
+    >,
+    clock: Res<crate::game::time::GameClock>,
+    mut rng: ResMut<GameRng>,
+    mut commands: Commands,
+) {
+    for (body, Orders(orders), glances) in &mut ordered {
+        let Some((often, lasts)) = orders.looks_about else { continue };
+        let Some(mut glances) = glances else {
+            let until = clock.ms + u64::from(often) * A_MINUTE;
+            commands.entity(body).insert(Glances { resting: false, until, step: 0 });
+            continue;
+        };
+        if clock.ms >= glances.until {
+            glances.resting = !glances.resting;
+            let length = if glances.resting { lasts } else { often };
+            let minutes = (rng.below(length.max(1)) + length / 2).max(1);
+            glances.until = clock.ms + u64::from(minutes) * A_MINUTE;
+        }
+        if glances.resting {
+            glances.step += 1;
+            if glances.step % 5 == 0 && rng.below(20) == 0 {
+                let heading = (rng.below(360) as f32).to_radians();
+                commands.entity(body).insert(Rotation(Quat::from_rotation_y(heading)));
+            }
         }
     }
 }

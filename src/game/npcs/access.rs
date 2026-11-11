@@ -81,6 +81,10 @@ impl NpcActors<'_, '_> {
     pub fn position(&self, body: Entity) -> Option<Vec3> {
         self.bodies.get(body).ok().map(|r| r.2.translation())
     }
+    /// Whether someone has a seat in the party.
+    pub fn in_party(&self, actor: Entity) -> bool {
+        self.records.get(actor).is_ok_and(|record| record.4)
+    }
     pub fn available(&self, actor: Entity) -> bool {
         let Ok((_, _, _, trigger, member)) = self.records.get(actor) else { return false };
         if member {

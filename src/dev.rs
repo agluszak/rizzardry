@@ -249,6 +249,10 @@ pub fn talk_to_npc(
     if speakers.active_body(actor).is_none() {
         return;
     }
-    commands.trigger(crate::game::npcs::conversation::Begin { actor, quote: None });
+    commands.trigger(crate::game::npcs::conversation::Begin {
+        actor,
+        quote: None,
+        with_held: false,
+    });
     *requested = true;
 }

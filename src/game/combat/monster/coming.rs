@@ -90,7 +90,8 @@ pub struct Entered {
 /// with no fight on, it opens one when a member sees the party and a member
 /// can act on it; into a running fight it comes when a member sees the party
 /// and its leader is in reach of it: within its longest reach and a stride,
-/// 65 m at the least. A neutral group joins only a running fight it stands
+/// 65 m at the least, both as the crow flies and by the way it would walk
+/// (`walks`, the leader and the metres). A neutral group joins only a running fight it stands
 /// with, turning hostile as it does if its kind has a radius. A friendly
 /// group never comes in.
 pub fn comes_in(
@@ -100,6 +101,7 @@ pub fn comes_in(
     (fight_running, provoked): (bool, bool),
     hostiles: &[Entity],
     content: &Catalogs,
+    walks: impl Fn(Entity, f32) -> bool,
 ) -> Entered {
     let nearest = fighters.iter().map(|&m| sight.party_gap(m)).fold(f32::INFINITY, f32::min);
     let sees = || fighters.iter().any(|&m| sight.sees_party(m));
@@ -109,7 +111,8 @@ pub fn comes_in(
             let reach =
                 leader.attacks.arms.iter().map(|arm| arm.reach.metres()).fold(0.0, f32::max)
                     + leader.attacks.stride.unwrap_or(0.0);
-            sight.party_gap(leader.entity) <= reach.max(ENGAGEMENT_RANGE + ENGAGEMENT_FLOOR)
+            let reach = reach.max(ENGAGEMENT_RANGE + ENGAGEMENT_FLOOR);
+            sight.party_gap(leader.entity) <= reach && walks(leader.entity, reach)
         })
     };
     let enters = match if turns { Stance::Hostile } else { stance } {

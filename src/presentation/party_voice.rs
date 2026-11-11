@@ -148,18 +148,31 @@ pub(super) fn queue_dialogue_remarks(
     mut rng: ResMut<PresentationRng>,
 ) {
     for remark in remarks.read() {
-        let mut candidates = speakers.eligible(selected.0);
-        if candidates.is_empty() {
-            continue;
-        }
-        let (actor, voice) = candidates.swap_remove(rng.0.random_range(0..candidates.len()));
-        selected.0 = Some(actor);
+        // The member named says it; otherwise someone fit other than the
+        // selected member, who becomes the selected member.
+        let (actor, voice) = match remark.speaker {
+            Some(speaker) => {
+                let named =
+                    speakers.eligible(None).into_iter().find(|(actor, _)| *actor == speaker);
+                let Some(named) = named else { continue };
+                named
+            }
+            None => {
+                let mut candidates = speakers.eligible(selected.0);
+                if candidates.is_empty() {
+                    continue;
+                }
+                let chosen = candidates.swap_remove(rng.0.random_range(0..candidates.len()));
+                selected.0 = Some(chosen.0);
+                chosen
+            }
+        };
         commands.spawn((
             PendingRemark {
                 actor,
                 requested: remark.event,
                 voice,
-                delay: Timer::from_seconds(0.0, TimerMode::Once),
+                delay: Timer::from_seconds(remark.after, TimerMode::Once),
                 audio: None,
                 dialogue: true,
             },
@@ -297,7 +310,10 @@ mod tests {
             ..default()
         });
         let script = Handle::<DialogueScript>::default();
-        world.insert_resource(NpcAssets { scripts: [(NpcId(0), script.clone())].into() });
+        world.insert_resource(NpcAssets {
+            scripts: [(NpcId(0), script.clone())].into(),
+            ..default()
+        });
 
         let eligible = world.run_system_once(|s: Speakers| s.eligible(None)).unwrap();
         assert_eq!(

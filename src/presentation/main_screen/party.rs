@@ -568,6 +568,7 @@ fn press(
         (),
         (With<Conversation>, Without<crate::game::npcs::conversation::Closing>),
     >,
+    picks: Query<(), With<crate::game::npcs::scenes::MemberPick>>,
 ) {
     if click.button != PointerButton::Primary {
         return;
@@ -575,6 +576,11 @@ fn press(
     let Ok(mut button) = buttons.get_mut(click.entity) else { return };
     let member = button.member;
     if !roster.contains(&member) {
+        return;
+    }
+    // The story has the player offer one of the party.
+    if !picks.is_empty() {
+        commands.trigger(crate::game::npcs::scenes::Picked { member });
         return;
     }
     if !conversations.is_empty() {

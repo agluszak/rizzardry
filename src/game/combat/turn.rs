@@ -9,6 +9,7 @@
 //! [`crate::game::magic::casting::Cast`], and here [`Breathe`], [`Guard`],
 //! [`Retreat`] and [`Hold`].
 
+use crate::game::magic::workings::Response;
 use bevy::prelude::*;
 use enum_map::EnumMap;
 
@@ -261,6 +262,7 @@ pub fn accept_round(
     rng: &mut GameRng,
 ) {
     battle.round += 1;
+    commands.trigger(super::RoundBegan);
     let surprised = battle.opening.take().is_some();
     let pace = if surprised { None } else { battle.party_pace };
     round.pace = pace;
@@ -368,7 +370,7 @@ pub fn accept_round(
 /// loses its turn; defending takes no turn. One going on with its turn
 /// after moving, or with attacks already spent, fights on. Otherwise a
 /// member follows its orders and anyone else decides for itself
-/// ([`ai::decide`]); then its conditions may take the action off it (retail
+/// ([`monster::deliberate`]); then its conditions may take the action off it (retail
 /// `GetConditionInterrupt`): insanity may turn it on its friends this round,
 /// fear send a monster running unannounced. What is left it does, as one
 /// event at it; a cast is cast, or for a point cast the utility magic it is.
@@ -385,6 +387,10 @@ pub(super) fn take_turn(
     content: Res<Catalogs>,
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<CombatNews>,
+    (lured, lures): (
+        Query<&crate::game::magic::pointcasts::LureInfluence>,
+        Query<&Transform, With<crate::game::magic::pointcasts::Lure>>,
+    ),
 ) {
     let actor = moment.actor;
     let (mut pause, combatants) = fight.into_inner();
@@ -523,8 +529,14 @@ pub(super) fn take_turn(
         _ => matches!(action, Decision::Special(_) | Decision::Fight(_)),
     };
     let running = matches!(action, Decision::Retreat(r) if r.conduct == Conduct::Flee);
-    let plans =
-        Plans { runs: order.is_none(), running, turned_on_friends: turn.berserk, against_foes };
+    let lure = lured.get(actor).ok().filter(|hold| hold.response == Response::Controlled);
+    let plans = Plans {
+        runs: order.is_none(),
+        running,
+        turned_on_friends: turn.berserk,
+        against_foes,
+        lured: lure.is_some(),
+    };
     let friend = ailments::friend_in_reach(&sight, &own, combatants, &formation);
     let interrupted = ailments::interrupt(&mut rng, &own, plans, friend);
     let action = match interrupted {
@@ -538,6 +550,25 @@ pub(super) fn take_turn(
         Some(Interrupt::Panics) => {
             commands.entity(actor).insert(Fleeing);
             Decision::Retreat(Retreats { conduct: Conduct::Flee, quiet: true })
+        }
+        // A lure draws it, at half its stride whatever hastes or slows it
+        // (retail's controlled move, `SetUpMonsterTurn`).
+        Some(Interrupt::Lured) => {
+            let toward = lure.and_then(|hold| lures.get(hold.lure).ok()).map(|at| at.translation);
+            if let Some(toward) = toward
+                && !turn.moved
+            {
+                turn.moved = true;
+                commands.entity(actor).insert(super::approach::CombatMove {
+                    budget: arms.stride.unwrap_or(0.0) * 0.5,
+                    moved: 0.0,
+                    goal: super::approach::MoveGoal::Retreat(toward),
+                });
+            }
+            news.write(CombatNews::Interrupted { actor, interrupt: Interrupt::Lured });
+            turn.end();
+            pause.0 = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
+            return;
         }
         Some(interrupt) => {
             if interrupt == Interrupt::Freed {

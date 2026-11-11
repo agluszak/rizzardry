@@ -51,6 +51,9 @@ pub struct Circumstances<'w, 's> {
     attempts: Query<'w, 's, &'static DeviceInteraction>,
     conversation: Option<Single<'w, 's, DialogueReadOnly>>,
     states: Query<'w, 's, &'static LevelState, With<Level>>,
+    footing:
+        Query<'w, 's, &'static bevy_tnua::TnuaController<crate::game::party::body::PartyMotion>>,
+    parts: Query<'w, 's, (), With<crate::game::world::props::PropPart>>,
 }
 
 /// What a utility spell may be aimed at: an item the party has, a lock or
@@ -241,7 +244,18 @@ impl Circumstances<'_, '_> {
             occupied: !self.freedom.unoccupied(),
             camped: self.camp.is_some(),
             spoken_to: self.conversation.as_ref().is_some_and(|talk| talk.idle()),
+            unsteady: self.unsteady(),
         }
+    }
+
+    /// The party is not on steady ground: in the air, or standing on a
+    /// prop (retail `HasLevelWalkableContact`, the prop-contact flag).
+    fn unsteady(&self) -> bool {
+        self.footing.iter().next().is_some_and(|controller| {
+            let airborne = controller.is_airborne().unwrap_or(false);
+            let on = controller.basis_access().ok().and_then(|b| b.memory.standing_on_entity());
+            airborne || on.is_some_and(|on| self.parts.contains(on))
+        })
     }
 
     /// Whether the party is under water, which quenches Fire.

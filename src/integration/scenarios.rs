@@ -60,6 +60,15 @@ fn monsters(world: &mut World) -> (usize, usize) {
     (all.len(), all.iter().filter(|m| m.is_dead()).count())
 }
 
+/// Where the level's monsters are: the dead ones, or the living.
+fn lying(world: &mut World, dead: bool) -> Vec<Vec3> {
+    let mut query = world.query_filtered::<
+        (&crate::game::characters::Vitals, &avian3d::prelude::Position),
+        With<Monster>,
+    >();
+    query.iter(world).filter(|(vitals, _)| vitals.is_dead() == dead).map(|(_, at)| at.0).collect()
+}
+
 fn fighting(world: &World) -> bool {
     world.try_query::<&Battle>().is_some_and(|mut q| q.iter(world).next().is_some())
 }
@@ -83,8 +92,9 @@ fn the_party_fights_rests_and_finds_the_dead_still_dead() {
     use avian3d::prelude::LinearVelocity;
     let mut app = game(&["--continuous", "--start=108,2.5,-96"]);
     crab_fight(&mut app);
-    let (count, dead) = monsters(app.world_mut());
+    let (_, dead) = monsters(app.world_mut());
     assert_eq!(dead, 3, "the party beat the three beach crabs");
+    let fell = lying(app.world_mut(), true);
 
     // The party may not camp while moving.
     step_until(&mut app, "the party standing still", |w| {
@@ -104,5 +114,94 @@ fn the_party_fights_rests_and_finds_the_dead_still_dead() {
     wait_for_level(&mut app, "levels/monastery/monastery2.pvl");
     app.world_mut().write_message(Travel { entrance: "MO102".into() });
     wait_for_level(&mut app, "levels/monastery/monastery1.pvl");
-    assert_eq!(monsters(app.world_mut()), (count - dead, 0), "the crabs did not come back");
+    // Wandering encounters come and go while the party rests; the crabs do
+    // not come back to where they fell.
+    assert_eq!(monsters(app.world_mut()).1, 0, "the dead were cleared away");
+    let stand = lying(app.world_mut(), false);
+    let back = stand.iter().any(|alive| fell.iter().any(|dead| dead.distance(*alive) < 10.0));
+    assert!(!back, "the crabs did not come back");
+}
+
+/// A device of the level being played, by its name.
+fn device(world: &mut World, name: &str) -> Entity {
+    use crate::content::level::LevelDefinition;
+    use crate::game::world::triggers::Device;
+    let handle = world.query::<&Level>().iter(world).next().unwrap().definition.clone();
+    let definitions = world.resource::<Assets<LevelDefinition>>();
+    let mut named = definitions.get(&handle).unwrap().triggers.iter();
+    let index = named.rposition(|trigger| trigger.name.eq_ignore_ascii_case(name)).unwrap();
+    let mut devices = world.query::<(Entity, &Device)>();
+    devices.iter(world).find(|(_, device)| device.definition == index).unwrap().0
+}
+
+/// How many of a species are in the level.
+fn of_species(world: &mut World, species: u32) -> usize {
+    world.query::<&Monster>().iter(world).filter(|monster| monster.species == species).count()
+}
+
+/// The story has its say in a level's devices: the lid of a coffin in the
+/// lower monastery lets out what is in it, once, and the wheel does not
+/// turn without its key.
+#[test]
+#[ignore = "requires a retail installation"]
+fn a_coffin_lid_lets_the_head_out_once() {
+    use crate::game::world::triggers::activate;
+    const HEAD: u32 = 0x12d;
+    let mut app = game(&["--continuous"]);
+    step_until(&mut app, "the Monastery becoming active", |w| playing(w).is_some());
+    app.update();
+    let lid = device(app.world_mut(), "Coffinlide");
+    assert_eq!(of_species(app.world_mut(), HEAD), 0);
+    activate(app.world_mut(), lid, false);
+    step_until(&mut app, "the head coming out", |w| of_species(w, HEAD) == 1);
+    activate(app.world_mut(), lid, false);
+    for _ in 0..256 {
+        app.update();
+    }
+    assert_eq!(of_species(app.world_mut(), HEAD), 1, "it is let out only once");
+
+    // And a device the story stops does nothing: the wheel wants its key.
+    let wheel = device(app.world_mut(), "wheel_star");
+    assert!(!activate(app.world_mut(), wheel, false), "the wheel turned without the star key");
+}
+
+/// A walk over the navmesh is found between the party and a monster of the
+/// monastery, and is no shorter than the straight line.
+#[test]
+#[ignore = "requires a retail installation"]
+fn a_monster_has_a_walk_to_the_party() {
+    use crate::game::party::body::PartyBody;
+    use crate::game::world::navigation::{LevelNavigation, walking_distance};
+    use avian3d::prelude::Position;
+    let mut app = game(&["--continuous", "--start=108,2.5,-96"]);
+    step_until(&mut app, "the Monastery becoming active", |w| playing(w).is_some());
+    for _ in 0..64 {
+        app.update();
+    }
+    let world = app.world_mut();
+    let party = *world.query_filtered::<&Position, With<PartyBody>>().single(world).unwrap();
+    let party = PartyBody::feet_below(PartyBody::eye(&party));
+    let navigation = world.query::<&LevelNavigation>().single(world).unwrap().archipelagos.clone();
+    let monsters: Vec<(f32, Vec3)> = world
+        .query::<(&Monster, &Position)>()
+        .iter(world)
+        .map(|(monster, at)| (monster.body.radius, at.0))
+        .collect();
+    let mut archipelagos = world.query::<&bevy_landmass::Archipelago3d>();
+    let walks: Vec<(f32, f32)> = monsters
+        .iter()
+        .filter_map(|&(radius, at)| {
+            let class = crate::game::world::navigation::bake::size_class(radius);
+            let archipelago = archipelagos.get(world, navigation[class]).ok()?;
+            let walked = walking_distance(archipelago, at, party)?;
+            Some((walked, at.distance(party)))
+        })
+        .collect();
+    assert!(!walks.is_empty(), "no monster of the monastery has a walk to the party");
+    for (walked, straight) in walks {
+        assert!(
+            walked + 0.5 >= straight * 0.9,
+            "a walk of {walked} m is shorter than {straight} m"
+        );
+    }
 }

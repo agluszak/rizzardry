@@ -27,9 +27,11 @@ made.
 
 A monster has two lives.
 
-**Outside a fight** it stands where it was put. (The original has it patrol,
-guard, wander, look about and follow noises; the code does none of that. See
-*Open questions*.) The one thing it does outside a fight is follow a hypnotic
+**Outside a fight** it stands where it was put, or keeps the orders its
+script gave it: guarding a post or patrolling; a hostile one that has seen
+the party lately makes for it. (The original also has it look
+about and follow noises; the code does neither. See
+*Open questions*.) It also follows a hypnotic
 lure ([casting](casting.md) section 8). Outside a fight it is also *judged*, as
 a group, every moment of play: whether it has noticed the party, what side its
 group stands on, whether the group comes into a fight (section 2 and 3).
@@ -561,24 +563,51 @@ lines are in `src/game/`.
    - A lured monster follows the lure.
    - A monster that cannot patrol is retired with its encounter, else waits 20
      ticks.
-   The Rust has monsters stand, and walk only toward a lure.
-6. **Sight has no memory.** The original keeps, for each monster, whether it
-   saw the party now, recently (within 240 seconds) or not (`Sight.cpp`
-   state, `MonsterAI.cpp:270-310`); engagement uses it. The Rust looks only at
-   the present.
-7. **A group comes in for a nearby rendered member** within extreme reach
-   (50 m) of the party, and the path distance must be within the leader's reach
-   (`ShouldMonsterGroupEnterCombat`, `MonsterAI.cpp:2675-2733`). The Rust
-   uses the straight distance and has no rendered members (its own comment).
-8. **A lured monster in a fight** is interrupted and sent to the lure
-   (interrupt 0xb, `Combat.cpp:3025-3027, 2509-2511`). The Rust lets a lure
-   hold only outside a fight.
-9. **A monster's spell is re-judged when cast.** The original chooses its power
-   again, and checks that the spell may still be cast at that target,
-   when the action begins (`Combat.cpp:2587-2600`, `MonsterOKToCastSpell`
-   `Magic.cpp:174-222`); a cone or blast is not cast if it would hit a neutral
-   monster (`SpellAreaHitsNeutralMonster`, `MonsterAI.cpp:1793-1823`). The Rust
-   decides once and has no neutral test.
+   The Rust has monsters keep their orders (guard, the three patrols, facing:
+   [scripts.md](scripts.md)), walk toward a lure, and charge: every fit
+   member of a hostile group above a fifth of its health makes for the party
+   while one of the group sees it or saw it within 240 seconds
+   (`world::pursuit`). The original moves the leader and the rest keep
+   formation with it; it also stops short at nine tenths of its longest
+   attack's reach, which is not there. **Noises** are there
+   (`world::noise`): the party's steps are one every 4 m it walks, carrying
+   50 m, or 75 m running or searching; a hostile group whose leader is not
+   deaf and is within reach hears it on a roll under its senses plus half a
+   point a metre of reach left, unless it has a louder one in mind; its
+   Sonic Boom and Alarm are heard too, 50 m and 30 m more a point of
+   power, where they are aimed (`assets/tables/noises.ron`). Its
+   members walk to a noise within one and a half times its reach (250 m at
+   most) and otherwise turn to it, and forget it once the leader is within
+   3 m. A round of fighting is a noise too, 100 m about the party, for
+   every group not in the fight that is within two of its moves of it; the
+   original brings a group that hears it
+   straight into the fight if it could walk there in its move, where here
+   it walks toward it and joins by the fight's own rule. Not there: the
+   two-region penalty on how
+   far a noise is walked to, the 30-tick wait. One at a fifth of its health
+   or less shadows the party instead of charging: it follows, keeping within
+   twice the far clip of it (`MonsterLinkToStartupNavigator`). Resting turns and retiring an
+   encounter that cannot patrol are there ([scripts.md](scripts.md)).
+6. *Done:* sight's memory. The original keeps, for each monster, whether it
+   sees the party now, saw it within 240 seconds or not (`Sight.cpp`,
+   `MonsterAI.cpp:270-310`). Only the out-of-fight charge reads "within 240
+   seconds" (`DoMonsterRTAI`), and a group here remembers when it last saw
+   the party for that. Coming into a fight reads "now" alone
+   (`MonsterGroupCanEngage` through `MonsterHasVisibleTarget`), as here.
+7. *Done, in part:* a hostile group joins a running fight only if its
+   leader is within reach of the party both as the crow flies and by the way
+   it would walk over its navmesh (`FindNavigatorPathDistance`). Not here:
+   the original also lets a hostile group with a member on screen within
+   50 m join (`MonsterGroupHasRenderableMember`); gameplay here does not know
+   what is on screen.
+8. *Done:* a lured monster in a fight walks toward the lure at half its
+   stride, haste and slowness aside, in place of its action (interrupt 11,
+   after fear and before Turncoat).
+9. **A monster's spell is re-judged when cast.** The original chooses at the
+   start of the round and judges again, with a fresh power, when the action
+   begins (`Combat.cpp:2587-2600`, `MonsterOKToCastSpell`). Here a monster
+   chooses at the moment it acts, with the neutral test, so there is nothing
+   to judge again; only the second roll of the power is not made.
 
 ### Unknown
 

@@ -58,9 +58,9 @@ pub fn monster_died(
         Option<&mut LinearVelocity>,
         Option<&mut Velocity3d>,
     )>,
-    (bodies, mut npcs): (
+    (bodies, npcs): (
         Query<&crate::game::npcs::NpcBody>,
-        Query<(&mut crate::game::npcs::Npc, &crate::game::npcs::ActorId)>,
+        Query<(Entity, &crate::game::npcs::ActorId)>,
     ),
     (mut purse, roster, characters): (
         Single<&mut PartyInventory>,
@@ -106,10 +106,10 @@ pub fn monster_died(
         faction_news.write(news);
     }
     let rng = &mut *rng;
-    let npc = bodies.get(target).ok().and_then(|body| npcs.get_mut(body.0).ok());
+    let npc = bodies.get(target).ok().and_then(|body| npcs.get(body.0).ok());
     let (found, gold) = match npc {
-        Some((mut npc, id)) => {
-            npc.killed = true;
+        Some((actor, id)) => {
+            commands.entity(actor).insert(crate::game::npcs::Killed);
             crate::game::loot::npc_loot(&content.npcs[id.npc()], tables, catalog, rng)
         }
         None => {

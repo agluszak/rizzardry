@@ -17,7 +17,6 @@ use bevy::ecs::system::SystemParam;
 
 use super::navigation::bake::SIZE_CLASSES;
 use super::population::MonsterBodies;
-use super::scripts::LevelScript;
 use super::triggers::spawn_devices;
 use super::{navigation, population};
 use crate::content::items::LootTables;
@@ -47,7 +46,6 @@ pub struct Level {
     pub definition: Handle<LevelDefinition>,
     /// One navmesh per walker size class (`navigation::bake::SIZE_CLASSES`).
     pub navmeshes: Vec<Handle<NavMesh3d>>,
-    pub script: LevelScript,
     /// The messages its triggers show.
     pub messages: Option<Handle<TextTable>>,
 }
@@ -62,8 +60,6 @@ impl Level {
             navmeshes: (0..SIZE_CLASSES.len())
                 .map(|class| assets.load(navmesh_path(path, class)))
                 .collect(),
-            script: info
-                .map_or_else(LevelScript::default, |info| LevelScript::for_location(info.location)),
             messages: info
                 .map(|info| assets.load(crate::content::paths::level_messages(info.folder))),
         }
@@ -75,13 +71,7 @@ impl Level {
 #[cfg(test)]
 impl Level {
     pub fn test(definition: Handle<LevelDefinition>) -> Self {
-        Level {
-            path: "test".into(),
-            definition,
-            navmeshes: vec![],
-            script: default(),
-            messages: None,
-        }
+        Level { path: "test".into(), definition, navmeshes: vec![], messages: None }
     }
 }
 
@@ -448,12 +438,11 @@ fn build_world(
     root: Entity,
     geometry: &LevelDefinition,
     collision: Collision,
-    script: super::scripts::LevelScript,
     tables: &LootTables,
 ) {
     let props: Vec<_> =
         geometry.props.iter().map(|_| commands.spawn(LevelOwned(root)).id()).collect();
-    spawn_devices(commands, root, geometry, &props, script, tables);
+    spawn_devices(commands, root, geometry, &props, tables);
     commands.entity(root).insert((
         RigidBody::Static,
         collision.level,
@@ -544,7 +533,7 @@ pub fn activate_level(
         let geometry = geometry.get(&level.definition).expect("prepared");
         // Built once, now that nothing else is awaited.
         let collision = prepare_collision(geometry);
-        build_world(&mut commands, root, geometry, collision, level.script, &catalogs.loot);
+        build_world(&mut commands, root, geometry, collision, &catalogs.loot);
         let navigation = navigation::install(&mut commands, root, level, geometry);
         population::populate(
             &mut commands,

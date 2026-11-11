@@ -10,6 +10,7 @@
 //! near the party is not modelled (`docs/rules/monsters.md` section 3).
 
 use super::*;
+use crate::game::world::navigation::walking_distance;
 
 use super::monster::coming;
 use super::monster::sight::Sight;
@@ -73,6 +74,10 @@ pub(super) fn engage(
     sight: Sight,
     level: PlayedLevel,
     content: If<Res<Catalogs>>,
+    (navigation, archipelagos): (
+        Option<Single<&crate::game::world::navigation::LevelNavigation>>,
+        Query<&bevy_landmass::Archipelago3d>,
+    ),
     mut engaged: MessageWriter<Engaged>,
     mut commands: Commands,
 ) {
@@ -123,8 +128,27 @@ pub(super) fn engage(
         let (_, _, allegiance, ..) = monsters.get(first).unwrap();
         let side = (sight.side(first).unwrap_or_default(), allegiance.hostility_radius());
         let provoked = group.is_some_and(|g| provoked.contains(&g));
-        let came =
-            coming::comes_in(&sight, &fighters, side, (running, provoked), &hostiles, &content);
+        // The way the leader would walk to the party, over the navmesh for
+        // its size (retail `FindNavigatorPathDistance`).
+        let walks = |leader: Entity, reach: f32| {
+            let Ok((_, monster, ..)) = monsters.get(leader) else { return false };
+            let archipelago = navigation.as_ref().and_then(|navigation| {
+                archipelagos.get(navigation.archipelago_for(monster.body.radius)).ok()
+            });
+            let (from, to) = (sight.places.of(leader).feet, sight.places.of(sight.party()).feet);
+            archipelago
+                .and_then(|archipelago| walking_distance(archipelago, from, to))
+                .is_some_and(|walked| walked <= reach)
+        };
+        let came = coming::comes_in(
+            &sight,
+            &fighters,
+            side,
+            (running, provoked),
+            &hostiles,
+            &content,
+            walks,
+        );
         if let Some(group) = group
             && came.turns_hostile
         {

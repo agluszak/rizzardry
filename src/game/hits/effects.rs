@@ -343,8 +343,8 @@ fn apply(
             laying.purify(victim, magnitude + rules.content.spells[own()].level);
             Effect::Purified { victim }
         }
-        K::SpellEnchant => {
-            let spell = own();
+        K::SpellEnchant | K::Enchant(_) => {
+            let spell = if let K::Enchant(spell) = &spec.kind { *spell } else { own() };
             // Haste first spends itself on a slowing; wholly spent, it
             // changed something all the same.
             let answers_slowing =
@@ -366,7 +366,7 @@ fn apply(
         }
         // The party's own: its purse, and its lasting spells.
         K::LoseGold | K::Dispel => return Outcome::Missed,
-        K::SpellPrismic | K::AfflictAny(_) => {
+        K::SpellPrismic | K::AfflictAny(_) | K::OneOf(_) => {
             unreachable!("an either-or is picked before it is applied")
         }
     };

@@ -15,7 +15,14 @@
 //     FitMember(r)     a member of race r is awake
 //     Not, All, Any    of other readings
 //     SetAnd(r)        what was last set, but only while r holds
-//     Unported         read off something this game does not have yet
+//     Killed(n)        person n was killed
+//     OwnAwake(n)      at least n of the party's own, companions aside, are awake
+//     Chosen           the one Al-Sedexus chose is of the party
+//     Stands(npc)      the person stands in the level
+//     Units(i, n)      the party holds at least n of item i, counting each of a stack
+//     Once(r)          as r reads until it is first seen to hold, then as last set
+//     Level(n)         the party is in level n
+//     LevelVar(v, n)   variable v of the party's level holds n
 (
     begins: ["FACT_VIRGIN", "FACT_QUEST_VIRGIN_1", "FACT_QUEST_VIRGIN_2", "FACT_QUEST_VIRGIN_3"],
     derived: {
@@ -73,12 +80,15 @@
         ]),
         "FACT_PARTY_DEACTIVATED_BOMB": Is("FACT_DS_BOMB_DEACTIVATED"),
 
-        // Whether Glumph was ever met; five grenades once seen; Vi lying
-        // unconscious in the party; the member Al-Sedexus took.
-        "FACT_GLUMPH_DEAD": Unported,
-        "FACT_UMISSION_TRAIN_COVERT_DONE": Unported,
-        "FACT_VI_IS_DEAD": Unported,
-        "FACT_FATHER_IN_PARTY": Unported,
+        // Vi is counted dead as was last said, but never while she stands
+        // awake in the party.
+        // Five grenades once seen, and the member Al-Sedexus took, this
+        // game does not have yet.
+        "FACT_GLUMPH_DEAD": Killed(0x2b),
+        // The five grenades of the covert training, once seen.
+        "FACT_UMISSION_TRAIN_COVERT_DONE": Once(Units(0x1c4, 5)),
+        "FACT_VI_IS_DEAD": SetAnd(Not(Joined(0x18))),
+        "FACT_FATHER_IN_PARTY": Chosen,
     },
     // What setting a fact sets off (retail `HandleFactChange`): when it is
     // Set, when it is Cleared, or Always.
@@ -98,26 +108,55 @@
     //   Stock(npc, item, count, after)
     //                          a merchant gets items, `after` seconds from now
     //   Unstock(npc, item)     an item a merchant was to get is cancelled
-    //   Mark(npc)              the person's turn comes when the party is next where they are
+    //   Mark(npc)              the person leaves where they stand, for good, once the party
+    //                          has left the level
     //   Gone(npc)              the person's body leaves where it stood; GoneUnmet, if never greeted
     //   Stands(npc, level, at) the person stands at a named spot of another level
     //   Script(npc, script)    the person's body follows a script
-    //   Reload(npc)            the person's lines are read anew and they greet the party
+    //   Renamed(npc)           the person goes by their other name: its lines and voice
+    //   Restarts(quote)        the one spoken with says a quote, whatever they were saying
+    //   MemberRemarks(npc, event)
+    //                          the person, in the party, says something
     //   SpawnItem(item, at)    an item appears at a named spot
-    //   SpawnMonster(species, at)
+    //   SpawnMonster(species:, at:, stance:, faces:, script:)
+    //                          one of a species appears at a named spot, facing another
+    //                          and following a script if they are given
+    //   PickMember             the player is to offer one of the party
+    //   OthersFaint, OthersWake
+    //                          everyone living but the chosen one lies senseless; wakes
+    //   ChosenRemarks(event)   the chosen one says something
+    //   AfterBattle(reading, [..])
+    //                          these befall once a battle has been fought and is over,
+    //                          and the reading holds
+    //   Ends                   the game ends
+    //   LeavesParty(npc)       the person is of the party no longer, and stands nowhere
+    //   Greets(npc)            the person speaks to the party as they would on meeting it
+    //   Offers(npc)            the person speaks to the party, handed what its hand holds
     //   LookAt(x, y, z)        the party looks at a point
     //   EndTalk                the conversation under way ends
     //   GroupScript(species, script)
     //                          the first group of a species follows a script
     //   GroupGone(species)     the leader of the first group of a species leaves the level
     //   SelfGone               the one spoken with leaves where they stood
+    //   FirstGone([npc, ..])   the first of these people who stands in the level leaves it
     //   Moved(npc, at)         the person is at a named spot; GroupMoved, a group's leader
     //   Says(npc, quote)       the person speaks to the party, with a quote of theirs
     //   Unlock(name)           a named device's lock is overcome
     //   TriggerOn(name)        a named device is switched on and runs
     //   Shows(npc, cycle)      the person plays an animation; GroupShows, a group's leader
+    //   ShowsThen(npc, cycle, [..]), GroupShowsThen(species, cycle, [..])
+    //                          the same, and these befall the one who played it once it is
+    //                          played out
+    //   GroupDies(species)     the leader of the first group of a species dies
+    //   GreetsOf(species)      the person whose species this is greets the party
+    //   Later(seconds, [..])   these befall after so long
+    //   Sound(file)            a sound, by its file under the game's sounds
+    //   Shake(seconds, by)     the ground shakes
+    //   Particle(name)         a named particle system of the level starts over
+    //   CameraPath(name)       the party is flown along a named camera path
+    //   Fade(dark, seconds, [..])
+    //                          the screen dims to black, or comes back, and then these befall
     //   LookAtSpot(name)       the party looks at a named spot
-    //   Scene(name)            one of the story's scenes this game does not have yet
     follows: {
         "FACT_ANTONE_ZYNARYX_ALL_INGREDIENTS": [Set([Stock(0x03, 0x28a, 1, 86400)])],
         "FACT_ANTONE_STEELHIDE_ALL_INGREDIENTS": [Set([Stock(0x03, 0x28b, 1, 86400)])],
@@ -157,7 +196,7 @@
 
         "FACT_ARNIKA_MYLES_TROOPERS_HOSTILE": [Always([Group(0x13, Hostile)])],
         "FACT_ENDGAME_JOIN_SAVANT": [Set([
-            Scene("ViStage"),
+            AfterBattle(Any([Is("FACT_VI_IS_DEAD"), Stands(99)]), [Greets(0x8d)]),
             Group(0x234, Friendly),
             Group(0x1b4, Hostile),
             Group(0x1b9, Hostile),
@@ -223,13 +262,17 @@
         "FACT_QUEST_SAVANT_BOMB_DEACTIVATED": [Always([GoneUnmet(0x57)])],
         "FACT_RAPAX_MYLES_IN_JAIL": [Set([If(Not(Joined(0x07)), [Stands(0x07, 0x11, "NP_MylesCell")])])],
         "FACT_MYLES_MISSION_RESCUE_VI_ASSIGNED": [Always([Script(0x07, "Guard.msf")])],
-        "FACT_RFS81_HAS_BEEN_FIXED": [Set([Reload(0x20)])],
+        "FACT_RFS81_HAS_BEEN_FIXED": [Set([
+            Renamed(0x20),
+            If(Not(Joined(0x20)), [Restarts(0)]),
+            If(Joined(0x20), [MemberRemarks(0x20, 0)]),
+        ])],
 
         "FACT_CROCK_KIDNAPPED_PLAYER": [Set([SpawnItem(0x2eb, "NP_BlueFlowers"), SpawnItem(0x2eb, "NP_BlueFlowers")])],
-        "FACT_CROCK_BREKEK_ASSIGN": [Always([If(Not(Is("FACT_CROCK_BREKEK_DEAD")), [SpawnMonster(0x131, "Brekek")])])],
+        "FACT_CROCK_BREKEK_ASSIGN": [Always([If(Not(Is("FACT_CROCK_BREKEK_DEAD")), [SpawnMonster(species: 0x131, at: "Brekek", stance: Hostile)])])],
 
         "FACT_PEACE_SAVANT_BLOWUP_DONE": [Set([Trigger("triggerFix")])],
-        "FACT_MOOK_MOOK_PC_REMOVED": [Set([Scene("MookComment")])],
+        "FACT_MOOK_MOOK_PC_REMOVED": [Set([If(OwnAwake(2), [RaceRemarks(Mook, 51)])])],
         "FACT_AP_GOLEM_ATTACK": [Always([EndTalk, GroupScript(0x13e, "MoveGolem.msf")])],
         "FACT_AP_SAVANT_DISAPPEARS": [Always([EndTalk, GroupScript(0xc2, "MoveSavant.msf")])],
         "FACT_AP_BELA_DONE": [Always([EndTalk, GroupScript(0x18c, "MoveBela.msf"), LookAtSpot("NP_DSExit")])],
@@ -241,32 +284,73 @@
         "FACT_RAPAX_RIDDLE1": [Set([Trigger("pillargate01"), Gone(0x3d)])],
         "FACT_RAPAX_RIDDLE2": [Set([Trigger("pillargate04"), Gone(0x3e)])],
         "FACT_RAPAX_RIDDLE3": [Set([Trigger("pillargate05"), Gone(0x3f)])],
-        "FACT_ALSEDEXUS_SACRIFICE_SELECT": [Set([Scene("SacrificeSelect")])],
-        "FACT_ALSEDEXUS_PARTY_PASSOUT": [Set([Scene("SedexusCapture")]), Cleared([Scene("SedexusPassout")])],
+        "FACT_ALSEDEXUS_SACRIFICE_SELECT": [Set([PickMember])],
+        "FACT_ALSEDEXUS_PARTY_PASSOUT": [
+            Set([OthersFaint, Fade(true, 1.0, [Sound("ambients/al_sedexus moaning.wav")])]),
+            Cleared([
+                Gone(0x3b),
+                Gone(0x40),
+                LevelVar("LezboDemonAppeared", 0),
+                SpawnMonster(species: 0xd8, at: "np_al-adryian51", stance: Friendly, script: Some("proximitytemplar.msf")),
+                Trigger("al-seduxusgate"),
+                Trigger("templargate14"),
+                Fade(false, 1.0, [OthersWake, ChosenRemarks(43)]),
+            ]),
+        ],
         "FACT_ALSEDEXUS_DISAPPEAR": [Set([EndTalk, LevelVar("LezboDemonAppeared", 0), Gone(0x40)])],
         "FACT_ALSEDEXUS_DISAPPEARS_RIFT": [Set([EndTalk, Gone(0x42)])],
-        "FACT_QUEST_KILL_ALSEDEXUS": [Set([Scene("Spacer")])],
-        "FACT_ALETHEIDES_DISAPPEARS": [Always([Scene("AletheidesLeaves")])],
-        "FACT_ALETHEIDES_CALLS_HENCHMAN": [Always([Scene("CallHenchman")])],
-        "FACT_HENCHMAN_DISAPPEARS": [Always([Scene("HenchmanLeaves")])],
+        "FACT_ALETHEIDES_DISAPPEARS": [Always([FirstGone([0x2d, 0x2e, 0x2f])])],
+        "FACT_ALETHEIDES_CALLS_HENCHMAN": [Always([EndTalk, GroupShowsThen(0x112, "ATTACK_SPECIAL", [
+            LookAtSpot("NP_HENCHMEN"),
+            SpawnMonster(species: 0xdc, at: "NP_HENCHMEN", stance: Friendly),
+            GreetsOf(0xdc),
+            BodyGone,
+        ])])],
+        "FACT_HENCHMAN_DISAPPEARS": [Always([EndTalk, GroupShowsThen(0xdc, "ATTACK_SPECIAL", [BodyGone])])],
         "FACT_PRINCE_DISAPPEARS": [Always([EndTalk, GroupGone(0x1ab), Group(0x15d, Hostile)])],
-        "FACT_SAVANT_HACK_ALETHEIDES": [Set([Scene("SavantHack")])],
+        "FACT_SAVANT_HACK_ALETHEIDES": [Set([GroupShowsThen(0x1b6, "SPELL", [Later(0.05, [
+            GroupDies(0x1b3),
+            Later(5.0, [GroupShowsThen(0x1b6, "ATTACK_LASH", [BodyGone, Greets(0x89)])]),
+        ])])])],
         "FACT_TRANG_INTRO_DISAPPEAR_GUARD": [Always([EndTalk, SelfGone])],
         "FACT_UMPANI_BALBRAK_INTRO_DISAPPEAR": [Set([Moved(0x0c, "NP_Balbrakhome")])],
         "FACT_UMPANI_MOVE_RUBBLE": [Always([EndTalk, GroupScript(0x83, "MoveRubble.msf")])],
-        "FACT_FUZZFAS_BOOM1": [Always([Scene("FuzzfasBoom")])],
-        "FACT_FUZZFAS_BOOM2": [Always([Scene("FuzzfasBoom")])],
-        "FACT_CC_REMOVE_RPC_VI": [Always([Scene("RemoveRpcVi")])],
+        "FACT_FUZZFAS_BOOM1": [Always([
+            Sound("misc/potion_exploding.wav"),
+            Particle("FuzzBlast"),
+            Shows(0x49, "GET_HIT"),
+        ])],
+        "FACT_FUZZFAS_BOOM2": [Always([
+            Sound("misc/potion_exploding.wav"),
+            Particle("FuzzBlast"),
+            Shows(0x49, "GET_HIT"),
+        ])],
+        "FACT_CC_REMOVE_RPC_VI": [Always([If(Joined(0x18), [
+            LeavesParty(0x18),
+            SpawnMonster(species: 0x1b9, at: "NP_VI1", stance: Friendly, faces: Some("NP_DS1")),
+        ])])],
         "FACT_ENDGAME_MOVE_TO_BOOK": [Always([EndTalk, GroupScript(0x1b4, "belapath1.msf"), TriggerOff("CC_TRIGGERPLANE3"), TriggerOn("CC_TRIGGERPLANE2")])],
         "FACT_MOVE_TO_BOOK2": [Always([TriggerOn("CC_TRIGGERPLANE3"), Says(0x8d, 7)])],
-        "FACT_ENDGAME_TURN_TOWARD_BOOK_WRITE": [Always([Scene("TurnToBook")])],
-        "FACT_ENDGAME_SAVANT_APPEARS": [Always([Scene("SavantAppears")])],
+        "FACT_ENDGAME_TURN_TOWARD_BOOK_WRITE": [Always([Fade(true, 0.5, [
+            CameraPath("CameraPath4"),
+            Fade(false, 1.0, [If(
+                Any([Is("FACT_QUE_ENDGAME2"), All([Is("FACT_QUE_ENDGAME3"), Killed(0x87)])]),
+                [Greets(0x8e)],
+            )]),
+        ])])],
+        "FACT_ENDGAME_SAVANT_APPEARS": [Always([SpawnMonster(species: 0x234, at: "NP_DS1", stance: Neutral), Greets(0x84)])],
         "FACT_ENDGAME_SAVANT_PHOON_SPLIT": [Always([Shows(0x84, "SPECIAL"), GroupMoved(0x197, "NP_PHOONZANGLEE"), GroupShows(0x197, "ATTACK_SPECIAL"), Says(0x8d, 0x12)])],
-        "FACT_QUE_ENDGAME2": [Always([Scene("QueueEndgame2")])],
-        "FACT_QUE_ENDGAME3": [Always([Scene("QueueEndgame3")])],
-        "FACT_ENDGAME_QUE_CONGRAT_TWO": [Always([Scene("BeginEndgame")])],
-        "FACT_ENDGAME_QUE_CONGRAT_THREE": [Always([Scene("BeginEndgame")])],
-        "FACT_ENDGAME_QUE_CONGRAT_FOUR": [Always([Scene("EndgameQuake")])],
+        // Setting FACT_QUE_ENDGAME2 or FACT_QUE_ENDGAME3 only notes that it was
+        // set, which the fact itself does; FACT_QUEST_KILL_ALSEDEXUS queues a
+        // separator the original does nothing with.
+        "FACT_ENDGAME_QUE_CONGRAT_TWO": [Always([Ends])],
+        "FACT_ENDGAME_QUE_CONGRAT_THREE": [Always([Ends])],
+        "FACT_ENDGAME_QUE_CONGRAT_FOUR": [Always([EndTalk,
+            GroupScript(0xc2, "MoveSavantBoffo.msf"),
+            Sound("misc/earthquake end.wav"),
+            Shake(6.0, 1.0),
+            Later(6.0, [Shake(3.0, 1.0), Ends]),
+        ])],
     },
     // The named happenings a monster's script comes to with DOACTION
     // (retail `ProcessScript`), which befall the monster whose script it is:
@@ -284,5 +368,65 @@
         "ENDHOGARWALKANDPUTTOSLEEP": [BodyScript("ClosePatrol.msf"), BodyAsleep(6)],
         "ENDBELAWALK": [BodyGone],
         "BELA_END_CC_WALK": [Says(0x8d, 6), BodyFacesParty],
+    },
+    // What goes with a marked person's leaving (retail
+    // `HandleMarkedNpcEvent`), by the person. Vi's leaving is forgotten.
+    // Sergeant Rubble, in his own level, is first moved to his post and then
+    // under the water, staying each time. Glumph leaves diving gear where he
+    // stood unless the dive is done.
+    //   RaceRemarks(race, event)
+    //                      each member of a race who is awake says something
+    //   Stays              the person does not leave after all
+    //   Drops(npc, item, at)
+    //                      an item is left where the person stands, or at a
+    //                      named spot if they stand nowhere
+    marked: {
+        0x18: [Fact("FACT_INTRO_VI_DISAPPEARS", 0)],
+        0x29: [
+            If(All([Level(13), LevelVar("CODESgtRubbleTeleport", 0)]), [
+                Moved(0x29, "RubbleCovert"),
+                LevelVar("CODESgtRubbleTeleport", 1),
+                Trigger("door08"),
+                Fact("FACT_UMISSION_MOVE_RUBBLE_COVERT", 0),
+                Stays,
+            ]),
+            If(All([Level(13), LevelVar("CODESgtRubbleTeleport", 1)]), [
+                Moved(0x29, "rubbleUnderWater"),
+                LevelVar("CODESgtRubbleTeleport", 2),
+                Stays,
+            ]),
+        ],
+        0x2b: [If(Not(Is("FACT_UMISSION_SCUBA_DONE")), [Drops(0x2b, 0x1e6, "NP_Glumph")])],
+    },
+    // The other name the story may give a person (retail
+    // `GetNpcDisplayName`): RFS-81, once repaired.
+    // The one Al-Sedexus is offered: a woman is refused while the party has anyone
+    // else; one of the party's own who is fit and carries what she asks is chosen,
+    // and is smitten with her once out of battle and away from her halls, unless
+    // the person who spares them stands there.
+    chosen: (
+        clears: [
+            "FACT_ALSEDEXUS_SACRIFICE_WOMAN",
+            "FACT_ALSEDEXUS_SACRIFICE_ALL_WOMAN",
+            "FACT_ALSEDEXUS_SACRIFICE_NOT_DRESSED",
+            "FACT_ALSEDEXUS_SACRIFICE_NOT_ABLE",
+        ],
+        woman: "FACT_ALSEDEXUS_SACRIFICE_WOMAN",
+        undressed: "FACT_ALSEDEXUS_SACRIFICE_NOT_DRESSED",
+        unable: "FACT_ALSEDEXUS_SACRIFICE_NOT_ABLE",
+        wears: [0x1fd, 0x1fe, 0x1ff],
+        spared_by: 0x42,
+        spared_in: ["levels/rapax/", "levels/rift/"],
+        smitten: "FACT_QUEST_KILL_ALSEDEXUS",
+    ),
+    // How the game ends: the first of these whose reading holds.
+    endings: [
+        (Is("FACT_ENDGAME_JOIN_SAVANT"), Savant),
+        (Is("FACT_QUE_ENDGAME2"), Cosmic),
+        (Is("FACT_ENDGAME_SAVANT_PHOON_SPLIT"), Split),
+        (Is("FACT_ENDING_BOFFO_ONE"), Blowout),
+    ],
+    renames: {
+        0x20: "RFS81B",
     },
 )

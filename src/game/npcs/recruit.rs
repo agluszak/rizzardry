@@ -94,8 +94,8 @@ pub struct Recruiter<'w, 's> {
     records: Query<
         'w,
         's,
-        (&'static ActorId, &'static Npc, Option<&'static NpcBodies>),
-        With<Character>,
+        (&'static ActorId, Has<super::Killed>, Option<&'static NpcBodies>),
+        (With<Npc>, With<Character>),
     >,
     party: Single<'w, 's, (Entity, &'static PartyRoster)>,
     members: Query<'w, 's, (&'static Character, &'static Vitals, Has<Npc>)>,
@@ -115,8 +115,8 @@ impl Recruiter<'_, '_> {
         let (party_id, roster) = **party;
         let occupied = roster.iter().filter(|&e| members.get(e).is_ok_and(|r| r.2)).count();
         {
-            let (id, npc, binding) = records.get(actor).map_err(|_| JoinRefusal::Declines)?;
-            if npc.killed || dead.contains(actor) || roster.contains(&actor) {
+            let (id, killed, binding) = records.get(actor).map_err(|_| JoinRefusal::Declines)?;
+            if killed || dead.contains(actor) || roster.contains(&actor) {
                 return Err(JoinRefusal::Declines);
             }
             let d = &content.npcs[id.0];
@@ -161,9 +161,11 @@ impl Recruiter<'_, '_> {
         }
     }
 }
-/// Dismissal is a complete ownership transfer; the caller does not edit formation.
+/// Dismissal is a complete ownership transfer; the caller does not edit
+/// formation. One who `stands` is left beside the party in a body of their
+/// own; the story may take someone with no body left behind.
 pub fn dismiss(
-    In(actor): In<Entity>,
+    In((actor, stands)): In<(Entity, bool)>,
     party: Single<(Entity, &PartyRoster, &Position, &PartyBody)>,
     records: Query<(&ActorId, &NpcLocation), With<Npc>>,
     profiles: Query<(&Character, &Vitals)>,
@@ -214,7 +216,7 @@ pub fn dismiss(
         }
     }
     return_to_pool(party, &returned, (root, PartyBody::feet(at)), &mut commands);
-    if !v.is_dead() {
+    if stands && !v.is_dead() {
         let kind = &content.species[location.species];
         let mut kept = Newborn::rolled(
             (-1, location.species, None),
@@ -391,7 +393,6 @@ mod tests {
                 path: String::new(),
                 definition: default(),
                 navmeshes: vec![],
-                script: default(),
                 messages: None,
             })
             .insert(MonsterBodies([(0, body)].into()));
@@ -487,7 +488,7 @@ mod tests {
             thing(&worn, EquipSlot::Primary),
         );
         let (potion, arrows) = (packed[0], packed[1]);
-        assert!(world.run_system_once_with(dismiss, scene.record).unwrap());
+        assert!(world.run_system_once_with(dismiss, (scene.record, true)).unwrap());
         world.flush();
         assert!(!world.entity(scene.record).contains::<PartyMember>());
         assert!(world.entity(scene.record).contains::<Character>());

@@ -219,7 +219,7 @@ names.
 - On the conversation: `Conversation` (who is spoken with, the transcript,
   the topics learned, the charm laid), `Script` (what is still to be said and
   done), `Asked` (the question put to the party: options, a typed word, a
-  price, giving everything), `Blocked`; the existing `Closing` and the spoken
+  price, giving everything); the existing `Closing` and the spoken
   line (`ConversationSpeech`), related to its conversation (`SaidIn`,
   `Speaking`).
 - What the party does, each an event at the conversation with one observer:
@@ -305,6 +305,73 @@ is contracted when it is reached, since each is a system of its own.
 
 Steps 5 to 7 are each as large as the conversation slice was.
 
+### What slice 9 left
+
+Nothing a quote asks or sets is refused any more, and the refusal is deleted:
+a fact is always readable and settable, and a conversation whose lines do not
+hold what was to be said falls silent with a warning. What each of the last
+scenes needed is built:
+
+| What | What it is here |
+| --- | --- |
+| An animation played out, and what follows it | `Cycle` on a body; the screen plays it once and says `Played`; `After` holds what follows. Scripts' `CYCLE` waits on the same thing |
+| Something happening after a while | `Due`, a timer with rows |
+| The screen dimmed and restored | `Fading`, answered by `Faded`; a camera path by name, a named particle system, a sound and a shake are rows |
+| The party looking somewhere | `party::body::LookAt`, an event: the party faces the point |
+| A member picked by the player | `MemberPick`, answered by `Picked` from a portrait; `Chosen`, `Pining` |
+| A member taken and returned | `Condition::Missing`, which nothing but the story lifts |
+| Something waiting for a battle to be over | `Awaited` |
+| The game's ending | `Ended(Ending)`, chosen by the table's `endings`; the screen shows its picture, words, voice and music |
+| A fact that stays once seen | `Reading::Once`, noted as a conversation reads it |
+| Leaving the party without a body; an arrival that greets | `dismiss` told whether the leaver stands; `GreetsOnArrival` |
+
+**Known to differ from the original, and not yet seen in the running game.**
+- Al-Sedexus's capture dims the screen, not the world's light, and her
+  moaning plays out instead of being stopped as the party comes round.
+- Her child is not named after the chosen one, and her death does not yet
+  free them (the original does both where a kill is recorded).
+- Nothing on screen asks the player to pick a member; the portraits simply
+  take the pick.
+- A member goes missing only by the story's rows; the level code that takes
+  one (Marten's Bluff) and the day-long absence of the Mook's exchange are
+  not ported.
+- The ending's words are placed, not laid up from the foot of their box;
+  nothing follows the ending screen (the original goes on to its credits),
+  and the endgame's video is not played.
+- The Savant's hack waits "fifty ticks", read here as fifty milliseconds.
+- A script's `PLAY` does not read how far the sound carries; a look turns
+  the party at once and only about the upright.
+- `Unstock` cancels what a merchant was still to get, not what they hold.
+
+**Still to port, beside the story's rows.**
+- The original's story code per level (`level_specific_code/`, 21 files,
+  some 5,300 lines beside its dispatch table): Arnika and Marten's Bluff are
+  the largest. Without it the conversations run but parts of the world they
+  refer to do not happen.
+- Standing orders acted on: guarding, patrolling, looking about.
+- A marked person's `restore` (a companion dismissed going home to their
+  post), which the original does by the same routine.
+
+### 10. What the story has to say about a device
+
+**Rules.** [rules/devices.md](rules/devices.md).
+
+The original's per-level code is some 140 callbacks on named devices, in 21
+files. Here one exists, as a component and a branch in the device's own code
+(`BellButton`).
+
+**Gone.** `world::scripts` (`LevelScript`, `BellButton`, `ring_bell`), the
+level's `script` field and `TriggerEffect::BellRang`: the bells are a row.
+
+**New types, and no others.** `triggers::Activating`, the question a device
+asks. `npcs::devices::Gate`, a device's cases. Readings and consequences are
+added to the story's enums as levels need them.
+
+**Order of work.** Levels by size, smallest first; each ends with a retail
+test still passing that every gate names a device its level has. Then what a
+level does as the party enters it (the original's setups), as rows of the
+same kinds. Arnika and Marten's Bluff last.
+
 ## Status
 
 | Slice | State |
@@ -316,5 +383,6 @@ Steps 5 to 7 are each as large as the conversation slice was.
 | 5. Tables are content | First phase landed: what each spell does is `assets/tables/spell_effects.ron`, 101 spells as rows, read into the catalogs; `define_spell` and its 44 arms are gone, after a test showed the table and the code made the same definitions for every spell. A row names its spell's own numbers symbolically (its dice, rounds, realm). Then spells laid: what a spell adds while laid is an amount written as data (`assets/tables/spells_laid.ron`), with whether it is personal, lasts only a fight, pulses and on whom, may backfire, and its death floor; backfires and pulses are rows beside a spell's effects; `bonus`'s match, `personal`, `combat_only`, `OFFENSIVE`, `define_backfire` and `define_pulse` are gone, each after a test found old and new equal for every spell. Then professions and races: each is a row (`assets/tables/professions.ron`, `races.ron`) holding its numbers and traits; `profession_row`, `race_attributes`, the trait arms and fourteen tests of a particular profession or race inside rules are gone, after tests found old and new equal for every profession, race and level 1 to 50. Then special attacks (`special_attacks.ron`) and the kinds of trap (`traps.ron`), each proven equal to the code it replaced. Then the ranged weapons (`weapons.ron`): what each bow, gun and omnigun tier takes, what reloads a gun, and the omnigun's tiers by level. Then what a laid spell does for its bearer beyond numbers (warning, finding, breath, answering a blow, absorbing, answering a slowing) is found by its row, not its name. An NPC's posts and what it waits on before joining are decoded in `retail`. Then what a blow's weapon effects do (`weapon_effects.ron`), proven equal to the code it replaced; and the definitions built from the tables at start-up are gone: a strike names whose rows it follows and the rows are read as it lands. Then what a special attack does is written out as effect rows like a spell's, proven equal to the code that spelled out its five effect words, which is gone. **Still owed:** a breath is aimed by the record of one named cone spell; Set Portal and Return to Portal are paired by name where spells are picked; a fountain heals by the record of Heal All. |
 | 6. A round | First phase landed: the round takes the earliest moment from a timeline (`Moment`); an actor's moment is one chain of events (`Strike`, `Cast`, `Breathe`, `Guard`, `Retreat`, `Hold`); deeds land as they are released; `RoundPhase`, `Called`, `Perform`, `Chosen` and the scheduled `resolve` are gone. Then the end of the round is what follows the last moment (`RoundEnds`, its steps in the rule page's order as events), time passing is an event (`Elapsed`, and `Aged` for spells laid), deaths settle where the hurt was dealt, and provocation, utility casts and refused casts are events. No system on the fixed step polls for a message or a marker any more: the step is `fly`, `stop_party_move`, `begin_round`, `next_moment`. Then the attack ([rules/attack.md](rules/attack.md)) and a monster's choices ([rules/monsters.md](rules/monsters.md)) were rebuilt as rules over structs of facts with a gatherer for each, and then rebuilt again without them: each rule takes the fighters, or the monster and what it makes out (`Sight`), and the attack under way. The facts modules and some forty mirror structs are gone. Casting ([rules/casting.md](rules/casting.md)) likewise as far as who may cast, the failure roll, the cost and the auto power, which read the caster, the means of the cast and the spell. A provoked group carries a mark that engagement reads once. Then whom a cast reaches is read from the actors where they stand, with no list taken as the cast begins. Then a deed became an entity (`Deed`) that lands and says `Landed`; what follows it (a drain's share, a burst, a spell turned back, practice, a recast, the telling) is components beside it that its maker's observer reads, so landing knows nothing of magic or the fight; `Release`, `Act`, `Flight` and the landing queue are gone. Then what the party does to a lock, a trap or a container is an event at the attempt with one observer each (`Pick`, `Force`, `Inspect`, `Disarm`, `Spring`, `Take`, `Leave`), and a trap going off or a device opening is an event too; `DeviceRequest`, `DeviceAct` and the system that polled and matched them are gone. **Still owed:** the cast observer is still some 250 lines; `monster/close.rs` and `noticing.rs` keep a few plain-value rules; what the casting, monster and attack pages record as confirmed but unfixed or missing. Most unit tests of the monster's and the cast's rules went with the fact structs and were not rebuilt: those rules are covered by the combat scenarios and the retail fight only. |
 | 7. Presentation | Adapted as each slice landed; never checked in the running game. |
-| 8. Talking with someone | Landed but for three of the differences. A conversation waits on what is there to be seen (a line being spoken, a question asked, a script not yet said out); each thing the party does is an event at it with one observer; saying is one chain that goes on when a line ends; the merchant and the recruit answer when asked. `Talk`, `ConversationRequest`, `ConversationWait`, `After`, `incoming`, `transaction`, `result`, the fifteen chained systems and their sets, and the request and receipt messages of trade and joining are gone. Fixed against the original: a topic with no match is answered (0x23 or 0x24); two matching words are both answered and more than two get 0x20; a gift counts against the trade pool by the original's arithmetic, and the answer follows from how the person then stands. Tests drive conversations through the plugin by what the party does and what is said, paid and felt. **Still owed:** `where is` and `join` typed as topics (they need the original's tables of names and regions and its keyword files); the farewell a friend says on leaving (0x5c) and the member's remark after; the prompt that turns a person hostile on purpose. The module is 1,500 lines against a target of under 1,000: the old files were unformatted and undocumented, and the events and their observers are written out. Not looked at in the running game. |
-| 9. The story so far | Steps 1 to 3 and most of 4 to 7 landed. Every fact is in `assets/tables/facts.ron` by its own name: which begin set, which are read off the world and how (36, of which four still wait on state this game lacks), and what each of 109 sets off, in full. A fact is read by one accessor (`Readings`). Setting a fact is an event (`FactSet`); each thing it sets off befalls (`Befalls`) and is carried out by the observer it concerns: the story and the party (another fact, a faction, a skill's floor), the level (a named device run, switched or unlocked, a variable, an item appearing, a group turned, given a script, moved or gone), or a person (gone for good, moved, given a script, made to speak, a merchant's delivery). Monster scripts ([rules/scripts.md](rules/scripts.md)) are read from their files and carried out for placed monsters and for those the story gives one; their named happenings are a table. Some twenty-five of the original's scenes are rows of these kinds. A quote's script label and its sending someone out of the party are carried out. **Still owed:** a person marked and what each marked person then does; a person stood in another level; a person's lines read anew; a monster appearing; the attribute raise and the taken member's return; an item struck from what a person carries; eighteen scenes that are their own (the endgame, Al-Sedexus's capture, the henchman, Alfie, and others); four derived facts; then the refusal deleted. Standing orders are kept but only facing is acted on. The original's story code per level (`level_specific_code/`) is not surveyed. Level variables are true or false where the original's are numbers. Nothing of this slice has been seen in the running game. |
+| 8. Talking with someone | Landed. A conversation waits on what is there to be seen (a line being spoken, a question asked, a script not yet said out); each thing the party does is an event at it with one observer; saying is one chain that goes on when a line ends; the merchant and the recruit answer when asked. `Talk`, `ConversationRequest`, `ConversationWait`, `After`, `incoming`, `transaction`, `result`, the fifteen chained systems and their sets, and the request and receipt messages of trade and joining are gone. Fixed against the original: a topic with no match is answered; two matching words are both answered and more than two get 0x20; `join` and `where is` are understood, the latter from a table of who knows of whom and which way each region lies; a friend says farewell on being left and a member remarks after; the party can turn on a person, who then stands against it with their group, as does one whose quote closes and resumes; a gift counts against the trade pool by the original's arithmetic. Tests drive conversations through the plugin by what the party does and what is said, paid and felt. The module is some 1,700 lines against a target of under 1,000. Not looked at in the running game. |
+| 9. The story so far | Steps 1 to 3 and most of 4 to 7 landed. Every fact is in `assets/tables/facts.ron` by its own name: which begin set, which are read off the world and how (36, of which four still wait on state this game lacks), and what each of 109 sets off, in full. A fact is read by one accessor (`Readings`). Setting a fact is an event (`FactSet`); each thing it sets off befalls (`Befalls`) and is carried out by the observer it concerns: the story and the party (another fact, a faction, a skill's floor), the level (a named device run, switched or unlocked, a variable, an item appearing, a group turned, given a script, moved or gone), or a person (gone for good, moved, given a script, made to speak, a merchant's delivery). Monster scripts ([rules/scripts.md](rules/scripts.md)) are read from their files and carried out for placed monsters and for those the story gives one; their named happenings are a table. Some twenty-five of the original's scenes are rows of these kinds. A quote's script label and its sending someone out of the party are carried out. Then people: a marked person leaves for good once the party has left the level; one the story stands at a spot of another level takes their place there when the party arrives (`Post`); one of a species can be brought in at a spot (`Coming`); "killed" and "gone" are components of a person, and whether someone was killed can be read as a fact. All of the 17,297 quotes the game ships can be said: the last scenes (the henchman, the Savant's hack, the quake, the book, the explosion, Al-Sedexus's choice and capture, Vi's ending, the endgame) are rows too, in `npcs/scenes.rs` where they turn on the party's own, and the refusal is deleted. None of it has been looked at in the running game. See "What slice 9 left". |
+| 10. What the story has to say about a device | Nearly all of it. A device asks before it acts (`Activating`); a level's cases, and what it does as the party enters, are rows of `assets/tables/devices.ron` in the story's readings and consequences. All twenty of the original's levels with such code have rows, each with gaps the rule page lists; a retail test checks that every device and spot a row names is the level's. What a case sets off may wait for seconds, for a device to stop moving, for a talk to end, or recur (`Due`, `Stilled`, `Parted`, `Recurring`), which is how the lifts, the teleporter and the alarms are rows. `world::scripts` and the level's `script` are gone. Marten's Bluff's arrows, spiked balls and crusher, the Gigas pressure plate, the lift's steps outside Mount Gigas, Trynton's fountain and Arnika's pedestal are in too. Arnika's scanner, the crusher's door controls and Trynton's dead (a generator may now be made to draw from another table) are in too. A retail scenario uses two gated devices of the lower monastery in the real game, headless; nothing has been looked at on screen. |

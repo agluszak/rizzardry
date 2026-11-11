@@ -9,10 +9,10 @@ use bevy::prelude::*;
 
 use super::acts::{Regard, Voices, greeting};
 use super::{
-    Asked, Blocked, Conversation, ConversationSpeech, Dialogue, DialogueItem, NpcSpeech,
-    PartyRemark, QuestReward, SaidIn, TranscriptLine,
+    Asked, Conversation, ConversationSpeech, Dialogue, DialogueItem, NpcSpeech, PartyRemark,
+    QuestReward, SaidIn, TranscriptLine,
 };
-use crate::content::npcs::{DialogueOp, Gift, Quote, Response, TopicCategory};
+use crate::content::npcs::{DialogueOp, Gift, Response, TopicCategory};
 use crate::game::camp::Camp;
 use crate::game::characters::{Character, Vitals};
 use crate::game::combat::Battle;
@@ -20,15 +20,20 @@ use crate::game::data::Catalogs;
 use crate::game::factions::{Band, FactionNews, Factions};
 use crate::game::inventory::PartyInventory;
 use crate::game::items::{Give, Items, Lose, Place, Put, make, roll_amount};
-use crate::game::npcs::Npc;
 use crate::game::npcs::access::{NpcActors, Scripts};
 use crate::game::npcs::recruit;
 use crate::game::npcs::story::{self, Readings, StoryFacts};
+use crate::game::npcs::{Alias, Npc};
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
 use crate::game::world::bidden::Jump;
+use crate::game::world::hostility::{Stance, Stand};
+use crate::game::world::identify::GroupMember;
+
+/// What a member says on leaving someone (retail's character event 504).
+const PARTING_REMARK: u16 = 504;
 use crate::game::world::items::CLEARANCE;
 use crate::game::world::level::{Destination, Level};
 
@@ -49,6 +54,9 @@ enum Step {
     Ask(Asked),
     /// The person has no more to say to the party.
     End,
+    /// The person has no more to say and goes back to what they were
+    /// doing, against the party.
+    Resume,
 }
 
 /// What the person still has to say and do, in order. Its ending, once
@@ -63,7 +71,7 @@ impl Script {
 
     fn push(&mut self, step: Step) {
         match self.0.back() {
-            Some(Step::End) => self.0.insert(self.0.len() - 1, step),
+            Some(Step::End | Step::Resume) => self.0.insert(self.0.len() - 1, step),
             _ => self.0.push_back(step),
         }
     }
@@ -73,6 +81,12 @@ impl Script {
         self.push(Step::Say { quote, line: 0, free: false });
     }
 
+    /// Whatever was to come is dropped, and the person says a quote.
+    pub(crate) fn restart(&mut self, quote: u16) {
+        self.0.clear();
+        self.say_free(quote);
+    }
+
     /// The person will say a quote whatever its price.
     pub(super) fn say_free(&mut self, quote: u16) {
         self.push(Step::Say { quote, line: 0, free: true });
@@ -80,9 +94,18 @@ impl Script {
 
     /// The conversation ends once everything queued has been said.
     pub(super) fn end(&mut self) {
-        if !matches!(self.0.back(), Some(Step::End)) {
+        if !matches!(self.0.back(), Some(Step::End | Step::Resume)) {
             self.0.push_back(Step::End);
         }
+    }
+
+    /// The conversation ends once everything queued has been said, and the
+    /// person turns on the party.
+    pub(super) fn resume(&mut self) {
+        if matches!(self.0.back(), Some(Step::End | Step::Resume)) {
+            self.0.pop_back();
+        }
+        self.0.push_back(Step::Resume);
     }
 
     fn ask(&mut self, asked: Asked) {
@@ -136,36 +159,13 @@ pub(super) fn interrupt(
     }
 }
 
-/// The person's script asks for what this game cannot do: nothing more is
-/// said.
-pub(super) fn block(talk: &mut DialogueItem, commands: &mut Commands, blocked: Blocked) {
+/// The person's lines do not hold what was to be said: nothing more is.
+pub(super) fn fall_silent(talk: &mut DialogueItem, commands: &mut Commands, why: &str) {
+    warn!("a conversation falls silent: {why}");
     talk.script.0.clear();
     if talk.closing {
         commands.entity(talk.entity).despawn();
-    } else {
-        commands.entity(talk.entity).insert(blocked);
     }
-}
-
-/// What this game cannot yet do of a quote, checked before the party pays
-/// or gives anything for it: which entry, and why. Conditions are evaluated
-/// later, when the quote reaches its entries.
-pub(super) fn unsupported(q: &Quote, content: &Catalogs) -> Option<(usize, String)> {
-    q.operations.iter().enumerate().find_map(|(entry, op)| {
-        let error = match op {
-            DialogueOp::SetFact(id, _) if !StoryFacts::writable(*id, &content.facts) => {
-                Some(format!("unimplemented fact consequences {id:?}"))
-            }
-            DialogueOp::Conditional { facts, .. } => {
-                facts.iter().find_map(|(id, _)| story::unreadable(*id, &content.facts))
-            }
-            DialogueOp::Unsupported { opcode, .. } => {
-                Some(format!("unimplemented opcode {opcode}"))
-            }
-            _ => None,
-        };
-        error.map(|error| (entry, error))
-    })
 }
 
 /// Go on with a conversation (retail `ProcessMessageBoxQueue`,
@@ -179,7 +179,7 @@ pub(super) fn carry_on(
     go: On<Continue>,
     mut talks: Query<Dialogue>,
     (scripts, actors, voices, readings): (Scripts, NpcActors, Voices, Readings),
-    mut npcs: Query<&mut Npc>,
+    (mut npcs, groups, aliases): (Query<&mut Npc>, Query<&GroupMember>, Query<&Alias>),
     (mut story, mut factions): (ResMut<StoryFacts>, ResMut<Factions>),
     (clock, camp): (Res<GameClock>, Option<Res<Camp>>),
     occupied: Query<(), Or<(With<Destination>, With<Battle>)>>,
@@ -203,7 +203,7 @@ pub(super) fn carry_on(
     if talk.speaking.is_some() {
         return;
     }
-    if talk.asked.is_some() || talk.blocked.is_some() {
+    if talk.asked.is_some() {
         if closing {
             commands.entity(conversation).despawn();
         }
@@ -230,7 +230,32 @@ pub(super) fn carry_on(
             return;
         };
         let (quote, line, free) = match step {
+            // Leaving one who has a body and is no merchant, a member has
+            // something to say about it a second later (retail
+            // `EndNpcDialogueSession`).
             Step::End => {
+                if talk.parting
+                    && !def.merchant
+                    && !actors.in_party(actor)
+                    && actors.active_body(actor).is_some()
+                {
+                    remarks.write(PartyRemark { event: PARTING_REMARK, after: 1.0, speaker: None });
+                }
+                commands.entity(conversation).despawn();
+                return;
+            }
+            // They are cool toward the party at best, and their group is
+            // against it (retail `ResumeNpc`).
+            Step::Resume => {
+                if let Ok(mut npc) = npcs.get_mut(actor)
+                    && npc.disposition > 32
+                {
+                    npc.disposition = 25;
+                }
+                let group = actors.active_body(actor).and_then(|body| groups.get(body).ok());
+                if let Some(&GroupMember(group)) = group {
+                    commands.trigger(Stand { group, stance: Some(Stance::Hostile) });
+                }
                 commands.entity(conversation).despawn();
                 return;
             }
@@ -250,19 +275,10 @@ pub(super) fn carry_on(
             }
             Step::Say { quote, line, free } => (quote, line, free),
         };
-        let blocked = |entry, reason: String| Blocked { quote, entry, reason };
-        let Some(script) = scripts.get(actor) else {
-            block(&mut talk, &mut commands, blocked(0, "speaker script is not loaded".into()));
+        let Some(q) = scripts.get(actor).and_then(|s| s.quotes.get(usize::from(quote))) else {
+            fall_silent(&mut talk, &mut commands, &format!("no quote {quote}"));
             return;
         };
-        let Some(q) = script.quotes.get(usize::from(quote)) else {
-            block(&mut talk, &mut commands, blocked(0, "quote does not exist".into()));
-            return;
-        };
-        if let Some((entry, reason)) = unsupported(q, &actors.content) {
-            block(&mut talk, &mut commands, blocked(entry, reason));
-            return;
-        }
         // A quote with a price is asked for before any of it is said,
         // unless it was paid for: the charm on the person takes its percent
         // off, and the party's best Communication a five-hundredth a point
@@ -294,14 +310,11 @@ pub(super) fn carry_on(
         let last = line + 1 >= q.text.len();
         if last {
             let mut failure = None;
-            for (entry, op) in q.operations.iter().enumerate() {
+            for op in &q.operations {
                 let response = match op {
                     DialogueOp::SetFact(id, value) => {
                         let level = actors.level().map_or("", |(_, l)| l.path.as_str());
-                        if let Err(e) = story.set(*id, *value, &actors.content.facts, level) {
-                            failure = Some((entry, e));
-                            break;
-                        }
+                        story.set(*id, *value, &actors.content.facts, level);
                         commands.trigger(story::FactSet { fact: *id, value: *value });
                         None
                     }
@@ -344,33 +357,20 @@ pub(super) fn carry_on(
                         let leaver = npc.as_deref().map_or(Some(actor), |name| actors.shown(name));
                         if let Some(leaver) = leaver {
                             commands.queue(move |world: &mut World| {
-                                let _ = world.run_system_cached_with(recruit::dismiss, leaver);
+                                let _ =
+                                    world.run_system_cached_with(recruit::dismiss, (leaver, true));
                             });
                         }
                         None
                     }
                     DialogueOp::PartyRemark(event) => {
-                        remarks.write(PartyRemark { event: *event });
+                        remarks.write(PartyRemark { event: *event, after: 0.0, speaker: None });
                         None
                     }
                     DialogueOp::Conditional { facts, response } => {
-                        let mut holds = true;
-                        for (id, value) in facts {
-                            match readings.read(*id, &story, &factions) {
-                                Ok(actual) if actual == *value => {}
-                                Ok(_) => {
-                                    holds = false;
-                                    break;
-                                }
-                                Err(e) => {
-                                    failure = Some((entry, e));
-                                    break;
-                                }
-                            }
-                        }
-                        if failure.is_some() {
-                            break;
-                        }
+                        let holds = facts.iter().all(|(id, value)| {
+                            readings.read_noting(*id, &mut story, &factions) == *value
+                        });
                         holds.then_some(response)
                     }
                     DialogueOp::Next(response) => Some(response),
@@ -386,13 +386,8 @@ pub(super) fn carry_on(
                         talk.script.end();
                         None
                     }
-                    // The person goes back to what they were doing, cool
-                    // toward the party.
                     DialogueOp::CloseAndResume => {
-                        if let Ok(mut npc) = npcs.get_mut(actor) {
-                            npc.disposition = 25;
-                        }
-                        talk.script.end();
+                        talk.script.resume();
                         break;
                     }
                     _ => None,
@@ -408,16 +403,16 @@ pub(super) fn carry_on(
                                 talk.conversation.actor = next;
                                 talk.script.say(*quote);
                             } else {
-                                failure = Some((entry, format!("speaker {npc} is unavailable")));
+                                failure = Some(format!("speaker {npc} is not there"));
                             }
                         }
-                        _ => failure = Some((entry, "invalid random quote range".into())),
+                        _ => failure = Some("a random quote's range is empty".into()),
                     }
                     break;
                 }
             }
-            if let Some((entry, reason)) = failure {
-                block(&mut talk, &mut commands, blocked(entry, reason));
+            if let Some(why) = failure {
+                fall_silent(&mut talk, &mut commands, &why);
                 return;
             }
         } else {
@@ -454,7 +449,8 @@ pub(super) fn carry_on(
                 0 => String::new(),
                 line => char::from(b'a' + (line - 1).min(25) as u8).to_string(),
             };
-            format!("{}_{quote:03}{letter}", def.voice_stem())
+            let name = aliases.get(actor).ok().map(|alias| alias.0.as_str());
+            format!("{}_{quote:03}{letter}", def.voice_stem(name))
         });
         let text = if token == "SOUND" && !q.alert { String::new() } else { text };
         commands.spawn((

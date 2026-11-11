@@ -438,6 +438,80 @@ pub fn roll_group(
         .collect()
 }
 
+/// A monster the story brings into the level the party is in (retail
+/// `SpawnMonsters`): one of a species at a named spot, standing toward the
+/// party as told. It is there once its body has loaded.
+#[derive(Component, Clone, Debug)]
+pub struct Coming {
+    pub species: u32,
+    pub spot: String,
+    pub stance: super::hostility::Stance,
+    /// How many of them.
+    pub count: u32,
+    /// The named spot it faces as it arrives.
+    pub faces: Option<String>,
+    /// The script it follows from then on.
+    pub script: Option<String>,
+    /// How far from the spot it comes.
+    pub shift: Vec3,
+}
+
+/// Those the story is bringing in arrive, each a group of its own.
+pub fn come(
+    mut commands: Commands,
+    coming: Query<(Entity, &Coming)>,
+    level: Single<(Entity, &super::level::Level, &LevelNavigation, &mut MonsterBodies, &Unborn)>,
+    (monsters, groups): (Query<&Monster>, Query<&MonsterGroup>),
+    definitions: Res<Assets<crate::content::level::LevelDefinition>>,
+    (bodies, server): (Res<Assets<MonsterBody>>, Res<AssetServer>),
+    (content, clock): (If<Res<Catalogs>>, Res<crate::game::time::GameClock>),
+    mut configs: ResMut<Assets<WalkerMotionConfig>>,
+    mut rng: ResMut<GameRng>,
+) {
+    if coming.is_empty() {
+        return;
+    }
+    let (root, played, navigation, mut handles, unborn) = level.into_inner();
+    let Some(definition) = definitions.get(&played.definition) else { return };
+    for (request, arrival) in &coming {
+        let (Some(kind), Some(feet)) =
+            (content.species.kind(arrival.species), definition.spot(&arrival.spot))
+        else {
+            commands.entity(request).despawn();
+            continue;
+        };
+        handles
+            .0
+            .entry(arrival.species)
+            .or_insert_with(|| server.load(crate::content::paths::monster(&kind.model)));
+        let Some(shape) = handles.get(arrival.species, &bodies) else { continue };
+        let ids = next_ids(
+            monsters.iter().map(|monster| monster.location),
+            groups.iter().map(|group| group.authored),
+            unborn,
+        );
+        let facing = arrival.faces.as_deref().and_then(|spot| definition.spot(spot));
+        let yaw = facing.map_or(0.0, |at| crate::game::party::body::yaw_toward(at - feet));
+        let mut members =
+            roll_group(ids, (arrival.species, arrival.count), (kind, shape), &mut rng);
+        for member in &mut members {
+            member.feet = feet + arrival.shift;
+            member.yaw = yaw;
+            member.script = arrival.script.clone();
+        }
+        let set = super::hostility::SetStance { stance: arrival.stance, at: clock.ms };
+        spawn_group(
+            &mut commands,
+            root,
+            members,
+            (ids.1, Some(set)),
+            &content.species,
+            (navigation, &mut configs),
+        );
+        commands.entity(request).despawn();
+    }
+}
+
 /// Birth an unborn group of the played level, by the level's id for it
 /// (retail `GiveBirthToMonster`): its members come into the world where
 /// they were placed. A group already born, or with no unborn members, is

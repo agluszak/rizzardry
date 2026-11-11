@@ -10,6 +10,7 @@ pub mod conversation;
 pub mod device_panel;
 pub mod dialog;
 pub mod effects;
+pub mod ending;
 pub mod environment;
 pub mod frontend;
 pub mod hover;
@@ -111,6 +112,7 @@ impl Plugin for PresentationPlugin {
         .add_message::<party_voice::SpokenRemark>()
         .add_message::<automap::OpenAutomap>()
         .init_resource::<effects::CameraShake>()
+        .init_resource::<effects::ScreenDim>()
         .init_resource::<notices::TextLog>()
         .init_resource::<hover::Hover>()
         .init_resource::<selection::WorldSelection>()
@@ -150,6 +152,8 @@ impl Plugin for PresentationPlugin {
                 (selection::select_world_target, selection::activate_selection).chain(),
                 (
                     effects::play_trigger_effects,
+                    effects::fade_screen,
+                    ending::show_ending,
                     effects::play_lock_sounds,
                     notices::queue_notices(),
                 )

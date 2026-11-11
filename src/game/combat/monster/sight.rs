@@ -67,7 +67,8 @@ impl Sight<'_, '_> {
     }
 
     /// The far clip, past which nobody sees anybody.
-    fn far(&self) -> f32 {
+    /// How far the level lets one see: its far clip.
+    pub fn far(&self) -> f32 {
         self.level.view_distance().unwrap_or(0.0)
     }
 
