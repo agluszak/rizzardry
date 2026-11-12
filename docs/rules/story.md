@@ -57,6 +57,42 @@ do. What they set off is of a few kinds:
 
 A scene is played after whatever is being said.
 
+## 3a. What follows from a death, and from taking an item
+
+Sources: `NPC Scripting Facts.cpp` (`MonsterKilled`, `HandleScriptedNpcDeath`),
+`PC Item.cpp` (`UpdateFactsAfterAcquiringItem`).
+
+The story also hears of two things that are not facts being set. Each is a
+table of the same consequences, by species and by item.
+
+**A death.** When one of these species dies, whoever killed it:
+
+| Species | What follows |
+| --- | --- |
+| Brekek | his death is a fact |
+| the Rapax queen | her death is a fact; the Templars' standing rises by 20 |
+| a Rattkin breeder | the level counts it; at the second, the Trynnie's quest is done and the common Rattkin turn hostile |
+| Al-Sedexus | her quest is cleared if she had attacked; the chosen one is smitten no longer and speaks (event 37); her death is a fact |
+| the Rapax king | his death is a fact |
+| the Lava Lord | his death is a fact |
+| the Dark Savant | Vi, if she is of the party, speaks event 24, and so does one other member when more than two are fit to; everyone fit to speaks event 28; the ending the party chose goes on (the turn to the book, or Phoonzang's greeting); every hostile monster of the level dies |
+
+**An item taken.** When an item comes to a member or to the party:
+
+| Item | What follows |
+| --- | --- |
+| the Destinae Dominus, the Astral Dominae, the Chaos Moliri | it is possessed, and the quest to get it is done |
+| the Chaos Moliri | two days of the game's time after it is first taken, the Mook know it stolen |
+| the false Astral Dominae | it is possessed (two facts) |
+| three quest items | their quests are done |
+
+An item is the party's (`Owned`) while a member wears or packs it or it is in
+the pool or the hand; the story hears of it as it becomes so, not as it is
+moved about within the party. The original counts the Chaos Moliri's two days
+anew each time it is taken up again; here they run from the first time.
+
+Not here: an NPC's body dying marking the NPC as having appeared.
+
 ## 4. The party's own in the story
 
 - **The one Al-Sedexus is offered.** The player picks a member. A woman is

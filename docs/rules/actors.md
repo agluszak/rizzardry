@@ -17,6 +17,7 @@ holds them; nothing else of the original's shape is kept.
 | `Armour` | Armour overall and by place; what surprise strips; what bracing adds; damage cut; missile deflection | refit |
 | `Attacks` | What it strikes with; when it acts; how hard it presses; how it fares blind or from hiding | refit |
 | `Vitals` | Health and stamina, each what is left and the most there can be; what ails it, each condition with how long it lasts | being hurt, tired, healed, rested, afflicted, cured, aged; refit moves the maxima |
+| `Mending` | What it gains or loses a minute outright; whether its stamina comes back by the breath; what its traits make of recovery | refit |
 | `Side` | The side its group or kind has it on toward the party | the events listed under *Side* |
 | `Loyalty` | The faction it keeps to, if any | being made |
 
@@ -37,7 +38,7 @@ it computed from those; nothing copies it onto the actor.
 
 ## Refit
 
-The first five components are written when an actor is **refitted**: when
+The figures (all but `Vitals`, `Side` and `Loyalty`) are written when an actor is **refitted**: when
 what they are made from has changed. Nothing asks for a refit and nothing
 fires one. A few small systems see that a source changed and mark the actor
 stale; one system writes the figures of every stale actor anew. The sources:
@@ -105,9 +106,119 @@ infatuation, lifts every spell, empties stamina, and marks the actor `Dead`.
 `Dead` being added is the event the rest of the game reacts to: the fight's
 kill, the loot, the member's seat. Being raised removes it.
 
+Whatever runs an actor's health out says **who did**: the one whose blow,
+spell or breath it was, or nobody for a poison, a cloud's pulse, a trap or a
+device (retail `condition_target`). `Dead` carries that one, and the death
+answers to them: see *Death answers to someone*.
+
 Two other ways health is lost do not go through `hurt`: being **slain** outright
 (no angel, no fatigue) and a member being **drained**, which lowers the maximum
 until the drain is lifted and takes present health with it.
+
+## Time
+
+Source: `GameplayTime.cpp`, `GameTurnsPassedChar`, `AgeMonsterSight`,
+`RegenCharacterStamina`, `RebuildCharacterRegenRates`,
+`RebuildMonsterRegenRates`, `RebuildPartyEffectBlock`.
+
+Time passes in **minutes** (the aging tick, 120 game seconds; a combat round
+is one) and **breaths** (the stamina tick, 1.4 game seconds, which a fight
+does not count). Whatever passes time says how much and at what **pace** the
+party spent it: camping, standing still, walking, running or fighting. The
+time is then gone through in the steps below, each its own event with its
+own observers over the components it is about, for every actor time passes
+for: the living who are `Present` or swallowed, and no sheet without a seat. An actor not of the party is at the
+party's pace only when it camps; otherwise it is fighting if it is in the
+fight and still if not. A level that was away is owed the minutes it missed,
+at the camping pace.
+
+For each actor, in order:
+
+1. **Poison** bites: its strength a minute, half again unless the actor is
+   at rest (still or camping). What wastes its bearer (a negative health
+   figure below) is taken with it, and so is what being **swallowed**
+   takes: one and half the swallower's level a minute, or five when the
+   swallower is nowhere about. All go through `hurt`, with nobody behind
+   them.
+2. **Disease** wears a sheet down (only one with a sheet): on a roll under
+   the minutes out of ten times Vitality, one of four: a lasting condition
+   (Irritated, Nauseated, Slowed, Blind or Insane), a point off an attribute
+   for good, one to four off the most health, or off the most stamina.
+3. **What it gains or loses outright**: its `Mending`'s health, stamina and
+   spell points a minute. A monster's are its species' health and stamina
+   regeneration; a member's are the sum over what they wear in the slots in
+   use. One that breathes gains or loses the stamina figure with every
+   breath as well as every minute.
+4. **Its own recovery**. Health comes back at `(0.4 × most + 20) / 240` a
+   minute, stamina at `(0.9 × most + 20) / 240`, spell points of a realm at
+   `(0.65 × most + 20) / 240`, each times a share:
+
+   | Pace | Health | Stamina of one that breathes |
+   | --- | --- | --- |
+   | Camping | 1 | 1 |
+   | Still | ½ | ½ |
+   | Walking | 0 | 1/10 |
+   | Running | 0 | 0 |
+   | Fighting | 0 | 0 |
+
+   - A member **breathes**: their stamina comes back by the breath. A
+     monster's comes back by the minute, at the health share.
+   - **Disease** leaves a quarter of the health and stamina shares.
+   - **Health Regeneration** multiplies the health share by 16.67 scaled by
+     profession level, and gives half of that at a pace that gives none.
+   - **Stamina Regeneration** gives half again the stamina share; in a
+     fight, where nobody else gets any, it gives 3.3 scaled by profession
+     level, by the minute.
+   - **Spell points** follow the health share before Health Regeneration,
+     never under a half; a Faerie's come back at 1¼ of that, a Lizardman's
+     at ¾.
+   - In a party one of whom has **Camp Recovery**, is alive and has nothing
+     ailing them, every member's three rates are half again. Such a party
+     is marked `Tended` as its members change.
+
+   Parts of a point are carried to the next time, and dropped once the pool
+   is full.
+5. **Conditions age** by the minutes.
+
+A character without a seat in the party is not carried along by its time,
+and neither is one missing from it, unless something swallowed them.
+
+Not here: the underwater fatigue, and infatuation's wasting outside the
+Rapax levels ([survey](../survey.md)).
+
+### Swallowed
+
+Source: `Combat Attack.cpp:3006`; `ConditionsAndEnchantments.cpp`,
+`BindMonsterToCharacterDependence`, `ReleaseMonsterConditionBindings`.
+
+A monster's blow that swallows takes a member whole: they are Missing
+without end, held by that monster, unless they save (Divine, base 22). They
+waste as above, and are let out, Missing no longer, when the monster dies.
+Being held is a relationship to the swallower; one brought back some other
+way is held no longer.
+On a monster the same blow kills outright instead (Divine, base 24).
+
+Not here: the swallower's group retiring from its encounter's budget.
+
+## Death answers to someone
+
+Source: `MonsterManager.cpp`, `RecordMonsterKill`; `Factions.cpp`,
+`RecordFactionOffense`.
+
+- A monster's death counts against its **faction** only when a member of the
+  party or a monster friendly to it ran its health out. A summoned monster's
+  never does. The cost is 20 for an NPC's body, what the story's table says
+  for a few species, and otherwise 2, 6 or 10 by how often the party has
+  offended that faction.
+- In a fight, a hostile's death is a **kill**: its experience goes to the
+  fight's spoils, and a member who killed it has it counted.
+  If the species is marked notable and its level is at least the party's
+  average level plus two, the killer speaks (event 25).
+- A member's kills and deaths are their `Tally`, apart from the sheet their
+  figures are made from.
+- When no member is left who is neither dead nor missing, the **party has
+  fallen** (retail `BeginPartyDeath`): one event, at which a fight under way
+  is lost and the game is over.
 
 ## Conditions
 
@@ -156,6 +267,7 @@ nothing ails it as badly as:
 | `CanGuard` | guard a fellow | Blind |
 | `CanAct` | act outside a fight (search, trade, rest) | Turncoat |
 | `CanFight` | take, or be the target of, a combat action | Asleep |
+| `Present` | be reached by passing time | Missing |
 
 Rules filter on the markers and react to their coming and going. A round's
 end does what it does to bodies, waits for that to be settled, and only then

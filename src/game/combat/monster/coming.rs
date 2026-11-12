@@ -98,7 +98,7 @@ pub struct Entered {
 /// group never comes in.
 pub fn comes_in(
     sight: &Sight,
-    fighters: &[Entity],
+    (fighters, leader): (&[Entity], Entity),
     (stance, radius): (Stance, Option<f32>),
     (fight_running, provoked): (bool, bool),
     hostiles: &[Entity],
@@ -109,7 +109,7 @@ pub fn comes_in(
     let sees = || fighters.iter().any(|&m| sight.sees_party(m));
     let turns = stance != Stance::Hostile && radius.is_some_and(|r| nearest <= r) && sees();
     let leader_in_reach = || {
-        fighters.first().and_then(|&leader| sight.bodies.get(leader).ok()).is_some_and(|leader| {
+        sight.bodies.get(leader).is_ok_and(|leader| {
             let reach =
                 leader.attacks.arms.iter().map(|arm| arm.reach.metres()).fold(0.0, f32::max)
                     + leader.attacks.stride.unwrap_or(0.0);

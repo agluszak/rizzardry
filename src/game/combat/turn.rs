@@ -14,6 +14,7 @@ use bevy::prelude::*;
 use enum_map::EnumMap;
 
 use super::attack::phase;
+use super::effort::{Effort, Exerted};
 use super::monster::ailments::Plans;
 use super::monster::conduct::Conduct;
 use super::monster::sight::{Fray, Sight};
@@ -570,6 +571,7 @@ pub(super) fn take_turn(
                 });
             }
             news.write(CombatNews::Interrupted { actor, interrupt: Interrupt::Lured });
+            commands.trigger(Exerted { actor, effort: Effort::Wait });
             turn.end();
             pause.0 = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
             return;
@@ -626,9 +628,12 @@ pub(super) fn retreat(
     pause.0 = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
     if !walker.is_some_and(|w| w.speed > 0.0) || turn.moved {
         turn.waited = true;
+        commands.trigger(Exerted { actor, effort: Effort::Wait });
         return;
     }
     turn.moved = true;
+    let effort = if retreats.conduct == Conduct::Flee { Effort::Run } else { Effort::Return };
+    commands.trigger(Exerted { actor, effort });
     let slowed = conditions.has(Condition::Slowed);
     let metres = close::metres(attacks, slowed, false);
     let feet = places.of(actor).feet;
@@ -647,9 +652,10 @@ pub(super) fn retreat(
 }
 
 /// Hold back and rest: done for the round, without a pause.
-pub(super) fn hold(hold: On<Hold>, mut turns: Query<&mut Turn>) {
+pub(super) fn hold(hold: On<Hold>, mut turns: Query<&mut Turn>, mut commands: Commands) {
     if let Ok(mut turn) = turns.get_mut(hold.actor) {
         turn.end();
+        commands.trigger(Exerted { actor: hold.actor, effort: Effort::Wait });
     }
 }
 
@@ -723,7 +729,8 @@ pub(super) fn breathe(
                 })
             })
             .collect::<Vec<Entity>>();
-        let strike = effects::Strike { rows, strength: breathes.strength, blow: None };
+        let strike =
+            effects::Strike { rows, strength: breathes.strength, blow: None, by: Some(actor) };
         commands.spawn((Deed::at(strike, victims), Breath));
     }
 }

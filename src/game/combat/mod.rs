@@ -5,6 +5,7 @@
 pub mod approach;
 pub mod attack;
 pub mod breath;
+pub mod effort;
 mod engage;
 pub mod monster;
 mod orders;
@@ -45,6 +46,7 @@ impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(hostility::plugin)
             .add_observer(credit_death)
+            .add_observer(count_kill)
             .add_observer(settle_defeat)
             .add_observer(turn::defend_instead)
             .add_observer(round_end::end_the_round)
@@ -68,6 +70,7 @@ impl Plugin for CombatPlugin {
             .add_observer(turn::guard)
             .add_observer(turn::retreat)
             .add_observer(turn::hold)
+            .add_observer(effort::tire)
             .add_observer(summon::summon)
             .add_message::<CombatNews>()
             .add_message::<CyclePartyMove>()
@@ -347,6 +350,10 @@ pub enum CombatNews {
     Killed {
         actor: Entity,
     },
+    /// A member made a kill worth speaking of.
+    Feat {
+        member: Entity,
+    },
     Won {
         kills: u32,
         experience_each: u32,
@@ -391,40 +398,36 @@ pub enum CombatNews {
     PartyStops,
 }
 
-/// Once deaths are settled, the party is defeated if none of it lives,
-/// whoever's action dealt the damage.
+/// A party that has fallen has lost the fight it was in: its combatants
+/// leave the fight and stop closing in; they remain.
 pub fn settle_defeat(
-    _: On<crate::game::characters::Settled>,
+    _: On<crate::game::party::PartyFell>,
     mut commands: Commands,
-    battle: Option<Single<Entity, With<Battle>>>,
-    roster: Single<&PartyRoster>,
+    battle: Single<Entity, With<Battle>>,
     mut news: MessageWriter<CombatNews>,
-    bodies: Query<&Vitals>,
 ) {
-    let Some(battle) = battle.map(Single::into_inner) else { return };
-    if roster.iter().all(|m| bodies.get(m).unwrap().is_dead()) {
-        news.write(CombatNews::Lost);
-        // Its combatants leave the fight and stop closing in; they remain.
-        commands.entity(battle).despawn();
-    }
+    news.write(CombatNews::Lost);
+    commands.entity(*battle).despawn();
 }
 
 /// A death in the fight: a hostile body's with a worth is a kill worth it
 /// (nothing for one summoned), shared at the fight's end (retail
-/// `MonsterStartsDying`); everyone's is announced.
+/// `RecordMonsterKill`); everyone's is announced.
 fn credit_death(
     died: On<Add<Dead>>,
-    bodies: Query<(
-        &Side,
-        Option<&crate::game::world::population::Worth>,
-        Has<crate::game::magic::pointcasts::SummonedBy>,
-        Has<Combatant>,
-    )>,
+    bodies: Query<
+        (
+            &Side,
+            Option<&crate::game::world::population::Worth>,
+            Has<crate::game::magic::pointcasts::SummonedBy>,
+        ),
+        With<Combatant>,
+    >,
     mut spoils: Single<&mut Spoils, With<Battle>>,
     mut news: MessageWriter<CombatNews>,
 ) {
     let actor = died.entity;
-    let Ok((side, worth, summoned, true)) = bodies.get(actor) else { return };
+    let Ok((side, worth, summoned)) = bodies.get(actor) else { return };
     if let Some(worth) = worth
         && side.own() == Stance::Hostile
     {
@@ -434,6 +437,37 @@ fn credit_death(
         }
     }
     news.write(CombatNews::Killed { actor });
+}
+
+/// A member who killed a hostile in the fight has it on their tally; if it
+/// was a kill to speak of, of a level two or more above the party's
+/// average, they speak (retail `RecordMonsterKill`).
+#[allow(clippy::type_complexity)]
+fn count_kill(
+    died: On<Add<Dead>>,
+    killed: Query<
+        (&Dead, &Side, &crate::game::actors::Level, Has<crate::game::world::population::Notable>),
+        (With<Combatant>, With<crate::game::world::population::Worth>),
+    >,
+    mut members: Query<
+        (&mut crate::game::characters::Tally, &crate::game::actors::Level),
+        With<crate::game::party::roster::PartyMember>,
+    >,
+    mut news: MessageWriter<CombatNews>,
+) {
+    let Ok((&Dead { by: Some(killer) }, side, level, notable)) = killed.get(died.entity) else {
+        return;
+    };
+    if side.own() != Stance::Hostile {
+        return;
+    }
+    let (sum, count) =
+        members.iter().fold((0, 0), |(sum, count), (_, level)| (sum + level.0, count + 1));
+    let Ok((mut tally, _)) = members.get_mut(killer) else { return };
+    tally.kills += 1;
+    if notable && sum / count + 2 <= level.0 {
+        news.write(CombatNews::Feat { member: killer });
+    }
 }
 
 /// Starting the round while the party moves ends its move (retail

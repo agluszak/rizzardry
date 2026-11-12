@@ -17,6 +17,7 @@ use super::monster::sight::Sight;
 use crate::game::actors::{Level, Places};
 use crate::game::party::body::PartyBody;
 use crate::game::world::hostility::{Allegiance, Stand};
+use crate::game::world::identify::Leads;
 use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::population::Camouflage;
 use avian3d::prelude::Position;
@@ -30,21 +31,18 @@ pub(super) struct Engaged(pub(super) Vec<Entity>);
 /// fighting (retail `AlertSameFactionGroups`). An NPC's group, an unaligned
 /// one and one hostile already are not stirred.
 pub(super) fn alert_factions(
-    monsters: Query<(&Allegiance, Has<Combatant>), With<Monster>>,
-    groups: Query<(Entity, &GroupMembers, &LevelOwned)>,
+    leading: Query<(Entity, &Leads, &Allegiance, Has<Combatant>, &LevelOwned), With<Monster>>,
     sight: Sight,
     level: PlayedLevel,
     mut commands: Commands,
 ) {
     let Some(root) = level.entity() else { return };
     let hostile = |monster: Entity| sight.side(monster) == Some(Stance::Hostile);
-    let leaders: Vec<(Entity, Entity, &Allegiance, bool)> = groups
+    let leaders: Vec<(Entity, Entity, &Allegiance, bool)> = leading
         .iter()
-        .filter(|(.., owner)| owner.0 == root)
-        .filter_map(|(group, members, _)| {
-            let leader = members.iter().find(|&member| sight.alive(member))?;
-            let (allegiance, fighting) = monsters.get(leader).ok()?;
-            Some((group, leader, allegiance, fighting))
+        .filter(|&(leader, .., owner)| owner.0 == root && sight.alive(leader))
+        .map(|(leader, &Leads(group), allegiance, fighting, _)| {
+            (group, leader, allegiance, fighting)
         })
         .collect();
     for &(group, leader, allegiance, _) in &leaders {
@@ -71,6 +69,7 @@ pub(super) fn engage(
     battles: Query<(), With<Battle>>,
     monsters: Query<(Entity, &Monster, &Allegiance, Option<&GroupMember>, Has<Combatant>)>,
     groups: Query<(Entity, &MonsterGroup, &GroupMembers, &LevelOwned, Has<hostility::Provoked>)>,
+    leading: Query<(), With<Leads>>,
     sight: Sight,
     level: PlayedLevel,
     content: If<Res<Catalogs>>,
@@ -140,9 +139,12 @@ pub(super) fn engage(
                 .and_then(|archipelago| walking_distance(archipelago, from, to))
                 .is_some_and(|walked| walked <= reach)
         };
+        // Its leader, if it is among those who may come; else the first of them.
+        let leader =
+            fighters.iter().copied().find(|&fighter| leading.contains(fighter)).unwrap_or(first);
         let came = coming::comes_in(
             &sight,
-            &fighters,
+            (&fighters, leader),
             side,
             (running, provoked),
             &hostiles,

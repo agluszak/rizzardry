@@ -1,9 +1,9 @@
 //! Simulation time.
 
 use crate::game::actors::spells::Aged;
+use crate::game::actors::time::{Elapsed, Pace};
 use crate::game::camp::Camp;
 use crate::game::party::body::{PartyBody, WALK_SPEED};
-use crate::game::party::recovery::{Elapsed, Pace};
 use crate::game::rng::GameRng;
 use crate::game::world::{identify::GroupRecognition, level::level_active};
 use avian3d::prelude::LinearVelocity;
@@ -24,7 +24,7 @@ pub const DAY_MS: u64 = 24 * HOUR_MS;
 /// pass in ten real seconds.
 ///
 /// Time passes only through [`GameClock::advance`], whose caller applies
-/// what that time means for the party at once (`recovery::elapse`).
+/// what that time means at once ([`Elapsed`]).
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GameClock {
     /// Milliseconds since midnight of the first day.

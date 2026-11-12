@@ -32,6 +32,11 @@ pub struct CanAct;
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct CanFight;
 
+/// Alive and not taken away (retail `highest_condition < DEAD`): time
+/// passes for it.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct Present;
+
 /// The schedule that settles what follows from a body's numbers and what
 /// it is made from, in order. [`settle`] runs it before the frame's rules
 /// read bodies, and on the fixed step once a fight's moment has been acted
@@ -55,7 +60,7 @@ pub(super) fn plugin(app: &mut App) {
             crate::game::items::weigh,
             (stats::notice_changed_sources, stats::notice_party_spells, stats::notice_changed_gear),
             stats::refit,
-            judge,
+            (judge, super::time::tend, super::time::let_go),
         )
             .chain(),
     )
@@ -115,23 +120,29 @@ fn notice_the_raised(
 #[allow(clippy::type_complexity)]
 fn judge(
     bodies: Query<
-        (Entity, &Vitals, &Conditions, Has<Lucid>, Has<CanGuard>, Has<CanAct>, Has<CanFight>),
+        (
+            Entity,
+            &Vitals,
+            &Conditions,
+            (Has<Lucid>, Has<CanGuard>, Has<CanAct>, Has<CanFight>, Has<Present>),
+        ),
         Or<(Changed<Vitals>, Changed<Conditions>)>,
     >,
     mut commands: Commands,
 ) {
-    for (body, vitals, conditions, lucid, guards, acts, fights) in &bodies {
+    for (body, vitals, conditions, (lucid, guards, acts, fights, present)) in &bodies {
         let fit = |below| !vitals.is_dead() && conditions.below(below);
         let mut body = commands.entity(body);
         mark::<Lucid>(&mut body, lucid, fit(Condition::Insane));
         mark::<CanGuard>(&mut body, guards, fit(Condition::Blind));
         mark::<CanAct>(&mut body, acts, fit(Condition::Turncoat));
         mark::<CanFight>(&mut body, fights, fit(Condition::Asleep));
+        mark::<Present>(&mut body, present, fit(Condition::Missing));
     }
 }
 
 /// The marker is on the body exactly while it should be.
-fn mark<M: Component + Default>(body: &mut EntityCommands, has: bool, should: bool) {
+pub(super) fn mark<M: Component + Default>(body: &mut EntityCommands, has: bool, should: bool) {
     match (has, should) {
         (false, true) => {
             body.insert(M::default());
@@ -185,7 +196,7 @@ mod tests {
         );
         assert_eq!(
             settled(|vitals| {
-                vitals.hurt(100);
+                vitals.hurt(100, None);
             }),
             (false, false),
             "the dead do not fight"

@@ -157,7 +157,10 @@ fn anti_magic_drains_once_and_then_dispels_the_party() {
     lay(world, party, SpellId::MAGIC_SCREEN, 10, 0);
     let rows = Rows::Spell(SpellId::ANTI_MAGIC);
     let strength = Strength { power: 1, against: 1, boost: 0 };
-    world.spawn((Deed::at(Strike { rows, strength, blow: None }, [member, second]), Magical));
+    world.spawn((
+        Deed::at(Strike { rows, strength, blow: None, by: None }, [member, second]),
+        Magical,
+    ));
     world.flush();
     assert!(!is_laid(world, party, SpellId::MAGIC_SCREEN));
     let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
@@ -229,7 +232,10 @@ fn missile_arrival_settles_defeat_before_any_actor_can_start() {
     world.entity_mut(actor).insert(turn);
     let rows = Rows::Pulse(SpellId::FIRESTORM);
     let strength = Strength { power: 1, against: 100, boost: 0 };
-    world.spawn(Deed::flying(Strike { rows, strength, blow: None }, [(member, Some(1.0))]));
+    world.spawn(Deed::flying(
+        Strike { rows, strength, blow: None, by: None },
+        [(member, Some(1.0))],
+    ));
     let before = world.get::<Vitals>(member).unwrap().health.current;
     // A second's flight is two steps of half a second.
     world.resource_mut::<Time>().advance_by(std::time::Duration::from_millis(500));
@@ -256,7 +262,7 @@ fn killing_a_turned_ally_awards_nothing_but_an_enemy_counts() {
         .afflict(Condition::Turncoat, Lasting::Rounds(5));
     refresh(world);
     let kill = |world: &mut World, body: Entity| {
-        world.get_mut::<Vitals>(body).unwrap().slay();
+        world.get_mut::<Vitals>(body).unwrap().slay(None);
         world.trigger(crate::game::characters::Fell { body });
         world.flush();
     };

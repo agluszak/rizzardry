@@ -293,6 +293,22 @@ pub enum Consequence {
     Restarts(u16),
     MemberRemarks(u16, u16),
     RaceRemarks(Race, u16),
+    /// A faction's standing moves by so much.
+    FactionShift(Faction, i8),
+    /// The chosen one is smitten no longer.
+    ChosenFreed,
+    /// Every member fit to speaks.
+    AllRemark(u16),
+    /// When more than two are fit to, one of them other than a person
+    /// speaks.
+    AnotherRemarks {
+        but: u16,
+        event: u16,
+    },
+    /// Every hostile monster of the level dies.
+    HostilesDie,
+    /// These befall after so many hours of the game's time.
+    InHours(u64, Vec<Consequence>),
 }
 
 /// When a fact's consequences follow: as it is set, as it is cleared, or
@@ -325,6 +341,10 @@ pub(super) struct FactTable {
     marked: HashMap<u16, Vec<Consequence>>,
     /// The other name the story may give a person.
     renames: HashMap<u16, String>,
+    /// What the death of one of a species sets off.
+    slain: HashMap<u32, Vec<Consequence>>,
+    /// What the party's taking an item sets off.
+    taken: HashMap<u16, Vec<Consequence>>,
 }
 
 /// The other name the story may give the person of a kind.
@@ -506,6 +526,64 @@ pub(super) fn follows_cycle(played: On<Played>, after: Query<&After>, mut bodies
     }
 }
 
+/// The story has something to say of a death (retail `MonsterKilled`,
+/// `HandleScriptedNpcDeath`): what the table gives for the species befalls.
+pub(super) fn slain(
+    died: On<Add<crate::game::characters::Dead>>,
+    monsters: Query<&Monster>,
+    readings: Readings,
+    (story, factions): (Res<StoryFacts>, Res<Factions>),
+    mut commands: Commands,
+) {
+    let Ok(monster) = monsters.get(died.entity) else { return };
+    let rows = FACTS.slain.get(&monster.species).into_iter().flatten();
+    for row in unfold(rows, None, &readings, &story, &factions) {
+        commands.trigger(Befalls(row.clone()));
+    }
+}
+
+/// The story has something to say of an item the party takes up (retail
+/// `UpdateFactsAfterAcquiringItem`): what the table gives for it befalls.
+pub(super) fn taken_up(
+    taken: On<Add<crate::game::items::Owned>>,
+    items: Query<&crate::game::items::Item>,
+    readings: Readings,
+    (story, factions): (Res<StoryFacts>, Res<Factions>),
+    mut commands: Commands,
+) {
+    let Ok(item) = items.get(taken.entity) else { return };
+    let rows = FACTS.taken.get(&item.0.0).into_iter().flatten();
+    for row in unfold(rows, None, &readings, &story, &factions) {
+        commands.trigger(Befalls(row.clone()));
+    }
+}
+
+/// Every hostile monster of the level dies, as anything killed does.
+pub(super) fn hostiles_die(
+    befalls: On<Befalls>,
+    mut monsters: Query<
+        (&mut Vitals, &crate::game::world::hostility::Side),
+        (With<Monster>, Without<crate::game::characters::Dead>),
+    >,
+) {
+    if !matches!(befalls.0, Consequence::HostilesDie) {
+        return;
+    }
+    for (mut vitals, side) in &mut monsters {
+        if side.own() == Stance::Hostile {
+            vitals.slay(None);
+        }
+    }
+}
+
+/// Something the story has put off: what befalls once its time has come.
+#[derive(Component, Debug)]
+pub struct DueAt {
+    /// The game clock's time it befalls at.
+    ms: u64,
+    rows: Vec<Consequence>,
+}
+
 /// Something the story has put off: what befalls once its time has come.
 #[derive(Component, Debug)]
 pub struct Due {
@@ -523,9 +601,18 @@ impl Due {
 /// What the story put off befalls as its time comes.
 pub(super) fn come_due(
     mut due: Query<(Entity, &mut Due)>,
-    time: Res<Time>,
+    mut due_at: Query<(Entity, &mut DueAt)>,
+    (time, clock): (Res<Time>, Res<GameClock>),
     mut commands: Commands,
 ) {
+    for (entity, mut due) in &mut due_at {
+        if clock.ms >= due.ms {
+            for row in due.rows.drain(..) {
+                commands.trigger(Befalls(row));
+            }
+            commands.entity(entity).despawn();
+        }
+    }
     for (entity, mut due) in &mut due {
         if due.timer.tick(time.delta()).is_finished() {
             for row in due.rows.drain(..) {
@@ -577,6 +664,13 @@ pub(super) fn befalls_the_story(
             news.write_batch(factions.set_band(*faction, band, clock.ms));
         }
         Consequence::FactionMet(faction) => factions.encounter(*faction as i32),
+        Consequence::FactionShift(faction, by) => {
+            news.write_batch(factions.adjust(*faction, *by, clock.ms));
+        }
+        Consequence::InHours(hours, rows) => {
+            let ms = clock.ms + hours * crate::game::time::HOUR_MS;
+            commands.spawn(DueAt { ms, rows: rows.clone() });
+        }
         // Each member awake gains up to so much, a hundred at most.
         Consequence::Raise(attribute, by, tells) => {
             for member in roster.iter() {
@@ -620,6 +714,7 @@ pub(super) fn befalls_the_story(
 pub(super) fn befalls_the_level(
     befalls: On<Befalls>,
     monsters: Query<(Entity, &Monster, &GroupMember)>,
+    leading: Query<(), With<crate::game::world::identify::Leads>>,
     positions: Query<&Position>,
     spots: Spots,
     (content, mut rng): (Res<Catalogs>, ResMut<GameRng>),
@@ -627,7 +722,11 @@ pub(super) fn befalls_the_level(
     mut effects: MessageWriter<TriggerEffect>,
     mut commands: Commands,
 ) {
-    let first = |species: &u32| monsters.iter().find(|(_, monster, _)| monster.species == *species);
+    // The leader of the first group of a species.
+    let first = |species: &u32| {
+        let of_kind = || monsters.iter().filter(|(_, monster, _)| monster.species == *species);
+        of_kind().find(|&(body, ..)| leading.contains(body)).or_else(|| of_kind().next())
+    };
     let mut bid = |bidding: Bidding| {
         commands.queue(move |world: &mut World| triggers::bid(world, bidding));
     };
@@ -699,7 +798,7 @@ pub(super) fn befalls_the_level(
         Consequence::GroupDies(species) => {
             if let Some((leader, ..)) = first(species) {
                 commands.entity(leader).entry::<Vitals>().and_modify(|mut vitals| {
-                    vitals.slay();
+                    vitals.slay(None);
                 });
             }
         }
@@ -1355,6 +1454,7 @@ mod tests {
                         named(reading, names);
                         set(rows, names);
                     }
+                    Consequence::InHours(_, rows) => set(rows, names),
                     _ => {}
                 }
             }
@@ -1365,6 +1465,9 @@ mod tests {
                 let (Follows::Set(rows) | Follows::Cleared(rows) | Follows::Always(rows)) = follows;
                 set(rows, &mut names);
             }
+        }
+        for rows in FACTS.slain.values().chain(FACTS.taken.values()) {
+            set(rows, &mut names);
         }
         for name in names {
             assert!(catalog.0.iter().any(|fact| fact.symbol == name), "{name}");

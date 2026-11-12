@@ -228,6 +228,25 @@ fn say(
     ));
 }
 
+/// What a member says of a kill worth speaking of (retail event 25).
+const NOTABLE_KILL: u16 = 25;
+
+/// A member speaks of a kill worth speaking of (retail `RecordMonsterKill`).
+pub(super) fn react_to_feats(
+    mut commands: Commands,
+    mut news: MessageReader<crate::game::combat::CombatNews>,
+    speakers: Speakers,
+    level: Single<Entity, With<Level>>,
+) {
+    for news in news.read() {
+        let crate::game::combat::CombatNews::Feat { member } = news else { continue };
+        let voice = speakers.eligible(None).into_iter().find(|(actor, _)| actor == member);
+        if let Some(voice) = voice {
+            say(&mut commands, *level, voice, NOTABLE_KILL, 0.0);
+        }
+    }
+}
+
 /// The party reacts to its wounds and its dead (retail
 /// `QueueDamageReactionEvents`, `QueuePartyDeathReaction`): a member still
 /// standing below a fifth of their health says they are going down, below

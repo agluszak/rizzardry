@@ -8,14 +8,20 @@ use crate::game::npcs::scenes::{Ended, Ending};
 use crate::presentation::screen_art::{BitmapText, BitmapWrap, GameStrings, SCREEN, absolute};
 
 /// What an ending shows and says: its picture among the loading screens,
-/// its words in the game's strings, the voice that speaks them.
+/// its words in the game's strings, the sound that goes with them.
 fn told(ending: Ending) -> (&'static str, Option<usize>, Option<&'static str>) {
     match ending {
-        Ending::Savant => ("darklord", Some(0x787), Some("voc_endgame1/voc_endgame1_005")),
-        Ending::Cosmic => ("cosmic ending", Some(0x788), Some("voc_endgame2/voc_endgame2_005")),
-        Ending::Split => ("cosmic ending", Some(0x789), Some("voc_endgame3/voc_endgame3_000")),
-        Ending::Blowout => ("blowout", Some(0x78a), Some("voc_endgame4/voc_endgame4_000")),
+        Ending::Savant => ("darklord", Some(0x787), Some("npcs/voc_endgame1/voc_endgame1_005.mp3")),
+        Ending::Cosmic => {
+            ("cosmic ending", Some(0x788), Some("npcs/voc_endgame2/voc_endgame2_005.mp3"))
+        }
+        Ending::Split => {
+            ("cosmic ending", Some(0x789), Some("npcs/voc_endgame3/voc_endgame3_000.mp3"))
+        }
+        Ending::Blowout => ("blowout", Some(0x78a), Some("npcs/voc_endgame4/voc_endgame4_000.mp3")),
         Ending::Untold => ("deathscreen", None, None),
+        // The party's death is heard (retail `BeginPartyDeath`).
+        Ending::Fallen => ("deathscreen", None, Some("misc/partydead.wav")),
     }
 }
 
@@ -111,9 +117,7 @@ pub fn show_ending(
                 if let Some(voice) = voice {
                     commands.spawn((
                         AudioPlayer::new(
-                            assets.load::<AudioSource>(format!(
-                                "retail://data/sound/npcs/{voice}.mp3"
-                            )),
+                            assets.load::<AudioSource>(format!("retail://data/sound/{voice}")),
                         ),
                         PlaybackSettings::DESPAWN,
                     ));

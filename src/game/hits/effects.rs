@@ -80,6 +80,10 @@ pub struct Strike {
     pub rows: Rows,
     pub strength: Strength,
     pub blow: Option<Blow>,
+    /// Who does it, and answers for a death it brings
+    /// ([`Vitals::hurt`](crate::game::characters::Vitals::hurt)); nobody for
+    /// a cloud's pulse, a trap or a device.
+    pub by: Option<Entity>,
 }
 
 /// The rules a strike is settled by.
@@ -106,6 +110,8 @@ pub struct Log {
     pub harm: u32,
     /// What heat took of the party's items: an item, and how many of it.
     pub burnt: Vec<(Entity, u16)>,
+    /// Who was swallowed, and by whom.
+    pub swallowed: Vec<(Entity, Entity)>,
 }
 
 impl Log {
@@ -113,6 +119,13 @@ impl Log {
     pub fn scorch(&mut self, commands: &mut Commands) {
         for (item, amount) in self.burnt.drain(..) {
             commands.trigger(Lose { item, amount });
+        }
+    }
+
+    /// Those swallowed are held by whoever swallowed them.
+    pub fn swallow(&mut self, commands: &mut Commands) {
+        for (victim, by) in self.swallowed.drain(..) {
+            commands.entity(victim).insert(crate::game::actors::Swallowed(by));
         }
     }
 }
@@ -222,18 +235,19 @@ fn apply(
             // `DrainTargetsLife`, `Magic Effects.cpp:1626-1650`).
             log.harm += magnitude.min(body.vitals.health.current);
             let through = laying.absorb(victim, magnitude);
-            let lost = body.vitals.hurt(through);
+            let lost = body.vitals.hurt(through, strike.by);
             dealt(body, lost, true, rng, log);
             return Outcome::Landed;
         }
         K::Sap => {
             let Some(character) = body.character.as_deref_mut() else { return Outcome::Missed };
-            let lost = body.vitals.drain_health(&mut body.conditions, character, magnitude);
+            let lost =
+                body.vitals.drain_health(&mut body.conditions, character, magnitude, strike.by);
             dealt(body, lost, false, rng, log);
             return Outcome::Landed;
         }
         K::Slay => {
-            let lost = body.vitals.slay();
+            let lost = body.vitals.slay(strike.by);
             dealt(body, lost, false, rng, log);
             return Outcome::Landed;
         }
@@ -250,6 +264,13 @@ fn apply(
                 body.conditions.afflict(condition, left);
             }
             Effect::Inflicted { victim, condition }
+        }
+        K::Swallow => {
+            let Some(by) = strike.by else { return Outcome::Missed };
+            body.conditions
+                .afflict(Condition::Missing, crate::game::characters::Lasting::Indefinite);
+            log.swallowed.push((victim, by));
+            Effect::Inflicted { victim, condition: Condition::Missing }
         }
         K::Tire => Effect::Tired { victim, amount: body.vitals.tire(magnitude) },
         K::DrainPool | K::DrainRealm(_) => {

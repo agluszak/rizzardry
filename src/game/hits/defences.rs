@@ -117,7 +117,7 @@ pub fn cure(
 }
 
 /// Whether an effect needs a living body to act on: harm, drain, afflict, slay,
-/// tire, heal, refresh and replenish do nothing to the dead.
+/// swallow, tire, heal, refresh and replenish do nothing to the dead.
 pub fn needs_the_living(kind: &EffectKind) -> bool {
     use EffectKind as K;
     matches!(
@@ -126,6 +126,7 @@ pub fn needs_the_living(kind: &EffectKind) -> bool {
             | K::Sap
             | K::Afflict { .. }
             | K::Slay
+            | K::Swallow
             | K::Tire
             | K::DrainPool
             | K::DrainBudget

@@ -390,7 +390,7 @@ impl Laying<'_, '_> {
 }
 
 /// Time has worn on the spells laid, by so many aging ticks. After the
-/// time that passed ([`Elapsed`](crate::game::party::recovery::Elapsed)): a round's last pulses land between.
+/// time that passed ([`Elapsed`](crate::game::actors::time::Elapsed)): a round's last pulses land between.
 #[derive(Event, Clone, Copy, Debug)]
 pub struct Aged {
     pub ticks: u32,
@@ -411,6 +411,21 @@ impl Turns {
         self.0 -= ticks.min(self.0);
         if self.0 == 0 {
             commands.entity(spell).despawn();
+        }
+    }
+}
+
+/// The spells laid in a level that was away wear by the time it missed.
+pub(crate) fn age_the_woken(
+    woke: On<crate::game::world::level::Woke>,
+    belongings: crate::game::world::level::Belongings,
+    mut spells: Query<&mut Turns>,
+    mut commands: Commands,
+) {
+    let ticks = (woke.away_ms / crate::game::time::AGING_TICK_MS) as u32;
+    for entity in belongings.of(woke.level) {
+        if let Ok(mut turns) = spells.get_mut(entity) {
+            turns.wear(entity, ticks, &mut commands);
         }
     }
 }

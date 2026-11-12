@@ -293,10 +293,10 @@ mod tests {
     use crate::content::npcs::NpcCatalog;
     use crate::content::npcs::NpcId;
     use crate::content::species::{MonsterCatalog, Species};
+    use crate::game::actors::time::{Elapsed, Pace};
     use crate::game::characters::{Condition, Gender, Lasting, Profession};
     use crate::game::items::{Burden, Packed, Worn};
     use crate::game::party::body::PartyBody;
-    use crate::game::party::recovery::{Elapsed, Pace, pass_time};
     use crate::game::party::roster::Party;
     use crate::game::time::Ticks;
     use crate::game::world::population::{MonsterBodies, ScaledBody};
@@ -525,8 +525,8 @@ mod tests {
         }
         let mut seatless = world.get::<Vitals>(record).unwrap().clone();
         let ailing = world.get::<crate::game::characters::Conditions>(record).unwrap().clone();
-        world.add_observer(pass_time);
         world.trigger(Elapsed { ticks: Ticks { stamina: 30, aging: 30 }, pace: Pace::Camping });
+        world.flush();
         let after = world.get::<Vitals>(record).unwrap();
         seatless.regeneration = after.regeneration;
         assert_eq!(*after, seatless, "nothing passed for them");

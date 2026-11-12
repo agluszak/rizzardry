@@ -176,6 +176,7 @@ impl Plugin for PresentationPlugin {
                 party_voice::queue_device_remarks.run_if(crate::game::world::level::level_active),
                 party_voice::queue_dialogue_remarks.run_if(crate::game::world::level::level_active),
                 party_voice::react_to_wounds.run_if(crate::game::world::level::level_active),
+                party_voice::react_to_feats.run_if(crate::game::world::level::level_active),
                 party_voice::react_to_conditions.run_if(crate::game::world::level::level_active),
                 party_voice::play_device_remarks,
             )

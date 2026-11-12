@@ -43,6 +43,17 @@ pub struct Npc {
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Killed;
 
+/// An NPC whose body dies is dead for good; one summoned was never theirs.
+fn body_killed(
+    died: On<Add<crate::game::characters::Dead>>,
+    bodies: Query<&NpcBody, Without<crate::game::magic::pointcasts::SummonedBy>>,
+    mut commands: Commands,
+) {
+    if let Ok(&NpcBody(actor)) = bodies.get(died.entity) {
+        commands.entity(actor).insert(Killed);
+    }
+}
+
 /// The story has taken a person from the world: they stand nowhere until it
 /// stands them somewhere.
 #[derive(Component, Clone, Copy, Debug)]
@@ -118,7 +129,12 @@ impl Plugin for NpcPlugin {
                 ),
             );
         app.add_message::<story::StoryTold>()
+            .add_observer(body_killed)
             .add_observer(story::follow)
+            .add_observer(story::slain)
+            .add_observer(story::taken_up)
+            .add_observer(story::hostiles_die)
+            .add_observer(scenes::befalls_the_fit)
             .add_observer(story::happens)
             .add_observer(story::follows_cycle)
             .add_observer(story::faded)
@@ -131,6 +147,7 @@ impl Plugin for NpcPlugin {
             .add_observer(scenes::picked)
             .add_observer(scenes::befalls_the_party)
             .add_observer(scenes::ends)
+            .add_observer(scenes::falls)
             .add_systems(
                 FixedUpdate,
                 (

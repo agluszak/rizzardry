@@ -472,7 +472,7 @@ mod tests {
             Chosen::Advance { goal: MoveGoal::Party, budget, again: 60 }
         );
         // Beside a party with nobody left to strike, it stands.
-        world.get_mut::<Vitals>(member).unwrap().slay();
+        world.get_mut::<Vitals>(member).unwrap().slay(None);
         let beside = walker(&mut world, AHEAD * 0.5, Stance::Hostile);
         assert_eq!(pick(&mut world, beside, &turn()), Chosen::Stand);
     }

@@ -544,6 +544,7 @@ A blow that did more than 0 damage lands as a **hit** on its victim:
 | Knock Out | Unconscious | Earth | 22 | rounds | all |
 | Blind | Blind | Fire | 12 | rounds | all |
 | Frighten | Afraid | Mental | 5 | rounds | all |
+| Swallow | Missing until the swallower dies ([actors](actors.md), *Swallowed*); a monster dies outright | Divine | 22; 24 for a monster | without end | only from a monster's blow |
 | Possess | Turncoat | Divine | 14 | rounds | members, and only from a monster's blow |
 | Drain Health | a member's maximum health drained | Earth | 0 | `c d2 + 1` | members |
 | Drain Stamina | stamina lost | Water | 0 | `(2c)d5 + 3c + 1` | all |

@@ -819,6 +819,8 @@ fn post_combat(
             ],
             CombatNews::Lost => vec![string(LOST)],
             CombatNews::Over => vec![string(NOTHING_TO_FIGHT)],
+            // Spoken, not written.
+            CombatNews::Feat { .. } => vec![],
         };
         let ended = matches!(news, CombatNews::Won { .. } | CombatNews::Lost | CombatNews::Over);
         // Retail CheckCombatEnd explicitly sends outcomes to General before

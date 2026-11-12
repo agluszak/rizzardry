@@ -1859,8 +1859,57 @@ pub fn pool_shares(pool_weight: u32, members: &[Option<(u32, u32)>]) -> Vec<u32>
     shares
 }
 
+/// An item the party has: worn or packed by one of it, in its pool or in
+/// its hand. Its coming says the party has taken the item up; moving it
+/// about within the party says nothing.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct Owned;
+
+/// What comes to a member or to the party is the party's.
+#[allow(clippy::type_complexity)]
+fn own(
+    come: Query<
+        (Entity, Option<&Worn>, Option<&Packed>),
+        (With<Item>, Without<Owned>, Or<(With<Worn>, With<Packed>, With<Pooled>, With<InHand>)>),
+    >,
+    members: Query<(), With<PartyMember>>,
+    mut commands: Commands,
+) {
+    for (item, worn, packed) in &come {
+        // What one outside the party wears or packs is not the party's.
+        let holder = worn.map(|worn| worn.by).or(packed.map(|packed| packed.by));
+        if holder.is_none_or(|holder| members.contains(holder)) {
+            commands.entity(item).insert(Owned);
+        }
+    }
+}
+
+/// What is no longer with a member or the party is no longer the party's.
+#[allow(clippy::type_complexity)]
+fn disown(
+    gone: Query<
+        Entity,
+        (With<Owned>, Without<Worn>, Without<Packed>, Without<Pooled>, Without<InHand>),
+    >,
+    mut commands: Commands,
+) {
+    for item in &gone {
+        commands.entity(item).remove::<Owned>();
+    }
+}
+
+/// One who leaves the party takes what they wear and pack out of its
+/// hands.
+fn leave_with(left: On<Remove<PartyMember>>, items: Items, mut commands: Commands) {
+    for item in items.carried(left.entity) {
+        commands.entity(item).try_remove::<Owned>();
+    }
+}
+
 pub(crate) fn plugin(app: &mut App) {
-    app.add_message::<Refused>()
+    app.add_systems(Update, (disown, own).chain().in_set(crate::game::GameplaySet::Bodies))
+        .add_observer(leave_with)
+        .add_message::<Refused>()
         .add_message::<ItemNews>()
         .add_observer(shed_unusable)
         .add_observer(stack)

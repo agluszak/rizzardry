@@ -146,6 +146,18 @@ impl SpellPoints {
         restored
     }
 
+    /// Each realm gains `amount` points, or loses them when negative, as
+    /// what is worn gives or takes a minute (retail `GameTurnsPassedChar`).
+    pub fn adjust(&mut self, amount: i32, maximum: &EnumMap<Realm, u32>) {
+        for (realm, _) in maximum {
+            if amount < 0 {
+                self.drain_realm(realm, (-amount) as u32, maximum);
+            } else if self.spent[realm] > 0 {
+                self.spent[realm] = (self.spent[realm] - amount).max(0);
+            }
+        }
+    }
+
     /// Whether any realm is short of its maximum.
     pub fn short(&self) -> bool {
         self.spent.values().any(|&spent| spent > 0)
@@ -905,11 +917,11 @@ pub(crate) mod tests {
                     let stamina = world.get::<Vitals>(ally).unwrap().stamina.current;
                     let through = absorb(world, 4);
                     let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
-                    assert_eq!(vitals.hurt(through), 0);
+                    assert_eq!(vitals.hurt(through, None), 0);
                     assert_eq!(vitals.stamina.current, stamina, "absorbed damage does not fatigue");
                     let through = absorb(world, 2);
                     let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
-                    assert_eq!(vitals.hurt(through), 1);
+                    assert_eq!(vitals.hurt(through, None), 1);
                     assert!(vitals.is_dead());
                 }
                 SpellId::ARMORPLATE => {

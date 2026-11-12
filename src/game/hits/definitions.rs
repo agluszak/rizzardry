@@ -264,6 +264,8 @@ pub enum EffectKind {
     /// as [`EffectKind::Afflict`] is, saved against by its own base.
     AfflictAny(Vec<Condition>),
     Slay,
+    /// Swallowed whole by whoever does it: missing until that one dies.
+    Swallow,
     Tire,
     DrainPool,
     DrainBudget,

@@ -293,6 +293,14 @@ pub struct Species {
     pub attributes: MonsterAttributes,
     pub hit_points: Dice,
     pub stamina: Dice,
+    /// Health and stamina gained a game minute, or lost when negative.
+    pub health_regeneration: i8,
+    pub stamina_regeneration: i8,
+    /// Killing it is something to speak of (retail `significant_kill`).
+    pub notable: bool,
+    /// What its death costs its killers with its faction, where that is not
+    /// by how often they have offended.
+    pub offence: Option<i32>,
     pub initiative: u8,
     pub attacks_per_round: u8,
     pub swings_per_round: u8,

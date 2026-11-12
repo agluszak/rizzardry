@@ -257,6 +257,7 @@ pub(super) fn befalls_at_a_device(
                 rows: Rows::Spell(id),
                 strength: power::strength(0, *power, 0, spell),
                 blow: None,
+                by: None,
             };
             commands.spawn((Deed::at(strike, living), Magical));
         }
@@ -408,7 +409,7 @@ pub(super) fn crush(
             } else if at.x + radius <= right || rng.below(100) < crushing.spared {
                 at.x = left + radius;
             } else {
-                vitals.slay();
+                vitals.slay(None);
                 if monster.species == crushing.prize.0 {
                     for member in roster.iter() {
                         if let Ok((mut character, vitals)) = members.get_mut(member)

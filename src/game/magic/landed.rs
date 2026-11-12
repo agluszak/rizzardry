@@ -245,7 +245,7 @@ fn bursts(spell: &Spell, strength: Strength, field: &Field, content: &Catalogs) 
         .map(|body| {
             let at = field.places.of(body.entity).feet;
             let victims = field.within(at, at, radius, recipients);
-            Deed::at(Strike { rows, strength, blow: None }, victims)
+            Deed::at(Strike { rows, strength, blow: None, by: spell.owner }, victims)
         })
         .collect()
 }
@@ -345,7 +345,10 @@ fn reflection(
         .map(|&victim| (victim, spell.missile.map(|_| flight(from, eye_of(victim)))))
         .collect();
     let strength = owners_strength(source, spell, (power, strength.boost), bodies);
-    let deed = Deed::flying(Strike { rows: Rows::Spell(spell.id), strength, blow: None }, flights);
+    let deed = Deed::flying(
+        Strike { rows: Rows::Spell(spell.id), strength, blow: None, by: Some(charged) },
+        flights,
+    );
     let turned = Spell {
         id: spell.id,
         caster: cast.caster,

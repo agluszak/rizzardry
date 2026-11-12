@@ -450,7 +450,7 @@ pub fn cast(
             };
             flies.then(|| reach::flight(stand.eye, to))
         };
-        let strike = Strike { rows, strength, blow: None };
+        let strike = Strike { rows, strength, blow: None, by: Some(caster) };
         // What follows the deed is put beside it before it is let go.
         let arrivals: Vec<_> = victims.iter().map(|&victim| (victim, flight(victim))).collect();
         let mut deed = commands.spawn(Spell { backfired, victims: victims.clone(), ..spell_of });

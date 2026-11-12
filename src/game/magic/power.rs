@@ -254,8 +254,8 @@ mod tests {
     fn auto(asked: &Auto) -> u32 {
         let spell = SpellDefinition { cost: 3, dice: asked.dice, ..Default::default() };
         let victim = asked.victim.map(|victim| {
-            let vitals =
-                Vitals { health: victim.health, stamina: victim.stamina, ..Default::default() };
+            let mut vitals = Vitals::default();
+            (vitals.health, vitals.stamina) = (victim.health, victim.stamina);
             (vitals, victim.conditions, victim.member)
         });
         super::auto(

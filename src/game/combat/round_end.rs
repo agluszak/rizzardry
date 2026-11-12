@@ -26,6 +26,7 @@ use crate::game::actors::Laid;
 use crate::game::actors::Places;
 use crate::game::actors::spells::Aged;
 use crate::game::actors::spells::{Enchantment, LaidOn, Pulses};
+use crate::game::actors::time::{Elapsed, Mending, Pace};
 use crate::game::characters::Vitals;
 use crate::game::characters::{Character, Condition};
 use crate::game::data::Catalogs;
@@ -36,7 +37,6 @@ use crate::game::hits::reach::{Field, Recipients};
 use crate::game::hits::{Deed, Landed};
 use crate::game::magic::{Strength, power};
 use crate::game::party::body::PartyBody;
-use crate::game::party::recovery::{self, Elapsed, Pace};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::{AGING_TICK_MS, GameClock};
@@ -182,7 +182,8 @@ pub(super) fn leave_fight(
 
 /// Whoever held back this round (a body that waited, a member who
 /// defended), or lies asleep or knocked out, gets its breath back (retail
-/// `AdvanceCombatRound`); a Fighter's sheet scales it.
+/// `AdvanceCombatRound`): two dice of a twentieth of its most, less one,
+/// from one to 255 sides, which one who gets their wind back fast scales.
 pub(super) fn rest_the_idle(
     rests: On<Rests>,
     fights: Query<&Combatants>,
@@ -190,13 +191,13 @@ pub(super) fn rest_the_idle(
         (&mut Vitals, &crate::game::characters::Conditions),
         Option<&Turn>,
         Option<&Ordered>,
-        Option<&Character>,
+        &Mending,
     )>,
     mut rng: ResMut<GameRng>,
 ) {
     let Ok(combatants) = fights.get(rests.fight) else { return };
     for &body in combatants.entities() {
-        let Ok(((mut vitals, conditions), turn, ordered, character)) = bodies.get_mut(body) else {
+        let Ok(((mut vitals, conditions), turn, ordered, mending)) = bodies.get_mut(body) else {
             continue;
         };
         let resting = turn.is_some_and(|turn| turn.waited)
@@ -206,9 +207,9 @@ pub(super) fn rest_the_idle(
             continue;
         }
         let maximum = vitals.stamina.max;
-        let rolled = recovery::rest_roll(maximum, &mut rng);
-        let gained =
-            character.map_or(rolled, |character| recovery::combat_rest_amount(character, rolled));
+        let sides = (maximum / 20).clamp(2, 256) as i32 - 1;
+        let rolled = rng.roll(crate::content::items::Dice { count: 2, sides, base: 0 });
+        let gained = mending.tireless.map_or(rolled, |scale| (scale * rolled as f32) as u32);
         if vitals.stamina.current < maximum || conditions.exhausted() {
             vitals.rest(gained);
         }
@@ -288,7 +289,7 @@ pub(super) fn pulse_clouds(
             power::strength(0, laid.power, laid.boost, &content.spells[laid.spell])
         };
         commands.spawn((
-            Deed::at(Strike { rows, strength, blow: None }, victims),
+            Deed::at(Strike { rows, strength, blow: None, by: None }, victims),
             crate::game::magic::landed::Magical,
             Pulse,
         ));

@@ -53,9 +53,11 @@ pub fn play_music(
     mut rng: ResMut<PresentationRng>,
     mut songs: Query<(Entity, &mut Song, Option<&mut AudioSink>)>,
 ) {
-    // The ending's music: the credits', or defeat's when the bomb went off.
+    // The ending's music: the credits', or defeat's when the bomb went off
+    // or the party fell.
     let wanted = if let Some(Ended(ending)) = ended.as_deref() {
-        let list = if *ending == Ending::Blowout { "combatlose" } else { "endcredit" };
+        let lost = matches!(ending, Ending::Blowout | Ending::Fallen);
+        let list = if lost { "combatlose" } else { "endcredit" };
         format!("retail://data/music/{list}.mpl")
     } else if camp.is_some() {
         CAMPING.to_owned()

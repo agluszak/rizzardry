@@ -247,6 +247,8 @@ pub enum Ending {
     Blowout,
     /// None the story tells of.
     Untold,
+    /// The party fell.
+    Fallen,
 }
 
 /// The game has ended, and how.
@@ -265,6 +267,58 @@ pub(super) fn ends(
         let holds = |reading: &Reading| readings.answer(reading, None, &story, &factions) != 0;
         let ending = FACTS.endings.iter().find(|(when, _)| holds(when));
         commands.insert_resource(Ended(ending.map_or(Ending::Untold, |(_, ending)| *ending)));
+    }
+}
+
+/// The game is over when the party has fallen.
+pub(super) fn falls(
+    _: On<crate::game::party::PartyFell>,
+    ended: Option<Res<Ended>>,
+    mut commands: Commands,
+) {
+    if ended.is_none() {
+        commands.insert_resource(Ended(Ending::Fallen));
+    }
+}
+
+/// What befalls those of the party fit to speak, and the chosen one freed.
+pub(super) fn befalls_the_fit(
+    befalls: On<Befalls>,
+    roster: Single<&PartyRoster>,
+    fit: Query<Option<&ActorId>, With<crate::game::actors::CanFight>>,
+    mut chosen: Query<(Entity, &mut crate::game::characters::Conditions), With<Chosen>>,
+    content: Res<crate::game::data::Catalogs>,
+    mut rng: ResMut<GameRng>,
+    mut remarks: MessageWriter<PartyRemark>,
+) {
+    let mut says = |event: u16, speaker: Entity| {
+        remarks.write(PartyRemark { event, after: 0.0, speaker: Some(speaker) });
+    };
+    match &befalls.0 {
+        Consequence::ChosenFreed => {
+            for (_, mut conditions) in &mut chosen {
+                if conditions.has(Condition::Infatuated) {
+                    conditions.lift(Condition::Infatuated);
+                }
+            }
+        }
+        Consequence::AllRemark(event) => {
+            for member in roster.iter().filter(|&member| fit.contains(member)) {
+                says(*event, member);
+            }
+        }
+        Consequence::AnotherRemarks { but, event } => {
+            let able: Vec<Entity> = roster.iter().filter(|&member| fit.contains(member)).collect();
+            let other = |&member: &Entity| {
+                let id = fit.get(member).ok().flatten();
+                !id.is_some_and(|id| content.npcs[id.0].kind == i32::from(*but))
+            };
+            let others: Vec<Entity> = able.iter().copied().filter(other).collect();
+            if able.len() > 2 && !others.is_empty() {
+                says(*event, others[rng.below(others.len() as u32) as usize]);
+            }
+        }
+        _ => {}
     }
 }
 

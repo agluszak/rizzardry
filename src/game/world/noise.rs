@@ -7,7 +7,7 @@ use bevy_landmass::prelude::AgentTarget3d;
 use super::bidden::Orders;
 use super::facing;
 use super::hostility::Stance;
-use super::identify::{GroupMembers, MonsterGroup};
+use super::identify::{GroupMembers, Leads, MonsterGroup};
 use super::population::Monster;
 use super::pursuit::Charging;
 use super::search::Search;
@@ -57,16 +57,15 @@ pub struct Investigating;
 /// mind is passed over (retail `AlertMonsterGroupsToNoise`).
 pub(super) fn hear(
     noise: On<Noise>,
-    groups: Query<(Entity, &GroupMembers, Option<&Heard>), With<MonsterGroup>>,
-    leaders: Query<(&Monster, &Position, Option<&Orders>, Has<Combatant>)>,
+    groups: Query<Option<&Heard>, With<MonsterGroup>>,
+    leaders: Query<(Entity, &Leads, &Monster, &Position, Option<&Orders>, Has<Combatant>)>,
     sight: Sight,
     content: If<Res<Catalogs>>,
     mut rng: ResMut<GameRng>,
     mut commands: Commands,
 ) {
-    for (group, members, heard) in &groups {
-        let Some(leader) = members.iter().next() else { continue };
-        let Ok((monster, at, orders, fighting)) = leaders.get(leader) else { continue };
+    for (leader, &Leads(group), monster, at, orders, fighting) in &leaders {
+        let Ok(heard) = groups.get(group) else { continue };
         let deaf = orders.is_some_and(|Orders(orders)| orders.deaf);
         let passes = match noise.to {
             Hearers::Hostile => sight.side(leader) != Some(Stance::Hostile),
@@ -134,6 +133,7 @@ const FARTHEST: f32 = 250.0;
 /// charging do neither.
 pub(super) fn investigate(
     mut groups: Query<(Entity, &GroupMembers, Option<&mut Heard>), With<MonsterGroup>>,
+    leading: Query<(), With<Leads>>,
     mut walkers: Query<
         (&Position, &mut AgentTarget3d, Has<Investigating>),
         (With<Monster>, Without<Combatant>, Without<Charging>),
@@ -158,9 +158,12 @@ pub(super) fn investigate(
         })
         .collect();
     for (group, members, heard) in &mut groups {
+        let Some(leader) = members.iter().find(|&member| leading.contains(member)) else {
+            continue;
+        };
         // Whether the way to it is walked, decided once, by the leader.
         let mut heard = heard;
-        if let (Some(heard), Some(leader)) = (heard.as_deref_mut(), members.iter().next())
+        if let Some(heard) = heard.as_deref_mut()
             && heard.walks.is_none()
         {
             let from = walkers.get(leader).map(|(at, ..)| at.0).unwrap_or(heard.at);
@@ -184,7 +187,7 @@ pub(super) fn investigate(
             }));
         }
         let heard = heard.as_deref().copied();
-        let leader_at = members.iter().next().and_then(|leader| walkers.get(leader).ok());
+        let leader_at = walkers.get(leader).ok();
         let been = heard
             .zip(leader_at)
             .is_some_and(|(heard, (at, ..))| at.0.distance(heard.at) < AT_THE_NOISE);

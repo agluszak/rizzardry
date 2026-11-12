@@ -117,9 +117,15 @@ impl Factions {
 
     /// The party killed one of the faction's (retail `RecordFactionOffense`).
     /// Mook, the Rattkin mafia and the Higardi turn hostile at once; anyone
-    /// already hostile, and every other faction, loses standing by the
-    /// victim and how often the party has offended.
-    pub fn record_offence(&mut self, faction: i32, npc: bool, now: u64) -> Option<FactionNews> {
+    /// already hostile, and every other faction, loses standing: what the
+    /// victim `costs` if it is set apart, otherwise by how often the party
+    /// has offended.
+    pub fn record_offence(
+        &mut self,
+        faction: i32,
+        costs: Option<i32>,
+        now: u64,
+    ) -> Option<FactionNews> {
         let index = usize::try_from(faction).ok()?;
         if index <= PARTY as usize || index >= self.scores.len() {
             return None;
@@ -131,15 +137,11 @@ impl Factions {
             // Retail `SetFactionDispositionBand`: the hostile band's anchor.
             return self.set_score(index, 25, now);
         }
-        let loss = if npc {
-            20
-        } else {
-            match self.offences[index] {
-                0..=20 => 2,
-                41.. => 10,
-                _ => 6,
-            }
-        };
+        let loss = costs.unwrap_or(match self.offences[index] {
+            0..=20 => 2,
+            41.. => 10,
+            _ => 6,
+        });
         self.shift(index, -loss, now)
     }
 
@@ -203,14 +205,14 @@ mod tests {
         assert_eq!(factions.band(4), Band::Friendly, "Umpani");
         assert_eq!(factions.band(15), Band::Hostile, "common Rapax");
         assert_eq!(factions.band(7), Band::Neutral, "common Rattkin");
-        assert!(factions.record_offence(MOOK, false, 7).is_some(), "Mook turn at once");
+        assert!(factions.record_offence(MOOK, None, 7).is_some(), "Mook turn at once");
         assert_eq!(factions.score(MOOK), Some(25));
         assert_eq!(factions.band_changed_at(MOOK), 7);
-        factions.record_offence(MOOK, false, 7);
+        factions.record_offence(MOOK, None, 7);
         assert_eq!(factions.score(MOOK), Some(23), "hostile Mook lose standing as others do");
-        factions.record_offence(4, false, 7);
+        factions.record_offence(4, None, 7);
         assert_eq!(factions.score(4), Some(78));
-        factions.record_offence(4, true, 7);
+        factions.record_offence(4, Some(20), 7);
         assert_eq!(factions.score(4), Some(58));
         assert_eq!(factions.band(4), Band::Neutral);
     }

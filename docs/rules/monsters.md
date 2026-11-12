@@ -656,6 +656,48 @@ leads to.
 **What a monster knows is read from its own components.** What its kind can do
 was written onto it when it was made. No decision asks the species record.
 
+## Effort
+
+Source: `Health Stamina Mana.cpp`, `MonsterActionFatigueCost`, charged as
+each action ends (`Combat.cpp`, `EndMonsterAttack`).
+
+A monster tires by what it does in a fight, not by what it swings (it is
+marked `Labours` as it is made). Each
+thing done costs stamina once, twice over when it is diseased
+(`assets/tables/efforts.ron`):
+
+| What it did | Stamina |
+| --- | --- |
+| closed in at a charge; ran for its life | 5 + below(5) |
+| walked up to strike; backed away | 3 + below(3) |
+| held back; was drawn by a lure | 1 + below(2) |
+| made an attack, whatever its swings | 2 + below(3) |
+| made an attack in a fury (Berserk) | 5 + below(8) |
+| cast, made its special attack, guarded a fellow, stood | nothing |
+
+The original's names for its move actions do not line up one to one with
+the moves here; charging and fleeing were taken as its dearer pair,
+walking up and backing away as its cheaper.
+
+## A group's leader
+
+Source: `MonsterGroup.cpp`, `ElectGroupLeaderMember`; `MonsterManager.cpp`,
+`RemoveMonster`.
+
+A group has one leader: the first of it to be made. When the leader dies or
+is gone from the group, the living member of highest level that is not
+Turncoat or worse leads, the first of them among equals; if there is none
+such, the first still living. The new leader takes up the script the old one
+followed, from its top. The noise a group has heard is the group's, so
+nothing of it changes hands.
+
+The leader is the member that carries `Leads`, a one-to-one relationship to
+its group. The rules that ask for a group's leader ask which member that is: who hears a noise and
+walks to it, whose grudge keeps a stance, whose sight stirs its faction.
+
+Not here: an encounter's companion groups electing a new leading group
+(`ElectAlliedLeaderGroup`).
+
 ## Random encounter orders
 
 An encounter table entry names the script followed by the main group’s leader.

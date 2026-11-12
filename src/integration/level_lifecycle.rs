@@ -36,12 +36,16 @@ fn app() -> App {
         .add_observer(set_aside)
         .add_observer(wake)
         .add_observer(crate::game::world::encounters::age_encounters)
-        .add_observer(crate::game::actors::age_the_woken)
+        .add_plugins(crate::game::actors::time::plugin)
+        .add_observer(crate::game::actors::spells::age_the_woken)
         .add_observer(give_bodies)
-        .add_observer(crate::game::world::damage::monster_died)
+        .add_observer(crate::game::world::hostility::answer_for)
+        .add_observer(crate::game::world::damage::halt)
+        .add_observer(crate::game::world::damage::leave_loot)
         .add_observer(crate::game::characters::fall)
         .init_resource::<crate::game::factions::Factions>()
         .add_message::<crate::game::factions::FactionNews>()
+        .add_message::<crate::game::hits::Damaged>()
         .init_resource::<GameRng>()
         .add_message::<LevelReady>()
         .add_message::<Travel>()
@@ -480,7 +484,7 @@ fn direct_damage_settles_death_once() {
     let target = world.query_filtered::<Entity, With<Monster>>().single(world).unwrap();
     let hit = |world: &mut World| {
         let mut vitals = world.get_mut::<crate::game::characters::Vitals>(target).unwrap();
-        let lost = vitals.hurt(10);
+        let lost = vitals.hurt(10, None);
         // Death settles its consequences.
         world.trigger(crate::game::characters::Fell { body: target });
         world.flush();
@@ -507,6 +511,34 @@ fn direct_damage_settles_death_once() {
         .map(|(_, count)| count.map_or(1, |count| u32::from(count.of)))
         .sum::<u32>();
     assert_eq!(units, 2, "death preserves every drop and cannot award it twice");
+}
+
+/// Retail `RecordMonsterKill`: a death costs the party standing with the
+/// dead one's faction only when one of the party killed it, not when a
+/// poison or a cloud did.
+#[test]
+fn a_death_offends_its_faction_only_when_the_party_killed() {
+    use crate::game::factions::{Factions, UMPANI};
+    let standing = |by_member: bool| {
+        let mut app = app();
+        with_data(&mut app);
+        app.world_mut().resource_mut::<Catalogs>().species.0[0].faction = UMPANI;
+        spawn_level(&mut app, floor());
+        app.update();
+        let world = app.world_mut();
+        let target = world.query_filtered::<Entity, With<Monster>>().single(world).unwrap();
+        let member = world
+            .query_filtered::<Entity, With<crate::game::party::roster::PartyMember>>()
+            .iter(world)
+            .next();
+        let mut vitals = world.get_mut::<crate::game::characters::Vitals>(target).unwrap();
+        vitals.hurt(1000, member.filter(|_| by_member));
+        world.trigger(crate::game::characters::Fell { body: target });
+        world.flush();
+        world.resource::<Factions>().score(UMPANI)
+    };
+    assert_eq!(standing(false), Some(80));
+    assert_eq!(standing(true), Some(78));
 }
 
 /// Every monster the party can see in the level played, with whether it is

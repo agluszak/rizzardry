@@ -243,6 +243,7 @@ fn arrive(
         commands.entity(arrival.deed).despawn();
     }
     log.scorch(&mut commands);
+    log.swallow(&mut commands);
     damaged.write_batch(log.damaged);
     for (member, skill, usage) in log.practised {
         commands.trigger(Practise { member, skill, usage });

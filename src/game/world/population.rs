@@ -227,6 +227,10 @@ pub struct Camouflage(pub u8);
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Worth(pub u32);
 
+/// Killing it is something for its killer to speak of.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Notable;
+
 /// How a body carries itself in a fight when it decides for itself: its
 /// species' temper.
 #[derive(Component, Clone, Copy, Debug)]
@@ -283,11 +287,15 @@ pub(crate) fn embody(
     entity.insert((
         allegiance,
         Worth(kind.experience),
+        crate::game::combat::effort::Labours,
         Camouflage(kind.camouflage),
         Temper(kind.temper),
         Special(kind.special),
         Spellcasting::of(kind),
     ));
+    if kind.notable {
+        entity.insert(Notable);
+    }
     if kind.untargetable {
         entity.insert(Untargetable);
     }

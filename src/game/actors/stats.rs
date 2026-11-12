@@ -9,6 +9,7 @@ use enumset::EnumSet;
 use super::Place;
 use super::arms::{self, Hands, Held};
 use super::spells::{Bonus, Laid, Spells};
+use super::time::Mending;
 use crate::content::characters::{Attribute, BodyPart, Realm, Skill, Trait};
 use crate::content::items::{AttackEffects, AttackMode, Dice};
 use crate::content::species::{AttackWord, MonsterKind, Reach, Species};
@@ -451,6 +452,7 @@ pub(super) fn refit(
             AnyOf<((&Character, Option<&Burden>), &Monster)>,
             Option<&PartyMember>,
             (&mut Attributes, &mut Skills, &mut Level, &mut Resistances, &mut Armour, &mut Attacks),
+            &mut Mending,
         ),
         With<Stale>,
     >,
@@ -460,7 +462,9 @@ pub(super) fn refit(
     mut commands: Commands,
 ) {
     let Some(content) = content else { return };
-    for (entity, (mut vitals, conditions), (sheet, monster), member, written) in &mut actors {
+    for (entity, (mut vitals, conditions), (sheet, monster), member, written, mut mending) in
+        &mut actors
+    {
         // A member counts the spells on them and on their party together.
         let mut spells = laid.bonus(entity);
         if let Some(member) = member {
@@ -490,6 +494,11 @@ pub(super) fn refit(
             }
             (None, None) => continue,
         };
+        mending.set_if_neq(match (sheet, monster) {
+            (Some((character, _)), _) => mending_of_member(character, &items, entity),
+            (None, Some(monster)) => mending_of_species(&content.species[monster.species]),
+            (None, None) => continue,
+        });
         let (mut a, mut s, mut l, mut r, mut ar, mut at) = written;
         s.set_if_neq(skills);
         a.set_if_neq(attributes);
@@ -499,6 +508,48 @@ pub(super) fn refit(
         at.set_if_neq(attacks);
         commands.entity(entity).remove::<Stale>();
         commands.trigger(Refitted { entity });
+    }
+}
+
+/// How a monster mends: by its species' points a minute, its stamina by
+/// the minute as its health.
+fn mending_of_species(kind: &Species) -> Mending {
+    Mending {
+        health: i32::from(kind.health_regeneration),
+        stamina: i32::from(kind.stamina_regeneration),
+        ..default()
+    }
+}
+
+/// How a character mends: by what they wear in the slots in use (retail
+/// `AccumulateEquipmentModifiers`) and their traits (retail
+/// `GameTurnsPassedChar`), their stamina by the breath.
+fn mending_of_member(character: &Character, items: &Items, member: Entity) -> Mending {
+    let mut worn = [0; 3];
+    for (slot, _) in items.in_use(member) {
+        if let Some((protection, _)) = items.protection(member, slot) {
+            for (sum, &bonus) in worn.iter_mut().zip(&protection.regeneration) {
+                *sum += i32::from(bonus);
+            }
+        }
+    }
+    let scaled =
+        |ability, value| character.has_trait(ability).then(|| character.scale_by_profession(value));
+    let mut magic_rate = 1.0;
+    if character.has_trait(Trait::FastMagicRecovery) {
+        magic_rate *= 1.25;
+    }
+    if character.has_trait(Trait::LizardmanMagicRecovery) {
+        magic_rate *= 0.75;
+    }
+    Mending {
+        health: worn[0],
+        stamina: worn[1],
+        magic: worn[2],
+        breathes: true,
+        hale: scaled(Trait::HealthRegeneration, 16.67),
+        tireless: scaled(Trait::StaminaRegeneration, 3.3),
+        magic_rate,
     }
 }
 

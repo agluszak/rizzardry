@@ -2,7 +2,6 @@
 
 pub mod body;
 pub mod formation;
-pub mod recovery;
 pub mod roster;
 pub mod walk_in;
 
@@ -15,6 +14,29 @@ use crate::game::GameplaySet;
 use crate::game::characters::Character;
 use crate::game::hits::Damaged;
 use crate::game::world::level::level_active;
+
+/// The party has fallen: none of it is left who is neither dead nor missing
+/// (retail `BeginPartyDeath`). Whatever that ends reacts: the fight, the
+/// game.
+#[derive(Event, Clone, Copy, Debug)]
+pub struct PartyFell;
+
+/// Once a death is settled, the party has fallen if nobody of it is left.
+pub(crate) fn fall(
+    _: On<crate::game::characters::Settled>,
+    roster: Single<&roster::PartyRoster>,
+    members: Query<(&crate::game::characters::Vitals, &crate::game::characters::Conditions)>,
+    mut commands: Commands,
+) {
+    let gone = |member| {
+        members.get(member).is_ok_and(|(vitals, conditions)| {
+            vitals.is_dead() || conditions.has(crate::game::characters::Condition::Missing)
+        })
+    };
+    if roster.iter().all(gone) {
+        commands.trigger(PartyFell);
+    }
+}
 
 /// A member's standing choice for the next round. Recruitment starts on
 /// Attack (retail `ResetPartySlotRow`).
@@ -130,7 +152,7 @@ pub fn damage_member(
     laying: &mut crate::game::actors::Laying,
     damage: &mut MessageWriter<Damaged>,
 ) -> u32 {
-    let lost = vitals.hurt(laying.absorb(member, amount));
+    let lost = vitals.hurt(laying.absorb(member, amount), None);
     if lost > 0 {
         damage.write(Damaged { body: member, amount: lost, died: vitals.is_dead() });
     }

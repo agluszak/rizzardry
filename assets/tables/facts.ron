@@ -428,5 +428,93 @@
     ],
     renames: {
         0x20: "RFS81B",
+    },    // What the death of one of a species sets off (retail `MonsterKilled`,
+    // `HandleScriptedNpcDeath`): Brekek, the Rapax queen, the second of the
+    // Rattkin breeders, Al-Sedexus, the king, the Lava Lord, and the Dark
+    // Savant, at whose death the party speaks, the ending the party chose
+    // goes on, and every hostile dies.
+    //   FactionShift(f, by)    the faction's standing moves by so much
+    //   ChosenFreed            the chosen one is smitten no longer
+    //   AllRemark(event)       every member fit to speaks
+    //   AnotherRemarks(but, event)
+    //                          with more than two fit to, one other than the person speaks
+    //   HostilesDie            every hostile monster of the level dies
+    //   InHours(n, [..])       these befall after so many hours of the game's time
+    slain: {
+        0x131: [Fact("FACT_CROCK_BREKEK_DEAD", 1)],
+        0x1a9: [Fact("FACT_QUEEN_IS_DEAD", 1), FactionShift(RapaxTemplar, 20)],
+        0x14f: [
+            If(Any([LevelVar("NumberRattkinBreedersKilled", 1), LevelVar("NumberRattkinBreedersKilled", 2)]), [
+                LevelVar("NumberRattkinBreedersKilled", 2),
+                Fact("FACT_TRYNNIE_KILL_RATS_DONE", 1),
+                Faction(RattkinCommon, Hostile),
+            ]),
+            If(Not(Any([LevelVar("NumberRattkinBreedersKilled", 1), LevelVar("NumberRattkinBreedersKilled", 2)])), [
+                LevelVar("NumberRattkinBreedersKilled", 1),
+            ]),
+        ],
+        0xdd: [
+            If(Any([LevelVar("NumberRattkinBreedersKilled", 1), LevelVar("NumberRattkinBreedersKilled", 2)]), [
+                LevelVar("NumberRattkinBreedersKilled", 2),
+                Fact("FACT_TRYNNIE_KILL_RATS_DONE", 1),
+                Faction(RattkinCommon, Hostile),
+            ]),
+            If(Not(Any([LevelVar("NumberRattkinBreedersKilled", 1), LevelVar("NumberRattkinBreedersKilled", 2)])), [
+                LevelVar("NumberRattkinBreedersKilled", 1),
+            ]),
+        ],
+        0x22b: [
+            If(Is("FACT_ALSEDEXUS_ATTACK"), [Fact("FACT_QUEST_KILL_ALSEDEXUS", 0)]),
+            ChosenFreed,
+            ChosenRemarks(37),
+            Fact("FACT_RAPAX_ALSEDEXUS_DEAD", 1),
+        ],
+        0x181: [Fact("FACT_KING_IS_DEAD", 1)],
+        0x175: [Fact("FACT_LAVALORD_DIE", 1)],
+        0x222: [Fact("FACT_LAVALORD_DIE", 1)],
+        0x234: [
+            MemberRemarks(0x18, 24),
+            AnotherRemarks(but: 0x18, event: 24),
+            AllRemark(28),
+            If(Any([Is("FACT_QUE_ENDGAME2"), All([Is("FACT_QUE_ENDGAME3"), Killed(0x87)])]), [
+                Fade(true, 0.5, [
+                    CameraPath("CameraPath4"),
+                    Fade(false, 1.0, [Greets(0x8e)]),
+                ]),
+            ]),
+            If(All([Is("FACT_QUE_ENDGAME3"), Not(Is("FACT_QUE_ENDGAME2")), Not(Killed(0x87))]), [Greets(0x87)]),
+            HostilesDie,
+        ],
+    },
+    // What the party's taking an item sets off (retail
+    // `UpdateFactsAfterAcquiringItem`): the three devices and the false one are
+    // possessed and their quests done; two days after the Chaos Moliri is first
+    // taken the Mook know it stolen (the original counts the two days anew each
+    // time it is taken up again).
+    taken: {
+        0x243: [
+            If(Not(Is("FACT_DESTINAE_POSSESS")), [Fact("FACT_DESTINAE_POSSESS", 1)]),
+            If(Is("FACT_QUEST_GET_DD"), [Fact("FACT_QUEST_GET_DD", 0)]),
+        ],
+        0x242: [
+            If(Not(Is("FACT_ASTRAL_POSSESS")), [Fact("FACT_ASTRAL_POSSESS", 1)]),
+            If(Is("FACT_QUEST_GET_AD"), [Fact("FACT_QUEST_GET_AD", 0)]),
+        ],
+        0x244: [
+            If(Not(Is("FACT_CHAOS_POSSESS")), [
+                Fact("FACT_CHAOS_POSSESS", 1),
+                InHours(48, [Fact("FACT_MOOK_CHAOS_STOLEN", 1)]),
+            ]),
+            If(Is("FACT_QUEST_GET_CM"), [Fact("FACT_QUEST_GET_CM", 0)]),
+        ],
+        0x264: [
+            If(Not(Is("FACT_ASTRAL_FAKE_POSSESS")), [
+                Fact("FACT_ASTRAL_FAKE_POSSESS", 1),
+                Fact("FACT_ASTRAL_FAKE_POSSESS1", 1),
+            ]),
+        ],
+        0x201: [If(Is("FACT_QUEST_BRAFFIT_CIERDAN"), [Fact("FACT_QUEST_BRAFFIT_CIERDAN", 0)])],
+        0x27c: [If(Is("FACT_QUEST_MYLES_FIND_DIAMOND"), [Fact("FACT_QUEST_MYLES_FIND_DIAMOND", 0)])],
+        0x1d2: [If(Is("FACT_QUEST_MYLES_WEAPONS_CACHE"), [Fact("FACT_QUEST_MYLES_WEAPONS_CACHE", 0)])],
     },
 )

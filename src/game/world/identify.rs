@@ -54,6 +54,98 @@ pub struct GroupMember(pub Entity);
 #[relationship_target(relationship = GroupMember)]
 pub struct GroupMembers(Vec<Entity>);
 
+/// The member that leads a group (`docs/rules/monsters.md`, "A group's
+/// leader"): the first to come into it, until it dies or goes; then the
+/// fittest of the rest. Whoever asks for a group's leader asks which of
+/// its members carries this.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+#[relationship(relationship_target = Leader)]
+pub struct Leads(pub Entity);
+
+/// A group's leader, maintained by Bevy from [`Leads`]: one at most, the
+/// last to take the lead.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+#[relationship_target(relationship = Leads)]
+pub struct Leader(Entity);
+
+/// The first to come into a group leads it.
+pub(super) fn first_leads(
+    joined: On<Add<GroupMember>>,
+    members: Query<&GroupMember>,
+    mut commands: Commands,
+) {
+    let member = joined.entity;
+    if let Ok(&GroupMember(group)) = members.get(member) {
+        commands.queue(move |world: &mut World| {
+            if world.get::<Leader>(group).is_none()
+                && let Ok(mut member) = world.get_entity_mut(member)
+            {
+                member.insert(Leads(group));
+            }
+        });
+    }
+}
+
+/// A group whose leader is gone takes a new one.
+#[derive(SystemParam)]
+pub(super) struct Succession<'w, 's> {
+    groups: Query<'w, 's, &'static GroupMembers>,
+    leading: Query<'w, 's, (), With<Leads>>,
+    members: Query<'w, 's, &'static GroupMember>,
+    fit: Query<
+        'w,
+        's,
+        (&'static crate::game::actors::Level, &'static crate::game::characters::Conditions),
+        Without<crate::game::characters::Dead>,
+    >,
+    scripts: Query<'w, 's, &'static super::bidden::Script>,
+    commands: Commands<'w, 's>,
+}
+
+impl Succession<'_, '_> {
+    /// If `gone` led its group, the living member of highest level that is
+    /// not Turncoat or worse leads it now, the first of them among equals,
+    /// or else the first still living; it takes up the script the old
+    /// leader followed (retail `ElectGroupLeaderMember`).
+    fn after(&mut self, gone: Entity) {
+        let Ok(&GroupMember(group)) = self.members.get(gone) else { return };
+        let Ok(members) = self.groups.get(group) else { return };
+        if !self.leading.contains(gone) {
+            return;
+        }
+        let living =
+            || members.iter().filter(|&member| member != gone && self.fit.contains(member));
+        let mut best: Option<(Entity, u32)> = None;
+        for member in living() {
+            let Ok((level, conditions)) = self.fit.get(member) else { continue };
+            let turned = !conditions.below(crate::game::characters::Condition::Turncoat);
+            if !turned && best.is_none_or(|(_, most)| level.0 > most) {
+                best = Some((member, level.0));
+            }
+        }
+        let Some(next) = best.map(|(member, _)| member).or_else(|| living().next()) else {
+            return;
+        };
+        self.commands.entity(next).insert(Leads(group));
+        if let Ok(script) = self.scripts.get(gone) {
+            self.commands.entity(next).insert(script.clone());
+        }
+    }
+}
+
+/// A leader that dies is succeeded.
+pub(super) fn succeed_the_dead(
+    died: On<Add<crate::game::characters::Dead>>,
+    mut succession: Succession,
+) {
+    succession.after(died.entity);
+}
+
+/// A leader that leaves its group, or is gone from the world, is succeeded.
+pub(super) fn succeed_the_gone(left: On<Remove<GroupMember>>, mut succession: Succession) {
+    succession.after(left.entity);
+}
+
 /// "Ragnar identifies the Crocodiles:", "They're Ironskin Crocodiles!"
 #[derive(Message, Debug, Clone, PartialEq)]
 pub struct Identified {
@@ -263,5 +355,46 @@ impl GroupRecognition<'_, '_> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::actors::Level;
+    use crate::game::characters::{Condition, Conditions, Dead, Lasting};
+    use crate::game::world::bidden::Script;
+
+    /// Retail `ElectGroupLeaderMember`: the first to come leads; when it
+    /// dies the living member of highest level that is not Turncoat leads,
+    /// and follows the script the dead leader followed.
+    #[test]
+    fn a_dead_leader_is_succeeded_by_the_highest_fit_member() {
+        let mut world = World::new();
+        world.add_observer(first_leads);
+        world.add_observer(succeed_the_dead);
+        let group = world.spawn(MonsterGroup::default()).id();
+        let member = |world: &mut World, level| {
+            world.spawn((Vitals::full(10, 10), Level(level), GroupMember(group))).id()
+        };
+        let first = member(&mut world, 3);
+        world.entity_mut(first).insert(Script("patrol.msf".into()));
+        let low = member(&mut world, 2);
+        let high = member(&mut world, 9);
+        let turned = member(&mut world, 12);
+        world
+            .get_mut::<Conditions>(turned)
+            .unwrap()
+            .afflict(Condition::Turncoat, Lasting::Rounds(3));
+        let leads = |world: &World, member| world.get::<Leads>(member).is_some();
+        assert!(leads(&world, first));
+        world.entity_mut(low).insert(Dead::default());
+        assert!(leads(&world, first), "not the leader's death");
+        world.entity_mut(first).insert(Dead::default());
+        assert!(leads(&world, high) && !leads(&world, first));
+        assert_eq!(world.get::<Script>(high), Some(&Script("patrol.msf".into())));
+        // With only the turned one left, it leads all the same.
+        world.entity_mut(high).insert(Dead::default());
+        assert!(leads(&world, turned));
     }
 }

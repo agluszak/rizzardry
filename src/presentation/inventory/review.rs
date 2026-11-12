@@ -50,6 +50,8 @@ pub(super) enum Field {
     Effect(usize),
     HandName(bool),
     CombatValue(usize),
+    Kills,
+    Deaths,
 }
 #[derive(Component, Default)]
 pub(super) struct StatsInfo {
@@ -272,6 +274,9 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) -
     );
     label(commands, stats, art.font.clone(), Vec2::new(350.0, -33.0), 0.0, Field::String(0x935));
     label(commands, stats, art.font.clone(), Vec2::new(350.0, -19.0), 0.0, Field::String(0x936));
+    // Retail `ReviewCharacterScreen.cpp:1026`: the counts, 80 to the right.
+    label(commands, stats, art.font.clone(), Vec2::new(430.0, -33.0), 32.0, Field::Kills);
+    label(commands, stats, art.font.clone(), Vec2::new(430.0, -19.0), 32.0, Field::Deaths);
 
     label(commands, stats, art.font.clone(), Vec2::new(10.0, 10.0), 287.0, Field::String(0x937));
     label(commands, stats, art.font.clone(), Vec2::new(10.0, 141.0), 287.0, Field::String(0x938));
@@ -489,6 +494,7 @@ pub(super) fn refresh(
     characters: Query<CharacterView>,
     roster: Option<Single<&PartyRoster>>,
     profiles: Query<&crate::game::actors::Skills>,
+    tallies: Query<&crate::game::characters::Tally>,
     info: Option<Single<&StatsInfo>>,
     slider: Option<Single<(Entity, &SliderValue, &SliderRange), With<StatsScroll>>>,
     mut commands: Commands,
@@ -500,6 +506,7 @@ pub(super) fn refresh(
 ) {
     let view = characters.get(screen.member).unwrap();
     let load = view.load();
+    let tally = tallies.get(screen.member).copied().unwrap_or_default();
     let CharacterViewItem {
         entity: member,
         profile,
@@ -665,6 +672,8 @@ pub(super) fn refresh(
                 (if armour_view { armour } else { combat }).map_or("", string).to_owned()
             }
             Field::Attribute(attribute) => attributes[attribute].to_string(),
+            Field::Kills => tally.kills.to_string(),
+            Field::Deaths => tally.deaths.to_string(),
             Field::Skill(skill) => skills[skill].to_string(),
             Field::SkillName(skill) => {
                 string(crate::content::ui::SKILL_NAMES + skill as usize).to_owned()

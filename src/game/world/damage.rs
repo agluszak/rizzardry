@@ -35,53 +35,27 @@ pub fn clear_the_fallen(
     }
 }
 
-/// A monster has died: its autonomous work stops, and unless it was
-/// summoned its death counts against its faction (retail
-/// `RecordFactionOffense`), an NPC's body leaves the NPC dead for good, and
-/// it drops its loot and pays its gold into the party's purse.
-#[allow(clippy::too_many_arguments)]
-pub fn monster_died(
+/// A dead monster's autonomous work stops; its body's geometry and
+/// vertical physics stay.
+pub fn halt(
     death: On<Add<crate::game::characters::Dead>>,
+    mut motion: Query<
+        (
+            Option<&mut AgentTarget3d>,
+            Option<&mut TnuaController<WalkerMotion>>,
+            Option<&mut TnuaMotor>,
+            Option<&mut LinearVelocity>,
+            Option<&mut Velocity3d>,
+        ),
+        With<Monster>,
+    >,
     mut commands: Commands,
-    monsters: Query<(
-        &Monster,
-        ActorPose,
-        Option<&Walker>,
-        &LevelOwned,
-        &super::hostility::Allegiance,
-        Has<crate::game::magic::pointcasts::SummonedBy>,
-    )>,
-    mut motion: Query<(
-        Option<&mut AgentTarget3d>,
-        Option<&mut TnuaController<WalkerMotion>>,
-        Option<&mut TnuaMotor>,
-        Option<&mut LinearVelocity>,
-        Option<&mut Velocity3d>,
-    )>,
-    (bodies, npcs): (
-        Query<&crate::game::npcs::NpcBody>,
-        Query<(Entity, &crate::game::npcs::ActorId)>,
-    ),
-    (mut purse, roster, characters): (
-        Single<&mut PartyInventory>,
-        Single<&crate::game::party::roster::PartyRoster>,
-        Query<&crate::game::characters::Character>,
-    ),
-    content: If<Res<crate::game::data::Catalogs>>,
-    (mut rng, mut factions, clock): (
-        ResMut<GameRng>,
-        ResMut<crate::game::factions::Factions>,
-        Res<crate::game::time::GameClock>,
-    ),
-    mut faction_news: MessageWriter<crate::game::factions::FactionNews>,
 ) {
-    let target = death.entity;
-    let Ok((monster, at, walker, owner, allegiance, summoned)) = monsters.get(target) else {
+    let Ok((targeting, controller, motor, velocity, navigation_velocity)) =
+        motion.get_mut(death.entity)
+    else {
         return;
     };
-    // Stop autonomous work, not the body's geometry or vertical physics.
-    let (targeting, controller, motor, velocity, navigation_velocity) =
-        motion.get_mut(target).unwrap();
     if let Some(mut targeting) = targeting {
         *targeting = AgentTarget3d::None;
     }
@@ -97,26 +71,39 @@ pub fn monster_died(
     if let Some(mut velocity) = navigation_velocity {
         velocity.velocity = Vec3::ZERO;
     }
-    commands.entity(target).remove_with_requires::<Crossing>();
-    if summoned {
-        return;
-    }
+    commands.entity(death.entity).remove_with_requires::<Crossing>();
+}
+
+/// A dead monster drops its loot where it stood and pays its gold into the
+/// party's purse: an NPC's body its NPC's, any other what its species
+/// drops, made now. One summoned leaves nothing.
+pub fn leave_loot(
+    death: On<Add<crate::game::characters::Dead>>,
+    mut commands: Commands,
+    monsters: Query<
+        (&Monster, ActorPose, Option<&Walker>, &LevelOwned),
+        Without<crate::game::magic::pointcasts::SummonedBy>,
+    >,
+    (bodies, npcs): (Query<&crate::game::npcs::NpcBody>, Query<&crate::game::npcs::ActorId>),
+    mut purse: Single<&mut PartyInventory>,
+    members: Query<
+        &crate::game::characters::Character,
+        With<crate::game::party::roster::PartyMember>,
+    >,
+    content: If<Res<crate::game::data::Catalogs>>,
+    mut rng: ResMut<GameRng>,
+) {
+    let target = death.entity;
+    let Ok((monster, at, walker, owner)) = monsters.get(target) else { return };
     let (catalog, tables) = (&content.items, &content.loot);
-    if let Some(news) = factions.record_offence(allegiance.faction, allegiance.npc, clock.ms) {
-        faction_news.write(news);
-    }
     let rng = &mut *rng;
     let npc = bodies.get(target).ok().and_then(|body| npcs.get(body.0).ok());
     let (found, gold) = match npc {
-        Some((actor, id)) => {
-            commands.entity(actor).insert(crate::game::npcs::Killed);
-            crate::game::loot::npc_loot(&content.npcs[id.npc()], tables, catalog, rng)
-        }
+        Some(id) => crate::game::loot::npc_loot(&content.npcs[id.npc()], tables, catalog, rng),
         None => {
             let party_level = crate::game::party::average_level(
-                roster.iter().map(|member| characters.get(member).unwrap().level()),
+                members.iter().map(crate::game::characters::Character::level),
             );
-            // Its loot is made now, from what its species drops.
             let kind = &content.species[monster.species];
             crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng)
         }
