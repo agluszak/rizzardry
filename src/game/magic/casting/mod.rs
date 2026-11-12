@@ -107,7 +107,7 @@ pub struct Refused {
 /// profession level in a hundred.
 fn blind_aim_strays(body: &BodyReadOnlyItem, rng: &mut GameRng) -> bool {
     use crate::content::characters::Trait;
-    if !body.vitals.conditions.has(crate::game::characters::Condition::Blind) {
+    if !body.conditions.has(crate::game::characters::Condition::Blind) {
         return false;
     }
     let sees_anyway = body.character.is_some_and(|character| {
@@ -286,7 +286,8 @@ pub fn cast(
         let Some(power) = power else {
             let tired = cost::stamina(&mut rng, &body, means.used(), spell, 0);
             let skill = means.used().and_then(|used| used.skill());
-            bodies.get_mut(caster).unwrap().vitals.tire(tired);
+            let mut paying = bodies.get_mut(caster).unwrap();
+            paying.vitals.tire(tired);
             if let Some(skill) = skill {
                 commands.trigger(Practise { member: caster, skill, usage: 1 });
             }

@@ -2,8 +2,7 @@
 //! acceptance revalidates the actor and commits training and its consequences.
 use super::*;
 use crate::content::spells::{SpellCatalog, SpellId, Spellbook};
-use crate::game::inventory::EquipSlot;
-use crate::game::items::{Fit, Give, Items, POOL_LIMIT};
+use crate::game::actors::Skills;
 use crate::game::magic::{self, LearnedSpells};
 use crate::game::party::roster::PartyRoster;
 use enumset::EnumSet;
@@ -75,6 +74,9 @@ pub struct Advancement {
     member: Entity,
     original: Character,
     known: LearnedSpells,
+    /// The member's skills as they stood when the draft began, which
+    /// decide the spells they may learn.
+    standing: Skills,
     profession: Profession,
     attributes: EnumMap<Attribute, u32>,
     skills: EnumMap<Skill, u32>,
@@ -90,9 +92,10 @@ pub struct Evaluation {
 }
 
 impl Advancement {
-    fn new(member: Entity, original: &Character, known: &LearnedSpells) -> Self {
+    fn new(member: Entity, original: &Character, known: &LearnedSpells, standing: &Skills) -> Self {
         Self {
             member,
+            standing: *standing,
             original: original.clone(),
             known: known.clone(),
             profession: original.profession,
@@ -269,7 +272,7 @@ impl Advancement {
     pub fn learnable(&self, draft: &Evaluation, id: SpellId, catalog: &SpellCatalog) -> bool {
         // Retail excludes this draft's magic-skill allocations from spell eligibility.
         !self.known.0.contains(&id)
-            && catalog.get(id).is_some_and(|s| magic::can_learn(&draft.baseline, s))
+            && catalog.get(id).is_some_and(|s| magic::can_learn(&draft.baseline, &self.standing, s))
     }
     fn remaining_picks(&self, draft: &Evaluation, catalog: &SpellCatalog) -> Option<SpellPicks> {
         let c = &draft.baseline;
@@ -341,10 +344,11 @@ fn selection_key(id: SpellId) -> SpellId {
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct Progression<'w, 's> {
     roster: Query<'w, 's, (Entity, &'static PartyRoster)>,
-    members:
-        Query<'w, 's, (&'static mut Character, &'static mut Vitals, &'static mut LearnedSpells)>,
-    held: Items<'w, 's>,
-    fit: Query<'w, 's, Fit>,
+    members: Query<
+        'w,
+        's,
+        (&'static mut Character, &'static mut Vitals, &'static mut LearnedSpells, &'static Skills),
+    >,
     blocked: Query<
         'w,
         's,
@@ -375,63 +379,25 @@ impl Progression<'_, '_> {
     }
     pub fn begin(&self, member: Entity) -> Result<Advancement, &'static str> {
         self.eligibility(member)?;
-        let (c, _, known, ..) = self.members.get(member).unwrap();
-        Ok(Advancement::new(member, c, known))
+        let (c, _, known, skills) = self.members.get(member).unwrap();
+        Ok(Advancement::new(member, c, known, skills))
     }
     pub fn accept(&mut self, draft: &Advancement) -> Result<(), &'static str> {
         self.eligibility(draft.member)?;
         let spells = &self.content.spells;
-        let (mut c, _, mut known) = self.members.get_mut(draft.member).unwrap();
+        let (mut c, _, mut known, _) = self.members.get_mut(draft.member).unwrap();
         if *c != draft.original || *known != draft.known {
             return Err("This character's training changed. Reopen level-up.");
         }
         let (next, learned) = draft.finish(spells)?;
         let (party, _) = self.roster.single().map_err(|_| "The party is unavailable.")?;
-        // What the new profession cannot wear goes to their pack or the
-        // pool, which must have room for all of it before anything changes.
         let member = draft.member;
-        let stripped: Vec<_> = EnumSet::<EquipSlot>::all()
-            .iter()
-            .filter_map(|slot| self.held.worn(member, slot))
-            .filter(|&item| self.fit.get(item).is_ok_and(|worn| !worn.wear.users.admit(&next)))
-            .collect();
-        let staying = || self.held.carried(member).filter(|item| !stripped.contains(item));
-        let mut pack_free = self.held.pack(member).iter().filter(|slot| slot.is_none()).count();
-        let mut pool_free = POOL_LIMIT - self.held.pool(party).len();
-        for &item in &stripped {
-            let (Some(id), Some(known)) = (self.held.id(item), self.held.known(item)) else {
-                continue;
-            };
-            let alike = self.held.room_among(staying(), id, known.identified)
-                + self.held.room_among(self.held.pool(party).iter().copied(), id, known.identified);
-            if alike >= self.held.units(item) {
-                continue;
-            }
-            if pack_free > 0 {
-                pack_free -= 1;
-            } else if pool_free > 0 {
-                pool_free -= 1;
-            } else {
-                return Err("Make room for equipment this profession cannot wear.");
-            }
-        }
         // Preserve deficits, conditions and recovery fractions; advancement is not a full heal.
         // Their maxima follow the new sheet when they are refitted.
         *c = next;
         *known = learned;
-        for item in stripped {
-            self.commands.trigger(Give {
-                item,
-                to: Some(member),
-                party,
-                pool_first: false,
-                told: false,
-            });
-        }
         // A Gadgeteer's omnigun follows the committed level.
         self.commands.trigger(crate::game::inventory::omnigun::Advanced { party, member });
-        // The new level, attributes and skill points are the member's now.
-        self.commands.trigger(crate::game::actors::Refit { entity: member });
         Ok(())
     }
 }

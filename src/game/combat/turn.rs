@@ -258,7 +258,11 @@ pub fn accept_round(
     (battle, round, party_move): (&mut Battle, &mut Round, &mut PartyMove),
     combatants: &[Entity],
     roster: &PartyRoster,
-    bodies: &Query<(&Vitals, &Attacks, Option<(&Character, &Order)>)>,
+    bodies: &Query<(
+        (&Vitals, &crate::game::characters::Conditions, Has<crate::game::actors::CanFight>),
+        &Attacks,
+        Option<(&Character, &Order)>,
+    )>,
     rng: &mut GameRng,
 ) {
     battle.round += 1;
@@ -285,11 +289,11 @@ pub fn accept_round(
         .collect();
     for &actor in combatants {
         let lightning = roster.get_index_of(&actor).and_then(|seat| lightning[seat]);
-        let Ok((vitals, arms, ordered)) = bodies.get(actor) else { continue };
+        let Ok(((_, conditions, can_fight), arms, ordered)) = bodies.get(actor) else { continue };
         // A member turned on the party attacks, whatever its order; one
         // who can no longer berserk attacks as usual.
         let action = ordered.map(|(character, order)| match *order {
-            _ if vitals.conditions.has(Condition::Turncoat) => Action::Attack { berserk: false },
+            _ if conditions.has(Condition::Turncoat) => Action::Attack { berserk: false },
             Order::Attack => Action::Attack { berserk: false },
             // A Berserk order needs the trait, an arm, and a primary for
             // close quarters (retail `CanCharacterBerserk`).
@@ -317,7 +321,7 @@ pub fn accept_round(
         };
         // An attacker opens with the slot with the most attacks, its arm's
         // initiative counting (retail `AssignCombatPhases`).
-        if vitals.can_fight() {
+        if can_fight {
             match action {
                 None | Some(Action::Attack { .. }) => {
                     if let Some(slot) = arms.opening() {
@@ -351,7 +355,7 @@ pub fn accept_round(
             let latest = roster
                 .iter()
                 .filter_map(|member| bodies.get(member).ok())
-                .filter(|(vitals, ..)| !vitals.is_dead())
+                .filter(|((vitals, ..), ..)| !vitals.is_dead())
                 .map(|(_, arms, _)| phase(rng, arms.initiative))
                 .max()
                 .unwrap_or(90);
@@ -403,7 +407,7 @@ pub(super) fn take_turn(
     // The weapons accepted, or nothing where one was used up.
     let weapons_hold =
         arms.weapons().iter().all(|(slot, &now)| now.is_none() || now == turn.weapons[slot]);
-    let able = own.vitals.can_fight()
+    let able = own.can_fight
         && match order {
             Some(Action::Attack { .. }) => weapons_hold,
             Some(Action::Defend) => false,
@@ -572,9 +576,11 @@ pub(super) fn take_turn(
         }
         Some(interrupt) => {
             if interrupt == Interrupt::Freed {
-                commands.entity(actor).entry::<Vitals>().and_modify(|mut vitals| {
-                    vitals.conditions.lift(Condition::Webbed);
-                });
+                commands.entity(actor).entry::<crate::game::characters::Conditions>().and_modify(
+                    |mut conditions| {
+                        conditions.lift(Condition::Webbed);
+                    },
+                );
             }
             news.write(CombatNews::Interrupted { actor, interrupt });
             turn.end();
@@ -608,14 +614,14 @@ pub(super) fn take_turn(
 pub(super) fn retreat(
     retreat: On<Retreat>,
     mut commands: Commands,
-    mut actors: Query<(&mut Turn, Option<&Walker>, &Attacks, &Vitals)>,
+    mut actors: Query<(&mut Turn, Option<&Walker>, &Attacks, &crate::game::characters::Conditions)>,
     mut pause: Single<&mut Pause, With<Battle>>,
     places: crate::game::actors::Places,
     party: Single<Entity, With<PartyRoster>>,
     mut news: MessageWriter<CombatNews>,
 ) {
     let Retreat { actor, retreats } = *retreat;
-    let Ok((mut turn, walker, attacks, vitals)) = actors.get_mut(actor) else { return };
+    let Ok((mut turn, walker, attacks, conditions)) = actors.get_mut(actor) else { return };
     turn.end();
     pause.0 = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
     if !walker.is_some_and(|w| w.speed > 0.0) || turn.moved {
@@ -623,7 +629,7 @@ pub(super) fn retreat(
         return;
     }
     turn.moved = true;
-    let slowed = vitals.conditions.has(Condition::Slowed);
+    let slowed = conditions.has(Condition::Slowed);
     let metres = close::metres(attacks, slowed, false);
     let feet = places.of(actor).feet;
     let away = close::withdraws_to(feet, places.of(*party).eye, metres);

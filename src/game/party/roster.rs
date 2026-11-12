@@ -125,7 +125,8 @@ pub fn starting_items(character: &Character) -> Vec<ItemId> {
     let extra = row.extra_item.map(|extra| match extra {
         ExtraItem::Always(item) => item,
         ExtraItem::ByTrainedSkill { skill, over, then, otherwise } => {
-            if character.skill(skill) > character.skill(over) { then } else { otherwise }
+            let skills = crate::game::actors::Skills::of_sheet(character);
+            if skills[skill] > skills[over] { then } else { otherwise }
         }
     });
     set.iter().copied().chain(extra).collect()
@@ -137,10 +138,8 @@ fn member_inserted(
 ) {
     let member = context.entity;
     let party = world.get::<PartyMember>(member).unwrap().0;
-    let dead = world.get::<crate::game::characters::Dead>(member).is_some();
     if let Some(mut formation) = world.get_mut::<super::formation::Formation>(party) {
         formation.seat(member);
-        formation.update_seat(member, dead);
     }
 }
 fn member_removed(

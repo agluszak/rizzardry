@@ -301,11 +301,8 @@ fn sync_walker_velocity(mut walkers: Query<(&LinearVelocity, &mut Velocity3d), W
 /// the target, so a crossing it began keeps its progress but no longer moves
 /// the walker, and recovering from a condition does not resume it; only a
 /// new move does.
-pub(crate) fn walking(
-    target: &AgentTarget3d,
-    body: Option<&crate::game::characters::Vitals>,
-) -> bool {
-    !matches!(target, AgentTarget3d::None) && body.is_none_or(|b| b.can_fight())
+pub(crate) fn walking(target: &AgentTarget3d, (body, can_fight): (bool, bool)) -> bool {
+    !matches!(target, AgentTarget3d::None) && (!body || can_fight)
 }
 
 /// Feed Landmass's desired velocity to Tnua; while crossing a doorway link,
@@ -314,7 +311,7 @@ fn steer_walkers(
     mut walkers: Query<(
         &Walker,
         &AgentTarget3d,
-        Option<&crate::game::characters::Vitals>,
+        (Has<crate::game::characters::Vitals>, Has<crate::game::actors::CanFight>),
         Option<&AgentDesiredVelocity3d>,
         Option<&links::Crossing>,
         &Transform,

@@ -493,6 +493,7 @@ pub(super) fn refresh(
     let resistances = crate::game::characters::resistance::resistances(
         &profile,
         &Attributes::of_sheet(&profile),
+        &crate::game::actors::Skills::of_sheet(&profile),
         |_| None,
     );
     let help = [0xe5, 0xe8, 0xe9, 0xea].map(|id| {
@@ -644,6 +645,7 @@ pub(super) fn refresh(
                 if session.choices.race {
                     crate::game::actors::arms::armour(
                         &profile,
+                        &crate::game::actors::Skills::of_sheet(&profile),
                         &Attributes::of_sheet(&profile),
                         |_| None,
                         crate::game::characters::Load::None,
@@ -662,6 +664,7 @@ pub(super) fn refresh(
                         &Attributes::of_sheet(&profile),
                         &learned,
                         &content.spells,
+                        &crate::game::actors::Skills::of_sheet(&profile),
                     );
                     points.values().sum::<u32>().to_string()
                 } else {

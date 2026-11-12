@@ -50,7 +50,7 @@ pub fn stands_with(sight: &Sight, members: &[Entity], hostiles: &[Entity]) -> bo
 /// ready.
 pub fn acts_on_party(sight: &Sight, fighter: Entity, content: &Catalogs) -> bool {
     let Some((own, mind)) = sight.monster(fighter) else { return false };
-    if !own.vitals.can_fight() {
+    if !own.can_fight {
         return false;
     }
     let gap = sight.party_gap(fighter);

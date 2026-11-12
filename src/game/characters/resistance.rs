@@ -21,6 +21,7 @@ pub struct Resistance {
 pub fn resistances<'a>(
     character: &crate::game::characters::Character,
     a: &crate::game::actors::Attributes,
+    skills: &crate::game::actors::Skills,
     worn: impl Fn(EquipSlot) -> Option<(&'a Protection, bool)>,
 ) -> EnumMap<Realm, Resistance> {
     let vitality = a[Attribute::Vitality] as i32;
@@ -32,7 +33,7 @@ pub fn resistances<'a>(
     EnumMap::from_fn(|realm: Realm| {
         let skill = realm.skill();
         let iron_will = if character.skill_available(Skill::IronWill) {
-            character.skill(Skill::IronWill) as i32 / 5 + 5
+            skills[Skill::IronWill] as i32 / 5 + 5
         } else {
             0
         };
@@ -44,7 +45,7 @@ pub fn resistances<'a>(
         let divine =
             if realm == Realm::Divine { (a[Attribute::Piety] as i32 - 80).max(0) / 2 } else { 0 };
         let base = 25
-            + character.skill(skill) as i32 / 10
+            + skills[skill] as i32 / 10
             + iron_will
             + character.profession.row().resistance
             + racial(realm)
@@ -74,11 +75,26 @@ mod tests {
         let sheet = crate::game::actors::Attributes::of_sheet(&dwarf);
         let none = |_| None;
         // 25, and vitality 60 / 5 = 12.
-        assert_eq!(resistances(&dwarf, &sheet, none)[Realm::Fire].base, 37);
-        assert_eq!(resistances(&dwarf, &sheet, none)[Realm::Water].base, 25);
+        assert_eq!(
+            resistances(&dwarf, &sheet, &crate::game::actors::Skills::of_sheet(&dwarf), none)
+                [Realm::Fire]
+                .base,
+            37
+        );
+        assert_eq!(
+            resistances(&dwarf, &sheet, &crate::game::actors::Skills::of_sheet(&dwarf), none)
+                [Realm::Water]
+                .base,
+            25
+        );
         let mage = Character::new("M", Race::Human, Gender::Male, Profession::Mage);
         let sheet = crate::game::actors::Attributes::of_sheet(&mage);
-        assert_eq!(resistances(&mage, &sheet, none)[Realm::Water].base, 30);
+        assert_eq!(
+            resistances(&mage, &sheet, &crate::game::actors::Skills::of_sheet(&mage), none)
+                [Realm::Water]
+                .base,
+            30
+        );
     }
 
     #[test]
@@ -90,15 +106,17 @@ mod tests {
             regeneration: [0; 3],
         };
         let sheet = crate::game::actors::Attributes::of_sheet(&elf);
-        let base = resistances(&elf, &sheet, |slot| {
-            (slot == EquipSlot::AlternatePrimary).then_some((&charm, false))
-        });
+        let base =
+            resistances(&elf, &sheet, &crate::game::actors::Skills::of_sheet(&elf), |slot| {
+                (slot == EquipSlot::AlternatePrimary).then_some((&charm, false))
+            });
         assert_eq!(base[Realm::Air], Resistance { base: 40, total: 40 });
         assert_eq!(base[Realm::Mental], Resistance { base: 50, total: 50 });
-        let worn = resistances(&elf, &sheet, |slot| {
-            matches!(slot, EquipSlot::AlternatePrimary | EquipSlot::Primary)
-                .then_some((&charm, false))
-        });
+        let worn =
+            resistances(&elf, &sheet, &crate::game::actors::Skills::of_sheet(&elf), |slot| {
+                matches!(slot, EquipSlot::AlternatePrimary | EquipSlot::Primary)
+                    .then_some((&charm, false))
+            });
         assert_eq!(worn[Realm::Air], Resistance { base: 40, total: 52 });
         assert_eq!(worn[Realm::Fire], Resistance { base: 30, total: 23 });
     }

@@ -116,6 +116,14 @@ impl Plugin for CombatPlugin {
                     .after(crate::game::party::body::turn_party)
                     .before(bevy_tnua::TnuaUserControlsSystems),
             )
+            // What a moment or a round's end did to bodies is settled, and
+            // only then is a closing round judged.
+            .add_systems(
+                FixedUpdate,
+                round_end::close_round
+                    .after(crate::game::actors::settle)
+                    .run_if(crate::game::world::level::level_active),
+            )
             // The party walks on the fixed step; its move is measured on
             // every step, once physics has moved it, so how frames batch
             // those steps changes neither the ground counted nor where the
@@ -264,7 +272,7 @@ fn opening_surprise<'a>(
     camping: bool,
     running: bool,
     searching: bool,
-    mut members: impl Iterator<Item = (&'a crate::game::actors::Attributes, &'a Vitals)>,
+    mut lucid: impl Iterator<Item = &'a crate::game::actors::Attributes>,
     rng: &mut GameRng,
 ) -> Option<SurpriseCause> {
     if !shadow_hound {
@@ -272,8 +280,7 @@ fn opening_surprise<'a>(
             return Some(SurpriseCause::Ambush);
         }
         if camping {
-            let guard = members.find(|(_, v)| v.lucid());
-            let Some((attributes, _)) = guard else { return Some(SurpriseCause::Ambush) };
+            let Some(attributes) = lucid.next() else { return Some(SurpriseCause::Ambush) };
             let senses = attributes[crate::content::characters::Attribute::Senses];
             rng.below(1);
             if senses / 2 <= rng.below(100) {
@@ -435,7 +442,10 @@ pub fn stop_party_move(
     fight: Option<Single<(&Round, &mut PartyMove), With<Battle>>>,
     mut rng: ResMut<GameRng>,
     roster: Single<&PartyRoster>,
-    mut movers: Query<(&mut Vitals, &crate::game::items::Burden), With<Turn>>,
+    mut movers: Query<
+        (&mut Vitals, &crate::game::characters::Conditions, &crate::game::items::Burden),
+        With<Turn>,
+    >,
     mut turns: Query<&mut Turn>,
     mut news: MessageWriter<CombatNews>,
     mut starts: MessageReader<StartRound>,
@@ -464,7 +474,7 @@ pub fn begin_round(
     mut rng: ResMut<GameRng>,
     roster: Single<&PartyRoster>,
     bodies: Query<(
-        &Vitals,
+        (&Vitals, &crate::game::characters::Conditions, Has<crate::game::actors::CanFight>),
         &crate::game::actors::Attacks,
         Option<(&Character, &crate::game::party::Order)>,
     )>,

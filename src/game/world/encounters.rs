@@ -267,6 +267,8 @@ impl Spawning<'_, '_, '_> {
         (at, toward): (Vec3, Vec3),
         (configs, rng): (&mut Assets<WalkerMotionConfig>, &mut GameRng),
         group: MonsterGroup,
+        // What its leader follows; an escort's follows nothing of its own.
+        script: Option<&str>,
         unborn: &mut Unborn,
     ) -> Option<(Entity, Vec<Vec3>)> {
         let kind = &self.species[id];
@@ -276,6 +278,7 @@ impl Spawning<'_, '_, '_> {
         if members.is_empty() {
             return None;
         }
+        members[0].script = script.map(str::to_owned);
         self.next = (location + members.len() as i32, authored + 1);
         let toward = toward - at;
         let yaw = crate::game::party::body::yaw_toward(toward);
@@ -351,6 +354,7 @@ fn generate(
         (generator.position, party.feet),
         (configs, rng),
         main,
+        Some(&table.entries[chosen].script),
         unborn,
     )?;
     for companion in companions {
@@ -362,6 +366,7 @@ fn generate(
             (generator.position, party.feet),
             (configs, rng),
             default(),
+            None,
             unborn,
         ) {
             commands.entity(escort).insert(EscortOf(leader));

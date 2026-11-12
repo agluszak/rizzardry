@@ -32,7 +32,7 @@ pub struct NpcActors<'w, 's> {
         'w,
         's,
         (
-            &'static Vitals,
+            (&'static Vitals, &'static crate::game::characters::Conditions),
             &'static Monster,
             ActorPose,
             &'static LevelOwned,
@@ -75,7 +75,7 @@ impl NpcActors<'_, '_> {
         self.records.get(actor).ok()?.2?.iter().find(|&b| {
             self.bodies
                 .get(b)
-                .is_ok_and(|(v, _, _, l, ..)| !v.is_dead() && self.levels.contains(l.0))
+                .is_ok_and(|((v, _), _, _, l, ..)| !v.is_dead() && self.levels.contains(l.0))
         })
     }
     pub fn position(&self, body: Entity) -> Option<Vec3> {
@@ -97,9 +97,9 @@ impl NpcActors<'_, '_> {
         self.sides.get(body).is_ok_and(|side| side.own() != Stance::Hostile)
     }
     pub fn turned(&self, actor: Entity) -> bool {
-        self.active_body(actor)
-            .and_then(|b| self.bodies.get(b).ok())
-            .is_some_and(|r| r.0.conditions.has(crate::game::characters::Condition::Turncoat))
+        self.active_body(actor).and_then(|b| self.bodies.get(b).ok()).is_some_and(
+            |((_, conditions), ..)| conditions.has(crate::game::characters::Condition::Turncoat),
+        )
     }
     pub fn species_level(&self, actor: Entity) -> u32 {
         self.active_body(actor).and_then(|b| self.bodies.get(b).ok()).map_or(1, |r| r.6.0.max(1))

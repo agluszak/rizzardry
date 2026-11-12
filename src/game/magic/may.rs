@@ -73,10 +73,17 @@ pub fn silence_stops(spell: &SpellDefinition, keeps_alchemy: bool) -> bool {
 /// Whether an item's spell may be set off by a character: it has a use,
 /// it is worn where it is in use if it must be, and they are among those who
 /// may use it, or it is a potion or food, which anyone takes.
-pub fn activates(casts: &Casts, worn: bool, character: &Character) -> bool {
+pub fn activates(
+    casts: &Casts,
+    worn: bool,
+    character: &Character,
+    attributes: &crate::game::actors::Attributes,
+    skills: &crate::game::actors::Skills,
+) -> bool {
     !matches!(casts.by, UseType::None | UseType::Spellbook)
         && (!casts.worn || worn)
-        && (casts.users.admit(character) || matches!(casts.by, UseType::Potion | UseType::Food))
+        && (casts.users.admit(character, attributes, skills)
+            || matches!(casts.by, UseType::Potion | UseType::Food))
 }
 
 /// How the party stands.
@@ -148,7 +155,7 @@ pub fn may(
     resolved: bool,
 ) -> Result<(), Refusal> {
     let own = matches!(source, Source::Innate { .. });
-    if !caster.vitals.can_fight() || !(caster.member || own) {
+    if !caster.can_fight || !(caster.member || own) {
         return Err(Refusal::CannotAct);
     }
     let item = match source {
@@ -164,10 +171,7 @@ pub fn may(
         .filter(|&item| held.id(item).is_some());
     let casts = there.map(|item| held.casts(item));
     let voiced = casts.is_none_or(|casts| casts.is_some_and(|c| c.by == UseType::Instrument));
-    if caster.vitals.conditions.has(Condition::Silenced)
-        && voiced
-        && silence_stops(spell, keeps_alchemy)
-    {
+    if caster.conditions.has(Condition::Silenced) && voiced && silence_stops(spell, keeps_alchemy) {
         return Err(Refusal::Silenced);
     }
     match source {
@@ -187,7 +191,9 @@ pub fn may(
             let Some(casts) = held.casts(item) else { return Err(Refusal::CannotUse) };
             let played = matches!(casts.by, UseType::Instrument | UseType::Gadget);
             let worn = held.slot(item).is_some_and(|slot| slot.is_active());
-            let user = caster.character.is_some_and(|c| activates(casts, worn, c));
+            let user = caster
+                .character
+                .is_some_and(|c| activates(casts, worn, c, caster.attributes, caster.skills));
             if (casts.power == 0 && !played) || !user {
                 return Err(Refusal::CannotUse);
             }

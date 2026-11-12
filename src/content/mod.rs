@@ -1,6 +1,7 @@
 //! Immutable content shared by every campaign session.
 
 pub mod characters;
+pub mod conditions;
 pub mod factions;
 pub mod hit_sounds;
 pub mod items;

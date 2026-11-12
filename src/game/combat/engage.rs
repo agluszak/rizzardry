@@ -184,7 +184,16 @@ pub(super) fn open_battle(
         &PartyRoster,
         &crate::game::party::body::PartyMovement,
     )>,
-    members: Query<(&Character, &Vitals, &crate::game::actors::Attributes)>,
+    members: Query<
+        (
+            &Character,
+            &crate::game::characters::Conditions,
+            &crate::game::actors::Attributes,
+            &crate::game::actors::Skills,
+        ),
+        With<crate::game::actors::CanFight>,
+    >,
+    watch: Query<&crate::game::actors::Attributes, With<crate::game::actors::Lucid>>,
     level: PlayedLevel,
     obstacles: WorldObstacles,
     mut recognition: GroupRecognition,
@@ -224,7 +233,7 @@ pub(super) fn open_battle(
         camp.is_some(),
         movement.running,
         searching,
-        members().map(|(_, vitals, attributes)| (attributes, vitals)),
+        watch.iter_many(roster.iter()).matched(),
         &mut rng,
     );
     if camp.is_some() {

@@ -112,7 +112,8 @@ fn drain_back(
         match (leech.gives, body.character.zip(body.spells)) {
             (Leeches::Health, _) => Some(body.vitals.health.current * 100 / body.vitals.health.max),
             (Leeches::Points, Some((character, (learned, pool)))) => {
-                let maxima = character.max_points(body.attributes, learned, &content.spells);
+                let maxima =
+                    character.max_points(body.attributes, learned, &content.spells, body.skills);
                 let most: u32 = maxima.values().sum();
                 let have: u32 =
                     maxima.iter().map(|(realm, _)| pool.available(realm, &maxima)).sum();
@@ -302,7 +303,7 @@ fn reflection(
         _ => {
             let first = roster
                 .iter()
-                .find(|&member| bodies.get(member).is_ok_and(|body| body.vitals.can_fight()))
+                .find(|&member| bodies.get(member).is_ok_and(|body| body.can_fight))
                 .unwrap_or(cast.caster);
             (Some(first), eye)
         }

@@ -12,7 +12,9 @@ pub struct CharacterView {
     pub entity: Entity,
     pub profile: &'static Character,
     pub vitals: &'static Vitals,
+    pub conditions: &'static crate::game::characters::Conditions,
     pub attributes: &'static Attributes,
+    pub skills: &'static crate::game::actors::Skills,
     pub armour: &'static Armour,
     pub resistances: &'static Resistances,
     pub burden: &'static Burden,
@@ -49,6 +51,7 @@ impl CharacterViewItem<'_, '_> {
         let sheet = crate::game::characters::resistance::resistances(
             self.profile,
             self.attributes,
+            self.skills,
             |slot| held.protection(self.entity, slot),
         );
         enum_map::EnumMap::from_fn(|realm| crate::game::characters::resistance::Resistance {

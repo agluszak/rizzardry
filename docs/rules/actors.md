@@ -37,20 +37,28 @@ it computed from those; nothing copies it onto the actor.
 
 ## Refit
 
-The first five components are written when an actor is made and when it is
-**refitted**. `Refit` is an event fired at one actor. Exactly these fire it:
+The first five components are written when an actor is **refitted**: when
+what they are made from has changed. Nothing asks for a refit and nothing
+fires one. A few small systems see that a source changed and mark the actor
+stale; one system writes the figures of every stale actor anew. The sources:
 
 - the actor is made, or joins or leaves the party;
-- a spell is laid on it or lifted from it — for a spell on the party, at every
+- the spells laid on it come or go; for a spell on the party, on every
   member;
 - a member's sheet changes: a level, an attribute, a skill point;
-- a member's load band changes;
-- a member's worn gear changes.
+- a member's load changes;
+- what a member wears changes, or a worn thing itself does (out of shots,
+  grown into a better one);
+- what ails it changes, or it dies or comes back to life.
 
-Each is fired by the operation that made the change, at the moment it makes
-it. Nothing polls for changes and nothing refits on a timer. (Worn gear is the
-one exception until items are things: it is noticed by a write to what the
-member carries. Slice 3 removes it.)
+These run as part of settling bodies (see Fitness), so the figures follow
+their sources by the next time rules read them, not inside the operation
+that changed the source. Nothing refits on a timer.
+
+Once the components are written, `Refitted` is said of the actor, for what
+follows from its figures: a member's seat in the formation, and what they can
+no longer wear, which goes to their pack or the pool (retail
+`UnequipUnusableItems`).
 
 What refit writes:
 
@@ -109,16 +117,8 @@ Blind, Turncoat, Webbed, Asleep, Paralyzed, Unconscious. An actor has each at
 most once, for a number of rounds or until lifted. Poison carries how hard it
 bites.
 
-What an actor can do follows from its worst condition:
-
-| It can… | when nothing is as bad as |
-| --- | --- |
-| act outside a fight (search, trade, rest) | Turncoat |
-| look, keep watch, identify | Insane |
-| guard a fellow | Blind |
-| take, or be the target of, a combat action | Asleep |
-
-Three operations change conditions, and each says what it did:
+Conditions are a component of their own beside the body's health and
+stamina. Three operations change them:
 
 - **afflict**: a longer duration replaces a shorter, never the reverse. Slowing
   a hasted actor first spends the slowing on the haste; hasting a slowed one
@@ -127,10 +127,39 @@ Three operations change conditions, and each says what it did:
 - **age**: timed conditions count down and lift at nothing; a poison weakens as
   it runs its course.
 
-Nothing is copied out of a condition when it begins or ends. What depends on
-one reads it where it is needed: the side an actor is on now is its side
-turned about while it is Turncoat; its eyes are shut while it is Blind or
-cannot fight.
+What a condition takes off attributes, skills, armour and to-hit
+(`assets/tables/conditions.ron`) is written at the refit: an actor's `Skills`
+are a component like its `Attributes`, and every rule reads those. Other
+rules read a condition where it is needed: the side an actor is on now is its
+side turned about while it is Turncoat; its eyes are shut while it is Blind.
+
+## Fitness
+
+No rule asks a body whether it can act. Whoever changes a body changes its
+numbers (health, stamina, conditions) and says nothing more. A few small
+systems, the `Settle` schedule, run before each frame's rules and after each
+moment of a fight, see the change and settle what follows, in this order:
+
+- stamina spent leaves the body out cold; above 9 it comes round;
+- health run out fells it (`Fell`, settled as before: a Valkyrie may cheat
+  it, anyone else is `Dead`); health back on one of the dead ends that;
+- each member's load is weighed (not in a fight);
+- an actor whose sources changed is refitted;
+- what it is fit for is marked on it.
+
+What an actor is fit for is a marker component, there while it is alive and
+nothing ails it as badly as:
+
+| Marker | It can… | Lost at |
+| --- | --- | --- |
+| `Lucid` | look, keep watch, identify | Insane |
+| `CanGuard` | guard a fellow | Blind |
+| `CanAct` | act outside a fight (search, trade, rest) | Turncoat |
+| `CanFight` | take, or be the target of, a combat action | Asleep |
+
+Rules filter on the markers and react to their coming and going. A round's
+end does what it does to bodies, waits for that to be settled, and only then
+judges the fight.
 
 ## Spells laid
 
@@ -148,9 +177,9 @@ a fight, whether it pulses each round. A bearer has each spell at most once.
 - **spend**: Razor Cloak and Eye for an Eye lose a point of power each time
   they answer, and lift at nothing. Guardian Angel loses what it absorbs.
 
-A spell coming onto a bearer or going from it refits the bearer; that is the
-relationship's own event, so no operation has to remember to. Refit sums what
-the spells on an actor, and on its party, add.
+A spell coming onto a bearer or going from it leaves the bearer's figures
+stale, and they are written anew as bodies are settled; no operation has to
+remember to. Refit sums what the spells on an actor, and on its party, add.
 
 What lasts only a fight (Bless, Armormelt, the shields, the clouds, Ring of
 Fire) lifts when the fight ends. The dead keep no spells.
@@ -198,3 +227,39 @@ level and Chameleon) are likewise computed when asked, from the facts above.
 - **bracing**, from defending this round;
 - **being on the move**, from walking or the party running this round;
 - **place**.
+
+## Condition modifiers
+
+Source: `Gameplay Mods.cpp`, `ApplyConditionModifiers`; `character_skills.cpp`,
+`ResetCharacterAttributes` and `GetEffectiveSkillLevel`; `GameplayCode.cpp`,
+`CalcArmorClasses`.
+
+| Condition | Attributes | To hit | Armour | Skills |
+| --- | --- | --- | --- | --- |
+| Irritated | — | −2 | −2 | — |
+| Nauseated | — | −5 | −4 | — |
+| Slowed | Speed −50 | — | — | — |
+| Afraid | — | −3 | −2 | — |
+| Poisoned | — | −2 | −2 | — |
+| Hexed | All −20 | −5 | — | All −20 |
+| Insane | Intelligence −50 | — | — | — |
+| Blind | Senses −50 | — | — | — |
+| Webbed | Dexterity −50 | — | — | — |
+
+Modifiers add together, including spells, before attributes are clamped to
+1–125 and skills to 0–125. The profession's skill bonus is added before that
+clamp. A member with Effective While Blind offsets the Senses penalty by
+`scale_by_level(profession level, 50)` and keeps their formation place.
+Monsters receive the ordinary blindness attribute penalty, even when their
+kind allows blind combat.
+
+Blind members without that trait, and Webbed, Asleep, Paralyzed or Unconscious
+members, give up their formation place while affected, as the dead and the
+missing do. They return to their
+remembered row if it has room. Their global armour is capped at −5 before
+local equipment armour is added. A member worse than Unconscious (dead or
+missing) loses race, speed, skill, spell, condition, load and defending armour
+contributions; worn armour remains.
+
+Stealth contributes its effective level divided by 10 to armour. An active
+Reflextion skill contributes its effective level divided by 20, plus one.

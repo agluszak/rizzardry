@@ -182,6 +182,7 @@ fn a_friend_greets_answers_what_is_paid_for_and_is_left() {
     let mut scene = scene(friend());
     let speaker = scene.speaker;
     scene.world().get_mut::<Character>(speaker).unwrap().skill_points[Skill::Communication] = 100;
+    scene.world().run_schedule(crate::game::actors::Settle);
     assert_eq!(scene.begin(), ["q0"], "the first greeting");
     scene.begin();
     let world = scene.world();

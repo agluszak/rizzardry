@@ -17,8 +17,6 @@ use crate::content::items::ItemId;
 use crate::content::level::LevelDefinition;
 use crate::content::npcs::*;
 use crate::game::actors::Places;
-use crate::game::actors::Refit;
-use crate::game::characters::Fell;
 use crate::game::characters::{Character, Condition, Lasting, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::factions::{Band, FactionNews, Factions};
@@ -410,7 +408,7 @@ fn unfold<'a>(
 /// the rows befalls as anything a fact sets off does.
 #[derive(SystemParam)]
 pub(super) struct Bodies<'w, 's> {
-    vitals: Query<'w, 's, &'static mut Vitals, With<Monster>>,
+    conditions: Query<'w, 's, &'static mut crate::game::characters::Conditions, With<Monster>>,
     places: Places<'w, 's>,
     party: Single<'w, 's, Entity, With<PartyBody>>,
     monsters: Query<'w, 's, (Entity, &'static Monster)>,
@@ -426,8 +424,8 @@ impl Bodies<'_, '_> {
                     self.commands.entity(body).insert(Script(script.clone()));
                 }
                 Consequence::BodyAsleep(rounds) => {
-                    if let Ok(mut vitals) = self.vitals.get_mut(body) {
-                        vitals.afflict(Condition::Asleep, Lasting::Rounds(*rounds));
+                    if let Ok(mut conditions) = self.conditions.get_mut(body) {
+                        conditions.afflict(Condition::Asleep, Lasting::Rounds(*rounds));
                     }
                 }
                 Consequence::BodyFacesParty => {
@@ -544,7 +542,10 @@ pub(super) fn come_due(
 pub(super) fn befalls_the_story(
     befalls: On<Befalls>,
     (mut story, mut factions): (ResMut<StoryFacts>, ResMut<Factions>),
-    mut members: Query<(&mut Character, &Vitals)>,
+    mut members: Query<
+        (&mut Character, Has<crate::game::actors::CanFight>),
+        Without<crate::game::characters::Dead>,
+    >,
     (roster, levels): (Single<&PartyRoster>, Query<&Level>),
     (content, clock): (Res<Catalogs>, Res<GameClock>),
     (mut news, mut told, mut remarks): (
@@ -579,12 +580,9 @@ pub(super) fn befalls_the_story(
         // Each member awake gains up to so much, a hundred at most.
         Consequence::Raise(attribute, by, tells) => {
             for member in roster.iter() {
-                if let Ok((mut character, vitals)) = members.get_mut(member)
-                    && vitals.can_fight()
-                {
+                if let Ok((mut character, true)) = members.get_mut(member) {
                     let base = character.attributes[*attribute];
                     character.attributes[*attribute] = base + (*by).min(100.max(base) - base);
-                    commands.trigger(Refit { entity: member });
                 }
             }
             told.write(StoryTold { string: *tells });
@@ -594,7 +592,7 @@ pub(super) fn befalls_the_story(
             for member in roster.iter() {
                 if members
                     .get(member)
-                    .is_ok_and(|(character, vitals)| character.race == *race && vitals.can_fight())
+                    .is_ok_and(|(character, can_fight)| character.race == *race && can_fight)
                 {
                     remarks.write(PartyRemark { event: *event, after: 0.0, speaker: Some(member) });
                 }
@@ -602,13 +600,11 @@ pub(super) fn befalls_the_story(
         }
         Consequence::SkillFloor(skill, points) => {
             for member in roster.iter() {
-                if let Ok((mut character, vitals)) = members.get_mut(member)
-                    && !vitals.is_dead()
+                if let Ok((mut character, _)) = members.get_mut(member)
                     && character.skill_available(*skill)
                     && character.skill_points[*skill] < *points
                 {
                     character.skill_points[*skill] = *points;
-                    commands.trigger(Refit { entity: member });
                 }
             }
         }
@@ -705,7 +701,6 @@ pub(super) fn befalls_the_level(
                 commands.entity(leader).entry::<Vitals>().and_modify(|mut vitals| {
                     vitals.slay();
                 });
-                commands.trigger(Fell { body: leader });
             }
         }
         Consequence::Sound(path) => {
@@ -1159,7 +1154,11 @@ pub(super) static FACTS: LazyLock<FactTable> = LazyLock::new(|| {
 #[derive(SystemParam)]
 pub struct Readings<'w, 's> {
     party: Single<'w, 's, (Entity, &'static PartyRoster)>,
-    members: Query<'w, 's, (&'static Character, &'static Vitals, Option<&'static ActorId>)>,
+    members: Query<
+        'w,
+        's,
+        (&'static Character, Has<crate::game::actors::CanFight>, Option<&'static ActorId>),
+    >,
     held: Items<'w, 's>,
     slain: Query<'w, 's, &'static ActorId, With<Killed>>,
     chosen: Query<'w, 's, (), (With<super::scenes::Chosen>, With<PartyMember>)>,
@@ -1235,13 +1234,15 @@ impl Readings<'_, '_> {
                 self.held.carried(member).any(|held| self.held.id(held) == Some(ItemId(*item)))
             }),
             Reading::Friendly(faction) => factions.band(*faction as i32) == Band::Friendly,
-            Reading::Joined(npc) => members()
-                .any(|(_, vitals, id)| id.is_some_and(|id| id.0.0 == *npc) && vitals.can_fight()),
+            Reading::Joined(npc) => {
+                members().any(|(_, can_fight, id)| id.is_some_and(|id| id.0.0 == *npc) && can_fight)
+            }
             Reading::Companions(count) => {
                 members().filter(|(_, _, id)| id.is_some()).count() == *count
             }
-            Reading::FitMember(race) => members()
-                .any(|(character, vitals, _)| character.race == *race && vitals.can_fight()),
+            Reading::FitMember(race) => {
+                members().any(|(character, can_fight, _)| character.race == *race && can_fight)
+            }
             Reading::Not(reading) => !so(reading),
             Reading::All(readings) => readings.iter().all(so),
             Reading::Any(readings) => readings.iter().any(so),
@@ -1298,7 +1299,7 @@ impl Readings<'_, '_> {
                 _ => so(reading),
             },
             Reading::OwnAwake(count) => {
-                let own = members().filter(|(_, vitals, id)| id.is_none() && vitals.can_fight());
+                let own = members().filter(|(_, can_fight, id)| id.is_none() && *can_fight);
                 own.count() >= *count
             }
             Reading::Level(number) => {

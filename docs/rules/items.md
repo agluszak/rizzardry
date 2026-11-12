@@ -83,12 +83,13 @@ asked.
 
 ## What follows from where items are
 
-- **Refit.** A member is refitted when an item comes onto them or leaves them
-  in a slot in use. That is the `Worn` relationship changing, so nothing has to
-  remember to fire it, and nothing watches a member's gear for writes.
+- **Refit.** What a member wears is one of the sources of their figures: a
+  thing coming onto them or leaving them, or a worn thing changing, leaves
+  the figures stale, and they are written anew as bodies are settled
+  ([actors.md](actors.md), "Refit"). Nothing that moves an item says so.
 - **Burden.** What a member carries weighs on them: what they wear and pack,
-  and their share of the pool. It is worked out when the items they hold, the
-  pool, or what they can carry changes — not every frame.
+  and their share of the pool. It is weighed as bodies are settled, from
+  what is carried then; a fight keeps the loads it began with.
 - **A member's arms.** What a member strikes with is read from the weapons in
   the two hands of the set in use: a weapon in a hand is an arm; an empty hand
   is a fist by Martial Arts; a launcher needs its ammunition in the other

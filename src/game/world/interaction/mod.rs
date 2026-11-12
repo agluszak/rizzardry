@@ -263,12 +263,11 @@ pub enum Unable {
     UnsupportedTrap,
 }
 
-/// A member's Locks & Traps level, if they can use it now (retail
-/// `GetPartySlotLocksTrapsLevel`).
-pub fn lock_skill(character: &Character, vitals: &Vitals) -> Option<u32> {
-    let level = character.skill(Skill::LocksAndTraps);
-    (vitals.can_act() && (character.skill_available(Skill::LocksAndTraps) || level > 0))
-        .then_some(level)
+/// The Locks & Traps level of a member who can act, if they have the skill
+/// to use (retail `GetPartySlotLocksTrapsLevel`).
+pub fn lock_skill(character: &Character, skills: &crate::game::actors::Skills) -> Option<u32> {
+    let level = skills[Skill::LocksAndTraps];
+    (character.skill_available(Skill::LocksAndTraps) || level > 0).then_some(level)
 }
 
 /// A member's chance in 100 to inspect a trap, or to disarm one of its
@@ -278,15 +277,15 @@ pub fn trap_chance(skill: Option<u32>, difficulty: u8, setting: Difficulty) -> i
     (skill * 3 / 2 + (11 - setting as i32) * 10).clamp(0, 99)
 }
 
-/// A member's chance in 100 to force a lock with this many tumblers, if
-/// they may try (retail `W8LockInteraction::AttemptForce`).
+/// The chance in 100 of a member who can act to force a lock with this many
+/// tumblers, if they have the stamina and strength to try (retail `W8LockInteraction::AttemptForce`).
 pub fn force_chance(
     strength: u32,
     vitals: &Vitals,
     tumblers: usize,
     setting: Difficulty,
 ) -> Option<u32> {
-    if !vitals.can_act() || vitals.stamina.current < FORCE_STAMINA || strength <= FORCE_STRENGTH {
+    if vitals.stamina.current < FORCE_STAMINA || strength <= FORCE_STRENGTH {
         return None;
     }
     let divisor = (setting as usize + tumblers - 1).clamp(2, 8);
@@ -365,7 +364,7 @@ impl Busy<'_, '_> {
 
 /// A member's Locks & Traps level if they can use it now.
 fn skill(body: &BodyItem) -> Option<u32> {
-    lock_skill(body.character.as_deref()?, &body.vitals)
+    lock_skill(body.character.as_deref().filter(|_| body.can_act)?, body.skills)
 }
 
 /// A member raises a tumbler of the lock being picked.
@@ -535,7 +534,7 @@ fn force(
     let Ok(mut body) = bodies.get_mut(member) else { return };
     let strength = body.attributes[Attribute::Strength];
     let Some(chance) = force_chance(strength, &body.vitals, picking.tumblers.len(), *setting)
-        .filter(|_| !busy.busy())
+        .filter(|_| body.can_act && !busy.busy())
     else {
         return;
     };
@@ -845,6 +844,7 @@ mod tests {
         thief.skill_points[Skill::LocksAndTraps] = 100;
         let member = world.spawn((Vitals::new(&thief), thief)).id();
         crate::game::party::roster::test_party(world, &[member]);
+        world.run_schedule(crate::game::actors::Settle);
         let lock = Lock::Pickable { difficulty: 2 };
         let door = world.spawn(Guarded::new(lock)).id();
         let attempt = begin(world, door, Work::Picking(Picking::new(2)));

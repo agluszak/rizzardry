@@ -57,7 +57,7 @@ pub fn catch_unaware(
     let watching = target.defending()
         && !vitals.is_dead()
         && vitals.stamina.current > 0
-        && vitals.conditions.worst().is_none_or(|worst| worst < Condition::Webbed)
+        && target.body.conditions.below(Condition::Webbed)
         && !target.has(Condition::Blind);
     let noticed = tries.filter(|_| watching).is_some_and(|tries| {
         caught.tries = tries + 1;
@@ -157,7 +157,10 @@ mod tests {
         };
         for condition in [Condition::Blind, Condition::Webbed] {
             let (mut world, member) = watchful();
-            world.get_mut::<Vitals>(member).unwrap().afflict(condition, Lasting::Rounds(9));
+            world
+                .get_mut::<crate::game::characters::Conditions>(member)
+                .unwrap()
+                .afflict(condition, Lasting::Rounds(9));
             assert!(unnoticed(&mut world, member), "{condition:?}");
         }
         let (mut world, member) = watchful();
@@ -168,7 +171,10 @@ mod tests {
         assert!(unnoticed(&mut world, member), "not defending");
         // Nothing worse than Turncoat is alert still.
         let (mut world, member) = watchful();
-        world.get_mut::<Vitals>(member).unwrap().afflict(Condition::Turncoat, Lasting::Rounds(9));
+        world
+            .get_mut::<crate::game::characters::Conditions>(member)
+            .unwrap()
+            .afflict(Condition::Turncoat, Lasting::Rounds(9));
         assert_eq!(caught(&mut world, member, Reach::Touch, Row::Rear).turns_to, Some(Row::Rear));
     }
 }

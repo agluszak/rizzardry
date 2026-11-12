@@ -52,7 +52,7 @@ from health, and side cannot until conditions are.
 
 **New types, and no others.** Components every actor has: `Attributes`,
 `Level`, `Resistances`, `Armour`, `Attacks`, `Vitals`, `Conditions`, `Spells`,
-`Side`. Events: `Refit`, `Afflicted`, `Recovered`, and the existing `Damaged`
+`Side`. Events: `Refitted`, `Afflicted`, `Recovered`, and the existing `Damaged`
 and `Dead`. One accessor that computes an actor's place when asked.
 
 **Not allowed.** A component that mirrors another. A system that scans actors

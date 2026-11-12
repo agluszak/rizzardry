@@ -58,7 +58,7 @@ pub fn steps_in(
         .copied()
         .filter(|&guard| {
             fighters.get(guard).is_ok_and(|guard| {
-                guard.body.vitals.can_guard()
+                guard.body.can_guard
                     && guard.body.attacks.arms.first().is_some_and(|arm| {
                         places.of(guard.body.entity).gap(&at) <= arm.reach.metres()
                     })
@@ -80,7 +80,7 @@ mod tests {
     use super::*;
     use crate::content::species::Reach;
     use crate::game::actors::Attacks;
-    use crate::game::characters::{Condition, Lasting, Vitals};
+
     use crate::game::combat::turn::{Guarding, Interceptions};
     use crate::game::world::hostility::Stance;
     use bevy::prelude::{Vec3, World};
@@ -144,8 +144,8 @@ mod tests {
         world.get_mut::<Interceptions>(guard).unwrap().taken = 2;
         assert_eq!(steps(&mut world, all), 0, "none left");
         world.get_mut::<Interceptions>(guard).unwrap().taken = 0;
-        world.get_mut::<Vitals>(guard).unwrap().afflict(Condition::Blind, Lasting::Rounds(9));
-        assert_eq!(steps(&mut world, all), 0, "blind");
+        world.entity_mut(guard).remove::<crate::game::actors::CanGuard>();
+        assert_eq!(steps(&mut world, all), 0, "unable to guard");
         let (mut world, all) = guarded(2.5);
         assert_eq!(steps(&mut world, all), 0, "out of reach");
         world.get_mut::<Attacks>(all[2]).unwrap().arms[0].reach = Reach::Long;

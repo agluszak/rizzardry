@@ -10,7 +10,7 @@ use bevy::prelude::*;
 
 use super::identify::{GroupMember, GroupMembers, MonsterGroup};
 use crate::content::species::{Disposition, Species};
-use crate::game::characters::{Condition, Vitals};
+use crate::game::characters::{Condition, Conditions, Vitals};
 use crate::game::factions::{Band, Factions, PARTY, UNALIGNED};
 use crate::game::party::recovery::Elapsed;
 use crate::game::time::GameClock;
@@ -57,8 +57,8 @@ impl Side {
     /// The side it is on now: its own, turned about while it is Turncoat.
     /// The dead have no conditions, so they keep the side they died on
     /// ([`Side::die`]).
-    pub fn now(&self, vitals: &Vitals) -> Stance {
-        if vitals.conditions.has(Condition::Turncoat) { self.0.turned() } else { self.0 }
+    pub fn now(&self, conditions: &Conditions) -> Stance {
+        if conditions.has(Condition::Turncoat) { self.0.turned() } else { self.0 }
     }
 
     /// The side its group or kind gives it, whatever has turned it.
@@ -68,8 +68,8 @@ impl Side {
 
     /// Dying fixes the side it was on as it died, since death lifts what
     /// had turned it.
-    pub fn die(&mut self, vitals: &Vitals) {
-        self.0 = self.now(vitals);
+    pub fn die(&mut self, conditions: &Conditions) {
+        self.0 = self.now(conditions);
     }
 }
 
@@ -87,9 +87,9 @@ pub enum Loyalty {
 
 impl Loyalty {
     /// The band it keeps to now: one under Turncoat has broken with its own.
-    pub fn now(self, vitals: &Vitals) -> Self {
+    pub fn now(self, conditions: &Conditions) -> Self {
         match self {
-            Loyalty::Faction(_) if vitals.conditions.has(Condition::Turncoat) => Loyalty::None,
+            Loyalty::Faction(_) if conditions.has(Condition::Turncoat) => Loyalty::None,
             loyalty => loyalty,
         }
     }
@@ -341,12 +341,12 @@ pub struct Provoked;
 /// nobody.
 pub fn take_offence(
     offence: On<Provocation>,
-    monsters: Query<(&Side, &Vitals, &GroupMember)>,
+    monsters: Query<(&Side, &Vitals, &Conditions, &GroupMember)>,
     mut commands: Commands,
 ) {
-    let Ok((side, vitals, member)) = monsters.get(offence.monster) else { return };
+    let Ok((side, vitals, conditions, member)) = monsters.get(offence.monster) else { return };
     commands.entity(member.0).insert(Provoked);
-    if vitals.is_dead() || vitals.conditions.has(Condition::Turncoat) {
+    if vitals.is_dead() || conditions.has(Condition::Turncoat) {
         return;
     }
     if side.own() != Stance::Hostile {

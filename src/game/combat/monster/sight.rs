@@ -115,9 +115,10 @@ impl Sight<'_, '_> {
             .bodies
             .iter_many(self.roster().iter())
             .matched()
-            .map(|member| (member.level, member.vitals));
+            .filter(|member| member.can_fight)
+            .map(|member| member.level);
         let hidden = Hidden::party(members, self.laid.bonus(self.party()).concealment);
-        Eyes::of(own.vitals, own.attributes, own.attacks).see(
+        Eyes::of((own.conditions, own.can_fight), own.attributes, own.attacks).see(
             &self.places.of(watcher),
             (&self.places.of(self.party()), hidden),
             self.far(),
@@ -130,7 +131,7 @@ impl Sight<'_, '_> {
         let (Ok(own), Ok(there)) = (self.bodies.get(watcher), self.bodies.get(watched)) else {
             return false;
         };
-        Eyes::of(own.vitals, own.attributes, own.attacks).see(
+        Eyes::of((own.conditions, own.can_fight), own.attributes, own.attacks).see(
             &self.places.of(watcher),
             (&self.places.of(watched), Hidden::alone(*there.level)),
             self.far(),

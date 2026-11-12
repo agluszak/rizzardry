@@ -195,7 +195,7 @@ pub(super) fn investigate(
         let walks = heard.is_some_and(|heard| heard.walks == Some(true));
         for member in members.iter() {
             let Ok((at, mut target, investigating)) = walkers.get_mut(member) else { continue };
-            let fit = sight.monster(member).is_some_and(|(body, _)| body.vitals.can_fight());
+            let fit = sight.monster(member).is_some_and(|(body, _)| body.can_fight);
             match heard.filter(|_| fit) {
                 Some(heard) if walks => {
                     *target = AgentTarget3d::Point(heard.at);

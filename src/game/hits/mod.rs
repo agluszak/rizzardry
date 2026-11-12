@@ -243,13 +243,7 @@ fn arrive(
         commands.entity(arrival.deed).despawn();
     }
     log.scorch(&mut commands);
-    for hurt in log.damaged.iter().filter(|hurt| hurt.died) {
-        commands.trigger(crate::game::characters::Fell { body: hurt.body });
-    }
     damaged.write_batch(log.damaged);
-    for raised in log.raised {
-        commands.entity(raised).remove::<crate::game::characters::Dead>();
-    }
     for (member, skill, usage) in log.practised {
         commands.trigger(Practise { member, skill, usage });
     }

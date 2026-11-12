@@ -73,7 +73,7 @@ pub(super) fn picked(
     picked: On<Picked>,
     picks: Query<Entity, With<MemberPick>>,
     roster: Single<&PartyRoster>,
-    members: Query<(&Character, &Vitals, Has<ActorId>)>,
+    members: Query<(&Character, Has<crate::game::actors::CanFight>, Has<ActorId>)>,
     chosen: Query<Entity, With<Chosen>>,
     held: Items,
     mut remarks: MessageWriter<PartyRemark>,
@@ -86,7 +86,7 @@ pub(super) fn picked(
     for pick in &picks {
         commands.entity(pick).despawn();
     }
-    let Ok((character, vitals, companion)) = members.get(member) else { return };
+    let Ok((character, can_fight, companion)) = members.get(member) else { return };
     let table = &FACTS.chosen;
     let mut set = |name: &String, value| {
         commands.trigger(Befalls(Consequence::Fact(name.clone(), value)));
@@ -100,7 +100,7 @@ pub(super) fn picked(
     if character.gender == Gender::Female && others {
         set(&table.woman, 1);
         remarks.write(PartyRemark { event: REFUSED, after: 0.0, speaker: Some(member) });
-    } else if companion || !vitals.can_fight() {
+    } else if companion || !can_fight {
         set(&table.unable, 1);
     } else if table
         .wears
@@ -120,7 +120,10 @@ pub(super) fn picked(
 /// The chosen one is smitten once out of battle and away from her halls;
 /// if the one who spares them stands in the level, they never are.
 pub(super) fn pine(
-    mut pining: Query<(Entity, &Character, &mut Vitals), (With<Pining>, With<PartyMember>)>,
+    mut pining: Query<
+        (Entity, &Character, &mut crate::game::characters::Conditions),
+        (With<Pining>, With<PartyMember>),
+    >,
     battles: Query<(), With<Battle>>,
     (people, content): (Query<Person>, Res<Catalogs>),
     level: Single<&Level>,
@@ -133,12 +136,12 @@ pub(super) fn pine(
     let table = &FACTS.chosen;
     let spared =
         matches!(story::one_of_kind(table.spared_by, &people, &content), Some((_, Some(_))));
-    for (member, character, mut vitals) in &mut pining {
+    for (member, character, mut conditions) in &mut pining {
         if spared {
             commands.entity(member).remove::<Pining>();
         } else if !table.spared_in.iter().any(|path| level.path.starts_with(path.as_str())) {
             commands.entity(member).remove::<Pining>();
-            vitals.afflict(Condition::Infatuated, Lasting::Indefinite);
+            conditions.afflict(Condition::Infatuated, Lasting::Indefinite);
             if character.gender == Gender::Male {
                 remarks.write(PartyRemark { event: SMITTEN, after: 0.0, speaker: Some(member) });
             }
@@ -271,7 +274,11 @@ pub(super) fn ends(
 pub(super) fn befalls_the_party(
     befalls: On<Befalls>,
     roster: Single<&PartyRoster>,
-    mut members: Query<(&Character, &mut Vitals, Has<Chosen>)>,
+    mut members: Query<(
+        &Character,
+        (&mut Vitals, &mut crate::game::characters::Conditions),
+        Has<Chosen>,
+    )>,
     mut points: Query<&mut SpellPoints>,
     mut rng: ResMut<GameRng>,
     mut remarks: MessageWriter<PartyRemark>,
@@ -285,14 +292,16 @@ pub(super) fn befalls_the_party(
         // `BeginSedexusCapture`), until they are woken.
         Consequence::OthersFaint | Consequence::OthersWake => {
             for member in roster.iter() {
-                let Ok((_, mut vitals, chosen)) = members.get_mut(member) else { continue };
+                let Ok((_, (vitals, mut conditions), chosen)) = members.get_mut(member) else {
+                    continue;
+                };
                 if chosen || vitals.is_dead() {
                     continue;
                 }
                 if matches!(befalls.0, Consequence::OthersFaint) {
-                    vitals.afflict(Condition::Unconscious, Lasting::Indefinite);
+                    conditions.afflict(Condition::Unconscious, Lasting::Indefinite);
                 } else {
-                    vitals.conditions.lift(Condition::Unconscious);
+                    conditions.lift(Condition::Unconscious);
                 }
             }
         }
@@ -304,8 +313,8 @@ pub(super) fn befalls_the_party(
         }
         Consequence::Returns => {
             for member in roster.iter() {
-                if let Ok((_, mut vitals, _)) = members.get_mut(member) {
-                    vitals.conditions.lift(Condition::Missing);
+                if let Ok((_, (_, mut conditions), _)) = members.get_mut(member) {
+                    conditions.lift(Condition::Missing);
                 }
             }
         }
@@ -323,8 +332,8 @@ pub(super) fn befalls_the_party(
                 open.iter().copied().filter(|&member| Some(score(member)) == least).collect();
             if !least.is_empty() {
                 let taken = least[rng.below(least.len() as u32) as usize];
-                if let Ok((_, mut vitals, _)) = members.get_mut(taken) {
-                    vitals.afflict(Condition::Missing, Lasting::Indefinite);
+                if let Ok((_, (_, mut conditions), _)) = members.get_mut(taken) {
+                    conditions.afflict(Condition::Missing, Lasting::Indefinite);
                 }
             }
         }
@@ -340,13 +349,13 @@ pub(super) fn befalls_the_party(
         Consequence::AfflictOne(condition, rounds, spread) => {
             let living: Vec<Entity> = roster
                 .iter()
-                .filter(|&m| members.get(m).is_ok_and(|(_, vitals, _)| !vitals.is_dead()))
+                .filter(|&m| members.get(m).is_ok_and(|(_, (vitals, _), _)| !vitals.is_dead()))
                 .collect();
             if !living.is_empty() {
                 let one = living[rng.below(living.len() as u32) as usize];
                 let lasts = Lasting::Rounds(*rounds + rng.below(*spread));
-                if let Ok((_, mut vitals, _)) = members.get_mut(one) {
-                    vitals.afflict(*condition, lasts);
+                if let Ok((_, (_, mut conditions), _)) = members.get_mut(one) {
+                    conditions.afflict(*condition, lasts);
                 }
             }
         }
@@ -354,7 +363,7 @@ pub(super) fn befalls_the_party(
         // `RestorePartySpellPoints` with nothing held back).
         Consequence::RestoreMagic => {
             for member in roster.iter() {
-                let alive = members.get(member).is_ok_and(|(_, vitals, _)| !vitals.is_dead());
+                let alive = members.get(member).is_ok_and(|(_, (vitals, _), _)| !vitals.is_dead());
                 if let (true, Ok(mut points)) = (alive, points.get_mut(member)) {
                     points.restore_evenly(u32::MAX);
                 }
@@ -362,7 +371,7 @@ pub(super) fn befalls_the_party(
         }
         Consequence::Heal(amount) | Consequence::Rest(amount) => {
             for member in roster.iter() {
-                let Ok((_, mut vitals, _)) = members.get_mut(member) else { continue };
+                let Ok((_, (mut vitals, _), _)) = members.get_mut(member) else { continue };
                 if matches!(befalls.0, Consequence::Heal(_)) {
                     vitals.heal(*amount);
                 } else {

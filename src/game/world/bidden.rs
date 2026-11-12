@@ -373,7 +373,7 @@ pub(super) fn keep_orders(
             Without<super::noise::Investigating>,
         ),
     >,
-    bodies: Query<(&crate::game::characters::Vitals, Option<&GroupMember>), With<Monster>>,
+    bodies: Query<(Has<crate::game::actors::CanFight>, Option<&GroupMember>), With<Monster>>,
     groups: Query<&super::identify::MonsterGroup>,
     (levels, definitions): (Query<&Level>, Res<Assets<LevelDefinition>>),
     (places, party): (Places, Single<Entity, With<PartyBody>>),
@@ -386,7 +386,7 @@ pub(super) fn keep_orders(
     }
     let unfit: Vec<Entity> = bodies
         .iter()
-        .filter(|(vitals, _)| !vitals.can_fight())
+        .filter(|(can_fight, _)| !can_fight)
         .filter_map(|(_, member)| member.map(|member| member.0))
         .collect();
     for ((body, Orders(orders), owner, home, beat, glances), (mut target, state, member)) in
@@ -398,7 +398,7 @@ pub(super) fn keep_orders(
             continue;
         }
         let Some(duty) = &orders.duty else { continue };
-        let fit = bodies.get(body).is_ok_and(|(vitals, _)| vitals.can_fight());
+        let fit = bodies.get(body).is_ok_and(|(can_fight, _)| can_fight);
         if !fit || member.is_some_and(|member| unfit.contains(&member.0)) {
             continue;
         }

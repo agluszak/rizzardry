@@ -91,8 +91,5 @@ fn advance(
     shape(&mut commands.entity(current), definition);
     let full = definition.initial_quantity.maximum() as u16;
     commands.entity(current).entry::<Charges>().and_modify(move |mut charges| charges.full = full);
-    if let Some(bearer) = items.bearer(current) {
-        commands.trigger(crate::game::actors::Refit { entity: bearer });
-    }
     news.write(told(tier));
 }

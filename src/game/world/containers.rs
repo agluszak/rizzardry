@@ -134,7 +134,7 @@ pub(crate) fn take(
     attempts: Query<(&DeviceInteraction, &AttemptOn)>,
     party: Single<Entity, With<PartyRoster>>,
     held: Items,
-    members: Query<&crate::game::characters::Vitals, With<Character>>,
+    able: Query<(), (With<Character>, With<crate::game::actors::CanAct>)>,
     (entering, battle): (
         Query<(), With<super::level::Destination>>,
         Query<(), With<crate::game::combat::Battle>>,
@@ -151,10 +151,8 @@ pub(crate) fn take(
     }
     let receiver = match take.to {
         Recipient::Party => None,
-        Recipient::Member(member) => match members.get(member) {
-            Ok(vitals) if vitals.can_act() => Some(member),
-            _ => return,
-        },
+        Recipient::Member(member) if able.contains(member) => Some(member),
+        Recipient::Member(_) => return,
     };
     let inside = held.stowed(device);
     for &(item, amount) in &take.picks {

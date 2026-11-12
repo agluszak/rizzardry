@@ -798,17 +798,16 @@ fn an_unborn_group_waits_until_born_and_is_born_once() {
 fn what_is_in_a_level_is_itself_when_the_party_returns() {
     use crate::content::items::ItemId;
     use crate::game::actors::spells::{LaidOn, Turns};
-    use crate::game::characters::{Condition, Lasting, Vitals};
+    use crate::game::characters::{Condition, Lasting};
     use crate::game::items::{Item, Known, Lying, Stowed, Stows};
     use crate::game::world::containers::Container;
     let (mut app, level) = playing();
     let monster =
         app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
     app.world_mut()
-        .get_mut::<Vitals>(monster)
+        .get_mut::<crate::game::characters::Conditions>(monster)
         .unwrap()
-        .conditions
-        .inflict(Condition::Blind, Lasting::Indefinite);
+        .afflict(Condition::Blind, Lasting::Indefinite);
     let spell = app.world_mut().spawn((Turns(3), LaidOn(monster))).id();
     let known = Known { identified: true, spell: false, curse: true };
     let item = app
@@ -827,7 +826,9 @@ fn what_is_in_a_level_is_itself_when_the_party_returns() {
     leave(&mut app);
     assert_eq!(come_back(&mut app), level);
     let world = app.world();
-    assert!(world.get::<Vitals>(monster).unwrap().conditions.has(Condition::Blind));
+    assert!(
+        world.get::<crate::game::characters::Conditions>(monster).unwrap().has(Condition::Blind)
+    );
     assert_eq!(world.get::<LaidOn>(spell), Some(&LaidOn(monster)));
     assert_eq!(world.get::<Turns>(spell), Some(&Turns(3)));
     assert_eq!(world.get::<Known>(item), Some(&known));
@@ -840,20 +841,21 @@ fn what_is_in_a_level_is_itself_when_the_party_returns() {
 #[test]
 fn a_level_that_was_away_ages_what_ails_and_what_is_laid() {
     use crate::game::actors::spells::{LaidOn, Turns};
-    use crate::game::characters::{Condition, Lasting, Vitals};
+    use crate::game::characters::{Condition, Lasting};
     let (mut app, level) = playing();
     let monster =
         app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
-    let mut vitals = app.world_mut().get_mut::<Vitals>(monster).unwrap();
-    vitals.afflict(Condition::Afraid, Lasting::Rounds(3));
-    vitals.afflict(Condition::Blind, Lasting::Rounds(9));
+    let mut ailing =
+        app.world_mut().get_mut::<crate::game::characters::Conditions>(monster).unwrap();
+    ailing.afflict(Condition::Afraid, Lasting::Rounds(3));
+    ailing.afflict(Condition::Blind, Lasting::Rounds(9));
     let brief = app.world_mut().spawn((Turns(3), LaidOn(monster))).id();
     let lasting = app.world_mut().spawn((Turns(9), LaidOn(monster))).id();
     leave(&mut app);
     app.world_mut().resource_mut::<crate::game::time::GameClock>().ms += 10 * 60_000;
     assert_eq!(come_back(&mut app), level);
     let world = app.world();
-    let conditions = &world.get::<Vitals>(monster).unwrap().conditions;
+    let conditions = &world.get::<crate::game::characters::Conditions>(monster).unwrap();
     assert!(!conditions.has(Condition::Afraid) && conditions.has(Condition::Blind));
     assert!(world.get_entity(brief).is_err(), "it wore off while the party was away");
     assert_eq!(world.get::<Turns>(lasting), Some(&Turns(4)));

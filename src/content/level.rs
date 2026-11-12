@@ -214,8 +214,10 @@ pub struct EncounterTable {
     pub entries: Vec<EncounterEntry>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EncounterEntry {
+    /// The script the main group's leader follows.
+    pub script: String,
     pub species: u32,
     /// How common: retail's classes 3, 7, 20 and 70.
     pub rarity: u8,

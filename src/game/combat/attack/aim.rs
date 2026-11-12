@@ -336,7 +336,7 @@ mod tests {
     use super::*;
     use crate::content::characters::Attribute;
     use crate::game::actors::{Armour, Attacks, Attributes};
-    use crate::game::characters::{Lasting, Vitals};
+    use crate::game::characters::Lasting;
     use crate::game::combat::approach::{CombatMove, MoveGoal};
     use crate::game::combat::attack::Surprise;
     use crate::game::world::hostility::Stance;
@@ -357,7 +357,10 @@ mod tests {
     }
 
     fn blind(world: &mut World, actor: Entity) {
-        world.get_mut::<Vitals>(actor).unwrap().afflict(Condition::Blind, Lasting::Rounds(9));
+        world
+            .get_mut::<crate::game::characters::Conditions>(actor)
+            .unwrap()
+            .afflict(Condition::Blind, Lasting::Rounds(9));
     }
 
     #[test]

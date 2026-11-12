@@ -21,11 +21,14 @@ pub fn empty_hands(race: crate::game::characters::Race) -> [&'static str; 2] {
 }
 
 /// The worst condition's icon name, `dead` for the dead.
-pub fn condition_icon(character: &Vitals) -> Option<String> {
-    if character.is_dead() {
+pub fn condition_icon(
+    vitals: &Vitals,
+    conditions: &crate::game::characters::Conditions,
+) -> Option<String> {
+    if vitals.is_dead() {
         Some("dead".into())
     } else {
-        character.conditions.worst().map(|c| format!("{c:?}").to_lowercase())
+        conditions.worst().map(|c| format!("{c:?}").to_lowercase())
     }
 }
 

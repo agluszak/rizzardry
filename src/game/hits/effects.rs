@@ -15,7 +15,7 @@ use crate::content::items::EquipClass;
 use crate::content::spells::SpellId;
 use crate::game::actors::spells::{Enchantment, Laying};
 use crate::game::actors::{Armour, Attacks, Attributes, Level, Resistances};
-use crate::game::characters::{Character, Condition, Lasting, Vitals};
+use crate::game::characters::{Character, Condition, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::inventory::PartyInventory;
@@ -33,9 +33,15 @@ use crate::game::world::population::{SpellBudget, Untargetable};
 pub struct Body {
     pub entity: Entity,
     pub vitals: &'static mut Vitals,
+    pub conditions: &'static mut crate::game::characters::Conditions,
+    pub lucid: Has<crate::game::actors::Lucid>,
+    pub can_guard: Has<crate::game::actors::CanGuard>,
+    pub can_act: Has<crate::game::actors::CanAct>,
+    pub can_fight: Has<crate::game::actors::CanFight>,
     pub side: &'static Side,
     pub loyalty: &'static Loyalty,
     pub attributes: &'static Attributes,
+    pub skills: &'static crate::game::actors::Skills,
     pub level: &'static Level,
     pub resistances: &'static Resistances,
     pub armour: &'static Armour,
@@ -51,19 +57,19 @@ pub struct Body {
 impl BodyItem<'_, '_> {
     /// The side it is on now.
     pub fn stance(&self) -> Stance {
-        self.side.now(&self.vitals)
+        self.side.now(&self.conditions)
     }
 }
 
 impl BodyReadOnlyItem<'_, '_> {
     /// The side it is on now.
     pub fn stance(&self) -> Stance {
-        self.side.now(self.vitals)
+        self.side.now(self.conditions)
     }
 
     /// The side it is on and the band it keeps to now.
     pub fn standing(&self) -> (Stance, Loyalty) {
-        (self.stance(), self.loyalty.now(self.vitals))
+        (self.stance(), self.loyalty.now(self.conditions))
     }
 }
 
@@ -95,8 +101,6 @@ pub struct Log {
     /// Skills a member used: who, which, and how often.
     pub practised: Vec<(Entity, Skill, u32)>,
     pub damaged: Vec<Damaged>,
-    /// The dead brought back.
-    pub raised: Vec<Entity>,
     /// The health plain harm would take, before a Guardian Angel, which a
     /// leeching spell gives back.
     pub harm: u32,
@@ -175,18 +179,8 @@ fn settle(body: &mut BodyItem, was_alive: bool, rules: &Rules, rng: &mut GameRng
         && was_alive
         && body.vitals.is_dead()
     {
-        body.vitals.cheats_death(character, rules.fight, rng);
+        body.vitals.cheats_death(&mut body.conditions, character, rules.fight, rng);
     }
-}
-
-/// A member's spell point maxima as their sheet and attributes make them.
-fn maxima(
-    character: &Character,
-    attributes: &Attributes,
-    learned: &LearnedSpells,
-    content: &Catalogs,
-) -> enum_map::EnumMap<crate::content::characters::Realm, u32> {
-    character.max_points(attributes, learned, &content.spells)
 }
 
 /// Damage dealt and its coupled consequences: it is told of, and plain harm
@@ -198,7 +192,8 @@ fn dealt(body: &mut BodyItem, amount: u32, harm: bool, rng: &mut GameRng, log: &
         log.damaged.push(Damaged { body: victim, amount, died: body.vitals.is_dead() });
     }
     if harm && amount > 0 && !body.vitals.is_dead() {
-        body.vitals.conditions.wake_on_hit(body.attributes[Attribute::Senses], rng);
+        let senses = body.attributes[Attribute::Senses];
+        body.conditions.wake_on_hit(senses, rng);
     }
 }
 
@@ -233,7 +228,7 @@ fn apply(
         }
         K::Sap => {
             let Some(character) = body.character.as_deref_mut() else { return Outcome::Missed };
-            let lost = body.vitals.drain_health(character, magnitude);
+            let lost = body.vitals.drain_health(&mut body.conditions, character, magnitude);
             dealt(body, lost, false, rng, log);
             return Outcome::Landed;
         }
@@ -248,11 +243,11 @@ fn apply(
                 return Outcome::Missed;
             };
             if condition == Condition::Poisoned {
-                body.vitals.poison(lasting, poison);
+                body.conditions.poison(lasting, poison);
             } else if condition != Condition::Slowed {
-                body.vitals.afflict(condition, lasting);
+                body.conditions.afflict(condition, lasting);
             } else if let Some(left) = laying.slow(victim, lasting) {
-                body.vitals.afflict(condition, left);
+                body.conditions.afflict(condition, left);
             }
             Effect::Inflicted { victim, condition }
         }
@@ -263,7 +258,8 @@ fn apply(
             else {
                 return Outcome::Missed;
             };
-            let maximum = maxima(character, body.attributes, learned, rules.content);
+            let maximum =
+                character.max_points(body.attributes, learned, &rules.content.spells, body.skills);
             let amount = match spec.kind {
                 K::DrainRealm(realm) => realm
                     .map_or(enumset::EnumSet::all(), enumset::EnumSet::only)
@@ -295,17 +291,14 @@ fn apply(
         }
         K::Cure { ref conditions, outright } => {
             if conditions.contains(&Condition::Poisoned) {
-                body.vitals.weaken_poison(defences::cure_rounds(strength), rng);
+                body.conditions.weaken_poison(defences::cure_rounds(strength), rng);
             }
-            let cured =
-                defences::cure(rng, &body.vitals.conditions, conditions, strength, outright);
+            let cured = defences::cure(rng, &body.conditions, conditions, strength, outright);
             for &(condition, left) in &cured.shortened {
-                if let Some(lasting) = body.vitals.conditions.lasting_mut(condition) {
-                    *lasting = Lasting::Rounds(left);
-                }
+                body.conditions.shorten(condition, left);
             }
             for &condition in &cured.lifted {
-                body.vitals.conditions.lift(condition);
+                body.conditions.lift(condition);
             }
             match cured.lifted.first() {
                 Some(&condition) => Effect::Cured { victim, condition },
@@ -314,7 +307,7 @@ fn apply(
         }
         K::Renew => {
             let Some(character) = body.character.as_deref_mut() else { return Outcome::Missed };
-            if body.vitals.lift_drain(character) {
+            if body.vitals.lift_drain(&mut body.conditions, character) {
                 Effect::Cured { victim, condition: Condition::Drained }
             } else {
                 Effect::Nothing { victim }
@@ -334,9 +327,7 @@ fn apply(
                 body.attributes[Attribute::Piety],
                 body.attributes[Attribute::Vitality],
             );
-            body.vitals.health.current = health;
-            body.vitals.stamina.current = stamina;
-            log.raised.push(victim);
+            body.vitals.raise(health, stamina);
             Effect::Raised { victim }
         }
         K::SpellPurify => {
@@ -349,7 +340,7 @@ fn apply(
             // changed something all the same.
             let answers_slowing =
                 rules.content.spell_row(spell).is_some_and(|row| row.answers_slowing);
-            let turns = if answers_slowing { body.vitals.hasted(magnitude) } else { magnitude };
+            let turns = if answers_slowing { body.conditions.hasted(magnitude) } else { magnitude };
             let dead = body.vitals.is_dead();
             let laid = !dead && lay(laying, victim, spell, turns, strength, rules, rng);
             // Wholly spent on a slowing, it changed something all the same.
@@ -411,7 +402,12 @@ pub fn land_on_party(
                     else {
                         continue;
                     };
-                    let maximum = maxima(character, body.attributes, learned, rules.content);
+                    let maximum = character.max_points(
+                        body.attributes,
+                        learned,
+                        &rules.content.spells,
+                        body.skills,
+                    );
                     let amount = pool.drain(magnitude, &maximum, rng);
                     log.effects.push(Effect::Drained { victim: body.entity, amount });
                 }

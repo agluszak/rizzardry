@@ -64,7 +64,11 @@ impl Voice {
 #[derive(SystemParam)]
 pub(super) struct Speakers<'w, 's> {
     roster: Single<'w, 's, &'static PartyRoster>,
-    members: Query<'w, 's, (&'static Character, &'static Vitals, Option<&'static ActorId>)>,
+    members: Query<
+        'w,
+        's,
+        (&'static Character, Has<crate::game::actors::CanFight>, Option<&'static ActorId>),
+    >,
     catalogs: Res<'w, crate::game::data::Catalogs>,
     scripts: Res<'w, NpcAssets>,
 }
@@ -74,8 +78,8 @@ impl Speakers<'_, '_> {
             .iter()
             .filter(|&actor| excluded != Some(actor))
             .filter_map(|actor| {
-                let (character, vitals, npc) = self.members.get(actor).ok()?;
-                vitals.can_fight().then(|| (actor, self.voice(character, npc)))
+                let (character, can_fight, npc) = self.members.get(actor).ok()?;
+                can_fight.then(|| (actor, self.voice(character, npc)))
             })
             .collect()
     }
@@ -236,7 +240,7 @@ pub(super) fn react_to_wounds(
     mut damaged: MessageReader<crate::game::hits::Damaged>,
     speakers: Speakers,
     order: Single<&PartyRoster>,
-    members: Query<(&Character, &Vitals)>,
+    members: Query<(&Character, &Vitals, &crate::game::characters::Conditions)>,
     level: Single<Entity, With<Level>>,
     mut fallen: ResMut<Fallen>,
     waiting: Query<&PendingRemark>,
@@ -245,7 +249,7 @@ pub(super) fn react_to_wounds(
 ) {
     for hurt in damaged.read() {
         let Some(seat) = order.get_index_of(&hurt.body) else { continue };
-        let Ok((character, vitals)) = members.get(hurt.body) else { continue };
+        let Ok((character, vitals, conditions)) = members.get(hurt.body) else { continue };
         if hurt.died {
             fallen.0 += 1;
             let first_two = seat < 2;
@@ -274,8 +278,7 @@ pub(super) fn react_to_wounds(
         if camp.is_some() {
             continue;
         }
-        let asleep = vitals.conditions.has(Condition::Asleep)
-            || vitals.conditions.has(Condition::Unconscious);
+        let asleep = conditions.has(Condition::Asleep) || conditions.has(Condition::Unconscious);
         let percent = vitals.health.current * 100 / vitals.health.max.max(1);
         let event = if asleep || percent >= CRIES_OUT_BELOW {
             None
@@ -362,24 +365,27 @@ pub(super) struct Afflictions(bevy::ecs::entity::EntityHashMap<(Vec<Condition>, 
 /// `QueueConditionChangeReaction`, `QueueConditionClearedReaction`).
 pub(super) fn react_to_conditions(
     mut commands: Commands,
-    members: Query<(Entity, &Vitals), Changed<Vitals>>,
+    members: Query<
+        (Entity, &Vitals, &crate::game::characters::Conditions),
+        Or<(Changed<Vitals>, Changed<crate::game::characters::Conditions>)>,
+    >,
     speakers: Speakers,
     order: Single<&PartyRoster>,
     level: Single<Entity, With<Level>>,
     mut known: Local<Afflictions>,
     mut rng: ResMut<PresentationRng>,
 ) {
-    for (member, vitals) in &members {
+    for (member, vitals, conditions) in &members {
         if !order.contains(&member) {
             continue;
         }
-        let now: Vec<Condition> = vitals.conditions.iter().map(|&(c, _)| c).collect();
+        let now: Vec<Condition> = conditions.iter().map(|&(c, _)| c).collect();
         let alive = !vitals.is_dead();
         let Some((before, was_alive)) = known.0.insert(member, (now.clone(), alive)) else {
             continue;
         };
         let voice = |who: Entity| speakers.eligible(None).into_iter().find(|(a, _)| *a == who);
-        let worst = vitals.conditions.worst();
+        let worst = conditions.worst();
         let mut said = None;
         if alive && !was_alive {
             said = Some((member, RAISED));
@@ -424,7 +430,7 @@ pub(super) fn play_device_remarks(
     scripts: Res<Assets<DialogueScript>>,
     mut pending: Query<(Entity, &mut PendingRemark)>,
     roster: Option<Single<&PartyRoster>>,
-    members: Query<&Vitals>,
+    members: Query<&crate::game::characters::Conditions, With<crate::game::actors::CanFight>>,
     speaking: Query<(), Or<(With<Speech>, With<PlayingRemark>)>>,
     conversations: Query<
         (),
@@ -439,10 +445,10 @@ pub(super) fn play_device_remarks(
     let mut busy = !speaking.is_empty();
     let talking = !conversations.is_empty();
     for (entity, mut remark) in &mut pending {
-        let vitals = members.get(remark.actor).ok();
+        let conditions = members.get(remark.actor).ok();
         if !entering.is_empty()
             || !roster.as_ref().is_some_and(|r| r.contains(&remark.actor))
-            || vitals.is_none_or(|v| !v.can_fight())
+            || conditions.is_none()
         {
             commands.entity(entity).despawn();
             continue;
@@ -454,10 +460,10 @@ pub(super) fn play_device_remarks(
             commands.entity(entity).despawn();
             continue;
         }
-        let vitals = vitals.unwrap();
-        let event = if vitals.conditions.has(Condition::Silenced) {
+        let conditions = conditions.unwrap();
+        let event = if conditions.has(Condition::Silenced) {
             510
-        } else if vitals.conditions.has(Condition::Insane) {
+        } else if conditions.has(Condition::Insane) {
             500
         } else {
             remark.requested

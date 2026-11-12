@@ -21,7 +21,7 @@ use super::{Announcement, Battle, CombatNews, Combatants, Pause, Round};
 use crate::content::characters::Skill;
 use crate::content::items::AttackEffects;
 use crate::game::actors::{Arm, Laying, Places, reaches};
-use crate::game::characters::{Condition, Fell, Practise};
+use crate::game::characters::{Condition, Practise};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::hits::Damaged;
@@ -226,7 +226,7 @@ pub(super) fn strike(
         // one steps in to take the blow.
         let seen = fighters.as_readonly();
         let (Ok(me), Ok(aimed)) = (seen.get(actor), seen.get(target)) else { break };
-        if !me.body.vitals.can_fight() || aimed.body.vitals.is_dead() {
+        if !me.body.can_fight || aimed.body.vitals.is_dead() {
             break;
         }
         let chance = attack::chance_to_hit(&on, &me, &aimed, setting);
@@ -366,9 +366,6 @@ pub(super) fn strike(
         }
     }
     log.scorch(&mut commands);
-    for hurt in log.damaged.iter().filter(|hurt| hurt.died) {
-        commands.trigger(Fell { body: hurt.body });
-    }
     damaged.write_batch(log.damaged);
     for (member, skill, usage) in log.practised {
         commands.trigger(Practise { member, skill, usage });

@@ -132,6 +132,7 @@ fn is_laid(world: &mut World, bearer: Entity, spell: SpellId) -> bool {
 
 fn refresh(world: &mut World) {
     world.flush();
+    world.run_schedule(crate::game::actors::Settle);
 }
 
 /// The fight's round is being played, at this moment.
@@ -249,7 +250,10 @@ fn killing_a_turned_ally_awards_nothing_but_an_enemy_counts() {
     let battle = world.spawn(Battle::default()).id();
     let actor = monster(world, battle, 3.0);
     refresh(world);
-    world.get_mut::<Vitals>(actor).unwrap().afflict(Condition::Turncoat, Lasting::Rounds(5));
+    world
+        .get_mut::<crate::game::characters::Conditions>(actor)
+        .unwrap()
+        .afflict(Condition::Turncoat, Lasting::Rounds(5));
     refresh(world);
     let kill = |world: &mut World, body: Entity| {
         world.get_mut::<Vitals>(body).unwrap().slay();
@@ -305,7 +309,17 @@ fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
     assert!(points >= 1);
     let spell = &world.resource::<Catalogs>().spells[SpellId::ENERGY_BLAST];
     let pace = Pace { difficulty: crate::game::difficulty::Difficulty::Normal, moment: 0 };
-    assert_eq!(learned_chance(world.get::<Character>(member).unwrap(), spell, 1, pace, false), 0);
+    assert_eq!(
+        learned_chance(
+            world.get::<Character>(member).unwrap(),
+            world.get::<crate::game::actors::Skills>(member).unwrap(),
+            spell,
+            1,
+            pace,
+            false
+        ),
+        0
+    );
     let choice = MagicChoice {
         source: Source::Spell { spell: SpellId::ENERGY_BLAST, power: 1 },
         aim: Aim::Body(foe),
@@ -544,7 +558,10 @@ fn a_provoked_neutral_group_stands_hostile_and_enters_the_fight() {
     };
     // Under Turncoat, or dead, it provokes nobody.
     let (turned, _) = neutral(world);
-    world.get_mut::<Vitals>(turned).unwrap().afflict(Condition::Turncoat, Lasting::Rounds(5));
+    world
+        .get_mut::<crate::game::characters::Conditions>(turned)
+        .unwrap()
+        .afflict(Condition::Turncoat, Lasting::Rounds(5));
     world.trigger(Provocation { monster: turned });
     world.flush();
     assert_eq!(world.get::<Side>(turned).unwrap().own(), Stance::Neutral);
@@ -578,12 +595,17 @@ fn outside_a_fight_time_passing_ages_conditions_spells_and_a_set_stance() {
     world.flush();
     assert!(world.get::<MonsterGroup>(group).unwrap().set.is_some());
     lay(world, member, SpellId::BLESS, 1, 0);
-    world.get_mut::<Vitals>(member).unwrap().afflict(Condition::Afraid, Lasting::Rounds(1));
+    world
+        .get_mut::<crate::game::characters::Conditions>(member)
+        .unwrap()
+        .afflict(Condition::Afraid, Lasting::Rounds(1));
     // A whole aging tick of game time, at twelve times real time.
     world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs(10));
     world.run_system_cached(crate::game::time::pass_time).unwrap();
     world.flush();
-    assert!(!world.get::<Vitals>(member).unwrap().conditions.has(Condition::Afraid));
+    assert!(
+        !world.get::<crate::game::characters::Conditions>(member).unwrap().has(Condition::Afraid)
+    );
     assert!(!is_laid(world, member, SpellId::BLESS));
     assert!(world.get::<MonsterGroup>(group).unwrap().set.is_none(), "the stance wore off");
 }
@@ -627,6 +649,7 @@ fn teach(world: &mut World, member: Entity, skill: u32, spells: &[SpellId]) {
         .entity_mut(member)
         .insert((LearnedSpells(spells.iter().copied().collect()), magic::SpellPoints::default()));
     magic::test_set_points(world, member, Realm::Divine, 100);
+    refresh(world);
 }
 
 /// A cast, resolved in one pass; what it reported.
@@ -694,7 +717,10 @@ fn silence_stops_all_but_alchemy_in_the_hands_of_an_alchemist() {
         Dice { base: 0, count: 0, sides: 1 },
     );
     teach(world, member, 100, &[SpellId::HEAL_WOUNDS, SpellId::ENERGY_BLAST]);
-    world.get_mut::<Vitals>(member).unwrap().afflict(Condition::Silenced, Lasting::Rounds(9));
+    world
+        .get_mut::<crate::game::characters::Conditions>(member)
+        .unwrap()
+        .afflict(Condition::Silenced, Lasting::Rounds(9));
     let casts = |world: &mut World, spell| {
         let choice = spell_choice(spell, 1, Aim::Body(member));
         let news = cast_in(world, member, choice);
@@ -702,6 +728,7 @@ fn silence_stops_all_but_alchemy_in_the_hands_of_an_alchemist() {
     };
     assert!(casts(world, SpellId::HEAL_WOUNDS), "no Alchemy, no voice");
     world.get_mut::<Character>(member).unwrap().skill_points[Skill::Alchemy] = 5;
+    refresh(world);
     assert!(!casts(world, SpellId::HEAL_WOUNDS), "an alchemist is not silenced for Alchemy");
     assert!(casts(world, SpellId::ENERGY_BLAST), "but is for the rest");
 }
@@ -827,12 +854,16 @@ fn an_instruments_toll_is_scaled_like_other_fatigue() {
     world.flush();
     world.trigger(Put { item, at: Place::Pack { member, slot: 0 } });
     world.flush();
-    world.get_mut::<Vitals>(member).unwrap().afflict(Condition::Slowed, Lasting::Rounds(9));
+    world
+        .get_mut::<crate::game::characters::Conditions>(member)
+        .unwrap()
+        .afflict(Condition::Slowed, Lasting::Rounds(9));
     let choice =
         (SpellId::HEAL_WOUNDS, MagicChoice { source: Source::Item(item), aim: Aim::Body(member) });
     // A virtuoso plays it, a beginner (with no skill) cannot.
     for (music, played) in [(125, true), (0, false)] {
         world.get_mut::<Character>(member).unwrap().skill_points[Skill::Music] = music;
+        refresh(world);
         world.get_mut::<Vitals>(member).unwrap().stamina = Pool::full(100);
         let news = cast_in(world, member, choice);
         let badly =
@@ -840,4 +871,43 @@ fn an_instruments_toll_is_scaled_like_other_fatigue() {
         assert_eq!(badly, !played, "{news:?}");
         assert_eq!(world.get::<Vitals>(member).unwrap().stamina.current, 100 - 21, "{news:?}");
     }
+}
+
+/// Retail `ApplyConditionModifiers`: Hexed takes 20 off every attribute and
+/// skill, Webbed 50 off Dexterity and the member out of their place. Both
+/// show as the condition comes and goes, with nothing else said.
+#[test]
+fn what_ails_a_member_is_in_their_figures_and_their_seat_as_it_comes_and_goes() {
+    use crate::content::characters::{Attribute, Skill};
+    use crate::game::actors::Attributes;
+    use crate::game::characters::{Condition, Conditions, Lasting};
+    use crate::game::party::formation::{Formation, keep_seat};
+    let (mut app, _, member) = app();
+    let world = app.world_mut();
+    world.add_observer(keep_seat);
+    refresh(world);
+    let well = *world.get::<Attributes>(member).unwrap();
+    let divinity = world.get::<crate::game::actors::Skills>(member).unwrap()[Skill::Divinity];
+    let seated = |world: &mut World| {
+        world.query::<&Formation>().single(world).unwrap().row_of(member).is_some()
+    };
+    let less = |attribute, by: i32| (well[attribute] as i32 - by).clamp(1, 125) as u32;
+    assert!(seated(world));
+    let mut ailing = world.get_mut::<Conditions>(member).unwrap();
+    ailing.afflict(Condition::Hexed, Lasting::Indefinite);
+    ailing.afflict(Condition::Webbed, Lasting::Rounds(3));
+    world.run_schedule(FixedUpdate);
+    let ailing = *world.get::<Attributes>(member).unwrap();
+    assert_eq!(ailing[Attribute::Strength], less(Attribute::Strength, 20));
+    assert_eq!(ailing[Attribute::Dexterity], less(Attribute::Dexterity, 70));
+    assert_eq!(
+        world.get::<crate::game::actors::Skills>(member).unwrap()[Skill::Divinity],
+        divinity.max(20) - 20
+    );
+    assert!(!seated(world), "the webbed are out of their place");
+    world.get_mut::<Conditions>(member).unwrap().lift(Condition::Webbed);
+    world.run_schedule(FixedUpdate);
+    let freed = *world.get::<Attributes>(member).unwrap();
+    assert_eq!(freed[Attribute::Dexterity], less(Attribute::Dexterity, 20));
+    assert!(seated(world), "and take it back once free");
 }

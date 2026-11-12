@@ -75,9 +75,9 @@ Resistance and regeneration sum what is worn in use.
 
 ## When this is worked out
 
-Only in refit, and refit is fired by the `Worn` relationship changing, by a
-missile stack running out, and by the events that already fire it (a level, a
-skill point, a spell, a load). Rules in a fight read `Attacks` and `Armour`.
+Only in refit, which follows a change to what is worn or to a worn thing
+(a launcher out of shots), and to the member's other sources ([actors.md](actors.md),
+"Refit"). Rules in a fight read `Attacks` and `Armour`.
 
 ## What goes
 

@@ -324,12 +324,12 @@ pub fn draw_party(
         let image = |path: &str, frame| (crate::content::paths::retail(path), frame);
         if let Some(view) = actor {
             let armour = view.armour();
-            let CharacterViewItem { entity, profile, vitals, .. } = view;
+            let CharacterViewItem { entity, profile, vitals, conditions, .. } = view;
             let dead = vitals.is_dead();
             let worn =
                 |slot| held.worn(entity, slot).and_then(|i| held.id(i)).map(|id| &catalog[id]);
             let two_handed = worn(EquipSlot::Primary).is_some_and(|d| d.two_handed);
-            let condition = condition_icon(vitals);
+            let condition = condition_icon(vitals, conditions);
             match part.kind {
                 Part::Portrait => {
                     let name = if dead { &skull(profile.race)[1..] } else { &profile.portrait };

@@ -197,69 +197,50 @@ These stop or change the story.
     (`ReviewCharacterScreen.cpp:1026`), and each level's; a member who kills a
     monster flagged significant whose level is at least the party's average
     plus two remarks (event 25). None here.
-15. **Armour from Stealth and Reflextion** (`CalcArmorClasses`,
-    `GameplayCode.cpp:840`): Stealth adds a tenth of its level, Reflextion
-    (if known) a twentieth plus one. Neither is in `actors/arms.rs` `armour`.
-    The original also drops race, speed, skill, spell and load parts of
-    armour from a member worse than unconscious.
-16. **Training by being attacked** (`MarkDefenderSkillUse`,
+15. **Training by being attacked** (`MarkDefenderSkillUse`,
     `PracticeCombatRoundSkills`): a member attacked in a round practises
     Stealth, Reflextion, and Shield (with a shield worn, not caught unaware,
     not by a natural attack), two points each at the round's end. Here only
     Iron Skin trains from blows taken.
-17. **Starting and ending a fight** (`ToggleCombatMode`): the player may
+16. **Starting and ending a fight** (`ToggleCombatMode`): the player may
     start a fight, and end one when no group in it can still engage, nothing
     is in flight and nobody is acting (notices for each refusal). Here fights
     begin and end only by the rules.
-18. **The party wiped out** (`BeginPartyDeath`, `MainGameScreen.cpp:3168`): when
+17. **The party wiped out** (`BeginPartyDeath`, `MainGameScreen.cpp:3168`): when
     nobody alive is above Dead, the death sound and the `CombatLose` music
     play and the screen fades to the party-death screen; an Iron Man game
     deletes its saves. Here nothing happens when the whole party dies.
-19. **What conditions do to figures** (`ApplyConditionModifiers`, `Gameplay
-    Mods.cpp:375`). Irritated −2 to hit and −2 armour; Nauseated −5 and −4;
-    Afraid −3 and −2; Poisoned −2 and −2; Hexed −5 to hit and −20 to every
-    attribute and skill; Slowed −50 Speed; Insane −50 Intelligence; Blind −50
-    Senses (a blind fighter instead gains `ScaleValueByProfessionLevel(50)` −
-    50); Webbed −50 Dexterity. Blind (without the trait), Webbed, Asleep,
-    Paralyzed and Unconscious leave the body out of formation, its armour no
-    better than −5. The same block is folded into monsters
-    (`ConvertMonsterAttributes`). Here no condition changes anyone's figures:
-    `actors/stats.rs` `refit` reads none.
-20. **What worn items add** (`AccumulateEquipmentModifiers`): each item may
+18. **What worn items add** (`AccumulateEquipmentModifiers`): each item may
     raise one skill and one attribute (record bytes 0xb1 to 0xb4, which
     `retail/items.rs` does not read), and an item worn outside the hands adds
     its to-hit and damage bonuses. Here only the weapon in hand adds them.
-21. **Monsters that open doors** (`can_open_doors`, `MonsterManager.cpp:255`):
+19. **Monsters that open doors** (`can_open_doors`, `MonsterManager.cpp:255`):
     such a monster's paths go through closed doors. Here every walker needs a
     door open.
-22. **Monsters striking several** (`attack_multiple_targets`, `Combat
+20. **Monsters striking several** (`attack_multiple_targets`, `Combat
     Attack.cpp:1954`): within short range such a monster picks a target anew
     for each swing. Here every swing of an attack goes to one target.
-23. **A target picked again** (`RepickActionTarget`, `Combat Attack.cpp:2397`):
+21. **A target picked again** (`RepickActionTarget`, `Combat Attack.cpp:2397`):
     each time a member's target has to be picked anew in a round, their aim
     loses `50 − (Speed − 25 × times − 50 + attack score)^¾`, never below
     nothing.
-24. **The Bishop lifts curses' hold** (`RevealCharacterItemBindingsByProfession`,
+22. **The Bishop lifts curses' hold** (`RevealCharacterItemBindingsByProfession`,
     `RCSItemsPage.cpp:332`): from the character screen one with Remove Cursed
     Items reveals the curses on a member's worn items whose identify
     difficulty is at most (their profession level / 4 + 1) × 3, so they can be
     taken off; all, some or none, said with a sound. The trait is read by
     nothing here.
-25. **Waking to an ambush** (`ResolveSurpriseWake`): when a camping party is
+23. **Waking to an ambush** (`ResolveSurpriseWake`): when a camping party is
     surprised, each member rolls below(100) − 20 − 70 percent of Senses; above
     nothing they are Asleep for roll / 30 + 1 rounds, otherwise they are told
     they woke. Here the camp's surprise is rolled but everyone wakes at once.
-26. **Encounter scripts** (`MonGen::GenerateEncounter`): each entry of an
-    encounter table names the script its group's leader runs (`Default.MSF`
-    when empty). `retail/encounters.rs` reads past the names, so every
-    encounter runs the default.
-27. **Arranging the formation** (`MGSFormation.cpp`, `ReconcilePartyFormation`):
+24. **Arranging the formation** (`MGSFormation.cpp`, `ReconcilePartyFormation`):
     the player drags members between the five rows on the formation panel; in
     a fight the change takes effect as the round ends (notice 0x7d9), and the
     formation the fight began with is put back when it ends
     (`RestoreCombatFormation`). Here the board only shows the formation and
     members are seated by the party's order.
-28. **Secrets found by searching** (`Search.cpp`, `RegisterSearchableTrigger`):
+25. **Secrets found by searching** (`Search.cpp`, `RegisterSearchableTrigger`):
     a trigger flagged searchable (`retail/trigger.rs` reads past the flag) is
     found like a hidden item and then runs, with its message from the level's
     message file. A find also trains the finder's Scouting (5 points), lets the
@@ -267,7 +248,7 @@ These stop or change the story.
     event 16 for secrets) and turns the camera to it; in search mode, one pulse
     in a hundred that finds nothing brings a remark. Here only hidden items are
     found, with a notice and nothing else.
-29. **Places in a level** (`CUBE` chunk of the level's `.sts`,
+26. **Places in a level** (`CUBE` chunk of the level's `.sts`,
     `MasterFunctionList.cpp` `g_world_cursor_node_handlers`): boxes the party
     walks into. By type: a message from the level's message file shown once
     (some only while searching, to a Ranger, or under Detect Secrets), a
@@ -276,7 +257,7 @@ These stop or change the story.
     `FACT_QUEST_PEACE_GOTO_AP` cleared), and a male member's remark while
     Al-Sedexus holds one. `retail/population.rs` reads the `LOCK` and `MONG`
     chunks but not `CUBE`, so none of these exists here.
-30. **The camp's two faces** (`NormalizeMasterFunctionValue`,
+27. **The camp's two faces** (`NormalizeMasterFunctionValue`,
     `LoadAwayCampChest`): travel to the camp (0x10, `CMP`) goes to the camp
     without the Rapax (0x26, `CNR`) unless the Rapax away camp exists (two or
     three relics held) or the party is at it; arriving at the Rapax camp moves

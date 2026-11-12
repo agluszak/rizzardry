@@ -278,7 +278,7 @@ pub fn draw_caption(
     held: Items,
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
-    members: Query<(Entity, &Character, &Vitals)>,
+    members: Query<(Entity, &Character, (&Vitals, &crate::game::characters::Conditions))>,
     content: If<Res<crate::game::data::Catalogs>>,
     battle: Option<Single<&Round, With<Battle>>>,
     orders: Query<&Order>,
@@ -330,7 +330,7 @@ pub fn draw_caption(
                     },
                 }
             } else {
-                crate::presentation::screen_art::condition_icon(vitals)
+                crate::presentation::screen_art::condition_icon(vitals.0, vitals.1)
                     .map(|mut c| {
                         c[..1].make_ascii_uppercase();
                         c

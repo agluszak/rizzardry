@@ -751,13 +751,13 @@ fn draw_vitals(
 
 fn draw_header_condition(
     screen: Single<&InventoryScreen>,
-    members: Query<&Vitals>,
+    members: Query<(&Vitals, &crate::game::characters::Conditions)>,
     assets: Res<AssetServer>,
     art: Res<InventoryArt>,
     mut displays: Query<(&HeaderCondition, &mut Picture, &mut Visibility)>,
 ) {
-    let vitals = members.get(screen.member).unwrap();
-    let condition = super::screen_art::condition_icon(vitals);
+    let (vitals, conditions) = members.get(screen.member).unwrap();
+    let condition = super::screen_art::condition_icon(vitals, conditions);
     for (display, mut picture, mut visibility) in &mut displays {
         match *display {
             HeaderCondition::Icon => {
@@ -1017,7 +1017,7 @@ fn draw_cells(
     screen: Single<&InventoryScreen>,
     assets: Res<AssetServer>,
     content: If<Res<Catalogs>>,
-    members: Query<&Character>,
+    members: Query<(&Character, &crate::game::actors::Attributes, &crate::game::actors::Skills)>,
     party: Single<Entity, With<PartyRoster>>,
     held: Items,
     pool_scroll: Option<Single<&bevy::ui_widgets::SliderValue, With<pool_scroll::PoolScroll>>>,
@@ -1030,7 +1030,7 @@ fn draw_cells(
     )>,
 ) {
     let catalog = &content.items;
-    let profile = members.get(screen.member).unwrap();
+    let (profile, attributes, skills) = members.get(screen.member).unwrap();
     let pool_start = pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2);
     for (cell, children) in &cells {
         let item = cell.cell.item(&held, screen.member, *party, pool_start);
@@ -1042,7 +1042,11 @@ fn draw_cells(
             let show = match *part {
                 CellPart::Picture => definition.is_some(),
                 CellPart::Count => count.is_some(),
-                CellPart::Unusable => grid && definition.is_some_and(|(_, d)| !profile.can_use(d)),
+                CellPart::Unusable => {
+                    grid && definition.is_some_and(|(_, d)| {
+                        !crate::game::items::users(d).admit(profile, attributes, skills)
+                    })
+                }
                 CellPart::Unidentified => definition
                     .is_some_and(|(i, _)| held.known(i).is_some_and(|known| !known.identified)),
                 CellPart::Rim => !grid && definition.is_some(),

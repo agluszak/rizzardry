@@ -68,13 +68,14 @@ pub fn paced(chance: u32, on: Pace) -> u32 {
 /// and what the spell adds when cast on oneself.
 pub fn learned(
     character: &Character,
+    skills: &crate::game::actors::Skills,
     spell: &SpellDefinition,
     power: u32,
     pace: Pace,
     on_oneself: bool,
 ) -> u32 {
-    let book = character.skill(best_book(character, spell));
-    let realm = spell.realm.map_or(0, |realm| character.skill(realm.skill()));
+    let book = skills[best_book(character, spell)];
+    let realm = spell.realm.map_or(0, |realm| skills[realm.skill()]);
     let mut chance = spell_failure(casting_skill(book, realm), spell, power);
     let caster_level = total_caster_level(character, spell.books);
     let short = min_caster_level(spell.level) - caster_level - 1 + power as i32;
@@ -94,13 +95,14 @@ pub fn learned(
 /// round; thirty more unidentified; a thrown item's use is quiet and halved.
 pub fn item(
     character: &Character,
+    skills: &crate::game::actors::Skills,
     (casts, identified): (&Casts, bool),
     spell: &SpellDefinition,
     power: u32,
     pace: Pace,
 ) -> (u32, bool) {
     let Some(skill) = casts.by.skill() else { return (0, false) };
-    let level = character.skill(skill);
+    let level = skills[skill];
     let mut chance = spell_failure(level, spell, power);
     match casts.by {
         UseType::Thrown => chance = chance * 8 / 10,

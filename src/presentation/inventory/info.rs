@@ -60,7 +60,7 @@ pub(super) fn open_info(
     spell_state: (Query<&crate::game::magic::LearnedSpells>, If<Res<crate::game::data::Catalogs>>),
     targets: Query<&InfoTarget>,
     screen: Single<&InventoryScreen>,
-    profiles: Query<&Character>,
+    profiles: Query<(&Character, &crate::game::actors::Skills)>,
     roster: Single<&PartyRoster>,
     existing: Query<(), With<InfoDialog>>,
     art: Res<InventoryArt>,
@@ -73,7 +73,7 @@ pub(super) fn open_info(
     if click.button != PointerButton::Secondary || !existing.is_empty() {
         return;
     }
-    let (Ok(target), Ok(profile), Some(font), Some(strings)) = (
+    let (Ok(target), Ok((profile, skills)), Some(font), Some(strings)) = (
         targets.get(click.entity),
         profiles.get(screen.member),
         sheets.get(&art.font),
@@ -109,9 +109,9 @@ pub(super) fn open_info(
     entries.push((String::new(), None));
     if let Subject::Skill(skill) = target.subject {
         let (first_attribute, second_attribute) = governing(skill);
-        let level = profile.skill(skill);
+        let level = skills[skill];
         let best = level > 0
-            && profiles.iter_many(roster.iter()).matched().all(|other| other.skill(skill) <= level);
+            && profiles.iter_many(roster.iter()).matched().all(|(_, other)| other[skill] <= level);
         entries.push((format!("{}: ", string(0x156)), Some(art.bronze.clone())));
         entries.push((string(0x274 + first_attribute as usize).to_owned(), None));
         if first_attribute != second_attribute {

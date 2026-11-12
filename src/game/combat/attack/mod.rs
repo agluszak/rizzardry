@@ -68,7 +68,7 @@ pub struct Fighter {
 
 impl FighterReadOnlyItem<'_, '_> {
     pub fn has(&self, condition: Condition) -> bool {
-        self.body.vitals.conditions.has(condition)
+        self.body.conditions.has(condition)
     }
 
     /// Aim and armour lost to how tired it is.

@@ -112,7 +112,7 @@ pub fn interrupt(
     plans: Plans,
     friend_in_reach: bool,
 ) -> Option<Interrupt> {
-    let has = |condition| own.vitals.conditions.has(condition);
+    let has = |condition| own.conditions.has(condition);
     if has(Condition::Nauseated) && rng.below(100) < 25 {
         return Some(Interrupt::Nauseated);
     }

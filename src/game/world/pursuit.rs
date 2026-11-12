@@ -51,7 +51,7 @@ pub(super) fn charge(
         let watching = |member: &Entity| {
             sight.monster(*member).is_some_and(|(body, _)| {
                 !body.vitals.is_dead()
-                    && body.vitals.conditions.below(crate::game::characters::Condition::Blind)
+                    && body.conditions.below(crate::game::characters::Condition::Blind)
             })
         };
         let sees = members.iter().filter(watching).any(|member| sight.sees_party(member));
@@ -63,7 +63,7 @@ pub(super) fn charge(
             let Ok((mut target, charging)) = walkers.get_mut(member) else { continue };
             let pursues = recent
                 && sight.side(member) == Some(Stance::Hostile)
-                && sight.monster(member).is_some_and(|(body, _)| body.vitals.can_fight());
+                && sight.monster(member).is_some_and(|(body, _)| body.can_fight);
             let hurt = sight.monster(member).is_some_and(|(body, _)| {
                 body.vitals.health.current * 100 <= body.vitals.health.max * TOO_HURT
             });

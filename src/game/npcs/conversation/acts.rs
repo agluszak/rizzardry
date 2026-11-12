@@ -15,7 +15,7 @@ use super::{
 use crate::content::characters::Skill;
 use crate::content::items::{AMMUNITION_BUNDLE, EquipClass, ItemId, QuantityKind};
 use crate::content::npcs::{DialogueOp, NpcDefinition, TopicCategory};
-use crate::game::characters::{Character, Practise, Vitals};
+use crate::game::characters::{Character, Practise};
 use crate::game::combat::Battle;
 use crate::game::factions::{Band, Factions};
 use crate::game::freedom::Freedom;
@@ -143,13 +143,28 @@ pub struct EditNotebook {
 #[derive(SystemParam)]
 pub(super) struct Voices<'w, 's> {
     roster: Single<'w, 's, &'static PartyRoster>,
-    members: Query<'w, 's, (&'static Character, &'static Vitals)>,
+    members: Query<
+        'w,
+        's,
+        (
+            &'static Character,
+            &'static crate::game::actors::Skills,
+            Has<crate::game::actors::CanAct>,
+            Has<crate::game::actors::CanFight>,
+        ),
+    >,
 }
 
 impl Voices<'_, '_> {
     /// The party's best Communication.
     pub fn skill(&self) -> u32 {
-        trade::communication(self.roster.iter().filter_map(|m| self.members.get(m).ok()))
+        trade::communication(
+            self.roster
+                .iter()
+                .filter_map(|m| self.members.get(m).ok())
+                .filter(|(_, _, can_act, _)| *can_act)
+                .map(|(_, skills, ..)| skills),
+        )
     }
 
     /// The best speaker able to act.
@@ -160,8 +175,8 @@ impl Voices<'_, '_> {
                 self.members
                     .get(m)
                     .ok()
-                    .filter(|(_, v)| v.can_act())
-                    .map(|(c, _)| (m, c.skill(Skill::Communication)))
+                    .filter(|(_, _, can_act, _)| *can_act)
+                    .map(|(_, skills, ..)| (m, skills[Skill::Communication]))
             })
             .max_by_key(|(_, skill)| *skill)
             .map(|(m, _)| m)
@@ -170,7 +185,7 @@ impl Voices<'_, '_> {
     /// Those fit to fight.
     fn fit(&self) -> impl Iterator<Item = (Entity, &Character)> {
         self.roster.iter().filter_map(|m| {
-            self.members.get(m).ok().filter(|(_, v)| v.can_fight()).map(|(c, _)| (m, c))
+            self.members.get(m).ok().filter(|(.., can_fight)| *can_fight).map(|(c, ..)| (m, c))
         })
     }
 

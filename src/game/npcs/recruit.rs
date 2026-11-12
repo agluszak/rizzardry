@@ -53,11 +53,12 @@ pub fn character(
         .copied()
         .unwrap_or_default()
         .into();
+    let skills = crate::game::actors::Skills::of_sheet(&c);
     let spells = LearnedSpells(
         t.spells
             .iter()
             .copied()
-            .filter(|&s| crate::game::magic::can_learn(&c, &content.spells[s]))
+            .filter(|&s| crate::game::magic::can_learn(&c, &skills, &content.spells[s]))
             .collect(),
     );
     let vitals = Vitals::new(&c);
@@ -98,8 +99,8 @@ pub struct Recruiter<'w, 's> {
         (With<Npc>, With<Character>),
     >,
     party: Single<'w, 's, (Entity, &'static PartyRoster)>,
-    members: Query<'w, 's, (&'static Character, &'static Vitals, Has<Npc>)>,
-    bodies: Query<'w, 's, &'static Vitals, With<Monster>>,
+    members: Query<'w, 's, (&'static Character, Has<crate::game::actors::CanFight>, Has<Npc>)>,
+    bodies: Query<'w, 's, &'static crate::game::characters::Conditions, With<Monster>>,
     dead: Query<'w, 's, (), With<Dead>>,
     level: Single<'w, 's, &'static Level>,
     content: Res<'w, Catalogs>,
@@ -128,7 +129,7 @@ impl Recruiter<'_, '_> {
             let (sum, count) = roster
                 .iter()
                 .filter_map(|e| members.get(e).ok())
-                .filter(|(_, v, _)| v.can_fight())
+                .filter(|(_, can_fight, _)| *can_fight)
                 .fold((0u32, 0u32), |(sum, count), (c, _, _)| {
                     (sum + u32::from(c.level()), count + 1)
                 });
@@ -146,12 +147,8 @@ impl Recruiter<'_, '_> {
             // the character and is gone.
             if let Some(binding) = binding {
                 for b in binding.iter() {
-                    if let Ok(v) = bodies.get(b) {
-                        let conditions = v.conditions.clone();
-                        commands
-                            .entity(actor)
-                            .entry::<Vitals>()
-                            .and_modify(move |mut vitals| vitals.conditions = conditions);
+                    if let Ok(conditions) = bodies.get(b) {
+                        commands.entity(actor).insert(conditions.clone());
                     }
                     commands.entity(b).despawn();
                 }
@@ -168,7 +165,7 @@ pub fn dismiss(
     In((actor, stands)): In<(Entity, bool)>,
     party: Single<(Entity, &PartyRoster, &Position, &PartyBody)>,
     records: Query<(&ActorId, &NpcLocation), With<Npc>>,
-    profiles: Query<(&Character, &Vitals)>,
+    profiles: Query<(&Character, &Vitals, &crate::game::characters::Conditions)>,
     (held, cursed): (Items, Query<&Cursed>),
     level: Single<(
         Entity,
@@ -187,7 +184,7 @@ pub fn dismiss(
         return false;
     }
     let Ok((id, location)) = records.get(actor) else { return false };
-    let Ok((c, v)) = profiles.get(actor) else { return false };
+    let Ok((c, v, conditions)) = profiles.get(actor) else { return false };
     let (root, played, navigation, handles) = *level;
     let Some(shape) = handles.get(location.species, &body_assets) else { return false };
     let feet = PartyBody::feet(at)
@@ -224,8 +221,8 @@ pub fn dismiss(
             (kind, shape),
             &mut rng,
         );
-        kept.vitals.conditions = v.conditions.clone();
-        if v.conditions.exhausted() {
+        kept.conditions = conditions.clone();
+        if conditions.exhausted() {
             kept.vitals.stamina.current =
                 v.stamina.current.min(c.max_stamina(&Attributes::of_sheet(c)));
         }
@@ -449,8 +446,8 @@ mod tests {
         let mut scene = scene();
         let before = carried(scene.app.world_mut(), scene.record);
         let world = scene.app.world_mut();
-        let mut ailing = Vitals::full(10, 10);
-        ailing.afflict(Condition::Poisoned, Lasting::Rounds(4));
+        let ailing =
+            crate::game::characters::Conditions::from([(Condition::Poisoned, Lasting::Rounds(4))]);
         let body = world
             .spawn((
                 NpcBody(scene.record),
@@ -459,6 +456,7 @@ mod tests {
                     species: 0,
                     body: ScaledBody::new(&MonsterBody::default(), 0),
                 },
+                Vitals::full(10, 10),
                 ailing,
             ))
             .id();
@@ -466,8 +464,12 @@ mod tests {
         let world = scene.app.world_mut();
         assert_eq!(world.get::<PartyMember>(scene.record), Some(&PartyMember(scene.party)));
         assert!(world.get_entity(body).is_err(), "their body is gone");
-        let vitals = world.get::<Vitals>(scene.record).unwrap();
-        assert!(vitals.conditions.has(Condition::Poisoned));
+        assert!(
+            world
+                .get::<crate::game::characters::Conditions>(scene.record)
+                .unwrap()
+                .has(Condition::Poisoned)
+        );
         assert_eq!(carried(world, scene.record), before, "the same things in the same places");
         let roster: Vec<_> = world.get::<PartyRoster>(scene.party).unwrap().iter().collect();
         assert_eq!(roster, [scene.veteran, scene.record]);
@@ -515,17 +517,21 @@ mod tests {
         let world = scene.app.world_mut();
         // Time: both are hurt and poisoned; only the seated one is healed.
         for who in [record, veteran] {
-            let mut vitals = world.get_mut::<Vitals>(who).unwrap();
-            vitals.health.current = 1;
-            vitals.afflict(Condition::Poisoned, Lasting::Rounds(50));
+            world.get_mut::<Vitals>(who).unwrap().health.current = 1;
+            world
+                .get_mut::<crate::game::characters::Conditions>(who)
+                .unwrap()
+                .afflict(Condition::Poisoned, Lasting::Rounds(50));
         }
         let mut seatless = world.get::<Vitals>(record).unwrap().clone();
+        let ailing = world.get::<crate::game::characters::Conditions>(record).unwrap().clone();
         world.add_observer(pass_time);
         world.trigger(Elapsed { ticks: Ticks { stamina: 30, aging: 30 }, pace: Pace::Camping });
         let after = world.get::<Vitals>(record).unwrap();
         seatless.regeneration = after.regeneration;
         assert_eq!(*after, seatless, "nothing passed for them");
-        assert_ne!(world.get::<Vitals>(veteran).unwrap().conditions, after.conditions);
+        assert_eq!(world.get::<crate::game::characters::Conditions>(record).unwrap(), &ailing);
+        assert_ne!(world.get::<crate::game::characters::Conditions>(veteran).unwrap(), &ailing);
         // Burden: the pool's weight goes to the seated one only.
         let heavy = world
             .run_system_once(|mut commands: Commands, content: Res<Catalogs>| {
@@ -533,7 +539,7 @@ mod tests {
             })
             .unwrap();
         world.trigger(Put { item: heavy, at: Place::Pool { party, row: 0 } });
-        world.flush();
+        world.run_schedule(crate::game::actors::Settle);
         let own = world.get::<Burden>(veteran).unwrap().weight;
         assert!(own > 0, "the seated member carries the pool's share");
         assert_eq!(*world.get::<Burden>(record).unwrap(), Burden::default());

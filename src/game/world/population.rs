@@ -10,7 +10,6 @@ use super::identify::{GroupMember, MonsterGroup};
 use crate::content::level::LevelDefinition;
 use crate::content::monster::MonsterBody;
 use crate::content::species::MonsterCatalog;
-use crate::game::characters::Condition;
 use crate::game::data::Catalogs;
 use crate::game::rng::GameRng;
 use crate::game::world::items::place_item;
@@ -34,6 +33,8 @@ pub struct Newborn {
     pub group: Option<i32>,
     pub monster: Monster,
     pub vitals: crate::game::characters::Vitals,
+    /// What ails it as it is made: nothing, unless it stood somewhere before.
+    pub conditions: crate::game::characters::Conditions,
     pub budget: SpellBudget,
     pub feet: Vec3,
     pub yaw: f32,
@@ -81,6 +82,7 @@ impl Newborn {
         Newborn {
             monster: Monster { location, species, body },
             vitals: crate::game::characters::Vitals::full(max_hp, max_stamina),
+            conditions: default(),
             budget: SpellBudget(kind.magic.budget.max(0) as u32),
             group,
             feet,
@@ -109,15 +111,6 @@ impl Monster {
     pub fn gap(&self, feet: Vec3, other: &Monster, other_feet: Vec3) -> f32 {
         (feet.distance(other_feet) - self.body.radius - other.body.radius).max(0.0)
     }
-}
-
-/// Blindness takes a monster's sight; a Monk fights on without it.
-pub fn blinded(
-    kind: &crate::content::species::Species,
-    vitals: &crate::game::characters::Vitals,
-) -> bool {
-    vitals.conditions.has(Condition::Blind)
-        && kind.kind != crate::content::species::MonsterKind::Monk
 }
 
 /// A monster's effective gameplay body at the size it was rolled.
@@ -383,7 +376,8 @@ fn spawn_member(
     let name = actor_name(species, (kept.monster.species, kept.monster.location));
     let (body, kind) = (kept.monster.body, &species[kept.monster.species]);
     let bidden = kept.bidden();
-    let mut entity = commands.spawn((Name::new(name), kept.monster, kept.vitals, kept.budget));
+    let mut entity =
+        commands.spawn((Name::new(name), kept.monster, kept.vitals, kept.conditions, kept.budget));
     embody(
         &mut entity,
         root,
@@ -592,8 +586,15 @@ pub fn populate(
         let name = actor_name(species, (newborn.monster.species, newborn.monster.location));
         let id = newborn.monster.species;
         let bidden = newborn.bidden();
-        let entity =
-            commands.spawn((Name::new(name), newborn.monster, newborn.vitals, newborn.budget)).id();
+        let entity = commands
+            .spawn((
+                Name::new(name),
+                newborn.monster,
+                newborn.vitals,
+                newborn.conditions,
+                newborn.budget,
+            ))
+            .id();
         actors.push((entity, newborn.feet, newborn.yaw, body, newborn.group, id, bidden));
     }
     let average = npcs.average_level();

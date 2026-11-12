@@ -30,7 +30,7 @@ pub fn stamina(
     spell: &SpellDefinition,
     power: u32,
 ) -> u32 {
-    let has = |condition| body.vitals.conditions.has(condition);
+    let has = |condition| body.conditions.has(condition);
     let toll = match used {
         None => spell.level + power,
         Some(UseType::Thrown) => THROWN,

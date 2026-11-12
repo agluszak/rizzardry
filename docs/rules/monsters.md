@@ -655,3 +655,11 @@ leads to.
 
 **What a monster knows is read from its own components.** What its kind can do
 was written onto it when it was made. No decision asks the species record.
+
+## Random encounter orders
+
+An encounter table entry names the script followed by the main group’s leader.
+An empty name means `Default.MSF`. Companion groups do not receive that script.
+The orders belong to the leader and begin at its spawn position; unborn groups
+retain the orders until birth. Source: `MonGen.cpp`, `MonGen::GenerateEncounter`,
+selection of `script_names` and the main leader’s `SetScript` call.

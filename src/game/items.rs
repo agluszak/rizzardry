@@ -18,7 +18,7 @@ use crate::content::items::{
     QuantityKind, Recipe, WEAPONS,
 };
 use crate::content::species::{MonsterKind, Reach};
-use crate::game::actors::{Attributes, Refit};
+use crate::game::actors::{Attributes, Refitted, Skills};
 use crate::game::characters::{Character, Practise, Vitals};
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
@@ -41,17 +41,67 @@ pub struct Item(pub ItemId);
 impl Users {
     /// Whether a character may wear or wield what these allow (retail
     /// `CanCharacterUseItem`): profession, race and gender, and every
-    /// attribute and skill minimum.
-    pub fn admit(&self, character: &Character) -> bool {
+    /// attribute and skill minimum, by what the attributes and skills are
+    /// now.
+    pub fn admit(&self, character: &Character, attributes: &Attributes, skills: &Skills) -> bool {
         self.professions.contains(character.profession)
             && self.races.contains(character.race)
             && self.genders.contains(character.gender)
-            && self
-                .attributes
-                .iter()
-                .all(|(a, &least)| character.attributes[a].clamp(1, 125) >= u32::from(least))
-            && self.skills.iter().all(|(s, &least)| character.skill(s) >= u32::from(least))
+            && self.lack(attributes, skills).is_none()
     }
+
+    /// The first minimum the character falls short of: an attribute's
+    /// before a skill's.
+    pub fn lack(&self, attributes: &Attributes, skills: &Skills) -> Option<Lack> {
+        let attribute =
+            self.attributes.iter().find(|&(a, &least)| attributes[a] < u32::from(least));
+        let skill = || self.skills.iter().find(|&(s, &least)| skills[s] < u32::from(least));
+        attribute.map(|(a, _)| Lack::Attribute(a)).or_else(|| skill().map(|(s, _)| Lack::Skill(s)))
+    }
+}
+
+/// What a refitted member wears that they can no longer use goes to their
+/// pack, or to the pool when the pack is full, and the party is told what
+/// they lack for it (retail `UnequipUnusableItems`, run whenever a
+/// character's attributes or skills are rebuilt). Coming off, it refits them
+/// again.
+fn shed_unusable(
+    refitted: On<Refitted>,
+    members: Query<(&Character, &Attributes, &Skills, &PartyMember)>,
+    items: Items,
+    worn: Query<&Wearable>,
+    content: Option<Res<Catalogs>>,
+    mut news: MessageWriter<ItemNews>,
+    mut commands: Commands,
+) {
+    let Some(content) = content else { return };
+    let member = refitted.entity;
+    let Ok((character, attributes, skills, &PartyMember(party))) = members.get(member) else {
+        return;
+    };
+    for slot in EnumSet::<EquipSlot>::all() {
+        let Some(item) = items.worn(member, slot) else { continue };
+        let Ok(wear) = worn.get(item) else { continue };
+        if wear.users.admit(character, attributes, skills) {
+            continue;
+        }
+        if let (Some(id), Some(known)) = (items.id(item), items.known(item)) {
+            news.write(ItemNews::Unusable {
+                member: character.name.clone(),
+                gender: character.gender,
+                item: content.items[id].known_name(known.identified).to_owned(),
+                lacks: wear.users.lack(attributes, skills),
+            });
+        }
+        commands.trigger(Give { item, to: Some(member), party, pool_first: false, told: false });
+    }
+}
+
+/// What a character has too little of for an item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lack {
+    Attribute(Attribute),
+    Skill(Skill),
 }
 
 /// What kind of thing it is, which a few rules single out: what loads a
@@ -503,7 +553,7 @@ fn wearable(definition: &ItemDefinition) -> Option<Wearable> {
 }
 
 /// Who may wear or use an item of this definition.
-fn users(definition: &ItemDefinition) -> Users {
+pub fn users(definition: &ItemDefinition) -> Users {
     Users {
         professions: definition.professions,
         races: definition.races,
@@ -883,7 +933,6 @@ fn stack(event: On<Stack>, mut stacks: Query<(&Item, &mut Count, &Known)>, mut c
     if from.of == 0 {
         commands.entity(event.from).despawn();
     }
-    commands.trigger(Reweigh);
 }
 
 /// What is left of a part taken from a stack, still stowed beside the stack
@@ -953,7 +1002,6 @@ fn put(event: On<Put>, mut curses: Query<&mut Cursed>, mut commands: Commands) {
             ));
         }
     }
-    commands.trigger(Reweigh);
 }
 
 /// A part of a stack, taken as an item of its own: `amount` of it, with the
@@ -998,7 +1046,6 @@ fn load(
     if left == 0 && (stacked.is_some() || !keeps.contains(event.from)) {
         commands.entity(event.from).despawn();
     }
-    commands.trigger(Reweigh);
 }
 
 /// An item is used: a charge is spent, or one of a stack, or the thing
@@ -1014,29 +1061,23 @@ pub struct Spend {
 fn spend(
     event: On<Spend>,
     mut items: Query<(Option<&mut Charges>, Option<&mut Count>, Has<SpentByUse>, Has<KeepsEmpty>)>,
-    worn: Query<&Worn>,
     mut commands: Commands,
 ) {
     let Ok((charges, count, spent_by_use, keeps)) = items.get_mut(event.item) else { return };
-    let (gone, empty) = match (charges, count) {
+    let gone = match (charges, count) {
         (Some(mut charges), _) => {
             charges.left -= charges.left.min(event.amount);
-            (charges.left == 0 && !keeps, charges.left == 0)
+            charges.left == 0 && !keeps
         }
         (None, Some(mut count)) if spent_by_use => {
             count.of -= count.of.min(event.amount);
-            (count.of == 0, count.of == 0)
+            count.of == 0
         }
-        (None, _) => (spent_by_use, spent_by_use),
+        (None, _) => spent_by_use,
     };
     if gone {
-        // A worn item going is what refits its wearer.
         commands.entity(event.item).despawn();
-    } else if empty {
-        // One that stays, out of shots, no longer strikes.
-        refit_wearer(event.item, &worn, &mut commands);
     }
-    commands.trigger(Reweigh);
 }
 
 /// Some of an item leave the party for good, sold, given away or burnt: that
@@ -1059,7 +1100,6 @@ fn lose(event: On<Lose>, mut counts: Query<&mut Count>, mut commands: Commands) 
     if gone {
         commands.entity(event.item).despawn();
     }
-    commands.trigger(Reweigh);
 }
 
 /// An item comes to the party: to a member if one is named, into what they
@@ -1194,7 +1234,7 @@ fn swap(
     items: Items,
     fit: Query<Fit>,
     things: Query<(&Kind, Option<&Cursed>, Has<Charges>, Option<&LoadedBy>)>,
-    members: Query<(&Character, &Vitals), With<PartyMember>>,
+    members: Query<(&Character, &Attributes, &Skills, &Vitals), With<PartyMember>>,
     mut refused: MessageWriter<Refused>,
     mut commands: Commands,
 ) {
@@ -1264,10 +1304,12 @@ fn carry(
     items: &Items,
     fit: &Query<Fit>,
     things: &Query<(&Kind, Option<&Cursed>, Has<Charges>, Option<&LoadedBy>)>,
-    members: &Query<(&Character, &Vitals), With<PartyMember>>,
+    members: &Query<(&Character, &Attributes, &Skills, &Vitals), With<PartyMember>>,
     commands: &mut Commands,
 ) -> Result<(), Refusal> {
-    let (character, vitals) = members.get(member).map_err(|_| Refusal::Nothing)?;
+    let (character, attributes, skills, vitals) =
+        members.get(member).map_err(|_| Refusal::Nothing)?;
+    let admits = |users: &Users| users.admit(character, attributes, skills);
     let (slot, there) = match at {
         Place::Slot { slot, .. } => (Some(slot), items.worn(member, slot)),
         Place::Pack { slot, .. } => (None, items.pack(member)[slot]),
@@ -1277,9 +1319,8 @@ fn carry(
         return Err(Refusal::Nothing);
     }
     // Only what its wearer may use goes on, or onto what is worn.
-    let usable = |item: Entity| {
-        slot.is_none() || fit.get(item).is_ok_and(|item| item.wear.users.admit(character))
-    };
+    let usable =
+        |item: Entity| slot.is_none() || fit.get(item).is_ok_and(|item| admits(&item.wear.users));
     if let (Some(held), Some(there)) = (held, there)
         && items.alike(there, held)
     {
@@ -1316,7 +1357,7 @@ fn carry(
         return Ok(());
     }
     if let Some(slot) = slot {
-        let coming = fit.get(held).ok().filter(|coming| coming.wear.users.admit(character));
+        let coming = fit.get(held).ok().filter(|coming| admits(&coming.wear.users));
         let coming = coming.ok_or(Refusal::DoesNotFit)?;
         let worn = |slot| items.worn(member, slot).and_then(|worn| fit.get(worn).ok());
         // What the other hand holds may have to go.
@@ -1380,13 +1421,14 @@ pub struct Pass {
 fn pass(
     event: On<Pass>,
     items: Items,
-    members: Query<&Vitals, With<PartyMember>>,
+    able: Query<(), (With<PartyMember>, With<crate::game::actors::CanAct>)>,
+    members: Query<(), With<PartyMember>>,
     battles: Query<(), With<Battle>>,
     mut commands: Commands,
 ) {
     let Pass { party, to } = *event;
-    let (Some(item), Ok(vitals)) = (items.held(party), members.get(to)) else { return };
-    let eligible = vitals.can_act();
+    let (Some(item), true) = (items.held(party), members.contains(to)) else { return };
+    let eligible = able.contains(to);
     let pool_first = !eligible || !battles.is_empty();
     commands.trigger(Give { item, to: eligible.then_some(to), party, pool_first, told: true });
 }
@@ -1437,6 +1479,15 @@ pub enum ItemNews {
     /// The member lacks the skill making it takes.
     Unskilled {
         member: String,
+    },
+    /// What a member wore they can no longer use, for want of an attribute
+    /// or a skill if it is one of those; it goes to their pack or the pool
+    /// (retail `UnequipUnusableItems`).
+    Unusable {
+        member: String,
+        gender: Gender,
+        item: String,
+        lacks: Option<Lack>,
     },
     /// A Gadgeteer was given their omnigun (tier 0) or it reached a tier
     /// (1 to 11 above the first).
@@ -1492,7 +1543,7 @@ fn merge(
     event: On<Merge>,
     items: Items,
     fit: Query<Fit>,
-    characters: Query<&Character, With<PartyMember>>,
+    characters: Query<(&Character, &Attributes, &Skills, &Vitals), With<PartyMember>>,
     content: Res<Catalogs>,
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<ItemNews>,
@@ -1500,7 +1551,9 @@ fn merge(
     mut commands: Commands,
 ) {
     let Merge { party, member, onto } = *event;
-    let (Some(held), Ok(character)) = (items.held(party), characters.get(member)) else {
+    let (Some(held), Ok((character, attributes, skills, _))) =
+        (items.held(party), characters.get(member))
+    else {
         refused.write(Refused(Refusal::Nothing));
         return;
     };
@@ -1523,7 +1576,7 @@ fn merge(
     }
     let made = made_from(&content.items, held_id, onto_id);
     let skilled = made.is_some_and(|(_, recipe)| {
-        recipe.skill.is_none_or(|(skill, level)| character.skill(skill) >= u32::from(level))
+        recipe.skill.is_none_or(|(skill, level)| skills[skill] >= u32::from(level))
     });
     let Some((product, recipe)) = made.filter(|_| skilled) else {
         if held_id == onto_id {
@@ -1550,10 +1603,10 @@ fn merge(
     let held_survives = held_count.is_some_and(|count| count > units);
     if !into_hand && let Place::Slot { slot, .. } = place {
         let worn = |slot| items.worn(member, slot).and_then(|worn| fit.get(worn).ok());
-        let fits = character.can_use(product)
-            && wearable(product).is_some_and(|wear| {
-                fits(&wear, |slot| worn(slot).map(|worn| worn.wear), &[slot]).contains(&slot)
-            });
+        let fits = wearable(product).is_some_and(|wear| {
+            wear.users.admit(character, attributes, skills)
+                && fits(&wear, |slot| worn(slot).map(|worn| worn.wear), &[slot]).contains(&slot)
+        });
         if !fits && held_survives {
             refused.write(Refused(Refusal::DoesNotFit));
             return;
@@ -1574,7 +1627,6 @@ fn merge(
     let made = make(&mut commands, product, amount, false);
     let at = if into_hand { Place::Hand { party } } else { place };
     commands.trigger(Put { item: made, at });
-    commands.trigger(Reweigh);
     news.write(ItemNews::Merged);
 }
 
@@ -1593,7 +1645,7 @@ fn identify(
     event: On<Identify>,
     shown: Query<(&Known, &Obscure)>,
     rosters: Query<&PartyRoster>,
-    members: Query<(&Character, &Vitals)>,
+    members: Query<&Skills, With<crate::game::actors::Lucid>>,
     mut commands: Commands,
 ) {
     let (Ok((&known, &Obscure(difficulty))), Ok(roster)) =
@@ -1606,8 +1658,8 @@ fn identify(
     }
     let (mut identified, mut binding) = (false, false);
     for attempting in roster.iter() {
-        let Ok((character, vitals)) = members.get(attempting) else { continue };
-        let Some(attempt) = identify_attempt(character, vitals, difficulty) else { continue };
+        let Ok(skills) = members.get(attempting) else { continue };
+        let Some(attempt) = identify_attempt(skills, difficulty) else { continue };
         identified = true;
         binding |= attempt.binding;
         if attempt.practises {
@@ -1632,14 +1684,11 @@ struct Identified {
 }
 
 /// One member's go at identifying an item of this difficulty (retail
-/// `TryIdentifyItemFor`): someone alive and sane manages it when a sixth of
-/// their Artifacts reaches it. Higher difficulty never becomes easier
+/// `TryIdentifyItemFor`): someone lucid manages it when a sixth of their
+/// Artifacts reaches it. Higher difficulty never becomes easier
 /// by overflowing a signed byte.
-fn identify_attempt(character: &Character, vitals: &Vitals, difficulty: u8) -> Option<Identified> {
-    if !vitals.lucid() {
-        return None;
-    }
-    let strength = character.skill(Skill::Artifacts) / 6;
+fn identify_attempt(skills: &Skills, difficulty: u8) -> Option<Identified> {
+    let strength = skills[Skill::Artifacts] / 6;
     let difficulty = difficulty as u32;
     if difficulty > strength {
         return None;
@@ -1662,14 +1711,17 @@ fn outfit(
     event: On<Outfit>,
     items: Items,
     fit: Query<Fit>,
-    characters: Query<&Character>,
+    characters: Query<(&Character, &Attributes, &Skills)>,
     mut commands: Commands,
 ) {
     let Outfit { member, item } = *event;
-    let (Ok(character), Ok(coming)) = (characters.get(member), fit.get(item)) else { return };
+    let (Ok((character, attributes, skills)), Ok(coming)) = (characters.get(member), fit.get(item))
+    else {
+        return;
+    };
     let worn = |slot| items.worn(member, slot).and_then(|worn| fit.get(worn).ok());
     let slot = creation_slot(&coming, &worn, character).filter(|slot| {
-        coming.wear.users.admit(character)
+        coming.wear.users.admit(character, attributes, skills)
             && fits(coming.wear, |slot| worn(slot).map(|worn| worn.wear), &[]).contains(slot)
     });
     let mut left = items.units(item) as u16;
@@ -1745,23 +1797,14 @@ pub struct Burden {
     pub load: crate::game::characters::Load,
 }
 
-/// What a party's members carry or can carry has changed: their items, the
-/// pool, their strength, who is alive or in the party. Fired by whatever
-/// changes it; not run in a fight, which keeps the loads it began with until
-/// it ends.
-#[derive(Event, Clone, Copy, Debug)]
-pub struct Reweigh;
-
 /// Share the pool's weight among the members and settle each member's load
-/// (retail `RedistributePartyEncumbrance`). A member whose load changed is
-/// refitted.
-fn reweigh(
-    _: On<Reweigh>,
+/// (retail `RedistributePartyEncumbrance`), from what they carry now. Not in
+/// a fight, which keeps the loads it began with until it ends.
+pub(crate) fn weigh(
     parties: Query<(Entity, &PartyRoster)>,
     items: Items,
     mut members: Query<(Entity, &Character, &Vitals, &Attributes, &mut Burden)>,
     battles: Query<(), With<Battle>>,
-    mut commands: Commands,
 ) {
     if !battles.is_empty() {
         return;
@@ -1780,14 +1823,12 @@ fn reweigh(
             own.iter().map(|&(weight, capacity)| capacity.map(|c| (weight, c))).collect();
         let shares = pool_shares(pool, &eligible);
         let members = members.iter_many_unique_mut(roster.iter()).matched();
-        for ((member, character, _, attributes, mut burden), (&(own, _), share)) in
+        for ((_, character, _, attributes, mut burden), (&(own, _), share)) in
             members.zip(own.iter().zip(shares))
         {
             let weight = own + share;
             let load = character.load(attributes, weight);
-            if burden.set_if_neq(Burden { weight, load }) {
-                commands.trigger(Refit { entity: member });
-            }
+            burden.set_if_neq(Burden { weight, load });
         }
     }
 }
@@ -1818,34 +1859,10 @@ pub fn pool_shares(pool_weight: u32, members: &[Option<(u32, u32)>]) -> Vec<u32>
     shares
 }
 
-fn reweigh_added<T: Component>(_: On<Add<T>>, mut commands: Commands) {
-    commands.trigger(Reweigh);
-}
-
-fn reweigh_removed<T: Component>(_: On<Remove<T>>, mut commands: Commands) {
-    commands.trigger(Reweigh);
-}
-
-/// Wearing or taking off in a slot in use refits the wearer.
-fn refit_wearer(item: Entity, worn: &Query<&Worn>, commands: &mut Commands) {
-    if let Ok(&Worn { by, slot }) = worn.get(item)
-        && slot.is_active()
-    {
-        commands.trigger(Refit { entity: by });
-    }
-}
-
-fn worn_on(worn: On<Insert<Worn>>, items: Query<&Worn>, mut commands: Commands) {
-    refit_wearer(worn.entity, &items, &mut commands);
-}
-
-fn worn_off(worn: On<Discard<Worn>>, items: Query<&Worn>, mut commands: Commands) {
-    refit_wearer(worn.entity, &items, &mut commands);
-}
-
 pub(crate) fn plugin(app: &mut App) {
     app.add_message::<Refused>()
         .add_message::<ItemNews>()
+        .add_observer(shed_unusable)
         .add_observer(stack)
         .add_observer(put)
         .add_observer(rejoin)
@@ -1858,13 +1875,7 @@ pub(crate) fn plugin(app: &mut App) {
         .add_observer(throw)
         .add_observer(merge)
         .add_observer(identify)
-        .add_observer(outfit)
-        .add_observer(reweigh)
-        .add_observer(reweigh_added::<crate::game::characters::Dead>)
-        .add_observer(reweigh_removed::<crate::game::characters::Dead>)
-        .add_observer(reweigh_removed::<Battle>)
-        .add_observer(worn_on)
-        .add_observer(worn_off);
+        .add_observer(outfit);
 }
 
 #[cfg(test)]
@@ -1993,7 +2004,6 @@ mod tests {
             Observer::new(merge),
             Observer::new(identify),
             Observer::new(outfit),
-            Observer::new(reweigh),
             Observer::new(crate::game::world::containers::emptied),
             Observer::new(crate::game::world::containers::bag_emptied),
         ] {
@@ -2155,7 +2165,7 @@ mod tests {
         assert_eq!(pack[0], Some(bow));
         let shield = new(&mut world, SHIELD, 1);
         hold(&mut world, party, shield);
-        world.get_mut::<Vitals>(member).unwrap().health.current = 0;
+        world.entity_mut(member).remove::<crate::game::actors::CanAct>();
         world.trigger(Pass { party, to: member });
         world.flush();
         let pool = world.run_system_once(move |items: Items| items.pool(party).to_vec()).unwrap();
@@ -2206,12 +2216,14 @@ mod tests {
         let quiver = new(&mut world, ARROWS, 100);
         world.trigger(Put { item: quiver, at: Place::Pack { member, slot: 0 } });
         world.flush();
+        world.run_system_once(weigh).unwrap();
         assert_eq!(world.get::<Burden>(member).unwrap().weight, 200);
         world.trigger(Put {
             item: quiver,
             at: Place::Hand { party: world.get::<PartyMember>(member).unwrap().0 },
         });
         world.flush();
+        world.run_system_once(weigh).unwrap();
         assert_eq!(world.get::<Burden>(member).unwrap().weight, 0);
     }
 

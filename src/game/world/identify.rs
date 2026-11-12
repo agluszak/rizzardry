@@ -67,7 +67,7 @@ pub struct Identified {
 /// three for each of its kind they have seen beyond its level, a tenth of
 /// their Intelligence, and their Mythology.
 pub fn recognition(
-    member: &Character,
+    skills: &crate::game::actors::Skills,
     attributes: &crate::game::actors::Attributes,
     knowledge: &MonsterKnowledge,
     species: u32,
@@ -76,16 +76,17 @@ pub fn recognition(
     let seen = knowledge.seen.get(&species).copied().unwrap_or(0);
     (seen as i32 - i32::from(level)) * 3
         + attributes[Attribute::Intelligence] as i32 / 10
-        + member.skill(Skill::Mythology) as i32
+        + skills[Skill::Mythology] as i32
 }
 
 /// What the party can tell of a monster's health (retail
 /// `FormatMonsterHealth`): its best Mythology, less three for each level the
 /// monster shows above the party's average, tells the current health from
 /// 10 and the most from 5; otherwise "?" ("12/20", "?/20", "?/?"). The
-/// party is in roster order, each member with whether it is a recruited NPC.
+/// party is in roster order, each member with whether they can act and
+/// whether they are a recruited NPC.
 pub fn health_known(
-    party: &[(&Character, &Vitals, bool)],
+    party: &[(&Character, &crate::game::actors::Skills, bool, bool)],
     health: crate::game::characters::Pool,
     display_level: u8,
 ) -> String {
@@ -93,12 +94,12 @@ pub fn health_known(
     // `GetBestPartySkillLevel`).
     let mythology = party
         .iter()
-        .filter(|(_, vitals, _)| vitals.can_act())
-        .map(|(character, ..)| character.skill(Skill::Mythology))
+        .filter(|(_, _, can_act, _)| *can_act)
+        .map(|(_, skills, ..)| skills[Skill::Mythology])
         .max()
         .unwrap_or(0);
     let average = crate::game::party::mean_level(
-        crate::game::party::averaged_places(party.iter().map(|&(m, _, npc)| (m, npc)))
+        crate::game::party::averaged_places(party.iter().map(|&(m, _, _, npc)| (m, npc)))
             .into_iter()
             .map(Character::level),
     );
@@ -139,8 +140,13 @@ pub struct GroupRecognition<'w, 's> {
         's,
         (
             &'static Character,
-            &'static Vitals,
+            (
+                &'static crate::game::characters::Conditions,
+                Has<crate::game::actors::CanFight>,
+                Has<crate::game::actors::Lucid>,
+            ),
             &'static crate::game::actors::Attributes,
+            &'static crate::game::actors::Skills,
             &'static mut MonsterKnowledge,
         ),
     >,
@@ -197,7 +203,10 @@ impl GroupRecognition<'_, '_> {
                     members
                         .iter_many(roster.iter())
                         .matched()
-                        .map(|(profile, vitals, attributes, _)| (profile, vitals, attributes)),
+                        .filter(|(_, (_, can_fight, _), ..)| *can_fight)
+                        .map(|(profile, (conditions, ..), attributes, skills, _)| {
+                            (profile, conditions, attributes, skills)
+                        }),
                     shadow_hound,
                     (monster, vitals),
                     (*level, camouflage.copied()),
@@ -211,19 +220,19 @@ impl GroupRecognition<'_, '_> {
             }
             let Some(species_id) = species_id else { continue };
             let species = &catalog[species_id];
-            if members.iter_many(roster.iter()).matched().any(|(_, vitals, ..)| vitals.lucid()) {
+            if members.iter_many(roster.iter()).matched().any(|(_, (.., lucid), ..)| lucid) {
                 self.factions.encounter(species.faction);
             }
             if !known {
                 let mut best: Option<(String, i32)> = None;
-                for (profile, vitals, attributes, knowledge) in
+                for (profile, (.., lucid), attributes, skills, knowledge) in
                     members.iter_many(roster.iter()).matched()
                 {
-                    if !vitals.lucid() {
+                    if !lucid {
                         continue;
                     }
                     let score =
-                        recognition(profile, attributes, knowledge, species_id, species.level);
+                        recognition(skills, attributes, knowledge, species_id, species.level);
                     let roll = rng.below(100) as i32;
                     if roll < score
                         && best.as_ref().is_none_or(|(_, margin)| score - roll > *margin)
@@ -243,10 +252,10 @@ impl GroupRecognition<'_, '_> {
             }
             if !counted {
                 group.counted = true;
-                for (_, vitals, _, mut knowledge) in
+                for (_, (.., lucid), _, _, mut knowledge) in
                     members.iter_many_unique_mut(roster.iter()).matched()
                 {
-                    if !vitals.lucid() {
+                    if !lucid {
                         continue;
                     }
                     let seen = knowledge.seen.entry(species_id).or_default();

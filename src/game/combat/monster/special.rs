@@ -38,7 +38,7 @@ pub fn ready(
 ) -> bool {
     let Some(kind) = mind.special.0.kind else { return false };
     let stamina = own.vitals.stamina;
-    let silenced = own.vitals.conditions.has(Condition::Silenced) && special(kind).silenced;
+    let silenced = own.conditions.has(Condition::Silenced) && special(kind).silenced;
     let placed = if summons(mind) {
         fighting && gap <= Reach::Long.metres() && own.stance() != Stance::Friendly
     } else {

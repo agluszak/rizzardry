@@ -295,7 +295,6 @@ pub(super) fn shoots(
     mut rng: ResMut<GameRng>,
     mut laying: Laying,
     (mut effects, mut damage): (MessageWriter<TriggerEffect>, MessageWriter<Damaged>),
-    mut commands: Commands,
 ) {
     let Consequence::Shoots { from, dice } = &befalls.0 else { return };
     let Some(definition) = definitions.get(&level.definition) else { return };
@@ -336,9 +335,6 @@ pub(super) fn shoots(
         let rolled = rng.roll(dice);
         if rolled > 0 {
             damage_member(struck, &mut vitals, rolled, &mut laying, &mut damage);
-            if vitals.is_dead() {
-                commands.trigger(crate::game::characters::Fell { body: struck });
-            }
         }
     }
 }
@@ -399,7 +395,7 @@ pub(super) fn crush(
         let (Some(lower), Some(upper)) = (around(low), around(high)) else { continue };
         let (left, right) = (lower.1.x, upper.0.x);
         let (floor, roof) = (lower.0.min(upper.0), lower.1.max(upper.1));
-        for (body, monster, mut at, mut vitals) in &mut monsters {
+        for (_body, monster, mut at, mut vitals) in &mut monsters {
             let within = (floor.y..=roof.y).contains(&at.y) && (floor.z..=roof.z).contains(&at.z);
             if vitals.is_dead() || !within || at.x < lower.0.x || at.x > upper.1.x {
                 continue;
@@ -413,7 +409,6 @@ pub(super) fn crush(
                 at.x = left + radius;
             } else {
                 vitals.slay();
-                commands.trigger(crate::game::characters::Fell { body });
                 if monster.species == crushing.prize.0 {
                     for member in roster.iter() {
                         if let Ok((mut character, vitals)) = members.get_mut(member)

@@ -104,7 +104,7 @@ pub fn aims(
                 stance,
                 reached: sight.places.gap(caster, body) <= spell.reach.metres(),
                 worth: content.spell_row(spell.id).is_some_and(|row| {
-                    row.worthwhile(their.vitals, sight.laid.has(body, spell.id))
+                    row.worthwhile((their.vitals, their.conditions), sight.laid.has(body, spell.id))
                 }),
             })
         })
@@ -197,7 +197,7 @@ fn usable<'a>(
     content: &'a Catalogs,
     fray: Fray,
 ) -> Vec<(u32, &'a SpellDefinition, Vec<Aim>)> {
-    let silenced = own.vitals.conditions.has(Condition::Silenced);
+    let silenced = own.conditions.has(Condition::Silenced);
     mind.casting
         .spells
         .iter()

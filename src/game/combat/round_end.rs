@@ -53,8 +53,9 @@ pub struct RoundEnds {
     pub fight: Entity,
 }
 
-/// A round of game time passes for everyone, and the rest of the round's end
-/// follows: this is where the steps are put in their order.
+/// A round of game time passes for everyone, and what the round's end does
+/// to bodies follows, in this order. The round then waits, [`Closing`],
+/// until what that did is settled.
 pub(super) fn end_the_round(
     ends: On<RoundEnds>,
     mut commands: Commands,
@@ -65,12 +66,26 @@ pub(super) fn end_the_round(
     commands.trigger(Elapsed { ticks, pace: Pace::Fighting });
     commands.trigger(GroupsLeave { fight });
     commands.trigger(Rests { fight });
-    // What the pulses do lands as they do, and its deaths are settled.
     commands.trigger(CloudsPulse { fight });
     commands.trigger(Aged { ticks: ticks.aging });
-    commands.trigger(FightJudged { fight });
-    commands.trigger(PartyLooksAgain { fight });
-    commands.trigger(RoundEnded { fight });
+    commands.entity(fight).insert(Closing);
+}
+
+/// A fight whose round has done all it does to bodies, and waits for what
+/// followed from that (the fallen, the spent) to be settled before it is
+/// judged.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Closing;
+
+/// What the round's end did is settled: the fight is judged, the party
+/// looks again at who it fights, and the round is over.
+pub(super) fn close_round(fights: Query<Entity, With<Closing>>, mut commands: Commands) {
+    for fight in &fights {
+        commands.entity(fight).remove::<Closing>();
+        commands.trigger(FightJudged { fight });
+        commands.trigger(PartyLooksAgain { fight });
+        commands.trigger(RoundEnded { fight });
+    }
 }
 
 /// Groups with nothing left to fight for leave, as the round ends.
@@ -171,18 +186,22 @@ pub(super) fn leave_fight(
 pub(super) fn rest_the_idle(
     rests: On<Rests>,
     fights: Query<&Combatants>,
-    mut bodies: Query<(&mut Vitals, Option<&Turn>, Option<&Ordered>, Option<&Character>)>,
+    mut bodies: Query<(
+        (&mut Vitals, &crate::game::characters::Conditions),
+        Option<&Turn>,
+        Option<&Ordered>,
+        Option<&Character>,
+    )>,
     mut rng: ResMut<GameRng>,
 ) {
     let Ok(combatants) = fights.get(rests.fight) else { return };
     for &body in combatants.entities() {
-        let Ok((mut vitals, turn, ordered, character)) = bodies.get_mut(body) else { continue };
+        let Ok(((mut vitals, conditions), turn, ordered, character)) = bodies.get_mut(body) else {
+            continue;
+        };
         let resting = turn.is_some_and(|turn| turn.waited)
             || ordered.is_some_and(Ordered::defends)
-            || matches!(
-                vitals.conditions.worst(),
-                Some(Condition::Asleep | Condition::Unconscious)
-            );
+            || matches!(conditions.worst(), Some(Condition::Asleep | Condition::Unconscious));
         if vitals.is_dead() || !resting {
             continue;
         }
@@ -190,7 +209,7 @@ pub(super) fn rest_the_idle(
         let rolled = recovery::rest_roll(maximum, &mut rng);
         let gained =
             character.map_or(rolled, |character| recovery::combat_rest_amount(character, rolled));
-        if vitals.stamina.current < maximum || vitals.conditions.exhausted() {
+        if vitals.stamina.current < maximum || conditions.exhausted() {
             vitals.rest(gained);
         }
     }
@@ -305,7 +324,7 @@ pub(super) fn judge_victory(
     mut members: Query<(&mut Character, &Vitals)>,
     monsters: Query<(
         &crate::game::actors::Attacks,
-        &Vitals,
+        (&Vitals, &crate::game::characters::Conditions),
         &Side,
         Option<&crate::game::world::navigation::Walker>,
     )>,
@@ -324,7 +343,7 @@ pub(super) fn judge_victory(
     }
     pause.0 = Timer::from_seconds(ROUND_SECONDS, TimerMode::Once);
     let approaching = combatants.entities().iter().any(|&entity| {
-        monsters.get(entity).is_ok_and(|(arms, vitals, _, walker)| {
+        monsters.get(entity).is_ok_and(|(arms, (vitals, _), _, walker)| {
             let gap = roster.first().map_or(f32::INFINITY, |&member| places.gap(entity, member));
             monster::close::needs_approach(
                 !vitals.is_dead() && walker.is_some_and(|walker| walker.speed > 0.0),
@@ -337,8 +356,8 @@ pub(super) fn judge_victory(
     battle.passive_rounds = if active { 0 } else { battle.passive_rounds + 1 };
     let hostiles_left = combatants.entities().iter().any(|&entity| {
         !round.leaving.contains(&entity)
-            && monsters.get(entity).is_ok_and(|(_, vitals, side, ..)| {
-                !vitals.is_dead() && side.now(vitals) == Stance::Hostile
+            && monsters.get(entity).is_ok_and(|(_, (vitals, conditions), side, ..)| {
+                !vitals.is_dead() && side.now(conditions) == Stance::Hostile
             })
     });
     if hostiles_left && battle.passive_rounds < PASSIVE_ROUNDS {

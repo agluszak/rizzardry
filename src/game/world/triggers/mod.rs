@@ -145,7 +145,6 @@ pub(crate) fn damage_party(
     mut rng: ResMut<GameRng>,
     mut laying: crate::game::actors::Laying,
     mut damage: MessageWriter<Damaged>,
-    mut commands: Commands,
 ) {
     for entity in roster.iter() {
         let mut member = members.get_mut(entity).unwrap();
@@ -161,9 +160,6 @@ pub(crate) fn damage_party(
                 &mut laying,
                 &mut damage,
             );
-            if member.is_dead() {
-                commands.trigger(crate::game::characters::Fell { body: entity });
-            }
         }
     }
 }
@@ -174,7 +170,7 @@ fn drink_fountain(
     clock: Res<GameClock>,
     roster: Single<&PartyRoster>,
     mut members: Query<(
-        &mut Vitals,
+        (&mut Vitals, &mut crate::game::characters::Conditions),
         Option<(&crate::game::magic::LearnedSpells, &mut crate::game::magic::SpellPoints)>,
     )>,
     content: If<Res<crate::game::data::Catalogs>>,
@@ -202,14 +198,16 @@ fn drink_fountain(
             state.refills_at = fountain.refills_after.map(|after| now + after);
         }
     }
-    for (mut member, points) in members.iter_many_unique_mut(roster.iter()).matched() {
+    for ((mut member, mut conditions), points) in
+        members.iter_many_unique_mut(roster.iter()).matched()
+    {
         if member.is_dead()
             || match fountain.restores {
                 Restores::Restoration => false,
                 Restores::Magic => points.is_none(),
                 Restores::Health => member.health.current >= member.health.max,
                 Restores::Stamina => {
-                    member.stamina.current >= member.stamina.max && !member.conditions.exhausted()
+                    member.stamina.current >= member.stamina.max && !conditions.exhausted()
                 }
             }
         {
@@ -228,7 +226,7 @@ fn drink_fountain(
                     );
                     member.heal(amount);
                 }
-                member.conditions.lift_all();
+                conditions.lift_all();
             }
             Restores::Magic => {
                 let (_, mut points) = points.unwrap();

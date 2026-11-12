@@ -376,8 +376,15 @@ impl SpellRow {
     /// already has (`enchanted`: the spell is laid on it now); a spell
     /// that does none of these always would. A follow-up that only comes if the
     /// effect before it landed is not weighed.
-    pub fn worthwhile(&self, victim: &crate::game::characters::Vitals, enchanted: bool) -> bool {
-        let has = |condition| victim.conditions.has(condition);
+    pub fn worthwhile(
+        &self,
+        (victim, conditions): (
+            &crate::game::characters::Vitals,
+            &crate::game::characters::Conditions,
+        ),
+        enchanted: bool,
+    ) -> bool {
+        let has = |condition| conditions.has(condition);
         let mut purposes = self
             .effects
             .iter()
