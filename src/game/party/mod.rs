@@ -11,7 +11,6 @@ use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
 use crate::game::GameplaySet;
-use crate::game::characters::Character;
 use crate::game::hits::Damaged;
 use crate::game::world::level::level_active;
 
@@ -66,7 +65,10 @@ impl Plugin for PartyPlugin {
         .insert_resource(Gravity(Vec3::NEG_Y * body::GRAVITY))
         .add_message::<body::PartyLook>()
         .add_message::<body::TurnParty>()
-        .add_observer(formation::keep_seat)
+        .add_systems(
+            crate::game::actors::Settle,
+            formation::keep_seat.after(crate::game::actors::Written),
+        )
         .add_observer(body::look_at)
         .add_systems(
             Update,
@@ -102,8 +104,8 @@ impl Plugin for PartyPlugin {
 
 /// The lowest level among those who can fight, which weakens monsters' sight
 /// from behind.
-pub fn lowest_level<'a>(able: impl IntoIterator<Item = &'a Character>) -> i32 {
-    able.into_iter().map(|c| i32::from(c.level())).min().unwrap_or(0)
+pub fn lowest_level(able: impl IntoIterator<Item = u32>) -> i32 {
+    able.into_iter().map(|level| level as i32).min().unwrap_or(0)
 }
 
 /// The mean of these levels, fractions kept, one when there are none
@@ -204,7 +206,6 @@ mod tests {
         );
         let first = world.spawn((Vitals::full(10, 20), sheet)).id();
         roster::test_party(&mut world, &[first]);
-        world.add_observer(formation::keep_seat);
         use crate::game::actors::{Enchantment, Laying};
         use bevy::ecs::system::RunSystemOnce;
         world
@@ -239,9 +240,8 @@ mod tests {
         }
         let reported: Vec<_> = world.resource_mut::<Messages<Damaged>>().drain().collect();
         assert_eq!(reported, [Damaged { body: first, amount: 10, died: true }]);
-        // Refitted, the dead give up their seat.
-        world.trigger(crate::game::actors::Refitted { entity: first });
-        world.flush();
+        // The dead give up their seat.
+        world.run_system_cached(formation::keep_seat).unwrap();
         let formation = world.query::<&formation::Formation>().single(&world).unwrap();
         assert!(formation.row_of(first).is_none(), "the dead give up their seat");
     }

@@ -9,6 +9,7 @@ use crate::content::species::{
 };
 use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
 use crate::game::actors::{Enchantment, Laid, Laying};
+use crate::game::characters::Character;
 use crate::game::characters::{Gender, Profession, Race};
 use crate::game::hits::definitions::Rows;
 use crate::game::hits::effects::Strike;
@@ -96,8 +97,10 @@ fn monster(world: &mut World, battle: Entity, distance: f32) -> Entity {
 }
 
 fn monster_in(world: &mut World, battle: Entity, distance: f32, group: Entity) -> Entity {
+    let made = crate::game::world::population::made_of(&world.resource::<Catalogs>().species.0[0]);
     world
         .spawn((
+            made,
             Monster {
                 location: 0,
                 species: 0,
@@ -178,10 +181,13 @@ fn final_cloud_pulse_settles_and_credits_the_kill_before_victory() {
     world.get_mut::<Round>(fight).unwrap().attacked = true;
     let actor = monster(world, fight, 3.0);
     lay(world, actor, SpellId::FIRESTORM, 1, 0);
-    let before = world.get::<Character>(member).unwrap().experience;
+    let before = world.get::<crate::game::characters::Experience>(member).unwrap().earned;
     world.run_schedule(FixedUpdate);
     assert!(world.get::<Vitals>(actor).unwrap().is_dead());
-    assert_eq!(world.get::<Character>(member).unwrap().experience, before + 120);
+    assert_eq!(
+        world.get::<crate::game::characters::Experience>(member).unwrap().earned,
+        before + 120
+    );
     let news: Vec<_> = world.resource_mut::<Messages<CombatNews>>().drain().collect();
     assert_eq!(
         news.iter()
@@ -191,7 +197,10 @@ fn final_cloud_pulse_settles_and_credits_the_kill_before_victory() {
     );
     assert!(news.iter().any(|n| matches!(n, CombatNews::Won { kills: 1, experience_each: 120 })));
     world.run_schedule(FixedUpdate);
-    assert_eq!(world.get::<Character>(member).unwrap().experience, before + 120);
+    assert_eq!(
+        world.get::<crate::game::characters::Experience>(member).unwrap().earned,
+        before + 120
+    );
 }
 
 #[test]
@@ -300,9 +309,9 @@ fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
         dice: Some(Dice { base: 5, count: 0, sides: 1 }),
         ..default()
     };
-    let mut character = world.get_mut::<Character>(member).unwrap();
-    character.skill_points[Skill::Divinity] = 100;
-    character.skill_points[Skill::FireMagic] = 100;
+    let mut character = world.get_mut::<crate::game::characters::Training>(member).unwrap();
+    character.0[Skill::Divinity] = 100;
+    character.0[Skill::FireMagic] = 100;
     world.entity_mut(member).insert((
         LearnedSpells([SpellId::HEAL_WOUNDS, SpellId::ENERGY_BLAST].into()),
         SpellPoints::default(),
@@ -313,11 +322,13 @@ fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
     refresh(world);
     let points = magic::test_points(world, member, Realm::Fire);
     assert!(points >= 1);
+    let mut papers = world.query::<crate::game::characters::PaperReadOnly>();
+    let paper = papers.get(world, member).unwrap();
     let spell = &world.resource::<Catalogs>().spells[SpellId::ENERGY_BLAST];
     let pace = Pace { difficulty: crate::game::difficulty::Difficulty::Normal, moment: 0 };
     assert_eq!(
         learned_chance(
-            world.get::<Character>(member).unwrap(),
+            paper.trained(),
             world.get::<crate::game::actors::Skills>(member).unwrap(),
             spell,
             1,
@@ -469,9 +480,9 @@ fn deadly_order(world: &mut World, member: Entity, foe: Entity) -> Ordered {
         dice: Some(Dice { base: 100, count: 0, sides: 1 }),
         ..default()
     };
-    let mut character = world.get_mut::<Character>(member).unwrap();
-    character.skill_points[Skill::Divinity] = 100;
-    character.skill_points[Skill::FireMagic] = 100;
+    let mut character = world.get_mut::<crate::game::characters::Training>(member).unwrap();
+    character.0[Skill::Divinity] = 100;
+    character.0[Skill::FireMagic] = 100;
     world.entity_mut(member).insert((
         LearnedSpells([SpellId::HEAL_WOUNDS, SpellId::ENERGY_BLAST].into()),
         magic::SpellPoints::default(),
@@ -647,10 +658,10 @@ fn spell_for(
 /// magic and a hundred points to cast them with.
 fn teach(world: &mut World, member: Entity, skill: u32, spells: &[SpellId]) {
     use crate::content::characters::Skill;
-    let mut character = world.get_mut::<Character>(member).unwrap();
-    character.skill_points = default();
-    character.skill_points[Skill::Divinity] = skill;
-    character.skill_points[Realm::Divine.skill()] = skill;
+    let mut character = world.get_mut::<crate::game::characters::Training>(member).unwrap();
+    character.0 = default();
+    character.0[Skill::Divinity] = skill;
+    character.0[Realm::Divine.skill()] = skill;
     world
         .entity_mut(member)
         .insert((LearnedSpells(spells.iter().copied().collect()), magic::SpellPoints::default()));
@@ -733,7 +744,7 @@ fn silence_stops_all_but_alchemy_in_the_hands_of_an_alchemist() {
         matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::Silenced, .. }])
     };
     assert!(casts(world, SpellId::HEAL_WOUNDS), "no Alchemy, no voice");
-    world.get_mut::<Character>(member).unwrap().skill_points[Skill::Alchemy] = 5;
+    world.get_mut::<crate::game::characters::Training>(member).unwrap().0[Skill::Alchemy] = 5;
     refresh(world);
     assert!(!casts(world, SpellId::HEAL_WOUNDS), "an alchemist is not silenced for Alchemy");
     assert!(casts(world, SpellId::ENERGY_BLAST), "but is for the rest");
@@ -868,7 +879,7 @@ fn an_instruments_toll_is_scaled_like_other_fatigue() {
         (SpellId::HEAL_WOUNDS, MagicChoice { source: Source::Item(item), aim: Aim::Body(member) });
     // A virtuoso plays it, a beginner (with no skill) cannot.
     for (music, played) in [(125, true), (0, false)] {
-        world.get_mut::<Character>(member).unwrap().skill_points[Skill::Music] = music;
+        world.get_mut::<crate::game::characters::Training>(member).unwrap().0[Skill::Music] = music;
         refresh(world);
         world.get_mut::<Vitals>(member).unwrap().stamina = Pool::full(100);
         let news = cast_in(world, member, choice);
@@ -887,10 +898,13 @@ fn what_ails_a_member_is_in_their_figures_and_their_seat_as_it_comes_and_goes() 
     use crate::content::characters::{Attribute, Skill};
     use crate::game::actors::Attributes;
     use crate::game::characters::{Condition, Conditions, Lasting};
-    use crate::game::party::formation::{Formation, keep_seat};
+    use crate::game::party::formation::Formation;
     let (mut app, _, member) = app();
+    app.add_systems(
+        crate::game::actors::Settle,
+        crate::game::party::formation::keep_seat.after(crate::game::actors::Written),
+    );
     let world = app.world_mut();
-    world.add_observer(keep_seat);
     refresh(world);
     let well = *world.get::<Attributes>(member).unwrap();
     let divinity = world.get::<crate::game::actors::Skills>(member).unwrap()[Skill::Divinity];

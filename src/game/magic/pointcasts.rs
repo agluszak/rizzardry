@@ -175,7 +175,7 @@ pub(crate) fn cast(
     // power, friendly unless the summoning backfired. It joins the fight and
     // lasts no longer; Power Cast may add its element's buff.
     let skills = bodies.get(caster).ok().and_then(|body| {
-        body.character.map(|_| {
+        body.calling.map(|_| {
             [Skill::FireMagic, Skill::WaterMagic, Skill::AirMagic, Skill::EarthMagic]
                 .map(|skill| body.skills[skill])
         })

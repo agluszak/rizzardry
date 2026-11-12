@@ -119,6 +119,8 @@ the fact's own name. No fact is named in game code.
 "is this fact so" from what was set and from the party, the factions and who
 is where. Nothing stores a copy of what it would answer.
 
-**Setting a fact is an event.** What it sets off is carried out by the
-observer of each kind of consequence, which the table names. Every fact can be read and set; one the
+**Setting a fact is an event.** What it sets off are rows of the table. A
+row is of one group by what it is about (the story, the level, a person, the
+party, a body, a device), and each group has one observer, which handles
+every row of its group; a row no one handles does not compile. Every fact can be read and set; one the
 game's records do not name reads as unset.

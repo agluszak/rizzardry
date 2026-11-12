@@ -84,10 +84,10 @@ pub fn leave_loot(
         (&Monster, ActorPose, Option<&Walker>, &LevelOwned),
         Without<crate::game::magic::pointcasts::SummonedBy>,
     >,
-    (bodies, npcs): (Query<&crate::game::npcs::NpcBody>, Query<&crate::game::npcs::ActorId>),
+    (bodies, npcs): (Query<&crate::game::npcs::Embodies>, Query<&crate::game::npcs::ActorId>),
     mut purse: Single<&mut PartyInventory>,
     members: Query<
-        &crate::game::characters::Character,
+        &crate::game::characters::Calling,
         With<crate::game::party::roster::PartyMember>,
     >,
     content: If<Res<crate::game::data::Catalogs>>,
@@ -102,7 +102,7 @@ pub fn leave_loot(
         Some(id) => crate::game::loot::npc_loot(&content.npcs[id.npc()], tables, catalog, rng),
         None => {
             let party_level = crate::game::party::average_level(
-                members.iter().map(crate::game::characters::Character::level),
+                members.iter().map(crate::game::characters::Calling::level),
             );
             let kind = &content.species[monster.species];
             crate::game::loot::monster_loot(kind, tables, catalog, party_level, rng)

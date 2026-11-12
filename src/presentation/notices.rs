@@ -642,14 +642,15 @@ fn post_items(mut items: MessageReader<ItemNews>, strings: GameStrings, mut noti
 
 fn post_locks(
     mut locks: MessageReader<LockNews>,
-    members: Query<&crate::game::characters::Character>,
+    members: Query<crate::game::characters::PaperReadOnly>,
     strings: GameStrings,
     mut notices: Notices,
 ) {
     let string = |index| strings.get(index).to_owned();
     // Retail's lock and trap notices (`AttemptForce`, `ResolvePick`,
     // `CompleteTrapDisarm`, `ResolveSprungTrap`); the rest are voices.
-    let member = |entity: &Entity| members.get(*entity).map(|c| c.name.clone()).unwrap_or_default();
+    let member =
+        |entity: &Entity| members.get(*entity).map(|c| c.identity.name.clone()).unwrap_or_default();
     let trap = |trap: &u8| string(crate::content::ui::TRAP_NAMES + usize::from(*trap));
     for news in locks.read() {
         let text = match news {

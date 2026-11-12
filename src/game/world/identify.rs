@@ -11,7 +11,7 @@ use bevy::prelude::*;
 
 use super::population::Monster;
 use crate::content::characters::{Attribute, Skill};
-use crate::game::characters::{Character, MonsterKnowledge, Vitals};
+use crate::game::characters::{Identity, MonsterKnowledge, Vitals};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::level::PlayedLevel;
@@ -175,10 +175,10 @@ pub fn recognition(
 /// `FormatMonsterHealth`): its best Mythology, less three for each level the
 /// monster shows above the party's average, tells the current health from
 /// 10 and the most from 5; otherwise "?" ("12/20", "?/20", "?/?"). The
-/// party is in roster order, each member with whether they can act and
-/// whether they are a recruited NPC.
+/// party is in roster order, each member's level with whether they can act
+/// and whether they are a recruited NPC.
 pub fn health_known(
-    party: &[(&Character, &crate::game::actors::Skills, bool, bool)],
+    party: &[(u8, &crate::game::actors::Skills, bool, bool)],
     health: crate::game::characters::Pool,
     display_level: u8,
 ) -> String {
@@ -190,11 +190,9 @@ pub fn health_known(
         .map(|(_, skills, ..)| skills[Skill::Mythology])
         .max()
         .unwrap_or(0);
-    let average = crate::game::party::mean_level(
-        crate::game::party::averaged_places(party.iter().map(|&(m, _, _, npc)| (m, npc)))
-            .into_iter()
-            .map(Character::level),
-    );
+    let average = crate::game::party::mean_level(crate::game::party::averaged_places(
+        party.iter().map(|&(level, _, _, npc)| (level, npc)),
+    ));
     let level = i32::from(display_level);
     let knowledge = if (average as i32) < level {
         (mythology as f32 - (level as f32 - average) * 3.0 + 0.5).max(0.0) as u32
@@ -231,7 +229,7 @@ pub struct GroupRecognition<'w, 's> {
         'w,
         's,
         (
-            &'static Character,
+            (&'static crate::game::actors::Traits, &'static Identity),
             (
                 &'static crate::game::characters::Conditions,
                 Has<crate::game::actors::CanFight>,
@@ -296,8 +294,8 @@ impl GroupRecognition<'_, '_> {
                         .iter_many(roster.iter())
                         .matched()
                         .filter(|(_, (_, can_fight, _), ..)| *can_fight)
-                        .map(|(profile, (conditions, ..), attributes, skills, _)| {
-                            (profile, conditions, attributes, skills)
+                        .map(|((traits, _), (conditions, ..), attributes, skills, _)| {
+                            (traits, conditions, attributes, skills)
                         }),
                     shadow_hound,
                     (monster, vitals),
@@ -317,7 +315,7 @@ impl GroupRecognition<'_, '_> {
             }
             if !known {
                 let mut best: Option<(String, i32)> = None;
-                for (profile, (.., lucid), attributes, skills, knowledge) in
+                for ((_, identity), (.., lucid), attributes, skills, knowledge) in
                     members.iter_many(roster.iter()).matched()
                 {
                     if !lucid {
@@ -329,7 +327,7 @@ impl GroupRecognition<'_, '_> {
                     if roll < score
                         && best.as_ref().is_none_or(|(_, margin)| score - roll > *margin)
                     {
-                        best = Some((profile.name.clone(), score - roll));
+                        best = Some((identity.name.clone(), score - roll));
                     }
                 }
                 if let Some((member, _)) = best {

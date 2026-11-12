@@ -40,7 +40,7 @@ pub fn aim_camera(
         &crate::game::npcs::conversation::Conversation,
         Without<crate::game::npcs::conversation::Closing>,
     >,
-    npc_bodies: Query<&crate::game::npcs::NpcBodies>,
+    people: crate::game::npcs::People,
     actors: Query<
         (
             crate::game::world::ActorPose,
@@ -56,8 +56,8 @@ pub fn aim_camera(
         let rotation = conversations
             .single()
             .ok()
-            .and_then(|c| npc_bodies.get(c.actor).ok())
-            .and_then(|bodies| bodies.iter().find_map(|body| actors.get(body).ok()))
+            .and_then(|c| people.body(c.actor))
+            .and_then(|body| actors.get(body).ok())
             .map_or(ordinary, |(target, monster, walker)| {
                 let direction = monster
                     .eye(crate::game::world::navigation::feet(target.translation(), walker))

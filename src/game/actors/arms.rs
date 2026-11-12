@@ -12,7 +12,7 @@ use super::{Arm, Attacks, Attributes, Skills};
 use crate::content::characters::{Attribute, BodyPart, Skill, Trait};
 use crate::content::items::{AttackEffect, AttackEffects, AttackMode, Dice};
 use crate::content::species::{MonsterKind, Reach};
-use crate::game::characters::{Character, Load};
+use crate::game::characters::{Load, Trained};
 use crate::game::inventory::{EquipSlot, WeaponSlot};
 use crate::game::items::{
     Charges, Fit, Launcher, Missile, Protection, Strength, Weapon, Weight, partners,
@@ -149,7 +149,7 @@ impl<'a> Hands<'a> {
     /// theirs to add. `to_hit_bonus` is what spells add to the rating.
     pub fn attacks(
         &self,
-        c: &Character,
+        c: Trained,
         skills: &Skills,
         a: &Attributes,
         load: Load,
@@ -174,7 +174,7 @@ impl<'a> Hands<'a> {
     /// The arm of a hand that strikes, as the member's gear and sheet make it.
     fn arm(
         &self,
-        c: &Character,
+        c: Trained,
         skills: &Skills,
         a: &Attributes,
         load: Load,
@@ -222,7 +222,7 @@ impl<'a> Hands<'a> {
             loaded: hand.shot().map(|missile| missile.modes),
             sure_throw: self.sure_throw(c, slot),
             critical: self.critical_skill(c, slot).map(|skill| skills[skill]),
-            practises: match (hand.ranged(), c.has_trait(Trait::ThrownCriticals)) {
+            practises: match (hand.ranged(), c.traits.contains(Trait::ThrownCriticals)) {
                 (false, _) => &[Skill::CriticalStrike, Skill::PowerStrike],
                 (true, true) => &[Skill::EagleEye, Skill::CriticalStrike],
                 (true, false) => &[Skill::EagleEye],
@@ -235,7 +235,7 @@ impl<'a> Hands<'a> {
             modern: skill == Skill::ModernWeapon,
             fatigue_pierces: skill != Skill::ModernWeapon,
             sword: skill == Skill::Sword,
-            ambushes: c.has_trait(Trait::Backstab)
+            ambushes: c.traits.contains(Trait::Backstab)
                 && reach <= Reach::Touch
                 && matches!(skill, Skill::Sword | Skill::Dagger),
             word: None,
@@ -338,7 +338,7 @@ impl<'a> Hands<'a> {
 
     /// The hand's attack rating (retail `attack_rating`); none when it
     /// cannot attack.
-    fn rating(&self, c: &Character, skills: &Skills, a: &Attributes, slot: WeaponSlot) -> i32 {
+    fn rating(&self, c: Trained, skills: &Skills, a: &Attributes, slot: WeaponSlot) -> i32 {
         if !self.hands[slot].strikes() {
             return 0;
         }
@@ -346,7 +346,7 @@ impl<'a> Hands<'a> {
         (self.dual_penalty(skills, slot)
             + dexterity / 2
             + self.skill(skills, slot) * 2
-            + c.physical_levels())
+            + c.calling.physical_levels())
             / 3
             + 60
     }
@@ -356,7 +356,7 @@ impl<'a> Hands<'a> {
     /// when it cannot attack.
     pub fn attacks_a_round(
         &self,
-        c: &Character,
+        c: Trained,
         skills: &Skills,
         a: &Attributes,
         load: Load,
@@ -368,7 +368,7 @@ impl<'a> Hands<'a> {
         let [dexterity, speed] = [Attribute::Dexterity, Attribute::Speed].map(|x| a[x] as i32);
         let score = ((speed + dexterity) >> 1)
             + self.dual_penalty(skills, slot)
-            + c.physical_levels()
+            + c.calling.physical_levels()
             + self.halved(slot, -load.attack_penalty())
             + self.skill(skills, slot);
         let score = score / 3;
@@ -393,7 +393,7 @@ impl<'a> Hands<'a> {
     /// in the main hand makes one. None when it cannot attack.
     pub fn swings(
         &self,
-        c: &Character,
+        c: Trained,
         skills: &Skills,
         a: &Attributes,
         load: Load,
@@ -410,7 +410,7 @@ impl<'a> Hands<'a> {
         let score = (a[Attribute::Speed] as i32
             + self.initiative(skills, slot) * 10
             + self.dual_penalty(skills, slot)
-            + c.physical_levels()
+            + c.calling.physical_levels()
             + self.halved(slot, -load.attack_penalty())
             + self.skill(skills, slot))
             / 3;
@@ -440,7 +440,7 @@ impl<'a> Hands<'a> {
     /// or Power Strike; none when the hand cannot attack.
     pub fn to_hit(
         &self,
-        c: &Character,
+        c: Trained,
         skills: &Skills,
         a: &Attributes,
         load: Load,
@@ -474,10 +474,10 @@ impl<'a> Hands<'a> {
             load_penalty = load_penalty * 3 / 2;
         }
         to_hit += self.halved(slot, load_penalty);
-        if hand.ranged() && c.skill_available(Skill::EagleEye) {
+        if hand.ranged() && c.can_use(Skill::EagleEye) {
             to_hit += skills[Skill::EagleEye] as i32 / 20 + 1;
         }
-        if !hand.ranged() && c.skill_available(Skill::PowerStrike) {
+        if !hand.ranged() && c.can_use(Skill::PowerStrike) {
             to_hit += skills[Skill::PowerStrike] as i32 / 20 + 1;
         }
         to_hit
@@ -508,7 +508,7 @@ impl<'a> Hands<'a> {
     /// (retail `ResolveCharacterAttack`): Critical Strike for close combat,
     /// Ranged Combat for a Ranger's bows and slings, Critical Strike for a
     /// Ninja's throws.
-    fn critical_skill(&self, c: &Character, slot: WeaponSlot) -> Option<Skill> {
+    fn critical_skill(&self, c: Trained, slot: WeaponSlot) -> Option<Skill> {
         let hand = &self.hands[slot];
         let skill = hand.skill();
         let sling = matches!(hand, Hand::Weapon { weapon, .. } if weapon.sling);
@@ -517,8 +517,8 @@ impl<'a> Hands<'a> {
         } else if matches!(skill, Skill::ModernWeapon | Skill::Bow)
             || (skill == Skill::ThrowingAndSling && sling)
         {
-            c.has_trait(Trait::RangedCriticals).then_some(Skill::RangedCombat)
-        } else if skill == Skill::ThrowingAndSling && c.has_trait(Trait::ThrownCriticals) {
+            c.traits.contains(Trait::RangedCriticals).then_some(Skill::RangedCombat)
+        } else if skill == Skill::ThrowingAndSling && c.traits.contains(Trait::ThrownCriticals) {
             Some(Skill::CriticalStrike)
         } else {
             None
@@ -528,9 +528,9 @@ impl<'a> Hands<'a> {
     /// A Ninja's thrown weapons always get through armour when they strike
     /// (retail `W8_TRAIT_THROWN_CRITICALS` for ranged thrown weapons other
     /// than slings).
-    fn sure_throw(&self, c: &Character, slot: WeaponSlot) -> bool {
+    fn sure_throw(&self, c: Trained, slot: WeaponSlot) -> bool {
         let hand = &self.hands[slot];
-        c.has_trait(Trait::ThrownCriticals)
+        c.traits.contains(Trait::ThrownCriticals)
             && hand.ranged()
             && hand.skill() == Skill::ThrowingAndSling
             && !matches!(hand, Hand::Weapon { weapon, .. } if weapon.sling)
@@ -636,7 +636,7 @@ pub fn worn_armour<'a>(worn: impl Fn(EquipSlot) -> Option<(&'a Protection, bool)
 /// shield add. Defending adds 2 everywhere and lets Shield skill count for
 /// more.
 pub fn armour<'a>(
-    c: &Character,
+    (c, natural): (Trained, i32),
     skills: &Skills,
     a: &Attributes,
     worn: impl Fn(EquipSlot) -> Option<(&'a Protection, bool)>,
@@ -662,11 +662,11 @@ pub fn armour<'a>(
         })
         .sum();
     armour.shield += skilled;
-    let mut own = c.race.row().armour + armour.speed - load.armour_penalty()
+    let mut own = natural + armour.speed - load.armour_penalty()
         + if defending { 2 } else { 0 }
         + skills[Skill::Stealth] as i32 / 10
         + skilled;
-    if c.skill_available(Skill::Reflextion) {
+    if c.can_use(Skill::Reflextion) {
         own += skills[Skill::Reflextion] as i32 / 20 + 1;
     }
     armour.total += own;
@@ -680,6 +680,7 @@ mod tests {
     use crate::content::characters::Gender;
     use crate::content::items::ItemKind;
     use crate::content::items::{EquipClass, ItemDefinition, ItemId};
+    use crate::game::characters::Character;
     use crate::game::characters::{Profession, Race};
     use crate::game::items::{Items, Worn, make};
     use bevy::ecs::system::RunSystemOnce;
@@ -743,7 +744,7 @@ mod tests {
         let armours = |bearer: Character, defending| {
             wearing(&[(EquipSlot::Secondary, &shield)], move |items, _, member| {
                 armour(
-                    &bearer,
+                    (bearer.trained(), 0),
                     &Skills::of_sheet(&bearer),
                     &Attributes::of_sheet(&bearer),
                     |slot| items.protection(member, slot),
@@ -761,10 +762,10 @@ mod tests {
             defending.total - standing.total
         };
         // Shield 60: 60 / 25 = 2 standing, 60 / 15 = 4 defending.
-        bearer.skill_points[Skill::Shield] = 60;
+        bearer.training.0[Skill::Shield] = 60;
         assert_eq!(gain(&bearer), 2 + (4 - 2));
         // Shield 125: capped at the shield's 4 standing, at 6 (1.5×) defending.
-        bearer.skill_points[Skill::Shield] = 125;
+        bearer.training.0[Skill::Shield] = 125;
         assert_eq!(gain(&bearer), 2 + (6 - 4));
         assert_eq!(armours(bearer, false).shield, 4 + 4);
     }
@@ -787,7 +788,7 @@ mod tests {
             let monk = monk.clone();
             in_hands(worn, move |hands| {
                 let arm = hands.arm(
-                    &monk,
+                    monk.trained(),
                     &Skills::of_sheet(&monk),
                     &attributes,
                     Load::None,
@@ -816,18 +817,19 @@ mod tests {
         let sword = weapon(0, EquipClass::ShortWeapon, Skill::Sword);
         let dagger = weapon(1, EquipClass::ShortWeapon, Skill::Dagger);
         let mut fighter = Character::new("A", Race::Human, Gender::Male, Profession::Fighter);
-        fighter.skill_points[Skill::DualWeapons] = 40;
+        fighter.training.0[Skill::DualWeapons] = 40;
         let attributes = Attributes::of_sheet(&fighter);
         let striking = |worn: &[(EquipSlot, &ItemDefinition)]| {
             let fighter = fighter.clone();
             in_hands(worn, move |hands| {
-                let (c, a) = (&fighter, &attributes);
+                let (c, a) = (fighter.trained(), &attributes);
                 let slots = [WeaponSlot::Primary, WeaponSlot::Secondary];
-                let rating = slots.map(|slot| hands.rating(c, &Skills::of_sheet(c), a, slot));
+                let rating =
+                    slots.map(|slot| hands.rating(c, &Skills::of_sheet(&fighter), a, slot));
                 (
                     slots.map(|slot| hands.hands[slot].strikes()),
                     rating,
-                    hands.attacks(c, &Skills::of_sheet(c), a, Load::None, 0),
+                    hands.attacks(c, &Skills::of_sheet(&fighter), a, Load::None, 0),
                 )
             })
         };
@@ -879,7 +881,7 @@ mod tests {
             move |hands| {
                 let primary = WeaponSlot::Primary;
                 let arm = hands.arm(
-                    &ranger,
+                    ranger.trained(),
                     &Skills::of_sheet(&ranger),
                     &attributes,
                     Load::None,

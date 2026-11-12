@@ -85,6 +85,7 @@ fn scene(definition: NpcDefinition) -> Scene {
         .add_message::<crate::game::hits::Damaged>();
     install(&mut app);
     app.add_message::<crate::game::npcs::story::StoryTold>()
+        .add_observer(crate::game::npcs::story::dispatch)
         .add_observer(crate::game::npcs::story::follow)
         .add_observer(crate::game::npcs::story::befalls_the_story);
     crate::game::npcs::trade::install(&mut app);
@@ -181,7 +182,8 @@ fn friend() -> NpcDefinition {
 fn a_friend_greets_answers_what_is_paid_for_and_is_left() {
     let mut scene = scene(friend());
     let speaker = scene.speaker;
-    scene.world().get_mut::<Character>(speaker).unwrap().skill_points[Skill::Communication] = 100;
+    scene.world().get_mut::<crate::game::characters::Training>(speaker).unwrap().0
+        [Skill::Communication] = 100;
     scene.world().run_schedule(crate::game::actors::Settle);
     assert_eq!(scene.begin(), ["q0"], "the first greeting");
     scene.begin();

@@ -128,7 +128,7 @@ impl Field<'_, '_, '_> {
         let mut taken: Vec<((u8, usize), Entity)> = self
             .bodies
             .iter()
-            .filter(|body| !body.untargetable && (body.member || body.character.is_none()))
+            .filter(|body| !body.untargetable && (body.member || body.calling.is_none()))
             .filter(|body| !body.vitals.is_dead() && recipients.admits(body.stance()))
             .filter_map(|body| {
                 let at = self.places.of(body.entity);

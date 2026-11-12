@@ -1,27 +1,23 @@
-//! What every actor is, a party member or a monster alike
-//! (`docs/rules/actors.md`): the components rules read, written when the
-//! actor is made and whenever it is refitted.
+//! An actor's figures: the components rules read, a party member's and a
+//! monster's alike. Each is written by its own system in
+//! [`super::figures`], from what the actor is made of.
 
 use bevy::prelude::*;
 use enum_map::EnumMap;
 use enumset::EnumSet;
 
 use super::Place;
-use super::arms::{self, Hands, Held};
-use super::spells::{Bonus, Laid, Spells};
-use super::time::Mending;
-use crate::content::characters::{Attribute, BodyPart, Realm, Skill, Trait};
+use super::sources::{Abilities, Traits};
+use super::spells::Bonus;
+use crate::content::characters::{Attribute, BodyPart, Realm, Skill};
 use crate::content::items::{AttackEffects, AttackMode, Dice};
-use crate::content::species::{AttackWord, MonsterKind, Reach, Species};
+use crate::content::species::{AttackWord, MonsterKind, Reach};
 use crate::content::spells::Spellbook;
-use crate::game::characters::resistance::resistances;
-use crate::game::characters::{Character, Condition, Conditions, Dead, Vitals, scale_by_level};
-use crate::game::data::Catalogs;
+use crate::game::characters::{
+    Calling, Character, Condition, Conditions, Training, scale_by_level,
+};
 use crate::game::inventory::WeaponSlot;
-use crate::game::items::{Burden, Charges, Item, Items, Wears, Worn};
 use crate::game::party::formation::Formation;
-use crate::game::party::roster::{PartyMember, PartyRoster};
-use crate::game::world::population::Monster;
 
 /// An actor's attributes as they stand now, spells counted, each 1 to 125.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,56 +51,60 @@ impl std::ops::Index<Skill> for Skills {
 }
 
 impl Skills {
-    fn affected(character: &Character, conditions: &Conditions) -> Self {
+    /// From the points trained, a quarter more (at least one) for the
+    /// profession's bonus skill, and what conditions take off, held to
+    /// 0-125.
+    pub(super) fn affected(
+        training: &Training,
+        calling: &Calling,
+        conditions: &Conditions,
+    ) -> Self {
         let ailing: i32 = conditions.modifiers().map(|row| row.skills).sum();
         Self(EnumMap::from_fn(|skill| {
-            let points = character.skill_points[skill] as i32;
-            let bonus = if character.profession.row().bonus_skill == skill {
-                (points / 4).max(1)
-            } else {
-                0
-            };
+            let points = training.0[skill] as i32;
+            let bonus =
+                if calling.profession.row().bonus_skill == skill { (points / 4).max(1) } else { 0 };
             (points + bonus + ailing).clamp(0, 125) as u32
         }))
     }
 
-    /// A character's, by their sheet alone: before they are anyone's actor.
+    /// A character's, on paper: before they are anyone's actor.
     pub fn of_sheet(character: &Character) -> Self {
-        Self::affected(character, &Conditions::default())
+        Self::affected(&character.training, &character.calling, &Conditions::default())
     }
 }
 
 impl Attributes {
     /// From base values, with what the spells on the actor add (Superman to
     /// each, Haste to Speed) and what its conditions take off, held to
-    /// 1–125 once all are counted (retail `ResetCharacterAttributes`). A
-    /// member with the trait that eases a condition gets some of it back,
-    /// scaled by their profession level.
-    fn affected(
-        base: EnumMap<Attribute, u32>,
+    /// 1-125 once all are counted (retail `ResetCharacterAttributes`). One
+    /// who trained, with the trait that eases a condition, gets some of it
+    /// back, scaled by their mastery.
+    pub(super) fn affected(
+        base: &Abilities,
         spells: &Bonus,
         conditions: &Conditions,
-        sheet: Option<&Character>,
+        eases: Option<(&Traits, u8)>,
     ) -> Self {
         let mut ailing = EnumMap::<Attribute, i32>::default();
         for row in conditions.modifiers() {
             for &(attribute, change) in &row.attributes {
                 ailing[attribute] += change;
             }
-            if let (Some(eased), Some(sheet)) = (&row.eased_by, sheet)
-                && sheet.has_trait(eased.ability)
+            if let (Some(eased), Some((traits, mastery))) = (&row.eased_by, eases)
+                && traits.has(eased.ability)
             {
-                ailing[eased.attribute] += sheet.scale_by_profession(eased.back) as i32;
+                ailing[eased.attribute] += scale_by_level(mastery, eased.back) as i32;
             }
         }
         Self(EnumMap::from_fn(|a| {
-            (base[a] as i32 + spells.attributes[a] as i32 + ailing[a]).clamp(1, 125) as u32
+            (base.0[a] as i32 + spells.attributes[a] as i32 + ailing[a]).clamp(1, 125) as u32
         }))
     }
 
-    /// A character's, by their sheet alone: before they are anyone's actor.
+    /// A character's, on paper: before they are anyone's actor.
     pub fn of_sheet(character: &Character) -> Self {
-        Self::affected(character.attributes, &Bonus::default(), &Conditions::default(), None)
+        Self(character.abilities.0)
     }
 
     /// These with a point of one lost for good, as disease takes it.
@@ -352,389 +352,5 @@ pub fn reaches(
         (true, false) => through_formation(a, from, to),
         (false, true) => through_formation(b, to, from),
         (false, false) => from.gap(to) <= reach.metres(),
-    }
-}
-
-/// An actor whose figures no longer follow their sources
-/// (`docs/rules/actors.md`): it was made, joined or left a party, died or
-/// was raised, or its sheet, what ails it, its gear, load or spells changed.
-/// The small systems below see such a change and mark the actor; nothing
-/// else says so. [`refit`] writes the figures anew and takes the mark off.
-#[derive(Component, Clone, Copy, Debug, Default)]
-pub(super) struct Stale;
-
-/// An actor's components have been written anew: said once a refit is done,
-/// for what follows from its figures (a member's seat, what they can still
-/// wear).
-#[derive(EntityEvent, Clone, Copy, Debug)]
-pub struct Refitted {
-    pub entity: Entity,
-}
-
-/// What an actor has of its own that its figures are made from has changed.
-#[allow(clippy::type_complexity)]
-pub(super) fn notice_changed_sources(
-    actors: Query<
-        Entity,
-        (
-            With<Vitals>,
-            Or<(
-                Changed<Character>,
-                Changed<Monster>,
-                Changed<Conditions>,
-                Changed<Burden>,
-                Changed<PartyMember>,
-                Changed<Wears>,
-                Changed<Spells>,
-                Changed<Dead>,
-            )>,
-        ),
-    >,
-    mut commands: Commands,
-) {
-    for actor in &actors {
-        commands.entity(actor).insert(Stale);
-    }
-}
-
-/// The spells on a party are in every member's figures.
-pub(super) fn notice_party_spells(
-    parties: Query<&PartyRoster, Changed<Spells>>,
-    mut commands: Commands,
-) {
-    for member in parties.iter().flat_map(|roster| roster.iter()) {
-        commands.entity(member).try_insert(Stale);
-    }
-}
-
-/// A worn thing that is itself no longer what it was (out of shots, grown
-/// into a better one) changes its wearer's figures.
-pub(super) fn notice_changed_gear(
-    gear: Query<&Worn, Or<(Changed<Item>, Changed<Charges>)>>,
-    mut commands: Commands,
-) {
-    for worn in &gear {
-        commands.entity(worn.by).try_insert(Stale);
-    }
-}
-
-/// A source going altogether (the last thing worn, life among the dead, a
-/// place in the party) changes the figures as its coming did.
-pub(super) fn stale_without<T: Component>(gone: On<Remove<T>>, mut commands: Commands) {
-    commands.entity(gone.entity).try_insert(Stale);
-}
-
-/// The last spell going from a bearer; from a party, from every member.
-pub(super) fn stale_without_spells(
-    gone: On<Remove<Spells>>,
-    rosters: Query<&PartyRoster>,
-    mut commands: Commands,
-) {
-    match rosters.get(gone.entity) {
-        Ok(roster) => roster.iter().for_each(|member| {
-            commands.entity(member).try_insert(Stale);
-        }),
-        Err(_) => {
-            commands.entity(gone.entity).try_insert(Stale);
-        }
-    }
-}
-
-/// Write a stale actor's components from its sources: a monster's species,
-/// or a member's sheet and what they wear, with the spells on it and, for a
-/// member, on the party.
-#[allow(clippy::type_complexity)]
-pub(super) fn refit(
-    mut actors: Query<
-        (
-            Entity,
-            (&mut Vitals, &Conditions),
-            AnyOf<((&Character, Option<&Burden>), &Monster)>,
-            Option<&PartyMember>,
-            (&mut Attributes, &mut Skills, &mut Level, &mut Resistances, &mut Armour, &mut Attacks),
-            &mut Mending,
-        ),
-        With<Stale>,
-    >,
-    (items, hands): (Items, Query<Held>),
-    laid: Laid,
-    content: Option<Res<Catalogs>>,
-    mut commands: Commands,
-) {
-    let Some(content) = content else { return };
-    for (entity, (mut vitals, conditions), (sheet, monster), member, written, mut mending) in
-        &mut actors
-    {
-        // A member counts the spells on them and on their party together.
-        let mut spells = laid.bonus(entity);
-        if let Some(member) = member {
-            spells += laid.bonus(member.0);
-        }
-        let skills = sheet.map(|(character, _)| Skills::affected(character, conditions));
-        let skills = skills.unwrap_or_default();
-        let (attributes, level, resistances, armour, attacks) = match (sheet, monster) {
-            (Some((character, burden)), _) => {
-                let load = burden.map(|burden| burden.load).unwrap_or_default();
-                let made = of_member(
-                    character,
-                    &skills,
-                    (&items, &hands, entity),
-                    load,
-                    &spells,
-                    (&vitals, conditions),
-                );
-                let (health, stamina) = (character.max_hp(&made.0), character.max_stamina(&made.0));
-                if (vitals.health.max, vitals.stamina.max) != (health, stamina) {
-                    vitals.refit_maxima(health, stamina);
-                }
-                made
-            }
-            (None, Some(monster)) => {
-                of_species(&content.species[monster.species], &spells, conditions)
-            }
-            (None, None) => continue,
-        };
-        mending.set_if_neq(match (sheet, monster) {
-            (Some((character, _)), _) => mending_of_member(character, &items, entity),
-            (None, Some(monster)) => mending_of_species(&content.species[monster.species]),
-            (None, None) => continue,
-        });
-        let (mut a, mut s, mut l, mut r, mut ar, mut at) = written;
-        s.set_if_neq(skills);
-        a.set_if_neq(attributes);
-        l.set_if_neq(level);
-        r.set_if_neq(resistances);
-        ar.set_if_neq(armour);
-        at.set_if_neq(attacks);
-        commands.entity(entity).remove::<Stale>();
-        commands.trigger(Refitted { entity });
-    }
-}
-
-/// How a monster mends: by its species' points a minute, its stamina by
-/// the minute as its health.
-fn mending_of_species(kind: &Species) -> Mending {
-    Mending {
-        health: i32::from(kind.health_regeneration),
-        stamina: i32::from(kind.stamina_regeneration),
-        ..default()
-    }
-}
-
-/// How a character mends: by what they wear in the slots in use (retail
-/// `AccumulateEquipmentModifiers`) and their traits (retail
-/// `GameTurnsPassedChar`), their stamina by the breath.
-fn mending_of_member(character: &Character, items: &Items, member: Entity) -> Mending {
-    let mut worn = [0; 3];
-    for (slot, _) in items.in_use(member) {
-        if let Some((protection, _)) = items.protection(member, slot) {
-            for (sum, &bonus) in worn.iter_mut().zip(&protection.regeneration) {
-                *sum += i32::from(bonus);
-            }
-        }
-    }
-    let scaled =
-        |ability, value| character.has_trait(ability).then(|| character.scale_by_profession(value));
-    let mut magic_rate = 1.0;
-    if character.has_trait(Trait::FastMagicRecovery) {
-        magic_rate *= 1.25;
-    }
-    if character.has_trait(Trait::LizardmanMagicRecovery) {
-        magic_rate *= 0.75;
-    }
-    Mending {
-        health: worn[0],
-        stamina: worn[1],
-        magic: worn[2],
-        breathes: true,
-        hale: scaled(Trait::HealthRegeneration, 16.67),
-        tireless: scaled(Trait::StaminaRegeneration, 3.3),
-        magic_rate,
-    }
-}
-
-/// A monster, from its species record and the spells on it.
-fn of_species(
-    kind: &Species,
-    spells: &Bonus,
-    conditions: &Conditions,
-) -> (Attributes, Level, Resistances, Armour, Attacks) {
-    let base = EnumMap::from_fn(|attribute| {
-        u32::from(match attribute {
-            Attribute::Strength => kind.attributes.strength,
-            Attribute::Intelligence => kind.attributes.intelligence,
-            Attribute::Dexterity => kind.attributes.dexterity,
-            Attribute::Speed => kind.attributes.speed,
-            Attribute::Senses => kind.attributes.senses,
-            Attribute::Piety | Attribute::Vitality => 1,
-        })
-    });
-    let attributes = Attributes::affected(base, spells, conditions, None);
-    let resistances = Resistances {
-        realms: EnumMap::from_fn(|realm| {
-            (i32::from(kind.resistances[realm]) + spells.resistance[realm]).min(100)
-        }),
-        immune: crate::game::hits::defences::immune(kind.kind),
-        wards: Vec::new(),
-        death_immune: kind.death_immune,
-        kind: Some(kind.kind),
-        caster: EnumMap::from_fn(|_| u32::from(kind.level)),
-    };
-    let laid = spells.armour + conditions.armour();
-    let armour = Armour {
-        total: 10 - i32::from(kind.evasion) + laid,
-        at: std::array::from_fn(|place| 10 + laid - i32::from(kind.armour_by_location[place])),
-        by_mode: EnumMap::from_fn(|mode| i32::from(kind.armour_by_mode[mode])),
-        exposed: 2 * i32::from(kind.vulnerable_from_behind),
-        braced: (0, 0),
-        tires: true,
-        reduction: (i32::from(kind.damage_reduction) + spells.reduction).min(100),
-        missile_shield: spells.missiles,
-        hit_locations: Some(kind.hit_locations),
-    };
-    let hit_bonus = spells.to_hit + conditions.to_hit();
-    let first = kind.attacks.first();
-    let attacks = Attacks {
-        arms: kind.attacks.iter().map(|swung| monster_arm(kind, swung, hit_bonus)).collect(),
-        initiative: i32::from(kind.initiative),
-        press: attributes[Attribute::Speed] as i32
-            + first.map_or(0, |a| i32::from(a.score))
-            + hit_bonus * 5,
-        tires_little: first.is_some_and(crate::content::species::MonsterAttack::tires_little),
-        blind_fighting: (kind.kind == MonsterKind::Monk).then_some(kind.level),
-        keen_sight: if kind.level_sight { (u32::from(kind.level) * 5).min(125) } else { 0 },
-        backstab: scale_by_level(kind.level, 100.0) as i32,
-        knock_out: None,
-        stride: Some(
-            kind.combat_move_range * crate::game::combat::monster::close::METRES_PER_MOVE_RANGE,
-        ),
-        hasted: spells.stride,
-    };
-    (attributes, Level(u32::from(kind.level)), resistances, armour, attacks)
-}
-
-/// A character, from their sheet and what they wear under this load, with
-/// the spells on them and, for a party member, the party's.
-fn of_member(
-    character: &Character,
-    skills: &Skills,
-    (held, hands, member): (&Items, &Query<Held>, Entity),
-    load: crate::game::characters::Load,
-    spells: &Bonus,
-    (vitals, conditions): (&Vitals, &Conditions),
-) -> (Attributes, Level, Resistances, Armour, Attacks) {
-    let protection = |slot| held.protection(member, slot);
-    let attributes =
-        Attributes::affected(character.attributes, spells, conditions, Some(character));
-    let a = &attributes;
-    let sheet = resistances(character, a, skills, protection);
-    let mut wards = Vec::new();
-    if character.has_trait(Trait::AndroidConditionImmunity) {
-        use Condition::*;
-        wards.extend([Afraid, Diseased, Irritated, Nauseated, Poisoned, Asleep]);
-    }
-    if character.has_trait(Trait::Fearless) {
-        wards.push(Condition::Afraid);
-    }
-    if character.has_trait(Trait::MentalConditionImmunity) {
-        wards.extend([Condition::Insane, Condition::Turncoat]);
-    }
-    let resistances = Resistances {
-        realms: EnumMap::from_fn(|realm| (sheet[realm].total + spells.resistance[realm]).min(100)),
-        immune: &[],
-        wards,
-        death_immune: false,
-        kind: None,
-        caster: EnumMap::from_fn(|book| {
-            crate::game::magic::total_caster_level(character, EnumSet::only(book)).max(0) as u32
-        }),
-    };
-    // The dead and the missing guard themselves with nothing: only what
-    // they wear still counts (retail `CalcArmorClasses`).
-    let lively = !vitals.is_dead() && conditions.below(Condition::Missing);
-    let guard = |defending| {
-        let mut armour = if lively {
-            arms::armour(character, skills, a, protection, load, defending)
-        } else {
-            arms::worn_armour(protection)
-        };
-        let laid = if lively { spells.armour + conditions.armour() } else { 0 };
-        // One kept from their place is guarded no better than -5 overall,
-        // before what covers each place is added.
-        let whole = armour.total + laid;
-        let held = if conditions.unseats(character.traits()) { whole.min(-5) } else { whole };
-        armour.by_location.values_mut().for_each(|at| *at += held - armour.total);
-        armour.total = held;
-        armour
-    };
-    let (standing, bracing) = (guard(false), guard(true));
-    let exposed = |armour: &arms::Armour| armour.speed.max(0) + armour.shield.max(0);
-    let armour = Armour {
-        total: standing.total,
-        at: std::array::from_fn(|place| {
-            standing.by_location.values().nth(place).copied().unwrap_or(standing.total)
-        }),
-        by_mode: EnumMap::default(),
-        exposed: exposed(&standing),
-        braced: (bracing.total - standing.total, exposed(&bracing) - exposed(&standing)),
-        tires: false,
-        reduction: (character.damage_reduction(a, skills) + spells.reduction).min(100),
-        missile_shield: spells.missiles,
-        hit_locations: None,
-    };
-    let hands = Hands::of(|slot| held.worn(member, slot).and_then(|item| hands.get(item).ok()));
-    let attacks = Attacks {
-        initiative: character.initiative(a, load, skills),
-        blind_fighting: character
-            .has_trait(Trait::EffectiveWhileBlind)
-            .then(|| character.profession_levels[character.profession]),
-        keen_sight: 0,
-        backstab: character.scale_by_profession(100.0) as i32,
-        knock_out: character
-            .has_trait(Trait::Knockout)
-            .then(|| character.profession_levels[character.profession]),
-        stride: None,
-        hasted: spells.stride,
-        ..hands.attacks(character, skills, a, load, spells.to_hit + conditions.to_hit())
-    };
-    (attributes, Level(u32::from(character.level())), resistances, armour, attacks)
-}
-
-/// A monster's arm: one of its species' attacks.
-fn monster_arm(
-    kind: &Species,
-    swung: &crate::content::species::MonsterAttack,
-    hit_bonus: i32,
-) -> Arm {
-    Arm {
-        slot: WeaponSlot::Primary,
-        weapon: None,
-        reach: swung.reach,
-        modes: swung.modes,
-        dice: swung.damage,
-        punch: swung.damage,
-        kick: swung.damage,
-        rating: i32::from(swung.score) + 5 * hit_bonus,
-        percent: 0,
-        effects: swung.effects,
-        slays: Vec::new(),
-        attacks: u32::from(kind.attacks_per_round),
-        initiative: 0,
-        swings: u32::from(kind.swings_per_round.max(1)),
-        extra_swings: 0,
-        ranged: false,
-        loaded: None,
-        sure_throw: false,
-        critical: None,
-        practises: &[],
-        weight: None,
-        tires: false,
-        modern: swung.tires_little(),
-        fatigue_pierces: swung.tires_little(),
-        sword: false,
-        ambushes: kind.kind == MonsterKind::Rogue && swung.reach <= Reach::Touch,
-        word: Some((swung.word, swung.named())),
-        lands_on_party: Some(kind.hits_on_party),
-        sound_class: swung.sound_class,
     }
 }

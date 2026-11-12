@@ -46,7 +46,7 @@ use crate::game::characters::{Condition, Vitals};
 use crate::game::difficulty::Difficulty;
 use crate::game::hits::effects::Body;
 use crate::game::magic::Strength;
-use crate::game::npcs::NpcBody;
+use crate::game::npcs::Embodies;
 use crate::game::rng::GameRng;
 
 /// An actor in a fight, as a blow finds it: what every actor is, and what
@@ -60,7 +60,7 @@ pub struct Fighter {
     /// It is walking this round.
     pub walking: Has<CombatMove>,
     /// An NPC's body, whom a member under orders never strikes.
-    pub npc: Has<NpcBody>,
+    pub npc: Has<Embodies>,
     pub guards: Option<&'static Guards>,
     pub interceptions: Option<&'static mut Interceptions>,
     pub spotted: Option<&'static mut Spotted>,

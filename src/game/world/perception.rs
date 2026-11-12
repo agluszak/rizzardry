@@ -4,7 +4,7 @@ use crate::{
     content::characters::{Attribute, Skill, Trait},
     game::{
         actors::Level,
-        characters::{Character, Condition, Vitals},
+        characters::{Condition, Vitals},
         combat::monster::noticing::{Noticing, notices},
         world::{
             obstacles::WorldObstacles,
@@ -57,7 +57,7 @@ impl View {
         self,
         mut members: impl Iterator<
             Item = (
-                &'a Character,
+                &'a crate::game::actors::Traits,
                 &'a crate::game::characters::Conditions,
                 &'a crate::game::actors::Attributes,
                 &'a crate::game::actors::Skills,
@@ -84,7 +84,7 @@ impl View {
         members.any(|(profile, conditions, attributes, skills)| {
             notices(&Noticing {
                 open: !(conditions.has(Condition::Blind)
-                    && !profile.has_trait(Trait::EffectiveWhileBlind)),
+                    && !profile.has(Trait::EffectiveWhileBlind)),
                 line: true,
                 senses: attributes[Attribute::Senses] as i32,
                 bonus: skills[Skill::Scouting],

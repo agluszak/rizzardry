@@ -8,7 +8,10 @@ use std::sync::LazyLock;
 use bevy::prelude::*;
 use serde::Deserialize;
 
-use super::story::{Befalls, Consequence, Due, Reading, Readings, StoryFacts, StoryTold};
+use super::story::{
+    Befell, Consequence, Crush, DeviceAct, Due, Reading, Readings, Shooting, StoryFacts, StoryTold,
+    Watch,
+};
 use crate::content::characters::BodyPart;
 use crate::content::items::AttackMode;
 use crate::content::items::{Dice, ItemId};
@@ -17,7 +20,7 @@ use crate::content::levels::LevelInfo;
 use crate::content::spells::{SpellId, Targeting};
 use crate::game::actors::Armour;
 use crate::game::actors::Laying;
-use crate::game::characters::{Character, Vitals};
+use crate::game::characters::{Calling, Experience, Vitals};
 use crate::game::combat::attack::{MEMBER_LOCATIONS, locate_at, mode_penetration};
 use crate::game::data::Catalogs;
 use crate::game::factions::Factions;
@@ -145,9 +148,9 @@ pub(super) fn ask(
 /// party hurt, a spell cast where it stands, what its hand holds taken or
 /// put there.
 pub(super) fn befalls_at_a_device(
-    befalls: On<Befalls>,
+    befalls: On<Befell<DeviceAct>>,
     party: Single<(Entity, &PartyRoster)>,
-    mut members: Query<(&mut Character, &Vitals)>,
+    mut members: Query<(&mut Experience, &Vitals)>,
     mut levels: Query<(&Level, &mut EncounterState, &Unborn, &mut MonsterBodies)>,
     (definitions, server): (Res<Assets<LevelDefinition>>, Res<AssetServer>),
     held: Items,
@@ -161,27 +164,27 @@ pub(super) fn befalls_at_a_device(
 ) {
     let (party, roster) = *party;
     match &befalls.0 {
-        Consequence::Tells(string) => {
+        DeviceAct::Tells(string) => {
             told.write(StoryTold { string: *string });
         }
-        Consequence::Message(id) => {
+        DeviceAct::Message(id) => {
             if let Some((level, ..)) = levels.iter().next() {
                 effects.write(TriggerEffect::Message { source: level.messages.clone(), id: *id });
             }
         }
         // Each living member wins as much (retail `AwardPartyExperience`).
-        Consequence::Experience(amount) => {
+        DeviceAct::Experience(amount) => {
             for member in roster.iter() {
-                if let Ok((mut character, vitals)) = members.get_mut(member)
+                if let Ok((mut experience, vitals)) = members.get_mut(member)
                     && !vitals.is_dead()
                 {
-                    character.award_experience(*amount);
+                    experience.earned += u64::from(*amount);
                 }
             }
         }
         // The generators that draw from one table draw from another from
         // now on (retail `SetEncounterTable`); what it holds is made ready.
-        Consequence::Breeds { from, to } => {
+        DeviceAct::Breeds { from, to } => {
             for (level, mut state, _, mut bodies) in &mut levels {
                 let Some(definition) = definitions.get(&level.definition) else { continue };
                 let encounters = &definition.encounters;
@@ -212,7 +215,7 @@ pub(super) fn befalls_at_a_device(
                 }
             }
         }
-        Consequence::Generator(name, on) => {
+        DeviceAct::Generator(name, on) => {
             for (level, mut state, ..) in &mut levels {
                 let Some(definition) = definitions.get(&level.definition) else { continue };
                 let named = &definition.encounters.generators;
@@ -224,7 +227,7 @@ pub(super) fn befalls_at_a_device(
         }
         // Every group of a species still to be born is (retail
         // `GiveBirthToMonster` on each).
-        Consequence::Births(species) => {
+        DeviceAct::Births(species) => {
             for (_, _, unborn, _) in &levels {
                 let of_species = unborn.0.iter().filter(|one| one.monster.species == *species);
                 let groups: std::collections::BTreeSet<i32> =
@@ -232,7 +235,7 @@ pub(super) fn befalls_at_a_device(
                 births.write_batch(groups.into_iter().map(Birth));
             }
         }
-        Consequence::Hurt(count, sides, base) => {
+        DeviceAct::Hurt(count, sides, base) => {
             let dice = Dice { count: *count, sides: *sides, base: *base };
             commands.queue(move |world: &mut World| {
                 let _ = world.run_system_cached_with(triggers::damage_party, dice);
@@ -241,7 +244,7 @@ pub(super) fn befalls_at_a_device(
         // A spell with no caster (retail `PointCastSpell`): one aimed at a
         // single being lands on a living member at random, any other on
         // every living member.
-        Consequence::CastHere(spell, power) => {
+        DeviceAct::CastHere(spell, power) => {
             let id = SpellId(*spell);
             let Some(spell) = content.spells.get(id) else { return };
             let mut living: Vec<Entity> = roster
@@ -261,18 +264,17 @@ pub(super) fn befalls_at_a_device(
             };
             commands.spawn((Deed::at(strike, living), Magical));
         }
-        Consequence::LoseHeld => {
+        DeviceAct::LoseHeld => {
             if let Some(item) = held.held(party) {
                 commands.trigger(Lose { item, amount: 1 });
             }
         }
-        Consequence::HandItem(item) => {
+        DeviceAct::HandItem(item) => {
             let definition = &content.items[ItemId(*item)];
             let amount = roll_amount(definition, &mut rng, true);
             let item = make(&mut commands, definition, amount, true);
             commands.trigger(Put { item, at: Place::Hand { party } });
         }
-        _ => {}
     }
 }
 
@@ -287,7 +289,7 @@ const MISSILE_REACH: f32 = 30.0;
 /// armour there is under 10 (`ResolveSpellMissileHit`), unless a Missile
 /// Shield turns it aside.
 pub(super) fn shoots(
-    befalls: On<Befalls>,
+    befalls: On<Befell<Shooting>>,
     level: Single<&Level, Without<SetAside>>,
     definitions: Res<Assets<LevelDefinition>>,
     party: Single<(&Position, &PartyRoster)>,
@@ -297,7 +299,7 @@ pub(super) fn shoots(
     mut laying: Laying,
     (mut effects, mut damage): (MessageWriter<TriggerEffect>, MessageWriter<Damaged>),
 ) {
-    let Consequence::Shoots { from, dice } = &befalls.0 else { return };
+    let Shooting::Shoots { from, dice } = &befalls.0;
     let Some(definition) = definitions.get(&level.definition) else { return };
     let (at, roster) = *party;
     let dice = Dice { count: dice.0, sides: dice.1, base: dice.2 };
@@ -354,11 +356,10 @@ pub struct Crushing {
     moved: bool,
 }
 
-pub(super) fn crush_begins(befalls: On<Befalls>, mut commands: Commands) {
-    if let Consequence::Crushes { low, high, spared, prize } = &befalls.0 {
-        let (low, high) = (low.clone(), high.clone());
-        commands.spawn(Crushing { low, high, spared: *spared, prize: *prize, moved: false });
-    }
+pub(super) fn crush_begins(befalls: On<Befell<Crush>>, mut commands: Commands) {
+    let Crush::Crushes { low, high, spared, prize } = &befalls.0;
+    let (low, high) = (low.clone(), high.clone());
+    commands.spawn(Crushing { low, high, spared: *spared, prize: *prize, moved: false });
 }
 
 /// While the plates move, a monster in their way is pushed by the one that
@@ -367,8 +368,8 @@ pub(super) fn crush(
     mut crushing: Query<(Entity, &mut Crushing)>,
     names: Single<&DeviceNames, Without<SetAside>>,
     (parts, bounds, motions): (Query<&Children>, Query<&ColliderAabb>, Query<&PropMotion>),
-    mut monsters: Query<(Entity, &Monster, &mut Position, &mut Vitals), Without<Character>>,
-    (roster, mut members): (Single<&PartyRoster>, Query<(&mut Character, &Vitals)>),
+    mut monsters: Query<(Entity, &Monster, &mut Position, &mut Vitals), Without<Calling>>,
+    (roster, mut members): (Single<&PartyRoster>, Query<(&mut Experience, &Vitals), With<Calling>>),
     mut rng: ResMut<GameRng>,
     mut commands: Commands,
 ) {
@@ -412,10 +413,10 @@ pub(super) fn crush(
                 vitals.slay(None);
                 if monster.species == crushing.prize.0 {
                     for member in roster.iter() {
-                        if let Ok((mut character, vitals)) = members.get_mut(member)
+                        if let Ok((mut experience, vitals)) = members.get_mut(member)
                             && !vitals.is_dead()
                         {
-                            character.award_experience(crushing.prize.1);
+                            experience.earned += u64::from(crushing.prize.1);
                         }
                     }
                 }
@@ -455,10 +456,9 @@ pub(super) fn still(
 }
 
 /// A watch on a device begins.
-pub(super) fn watch(befalls: On<Befalls>, mut commands: Commands) {
-    if let Consequence::WhenStill(device, rows) = &befalls.0 {
-        commands.spawn(Stilled { device: device.clone(), rows: rows.clone(), moved: false });
-    }
+pub(super) fn watch(befalls: On<Befell<Watch>>, mut commands: Commands) {
+    let Watch::WhenStill(device, rows) = &befalls.0;
+    commands.spawn(Stilled { device: device.clone(), rows: rows.clone(), moved: false });
 }
 
 #[cfg(test)]
@@ -467,38 +467,45 @@ mod tests {
 
     /// The spots and the devices some consequences name.
     fn named<'a>(rows: &'a [Consequence], spots: &mut Vec<&'a str>, devices: &mut Vec<&'a str>) {
+        use super::super::story::{Flow, LevelAct, PartyAct, PersonAct};
         for row in rows {
             match row {
-                Consequence::SpawnMonster { at, faces, .. } => {
-                    spots.push(at);
-                    spots.extend(faces.as_deref());
+                Consequence::Level(row) => match row {
+                    LevelAct::SpawnMonster { at, faces, .. } => {
+                        spots.push(at);
+                        spots.extend(faces.as_deref());
+                    }
+                    LevelAct::SpawnItem(_, spot)
+                    | LevelAct::LookAtSpot(spot)
+                    | LevelAct::GroupMoved(_, spot) => spots.push(spot),
+                    LevelAct::Trigger(name)
+                    | LevelAct::TriggerOnce(name)
+                    | LevelAct::TriggerOff(name)
+                    | LevelAct::TriggerOn(name)
+                    | LevelAct::TriggerEnabled(name)
+                    | LevelAct::Unlock(name) => devices.push(name),
+                    LevelAct::Later(_, rows) => named(rows, spots, devices),
+                    LevelAct::OneOf(choices) => {
+                        for rows in choices {
+                            named(rows, spots, devices);
+                        }
+                    }
+                    _ => {}
+                },
+                Consequence::Person(PersonAct::Moved(_, spot)) => spots.push(spot),
+                Consequence::Shooting(Shooting::Shoots { from, .. }) => {
+                    spots.extend(from.iter().map(String::as_str))
                 }
-                Consequence::SpawnItem(_, spot)
-                | Consequence::LookAtSpot(spot)
-                | Consequence::Moved(_, spot)
-                | Consequence::GroupMoved(_, spot) => spots.push(spot),
-                Consequence::Shoots { from, .. } => spots.extend(from.iter().map(String::as_str)),
-                Consequence::Trigger(name)
-                | Consequence::TriggerOnce(name)
-                | Consequence::TriggerOff(name)
-                | Consequence::TriggerOn(name)
-                | Consequence::TriggerEnabled(name)
-                | Consequence::Unlock(name) => devices.push(name),
-                Consequence::If(_, rows)
-                | Consequence::Later(_, rows)
-                | Consequence::AfterTalk(rows)
-                | Consequence::Every(_, _, rows) => named(rows, spots, devices),
-                Consequence::Crushes { low, high, .. } => {
+                Consequence::Flow(Flow::If(_, rows))
+                | Consequence::Party(PartyAct::AfterTalk(rows) | PartyAct::Every(_, _, rows)) => {
+                    named(rows, spots, devices)
+                }
+                Consequence::Crush(Crush::Crushes { low, high, .. }) => {
                     devices.extend([low.as_str(), high.as_str()])
                 }
-                Consequence::WhenStill(device, rows) => {
+                Consequence::Watch(Watch::WhenStill(device, rows)) => {
                     devices.push(device);
                     named(rows, spots, devices);
-                }
-                Consequence::OneOf(choices) => {
-                    for rows in choices {
-                        named(rows, spots, devices);
-                    }
                 }
                 _ => {}
             }

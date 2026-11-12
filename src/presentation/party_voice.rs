@@ -6,8 +6,8 @@ use super::{
 use crate::{
     content::{npcs::DialogueScript, ui::TextTable},
     game::{
-        characters::{Character, Condition, Gender, Vitals},
-        npcs::{ActorId, NpcAssets},
+        characters::{Condition, Gender, Vitals},
+        npcs::NpcAssets,
         party::roster::PartyRoster,
         world::{
             interaction::LockNews,
@@ -64,11 +64,9 @@ impl Voice {
 #[derive(SystemParam)]
 pub(super) struct Speakers<'w, 's> {
     roster: Single<'w, 's, &'static PartyRoster>,
-    members: Query<
-        'w,
-        's,
-        (&'static Character, Has<crate::game::actors::CanFight>, Option<&'static ActorId>),
-    >,
+    members:
+        Query<'w, 's, (crate::game::characters::PaperReadOnly, Has<crate::game::actors::CanFight>)>,
+    people: crate::game::npcs::People<'w, 's>,
     catalogs: Res<'w, crate::game::data::Catalogs>,
     scripts: Res<'w, NpcAssets>,
 }
@@ -78,22 +76,27 @@ impl Speakers<'_, '_> {
             .iter()
             .filter(|&actor| excluded != Some(actor))
             .filter_map(|actor| {
-                let (character, can_fight, npc) = self.members.get(actor).ok()?;
-                can_fight.then(|| (actor, self.voice(character, npc)))
+                let (character, can_fight) = self.members.get(actor).ok()?;
+                can_fight.then(|| (actor, self.voice(&character, self.people.id(actor))))
             })
             .collect()
     }
-    fn voice(&self, character: &Character, npc: Option<&ActorId>) -> Voice {
+    fn voice(
+        &self,
+        character: &crate::game::characters::PaperReadOnlyItem,
+        npc: Option<crate::content::npcs::NpcId>,
+    ) -> Voice {
         match npc {
-            Some(npc) => {
-                let id = npc.npc();
-                Voice::Recruit {
-                    stem: self.catalogs.npcs[id].party_voice_stem(),
-                    script: self.scripts.scripts[&id].clone(),
-                }
-            }
+            Some(id) => Voice::Recruit {
+                stem: self.catalogs.npcs[id].party_voice_stem(),
+                script: self.scripts.scripts[&id].clone(),
+            },
             None => Voice::Character {
-                stem: pc_voice_stem(character.gender, character.personality, character.voice),
+                stem: pc_voice_stem(
+                    character.birth.gender,
+                    character.identity.personality,
+                    character.identity.voice,
+                ),
                 quotes: None,
             },
         }
@@ -259,7 +262,11 @@ pub(super) fn react_to_wounds(
     mut damaged: MessageReader<crate::game::hits::Damaged>,
     speakers: Speakers,
     order: Single<&PartyRoster>,
-    members: Query<(&Character, &Vitals, &crate::game::characters::Conditions)>,
+    members: Query<(
+        crate::game::characters::PaperReadOnly,
+        &Vitals,
+        &crate::game::characters::Conditions,
+    )>,
     level: Single<Entity, With<Level>>,
     mut fallen: ResMut<Fallen>,
     waiting: Query<&PendingRemark>,
@@ -274,7 +281,7 @@ pub(super) fn react_to_wounds(
             let first_two = seat < 2;
             let event = if first_two {
                 MOURNS[2]
-            } else if character.gender == Gender::Male {
+            } else if character.birth.gender == Gender::Male {
                 MOURNS[0]
             } else {
                 MOURNS[1]
@@ -544,6 +551,7 @@ pub(super) fn play_device_remarks(
 mod tests {
     use super::*;
     use crate::content::npcs::{NpcCatalog, NpcDefinition, NpcId};
+    use crate::game::characters::Character;
     use crate::game::characters::{Gender, Profession, Race};
     use bevy::ecs::system::RunSystemOnce;
 
@@ -560,7 +568,8 @@ mod tests {
         let mut world = World::new();
         let pc = member(&mut world, "Made");
         let recruit = member(&mut world, "Drazic");
-        world.entity_mut(recruit).insert(ActorId(NpcId(0)));
+        let person = world.spawn(crate::game::npcs::ActorId(NpcId(0))).id();
+        world.entity_mut(recruit).insert(crate::game::npcs::CompanionOf(person));
         crate::game::party::roster::test_party(&mut world, &[pc, recruit]);
         world.insert_resource(crate::game::data::Catalogs {
             npcs: NpcCatalog(vec![NpcDefinition { source_name: "Drazic".into(), ..default() }]),

@@ -188,7 +188,7 @@ pub(super) fn open_battle(
     )>,
     members: Query<
         (
-            &Character,
+            &crate::game::actors::Traits,
             &crate::game::characters::Conditions,
             &crate::game::actors::Attributes,
             &crate::game::actors::Skills,

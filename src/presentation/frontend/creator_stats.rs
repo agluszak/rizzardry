@@ -491,7 +491,7 @@ pub(super) fn refresh(
             .unwrap_or_default()
     };
     let resistances = crate::game::characters::resistance::resistances(
-        &profile,
+        (&crate::game::actors::Nature::of_race(profile.birth.race), Some(profile.trained())),
         &Attributes::of_sheet(&profile),
         &crate::game::actors::Skills::of_sheet(&profile),
         |_| None,
@@ -577,7 +577,7 @@ pub(super) fn refresh(
             Value::SkillName(skill) => {
                 string(crate::content::ui::SKILL_NAMES + skill as usize).to_owned()
             }
-            Value::Skill(skill) => profile.skill_points[skill].to_string(),
+            Value::Skill(skill) => profile.training.0[skill].to_string(),
             Value::AllocatedSkill(skill) => draft.allocated_skill(skill).to_string(),
             Value::Remaining => {
                 if session.choices.profession && session.choices.race {
@@ -620,7 +620,7 @@ pub(super) fn refresh(
             },
             Value::Health => {
                 if session.choices.race && session.choices.profession {
-                    profile.max_hp(&Attributes::of_sheet(&profile)).to_string()
+                    profile.max_hp().to_string()
                 } else if session.choices.race {
                     "0".into()
                 } else {
@@ -629,14 +629,14 @@ pub(super) fn refresh(
             }
             Value::Stamina => {
                 if session.choices.race {
-                    profile.max_stamina(&Attributes::of_sheet(&profile)).to_string()
+                    profile.max_stamina().to_string()
                 } else {
                     String::new()
                 }
             }
             Value::Capacity => {
                 if session.choices.race {
-                    (profile.capacity(&Attributes::of_sheet(&profile)) / 10).to_string()
+                    (profile.capacity() / 10).to_string()
                 } else {
                     String::new()
                 }
@@ -644,7 +644,7 @@ pub(super) fn refresh(
             Value::Armour => {
                 if session.choices.race {
                     crate::game::actors::arms::armour(
-                        &profile,
+                        (profile.trained(), profile.birth.race.row().armour),
                         &crate::game::actors::Skills::of_sheet(&profile),
                         &Attributes::of_sheet(&profile),
                         |_| None,
@@ -660,7 +660,8 @@ pub(super) fn refresh(
             Value::SpellPoints => {
                 if session.choices.race {
                     let learned = crate::game::magic::LearnedSpells(draft.spells());
-                    let points = profile.max_points(
+                    let points = crate::game::magic::max_points(
+                        u32::from(profile.calling.level()),
                         &Attributes::of_sheet(&profile),
                         &learned,
                         &content.spells,
@@ -693,17 +694,17 @@ pub(super) fn refresh(
                         "{} {}",
                         string(
                             crate::content::ui::SKILL_NAMES
-                                + profile.profession.row().bonus_skill as usize
+                                + profile.calling.profession.row().bonus_skill as usize
                         ),
                         string(0xb2)
                     ));
                 }
                 let mut abilities = enumset::EnumSet::empty();
                 if session.choices.profession {
-                    abilities |= profile.profession.row().traits;
+                    abilities |= profile.calling.profession.row().traits;
                 }
                 if session.choices.race {
-                    abilities |= profile.race.row().traits;
+                    abilities |= profile.birth.race.row().traits;
                 }
                 lines.extend(abilities.iter().map(|ability| {
                     string(crate::content::ui::ABILITY_NAMES + ability as usize).to_owned()
@@ -715,9 +716,9 @@ pub(super) fn refresh(
                     String::new()
                 } else {
                     let skill = if i == 0 {
-                        Some(profile.profession.row().bonus_skill)
+                        Some(profile.calling.profession.row().bonus_skill)
                     } else {
-                        profile.profession.row().skills.get(i - 1).copied()
+                        profile.calling.profession.row().skills.get(i - 1).copied()
                     };
                     skill
                         .map(|s| string(crate::content::ui::SKILL_NAMES + s as usize).to_owned())
@@ -729,7 +730,8 @@ pub(super) fn refresh(
             label.value = value;
         }
         if let Value::SkillName(skill) = *field {
-            let palette = (skill == profile.profession.row().bonus_skill).then(|| art.blue.clone());
+            let palette =
+                (skill == profile.calling.profession.row().bonus_skill).then(|| art.blue.clone());
             if label.palette != palette {
                 label.palette = palette;
             }

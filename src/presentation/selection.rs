@@ -74,7 +74,7 @@ pub fn activate_selection(
     props: Query<Has<Device>, With<Prop>>,
     party: Single<Entity, With<crate::game::party::roster::PartyRoster>>,
     held: Items,
-    npcs: Query<&crate::game::npcs::NpcBody>,
+    npcs: Query<&crate::game::npcs::Embodies>,
     mut commands: Commands,
     mut requests: (MessageWriter<ActivateDevice>, MessageWriter<TakeItem>, MessageWriter<DropHeld>),
 ) {

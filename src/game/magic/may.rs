@@ -4,7 +4,7 @@
 
 use crate::content::items::UseType;
 use crate::content::spells::{PowerChoice, SpellDefinition, Usable, Working};
-use crate::game::characters::{Character, Condition};
+use crate::game::characters::{Condition, Trained};
 use crate::game::hits::effects::BodyReadOnlyItem;
 use crate::game::items::{Casts, Items};
 use crate::game::magic::casting::Source;
@@ -76,13 +76,13 @@ pub fn silence_stops(spell: &SpellDefinition, keeps_alchemy: bool) -> bool {
 pub fn activates(
     casts: &Casts,
     worn: bool,
-    character: &Character,
+    character: Trained,
     attributes: &crate::game::actors::Attributes,
     skills: &crate::game::actors::Skills,
 ) -> bool {
     !matches!(casts.by, UseType::None | UseType::Spellbook)
         && (!casts.worn || worn)
-        && (casts.users.admit(character, attributes, skills)
+        && (casts.users.admit((character.calling, character.birth), attributes, skills)
             || matches!(casts.by, UseType::Potion | UseType::Food))
 }
 
@@ -192,7 +192,7 @@ pub fn may(
             let played = matches!(casts.by, UseType::Instrument | UseType::Gadget);
             let worn = held.slot(item).is_some_and(|slot| slot.is_active());
             let user = caster
-                .character
+                .trained()
                 .is_some_and(|c| activates(casts, worn, c, caster.attributes, caster.skills));
             if (casts.power == 0 && !played) || !user {
                 return Err(Refusal::CannotUse);

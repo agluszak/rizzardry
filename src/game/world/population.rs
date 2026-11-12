@@ -33,6 +33,8 @@ pub struct Newborn {
     pub group: Option<i32>,
     pub monster: Monster,
     pub vitals: crate::game::characters::Vitals,
+    /// The health and stamina it was born with.
+    pub frame: crate::game::actors::Frame,
     /// What ails it as it is made: nothing, unless it stood somewhere before.
     pub conditions: crate::game::characters::Conditions,
     pub budget: SpellBudget,
@@ -82,6 +84,7 @@ impl Newborn {
         Newborn {
             monster: Monster { location, species, body },
             vitals: crate::game::characters::Vitals::full(max_hp, max_stamina),
+            frame: crate::game::actors::Frame { health: max_hp, stamina: max_stamina },
             conditions: default(),
             budget: SpellBudget(kind.magic.budget.max(0) as u32),
             group,
@@ -265,6 +268,96 @@ impl Spellcasting {
     }
 }
 
+/// What a species makes one of its own of: its abilities, level, kind and
+/// what that lets it do, its natural guard, resistances and mending, and
+/// what it strikes with. Written once, as the monster is made.
+pub(crate) fn made_of(kind: &crate::content::species::Species) -> impl Bundle {
+    use crate::content::characters::{Attribute, Resist, Trait};
+    use crate::content::species::{MonsterKind, Reach};
+    use crate::game::actors::{Abilities, Arm, Kind, Level, NaturalArms, Nature, Traits};
+    use crate::game::inventory::WeaponSlot;
+    let abilities = Abilities(enum_map::EnumMap::from_fn(|attribute| {
+        u32::from(match attribute {
+            Attribute::Strength => kind.attributes.strength,
+            Attribute::Intelligence => kind.attributes.intelligence,
+            Attribute::Dexterity => kind.attributes.dexterity,
+            Attribute::Speed => kind.attributes.speed,
+            Attribute::Senses => kind.attributes.senses,
+            Attribute::Piety | Attribute::Vitality => 1,
+        })
+    }));
+    // What its kind lets it do is the trait a character has it by.
+    let mut traits = enumset::EnumSet::new();
+    if kind.kind == MonsterKind::Monk {
+        traits |= Trait::EffectiveWhileBlind;
+    }
+    let nature = Nature {
+        // Armour is 10 less the record's value, so that higher is always
+        // better guarded.
+        armour: 10 - i32::from(kind.evasion),
+        armour_at: std::array::from_fn(|place| 10 - i32::from(kind.armour_by_location[place])),
+        armour_by_mode: enum_map::EnumMap::from_fn(|mode| i32::from(kind.armour_by_mode[mode])),
+        hit_locations: Some(kind.hit_locations),
+        exposed: 2 * i32::from(kind.vulnerable_from_behind),
+        fatigue_guards: true,
+        reduction: i32::from(kind.damage_reduction),
+        resistance: enum_map::EnumMap::from_fn(|realm| {
+            Some(Resist::Flat(i32::from(kind.resistances[realm])))
+        }),
+        initiative: i32::from(kind.initiative),
+        mending: (i32::from(kind.health_regeneration), i32::from(kind.stamina_regeneration)),
+        death_immune: kind.death_immune,
+        carry_factor: 0,
+        keen_sight: if kind.level_sight { (u32::from(kind.level) * 5).min(125) } else { 0 },
+        stride: Some(
+            kind.combat_move_range * crate::game::combat::monster::close::METRES_PER_MOVE_RANGE,
+        ),
+    };
+    let arms = kind
+        .attacks
+        .iter()
+        .map(|swung| Arm {
+            slot: WeaponSlot::Primary,
+            weapon: None,
+            reach: swung.reach,
+            modes: swung.modes,
+            dice: swung.damage,
+            punch: swung.damage,
+            kick: swung.damage,
+            rating: i32::from(swung.score),
+            percent: 0,
+            effects: swung.effects,
+            slays: Vec::new(),
+            attacks: u32::from(kind.attacks_per_round),
+            initiative: 0,
+            swings: u32::from(kind.swings_per_round.max(1)),
+            extra_swings: 0,
+            ranged: false,
+            loaded: None,
+            sure_throw: false,
+            critical: None,
+            practises: &[],
+            weight: None,
+            tires: false,
+            modern: swung.tires_little(),
+            fatigue_pierces: swung.tires_little(),
+            sword: false,
+            ambushes: kind.kind == MonsterKind::Rogue && swung.reach <= Reach::Touch,
+            word: Some((swung.word, swung.named())),
+            lands_on_party: Some(kind.hits_on_party),
+            sound_class: swung.sound_class,
+        })
+        .collect();
+    (
+        abilities,
+        Level(u32::from(kind.level)),
+        Traits(traits),
+        Kind(kind.kind),
+        nature,
+        NaturalArms(arms),
+    )
+}
+
 /// Make a monster an actor of its level: standing at its feet and facing
 /// its heading, in its group, and a walker if it walks.
 pub(crate) fn embody(
@@ -284,6 +377,7 @@ pub(crate) fn embody(
         entity.insert(GroupMember(group));
     }
     let allegiance = super::hostility::Allegiance::of(kind);
+    entity.insert(made_of(kind));
     entity.insert((
         allegiance,
         Worth(kind.experience),
@@ -384,8 +478,14 @@ fn spawn_member(
     let name = actor_name(species, (kept.monster.species, kept.monster.location));
     let (body, kind) = (kept.monster.body, &species[kept.monster.species]);
     let bidden = kept.bidden();
-    let mut entity =
-        commands.spawn((Name::new(name), kept.monster, kept.vitals, kept.conditions, kept.budget));
+    let mut entity = commands.spawn((
+        Name::new(name),
+        kept.monster,
+        kept.vitals,
+        kept.frame,
+        kept.conditions,
+        kept.budget,
+    ));
     embody(
         &mut entity,
         root,
@@ -599,6 +699,7 @@ pub fn populate(
                 Name::new(name),
                 newborn.monster,
                 newborn.vitals,
+                newborn.frame,
                 newborn.conditions,
                 newborn.budget,
             ))

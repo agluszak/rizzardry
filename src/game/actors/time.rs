@@ -12,9 +12,11 @@
 use bevy::prelude::*;
 
 use super::fitness::Present;
-use super::{Attributes, Laying, Level, Skills};
+use super::{Abilities, Attributes, Drained, Laying, Level, Skills, Traits};
 use crate::content::characters::{Attribute, Trait};
-use crate::game::characters::{Character, Condition, Conditions, Dead, Lasting, Sickness, Vitals};
+use crate::game::characters::{
+    Calling, Condition, Conditions, Dead, Lasting, Recovering, Sickness, Vitals,
+};
 use crate::game::combat::Combatant;
 use crate::game::data::Catalogs;
 use crate::game::hits::Damaged;
@@ -175,12 +177,12 @@ pub(super) fn tend(
         (),
         (
             With<PartyMember>,
-            Or<(Changed<Conditions>, Changed<Vitals>, Changed<Character>, Changed<PartyMember>)>,
+            Or<(Changed<Conditions>, Changed<Vitals>, Changed<Traits>, Changed<PartyMember>)>,
         ),
     >,
     mut left: RemovedComponents<PartyMember>,
     parties: Query<(Entity, &PartyRoster, Has<Tended>)>,
-    members: Query<(&Character, &Conditions, &Vitals)>,
+    members: Query<(&Traits, &Conditions, &Vitals)>,
     mut commands: Commands,
 ) {
     if changed.is_empty() && left.read().count() == 0 {
@@ -188,8 +190,8 @@ pub(super) fn tend(
     }
     for (party, roster, tended) in &parties {
         let tends = roster.iter().any(|member| {
-            members.get(member).is_ok_and(|(sheet, conditions, vitals)| {
-                sheet.has_trait(Trait::CampRecovery) && conditions.is_empty() && !vitals.is_dead()
+            members.get(member).is_ok_and(|(traits, conditions, vitals)| {
+                traits.has(Trait::CampRecovery) && conditions.is_empty() && !vitals.is_dead()
             })
         });
         super::fitness::mark::<Tended>(&mut commands.entity(party), tended, tends);
@@ -249,7 +251,7 @@ fn owe(woke: On<Woke>, mut commands: Commands) {
 pub(crate) struct InTime {
     alive: Without<Dead>,
     here: Or<(With<Present>, With<Swallowed>)>,
-    seated: Or<(With<PartyMember>, Without<Character>)>,
+    seated: Or<(With<PartyMember>, Without<Calling>)>,
 }
 
 /// How an actor spends a span.
@@ -310,38 +312,37 @@ fn bite(
     }
 }
 
-/// Disease wears a sheet down ([`Vitals::sicken`]); a point lost takes
-/// health and stamina with it, and may kill; a slowing without end ends
-/// Haste.
+/// Disease wears one who trained down ([`Vitals::sicken`]): a lasting
+/// condition, a point of an ability for good, or some of the most health or
+/// stamina. A slowing without end ends Haste.
+#[allow(clippy::type_complexity)]
 fn sicken(
     ails: On<Ails>,
-    mut sheets: Query<
-        (Entity, &mut Vitals, &mut Conditions, &mut Character, &Attributes, Timed),
-        InTime,
+    mut trained: Query<
+        (Entity, &mut Vitals, &mut Conditions, &mut Abilities, &mut Drained, &Attributes, Timed),
+        (InTime, With<Calling>),
     >,
     mut laying: Laying,
     mut rng: ResMut<GameRng>,
-    mut damaged: MessageWriter<Damaged>,
 ) {
     let span = ails.0;
-    for (entity, mut vitals, mut conditions, mut sheet, attributes, timed) in &mut sheets {
+    for (entity, mut vitals, mut conditions, mut abilities, mut drained, attributes, timed) in
+        &mut trained
+    {
         if timed.pace(&span).is_none() || !conditions.has(Condition::Diseased) {
             continue;
         }
         let vitality = attributes[Attribute::Vitality];
         let minutes = span.ticks.aging;
-        match vitals.sicken(&mut conditions, &mut sheet, vitality, minutes, &mut rng) {
-            Some(Sickness::Weakened(lost)) => {
-                let less = attributes.weakened(lost);
-                let had = vitals.health.current;
-                if vitals.weaken(sheet.max_hp(&less), sheet.max_stamina(&less)) {
-                    damaged.write(Damaged { body: entity, amount: had, died: true });
-                }
-            }
-            Some(Sickness::Condition(Condition::Slowed)) => {
-                laying.slow(entity, Lasting::Indefinite);
-            }
-            _ => {}
+        // Worked on copies, so that a roll that takes nothing marks
+        // nothing changed.
+        let (mut base, mut lost) = (*abilities, *drained);
+        let struck =
+            vitals.sicken(&mut conditions, (&mut base, &mut lost), vitality, minutes, &mut rng);
+        abilities.set_if_neq(base);
+        drained.set_if_neq(lost);
+        if struck == Some(Sickness::Condition(Condition::Slowed)) {
+            laying.slow(entity, Lasting::Indefinite);
         }
     }
 }
@@ -352,16 +353,16 @@ fn sicken(
 /// minute, by its pace.
 fn mend(
     mends: On<Mends>,
-    mut bodies: Query<(&mut Vitals, &Conditions, &Mending, Timed), InTime>,
+    mut bodies: Query<(&mut Vitals, &mut Recovering, &Conditions, &Mending, Timed), InTime>,
     tended: Query<(), With<Tended>>,
 ) {
     let span = mends.0;
     let Ticks { stamina: breaths, aging: minutes } = span.ticks;
-    for (mut vitals, conditions, mending, timed) in &mut bodies {
+    for (mut vitals, mut parts, conditions, mending, timed) in &mut bodies {
         let Some(pace) = timed.pace(&span) else { continue };
         let whole = vitals.health.current >= vitals.health.max
             && vitals.stamina.current >= vitals.stamina.max
-            && vitals.regeneration == default();
+            && *parts == Recovering::default();
         if whole && mending.stamina >= 0 {
             continue;
         }
@@ -387,7 +388,7 @@ fn mend(
             (minutes, pace.mending() * ill)
         };
         if winds > 0 {
-            vitals.recover_stamina(winds, wind * boost);
+            vitals.recover_stamina(&mut parts, winds, wind * boost);
         }
         if minutes > 0 {
             let share = pace.mending() * ill;
@@ -395,7 +396,7 @@ fn mend(
                 Some(hale) => hale * if share == 0.0 { 0.5 } else { share },
                 None => share,
             };
-            vitals.recover_health(minutes, share * boost);
+            vitals.recover_health(&mut parts, minutes, share * boost);
         }
     }
 }
@@ -407,8 +408,8 @@ fn replenish(
     mends: On<Mends>,
     mut casters: Query<
         (
-            (&Character, &LearnedSpells, &mut SpellPoints),
-            (&Attributes, &Skills, &Conditions, &Mending),
+            (&LearnedSpells, &mut SpellPoints),
+            (&Level, &Attributes, &Skills, &Conditions, &Mending),
             Timed,
         ),
         InTime,
@@ -421,13 +422,14 @@ fn replenish(
     if minutes == 0 {
         return;
     }
-    for ((sheet, known, mut pool), (attributes, skills, conditions, mending), timed) in &mut casters
+    for ((known, mut pool), (level, attributes, skills, conditions, mending), timed) in &mut casters
     {
         let Some(pace) = timed.pace(&span) else { continue };
         if mending.magic == 0 && !pool.needs_recovery() {
             continue;
         }
-        let maximum = sheet.max_points(attributes, known, &content.spells, skills);
+        let maximum =
+            crate::game::magic::max_points(level.0, attributes, known, &content.spells, skills);
         if mending.magic != 0 {
             pool.adjust(mending.magic * minutes as i32, &maximum);
         }
@@ -467,6 +469,7 @@ pub(crate) fn plugin(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::characters::Character;
     use crate::game::characters::{Gender, Profession, Race};
 
     /// A world where time can pass over actors.
@@ -489,7 +492,7 @@ mod tests {
         let mut vitals = world.get_mut::<Vitals>(body).unwrap();
         vitals.health.current = 1;
         vitals.stamina.current = 10;
-        vitals.regeneration = default();
+        world.entity_mut(body).insert(Recovering::default());
     }
 
     fn left(world: &World, body: Entity) -> (u32, u32) {
@@ -541,6 +544,7 @@ mod tests {
         };
         let fighter = member(&mut world, Profession::Fighter);
         let rest = |world: &mut World, pace| {
+            world.run_system_cached(crate::game::actors::figures::follow_calling).unwrap();
             world.run_system_cached(tend).unwrap();
             hurt(world, fighter);
             pass_time(world, Elapsed { ticks: Ticks { stamina: 100, aging: 10 }, pace });

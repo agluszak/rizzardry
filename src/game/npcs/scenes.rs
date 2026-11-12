@@ -6,10 +6,13 @@ use bevy::prelude::*;
 use serde::Deserialize;
 
 use super::conversation::PartyRemark;
-use super::story::{Befalls, Consequence, FACTS, Person, Reading, Readings, StoryFacts};
-use super::{ActorId, story};
+use super::story::{
+    Befalls, Befell, Consequence, EndAct, FACTS, FitAct, PartyAct, Person, Reading, Readings,
+    StoryAct, StoryFacts,
+};
+use super::{CompanionOf, People, story};
 use crate::content::items::ItemId;
-use crate::game::characters::{Character, Condition, Gender, Lasting, Vitals};
+use crate::game::characters::{Birth, Calling, Condition, Gender, Lasting, Vitals};
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
 use crate::game::factions::Factions;
@@ -73,7 +76,7 @@ pub(super) fn picked(
     picked: On<Picked>,
     picks: Query<Entity, With<MemberPick>>,
     roster: Single<&PartyRoster>,
-    members: Query<(&Character, Has<crate::game::actors::CanFight>, Has<ActorId>)>,
+    members: Query<(&Birth, Has<crate::game::actors::CanFight>, Has<CompanionOf>)>,
     chosen: Query<Entity, With<Chosen>>,
     held: Items,
     mut remarks: MessageWriter<PartyRemark>,
@@ -89,7 +92,7 @@ pub(super) fn picked(
     let Ok((character, can_fight, companion)) = members.get(member) else { return };
     let table = &FACTS.chosen;
     let mut set = |name: &String, value| {
-        commands.trigger(Befalls(Consequence::Fact(name.clone(), value)));
+        commands.trigger(Befalls(StoryAct::Fact(name.clone(), value).into()));
     };
     for name in &table.clears {
         set(name, 0);
@@ -121,7 +124,7 @@ pub(super) fn picked(
 /// if the one who spares them stands in the level, they never are.
 pub(super) fn pine(
     mut pining: Query<
-        (Entity, &Character, &mut crate::game::characters::Conditions),
+        (Entity, &Birth, &mut crate::game::characters::Conditions),
         (With<Pining>, With<PartyMember>),
     >,
     battles: Query<(), With<Battle>>,
@@ -145,7 +148,7 @@ pub(super) fn pine(
             if character.gender == Gender::Male {
                 remarks.write(PartyRemark { event: SMITTEN, after: 0.0, speaker: Some(member) });
             }
-            commands.trigger(Befalls(Consequence::Fact(table.smitten.clone(), 1)));
+            commands.trigger(Befalls(StoryAct::Fact(table.smitten.clone(), 1).into()));
         }
     }
 }
@@ -258,16 +261,15 @@ pub struct Ended(pub Ending);
 /// The game ends, as the first ending whose reading holds (retail
 /// `ShowEndingScreen`).
 pub(super) fn ends(
-    befalls: On<Befalls>,
+    befalls: On<Befell<EndAct>>,
     readings: Readings,
     (story, factions): (Res<StoryFacts>, Res<Factions>),
     mut commands: Commands,
 ) {
-    if let Consequence::Ends = &befalls.0 {
-        let holds = |reading: &Reading| readings.answer(reading, None, &story, &factions) != 0;
-        let ending = FACTS.endings.iter().find(|(when, _)| holds(when));
-        commands.insert_resource(Ended(ending.map_or(Ending::Untold, |(_, ending)| *ending)));
-    }
+    let EndAct::Ends = &befalls.0;
+    let holds = |reading: &Reading| readings.answer(reading, None, &story, &factions) != 0;
+    let ending = FACTS.endings.iter().find(|(when, _)| holds(when));
+    commands.insert_resource(Ended(ending.map_or(Ending::Untold, |(_, ending)| *ending)));
 }
 
 /// The game is over when the party has fallen.
@@ -283,9 +285,10 @@ pub(super) fn falls(
 
 /// What befalls those of the party fit to speak, and the chosen one freed.
 pub(super) fn befalls_the_fit(
-    befalls: On<Befalls>,
+    befalls: On<Befell<FitAct>>,
     roster: Single<&PartyRoster>,
-    fit: Query<Option<&ActorId>, With<crate::game::actors::CanFight>>,
+    fit: Query<(), With<crate::game::actors::CanFight>>,
+    people: People,
     mut chosen: Query<(Entity, &mut crate::game::characters::Conditions), With<Chosen>>,
     content: Res<crate::game::data::Catalogs>,
     mut rng: ResMut<GameRng>,
@@ -295,30 +298,28 @@ pub(super) fn befalls_the_fit(
         remarks.write(PartyRemark { event, after: 0.0, speaker: Some(speaker) });
     };
     match &befalls.0 {
-        Consequence::ChosenFreed => {
+        FitAct::ChosenFreed => {
             for (_, mut conditions) in &mut chosen {
                 if conditions.has(Condition::Infatuated) {
                     conditions.lift(Condition::Infatuated);
                 }
             }
         }
-        Consequence::AllRemark(event) => {
+        FitAct::AllRemark(event) => {
             for member in roster.iter().filter(|&member| fit.contains(member)) {
                 says(*event, member);
             }
         }
-        Consequence::AnotherRemarks { but, event } => {
+        FitAct::AnotherRemarks { but, event } => {
             let able: Vec<Entity> = roster.iter().filter(|&member| fit.contains(member)).collect();
             let other = |&member: &Entity| {
-                let id = fit.get(member).ok().flatten();
-                !id.is_some_and(|id| content.npcs[id.0].kind == i32::from(*but))
+                !people.id(member).is_some_and(|id| content.npcs[id].kind == i32::from(*but))
             };
             let others: Vec<Entity> = able.iter().copied().filter(other).collect();
             if able.len() > 2 && !others.is_empty() {
                 says(*event, others[rng.below(others.len() as u32) as usize]);
             }
         }
-        _ => {}
     }
 }
 
@@ -326,10 +327,10 @@ pub(super) fn befalls_the_fit(
 /// wake, the chosen one speaks, one taken is back, something waits for a
 /// battle.
 pub(super) fn befalls_the_party(
-    befalls: On<Befalls>,
+    befalls: On<Befell<PartyAct>>,
     roster: Single<&PartyRoster>,
     mut members: Query<(
-        &Character,
+        &Calling,
         (&mut Vitals, &mut crate::game::characters::Conditions),
         Has<Chosen>,
     )>,
@@ -339,12 +340,12 @@ pub(super) fn befalls_the_party(
     mut commands: Commands,
 ) {
     match &befalls.0 {
-        Consequence::PickMember => {
+        PartyAct::PickMember => {
             commands.spawn(MemberPick);
         }
         // Everyone living but the chosen one lies senseless (retail
         // `BeginSedexusCapture`), until they are woken.
-        Consequence::OthersFaint | Consequence::OthersWake => {
+        PartyAct::OthersFaint | PartyAct::OthersWake => {
             for member in roster.iter() {
                 let Ok((_, (vitals, mut conditions), chosen)) = members.get_mut(member) else {
                     continue;
@@ -352,20 +353,20 @@ pub(super) fn befalls_the_party(
                 if chosen || vitals.is_dead() {
                     continue;
                 }
-                if matches!(befalls.0, Consequence::OthersFaint) {
+                if matches!(befalls.0, PartyAct::OthersFaint) {
                     conditions.afflict(Condition::Unconscious, Lasting::Indefinite);
                 } else {
                     conditions.lift(Condition::Unconscious);
                 }
             }
         }
-        Consequence::ChosenRemarks(event) => {
+        PartyAct::ChosenRemarks(event) => {
             let chosen = roster.iter().find(|&m| members.get(m).is_ok_and(|(.., chosen)| chosen));
             if let Some(speaker) = chosen {
                 remarks.write(PartyRemark { event: *event, after: 0.0, speaker: Some(speaker) });
             }
         }
-        Consequence::Returns => {
+        PartyAct::Returns => {
             for member in roster.iter() {
                 if let Ok((_, (_, mut conditions), _)) = members.get_mut(member) {
                     conditions.lift(Condition::Missing);
@@ -374,7 +375,7 @@ pub(super) fn befalls_the_party(
         }
         // One of those wanted least, at random (retail
         // `MartensBluff2IdolGasVictim`), is missing from then on.
-        Consequence::Takes { spares, wanted } => {
+        PartyAct::Takes { spares, wanted } => {
             let score = |member: Entity| {
                 let profession = members.get(member).map(|(character, ..)| character.profession);
                 let named = wanted.iter().find(|(wanted, _)| Ok(*wanted) == profession);
@@ -391,7 +392,7 @@ pub(super) fn befalls_the_party(
                 }
             }
         }
-        Consequence::Every(seconds, reading, rows) => {
+        PartyAct::Every(seconds, reading, rows) => {
             commands.spawn(Recurring {
                 timer: Timer::from_seconds(*seconds, TimerMode::Repeating),
                 reading: reading.clone(),
@@ -400,7 +401,7 @@ pub(super) fn befalls_the_party(
         }
         // One living member at random, for so many rounds and up to so
         // many more.
-        Consequence::AfflictOne(condition, rounds, spread) => {
+        PartyAct::AfflictOne(condition, rounds, spread) => {
             let living: Vec<Entity> = roster
                 .iter()
                 .filter(|&m| members.get(m).is_ok_and(|(_, (vitals, _), _)| !vitals.is_dead()))
@@ -415,7 +416,7 @@ pub(super) fn befalls_the_party(
         }
         // Every living member's spell points, in full (retail
         // `RestorePartySpellPoints` with nothing held back).
-        Consequence::RestoreMagic => {
+        PartyAct::RestoreMagic => {
             for member in roster.iter() {
                 let alive = members.get(member).is_ok_and(|(_, (vitals, _), _)| !vitals.is_dead());
                 if let (true, Ok(mut points)) = (alive, points.get_mut(member)) {
@@ -423,22 +424,21 @@ pub(super) fn befalls_the_party(
                 }
             }
         }
-        Consequence::Heal(amount) | Consequence::Rest(amount) => {
+        PartyAct::Heal(amount) | PartyAct::Rest(amount) => {
             for member in roster.iter() {
                 let Ok((_, (mut vitals, _), _)) = members.get_mut(member) else { continue };
-                if matches!(befalls.0, Consequence::Heal(_)) {
+                if matches!(befalls.0, PartyAct::Heal(_)) {
                     vitals.heal(*amount);
                 } else {
                     vitals.rest(*amount);
                 }
             }
         }
-        Consequence::AfterTalk(rows) => {
+        PartyAct::AfterTalk(rows) => {
             commands.spawn(Parted { rows: rows.clone(), spoken: false });
         }
-        Consequence::AfterBattle(reading, rows) => {
+        PartyAct::AfterBattle(reading, rows) => {
             commands.spawn(Awaited { reading: reading.clone(), rows: rows.clone(), fought: false });
         }
-        _ => {}
     }
 }

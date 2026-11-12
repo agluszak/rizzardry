@@ -6,7 +6,7 @@ use crate::{
         npcs::NpcDefinition,
     },
     game::{
-        characters::Character,
+        characters::Calling,
         data::Catalogs,
         inventory::PartyInventory,
         items::{Charges, Give, Items, Known, Lose, Place, Put, make, split},
@@ -387,16 +387,12 @@ fn maintain(
     clock: Res<GameClock>,
     story: Res<super::story::StoryFacts>,
     party: Query<&PartyRoster>,
-    members: Query<&Character>,
+    members: Query<&Calling>,
     mut rng: ResMut<GameRng>,
     mut commands: Commands,
 ) {
     let average = crate::game::party::average_level(
-        party
-            .iter()
-            .flat_map(|p| p.iter())
-            .filter_map(|m| members.get(m).ok())
-            .map(Character::level),
+        party.iter().flat_map(|p| p.iter()).filter_map(|m| members.get(m).ok()).map(Calling::level),
     );
     let items = &content.items;
     {

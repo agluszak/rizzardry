@@ -8,16 +8,16 @@ use bevy::prelude::*;
 use serde::Deserialize;
 
 use super::conversation::{Begin, Continue, Conversation, PartyRemark, Script as TalkScript};
-use super::population::{GreetsOnArrival, Post};
+use super::population::GreetsOnArrival;
 use super::trade::Delivery;
-use super::{ActorId, Alias, Gone, Killed, Npc, NpcAssets, NpcBodies};
+use super::{ActorId, Alias, CompanionOf, Embodied, Npc, NpcAssets, People, Whereabouts};
 use crate::content::characters::{Attribute, Profession, Race, Skill};
 use crate::content::factions::Faction;
 use crate::content::items::ItemId;
 use crate::content::level::LevelDefinition;
 use crate::content::npcs::*;
 use crate::game::actors::Places;
-use crate::game::characters::{Character, Condition, Lasting, Vitals};
+use crate::game::characters::{Birth, Calling, Condition, Lasting, Training, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::factions::{Band, FactionNews, Factions};
 use crate::game::items::{Items, Place, Put, make, roll_amount};
@@ -159,57 +159,177 @@ pub enum Reading {
 }
 
 /// Something that setting a fact sets off (retail `HandleFactChange`): a
-/// row of `assets/tables/facts.ron`, where each kind is described.
+/// row of `assets/tables/facts.ron`, where each kind is described. A row is
+/// of one of these groups, by what it is about; each group has one observer,
+/// which handles every row of it.
 #[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
 pub enum Consequence {
-    Fact(String, u8),
+    Flow(Flow),
+    Body(BodyAct),
+    Story(StoryAct),
+    Level(LevelAct),
+    Person(PersonAct),
+    Party(PartyAct),
+    Fit(FitAct),
+    Ending(EndAct),
+    Device(DeviceAct),
+    Shooting(Shooting),
+    Crush(Crush),
+    Watch(Watch),
+}
+
+/// Rows that hold more rows, or mark how the rest are read.
+#[derive(Clone, Debug, Deserialize)]
+pub enum Flow {
     If(Reading, Vec<Consequence>),
+    Stays,
+}
+
+impl From<Flow> for Consequence {
+    fn from(row: Flow) -> Self {
+        Consequence::Flow(row)
+    }
+}
+
+/// What befalls the one body a script or an animation is about.
+#[derive(Clone, Debug, Deserialize)]
+pub enum BodyAct {
+    BodyGone,
+    BodyScript(String),
+    BodyAsleep(u32),
+    BodyFacesParty,
+    Engages(u32),
+}
+
+impl From<BodyAct> for Consequence {
+    fn from(row: BodyAct) -> Self {
+        Consequence::Body(row)
+    }
+}
+
+/// What befalls the story itself: its facts, the factions, the party's training.
+#[derive(Clone, Debug, Deserialize)]
+pub enum StoryAct {
+    Fact(String, u8),
     Faction(Faction, Stance),
     FactionMet(Faction),
-    Group(u32, Stance),
     SkillFloor(Skill, u32),
     Raise(Attribute, u32, usize),
-    Returns,
+    FactNumbered(u16, u8),
+    RaceRemarks(Race, u16),
+    /// A faction's standing moves by so much.
+    FactionShift(Faction, i8),
+    /// These befall after so many hours of the game's time.
+    InHours(u64, Vec<Consequence>),
+}
+
+impl From<StoryAct> for Consequence {
+    fn from(row: StoryAct) -> Self {
+        Consequence::Story(row)
+    }
+}
+
+/// What befalls the level the party is in.
+#[derive(Clone, Debug, Deserialize)]
+pub enum LevelAct {
+    Group(u32, Stance),
     TriggerEnabled(String),
-    /// The person speaks to the party, handed what its hand holds.
-    Offers(u16),
-    /// While two named devices close on each other, what stands between
-    /// them is pushed along or crushed; crushing one of a species is worth
-    /// experience.
-    Crushes {
-        low: String,
-        high: String,
-        spared: u32,
-        prize: (u32, u32),
-    },
-    Shoots {
-        from: Vec<String>,
-        dice: (i32, i32, i32),
-    },
     FactionGone(Faction),
-    Breeds {
-        from: String,
-        to: String,
-    },
     GroupDrops(u32, u16),
-    AfterTalk(Vec<Consequence>),
-    WhenStill(String, Vec<Consequence>),
     LevelVarStep(String, i32),
     Travel(String),
     OneOf(Vec<Vec<Consequence>>),
-    Every(f32, Reading, Vec<Consequence>),
     SpawnItemAt(u16, (f32, f32, f32)),
-    FactNumbered(u16, u8),
-    Births(u32),
-    Tells(usize),
-    Message(i32),
-    Experience(u32),
-    Generator(String, bool),
-    Hurt(i32, i32, i32),
-    CastHere(u8, u32),
-    LoseHeld,
-    HandItem(u16),
     ParticleOff(String),
+    Trigger(String),
+    TriggerOnce(String),
+    TriggerOff(String),
+    LevelVar(String, i32),
+    LevelVarOr(String, i32),
+    SpawnItem(u16, String),
+    SpawnMonster {
+        species: u32,
+        at: String,
+        stance: Stance,
+        #[serde(default = "one")]
+        count: u32,
+        #[serde(default)]
+        faces: Option<String>,
+        #[serde(default)]
+        script: Option<String>,
+        /// How far from the spot, in the original's units.
+        #[serde(default)]
+        shift: (f32, f32, f32),
+    },
+    LookAt(f32, f32, f32),
+    GroupScript(u32, String),
+    GroupGone(u32),
+    GroupMoved(u32, String),
+    Unlock(String),
+    TriggerOn(String),
+    GroupShows(u32, String),
+    GroupShowsThen(u32, String, Vec<Consequence>),
+    GroupDies(u32),
+    Later(f32, Vec<Consequence>),
+    Sound(String),
+    Shake(f32, f32),
+    Particle(String),
+    CameraPath(String),
+    Fade(bool, f32, Vec<Consequence>),
+    LookAtSpot(String),
+    /// Every hostile monster of the level dies.
+    HostilesDie,
+}
+
+impl From<LevelAct> for Consequence {
+    fn from(row: LevelAct) -> Self {
+        Consequence::Level(row)
+    }
+}
+
+/// What befalls a named person, or the talk under way.
+#[derive(Clone, Debug, Deserialize)]
+pub enum PersonAct {
+    /// The person speaks to the party, handed what its hand holds.
+    Offers(u16),
+    Stock(u16, u16, u32, u32),
+    Unstock(u16, u16),
+    Mark(u16),
+    Gone(u16),
+    GoneUnmet(u16),
+    Stands(u16, u8, String),
+    Script(u16, String),
+    LeavesParty(u16),
+    /// The person of an id stands at a spot of a level, by its path.
+    StandsHere(u16, String, String),
+    Greets(u16),
+    EndTalk,
+    SelfGone,
+    FirstGone(Vec<u16>),
+    Moved(u16, String),
+    Says(u16, u16),
+    Shows(u16, String),
+    ShowsThen(u16, String, Vec<Consequence>),
+    GreetsOf(u32),
+    Drops(u16, u16, String),
+    Renamed(u16),
+    Restarts(u16),
+    MemberRemarks(u16, u16),
+}
+
+impl From<PersonAct> for Consequence {
+    fn from(row: PersonAct) -> Self {
+        Consequence::Person(row)
+    }
+}
+
+/// What befalls the party's own.
+#[derive(Clone, Debug, Deserialize)]
+pub enum PartyAct {
+    Returns,
+    AfterTalk(Vec<Consequence>),
+    Every(f32, Reading, Vec<Consequence>),
     /// One of the party is taken: not the first so many of its order, and
     /// of the rest one of those the takers want least, by profession (any
     /// not named counts 1).
@@ -226,89 +346,102 @@ pub enum Consequence {
     OthersWake,
     ChosenRemarks(u16),
     AfterBattle(Reading, Vec<Consequence>),
-    Ends,
-    Trigger(String),
-    TriggerOnce(String),
-    TriggerOff(String),
-    LevelVar(String, i32),
-    LevelVarOr(String, i32),
-    Stock(u16, u16, u32, u32),
-    Unstock(u16, u16),
-    Mark(u16),
-    Gone(u16),
-    GoneUnmet(u16),
-    Stands(u16, u8, String),
-    Script(u16, String),
-    SpawnItem(u16, String),
-    SpawnMonster {
-        species: u32,
-        at: String,
-        stance: Stance,
-        #[serde(default = "one")]
-        count: u32,
-        #[serde(default)]
-        faces: Option<String>,
-        #[serde(default)]
-        script: Option<String>,
-        /// How far from the spot, in the original's units.
-        #[serde(default)]
-        shift: (f32, f32, f32),
-    },
-    LeavesParty(u16),
-    /// The person of an id stands at a spot of a level, by its path.
-    StandsHere(u16, String, String),
-    Greets(u16),
-    LookAt(f32, f32, f32),
-    EndTalk,
-    GroupScript(u32, String),
-    GroupGone(u32),
-    SelfGone,
-    FirstGone(Vec<u16>),
-    Moved(u16, String),
-    GroupMoved(u32, String),
-    Says(u16, u16),
-    Unlock(String),
-    TriggerOn(String),
-    Shows(u16, String),
-    GroupShows(u32, String),
-    ShowsThen(u16, String, Vec<Consequence>),
-    GroupShowsThen(u32, String, Vec<Consequence>),
-    GroupDies(u32),
-    GreetsOf(u32),
-    Later(f32, Vec<Consequence>),
-    Sound(String),
-    Shake(f32, f32),
-    Particle(String),
-    CameraPath(String),
-    Fade(bool, f32, Vec<Consequence>),
-    LookAtSpot(String),
-    BodyGone,
-    BodyScript(String),
-    BodyAsleep(u32),
-    BodyFacesParty,
-    Engages(u32),
-    Stays,
-    Drops(u16, u16, String),
-    Renamed(u16),
-    Restarts(u16),
-    MemberRemarks(u16, u16),
-    RaceRemarks(Race, u16),
-    /// A faction's standing moves by so much.
-    FactionShift(Faction, i8),
+}
+
+impl From<PartyAct> for Consequence {
+    fn from(row: PartyAct) -> Self {
+        Consequence::Party(row)
+    }
+}
+
+/// What those of the party fit to speak say, and the chosen one freed.
+#[derive(Clone, Debug, Deserialize)]
+pub enum FitAct {
     /// The chosen one is smitten no longer.
     ChosenFreed,
     /// Every member fit to speaks.
     AllRemark(u16),
     /// When more than two are fit to, one of them other than a person
     /// speaks.
-    AnotherRemarks {
-        but: u16,
-        event: u16,
-    },
-    /// Every hostile monster of the level dies.
-    HostilesDie,
-    /// These befall after so many hours of the game's time.
-    InHours(u64, Vec<Consequence>),
+    AnotherRemarks { but: u16, event: u16 },
+}
+
+impl From<FitAct> for Consequence {
+    fn from(row: FitAct) -> Self {
+        Consequence::Fit(row)
+    }
+}
+
+/// The game ends.
+#[derive(Clone, Debug, Deserialize)]
+pub enum EndAct {
+    Ends,
+}
+
+impl From<EndAct> for Consequence {
+    fn from(row: EndAct) -> Self {
+        Consequence::Ending(row)
+    }
+}
+
+/// What a device of a level does to the party and the level.
+#[derive(Clone, Debug, Deserialize)]
+pub enum DeviceAct {
+    Breeds { from: String, to: String },
+    Births(u32),
+    Tells(usize),
+    Message(i32),
+    Experience(u32),
+    Generator(String, bool),
+    Hurt(i32, i32, i32),
+    CastHere(u8, u32),
+    LoseHeld,
+    HandItem(u16),
+}
+
+impl From<DeviceAct> for Consequence {
+    fn from(row: DeviceAct) -> Self {
+        Consequence::Device(row)
+    }
+}
+
+/// Something shoots at the party.
+#[derive(Clone, Debug, Deserialize)]
+pub enum Shooting {
+    Shoots { from: Vec<String>, dice: (i32, i32, i32) },
+}
+
+impl From<Shooting> for Consequence {
+    fn from(row: Shooting) -> Self {
+        Consequence::Shooting(row)
+    }
+}
+
+/// Two devices close on what stands between them.
+#[derive(Clone, Debug, Deserialize)]
+pub enum Crush {
+    /// While two named devices close on each other, what stands between
+    /// them is pushed along or crushed; crushing one of a species is worth
+    /// experience.
+    Crushes { low: String, high: String, spared: u32, prize: (u32, u32) },
+}
+
+impl From<Crush> for Consequence {
+    fn from(row: Crush) -> Self {
+        Consequence::Crush(row)
+    }
+}
+
+/// Something waits for a device to come to rest.
+#[derive(Clone, Debug, Deserialize)]
+pub enum Watch {
+    WhenStill(String, Vec<Consequence>),
+}
+
+impl From<Watch> for Consequence {
+    fn from(row: Watch) -> Self {
+        Consequence::Watch(row)
+    }
 }
 
 /// When a fact's consequences follow: as it is set, as it is cleared, or
@@ -368,6 +501,30 @@ pub struct FactSet {
 #[derive(Event, Clone, Debug)]
 pub(super) struct Befalls(pub(super) Consequence);
 
+/// A row of one group befalls: what its one observer carries out.
+#[derive(Event, Clone, Debug)]
+pub(super) struct Befell<T>(pub(super) T);
+
+/// Each row goes to the observer of its group. A row about one body
+/// befalls only where a body is at hand ([`Bodies::befall`]); a row that
+/// only marks how the rest are read does nothing of itself.
+pub(super) fn dispatch(befalls: On<Befalls>, mut commands: Commands) {
+    match befalls.0.clone() {
+        Consequence::Flow(row) => commands.trigger(Befell(row)),
+        Consequence::Story(row) => commands.trigger(Befell(row)),
+        Consequence::Level(row) => commands.trigger(Befell(row)),
+        Consequence::Person(row) => commands.trigger(Befell(row)),
+        Consequence::Party(row) => commands.trigger(Befell(row)),
+        Consequence::Fit(row) => commands.trigger(Befell(row)),
+        Consequence::Ending(row) => commands.trigger(Befell(row)),
+        Consequence::Device(row) => commands.trigger(Befell(row)),
+        Consequence::Shooting(row) => commands.trigger(Befell(row)),
+        Consequence::Crush(row) => commands.trigger(Befell(row)),
+        Consequence::Watch(row) => commands.trigger(Befell(row)),
+        Consequence::Body(_) => {}
+    }
+}
+
 /// The party is told something, by the number of one of the game's
 /// strings.
 #[derive(Message, Clone, Copy, Debug)]
@@ -412,7 +569,7 @@ fn unfold<'a>(
     pending.reverse();
     while let Some(row) = pending.pop() {
         match row {
-            Consequence::If(reading, rows) => {
+            Consequence::Flow(Flow::If(reading, rows)) => {
                 if readings.answer(reading, fact, story, factions) != 0 {
                     pending.extend(rows.iter().rev());
                 }
@@ -439,22 +596,22 @@ impl Bodies<'_, '_> {
     fn befall(&mut self, body: Entity, rows: &[Consequence]) {
         for row in rows {
             match row {
-                Consequence::BodyGone => self.commands.entity(body).despawn(),
-                Consequence::BodyScript(script) => {
+                Consequence::Body(BodyAct::BodyGone) => self.commands.entity(body).despawn(),
+                Consequence::Body(BodyAct::BodyScript(script)) => {
                     self.commands.entity(body).insert(Script(script.clone()));
                 }
-                Consequence::BodyAsleep(rounds) => {
+                Consequence::Body(BodyAct::BodyAsleep(rounds)) => {
                     if let Ok(mut conditions) = self.conditions.get_mut(body) {
                         conditions.afflict(Condition::Asleep, Lasting::Rounds(*rounds));
                     }
                 }
-                Consequence::BodyFacesParty => {
+                Consequence::Body(BodyAct::BodyFacesParty) => {
                     let from = self.places.of(body).feet;
                     if let Some(turned) = facing(from, self.places.of(*self.party).feet) {
                         self.commands.entity(body).insert(Rotation(turned));
                     }
                 }
-                Consequence::Engages(species) => {
+                Consequence::Body(BodyAct::Engages(species)) => {
                     let first = self.monsters.iter().find(|(_, m)| m.species == *species);
                     if let Some((monster, _)) = first {
                         self.commands.trigger(Provocation { monster });
@@ -501,13 +658,14 @@ pub(super) fn faded(faded: On<Faded>, fades: Query<&Fading>, mut commands: Comma
 /// Something that befalls only if a reading holds, wherever it was put off
 /// to: asked of the world as it is now.
 pub(super) fn befalls_if(
-    befalls: On<Befalls>,
+    befalls: On<Befell<Flow>>,
     readings: Readings,
     (story, factions): (Res<StoryFacts>, Res<Factions>),
     mut commands: Commands,
 ) {
-    if let Consequence::If(..) = &befalls.0 {
-        for row in unfold(std::iter::once(&befalls.0), None, &readings, &story, &factions) {
+    if let Flow::If(..) = &befalls.0 {
+        let row = Consequence::Flow(befalls.0.clone());
+        for row in unfold(std::iter::once(&row), None, &readings, &story, &factions) {
             commands.trigger(Befalls(row.clone()));
         }
     }
@@ -559,16 +717,12 @@ pub(super) fn taken_up(
 }
 
 /// Every hostile monster of the level dies, as anything killed does.
-pub(super) fn hostiles_die(
-    befalls: On<Befalls>,
+fn hostiles_die(
     mut monsters: Query<
         (&mut Vitals, &crate::game::world::hostility::Side),
         (With<Monster>, Without<crate::game::characters::Dead>),
     >,
 ) {
-    if !matches!(befalls.0, Consequence::HostilesDie) {
-        return;
-    }
     for (mut vitals, side) in &mut monsters {
         if side.own() == Stance::Hostile {
             vitals.slay(None);
@@ -627,10 +781,14 @@ pub(super) fn come_due(
 /// faction put in a band or marked as met, a skill raised to a floor, an
 /// attribute raised.
 pub(super) fn befalls_the_story(
-    befalls: On<Befalls>,
+    befalls: On<Befell<StoryAct>>,
     (mut story, mut factions): (ResMut<StoryFacts>, ResMut<Factions>),
     mut members: Query<
-        (&mut Character, Has<crate::game::actors::CanFight>),
+        (
+            (&mut crate::game::actors::Abilities, &mut Training),
+            (&Calling, &Birth),
+            Has<crate::game::actors::CanFight>,
+        ),
         Without<crate::game::characters::Dead>,
     >,
     (roster, levels): (Single<&PartyRoster>, Query<&Level>),
@@ -644,18 +802,18 @@ pub(super) fn befalls_the_story(
 ) {
     match &befalls.0 {
         // One the game's records do not name, by its number.
-        Consequence::FactNumbered(number, value) => {
+        StoryAct::FactNumbered(number, value) => {
             let level = levels.iter().next().map_or("", |level| level.path.as_str());
             story.set(FactId(*number), *value, &content.facts, level);
             commands.trigger(FactSet { fact: FactId(*number), value: *value });
         }
-        Consequence::Fact(name, value) => {
+        StoryAct::Fact(name, value) => {
             let Some(other) = content.facts.0.iter().find(|d| &d.symbol == name) else { return };
             let level = levels.iter().next().map_or("", |level| level.path.as_str());
             story.set(other.id, *value, &content.facts, level);
             commands.trigger(FactSet { fact: other.id, value: *value });
         }
-        Consequence::Faction(faction, stance) => {
+        StoryAct::Faction(faction, stance) => {
             let band = match stance {
                 Stance::Hostile => Band::Hostile,
                 Stance::Neutral => Band::Neutral,
@@ -663,46 +821,45 @@ pub(super) fn befalls_the_story(
             };
             news.write_batch(factions.set_band(*faction, band, clock.ms));
         }
-        Consequence::FactionMet(faction) => factions.encounter(*faction as i32),
-        Consequence::FactionShift(faction, by) => {
+        StoryAct::FactionMet(faction) => factions.encounter(*faction as i32),
+        StoryAct::FactionShift(faction, by) => {
             news.write_batch(factions.adjust(*faction, *by, clock.ms));
         }
-        Consequence::InHours(hours, rows) => {
+        StoryAct::InHours(hours, rows) => {
             let ms = clock.ms + hours * crate::game::time::HOUR_MS;
             commands.spawn(DueAt { ms, rows: rows.clone() });
         }
         // Each member awake gains up to so much, a hundred at most.
-        Consequence::Raise(attribute, by, tells) => {
+        StoryAct::Raise(attribute, by, tells) => {
             for member in roster.iter() {
-                if let Ok((mut character, true)) = members.get_mut(member) {
-                    let base = character.attributes[*attribute];
-                    character.attributes[*attribute] = base + (*by).min(100.max(base) - base);
+                if let Ok(((mut abilities, _), _, true)) = members.get_mut(member) {
+                    let base = abilities.0[*attribute];
+                    abilities.0[*attribute] = base + (*by).min(100.max(base) - base);
                 }
             }
             told.write(StoryTold { string: *tells });
         }
         // Each member of a race who is awake says something.
-        Consequence::RaceRemarks(race, event) => {
+        StoryAct::RaceRemarks(race, event) => {
             for member in roster.iter() {
                 if members
                     .get(member)
-                    .is_ok_and(|(character, can_fight)| character.race == *race && can_fight)
+                    .is_ok_and(|(_, (_, birth), can_fight)| birth.race == *race && can_fight)
                 {
                     remarks.write(PartyRemark { event: *event, after: 0.0, speaker: Some(member) });
                 }
             }
         }
-        Consequence::SkillFloor(skill, points) => {
+        StoryAct::SkillFloor(skill, points) => {
             for member in roster.iter() {
-                if let Ok((mut character, _)) = members.get_mut(member)
-                    && character.skill_available(*skill)
-                    && character.skill_points[*skill] < *points
+                if let Ok(((abilities, mut training), (calling, _), _)) = members.get_mut(member)
+                    && crate::game::characters::skill_available(calling, &abilities, *skill)
+                    && training.0[*skill] < *points
                 {
-                    character.skill_points[*skill] = *points;
+                    training.0[*skill] = *points;
                 }
             }
         }
-        _ => {}
     }
 }
 
@@ -712,7 +869,7 @@ pub(super) fn befalls_the_story(
 /// leaves or plays an animation; an item appearing at a spot; the party
 /// made to look somewhere.
 pub(super) fn befalls_the_level(
-    befalls: On<Befalls>,
+    befalls: On<Befell<LevelAct>>,
     monsters: Query<(Entity, &Monster, &GroupMember)>,
     leading: Query<(), With<crate::game::world::identify::Leads>>,
     positions: Query<&Position>,
@@ -731,37 +888,38 @@ pub(super) fn befalls_the_level(
         commands.queue(move |world: &mut World| triggers::bid(world, bidding));
     };
     match &befalls.0 {
-        Consequence::Trigger(name) => bid(Bidding::Run(name.clone())),
-        Consequence::TriggerOnce(name) => bid(Bidding::RunOnce(name.clone())),
-        Consequence::TriggerOff(name) => bid(Bidding::SwitchOff(name.clone())),
-        Consequence::TriggerOn(name) => bid(Bidding::SwitchOn(name.clone())),
-        Consequence::TriggerEnabled(name) => bid(Bidding::Enable(name.clone())),
-        Consequence::LevelVarStep(name, count) => {
+        LevelAct::HostilesDie => commands.run_system_cached(hostiles_die),
+        LevelAct::Trigger(name) => bid(Bidding::Run(name.clone())),
+        LevelAct::TriggerOnce(name) => bid(Bidding::RunOnce(name.clone())),
+        LevelAct::TriggerOff(name) => bid(Bidding::SwitchOff(name.clone())),
+        LevelAct::TriggerOn(name) => bid(Bidding::SwitchOn(name.clone())),
+        LevelAct::TriggerEnabled(name) => bid(Bidding::Enable(name.clone())),
+        LevelAct::LevelVarStep(name, count) => {
             bid(Bidding::Step(name.as_str().into(), *count));
         }
-        Consequence::Unlock(name) => bid(Bidding::Unlock(name.clone())),
-        Consequence::LevelVar(name, value) => bid(Bidding::Set(name.as_str().into(), *value)),
-        Consequence::LevelVarOr(name, bits) => {
+        LevelAct::Unlock(name) => bid(Bidding::Unlock(name.clone())),
+        LevelAct::LevelVar(name, value) => bid(Bidding::Set(name.as_str().into(), *value)),
+        LevelAct::LevelVarOr(name, bits) => {
             bid(Bidding::SetBits(name.as_str().into(), *bits));
         }
-        Consequence::Group(species, stance) => {
+        LevelAct::Group(species, stance) => {
             if let Some((_, _, member)) = first(species) {
                 commands.trigger(Stand { group: member.0, stance: Some(*stance) });
             }
         }
-        Consequence::GroupScript(species, script) => {
+        LevelAct::GroupScript(species, script) => {
             if let Some((leader, ..)) = first(species) {
                 commands.entity(leader).insert(Script(script.clone()));
             }
         }
-        Consequence::GroupGone(species) => {
+        LevelAct::GroupGone(species) => {
             if let Some((leader, ..)) = first(species) {
                 commands.entity(leader).despawn();
             }
         }
         // What it leaves lies where it stands, not yet known for what it
         // is.
-        Consequence::GroupDrops(species, item) => {
+        LevelAct::GroupDrops(species, item) => {
             let at = first(species).and_then(|(leader, ..)| positions.get(leader).ok());
             if let (Some(at), Some(level)) = (at, spots.level()) {
                 let definition = &content.items[ItemId(*item)];
@@ -771,7 +929,7 @@ pub(super) fn befalls_the_level(
             }
         }
         // Every group of a faction's kind leaves the level.
-        Consequence::FactionGone(faction) => {
+        LevelAct::FactionGone(faction) => {
             for (body, monster, member) in &monsters {
                 if content.species[monster.species].faction == *faction as i32 {
                     commands.entity(body).try_despawn();
@@ -779,34 +937,34 @@ pub(super) fn befalls_the_level(
                 }
             }
         }
-        Consequence::GroupMoved(species, spot) => {
+        LevelAct::GroupMoved(species, spot) => {
             if let (Some((leader, ..)), Some(at)) = (first(species), spots.named(spot)) {
                 commands.entity(leader).insert(Position(at));
             }
         }
-        Consequence::GroupShows(species, cycle) => {
+        LevelAct::GroupShows(species, cycle) => {
             if let Some((body, ..)) = first(species) {
                 commands.entity(body).insert(Cycle(cycle.clone()));
             }
         }
-        Consequence::GroupShowsThen(species, cycle, rows) => {
+        LevelAct::GroupShowsThen(species, cycle, rows) => {
             if let Some((body, ..)) = first(species) {
                 commands.entity(body).insert((Cycle(cycle.clone()), After(rows.clone())));
             }
         }
         // Its leader dies, as anything killed does.
-        Consequence::GroupDies(species) => {
+        LevelAct::GroupDies(species) => {
             if let Some((leader, ..)) = first(species) {
                 commands.entity(leader).entry::<Vitals>().and_modify(|mut vitals| {
                     vitals.slay(None);
                 });
             }
         }
-        Consequence::Sound(path) => {
+        LevelAct::Sound(path) => {
             let path = format!("data/sound/{}", path.to_lowercase());
             effects.write(TriggerEffect::Sound { path, volume: 1.0, at: None });
         }
-        Consequence::Shake(seconds, intensity) => {
+        LevelAct::Shake(seconds, intensity) => {
             effects.write(TriggerEffect::Shake {
                 seconds: *seconds,
                 intensity: *intensity,
@@ -814,7 +972,7 @@ pub(super) fn befalls_the_level(
             });
         }
         // A named particle system of the level starts over.
-        Consequence::ParticleOff(name) => {
+        LevelAct::ParticleOff(name) => {
             let named = spots.definition().and_then(|definition| {
                 definition.particles.iter().position(|p| p.name.eq_ignore_ascii_case(name))
             });
@@ -824,7 +982,7 @@ pub(super) fn befalls_the_level(
                 }
             }
         }
-        Consequence::Particle(name) => {
+        LevelAct::Particle(name) => {
             let named = spots.definition().and_then(|definition| {
                 definition.particles.iter().position(|p| p.name.eq_ignore_ascii_case(name))
             });
@@ -835,7 +993,7 @@ pub(super) fn befalls_the_level(
             }
         }
         // The party is flown along a named camera path of the level.
-        Consequence::CameraPath(name) => {
+        LevelAct::CameraPath(name) => {
             let path = spots.definition().and_then(|definition| {
                 definition.camera_paths.iter().position(|p| p.name.eq_ignore_ascii_case(name))
             });
@@ -843,11 +1001,11 @@ pub(super) fn befalls_the_level(
                 commands.entity(level).insert(PendingPartyMove(PartyMove::Fly(path)));
             }
         }
-        Consequence::Fade(dark, seconds, rows) => {
+        LevelAct::Fade(dark, seconds, rows) => {
             commands.spawn(Fading { dark: *dark, seconds: *seconds, then: rows.clone() });
         }
         // The party goes in by an entrance, of this level or another.
-        Consequence::Travel(entrance) => {
+        LevelAct::Travel(entrance) => {
             commands.queue({
                 let entrance = entrance.clone();
                 move |world: &mut World| {
@@ -856,7 +1014,7 @@ pub(super) fn befalls_the_level(
             });
         }
         // One of these, each as likely as another.
-        Consequence::OneOf(choices) => {
+        LevelAct::OneOf(choices) => {
             if !choices.is_empty() {
                 let chosen = &choices[rng.below(choices.len() as u32) as usize];
                 for row in chosen {
@@ -864,27 +1022,28 @@ pub(super) fn befalls_the_level(
                 }
             }
         }
-        Consequence::Later(seconds, rows) => {
+        LevelAct::Later(seconds, rows) => {
             let timer = Timer::from_seconds(*seconds, TimerMode::Once);
             commands.spawn(Due { timer, rows: rows.clone() });
         }
-        Consequence::LookAtSpot(spot) => {
+        LevelAct::LookAtSpot(spot) => {
             if let Some(at) = spots.named(spot) {
                 commands.trigger(LookAt { at });
             }
         }
         // The point is given in the original's units.
-        Consequence::LookAt(x, y, z) => {
+        LevelAct::LookAt(x, y, z) => {
             let at = Vec3::new(*x, *y, -*z) / crate::content::UNITS_PER_METRE;
             commands.trigger(LookAt { at });
         }
         // One of a species that is a person is that person, stood there.
-        Consequence::SpawnMonster { species, at: spot, stance, count, faces, script, shift } => {
+        LevelAct::SpawnMonster { species, at: spot, stance, count, faces, script, shift } => {
             let shift = Vec3::new(shift.0, shift.1, -shift.2) / crate::content::UNITS_PER_METRE;
             let person = content.species.kind(*species).and_then(|kind| kind.npc);
             match (person, spots.path()) {
                 (Some(id), Some(map)) => {
-                    commands.trigger(Befalls(Consequence::StandsHere(id.0, map, spot.clone())));
+                    commands
+                        .trigger(Befalls(PersonAct::StandsHere(id.0, map, spot.clone()).into()));
                 }
                 _ => {
                     commands.spawn(Coming {
@@ -900,7 +1059,7 @@ pub(super) fn befalls_the_level(
             }
         }
         // At a point given in the original's units.
-        Consequence::SpawnItemAt(item, (x, y, z)) => {
+        LevelAct::SpawnItemAt(item, (x, y, z)) => {
             if let Some(level) = spots.level() {
                 let at = Vec3::new(*x, *y, -*z) / crate::content::UNITS_PER_METRE;
                 let definition = &content.items[ItemId(*item)];
@@ -909,7 +1068,7 @@ pub(super) fn befalls_the_level(
                 commands.trigger(Put { item, at: Place::Ground { level, at } });
             }
         }
-        Consequence::SpawnItem(item, spot) => {
+        LevelAct::SpawnItem(item, spot) => {
             if let (Some(at), Some(level)) = (spots.named(spot), spots.level()) {
                 let definition = &content.items[ItemId(*item)];
                 let amount = roll_amount(definition, &mut rng, true);
@@ -917,7 +1076,6 @@ pub(super) fn befalls_the_level(
                 commands.trigger(Put { item, at: Place::Ground { level, at } });
             }
         }
-        _ => {}
     }
 }
 
@@ -925,8 +1083,8 @@ pub(super) fn befalls_the_level(
 /// follow a script, speak up or play an animation; a merchant is to get
 /// something; the conversation under way ends.
 pub(super) fn befalls_someone(
-    befalls: On<Befalls>,
-    people: Query<Person>,
+    befalls: On<Befell<PersonAct>>,
+    (people, who): (Query<Person>, People),
     conversations: Query<(Entity, &Conversation)>,
     (spots, places): (Spots, Places),
     (content, clock, mut rng): (Res<Catalogs>, Res<GameClock>, ResMut<GameRng>),
@@ -936,24 +1094,24 @@ pub(super) fn befalls_someone(
 ) {
     let of_kind = |kind: &u16, people: &Query<Person>| one_of_kind(*kind, people, &content);
     match &befalls.0 {
-        Consequence::EndTalk => {
+        PersonAct::EndTalk => {
             for (conversation, _) in &conversations {
                 commands.entity(conversation).despawn();
             }
         }
-        Consequence::Gone(kind) => {
+        PersonAct::Gone(kind) => {
             if let Some((actor, _)) = of_kind(kind, &people) {
                 leave(actor, &people, &mut commands);
             }
         }
-        Consequence::GoneUnmet(kind) => {
+        PersonAct::GoneUnmet(kind) => {
             if let Some((actor, _)) = of_kind(kind, &people)
                 && people.get(actor).is_ok_and(|person| person.npc.greeting_pending)
             {
                 leave(actor, &people, &mut commands);
             }
         }
-        Consequence::FirstGone(kinds) => {
+        PersonAct::FirstGone(kinds) => {
             let standing = kinds.iter().find_map(|kind| match of_kind(kind, &people) {
                 Some((actor, Some(_))) => Some(actor),
                 _ => None,
@@ -964,7 +1122,7 @@ pub(super) fn befalls_someone(
         }
         // Something of theirs is left where they stand, or at a spot if
         // they stand nowhere.
-        Consequence::Drops(kind, item, spot) => {
+        PersonAct::Drops(kind, item, spot) => {
             let body = of_kind(kind, &people).and_then(|(_, body)| body);
             let at = body.map(|body| places.of(body).feet).or_else(|| spots.named(spot));
             if let (Some(at), Some(level)) = (at, spots.level()) {
@@ -974,28 +1132,28 @@ pub(super) fn befalls_someone(
                 commands.trigger(Put { item, at: Place::Ground { level, at } });
             }
         }
-        Consequence::SelfGone => {
+        PersonAct::SelfGone => {
             if let Some((_, talk)) = conversations.iter().next() {
                 leave(talk.actor, &people, &mut commands);
             }
         }
-        Consequence::Moved(kind, spot) => {
+        PersonAct::Moved(kind, spot) => {
             if let (Some((_, Some(body))), Some(at)) = (of_kind(kind, &people), spots.named(spot)) {
                 commands.entity(body).insert(Position(at));
             }
         }
-        Consequence::Script(kind, script) => {
+        PersonAct::Script(kind, script) => {
             if let Some((_, Some(body))) = of_kind(kind, &people) {
                 commands.entity(body).insert(Script(script.clone()));
             }
         }
-        Consequence::Says(kind, quote) => {
+        PersonAct::Says(kind, quote) => {
             if let Some((actor, _)) = of_kind(kind, &people) {
                 commands.trigger(Begin { actor, quote: Some(*quote), with_held: false });
             }
         }
         // One who is not there yet greets the party as they arrive.
-        Consequence::Greets(kind) => match of_kind(kind, &people) {
+        PersonAct::Greets(kind) => match of_kind(kind, &people) {
             Some((actor, Some(_))) => {
                 commands.trigger(Begin { actor, quote: None, with_held: false })
             }
@@ -1004,36 +1162,35 @@ pub(super) fn befalls_someone(
             }
             None => {}
         },
-        Consequence::Offers(kind) => {
+        PersonAct::Offers(kind) => {
             if let Some((actor, _)) = of_kind(kind, &people) {
                 commands.trigger(Begin { actor, quote: None, with_held: true });
             }
         }
         // They are of the party no longer, and stand nowhere.
-        Consequence::LeavesParty(kind) => {
+        PersonAct::LeavesParty(kind) => {
             if let Some((actor, _)) = of_kind(kind, &people) {
                 commands.queue(move |world: &mut World| {
                     let _ = world.run_system_cached_with(super::recruit::dismiss, (actor, false));
                 });
             }
         }
-        Consequence::Shows(kind, cycle) => {
+        PersonAct::Shows(kind, cycle) => {
             if let Some((_, Some(body))) = of_kind(kind, &people) {
                 commands.entity(body).insert(Cycle(cycle.clone()));
             }
         }
-        Consequence::ShowsThen(kind, cycle, rows) => {
+        PersonAct::ShowsThen(kind, cycle, rows) => {
             if let Some((_, Some(body))) = of_kind(kind, &people) {
                 commands.entity(body).insert((Cycle(cycle.clone()), After(rows.clone())));
             }
         }
         // The person whose species this is greets the party, as they
         // arrive if they are not there yet.
-        Consequence::GreetsOf(species) => {
+        PersonAct::GreetsOf(species) => {
             let id = content.species.kind(*species).and_then(|kind| kind.npc);
             let found = people.iter().find(|person| Some(person.id.0) == id);
-            match found.map(|person| (person.entity, person.bodies.is_some_and(|b| !b.is_empty())))
-            {
+            match found.map(|person| (person.entity, person.body.is_some())) {
                 Some((actor, true)) => {
                     commands.trigger(Begin { actor, quote: None, with_held: false })
                 }
@@ -1043,14 +1200,14 @@ pub(super) fn befalls_someone(
                 None => {}
             }
         }
-        Consequence::Mark(kind) => {
+        PersonAct::Mark(kind) => {
             if let Some((actor, _)) = of_kind(kind, &people) {
                 commands.entity(actor).insert(Marked);
             }
         }
         // They go by their other name from now on: its lines and voice are
         // theirs (retail `ReloadNpcScriptResources`).
-        Consequence::Renamed(kind) => {
+        PersonAct::Renamed(kind) => {
             let renamed = of_kind(kind, &people).and_then(|(actor, _)| {
                 let id = people.get(actor).ok()?.id.0;
                 Some((actor, id, alias_of(i32::from(*kind))?, assets.renamed.get(&id)?.clone()))
@@ -1061,7 +1218,7 @@ pub(super) fn befalls_someone(
             }
         }
         // Whatever the one spoken with was saying, they say this instead.
-        Consequence::Restarts(quote) => {
+        PersonAct::Restarts(quote) => {
             for (conversation, _) in &conversations {
                 let quote = *quote;
                 commands.entity(conversation).entry::<TalkScript>().and_modify(
@@ -1072,42 +1229,41 @@ pub(super) fn befalls_someone(
                 commands.trigger(Continue { conversation });
             }
         }
-        Consequence::MemberRemarks(kind, event) => {
-            if let Some((actor, _)) = of_kind(kind, &people) {
-                remarks.write(PartyRemark { event: *event, after: 0.0, speaker: Some(actor) });
+        PersonAct::MemberRemarks(kind, event) => {
+            let member = of_kind(kind, &people).and_then(|(person, _)| who.member(person));
+            if let Some(member) = member {
+                remarks.write(PartyRemark { event: *event, after: 0.0, speaker: Some(member) });
             }
         }
-        Consequence::StandsHere(id, map, spot) => {
+        PersonAct::StandsHere(id, map, spot) => {
             let found = people.iter().find(|person| person.id.0.0 == *id).map(|p| p.entity);
             if let Some(actor) = found {
                 leave(actor, &people, &mut commands);
                 commands
                     .entity(actor)
-                    .remove::<Gone>()
-                    .insert(Post { map: map.clone(), spot: spot.clone() });
+                    .insert(Whereabouts::Posted { map: map.clone(), spot: spot.clone() });
             }
         }
         // They leave wherever they stood and stand there instead, when
         // the party is next in that level.
-        Consequence::Stands(kind, level, spot) => {
+        PersonAct::Stands(kind, level, spot) => {
             let map = crate::content::levels::LEVELS.get(usize::from(*level));
             if let (Some((actor, _)), Some(map)) = (of_kind(kind, &people), map) {
                 leave(actor, &people, &mut commands);
                 commands
                     .entity(actor)
-                    .remove::<Gone>()
-                    .insert(Post { map: map.path(), spot: spot.clone() });
+                    .insert(Whereabouts::Posted { map: map.path(), spot: spot.clone() });
             }
         }
         // The original counts the wait in seconds.
-        Consequence::Stock(kind, item, units, after) => {
+        PersonAct::Stock(kind, item, units, after) => {
             if let Some((merchant, _)) = of_kind(kind, &people) {
                 let due = clock.ms + u64::from(*after) * 1000;
                 commands.spawn(Delivery { merchant, item: ItemId(*item), units: *units, due });
             }
         }
         // What they were yet to get, they do not.
-        Consequence::Unstock(kind, item) => {
+        PersonAct::Unstock(kind, item) => {
             if let Some((merchant, _)) = of_kind(kind, &people) {
                 let due = deliveries.iter().filter(|(_, delivery)| {
                     delivery.merchant == merchant && delivery.item == ItemId(*item)
@@ -1117,7 +1273,6 @@ pub(super) fn befalls_someone(
                 }
             }
         }
-        _ => {}
     }
 }
 
@@ -1134,7 +1289,7 @@ fn depart(
     let Ok(kind) = people.get(actor).map(|person| content.npcs[person.id.0].kind) else { return };
     let rows = u16::try_from(kind).ok().and_then(|kind| FACTS.marked.get(&kind));
     let rows = unfold(rows.into_iter().flatten(), None, readings, story, factions);
-    let stays = rows.iter().any(|row| matches!(row, Consequence::Stays));
+    let stays = rows.iter().any(|row| matches!(row, Consequence::Flow(Flow::Stays)));
     for row in rows {
         commands.trigger(Befalls(row.clone()));
     }
@@ -1178,7 +1333,7 @@ pub(super) fn marked_slip_away(
     }
     let eye = places.of(*party).eye;
     for actor in &marked {
-        let body = people.get(actor).ok().and_then(|person| person.bodies?.first().copied());
+        let body = people.get(actor).ok().and_then(|person| person.body.map(|body| body.0));
         let seen = body.and_then(|body| Some((body, bodies.get(body).ok()?))).is_some_and(
             |(body, monster)| in_view((eye, far), monster, places.of(body).feet, &obstacles),
         );
@@ -1194,7 +1349,8 @@ pub(super) struct Person {
     entity: Entity,
     id: &'static ActorId,
     npc: &'static Npc,
-    bodies: Option<&'static NpcBodies>,
+    /// The body they stand in, in whatever level.
+    body: Option<&'static Embodied>,
 }
 
 /// The one of a kind, by the kind their record gives, and the body they
@@ -1205,15 +1361,15 @@ pub(super) fn one_of_kind(
     content: &Catalogs,
 ) -> Option<(Entity, Option<Entity>)> {
     let found = people.iter().find(|person| content.npcs[person.id.0].kind == i32::from(kind));
-    found.map(|person| (person.entity, person.bodies.and_then(|bodies| bodies.first().copied())))
+    found.map(|person| (person.entity, person.body.map(|body| body.0)))
 }
 
 /// Someone leaves where they stood, for good.
 fn leave(actor: Entity, people: &Query<Person>, commands: &mut Commands) {
     if let Ok(person) = people.get(actor) {
-        commands.entity(actor).insert(Gone);
-        for body in person.bodies.into_iter().flat_map(|bodies| bodies.iter()) {
-            commands.entity(body).despawn();
+        commands.entity(actor).insert(Whereabouts::Gone);
+        if let Some(body) = person.body {
+            commands.entity(body.0).despawn();
         }
     }
 }
@@ -1256,12 +1412,13 @@ pub struct Readings<'w, 's> {
     members: Query<
         'w,
         's,
-        (&'static Character, Has<crate::game::actors::CanFight>, Option<&'static ActorId>),
+        (&'static Birth, Has<crate::game::actors::CanFight>, Option<&'static CompanionOf>),
     >,
+    ids: Query<'w, 's, &'static ActorId>,
     held: Items<'w, 's>,
-    slain: Query<'w, 's, &'static ActorId, With<Killed>>,
+    whereabouts: Query<'w, 's, (&'static ActorId, &'static Whereabouts)>,
     chosen: Query<'w, 's, (), (With<super::scenes::Chosen>, With<PartyMember>)>,
-    standing: Query<'w, 's, (&'static ActorId, &'static NpcBodies)>,
+    standing: Query<'w, 's, &'static ActorId, With<Embodied>>,
     names: Query<'w, 's, &'static triggers::DeviceNames>,
     doors: Query<'w, 's, &'static triggers::DoorState>,
     parts: Query<'w, 's, &'static Children>,
@@ -1334,13 +1491,14 @@ impl Readings<'_, '_> {
             }),
             Reading::Friendly(faction) => factions.band(*faction as i32) == Band::Friendly,
             Reading::Joined(npc) => {
-                members().any(|(_, can_fight, id)| id.is_some_and(|id| id.0.0 == *npc) && can_fight)
+                let is = |of: &CompanionOf| self.ids.get(of.0).is_ok_and(|id| id.0.0 == *npc);
+                members().any(|(_, can_fight, of)| of.is_some_and(is) && can_fight)
             }
             Reading::Companions(count) => {
                 members().filter(|(_, _, id)| id.is_some()).count() == *count
             }
             Reading::FitMember(race) => {
-                members().any(|(character, can_fight, _)| character.race == *race && can_fight)
+                members().any(|(birth, can_fight, _)| birth.race == *race && can_fight)
             }
             Reading::Not(reading) => !so(reading),
             Reading::All(readings) => readings.iter().all(so),
@@ -1380,9 +1538,9 @@ impl Readings<'_, '_> {
             }
             Reading::HandEmpty => self.held.held(self.party.0).is_none(),
             Reading::Here(species) => self.bodies.iter().any(|body| body.species == *species),
-            Reading::Stands(kind) => self.standing.iter().any(|(id, bodies)| {
-                self.content.npcs[id.0].kind == i32::from(*kind) && !bodies.is_empty()
-            }),
+            Reading::Stands(kind) => {
+                self.standing.iter().any(|id| self.content.npcs[id.0].kind == i32::from(*kind))
+            }
             Reading::Units(item, count) => {
                 let (party, roster) = *self.party;
                 let held = roster
@@ -1410,9 +1568,10 @@ impl Readings<'_, '_> {
                 let name = name.as_str().into();
                 self.levels.iter().any(|(_, state)| state.value(&name) == *value)
             }
-            Reading::Killed(kind) => {
-                self.slain.iter().any(|id| self.content.npcs[id.0].kind == i32::from(*kind))
-            }
+            Reading::Killed(kind) => self.whereabouts.iter().any(|(id, whereabouts)| {
+                *whereabouts == Whereabouts::Killed
+                    && self.content.npcs[id.0].kind == i32::from(*kind)
+            }),
         })
     }
 }
@@ -1449,12 +1608,12 @@ mod tests {
         fn set(rows: &[Consequence], names: &mut Vec<String>) {
             for row in rows {
                 match row {
-                    Consequence::Fact(name, _) => names.push(name.clone()),
-                    Consequence::If(reading, rows) => {
+                    Consequence::Story(StoryAct::Fact(name, _)) => names.push(name.clone()),
+                    Consequence::Flow(Flow::If(reading, rows)) => {
                         named(reading, names);
                         set(rows, names);
                     }
-                    Consequence::InHours(_, rows) => set(rows, names),
+                    Consequence::Story(StoryAct::InHours(_, rows)) => set(rows, names),
                     _ => {}
                 }
             }

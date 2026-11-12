@@ -15,7 +15,7 @@ use crate::content::items::EquipClass;
 use crate::content::spells::SpellId;
 use crate::game::actors::spells::{Enchantment, Laying};
 use crate::game::actors::{Armour, Attacks, Attributes, Level, Resistances};
-use crate::game::characters::{Character, Condition, Vitals};
+use crate::game::characters::{Condition, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::inventory::PartyInventory;
@@ -46,7 +46,12 @@ pub struct Body {
     pub resistances: &'static Resistances,
     pub armour: &'static Armour,
     pub attacks: &'static Attacks,
-    pub character: Option<&'static mut Character>,
+    /// What it is made of, where landing an effect changes or asks it.
+    pub traits: &'static crate::game::actors::Traits,
+    pub drained: &'static mut crate::game::actors::Drained,
+    pub calling: Option<&'static crate::game::characters::Calling>,
+    pub schooling: Option<crate::game::characters::Schooling>,
+    pub cheated: Option<&'static crate::game::characters::CheatedDeathIn>,
     pub spells: Option<(&'static LearnedSpells, &'static mut SpellPoints)>,
     pub budget: Option<&'static mut SpellBudget>,
     pub burden: Option<&'static Burden>,
@@ -59,6 +64,16 @@ impl BodyItem<'_, '_> {
     pub fn stance(&self) -> Stance {
         self.side.now(&self.conditions)
     }
+
+    /// As the formulas of training read it, if it trained.
+    pub fn trained(&self) -> Option<crate::game::characters::Trained<'_>> {
+        self.schooling.as_ref().map(|schooling| schooling.view())
+    }
+
+    /// The level a trait of its grows with.
+    fn mastery(&self) -> u8 {
+        self.calling.map_or(self.level.0 as u8, crate::game::characters::Calling::mastery)
+    }
 }
 
 impl BodyReadOnlyItem<'_, '_> {
@@ -70,6 +85,11 @@ impl BodyReadOnlyItem<'_, '_> {
     /// The side it is on and the band it keeps to now.
     pub fn standing(&self) -> (Stance, Loyalty) {
         (self.stance(), self.loyalty.now(self.conditions))
+    }
+
+    /// As the formulas of training read it, if it trained.
+    pub fn trained(&self) -> Option<crate::game::characters::Trained<'_>> {
+        self.schooling.as_ref().map(|schooling| schooling.view())
     }
 }
 
@@ -112,6 +132,8 @@ pub struct Log {
     pub burnt: Vec<(Entity, u16)>,
     /// Who was swallowed, and by whom.
     pub swallowed: Vec<(Entity, Entity)>,
+    /// Who cheated death for the first time in a fight, and the fight.
+    pub cheated: Vec<(Entity, Entity)>,
 }
 
 impl Log {
@@ -122,10 +144,14 @@ impl Log {
         }
     }
 
-    /// Those swallowed are held by whoever swallowed them.
+    /// Those swallowed are held by whoever swallowed them, and one who
+    /// cheated death in a fight has done so in it.
     pub fn swallow(&mut self, commands: &mut Commands) {
         for (victim, by) in self.swallowed.drain(..) {
             commands.entity(victim).insert(crate::game::actors::Swallowed(by));
+        }
+        for (victim, fight) in self.cheated.drain(..) {
+            commands.entity(victim).insert(crate::game::characters::CheatedDeathIn(fight));
         }
     }
 }
@@ -170,12 +196,12 @@ pub fn land(
         previous = Some(match defended {
             defences::Defended::Through(magnitude) => {
                 let outcome = apply(&spec, magnitude, strike, body, rules, rng, log, laying);
-                settle(body, alive, rules, rng);
+                settle(body, alive, rules, rng, log);
                 outcome
             }
             defences::Defended::Missed => Outcome::Missed,
             defences::Defended::Resisted { saved } => {
-                if saved && body.character.is_some() {
+                if saved && body.calling.is_some() {
                     log.practised.push((victim, Skill::IronWill, 2));
                 }
                 log.effects.push(Effect::Resisted { victim });
@@ -185,14 +211,22 @@ pub fn land(
     }
 }
 
-/// A Valkyrie whose health the effect ran out cheats death before anything
-/// else lands on her.
-fn settle(body: &mut BodyItem, was_alive: bool, rules: &Rules, rng: &mut GameRng) {
-    if let Some(character) = body.character.as_deref()
-        && was_alive
-        && body.vitals.is_dead()
+/// One whose health the effect ran out, and who cheats death, does so
+/// before anything else lands on them.
+fn settle(body: &mut BodyItem, was_alive: bool, rules: &Rules, rng: &mut GameRng, log: &mut Log) {
+    if !was_alive || !body.vitals.is_dead() {
+        return;
+    }
+    let victim = body.entity;
+    let first = rules.fight.is_some_and(|fight| {
+        body.cheated != Some(&crate::game::characters::CheatedDeathIn(fight))
+            && !log.cheated.contains(&(victim, fight))
+    });
+    let by = (body.traits, body.mastery());
+    if body.vitals.cheats_death(&mut body.conditions, by, first, rng)
+        && let (true, Some(fight)) = (first, rules.fight)
     {
-        body.vitals.cheats_death(&mut body.conditions, character, rules.fight, rng);
+        log.cheated.push((victim, fight));
     }
 }
 
@@ -240,9 +274,12 @@ fn apply(
             return Outcome::Landed;
         }
         K::Sap => {
-            let Some(character) = body.character.as_deref_mut() else { return Outcome::Missed };
-            let lost =
-                body.vitals.drain_health(&mut body.conditions, character, magnitude, strike.by);
+            let lost = body.vitals.drain_health(
+                &mut body.conditions,
+                &mut body.drained,
+                magnitude,
+                strike.by,
+            );
             dealt(body, lost, false, rng, log);
             return Outcome::Landed;
         }
@@ -274,13 +311,14 @@ fn apply(
         }
         K::Tire => Effect::Tired { victim, amount: body.vitals.tire(magnitude) },
         K::DrainPool | K::DrainRealm(_) => {
-            let (Some(character), Some((learned, pool))) =
-                (body.character.as_deref(), body.spells.as_mut())
-            else {
-                return Outcome::Missed;
-            };
-            let maximum =
-                character.max_points(body.attributes, learned, &rules.content.spells, body.skills);
+            let Some((learned, pool)) = body.spells.as_mut() else { return Outcome::Missed };
+            let maximum = crate::game::magic::max_points(
+                body.level.0,
+                body.attributes,
+                learned,
+                &rules.content.spells,
+                body.skills,
+            );
             let amount = match spec.kind {
                 K::DrainRealm(realm) => realm
                     .map_or(enumset::EnumSet::all(), enumset::EnumSet::only)
@@ -327,15 +365,14 @@ fn apply(
             }
         }
         K::Renew => {
-            let Some(character) = body.character.as_deref_mut() else { return Outcome::Missed };
-            if body.vitals.lift_drain(&mut body.conditions, character) {
+            if body.drained.lift(&mut body.conditions) {
                 Effect::Cured { victim, condition: Condition::Drained }
             } else {
                 Effect::Nothing { victim }
             }
         }
         K::Raise => {
-            if body.character.is_none() {
+            if body.calling.is_none() {
                 return Outcome::Missed;
             }
             if !body.vitals.is_dead() {
@@ -370,7 +407,7 @@ fn apply(
             if changed { Effect::Enchanted { victim, spell } } else { Effect::Nothing { victim } }
         }
         K::Burn => {
-            if body.character.is_none() {
+            if body.calling.is_none() {
                 return Outcome::Missed;
             }
             burn(rules.held.carried(victim), rules, magnitude, rng, log);
@@ -418,12 +455,9 @@ pub fn land_on_party(
         match spec.kind {
             K::DrainPool => {
                 for body in members.iter_mut().filter(|body| !body.vitals.is_dead()) {
-                    let (Some(character), Some((learned, pool))) =
-                        (body.character.as_deref(), body.spells.as_mut())
-                    else {
-                        continue;
-                    };
-                    let maximum = character.max_points(
+                    let Some((learned, pool)) = body.spells.as_mut() else { continue };
+                    let maximum = crate::game::magic::max_points(
+                        body.level.0,
                         body.attributes,
                         learned,
                         &rules.content.spells,

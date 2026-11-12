@@ -211,25 +211,38 @@ pub fn quadrant(from: Vec3, yaw: f32, to: Vec3) -> Row {
     }
 }
 
-/// A refitted member's seat follows what they are fit for: the dead, the
-/// missing and those their conditions keep from their place give it up, and
-/// take it back when they can stand in it again.
+/// A member's seat follows what they are fit for: the dead, the missing
+/// and those their conditions keep from their place give it up, and take it
+/// back when they can stand in it again.
+#[allow(clippy::type_complexity)]
 pub fn keep_seat(
-    refit: On<crate::game::actors::Refitted>,
-    members: Query<(
-        (&crate::game::characters::Vitals, &crate::game::characters::Conditions),
-        &crate::game::characters::Character,
-        &super::roster::PartyMember,
-    )>,
+    members: Query<
+        (
+            Entity,
+            (&crate::game::characters::Vitals, &crate::game::characters::Conditions),
+            &crate::game::actors::Traits,
+            &super::roster::PartyMember,
+        ),
+        Or<(
+            Changed<crate::game::characters::Vitals>,
+            Changed<crate::game::characters::Conditions>,
+            Changed<crate::game::actors::Traits>,
+            Changed<super::roster::PartyMember>,
+        )>,
+    >,
     mut formations: Query<&mut Formation>,
 ) {
     use crate::game::characters::Condition;
-    let Ok(((vitals, conditions), sheet, member)) = members.get(refit.entity) else { return };
-    let stands = !vitals.is_dead()
-        && conditions.below(Condition::Missing)
-        && !conditions.unseats(sheet.traits());
-    if let Ok(mut formation) = formations.get_mut(member.0) {
-        formation.update_seat(refit.entity, !stands);
+    for (entity, (vitals, conditions), traits, member) in &members {
+        let stands = !vitals.is_dead()
+            && conditions.below(Condition::Missing)
+            && !conditions.unseats(traits.0);
+        let Ok(mut formation) = formations.get_mut(member.0) else { continue };
+        // Only a seat that is to change is touched, so that the formation
+        // is marked changed when it has.
+        if formation.row_of(entity).is_some() != stands {
+            formation.update_seat(entity, !stands);
+        }
     }
 }
 

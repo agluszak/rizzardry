@@ -76,7 +76,7 @@ Otherwise it makes out the party if all of the following hold (retail
   threshold = percent * far / 100
   ```
 
-  It sees if `threshold >= gap`. *Senses* is the monster's own attribute (refit,
+  It sees if `threshold >= gap`. *Senses* is the monster's own attribute (its figures,
   spells counted); *bonus* is the percent its kind adds to its sight. The
   *hider's level* is the lowest level among the party's members who can take a
   combat action (the party hides by its weakest able member); *concealment* is

@@ -2,7 +2,7 @@
 use super::{InventoryArt, InventoryScreen, absolute};
 use crate::content::characters::{Attribute, Skill};
 use crate::content::ui::SpriteSheet;
-use crate::game::characters::{Character, governing};
+use crate::game::characters::governing;
 use crate::game::party::roster::PartyRoster;
 use crate::presentation::screen_art::spawn_picture as image;
 use crate::presentation::screen_art::{BitmapText, Picture};
@@ -60,7 +60,7 @@ pub(super) fn open_info(
     spell_state: (Query<&crate::game::magic::LearnedSpells>, If<Res<crate::game::data::Catalogs>>),
     targets: Query<&InfoTarget>,
     screen: Single<&InventoryScreen>,
-    profiles: Query<(&Character, &crate::game::actors::Skills)>,
+    profiles: Query<(crate::game::characters::PaperReadOnly, &crate::game::actors::Skills)>,
     roster: Single<&PartyRoster>,
     existing: Query<(), With<InfoDialog>>,
     art: Res<InventoryArt>,
@@ -120,11 +120,16 @@ pub(super) fn open_info(
         for (show, id, palette) in [
             (best, 0x157, &art.yellow),
             (
-                !crate::game::magic::skill_available(profile, learned, spell_catalog, skill),
+                !crate::game::magic::skill_available(
+                    profile.trained(),
+                    learned,
+                    spell_catalog,
+                    skill,
+                ),
                 0x158,
                 &art.gray,
             ),
-            (profile.profession.row().bonus_skill == skill, 0x159, &art.blue),
+            (profile.calling.profession.row().bonus_skill == skill, 0x159, &art.blue),
         ] {
             if show {
                 entries.push((String::new(), None));

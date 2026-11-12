@@ -27,8 +27,8 @@ use crate::game::actors::Places;
 use crate::game::actors::spells::Aged;
 use crate::game::actors::spells::{Enchantment, LaidOn, Pulses};
 use crate::game::actors::time::{Elapsed, Mending, Pace};
+use crate::game::characters::Condition;
 use crate::game::characters::Vitals;
-use crate::game::characters::{Character, Condition};
 use crate::game::data::Catalogs;
 use crate::game::hits::definitions::Rows;
 use crate::game::hits::effects::BodyReadOnly;
@@ -322,7 +322,7 @@ pub(super) fn count_pulse(
 pub(super) fn judge_victory(
     judged: On<FightJudged>,
     mut fights: Query<(&mut Battle, &mut Round, &Spoils, &mut Pause, &Combatants)>,
-    mut members: Query<(&mut Character, &Vitals)>,
+    mut members: Query<(&mut crate::game::characters::Experience, &Vitals)>,
     monsters: Query<(
         &crate::game::actors::Attacks,
         (&Vitals, &crate::game::characters::Conditions),
@@ -367,7 +367,7 @@ pub(super) fn judge_victory(
     let each = spoils.experience / living.len() as u32;
     if each > 0 {
         for &member in &living {
-            members.get_mut(member).unwrap().0.award_experience(each);
+            members.get_mut(member).unwrap().0.earned += u64::from(each);
         }
     }
     news.write(if spoils.kills > 0 {

@@ -248,7 +248,7 @@ impl CharacterDraft {
         if increase {
             self.attribute_remaining() > 0
                 && allocated < self.attribute_step_limit()
-                && self.preview().attributes[attribute] < 100
+                && self.preview().abilities.0[attribute] < 100
         } else {
             allocated > 0
         }
@@ -279,7 +279,7 @@ impl CharacterDraft {
             self.skill_remaining() > 0
                 && self.skills[skill] < 5
                 && self.skill_available(skill)
-                && self.preview().skill_points[skill] < 75
+                && self.preview().training.0[skill] < 75
         } else {
             self.skills[skill] > 0
         }
@@ -303,24 +303,24 @@ impl CharacterDraft {
     pub fn skill_available(&self, skill: Skill) -> bool {
         match skill.realm() {
             Some(realm) => !self.learned_spells[realm].is_empty(),
-            None => self.preview().skill_available(skill),
+            None => self.preview().trained().can_use(skill),
         }
     }
 
     pub fn preview(&self) -> Character {
         let mut character =
             Character::new(self.display_name(), self.race, self.gender, self.profession);
-        character.full_name = self.name.trim().to_owned();
-        character.personality = self.personality;
-        character.voice = self.voice;
-        character.spell_picks.grant(self.profession, self.spell_remaining());
-        character.portrait.clone_from(&self.portrait);
+        character.identity.full_name = self.name.trim().to_owned();
+        character.identity.personality = self.personality;
+        character.identity.voice = self.voice;
+        character.picks.grant(self.profession, self.spell_remaining());
+        character.identity.portrait.clone_from(&self.portrait);
         for a in EnumSet::<Attribute>::all() {
-            character.attributes[a] += self.attributes[a];
+            character.abilities.0[a] += self.attributes[a];
         }
         character.seed_starting_skills();
         for skill in EnumSet::<Skill>::all() {
-            character.skill_points[skill] += self.skills[skill];
+            character.training.0[skill] += self.skills[skill];
         }
         character
     }

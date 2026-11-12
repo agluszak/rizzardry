@@ -857,7 +857,7 @@ own: no arithmetic, no constant.
 through the same view of an actor (health and what ails it, attributes, level,
 `Attacks`, `Armour`, side, place), whichever of member and monster they are.
 The places section 8 lists where the two differ are differences in what
-refit wrote, never a branch in a rule here.
+its figures hold, never a branch in a rule here.
 
 **What goes.** `open`, `swing`, `intercept`, `catch_unaware`, `land_blow`,
 `riposte`, `next_attack` as functions that take the world's queries and a

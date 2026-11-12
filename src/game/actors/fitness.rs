@@ -10,7 +10,7 @@
 
 use bevy::prelude::*;
 
-use super::stats;
+use super::figures;
 use crate::game::characters::{COMES_ROUND_ABOVE, Condition, Conditions, Dead, Fell, Vitals};
 
 /// In its right mind: able to look, keep watch or identify (retail
@@ -44,6 +44,11 @@ pub struct Present;
 #[derive(bevy::ecs::schedule::ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Settle;
 
+/// Within [`Settle`]: every body's state is settled and its figures
+/// written. What follows from the figures runs after it.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Written;
+
 /// Run [`Settle`] now.
 pub fn settle(world: &mut World) {
     world.run_schedule(Settle);
@@ -58,18 +63,19 @@ pub(super) fn plugin(app: &mut App) {
             notice_the_fallen,
             notice_the_raised,
             crate::game::items::weigh,
-            (stats::notice_changed_sources, stats::notice_party_spells, stats::notice_changed_gear),
-            stats::refit,
+            super::modifiers::gear_changed,
+            figures::follow_calling,
+            figures::attributes,
+            figures::skills,
+            figures::maxima,
+            (figures::resistances, figures::armour, figures::attacks, figures::mending),
             (judge, super::time::tend, super::time::let_go),
         )
-            .chain(),
+            .chain()
+            .in_set(Written),
     )
     .add_systems(Update, settle.in_set(crate::game::GameplaySet::Bodies))
-    .add_systems(FixedUpdate, settle.after(crate::game::GameplaySet::Combat))
-    .add_observer(stats::stale_without::<Dead>)
-    .add_observer(stats::stale_without::<crate::game::party::roster::PartyMember>)
-    .add_observer(stats::stale_without::<crate::game::items::Wears>)
-    .add_observer(stats::stale_without_spells);
+    .add_systems(FixedUpdate, settle.after(crate::game::GameplaySet::Combat));
 }
 
 /// Spent stamina leaves a body out cold (retail `FatigueCharacter`,

@@ -187,7 +187,7 @@ pub fn update_radar(
     layers: Query<Entity, With<RadarBlips>>,
     members: Query<
         (
-            &crate::game::characters::Character,
+            &crate::game::actors::Traits,
             &crate::game::characters::Conditions,
             &crate::game::actors::Attributes,
             &crate::game::actors::Skills,

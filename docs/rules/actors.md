@@ -11,13 +11,13 @@ holds them; nothing else of the original's shape is kept.
 
 | Component | The fact it holds | What changes it |
 | --- | --- | --- |
-| `Attributes` | Strength, Intelligence, Piety, Vitality, Dexterity, Speed, Senses, each 1–125, spells counted | refit |
-| `Level` | The level saves, resistance and special attacks weigh | refit |
-| `Resistances` | Percent per realm; what it cannot suffer; its creature kind; how strongly it casts | refit |
-| `Armour` | Armour overall and by place; what surprise strips; what bracing adds; damage cut; missile deflection | refit |
-| `Attacks` | What it strikes with; when it acts; how hard it presses; how it fares blind or from hiding | refit |
-| `Vitals` | Health and stamina, each what is left and the most there can be; what ails it, each condition with how long it lasts | being hurt, tired, healed, rested, afflicted, cured, aged; refit moves the maxima |
-| `Mending` | What it gains or loses a minute outright; whether its stamina comes back by the breath; what its traits make of recovery | refit |
+| `Attributes` | Strength, Intelligence, Piety, Vitality, Dexterity, Speed, Senses, each 1–125, spells counted | its figure's system |
+| `Level` | The level saves, resistance and special attacks weigh | its figure's system |
+| `Resistances` | Percent per realm; what it cannot suffer; its creature kind; how strongly it casts | its figure's system |
+| `Armour` | Armour overall and by place; what surprise strips; what bracing adds; damage cut; missile deflection | its figure's system |
+| `Attacks` | What it strikes with; when it acts; how hard it presses; how it fares blind or from hiding | its figure's system |
+| `Vitals` | Health and stamina, each what is left and the most there can be; what ails it, each condition with how long it lasts | being hurt, tired, healed, rested, afflicted, cured, aged; the maxima follow their sources |
+| `Mending` | What it gains or loses a minute outright; whether its stamina comes back by the breath; what its traits make of recovery | its figure's system |
 | `Side` | The side its group or kind has it on toward the party | the events listed under *Side* |
 | `Loyalty` | The faction it keeps to, if any | being made |
 
@@ -36,54 +36,52 @@ What is **not** on an actor: where it stands. A monster stands where its body
 is; a member stands where the party is. Rules ask for an actor's place and get
 it computed from those; nothing copies it onto the actor.
 
-## Refit
+## Sources and figures
 
-The figures (all but `Vitals`, `Side` and `Loyalty`) are written when an actor is **refitted**: when
-what they are made from has changed. Nothing asks for a refit and nothing
-fires one. A few small systems see that a source changed and mark the actor
-stale; one system writes the figures of every stale actor anew. The sources:
+An actor has **sources**, written where it is made or where the thing itself
+changes, and **figures**, which rules read and which are worked out from the
+sources.
 
-- the actor is made, or joins or leaves the party;
-- the spells laid on it come or go; for a spell on the party, on every
-  member;
-- a member's sheet changes: a level, an attribute, a skill point;
-- a member's load changes;
-- what a member wears changes, or a worn thing itself does (out of shots,
-  grown into a better one);
-- what ails it changes, or it dies or comes back to life.
+The sources:
 
-These run as part of settling bodies (see Fitness), so the figures follow
-their sources by the next time rules read them, not inside the operation
-that changed the source. Nothing refits on a timer.
+- `Abilities`, the seven attributes before anything is laid on them; `Traits`,
+  what it is able to do; `Kind`; `Level`;
+- `Nature`, what it has of itself: natural armour overall, by place and by
+  mode, damage cut, resistances, initiative, mending, what it carries, how far
+  it strides; `NaturalArms`, what it strikes with holding nothing; `Frame`,
+  the health and stamina it was made with;
+- for one who trained: `Calling` (professions and their levels), `Birth`
+  (race and gender), `Training` (skill points), `Practice`, `Experience`;
+- `Modifiers`, what the spells laid on it, and on its party, come to;
+- what it wears and its load; what ails it; what has been `Drained` from it.
 
-Once the components are written, `Refitted` is said of the actor, for what
-follows from its figures: a member's seat in the formation, and what they can
-no longer wear, which goes to their pack or the pool (retail
-`UnequipUnusableItems`).
+A monster's sources are written from its species once, as it is made. A
+character's are written at creation and by progression. No rule looks the
+species or the sheet up again, and no rule asks which of the two an actor is:
+one that trained has a `Calling`, and what a `Calling` adds is in the one
+formula.
 
-What refit writes:
+Each figure has one system, which writes it for every actor one of whose
+sources changed since it last ran: attributes, skills, the maxima of health
+and stamina, resistances, armour, attacks, mending. They run in that order
+as part of settling bodies (see Fitness), so the figures follow their sources
+by the next time rules read them, not inside the operation that changed the
+source. Nothing asks for a figure to be written, and nothing is told that
+one was. What follows from figures is noticed the same way: a member's seat
+in the formation, and what they can no longer wear, which goes to their pack
+or the pool (retail `UnequipUnusableItems`).
 
-- **A monster**: attributes, level, kind, immunities, resistances, armour by
-  place and mode, damage reduction, initiative and each attack come from its
-  species record. Armour is 10 less the record's value, so lower is always
-  better guarded.
-- **A member**: attributes from the sheet; level the sum of profession levels;
-  resistances from race, realm skill, Iron Will, high Intelligence and Piety,
-  and what is worn; immunities from traits; armour from Speed, race, load,
-  shield and skill, and what is worn at each place; one thing to strike with
-  per weapon slot in play; maximum health and stamina.
-- **Spells** on the actor, and on the party for a member, are counted: on
-  armour (Armorplate, Bless, Body of Stone, Armormelt), on rating (Bless,
-  Enchanted Blade), on resistance (Magic Screen, Element Shield, Soul Shield),
-  on missiles (Missile Shield), on attributes (Superman, Haste), on damage cut
-  (Body of Stone).
+Spells on the actor, and on the party for a member, are counted in
+`Modifiers`: on armour (Armorplate, Bless, Body of Stone, Armormelt), on
+rating (Bless, Enchanted Blade), on resistance (Magic Screen, Element Shield,
+Soul Shield), on missiles (Missile Shield), on attributes (Superman, Haste),
+on damage cut (Body of Stone). Armour by nature is 10 less the species
+record's value, so higher is always better guarded.
 
-Where the original computes one number differently for a member and a monster
-(initiative, armour, to-hit), both formulas are kept. The difference is which
-one fills the component, and it lives only in refit.
-
-When refit moves a member's maximum health or stamina, what they have left
-stays as it is, held to the new maximum.
+When a maximum of health or stamina moves, for any reason (a level, a drain,
+a disease, an attribute), what is left moves by as much (retail
+`RecalculateCharacterHitPoints`, `RecalculateCharacterStamina`); health
+brought to nothing so is death, and the dead keep nothing.
 
 ## Being hurt
 
@@ -239,7 +237,7 @@ stamina. Three operations change them:
   it runs its course.
 
 What a condition takes off attributes, skills, armour and to-hit
-(`assets/tables/conditions.ron`) is written at the refit: an actor's `Skills`
+(`assets/tables/conditions.ron`) is in its figures: an actor's `Skills`
 are a component like its `Attributes`, and every rule reads those. Other
 rules read a condition where it is needed: the side an actor is on now is its
 side turned about while it is Turncoat; its eyes are shut while it is Blind.
@@ -255,7 +253,7 @@ moment of a fight, see the change and settle what follows, in this order:
 - health run out fells it (`Fell`, settled as before: a Valkyrie may cheat
   it, anyone else is `Dead`); health back on one of the dead ends that;
 - each member's load is weighed (not in a fight);
-- an actor whose sources changed is refitted;
+- the figures whose sources changed are written anew;
 - what it is fit for is marked on it.
 
 What an actor is fit for is a marker component, there while it is alive and
@@ -291,7 +289,7 @@ a fight, whether it pulses each round. A bearer has each spell at most once.
 
 A spell coming onto a bearer or going from it leaves the bearer's figures
 stale, and they are written anew as bodies are settled; no operation has to
-remember to. Refit sums what the spells on an actor, and on its party, add.
+remember to. `Modifiers` sums what the spells on an actor, and on its party, add.
 
 What lasts only a fight (Bless, Armormelt, the shields, the clouds, Ring of
 Fire) lifts when the fight ends. The dead keep no spells.

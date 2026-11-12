@@ -14,7 +14,7 @@ use super::{
 };
 use crate::content::npcs::{DialogueOp, Gift, Response, TopicCategory};
 use crate::game::camp::Camp;
-use crate::game::characters::{Character, Vitals};
+use crate::game::characters::{Experience, Identity, Vitals};
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
 use crate::game::factions::{Band, FactionNews, Factions};
@@ -475,7 +475,7 @@ pub(super) fn deliver(
     mut conversations: Query<&mut Conversation>,
     givers: Query<&crate::game::npcs::ActorId>,
     mut party: Single<(Entity, &PartyRoster, &mut PartyInventory, &Position)>,
-    mut characters: Query<(&mut Character, &Vitals)>,
+    mut characters: Query<(&mut Experience, &Identity, &Vitals)>,
     held: Items,
     content: If<Res<Catalogs>>,
     level: Single<Entity, With<Level>>,
@@ -493,10 +493,10 @@ pub(super) fn deliver(
         }
         Gift::Experience(amount) => {
             for member in roster.iter() {
-                if let Ok((mut character, vitals)) = characters.get_mut(member)
+                if let Ok((mut experience, _, vitals)) = characters.get_mut(member)
                     && !vitals.is_dead()
                 {
-                    character.award_experience(*amount);
+                    experience.earned += u64::from(*amount);
                 }
             }
             Some(QuestReward::Experience { amount_each: *amount })
@@ -524,7 +524,7 @@ pub(super) fn deliver(
                 QuestReward::Taken {
                     member: member
                         .and_then(|member| characters.get(member).ok())
-                        .map(|(character, _)| character.name.clone()),
+                        .map(|(_, identity, _)| identity.name.clone()),
                 }
             })
         }

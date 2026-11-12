@@ -28,7 +28,7 @@ use super::retail_controls::FocusRing;
 use super::screen_art::{BitmapText, visible_if};
 use crate::content::level::TRAP_TYPES;
 use crate::content::ui::SpriteSheet;
-use crate::game::characters::{Character, Vitals};
+use crate::game::characters::Vitals;
 use crate::game::items::Items;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::containers::Recipient;
@@ -379,7 +379,7 @@ fn draw_device_panel(
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
     members: Query<(
-        &Character,
+        crate::game::characters::PaperReadOnly,
         &Vitals,
         &crate::game::actors::Attributes,
         &crate::game::actors::Skills,
@@ -395,9 +395,10 @@ fn draw_device_panel(
     let Ok((interaction, on)) = attempts.get(panel_of.0) else { return };
     let member = selected.member(&roster).map(|m| (m, members.get(m).unwrap()));
     // What the selected member can do, they can do only while they can act.
-    let able = member.filter(|&(m, _)| able.contains(m));
-    let name = member.map_or(String::new(), |(_, (c, ..))| c.name.clone());
-    let skill = able.and_then(|(_, (c, _, _, skills))| interaction::lock_skill(c, skills));
+    let able = member.as_ref().filter(|(m, _)| able.contains(*m));
+    let name = member.as_ref().map_or(String::new(), |(_, (c, ..))| c.identity.name.clone());
+    let skill =
+        able.and_then(|(_, (c, _, _, skills))| interaction::lock_skill(c.trained(), skills));
     let trap_name = |trap: usize| {
         let name = strings.get(crate::content::ui::TRAP_NAMES + trap);
         if name.is_empty() { "Trap" } else { name }.to_owned()
@@ -438,7 +439,11 @@ fn draw_device_panel(
                     let mark = if disarming.disarmed[index] {
                         "ok"
                     } else {
-                        match member.and_then(|(m, _)| disarming.observed(m)).map(|s| s[index]) {
+                        match member
+                            .as_ref()
+                            .and_then(|(m, _)| disarming.observed(*m))
+                            .map(|s| s[index])
+                        {
                             Some(Observation::Present) => "!",
                             Some(Observation::Absent) => "-",
                             Some(Observation::Unknown) | None => "?",

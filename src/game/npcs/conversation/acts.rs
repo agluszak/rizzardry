@@ -15,7 +15,7 @@ use super::{
 use crate::content::characters::Skill;
 use crate::content::items::{AMMUNITION_BUNDLE, EquipClass, ItemId, QuantityKind};
 use crate::content::npcs::{DialogueOp, NpcDefinition, TopicCategory};
-use crate::game::characters::{Character, Practise};
+use crate::game::characters::Practise;
 use crate::game::combat::Battle;
 use crate::game::factions::{Band, Factions};
 use crate::game::freedom::Freedom;
@@ -147,7 +147,7 @@ pub(super) struct Voices<'w, 's> {
         'w,
         's,
         (
-            &'static Character,
+            &'static crate::game::actors::Level,
             &'static crate::game::actors::Skills,
             Has<crate::game::actors::CanAct>,
             Has<crate::game::actors::CanFight>,
@@ -183,15 +183,19 @@ impl Voices<'_, '_> {
     }
 
     /// Those fit to fight.
-    fn fit(&self) -> impl Iterator<Item = (Entity, &Character)> {
+    fn fit(&self) -> impl Iterator<Item = (Entity, u8)> + '_ {
         self.roster.iter().filter_map(|m| {
-            self.members.get(m).ok().filter(|(.., can_fight)| *can_fight).map(|(c, ..)| (m, c))
+            self.members
+                .get(m)
+                .ok()
+                .filter(|(.., can_fight)| *can_fight)
+                .map(|(level, ..)| (m, level.0 as u8))
         })
     }
 
     /// Their average level.
     fn level(&self) -> u32 {
-        crate::game::party::average_level(self.fit().map(|(_, c)| c.level()))
+        crate::game::party::average_level(self.fit().map(|(_, level)| level))
     }
 }
 

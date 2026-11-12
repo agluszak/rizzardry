@@ -2,9 +2,9 @@ use super::*;
 use crate::{
     content::{level::MonsterPlacement, npcs::*},
     game::{
-        characters::Character,
+        characters::Calling,
         data::Catalogs,
-        party::roster::{PartyMember, PartyRoster},
+        party::roster::PartyRoster,
         rng::GameRng,
         time::GameClock,
         world::{
@@ -23,7 +23,7 @@ pub(super) fn initialize(
     mut rng: ResMut<GameRng>,
     clock: Res<GameClock>,
     party: Query<&PartyRoster>,
-    characters: Query<&Character>,
+    characters: Query<&Calling>,
     destinations: Query<&Destination>,
 ) {
     if peopled.is_some() {
@@ -32,14 +32,14 @@ pub(super) fn initialize(
     let Ok(destination) = destinations.single() else { return };
     let average = match &destination.entry {
         Entry::NewGame(profiles) => crate::game::party::average_level(
-            profiles.iter().map(|(character, _)| character.level()),
+            profiles.iter().map(|(character, _)| character.calling.level()),
         ),
         Entry::Travel => crate::game::party::average_level(
             party
                 .iter()
                 .flat_map(|r| r.iter())
                 .filter_map(|e| characters.get(e).ok())
-                .map(Character::level),
+                .map(Calling::level),
         ),
     };
     for (index, _) in content.npcs.0.iter().enumerate().filter(|(_, d)| !d.monster_bound) {
@@ -47,6 +47,9 @@ pub(super) fn initialize(
     }
     commands.insert_resource(Peopled);
 }
+/// A person is made: how they regard the party, the species their body is
+/// of, the character they are in the party if they can join it, and their
+/// stock if they keep one.
 fn spawn_record(
     commands: &mut Commands,
     id: NpcId,
@@ -56,30 +59,29 @@ fn spawn_record(
     rng: &mut GameRng,
 ) -> Entity {
     let def = &content.npcs[id];
-    let mut record = commands.spawn((ActorId(id), Npc::from_definition(def)));
+    let mut person =
+        commands.spawn((ActorId(id), Npc::from_definition(def), Whereabouts::AsPlaced));
+    if let Some(species) = content.species.0.iter().position(|kind| kind.npc == Some(id)) {
+        person.insert(Shape(species as u32));
+    }
+    let person = person.id();
     if let Some(template) = &def.character {
-        recruit::character(&mut record, template, content, rng);
+        recruit::companion(commands, person, template, content, rng);
     }
-    let actor = record.id();
     if def.owns_stock {
-        trade::open(commands, actor, def, &content.items, average, now, rng);
+        trade::open(commands, person, def, &content.items, average, now, rng);
     }
-    actor
+    person
 }
 #[derive(SystemParam)]
 pub struct NpcPopulation<'w, 's> {
     peopled: Option<Res<'w, Peopled>>,
-    people: Query<'w, 's, (Entity, &'static ActorId, Option<&'static Placed>)>,
-    dead: Query<'w, 's, (), With<crate::game::characters::Dead>>,
+    persons: Query<'w, 's, (Entity, &'static ActorId, &'static Whereabouts)>,
+    people: People<'w, 's>,
     assets: ResMut<'w, NpcAssets>,
     scripts: Res<'w, Assets<DialogueScript>>,
-    states: Query<
-        'w,
-        's,
-        (Has<Killed>, Has<Gone>, Has<PartyMember>, Option<&'static NpcLocation>, Has<Post>),
-    >,
     roster: Query<'w, 's, &'static PartyRoster>,
-    characters: Query<'w, 's, &'static Character>,
+    characters: Query<'w, 's, &'static Calling>,
     clock: Res<'w, GameClock>,
 }
 pub struct Placing<'a> {
@@ -95,7 +97,7 @@ impl NpcPopulation<'_, '_> {
                 .iter()
                 .flat_map(|r| r.iter())
                 .filter_map(|e| self.characters.get(e).ok())
-                .map(Character::level),
+                .map(Calling::level),
         )
     }
     pub fn prepare(
@@ -152,44 +154,27 @@ impl NpcPopulation<'_, '_> {
         rng: &mut GameRng,
         roll: impl FnOnce(&mut GameRng) -> Newborn,
     ) -> Option<(Entity, Vec3, f32, ScaledBody, Option<i32>)> {
-        // One with a name of their own is the one NPC of that id; one of a
-        // level's placed monsters is made the first time its place is met.
-        let here = Placed { map: p.map.to_owned(), location: p.placed.location };
-        let bound = content.npcs[p.id].monster_bound;
-        let known = self
-            .people
-            .iter()
-            .find(|(_, id, at)| id.0 == p.id && (!bound || *at == Some(&here)))
-            .map(|(actor, ..)| actor);
-        let actor = match known {
-            Some(actor) => actor,
-            None if bound => {
-                let actor = spawn_record(commands, p.id, content, p.average, self.clock.ms, rng);
-                commands.entity(actor).insert(here);
-                actor
+        // One with a name of their own is the one person of that id; one
+        // of a level's placed monsters is made with it.
+        let person = if content.npcs[p.id].monster_bound {
+            spawn_record(commands, p.id, content, p.average, self.clock.ms, rng)
+        } else {
+            let (person, _, whereabouts) = self.persons.iter().find(|(_, id, _)| id.0 == p.id)?;
+            // One the story has stood elsewhere, taken or killed, one who
+            // stands in another level, and one in the party do not stand
+            // where a level placed them.
+            if *whereabouts != Whereabouts::AsPlaced
+                || self.people.body(person).is_some()
+                || self.people.member(person).is_some()
+            {
+                return None;
             }
-            None => return None,
+            person
         };
-        if !placed.insert(actor) {
+        if !placed.insert(person) {
             return None;
         }
-        // One the story has stood somewhere stands there, not where a
-        // level placed them.
-        if let Ok((killed, gone, member, location, posted)) = self.states.get(actor)
-            && (killed
-                || posted
-                || gone
-                || self.dead.contains(actor)
-                || member
-                || location.is_some_and(|l| l.map != p.map))
-        {
-            return None;
-        }
-        let kept = roll(rng);
-        commands
-            .entity(actor)
-            .insert(NpcLocation { map: p.map.into(), species: kept.monster.species });
-        Some(bind(commands, actor, kept))
+        Some(bind(commands, person, roll(rng)))
     }
 }
 fn bind(
@@ -198,7 +183,8 @@ fn bind(
     kept: Newborn,
 ) -> (Entity, Vec3, f32, ScaledBody, Option<i32>) {
     let shape = kept.monster.body;
-    let e = commands.spawn((NpcBody(actor), kept.monster, kept.vitals, kept.budget)).id();
+    let e =
+        commands.spawn((Embodies(actor), kept.monster, kept.vitals, kept.frame, kept.budget)).id();
     (e, kept.feet, kept.yaw, shape, kept.group)
 }
 
@@ -233,14 +219,6 @@ pub(super) fn bind_triggers(
     }
 }
 
-/// Where the story has stood someone: a named spot of a level, in place of
-/// wherever the level placed them.
-#[derive(Component, Clone, Debug, PartialEq, Eq)]
-pub struct Post {
-    pub map: String,
-    pub spot: String,
-}
-
 /// One the story has greet the party, who was not there to do it: they do
 /// as they take their place.
 #[derive(Component, Clone, Copy, Debug)]
@@ -251,9 +229,10 @@ pub struct GreetsOnArrival;
 /// theirs, at the spot named, once that body is loaded.
 pub(super) fn station(
     posted: Query<
-        (Entity, &ActorId, &Post, Option<&NpcBodies>, Has<GreetsOnArrival>),
-        Without<PartyMember>,
+        (Entity, &Whereabouts, &Shape, Has<GreetsOnArrival>),
+        (With<ActorId>, Without<Embodied>),
     >,
+    people: People,
     level: Single<(
         Entity,
         &crate::game::world::level::Level,
@@ -269,14 +248,13 @@ pub(super) fn station(
 ) {
     let (root, played, navigation, mut handles) = level.into_inner();
     let Some(definition) = definitions.get(&played.definition) else { return };
-    for (actor, id, post, standing, greets) in &posted {
-        if post.map != played.path || standing.is_some_and(|bodies| !bodies.is_empty()) {
+    for (person, whereabouts, &Shape(species), greets) in &posted {
+        let Whereabouts::Posted { map, spot } = whereabouts else { continue };
+        if *map != played.path || people.member(person).is_some() {
             continue;
         }
-        let species = content.species.0.iter().position(|kind| kind.npc == Some(id.0));
-        let (Some(species), Some(feet)) = (species, definition.spot(&post.spot)) else { continue };
-        let kind = &content.species.0[species];
-        let species = species as u32;
+        let Some(feet) = definition.spot(spot) else { continue };
+        let kind = &content.species.0[species as usize];
         handles
             .0
             .entry(species)
@@ -284,7 +262,8 @@ pub(super) fn station(
         let Some(shape) = handles.get(species, &bodies) else { continue };
         let kept = Newborn::rolled((-1, species, None), (feet, 0.0), (kind, shape), &mut rng);
         let scaled = kept.monster.body;
-        let mut body = commands.spawn((NpcBody(actor), kept.monster, kept.vitals, kept.budget));
+        let mut body =
+            commands.spawn((Embodies(person), kept.monster, kept.vitals, kept.frame, kept.budget));
         crate::game::world::population::embody(
             &mut body,
             root,
@@ -292,10 +271,9 @@ pub(super) fn station(
             (None, kind),
             (navigation, &mut configs),
         );
-        commands.entity(actor).insert(NpcLocation { map: played.path.clone(), species });
         if greets {
-            commands.entity(actor).remove::<GreetsOnArrival>();
-            commands.trigger(conversation::Begin { actor, quote: None, with_held: false });
+            commands.entity(person).remove::<GreetsOnArrival>();
+            commands.trigger(conversation::Begin { actor: person, quote: None, with_held: false });
         }
     }
 }

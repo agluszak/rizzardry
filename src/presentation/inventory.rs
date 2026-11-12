@@ -29,7 +29,7 @@ use super::screen_art::{
 use crate::content::items::QuantityKind;
 use crate::content::ui::SpriteSheet;
 use crate::game::GameplaySet;
-use crate::game::characters::{Character, Gender, Race, Vitals};
+use crate::game::characters::{Gender, Race, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::inventory::{EquipSlot, PartyInventory};
 use crate::game::items::{
@@ -694,7 +694,7 @@ fn spawn_inventory_screen(
 }
 
 // Retail profession titles, indexed by profession and level band.
-fn profession_title(profile: &Character) -> usize {
+fn profession_title(calling: &crate::game::characters::Calling) -> usize {
     const TITLES: [[usize; 9]; 15] = [
         [0x3b6, 0x3b7, 0x3b8, 0x3b9, 0x3ba, 0x3bb, 0x3bc, 0x3bd, 0x3be],
         [0x3b6, 0x3b7, 0x3bf, 0x3c0, 0x3c1, 0x3c2, 0x3c3, 0x3c4, 0x3c5],
@@ -712,7 +712,7 @@ fn profession_title(profile: &Character) -> usize {
         [0x3b6, 0x3b7, 0x40e, 0x40f, 0x410, 0x411, 0x412, 0x413, 0x414],
         [0x3b6, 0x3b7, 0x415, 0x416, 0x417, 0x418, 0x419, 0x41a, 0x41b],
     ];
-    let level = profile.profession_levels[profile.profession];
+    let level = calling.levels[calling.profession];
     let band = match level {
         0 => 0,
         1 => 1,
@@ -724,7 +724,7 @@ fn profession_title(profile: &Character) -> usize {
         22..=27 => 7,
         _ => 8,
     };
-    TITLES[profile.profession as usize][band]
+    TITLES[calling.profession as usize][band]
 }
 
 fn draw_vitals(
@@ -819,7 +819,7 @@ fn draw_header_hands(
                     (
                         format!(
                             "data/main interface/{}.sti",
-                            empty_hands(profile.race)[usize::from(off)]
+                            empty_hands(profile.birth.race)[usize::from(off)]
                         ),
                         0,
                         133.0,
@@ -873,7 +873,7 @@ fn sync_member_portraits(
     mut commands: Commands,
     root: Single<Entity, With<MemberSelector>>,
     roster: Single<&PartyRoster>,
-    members: Query<(&Character, &Vitals)>,
+    members: Query<(crate::game::characters::PaperReadOnly, &Vitals)>,
     mut buttons: Query<(Entity, &InventoryMemberButton, &mut Picture)>,
     mut empty: Query<(&EmptyMemberSlot, &mut Visibility)>,
     art: Res<InventoryArt>,
@@ -891,9 +891,9 @@ fn sync_member_portraits(
     for (slot, member) in roster.iter().enumerate() {
         let (profile, vitals) = members.get(member).unwrap();
         let name = if vitals.is_dead() {
-            &super::screen_art::skull(profile.race)[1..]
+            &super::screen_art::skull(profile.birth.race)[1..]
         } else {
-            &profile.portrait
+            &profile.identity.portrait
         };
         let path =
             crate::content::paths::portrait(crate::content::paths::PortraitSize::Small, name);
@@ -926,7 +926,7 @@ fn sync_member_portraits(
 fn draw_header(
     screen: Single<&InventoryScreen>,
     assets: Res<AssetServer>,
-    members: Query<(&Character, &Vitals)>,
+    members: Query<(crate::game::characters::PaperReadOnly, &Vitals)>,
     strings: GameStrings,
     mut displays: Query<(&HeaderDisplay, Option<&mut Picture>, Option<&mut BitmapText>)>,
 ) {
@@ -937,9 +937,9 @@ fn draw_header(
         match display.0 {
             HeaderPart::Portrait => {
                 let name = if vitals.is_dead() {
-                    &super::screen_art::skull(profile.race)[1..]
+                    &super::screen_art::skull(profile.birth.race)[1..]
                 } else {
-                    &profile.portrait
+                    &profile.identity.portrait
                 };
                 source = Some(crate::content::paths::portrait(
                     crate::content::paths::PortraitSize::Medium,
@@ -949,27 +949,31 @@ fn draw_header(
             HeaderPart::Statue => {
                 source = Some(crate::content::paths::sheet(&format!(
                     "review/{}",
-                    statue(profile.race, profile.gender)
+                    statue(profile.birth.race, profile.birth.gender)
                 )));
             }
-            HeaderPart::Name => value = Some(profile.name.clone()),
+            HeaderPart::Name => value = Some(profile.identity.name.clone()),
             HeaderPart::Race => {
-                let gender = if profile.gender == Gender::Male { 0x2d1 } else { 0x2d2 };
+                let gender = if profile.birth.gender == Gender::Male { 0x2d1 } else { 0x2d2 };
                 let gender = strings.get(gender);
-                let race = strings.get(crate::content::ui::RACE_NAMES + profile.race as usize);
+                let race =
+                    strings.get(crate::content::ui::RACE_NAMES + profile.birth.race as usize);
                 value = Some(format!("{gender} {race}").trim().to_owned());
             }
             HeaderPart::Profession => {
                 value = Some(
                     strings
-                        .get(crate::content::ui::PROFESSION_NAMES + profile.profession as usize)
+                        .get(
+                            crate::content::ui::PROFESSION_NAMES
+                                + profile.calling.profession as usize,
+                        )
                         .to_owned(),
                 );
             }
             HeaderPart::Level => {
-                let title = strings.get(profession_title(profile));
+                let title = strings.get(profession_title(profile.calling));
                 let level = strings.get(0x91a);
-                value = Some(format!("{level} {} ({title})", profile.level()));
+                value = Some(format!("{level} {} ({title})", profile.calling.level()));
             }
         }
         if let Some(mut picture) = picture
@@ -1017,7 +1021,11 @@ fn draw_cells(
     screen: Single<&InventoryScreen>,
     assets: Res<AssetServer>,
     content: If<Res<Catalogs>>,
-    members: Query<(&Character, &crate::game::actors::Attributes, &crate::game::actors::Skills)>,
+    members: Query<(
+        crate::game::characters::PaperReadOnly,
+        &crate::game::actors::Attributes,
+        &crate::game::actors::Skills,
+    )>,
     party: Single<Entity, With<PartyRoster>>,
     held: Items,
     pool_scroll: Option<Single<&bevy::ui_widgets::SliderValue, With<pool_scroll::PoolScroll>>>,
@@ -1044,7 +1052,11 @@ fn draw_cells(
                 CellPart::Count => count.is_some(),
                 CellPart::Unusable => {
                     grid && definition.is_some_and(|(_, d)| {
-                        !crate::game::items::users(d).admit(profile, attributes, skills)
+                        !crate::game::items::users(d).admit(
+                            (profile.calling, profile.birth),
+                            attributes,
+                            skills,
+                        )
                     })
                 }
                 CellPart::Unidentified => definition

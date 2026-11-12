@@ -25,7 +25,7 @@ use crate::content::characters::Trait;
 use crate::content::species::SpecialAttackKind;
 use crate::content::spells::SpellId;
 use crate::game::actors::Attacks;
-use crate::game::characters::{Character, Condition, Vitals};
+use crate::game::characters::{Condition, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::hits::definitions::Rows;
 use crate::game::hits::effects::{self, Body};
@@ -262,7 +262,7 @@ pub fn accept_round(
     bodies: &Query<(
         (&Vitals, &crate::game::characters::Conditions, Has<crate::game::actors::CanFight>),
         &Attacks,
-        Option<(&Character, &Order)>,
+        Option<(crate::game::characters::Schooling, &Order)>,
     )>,
     rng: &mut GameRng,
 ) {
@@ -277,15 +277,16 @@ pub fn accept_round(
     let lightning: Vec<Option<u8>> = roster
         .iter()
         .map(|member| {
-            let Ok((_, arms, Some((character, order)))) = bodies.get(member) else {
+            let Ok((_, arms, Some((schooling, order)))) = bodies.get(member) else {
                 return None;
             };
+            let character = schooling.view();
             (!surprised
                 && *order == Order::Attack
-                && character.has_trait(Trait::LightningStrike)
+                && character.traits.contains(Trait::LightningStrike)
                 && arms.of(WeaponSlot::Primary).any(|arm| arm.sword)
-                && rng.below(100) < u32::from(character.scale_by_profession(12.0) as u8))
-            .then(|| character.profession_levels[character.profession])
+                && rng.below(100) < u32::from(character.calling.scale(12.0) as u8))
+            .then(|| character.calling.mastery())
         })
         .collect();
     for &actor in combatants {
@@ -293,13 +294,13 @@ pub fn accept_round(
         let Ok(((_, conditions, can_fight), arms, ordered)) = bodies.get(actor) else { continue };
         // A member turned on the party attacks, whatever its order; one
         // who can no longer berserk attacks as usual.
-        let action = ordered.map(|(character, order)| match *order {
+        let action = ordered.map(|(schooling, order)| match *order {
             _ if conditions.has(Condition::Turncoat) => Action::Attack { berserk: false },
             Order::Attack => Action::Attack { berserk: false },
             // A Berserk order needs the trait, an arm, and a primary for
             // close quarters (retail `CanCharacterBerserk`).
             Order::Berserk => Action::Attack {
-                berserk: character.has_trait(Trait::Berserk)
+                berserk: schooling.view().traits.contains(Trait::Berserk)
                     && !arms.arms.is_empty()
                     && arms
                         .of(WeaponSlot::Primary)
@@ -445,10 +446,10 @@ pub(super) fn take_turn(
                     )
             });
             let breathes = own
-                .character
-                .filter(|character| super::breath::available(actor, character, own.vitals, &laid))
+                .calling
+                .filter(|_| super::breath::available(actor, own.traits, own.vitals, &laid))
                 .zip(aimed);
-            let Some((character, aimed)) = breathes else {
+            let Some((_, aimed)) = breathes else {
                 ordered.unwrap().0 = Action::Defend;
                 turn.end();
                 return;
@@ -457,7 +458,7 @@ pub(super) fn take_turn(
                 special: None,
                 summons: None,
                 strength: crate::game::hits::specials::strength(
-                    character.level(),
+                    own.level.0 as u8,
                     own.vitals.stamina,
                 ),
                 toward: places.of(aimed.entity).feet,

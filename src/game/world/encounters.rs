@@ -549,7 +549,7 @@ pub fn run_encounters(
         Option<&super::identify::GroupMember>,
     )>,
     party: Query<(&Position, &crate::game::party::roster::PartyRoster), With<PartyBody>>,
-    characters: Query<(&crate::game::characters::Character, Has<crate::game::npcs::Npc>)>,
+    characters: Query<(&crate::game::characters::Calling, Has<crate::game::npcs::Npc>)>,
     blocked: (
         Option<Single<(), With<crate::game::combat::Battle>>>,
         Query<(), With<crate::game::npcs::conversation::Conversation>>,
@@ -576,11 +576,12 @@ pub fn run_encounters(
     let blocked = in_battle.is_some() || !talking.is_empty();
     let difficulty = *difficulty;
     let now_s = clock.ms / 1000;
-    let level = crate::game::party::mean_level(
-        crate::game::party::averaged_places(roster.iter().map(|m| characters.get(m).unwrap()))
-            .into_iter()
-            .map(|c| c.level()),
-    );
+    let level = crate::game::party::mean_level(crate::game::party::averaged_places(
+        roster.iter().map(|member| {
+            let (calling, companion) = characters.get(member).unwrap();
+            (calling.level(), companion)
+        }),
+    ));
     let onlooker =
         Onlooker { eye: PartyBody::eye(party_at), feet: PartyBody::feet(party_at), level };
     let night = night(&clock);

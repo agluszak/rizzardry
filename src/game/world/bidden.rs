@@ -20,7 +20,7 @@ use crate::content::scripts::{
 };
 use crate::game::actors::Places;
 use crate::game::combat::Combatant;
-use crate::game::npcs::NpcBody;
+use crate::game::npcs::Embodies;
 use crate::game::npcs::conversation::{Begin, Conversation, Overheard};
 use crate::game::party::body::PartyBody;
 use crate::game::rng::GameRng;
@@ -144,7 +144,7 @@ pub(super) fn run(
     mut running: Query<
         (
             (Entity, &mut Running, &LevelOwned),
-            (Option<&GroupMember>, Option<&NpcBody>, Option<&Home>, Has<Cycle>),
+            (Option<&GroupMember>, Option<&Embodies>, Option<&Home>, Has<Cycle>),
         ),
         (With<Monster>, Without<Combatant>),
     >,
@@ -243,7 +243,7 @@ pub(super) fn run(
                     }
                 }
                 ScriptStep::Say { quote, waits } => {
-                    if let (Some(&NpcBody(actor)), Some(quote)) = (npc, *quote) {
+                    if let (Some(&Embodies(actor)), Some(quote)) = (npc, *quote) {
                         commands.trigger(Overheard { actor, quote });
                     }
                     if *waits {
@@ -252,7 +252,7 @@ pub(super) fn run(
                     break;
                 }
                 ScriptStep::Talk { quote } => {
-                    if let Some(&NpcBody(actor)) = npc {
+                    if let Some(&Embodies(actor)) = npc {
                         commands.trigger(Begin { actor, quote: *quote, with_held: false });
                     }
                     running.wait = Some(Wait::Talk);

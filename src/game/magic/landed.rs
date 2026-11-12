@@ -109,11 +109,16 @@ fn drain_back(
     // always in need of budget.
     let need = |victim: Entity| -> Option<u32> {
         let body = bodies.get(victim).ok().filter(|body| !body.vitals.is_dead())?;
-        match (leech.gives, body.character.zip(body.spells)) {
+        match (leech.gives, body.spells) {
             (Leeches::Health, _) => Some(body.vitals.health.current * 100 / body.vitals.health.max),
-            (Leeches::Points, Some((character, (learned, pool)))) => {
-                let maxima =
-                    character.max_points(body.attributes, learned, &content.spells, body.skills);
+            (Leeches::Points, Some((learned, pool))) => {
+                let maxima = crate::game::magic::max_points(
+                    body.level.0,
+                    body.attributes,
+                    learned,
+                    &content.spells,
+                    body.skills,
+                );
                 let most: u32 = maxima.values().sum();
                 let have: u32 =
                     maxima.iter().map(|(realm, _)| pool.available(realm, &maxima)).sum();

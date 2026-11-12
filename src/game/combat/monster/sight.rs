@@ -10,7 +10,7 @@ use bevy::prelude::*;
 use crate::game::actors::{Eyes, Hidden, Laid, Places};
 use crate::game::combat::turn::{Fleeing, SpecialCooldown};
 use crate::game::hits::effects::{BodyReadOnly, BodyReadOnlyItem};
-use crate::game::npcs::NpcBody;
+use crate::game::npcs::Embodies;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::hostility::{self, Stance};
 use crate::game::world::identify::GroupMember;
@@ -27,7 +27,7 @@ pub struct Mind {
     pub casting: &'static Spellcasting,
     /// Rounds before its next special attack.
     pub cooldown: Option<&'static SpecialCooldown>,
-    pub npc: Has<NpcBody>,
+    pub npc: Has<Embodies>,
     /// It ran in an earlier round.
     pub fleeing: Has<Fleeing>,
     pub group: Option<&'static GroupMember>,

@@ -48,7 +48,7 @@ pub struct Strike {
 /// A member practises a skill it may train.
 fn practise(actor: Entity, skill: Skill, fighters: &Query<Fighter>, commands: &mut Commands) {
     let trains = |fighter: attack::FighterReadOnlyItem| {
-        fighter.body.character.is_some_and(|c| c.skill_available(skill))
+        fighter.body.trained().is_some_and(|c| c.can_use(skill))
     };
     if fighters.get(actor).is_ok_and(trains) {
         commands.trigger(Practise { member: actor, skill, usage: 1 });

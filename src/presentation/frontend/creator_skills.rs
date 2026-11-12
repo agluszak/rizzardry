@@ -128,7 +128,7 @@ pub(super) fn refresh(
     let Some(draft) = session.mode.draft() else { return };
     let profile = draft.preview();
     for (row, mut node, mut visibility) in &mut rows {
-        let shown = draft.skill_available(row.0) || profile.skill_points[row.0] > 0;
+        let shown = draft.skill_available(row.0) || profile.training.0[row.0] > 0;
         visibility.set_if_neq(visible_if(shown));
         crate::presentation::screen_art::display_if(&mut node, shown);
         if shown {
@@ -138,7 +138,7 @@ pub(super) fn refresh(
                 .take(row.0 as usize)
                 .filter(|&skill| {
                     category(skill) == group
-                        && (draft.skill_available(skill) || profile.skill_points[skill] > 0)
+                        && (draft.skill_available(skill) || profile.training.0[skill] > 0)
                 })
                 .count();
             let (x, y) =

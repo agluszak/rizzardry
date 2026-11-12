@@ -31,7 +31,7 @@ use bevy::prelude::*;
 use crate::content::items::AttackMode;
 use crate::content::species::AttackWord;
 
-use crate::game::characters::{Character, Dead, Vitals};
+use crate::game::characters::{Dead, Vitals};
 use crate::game::hits::Effect;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
@@ -510,7 +510,7 @@ pub fn begin_round(
     bodies: Query<(
         (&Vitals, &crate::game::characters::Conditions, Has<crate::game::actors::CanFight>),
         &crate::game::actors::Attacks,
-        Option<(&Character, &crate::game::party::Order)>,
+        Option<(crate::game::characters::Schooling, &crate::game::party::Order)>,
     )>,
     settings: Res<CombatSettings>,
     in_flight: Query<(), With<crate::game::hits::Deed>>,

@@ -14,7 +14,7 @@ use rand::Rng;
 
 use super::{LayoutMode, MainScreenArt, ScreenLayout, SelectedMember, layer};
 use crate::content::ui::SpriteSheet;
-use crate::game::characters::{Character, Vitals};
+use crate::game::characters::Vitals;
 use crate::game::hits::Damaged;
 use crate::game::inventory::EquipSlot;
 use crate::game::npcs::conversation::Conversation;
@@ -150,7 +150,7 @@ pub fn build_party_parts(
     art: Res<MainScreenArt>,
     assets: Res<AssetServer>,
     slots: PortraitSlots,
-    members: Query<(), (With<Character>, With<Vitals>)>,
+    members: Query<(), (With<crate::game::characters::Calling>, With<Vitals>)>,
     views: Query<(Entity, &PartyMemberView, &ChildOf)>,
     roots: Query<
         (Entity, Option<&PartySlot>, Option<&SlotPortrait>, Has<PartyWidgetsBuilt>),
@@ -332,7 +332,11 @@ pub fn draw_party(
             let condition = condition_icon(vitals, conditions);
             match part.kind {
                 Part::Portrait => {
-                    let name = if dead { &skull(profile.race)[1..] } else { &profile.portrait };
+                    let name = if dead {
+                        &skull(profile.birth.race)[1..]
+                    } else {
+                        &profile.identity.portrait
+                    };
                     source = Some((
                         crate::content::paths::portrait(
                             crate::content::paths::PortraitSize::Medium,
@@ -391,7 +395,7 @@ pub fn draw_party(
                         None => image(
                             &format!(
                                 "data/main interface/{}.sti",
-                                crate::presentation::screen_art::empty_hands(profile.race)
+                                crate::presentation::screen_art::empty_hands(profile.birth.race)
                                     [usize::from(off)]
                             ),
                             0,
@@ -406,7 +410,7 @@ pub fn draw_party(
                     shown = !dead;
                     value = Some(armour.average().to_string());
                 }
-                Part::Name => value = Some(profile.name.clone()),
+                Part::Name => value = Some(profile.identity.name.clone()),
                 Part::HitPoints => {
                     shown = !dead;
                     value = Some(vitals.health.current.to_string());
@@ -502,7 +506,7 @@ pub fn draw_party(
 pub fn place_party_buttons(
     slots: PortraitSlots,
     layout: Res<ScreenLayout>,
-    members: Query<(), (With<Character>, With<Vitals>)>,
+    members: Query<(), (With<crate::game::characters::Calling>, With<Vitals>)>,
     mut buttons: Query<(&SlotButton, &mut Node)>,
     mut empty: Query<(&EmptySlot, &mut Visibility)>,
 ) {

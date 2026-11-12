@@ -209,7 +209,8 @@ pub(super) fn refresh(
         let skill = role.0.skill();
         let value = if role.1 {
             let learned = crate::game::magic::LearnedSpells(draft.spells());
-            let points = profile.max_points(
+            let points = crate::game::magic::max_points(
+                u32::from(profile.calling.level()),
                 &Attributes::of_sheet(&profile),
                 &learned,
                 catalog,
@@ -217,7 +218,7 @@ pub(super) fn refresh(
             )[role.0];
             format!("{points}/{points}")
         } else {
-            profile.skill_points[skill].to_string()
+            profile.training.0[skill].to_string()
         };
         if label.value != value {
             label.value = value;

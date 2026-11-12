@@ -27,7 +27,7 @@ use super::triggers::DoorState;
 use crate::content::characters::{Attribute, Skill};
 use crate::content::level::{Lock, TRAP_TYPES};
 use crate::content::spells::Working;
-use crate::game::characters::{Character, Practise, Vitals};
+use crate::game::characters::{Calling, Practise, Trained, Vitals};
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
@@ -265,9 +265,9 @@ pub enum Unable {
 
 /// The Locks & Traps level of a member who can act, if they have the skill
 /// to use (retail `GetPartySlotLocksTrapsLevel`).
-pub fn lock_skill(character: &Character, skills: &crate::game::actors::Skills) -> Option<u32> {
+pub fn lock_skill(character: Trained, skills: &crate::game::actors::Skills) -> Option<u32> {
     let level = skills[Skill::LocksAndTraps];
-    (character.skill_available(Skill::LocksAndTraps) || level > 0).then_some(level)
+    (character.can_use(Skill::LocksAndTraps) || level > 0).then_some(level)
 }
 
 /// A member's chance in 100 to inspect a trap, or to disarm one of its
@@ -364,7 +364,7 @@ impl Busy<'_, '_> {
 
 /// A member's Locks & Traps level if they can use it now.
 fn skill(body: &BodyItem) -> Option<u32> {
-    lock_skill(body.character.as_deref().filter(|_| body.can_act)?, body.skills)
+    lock_skill(body.trained().filter(|_| body.can_act)?, body.skills)
 }
 
 /// A member raises a tumbler of the lock being picked.
@@ -650,7 +650,7 @@ fn spring(
 fn release_pins(
     release: On<ReleasePins>,
     mut attempts: Query<&mut DeviceInteraction>,
-    members: Query<(), With<Character>>,
+    members: Query<(), With<Calling>>,
     busy: Busy,
 ) {
     let Ok(mut interaction) = attempts.get_mut(release.attempt) else { return };
@@ -824,6 +824,7 @@ pub(crate) fn plugin(app: &mut App) {
 mod tests {
     use super::*;
     use crate::content::characters::{Gender, Profession, Race};
+    use crate::game::characters::Character;
 
     /// A lock of two tumblers, picked by one skilled enough never to drop a
     /// pin: the first leaves it locked, the second opens it, and the device
@@ -841,7 +842,7 @@ mod tests {
             .add_plugins((plugin, crate::game::actors::plugin));
         let world = app.world_mut();
         let mut thief = Character::new("Thief", Race::Human, Gender::Male, Profession::Rogue);
-        thief.skill_points[Skill::LocksAndTraps] = 100;
+        thief.training.0[Skill::LocksAndTraps] = 100;
         let member = world.spawn((Vitals::new(&thief), thief)).id();
         crate::game::party::roster::test_party(world, &[member]);
         world.run_schedule(crate::game::actors::Settle);

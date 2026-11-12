@@ -6,7 +6,6 @@ use bevy::prelude::*;
 use bevy::time::Stopwatch;
 
 use crate::content::ui::SpriteSheet;
-use crate::game::characters::Character;
 use crate::game::items::{Hidden, Items, Lying};
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::identify::{GroupMember, MonsterGroup, health_known};
@@ -74,10 +73,10 @@ pub fn show_tooltip(
         Query<&GroupMember>,
         Single<&PartyRoster>,
         Query<(
-            &Character,
+            &crate::game::actors::Level,
             &crate::game::actors::Skills,
             Has<crate::game::actors::CanAct>,
-            Has<crate::game::npcs::Npc>,
+            Has<crate::game::npcs::CompanionOf>,
         )>,
     ),
     pointers: Query<(&PointerId, &PointerLocation)>,
@@ -117,8 +116,13 @@ pub fn show_tooltip(
                 .ok()
                 .and_then(|m| groups.get(m.0).ok())
                 .is_some_and(|g| g.identified);
-            let party: Vec<(&Character, &crate::game::actors::Skills, bool, bool)> =
-                members.iter_many(roster.iter()).matched().collect();
+            let party: Vec<(u8, &crate::game::actors::Skills, bool, bool)> = members
+                .iter_many(roster.iter())
+                .matched()
+                .map(|(level, skills, can_act, companion)| {
+                    (level.0 as u8, skills, can_act, companion)
+                })
+                .collect();
             let health = health_known(&party, vitals.health, kind.display_level);
             format!("{} ({health})", kind.shown_name(identified, 1))
         } else {

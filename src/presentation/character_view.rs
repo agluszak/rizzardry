@@ -1,7 +1,7 @@
 //! Named read-only view of the components needed by character summaries.
 use crate::game::{
     actors::{Armour, Attributes, Resistances},
-    characters::{Character, Vitals},
+    characters::Vitals,
     items::{Burden, Items},
 };
 use bevy::ecs::query::QueryData;
@@ -10,7 +10,7 @@ use bevy::prelude::Entity;
 #[derive(QueryData)]
 pub struct CharacterView {
     pub entity: Entity,
-    pub profile: &'static Character,
+    pub profile: crate::game::characters::PaperReadOnly,
     pub vitals: &'static Vitals,
     pub conditions: &'static crate::game::characters::Conditions,
     pub attributes: &'static Attributes,
@@ -18,6 +18,7 @@ pub struct CharacterView {
     pub armour: &'static Armour,
     pub resistances: &'static Resistances,
     pub burden: &'static Burden,
+    pub nature: &'static crate::game::actors::Nature,
     /// The member's action this round, while in a fight.
     pub ordered: Option<&'static crate::game::combat::Ordered>,
 }
@@ -49,7 +50,7 @@ impl CharacterViewItem<'_, '_> {
         crate::game::characters::resistance::Resistance,
     > {
         let sheet = crate::game::characters::resistance::resistances(
-            self.profile,
+            (self.nature, Some(self.profile.trained())),
             self.attributes,
             self.skills,
             |slot| held.protection(self.entity, slot),

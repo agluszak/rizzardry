@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use super::interaction::{AttemptOn, DeviceAttempt, DeviceInteraction, Work};
 use super::props::PropMotion;
 use super::triggers::TriggerEffect;
-use crate::game::characters::Character;
+use crate::game::characters::Calling;
 use crate::game::inventory::PartyInventory;
 use crate::game::items::{
     Bag, Give, Items, Lying, Place, Put, Rejoin, Stows, make, roll_amount, split,
@@ -53,7 +53,7 @@ pub(crate) fn use_container(
     attempts: Query<&DeviceAttempt>,
     mut purse: Single<&mut PartyInventory>,
     party: Single<(Entity, &PartyRoster)>,
-    (profiles, held): (Query<&Character>, Items),
+    (profiles, held): (Query<&Calling>, Items),
     mut rng: ResMut<GameRng>,
     mut outcomes: MessageWriter<TriggerEffect>,
     mut commands: Commands,
@@ -134,7 +134,7 @@ pub(crate) fn take(
     attempts: Query<(&DeviceInteraction, &AttemptOn)>,
     party: Single<Entity, With<PartyRoster>>,
     held: Items,
-    able: Query<(), (With<Character>, With<crate::game::actors::CanAct>)>,
+    able: Query<(), (With<Calling>, With<crate::game::actors::CanAct>)>,
     (entering, battle): (
         Query<(), With<super::level::Destination>>,
         Query<(), With<crate::game::combat::Battle>>,

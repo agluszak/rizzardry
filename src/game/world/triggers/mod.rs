@@ -25,7 +25,7 @@ use crate::content::level::{
     Fountain, LevelDefinition, PropModel, Restores, TriggerAction, TriggerDefinition, TriggerUse,
     VariableName,
 };
-use crate::game::characters::{Character, Vitals};
+use crate::game::characters::{Calling, Vitals};
 use crate::game::hits::Damaged;
 use crate::game::items::Items;
 use crate::game::party::roster::PartyRoster;
@@ -141,7 +141,7 @@ struct FountainUses {
 pub(crate) fn damage_party(
     In(dice): In<Dice>,
     roster: Single<&PartyRoster>,
-    mut members: Query<&mut Vitals, With<Character>>,
+    mut members: Query<&mut Vitals, With<Calling>>,
     mut rng: ResMut<GameRng>,
     mut laying: crate::game::actors::Laying,
     mut damage: MessageWriter<Damaged>,

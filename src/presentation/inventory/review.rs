@@ -4,9 +4,7 @@ use super::{InventoryArt, InventoryScreen, absolute};
 use crate::content::characters::{Attribute, Skill};
 use crate::content::items::EquipClass;
 use crate::content::ui::SpriteSheet;
-use crate::game::actors::Attributes;
 use crate::game::actors::arms::{Hands, Held};
-use crate::game::characters::Character;
 use crate::game::data::Catalogs;
 use crate::game::inventory::EquipSlot;
 use crate::game::items::{Cursed, Items};
@@ -644,8 +642,12 @@ pub(super) fn refresh(
                 Some(art.green.clone())
             }
             Field::SkillName(skill) => {
-                let active =
-                    crate::game::magic::skill_available(profile, learned, spell_catalog, skill);
+                let active = crate::game::magic::skill_available(
+                    profile.trained(),
+                    learned,
+                    spell_catalog,
+                    skill,
+                );
                 let level = skills[skill];
                 let best = level > 0
                     && roster.as_ref().is_some_and(|roster| {
@@ -683,7 +685,7 @@ pub(super) fn refresh(
                     "{} {}",
                     string(
                         crate::content::ui::SKILL_NAMES
-                            + profile.profession.row().bonus_skill as usize
+                            + profile.calling.profession.row().bonus_skill as usize
                     ),
                     string(0x8c5)
                 )
@@ -721,16 +723,22 @@ pub(super) fn refresh(
                             )
                         }
                         3 => hands
-                            .attacks_a_round(profile, skills, attributes, load, primary)
+                            .attacks_a_round(profile.trained(), skills, attributes, load, primary)
                             .to_string(),
-                        4 => hands.swings(profile, skills, attributes, load, primary).to_string(),
+                        4 => hands
+                            .swings(profile.trained(), skills, attributes, load, primary)
+                            .to_string(),
                         5 => format!(
                             "{:+}",
-                            hands.to_hit(profile, skills, attributes, load, primary)
+                            hands.to_hit(profile.trained(), skills, attributes, load, primary)
                         ),
                         7 => format!("{:+}%", hands.damage_percent(attributes, primary)),
-                        8 => (profile.initiative(attributes, load, skills)
-                            + hands.initiative(skills, primary))
+                        8 => (crate::game::actors::figures::trained_initiative(
+                            (u32::from(profile.calling.level()), profile.training),
+                            attributes,
+                            skills,
+                            load,
+                        ) + hands.initiative(skills, primary))
                         .to_string(),
                         _ => String::new(),
                     }
@@ -752,7 +760,7 @@ pub(super) fn refresh(
 pub(super) fn layout_skills(
     spell_state: (Query<&LearnedSpells>, If<Res<Catalogs>>),
     screen: Single<&InventoryScreen>,
-    characters: Query<(&Character, &crate::game::actors::Skills)>,
+    characters: Query<(crate::game::characters::PaperReadOnly, &crate::game::actors::Skills)>,
     mut rows: Query<
         (Entity, &SkillRow, &mut Node, &mut Visibility),
         (Without<Bar>, Without<CategoryIcon>),
@@ -772,9 +780,10 @@ pub(super) fn layout_skills(
     for (_, entity) in ordered {
         let Ok((_, row, mut node, mut visibility)) = rows.get_mut(entity) else { continue };
         let category = skill_category(row.0);
-        let shown = crate::game::magic::skill_available(profile, learned, spell_catalog, row.0)
-            || profile.skill_points[row.0] > 0
-            || skills[row.0] > 0;
+        let shown =
+            crate::game::magic::skill_available(profile.trained(), learned, spell_catalog, row.0)
+                || profile.training.0[row.0] > 0
+                || skills[row.0] > 0;
         crate::presentation::screen_art::display_if(&mut node, shown);
         visibility.set_if_neq(visible_if(shown));
         if shown {
@@ -802,12 +811,10 @@ pub(super) fn layout_skills(
     }
     for (bar, mut crop) in &mut bars {
         let (start, end) = match *bar {
-            Bar::Attribute(attribute) => {
-                (0.0, Attributes::of_sheet(profile)[attribute].min(125) as f32)
-            }
-            Bar::SkillBase(skill) => (0.0, profile.skill_points[skill].min(skills[skill]) as f32),
+            Bar::Attribute(attribute) => (0.0, profile.abilities.0[attribute].min(125) as f32),
+            Bar::SkillBase(skill) => (0.0, profile.training.0[skill].min(skills[skill]) as f32),
             Bar::SkillBonus(skill) => {
-                (profile.skill_points[skill].min(skills[skill]) as f32, skills[skill] as f32)
+                (profile.training.0[skill].min(skills[skill]) as f32, skills[skill] as f32)
             }
         };
         crop.set_if_neq(PictureCrop::horizontal(start, end));

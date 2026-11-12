@@ -5,7 +5,7 @@
 use crate::content::characters::{Realm, Skill};
 use crate::content::items::UseType;
 use crate::content::spells::SpellDefinition;
-use crate::game::characters::{Character, Condition, Load};
+use crate::game::characters::{Condition, Load, Trained};
 use crate::game::hits::effects::BodyReadOnlyItem;
 use crate::game::magic::best_book;
 use crate::game::rng::GameRng;
@@ -51,16 +51,17 @@ pub fn stamina(
 /// `(level + power + 2) / 4`, its realm by `level + power`. An item: the
 /// skill it is used with by `level + power / 2`.
 pub fn practice(
-    character: &Character,
+    character: Trained,
     used: Option<UseType>,
     spell: &SpellDefinition,
     power: u32,
 ) -> Vec<(Skill, u32)> {
     let Some(used) = used else {
         let index = spell.level + power;
-        let mut skills = vec![(best_book(character, spell), (index + 2) >> 2)];
+        let mut skills =
+            vec![(best_book((character.calling, character.training), spell), (index + 2) >> 2)];
         skills.extend(spell.realm.map(|realm| (Realm::skill(realm), index)));
-        if character.skill_available(Skill::PowerCast) {
+        if character.can_use(Skill::PowerCast) {
             skills.push((Skill::PowerCast, (index + 2) >> 2));
         }
         return skills;

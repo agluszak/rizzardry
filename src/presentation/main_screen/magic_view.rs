@@ -25,7 +25,6 @@ use enumset::EnumSet;
 use crate::content::characters::{Realm, Skill};
 use crate::content::spells::{MAX_POWER, PowerChoice, SpellCatalog, SpellDefinition, Targeting};
 use crate::content::ui::SpriteSheet;
-use crate::game::characters::Character;
 use crate::game::characters::Condition;
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
@@ -577,7 +576,7 @@ fn offers<'a>(
     view: &MagicView,
     (member, character, attributes, skills): (
         Entity,
-        &Character,
+        crate::game::characters::Trained,
         &crate::game::actors::Attributes,
         &crate::game::actors::Skills,
     ),
@@ -744,7 +743,7 @@ pub(super) fn draw_magic_view(
     mut views: Query<(&mut MagicView, &MagicScroll, Option<&CastsAt>, Option<&ConversationTarget>)>,
     sliders: Query<(&SliderValue, &SliderRange)>,
     members: Query<(
-        &Character,
+        crate::game::characters::PaperReadOnly,
         &crate::game::characters::Conditions,
         &Attributes,
         &crate::game::actors::Skills,
@@ -798,9 +797,16 @@ pub(super) fn draw_magic_view(
     ) else {
         return;
     };
-    let (character, conditions, attributes, skills) = members.get(view.caster).unwrap();
+    let (paper, conditions, attributes, skills) = members.get(view.caster).unwrap();
+    let character = paper.trained();
     let (learned, points) = casters.get(view.caster).unwrap();
-    let mana_maximum = character.max_points(attributes, learned, spells, skills);
+    let mana_maximum = crate::game::magic::max_points(
+        u32::from(character.calling.level()),
+        attributes,
+        learned,
+        spells,
+        skills,
+    );
     // Realms: their points, the chosen one latched; the first with points
     // chosen when none is.
     if !view.items {
@@ -996,7 +1002,7 @@ pub(super) fn commit_magic_choice(
     content: If<Res<Catalogs>>,
     (conversations, speakers, monsters, party): (
         Query<crate::game::npcs::conversation::DialogueReadOnly>,
-        Query<&crate::game::npcs::NpcBody>,
+        Query<&crate::game::npcs::Embodies>,
         Query<
             (Entity, &crate::game::characters::Vitals, crate::game::world::ActorPose),
             With<crate::game::world::population::Monster>,
@@ -1095,7 +1101,7 @@ fn choose_row(
     rows: Query<&Row>,
     mut views: Query<(&mut MagicView, Option<&CastsAt>, Option<&ConversationTarget>)>,
     members: Query<(
-        &Character,
+        crate::game::characters::PaperReadOnly,
         &crate::game::characters::Conditions,
         &Attributes,
         &crate::game::actors::Skills,
@@ -1116,9 +1122,16 @@ fn choose_row(
         return;
     };
     let spells = &content.spells;
-    let (character, conditions, attributes, skills) = members.get(view.caster).unwrap();
+    let (paper, conditions, attributes, skills) = members.get(view.caster).unwrap();
+    let character = paper.trained();
     let (learned, points) = casters.get(view.caster).unwrap();
-    let mana_maximum = character.max_points(attributes, learned, spells, skills);
+    let mana_maximum = crate::game::magic::max_points(
+        u32::from(character.calling.level()),
+        attributes,
+        learned,
+        spells,
+        skills,
+    );
     let offers = offers(
         &view,
         (view.caster, character, attributes, skills),

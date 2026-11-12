@@ -110,9 +110,9 @@ fn blind_aim_strays(body: &BodyReadOnlyItem, rng: &mut GameRng) -> bool {
     if !body.conditions.has(crate::game::characters::Condition::Blind) {
         return false;
     }
-    let sees_anyway = body.character.is_some_and(|character| {
-        character.has_trait(Trait::EffectiveWhileBlind)
-            && rng.below(100) < character.scale_by_profession(50.0) as u32
+    let sees_anyway = body.trained().is_some_and(|c| {
+        c.traits.contains(Trait::EffectiveWhileBlind)
+            && rng.below(100) < c.calling.scale(50.0) as u32
     });
     !sees_anyway && rng.below(100) < 20
 }

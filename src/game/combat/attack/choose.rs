@@ -256,7 +256,7 @@ mod tests {
     use crate::game::actors::Attacks;
     use crate::game::characters::{Condition, Lasting, Vitals};
     use crate::game::combat::turn::{Action, Ordered};
-    use crate::game::npcs::NpcBody;
+    use crate::game::npcs::Embodies;
     use bevy::ecs::system::SystemState;
     use bevy::prelude::{Single, Vec3, World};
     use enum_map::EnumMap;
@@ -413,7 +413,7 @@ mod tests {
         let member = ordered_party(&mut world, 1);
         let record = world.spawn_empty().id();
         let npc = monster(&mut world, AHEAD, Stance::Hostile);
-        world.entity_mut(npc).insert(NpcBody(record));
+        world.entity_mut(npc).insert(Embodies(record));
         assert_eq!(pick(&mut world, member, &turn()), Chosen::Stand);
         let foe = monster(&mut world, AHEAD, Stance::Hostile);
         assert_eq!(target(pick(&mut world, member, &turn())), foe);
