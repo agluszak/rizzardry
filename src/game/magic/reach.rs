@@ -7,6 +7,7 @@ use bevy::prelude::*;
 use crate::content::spells::{SpellDefinition, Targeting};
 use crate::game::hits::reach::Field;
 use crate::game::magic::may::Refusal;
+use crate::game::rng::GameRng;
 use crate::game::world::hostility::{self, Stance};
 
 /// How fast spell missiles fly: retail's `energy_blast.mls` velocity of 30,
@@ -67,6 +68,61 @@ pub struct Reached {
 }
 
 impl Aiming<'_, '_, '_> {
+    /// Where a spell goes astray to (retail `PickBackfireTarget`,
+    /// `ScatterSpellPointTarget`): one aimed at a body, a friend or a group
+    /// takes another in the fight at random, members and living monsters
+    /// alike, never the caster; a cone, a blast or a point spell a spot at
+    /// random within its reach of the caster. None when nothing else may be
+    /// taken.
+    pub fn astray(&self, rng: &mut GameRng) -> Option<Aim> {
+        let field = self.field;
+        match self.targeting {
+            Targeting::Ally | Targeting::Enemy | Targeting::EnemyGroup => {
+                let members = field.roster.iter().filter(|&member| member != self.caster);
+                let monsters = field.combatants.iter().copied().filter(|&body| {
+                    body != self.caster && !field.roster.contains(&body) && self.alive(body)
+                });
+                let others: Vec<Entity> = members.chain(monsters).collect();
+                (!others.is_empty())
+                    .then(|| Aim::Body(others[rng.below(others.len() as u32) as usize]))
+            }
+            Targeting::Cone | Targeting::Radius | Targeting::Point => {
+                Some(Aim::Point(self.scatter(rng)))
+            }
+            _ => None,
+        }
+    }
+
+    /// A spot at random within the spell's reach of the caster: up to five
+    /// tries for one that stands on ground, each stopped short by what is
+    /// solid in the way; one too far is drawn back to the reach.
+    fn scatter(&self, rng: &mut GameRng) -> Vec3 {
+        let origin = self.field.places.of(self.caster).feet;
+        let reach = self.reach;
+        let obstacles = self.field.obstacles;
+        let mut spot = origin;
+        for _ in 0..5 {
+            let across = |rng: &mut GameRng| (rng.below(2001) as f32 - 1000.0) / 1000.0 * reach;
+            let (x, z) = (across(rng), across(rng));
+            let up = rng.below(1001) as f32 / 1000.0 * reach;
+            let mut point = origin + Vec3::new(x, up, z);
+            if let Ok(way) = Dir3::new(point - origin)
+                && let Some(hit) = obstacles.first_hit(origin, way, origin.distance(point))
+            {
+                point = origin + *way * hit.distance;
+            }
+            spot = point;
+            if let Some(ground) = obstacles.ground_below(point, up + reach) {
+                spot = ground;
+                break;
+            }
+        }
+        if spot.distance(origin) > reach {
+            spot = origin + (spot - origin).normalize_or_zero() * reach;
+        }
+        spot
+    }
+
     fn alive(&self, body: Entity) -> bool {
         self.field.bodies.get(body).is_ok_and(|body| !body.vitals.is_dead())
     }

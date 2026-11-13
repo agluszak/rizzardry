@@ -11,12 +11,13 @@ holds them; nothing else of the original's shape is kept.
 
 | Component | The fact it holds | What changes it |
 | --- | --- | --- |
-| `Attributes` | Strength, Intelligence, Piety, Vitality, Dexterity, Speed, Senses, each 1–125, spells counted | refit |
-| `Level` | The level saves, resistance and special attacks weigh | refit |
-| `Resistances` | Percent per realm; what it cannot suffer; its creature kind; how strongly it casts | refit |
-| `Armour` | Armour overall and by place; what surprise strips; what bracing adds; damage cut; missile deflection | refit |
-| `Attacks` | What it strikes with; when it acts; how hard it presses; how it fares blind or from hiding | refit |
-| `Vitals` | Health and stamina, each what is left and the most there can be; what ails it, each condition with how long it lasts | being hurt, tired, healed, rested, afflicted, cured, aged; refit moves the maxima |
+| `Attributes` | Strength, Intelligence, Piety, Vitality, Dexterity, Speed, Senses, each 1–125, spells counted | its figure's system |
+| `Level` | The level saves, resistance and special attacks weigh | its figure's system |
+| `Resistances` | Percent per realm; what it cannot suffer; its creature kind; how strongly it casts | its figure's system |
+| `Armour` | Armour overall and by place; what surprise strips; what bracing adds; damage cut; missile deflection | its figure's system |
+| `Attacks` | What it strikes with; when it acts; how hard it presses; how it fares blind or from hiding | its figure's system |
+| `Vitals` | Health and stamina, each what is left and the most there can be; what ails it, each condition with how long it lasts | being hurt, tired, healed, rested, afflicted, cured, aged; the maxima follow their sources |
+| `Mending` | What it gains or loses a minute outright; whether its stamina comes back by the breath; what its traits make of recovery | its figure's system |
 | `Side` | The side its group or kind has it on toward the party | the events listed under *Side* |
 | `Loyalty` | The faction it keeps to, if any | being made |
 
@@ -35,46 +36,52 @@ What is **not** on an actor: where it stands. A monster stands where its body
 is; a member stands where the party is. Rules ask for an actor's place and get
 it computed from those; nothing copies it onto the actor.
 
-## Refit
+## Sources and figures
 
-The first five components are written when an actor is made and when it is
-**refitted**. `Refit` is an event fired at one actor. Exactly these fire it:
+An actor has **sources**, written where it is made or where the thing itself
+changes, and **figures**, which rules read and which are worked out from the
+sources.
 
-- the actor is made, or joins or leaves the party;
-- a spell is laid on it or lifted from it — for a spell on the party, at every
-  member;
-- a member's sheet changes: a level, an attribute, a skill point;
-- a member's load band changes;
-- a member's worn gear changes.
+The sources:
 
-Each is fired by the operation that made the change, at the moment it makes
-it. Nothing polls for changes and nothing refits on a timer. (Worn gear is the
-one exception until items are things: it is noticed by a write to what the
-member carries. Slice 3 removes it.)
+- `Abilities`, the seven attributes before anything is laid on them; `Traits`,
+  what it is able to do; `Kind`; `Level`;
+- `Nature`, what it has of itself: natural armour overall, by place and by
+  mode, damage cut, resistances, initiative, mending, what it carries, how far
+  it strides; `NaturalArms`, what it strikes with holding nothing; `Frame`,
+  the health and stamina it was made with;
+- for one who trained: `Calling` (professions and their levels), `Birth`
+  (race and gender), `Training` (skill points), `Practice`, `Experience`;
+- `Modifiers`, what the spells laid on it, and on its party, come to;
+- what it wears and its load; what ails it; what has been `Drained` from it.
 
-What refit writes:
+A monster's sources are written from its species once, as it is made. A
+character's are written at creation and by progression. No rule looks the
+species or the sheet up again, and no rule asks which of the two an actor is:
+one that trained has a `Calling`, and what a `Calling` adds is in the one
+formula.
 
-- **A monster**: attributes, level, kind, immunities, resistances, armour by
-  place and mode, damage reduction, initiative and each attack come from its
-  species record. Armour is 10 less the record's value, so lower is always
-  better guarded.
-- **A member**: attributes from the sheet; level the sum of profession levels;
-  resistances from race, realm skill, Iron Will, high Intelligence and Piety,
-  and what is worn; immunities from traits; armour from Speed, race, load,
-  shield and skill, and what is worn at each place; one thing to strike with
-  per weapon slot in play; maximum health and stamina.
-- **Spells** on the actor, and on the party for a member, are counted: on
-  armour (Armorplate, Bless, Body of Stone, Armormelt), on rating (Bless,
-  Enchanted Blade), on resistance (Magic Screen, Element Shield, Soul Shield),
-  on missiles (Missile Shield), on attributes (Superman, Haste), on damage cut
-  (Body of Stone).
+Each figure has one system, which writes it for every actor one of whose
+sources changed since it last ran: attributes, skills, the maxima of health
+and stamina, resistances, armour, attacks, mending. They run in that order
+as part of settling bodies (see Fitness), so the figures follow their sources
+by the next time rules read them, not inside the operation that changed the
+source. Nothing asks for a figure to be written, and nothing is told that
+one was. What follows from figures is noticed the same way: a member's seat
+in the formation, and what they can no longer wear, which goes to their pack
+or the pool (retail `UnequipUnusableItems`).
 
-Where the original computes one number differently for a member and a monster
-(initiative, armour, to-hit), both formulas are kept. The difference is which
-one fills the component, and it lives only in refit.
+Spells on the actor, and on the party for a member, are counted in
+`Modifiers`: on armour (Armorplate, Bless, Body of Stone, Armormelt), on
+rating (Bless, Enchanted Blade), on resistance (Magic Screen, Element Shield,
+Soul Shield), on missiles (Missile Shield), on attributes (Superman, Haste),
+on damage cut (Body of Stone). Armour by nature is 10 less the species
+record's value, so higher is always better guarded.
 
-When refit moves a member's maximum health or stamina, what they have left
-stays as it is, held to the new maximum.
+When a maximum of health or stamina moves, for any reason (a level, a drain,
+a disease, an attribute), what is left moves by as much (retail
+`RecalculateCharacterHitPoints`, `RecalculateCharacterStamina`); health
+brought to nothing so is death, and the dead keep nothing.
 
 ## Being hurt
 
@@ -97,9 +104,119 @@ infatuation, lifts every spell, empties stamina, and marks the actor `Dead`.
 `Dead` being added is the event the rest of the game reacts to: the fight's
 kill, the loot, the member's seat. Being raised removes it.
 
+Whatever runs an actor's health out says **who did**: the one whose blow,
+spell or breath it was, or nobody for a poison, a cloud's pulse, a trap or a
+device (retail `condition_target`). `Dead` carries that one, and the death
+answers to them: see *Death answers to someone*.
+
 Two other ways health is lost do not go through `hurt`: being **slain** outright
 (no angel, no fatigue) and a member being **drained**, which lowers the maximum
 until the drain is lifted and takes present health with it.
+
+## Time
+
+Source: `GameplayTime.cpp`, `GameTurnsPassedChar`, `AgeMonsterSight`,
+`RegenCharacterStamina`, `RebuildCharacterRegenRates`,
+`RebuildMonsterRegenRates`, `RebuildPartyEffectBlock`.
+
+Time passes in **minutes** (the aging tick, 120 game seconds; a combat round
+is one) and **breaths** (the stamina tick, 1.4 game seconds, which a fight
+does not count). Whatever passes time says how much and at what **pace** the
+party spent it: camping, standing still, walking, running or fighting. The
+time is then gone through in the steps below, each its own event with its
+own observers over the components it is about, for every actor time passes
+for: the living who are `Present` or swallowed, and no sheet without a seat. An actor not of the party is at the
+party's pace only when it camps; otherwise it is fighting if it is in the
+fight and still if not. A level that was away is owed the minutes it missed,
+at the camping pace.
+
+For each actor, in order:
+
+1. **Poison** bites: its strength a minute, half again unless the actor is
+   at rest (still or camping). What wastes its bearer (a negative health
+   figure below) is taken with it, and so is what being **swallowed**
+   takes: one and half the swallower's level a minute, or five when the
+   swallower is nowhere about. All go through `hurt`, with nobody behind
+   them.
+2. **Disease** wears a sheet down (only one with a sheet): on a roll under
+   the minutes out of ten times Vitality, one of four: a lasting condition
+   (Irritated, Nauseated, Slowed, Blind or Insane), a point off an attribute
+   for good, one to four off the most health, or off the most stamina.
+3. **What it gains or loses outright**: its `Mending`'s health, stamina and
+   spell points a minute. A monster's are its species' health and stamina
+   regeneration; a member's are the sum over what they wear in the slots in
+   use. One that breathes gains or loses the stamina figure with every
+   breath as well as every minute.
+4. **Its own recovery**. Health comes back at `(0.4 × most + 20) / 240` a
+   minute, stamina at `(0.9 × most + 20) / 240`, spell points of a realm at
+   `(0.65 × most + 20) / 240`, each times a share:
+
+   | Pace | Health | Stamina of one that breathes |
+   | --- | --- | --- |
+   | Camping | 1 | 1 |
+   | Still | ½ | ½ |
+   | Walking | 0 | 1/10 |
+   | Running | 0 | 0 |
+   | Fighting | 0 | 0 |
+
+   - A member **breathes**: their stamina comes back by the breath. A
+     monster's comes back by the minute, at the health share.
+   - **Disease** leaves a quarter of the health and stamina shares.
+   - **Health Regeneration** multiplies the health share by 16.67 scaled by
+     profession level, and gives half of that at a pace that gives none.
+   - **Stamina Regeneration** gives half again the stamina share; in a
+     fight, where nobody else gets any, it gives 3.3 scaled by profession
+     level, by the minute.
+   - **Spell points** follow the health share before Health Regeneration,
+     never under a half; a Faerie's come back at 1¼ of that, a Lizardman's
+     at ¾.
+   - In a party one of whom has **Camp Recovery**, is alive and has nothing
+     ailing them, every member's three rates are half again. Such a party
+     is marked `Tended` as its members change.
+
+   Parts of a point are carried to the next time, and dropped once the pool
+   is full.
+5. **Conditions age** by the minutes.
+
+A character without a seat in the party is not carried along by its time,
+and neither is one missing from it, unless something swallowed them.
+
+Not here: the underwater fatigue, and infatuation's wasting outside the
+Rapax levels ([survey](../survey.md)).
+
+### Swallowed
+
+Source: `Combat Attack.cpp:3006`; `ConditionsAndEnchantments.cpp`,
+`BindMonsterToCharacterDependence`, `ReleaseMonsterConditionBindings`.
+
+A monster's blow that swallows takes a member whole: they are Missing
+without end, held by that monster, unless they save (Divine, base 22). They
+waste as above, and are let out, Missing no longer, when the monster dies.
+Being held is a relationship to the swallower; one brought back some other
+way is held no longer.
+On a monster the same blow kills outright instead (Divine, base 24).
+
+Not here: the swallower's group retiring from its encounter's budget.
+
+## Death answers to someone
+
+Source: `MonsterManager.cpp`, `RecordMonsterKill`; `Factions.cpp`,
+`RecordFactionOffense`.
+
+- A monster's death counts against its **faction** only when a member of the
+  party or a monster friendly to it ran its health out. A summoned monster's
+  never does. The cost is 20 for an NPC's body, what the story's table says
+  for a few species, and otherwise 2, 6 or 10 by how often the party has
+  offended that faction.
+- In a fight, a hostile's death is a **kill**: its experience goes to the
+  fight's spoils, and a member who killed it has it counted.
+  If the species is marked notable and its level is at least the party's
+  average level plus two, the killer speaks (event 25).
+- A member's kills and deaths are their `Tally`, apart from the sheet their
+  figures are made from.
+- When no member is left who is neither dead nor missing, the **party has
+  fallen** (retail `BeginPartyDeath`): one event, at which a fight under way
+  is lost and the game is over.
 
 ## Conditions
 
@@ -109,16 +226,8 @@ Blind, Turncoat, Webbed, Asleep, Paralyzed, Unconscious. An actor has each at
 most once, for a number of rounds or until lifted. Poison carries how hard it
 bites.
 
-What an actor can do follows from its worst condition:
-
-| It can… | when nothing is as bad as |
-| --- | --- |
-| act outside a fight (search, trade, rest) | Turncoat |
-| look, keep watch, identify | Insane |
-| guard a fellow | Blind |
-| take, or be the target of, a combat action | Asleep |
-
-Three operations change conditions, and each says what it did:
+Conditions are a component of their own beside the body's health and
+stamina. Three operations change them:
 
 - **afflict**: a longer duration replaces a shorter, never the reverse. Slowing
   a hasted actor first spends the slowing on the haste; hasting a slowed one
@@ -127,10 +236,40 @@ Three operations change conditions, and each says what it did:
 - **age**: timed conditions count down and lift at nothing; a poison weakens as
   it runs its course.
 
-Nothing is copied out of a condition when it begins or ends. What depends on
-one reads it where it is needed: the side an actor is on now is its side
-turned about while it is Turncoat; its eyes are shut while it is Blind or
-cannot fight.
+What a condition takes off attributes, skills, armour and to-hit
+(`assets/tables/conditions.ron`) is in its figures: an actor's `Skills`
+are a component like its `Attributes`, and every rule reads those. Other
+rules read a condition where it is needed: the side an actor is on now is its
+side turned about while it is Turncoat; its eyes are shut while it is Blind.
+
+## Fitness
+
+No rule asks a body whether it can act. Whoever changes a body changes its
+numbers (health, stamina, conditions) and says nothing more. A few small
+systems, the `Settle` schedule, run before each frame's rules and after each
+moment of a fight, see the change and settle what follows, in this order:
+
+- stamina spent leaves the body out cold; above 9 it comes round;
+- health run out fells it (`Fell`, settled as before: a Valkyrie may cheat
+  it, anyone else is `Dead`); health back on one of the dead ends that;
+- each member's load is weighed (not in a fight);
+- the figures whose sources changed are written anew;
+- what it is fit for is marked on it.
+
+What an actor is fit for is a marker component, there while it is alive and
+nothing ails it as badly as:
+
+| Marker | It can… | Lost at |
+| --- | --- | --- |
+| `Lucid` | look, keep watch, identify | Insane |
+| `CanGuard` | guard a fellow | Blind |
+| `CanAct` | act outside a fight (search, trade, rest) | Turncoat |
+| `CanFight` | take, or be the target of, a combat action | Asleep |
+| `Present` | be reached by passing time | Missing |
+
+Rules filter on the markers and react to their coming and going. A round's
+end does what it does to bodies, waits for that to be settled, and only then
+judges the fight.
 
 ## Spells laid
 
@@ -148,9 +287,9 @@ a fight, whether it pulses each round. A bearer has each spell at most once.
 - **spend**: Razor Cloak and Eye for an Eye lose a point of power each time
   they answer, and lift at nothing. Guardian Angel loses what it absorbs.
 
-A spell coming onto a bearer or going from it refits the bearer; that is the
-relationship's own event, so no operation has to remember to. Refit sums what
-the spells on an actor, and on its party, add.
+A spell coming onto a bearer or going from it leaves the bearer's figures
+stale, and they are written anew as bodies are settled; no operation has to
+remember to. `Modifiers` sums what the spells on an actor, and on its party, add.
 
 What lasts only a fight (Bless, Armormelt, the shields, the clouds, Ring of
 Fire) lifts when the fight ends. The dead keep no spells.
@@ -198,3 +337,39 @@ level and Chameleon) are likewise computed when asked, from the facts above.
 - **bracing**, from defending this round;
 - **being on the move**, from walking or the party running this round;
 - **place**.
+
+## Condition modifiers
+
+Source: `Gameplay Mods.cpp`, `ApplyConditionModifiers`; `character_skills.cpp`,
+`ResetCharacterAttributes` and `GetEffectiveSkillLevel`; `GameplayCode.cpp`,
+`CalcArmorClasses`.
+
+| Condition | Attributes | To hit | Armour | Skills |
+| --- | --- | --- | --- | --- |
+| Irritated | — | −2 | −2 | — |
+| Nauseated | — | −5 | −4 | — |
+| Slowed | Speed −50 | — | — | — |
+| Afraid | — | −3 | −2 | — |
+| Poisoned | — | −2 | −2 | — |
+| Hexed | All −20 | −5 | — | All −20 |
+| Insane | Intelligence −50 | — | — | — |
+| Blind | Senses −50 | — | — | — |
+| Webbed | Dexterity −50 | — | — | — |
+
+Modifiers add together, including spells, before attributes are clamped to
+1–125 and skills to 0–125. The profession's skill bonus is added before that
+clamp. A member with Effective While Blind offsets the Senses penalty by
+`scale_by_level(profession level, 50)` and keeps their formation place.
+Monsters receive the ordinary blindness attribute penalty, even when their
+kind allows blind combat.
+
+Blind members without that trait, and Webbed, Asleep, Paralyzed or Unconscious
+members, give up their formation place while affected, as the dead and the
+missing do. They return to their
+remembered row if it has room. Their global armour is capped at −5 before
+local equipment armour is added. A member worse than Unconscious (dead or
+missing) loses race, speed, skill, spell, condition, load and defending armour
+contributions; worn armour remains.
+
+Stealth contributes its effective level divided by 10 to armour. An active
+Reflextion skill contributes its effective level divided by 20, plus one.

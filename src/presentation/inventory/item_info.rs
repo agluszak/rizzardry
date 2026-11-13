@@ -138,13 +138,15 @@ pub(super) fn refresh(
     let view = members.get(screen.member).unwrap();
     let load = view.load();
     let armour = view.armour();
-    let CharacterViewItem { profile: character, vitals, attributes, burden, .. } = view;
+    let CharacterViewItem { profile: character, vitals, attributes, burden, nature, .. } = view;
 
     let weight = burden.weight;
     for (kind, mut text) in &mut values {
         let (value, palette) = match *kind {
-            Value::Experience => (format_gold(character.experience), None),
-            Value::Goal => (format_gold(character.experience_goal()), None),
+            Value::Experience => (format_gold(character.experience.earned), None),
+            Value::Goal => {
+                (format_gold(character.calling.experience_goal(character.experience)), None)
+            }
             Value::HitPoints => (format!("{}/{}", vitals.health.current, vitals.health.max), None),
             Value::Stamina => (format!("{}/{}", vitals.stamina.current, vitals.stamina.max), None),
             Value::Load => {
@@ -155,7 +157,14 @@ pub(super) fn refresh(
                     Load::Heavy => Some(art.yellow.clone()),
                     Load::Extreme => Some(art.red.clone()),
                 };
-                (format!("{}/{}", weight / 10, character.capacity(attributes) / 10), palette)
+                (
+                    format!(
+                        "{}/{}",
+                        weight / 10,
+                        crate::game::characters::capacity(attributes, nature.carry_factor) / 10
+                    ),
+                    palette,
+                )
             }
             Value::BaseArmour => (armour.total.to_string(), None),
             Value::AverageArmour => (armour.average().to_string(), None),
@@ -168,9 +177,10 @@ pub(super) fn refresh(
             text.palette = palette;
         }
     }
-    let progress = (character.experience.max(character.experience_previous_goal)
-        - character.experience_previous_goal) as f32
-        / (character.experience_goal() - character.experience_previous_goal).max(1) as f32;
+    let progress = (character.experience.earned.max(character.experience.last_goal)
+        - character.experience.last_goal) as f32
+        / (character.calling.experience_goal(character.experience) - character.experience.last_goal)
+            .max(1) as f32;
     for mut bar in &mut bars {
         bar.set_if_neq(PictureCrop::horizontal(0.0, (103.0 * progress.clamp(0.0, 1.0)).floor()));
     }

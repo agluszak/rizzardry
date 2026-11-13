@@ -12,7 +12,7 @@ use crate::content::items::UseType;
 use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId, Working};
 use crate::game::actors::{Place, Places};
 use crate::game::camp::Camp;
-use crate::game::characters::{Character, Profession};
+use crate::game::characters::{Profession, Trained};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::freedom::Freedom;
@@ -25,8 +25,8 @@ use crate::game::magic::portals::Portal;
 use crate::game::magic::reach::{Aim, Marked};
 use crate::game::magic::roll::{self, Pace};
 use crate::game::magic::{power, total_caster_level, traps};
+use crate::game::npcs::People;
 use crate::game::npcs::conversation::{Conversation, DialogueReadOnly};
-use crate::game::npcs::{Npc, NpcBodies};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::interaction::{AttemptOn, DeviceInteraction, Guarded, Work};
@@ -51,6 +51,9 @@ pub struct Circumstances<'w, 's> {
     attempts: Query<'w, 's, &'static DeviceInteraction>,
     conversation: Option<Single<'w, 's, DialogueReadOnly>>,
     states: Query<'w, 's, &'static LevelState, With<Level>>,
+    footing:
+        Query<'w, 's, &'static bevy_tnua::TnuaController<crate::game::party::body::PartyMotion>>,
+    parts: Query<'w, 's, (), With<crate::game::world::props::PropPart>>,
 }
 
 /// What a utility spell may be aimed at: an item the party has, a lock or
@@ -63,7 +66,7 @@ pub struct Marks<'w, 's> {
     attempts: Query<'w, 's, (&'static DeviceInteraction, &'static AttemptOn)>,
     devices: Query<'w, 's, Has<Guarded>>,
     conversation: Option<Single<'w, 's, &'static Conversation>>,
-    speakers: Query<'w, 's, (&'static Npc, Option<&'static NpcBodies>)>,
+    people: People<'w, 's>,
     monsters: Query<'w, 's, &'static LevelOwned, With<Monster>>,
     levels: Query<'w, 's, (), With<Level>>,
     portals: Query<'w, 's, &'static Portal>,
@@ -96,9 +99,9 @@ impl ItemUse<'_> {
 #[derive(Clone, Copy)]
 pub enum Means<'b> {
     /// A learned spell at the power asked for, paid in points of its realm.
-    Learned { character: &'b Character, asked: u32 },
+    Learned { character: Trained<'b>, skills: &'b crate::game::actors::Skills, asked: u32 },
     /// An item's spell, paid with one use of the item.
-    Item { character: &'b Character, item: ItemUse<'b> },
+    Item { character: Trained<'b>, skills: &'b crate::game::actors::Skills, item: ItemUse<'b> },
     /// A monster's own casting at the power it chose: its budget stands in
     /// for skill, its level sets the strength, and it pays nothing.
     Own { power: u32, budget: u32, level: u8 },
@@ -133,7 +136,7 @@ impl<'b> Means<'b> {
     }
 
     /// The member casting, whose skills are practised; a monster has none.
-    pub fn character(&self) -> Option<&'b Character> {
+    pub fn character(&self) -> Option<Trained<'b>> {
         match *self {
             Means::Learned { character, .. } | Means::Item { character, .. } => Some(character),
             Means::Own { .. } => None,
@@ -146,11 +149,15 @@ impl<'b> Means<'b> {
     /// member's learned spell, or the item they use. None for a monster asked
     /// for a member's means, or an item that is no longer there or casts
     /// nothing.
-    pub fn of(source: Source, caster: &BodyReadOnlyItem<'b, '_>, held: &'b Items) -> Option<Self> {
+    pub fn of(
+        source: Source,
+        caster: &'b BodyReadOnlyItem<'_, '_>,
+        held: &'b Items,
+    ) -> Option<Self> {
         Some(match source {
             Source::Innate { power, budget, level, .. } => Means::Own { power, budget, level },
             Source::Spell { power, .. } => {
-                Means::Learned { character: caster.character?, asked: power }
+                Means::Learned { character: caster.trained()?, skills: caster.skills, asked: power }
             }
             Source::Item(item) => {
                 if held.bearer(item) != Some(caster.entity) && !held.pooled(item) {
@@ -161,7 +168,7 @@ impl<'b> Means<'b> {
                     casts: held.casts(item)?,
                     identified: held.known(item)?.identified,
                 };
-                Means::Item { character: caster.character?, item: used }
+                Means::Item { character: caster.trained()?, skills: caster.skills, item: used }
             }
         })
     }
@@ -178,18 +185,18 @@ impl<'b> Means<'b> {
     pub fn figure(&self, spell: &SpellDefinition) -> (u32, u32) {
         match self {
             Means::Own { level, .. } => (u32::from(*level), 0),
-            Means::Item { character, item } => {
+            Means::Item { character, item, .. } => {
                 let figure = match item.casts.by {
-                    UseType::Instrument => character.profession_levels[Profession::Bard],
-                    UseType::Gadget => character.profession_levels[Profession::Gadgeteer],
-                    _ => character.level(),
+                    UseType::Instrument => character.calling.levels[Profession::Bard],
+                    UseType::Gadget => character.calling.levels[Profession::Gadgeteer],
+                    _ => character.calling.level(),
                 };
                 (u32::from(figure), 0)
             }
-            Means::Learned { character, .. } => {
-                let figure = total_caster_level(character, spell.books).max(0) as u32;
-                let cast_skill = character.skill(Skill::PowerCast);
-                (figure, power::boost(cast_skill, character.skill_available(Skill::PowerCast)))
+            Means::Learned { character, skills, .. } => {
+                let figure = total_caster_level(character.calling, spell.books).max(0) as u32;
+                let cast_skill = skills[Skill::PowerCast];
+                (figure, power::boost(cast_skill, character.can_use(Skill::PowerCast)))
             }
         }
     }
@@ -207,11 +214,11 @@ impl<'b> Means<'b> {
     ) -> (u32, bool) {
         match self {
             Means::Own { budget, .. } => (roll::spell_failure(*budget, spell, power), false),
-            Means::Item { character, item } => {
-                roll::item(character, (item.casts, item.identified), spell, power, pace)
+            Means::Item { character, item, skills } => {
+                roll::item(*character, skills, (item.casts, item.identified), spell, power, pace)
             }
-            Means::Learned { character, .. } => {
-                (roll::learned(character, spell, power, pace, on_oneself), false)
+            Means::Learned { character, skills, .. } => {
+                (roll::learned(*character, skills, spell, power, pace, on_oneself), false)
             }
         }
     }
@@ -241,7 +248,18 @@ impl Circumstances<'_, '_> {
             occupied: !self.freedom.unoccupied(),
             camped: self.camp.is_some(),
             spoken_to: self.conversation.as_ref().is_some_and(|talk| talk.idle()),
+            unsteady: self.unsteady(),
         }
+    }
+
+    /// The party is not on steady ground: in the air, or standing on a
+    /// prop (retail `HasLevelWalkableContact`, the prop-contact flag).
+    fn unsteady(&self) -> bool {
+        self.footing.iter().next().is_some_and(|controller| {
+            let airborne = controller.is_airborne().unwrap_or(false);
+            let on = controller.basis_access().ok().and_then(|b| b.memory.standing_on_entity());
+            airborne || on.is_some_and(|on| self.parts.contains(on))
+        })
     }
 
     /// Whether the party is under water, which quenches Fire.
@@ -253,8 +271,8 @@ impl Circumstances<'_, '_> {
 /// Whether a silence leaves a caster their Alchemy: a member with the skill,
 /// a monster of a kind that keeps it.
 pub fn keeps_alchemy(caster: &BodyReadOnlyItem, kinds: &Query<&Spellcasting>) -> bool {
-    match caster.character {
-        Some(character) => character.skill(Skill::Alchemy) > 0,
+    match caster.calling {
+        Some(_) => caster.skills[Skill::Alchemy] > 0,
         None => kinds.get(caster.entity).is_ok_and(|casting| casting.silent_alchemy),
     }
 }
@@ -304,8 +322,7 @@ impl Marks<'_, '_> {
             (Working::Charm | Working::Mindread, Aim::Body(aimed)) => {
                 // The living body of the one talked with, in the level played.
                 let speaker = self.conversation.as_ref().and_then(|conversation| {
-                    let (_, standing) = self.speakers.get(conversation.actor).ok()?;
-                    standing?.iter().find(|&body| {
+                    self.people.body(conversation.actor).filter(|&body| {
                         self.monsters.get(body).is_ok_and(|level| self.levels.contains(level.0))
                             && alive(body)
                     })
@@ -350,12 +367,16 @@ pub fn affordable(
     spell: &SpellDefinition,
     spells: &SpellCatalog,
 ) -> u32 {
-    let (Some(character), Some((learned, pool)), Some(realm)) =
-        (caster.character, caster.spells, spell.realm)
-    else {
+    let (Some((learned, pool)), Some(realm)) = (caster.spells, spell.realm) else {
         return 0;
     };
-    let maximum = character.max_points(caster.attributes, learned, spells);
+    let maximum = crate::game::magic::max_points(
+        caster.level.0,
+        caster.attributes,
+        learned,
+        spells,
+        caster.skills,
+    );
     power::affordable(pool.available(realm, &maximum), spell.cost)
 }
 
@@ -377,10 +398,11 @@ pub fn power_of(
 ) -> Option<u32> {
     Some(match means {
         Means::Own { power, .. } => *power,
-        Means::Item { character, item } if item.played() => {
+        Means::Item { character, item, skills } if item.played() => {
             let unpaced = Pace { difficulty: Difficulty::Normal, moment: 0 };
             let chances = std::array::from_fn(|power| {
-                roll::item(character, (item.casts, true), spell, power as u32 + 1, unpaced).0
+                roll::item(*character, skills, (item.casts, true), spell, power as u32 + 1, unpaced)
+                    .0
             });
             match power::played(rng, chances) {
                 0 => return None,
@@ -388,7 +410,7 @@ pub fn power_of(
             }
         }
         Means::Item { item, .. } => item.casts.power,
-        Means::Learned { character, asked } => {
+        Means::Learned { character, asked, skills } => {
             let affordable = affordable(caster, spell, &content.spells);
             if *asked != power::AUTO {
                 return Some(power::chosen(*asked, affordable, spell.power));
@@ -402,12 +424,12 @@ pub fn power_of(
             let victim = cast.choice.aim.body().and_then(|aimed| bodies.get(aimed).ok());
             let row = content.spell_row(spell.id);
             let failure = std::array::from_fn(|power| {
-                roll::learned(character, spell, power as u32 + 1, pace, false)
+                roll::learned(*character, skills, spell, power as u32 + 1, pace, false)
             });
             power::auto(
                 spell,
                 (row.and_then(|row| row.restores), row.map_or(&[], |row| &row.outlasts)),
-                victim.as_ref().map(|victim| (victim.vitals, victim.member)),
+                victim.as_ref().map(|victim| (victim.vitals, victim.conditions, victim.member)),
                 affordable,
                 failure,
                 identify,
@@ -437,12 +459,16 @@ impl Recast {
 /// Whether an auto cast's caster can go again: stamina past the spell's
 /// level and points for it at power 1.
 pub fn goes_again(caster: &BodyReadOnlyItem, spell: &SpellDefinition, content: &Catalogs) -> bool {
-    let (Some(character), Some((learned, pool)), Some(realm)) =
-        (caster.character, caster.spells, spell.realm)
-    else {
+    let (Some((learned, pool)), Some(realm)) = (caster.spells, spell.realm) else {
         return false;
     };
-    let maximum = character.max_points(caster.attributes, learned, &content.spells);
+    let maximum = crate::game::magic::max_points(
+        caster.level.0,
+        caster.attributes,
+        learned,
+        &content.spells,
+        caster.skills,
+    );
     power::goes_again(
         caster.vitals.stamina.current,
         spell.level,
@@ -461,14 +487,18 @@ pub fn resolvable(spell: &SpellDefinition, content: &Catalogs) -> bool {
 /// validates again.
 pub fn usable_items(
     member: Entity,
-    character: &Character,
+    (character, attributes, skills): (
+        Trained,
+        &crate::game::actors::Attributes,
+        &crate::game::actors::Skills,
+    ),
     held: &Items,
     content: &Catalogs,
 ) -> Vec<(Entity, SpellId)> {
     held.carried(member)
         .filter_map(|item| {
             let worn = held.slot(item).is_some_and(|slot| slot.is_active());
-            Some((item, usable_item(character, item, held, content, worn)?))
+            Some((item, usable_item((character, attributes, skills), item, held, content, worn)?))
         })
         .collect()
 }
@@ -477,14 +507,18 @@ pub fn usable_items(
 /// they may activate (worn, if it must be), with a charge left, whose
 /// effect the game resolves.
 pub fn usable_item(
-    character: &Character,
+    (character, attributes, skills): (
+        Trained,
+        &crate::game::actors::Attributes,
+        &crate::game::actors::Skills,
+    ),
     item: Entity,
     held: &Items,
     content: &Catalogs,
     worn: bool,
 ) -> Option<SpellId> {
     let cast = held.casts(item)?;
-    (may::activates(cast, worn, character)
+    (may::activates(cast, worn, character, attributes, skills)
         && held.charges(item) != Some(0)
         && resolvable(content.spells.get(cast.spell)?, content))
     .then_some(cast.spell)

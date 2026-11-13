@@ -44,6 +44,7 @@ pub(crate) fn discharge(
         rows: Rows::Spell(id),
         strength: power::strength(0, sprung.power, 0, spell),
         blow: None,
+        by: None,
     };
     (sprung.destroyed, Deed::at(strike, sprung.victims))
 }

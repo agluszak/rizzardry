@@ -33,7 +33,7 @@ pub fn closes_in(own: &BodyReadOnlyItem, mind: &MindItem, gap: f32) -> bool {
 /// `UpdateMonsterAI`'s `RETURN_TO_START`): it has no arm, or it is blind,
 /// does not fight blind, and has nobody in reach.
 pub fn cannot_strike(own: &BodyReadOnlyItem, gap: f32) -> bool {
-    let blind = own.vitals.conditions.has(Condition::Blind) && own.attacks.blind_fighting.is_none();
+    let blind = own.conditions.has(Condition::Blind) && own.attacks.blind_fighting.is_none();
     own.attacks.arms.is_empty() || (blind && !reaches_party(own.attacks, gap))
 }
 
@@ -79,7 +79,7 @@ impl MoveBudget {
     /// What a monster may move now: it charges when hurt.
     pub fn of(own: &BodyReadOnlyItem) -> Self {
         let charge = charges(own.vitals.health.current, own.vitals.health.max);
-        let slowed = own.vitals.conditions.has(Condition::Slowed);
+        let slowed = own.conditions.has(Condition::Slowed);
         MoveBudget { metres: metres(own.attacks, slowed, charge), charge }
     }
 }

@@ -28,7 +28,7 @@ use super::retail_controls::FocusRing;
 use super::screen_art::{BitmapText, visible_if};
 use crate::content::level::TRAP_TYPES;
 use crate::content::ui::SpriteSheet;
-use crate::game::characters::{Character, Vitals};
+use crate::game::characters::Vitals;
 use crate::game::items::Items;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::containers::Recipient;
@@ -378,7 +378,13 @@ fn draw_device_panel(
     panels: Query<(&PanelOf, &DevicePanel)>,
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
-    members: Query<(&Character, &Vitals, &crate::game::actors::Attributes)>,
+    members: Query<(
+        crate::game::characters::PaperReadOnly,
+        &Vitals,
+        &crate::game::actors::Attributes,
+        &crate::game::actors::Skills,
+    )>,
+    able: Query<(), With<crate::game::actors::CanAct>>,
     held: Items,
     content: If<Res<crate::game::data::Catalogs>>,
     strings: crate::presentation::screen_art::GameStrings,
@@ -388,8 +394,11 @@ fn draw_device_panel(
     let Ok((panel_of, panel)) = panels.single() else { return };
     let Ok((interaction, on)) = attempts.get(panel_of.0) else { return };
     let member = selected.member(&roster).map(|m| (m, members.get(m).unwrap()));
-    let name = member.map_or(String::new(), |(_, (c, ..))| c.name.clone());
-    let skill = member.and_then(|(_, (c, v, _))| interaction::lock_skill(c, v));
+    // What the selected member can do, they can do only while they can act.
+    let able = member.as_ref().filter(|(m, _)| able.contains(*m));
+    let name = member.as_ref().map_or(String::new(), |(_, (c, ..))| c.identity.name.clone());
+    let skill =
+        able.and_then(|(_, (c, _, _, skills))| interaction::lock_skill(c.trained(), skills));
     let trap_name = |trap: usize| {
         let name = strings.get(crate::content::ui::TRAP_NAMES + trap);
         if name.is_empty() { "Trap" } else { name }.to_owned()
@@ -406,7 +415,7 @@ fn draw_device_panel(
             (Caption::Title, Work::Disarming(_)) => "Trapped".to_owned(),
             (Caption::Title, Work::Looting) => "Contents".to_owned(),
             (Caption::Status, Work::Picking(picking)) => {
-                let force = member.and_then(|(_, (_, v, a))| {
+                let force = able.and_then(|(_, (_, v, a, _))| {
                     let strength = a[crate::content::characters::Attribute::Strength];
                     interaction::force_chance(strength, v, picking.tumblers.len(), *difficulty)
                 });
@@ -430,7 +439,11 @@ fn draw_device_panel(
                     let mark = if disarming.disarmed[index] {
                         "ok"
                     } else {
-                        match member.and_then(|(m, _)| disarming.observed(m)).map(|s| s[index]) {
+                        match member
+                            .as_ref()
+                            .and_then(|(m, _)| disarming.observed(*m))
+                            .map(|s| s[index])
+                        {
                             Some(Observation::Present) => "!",
                             Some(Observation::Absent) => "-",
                             Some(Observation::Unknown) | None => "?",
@@ -479,7 +492,7 @@ fn draw_device_panel(
             (Control::Tumbler(index), Work::Picking(picking)) => {
                 skill.is_some() && picking.tumblers.get(index).is_some_and(|pin| !pin.raised())
             }
-            (Control::Force, Work::Picking(picking)) => member.is_some_and(|(_, (_, v, a))| {
+            (Control::Force, Work::Picking(picking)) => able.is_some_and(|(_, (_, v, a, _))| {
                 let strength = a[crate::content::characters::Attribute::Strength];
                 interaction::force_chance(strength, v, picking.tumblers.len(), *difficulty)
                     .is_some()
@@ -490,9 +503,7 @@ fn draw_device_panel(
                     && !disarming.disarmed[index]
             }
             (Control::Inspect, _) => skill.is_some(),
-            (Control::Cast | Control::UseItem, _) => {
-                member.is_some_and(|(_, (_, vitals, _))| vitals.can_act())
-            }
+            (Control::Cast | Control::UseItem, _) => able.is_some(),
             (Control::Less(id) | Control::More(id), _) => {
                 stacks.contains(&id) && held.units(id) > 1
             }

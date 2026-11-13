@@ -2,7 +2,6 @@
 
 pub mod body;
 pub mod formation;
-pub mod recovery;
 pub mod roster;
 pub mod walk_in;
 
@@ -12,9 +11,31 @@ use bevy_tnua::prelude::*;
 use bevy_tnua_avian3d::prelude::*;
 
 use crate::game::GameplaySet;
-use crate::game::characters::Character;
 use crate::game::hits::Damaged;
 use crate::game::world::level::level_active;
+
+/// The party has fallen: none of it is left who is neither dead nor missing
+/// (retail `BeginPartyDeath`). Whatever that ends reacts: the fight, the
+/// game.
+#[derive(Event, Clone, Copy, Debug)]
+pub struct PartyFell;
+
+/// Once a death is settled, the party has fallen if nobody of it is left.
+pub(crate) fn fall(
+    _: On<crate::game::characters::Settled>,
+    roster: Single<&roster::PartyRoster>,
+    members: Query<(&crate::game::characters::Vitals, &crate::game::characters::Conditions)>,
+    mut commands: Commands,
+) {
+    let gone = |member| {
+        members.get(member).is_ok_and(|(vitals, conditions)| {
+            vitals.is_dead() || conditions.has(crate::game::characters::Condition::Missing)
+        })
+    };
+    if roster.iter().all(gone) {
+        commands.trigger(PartyFell);
+    }
+}
 
 /// A member's standing choice for the next round. Recruitment starts on
 /// Attack (retail `ResetPartySlotRow`).
@@ -44,8 +65,11 @@ impl Plugin for PartyPlugin {
         .insert_resource(Gravity(Vec3::NEG_Y * body::GRAVITY))
         .add_message::<body::PartyLook>()
         .add_message::<body::TurnParty>()
-        .add_observer(formation::vacate_seat)
-        .add_observer(formation::retake_seat)
+        .add_systems(
+            crate::game::actors::Settle,
+            formation::keep_seat.after(crate::game::actors::Written),
+        )
+        .add_observer(body::look_at)
         .add_systems(
             Update,
             body::look_around
@@ -80,15 +104,8 @@ impl Plugin for PartyPlugin {
 
 /// The lowest level among those who can fight, which weakens monsters' sight
 /// from behind.
-pub fn lowest_level<'a>(
-    members: impl IntoIterator<Item = (&'a Character, &'a crate::game::characters::Vitals)>,
-) -> i32 {
-    members
-        .into_iter()
-        .filter(|(_, v)| v.can_fight())
-        .map(|(c, _)| i32::from(c.level()))
-        .min()
-        .unwrap_or(0)
+pub fn lowest_level(able: impl IntoIterator<Item = u32>) -> i32 {
+    able.into_iter().map(|level| level as i32).min().unwrap_or(0)
 }
 
 /// The mean of these levels, fractions kept, one when there are none
@@ -130,7 +147,6 @@ pub fn average_level(levels: impl IntoIterator<Item = u8>) -> u32 {
 
 /// Hurt a member past any Guardian Angel on them
 /// ([`crate::game::characters::Vitals::hurt`]) and report what it cost them.
-/// Whoever hurt them says so if they fell ([`crate::game::characters::Fell`]).
 pub fn damage_member(
     member: Entity,
     vitals: &mut crate::game::characters::Vitals,
@@ -138,7 +154,7 @@ pub fn damage_member(
     laying: &mut crate::game::actors::Laying,
     damage: &mut MessageWriter<Damaged>,
 ) -> u32 {
-    let lost = vitals.hurt(laying.absorb(member, amount));
+    let lost = vitals.hurt(laying.absorb(member, amount), None);
     if lost > 0 {
         damage.write(Damaged { body: member, amount: lost, died: vitals.is_dead() });
     }
@@ -182,9 +198,14 @@ mod tests {
             ),
             ..default()
         });
-        let first = world.spawn(Vitals::full(10, 20)).id();
+        let sheet = crate::game::characters::Character::new(
+            "F",
+            crate::game::characters::Race::Human,
+            crate::game::characters::Gender::Male,
+            crate::game::characters::Profession::Fighter,
+        );
+        let first = world.spawn((Vitals::full(10, 20), sheet)).id();
         roster::test_party(&mut world, &[first]);
-        world.add_observer(formation::vacate_seat);
         use crate::game::actors::{Enchantment, Laying};
         use bevy::ecs::system::RunSystemOnce;
         world
@@ -219,10 +240,8 @@ mod tests {
         }
         let reported: Vec<_> = world.resource_mut::<Messages<Damaged>>().drain().collect();
         assert_eq!(reported, [Damaged { body: first, amount: 10, died: true }]);
-        // Settling the death gives up the member's seat.
-        world.add_observer(crate::game::characters::fall);
-        world.trigger(crate::game::characters::Fell { body: first });
-        world.flush();
+        // The dead give up their seat.
+        world.run_system_cached(formation::keep_seat).unwrap();
         let formation = world.query::<&formation::Formation>().single(&world).unwrap();
         assert!(formation.row_of(first).is_none(), "the dead give up their seat");
     }

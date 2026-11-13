@@ -50,7 +50,7 @@ pub fn stands_with(sight: &Sight, members: &[Entity], hostiles: &[Entity]) -> bo
 /// ready.
 pub fn acts_on_party(sight: &Sight, fighter: Entity, content: &Catalogs) -> bool {
     let Some((own, mind)) = sight.monster(fighter) else { return false };
-    if !own.vitals.can_fight() {
+    if !own.can_fight {
         return false;
     }
     let gap = sight.party_gap(fighter);
@@ -90,31 +90,42 @@ pub struct Entered {
 /// with no fight on, it opens one when a member sees the party and a member
 /// can act on it; into a running fight it comes when a member sees the party
 /// and its leader is in reach of it: within its longest reach and a stride,
-/// 65 m at the least. A neutral group joins only a running fight it stands
+/// 65 m at the least, both as the crow flies and by the way it would walk
+/// (`walks`, the leader and the metres), or when one of its members the
+/// party can see, not of a kind that keeps hidden, stands within extreme
+/// reach (50 m) of it (`MonsterGroupHasRenderableMember`). A neutral group joins only a running fight it stands
 /// with, turning hostile as it does if its kind has a radius. A friendly
 /// group never comes in.
 pub fn comes_in(
     sight: &Sight,
-    fighters: &[Entity],
+    (fighters, leader): (&[Entity], Entity),
     (stance, radius): (Stance, Option<f32>),
     (fight_running, provoked): (bool, bool),
     hostiles: &[Entity],
     content: &Catalogs,
+    walks: impl Fn(Entity, f32) -> bool,
 ) -> Entered {
     let nearest = fighters.iter().map(|&m| sight.party_gap(m)).fold(f32::INFINITY, f32::min);
     let sees = || fighters.iter().any(|&m| sight.sees_party(m));
     let turns = stance != Stance::Hostile && radius.is_some_and(|r| nearest <= r) && sees();
     let leader_in_reach = || {
-        fighters.first().and_then(|&leader| sight.bodies.get(leader).ok()).is_some_and(|leader| {
+        sight.bodies.get(leader).is_ok_and(|leader| {
             let reach =
                 leader.attacks.arms.iter().map(|arm| arm.reach.metres()).fold(0.0, f32::max)
                     + leader.attacks.stride.unwrap_or(0.0);
-            sight.party_gap(leader.entity) <= reach.max(ENGAGEMENT_RANGE + ENGAGEMENT_FLOOR)
+            let reach = reach.max(ENGAGEMENT_RANGE + ENGAGEMENT_FLOOR);
+            sight.party_gap(leader.entity) <= reach && walks(leader.entity, reach)
+        })
+    };
+    let hidden = |m: Entity| sight.minds.get(m).is_ok_and(|mind| mind.temper.0.camouflaged);
+    let in_sight_near = || {
+        fighters.iter().any(|&m| {
+            sight.in_party_view(m) && !hidden(m) && sight.party_gap(m) <= Reach::Extreme.metres()
         })
     };
     let enters = match if turns { Stance::Hostile } else { stance } {
         Stance::Hostile if provoked => true,
-        Stance::Hostile if fight_running => sees() && leader_in_reach(),
+        Stance::Hostile if fight_running => (sees() && leader_in_reach()) || in_sight_near(),
         Stance::Hostile => sees() && fighters.iter().any(|&m| acts_on_party(sight, m, content)),
         Stance::Neutral if fight_running => stands_with(sight, fighters, hostiles),
         _ => false,

@@ -10,7 +10,6 @@ use super::identify::{GroupMember, MonsterGroup};
 use crate::content::level::LevelDefinition;
 use crate::content::monster::MonsterBody;
 use crate::content::species::MonsterCatalog;
-use crate::game::characters::Condition;
 use crate::game::data::Catalogs;
 use crate::game::rng::GameRng;
 use crate::game::world::items::place_item;
@@ -34,6 +33,10 @@ pub struct Newborn {
     pub group: Option<i32>,
     pub monster: Monster,
     pub vitals: crate::game::characters::Vitals,
+    /// The health and stamina it was born with.
+    pub frame: crate::game::actors::Frame,
+    /// What ails it as it is made: nothing, unless it stood somewhere before.
+    pub conditions: crate::game::characters::Conditions,
     pub budget: SpellBudget,
     pub feet: Vec3,
     pub yaw: f32,
@@ -81,6 +84,8 @@ impl Newborn {
         Newborn {
             monster: Monster { location, species, body },
             vitals: crate::game::characters::Vitals::full(max_hp, max_stamina),
+            frame: crate::game::actors::Frame { health: max_hp, stamina: max_stamina },
+            conditions: default(),
             budget: SpellBudget(kind.magic.budget.max(0) as u32),
             group,
             feet,
@@ -109,15 +114,6 @@ impl Monster {
     pub fn gap(&self, feet: Vec3, other: &Monster, other_feet: Vec3) -> f32 {
         (feet.distance(other_feet) - self.body.radius - other.body.radius).max(0.0)
     }
-}
-
-/// Blindness takes a monster's sight; a Monk fights on without it.
-pub fn blinded(
-    kind: &crate::content::species::Species,
-    vitals: &crate::game::characters::Vitals,
-) -> bool {
-    vitals.conditions.has(Condition::Blind)
-        && kind.kind != crate::content::species::MonsterKind::Monk
 }
 
 /// A monster's effective gameplay body at the size it was rolled.
@@ -234,6 +230,10 @@ pub struct Camouflage(pub u8);
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Worth(pub u32);
 
+/// Killing it is something for its killer to speak of.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Notable;
+
 /// How a body carries itself in a fight when it decides for itself: its
 /// species' temper.
 #[derive(Component, Clone, Copy, Debug)]
@@ -268,6 +268,96 @@ impl Spellcasting {
     }
 }
 
+/// What a species makes one of its own of: its abilities, level, kind and
+/// what that lets it do, its natural guard, resistances and mending, and
+/// what it strikes with. Written once, as the monster is made.
+pub(crate) fn made_of(kind: &crate::content::species::Species) -> impl Bundle {
+    use crate::content::characters::{Attribute, Resist, Trait};
+    use crate::content::species::{MonsterKind, Reach};
+    use crate::game::actors::{Abilities, Arm, Kind, Level, NaturalArms, Nature, Traits};
+    use crate::game::inventory::WeaponSlot;
+    let abilities = Abilities(enum_map::EnumMap::from_fn(|attribute| {
+        u32::from(match attribute {
+            Attribute::Strength => kind.attributes.strength,
+            Attribute::Intelligence => kind.attributes.intelligence,
+            Attribute::Dexterity => kind.attributes.dexterity,
+            Attribute::Speed => kind.attributes.speed,
+            Attribute::Senses => kind.attributes.senses,
+            Attribute::Piety | Attribute::Vitality => 1,
+        })
+    }));
+    // What its kind lets it do is the trait a character has it by.
+    let mut traits = enumset::EnumSet::new();
+    if kind.kind == MonsterKind::Monk {
+        traits |= Trait::EffectiveWhileBlind;
+    }
+    let nature = Nature {
+        // Armour is 10 less the record's value, so that higher is always
+        // better guarded.
+        armour: 10 - i32::from(kind.evasion),
+        armour_at: std::array::from_fn(|place| 10 - i32::from(kind.armour_by_location[place])),
+        armour_by_mode: enum_map::EnumMap::from_fn(|mode| i32::from(kind.armour_by_mode[mode])),
+        hit_locations: Some(kind.hit_locations),
+        exposed: 2 * i32::from(kind.vulnerable_from_behind),
+        fatigue_guards: true,
+        reduction: i32::from(kind.damage_reduction),
+        resistance: enum_map::EnumMap::from_fn(|realm| {
+            Some(Resist::Flat(i32::from(kind.resistances[realm])))
+        }),
+        initiative: i32::from(kind.initiative),
+        mending: (i32::from(kind.health_regeneration), i32::from(kind.stamina_regeneration)),
+        death_immune: kind.death_immune,
+        carry_factor: 0,
+        keen_sight: if kind.level_sight { (u32::from(kind.level) * 5).min(125) } else { 0 },
+        stride: Some(
+            kind.combat_move_range * crate::game::combat::monster::close::METRES_PER_MOVE_RANGE,
+        ),
+    };
+    let arms = kind
+        .attacks
+        .iter()
+        .map(|swung| Arm {
+            slot: WeaponSlot::Primary,
+            weapon: None,
+            reach: swung.reach,
+            modes: swung.modes,
+            dice: swung.damage,
+            punch: swung.damage,
+            kick: swung.damage,
+            rating: i32::from(swung.score),
+            percent: 0,
+            effects: swung.effects,
+            slays: Vec::new(),
+            attacks: u32::from(kind.attacks_per_round),
+            initiative: 0,
+            swings: u32::from(kind.swings_per_round.max(1)),
+            extra_swings: 0,
+            ranged: false,
+            loaded: None,
+            sure_throw: false,
+            critical: None,
+            practises: &[],
+            weight: None,
+            tires: false,
+            modern: swung.tires_little(),
+            fatigue_pierces: swung.tires_little(),
+            sword: false,
+            ambushes: kind.kind == MonsterKind::Rogue && swung.reach <= Reach::Touch,
+            word: Some((swung.word, swung.named())),
+            lands_on_party: Some(kind.hits_on_party),
+            sound_class: swung.sound_class,
+        })
+        .collect();
+    (
+        abilities,
+        Level(u32::from(kind.level)),
+        Traits(traits),
+        Kind(kind.kind),
+        nature,
+        NaturalArms(arms),
+    )
+}
+
 /// Make a monster an actor of its level: standing at its feet and facing
 /// its heading, in its group, and a walker if it walks.
 pub(crate) fn embody(
@@ -287,14 +377,19 @@ pub(crate) fn embody(
         entity.insert(GroupMember(group));
     }
     let allegiance = super::hostility::Allegiance::of(kind);
+    entity.insert(made_of(kind));
     entity.insert((
         allegiance,
         Worth(kind.experience),
+        crate::game::combat::effort::Labours,
         Camouflage(kind.camouflage),
         Temper(kind.temper),
         Special(kind.special),
         Spellcasting::of(kind),
     ));
+    if kind.notable {
+        entity.insert(Notable);
+    }
     if kind.untargetable {
         entity.insert(Untargetable);
     }
@@ -383,7 +478,14 @@ fn spawn_member(
     let name = actor_name(species, (kept.monster.species, kept.monster.location));
     let (body, kind) = (kept.monster.body, &species[kept.monster.species]);
     let bidden = kept.bidden();
-    let mut entity = commands.spawn((Name::new(name), kept.monster, kept.vitals, kept.budget));
+    let mut entity = commands.spawn((
+        Name::new(name),
+        kept.monster,
+        kept.vitals,
+        kept.frame,
+        kept.conditions,
+        kept.budget,
+    ));
     embody(
         &mut entity,
         root,
@@ -436,6 +538,80 @@ pub fn roll_group(
             )
         })
         .collect()
+}
+
+/// A monster the story brings into the level the party is in (retail
+/// `SpawnMonsters`): one of a species at a named spot, standing toward the
+/// party as told. It is there once its body has loaded.
+#[derive(Component, Clone, Debug)]
+pub struct Coming {
+    pub species: u32,
+    pub spot: String,
+    pub stance: super::hostility::Stance,
+    /// How many of them.
+    pub count: u32,
+    /// The named spot it faces as it arrives.
+    pub faces: Option<String>,
+    /// The script it follows from then on.
+    pub script: Option<String>,
+    /// How far from the spot it comes.
+    pub shift: Vec3,
+}
+
+/// Those the story is bringing in arrive, each a group of its own.
+pub fn come(
+    mut commands: Commands,
+    coming: Query<(Entity, &Coming)>,
+    level: Single<(Entity, &super::level::Level, &LevelNavigation, &mut MonsterBodies, &Unborn)>,
+    (monsters, groups): (Query<&Monster>, Query<&MonsterGroup>),
+    definitions: Res<Assets<crate::content::level::LevelDefinition>>,
+    (bodies, server): (Res<Assets<MonsterBody>>, Res<AssetServer>),
+    (content, clock): (If<Res<Catalogs>>, Res<crate::game::time::GameClock>),
+    mut configs: ResMut<Assets<WalkerMotionConfig>>,
+    mut rng: ResMut<GameRng>,
+) {
+    if coming.is_empty() {
+        return;
+    }
+    let (root, played, navigation, mut handles, unborn) = level.into_inner();
+    let Some(definition) = definitions.get(&played.definition) else { return };
+    for (request, arrival) in &coming {
+        let (Some(kind), Some(feet)) =
+            (content.species.kind(arrival.species), definition.spot(&arrival.spot))
+        else {
+            commands.entity(request).despawn();
+            continue;
+        };
+        handles
+            .0
+            .entry(arrival.species)
+            .or_insert_with(|| server.load(crate::content::paths::monster(&kind.model)));
+        let Some(shape) = handles.get(arrival.species, &bodies) else { continue };
+        let ids = next_ids(
+            monsters.iter().map(|monster| monster.location),
+            groups.iter().map(|group| group.authored),
+            unborn,
+        );
+        let facing = arrival.faces.as_deref().and_then(|spot| definition.spot(spot));
+        let yaw = facing.map_or(0.0, |at| crate::game::party::body::yaw_toward(at - feet));
+        let mut members =
+            roll_group(ids, (arrival.species, arrival.count), (kind, shape), &mut rng);
+        for member in &mut members {
+            member.feet = feet + arrival.shift;
+            member.yaw = yaw;
+            member.script = arrival.script.clone();
+        }
+        let set = super::hostility::SetStance { stance: arrival.stance, at: clock.ms };
+        spawn_group(
+            &mut commands,
+            root,
+            members,
+            (ids.1, Some(set)),
+            &content.species,
+            (navigation, &mut configs),
+        );
+        commands.entity(request).despawn();
+    }
 }
 
 /// Birth an unborn group of the played level, by the level's id for it
@@ -518,8 +694,16 @@ pub fn populate(
         let name = actor_name(species, (newborn.monster.species, newborn.monster.location));
         let id = newborn.monster.species;
         let bidden = newborn.bidden();
-        let entity =
-            commands.spawn((Name::new(name), newborn.monster, newborn.vitals, newborn.budget)).id();
+        let entity = commands
+            .spawn((
+                Name::new(name),
+                newborn.monster,
+                newborn.vitals,
+                newborn.frame,
+                newborn.conditions,
+                newborn.budget,
+            ))
+            .id();
         actors.push((entity, newborn.feet, newborn.yaw, body, newborn.group, id, bidden));
     }
     let average = npcs.average_level();

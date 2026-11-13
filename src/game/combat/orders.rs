@@ -30,7 +30,10 @@ pub(super) fn give_orders(
     mut requests: MessageReader<GiveOrder>,
     battle: Option<Single<&Battle>>,
     roster: Single<&crate::game::party::roster::PartyRoster>,
-    mut orders: Query<(&mut crate::game::party::Order, &Character, &Vitals)>,
+    mut orders: Query<
+        (&mut crate::game::party::Order, &crate::game::actors::Traits, &Vitals),
+        With<crate::game::actors::CanFight>,
+    >,
     laid: crate::game::actors::Laid,
 ) {
     use crate::content::characters::Trait;
@@ -40,7 +43,7 @@ pub(super) fn give_orders(
             && roster.contains(&member)
             && let Ok((mut current, character, vitals)) = orders.get_mut(member)
             // Only those with the trait go berserk.
-            && (order != Order::Berserk || character.has_trait(Trait::Berserk))
+            && (order != Order::Berserk || character.has(Trait::Berserk))
             && (!matches!(order, Order::Breathe(_)) || breath::available(member, character, vitals, &laid))
         {
             current.set_if_neq(order);
@@ -116,7 +119,10 @@ pub fn track_party_move(
     party: Query<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>,
     mut rng: ResMut<GameRng>,
     roster: Single<&PartyRoster>,
-    mut movers: Query<(&mut Vitals, &crate::game::items::Burden), With<Turn>>,
+    mut movers: Query<
+        (&mut Vitals, &crate::game::characters::Conditions, &crate::game::items::Burden),
+        With<Turn>,
+    >,
     mut turns: Query<&mut Turn>,
     mut news: MessageWriter<CombatNews>,
 ) {
@@ -165,7 +171,10 @@ pub(super) fn finish_party_move(
     (round, party_move): (&Round, &mut PartyMove),
     rng: &mut GameRng,
     roster: &PartyRoster,
-    movers: &mut Query<(&mut Vitals, &crate::game::items::Burden), With<Turn>>,
+    movers: &mut Query<
+        (&mut Vitals, &crate::game::characters::Conditions, &crate::game::items::Burden),
+        With<Turn>,
+    >,
     turns: &mut Query<&mut Turn>,
 ) {
     let PartyMove::Moving { pace, budget, moved, .. } = *party_move else { return };
@@ -185,11 +194,11 @@ pub(super) fn finish_party_move(
         }
     }
     for member in roster.iter() {
-        let Ok((mut vitals, burden)) = movers.get_mut(member) else { continue };
+        let Ok((mut vitals, conditions, burden)) = movers.get_mut(member) else { continue };
         if vitals.is_dead() {
             continue;
         }
-        let disease = if vitals.conditions.has(Condition::Diseased) { 1.5 } else { 1.0 };
+        let disease = if conditions.has(Condition::Diseased) { 1.5 } else { 1.0 };
         let cost = moved * pace.stamina_per_metre() * burden.load.movement_factor() * disease;
         vitals.tire(cost.round() as u32);
     }

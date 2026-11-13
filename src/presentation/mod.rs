@@ -5,11 +5,13 @@ pub mod automap;
 pub mod billboards;
 pub mod camp;
 pub mod character_view;
+pub mod combat_sounds;
 pub mod controls;
 pub mod conversation;
 pub mod device_panel;
 pub mod dialog;
 pub mod effects;
+pub mod ending;
 pub mod environment;
 pub mod frontend;
 pub mod hover;
@@ -111,6 +113,9 @@ impl Plugin for PresentationPlugin {
         .add_message::<party_voice::SpokenRemark>()
         .add_message::<automap::OpenAutomap>()
         .init_resource::<effects::CameraShake>()
+        .init_resource::<effects::ScreenDim>()
+        .init_resource::<party_voice::Fallen>()
+        .add_observer(party_voice::react_to_losses)
         .init_resource::<notices::TextLog>()
         .init_resource::<hover::Hover>()
         .init_resource::<selection::WorldSelection>()
@@ -150,6 +155,9 @@ impl Plugin for PresentationPlugin {
                 (selection::select_world_target, selection::activate_selection).chain(),
                 (
                     effects::play_trigger_effects,
+                    effects::fade_screen,
+                    combat_sounds::play_combat_sounds,
+                    ending::show_ending,
                     effects::play_lock_sounds,
                     notices::queue_notices(),
                 )
@@ -167,6 +175,9 @@ impl Plugin for PresentationPlugin {
             (
                 party_voice::queue_device_remarks.run_if(crate::game::world::level::level_active),
                 party_voice::queue_dialogue_remarks.run_if(crate::game::world::level::level_active),
+                party_voice::react_to_wounds.run_if(crate::game::world::level::level_active),
+                party_voice::react_to_feats.run_if(crate::game::world::level::level_active),
+                party_voice::react_to_conditions.run_if(crate::game::world::level::level_active),
                 party_voice::play_device_remarks,
             )
                 .chain()
@@ -182,6 +193,7 @@ impl Plugin for PresentationPlugin {
                 screen_art::load_string_table,
                 dialog::load_dialog_art,
                 camp::load_camp_art,
+                combat_sounds::load_combat_sounds,
             ),
         )
         .add_systems(

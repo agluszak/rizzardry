@@ -127,12 +127,23 @@ pub struct LevelDefinition {
 }
 
 impl LevelDefinition {
-    /// Where a named spot is.
+    /// The way a named spot faces.
+    pub fn aim(&self, name: &str) -> Option<Dir3> {
+        let named = self.spots.iter().find(|spot| spot.name.eq_ignore_ascii_case(name));
+        named.map(|spot| spot.aim)
+    }
+
+    /// Where a named spot is. A device is one by its own name: where it
+    /// stands, or the middle of the prop it is on.
     pub fn spot(&self, name: &str) -> Option<Vec3> {
-        self.spots
-            .iter()
-            .find(|spot| spot.name.eq_ignore_ascii_case(name))
-            .map(|spot| spot.position)
+        let named = self.spots.iter().find(|spot| spot.name.eq_ignore_ascii_case(name));
+        named.map(|spot| spot.position).or_else(|| {
+            let device = self.triggers.iter().rposition(|t| t.name.eq_ignore_ascii_case(name))?;
+            self.triggers[device].place.or_else(|| {
+                let prop = self.props.iter().find(|prop| prop.trigger == Some(device));
+                prop.map(PropModel::centre)
+            })
+        })
     }
 }
 
@@ -152,6 +163,9 @@ pub struct Encounters {
     pub default_chance: i16,
     pub default_interval: i16,
     pub generators: Vec<Generator>,
+    /// Every table of the game, by which the story may change what a
+    /// generator draws from.
+    pub tables: Vec<EncounterTable>,
 }
 
 /// A level's bounds on random encounters (retail `LEVELS.DBS`).
@@ -200,8 +214,10 @@ pub struct EncounterTable {
     pub entries: Vec<EncounterEntry>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EncounterEntry {
+    /// The script the main group's leader follows.
+    pub script: String,
     pub species: u32,
     /// How common: retail's classes 3, 7, 20 and 70.
     pub rarity: u8,
@@ -295,6 +311,8 @@ pub struct MonsterPlacement {
 pub struct Spot {
     pub name: String,
     pub position: Vec3,
+    /// The way it faces: what is launched from it goes this way.
+    pub aim: Dir3,
 }
 
 /// An item lying in the level as authored (retail `.sts` `ITEM`).

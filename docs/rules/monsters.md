@@ -27,9 +27,11 @@ made.
 
 A monster has two lives.
 
-**Outside a fight** it stands where it was put. (The original has it patrol,
-guard, wander, look about and follow noises; the code does none of that. See
-*Open questions*.) The one thing it does outside a fight is follow a hypnotic
+**Outside a fight** it stands where it was put, or keeps the orders its
+script gave it: guarding a post or patrolling; a hostile one that has seen
+the party lately makes for it. (The original also has it look
+about and follow noises; the code does neither. See
+*Open questions*.) It also follows a hypnotic
 lure ([casting](casting.md) section 8). Outside a fight it is also *judged*, as
 a group, every moment of play: whether it has noticed the party, what side its
 group stands on, whether the group comes into a fight (section 2 and 3).
@@ -74,7 +76,7 @@ Otherwise it makes out the party if all of the following hold (retail
   threshold = percent * far / 100
   ```
 
-  It sees if `threshold >= gap`. *Senses* is the monster's own attribute (refit,
+  It sees if `threshold >= gap`. *Senses* is the monster's own attribute (its figures,
   spells counted); *bonus* is the percent its kind adds to its sight. The
   *hider's level* is the lowest level among the party's members who can take a
   combat action (the party hides by its weakest able member); *concealment* is
@@ -561,24 +563,54 @@ lines are in `src/game/`.
    - A lured monster follows the lure.
    - A monster that cannot patrol is retired with its encounter, else waits 20
      ticks.
-   The Rust has monsters stand, and walk only toward a lure.
-6. **Sight has no memory.** The original keeps, for each monster, whether it
-   saw the party now, recently (within 240 seconds) or not (`Sight.cpp`
-   state, `MonsterAI.cpp:270-310`); engagement uses it. The Rust looks only at
-   the present.
-7. **A group comes in for a nearby rendered member** within extreme reach
-   (50 m) of the party, and the path distance must be within the leader's reach
-   (`ShouldMonsterGroupEnterCombat`, `MonsterAI.cpp:2675-2733`). The Rust
-   uses the straight distance and has no rendered members (its own comment).
-8. **A lured monster in a fight** is interrupted and sent to the lure
-   (interrupt 0xb, `Combat.cpp:3025-3027, 2509-2511`). The Rust lets a lure
-   hold only outside a fight.
-9. **A monster's spell is re-judged when cast.** The original chooses its power
-   again, and checks that the spell may still be cast at that target,
-   when the action begins (`Combat.cpp:2587-2600`, `MonsterOKToCastSpell`
-   `Magic.cpp:174-222`); a cone or blast is not cast if it would hit a neutral
-   monster (`SpellAreaHitsNeutralMonster`, `MonsterAI.cpp:1793-1823`). The Rust
-   decides once and has no neutral test.
+   The Rust has monsters keep their orders (guard, the three patrols, facing:
+   [scripts.md](scripts.md)), walk toward a lure, and charge: every fit
+   member of a hostile group above a fifth of its health makes for the party
+   while one of the group sees it or saw it within 240 seconds
+   (`world::pursuit`). The original moves the leader and the rest keep
+   formation with it; it also stops short at nine tenths of its longest
+   attack's reach, which is not there. **Noises** are there
+   (`world::noise`): the party's steps are one every 4 m it walks, carrying
+   50 m, or 75 m running or searching; a hostile group whose leader is not
+   deaf and is within reach hears it on a roll under its senses plus half a
+   point a metre of reach left, unless it has a louder one in mind; its
+   Sonic Boom and Alarm are heard too, 50 m and 30 m more a point of
+   power, where they are aimed (`assets/tables/noises.ron`). Its
+   members walk to a noise if their leader has a way there over the navmesh
+   shorter than the noise's reach, 50 m more for each step of the way that
+   passes through a closed door, looked for no farther than one and a half
+   times that reach and 250 m (`TestNoiseLineOfSight`, `NoiseHearingMargin`);
+   otherwise they turn to it. They forget it once the leader is within 3 m. A round of fighting is a noise too, 100 m about the party, for
+   every group not in the fight that is within two of its moves of it; the
+   original brings a group that hears it
+   straight into the fight if it could walk there in its move, where here
+   it walks toward it and joins by the fight's own rule. Not there: after reaching a
+   noise the original waits 30 of its thinking ticks, a rate it ties to its
+   frame rate. One at a fifth of its health
+   or less shadows the party instead of charging: it follows, keeping within
+   twice the far clip of it (`MonsterLinkToStartupNavigator`). Resting turns and retiring an
+   encounter that cannot patrol are there ([scripts.md](scripts.md)).
+6. *Done:* sight's memory. The original keeps, for each monster, whether it
+   sees the party now, saw it within 240 seconds or not (`Sight.cpp`,
+   `MonsterAI.cpp:270-310`). Only the out-of-fight charge reads "within 240
+   seconds" (`DoMonsterRTAI`), and a group here remembers when it last saw
+   the party for that. Coming into a fight reads "now" alone
+   (`MonsterGroupCanEngage` through `MonsterHasVisibleTarget`), as here.
+7. *Done:* a hostile group joins a running fight only if its
+   leader is within reach of the party both as the crow flies and by the way
+   it would walk over its navmesh (`FindNavigatorPathDistance`), or if one of
+   its members the party can see stands within extreme reach (50 m) of it
+   (`MonsterGroupHasRenderableMember`, which despite its name asks whether
+   the party sees the member, not the screen). A kind that keeps hidden is
+   not counted; the original counts it once the party has detected it.
+8. *Done:* a lured monster in a fight walks toward the lure at half its
+   stride, haste and slowness aside, in place of its action (interrupt 11,
+   after fear and before Turncoat).
+9. **A monster's spell is re-judged when cast.** The original chooses at the
+   start of the round and judges again, with a fresh power, when the action
+   begins (`Combat.cpp:2587-2600`, `MonsterOKToCastSpell`). Here a monster
+   chooses at the moment it acts, with the neutral test, so there is nothing
+   to judge again; only the second roll of the power is not made.
 
 ### Unknown
 
@@ -623,3 +655,53 @@ leads to.
 
 **What a monster knows is read from its own components.** What its kind can do
 was written onto it when it was made. No decision asks the species record.
+
+## Effort
+
+Source: `Health Stamina Mana.cpp`, `MonsterActionFatigueCost`, charged as
+each action ends (`Combat.cpp`, `EndMonsterAttack`).
+
+A monster tires by what it does in a fight, not by what it swings (it is
+marked `Labours` as it is made). Each
+thing done costs stamina once, twice over when it is diseased
+(`assets/tables/efforts.ron`):
+
+| What it did | Stamina |
+| --- | --- |
+| closed in at a charge; ran for its life | 5 + below(5) |
+| walked up to strike; backed away | 3 + below(3) |
+| held back; was drawn by a lure | 1 + below(2) |
+| made an attack, whatever its swings | 2 + below(3) |
+| made an attack in a fury (Berserk) | 5 + below(8) |
+| cast, made its special attack, guarded a fellow, stood | nothing |
+
+The original's names for its move actions do not line up one to one with
+the moves here; charging and fleeing were taken as its dearer pair,
+walking up and backing away as its cheaper.
+
+## A group's leader
+
+Source: `MonsterGroup.cpp`, `ElectGroupLeaderMember`; `MonsterManager.cpp`,
+`RemoveMonster`.
+
+A group has one leader: the first of it to be made. When the leader dies or
+is gone from the group, the living member of highest level that is not
+Turncoat or worse leads, the first of them among equals; if there is none
+such, the first still living. The new leader takes up the script the old one
+followed, from its top. The noise a group has heard is the group's, so
+nothing of it changes hands.
+
+The leader is the member that carries `Leads`, a one-to-one relationship to
+its group. The rules that ask for a group's leader ask which member that is: who hears a noise and
+walks to it, whose grudge keeps a stance, whose sight stirs its faction.
+
+Not here: an encounter's companion groups electing a new leading group
+(`ElectAlliedLeaderGroup`).
+
+## Random encounter orders
+
+An encounter table entry names the script followed by the main group’s leader.
+An empty name means `Default.MSF`. Companion groups do not receive that script.
+The orders belong to the leader and begin at its spawn position; unborn groups
+retain the orders until birth. Source: `MonGen.cpp`, `MonGen::GenerateEncounter`,
+selection of `script_names` and the main leader’s `SetScript` call.

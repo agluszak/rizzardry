@@ -40,7 +40,7 @@ struct Scene {
 /// record says, and a party of one with 500 gold.
 fn scene(definition: NpcDefinition) -> Scene {
     let mut quotes: Vec<Quote> =
-        (0..=PEACE).map(|n| Quote { text: vec![format!("q{n}")], ..default() }).collect();
+        (0..=0x76).map(|n| Quote { text: vec![format!("q{n}")], ..default() }).collect();
     let topic = |word: &str| DialogueOp::Keywords(vec![word.to_owned()]);
     quotes[usize::from(SWORD)].operations =
         vec![topic("sword"), DialogueOp::Price { gold: 100, always: false }];
@@ -71,7 +71,7 @@ fn scene(definition: NpcDefinition) -> Scene {
     let mut scripts = Assets::<DialogueScript>::default();
     let script = scripts.add(DialogueScript { quotes });
     app.insert_resource(scripts)
-        .insert_resource(NpcAssets { scripts: [(NpcId(0), script)].into() })
+        .insert_resource(NpcAssets { scripts: [(NpcId(0), script)].into(), ..default() })
         .insert_resource(Catalogs {
             npcs: NpcCatalog(vec![definition]),
             facts: FactCatalog(vec![fact]),
@@ -84,8 +84,8 @@ fn scene(definition: NpcDefinition) -> Scene {
         .add_message::<crate::game::factions::FactionNews>()
         .add_message::<crate::game::hits::Damaged>();
     install(&mut app);
-    app.add_message::<crate::game::world::bidden::ScriptShow>()
-        .add_message::<crate::game::npcs::story::StoryLook>()
+    app.add_message::<crate::game::npcs::story::StoryTold>()
+        .add_observer(crate::game::npcs::story::dispatch)
         .add_observer(crate::game::npcs::story::follow)
         .add_observer(crate::game::npcs::story::befalls_the_story);
     crate::game::npcs::trade::install(&mut app);
@@ -97,7 +97,6 @@ fn scene(definition: NpcDefinition) -> Scene {
             path: String::new(),
             definition: default(),
             navmeshes: vec![],
-            script: default(),
             messages: None,
         })
         .id();
@@ -149,7 +148,7 @@ impl Scene {
 
     fn begin(&mut self) -> Vec<String> {
         let actor = self.person;
-        self.world().trigger(Begin { actor, quote: None });
+        self.world().trigger(Begin { actor, quote: None, with_held: false });
         self.world().flush();
         self.hear()
     }
@@ -183,24 +182,26 @@ fn friend() -> NpcDefinition {
 fn a_friend_greets_answers_what_is_paid_for_and_is_left() {
     let mut scene = scene(friend());
     let speaker = scene.speaker;
-    scene.world().get_mut::<Character>(speaker).unwrap().skill_points[Skill::Communication] = 100;
+    scene.world().get_mut::<crate::game::characters::Training>(speaker).unwrap().0
+        [Skill::Communication] = 100;
+    scene.world().run_schedule(crate::game::actors::Settle);
     assert_eq!(scene.begin(), ["q0"], "the first greeting");
     scene.begin();
     let world = scene.world();
     assert_eq!(world.query::<&Conversation>().iter(world).count(), 1);
 
-    scene.act(|conversation| Ask { conversation, text: "Sword?".into() });
+    scene.act(|conversation| Ask { conversation, text: "Sword?".into(), where_is: false });
     assert_eq!(scene.hear(), ["q18"], "they name a price before saying it");
     assert_eq!(scene.asked(), Some(Asked::Price { quote: SWORD, gold: 80, always: false }));
     scene.act(|conversation| Answer { conversation, reply: Reply::Accept(true) });
     assert_eq!(scene.hear(), ["q37"]);
     assert_eq!(scene.gold(), 420);
     // Paid for once, it is said again for nothing.
-    scene.act(|conversation| Ask { conversation, text: "sword".into() });
+    scene.act(|conversation| Ask { conversation, text: "sword".into(), where_is: false });
     assert_eq!(scene.hear(), ["q37"]);
     assert_eq!(scene.gold(), 420);
 
-    scene.act(|conversation| Ask { conversation, text: "shield".into() });
+    scene.act(|conversation| Ask { conversation, text: "shield".into(), where_is: false });
     assert_eq!(scene.hear(), ["q38", "q3"]);
     assert_eq!(scene.gold(), 450);
     let conversation = scene.conversation().unwrap();
@@ -217,6 +218,7 @@ fn a_friend_greets_answers_what_is_paid_for_and_is_left() {
     );
 
     scene.act(|conversation| Leave { conversation });
+    assert_eq!(scene.hear(), ["q92"], "a friend says farewell");
     assert_eq!(scene.conversation(), None);
 }
 
@@ -226,7 +228,7 @@ fn a_friend_greets_answers_what_is_paid_for_and_is_left() {
 fn a_price_refused_or_beyond_the_purse_is_not_paid() {
     let mut scene = scene(friend());
     scene.begin();
-    scene.act(|conversation| Ask { conversation, text: "sword".into() });
+    scene.act(|conversation| Ask { conversation, text: "sword".into(), where_is: false });
     scene.hear();
     scene.act(|conversation| Answer { conversation, reply: Reply::Accept(false) });
     assert_eq!(scene.hear(), [] as [&str; 0]);
@@ -234,7 +236,7 @@ fn a_price_refused_or_beyond_the_purse_is_not_paid() {
 
     let party = scene.party;
     scene.world().get_mut::<PartyInventory>(party).unwrap().gold = 99;
-    scene.act(|conversation| Ask { conversation, text: "sword".into() });
+    scene.act(|conversation| Ask { conversation, text: "sword".into(), where_is: false });
     scene.hear();
     scene.act(|conversation| Answer { conversation, reply: Reply::Accept(true) });
     assert_eq!(scene.hear(), ["q20"]);
@@ -248,12 +250,20 @@ fn a_price_refused_or_beyond_the_purse_is_not_paid() {
 fn topics_are_matched_by_word() {
     let mut scene = scene(friend());
     scene.begin();
-    scene.act(|conversation| Ask { conversation, text: "dragons".into() });
+    scene.act(|conversation| Ask { conversation, text: "dragons".into(), where_is: false });
     let unknown = scene.hear();
     assert!(unknown == ["q35"] || unknown == ["q36"], "{unknown:?}");
-    scene.act(|conversation| Ask { conversation, text: "the helm or that shield".into() });
+    scene.act(|conversation| Ask {
+        conversation,
+        text: "the helm or that shield".into(),
+        where_is: false,
+    });
     assert_eq!(scene.hear(), ["q39", "q33", "q38", "q3"]);
-    scene.act(|conversation| Ask { conversation, text: "helm shield sword".into() });
+    scene.act(|conversation| Ask {
+        conversation,
+        text: "helm shield sword".into(),
+        where_is: false,
+    });
     assert_eq!(scene.hear(), ["q32"]);
 }
 
@@ -265,7 +275,7 @@ fn gold_buys_a_cold_persons_friendship_once_it_covers_what_they_want() {
     let cold = NpcDefinition { disposition: 50, trade_pool: 100, ..friend() };
     let mut scene = scene(cold);
     assert_eq!(scene.begin(), ["q2"]);
-    scene.act(|conversation| Ask { conversation, text: "shield".into() });
+    scene.act(|conversation| Ask { conversation, text: "shield".into(), where_is: false });
     assert_eq!(scene.hear(), [] as [&str; 0], "they will not talk of anything yet");
 
     scene.act(|conversation| OfferGold { conversation, amount: 60, sure: false });
@@ -274,7 +284,7 @@ fn gold_buys_a_cold_persons_friendship_once_it_covers_what_they_want() {
     scene.act(|conversation| OfferGold { conversation, amount: 40, sure: false });
     assert_eq!(scene.hear(), ["q16", "q0"]);
     assert_eq!((scene.gold(), scene.regard()), (400, 75));
-    scene.act(|conversation| Ask { conversation, text: "helm".into() });
+    scene.act(|conversation| Ask { conversation, text: "helm".into(), where_is: false });
     assert_eq!(scene.hear(), ["q39"]);
 }
 
@@ -341,10 +351,10 @@ fn a_quote_follows_a_fact_read_off_the_world() {
     let mut scene = scene(friend());
     scene.begin();
     scene.world().resource_mut::<Factions>().adjust(Faction::Umpani, -100, 0);
-    scene.act(|conversation| Ask { conversation, text: "umpani".into() });
+    scene.act(|conversation| Ask { conversation, text: "umpani".into(), where_is: false });
     assert_eq!(scene.hear(), ["q40", "q6"]);
     scene.world().resource_mut::<Factions>().adjust(Faction::Umpani, 100, 0);
-    scene.act(|conversation| Ask { conversation, text: "umpani".into() });
+    scene.act(|conversation| Ask { conversation, text: "umpani".into(), where_is: false });
     assert_eq!(scene.hear(), ["q40", "q4"]);
 }
 
@@ -357,8 +367,74 @@ fn a_quote_sets_a_fact_and_what_it_sets_off_follows() {
     let mut scene = scene(friend());
     scene.begin();
     scene.world().resource_mut::<Factions>().adjust(Faction::Umpani, -100, 0);
-    scene.act(|conversation| Ask { conversation, text: "peace".into() });
+    scene.act(|conversation| Ask { conversation, text: "peace".into(), where_is: false });
     assert_eq!(scene.hear(), ["q41"]);
-    scene.act(|conversation| Ask { conversation, text: "umpani".into() });
+    scene.act(|conversation| Ask { conversation, text: "umpani".into(), where_is: false });
     assert_eq!(scene.hear(), ["q40", "q4"]);
+}
+
+/// Asked where something is, a person answers with what they know of the
+/// name, or that they do not know; asked after themselves, that they are
+/// here. `join` asks them to join.
+#[test]
+fn a_person_says_where_things_are_if_they_know() {
+    // The bit for the Umpani.
+    let mut scene = scene(NpcDefinition { knows: 0x20, ..friend() });
+    scene.begin();
+    let wheres = |text: &str| {
+        let text = text.to_owned();
+        move |conversation| Ask { conversation, text, where_is: true }
+    };
+    scene.act(wheres("Umpani"));
+    assert_eq!(scene.hear(), ["q111"]);
+    scene.act(wheres("Rattkin"));
+    assert_eq!(scene.hear(), ["q118"], "they know nothing of the Rattkin");
+    scene.act(|conversation| Ask { conversation, text: "where is Rosa".into(), where_is: false });
+    assert_eq!(scene.hear(), ["q117"]);
+    scene.act(|conversation| Ask { conversation, text: "join us".into(), where_is: false });
+    assert_eq!(scene.hear(), ["q11"], "one with no character to bring will not join");
+}
+
+/// Turning on a person is asked about first; then they say they want
+/// nothing more of the party, it is over, and they are cool toward it.
+#[test]
+fn turning_on_a_person_ends_it_badly() {
+    let mut scene = scene(friend());
+    scene.begin();
+    scene.act(|conversation| Attack { conversation });
+    assert_eq!(scene.asked(), Some(Asked::Attack));
+    scene.act(|conversation| Answer { conversation, reply: Reply::Accept(true) });
+    assert_eq!(scene.hear(), ["q24"]);
+    assert_eq!(scene.conversation(), None);
+    assert_eq!(scene.regard(), 25);
+}
+
+/// A talk begun with something in the party's hand, as a device that speaks
+/// for someone begins it, opens on what they make of it and not on their
+/// greeting (retail `BeginNpcDialogue` with an item).
+#[test]
+fn a_talk_begun_with_an_item_answers_it_instead_of_greeting() {
+    use crate::content::items::{ItemCatalog, ItemDefinition, ItemId};
+    use bevy::ecs::system::RunSystemOnce;
+    let mut scene = scene(friend());
+    let party = scene.party;
+    let world = scene.world();
+    let definition = ItemDefinition { id: ItemId(0), name: "Ball".into(), ..default() };
+    world.resource_mut::<Catalogs>().items = ItemCatalog(vec![definition.clone()]);
+    world
+        .run_system_once(move |mut commands: Commands| {
+            let item = crate::game::items::make(&mut commands, &definition, 1, true);
+            commands.trigger(crate::game::items::Put {
+                item,
+                at: crate::game::items::Place::Hand { party },
+            });
+        })
+        .unwrap();
+    world.flush();
+    let actor = scene.person;
+    scene.world().trigger(Begin { actor, quote: None, with_held: true });
+    scene.world().flush();
+    let heard = scene.hear();
+    assert!(!heard.is_empty(), "they answer");
+    assert!(!heard.contains(&"q0".to_owned()), "no greeting: {heard:?}");
 }

@@ -16,12 +16,13 @@ use enum_map::EnumMap;
 
 use super::approach::CombatMove;
 use super::attack::{self, Attack, Fighter, FighterReadOnly, Setting, Surprise};
+use super::effort::{Effort, Exerted};
 use super::turn::{Fights, Turn};
 use super::{Announcement, Battle, CombatNews, Combatants, Pause, Round};
 use crate::content::characters::Skill;
 use crate::content::items::AttackEffects;
 use crate::game::actors::{Arm, Laying, Places, reaches};
-use crate::game::characters::{Condition, Fell, Practise};
+use crate::game::characters::{Condition, Practise};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::hits::Damaged;
@@ -47,7 +48,7 @@ pub struct Strike {
 /// A member practises a skill it may train.
 fn practise(actor: Entity, skill: Skill, fighters: &Query<Fighter>, commands: &mut Commands) {
     let trains = |fighter: attack::FighterReadOnlyItem| {
-        fighter.body.character.is_some_and(|c| c.skill_available(skill))
+        fighter.body.trained().is_some_and(|c| c.can_use(skill))
     };
     if fighters.get(actor).is_ok_and(trains) {
         commands.trigger(Practise { member: actor, skill, usage: 1 });
@@ -56,7 +57,7 @@ fn practise(actor: Entity, skill: Skill, fighters: &Query<Fighter>, commands: &m
 
 /// Land a blow on a body: its damage, then its weapon's effects, told apart.
 fn deal(
-    victim: Entity,
+    (by, victim): (Entity, Entity),
     strength: Strength,
     blow: Blow,
     fighters: &mut Query<Fighter>,
@@ -65,7 +66,7 @@ fn deal(
     (log, laying): (&mut Log, &mut Laying),
 ) -> attack::Dealt {
     let Ok(mut fighter) = fighters.get_mut(victim) else { return attack::Dealt::default() };
-    let strike = effects::Strike { rows: Rows::Blow, strength, blow: Some(blow) };
+    let strike = effects::Strike { rows: Rows::Blow, strength, blow: Some(blow), by: Some(by) };
     effects::land(&strike, &mut fighter.body, rules, rng, log, laying);
     attack::dealt(log.effects.drain(..))
 }
@@ -164,11 +165,14 @@ pub(super) fn strike(
             turn.when = Some(again);
             commands.entity(actor).insert(CombatMove { budget: budget.metres, moved: 0.0, goal });
             news.write(CombatNews::Moves { monster: actor, charge: budget.charge });
+            let effort = if budget.charge { Effort::Charge } else { Effort::Approach };
+            commands.trigger(Exerted { actor, effort });
             return;
         }
         attack::Chosen::Wait => {
             turn.waited = true;
             turn.end();
+            commands.trigger(Exerted { actor, effort: Effort::Wait });
             return;
         }
         attack::Chosen::Stand => {
@@ -212,6 +216,10 @@ pub(super) fn strike(
     };
     let surprise = caught.surprise;
     news.write(CombatNews::Attack { attacker: actor, target, how, swings: swings.count, surprise });
+    // A member's weapon is heard swung (retail `MakePCAttackSound`).
+    if arm.word.is_none() {
+        news.write(CombatNews::Swung { sound_class: arm.sound_class });
+    }
 
     // The swings.
     let mut on = Attack { arm: &arm, mode, berserk: fights.berserk, surprise };
@@ -222,7 +230,7 @@ pub(super) fn strike(
         // one steps in to take the blow.
         let seen = fighters.as_readonly();
         let (Ok(me), Ok(aimed)) = (seen.get(actor), seen.get(target)) else { break };
-        if !me.body.vitals.can_fight() || aimed.body.vitals.is_dead() {
+        if !me.body.can_fight || aimed.body.vitals.is_dead() {
             break;
         }
         let chance = attack::chance_to_hit(&on, &me, &aimed, setting);
@@ -259,13 +267,25 @@ pub(super) fn strike(
         if let Some((roll, true, through)) = reached {
             hits += u32::from(!fumbled);
             let seen = fighters.as_readonly();
+            let mut landed = None;
             let blow = seen.get(actor).ok().zip(seen.get(victim).ok()).and_then(|(me, struck)| {
                 let place = attack::where_it_lands(&mut rng, &arm, &struck);
                 let by = attack::piercing_mode(&mut rng, mode, arm.loaded);
                 let sure = (roll, through);
-                attack::gets_through(&mut rng, &on, (place, by), sure, &me, &struck, setting)
-                    .then(|| attack::blow(&mut rng, &on, &me, &struck, setting, fumbled))
+                let through =
+                    attack::gets_through(&mut rng, &on, (place, by), sure, &me, &struck, setting);
+                landed = through.then_some(place);
+                through.then(|| attack::blow(&mut rng, &on, &me, &struck, setting, fumbled))
             });
+            // The blow is heard where it lands (retail `MakePCMeleeHitSound`,
+            // `MakeMonsterHitSound`).
+            if let Some(place) = landed {
+                news.write(CombatNews::Struck {
+                    victim,
+                    place: place.0,
+                    sound_class: arm.sound_class,
+                });
+            }
             if blow.is_some() {
                 practise(victim, Skill::IronSkin, &fighters, &mut commands);
             }
@@ -276,7 +296,7 @@ pub(super) fn strike(
                     by_monster: arm.word.is_some(),
                 };
                 let landing = (&mut log, &mut laying);
-                deal(victim, strength, blow, &mut fighters, &rules, &mut rng, landing)
+                deal((actor, victim), strength, blow, &mut fighters, &rules, &mut rng, landing)
             });
             match done {
                 Some(done) if !fumbled => {
@@ -306,7 +326,16 @@ pub(super) fn strike(
                         by_monster: false,
                     };
                     let landing = (&mut log, &mut laying);
-                    deal(actor, Strength::default(), blow, &mut fighters, &rules, &mut rng, landing)
+                    let between = (victim, actor);
+                    deal(
+                        between,
+                        Strength::default(),
+                        blow,
+                        &mut fighters,
+                        &rules,
+                        &mut rng,
+                        landing,
+                    )
                 } else {
                     attack::Dealt::default()
                 };
@@ -332,7 +361,11 @@ pub(super) fn strike(
         }
     }
 
-    // What the attack came to.
+    // What the attack came to, and took out of one that tires by what it
+    // does.
+    let fury = fights.berserk || mode == crate::content::items::AttackMode::Berserk;
+    let effort = if fury { Effort::Fury } else { Effort::Attack };
+    commands.trigger(Exerted { actor, effort });
     news.write(CombatNews::Result { attacker: actor, target, hits, damage });
     if !effects.is_empty() {
         news.write(CombatNews::Effects(effects));
@@ -350,9 +383,7 @@ pub(super) fn strike(
         }
     }
     log.scorch(&mut commands);
-    for hurt in log.damaged.iter().filter(|hurt| hurt.died) {
-        commands.trigger(Fell { body: hurt.body });
-    }
+    log.swallow(&mut commands);
     damaged.write_batch(log.damaged);
     for (member, skill, usage) in log.practised {
         commands.trigger(Practise { member, skill, usage });

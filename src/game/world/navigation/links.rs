@@ -155,7 +155,7 @@ pub fn use_reached_links(
             &ReachedAnimationLink3d,
             &super::Walker,
             &bevy_landmass::prelude::AgentTarget3d,
-            Option<&crate::game::characters::Vitals>,
+            (Has<crate::game::characters::Vitals>, Has<crate::game::actors::CanFight>),
         ),
         (Without<UsingAnimationLink>, Without<Crossing>),
     >,

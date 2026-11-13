@@ -100,6 +100,7 @@ pub fn arm(rating: i32) -> Arm {
         ambushes: false,
         word: None,
         lands_on_party: None::<EnumMap<_, _>>,
+        sound_class: None,
     }
 }
 

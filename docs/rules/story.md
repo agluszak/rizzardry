@@ -57,18 +57,57 @@ do. What they set off is of a few kinds:
 
 A scene is played after whatever is being said.
 
-## 4. What this needs that the game does not have
+## 3a. What follows from a death, and from taking an item
 
-Each is a prerequisite of some kind above and is built before it.
+Sources: `NPC Scripting Facts.cpp` (`MonsterKilled`, `HandleScriptedNpcDeath`),
+`PC Item.cpp` (`UpdateFactsAfterAcquiringItem`).
 
-- **Named triggers run from outside their level's script**, and switched off.
-- **A faction set to a band** rather than nudged.
-- **A merchant's stock added to later.**
-- **A person's presence in the world changed by the story**: marked, removed,
-  stood elsewhere, and what each marked person then does.
-- **Monster scripts** (`.msf`): the paths and poses a body is put through.
-  Most scenes are one of these on a named group.
-- **The endgame.**
+The story also hears of two things that are not facts being set. Each is a
+table of the same consequences, by species and by item.
+
+**A death.** When one of these species dies, whoever killed it:
+
+| Species | What follows |
+| --- | --- |
+| Brekek | his death is a fact |
+| the Rapax queen | her death is a fact; the Templars' standing rises by 20 |
+| a Rattkin breeder | the level counts it; at the second, the Trynnie's quest is done and the common Rattkin turn hostile |
+| Al-Sedexus | her quest is cleared if she had attacked; the chosen one is smitten no longer and speaks (event 37); her death is a fact |
+| the Rapax king | his death is a fact |
+| the Lava Lord | his death is a fact |
+| the Dark Savant | Vi, if she is of the party, speaks event 24, and so does one other member when more than two are fit to; everyone fit to speaks event 28; the ending the party chose goes on (the turn to the book, or Phoonzang's greeting); every hostile monster of the level dies |
+
+**An item taken.** When an item comes to a member or to the party:
+
+| Item | What follows |
+| --- | --- |
+| the Destinae Dominus, the Astral Dominae, the Chaos Moliri | it is possessed, and the quest to get it is done |
+| the Chaos Moliri | two days of the game's time after it is first taken, the Mook know it stolen |
+| the false Astral Dominae | it is possessed (two facts) |
+| three quest items | their quests are done |
+
+An item is the party's (`Owned`) while a member wears or packs it or it is in
+the pool or the hand; the story hears of it as it becomes so, not as it is
+moved about within the party. The original counts the Chaos Moliri's two days
+anew each time it is taken up again; here they run from the first time.
+
+Not here: an NPC's body dying marking the NPC as having appeared.
+
+## 4. The party's own in the story
+
+- **The one Al-Sedexus is offered.** The player picks a member. A woman is
+  refused while the party has anyone who is not one. A companion, or a
+  member not fit to act, cannot be offered. One of the party's own who
+  carries the three things she asks (items 0x1fd to 0x1ff) is chosen;
+  otherwise they are "not dressed". The chosen one is smitten with her,
+  for good, once the party is out of battle and outside the Rapax castle
+  and the Rift, unless the person who spares them stands in the level.
+- **Her capture.** Everyone living but the chosen one lies senseless while
+  the screen is dark, and wakes as it returns.
+- **Missing.** A member taken from the party keeps their place, does
+  nothing, and is back only when the story says so.
+- **The ending.** The first of the table's endings whose reading holds; the
+  party can do nothing more.
 
 ## How this is built
 
@@ -80,8 +119,8 @@ the fact's own name. No fact is named in game code.
 "is this fact so" from what was set and from the party, the factions and who
 is where. Nothing stores a copy of what it would answer.
 
-**Setting a fact is an event.** What it sets off is carried out by the
-observer of each kind of consequence, which the table names. A fact whose
-consequences this game cannot yet carry out is refused before it is set, and
-the conversation that needs it says so; when every kind is built, that
-refusal and the conversation's check for it are deleted.
+**Setting a fact is an event.** What it sets off are rows of the table. A
+row is of one group by what it is about (the story, the level, a person, the
+party, a body, a device), and each group has one observer, which handles
+every row of its group; a row no one handles does not compile. Every fact can be read and set; one the
+game's records do not name reads as unset.

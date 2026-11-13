@@ -39,7 +39,7 @@ use crate::content::characters::Trait;
 use crate::content::characters::{Attribute, Realm, Skill};
 use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId, Spellbook, min_caster_level};
 use crate::game::GameplaySet;
-use crate::game::characters::{Character, Profession};
+use crate::game::characters::{Calling, Profession, Trained, Training};
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
 use crate::game::items::Items;
@@ -51,30 +51,24 @@ pub struct LearnedSpells(pub BTreeSet<SpellId>);
 
 /// Skill eligibility combines profile rules with the actual learned spell set.
 pub fn skill_available(
-    character: &Character,
+    c: Trained,
     learned: &LearnedSpells,
     catalog: &SpellCatalog,
     skill: Skill,
 ) -> bool {
     if skill as usize >= Skill::Wizardry as usize
         && (skill as usize) < Skill::PowerStrike as usize
-        && character.traits().contains(Trait::CannotLearn)
+        && c.traits.contains(Trait::CannotLearn)
     {
         return false;
     }
     if let Some(realm) = skill.realm() {
-        if !character
-            .profession
-            .row()
-            .books
-            .iter()
-            .any(|book| character.skill_available(book_skill(book)))
-        {
+        if !c.calling.profession.row().books.iter().any(|book| c.can_use(book_skill(book))) {
             return false;
         }
         return learned.0.iter().any(|&id| catalog[id].realm == Some(realm));
     }
-    character.skill_available(skill)
+    c.can_use(skill)
 }
 
 /// Mana already spent and fractional recovery are history. The current pool is
@@ -146,6 +140,18 @@ impl SpellPoints {
         restored
     }
 
+    /// Each realm gains `amount` points, or loses them when negative, as
+    /// what is worn gives or takes a minute (retail `GameTurnsPassedChar`).
+    pub fn adjust(&mut self, amount: i32, maximum: &EnumMap<Realm, u32>) {
+        for (realm, _) in maximum {
+            if amount < 0 {
+                self.drain_realm(realm, (-amount) as u32, maximum);
+            } else if self.spent[realm] > 0 {
+                self.spent[realm] = (self.spent[realm] - amount).max(0);
+            }
+        }
+    }
+
     /// Whether any realm is short of its maximum.
     pub fn short(&self) -> bool {
         self.spent.values().any(|&spent| spent > 0)
@@ -183,8 +189,8 @@ pub fn recovery_scale(health_scale: f32) -> f32 {
 }
 
 /// Retail `GetProfessionCasterLevel`; -1 for a profession that cannot cast.
-pub fn caster_level(character: &Character, profession: Profession) -> i32 {
-    profession_caster_level(profession, character.profession_levels[profession])
+pub fn caster_level(calling: &Calling, profession: Profession) -> i32 {
+    profession_caster_level(profession, calling.levels[profession])
 }
 
 /// A profession's caster level after `levels` of it; -1 if it cannot cast.
@@ -194,9 +200,10 @@ fn profession_caster_level(profession: Profession, levels: u8) -> i32 {
 
 /// Retail `GetTotalCasterLevel` over `books`: the current profession's caster
 /// level plus every other held profession sharing a book.
-pub fn total_caster_level(character: &Character, books: EnumSet<Spellbook>) -> i32 {
+pub fn total_caster_level(calling: &Calling, books: EnumSet<Spellbook>) -> i32 {
+    let character = calling;
     let mut total = caster_level(character, character.profession);
-    for (profession, &levels) in &character.profession_levels {
+    for (profession, &levels) in &character.levels {
         if levels != 0
             && profession != character.profession
             && !(profession.row().books & books).is_empty()
@@ -217,9 +224,9 @@ pub(crate) fn book_skill(book: Spellbook) -> Skill {
 }
 
 /// The books the character has ever cast from.
-fn character_books(character: &Character) -> EnumSet<Spellbook> {
+fn character_books(character: &Calling) -> EnumSet<Spellbook> {
     character
-        .profession_levels
+        .levels
         .iter()
         .filter(|&(_, &levels)| levels > 0)
         .map(|(profession, _)| profession.row().books)
@@ -228,21 +235,29 @@ fn character_books(character: &Character) -> EnumSet<Spellbook> {
 
 /// The book skill a spell is cast by: the best of the character's (retail
 /// `GetBestSpellbookSkillForSpell`).
-pub(crate) fn best_book(character: &Character, spell: &SpellDefinition) -> Skill {
-    let books = spell.books & character_books(character);
+pub(crate) fn best_book(
+    (calling, training): (&Calling, &Training),
+    spell: &SpellDefinition,
+) -> Skill {
+    let books = spell.books & character_books(calling);
     let books = if books.is_empty() { spell.books } else { books };
-    books.iter().map(book_skill).max_by_key(|&s| character.skill(s)).unwrap_or(Skill::Wizardry)
+    books.iter().map(book_skill).max_by_key(|&s| training.0[s]).unwrap_or(Skill::Wizardry)
 }
 
 /// Whether the character may learn a spell now (retail `CanLearnSpell`): it is
 /// in one of their books and its level is within both their caster level and
 /// their realm and book training.
-pub fn can_learn(character: &Character, spell: &SpellDefinition) -> bool {
+pub fn can_learn(
+    (c, training): (Trained, &Training),
+    skills: &crate::game::actors::Skills,
+    spell: &SpellDefinition,
+) -> bool {
+    let character = c.calling;
     let books = character.profession.row().books;
     if spell.id.0 == 0 || spell.id.0 >= SpellId::LEARNABLE || (spell.books & books).is_empty() {
         return false;
     }
-    if character.traits().contains(Trait::CannotLearn)
+    if c.traits.contains(Trait::CannotLearn)
         || caster_level(character, character.profession) <= 0
         || spell.realm.is_none()
     {
@@ -250,12 +265,12 @@ pub fn can_learn(character: &Character, spell: &SpellDefinition) -> bool {
     }
     let caster = total_caster_level(character, spell.books);
     let by_level = (1..=7).filter(|&l| min_caster_level(l) <= caster).max().unwrap_or(0);
-    let realm_points = spell.realm.map_or(0, |r| character.skill_points[r.skill()]);
+    let realm_points = spell.realm.map_or(0, |r| training.0[r.skill()]);
     let book = [Spellbook::Wizardry, Spellbook::Divinity, Spellbook::Alchemy, Spellbook::Psionics]
         .into_iter()
         .filter(|book| spell.books.contains(*book))
-        .max_by_key(|book| character.skill_points[book_skill(*book)]);
-    let best = book.map_or(0, |book| character.skill(book_skill(book)));
+        .max_by_key(|book| training.0[book_skill(*book)]);
+    let best = book.map_or(0, |book| skills[book_skill(book)]);
     let by_skill = (realm_points / 10 + best) / 15 + 1;
     spell.level <= by_level.min(by_skill)
 }
@@ -266,44 +281,39 @@ pub fn starting_picks(profession: Profession) -> usize {
     if profession_caster_level(profession, 1) > 0 { 2 } else { 0 }
 }
 
-impl Character {
-    /// Spell points per realm (retail `RecalculateRealmSpellPoints`): none in
-    /// a realm without a learned spell, and never under its dearest learned
-    /// spell.
-    pub fn max_points(
-        &self,
-        attributes: &Attributes,
-        learned: &LearnedSpells,
-        spells: &SpellCatalog,
-    ) -> EnumMap<Realm, u32> {
-        let character = self;
-        let mut books: Vec<u32> =
-            [Skill::Wizardry, Skill::Divinity, Skill::Alchemy, Skill::Psionics]
-                .map(|s| character.skill(s))
-                .to_vec();
-        books.sort_unstable_by(|a, b| b.cmp(a));
-        let weight = (books[0] as f32
-            + (books[1] / 2) as f32
-            + (books[2] / 4) as f32
-            + (books[3] / 8) as f32)
+/// Spell points per realm at a level (retail `RecalculateRealmSpellPoints`):
+/// none in a realm without a learned spell, and never under its dearest
+/// learned spell.
+pub fn max_points(
+    level: u32,
+    attributes: &Attributes,
+    learned: &LearnedSpells,
+    spells: &SpellCatalog,
+    skills: &crate::game::actors::Skills,
+) -> EnumMap<Realm, u32> {
+    let mut books: Vec<u32> = [Skill::Wizardry, Skill::Divinity, Skill::Alchemy, Skill::Psionics]
+        .map(|s| skills[s])
+        .to_vec();
+    books.sort_unstable_by(|a, b| b.cmp(a));
+    let weight =
+        (books[0] as f32 + (books[1] / 2) as f32 + (books[2] / 4) as f32 + (books[3] / 8) as f32)
             .min(125.0);
-        let piety = attributes[Attribute::Piety] as f32;
-        EnumMap::from_fn(|realm| {
-            let known: Vec<_> = learned
-                .0
-                .iter()
-                .filter_map(|&id| spells.get(id))
-                .filter(|s| s.realm == Some(realm))
-                .collect();
-            if known.is_empty() {
-                return 0;
-            }
-            let skill = character.skill(realm.skill()) as f32;
-            let levels = (known.len() + usize::from(character.level()) + 1) as f32;
-            let points = ((weight + 3.0 * skill + piety) * 0.02 * levels + 0.5) as u32;
-            points.max(known.iter().map(|s| s.cost).max().unwrap_or(0))
-        })
-    }
+    let piety = attributes[Attribute::Piety] as f32;
+    EnumMap::from_fn(|realm| {
+        let known: Vec<_> = learned
+            .0
+            .iter()
+            .filter_map(|&id| spells.get(id))
+            .filter(|s| s.realm == Some(realm))
+            .collect();
+        if known.is_empty() {
+            return 0;
+        }
+        let skill = skills[realm.skill()] as f32;
+        let levels = (known.len() + level as usize + 1) as f32;
+        let points = ((weight + 3.0 * skill + piety) * 0.02 * levels + 0.5) as u32;
+        points.max(known.iter().map(|s| s.cost).max().unwrap_or(0))
+    })
 }
 
 /// The strength a cast's victims save against, and the percent its rolls are
@@ -387,12 +397,15 @@ pub fn accept_magic(
 
 #[cfg(test)]
 fn test_maximum(world: &World, member: Entity) -> EnumMap<Realm, u32> {
-    let profile = world.get::<Character>(member).unwrap();
     let learned = world.get::<LearnedSpells>(member).unwrap();
     let spells = &world.resource::<Catalogs>().spells;
-    let attributes =
-        world.get::<Attributes>(member).copied().unwrap_or(Attributes::of_sheet(profile));
-    profile.max_points(&attributes, learned, spells)
+    max_points(
+        u32::from(world.get::<Calling>(member).unwrap().level()),
+        world.get::<Attributes>(member).unwrap(),
+        learned,
+        spells,
+        world.get::<crate::game::actors::Skills>(member).unwrap(),
+    )
 }
 
 #[cfg(test)]
@@ -414,6 +427,7 @@ pub(crate) mod tests {
     use crate::content::items::ItemCatalog;
     use crate::content::species::MonsterCatalog;
     use crate::content::spells::{PowerChoice, Reach, Targeting, Usable};
+    use crate::game::characters::Character;
     use crate::game::characters::{Gender, Race};
 
     pub(crate) fn heal_wounds() -> SpellDefinition {
@@ -457,7 +471,11 @@ pub(crate) mod tests {
             .add_message::<MagicRequest>()
             .add_message::<casting::MagicNews>()
             .add_message::<crate::game::combat::CombatNews>()
-            .add_plugins((crate::game::hits::HitsPlugin, crate::game::items::plugin))
+            .add_plugins((
+                crate::game::hits::HitsPlugin,
+                crate::game::items::plugin,
+                crate::game::actors::plugin,
+            ))
             .add_observer(casting::cast)
             .add_observer(casting::refuse)
             .add_systems(Update, accept_magic);
@@ -577,7 +595,11 @@ pub(crate) mod tests {
             .add_message::<MagicRequest>()
             .add_message::<MagicNews>()
             .add_message::<crate::game::combat::CombatNews>()
-            .add_plugins((crate::game::hits::HitsPlugin, crate::game::items::plugin))
+            .add_plugins((
+                crate::game::hits::HitsPlugin,
+                crate::game::items::plugin,
+                crate::game::actors::plugin,
+            ))
             .add_observer(casting::cast)
             .add_observer(casting::refuse)
             .add_observer(utilities::identify)
@@ -609,8 +631,8 @@ pub(crate) mod tests {
             ..default()
         });
         let mut priest = Character::new("Seer", Race::Human, Gender::Male, Profession::Priest);
-        priest.skill_points[Skill::Divinity] = 100;
-        priest.skill_points[Skill::DivineMagic] = 100;
+        priest.training.0[Skill::Divinity] = 100;
+        priest.training.0[Skill::DivineMagic] = 100;
         let member = world
             .spawn((
                 Vitals::new(&priest),
@@ -633,6 +655,7 @@ pub(crate) mod tests {
             crate::game::party::body::PartyBody::default(),
             avian3d::prelude::Position::default(),
         ));
+        world.run_schedule(crate::game::actors::Settle);
         let before = test_points(world, member, Realm::Divine);
         let stamina = world.get::<Vitals>(member).unwrap().stamina.current;
         assert!(!world.get::<Known>(item).unwrap().identified);
@@ -675,14 +698,40 @@ pub(crate) mod tests {
         let priest = Character::new("Cleric", Race::Human, Gender::Male, Profession::Priest);
         let fighter = Character::new("Brute", Race::Human, Gender::Male, Profession::Fighter);
         let heal = heal_wounds();
-        assert_eq!((starting_picks(priest.profession), starting_picks(fighter.profession)), (2, 0));
-        assert!(can_learn(&priest, &heal) && !can_learn(&fighter, &heal));
+        assert_eq!(
+            (starting_picks(priest.calling.profession), starting_picks(fighter.calling.profession)),
+            (2, 0)
+        );
+        assert!(
+            can_learn(
+                (priest.trained(), &priest.training),
+                &crate::game::actors::Skills::of_sheet(&priest),
+                &heal
+            ) && !can_learn(
+                (fighter.trained(), &fighter.training),
+                &crate::game::actors::Skills::of_sheet(&fighter),
+                &heal
+            )
+        );
         let higher = SpellDefinition { level: 2, ..heal_wounds() };
-        assert!(!can_learn(&priest, &higher), "level 1 casters learn level 1 spells only");
+        assert!(
+            !can_learn(
+                (priest.trained(), &priest.training),
+                &crate::game::actors::Skills::of_sheet(&priest),
+                &higher
+            ),
+            "level 1 casters learn level 1 spells only"
+        );
         let catalog =
             SpellCatalog((0..=6).map(|i| if i == 6 { heal_wounds() } else { default() }).collect());
         let learned = LearnedSpells([SpellId::HEAL_WOUNDS].into());
-        let points = priest.max_points(&Attributes::of_sheet(&priest), &learned, &catalog);
+        let points = max_points(
+            1,
+            &Attributes::of_sheet(&priest),
+            &learned,
+            &catalog,
+            &crate::game::actors::Skills::of_sheet(&priest),
+        );
         assert!(points[Realm::Divine] >= 3, "never under the dearest learned spell");
         assert_eq!(points[Realm::Fire], 0, "no spell, no points");
     }
@@ -741,7 +790,11 @@ pub(crate) mod tests {
                 .add_message::<MagicRequest>()
                 .add_message::<MagicNews>()
                 .add_message::<crate::game::combat::CombatNews>()
-                .add_plugins((crate::game::hits::HitsPlugin, crate::game::items::plugin))
+                .add_plugins((
+                    crate::game::hits::HitsPlugin,
+                    crate::game::items::plugin,
+                    crate::game::actors::plugin,
+                ))
                 .add_observer(casting::cast)
                 .add_observer(casting::refuse)
                 .add_observer(crate::game::actors::spells::age)
@@ -784,7 +837,7 @@ pub(crate) mod tests {
                 ..default()
             });
             let mut user = Character::new("User", Race::Human, Gender::Male, Profession::Priest);
-            user.skill_points[Skill::ThrowingAndSling] = 100;
+            user.training.0[Skill::ThrowingAndSling] = 100;
             let user = world.spawn((Vitals::new(&user), user)).id();
             let stack_id = world
                 .run_system_once(
@@ -800,13 +853,15 @@ pub(crate) mod tests {
             let mut vitals = Vitals::new(&ally);
             vitals.health.current = 1;
             vitals.stamina.current = 1;
-            vitals.afflict(Condition::Asleep, Lasting::Rounds(8));
-            vitals.afflict(Condition::Unconscious, Lasting::Rounds(8));
-            vitals.poison(Lasting::Rounds(20), 10);
+            let mut ailing = crate::game::characters::Conditions::default();
+            ailing.afflict(Condition::Asleep, Lasting::Rounds(8));
+            ailing.afflict(Condition::Unconscious, Lasting::Rounds(8));
+            ailing.poison(Lasting::Rounds(20), 10);
             let ally = world
                 .spawn((
                     ally,
                     vitals,
+                    ailing,
                     LearnedSpells([SpellId::HEAL_WOUNDS].into()),
                     SpellPoints::default(),
                 ))
@@ -819,6 +874,8 @@ pub(crate) mod tests {
                 avian3d::prelude::Position::default(),
             ));
             let user_before = world.get::<Vitals>(user).unwrap().clone();
+            let ailed_before =
+                world.get::<crate::game::characters::Conditions>(user).unwrap().clone();
             world.write_message(MagicRequest {
                 caster: user,
                 choice: MagicChoice { source: Source::Item(stack_id), aim: Aim::Body(ally) },
@@ -830,7 +887,10 @@ pub(crate) mod tests {
             assert_eq!(world.get::<Count>(stack_id).unwrap().of, 1);
             let user_after = world.get::<Vitals>(user).unwrap();
             assert_eq!(user_after.health.current, user_before.health.current);
-            assert_eq!(user_after.conditions, user_before.conditions);
+            assert_eq!(
+                world.get::<crate::game::characters::Conditions>(user).unwrap(),
+                &ailed_before
+            );
             let fatigue = user_before.stamina.current - user_after.stamina.current;
             if id == SpellId::SMELLING_SALTS {
                 assert_eq!(fatigue, 10);
@@ -838,6 +898,7 @@ pub(crate) mod tests {
                 assert!((1..=2).contains(&fatigue), "using an item still pays its normal fatigue");
             }
             let vitals = world.get::<Vitals>(ally).unwrap();
+            let ailing = world.get::<crate::game::characters::Conditions>(ally).unwrap();
             match id {
                 SpellId::GUARDIAN_ANGEL => {
                     use crate::game::actors::{Laid, Laying};
@@ -859,11 +920,11 @@ pub(crate) mod tests {
                     let stamina = world.get::<Vitals>(ally).unwrap().stamina.current;
                     let through = absorb(world, 4);
                     let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
-                    assert_eq!(vitals.hurt(through), 0);
+                    assert_eq!(vitals.hurt(through, None), 0);
                     assert_eq!(vitals.stamina.current, stamina, "absorbed damage does not fatigue");
                     let through = absorb(world, 2);
                     let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
-                    assert_eq!(vitals.hurt(through), 1);
+                    assert_eq!(vitals.hurt(through, None), 1);
                     assert!(vitals.is_dead());
                 }
                 SpellId::ARMORPLATE => {
@@ -902,20 +963,14 @@ pub(crate) mod tests {
                     assert_eq!((vitals.health.current, vitals.stamina.current), (1, 1));
                 }
                 SpellId::SMELLING_SALTS => {
-                    assert!(
-                        !vitals.conditions.has(Condition::Asleep)
-                            && !vitals.conditions.has(Condition::Unconscious)
-                    )
+                    assert!(!ailing.has(Condition::Asleep) && !ailing.has(Condition::Unconscious))
                 }
                 // Power four takes sixteen rounds off, and the poison weakens
                 // by the same share, as aging would (retail
                 // `TickCharacterCondition`).
                 SpellId::CURE_POISON => {
-                    assert_eq!(
-                        vitals.conditions.lasting(Condition::Poisoned),
-                        Some(Lasting::Rounds(4))
-                    );
-                    assert_eq!(vitals.poison, 2);
+                    assert_eq!(ailing.lasting(Condition::Poisoned), Some(Lasting::Rounds(4)));
+                    assert_eq!(ailing.poison, 2);
                 }
                 _ => unreachable!(),
             }

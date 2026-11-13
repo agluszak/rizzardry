@@ -47,8 +47,8 @@ costs each hand rating and swings by how far Dual Weapons falls short.
 
 ## An arm
 
-Each hand that strikes is one arm on the member's `Attacks`. For each, refit
-works out, from the hand, the member's attributes and skills, and their load:
+Each hand that strikes is one arm on the member's `Attacks`. For each, the system
+that writes `Attacks` works out, from the hand, the member's attributes and skills, and their load:
 
 - **rating to hit** and the sheet's **to hit**;
 - **attacks a round**, and **swings** an attack;
@@ -75,9 +75,9 @@ Resistance and regeneration sum what is worn in use.
 
 ## When this is worked out
 
-Only in refit, and refit is fired by the `Worn` relationship changing, by a
-missile stack running out, and by the events that already fire it (a level, a
-skill point, a spell, a load). Rules in a fight read `Attacks` and `Armour`.
+Only in the systems that write `Attacks` and `Armour`, which follow a change to what is worn or to a worn thing
+(a launcher out of shots), and to the member's other sources ([actors.md](actors.md),
+"Sources and figures"). Rules in a fight read `Attacks` and `Armour`.
 
 ## What goes
 

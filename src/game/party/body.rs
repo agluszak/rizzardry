@@ -66,6 +66,21 @@ pub fn yaw_toward(toward: Vec3) -> f32 {
     (-toward.x).atan2(-toward.z)
 }
 
+/// The party turns to look at a point (retail `PointCameraAtMonster`, and
+/// the story's looks): it faces it, level with the ground.
+#[derive(Event, Clone, Copy, Debug)]
+pub struct LookAt {
+    pub at: Vec3,
+}
+
+pub fn look_at(look: On<LookAt>, mut party: Single<(&mut PartyBody, &Transform)>) {
+    let (body, transform) = &mut *party;
+    let toward = (look.at - transform.translation).with_y(0.0);
+    if toward != Vec3::ZERO {
+        body.yaw = yaw_toward(toward);
+    }
+}
+
 impl PartyBody {
     /// The way the party faces, level.
     pub fn forward(&self) -> Vec3 {

@@ -152,8 +152,8 @@ pub(crate) fn cast(
             // `ApplyMonsterControlToNearbyMonsters`).
             let tested = body.stance() == Stance::Hostile
                 && !influence.is_some_and(|held| held.response == Response::Resisted)
-                && body.vitals.can_fight()
-                && !body.vitals.conditions.has(Condition::Blind)
+                && body.can_fight
+                && !body.conditions.has(Condition::Blind)
                 && (here - at).abs().max_element() <= far
                 && obstacles.clear(monster.eye(here), at);
             if !tested {
@@ -175,9 +175,9 @@ pub(crate) fn cast(
     // power, friendly unless the summoning backfired. It joins the fight and
     // lasts no longer; Power Cast may add its element's buff.
     let skills = bodies.get(caster).ok().and_then(|body| {
-        body.character.map(|character| {
+        body.calling.map(|_| {
             [Skill::FireMagic, Skill::WaterMagic, Skill::AirMagic, Skill::EarthMagic]
-                .map(|skill| character.skill(skill))
+                .map(|skill| body.skills[skill])
         })
     });
     let summoned = workings::summon(&mut rng, skills, state.camera_sway, outcome, strength);
@@ -257,7 +257,7 @@ pub(crate) fn follow_lures(
     mut followers: Query<
         (
             &LureInfluence,
-            &crate::game::characters::Vitals,
+            (&crate::game::characters::Conditions, Has<crate::game::actors::CanFight>),
             Option<&mut AgentTarget3d>,
             Option<&avian3d::prelude::Position>,
             &mut Transform,
@@ -266,14 +266,16 @@ pub(crate) fn follow_lures(
         (Without<Combatant>, Without<Lure>),
     >,
 ) {
-    for (influence, body, walking, position, mut transform, rotation) in &mut followers {
+    for (influence, (conditions, can_fight), walking, position, mut transform, rotation) in
+        &mut followers
+    {
         let target = lures.get(influence.lure).unwrap().translation;
         let here = position.map_or(transform.translation, |p| p.0);
         // It follows while it is controlled and can see, and walks to the
         // lure while it is more than five metres off.
         let follows = influence.response == Response::Controlled
-            && body.can_fight()
-            && !body.conditions.has(Condition::Blind);
+            && can_fight
+            && !conditions.has(Condition::Blind);
         let walks = follows && here.distance(target) > workings::LURE_HELD_AT;
         if let Some(mut walking) = walking {
             *walking =

@@ -44,7 +44,10 @@ opposite. The conditions are:
 | `DISPOSITION d` | its group becomes neutral, hostile or friendly | |
 | `TRIGGER name` | a device of the level runs | |
 | `DELAY ms` | nothing | that long |
-| `CYCLE name`, `PLAY …`, `LOOKHERE`, `DIE` | an animation, a sound, the camera, a death played out | |
+| `CYCLE name` | plays an animation once | its end |
+| `DIE` | plays its death | |
+| `PLAY volume reach file` | a sound heard from where it stands, `volume` of 127 | |
+| `LOOKHERE` | the party turns to look at it | |
 | `GIVE item` | the party gets an item | |
 | `DISAPPEAR`, `FADEOUT` | it is gone from the level | |
 | `DOACTION name` | one of a few named happenings of the story | |
@@ -60,13 +63,35 @@ itself from then on: `GUARD place`, `PATROL distance variation`,
 `FACE PARTY`, `TURNTOFACEPARTY`, `DEAF` (it does not hear), `STAYHOME`,
 `LOOKABOUT`. Reaching `ENDORDERS` ends the script for good.
 
+**Keeping them.** While it is not fighting, is fit to act, and no member of
+its group is unfit:
+
+- **Guard.** It walks back to its post when 3 m or more from it.
+- **Patrol over places.** It heads for one of them; within 3 m of it, for the
+  next, the first after the last. A random patrol takes another of them, each
+  as likely.
+- **Patrol of an area** (`PATROL near far`). When it has stopped, it makes
+  for a point between `near` and `far` metres from where it stands; beyond
+  `far` from home, it goes home. (The original walks a path of its own
+  graph between the two lengths; only the range is the same.) One that can find no
+  way to where it makes for: if it came as a wandering encounter the
+  encounter leaves the level; otherwise it tries another point.
+
+- **Look about** (`LOOKABOUT often lasts`). It keeps its orders for
+  `often` game minutes, then rests for a spell, then keeps them again, by
+  turns; each spell after the first lasts from half to one and a half times
+  its number of minutes, at least one. Resting, it stands, and one time in
+  twenty that it thinks turns to a heading at random.
+
+Nothing is kept while the party is talking with someone.
+
 ## 5. Not built
 
-- A monster with standing orders faces as told, but does not yet guard,
-  patrol or look about: outside a fight monsters do not move of their own
-  accord ([monsters.md](monsters.md)).
-- `CYCLE`, `PLAY`, `LOOKHERE` and `DIE` are told to the screen and not
-  waited for.
+- `STAYHOME` changes nothing yet. A `DEAF` one hears no noise
+  ([monsters.md](monsters.md)).
+- How often a resting monster turns is this game's own: the original thinks
+  every fifth frame, at no fixed rate.
+- `PLAY` and `LOOKHERE` are not waited for; how far a sound carries is not read.
 
 ## How this is built
 

@@ -1,0 +1,12 @@
+// What each thing done in a fight costs one that tires by what it does:
+// `add` + below(`below`) stamina (retail `MonsterActionFatigueCost`).
+// Casting, a special attack and guarding a fellow cost nothing.
+{
+    Charge: (below: 5, add: 5),
+    Run: (below: 5, add: 5),
+    Approach: (below: 3, add: 3),
+    Return: (below: 3, add: 3),
+    Wait: (below: 2, add: 1),
+    Attack: (below: 3, add: 2),
+    Fury: (below: 8, add: 5),
+}

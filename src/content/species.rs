@@ -217,6 +217,8 @@ pub struct MonsterAttack {
     pub damage: Dice,
     /// What its blows may do besides damage.
     pub effects: AttackEffects,
+    /// How it sounds striking (a row of the hit-sound table), if at all.
+    pub sound_class: Option<u8>,
 }
 
 impl MonsterAttack {
@@ -291,6 +293,14 @@ pub struct Species {
     pub attributes: MonsterAttributes,
     pub hit_points: Dice,
     pub stamina: Dice,
+    /// Health and stamina gained a game minute, or lost when negative.
+    pub health_regeneration: i8,
+    pub stamina_regeneration: i8,
+    /// Killing it is something to speak of (retail `significant_kill`).
+    pub notable: bool,
+    /// What its death costs its killers with its faction, where that is not
+    /// by how often they have offended.
+    pub offence: Option<i32>,
     pub initiative: u8,
     pub attacks_per_round: u8,
     pub swings_per_round: u8,
@@ -320,6 +330,9 @@ pub struct Species {
     /// Authored disposition (retail `hostility_radius`): hostile on sight,
     /// neutral, or neutral until the party comes within this many metres.
     pub disposition: Disposition,
+    /// What it is made of, for the sound of a blow on it (a column of the
+    /// hit-sound table, 0 to 11).
+    pub material: u8,
     /// Retail faction (0 is unaligned); only unaligned species use the
     /// hostility radius.
     pub faction: i32,

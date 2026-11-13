@@ -312,7 +312,7 @@ impl RaceRow {
 }
 
 /// What a race adds to a realm's resistance.
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum Resist {
     Flat(i32),
     /// A d-th of vitality.

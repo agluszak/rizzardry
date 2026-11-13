@@ -20,13 +20,12 @@ use super::containers::{Container, ContainerUse, use_container};
 use super::interaction::{Guarded, Work};
 use super::level::{Level, LevelOwned};
 use super::props::{Prop, PropMotion};
-use super::scripts::BellButton;
 use crate::content::items::Dice;
 use crate::content::level::{
     Fountain, LevelDefinition, PropModel, Restores, TriggerAction, TriggerDefinition, TriggerUse,
     VariableName,
 };
-use crate::game::characters::{Character, Vitals};
+use crate::game::characters::{Calling, Vitals};
 use crate::game::hits::Damaged;
 use crate::game::items::Items;
 use crate::game::party::roster::PartyRoster;
@@ -52,7 +51,9 @@ pub struct PositionedDevices(Vec<Entity>);
 #[derive(Component, Debug, Default)]
 pub struct LevelState {
     pub camera_sway: bool,
-    variables: HashMap<VariableName, bool>,
+    /// The level's variables: numbers, of which devices ask only whether
+    /// one is set (retail's location variables).
+    variables: HashMap<VariableName, i32>,
     ambient_sounds: HashMap<String, bool>,
     previous_eye: Option<Vec3>,
 }
@@ -80,16 +81,22 @@ impl LevelState {
         }
     }
 
+    /// Whether a variable was ever made.
+    pub fn made(&self, name: &VariableName) -> bool {
+        self.variables.contains_key(name)
+    }
+
+    /// What a variable holds; one never made holds nothing.
+    pub fn value(&self, name: &VariableName) -> i32 {
+        self.variables.get(name).copied().unwrap_or(0)
+    }
+
     fn variable(&self, name: &VariableName) -> bool {
-        self.variables.get(name).copied().unwrap_or(false)
+        self.value(name) != 0
     }
 
     fn set_variable(&mut self, name: &VariableName, value: bool) {
-        if let Some(stored) = self.variables.get_mut(name) {
-            *stored = value;
-        } else {
-            self.variables.insert(name.clone(), value);
-        }
+        self.variables.insert(name.clone(), i32::from(value));
     }
 }
 
@@ -131,14 +138,13 @@ struct FountainUses {
 }
 
 /// Hurt each living member by `dice`, in roster order.
-fn damage_party(
+pub(crate) fn damage_party(
     In(dice): In<Dice>,
     roster: Single<&PartyRoster>,
-    mut members: Query<&mut Vitals, With<Character>>,
+    mut members: Query<&mut Vitals, With<Calling>>,
     mut rng: ResMut<GameRng>,
     mut laying: crate::game::actors::Laying,
     mut damage: MessageWriter<Damaged>,
-    mut commands: Commands,
 ) {
     for entity in roster.iter() {
         let mut member = members.get_mut(entity).unwrap();
@@ -154,9 +160,6 @@ fn damage_party(
                 &mut laying,
                 &mut damage,
             );
-            if member.is_dead() {
-                commands.trigger(crate::game::characters::Fell { body: entity });
-            }
         }
     }
 }
@@ -167,7 +170,7 @@ fn drink_fountain(
     clock: Res<GameClock>,
     roster: Single<&PartyRoster>,
     mut members: Query<(
-        &mut Vitals,
+        (&mut Vitals, &mut crate::game::characters::Conditions),
         Option<(&crate::game::magic::LearnedSpells, &mut crate::game::magic::SpellPoints)>,
     )>,
     content: If<Res<crate::game::data::Catalogs>>,
@@ -195,14 +198,16 @@ fn drink_fountain(
             state.refills_at = fountain.refills_after.map(|after| now + after);
         }
     }
-    for (mut member, points) in members.iter_many_unique_mut(roster.iter()).matched() {
+    for ((mut member, mut conditions), points) in
+        members.iter_many_unique_mut(roster.iter()).matched()
+    {
         if member.is_dead()
             || match fountain.restores {
                 Restores::Restoration => false,
                 Restores::Magic => points.is_none(),
                 Restores::Health => member.health.current >= member.health.max,
                 Restores::Stamina => {
-                    member.stamina.current >= member.stamina.max && !member.conditions.exhausted()
+                    member.stamina.current >= member.stamina.max && !conditions.exhausted()
                 }
             }
         {
@@ -221,7 +226,7 @@ fn drink_fountain(
                     );
                     member.heal(amount);
                 }
-                member.conditions.lift_all();
+                conditions.lift_all();
             }
             Restores::Magic => {
                 let (_, mut points) = points.unwrap();
@@ -269,7 +274,6 @@ pub enum TriggerEffect {
     FountainUsed {
         at: Option<Vec3>,
     },
-    BellRang(usize),
     Locked,
 }
 
@@ -346,9 +350,26 @@ pub enum Bidding {
     SwitchOff(String),
     /// Switch it on and run it.
     SwitchOn(String),
+    /// Switch it on, without running it.
+    Enable(String),
     /// Overcome its lock or trap, as if it had been picked or disarmed.
     Unlock(String),
-    Set(VariableName, bool),
+    Set(VariableName, i32),
+    /// Set these bits of a variable, keeping the others.
+    SetBits(VariableName, i32),
+    /// Move a variable on by one, back to nothing at a count.
+    Step(VariableName, i32),
+}
+
+/// On a level: its devices by their names. A name several share is the
+/// last one's, as the original finds it.
+#[derive(Component, Debug, Default)]
+pub struct DeviceNames(pub(super) HashMap<String, Entity>);
+
+impl DeviceNames {
+    pub fn named(&self, name: &str) -> Option<Entity> {
+        self.0.get(&name.to_ascii_lowercase()).copied()
+    }
 }
 
 /// Carry out the story's bidding on the level the party is in.
@@ -356,20 +377,7 @@ pub fn bid(world: &mut World, bidding: Bidding) {
     let Some(level) = world.query_filtered::<Entity, With<Level>>().iter(world).next() else {
         return;
     };
-    let named = |world: &mut World, name: &str| {
-        let handle = world.get::<Level>(level)?.definition.clone();
-        let devices: Vec<(Entity, usize)> = world
-            .query::<(Entity, &Device, &LevelOwned)>()
-            .iter(world)
-            .filter(|(_, _, owner)| owner.0 == level)
-            .map(|(entity, device, _)| (entity, device.definition))
-            .collect();
-        let geometry = world.resource::<Assets<LevelDefinition>>().get(&handle)?;
-        let found = |&(_, definition): &(Entity, usize)| {
-            geometry.triggers[definition].name.eq_ignore_ascii_case(name)
-        };
-        devices.into_iter().find(found).map(|(entity, _)| entity)
-    };
+    let named = |world: &mut World, name: &str| world.get::<DeviceNames>(level)?.named(name);
     match bidding {
         Bidding::Run(name) => {
             if let Some(device) = named(world, &name) {
@@ -398,6 +406,13 @@ pub fn bid(world: &mut World, bidding: Bidding) {
                 activate(world, device, false);
             }
         }
+        Bidding::Enable(name) => {
+            if let Some(device) = named(world, &name)
+                && let Some(mut state) = world.get_mut::<TriggerState>(device)
+            {
+                state.on = true;
+            }
+        }
         Bidding::Unlock(name) => {
             if let Some(device) = named(world, &name) {
                 world.entity_mut(device).remove::<Guarded>();
@@ -408,10 +423,38 @@ pub fn bid(world: &mut World, bidding: Bidding) {
         }
         Bidding::Set(name, value) => {
             if let Some(mut state) = world.get_mut::<LevelState>(level) {
-                state.set_variable(&name, value);
+                state.variables.insert(name, value);
+            }
+        }
+        Bidding::Step(name, count) => {
+            if let Some(mut state) = world.get_mut::<LevelState>(level) {
+                let next = (state.value(&name) + 1) % count;
+                state.variables.insert(name, next);
+            }
+        }
+        Bidding::SetBits(name, bits) => {
+            if let Some(mut state) = world.get_mut::<LevelState>(level) {
+                let held = state.value(&name);
+                state.variables.insert(name, held | bits);
             }
         }
     }
+}
+
+/// A device is about to do what it was made to; whoever has a say in it
+/// may stop it.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Activating {
+    #[event_target]
+    pub device: Entity,
+    pub proceeds: bool,
+}
+
+/// Ask whoever has a say in a device whether it goes on.
+fn proceeds(world: &mut World, device: Entity) -> bool {
+    let mut asking = Activating { device, proceeds: true };
+    world.trigger_ref(&mut asking);
+    asking.proceeds
 }
 
 /// How running a device went.
@@ -632,9 +675,20 @@ fn execute(
     if definition.door.is_some() && links_moving(world, entity, 0) {
         return Ran::Declined;
     }
+    // A device that speaks for someone asks whoever has a say in it before
+    // they are spoken with.
+    if world.get::<crate::game::npcs::NpcSpeaker>(entity).is_some() && !proceeds(world, entity) {
+        return Ran::Answered;
+    }
     if let Some(speaker) = world.get::<crate::game::npcs::NpcSpeaker>(entity) {
         let actor = speaker.0;
-        world.commands().trigger(crate::game::npcs::conversation::Begin { actor, quote: None });
+        // What the party holds is handed over as the talk begins (retail
+        // `NotifyNpcTriggerActivation`).
+        world.commands().trigger(crate::game::npcs::conversation::Begin {
+            actor,
+            quote: None,
+            with_held: true,
+        });
         return Ran::Committed;
     }
     let party = crate::game::party::roster::the_party(world);
@@ -678,12 +732,11 @@ fn execute(
             chosen
         }
     };
-    // A level callback runs once the action is selected, before it executes
-    // (retail `Trigger::Run`).
-    if let Some(bell) = world.get::<BellButton>(entity).copied() {
-        let [button, dial] = world.get_entity_mut([entity, bell.dial]).unwrap();
-        let outcome = super::scripts::ring_bell(button, dial);
-        world.write_message(outcome);
+    // Whoever has a say in the device may stop it once the action is
+    // selected, before it is carried out (retail `Trigger::Run`'s activation
+    // callback).
+    if !proceeds(world, entity) {
+        return Ran::Answered;
     }
     let changes_state = !matches!(chosen.action, TriggerAction::Dial);
     // The prop the device moves, as its level authored it.

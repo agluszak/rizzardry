@@ -122,7 +122,7 @@ pub fn choose(
                 && hostility::between(own.body.standing(), their.body.standing()) == seeks
         })
         .map(|their| {
-            let stealth = their.body.character.map_or(0, |c| c.skill(Skill::Stealth));
+            let stealth = their.body.skills[Skill::Stealth];
             let lost = !ordered
                 && roster.contains(&their.body.entity)
                 && rng.below(100) < stealth * 75 / 100;
@@ -171,7 +171,7 @@ pub fn choose(
             let (their, there, _) = &sought[way.target];
             let armed = !their.body.attacks.arms.is_empty();
             let reached = in_reach_of_party(armed, at.quadrant(there.feet), formation);
-            (their.body.vitals.conditions.worst(), !reached, at.gap(there))
+            (their.body.conditions.worst(), !reached, at.gap(there))
         };
         let best = ways
             .iter()
@@ -256,7 +256,7 @@ mod tests {
     use crate::game::actors::Attacks;
     use crate::game::characters::{Condition, Lasting, Vitals};
     use crate::game::combat::turn::{Action, Ordered};
-    use crate::game::npcs::NpcBody;
+    use crate::game::npcs::Embodies;
     use bevy::ecs::system::SystemState;
     use bevy::prelude::{Single, Vec3, World};
     use enum_map::EnumMap;
@@ -323,7 +323,10 @@ mod tests {
     const LEFT: Vec3 = Vec3::new(-3.0, 0.0, 0.0);
 
     fn afflict(world: &mut World, actor: Entity, condition: Condition) {
-        world.get_mut::<Vitals>(actor).unwrap().afflict(condition, Lasting::Rounds(9));
+        world
+            .get_mut::<crate::game::characters::Conditions>(actor)
+            .unwrap()
+            .afflict(condition, Lasting::Rounds(9));
     }
 
     #[test]
@@ -410,7 +413,7 @@ mod tests {
         let member = ordered_party(&mut world, 1);
         let record = world.spawn_empty().id();
         let npc = monster(&mut world, AHEAD, Stance::Hostile);
-        world.entity_mut(npc).insert(NpcBody(record));
+        world.entity_mut(npc).insert(Embodies(record));
         assert_eq!(pick(&mut world, member, &turn()), Chosen::Stand);
         let foe = monster(&mut world, AHEAD, Stance::Hostile);
         assert_eq!(target(pick(&mut world, member, &turn())), foe);
@@ -469,7 +472,7 @@ mod tests {
             Chosen::Advance { goal: MoveGoal::Party, budget, again: 60 }
         );
         // Beside a party with nobody left to strike, it stands.
-        world.get_mut::<Vitals>(member).unwrap().slay();
+        world.get_mut::<Vitals>(member).unwrap().slay(None);
         let beside = walker(&mut world, AHEAD * 0.5, Stance::Hostile);
         assert_eq!(pick(&mut world, beside, &turn()), Chosen::Stand);
     }

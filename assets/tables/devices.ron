@@ -1,0 +1,1220 @@
+// What the story has to say in each level, by the level's three letters.
+//
+// `devices`: when a device of that name is used, the first case whose `when`
+// holds (a reading, as in facts.ron; always, if not given) sets off its `then`
+// (consequences, as in facts.ron) and says by `runs` (true if not given)
+// whether the device then does what it was made to. A device no case holds
+// for simply runs.
+//
+// `enter`: as the party enters the level, every case that holds sets off its
+// `then`.
+{
+    // Arnika.
+    "ARN": (
+        // Each lift waits where it is: the first above with its gate shut, the
+        // second below with its door open.
+        enter: [
+            // Vi, once rescued, is inside the inn; the Mook's image does not
+            // outlast the party's leaving.
+            (when: Is("FACT_VI_RESCUED"), then: [Moved(0x18, "Inside_Inn")]),
+            (when: All([LevelVar("ScregActive", 1), Not(Here(0xb))]), then: [LevelVar("ScregActive", 0)]),
+            // The pedestal begins with the Chaos Moliri on it.
+            (when: Unset("PedestalItem"), then: [LevelVar("PedestalItem", 0x244)]),
+            (when: Unset("El01State"), then: [LevelVar("El01State", 1)]),
+            (
+                when: Unset("El02State"),
+                then: [LevelVar("El02State", 7), Trigger("El-02BottomDoor"), Trigger("El-02BottomDoorCollide")],
+            ),
+        ],
+        devices: {
+        // A lift called at rest goes through its turn, each part moving when
+        // the one before has stopped: above, its gate shuts, it goes down and
+        // the gate below opens; below, the reverse. The first time its gate
+        // above only opens.
+        "El1-TopButtons": [
+            (when: LevelVar("El01State", 1), then: [LevelVar("El01State", 2), Trigger("El1-TopGate"), Trigger("El1-TopGateC"), WhenStill("El1-TopGate", [LevelVar("El01State", 3)])]),
+            (when: LevelVar("El01State", 3), then: [LevelVar("El01State", 4), Trigger("El1-TopGate"), Trigger("El1-TopGateC"), WhenStill("El1-TopGate", [LevelVar("El01State", 5), Trigger("El1-Lift"), WhenStill("El1-Lift", [LevelVar("El01State", 6), Trigger("El1-BottomGate"), Trigger("El1-BottomGateC"), WhenStill("El1-BottomGate", [LevelVar("El01State", 7)])])])]),
+            (when: LevelVar("El01State", 7), then: [LevelVar("El01State", 8), Trigger("El1-BottomGate"), Trigger("El1-BottomGateC"), WhenStill("El1-BottomGate", [LevelVar("El01State", 1), Trigger("El1-Lift"), WhenStill("El1-Lift", [LevelVar("El01State", 2), Trigger("El1-TopGate"), Trigger("El1-TopGateC"), WhenStill("El1-TopGate", [LevelVar("El01State", 3)])])])]),
+        ],
+        "El1-BottomButtons": [
+            (when: LevelVar("El01State", 1), then: [LevelVar("El01State", 2), Trigger("El1-TopGate"), Trigger("El1-TopGateC"), WhenStill("El1-TopGate", [LevelVar("El01State", 3)])]),
+            (when: LevelVar("El01State", 3), then: [LevelVar("El01State", 4), Trigger("El1-TopGate"), Trigger("El1-TopGateC"), WhenStill("El1-TopGate", [LevelVar("El01State", 5), Trigger("El1-Lift"), WhenStill("El1-Lift", [LevelVar("El01State", 6), Trigger("El1-BottomGate"), Trigger("El1-BottomGateC"), WhenStill("El1-BottomGate", [LevelVar("El01State", 7)])])])]),
+            (when: LevelVar("El01State", 7), then: [LevelVar("El01State", 8), Trigger("El1-BottomGate"), Trigger("El1-BottomGateC"), WhenStill("El1-BottomGate", [LevelVar("El01State", 1), Trigger("El1-Lift"), WhenStill("El1-Lift", [LevelVar("El01State", 2), Trigger("El1-TopGate"), Trigger("El1-TopGateC"), WhenStill("El1-TopGate", [LevelVar("El01State", 3)])])])]),
+        ],
+        // The red button also opens the safety deposit, and springs back
+        // once it has been pressed home.
+        "RedButton": [
+            (when: LevelVar("RedButtonDown", 2)),
+            (when: Not(LevelVar("RedButtonDown", 0)), runs: false),
+            (when: LevelVar("El01State", 3), then: [Fact("FACT_ARNIKA_SAFETY_DEPOSIT_OPEN", 1), LevelVar("RedButtonDown", 1), WhenStill("RedButton", [LevelVar("RedButtonDown", 2), Trigger("RedButton"), LevelVar("RedButtonDown", 3), WhenStill("RedButton", [LevelVar("RedButtonDown", 0)])])]),
+            (when: LevelVar("El01State", 1), then: [Fact("FACT_ARNIKA_SAFETY_DEPOSIT_OPEN", 1), LevelVar("El01State", 2), Trigger("El1-TopGate"), Trigger("El1-TopGateC"), WhenStill("El1-TopGate", [LevelVar("El01State", 3)]), LevelVar("RedButtonDown", 1), WhenStill("RedButton", [LevelVar("RedButtonDown", 2), Trigger("RedButton"), LevelVar("RedButtonDown", 3), WhenStill("RedButton", [LevelVar("RedButtonDown", 0)])])]),
+            (when: LevelVar("El01State", 7), then: [Fact("FACT_ARNIKA_SAFETY_DEPOSIT_OPEN", 1), LevelVar("El01State", 8), Trigger("El1-BottomGate"), Trigger("El1-BottomGateC"), WhenStill("El1-BottomGate", [LevelVar("El01State", 1), Trigger("El1-Lift"), WhenStill("El1-Lift", [LevelVar("El01State", 2), Trigger("El1-TopGate"), Trigger("El1-TopGateC"), WhenStill("El1-TopGate", [LevelVar("El01State", 3)])])]), LevelVar("RedButtonDown", 1), WhenStill("RedButton", [LevelVar("RedButtonDown", 2), Trigger("RedButton"), LevelVar("RedButtonDown", 3), WhenStill("RedButton", [LevelVar("RedButtonDown", 0)])])]),
+            (then: [Fact("FACT_ARNIKA_SAFETY_DEPOSIT_OPEN", 1)], runs: false),
+        ],
+        // The green button turns the bank on the party and calls the second
+        // lift unless it is above already.
+        "GreenButton": [
+            (when: LevelVar("GreenButtonDown", 2)),
+            (when: Not(LevelVar("GreenButtonDown", 0)), runs: false),
+            (
+                then: [
+                    Faction(HigardiBank, Hostile),
+                    If(Not(LevelVar("El02State", 3)), [Trigger("Elevator-02")]),
+                    LevelVar("GreenButtonDown", 1), WhenStill("GreenButton", [LevelVar("GreenButtonDown", 2), Trigger("GreenButton"), LevelVar("GreenButtonDown", 3), WhenStill("GreenButton", [LevelVar("GreenButtonDown", 0)])]),
+                ],
+            ),
+        ],
+        "Elevator-02": [
+            (when: LevelVar("GreenButtonDown", 2), runs: false),
+            (when: LevelVar("El02State", 1), then: [LevelVar("El02State", 2), Trigger("El-02TopDoor"), Trigger("El-02TopDoorCollide"), WhenStill("El-02TopDoor", [LevelVar("El02State", 3)])]),
+            (when: LevelVar("El02State", 3), then: [LevelVar("El02State", 4), Trigger("El-02TopDoor"), Trigger("El-02TopDoorCollide"), WhenStill("El-02TopDoor", [LevelVar("El02State", 5), Trigger("El-02Lift"), WhenStill("El-02Lift", [LevelVar("El02State", 6), Trigger("El-02BottomDoor"), Trigger("El-02BottomDoorCollide"), WhenStill("El-02BottomDoor", [LevelVar("El02State", 7)])])])]),
+            (when: LevelVar("El02State", 7), then: [LevelVar("El02State", 8), Trigger("El-02BottomDoor"), Trigger("El-02BottomDoorCollide"), WhenStill("El-02BottomDoor", [LevelVar("El02State", 1), Trigger("El-02Lift"), WhenStill("El-02Lift", [LevelVar("El02State", 2), Trigger("El-02TopDoor"), Trigger("El-02TopDoorCollide"), WhenStill("El-02TopDoor", [LevelVar("El02State", 3)])])])]),
+            (runs: false),
+        ],
+        // The scanner's door opens to a party that has the pass, and the
+        // scanner scans no more once it has.
+        "ScannerDoor": [(when: Has(0x27b), then: [LevelVar("HLLDoorOpen", 1)]), (runs: false)],
+        "LazerScanner": [
+            (when: Any([Not(Unset("HLLDoorOpen")), Not(LevelVar("LaserScanning", 0))]), runs: false),
+            (then: [LevelVar("LaserScanning", 1), WhenStill("LazerScanner", [LevelVar("LaserScanning", 0)])]),
+        ],
+        // The Mook's image appears, speaks and is gone, unless it is there
+        // already or their door is open.
+        "Mookholo": [
+            (when: Any([Not(LevelVar("ScregActive", 0)), Not(LevelVar("MookDoorOpen", 0))]), runs: false),
+            (
+                then: [
+                    SpawnMonster(species: 0xb, at: "Mookholo", stance: Neutral),
+                    LevelVar("ScregActive", 1),
+                    GreetsOf(0xb),
+                    AfterTalk([GroupGone(0xb), LevelVar("ScregActive", 0)]),
+                ],
+            ),
+        ],
+        "MookFrontDoor": [(then: [LevelVar("MookDoorOpen", 1)])],
+        // The Mook's pedestal holds one of three relics. An empty hand takes
+        // what is on it, and the Mook warn the party; after the warning a
+        // relic in hand is put on it.
+        "CMbox": [
+            (when: Not(LevelVar("PedestalBusy", 0)), runs: false),
+            (
+                when: All([HandEmpty, LevelVar("WarnedAboutEntry", 0), LevelVar("PedestalItem", 0x244)]),
+                then: [HandItem(0x244), LevelVar("PedestalItem", 0), Says(0x69, 8), LevelVar("WarnedAboutEntry", 1)],
+            ),
+            (
+                when: All([HandEmpty, LevelVar("WarnedAboutEntry", 0), LevelVar("PedestalItem", 0x242)]),
+                then: [HandItem(0x242), LevelVar("PedestalItem", 0), Says(0x69, 8), LevelVar("WarnedAboutEntry", 1)],
+            ),
+            (
+                when: All([HandEmpty, LevelVar("WarnedAboutEntry", 0), LevelVar("PedestalItem", 0x264)]),
+                then: [HandItem(0x264), LevelVar("PedestalItem", 0), Says(0x69, 8), LevelVar("WarnedAboutEntry", 1)],
+            ),
+            (
+                when: All([Holding(0x244), LevelVar("WarnedAboutEntry", 1)]),
+                then: [
+                    LoseHeld,
+                    LevelVar("PedestalItem", 0x244),
+                    LevelVar("WarnedAboutEntry", 0),
+                    LevelVar("PedestalBusy", 1),
+                    Trigger("ChaosMolori"),
+                    LevelVar("PedestalBusy", 0),
+                ],
+            ),
+            (
+                when: All([Holding(0x242), LevelVar("WarnedAboutEntry", 1)]),
+                then: [
+                    LoseHeld,
+                    LevelVar("PedestalItem", 0x242),
+                    LevelVar("WarnedAboutEntry", 0),
+                    LevelVar("PedestalBusy", 1),
+                    Trigger("AstralDominae"),
+                    LevelVar("PedestalBusy", 0),
+                ],
+            ),
+            (
+                when: All([Holding(0x264), LevelVar("WarnedAboutEntry", 1)]),
+                then: [
+                    LoseHeld,
+                    LevelVar("PedestalItem", 0x264),
+                    LevelVar("WarnedAboutEntry", 0),
+                    LevelVar("PedestalBusy", 1),
+                    Trigger("AstralDominae"),
+                    LevelVar("PedestalBusy", 0),
+                ],
+            ),
+            (runs: false),
+        ],
+        // The relics on it are part of the pedestal: touched, they are it.
+        "ChaosMolori": [(when: All([LevelVar("PedestalBusy", 0), Not(HandEmpty)]), runs: false)],
+        "AstralDominae": [
+            (when: Not(LevelVar("PedestalBusy", 0))),
+            (when: Not(HandEmpty), runs: false),
+            (then: [Trigger("CMBox")]),
+        ],
+        // The Mook turn on a party they warned off, unless they stand
+        // neither for nor against it.
+        "Maddmook": [
+            (
+                when: All([LevelVar("WarnedAboutEntry", 1), Not(Neutral(Mook))]),
+                then: [Says(0x69, 7), Faction(Mook, Hostile)],
+            ),
+        ],
+        // The bank: the yellow button calls six guards, the vault's door
+        // turns the guards on the party, the exit takes it out once its door
+        // has moved, and the inner vault has a golem.
+        "YellowButton": [
+            (then: [SpawnMonster(species: 0xc, count: 6, at: "Bguards", stance: Hostile, script: Some("guard.msf"))]),
+        ],
+        "Vaultalarmdoor": [
+            (then: [Sound("ambients/vaultalarm.wav"), Group(0xc, Hostile), Fact("FACT_ARNIKA_VAULT_ENTERED", 1)]),
+        ],
+        "Exitbutton": [
+            (
+                when: LevelVar("Teleporting", 0),
+                then: [
+                    LevelVar("Teleporting", 1),
+                    Fact("FACT_ARNIKA_VAULT_TELEPORT", 1),
+                    Fact("FACT_ARNIKA_VAULT_ENTERED", 1),
+                    WhenStill("Exitbutton", [Trigger("Exitbutton"), Travel("ARN11")]),
+                ],
+            ),
+            (
+                then: [
+                    LevelVar("Teleporting", 0),
+                    Fact("FACT_ARNIKA_VAULT_TELEPORT", 1),
+                    Fact("FACT_ARNIKA_VAULT_ENTERED", 1),
+                ],
+            ),
+        ],
+        "GenVault-2-door": [
+            (when: Not(Unset("GolemSpawned")), runs: false),
+            (
+                then: [
+                    LevelVar("GolemSpawned", 1),
+                    SpawnMonster(species: 0x31, at: "Golem", stance: Hostile),
+                    Sound("ambients/temp transporting.wav"),
+                ],
+            ),
+        ],
+        // The way out of the vault is only ever the exit button's.
+        "ARN11": [(runs: false)],
+        // The recorder is spoken to, handed what the party holds.
+        "Flightrecordertrigger": [(then: [Offers(0x14)], runs: false)],
+        // The first ball put in the slot goes to the one waiting for it.
+        "BallSlot": [
+            (when: Unset("BallInserted"), then: [LevelVar("BallInserted", 1), HandItem(0x240), Offers(0x16)]),
+        ],
+        },
+    ),
+    // The Umpani camp: opening a cage frees who was in it.
+    "CMP": (devices: {
+        "prisondoor06": [(then: [Fact("FACT_RAPAX_QUEEN_LOCKED_UP", 0)])],
+        "prisondoor04": [(then: [Fact("FACT_RODAN_LOCKED_IN_CAGE", 0)])],
+        "prisondoor03": [(then: [Fact("FACT_DRAZIC_LOCKED_IN_CAGE", 0)])],
+    }),
+    // The Rapax Rift.
+    "RIF": (devices: {
+        // Once the party is a Templar, Al-Sedexus is replaced by the one who
+        // can be fought; until then the device waits.
+        "Sexspawn": [
+            (
+                when: All([Is("FACT_TEMPLAR"), LevelVar("AlSedexusSwapped", 0)]),
+                then: [
+                    LevelVar("AlSedexusSwapped", 1),
+                    GroupGone(0xd9),
+                    If(Not(Here(0x22b)), [SpawnMonster(species: 0x22b, at: "Sexspawn", stance: Neutral)]),
+                ],
+            ),
+            (runs: false),
+        ],
+        "Hotstuff": [
+            (
+                when: Not(Is("FACT_LAVALORD_DIE")),
+                then: [SpawnMonster(species: 0x175, at: "Hotstuff", stance: Neutral, script: Some("MoveLavalord.MSF"))],
+            ),
+        ],
+        "Fireantspawn": [(then: [SpawnMonster(species: 0x12b, count: 6, at: "Fireantspawn", stance: Hostile)])],
+        "Gate": [(then: [Fact("FACT_RIFT_RAFE_CAGE_OPEN", 1)])],
+        "AshLock": [(then: [SpawnMonster(species: 0x222, at: "NP_Hotstuff3", stance: Hostile)])],
+        "TimeDorado": [(then: [Births(0xfc)])],
+    }),
+    // The lower monastery.
+    "MO1": (devices: {
+        // Once: three roaches by each of three places.
+        "roach_trigger": [
+            (
+                when: LevelVar("RoachesSpawned", 0),
+                then: [
+                    SpawnMonster(species: 0x138, count: 3, at: "location_roach01", stance: Hostile, shift: (0, 0, 1000)),
+                    SpawnMonster(species: 0x138, count: 3, at: "location_roach02", stance: Hostile, shift: (0, 0, 1000)),
+                    SpawnMonster(species: 0x138, count: 3, at: "location_roach03", stance: Hostile, shift: (0, 0, 1000)),
+                    LevelVar("RoachesSpawned", 1),
+                ],
+            ),
+            (runs: false),
+        ],
+        "spider_trigger": [(then: [SpawnMonster(species: 0x19c, count: 6, at: "spiderman", stance: Hostile)])],
+        "Bartrigger": [(then: [TriggerOff("Textforbar")])],
+        "Coffinlide": [
+            (
+                when: LevelVar("HeadSpawned", 0),
+                then: [SpawnMonster(species: 0x12d, at: "Head", stance: Hostile), LevelVar("HeadSpawned", 1)],
+            ),
+        ],
+        // Noxious Fumes, at power 3.
+        "Coffinlidg": [(then: [CastHere(42, 3)])],
+        // The wheel takes the star key and nothing else.
+        "wheel_star": [
+            (when: Not(Holding(0x24c)), then: [Message(0x22)], runs: false),
+            (then: [LoseHeld]),
+        ],
+    }),
+    // The upper monastery.
+    "MO2": (devices: {
+        // The button rings the bell the dial stands at; the third bell is the
+        // last, and the dial and the button are done.
+        "bell_button": [
+            (when: Not(LevelVar("RING0", 0)), then: [Sound("ambients/mon2bell1.wav")]),
+            (when: Not(LevelVar("RING1", 0)), then: [Sound("ambients/mon2bell2.wav")]),
+            (
+                when: Not(LevelVar("RING2", 0)),
+                then: [Sound("ambients/mon2bell3.wav"), TriggerOff("bellringswitch"), TriggerOff("bell_button")],
+            ),
+        ],
+        // Something lies behind the small door.
+        "micro_door2": [(then: [SpawnItemAt(0x2d7, (13085, -80, -49440))])],
+    }),
+    // The top of Mount Gigas.
+    "MGT": (devices: {
+        "catchCord": [(then: [Fact("FACT_TMISSION_KILL_UMPANI_CORD_SEVERED", 1)])],
+        "painActivatorTrigger": [(then: [Hurt(1, 40, 30)], runs: false)],
+    }),
+    // The road from Arnika to Trynton: the crypt.
+    "CT1": (devices: {
+        "Liche": [
+            (when: Not(Holding(0x15d)), then: [Message(6)], runs: false),
+            (
+                then: [
+                    Message(7),
+                    If(LevelVar("LicheDead", 0), [LevelVar("LicheDead", 1), Experience(1000)]),
+                    // The original sets the bit that turns each off.
+                    Generator("UNDEAD01", false),
+                    Generator("UNDEAD02", false),
+                    Generator("UNDEAD03", false),
+                    Generator("UNDEAD04", false),
+                    Generator("UNDEAD05", false),
+                    Generator("UNDEAD06", false),
+                ],
+            ),
+        ],
+    }),
+    // The swamp.
+    "SWM": (devices: {
+        // The oil turns one thing held over it into another, and the pool does
+        // nothing else.
+        "oil_pool": [
+            (when: Holding(0x2d0), then: [LoseHeld, HandItem(0x15e)], runs: false),
+            (runs: false),
+        ],
+        // The first plane of gas or fire the party crosses is where the Savant
+        // meets it: he appears there, speaks, leaves something behind and is
+        // gone. From then on the gas is Noxious Fumes and the fire a Fireball,
+        // at power 4.
+        "gas_trig_plane01": [
+            (when: Is("FACT_SAVANT_PARTY_SWAMP_MEET"), then: [CastHere(42, 4)]),
+            (
+                then: [
+                    Fact("FACT_SAVANT_PARTY_SWAMP_MEET", 1),
+                    SpawnMonster(species: 0x1b5, at: "gas_trig_plane01", stance: Neutral),
+                    GreetsOf(0x1b5),
+                    AfterTalk([GroupDrops(0x1b5, 0x264), GroupGone(0x1b5)]),
+                ],
+                runs: false,
+            ),
+        ],
+        "gas_trig_plane02": [
+            (when: Is("FACT_SAVANT_PARTY_SWAMP_MEET"), then: [CastHere(42, 4)]),
+            (
+                then: [
+                    Fact("FACT_SAVANT_PARTY_SWAMP_MEET", 1),
+                    SpawnMonster(species: 0x1b5, at: "gas_trig_plane02", stance: Neutral),
+                    GreetsOf(0x1b5),
+                    AfterTalk([GroupDrops(0x1b5, 0x264), GroupGone(0x1b5)]),
+                ],
+                runs: false,
+            ),
+        ],
+        "gas_trig_plane03": [
+            (when: Is("FACT_SAVANT_PARTY_SWAMP_MEET"), then: [CastHere(42, 4)]),
+            (
+                then: [
+                    Fact("FACT_SAVANT_PARTY_SWAMP_MEET", 1),
+                    SpawnMonster(species: 0x1b5, at: "gas_trig_plane03", stance: Neutral),
+                    GreetsOf(0x1b5),
+                    AfterTalk([GroupDrops(0x1b5, 0x264), GroupGone(0x1b5)]),
+                ],
+                runs: false,
+            ),
+        ],
+        "gas_trig_plane04": [
+            (when: Is("FACT_SAVANT_PARTY_SWAMP_MEET"), then: [CastHere(42, 4)]),
+            (
+                then: [
+                    Fact("FACT_SAVANT_PARTY_SWAMP_MEET", 1),
+                    SpawnMonster(species: 0x1b5, at: "gas_trig_plane04", stance: Neutral),
+                    GreetsOf(0x1b5),
+                    AfterTalk([GroupDrops(0x1b5, 0x264), GroupGone(0x1b5)]),
+                ],
+                runs: false,
+            ),
+        ],
+        "gas_trig_plane05": [
+            (when: Is("FACT_SAVANT_PARTY_SWAMP_MEET"), then: [CastHere(42, 4)]),
+            (
+                then: [
+                    Fact("FACT_SAVANT_PARTY_SWAMP_MEET", 1),
+                    SpawnMonster(species: 0x1b5, at: "gas_trig_plane05", stance: Neutral),
+                    GreetsOf(0x1b5),
+                    AfterTalk([GroupDrops(0x1b5, 0x264), GroupGone(0x1b5)]),
+                ],
+                runs: false,
+            ),
+        ],
+        "gas_trig_plane06": [
+            (when: Is("FACT_SAVANT_PARTY_SWAMP_MEET"), then: [CastHere(42, 4)]),
+            (
+                then: [
+                    Fact("FACT_SAVANT_PARTY_SWAMP_MEET", 1),
+                    SpawnMonster(species: 0x1b5, at: "gas_trig_plane06", stance: Neutral),
+                    GreetsOf(0x1b5),
+                    AfterTalk([GroupDrops(0x1b5, 0x264), GroupGone(0x1b5)]),
+                ],
+                runs: false,
+            ),
+        ],
+        "gas_trig_plane07": [
+            (when: Is("FACT_SAVANT_PARTY_SWAMP_MEET"), then: [CastHere(42, 4)]),
+            (
+                then: [
+                    Fact("FACT_SAVANT_PARTY_SWAMP_MEET", 1),
+                    SpawnMonster(species: 0x1b5, at: "gas_trig_plane07", stance: Neutral),
+                    GreetsOf(0x1b5),
+                    AfterTalk([GroupDrops(0x1b5, 0x264), GroupGone(0x1b5)]),
+                ],
+                runs: false,
+            ),
+        ],
+        "fire_trig_plane01": [
+            (when: Is("FACT_SAVANT_PARTY_SWAMP_MEET"), then: [CastHere(36, 4)]),
+            (
+                then: [
+                    Fact("FACT_SAVANT_PARTY_SWAMP_MEET", 1),
+                    SpawnMonster(species: 0x1b5, at: "fire_trig_plane01", stance: Neutral),
+                    GreetsOf(0x1b5),
+                    AfterTalk([GroupDrops(0x1b5, 0x264), GroupGone(0x1b5)]),
+                ],
+                runs: false,
+            ),
+        ],
+        "fire_trig_plane02": [
+            (when: Is("FACT_SAVANT_PARTY_SWAMP_MEET"), then: [CastHere(36, 4)]),
+            (
+                then: [
+                    Fact("FACT_SAVANT_PARTY_SWAMP_MEET", 1),
+                    SpawnMonster(species: 0x1b5, at: "fire_trig_plane02", stance: Neutral),
+                    GreetsOf(0x1b5),
+                    AfterTalk([GroupDrops(0x1b5, 0x264), GroupGone(0x1b5)]),
+                ],
+                runs: false,
+            ),
+        ],
+        "fire_trig_plane03": [
+            (when: Is("FACT_SAVANT_PARTY_SWAMP_MEET"), then: [CastHere(36, 4)]),
+            (
+                then: [
+                    Fact("FACT_SAVANT_PARTY_SWAMP_MEET", 1),
+                    SpawnMonster(species: 0x1b5, at: "fire_trig_plane03", stance: Neutral),
+                    GreetsOf(0x1b5),
+                    AfterTalk([GroupDrops(0x1b5, 0x264), GroupGone(0x1b5)]),
+                ],
+                runs: false,
+            ),
+        ],
+        "fire_trig_plane04": [
+            (when: Is("FACT_SAVANT_PARTY_SWAMP_MEET"), then: [CastHere(36, 4)]),
+            (
+                then: [
+                    Fact("FACT_SAVANT_PARTY_SWAMP_MEET", 1),
+                    SpawnMonster(species: 0x1b5, at: "fire_trig_plane04", stance: Neutral),
+                    GreetsOf(0x1b5),
+                    AfterTalk([GroupDrops(0x1b5, 0x264), GroupGone(0x1b5)]),
+                ],
+                runs: false,
+            ),
+        ],
+        "fire_trig_plane05": [
+            (when: Is("FACT_SAVANT_PARTY_SWAMP_MEET"), then: [CastHere(36, 4)]),
+            (
+                then: [
+                    Fact("FACT_SAVANT_PARTY_SWAMP_MEET", 1),
+                    SpawnMonster(species: 0x1b5, at: "fire_trig_plane05", stance: Neutral),
+                    GreetsOf(0x1b5),
+                    AfterTalk([GroupDrops(0x1b5, 0x264), GroupGone(0x1b5)]),
+                ],
+                runs: false,
+            ),
+        ],
+        "fire_trig_plane06": [
+            (when: Is("FACT_SAVANT_PARTY_SWAMP_MEET"), then: [CastHere(36, 4)]),
+            (
+                then: [
+                    Fact("FACT_SAVANT_PARTY_SWAMP_MEET", 1),
+                    SpawnMonster(species: 0x1b5, at: "fire_trig_plane06", stance: Neutral),
+                    GreetsOf(0x1b5),
+                    AfterTalk([GroupDrops(0x1b5, 0x264), GroupGone(0x1b5)]),
+                ],
+                runs: false,
+            ),
+        ],
+        "fire_trig_plane07": [
+            (when: Is("FACT_SAVANT_PARTY_SWAMP_MEET"), then: [CastHere(36, 4)]),
+            (
+                then: [
+                    Fact("FACT_SAVANT_PARTY_SWAMP_MEET", 1),
+                    SpawnMonster(species: 0x1b5, at: "fire_trig_plane07", stance: Neutral),
+                    GreetsOf(0x1b5),
+                    AfterTalk([GroupDrops(0x1b5, 0x264), GroupGone(0x1b5)]),
+                ],
+                runs: false,
+            ),
+        ],
+        // Crock gives back the member he took.
+        "onelid": [
+            (
+                when: All([Is("FACT_CROCK_KIDNAPPED_PLAYER"), Stands(0x1e)]),
+                then: [Fact("FACT_CROCK_PLAYER_RETURNED_TO_PARTY", 1), Fact("FACT_CROCK_KIDNAPPED_PLAYER", 0)],
+            ),
+        ],
+    }),
+    // The Savant's tower: the bomb.
+    "SAV": (devices: {
+        "Triangle": [(when: LevelVar("DeactivatingBomb", 0), then: [LevelVar("DeactivatingBomb", 1), Says(0x46, 0)])],
+        "Circle": [(when: LevelVar("DeactivatingBomb", 0), then: [LevelVar("DeactivatingBomb", 1), Says(0x46, 0)])],
+        "Square": [(when: LevelVar("DeactivatingBomb", 0), then: [LevelVar("DeactivatingBomb", 1), Says(0x46, 0)])],
+        "Star": [(when: LevelVar("DeactivatingBomb", 0), then: [LevelVar("DeactivatingBomb", 1), Says(0x46, 0)])],
+        "ButtonBlocker": [(then: [Says(0x46, 1), Fact("FACT_DS_BOMB_DEACTIVATED", 1)])],
+    }),
+    // The Rapax castle, main floor.
+    "RAM": (devices: {
+        // The first time, unless she has chosen already, Al-Sedexus appears.
+        "AltarBox": [
+            (
+                when: All([Not(Chosen), LevelVar("LezboDemonAppeared", 0)]),
+                then: [
+                    LevelVar("LezboDemonAppeared", 1),
+                    SpawnMonster(species: 0x124, at: "NP_Al-Sedexus", stance: Neutral),
+                ],
+            ),
+        ],
+        // What she asks the one offered to wear lies ready.
+        "platformtrigger": [
+            (then: [
+                SpawnItem(0x1fd, "NP_CRobe"),
+                SpawnItem(0x1fe, "NP_CHelm"),
+                SpawnItem(0x1ff, "NP_CDagger"),
+                TriggerEnabled("RAM03"),
+            ]),
+        ],
+        "platformtrigger01": [(then: [TriggerOff("RAM03"), TriggerEnabled("RAM07")])],
+        "platformtrigger02": [(then: [TriggerOff("RAM07"), TriggerEnabled("RAM11")])],
+    }),
+    // The Rapax castle, upper floor: the treasury's air box turns each of
+    // four things into a treasure that slips out by the door, at once if the
+    // door is shut and when it has shut again if not.
+    "RAU": (devices: {
+        "AirBox": [
+            (
+                when: Holding(0x1cb),
+                then: [
+                    Fact("FACT_RAPAX_TREASURY_RAIDED", 1),
+                    Faction(KingsAssassins, Hostile),
+                    LoseHeld,
+                    If(LevelVar("TdoorOpen", 0), [SpawnItem(0x1c7, "NP_SlipItem"), Trigger("TDoor1")]),
+                    If(Not(LevelVar("TdoorOpen", 0)), [
+                        Trigger("TDoor1"),
+                        LevelVar("TMakeTreasure", 1),
+                        LevelVar("TMakeTreasureNumber", 0x1c7),
+                    ]),
+                ],
+            ),
+            (
+                when: Holding(0x1cd),
+                then: [
+                    Fact("FACT_RAPAX_TREASURY_RAIDED", 1),
+                    Faction(KingsAssassins, Hostile),
+                    LoseHeld,
+                    If(LevelVar("TdoorOpen", 0), [SpawnItem(0x11f, "NP_SlipItem"), Trigger("TDoor1")]),
+                    If(Not(LevelVar("TdoorOpen", 0)), [
+                        Trigger("TDoor1"),
+                        LevelVar("TMakeTreasure", 1),
+                        LevelVar("TMakeTreasureNumber", 0x11f),
+                    ]),
+                ],
+            ),
+            (
+                when: Holding(0x1cc),
+                then: [
+                    Fact("FACT_RAPAX_TREASURY_RAIDED", 1),
+                    Faction(KingsAssassins, Hostile),
+                    LoseHeld,
+                    If(LevelVar("TdoorOpen", 0), [SpawnItem(0x1ca, "NP_SlipItem"), Trigger("TDoor1")]),
+                    If(Not(LevelVar("TdoorOpen", 0)), [
+                        Trigger("TDoor1"),
+                        LevelVar("TMakeTreasure", 1),
+                        LevelVar("TMakeTreasureNumber", 0x1ca),
+                    ]),
+                ],
+            ),
+            (
+                when: Holding(0x1ce),
+                then: [
+                    Fact("FACT_RAPAX_TREASURY_RAIDED", 1),
+                    Faction(KingsAssassins, Hostile),
+                    LoseHeld,
+                    If(LevelVar("TdoorOpen", 0), [SpawnItem(0x51, "NP_SlipItem"), Trigger("TDoor1")]),
+                    If(Not(LevelVar("TdoorOpen", 0)), [
+                        Trigger("TDoor1"),
+                        LevelVar("TMakeTreasure", 1),
+                        LevelVar("TMakeTreasureNumber", 0x51),
+                    ]),
+                ],
+            ),
+            (when: Not(HandEmpty), then: [Tells(0x96a), Tells(0x964)]),
+            (then: [Tells(0x964)]),
+        ],
+        "DoorDone": [
+            (
+                when: All([Not(LevelVar("TMakeTreasure", 0)), LevelVar("TdoorOpen", 0), LevelVar("TMakeTreasureNumber", 0x1c7)]),
+                then: [SpawnItem(0x1c7, "NP_SlipItem"), Trigger("TDoor1")],
+                runs: false,
+            ),
+            (
+                when: All([Not(LevelVar("TMakeTreasure", 0)), LevelVar("TdoorOpen", 0), LevelVar("TMakeTreasureNumber", 0x11f)]),
+                then: [SpawnItem(0x11f, "NP_SlipItem"), Trigger("TDoor1")],
+                runs: false,
+            ),
+            (
+                when: All([Not(LevelVar("TMakeTreasure", 0)), LevelVar("TdoorOpen", 0), LevelVar("TMakeTreasureNumber", 0x1ca)]),
+                then: [SpawnItem(0x1ca, "NP_SlipItem"), Trigger("TDoor1")],
+                runs: false,
+            ),
+            (
+                when: All([Not(LevelVar("TMakeTreasure", 0)), LevelVar("TdoorOpen", 0), LevelVar("TMakeTreasureNumber", 0x51)]),
+                then: [SpawnItem(0x51, "NP_SlipItem"), Trigger("TDoor1")],
+                runs: false,
+            ),
+        ],
+    }),
+    // The caves of Mount Gigas.
+    "MG1": (devices: {
+        "mudWallTrigger": [(then: [SpawnMonster(species: 0x157, at: "NP_BadassMonster", stance: Hostile)])],
+        // The plate opens the secret door while the party stands on it, and
+        // shuts it when it steps off.
+        "PRESSUREPLATE": [
+            (
+                when: All([On("plate"), LevelVar("PPlateDown", 0)]),
+                then: [
+                    Trigger("secretDoor-01"),
+                    Trigger("plate"),
+                    LevelVar("PPlateDown", 1),
+                    Sound("ambients/door stone open.wav"),
+                    Sound("ambients/amb rumble very low.wav"),
+                ],
+                runs: false,
+            ),
+            (
+                when: All([Not(On("plate")), Not(LevelVar("PPlateDown", 0))]),
+                then: [
+                    Trigger("secretDoor-01"),
+                    Trigger("plate"),
+                    LevelVar("PPlateDown", 0),
+                    Sound("ambients/door stone close 01.wav"),
+                    Sound("ambients/amb rumble very low.wav"),
+                ],
+                runs: false,
+            ),
+            (runs: false),
+        ],
+    }),
+    // Trynton.
+    "TY1": (
+        // Once the shaman has died Trynton is dead: its people are gone, the
+        // dead come in their stead, and the shaman lies where he fell.
+        enter: [
+            (
+                when: All([Is("FACT_TRYNNIE_SHAMAN_DIES"), Unset("Trynnie1Killed")]),
+                then: [
+                    FactionGone(Trynnie),
+                    Breeds(from: "Trynnies", to: "Dead Trynnies"),
+                    SpawnMonster(species: 0xcd, at: "VOC_SHAMAN_DYING", stance: Neutral),
+                    LevelVar("Trynnie1Killed", 1),
+                ],
+            ),
+        ],
+        devices: {
+        // The fountain does one of four things, each as likely: hexes one of
+        // the party for 10 to 14 rounds, fills everyone's spell points, heals
+        // everyone by 100, or gives everyone 100 stamina.
+        "Fount_randomFX": [
+            (then: [
+                OneOf([[AfflictOne(Hexed, 10, 5)], [RestoreMagic], [Heal(100)], [Rest(100)]]),
+                Sound("misc/fountain_magic.wav"),
+            ]),
+        ],
+        },
+    ),
+    // Trynton's upper branches.
+    "TY2": (
+        enter: [
+            (
+                when: All([Is("FACT_TRYNNIE_SHAMAN_DIES"), Unset("Trynnie2Killed")]),
+                then: [FactionGone(Trynnie), Breeds(from: "Trynnies", to: "Dead Trynnies"), LevelVar("Trynnie2Killed", 1)],
+            ),
+        ],
+        devices: {
+        // A vine, or the Zulu, to an empty hand.
+        "GoodaVine_A": [(when: HandEmpty, then: [HandItem(0x16d)]), (runs: false)],
+        "GoodaVine_B": [(when: HandEmpty, then: [HandItem(0x16e)]), (runs: false)],
+        "Give_Zulu": [(when: HandEmpty, then: [HandItem(0x1b3)]), (runs: false)],
+        "Meat_Maker": [(then: [SpawnItem(0x1b4, "Meat_Position")])],
+        // Hogar follows meat put in the box, and sleeps on drugged meat,
+        // which is worth 500 experience once.
+        "Meat_Box": [
+            (when: Any([Not(Here(0x1d4)), Not(Any([Holding(0x1b4), Holding(0x1c2)]))]), then: [Tells(0x964)]),
+            (when: Holding(0x1b4), then: [GroupScript(0x1d4, "MoveHogar.msf"), LoseHeld]),
+            (
+                then: [
+                    GroupScript(0x1d4, "MoveHogarDrugged.msf"),
+                    If(LevelVar("HogarDruggedGivenExp", 0), [Experience(500), LevelVar("HogarDruggedGivenExp", 1)]),
+                    LoseHeld,
+                ],
+            ),
+        ],
+        // With three of the four urns set the pagoda breeds no more.
+        "URN_Trigger_01": [
+            (when: AtLeast(3, [Not(LevelVar("Urn1", 0)), Not(LevelVar("Urn2", 0)), Not(LevelVar("Urn3", 0)), Not(LevelVar("Urn4", 0))]), then: [Generator("PAGODA", false), Message(0x14)]),
+            (then: [Message(0x13)]),
+        ],
+        "URN_Trigger_02": [
+            (when: AtLeast(3, [Not(LevelVar("Urn1", 0)), Not(LevelVar("Urn2", 0)), Not(LevelVar("Urn3", 0)), Not(LevelVar("Urn4", 0))]), then: [Generator("PAGODA", false), Message(0x14)]),
+            (then: [Message(0x13)]),
+        ],
+        "URN_Trigger_03": [
+            (when: AtLeast(3, [Not(LevelVar("Urn1", 0)), Not(LevelVar("Urn2", 0)), Not(LevelVar("Urn3", 0)), Not(LevelVar("Urn4", 0))]), then: [Generator("PAGODA", false), Message(0x14)]),
+            (then: [Message(0x13)]),
+        ],
+        "URN_Trigger_04": [
+            (when: AtLeast(3, [Not(LevelVar("Urn1", 0)), Not(LevelVar("Urn2", 0)), Not(LevelVar("Urn3", 0)), Not(LevelVar("Urn4", 0))]), then: [Generator("PAGODA", false), Message(0x14)]),
+            (then: [Message(0x13)]),
+        ],
+        },
+    ),
+    // The Cosmic Circle: stepping into the arena.
+    "CIR": (
+        // The first time: Aletheides and the Savant face each other in the
+        // arena, Bela and Phoonzang stand by, and two of the planes are off.
+        enter: [
+            (
+                when: Unset("ArenaSpawned"),
+                then: [
+                    SpawnMonster(species: 0x1b3, at: "NP_ALTHEIDESARENA", stance: Neutral, faces: Some("NP_DSARENA")),
+                    SpawnMonster(species: 0x1b6, at: "NP_DSARENA", stance: Neutral, faces: Some("NP_ALTHEIDESARENA")),
+                    SpawnMonster(species: 0x1b4, at: "NP_BELASTART", stance: Friendly),
+                    SpawnMonster(species: 0x197, at: "NP_PHOONZANG1", stance: Friendly),
+                    TriggerOff("CC_TRIGGERPLANE2"),
+                    TriggerOff("CC_TRIGGERPLANE4"),
+                    LevelVar("ArenaSpawned", 1),
+                ],
+            ),
+        ],
+        devices: {
+            "CC_TRIGGERPLANE1HEDRA": [(then: [Greets(0x85), CameraPath("CameraPath1")])],
+        },
+    ),
+    // Outside Mount Gigas.
+    "MGO": (devices: {
+        // The door takes any of seven things held.
+        "ewaxxdoortrigger03": [
+            (when: Any([Holding(0x268), Holding(0x269), Holding(0x26a), Holding(0x26b), Holding(0x26c), Holding(0x26d), Holding(0x26e)])),
+            (runs: false),
+        ],
+        "VOC_EWAXXSENTRYtrig": [(then: [Greets(0x59)])],
+        "dummytrigger": [(then: [Births(0x180)])],
+        // The crank, with an empty hand: the first turn only gets a word from
+        // the one who minds it; the next lowers the flag, which takes three
+        // seconds; once it is down a turn takes the flag, and something comes
+        // along the catwalk.
+        "crank": [
+            (when: Not(HandEmpty), runs: false),
+            (when: Unset("FlagPosition"), then: [LevelVar("FlagPosition", 0), Says(0x2a, 0x90)], runs: false),
+            (
+                when: LevelVar("FlagPosition", 0),
+                then: [LevelVar("FlagPosition", 1), Says(0x2a, 0x16), Later(3.0, [LevelVar("FlagPosition", 100)])],
+            ),
+            (
+                when: LevelVar("FlagPosition", 100),
+                then: [
+                    LevelVar("FlagPosition", 1000),
+                    HandItem(0x290),
+                    Says(0x2a, 0x18),
+                    SpawnMonster(species: 0x14a, at: "NP_catwalk", stance: Hostile),
+                ],
+            ),
+            (runs: false),
+        ],
+        // The alarm, once: the Umpani turn on the party and it sounds for
+        // thirty seconds.
+        "Security Button": [
+            (
+                when: Unset("UmpaniCampAlarm"),
+                then: [
+                    Faction(Umpani, Hostile),
+                    LevelVar("UmpaniCampAlarm", 30),
+                    Sound("ambients/alarm1.wav"),
+                    Later(30.0, [LevelVar("UmpaniCampAlarm", 0)]),
+                ],
+            ),
+            (runs: false),
+        ],
+    }),
+    // The upper caves of Mount Gigas.
+    "MG2": (
+        // The wire panel is untouched until it is armed.
+        enter: [(when: Unset("WirePanel"), then: [LevelVar("WirePanel", -1)])],
+        devices: {
+            // Either of two things held arms the untouched panel, with a spark.
+            "_VOC_EWAXXTRAIN": [
+                (when: LevelVar("WirePanel", 3), then: [Greets(0x5b)], runs: false),
+                (
+                    when: All([Any([Holding(0x269), Holding(0x26c)]), LevelVar("WirePanel", -1)]),
+                    then: [Sound("ambients/electricity 01.wav"), LevelVar("WirePanel", 0)],
+                ),
+                (
+                    when: Any([Holding(0x269), Holding(0x26c)]),
+                    then: [Sound("ambients/electricity 01.wav"), Greets(0x5b)],
+                    runs: false,
+                ),
+                (then: [Greets(0x5b)], runs: false),
+            ],
+            // Red, blue, yellow, in that order; any other shocks the party
+            // for 2d4+1 and the panel starts over.
+            "redwire": [
+                (when: LevelVar("WirePanel", 3)),
+                (when: LevelVar("WirePanel", 0), then: [LevelVar("WirePanel", 1)]),
+                (then: [LevelVar("WirePanel", 0), Hurt(2, 4, 1), Sound("ambients/electricity 04.wav")], runs: false),
+            ],
+            "bluewire": [
+                (when: LevelVar("WirePanel", 3)),
+                (when: LevelVar("WirePanel", 1), then: [LevelVar("WirePanel", 2)]),
+                (then: [LevelVar("WirePanel", 0), Hurt(2, 4, 1), Sound("ambients/electricity 04.wav")], runs: false),
+            ],
+            "yellowwire": [
+                (when: LevelVar("WirePanel", 3)),
+                (
+                    when: LevelVar("WirePanel", 2),
+                    then: [
+                        Fact("FACT_UMISSION_TRAIN_MACHINE_FIXED", 1),
+                        LevelVar("WirePanel", 3),
+                        TriggerOff("yellowwire"),
+                        TriggerOff("redwire"),
+                        TriggerOff("bluewire"),
+                    ],
+                ),
+                (then: [LevelVar("WirePanel", 0), Hurt(2, 4, 1), Sound("ambients/electricity 04.wav")], runs: false),
+            ],
+            // An officer opens the obstacle door that is his to open, once;
+            // otherwise he is spoken with.
+            "_VOC_EWAXXOFFICER1": [
+                (when: LevelVar("ObstacleDoors", 1), then: [Trigger("Door19"), LevelVar("ObstacleDoors", 0)], runs: false),
+                (when: LevelVar("ObstacleDoors", 3), then: [Trigger("Door19"), LevelVar("ObstacleDoors", 2)], runs: false),
+            ],
+            "_VOC_EWAXXOFFICER2": [
+                (when: LevelVar("ObstacleDoors", 2), then: [Trigger("Door18"), LevelVar("ObstacleDoors", 0)], runs: false),
+                (when: LevelVar("ObstacleDoors", 3), then: [Trigger("Door18"), LevelVar("ObstacleDoors", 1)], runs: false),
+            ],
+            // The lasers, once, unless the sensors are off: the Umpani turn on
+            // the party and the alarm sounds for thirty seconds.
+            "triggerPlaneLaserAlarm": [
+            (
+                when: All([Not(Is("FACT_LOCATION_GIGAS_MOTION_SENSORS_OFF")), Unset("UmpaniAlarm")]),
+                then: [
+                    Faction(Umpani, Hostile),
+                    LevelVar("UmpaniAlarm", 30),
+                    Sound("vocs/voc_hllintruder/voc_hllintruder_003.wav"),
+                    Later(30.0, [LevelVar("UmpaniAlarm", 0)]),
+                ],
+            ),
+            (runs: false),
+            ],
+            "triggerPlaneLaserAlarm01": [
+            (
+                when: All([Not(Is("FACT_LOCATION_GIGAS_MOTION_SENSORS_OFF")), Unset("UmpaniAlarm")]),
+                then: [
+                    Faction(Umpani, Hostile),
+                    LevelVar("UmpaniAlarm", 30),
+                    Sound("vocs/voc_hllintruder/voc_hllintruder_003.wav"),
+                    Later(30.0, [LevelVar("UmpaniAlarm", 0)]),
+                ],
+            ),
+            (runs: false),
+            ],
+            "wiringMalfunction": [(then: [Sound("ambients/electricity 04.wav")])],
+            "accessHatch": [(then: [Sound("ambients/sign falling statue.wav")])],
+        },
+    ),
+    // Ascension Peak.
+    "ASC": (
+        enter: [
+            // With two of the three relics, the first time: the avalanche, the
+            // Rapax and their prince.
+            (
+                when: All([AtLeast(2, [Has(0x242), Has(0x243), Has(0x244)]), Unset("AP_AtLeast2of3Items")]),
+                then: [
+                    Trigger("Avalanche"),
+                    Later(1.0, [Trigger("LandShaker")]),
+                    SpawnMonster(species: 0xb1, count: 6, at: "NP_Rapax01", stance: Hostile, script: Some("proximitylandslide.msf")),
+                    SpawnMonster(species: 0xf, count: 4, at: "NP_Rapax04", stance: Hostile),
+                    SpawnMonster(species: 0xc3, count: 3, at: "NP_Rapax02", stance: Neutral),
+                    SpawnMonster(species: 0xc4, count: 6, at: "NP_Rapax03", stance: Neutral),
+                    SpawnMonster(species: 0xc5, count: 6, at: "NP_Rapax05", stance: Neutral),
+                    SpawnMonster(species: 0xb2, at: "NP_Prince", stance: Neutral),
+                    LevelVar("AP_AtLeast2of3Items", 1),
+                ],
+            ),
+            // And to a Templar, once: the daughter.
+            (
+                when: All([AtLeast(2, [Has(0x242), Has(0x243), Has(0x244)]), Unset("AP_SpawnDaughter"), Is("FACT_TEMPLAR"), Not(Stands(0x31))]),
+                then: [
+                    SpawnMonster(species: 0x18d, at: "NP_Daughter", stance: Neutral),
+                    // A fact the game's records do not name.
+                    FactNumbered(0x327, 1),
+                    LevelVar("AP_SpawnDaughter", 1),
+                ],
+            ),
+            // With all three, the first time: the Savant's guard, and the
+            // bodies if either side sent the party here.
+            (
+                when: All([AtLeast(3, [Has(0x242), Has(0x243), Has(0x244)]), Unset("AP_All3Items")]),
+                then: [
+                    SpawnMonster(species: 0x1a0, count: 6, at: "NP_Savants01", stance: Hostile),
+                    If(Any([Is("FACT_TMISSION_MEET_ZANT_AT_AP"), Is("FACT_UMISSION_MEET_AP_ASSIGN")]), [Trigger("Bodies")]),
+                    LevelVar("AP_All3Items", 1),
+                ],
+            ),
+        ],
+        devices: {
+            // Leaving Chaos's place lets it be asked again, and sends away the
+            // Aletheides who answered there.
+            "ChaosBTrigger": [
+                (then: [
+                    TriggerEnabled("ChaosATrigger"),
+                    If(Not(LevelVar("AlethidiesChaosActive", 0)), [FirstGone([0x2d, 0x2e, 0x2f]), LevelVar("AlethidiesChaosActive", 0)]),
+                ]),
+            ],
+            // Aletheides answers once; to a party that carries the relic he
+            // sends his creature.
+            "ChaosATrigger": [
+                (when: Not(LevelVar("AlethidiesChaosActive", 0)), runs: false),
+                (
+                    when: Has(0x244),
+                    then: [
+                        Tells(0x71e),
+                        LevelVar("AlethidiesChaosActive", 1),
+                        Tells(0x720),
+                        SpawnMonster(species: 0xae, at: "NP_AlfieChaos", stance: Neutral),
+                        TriggerOff("ChaosATrigger"),
+                    ],
+                ),
+                (then: [Tells(0x71e), Tells(0x71f), TriggerOff("ChaosATrigger")]),
+            ],
+            // Leaving Life's place lets it be asked again, and sends away the
+            // Aletheides who answered there.
+            "LifeBTrigger": [
+                (then: [
+                    TriggerEnabled("LifeATrigger"),
+                    If(Not(LevelVar("AlethidiesLifeActive", 0)), [FirstGone([0x2d, 0x2e, 0x2f]), LevelVar("AlethidiesLifeActive", 0)]),
+                ]),
+            ],
+            // Aletheides answers once; to a party that carries the relic he
+            // sends his creature.
+            "LifeATrigger": [
+                (when: Not(LevelVar("AlethidiesLifeActive", 0)), runs: false),
+                (
+                    when: Has(0x242),
+                    then: [
+                        Tells(0x71e),
+                        LevelVar("AlethidiesLifeActive", 1),
+                        Tells(0x720),
+                        SpawnMonster(species: 0xaf, at: "NP_AlfieLife", stance: Neutral),
+                        TriggerOff("LifeATrigger"),
+                    ],
+                ),
+                (then: [Tells(0x71e), Tells(0x71f), TriggerOff("LifeATrigger")]),
+            ],
+            // Leaving Know's place lets it be asked again, and sends away the
+            // Aletheides who answered there.
+            "KnowBTrigger": [
+                (then: [
+                    TriggerEnabled("KnowATrigger"),
+                    If(Not(LevelVar("AlethidiesKnowActive", 0)), [FirstGone([0x2d, 0x2e, 0x2f]), LevelVar("AlethidiesKnowActive", 0)]),
+                ]),
+            ],
+            // Aletheides answers once; to a party that carries the relic he
+            // sends his creature.
+            "KnowATrigger": [
+                (when: Not(LevelVar("AlethidiesKnowActive", 0)), runs: false),
+                (
+                    when: Has(0x243),
+                    then: [
+                        Tells(0x71e),
+                        LevelVar("AlethidiesKnowActive", 1),
+                        Tells(0x720),
+                        SpawnMonster(species: 0xb0, at: "NP_AlfieKnow", stance: Neutral),
+                        TriggerOff("KnowATrigger"),
+                    ],
+                ),
+                (then: [Tells(0x71e), Tells(0x71f), TriggerOff("KnowATrigger")]),
+            ],
+            // The Savant and Bela arrive.
+            "RampUp": [
+                (then: [
+                    SpawnMonster(species: 0xc2, at: "NP_DSavant", stance: Neutral),
+                    SpawnMonster(species: 0x18c, at: "NP_Bela", stance: Neutral),
+                    LevelVar("AP_DSSpawned", 1),
+                ]),
+            ],
+            "Path1Camera": [
+                (when: Unset("AP_DSSpawned"), runs: false),
+                (then: [TriggerOff("Path1Camera")]),
+            ],
+            "Shaker": [(then: [Sound("ambients/rumble 01.wav")])],
+        },
+    ),
+    // Marten's Bluff.
+    "MR1": (
+        enter: [
+            // The door's three dials start at one each.
+            (when: Unset("DialA"), then: [LevelVar("DialA", 1), LevelVar("DialB", 1), LevelVar("DialC", 1)]),
+            // Until their transporter is wrecked, a T'Rang arrives by it every
+            // minute.
+            (
+                when: Unset("TransportRuns"),
+                then: [
+                    LevelVar("TransportRuns", 1),
+                    Every(60.0, Not(Is("FACT_TRANG_TELEPORTER_TOAST")), [
+                        Sound("ambients/trangtransporter.wav"),
+                        SpawnMonster(species: 0x177, at: "ANTRHACAX1", stance: Neutral, script: Some("M1_Trang_trans.MSF")),
+                    ]),
+                ],
+            ),
+        ],
+        devices: {
+            // Each dial turns through eight places.
+            "Dial-A": [(then: [LevelVarStep("DialA", 8)])],
+            "Dial-B": [(then: [LevelVarStep("DialB", 8)])],
+            "Dial-C": [(then: [LevelVarStep("DialC", 8)])],
+            // The switch turns the gas off, and on again.
+            "Gas-Switch": [
+                (when: Not(LevelVar("GasOff", 0)), then: [LevelVar("GasOff", 0)]),
+                (then: [LevelVar("GasOff", 1), ParticleOff("GasSpray-00"), ParticleOff("GasSpray-01")]),
+            ],
+            // The door opens to 7, 4, 0. Anything else, unless the gas is off,
+            // sprays it: Freeze Flesh at power 5.
+            "J-Doorcontroller": [
+                (when: All([LevelVar("DialA", 7), LevelVar("DialB", 4), LevelVar("DialC", 0)])),
+                (when: Not(LevelVar("GasOff", 0)), runs: false),
+                (
+                    then: [
+                        Particle("GasSpray-00"),
+                        Particle("GasSpray-01"),
+                        Sound("ambients/air_escaping_loop.wav"),
+                        CastHere(37, 5),
+                    ],
+                    runs: false,
+                ),
+            ],
+            // The pad sends the party where its buttons say, and anywhere of
+            // the four while none has been pressed.
+            "MR109": [
+                (when: LevelVar("TeleporterState", 1), then: [Travel("CT611")], runs: false),
+                (when: LevelVar("TeleporterState", 2), then: [Travel("CT107")], runs: false),
+                (when: LevelVar("TeleporterState", 3), then: [Travel("RIF01")], runs: false),
+                (when: LevelVar("TeleporterState", 4), then: [Travel("MR207")], runs: false),
+                (then: [OneOf([[Travel("CT611")], [Travel("CT107")], [Travel("RIF01")], [Travel("MR207")]])], runs: false),
+            ],
+            // A button, once the pad is wired, lets go the one pressed before.
+            "ButtonGigas": [
+                (when: Not(LevelVar("TeleportRunning", 0))),
+                (when: Any([LevelVar("TeleporterState", 0), LevelVar("TeleporterState", 1)]), runs: false),
+                (when: LevelVar("TeleporterState", 2), then: [LevelVar("TeleportRunning", 1), Trigger("ButtonTrang"), LevelVar("TeleporterState", 1), LevelVar("TeleportRunning", 0)]),
+                (when: LevelVar("TeleporterState", 3), then: [LevelVar("TeleportRunning", 1), Trigger("ButtonRift"), LevelVar("TeleporterState", 1), LevelVar("TeleportRunning", 0)]),
+                (when: LevelVar("TeleporterState", 4), then: [LevelVar("TeleportRunning", 1), Trigger("ButtonMaten"), LevelVar("TeleporterState", 1), LevelVar("TeleportRunning", 0)]),
+            ],
+            "ButtonTrang": [
+                (when: Not(LevelVar("TeleportRunning", 0))),
+                (when: Any([LevelVar("TeleporterState", 0), LevelVar("TeleporterState", 2)]), runs: false),
+                (when: LevelVar("TeleporterState", 1), then: [LevelVar("TeleportRunning", 1), Trigger("ButtonGigas"), LevelVar("TeleporterState", 2), LevelVar("TeleportRunning", 0)]),
+                (when: LevelVar("TeleporterState", 3), then: [LevelVar("TeleportRunning", 1), Trigger("ButtonRift"), LevelVar("TeleporterState", 2), LevelVar("TeleportRunning", 0)]),
+                (when: LevelVar("TeleporterState", 4), then: [LevelVar("TeleportRunning", 1), Trigger("ButtonMaten"), LevelVar("TeleporterState", 2), LevelVar("TeleportRunning", 0)]),
+            ],
+            "ButtonRift": [
+                (when: Not(LevelVar("TeleportRunning", 0))),
+                (when: Any([LevelVar("TeleporterState", 0), LevelVar("TeleporterState", 3)]), runs: false),
+                (when: LevelVar("TeleporterState", 1), then: [LevelVar("TeleportRunning", 1), Trigger("ButtonGigas"), LevelVar("TeleporterState", 3), LevelVar("TeleportRunning", 0)]),
+                (when: LevelVar("TeleporterState", 2), then: [LevelVar("TeleportRunning", 1), Trigger("ButtonTrang"), LevelVar("TeleporterState", 3), LevelVar("TeleportRunning", 0)]),
+                (when: LevelVar("TeleporterState", 4), then: [LevelVar("TeleportRunning", 1), Trigger("ButtonMaten"), LevelVar("TeleporterState", 3), LevelVar("TeleportRunning", 0)]),
+            ],
+            "ButtonMaten": [
+                (when: Not(LevelVar("TeleportRunning", 0))),
+                (when: Any([LevelVar("TeleporterState", 0), LevelVar("TeleporterState", 4)]), runs: false),
+                (when: LevelVar("TeleporterState", 1), then: [LevelVar("TeleportRunning", 1), Trigger("ButtonGigas"), LevelVar("TeleporterState", 4), LevelVar("TeleportRunning", 0)]),
+                (when: LevelVar("TeleporterState", 2), then: [LevelVar("TeleportRunning", 1), Trigger("ButtonTrang"), LevelVar("TeleporterState", 4), LevelVar("TeleportRunning", 0)]),
+                (when: LevelVar("TeleporterState", 3), then: [LevelVar("TeleportRunning", 1), Trigger("ButtonRift"), LevelVar("TeleporterState", 4), LevelVar("TeleportRunning", 0)]),
+            ],
+            // Wiring the pad sets it to the first button.
+            "WireTrigger": [
+                (when: Not(LevelVar("TeleporterState", 0)), runs: false),
+                (then: [LevelVar("TeleporterState", 1), LevelVar("TeleportRunning", 1), Trigger("ButtonGigas"), LevelVar("TeleportRunning", 0)]),
+            ],
+
+            // The hand lock opens to the hand held to it, and shocks anyone else
+            // for 2d4+1.
+            "F-Handlock": [
+                (when: Holding(0x26f)),
+                (then: [Hurt(2, 4, 1), Sound("ambients/electricity 04.wav")], runs: false),
+            ],
+            "Controller": [
+                (when: Is("FACT_NARGISST_MONITOR_OVERFLOW_ON"), then: [Fact("FACT_NARGISST_MONITOR_OVERFLOW_ON", 0)]),
+                (then: [Fact("FACT_NARGISST_MONITOR_OVERFLOW_ON", 1)]),
+            ],
+            "MartenBook": [(then: [Fact("FACT_QUEST_MARTEN_DIARY", 1)])],
+        },
+    ),
+    // Under Marten's Bluff.
+    "MR2": (
+        // The perfume box waits until the dummy has been found.
+        enter: [(when: Unset("RavenQuest"), then: [LevelVar("RavenQuest", 0), TriggerOff("PerfumeBox")])],
+        devices: {
+            // Four arrows, 2d6 each to whoever stands in their way.
+            "Arrowtraptrigger": [(then: [Shoots(from: ["Arrowlauncher1", "Arrowlauncher2", "Arrowlauncher3", "Arrowlauncher4"], dice: (2, 6, 0))])],
+            // The spiked balls: sixteen volleys, two seconds apart; set off
+            // again while they fly, they stop.
+            "Spikeballtrigger": [
+                (
+                    when: LevelVar("SpikedBallLauncher", 0),
+                    then: [
+                        LevelVar("SpikedBallLauncher", 1),
+                        Shoots(from: ["Spikeball-launcher1", "Spikeball-launcher2", "Spikeball-launcher3", "Spikeball-launcher4"], dice: (2, 6, 0)),
+                        Every(2.0, Not(LevelVar("SpikedBallLauncher", 0)), [
+                            Shoots(from: ["Spikeball-launcher1", "Spikeball-launcher2", "Spikeball-launcher3", "Spikeball-launcher4"], dice: (2, 6, 0)),
+                            LevelVarStep("SpikedBallLauncher", 16),
+                        ]),
+                    ],
+                ),
+                (then: [LevelVar("SpikedBallLauncher", 0)]),
+            ],
+            // The door controls shut whichever of the crusher's doors is open.
+            "DoorControls": [
+                (then: [
+                    If(Open("SquisherDoor"), [Trigger("SquisherDoor")]),
+                    If(Open("SquisherDoor1"), [Trigger("SquisherDoor1")]),
+                ]),
+            ],
+            "DoorBolt": [(then: [TriggerOff("SideGateText")])],
+            "DummyLever": [
+                (when: LevelVar("RavenQuest", 0), then: [TriggerOff("DummyLever")]),
+                (then: [TriggerOff("DummyLever")], runs: false),
+            ],
+            "Dummy": [
+                (when: Not(LevelVar("DummyBusy", 0))),
+                (then: [TriggerEnabled("PerfumeBox"), LevelVar("RavenQuest", 1)]),
+            ],
+            // The crusher, while it is still: its two plates close. A monster
+            // in the way of one is pushed along; one caught by both dies, but
+            // 36 in 100 are pushed clear. Crushing the Rapax is worth 10,000
+            // experience. When the plates have stopped the dummy is set again,
+            // if the raven's quest is under way.
+            "SquisherControls": [
+                (
+                    when: LevelVar("MonsterCrusher", 0),
+                    then: [
+                        LevelVar("MonsterCrusher", 1),
+                        Trigger("Squisher-3"),
+                        Trigger("Squisher-4"),
+                        Sound("ambients/hydraulics squisher loop.wav"),
+                        Crushes(low: "Squisher-3", high: "Squisher-4", spared: 36, prize: (0x183, 10000)),
+                        WhenStill("Squisher-3", [
+                            If(Not(LevelVar("RavenQuest", 0)), [
+                                LevelVar("DummyBusy", 1),
+                                Trigger("Dummy"),
+                                Trigger("DummyRope"),
+                                LevelVar("DummyBusy", 0),
+                            ]),
+                            LevelVar("MonsterCrusher", 0),
+                        ]),
+                    ],
+                ),
+                (runs: false),
+            ],
+            // The perfume brings the Rapax.
+            "PerfumeBox": [
+                (
+                    when: Holding(0x2ea),
+                    then: [
+                        LoseHeld,
+                        TriggerOff("PerfumeBox"),
+                        SpawnMonster(species: 0x183, at: "Ravenz", stance: Neutral, script: Some("MB_MoveRapax.msf")),
+                        LevelVar("RavenQuest", 3),
+                        Tells(0x71c),
+                    ],
+                    runs: false,
+                ),
+                (runs: false),
+            ],
+            // Taking the idol looses its gas: the dark comes down for four
+            // seconds, and unless Crock is about one of the party is gone when
+            // it lifts.
+            "StoneIdol": [
+                (
+                    when: HandEmpty,
+                    then: [
+                        HandItem(0x291),
+                        Tells(0x71d),
+                        Particle("IdolGas"),
+                        TriggerOff("StoneIdol"),
+                        Fact("FACT_QUEST_MARTEN_IDOL", 1),
+                        Fade(true, 3.0, []),
+                        Later(4.0, [
+                            If(Not(Stands(0x1e)), [
+                                Takes(spares: 2, wanted: [(Fighter, 2), (Rogue, 3), (Mage, 4), (Priest, 5)]),
+                                Fact("FACT_CROCK_KIDNAPPED_PLAYER", 1),
+                            ]),
+                            Fade(false, 3.0, []),
+                            ParticleOff("IdolGas"),
+                        ]),
+                    ],
+                ),
+                (runs: false),
+            ],
+            "BlueFlowers": [(when: HandEmpty, then: [HandItem(0x2eb)]), (runs: false)],
+        },
+    ),
+    // The sea caves: each Higardi chest has its spirit.
+    "SC1": (devices: {
+        "HigardiChest01": [(then: [SpawnMonster(species: 0x1f2, at: "NP_Spirit01", stance: Hostile)])],
+        "HigardiChest02": [(then: [SpawnMonster(species: 0x1f2, at: "NP_Spirit02", stance: Hostile)])],
+        "HigardiChest03": [(then: [SpawnMonster(species: 0x1f2, at: "NP_Spirit03", stance: Hostile)])],
+        "HigardiChest04": [(then: [SpawnMonster(species: 0x1f2, at: "NP_Spirit04", stance: Hostile)])],
+        "HigardiChest05": [(then: [SpawnMonster(species: 0x1f2, at: "NP_Spirit05", stance: Hostile)])],
+    }),
+}

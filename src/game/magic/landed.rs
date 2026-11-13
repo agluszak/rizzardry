@@ -109,10 +109,16 @@ fn drain_back(
     // always in need of budget.
     let need = |victim: Entity| -> Option<u32> {
         let body = bodies.get(victim).ok().filter(|body| !body.vitals.is_dead())?;
-        match (leech.gives, body.character.zip(body.spells)) {
+        match (leech.gives, body.spells) {
             (Leeches::Health, _) => Some(body.vitals.health.current * 100 / body.vitals.health.max),
-            (Leeches::Points, Some((character, (learned, pool)))) => {
-                let maxima = character.max_points(body.attributes, learned, &content.spells);
+            (Leeches::Points, Some((learned, pool))) => {
+                let maxima = crate::game::magic::max_points(
+                    body.level.0,
+                    body.attributes,
+                    learned,
+                    &content.spells,
+                    body.skills,
+                );
                 let most: u32 = maxima.values().sum();
                 let have: u32 =
                     maxima.iter().map(|(realm, _)| pool.available(realm, &maxima)).sum();
@@ -244,7 +250,7 @@ fn bursts(spell: &Spell, strength: Strength, field: &Field, content: &Catalogs) 
         .map(|body| {
             let at = field.places.of(body.entity).feet;
             let victims = field.within(at, at, radius, recipients);
-            Deed::at(Strike { rows, strength, blow: None }, victims)
+            Deed::at(Strike { rows, strength, blow: None, by: spell.owner }, victims)
         })
         .collect()
 }
@@ -302,7 +308,7 @@ fn reflection(
         _ => {
             let first = roster
                 .iter()
-                .find(|&member| bodies.get(member).is_ok_and(|body| body.vitals.can_fight()))
+                .find(|&member| bodies.get(member).is_ok_and(|body| body.can_fight))
                 .unwrap_or(cast.caster);
             (Some(first), eye)
         }
@@ -344,7 +350,10 @@ fn reflection(
         .map(|&victim| (victim, spell.missile.map(|_| flight(from, eye_of(victim)))))
         .collect();
     let strength = owners_strength(source, spell, (power, strength.boost), bodies);
-    let deed = Deed::flying(Strike { rows: Rows::Spell(spell.id), strength, blow: None }, flights);
+    let deed = Deed::flying(
+        Strike { rows: Rows::Spell(spell.id), strength, blow: None, by: Some(charged) },
+        flights,
+    );
     let turned = Spell {
         id: spell.id,
         caster: cast.caster,

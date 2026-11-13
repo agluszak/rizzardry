@@ -78,7 +78,7 @@ impl Recruit {
     /// The new character, before they join.
     pub fn character(&self) -> Character {
         let mut character = Character::new(&self.name, self.race, self.gender, self.profession);
-        character.portrait = self.portrait.clone();
+        character.identity.portrait = self.portrait.clone();
         character
     }
 }
@@ -100,7 +100,8 @@ pub fn recruit_character(
     let vitals = crate::game::characters::Vitals::new(&character);
     let member = commands
         .spawn((
-            Name::new(character.name.clone()),
+            Name::new(character.identity.name.clone()),
+            crate::game::actors::Nature::of_race(character.birth.race),
             character,
             vitals,
             learned,
@@ -120,12 +121,13 @@ pub fn recruit_character(
 /// their race's set if it has its own, otherwise their profession's, then the
 /// one extra item some professions add, chosen by their weapon skills.
 pub fn starting_items(character: &Character) -> Vec<ItemId> {
-    let row = character.profession.row();
-    let set = character.race.row().starting_items.as_deref().unwrap_or(&row.starting_items);
+    let row = character.calling.profession.row();
+    let set = character.birth.race.row().starting_items.as_deref().unwrap_or(&row.starting_items);
     let extra = row.extra_item.map(|extra| match extra {
         ExtraItem::Always(item) => item,
         ExtraItem::ByTrainedSkill { skill, over, then, otherwise } => {
-            if character.skill(skill) > character.skill(over) { then } else { otherwise }
+            let skills = crate::game::actors::Skills::of_sheet(character);
+            if skills[skill] > skills[over] { then } else { otherwise }
         }
     });
     set.iter().copied().chain(extra).collect()
@@ -137,10 +139,8 @@ fn member_inserted(
 ) {
     let member = context.entity;
     let party = world.get::<PartyMember>(member).unwrap().0;
-    let dead = world.get::<crate::game::characters::Dead>(member).is_some();
     if let Some(mut formation) = world.get_mut::<super::formation::Formation>(party) {
         formation.seat(member);
-        formation.update_seat(member, dead);
     }
 }
 fn member_removed(
@@ -163,14 +163,14 @@ mod tests {
     #[test]
     fn starting_items_are_the_races_or_the_professions_with_an_extra_by_skill() {
         let mut fighter = Character::new("F", Race::Human, Gender::Male, Profession::Fighter);
-        fighter.skill_points[Skill::Axe] = 9;
-        fighter.skill_points[Skill::Sword] = 3;
+        fighter.training.0[Skill::Axe] = 9;
+        fighter.training.0[Skill::Sword] = 3;
         assert_eq!(
             starting_items(&fighter),
             [143, 153, 203, 246, 18].map(ItemId),
             "an axe fighter gets the battle axe"
         );
-        fighter.skill_points[Skill::Axe] = 3;
+        fighter.training.0[Skill::Axe] = 3;
         assert_eq!(starting_items(&fighter)[4], ItemId::LONGSWORD);
         let faerie = Character::new("P", Race::Faerie, Gender::Female, Profession::Mage);
         assert_eq!(starting_items(&faerie), [63, 169, 196, 335, 358, 0].map(ItemId));

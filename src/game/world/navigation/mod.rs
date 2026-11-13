@@ -68,6 +68,48 @@ pub struct LevelNavigation {
     pub archipelagos: Vec<Entity>,
 }
 
+/// How far from a point its navmesh is looked for: actor origins float
+/// above the ground, so mostly beneath.
+fn sampling() -> PointSampleDistance3d {
+    PointSampleDistance3d {
+        horizontal_distance: 1.0,
+        distance_above: 0.5,
+        distance_below: FLOAT_HEIGHT + 2.0,
+        vertical_preference_ratio: 2.0,
+        animation_link_max_vertical_distance: 1.0,
+    }
+}
+
+/// The way one would walk from one point to another over a navigation
+/// mesh, as the points it passes, the first and last included; none if
+/// there is no way.
+pub fn walking_path(archipelago: &Archipelago3d, from: Vec3, to: Vec3) -> Option<Vec<Vec3>> {
+    let start = archipelago.sample_point(from, &sampling()).ok()?;
+    let end = archipelago.sample_point(to, &sampling()).ok()?;
+    let costs = std::collections::HashMap::new();
+    let steps = archipelago
+        .find_path(&start, &end, &costs, bevy_landmass::PermittedAnimationLinks::All)
+        .ok()?;
+    let mut points = vec![from];
+    for step in steps {
+        match step {
+            bevy_landmass::PathStep::Waypoint(point) => points.push(point),
+            bevy_landmass::PathStep::AnimationLink { start_point, end_point, .. } => {
+                points.extend([start_point, end_point]);
+            }
+        }
+    }
+    points.push(to);
+    Some(points)
+}
+
+/// How far one would walk from one point to another over a navigation
+/// mesh, if there is a way at all.
+pub fn walking_distance(archipelago: &Archipelago3d, from: Vec3, to: Vec3) -> Option<f32> {
+    let points = walking_path(archipelago, from, to)?;
+    Some(points.windows(2).map(|pair| pair[0].distance(pair[1])).sum())
+}
+
 impl LevelNavigation {
     /// The archipelago a walker of `radius` metres navigates in.
     pub fn archipelago_for(&self, radius: f32) -> Entity {
@@ -182,13 +224,7 @@ pub fn install(
         let radius = bake::SIZE_CLASSES[class];
         let mut options = ArchipelagoOptions::from_agent_radius(radius);
         // Actor origins float above the ground; sample the navmesh beneath.
-        options.point_sample_distance = PointSampleDistance3d {
-            horizontal_distance: 1.0,
-            distance_above: 0.5,
-            distance_below: FLOAT_HEIGHT + 2.0,
-            vertical_preference_ratio: 2.0,
-            animation_link_max_vertical_distance: 1.0,
-        };
+        options.point_sample_distance = sampling();
         let archipelago = commands
             .spawn((
                 Name::new(format!("Archipelago for {radius} m walkers")),
@@ -265,11 +301,8 @@ fn sync_walker_velocity(mut walkers: Query<(&LinearVelocity, &mut Velocity3d), W
 /// the target, so a crossing it began keeps its progress but no longer moves
 /// the walker, and recovering from a condition does not resume it; only a
 /// new move does.
-pub(crate) fn walking(
-    target: &AgentTarget3d,
-    body: Option<&crate::game::characters::Vitals>,
-) -> bool {
-    !matches!(target, AgentTarget3d::None) && body.is_none_or(|b| b.can_fight())
+pub(crate) fn walking(target: &AgentTarget3d, (body, can_fight): (bool, bool)) -> bool {
+    !matches!(target, AgentTarget3d::None) && (!body || can_fight)
 }
 
 /// Feed Landmass's desired velocity to Tnua; while crossing a doorway link,
@@ -278,7 +311,7 @@ fn steer_walkers(
     mut walkers: Query<(
         &Walker,
         &AgentTarget3d,
-        Option<&crate::game::characters::Vitals>,
+        (Has<crate::game::characters::Vitals>, Has<crate::game::actors::CanFight>),
         Option<&AgentDesiredVelocity3d>,
         Option<&links::Crossing>,
         &Transform,

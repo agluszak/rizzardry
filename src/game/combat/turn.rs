@@ -9,10 +9,12 @@
 //! [`crate::game::magic::casting::Cast`], and here [`Breathe`], [`Guard`],
 //! [`Retreat`] and [`Hold`].
 
+use crate::game::magic::workings::Response;
 use bevy::prelude::*;
 use enum_map::EnumMap;
 
 use super::attack::phase;
+use super::effort::{Effort, Exerted};
 use super::monster::ailments::Plans;
 use super::monster::conduct::Conduct;
 use super::monster::sight::{Fray, Sight};
@@ -23,7 +25,7 @@ use crate::content::characters::Trait;
 use crate::content::species::SpecialAttackKind;
 use crate::content::spells::SpellId;
 use crate::game::actors::Attacks;
-use crate::game::characters::{Character, Condition, Vitals};
+use crate::game::characters::{Condition, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::hits::definitions::Rows;
 use crate::game::hits::effects::{self, Body};
@@ -257,10 +259,15 @@ pub fn accept_round(
     (battle, round, party_move): (&mut Battle, &mut Round, &mut PartyMove),
     combatants: &[Entity],
     roster: &PartyRoster,
-    bodies: &Query<(&Vitals, &Attacks, Option<(&Character, &Order)>)>,
+    bodies: &Query<(
+        (&Vitals, &crate::game::characters::Conditions, Has<crate::game::actors::CanFight>),
+        &Attacks,
+        Option<(crate::game::characters::Schooling, &Order)>,
+    )>,
     rng: &mut GameRng,
 ) {
     battle.round += 1;
+    commands.trigger(super::RoundBegan);
     let surprised = battle.opening.take().is_some();
     let pace = if surprised { None } else { battle.party_pace };
     round.pace = pace;
@@ -270,29 +277,30 @@ pub fn accept_round(
     let lightning: Vec<Option<u8>> = roster
         .iter()
         .map(|member| {
-            let Ok((_, arms, Some((character, order)))) = bodies.get(member) else {
+            let Ok((_, arms, Some((schooling, order)))) = bodies.get(member) else {
                 return None;
             };
+            let character = schooling.view();
             (!surprised
                 && *order == Order::Attack
-                && character.has_trait(Trait::LightningStrike)
+                && character.traits.contains(Trait::LightningStrike)
                 && arms.of(WeaponSlot::Primary).any(|arm| arm.sword)
-                && rng.below(100) < u32::from(character.scale_by_profession(12.0) as u8))
-            .then(|| character.profession_levels[character.profession])
+                && rng.below(100) < u32::from(character.calling.scale(12.0) as u8))
+            .then(|| character.calling.mastery())
         })
         .collect();
     for &actor in combatants {
         let lightning = roster.get_index_of(&actor).and_then(|seat| lightning[seat]);
-        let Ok((vitals, arms, ordered)) = bodies.get(actor) else { continue };
+        let Ok(((_, conditions, can_fight), arms, ordered)) = bodies.get(actor) else { continue };
         // A member turned on the party attacks, whatever its order; one
         // who can no longer berserk attacks as usual.
-        let action = ordered.map(|(character, order)| match *order {
-            _ if vitals.conditions.has(Condition::Turncoat) => Action::Attack { berserk: false },
+        let action = ordered.map(|(schooling, order)| match *order {
+            _ if conditions.has(Condition::Turncoat) => Action::Attack { berserk: false },
             Order::Attack => Action::Attack { berserk: false },
             // A Berserk order needs the trait, an arm, and a primary for
             // close quarters (retail `CanCharacterBerserk`).
             Order::Berserk => Action::Attack {
-                berserk: character.has_trait(Trait::Berserk)
+                berserk: schooling.view().traits.contains(Trait::Berserk)
                     && !arms.arms.is_empty()
                     && arms
                         .of(WeaponSlot::Primary)
@@ -315,7 +323,7 @@ pub fn accept_round(
         };
         // An attacker opens with the slot with the most attacks, its arm's
         // initiative counting (retail `AssignCombatPhases`).
-        if vitals.can_fight() {
+        if can_fight {
             match action {
                 None | Some(Action::Attack { .. }) => {
                     if let Some(slot) = arms.opening() {
@@ -349,7 +357,7 @@ pub fn accept_round(
             let latest = roster
                 .iter()
                 .filter_map(|member| bodies.get(member).ok())
-                .filter(|(vitals, ..)| !vitals.is_dead())
+                .filter(|((vitals, ..), ..)| !vitals.is_dead())
                 .map(|(_, arms, _)| phase(rng, arms.initiative))
                 .max()
                 .unwrap_or(90);
@@ -368,7 +376,7 @@ pub fn accept_round(
 /// loses its turn; defending takes no turn. One going on with its turn
 /// after moving, or with attacks already spent, fights on. Otherwise a
 /// member follows its orders and anyone else decides for itself
-/// ([`ai::decide`]); then its conditions may take the action off it (retail
+/// ([`monster::deliberate`]); then its conditions may take the action off it (retail
 /// `GetConditionInterrupt`): insanity may turn it on its friends this round,
 /// fear send a monster running unannounced. What is left it does, as one
 /// event at it; a cast is cast, or for a point cast the utility magic it is.
@@ -385,6 +393,10 @@ pub(super) fn take_turn(
     content: Res<Catalogs>,
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<CombatNews>,
+    (lured, lures): (
+        Query<&crate::game::magic::pointcasts::LureInfluence>,
+        Query<&Transform, With<crate::game::magic::pointcasts::Lure>>,
+    ),
 ) {
     let actor = moment.actor;
     let (mut pause, combatants) = fight.into_inner();
@@ -397,7 +409,7 @@ pub(super) fn take_turn(
     // The weapons accepted, or nothing where one was used up.
     let weapons_hold =
         arms.weapons().iter().all(|(slot, &now)| now.is_none() || now == turn.weapons[slot]);
-    let able = own.vitals.can_fight()
+    let able = own.can_fight
         && match order {
             Some(Action::Attack { .. }) => weapons_hold,
             Some(Action::Defend) => false,
@@ -434,10 +446,10 @@ pub(super) fn take_turn(
                     )
             });
             let breathes = own
-                .character
-                .filter(|character| super::breath::available(actor, character, own.vitals, &laid))
+                .calling
+                .filter(|_| super::breath::available(actor, own.traits, own.vitals, &laid))
                 .zip(aimed);
-            let Some((character, aimed)) = breathes else {
+            let Some((_, aimed)) = breathes else {
                 ordered.unwrap().0 = Action::Defend;
                 turn.end();
                 return;
@@ -446,7 +458,7 @@ pub(super) fn take_turn(
                 special: None,
                 summons: None,
                 strength: crate::game::hits::specials::strength(
-                    character.level(),
+                    own.level.0 as u8,
                     own.vitals.stamina,
                 ),
                 toward: places.of(aimed.entity).feet,
@@ -523,8 +535,14 @@ pub(super) fn take_turn(
         _ => matches!(action, Decision::Special(_) | Decision::Fight(_)),
     };
     let running = matches!(action, Decision::Retreat(r) if r.conduct == Conduct::Flee);
-    let plans =
-        Plans { runs: order.is_none(), running, turned_on_friends: turn.berserk, against_foes };
+    let lure = lured.get(actor).ok().filter(|hold| hold.response == Response::Controlled);
+    let plans = Plans {
+        runs: order.is_none(),
+        running,
+        turned_on_friends: turn.berserk,
+        against_foes,
+        lured: lure.is_some(),
+    };
     let friend = ailments::friend_in_reach(&sight, &own, combatants, &formation);
     let interrupted = ailments::interrupt(&mut rng, &own, plans, friend);
     let action = match interrupted {
@@ -539,11 +557,33 @@ pub(super) fn take_turn(
             commands.entity(actor).insert(Fleeing);
             Decision::Retreat(Retreats { conduct: Conduct::Flee, quiet: true })
         }
+        // A lure draws it, at half its stride whatever hastes or slows it
+        // (retail's controlled move, `SetUpMonsterTurn`).
+        Some(Interrupt::Lured) => {
+            let toward = lure.and_then(|hold| lures.get(hold.lure).ok()).map(|at| at.translation);
+            if let Some(toward) = toward
+                && !turn.moved
+            {
+                turn.moved = true;
+                commands.entity(actor).insert(super::approach::CombatMove {
+                    budget: arms.stride.unwrap_or(0.0) * 0.5,
+                    moved: 0.0,
+                    goal: super::approach::MoveGoal::Retreat(toward),
+                });
+            }
+            news.write(CombatNews::Interrupted { actor, interrupt: Interrupt::Lured });
+            commands.trigger(Exerted { actor, effort: Effort::Wait });
+            turn.end();
+            pause.0 = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
+            return;
+        }
         Some(interrupt) => {
             if interrupt == Interrupt::Freed {
-                commands.entity(actor).entry::<Vitals>().and_modify(|mut vitals| {
-                    vitals.conditions.lift(Condition::Webbed);
-                });
+                commands.entity(actor).entry::<crate::game::characters::Conditions>().and_modify(
+                    |mut conditions| {
+                        conditions.lift(Condition::Webbed);
+                    },
+                );
             }
             news.write(CombatNews::Interrupted { actor, interrupt });
             turn.end();
@@ -577,22 +617,25 @@ pub(super) fn take_turn(
 pub(super) fn retreat(
     retreat: On<Retreat>,
     mut commands: Commands,
-    mut actors: Query<(&mut Turn, Option<&Walker>, &Attacks, &Vitals)>,
+    mut actors: Query<(&mut Turn, Option<&Walker>, &Attacks, &crate::game::characters::Conditions)>,
     mut pause: Single<&mut Pause, With<Battle>>,
     places: crate::game::actors::Places,
     party: Single<Entity, With<PartyRoster>>,
     mut news: MessageWriter<CombatNews>,
 ) {
     let Retreat { actor, retreats } = *retreat;
-    let Ok((mut turn, walker, attacks, vitals)) = actors.get_mut(actor) else { return };
+    let Ok((mut turn, walker, attacks, conditions)) = actors.get_mut(actor) else { return };
     turn.end();
     pause.0 = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
     if !walker.is_some_and(|w| w.speed > 0.0) || turn.moved {
         turn.waited = true;
+        commands.trigger(Exerted { actor, effort: Effort::Wait });
         return;
     }
     turn.moved = true;
-    let slowed = vitals.conditions.has(Condition::Slowed);
+    let effort = if retreats.conduct == Conduct::Flee { Effort::Run } else { Effort::Return };
+    commands.trigger(Exerted { actor, effort });
+    let slowed = conditions.has(Condition::Slowed);
     let metres = close::metres(attacks, slowed, false);
     let feet = places.of(actor).feet;
     let away = close::withdraws_to(feet, places.of(*party).eye, metres);
@@ -610,9 +653,10 @@ pub(super) fn retreat(
 }
 
 /// Hold back and rest: done for the round, without a pause.
-pub(super) fn hold(hold: On<Hold>, mut turns: Query<&mut Turn>) {
+pub(super) fn hold(hold: On<Hold>, mut turns: Query<&mut Turn>, mut commands: Commands) {
     if let Ok(mut turn) = turns.get_mut(hold.actor) {
         turn.end();
+        commands.trigger(Exerted { actor: hold.actor, effort: Effort::Wait });
     }
 }
 
@@ -686,7 +730,8 @@ pub(super) fn breathe(
                 })
             })
             .collect::<Vec<Entity>>();
-        let strike = effects::Strike { rows, strength: breathes.strength, blow: None };
+        let strike =
+            effects::Strike { rows, strength: breathes.strength, blow: None, by: Some(actor) };
         commands.spawn((Deed::at(strike, victims), Breath));
     }
 }

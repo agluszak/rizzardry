@@ -30,6 +30,8 @@ pub struct Freedom<'w, 's> {
     questions: Query<'w, 's, (), With<TravelQuestion>>,
     flights: Query<'w, 's, (), With<crate::game::party::walk_in::PathFlight>>,
     interaction: Query<'w, 's, (), With<crate::game::world::interaction::DeviceInteraction>>,
+    picks: Query<'w, 's, (), With<crate::game::npcs::scenes::MemberPick>>,
+    ended: Option<Res<'w, crate::game::npcs::scenes::Ended>>,
 }
 
 impl Freedom<'_, '_> {
@@ -50,6 +52,8 @@ impl Freedom<'_, '_> {
             && self.undisturbed()
             && self.flights.is_empty()
             && self.interaction.is_empty()
+            && self.picks.is_empty()
+            && self.ended.is_none()
     }
 }
 

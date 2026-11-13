@@ -12,7 +12,7 @@ use bevy::prelude::*;
 
 use super::{Attacks, Attributes, Level};
 use crate::content::characters::Attribute;
-use crate::game::characters::{Condition, Vitals};
+use crate::game::characters::{Condition, Conditions};
 use crate::game::combat::monster::noticing::{Noticing, notices};
 use crate::game::party::body::{self as party_body, PartyBody};
 use crate::game::party::formation::{self, Row};
@@ -122,12 +122,16 @@ pub struct Eyes {
 }
 
 impl Eyes {
-    pub fn of(vitals: &Vitals, attributes: &Attributes, attacks: &Attacks) -> Self {
-        let blinded = vitals.conditions.has(Condition::Blind) && attacks.blind_fighting.is_none();
+    pub fn of(
+        (conditions, can_fight): (&Conditions, bool),
+        attributes: &Attributes,
+        attacks: &Attacks,
+    ) -> Self {
+        let blinded = conditions.has(Condition::Blind) && attacks.blind_fighting.is_none();
         Eyes {
             senses: attributes[Attribute::Senses] as i32,
             bonus: attacks.keen_sight,
-            open: vitals.can_fight() && !blinded,
+            open: can_fight && !blinded,
         }
     }
 
@@ -170,14 +174,10 @@ impl Hidden {
         Hidden { level: level.0 as i32, concealment: 0 }
     }
 
-    /// The party hides by the lowest level among its `members` who can
+    /// The party hides by the lowest level among its members who can
     /// fight, and by what Chameleon adds.
-    pub fn party<'a>(
-        members: impl IntoIterator<Item = (&'a Level, &'a Vitals)>,
-        concealment: u32,
-    ) -> Self {
-        let able = members.into_iter().filter(|(_, vitals)| vitals.can_fight());
-        let level = able.map(|(level, _)| level.0 as i32).min().unwrap_or(0);
+    pub fn party<'a>(able: impl IntoIterator<Item = &'a Level>, concealment: u32) -> Self {
+        let level = able.into_iter().map(|level| level.0 as i32).min().unwrap_or(0);
         Hidden { level, concealment }
     }
 }

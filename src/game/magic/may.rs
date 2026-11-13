@@ -4,7 +4,7 @@
 
 use crate::content::items::UseType;
 use crate::content::spells::{PowerChoice, SpellDefinition, Usable, Working};
-use crate::game::characters::{Character, Condition};
+use crate::game::characters::{Condition, Trained};
 use crate::game::hits::effects::BodyReadOnlyItem;
 use crate::game::items::{Casts, Items};
 use crate::game::magic::casting::Source;
@@ -73,10 +73,17 @@ pub fn silence_stops(spell: &SpellDefinition, keeps_alchemy: bool) -> bool {
 /// Whether an item's spell may be set off by a character: it has a use,
 /// it is worn where it is in use if it must be, and they are among those who
 /// may use it, or it is a potion or food, which anyone takes.
-pub fn activates(casts: &Casts, worn: bool, character: &Character) -> bool {
+pub fn activates(
+    casts: &Casts,
+    worn: bool,
+    character: Trained,
+    attributes: &crate::game::actors::Attributes,
+    skills: &crate::game::actors::Skills,
+) -> bool {
     !matches!(casts.by, UseType::None | UseType::Spellbook)
         && (!casts.worn || worn)
-        && (casts.users.admit(character) || matches!(casts.by, UseType::Potion | UseType::Food))
+        && (casts.users.admit((character.calling, character.birth), attributes, skills)
+            || matches!(casts.by, UseType::Potion | UseType::Food))
 }
 
 /// How the party stands.
@@ -90,6 +97,8 @@ pub struct Moment {
     pub camped: bool,
     /// A conversation waits for the party's word.
     pub spoken_to: bool,
+    /// The party is in the air or standing on a prop.
+    pub unsteady: bool,
 }
 
 /// Whether a utility spell waits for another moment: some are not cast in a
@@ -98,7 +107,11 @@ pub struct Moment {
 /// waiting for the party's word.
 fn waits(spell: &SpellDefinition, moment: Moment) -> bool {
     match spell.facts.working {
-        Some(Working::Identify | Working::SetPortal | Working::ReturnToPortal) => {
+        // A portal is not set where the party is not on steady ground.
+        Some(Working::SetPortal) => {
+            moment.context == UseContext::Combat || moment.occupied || moment.unsteady
+        }
+        Some(Working::Identify | Working::ReturnToPortal) => {
             moment.context == UseContext::Combat || moment.occupied
         }
         Some(Working::Lure) => moment.occupied || moment.camped,
@@ -142,7 +155,7 @@ pub fn may(
     resolved: bool,
 ) -> Result<(), Refusal> {
     let own = matches!(source, Source::Innate { .. });
-    if !caster.vitals.can_fight() || !(caster.member || own) {
+    if !caster.can_fight || !(caster.member || own) {
         return Err(Refusal::CannotAct);
     }
     let item = match source {
@@ -158,10 +171,7 @@ pub fn may(
         .filter(|&item| held.id(item).is_some());
     let casts = there.map(|item| held.casts(item));
     let voiced = casts.is_none_or(|casts| casts.is_some_and(|c| c.by == UseType::Instrument));
-    if caster.vitals.conditions.has(Condition::Silenced)
-        && voiced
-        && silence_stops(spell, keeps_alchemy)
-    {
+    if caster.conditions.has(Condition::Silenced) && voiced && silence_stops(spell, keeps_alchemy) {
         return Err(Refusal::Silenced);
     }
     match source {
@@ -181,7 +191,9 @@ pub fn may(
             let Some(casts) = held.casts(item) else { return Err(Refusal::CannotUse) };
             let played = matches!(casts.by, UseType::Instrument | UseType::Gadget);
             let worn = held.slot(item).is_some_and(|slot| slot.is_active());
-            let user = caster.character.is_some_and(|c| activates(casts, worn, c));
+            let user = caster
+                .trained()
+                .is_some_and(|c| activates(casts, worn, c, caster.attributes, caster.skills));
             if (casts.power == 0 && !played) || !user {
                 return Err(Refusal::CannotUse);
             }
@@ -211,8 +223,13 @@ mod tests {
         SpellCatalog::new(vec![SpellDefinition { id, ..Default::default() }]).0.remove(0)
     }
 
-    const FREE: Moment =
-        Moment { context: UseContext::World, occupied: false, camped: false, spoken_to: false };
+    const FREE: Moment = Moment {
+        context: UseContext::World,
+        occupied: false,
+        camped: false,
+        spoken_to: false,
+        unsteady: false,
+    };
 
     /// Identify and the portals wait out a fight and a busy party; a lure
     /// waits out a camp as well; Summon Elemental is for a fight only; Charm

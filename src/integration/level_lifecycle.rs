@@ -36,12 +36,16 @@ fn app() -> App {
         .add_observer(set_aside)
         .add_observer(wake)
         .add_observer(crate::game::world::encounters::age_encounters)
-        .add_observer(crate::game::actors::age_the_woken)
+        .add_plugins(crate::game::actors::time::plugin)
+        .add_observer(crate::game::actors::spells::age_the_woken)
         .add_observer(give_bodies)
-        .add_observer(crate::game::world::damage::monster_died)
+        .add_observer(crate::game::world::hostility::answer_for)
+        .add_observer(crate::game::world::damage::halt)
+        .add_observer(crate::game::world::damage::leave_loot)
         .add_observer(crate::game::characters::fall)
         .init_resource::<crate::game::factions::Factions>()
         .add_message::<crate::game::factions::FactionNews>()
+        .add_message::<crate::game::hits::Damaged>()
         .init_resource::<GameRng>()
         .add_message::<LevelReady>()
         .add_message::<Travel>()
@@ -121,7 +125,6 @@ fn test_level(app: &mut App, collision: CollisionMesh) -> Level {
         path: "levels/test/test.pvl".into(),
         definition: geometry,
         navmeshes: vec![],
-        script: default(),
         messages: None,
     }
 }
@@ -481,7 +484,7 @@ fn direct_damage_settles_death_once() {
     let target = world.query_filtered::<Entity, With<Monster>>().single(world).unwrap();
     let hit = |world: &mut World| {
         let mut vitals = world.get_mut::<crate::game::characters::Vitals>(target).unwrap();
-        let lost = vitals.hurt(10);
+        let lost = vitals.hurt(10, None);
         // Death settles its consequences.
         world.trigger(crate::game::characters::Fell { body: target });
         world.flush();
@@ -508,6 +511,34 @@ fn direct_damage_settles_death_once() {
         .map(|(_, count)| count.map_or(1, |count| u32::from(count.of)))
         .sum::<u32>();
     assert_eq!(units, 2, "death preserves every drop and cannot award it twice");
+}
+
+/// Retail `RecordMonsterKill`: a death costs the party standing with the
+/// dead one's faction only when one of the party killed it, not when a
+/// poison or a cloud did.
+#[test]
+fn a_death_offends_its_faction_only_when_the_party_killed() {
+    use crate::game::factions::{Factions, UMPANI};
+    let standing = |by_member: bool| {
+        let mut app = app();
+        with_data(&mut app);
+        app.world_mut().resource_mut::<Catalogs>().species.0[0].faction = UMPANI;
+        spawn_level(&mut app, floor());
+        app.update();
+        let world = app.world_mut();
+        let target = world.query_filtered::<Entity, With<Monster>>().single(world).unwrap();
+        let member = world
+            .query_filtered::<Entity, With<crate::game::party::roster::PartyMember>>()
+            .iter(world)
+            .next();
+        let mut vitals = world.get_mut::<crate::game::characters::Vitals>(target).unwrap();
+        vitals.hurt(1000, member.filter(|_| by_member));
+        world.trigger(crate::game::characters::Fell { body: target });
+        world.flush();
+        world.resource::<Factions>().score(UMPANI)
+    };
+    assert_eq!(standing(false), Some(80));
+    assert_eq!(standing(true), Some(78));
 }
 
 /// Every monster the party can see in the level played, with whether it is
@@ -799,17 +830,16 @@ fn an_unborn_group_waits_until_born_and_is_born_once() {
 fn what_is_in_a_level_is_itself_when_the_party_returns() {
     use crate::content::items::ItemId;
     use crate::game::actors::spells::{LaidOn, Turns};
-    use crate::game::characters::{Condition, Lasting, Vitals};
+    use crate::game::characters::{Condition, Lasting};
     use crate::game::items::{Item, Known, Lying, Stowed, Stows};
     use crate::game::world::containers::Container;
     let (mut app, level) = playing();
     let monster =
         app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
     app.world_mut()
-        .get_mut::<Vitals>(monster)
+        .get_mut::<crate::game::characters::Conditions>(monster)
         .unwrap()
-        .conditions
-        .inflict(Condition::Blind, Lasting::Indefinite);
+        .afflict(Condition::Blind, Lasting::Indefinite);
     let spell = app.world_mut().spawn((Turns(3), LaidOn(monster))).id();
     let known = Known { identified: true, spell: false, curse: true };
     let item = app
@@ -828,7 +858,9 @@ fn what_is_in_a_level_is_itself_when_the_party_returns() {
     leave(&mut app);
     assert_eq!(come_back(&mut app), level);
     let world = app.world();
-    assert!(world.get::<Vitals>(monster).unwrap().conditions.has(Condition::Blind));
+    assert!(
+        world.get::<crate::game::characters::Conditions>(monster).unwrap().has(Condition::Blind)
+    );
     assert_eq!(world.get::<LaidOn>(spell), Some(&LaidOn(monster)));
     assert_eq!(world.get::<Turns>(spell), Some(&Turns(3)));
     assert_eq!(world.get::<Known>(item), Some(&known));
@@ -841,20 +873,21 @@ fn what_is_in_a_level_is_itself_when_the_party_returns() {
 #[test]
 fn a_level_that_was_away_ages_what_ails_and_what_is_laid() {
     use crate::game::actors::spells::{LaidOn, Turns};
-    use crate::game::characters::{Condition, Lasting, Vitals};
+    use crate::game::characters::{Condition, Lasting};
     let (mut app, level) = playing();
     let monster =
         app.world_mut().query_filtered::<Entity, With<Monster>>().single(app.world()).unwrap();
-    let mut vitals = app.world_mut().get_mut::<Vitals>(monster).unwrap();
-    vitals.afflict(Condition::Afraid, Lasting::Rounds(3));
-    vitals.afflict(Condition::Blind, Lasting::Rounds(9));
+    let mut ailing =
+        app.world_mut().get_mut::<crate::game::characters::Conditions>(monster).unwrap();
+    ailing.afflict(Condition::Afraid, Lasting::Rounds(3));
+    ailing.afflict(Condition::Blind, Lasting::Rounds(9));
     let brief = app.world_mut().spawn((Turns(3), LaidOn(monster))).id();
     let lasting = app.world_mut().spawn((Turns(9), LaidOn(monster))).id();
     leave(&mut app);
     app.world_mut().resource_mut::<crate::game::time::GameClock>().ms += 10 * 60_000;
     assert_eq!(come_back(&mut app), level);
     let world = app.world();
-    let conditions = &world.get::<Vitals>(monster).unwrap().conditions;
+    let conditions = &world.get::<crate::game::characters::Conditions>(monster).unwrap();
     assert!(!conditions.has(Condition::Afraid) && conditions.has(Condition::Blind));
     assert!(world.get_entity(brief).is_err(), "it wore off while the party was away");
     assert_eq!(world.get::<Turns>(lasting), Some(&Turns(4)));

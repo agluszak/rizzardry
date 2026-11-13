@@ -110,12 +110,12 @@ impl Formation {
         Some(row)
     }
 
-    /// Keep a member's seat in step with its life (retail
-    /// `UpdateFormationSlotState`): the dead give up their place and remember
-    /// its row; the raised return to that row when it has room, or are
-    /// seated like a joiner.
-    pub fn update_seat(&mut self, member: Entity, dead: bool) {
-        if dead {
+    /// Keep a member's seat in step with whether they stand in the formation
+    /// (retail `UpdateFormationSlotState`): one who is away gives up their
+    /// place and remembers its row; back, they return to that row when it
+    /// has room, or are seated like a joiner.
+    pub fn update_seat(&mut self, member: Entity, away: bool) {
+        if away {
             if let Some(row) = self.take_seat(member) {
                 self.vacated.insert(member, row);
             }
@@ -211,28 +211,38 @@ pub fn quadrant(from: Vec3, yaw: f32, to: Vec3) -> Row {
     }
 }
 
-/// A member who dies gives up their seat, remembering its row (retail
-/// `UpdateFormationSlotState`).
-pub fn vacate_seat(
-    death: On<Add<crate::game::characters::Dead>>,
+/// A member's seat follows what they are fit for: the dead, the missing
+/// and those their conditions keep from their place give it up, and take it
+/// back when they can stand in it again.
+#[allow(clippy::type_complexity)]
+pub fn keep_seat(
+    members: Query<
+        (
+            Entity,
+            (&crate::game::characters::Vitals, &crate::game::characters::Conditions),
+            &crate::game::actors::Traits,
+            &super::roster::PartyMember,
+        ),
+        Or<(
+            Changed<crate::game::characters::Vitals>,
+            Changed<crate::game::characters::Conditions>,
+            Changed<crate::game::actors::Traits>,
+            Changed<super::roster::PartyMember>,
+        )>,
+    >,
     mut formations: Query<&mut Formation>,
 ) {
-    let Ok(mut formation) = formations.single_mut() else { return };
-    if formation.row_of(death.entity).is_some() {
-        formation.update_seat(death.entity, true);
-    }
-}
-
-/// A member raised from the dead returns to their row when it has room, or
-/// is seated like a joiner.
-pub fn retake_seat(
-    life: On<Remove<crate::game::characters::Dead>>,
-    members: Query<(), With<super::roster::PartyMember>>,
-    mut formations: Query<&mut Formation>,
-) {
-    let Ok(mut formation) = formations.single_mut() else { return };
-    if members.contains(life.entity) {
-        formation.update_seat(life.entity, false);
+    use crate::game::characters::Condition;
+    for (entity, (vitals, conditions), traits, member) in &members {
+        let stands = !vitals.is_dead()
+            && conditions.below(Condition::Missing)
+            && !conditions.unseats(traits.0);
+        let Ok(mut formation) = formations.get_mut(member.0) else { continue };
+        // Only a seat that is to change is touched, so that the formation
+        // is marked changed when it has.
+        if formation.row_of(entity).is_some() != stands {
+            formation.update_seat(entity, !stands);
+        }
     }
 }
 

@@ -73,7 +73,7 @@ Reaching a quote's last line, its entries are taken in order:
 | disposition, faction | a named person's standing with the party, or a faction's, changes |
 | party remark | a member says something about it |
 | close | the conversation ends once what is queued has been said |
-| close and resume | the same, and the person goes back to what they were doing, cool toward the party (25) |
+| close and resume | the same, and the person goes back to what they were doing: cool toward the party (25) at best, and their group against it |
 | script label, world action, leave party | the person's body does something in the world |
 
 The first *next*, *if facts* that holds, *options*, *typed word* or *close and
@@ -109,8 +109,16 @@ topic, and every member fit to fight practises Communication, 15) or 1 after.
 person's topics: the whole text, then each pair of adjacent words, then each
 word. The first match is said; with two different single-word matches the
 second follows after 0x21; with more than two, 0x20. With none, 0x23 or 0x24.
-A topic that matched is remembered. `join` asks them to join; `where is …`
-asks after a person or place, 0x76 if unknown.
+A topic that matched is remembered. A topic beginning `join` or `recruit`
+asks them to join; one beginning `talk about` is about the rest.
+
+**Ask where something is**, by its own button or by beginning `where is`.
+The person answers from their own topics if they have one for it. Otherwise
+by name: themselves, 0x75; one of twenty people and things, if their record
+says they know of it; a region, by a table of where the party is now against
+where is asked after. Anything else, 0x76. (`where are` and `where's` are
+recognised, but the original then cuts nine letters whichever was typed, so
+only `where is` finds anything.)
 
 **Answer** an options or typed-word question. A word that is one of those
 listed takes the quote's reply for that word, or its general reply; any other
@@ -125,7 +133,11 @@ the party's best Communication, at least 1. Refused, the quote's decline
 quotes are said. Accepted without the gold, 0x14. Accepted, the gold is paid
 and the quote is said.
 
-**Give an item.**
+**Give an item.** What is given is what the party could sell (in its pool
+or a member's pack) or what its hand holds. A talk that a device begins for
+someone while the party holds something opens on that thing being given, in
+place of the greeting (retail `NotifyNpcTriggerActivation`,
+`BeginNpcDialogue`).
 - To a friend: the quote their script has for that item, if any; they keep
   it if the script says so. Otherwise an item that must not be lost is
   refused (0x11); any other is taken with thanks (0x10).
@@ -160,8 +172,14 @@ is).
 **Trade.** Buying and selling are the merchant's rules (`npcs/trade.rs`); the
 conversation only has to be idle.
 
-**Leave.** What is being said is finished; nothing more is begun. The charm
-on the person ends.
+**Turn on them.** Asked whether it means it, the party confirms: one not
+already hostile becomes so (25), says 0x18, and goes back to what they were
+doing with their group against the party.
+
+**Leave.** A friend says farewell (0x5c) and then it is over; if they have a
+body, are no merchant and are not of the party, a member remarks on it a
+second later. With anyone else, what is being said is finished and nothing
+more is begun. The charm on the person ends.
 
 ## 6. What ends it
 
@@ -172,20 +190,10 @@ not paid, an item offered and not taken is still the party's.
 
 ## 7. Seen in the original and not in this game
 
-Read off the decompilation while writing this page. Slice 8 fixes each as
-its act is rebuilt, confirming it against the decompilation first; the last
-is not part of that slice.
-
-- `where is` and `join` typed as topics are understood: `where is` looks a
-  name up among the people and regions the person knows of (0x76 if they do
-  not), by tables this game does not have yet.
-- Leaving a friend, they say a farewell (0x5c), and after talking with one
-  who is not a merchant a member may remark on it a second later.
-- A prompt to turn the person hostile on purpose (they become cool, 25, say
-  0x18 and go back to what they were doing).
-- The story commands a quote can queue (a person walking off, a door
-  opening, a henchman called, the endgame) are not carried out; a quote that
-  needs one is refused before anything is paid or given.
+- The player's own line is shown reworded in the original ("Tell me about
+  …?"); here it is shown as typed.
+- The story commands a quote can queue are slice 9's
+  ([story.md](story.md)).
 
 ## How this is built
 

@@ -204,6 +204,12 @@ const MERGE_UNIDENTIFIED: usize = 0x163;
 const OMNIGUN_TIERS: usize = 0x167;
 const GIFT_PRONOUNS: usize = 0x2da;
 const POSSESSIVES: usize = 0x2d7;
+/// What a member wore and can no longer use comes off: for want of an
+/// attribute or skill, and otherwise.
+const UNUSABLE_LACKING: usize = 0x1ef;
+const UNUSABLE: usize = 0x1f0;
+/// The attributes' names (retail `g_character_description_first_ids`).
+const ATTRIBUTE_NAMES: usize = 0x274;
 const SEARCH_ON: usize = 0x78e;
 const SEARCH_OFF: usize = 0x78f;
 const SPOTS_HIDDEN: usize = 0x772;
@@ -371,6 +377,7 @@ fn magic_lines(
             vec![format!("{} {why}.", name(*caster))]
         }
         MagicNews::Landed { effects } => effects.iter().map(|&e| effect_line(e)).collect(),
+        MagicNews::Astray { caster } => vec![format!("{}'s spell goes astray!", name(*caster))],
         MagicNews::Done(report) => {
             let spell = &spells[report.spell].name;
             let mut lines = vec![match &report.item {
@@ -434,6 +441,7 @@ pub fn queue_notices() -> bevy::ecs::schedule::ScheduleConfigs<bevy::ecs::system
         post_remarks,
         post_magic,
         post_speech,
+        post_story,
         post_factions,
         post_trigger_effects,
         post_identified,
@@ -488,6 +496,16 @@ fn post_speech(
     }
 }
 
+fn post_story(
+    mut told: MessageReader<crate::game::npcs::story::StoryTold>,
+    strings: GameStrings,
+    mut notices: Notices,
+) {
+    for line in told.read() {
+        notices.post(strings.get(line.string));
+    }
+}
+
 fn post_factions(
     mut factions: MessageReader<FactionNews>,
     strings: GameStrings,
@@ -524,7 +542,6 @@ fn post_trigger_effects(
             }
             TriggerEffect::Sound { .. }
             | TriggerEffect::FountainUsed { .. }
-            | TriggerEffect::BellRang(_)
             | TriggerEffect::Shake { .. } => None,
         };
         if let Some(text) = text.filter(|t| !t.trim().is_empty()) {
@@ -585,6 +602,30 @@ fn post_items(mut items: MessageReader<ItemNews>, strings: GameStrings, mut noti
             ItemNews::Merged => continue,
             ItemNews::Unskilled { member } => string(UNSKILLED_MERGE).replace("%s", member),
             ItemNews::Unidentified => string(MERGE_UNIDENTIFIED),
+            // Retail `UnequipUnusableItems`: the member's possessive, the
+            // item, and for 0x1ef the possessive again and what they lack.
+            ItemNews::Unusable { member, gender, item, lacks } => {
+                use crate::game::items::Lack;
+                let their = string(POSSESSIVES + *gender as usize);
+                let text = match lacks {
+                    Some(lack) => {
+                        let lacking = string(match lack {
+                            Lack::Attribute(attribute) => ATTRIBUTE_NAMES + *attribute as usize,
+                            Lack::Skill(skill) => crate::content::ui::SKILL_NAMES + *skill as usize,
+                        });
+                        [&their, item, &their, &lacking]
+                            .iter()
+                            .fold(string(UNUSABLE_LACKING), |text, part| {
+                                text.replacen("%s", part, 1)
+                            })
+                    }
+                    None => [&their, item]
+                        .iter()
+                        .fold(string(UNUSABLE), |text, part| text.replacen("%s", part, 1)),
+                };
+                let separator = if text.starts_with(['\'', ':']) { "" } else { " " };
+                format!("{member}{separator}{text}")
+            }
             ItemNews::Omnigun { member, gender, tier } => {
                 let pronouns = if *tier == 0 { GIFT_PRONOUNS } else { POSSESSIVES };
                 let pronoun = string(pronouns + *gender as usize);
@@ -601,14 +642,15 @@ fn post_items(mut items: MessageReader<ItemNews>, strings: GameStrings, mut noti
 
 fn post_locks(
     mut locks: MessageReader<LockNews>,
-    members: Query<&crate::game::characters::Character>,
+    members: Query<crate::game::characters::PaperReadOnly>,
     strings: GameStrings,
     mut notices: Notices,
 ) {
     let string = |index| strings.get(index).to_owned();
     // Retail's lock and trap notices (`AttemptForce`, `ResolvePick`,
     // `CompleteTrapDisarm`, `ResolveSprungTrap`); the rest are voices.
-    let member = |entity: &Entity| members.get(*entity).map(|c| c.name.clone()).unwrap_or_default();
+    let member =
+        |entity: &Entity| members.get(*entity).map(|c| c.identity.name.clone()).unwrap_or_default();
     let trap = |trap: &u8| string(crate::content::ui::TRAP_NAMES + usize::from(*trap));
     for news in locks.read() {
         let text = match news {
@@ -668,6 +710,8 @@ fn post_combat(
                 notices.log.selected = 1;
                 vec![string(COMBAT)]
             }
+            // Heard, not told.
+            CombatNews::Swung { .. } | CombatNews::Struck { .. } => vec![],
             CombatNews::Breathed { actor } => {
                 names.name(*actor).map(|name| vec![format!("{name} breathes!")]).unwrap_or_default()
             }
@@ -776,6 +820,8 @@ fn post_combat(
             ],
             CombatNews::Lost => vec![string(LOST)],
             CombatNews::Over => vec![string(NOTHING_TO_FIGHT)],
+            // Spoken, not written.
+            CombatNews::Feat { .. } => vec![],
         };
         let ended = matches!(news, CombatNews::Won { .. } | CombatNews::Lost | CombatNews::Over);
         // Retail CheckCombatEnd explicitly sends outcomes to General before

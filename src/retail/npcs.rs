@@ -98,6 +98,7 @@ pub fn read_npcs(data: &[u8]) -> Result<NpcCatalog, LoadError> {
             charm_scale: r[0x5d] as i8,
             talk_scale: r[0x5e] as i8,
             faction: r[0x5f],
+            knows: u32_at(r, 0x60)?,
             trade_pool: u16_at(r, 2)?,
             kind: u32_at(r, 0x58)? as i32,
             buy_factor,
@@ -287,6 +288,8 @@ fn operation(
         }
         18 | 30 if args[0] >= 0 => DialogueOp::Price { gold: args[0] as u32, always: kind == 30 },
         23 => DialogueOp::Decline(id(args[0])?),
+        // Retail has no case for kind 29 anywhere a quote's entries are run.
+        29 => DialogueOp::Inert,
         25..=28 | 31..=34 if subs.len() == 1 => DialogueOp::Mention {
             category: match kind {
                 25 | 31 => TopicCategory::Person,

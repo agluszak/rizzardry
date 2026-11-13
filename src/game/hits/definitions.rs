@@ -264,6 +264,8 @@ pub enum EffectKind {
     /// as [`EffectKind::Afflict`] is, saved against by its own base.
     AfflictAny(Vec<Condition>),
     Slay,
+    /// Swallowed whole by whoever does it: missing until that one dies.
+    Swallow,
     Tire,
     DrainPool,
     DrainBudget,
@@ -291,6 +293,19 @@ pub enum EffectKind {
     /// Prismic Ray's either-or: half the time the spell's damage, otherwise
     /// a weighted condition for the spell's rounds, or death.
     SpellPrismic,
+    /// A named spell, laid on the body for the magnitude's rounds.
+    Enchant(SpellId),
+    /// One of these, by its weight in a hundred, picked for each body.
+    OneOf(Vec<Choice>),
+}
+
+/// One of an effect's either-ors: how likely it is in a hundred, what it
+/// does and how its magnitude is rolled.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct Choice {
+    pub weight: u32,
+    pub kind: EffectKind,
+    pub roll: Roll,
 }
 
 /// One spell's row of the table: what it does when cast, and, for a personal
@@ -363,8 +378,15 @@ impl SpellRow {
     /// already has (`enchanted`: the spell is laid on it now); a spell
     /// that does none of these always would. A follow-up that only comes if the
     /// effect before it landed is not weighed.
-    pub fn worthwhile(&self, victim: &crate::game::characters::Vitals, enchanted: bool) -> bool {
-        let has = |condition| victim.conditions.has(condition);
+    pub fn worthwhile(
+        &self,
+        (victim, conditions): (
+            &crate::game::characters::Vitals,
+            &crate::game::characters::Conditions,
+        ),
+        enchanted: bool,
+    ) -> bool {
+        let has = |condition| conditions.has(condition);
         let mut purposes = self
             .effects
             .iter()
@@ -374,7 +396,7 @@ impl SpellRow {
                 EffectKind::Afflict { condition, .. } if !effect.landed => {
                     Some(Purpose::Afflicts(*condition))
                 }
-                EffectKind::SpellEnchant => Some(Purpose::Enchants),
+                EffectKind::SpellEnchant | EffectKind::Enchant(_) => Some(Purpose::Enchants),
                 EffectKind::Cure { conditions, .. } => Some(Purpose::Cures(conditions)),
                 _ => None,
             })
@@ -397,6 +419,17 @@ impl EffectSpec {
             let condition = conditions[rng.below(conditions.len() as u32) as usize];
             self.save = Some(condition_save(condition));
             self.kind = EffectKind::Afflict { condition, poison: 0, indefinite: false };
+        }
+        if let EffectKind::OneOf(choices) = &self.kind {
+            let roll = rng.below(100);
+            let chosen = crate::game::rng::weighted(roll, choices.iter().map(|c| c.weight));
+            if let Some(choice) = chosen.map(|index| choices[index].clone()) {
+                if let EffectKind::Afflict { condition, .. } = choice.kind {
+                    self.save = Some(condition_save(condition));
+                }
+                self.roll = Some(choice.roll);
+                self.kind = choice.kind;
+            }
         }
         if self.kind == EffectKind::SpellPrismic {
             let roll = rng.below(100);

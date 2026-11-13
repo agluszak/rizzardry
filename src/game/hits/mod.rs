@@ -115,6 +115,11 @@ pub struct Deed {
 }
 
 impl Deed {
+    /// Those it has yet to reach.
+    pub fn aimed_at(&self) -> impl Iterator<Item = Entity> + '_ {
+        self.arrivals.iter().map(|(victim, _)| *victim)
+    }
+
     /// A deed that reaches its victims at once.
     pub fn at(strike: Strike, victims: impl IntoIterator<Item = Entity>) -> Self {
         Self::flying(strike, victims.into_iter().map(|victim| (victim, None)))
@@ -238,13 +243,8 @@ fn arrive(
         commands.entity(arrival.deed).despawn();
     }
     log.scorch(&mut commands);
-    for hurt in log.damaged.iter().filter(|hurt| hurt.died) {
-        commands.trigger(crate::game::characters::Fell { body: hurt.body });
-    }
+    log.swallow(&mut commands);
     damaged.write_batch(log.damaged);
-    for raised in log.raised {
-        commands.entity(raised).remove::<crate::game::characters::Dead>();
-    }
     for (member, skill, usage) in log.practised {
         commands.trigger(Practise { member, skill, usage });
     }

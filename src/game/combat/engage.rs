@@ -10,12 +10,14 @@
 //! near the party is not modelled (`docs/rules/monsters.md` section 3).
 
 use super::*;
+use crate::game::world::navigation::walking_distance;
 
 use super::monster::coming;
 use super::monster::sight::Sight;
 use crate::game::actors::{Level, Places};
 use crate::game::party::body::PartyBody;
 use crate::game::world::hostility::{Allegiance, Stand};
+use crate::game::world::identify::Leads;
 use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::population::Camouflage;
 use avian3d::prelude::Position;
@@ -29,21 +31,18 @@ pub(super) struct Engaged(pub(super) Vec<Entity>);
 /// fighting (retail `AlertSameFactionGroups`). An NPC's group, an unaligned
 /// one and one hostile already are not stirred.
 pub(super) fn alert_factions(
-    monsters: Query<(&Allegiance, Has<Combatant>), With<Monster>>,
-    groups: Query<(Entity, &GroupMembers, &LevelOwned)>,
+    leading: Query<(Entity, &Leads, &Allegiance, Has<Combatant>, &LevelOwned), With<Monster>>,
     sight: Sight,
     level: PlayedLevel,
     mut commands: Commands,
 ) {
     let Some(root) = level.entity() else { return };
     let hostile = |monster: Entity| sight.side(monster) == Some(Stance::Hostile);
-    let leaders: Vec<(Entity, Entity, &Allegiance, bool)> = groups
+    let leaders: Vec<(Entity, Entity, &Allegiance, bool)> = leading
         .iter()
-        .filter(|(.., owner)| owner.0 == root)
-        .filter_map(|(group, members, _)| {
-            let leader = members.iter().find(|&member| sight.alive(member))?;
-            let (allegiance, fighting) = monsters.get(leader).ok()?;
-            Some((group, leader, allegiance, fighting))
+        .filter(|&(leader, .., owner)| owner.0 == root && sight.alive(leader))
+        .map(|(leader, &Leads(group), allegiance, fighting, _)| {
+            (group, leader, allegiance, fighting)
         })
         .collect();
     for &(group, leader, allegiance, _) in &leaders {
@@ -70,9 +69,14 @@ pub(super) fn engage(
     battles: Query<(), With<Battle>>,
     monsters: Query<(Entity, &Monster, &Allegiance, Option<&GroupMember>, Has<Combatant>)>,
     groups: Query<(Entity, &MonsterGroup, &GroupMembers, &LevelOwned, Has<hostility::Provoked>)>,
+    leading: Query<(), With<Leads>>,
     sight: Sight,
     level: PlayedLevel,
     content: If<Res<Catalogs>>,
+    (navigation, archipelagos): (
+        Option<Single<&crate::game::world::navigation::LevelNavigation>>,
+        Query<&bevy_landmass::Archipelago3d>,
+    ),
     mut engaged: MessageWriter<Engaged>,
     mut commands: Commands,
 ) {
@@ -123,8 +127,30 @@ pub(super) fn engage(
         let (_, _, allegiance, ..) = monsters.get(first).unwrap();
         let side = (sight.side(first).unwrap_or_default(), allegiance.hostility_radius());
         let provoked = group.is_some_and(|g| provoked.contains(&g));
-        let came =
-            coming::comes_in(&sight, &fighters, side, (running, provoked), &hostiles, &content);
+        // The way the leader would walk to the party, over the navmesh for
+        // its size (retail `FindNavigatorPathDistance`).
+        let walks = |leader: Entity, reach: f32| {
+            let Ok((_, monster, ..)) = monsters.get(leader) else { return false };
+            let archipelago = navigation.as_ref().and_then(|navigation| {
+                archipelagos.get(navigation.archipelago_for(monster.body.radius)).ok()
+            });
+            let (from, to) = (sight.places.of(leader).feet, sight.places.of(sight.party()).feet);
+            archipelago
+                .and_then(|archipelago| walking_distance(archipelago, from, to))
+                .is_some_and(|walked| walked <= reach)
+        };
+        // Its leader, if it is among those who may come; else the first of them.
+        let leader =
+            fighters.iter().copied().find(|&fighter| leading.contains(fighter)).unwrap_or(first);
+        let came = coming::comes_in(
+            &sight,
+            (&fighters, leader),
+            side,
+            (running, provoked),
+            &hostiles,
+            &content,
+            walks,
+        );
         if let Some(group) = group
             && came.turns_hostile
         {
@@ -160,7 +186,16 @@ pub(super) fn open_battle(
         &PartyRoster,
         &crate::game::party::body::PartyMovement,
     )>,
-    members: Query<(&Character, &Vitals, &crate::game::actors::Attributes)>,
+    members: Query<
+        (
+            &crate::game::actors::Traits,
+            &crate::game::characters::Conditions,
+            &crate::game::actors::Attributes,
+            &crate::game::actors::Skills,
+        ),
+        With<crate::game::actors::CanFight>,
+    >,
+    watch: Query<&crate::game::actors::Attributes, With<crate::game::actors::Lucid>>,
     level: PlayedLevel,
     obstacles: WorldObstacles,
     mut recognition: GroupRecognition,
@@ -200,7 +235,7 @@ pub(super) fn open_battle(
         camp.is_some(),
         movement.running,
         searching,
-        members().map(|(_, vitals, attributes)| (attributes, vitals)),
+        watch.iter_many(roster.iter()).matched(),
         &mut rng,
     );
     if camp.is_some() {

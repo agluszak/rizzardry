@@ -5,6 +5,7 @@
 pub mod approach;
 pub mod attack;
 pub mod breath;
+pub mod effort;
 mod engage;
 pub mod monster;
 mod orders;
@@ -30,7 +31,7 @@ use bevy::prelude::*;
 use crate::content::items::AttackMode;
 use crate::content::species::AttackWord;
 
-use crate::game::characters::{Character, Dead, Vitals};
+use crate::game::characters::{Dead, Vitals};
 use crate::game::hits::Effect;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
@@ -45,6 +46,7 @@ impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(hostility::plugin)
             .add_observer(credit_death)
+            .add_observer(count_kill)
             .add_observer(settle_defeat)
             .add_observer(turn::defend_instead)
             .add_observer(round_end::end_the_round)
@@ -68,6 +70,7 @@ impl Plugin for CombatPlugin {
             .add_observer(turn::guard)
             .add_observer(turn::retreat)
             .add_observer(turn::hold)
+            .add_observer(effort::tire)
             .add_observer(summon::summon)
             .add_message::<CombatNews>()
             .add_message::<CyclePartyMove>()
@@ -115,6 +118,14 @@ impl Plugin for CombatPlugin {
                     .run_if(crate::game::world::level::level_active)
                     .after(crate::game::party::body::turn_party)
                     .before(bevy_tnua::TnuaUserControlsSystems),
+            )
+            // What a moment or a round's end did to bodies is settled, and
+            // only then is a closing round judged.
+            .add_systems(
+                FixedUpdate,
+                round_end::close_round
+                    .after(crate::game::actors::settle)
+                    .run_if(crate::game::world::level::level_active),
             )
             // The party walks on the fixed step; its move is measured on
             // every step, once physics has moved it, so how frames batch
@@ -264,7 +275,7 @@ fn opening_surprise<'a>(
     camping: bool,
     running: bool,
     searching: bool,
-    mut members: impl Iterator<Item = (&'a crate::game::actors::Attributes, &'a Vitals)>,
+    mut lucid: impl Iterator<Item = &'a crate::game::actors::Attributes>,
     rng: &mut GameRng,
 ) -> Option<SurpriseCause> {
     if !shadow_hound {
@@ -272,8 +283,7 @@ fn opening_surprise<'a>(
             return Some(SurpriseCause::Ambush);
         }
         if camping {
-            let guard = members.find(|(_, v)| v.lucid());
-            let Some((attributes, _)) = guard else { return Some(SurpriseCause::Ambush) };
+            let Some(attributes) = lucid.next() else { return Some(SurpriseCause::Ambush) };
             let senses = attributes[crate::content::characters::Attribute::Senses];
             rng.below(1);
             if senses / 2 <= rng.below(100) {
@@ -286,6 +296,10 @@ fn opening_surprise<'a>(
     }
     None
 }
+
+/// A round of the fight has begun.
+#[derive(Event, Clone, Copy, Debug)]
+pub struct RoundBegan;
 
 /// What the fight tells the player.
 #[derive(Message, Clone, Debug, PartialEq)]
@@ -306,6 +320,18 @@ pub enum CombatNews {
         swings: u32,
         surprise: attack::Surprise,
     },
+    /// A member swings a weapon of this sound class.
+    Swung {
+        sound_class: Option<u8>,
+    },
+    /// A blow gets through to a body, at a place of it (for a member, head,
+    /// body, legs, hands or feet in that order), by an arm of this sound
+    /// class.
+    Struck {
+        victim: Entity,
+        place: usize,
+        sound_class: Option<u8>,
+    },
     /// A swing goes astray onto someone else (retail
     /// `AnnounceAccidentalStrike`).
     Fumble {
@@ -323,6 +349,10 @@ pub enum CombatNews {
     },
     Killed {
         actor: Entity,
+    },
+    /// A member made a kill worth speaking of.
+    Feat {
+        member: Entity,
     },
     Won {
         kills: u32,
@@ -368,40 +398,36 @@ pub enum CombatNews {
     PartyStops,
 }
 
-/// Once deaths are settled, the party is defeated if none of it lives,
-/// whoever's action dealt the damage.
+/// A party that has fallen has lost the fight it was in: its combatants
+/// leave the fight and stop closing in; they remain.
 pub fn settle_defeat(
-    _: On<crate::game::characters::Settled>,
+    _: On<crate::game::party::PartyFell>,
     mut commands: Commands,
-    battle: Option<Single<Entity, With<Battle>>>,
-    roster: Single<&PartyRoster>,
+    battle: Single<Entity, With<Battle>>,
     mut news: MessageWriter<CombatNews>,
-    bodies: Query<&Vitals>,
 ) {
-    let Some(battle) = battle.map(Single::into_inner) else { return };
-    if roster.iter().all(|m| bodies.get(m).unwrap().is_dead()) {
-        news.write(CombatNews::Lost);
-        // Its combatants leave the fight and stop closing in; they remain.
-        commands.entity(battle).despawn();
-    }
+    news.write(CombatNews::Lost);
+    commands.entity(*battle).despawn();
 }
 
 /// A death in the fight: a hostile body's with a worth is a kill worth it
 /// (nothing for one summoned), shared at the fight's end (retail
-/// `MonsterStartsDying`); everyone's is announced.
+/// `RecordMonsterKill`); everyone's is announced.
 fn credit_death(
     died: On<Add<Dead>>,
-    bodies: Query<(
-        &Side,
-        Option<&crate::game::world::population::Worth>,
-        Has<crate::game::magic::pointcasts::SummonedBy>,
-        Has<Combatant>,
-    )>,
+    bodies: Query<
+        (
+            &Side,
+            Option<&crate::game::world::population::Worth>,
+            Has<crate::game::magic::pointcasts::SummonedBy>,
+        ),
+        With<Combatant>,
+    >,
     mut spoils: Single<&mut Spoils, With<Battle>>,
     mut news: MessageWriter<CombatNews>,
 ) {
     let actor = died.entity;
-    let Ok((side, worth, summoned, true)) = bodies.get(actor) else { return };
+    let Ok((side, worth, summoned)) = bodies.get(actor) else { return };
     if let Some(worth) = worth
         && side.own() == Stance::Hostile
     {
@@ -413,13 +439,47 @@ fn credit_death(
     news.write(CombatNews::Killed { actor });
 }
 
+/// A member who killed a hostile in the fight has it on their tally; if it
+/// was a kill to speak of, of a level two or more above the party's
+/// average, they speak (retail `RecordMonsterKill`).
+#[allow(clippy::type_complexity)]
+fn count_kill(
+    died: On<Add<Dead>>,
+    killed: Query<
+        (&Dead, &Side, &crate::game::actors::Level, Has<crate::game::world::population::Notable>),
+        (With<Combatant>, With<crate::game::world::population::Worth>),
+    >,
+    mut members: Query<
+        (&mut crate::game::characters::Tally, &crate::game::actors::Level),
+        With<crate::game::party::roster::PartyMember>,
+    >,
+    mut news: MessageWriter<CombatNews>,
+) {
+    let Ok((&Dead { by: Some(killer) }, side, level, notable)) = killed.get(died.entity) else {
+        return;
+    };
+    if side.own() != Stance::Hostile {
+        return;
+    }
+    let (sum, count) =
+        members.iter().fold((0, 0), |(sum, count), (_, level)| (sum + level.0, count + 1));
+    let Ok((mut tally, _)) = members.get_mut(killer) else { return };
+    tally.kills += 1;
+    if notable && sum / count + 2 <= level.0 {
+        news.write(CombatNews::Feat { member: killer });
+    }
+}
+
 /// Starting the round while the party moves ends its move (retail
 /// `MGSKeyboard.cpp:568-573`).
 pub fn stop_party_move(
     fight: Option<Single<(&Round, &mut PartyMove), With<Battle>>>,
     mut rng: ResMut<GameRng>,
     roster: Single<&PartyRoster>,
-    mut movers: Query<(&mut Vitals, &crate::game::items::Burden), With<Turn>>,
+    mut movers: Query<
+        (&mut Vitals, &crate::game::characters::Conditions, &crate::game::items::Burden),
+        With<Turn>,
+    >,
     mut turns: Query<&mut Turn>,
     mut news: MessageWriter<CombatNews>,
     mut starts: MessageReader<StartRound>,
@@ -448,9 +508,9 @@ pub fn begin_round(
     mut rng: ResMut<GameRng>,
     roster: Single<&PartyRoster>,
     bodies: Query<(
-        &Vitals,
+        (&Vitals, &crate::game::characters::Conditions, Has<crate::game::actors::CanFight>),
         &crate::game::actors::Attacks,
-        Option<(&Character, &crate::game::party::Order)>,
+        Option<(crate::game::characters::Schooling, &crate::game::party::Order)>,
     )>,
     settings: Res<CombatSettings>,
     in_flight: Query<(), With<crate::game::hits::Deed>>,

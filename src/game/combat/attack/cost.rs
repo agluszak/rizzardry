@@ -130,7 +130,7 @@ mod tests {
     use super::super::arena::{arena, arm, duel, party, swing};
     use super::*;
     use crate::game::actors::Attacks;
-    use crate::game::characters::{Lasting, Load, Vitals};
+    use crate::game::characters::{Lasting, Load};
     use crate::game::items::Burden;
     use bevy::prelude::World;
 
@@ -151,7 +151,10 @@ mod tests {
             })
         };
         let afflict = |world: &mut World, condition| {
-            world.get_mut::<Vitals>(member).unwrap().afflict(condition, Lasting::Rounds(9));
+            world
+                .get_mut::<crate::game::characters::Conditions>(member)
+                .unwrap()
+                .afflict(condition, Lasting::Rounds(9));
         };
         afflict(&mut world, Condition::Diseased);
         assert_eq!(spent(&mut world, Load::None), 8);

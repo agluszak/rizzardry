@@ -38,23 +38,19 @@ pub fn guards(
     let (temper, intelligence) = (mind.temper.0, own.attributes[Attribute::Intelligence]);
     let reach = own.attacks.arms.first().map(|arm| arm.reach.metres());
     let wards: Vec<Entity> = match reach {
-        Some(reach)
-            if temper.bodyguard && own.vitals.can_guard() && rng.below(100) < intelligence =>
-        {
-            bodies
-                .iter()
-                .copied()
-                .filter(|&other| other != own.entity)
-                .filter(|&other| sight.toward(own, other) == Some(Stance::Friendly))
-                .filter(|&other| sight.places.gap(own.entity, other) <= reach)
-                .filter(|&other| {
-                    sight.bodies.get(other).is_ok_and(|fellow| {
-                        let health = fellow.vitals.health;
-                        fellow.level > own.level && share(health.current, health.max) < 40
-                    })
+        Some(reach) if temper.bodyguard && own.can_guard && rng.below(100) < intelligence => bodies
+            .iter()
+            .copied()
+            .filter(|&other| other != own.entity)
+            .filter(|&other| sight.toward(own, other) == Some(Stance::Friendly))
+            .filter(|&other| sight.places.gap(own.entity, other) <= reach)
+            .filter(|&other| {
+                sight.bodies.get(other).is_ok_and(|fellow| {
+                    let health = fellow.vitals.health;
+                    fellow.level > own.level && share(health.current, health.max) < 40
                 })
-                .collect()
-        }
+            })
+            .collect(),
         _ => Vec::new(),
     };
     if !wards.is_empty() {

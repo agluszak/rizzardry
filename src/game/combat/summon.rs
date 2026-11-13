@@ -46,7 +46,7 @@ pub fn summon(
     party: Query<(&Position, &PartyBody)>,
     monsters: Query<(&Monster, ActorPose, Option<&Walker>, &Vitals)>,
     groups: Query<&MonsterGroup>,
-    sides: Query<(&hostility::Side, &crate::game::characters::Vitals)>,
+    sides: Query<(&hostility::Side, &crate::game::characters::Conditions)>,
     mut levels: Query<(Entity, &LevelNavigation, &mut Unborn, &MonsterBodies), With<Level>>,
     level: PlayedLevel,
     obstacles: WorldObstacles,
@@ -83,7 +83,7 @@ pub fn summon(
     if count == 0 {
         return;
     }
-    let stance = match sides.get(summoner).map(|(side, vitals)| side.now(vitals)) {
+    let stance = match sides.get(summoner).map(|(side, conditions)| side.now(conditions)) {
         Ok(Stance::Friendly) => Stance::Friendly,
         _ => Stance::Hostile,
     };

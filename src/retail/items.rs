@@ -472,6 +472,8 @@ fn read_item(index: usize, record: &[u8], strings: &[String]) -> Result<ItemDefi
     let weight = bytes.u16()?;
     let cursed = bytes.u8()? != 0;
     let extra_swings = i32::from_le_bytes(record[0xad..0xb1].try_into().unwrap());
+    let material = i32::from_le_bytes(record[0xc1..0xc5].try_into().unwrap());
+    let sound_class = i32::from_le_bytes(record[0xc5..0xc9].try_into().unwrap());
     let own_image = lenient_string(&record[0xcd..0xcd + 0x18]);
     let string = |index: usize| strings.get(index).map_or("", |s| s.as_str());
     let kind_name = KIND_NAMES.get(usize::from(kind)).map_or("", |&k| string(k));
@@ -501,6 +503,8 @@ fn read_item(index: usize, record: &[u8], strings: &[String]) -> Result<ItemDefi
         effects,
         slays,
         extra_swings,
+        material: u8::try_from(material).ok().filter(|&m| m < 12).unwrap_or(0),
+        sound_class: u8::try_from(sound_class).ok().filter(|&class| class < 38),
         never_depletes: has(flag::NEVER_DEPLETES),
         damage_bonus,
         hit_bonus,

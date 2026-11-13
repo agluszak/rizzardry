@@ -83,14 +83,14 @@ pub(crate) fn advance_camp(
     camp: Option<Res<Camp>>,
     battle: Option<Single<&Battle>>,
     roster: Single<&PartyRoster>,
-    members: Query<&Vitals>,
+    able: Query<(), With<crate::game::actors::CanAct>>,
     mut news: MessageWriter<CampNews>,
 ) {
     let Some(camp) = camp else { return };
     if battle.is_some() {
         return;
     }
-    let anyone_able = members.iter_many(roster.iter()).matched().any(Vitals::can_act);
+    let anyone_able = roster.iter().any(|member| able.contains(member));
     if let Some(outcome) = camp.outcome(clock.ms, anyone_able) {
         news.write(outcome);
         commands.remove_resource::<Camp>();
@@ -132,14 +132,14 @@ pub fn force_camp(
     camp: Option<Res<Camp>>,
     battle: Option<Single<&Battle>>,
     roster: Single<&PartyRoster>,
-    members: Query<&Vitals>,
+    members: Query<(&Vitals, Has<crate::game::actors::CanAct>)>,
     mut news: MessageWriter<CampNews>,
 ) {
     if camp.is_some() || battle.is_some() {
         return;
     }
     let members = || roster.iter().map(|m| members.get(m).unwrap());
-    if members().all(Vitals::is_dead) || members().any(Vitals::can_act) {
+    if members().all(|(vitals, _)| vitals.is_dead()) || members().any(|(_, can_act)| can_act) {
         return;
     }
     commands.insert_resource(Camp::UntilAble);
