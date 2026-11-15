@@ -90,7 +90,7 @@ impl Plugin for WorldPlugin {
             .add_message::<population::Birth>()
             .add_message::<particles::EmissionSpent>()
             .add_message::<crate::game::automap::CommitNote>()
-            .add_plugins(interaction::plugin)
+            .add_plugins((interaction::plugin, encounters::plugin))
             .add_observer(interaction::end_attempts)
             .add_observer(damage::monster_died)
             .add_observer(damage::clear_the_fallen)
@@ -122,14 +122,6 @@ impl Plugin for WorldPlugin {
                     population::give_birth.run_if(level::level_active).before(GameplaySet::Combat),
                     search::toggle_search.run_if(level::level_active).after(level::activate_level),
                 ),
-            )
-            // Encounters come over ground physics has placed.
-            .add_systems(
-                FixedPostUpdate,
-                (encounters::write_off_wiped_out, encounters::run_encounters)
-                    .chain()
-                    .after(avian3d::prelude::PhysicsSystems::Writeback)
-                    .run_if(level::level_active),
             )
             .add_systems(
                 FixedPreUpdate,

@@ -25,9 +25,6 @@ pub struct MonsterGroup {
     pub counted: bool,
     /// The stance last set on the group and when, if anything has set one.
     pub set: Option<super::hostility::SetStance>,
-    /// A random encounter about the level, and the game second it came
-    /// (retail `encounter_registered`, `spawn_time`).
-    pub encounter: Option<u64>,
 }
 
 /// A companion group come along with a random encounter, which it goes

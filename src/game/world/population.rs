@@ -509,8 +509,7 @@ pub fn populate(
     let unborn = unborn.into_iter().map(|(_, newborn)| newborn).collect();
     commands.entity(root).insert(Unborn(unborn));
     // The encounters' timers jitter after the placed monsters' rolls.
-    let encounters = super::encounters::EncounterState::authored(&geometry.encounters, rng);
-    commands.entity(root).insert(encounters);
+    super::encounters::spawn_generators(commands, root, &geometry.encounters, rng);
     let mut groups: HashMap<i32, Entity> = HashMap::new();
     let mut actors = Vec::new();
     for (_, newborn) in monsters {
