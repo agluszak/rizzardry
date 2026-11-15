@@ -43,11 +43,20 @@ pub(crate) enum ContainerUse {
     Look { open: bool },
 }
 
+/// Ask the container to handle a use before its lid moves. Item transfers and
+/// loot generation belong to the container; the device only needs the outcome.
+#[derive(EntityEvent)]
+pub(crate) struct Open {
+    #[event_target]
+    pub container: Entity,
+    pub outcome: ContainerUse,
+}
+
 /// Retail `Trigger::RunAction` case 3: a held item goes in; otherwise the
 /// contents are drawn once, their gold goes to the party, a lone item to
 /// the hand, and several are looked through.
 pub(crate) fn use_container(
-    In(entity): In<Entity>,
+    mut request: On<Open>,
     mut containers: Query<(&mut Container, &PropMotion)>,
     content: If<Res<crate::game::data::Catalogs>>,
     attempts: Query<&DeviceAttempt>,
@@ -57,15 +66,18 @@ pub(crate) fn use_container(
     mut rng: ResMut<GameRng>,
     mut outcomes: MessageWriter<TriggerEffect>,
     mut commands: Commands,
-) -> ContainerUse {
+) {
+    let entity = request.container;
     let (party, roster) = *party;
     let (mut container, motion) = containers.get_mut(entity).unwrap();
     if let Some(item) = held.held(party) {
         commands.trigger(Put { item, at: Place::Container(entity) });
-        return ContainerUse::Deposited;
+        request.outcome = ContainerUse::Deposited;
+        return;
     }
     if attempts.contains(entity) {
-        return ContainerUse::Busy;
+        request.outcome = ContainerUse::Busy;
+        return;
     }
     // Devices with containers run only once the databases have loaded.
     let catalog = &content.items;
@@ -96,14 +108,14 @@ pub(crate) fn use_container(
         outcomes.write(TriggerEffect::Gold(container.gold));
         container.gold = 0;
     }
-    match inside[..] {
+    request.outcome = match inside[..] {
         [] => ContainerUse::Toggle,
         [item] => {
             commands.trigger(Put { item, at: Place::Hand { party } });
             ContainerUse::Toggle
         }
         _ => ContainerUse::Look { open: motion.target > 0.0 },
-    }
+    };
 }
 
 /// Where taken items go.

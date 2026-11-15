@@ -98,6 +98,7 @@ impl Plugin for WorldPlugin {
             .add_observer(interaction::end_attempts)
             .add_observer(damage::monster_died)
             .add_observer(damage::clear_the_fallen)
+            .add_observer(containers::use_container)
             .add_observer(containers::emptied)
             .add_observer(containers::bag_emptied)
             // Resolve travel intent early; activation owns the later level swap.

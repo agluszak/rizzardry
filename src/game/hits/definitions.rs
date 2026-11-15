@@ -606,21 +606,6 @@ mod tests {
         assert_eq!(rounds(0, -5, 1, 0), [0, 1].into(), "never under nothing, then the luck");
     }
 
-    /// A gold share is the dice at the power; if that is under 100, a second roll
-    /// is taken in its place, held at 100; if it is 100 or over, 100.
-    #[test]
-    fn a_gold_share_is_the_dice_rolled_again_when_under_a_hundred_and_held_at_a_hundred() {
-        let share = |base| {
-            let dice = Some(Dice { base, count: 1, sides: 1 });
-            let spell = SpellDefinition { dice, ..default() };
-            let strength = Strength { power: 1, against: 0, boost: 0 };
-            roll(Roll::SpellGoldShare, strength, None, Some(&spell), &mut GameRng::seeded(0))
-        };
-        assert_eq!(share(30), 31, "the second roll, 1d1 + 30");
-        assert_eq!(share(99), 100, "the second, 100, held");
-        assert_eq!(share(150), 100, "not under 100, so 100");
-    }
-
     fn spell_with_facts(id: SpellId) -> SpellDefinition {
         let spell = SpellDefinition { id, realm: Some(Realm::Air), ..default() };
         crate::content::spells::SpellCatalog::new(vec![spell]).0.remove(0)

@@ -244,7 +244,7 @@ fn bursts(spell: &Spell, strength: Strength, field: &Field, content: &Catalogs) 
         .map(|body| {
             let at = field.places.of(body.entity).feet;
             let victims = field.within(at, at, radius, recipients);
-            Deed::at(Strike::new(rows, strength, None, &content), victims)
+            Deed::at(Strike::new(rows, strength, None, content), victims)
         })
         .collect()
 }

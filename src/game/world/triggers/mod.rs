@@ -16,7 +16,7 @@ use std::{collections::HashMap, sync::Arc};
 use bevy::ecs::world::EntityMut;
 use bevy::prelude::*;
 
-use super::containers::{Container, ContainerUse, use_container};
+use super::containers::{Container, ContainerUse, Open};
 use super::interaction::{Guarded, Work};
 use super::level::{Level, LevelOwned};
 use super::props::{PropAnimation, PropMotion};
@@ -27,10 +27,10 @@ use crate::content::level::{
 };
 use crate::game::characters::{Character, Vitals};
 use crate::game::hits::Damaged;
-use crate::game::items::Items;
+use crate::game::items::{Hand, Item};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
-use bevy::ecs::system::RunSystemOnce;
+use bevy::ecs::relationship::RelationshipTarget;
 
 const MAX_DEPTH: usize = 16;
 
@@ -522,8 +522,10 @@ fn execute(world: &mut World, entity: Entity, depth: usize, source: i32) -> Ran 
     }
     let party = crate::game::party::roster::the_party(world);
     let offered = world
-        .run_system_once(move |items: Items| items.held(party).and_then(|held| items.id(held)))
-        .unwrap();
+        .get::<Hand>(party)
+        .and_then(|hand| hand.iter().next())
+        .and_then(|item| world.get::<Item>(item))
+        .map(|item| item.0);
     let chosen = select_use(
         &world.entity(entity),
         world.get::<LevelState>(level).unwrap(),
@@ -592,7 +594,10 @@ fn execute(world: &mut World, entity: Entity, depth: usize, source: i32) -> Ran 
                 return Ran::Declined;
             }
             if world.get::<Container>(entity).is_some() {
-                match world.run_system_cached_with(use_container, entity).unwrap() {
+                let mut open = Open { container: entity, outcome: ContainerUse::Busy };
+                world.trigger_ref(&mut open);
+                world.flush();
+                match open.outcome {
                     ContainerUse::Busy => return Ran::Declined,
                     ContainerUse::Deposited => return Ran::Answered,
                     ContainerUse::Toggle => {}
