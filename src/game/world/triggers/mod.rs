@@ -23,15 +23,13 @@ use super::props::{PropAnimation, PropMotion};
 use super::scripts::BellButton;
 use crate::content::items::Dice;
 use crate::content::level::{
-    DoorLock, Fountain, Lock, Restores, StateChange, TriggerAction, TriggerSound, TriggerUse,
-    VariableName,
+    DoorLock, Lock, StateChange, TriggerAction, TriggerSound, TriggerUse, VariableName,
 };
 use crate::game::characters::{Character, Vitals};
 use crate::game::hits::Damaged;
 use crate::game::items::Items;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
-use crate::game::time::GameClock;
 use bevy::ecs::system::RunSystemOnce;
 
 const MAX_DEPTH: usize = 16;
@@ -138,17 +136,6 @@ pub struct DialState {
     pub position: usize,
 }
 
-#[derive(Component, Clone, Debug, Default)]
-pub struct FountainState {
-    used: Option<FountainUses>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct FountainUses {
-    left: Option<u32>,
-    refills_at: Option<u64>,
-}
-
 #[derive(Event)]
 pub(super) struct PartyHurt(Dice);
 
@@ -181,84 +168,6 @@ pub(super) fn damage_party(
             }
         }
     }
-}
-
-fn drink_fountain(
-    In((entity, fountain, at)): In<(Entity, Fountain, Option<Vec3>)>,
-    mut fountains: Query<&mut FountainState>,
-    clock: Res<GameClock>,
-    roster: Single<&PartyRoster>,
-    mut members: Query<(
-        &mut Vitals,
-        Option<(&crate::game::magic::LearnedSpells, &mut crate::game::magic::SpellPoints)>,
-    )>,
-    content: If<Res<crate::game::data::Catalogs>>,
-    mut rng: ResMut<GameRng>,
-    mut outcomes: MessageWriter<TriggerEffect>,
-) -> bool {
-    let restoration = (fountain.restores == Restores::Restoration)
-        .then(|| &content.spells[crate::content::spells::SpellId::HEAL_ALL]);
-    let mut state = fountains.get_mut(entity).unwrap();
-    let now = clock.ms;
-    // A dry fountain is assessed without marking it changed.
-    if state.used.is_some_and(|s| s.left == Some(0) && !s.refills_at.is_some_and(|at| at <= now)) {
-        return false;
-    }
-    let state = state.used.get_or_insert(FountainUses { left: fountain.uses, refills_at: None });
-    if state.refills_at.is_some_and(|at| at <= now) {
-        *state = FountainUses { left: fountain.uses, refills_at: None };
-    }
-    if let Some(left) = &mut state.left {
-        if *left == 0 {
-            return false;
-        }
-        *left -= 1;
-        if state.refills_at.is_none() {
-            state.refills_at = fountain.refills_after.map(|after| now + after);
-        }
-    }
-    for (mut member, points) in members.iter_many_unique_mut(roster.iter()).matched() {
-        if member.is_dead()
-            || match fountain.restores {
-                Restores::Restoration => false,
-                Restores::Magic => points.is_none(),
-                Restores::Health => member.health.current >= member.health.max,
-                Restores::Stamina => {
-                    member.stamina.current >= member.stamina.max && !member.conditions.exhausted()
-                }
-            }
-        {
-            continue;
-        }
-        match fountain.restores {
-            Restores::Restoration => {
-                // PointCastSpell: zero does not cast, values above seven use
-                // power one (the retail temple fountain authors fifteen).
-                let power = if fountain.amount > 7 { 1 } else { fountain.amount };
-                if power > 0 {
-                    let amount = crate::game::hits::definitions::magnitude(
-                        &mut rng,
-                        restoration.unwrap().dice,
-                        crate::game::magic::Strength { power, ..default() },
-                    );
-                    member.heal(amount);
-                }
-                member.conditions.lift_all();
-            }
-            Restores::Magic => {
-                let (_, mut points) = points.unwrap();
-                points.restore_evenly(fountain.amount);
-            }
-            Restores::Health => {
-                member.heal(fountain.amount);
-            }
-            Restores::Stamina => {
-                member.rest(fountain.amount);
-            }
-        }
-    }
-    outcomes.write(TriggerEffect::FountainUsed { at });
-    true
 }
 
 /// Something presentation shows after triggers ran.
@@ -789,11 +698,15 @@ fn execute(world: &mut World, entity: Entity, depth: usize, source: i32) -> Ran 
             world.trigger(PartyHurt(*dice));
         }
         TriggerAction::Fountain(fountain) => {
-            let at = definition.at;
-            if !world
-                .run_system_cached_with(drink_fountain, (entity, *fountain, at))
-                .unwrap_or(false)
-            {
+            let mut drink = super::fountains::Drink {
+                fountain: entity,
+                water: *fountain,
+                at: definition.at,
+                consumed: false,
+            };
+            world.trigger_ref(&mut drink);
+            world.flush();
+            if !drink.consumed {
                 return Ran::Declined;
             }
         }

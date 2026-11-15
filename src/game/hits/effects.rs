@@ -5,10 +5,11 @@
 
 use bevy::ecs::query::QueryData;
 use bevy::prelude::*;
+use std::sync::Arc;
 
 use super::applied::{self, Outcome};
 use super::defences;
-use super::definitions::{self, Blow, EffectKind, EffectSpec, Rows};
+use super::definitions::{self, Blow, EffectKind, EffectSpec, Rows, SpellParameters};
 use super::{Damaged, Effect};
 use crate::content::characters::{Attribute, Skill};
 use crate::content::items::EquipClass;
@@ -69,11 +70,31 @@ impl BodyReadOnlyItem<'_, '_> {
 
 /// One thing landing: the rows it follows at a strength, a weapon's blow
 /// behind them when it is one.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Strike {
-    pub rows: Rows,
+    pub effects: Arc<[EffectSpec]>,
+    pub spell: Option<SpellParameters>,
     pub strength: Strength,
     pub blow: Option<Blow>,
+}
+
+impl Strike {
+    /// Resolve the authored effects once. Landing reads the deed, never its table again.
+    pub fn new(rows: Rows, strength: Strength, blow: Option<Blow>, content: &Catalogs) -> Self {
+        let spell = rows.spell().map(|id| {
+            let spell = &content.spells[id];
+            SpellParameters {
+                id,
+                realm: spell.realm,
+                level: spell.level,
+                dice: spell.dice,
+                duration_base: spell.duration_base,
+                duration_per_power: spell.duration_per_power,
+                answers_slowing: content.spell_row(id).is_some_and(|row| row.answers_slowing),
+            }
+        });
+        Self { effects: rows.effects(content).into(), spell, strength, blow }
+    }
 }
 
 /// The rules a strike is settled by.
@@ -126,8 +147,8 @@ pub fn land(
     laying: &mut Laying,
 ) {
     let mut previous = None;
-    let spell = strike.rows.spell().map(|spell| &rules.content.spells[spell]);
-    for spec in applied::rows(strike.rows.effects(rules.content), strike.blow, false) {
+    let spell = strike.spell.as_ref();
+    for spec in applied::rows(&strike.effects, strike.blow, false) {
         let kind = body.resistances.kind;
         if !applied::is_for(&spec, body.member, kind) {
             continue;
@@ -215,7 +236,7 @@ fn apply(
 ) -> Outcome {
     use EffectKind as K;
     let strength = strike.strength;
-    let own = || strike.rows.spell().expect("only a spell's row is the spell's own");
+    let own = || strike.spell.as_ref().expect("only a spell's row is the spell's own");
     let victim = body.entity;
     let nothing_or = |amount: u32, effect: Effect| {
         if amount == 0 { Effect::Nothing { victim } } else { effect }
@@ -312,6 +333,17 @@ fn apply(
                 None => Effect::Nothing { victim },
             }
         }
+        K::Cleanse => {
+            let condition = body
+                .vitals
+                .conditions
+                .iter()
+                .map(|&(condition, _)| condition)
+                .find(|&condition| condition != Condition::Infatuated);
+            body.vitals.conditions.lift_all();
+            condition
+                .map_or(Effect::Nothing { victim }, |condition| Effect::Cured { victim, condition })
+        }
         K::Renew => {
             let Some(character) = body.character.as_deref_mut() else { return Outcome::Missed };
             if body.vitals.lift_drain(character) {
@@ -340,15 +372,14 @@ fn apply(
             Effect::Raised { victim }
         }
         K::SpellPurify => {
-            laying.purify(victim, magnitude + rules.content.spells[own()].level);
+            laying.purify(victim, magnitude + own().level);
             Effect::Purified { victim }
         }
         K::SpellEnchant => {
-            let spell = own();
+            let spell = own().id;
             // Haste first spends itself on a slowing; wholly spent, it
             // changed something all the same.
-            let answers_slowing =
-                rules.content.spell_row(spell).is_some_and(|row| row.answers_slowing);
+            let answers_slowing = own().answers_slowing;
             let turns = if answers_slowing { body.vitals.hasted(magnitude) } else { magnitude };
             let dead = body.vitals.is_dead();
             let laid = !dead && lay(laying, victim, spell, turns, strength, rules, rng);
@@ -389,9 +420,9 @@ pub fn land_on_party(
     use EffectKind as K;
     let victim = party;
     let mut previous = None;
-    let own = || strike.rows.spell().expect("only a spell's row is the spell's own");
-    let spell = strike.rows.spell().map(|spell| &rules.content.spells[spell]);
-    for spec in applied::rows(strike.rows.effects(rules.content), strike.blow, true) {
+    let own = || strike.spell.as_ref().expect("only a spell's row is the spell's own");
+    let spell = strike.spell.as_ref();
+    for spec in applied::rows(&strike.effects, strike.blow, true) {
         if applied::waits(&spec, previous) {
             previous = Some(Outcome::Missed);
             continue;
@@ -417,11 +448,11 @@ pub fn land_on_party(
                 }
             }
             K::SpellPurify => {
-                laying.purify(party, magnitude + rules.content.spells[own()].level);
+                laying.purify(party, magnitude + own().level);
                 log.effects.push(Effect::Purified { victim });
             }
             K::SpellEnchant => {
-                let spell = own();
+                let spell = own().id;
                 let laid = lay(laying, party, spell, magnitude, strike.strength, rules, rng);
                 log.effects.push(if laid {
                     Effect::Enchanted { victim, spell }

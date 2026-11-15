@@ -65,7 +65,7 @@ fn deal(
     (log, laying): (&mut Log, &mut Laying),
 ) -> attack::Dealt {
     let Ok(mut fighter) = fighters.get_mut(victim) else { return attack::Dealt::default() };
-    let strike = effects::Strike { rows: Rows::Blow, strength, blow: Some(blow) };
+    let strike = effects::Strike::new(Rows::Blow, strength, Some(blow), rules.content);
     effects::land(&strike, &mut fighter.body, rules, rng, log, laying);
     attack::dealt(log.effects.drain(..))
 }

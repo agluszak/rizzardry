@@ -67,6 +67,18 @@ impl Rows {
     }
 }
 
+/// Spell parameters an effect needs, resolved when its deed is made.
+#[derive(Clone, Copy, Debug)]
+pub struct SpellParameters {
+    pub id: SpellId,
+    pub realm: Option<Realm>,
+    pub level: u32,
+    pub dice: Option<Dice>,
+    pub duration_base: i32,
+    pub duration_per_power: i32,
+    pub answers_slowing: bool,
+}
+
 /// What the damage of a leeching spell comes back to its caster's side as.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum Leeches {
@@ -238,7 +250,7 @@ pub struct EffectSpec {
 impl EffectSpec {
     /// The realm it is resisted and saved against in, as it lands of
     /// `spell`.
-    pub fn realm(&self, spell: Option<&SpellDefinition>) -> Option<Realm> {
+    pub fn realm(&self, spell: Option<&SpellParameters>) -> Option<Realm> {
         if self.spell_realm { spell.and_then(|spell| spell.realm) } else { self.resist }
     }
 }
@@ -272,6 +284,8 @@ pub enum EffectKind {
     Heal,
     Refresh,
     Replenish,
+    /// Remove conditions except infatuation, as a restoration fountain does.
+    Cleanse,
     /// Lift these conditions, by the strike's strength, or outright.
     Cure {
         conditions: Vec<Condition>,
@@ -465,7 +479,7 @@ pub fn roll(
     roll: Roll,
     strength: Strength,
     blow: Option<&Blow>,
-    spell: Option<&SpellDefinition>,
+    spell: Option<&SpellParameters>,
     rng: &mut GameRng,
 ) -> u32 {
     let count = strength.power / 3 + 1;

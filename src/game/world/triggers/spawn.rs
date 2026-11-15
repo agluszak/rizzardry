@@ -3,8 +3,7 @@
 use bevy::prelude::*;
 
 use super::{
-    Device, DeviceProgram, DialState, DoorState, FountainState, LevelState, LightActivation,
-    TriggerState,
+    Device, DeviceProgram, DialState, DoorState, LevelState, LightActivation, TriggerState,
 };
 use crate::content::items::LootTables;
 use crate::content::level::{LevelDefinition, TriggerAction};
@@ -103,7 +102,7 @@ pub fn spawn_devices(
             entity.insert(DialState::default());
         }
         if actions.clone().any(|b| matches!(b.action, TriggerAction::Fountain(_))) {
-            entity.insert(FountainState::default());
+            entity.insert(super::super::fountains::Supply::default());
         }
         if let Some(name) = &definition.loot_table {
             let table = tables.0.iter().position(|t| t.name.eq_ignore_ascii_case(name));

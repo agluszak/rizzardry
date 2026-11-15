@@ -269,7 +269,7 @@ pub(super) fn pulse_clouds(
             power::strength(0, laid.power, laid.boost, &content.spells[laid.spell])
         };
         commands.spawn((
-            Deed::at(Strike { rows, strength, blow: None }, victims),
+            Deed::at(Strike::new(rows, strength, None, &content), victims),
             crate::game::magic::landed::Magical,
             Pulse,
         ));

@@ -4,6 +4,7 @@ pub mod bidden;
 pub mod containers;
 pub mod damage;
 pub mod encounters;
+mod fountains;
 pub mod hostility;
 pub mod identify;
 pub mod interaction;
@@ -93,6 +94,7 @@ impl Plugin for WorldPlugin {
             .add_plugins((interaction::plugin, encounters::plugin))
             .add_observer(triggers::crossed)
             .add_observer(triggers::damage_party)
+            .add_observer(fountains::drink)
             .add_observer(interaction::end_attempts)
             .add_observer(damage::monster_died)
             .add_observer(damage::clear_the_fallen)

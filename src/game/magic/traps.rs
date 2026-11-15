@@ -40,10 +40,7 @@ pub(crate) fn discharge(
     let spell = &content.spells[id];
     let grade = trap_kind(trap).grade;
     let sprung = workings::spring(rng, (difficulty, grade), &members, selected);
-    let strike = Strike {
-        rows: Rows::Spell(id),
-        strength: power::strength(0, sprung.power, 0, spell),
-        blow: None,
-    };
+    let strike =
+        Strike::new(Rows::Spell(id), power::strength(0, sprung.power, 0, spell), None, content);
     (sprung.destroyed, Deed::at(strike, sprung.victims))
 }

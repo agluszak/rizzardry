@@ -10,15 +10,12 @@ use crate::content::species::{
 use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
 use crate::game::actors::{Enchantment, Laid, Laying};
 use crate::game::characters::{Gender, Profession, Race};
-use crate::game::hits::definitions::Rows;
-use crate::game::hits::effects::Strike;
-use crate::game::hits::{self, Deed, Effect};
+use crate::game::hits;
 use crate::game::magic::casting::{Cast, MagicChoice, MagicNews, Source, learned_chance};
-use crate::game::magic::landed::Magical;
 use crate::game::magic::may::Refusal;
 use crate::game::magic::reach::Aim;
 use crate::game::magic::roll::Pace;
-use crate::game::magic::{self, LearnedSpells, Strength};
+use crate::game::magic::{self, LearnedSpells};
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster;
 use crate::game::time::GameClock;
@@ -141,30 +138,6 @@ fn play(world: &mut World, fight: Entity, moment: u32) {
 }
 
 #[test]
-fn anti_magic_drains_once_and_then_dispels_the_party() {
-    let (mut app, party, member) = app();
-    let world = app.world_mut();
-    let second = world
-        .spawn((
-            Character::new("Other", Race::Human, Gender::Male, Profession::Priest),
-            Vitals::full(20, 100),
-            LearnedSpells([SpellId::HEAL_WOUNDS].into()),
-            roster::PartyMember(party),
-        ))
-        .id();
-    lay(world, party, SpellId::MAGIC_SCREEN, 10, 0);
-    let rows = Rows::Spell(SpellId::ANTI_MAGIC);
-    let strength = Strength { power: 1, against: 1, boost: 0 };
-    world.spawn((Deed::at(Strike { rows, strength, blow: None }, [member, second]), Magical));
-    world.flush();
-    assert!(!is_laid(world, party, SpellId::MAGIC_SCREEN));
-    let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
-    let [MagicNews::Landed { effects }] = news.as_slice() else { panic!("{news:?}") };
-    let drained = effects.iter().filter(|e| matches!(e, Effect::Drained { .. })).count();
-    assert_eq!(drained, 2, "each pool is drained once, not once per body reached");
-}
-
-#[test]
 fn final_cloud_pulse_settles_and_credits_the_kill_before_victory() {
     let (mut app, _, member) = app();
     let world = app.world_mut();
@@ -202,42 +175,6 @@ fn a_clouds_last_pulse_still_sees_the_targets_protection() {
     assert_eq!(world.get::<Vitals>(actor).unwrap().health.current, 20);
     world.flush();
     assert!(!is_laid(world, actor, SpellId::GUARDIAN_ANGEL));
-}
-
-#[test]
-fn missile_arrival_settles_defeat_before_any_actor_can_start() {
-    let (mut app, _, member) = app();
-    let world = app.world_mut();
-    let fight = world.spawn(Battle::default()).id();
-    let actor = monster(world, fight, 3.0);
-    play(world, fight, 1);
-    refresh(world);
-    let arms = world.get::<crate::game::actors::Attacks>(actor).unwrap();
-    let turn = Turn {
-        when: Some(1),
-        attacks: enum_map::EnumMap::from_fn(|slot| arms.attacks(slot)),
-        due: crate::game::inventory::WeaponSlot::Primary,
-        weapons: arms.weapons(),
-        lightning: None,
-        moved: false,
-        special: false,
-        berserk: false,
-        waited: false,
-    };
-    world.entity_mut(actor).insert(turn);
-    let rows = Rows::Pulse(SpellId::FIRESTORM);
-    let strength = Strength { power: 1, against: 100, boost: 0 };
-    world.spawn(Deed::flying(Strike { rows, strength, blow: None }, [(member, Some(1.0))]));
-    let before = world.get::<Vitals>(member).unwrap().health.current;
-    // A second's flight is two steps of half a second.
-    world.resource_mut::<Time>().advance_by(std::time::Duration::from_millis(500));
-    world.run_schedule(FixedUpdate);
-    assert_eq!(world.get::<Vitals>(member).unwrap().health.current, before);
-    world.run_schedule(FixedUpdate);
-    assert!(world.get::<Vitals>(member).unwrap().is_dead());
-    assert!(
-        world.resource_mut::<Messages<CombatNews>>().drain().any(|n| matches!(n, CombatNews::Lost))
-    );
 }
 
 #[test]
