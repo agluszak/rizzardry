@@ -3,7 +3,7 @@
 use bevy::prelude::*;
 
 use super::{
-    Device, DialState, DoorState, FountainState, LevelState, LightActivation, PositionedDevices,
+    Device, DeviceProgram, DialState, DoorState, FountainState, LevelState, LightActivation,
     TriggerState,
 };
 use crate::content::items::LootTables;
@@ -54,12 +54,34 @@ pub fn spawn_devices(
             }
         }
     }
-    let mut positioned = PositionedDevices::default();
     for (index, definition) in geometry.triggers.iter().enumerate() {
+        let prop_centre = geometry
+            .props
+            .iter()
+            .find(|prop| prop.trigger == Some(index))
+            .map(|prop| prop.centre());
         let mut entity = commands.entity(devices[index]);
         entity.insert((
             Device {
-                definition: index,
+                name: definition.name.clone(),
+                program: std::sync::Arc::new(DeviceProgram {
+                    usable: definition.usable,
+                    once: definition.once,
+                    fire_linked: definition.fire_linked,
+                    initial: definition.initial.clone(),
+                    alternate: definition.alternate.clone(),
+                    fallback: definition.fallback.clone(),
+                    alternate_toggles: definition.alternate_toggles,
+                    sound: definition.sound.clone(),
+                    sound_on_commit: definition.sound_on_commit,
+                    required_states: definition.required_states.clone(),
+                    state_change: definition.state_change.clone(),
+                    range: definition.range,
+                    door: definition.door,
+                    lock: definition.lock,
+                    at: definition.place.or(prop_centre),
+                    reach_origin: prop_centre,
+                }),
                 recipients: definition.recipients.iter().map(|&i| devices[i]).collect(),
             },
             TriggerState::default(),
@@ -96,11 +118,15 @@ pub fn spawn_devices(
         if let Some(guarded) = definition.lock.map(Guarded::new) {
             entity.insert(guarded);
         }
-        if definition.place.is_some() {
-            positioned.0.push(devices[index]);
+        if let Some(centre) = definition.place {
+            entity.insert(super::walk::WalkVolume {
+                centre,
+                range: definition.range,
+                order: index,
+            });
         }
     }
-    commands.entity(level).insert((state, LightActivation::default(), positioned));
+    commands.entity(level).insert((state, LightActivation::default()));
     script.bind(commands, geometry, &devices);
     devices
 }

@@ -67,10 +67,7 @@ impl Plugin for PartyPlugin {
         )
         .add_systems(
             FixedPostUpdate,
-            (
-                walk_in::run_walk_in_triggers.pipe(crate::game::world::triggers::walk),
-                walk_in::move_party,
-            )
+            (crate::game::world::triggers::walk, walk_in::move_party)
                 .chain()
                 .after(PhysicsSystems::Writeback)
                 .run_if(level_active),

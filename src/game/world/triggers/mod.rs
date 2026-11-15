@@ -1,5 +1,4 @@
-//! Live devices and synchronous trigger operations. Definitions stay in the
-//! level asset; runtime links and mutable state belong to device entities.
+//! Live devices own their programs, resolved links and mutable state.
 //!
 //! An action commits its sound, ordered recipients, location variable, message
 //! and fired flag synchronously. A relay also runs its recipients as its action,
@@ -9,9 +8,10 @@ mod spawn;
 mod walk;
 
 pub use spawn::spawn_devices;
+pub(super) use walk::crossed;
 pub(crate) use walk::walk;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use bevy::ecs::world::EntityMut;
 use bevy::prelude::*;
@@ -19,11 +19,11 @@ use bevy::prelude::*;
 use super::containers::{Container, ContainerUse, use_container};
 use super::interaction::{Guarded, Work};
 use super::level::{Level, LevelOwned};
-use super::props::{Prop, PropMotion};
+use super::props::{PropAnimation, PropMotion};
 use super::scripts::BellButton;
 use crate::content::items::Dice;
 use crate::content::level::{
-    Fountain, LevelDefinition, PropModel, Restores, TriggerAction, TriggerDefinition, TriggerUse,
+    DoorLock, Fountain, Lock, Restores, StateChange, TriggerAction, TriggerSound, TriggerUse,
     VariableName,
 };
 use crate::game::characters::{Character, Vitals};
@@ -40,13 +40,32 @@ const MAX_DEPTH: usize = 16;
 /// A prop-backed device lives on that prop; positioned devices stand alone.
 #[derive(Component, Debug)]
 pub struct Device {
-    pub definition: usize,
+    pub name: String,
+    program: Arc<DeviceProgram>,
     pub recipients: Vec<Entity>,
 }
 
-/// Authored traversal order, resolved once per visit; not an owner of device state.
-#[derive(Component, Debug, Default)]
-pub struct PositionedDevices(Vec<Entity>);
+/// Executable device data, compiled when the level is populated. The shared
+/// immutable program can be read while an action mutates the device graph.
+#[derive(Debug)]
+struct DeviceProgram {
+    usable: bool,
+    once: bool,
+    fire_linked: bool,
+    initial: TriggerUse,
+    alternate: Option<TriggerUse>,
+    fallback: Option<TriggerUse>,
+    alternate_toggles: bool,
+    sound: Option<TriggerSound>,
+    sound_on_commit: bool,
+    required_states: Vec<VariableName>,
+    state_change: Option<(VariableName, StateChange)>,
+    range: (f32, f32),
+    door: Option<DoorLock>,
+    lock: Option<Lock>,
+    at: Option<Vec3>,
+    reach_origin: Option<Vec3>,
+}
 
 /// Only level-wide variables and visit state live on the level.
 #[derive(Component, Debug, Default)]
@@ -130,9 +149,12 @@ struct FountainUses {
     refills_at: Option<u64>,
 }
 
+#[derive(Event)]
+pub(super) struct PartyHurt(Dice);
+
 /// Hurt each living member by `dice`, in roster order.
-fn damage_party(
-    In(dice): In<Dice>,
+pub(super) fn damage_party(
+    event: On<PartyHurt>,
     roster: Single<&PartyRoster>,
     mut members: Query<&mut Vitals, With<Character>>,
     mut rng: ResMut<GameRng>,
@@ -145,7 +167,7 @@ fn damage_party(
         if member.is_dead() {
             continue;
         }
-        let rolled = rng.roll(dice);
+        let rolled = rng.roll(event.0);
         if rolled > 0 {
             crate::game::party::damage_member(
                 entity,
@@ -292,35 +314,27 @@ pub fn activate(world: &mut World, entity: Entity, player: bool) -> bool {
     if player && !crate::game::freedom::free_in(world) {
         return false;
     }
-    let level = world.get::<LevelOwned>(entity).unwrap().0;
-    let handle = world.get::<Level>(level).unwrap().definition.clone();
-    // Borrow immutable definitions for the entire synchronous operation. Nested
-    // links use these same definitions, without cloning a graph or a definition.
-    world.resource_scope(|world, geometry: Mut<Assets<LevelDefinition>>| {
-        let geometry = geometry.get(&handle).unwrap();
-        let definition = &geometry.triggers[world.get::<Device>(entity).unwrap().definition];
-        if player
-            && (!usable(world, entity, definition)
-                || !(definition.range.0..=definition.range.1)
-                    .contains(&player_distance(world, geometry, entity)))
-        {
-            return false;
-        }
-        let ran = execute(world, geometry, entity, 0, -1);
-        if player && ran == Ran::Declined {
-            world.write_message(TriggerEffect::NothingHappened);
-        }
-        ran == Ran::Committed
-    })
+    let program = world.get::<Device>(entity).unwrap().program.clone();
+    if player
+        && (!usable(world, entity, &program)
+            || !(program.range.0..=program.range.1).contains(&player_distance(world, entity)))
+    {
+        return false;
+    }
+    let ran = execute(world, entity, 0, -1);
+    if player && ran == Ran::Declined {
+        world.write_message(TriggerEffect::NothingHappened);
+    }
+    ran == Ran::Committed
 }
 
 /// Reach uses the current gameplay geometry, independent of the last pointer hit.
 /// Colliderless props fall back to their authored centre. The player uses
 /// only props.
-fn player_distance(world: &mut World, geometry: &LevelDefinition, entity: Entity) -> f32 {
+fn player_distance(world: &mut World, entity: Entity) -> f32 {
     use avian3d::prelude::Collider;
     let eye = crate::game::party::body::PartyBody::eye_in(world);
-    let centre = geometry.props[world.get::<Prop>(entity).unwrap().definition].centre();
+    let centre = world.get::<Device>(entity).unwrap().program.reach_origin.unwrap();
     let distance = world
         .get::<Children>(entity)
         .into_iter()
@@ -357,18 +371,11 @@ pub fn bid(world: &mut World, bidding: Bidding) {
         return;
     };
     let named = |world: &mut World, name: &str| {
-        let handle = world.get::<Level>(level)?.definition.clone();
-        let devices: Vec<(Entity, usize)> = world
+        world
             .query::<(Entity, &Device, &LevelOwned)>()
             .iter(world)
-            .filter(|(_, _, owner)| owner.0 == level)
-            .map(|(entity, device, _)| (entity, device.definition))
-            .collect();
-        let geometry = world.resource::<Assets<LevelDefinition>>().get(&handle)?;
-        let found = |&(_, definition): &(Entity, usize)| {
-            geometry.triggers[definition].name.eq_ignore_ascii_case(name)
-        };
-        devices.into_iter().find(found).map(|(entity, _)| entity)
+            .find(|(_, device, owner)| owner.0 == level && device.name.eq_ignore_ascii_case(name))
+            .map(|(entity, ..)| entity)
     };
     match bidding {
         Bidding::Run(name) => {
@@ -434,7 +441,7 @@ enum Selected<'a> {
     Guarded,
 }
 
-fn usable(world: &World, entity: Entity, definition: &TriggerDefinition) -> bool {
+fn usable(world: &World, entity: Entity, definition: &DeviceProgram) -> bool {
     world
         .get::<TriggerState>(entity)
         .is_some_and(|state| definition.usable && state.on && !(definition.once && state.fired))
@@ -450,7 +457,7 @@ fn usable(world: &World, entity: Entity, definition: &TriggerDefinition) -> bool
 fn select_use<'a>(
     actor: &bevy::ecs::world::EntityRef,
     variables: &LevelState,
-    definition: &'a TriggerDefinition,
+    definition: &'a DeviceProgram,
     offered: Option<crate::content::items::ItemId>,
 ) -> Option<Selected<'a>> {
     let state = actor.get::<TriggerState>()?;
@@ -495,17 +502,16 @@ fn select_use<'a>(
     Some(Selected::Use { chosen, keyed, next: Some(next) })
 }
 
-fn operate_door(
-    mut device: EntityMut,
-    model: &PropModel,
-    open_only: bool,
-) -> Result<bool, TriggerEffect> {
+fn operate_door(mut device: EntityMut, open_only: bool) -> Result<bool, TriggerEffect> {
     if device.get::<DoorState>().is_some_and(|door| door.locked) {
         return Err(TriggerEffect::Locked);
     }
-    let Ok((mut door, mut motion, mut trigger)) =
-        device.get_components_mut::<(&mut DoorState, &mut PropMotion, &mut TriggerState)>()
-    else {
+    let Ok((model, mut door, mut motion, mut trigger)) = device.get_components_mut::<(
+        &PropAnimation,
+        &mut DoorState,
+        &mut PropMotion,
+        &mut TriggerState,
+    )>() else {
         return Ok(false);
     };
     let open = open_only || !door.open;
@@ -513,17 +519,14 @@ fn operate_door(
         return Ok(false);
     }
     door.open = open;
-    motion.target = if open { model.last_frame() as f32 } else { 0.0 };
+    motion.target = if open { model.last_frame } else { 0.0 };
     trigger.awaits_animation = true;
     Ok(true)
 }
 
-fn animate_device(
-    mut device: EntityMut,
-    model: &PropModel,
-    animation: crate::content::level::Animation,
-) {
-    PropMotion::activate(device.get_mut::<PropMotion>().unwrap(), model, animation);
+fn animate_device(mut device: EntityMut, animation: crate::content::level::Animation) {
+    let (model, motion) = device.get_components_mut::<(&PropAnimation, &mut PropMotion)>().unwrap();
+    PropMotion::activate(motion, model, animation);
     if let Some(mut door) = device.get_mut::<DoorState>() {
         door.open = !door.open;
     }
@@ -532,12 +535,11 @@ fn animate_device(
 
 fn turn_dial(
     mut actor: EntityMut,
-    model: &PropModel,
     mut level: Mut<LevelState>,
     variable: Option<&VariableName>,
 ) -> bool {
-    let Ok((mut dial, mut motion)) =
-        actor.get_components_mut::<(&mut DialState, &mut PropMotion)>()
+    let Ok((model, mut dial, mut motion)) =
+        actor.get_components_mut::<(&PropAnimation, &mut DialState, &mut PropMotion)>()
     else {
         return false;
     };
@@ -561,44 +563,21 @@ fn turn_dial(
     true
 }
 
-fn sound_position(
-    world: &World,
-    geometry: &LevelDefinition,
-    entity: Entity,
-    definition: &TriggerDefinition,
-) -> Option<Vec3> {
-    definition.place.or_else(|| {
-        let prop = world.get::<Prop>(entity)?;
-        geometry.props.get(prop.definition).map(PropModel::centre)
-    })
-}
-
-fn play_authored_sound(
-    world: &mut World,
-    geometry: &LevelDefinition,
-    entity: Entity,
-    definition: &TriggerDefinition,
-) {
+fn play_authored_sound(world: &mut World, definition: &DeviceProgram) {
     if let Some(sound) = &definition.sound {
         world.write_message(TriggerEffect::Sound {
             path: sound.path.clone(),
             volume: sound.volume,
-            at: sound_position(world, geometry, entity, definition),
+            at: definition.at,
         });
     }
 }
 
-fn execute_links(
-    world: &mut World,
-    geometry: &LevelDefinition,
-    entity: Entity,
-    depth: usize,
-    source: i32,
-) {
+fn execute_links(world: &mut World, entity: Entity, depth: usize, source: i32) {
     let count = world.get::<Device>(entity).unwrap().recipients.len();
     for index in 0..count {
         let recipient = world.get::<Device>(entity).unwrap().recipients[index];
-        execute(world, geometry, recipient, depth + 1, source);
+        execute(world, recipient, depth + 1, source);
     }
 }
 
@@ -613,18 +592,13 @@ fn links_moving(world: &World, entity: Entity, depth: usize) -> bool {
         })
 }
 
-fn execute(
-    world: &mut World,
-    geometry: &LevelDefinition,
-    entity: Entity,
-    depth: usize,
-    source: i32,
-) -> Ran {
+fn execute(world: &mut World, entity: Entity, depth: usize, source: i32) -> Ran {
     let device = world.get::<Device>(entity).unwrap();
     let level = world.get::<LevelOwned>(entity).unwrap().0;
-    let definition = &geometry.triggers[device.definition];
+    let program = device.program.clone();
+    let definition = &*program;
     if depth > MAX_DEPTH {
-        warn!("trigger {} recurses too deeply", definition.name);
+        warn!("trigger {} recurses too deeply", world.get::<Device>(entity).unwrap().name);
         return Ran::Declined;
     }
     // A door waits while any device it runs is still moving (retail
@@ -660,7 +634,7 @@ fn execute(
             // selection and locks so installing support cannot skip this action.
             if let TriggerAction::Unsupported(code) = chosen.action {
                 world.write_message(TriggerEffect::Unsupported {
-                    device: definition.name.clone(),
+                    device: world.get::<Device>(entity).unwrap().name.clone(),
                     code,
                 });
                 return Ran::Answered;
@@ -686,16 +660,12 @@ fn execute(
         world.write_message(outcome);
     }
     let changes_state = !matches!(chosen.action, TriggerAction::Dial);
-    // The prop the device moves, as its level authored it.
-    let model = world.get::<Prop>(entity).and_then(|prop| geometry.props.get(prop.definition));
     match &chosen.action {
         TriggerAction::Nothing => {}
         TriggerAction::NoRuntimeAction => return Ran::Declined,
         action @ (TriggerAction::OpenDoor | TriggerAction::ToggleDoor) => {
-            let Some(model) = model else { return Ran::Declined };
             match operate_door(
                 world.entity_mut(entity).into_mutable(),
-                model,
                 *action == TriggerAction::OpenDoor,
             ) {
                 Ok(true) => {}
@@ -707,9 +677,11 @@ fn execute(
             }
         }
         TriggerAction::Animate(animation) => {
-            let Some(model) = model.filter(|_| world.get::<PropMotion>(entity).is_some()) else {
+            if !world.entity(entity).contains::<PropAnimation>()
+                || !world.entity(entity).contains::<PropMotion>()
+            {
                 return Ran::Declined;
-            };
+            }
             if world.get::<Container>(entity).is_some() {
                 match world.run_system_cached_with(use_container, entity).unwrap() {
                     ContainerUse::Busy => return Ran::Declined,
@@ -723,10 +695,10 @@ fn execute(
                     }
                 }
             }
-            animate_device(world.entity_mut(entity).into_mutable(), model, *animation);
+            animate_device(world.entity_mut(entity).into_mutable(), *animation);
         }
         TriggerAction::Sound => {
-            play_authored_sound(world, geometry, entity, definition);
+            play_authored_sound(world, definition);
             return Ran::Declined;
         }
         TriggerAction::CameraSway => {
@@ -738,7 +710,7 @@ fn execute(
             if world.get::<Device>(entity).unwrap().recipients.is_empty() {
                 return Ran::Declined;
             }
-            execute_links(world, geometry, entity, depth, *source);
+            execute_links(world, entity, depth, *source);
         }
         TriggerAction::Lights { sources, change } => {
             if sources.is_empty() {
@@ -814,12 +786,10 @@ fn execute(
         }
         // Refused with its level at preparation.
         TriggerAction::HurtParty(dice) => {
-            if world.run_system_cached_with(damage_party, *dice).is_err() {
-                return Ran::Declined;
-            }
+            world.trigger(PartyHurt(*dice));
         }
         TriggerAction::Fountain(fountain) => {
-            let at = sound_position(world, geometry, entity, definition);
+            let at = definition.at;
             if !world
                 .run_system_cached_with(drink_fountain, (entity, *fountain, at))
                 .unwrap_or(false)
@@ -828,7 +798,7 @@ fn execute(
             }
         }
         TriggerAction::DamageZone => {
-            if definition.place.is_some() {
+            if world.get::<walk::WalkVolume>(entity).is_some() {
                 world.entity_mut(entity).insert(walk::ActiveDamageZone::new());
             }
         }
@@ -840,11 +810,9 @@ fn execute(
             });
         }
         TriggerAction::Dial => {
-            let Some(model) = model else { return Ran::Declined };
             let [actor, mut owner] = world.get_entity_mut([entity, level]).unwrap();
             if !turn_dial(
                 actor,
-                model,
                 owner.get_mut::<LevelState>().unwrap(),
                 definition.state_change.as_ref().map(|(name, _)| name),
             ) {
@@ -854,10 +822,10 @@ fn execute(
         TriggerAction::Unsupported(_) => unreachable!("checked before selection commits"),
     }
     if definition.sound_on_commit {
-        play_authored_sound(world, geometry, entity, definition);
+        play_authored_sound(world, definition);
     }
     if definition.fire_linked {
-        execute_links(world, geometry, entity, depth, -1);
+        execute_links(world, entity, depth, -1);
     }
     if changes_state && let Some((name, change)) = &definition.state_change {
         let mut state = world.get_mut::<LevelState>(level).unwrap();

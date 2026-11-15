@@ -91,6 +91,8 @@ impl Plugin for WorldPlugin {
             .add_message::<particles::EmissionSpent>()
             .add_message::<crate::game::automap::CommitNote>()
             .add_plugins((interaction::plugin, encounters::plugin))
+            .add_observer(triggers::crossed)
+            .add_observer(triggers::damage_party)
             .add_observer(interaction::end_attempts)
             .add_observer(damage::monster_died)
             .add_observer(damage::clear_the_fallen)
