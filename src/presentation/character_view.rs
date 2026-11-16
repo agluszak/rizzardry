@@ -19,27 +19,9 @@ pub struct CharacterView {
     pub resistances: &'static Resistances,
     pub burden: &'static Burden,
     pub nature: &'static crate::game::actors::Nature,
-    /// The member's action this round, while in a fight.
-    pub ordered: Option<&'static crate::game::combat::Ordered>,
 }
 
 impl CharacterViewItem<'_, '_> {
-    /// The member's armour as it stands, braced while they defend.
-    pub fn armour(&self) -> crate::game::actors::arms::Armour {
-        let braced = match self.ordered {
-            Some(ordered) if ordered.defends() => self.armour.braced.0,
-            _ => 0,
-        };
-        crate::game::actors::arms::Armour {
-            total: self.armour.total + braced,
-            by_location: enum_map::EnumMap::from_fn(|part| {
-                self.armour.at[enum_map::Enum::into_usize(part)] + braced
-            }),
-            speed: 0,
-            shield: 0,
-        }
-    }
-
     /// The member's resistances as they stand, beside what their sheet
     /// alone gives.
     pub fn resistances(

@@ -323,7 +323,7 @@ pub fn draw_party(
         let mut hand_x = None;
         let image = |path: &str, frame| (crate::content::paths::retail(path), frame);
         if let Some(view) = actor {
-            let armour = view.armour();
+            let armour = view.armour;
             let CharacterViewItem { entity, profile, vitals, conditions, .. } = view;
             let dead = vitals.is_dead();
             let worn =
@@ -408,7 +408,7 @@ pub fn draw_party(
                 }
                 Part::Armour => {
                     shown = !dead;
-                    value = Some(armour.average().to_string());
+                    value = Some(armour.average.to_string());
                 }
                 Part::Name => value = Some(profile.identity.name.clone()),
                 Part::HitPoints => {

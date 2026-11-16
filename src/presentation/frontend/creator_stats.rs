@@ -454,8 +454,43 @@ pub(super) fn build(commands: &mut Commands, parent: Entity, assets: &AssetServe
     }
 }
 
+/// The draft as an actor: made of what the draft is on paper, so that what
+/// it comes to is worked out as any actor's is, and the page only reads it.
+#[derive(Component)]
+pub(super) struct DraftActor;
+
+/// The draft's actor is made anew whenever the draft changes, and is gone
+/// with it.
+pub(super) fn embody_draft(
+    session: Option<Single<Ref<Creation>>>,
+    actors: Query<Entity, With<DraftActor>>,
+    mut commands: Commands,
+) {
+    let session = session.as_ref();
+    let draft = session.and_then(|session| session.mode.draft());
+    if draft.is_some() && !actors.is_empty() && !session.is_some_and(|session| session.is_changed())
+    {
+        return;
+    }
+    for actor in &actors {
+        commands.entity(actor).despawn();
+    }
+    if let Some(draft) = draft {
+        let profile = draft.preview();
+        commands.spawn((
+            DraftActor,
+            DespawnOnExit(super::Session::Creation),
+            crate::game::actors::Nature::of_race(profile.birth.race),
+            crate::game::actors::armour::born(profile.birth.race),
+            crate::game::characters::Vitals::new(&profile),
+            profile,
+        ));
+    }
+}
+
 pub(super) fn refresh(
     session: Option<Single<Ref<Creation>>>,
+    actor: Option<Single<Ref<crate::game::actors::Armour>, With<DraftActor>>>,
     art: Option<Single<Ref<StatsAssets>>>,
     strings: crate::presentation::screen_art::GameStrings,
     content: If<Res<crate::game::data::Catalogs>>,
@@ -471,6 +506,7 @@ pub(super) fn refresh(
     // The page shows the draft: redraw it only when the draft, the words
     // or the art change, or when the page gains parts.
     if !session.is_changed()
+        && !actor.as_ref().is_some_and(|armour| armour.is_changed())
         && !art.is_changed()
         && !strings.is_changed()
         && !sheets.is_changed()
@@ -643,16 +679,7 @@ pub(super) fn refresh(
             }
             Value::Armour => {
                 if session.choices.race {
-                    crate::game::actors::arms::armour(
-                        (profile.trained(), profile.birth.race.row().armour),
-                        &crate::game::actors::Skills::of_sheet(&profile),
-                        &Attributes::of_sheet(&profile),
-                        |_| None,
-                        crate::game::characters::Load::None,
-                        false,
-                    )
-                    .average()
-                    .to_string()
+                    actor.as_ref().map_or_else(String::new, |armour| armour.average.to_string())
                 } else {
                     String::new()
                 }

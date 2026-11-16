@@ -14,7 +14,9 @@ use crate::content::characters::{Attribute, Skill};
 use crate::content::items::EquipClass;
 use crate::content::spells::SpellId;
 use crate::game::actors::spells::{Enchantment, Laying};
-use crate::game::actors::{Armour, Attacks, Attributes, Level, Resistances};
+use crate::game::actors::{
+    Armour, Attacks, Attributes, Level, MissileShield, Reduction, Resistances,
+};
 use crate::game::characters::{Condition, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
@@ -45,6 +47,8 @@ pub struct Body {
     pub level: &'static Level,
     pub resistances: &'static Resistances,
     pub armour: &'static Armour,
+    pub reduction: &'static Reduction,
+    pub missile_shield: &'static MissileShield,
     pub attacks: &'static Attacks,
     /// What it is made of, where landing an effect changes or asks it.
     pub traits: &'static crate::game::actors::Traits,

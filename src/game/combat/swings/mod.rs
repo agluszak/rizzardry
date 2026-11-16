@@ -317,7 +317,7 @@ pub(super) fn strike(
                 && let Some(cloak) = laying.answer_blow(victim)
             {
                 let dice = content.spells[cloak.spell].dice;
-                let reduction = fighters.get(actor).map_or(0, |me| me.body.armour.reduction);
+                let reduction = fighters.get(actor).map_or(0, |me| me.body.reduction.0);
                 let answer = attack::riposte(&mut rng, dice, cloak.power, reduction);
                 let done = if answer > 0 {
                     let blow = Blow {

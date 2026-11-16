@@ -137,7 +137,7 @@ pub(super) fn refresh(
 ) {
     let view = members.get(screen.member).unwrap();
     let load = view.load();
-    let armour = view.armour();
+    let armour = view.armour;
     let CharacterViewItem { profile: character, vitals, attributes, burden, nature, .. } = view;
 
     let weight = burden.weight;
@@ -167,7 +167,7 @@ pub(super) fn refresh(
                 )
             }
             Value::BaseArmour => (armour.total.to_string(), None),
-            Value::AverageArmour => (armour.average().to_string(), None),
+            Value::AverageArmour => (armour.average.to_string(), None),
             Value::Attribute(attribute) => (attributes[attribute].to_string(), None),
         };
         if text.value != value {

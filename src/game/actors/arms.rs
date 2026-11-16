@@ -9,14 +9,12 @@ use enum_map::EnumMap;
 use enumset::EnumSet;
 
 use super::{Arm, Attacks, Attributes, Skills};
-use crate::content::characters::{Attribute, BodyPart, Skill, Trait};
+use crate::content::characters::{Attribute, Skill, Trait};
 use crate::content::items::{AttackEffect, AttackEffects, AttackMode, Dice};
 use crate::content::species::{MonsterKind, Reach};
 use crate::game::characters::{Load, Trained};
 use crate::game::inventory::{EquipSlot, WeaponSlot};
-use crate::game::items::{
-    Charges, Fit, Launcher, Missile, Protection, Strength, Weapon, Weight, partners,
-};
+use crate::game::items::{Charges, Fit, Launcher, Missile, Strength, Weapon, Weight, partners};
 
 /// The sound class of a blow with nothing in hand (retail's class 9).
 const FIST_SOUND: u8 = 9;
@@ -568,112 +566,6 @@ fn hand<'a>(slot: WeaponSlot, held: &EnumMap<WeaponSlot, Option<HeldItem<'a, '_>
     }
 }
 
-/// A member's total and per-location armour, without skills or conditions.
-/// Calculated from current inputs, never stored on the member.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Armour {
-    pub total: i32,
-    pub by_location: EnumMap<BodyPart, i32>,
-    /// What speed adds, which a blow from behind gets past.
-    pub speed: i32,
-    /// What a shield and the skill to use it add, likewise.
-    pub shield: i32,
-}
-
-impl Armour {
-    /// Hit-location-weighted average displayed on the character portrait.
-    pub fn average(&self) -> i32 {
-        let weight = |part| match part {
-            BodyPart::Head => 15,
-            BodyPart::Body => 40,
-            BodyPart::Leg => 30,
-            BodyPart::Hand => 10,
-            BodyPart::Foot => 5,
-        };
-        let total: i32 = self.by_location.iter().map(|(part, value)| value * weight(part)).sum();
-        (total as f32 / 100.0).round() as i32
-    }
-}
-
-/// The equipment slot whose armour covers a character's hit location.
-fn armour_slot(part: BodyPart) -> EquipSlot {
-    match part {
-        BodyPart::Head => EquipSlot::Head,
-        BodyPart::Body => EquipSlot::Torso,
-        BodyPart::Leg => EquipSlot::Legs,
-        BodyPart::Hand => EquipSlot::Hands,
-        BodyPart::Foot => EquipSlot::Feet,
-    }
-}
-
-/// The slots whose protection guards the whole body: shields and magic
-/// items worn in the misc, cloak and weapon slots.
-const GUARDING: [EquipSlot; 5] = [
-    EquipSlot::Misc1,
-    EquipSlot::Misc2,
-    EquipSlot::Cloak,
-    EquipSlot::Primary,
-    EquipSlot::Secondary,
-];
-
-/// What a character wears alone, given what protects in each slot and
-/// whether it is a shield: all that guards one who is dead or away.
-pub fn worn_armour<'a>(worn: impl Fn(EquipSlot) -> Option<(&'a Protection, bool)>) -> Armour {
-    let guarding = || GUARDING.into_iter().filter_map(&worn);
-    let total: i32 = guarding().map(|(protection, _)| protection.armour).sum();
-    Armour {
-        total,
-        by_location: EnumMap::from_fn(|part| {
-            total + worn(armour_slot(part)).map_or(0, |(protection, _)| protection.armour)
-        }),
-        speed: 0,
-        shield: guarding().filter(|(_, shield)| *shield).map(|(shield, _)| shield.armour).sum(),
-    }
-}
-
-/// A living character's armour (retail `CalcArmorClasses`): what they wear,
-/// and what their race, speed, load, Stealth, Reflextion and skill with a
-/// shield add. Defending adds 2 everywhere and lets Shield skill count for
-/// more.
-pub fn armour<'a>(
-    (c, natural): (Trained, i32),
-    skills: &Skills,
-    a: &Attributes,
-    worn: impl Fn(EquipSlot) -> Option<(&'a Protection, bool)>,
-    load: Load,
-    defending: bool,
-) -> Armour {
-    let mut armour = worn_armour(&worn);
-    let speed = a[Attribute::Speed];
-    armour.speed = i32::from(speed > 79) + i32::from(speed > 89)
-        - i32::from(speed < 20)
-        - i32::from(speed < 10);
-    let shield = skills[Skill::Shield] as i32;
-    let skilled: i32 = GUARDING
-        .into_iter()
-        .filter_map(&worn)
-        .filter(|(_, shield)| *shield)
-        .map(|(protection, _)| {
-            if defending {
-                (shield / 15).min(protection.armour * 3 / 2)
-            } else {
-                (shield / 25).min(protection.armour)
-            }
-        })
-        .sum();
-    armour.shield += skilled;
-    let mut own = natural + armour.speed - load.armour_penalty()
-        + if defending { 2 } else { 0 }
-        + skills[Skill::Stealth] as i32 / 10
-        + skilled;
-    if c.can_use(Skill::Reflextion) {
-        own += skills[Skill::Reflextion] as i32 / 20 + 1;
-    }
-    armour.total += own;
-    armour.by_location.values_mut().for_each(|at| *at += own);
-    armour
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -731,43 +623,6 @@ mod tests {
                 items.worn(member, slot).and_then(|item| held.get(item).ok())
             }))
         })
-    }
-
-    #[test]
-    fn defending_adds_two_everywhere_and_lets_shield_skill_count_for_more() {
-        let shield = ItemDefinition {
-            class: EquipClass::Shield,
-            armor_class_bonus: 4,
-            ..ItemDefinition::default()
-        };
-        let mut bearer = Character::new("A", Race::Human, Gender::Male, Profession::Mage);
-        let armours = |bearer: Character, defending| {
-            wearing(&[(EquipSlot::Secondary, &shield)], move |items, _, member| {
-                armour(
-                    (bearer.trained(), 0),
-                    &Skills::of_sheet(&bearer),
-                    &Attributes::of_sheet(&bearer),
-                    |slot| items.protection(member, slot),
-                    Load::None,
-                    defending,
-                )
-            })
-        };
-        let gain = |bearer: &Character| {
-            let standing = armours(bearer.clone(), false);
-            let defending = armours(bearer.clone(), true);
-            for (part, armour) in &defending.by_location {
-                assert_eq!(armour - standing.by_location[part], defending.total - standing.total);
-            }
-            defending.total - standing.total
-        };
-        // Shield 60: 60 / 25 = 2 standing, 60 / 15 = 4 defending.
-        bearer.training.0[Skill::Shield] = 60;
-        assert_eq!(gain(&bearer), 2 + (4 - 2));
-        // Shield 125: capped at the shield's 4 standing, at 6 (1.5×) defending.
-        bearer.training.0[Skill::Shield] = 125;
-        assert_eq!(gain(&bearer), 2 + (6 - 4));
-        assert_eq!(armours(bearer, false).shield, 4 + 4);
     }
 
     #[test]

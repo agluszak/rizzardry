@@ -75,6 +75,7 @@ pub fn companion(
             Name::new(c.identity.name.clone()),
             CompanionOf(person),
             Nature::of_race(t.race),
+            crate::game::actors::armour::born(t.race),
             c,
             vitals,
             spells,

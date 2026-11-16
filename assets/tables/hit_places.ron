@@ -1,0 +1,17 @@
+// The places of a character's body where a blow can land (retail
+// `gubLocalACPercent` and the slot table of `CalcArmorClasses`), in the order
+// a roll walks them.
+//
+//   part    which part of the body it is
+//   chance  how often a blow lands there, in a hundred, when nothing else
+//           says where the attacker's blows land
+//   slot    where what covers it is worn
+//
+// A blow the chances do not place lands on the Body.
+[
+    (part: Head, chance: 15, slot: Head),
+    (part: Body, chance: 40, slot: Torso),
+    (part: Leg, chance: 30, slot: Legs),
+    (part: Hand, chance: 10, slot: Hands),
+    (part: Foot, chance: 5, slot: Feet),
+]

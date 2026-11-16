@@ -34,7 +34,9 @@
 //   laid              what it adds to its bearer while laid, at the power and
 //                     boost it was cast at (retail `RebuildPartyEffectBlock`,
 //                     `RebuildMonsterDerivedStats`):
-//                       armour, to_hit, missiles (percent chance a missile is
+//                       armour (against being struck at all), penetration
+//                       (armour against being pierced where struck; retail
+//                       `armor_matchup`), to_hit, missiles (percent chance a missile is
 //                       turned aside), reduction (percent cut off damage),
 //                       concealment (sight lost by eyes behind the bearer):
 //                         an Amount;
@@ -113,7 +115,7 @@
     ),
     ARMORPLATE: (
         laid: (
-            armour: (per_power: 1, halved_up: true, boost: Rounded),
+            penetration: (per_power: 1, halved_up: true, boost: Rounded),
         ),
     ),
     CHAMELEON: (
@@ -156,7 +158,7 @@
     ARMORMELT: (
         only_in_a_fight: true,
         laid: (
-            armour: (per_power: -1),
+            penetration: (per_power: -1),
         ),
     ),
     ELEMENT_SHIELD: (
@@ -211,7 +213,7 @@
     BODY_OF_STONE: (
         personal: true,
         laid: (
-            armour: (per_power: 1, boost: Scaled),
+            penetration: (per_power: 1, boost: Scaled),
             reduction: (per_power: 8, boost: Scaled, cap: 100),
         ),
     ),

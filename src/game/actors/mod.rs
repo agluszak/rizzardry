@@ -1,6 +1,7 @@
 //! What every actor is, a party member or a monster alike
 //! (`docs/rules/actors.md`).
 
+pub mod armour;
 pub mod arms;
 pub mod figures;
 pub mod fitness;
@@ -11,6 +12,9 @@ pub mod spells;
 mod stats;
 pub mod time;
 
+pub use armour::{
+    Against, Armour, ArmourPart, ArmourParts, HitPlace, HitPlaces, VulnerableFromBehind,
+};
 pub use fitness::{CanAct, CanFight, CanGuard, Lucid, Settle, Written, settle};
 pub use modifiers::Modifiers;
 pub use place::{Eyes, Hidden, Place, Places};
@@ -22,7 +26,7 @@ pub use time::{Mending, Swallowed};
 use bevy::prelude::*;
 
 pub(crate) fn plugin(app: &mut App) {
-    app.add_plugins((fitness::plugin, time::plugin, modifiers::plugin))
+    app.add_plugins((fitness::plugin, time::plugin, modifiers::plugin, armour::plugin))
         .add_observer(spells::age)
         .add_observer(spells::age_the_woken)
         .add_message::<crate::game::characters::Improved>()

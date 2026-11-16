@@ -41,7 +41,7 @@ use super::approach::CombatMove;
 use super::turn::{Guards, Interceptions, Ordered, Spotted};
 use crate::content::items::{AttackMode, Dice};
 use crate::content::species::Reach;
-use crate::game::actors::Arm;
+use crate::game::actors::{Against, Arm, ArmourParts, HitPlaces, VulnerableFromBehind};
 use crate::game::characters::{Condition, Vitals};
 use crate::game::difficulty::Difficulty;
 use crate::game::hits::effects::Body;
@@ -55,6 +55,11 @@ use crate::game::rng::GameRng;
 #[query_data(mutable)]
 pub struct Fighter {
     pub body: Body,
+    /// The parts of its armour, some of which a blow gets past by name.
+    pub parts: &'static ArmourParts,
+    pub against: &'static Against,
+    pub hit_places: &'static HitPlaces,
+    pub vulnerable_from_behind: Has<VulnerableFromBehind>,
     /// What a member was ordered to do this round.
     pub ordered: Option<&'static Ordered>,
     /// It is walking this round.
@@ -198,8 +203,8 @@ impl Surprise {
     }
 }
 
-/// Where a blow lands: one of a monster's seven locations, or a member's
-/// body part.
+/// Where a blow lands: one of the places of the body struck, by its order
+/// among them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Location(pub usize);
 

@@ -932,7 +932,7 @@ pub(crate) mod tests {
                     let party = crate::game::party::roster::the_party(world);
                     let (on_ally, on_party) = world
                         .run_system_once(move |laid: crate::game::actors::Laid| {
-                            (laid.listed(ally).count(), laid.bonus(party).armour)
+                            (laid.listed(ally).count(), laid.bonus(party).penetration)
                         })
                         .unwrap();
                     assert_eq!((on_ally, on_party), (0, 2));

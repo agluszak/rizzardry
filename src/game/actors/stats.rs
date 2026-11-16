@@ -155,32 +155,13 @@ impl Resistances {
     }
 }
 
-/// An actor's armour against blows: higher is better guarded, five off the
-/// aim for each point (retail `GetTargetArmorClass`,
-/// `TargetArmorClassAtLocation`, `GetTargetArmorClassModifier`).
-#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
-pub struct Armour {
-    /// Against being struck at all.
-    pub total: i32,
-    /// Where struck, by location.
-    pub at: [i32; 7],
-    /// What each mode finds besides.
-    pub by_mode: EnumMap<AttackMode, i32>,
-    /// What a surprise strips from its guard.
-    pub exposed: i32,
-    /// What bracing (defending) adds everywhere, and to what a surprise
-    /// strips: two, and a shield's skill counting for more.
-    pub braced: (i32, i32),
-    /// Fatigue adds to its guard, as it does to a monster's.
-    pub tires: bool,
-    /// The percent cut off the damage of blows at it.
-    pub reduction: i32,
-    /// The percent chance what is shot or thrown at it is turned aside.
-    pub missile_shield: u32,
-    /// Where blows land on a monster, by its species' chances; a member
-    /// has none of its own.
-    pub hit_locations: Option<[u8; 7]>,
-}
+/// The percent cut off the damage of blows at it.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Reduction(pub i32);
+
+/// The percent chance what is shot or thrown at it is turned aside.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MissileShield(pub u32);
 
 /// One thing an actor strikes with: one of a member's weapon slots as their gear
 /// and stats make it now, or one of a monster's species' attacks. A

@@ -68,7 +68,7 @@ pub(super) fn plugin(app: &mut App) {
             figures::attributes,
             figures::skills,
             figures::maxima,
-            (figures::resistances, figures::armour, figures::attacks, figures::mending),
+            (figures::resistances, figures::reduction, figures::attacks, figures::mending),
             (judge, super::time::tend, super::time::let_go),
         )
             .chain()

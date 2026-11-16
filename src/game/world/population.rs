@@ -292,13 +292,6 @@ pub(crate) fn made_of(kind: &crate::content::species::Species) -> impl Bundle {
         traits |= Trait::EffectiveWhileBlind;
     }
     let nature = Nature {
-        // Armour is 10 less the record's value, so that higher is always
-        // better guarded.
-        armour: 10 - i32::from(kind.evasion),
-        armour_at: std::array::from_fn(|place| 10 - i32::from(kind.armour_by_location[place])),
-        armour_by_mode: enum_map::EnumMap::from_fn(|mode| i32::from(kind.armour_by_mode[mode])),
-        hit_locations: Some(kind.hit_locations),
-        exposed: 2 * i32::from(kind.vulnerable_from_behind),
         fatigue_guards: true,
         reduction: i32::from(kind.damage_reduction),
         resistance: enum_map::EnumMap::from_fn(|realm| {
@@ -354,6 +347,7 @@ pub(crate) fn made_of(kind: &crate::content::species::Species) -> impl Bundle {
         Traits(traits),
         Kind(kind.kind),
         nature,
+        crate::game::actors::armour::of_species(kind),
         NaturalArms(arms),
     )
 }
@@ -378,6 +372,9 @@ pub(crate) fn embody(
     }
     let allegiance = super::hostility::Allegiance::of(kind);
     entity.insert(made_of(kind));
+    if kind.vulnerable_from_behind {
+        entity.insert(crate::game::actors::VulnerableFromBehind);
+    }
     entity.insert((
         allegiance,
         Worth(kind.experience),

@@ -80,7 +80,10 @@ pub struct Absorbs(pub u32);
 /// these over the spells on an actor and on its party.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
 pub struct Bonus {
+    /// Armour against being struck at all.
     pub armour: i32,
+    /// Armour against being pierced where struck.
+    pub penetration: i32,
     pub to_hit: i32,
     pub resistance: EnumMap<Realm, i32>,
     pub attributes: EnumMap<Attribute, u32>,
@@ -114,6 +117,7 @@ pub struct Answers {
 impl std::ops::AddAssign for Bonus {
     fn add_assign(&mut self, other: Self) {
         self.armour += other.armour;
+        self.penetration += other.penetration;
         self.to_hit += other.to_hit;
         self.missiles += other.missiles;
         self.reduction += other.reduction;
@@ -143,6 +147,7 @@ fn bonus(laid: Enchantment, row: &WhileLaid) -> Bonus {
     }
     Bonus {
         armour: amount(&row.armour),
+        penetration: amount(&row.penetration),
         to_hit: amount(&row.to_hit),
         resistance: EnumMap::from_fn(|realm| spread(laid, &row.resistance, realm)),
         attributes: EnumMap::from_fn(|attribute| spread(laid, &row.attributes, attribute) as u32),
@@ -480,8 +485,8 @@ mod tests {
     #[test]
     fn what_a_row_adds_is_worked_out_from_the_cast() {
         // Armorplate: half the power, rounded up, raised by the boost, rounded.
-        assert_eq!(bonus_at(SpellId::ARMORPLATE, 3, 0).armour, 2);
-        assert_eq!(bonus_at(SpellId::ARMORPLATE, 3, 50).armour, 3);
+        assert_eq!(bonus_at(SpellId::ARMORPLATE, 3, 0).penetration, 2);
+        assert_eq!(bonus_at(SpellId::ARMORPLATE, 3, 50).penetration, 3);
         // Magic Screen guards every realm by four a power and seven.
         let screen = bonus_at(SpellId::MAGIC_SCREEN, 2, 0).resistance;
         assert!(screen.values().all(|&amount| amount == 15));
@@ -495,18 +500,19 @@ mod tests {
         assert_eq!(bonus_at(SpellId::ENCHANTED_BLADE, 5, 0).to_hit, 3);
         // Body of Stone's cut is held to all of the damage.
         assert_eq!(bonus_at(SpellId::BODY_OF_STONE, 13, 0).reduction, 100);
-        assert_eq!(bonus_at(SpellId::BODY_OF_STONE, 13, 0).armour, 13);
+        assert_eq!(bonus_at(SpellId::BODY_OF_STONE, 13, 0).penetration, 13);
         // A spell with no row adds nothing.
         assert_eq!(bonus_at(SpellId::FIREBALL, 7, 100), Bonus::default());
     }
 
-    /// Armormelt takes its raw power off what Bless and Armorplate add.
+    /// Armormelt takes its raw power off what Armorplate adds against being
+    /// pierced; what Bless adds against being struck is its own.
     #[test]
     fn armormelt_takes_from_what_protections_add() {
         let mut sum = bonus_at(SpellId::BLESS, 1, 0);
         sum += bonus_at(SpellId::ARMORPLATE, 4, 0);
         sum += bonus_at(SpellId::ARMORMELT, 3, 50);
-        assert_eq!((sum.armour, sum.to_hit), (2 + 2 - 3, 2));
+        assert_eq!((sum.armour, sum.penetration, sum.to_hit), (2, 2 - 3, 2));
     }
 
     /// The boost raises what a spell adds: Haste's Speed, Body of Stone's cut.

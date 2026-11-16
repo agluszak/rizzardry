@@ -232,7 +232,7 @@ impl Skill {
 }
 
 /// Where a blow lands on a character (strings 0x429..0x431).
-#[derive(Debug, Enum, EnumSetType)]
+#[derive(Debug, Enum, EnumSetType, Deserialize)]
 pub enum BodyPart {
     Head,
     Body,

@@ -874,7 +874,12 @@ impl Pool {
     crate::game::actors::Skills,
     crate::game::actors::Level,
     crate::game::actors::Resistances,
+    crate::game::actors::ArmourParts,
+    crate::game::actors::HitPlaces,
+    crate::game::actors::Against,
     crate::game::actors::Armour,
+    crate::game::actors::Reduction,
+    crate::game::actors::MissileShield,
     crate::game::actors::Attacks,
     crate::game::actors::Mending
 )]

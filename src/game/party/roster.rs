@@ -102,6 +102,7 @@ pub fn recruit_character(
         .spawn((
             Name::new(character.identity.name.clone()),
             crate::game::actors::Nature::of_race(character.birth.race),
+            crate::game::actors::armour::born(character.birth.race),
             character,
             vitals,
             learned,

@@ -12,16 +12,15 @@ use super::story::{
     Befell, Consequence, Crush, DeviceAct, Due, Reading, Readings, Shooting, StoryFacts, StoryTold,
     Watch,
 };
-use crate::content::characters::BodyPart;
 use crate::content::items::AttackMode;
 use crate::content::items::{Dice, ItemId};
 use crate::content::level::LevelDefinition;
 use crate::content::levels::LevelInfo;
 use crate::content::spells::{SpellId, Targeting};
-use crate::game::actors::Armour;
 use crate::game::actors::Laying;
+use crate::game::actors::{Against, Armour, HitPlaces, MissileShield};
 use crate::game::characters::{Calling, Experience, Vitals};
-use crate::game::combat::attack::{MEMBER_LOCATIONS, locate_at, mode_penetration};
+use crate::game::combat::attack::{lands_at, mode_penetration};
 use crate::game::data::Catalogs;
 use crate::game::factions::Factions;
 use crate::game::hits::Damaged;
@@ -293,7 +292,7 @@ pub(super) fn shoots(
     level: Single<&Level, Without<SetAside>>,
     definitions: Res<Assets<LevelDefinition>>,
     party: Single<(&Position, &PartyRoster)>,
-    mut members: Query<(&mut Vitals, &Armour)>,
+    mut members: Query<(&mut Vitals, &Armour, &HitPlaces, &Against, &MissileShield)>,
     obstacles: WorldObstacles,
     mut rng: ResMut<GameRng>,
     mut laying: Laying,
@@ -320,17 +319,19 @@ pub(super) fn shoots(
         }
         let living: Vec<Entity> = roster
             .iter()
-            .filter(|&member| members.get(member).is_ok_and(|(vitals, _)| !vitals.is_dead()))
+            .filter(|&member| members.get(member).is_ok_and(|(vitals, ..)| !vitals.is_dead()))
             .collect();
         if living.is_empty() {
             continue;
         }
         let struck = living[rng.below(living.len() as u32) as usize];
-        let Ok((mut vitals, armour)) = members.get_mut(struck) else { continue };
-        let place = locate_at(rng.below(100), &MEMBER_LOCATIONS, BodyPart::Body as usize);
+        let Ok((mut vitals, armour, places, against, shield)) = members.get_mut(struck) else {
+            continue;
+        };
+        let place = lands_at(rng.below(100), places, None);
         let mode = AttackMode::Thrust;
-        let there = armour.at[place.0] - armour.by_mode[mode];
-        let aside = rng.below(100) < armour.missile_shield;
+        let there = armour.at(place.0) - against.0[mode];
+        let aside = rng.below(100) < shield.0;
         let through = (rng.below(100) as i32) < 50 + mode_penetration(mode) + 5 * (10 - there);
         if aside || !through {
             continue;

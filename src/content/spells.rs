@@ -494,7 +494,10 @@ impl<T: PartialEq> Spread<T> {
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WhileLaid {
+    /// Armour against being struck at all.
     pub armour: Option<Amount>,
+    /// Armour against being pierced where struck.
+    pub penetration: Option<Amount>,
     pub to_hit: Option<Amount>,
     pub resistance: Option<Spread<Realm>>,
     pub attributes: Option<Spread<Attribute>>,

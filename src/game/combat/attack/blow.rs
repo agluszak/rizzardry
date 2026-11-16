@@ -73,7 +73,7 @@ pub fn blow(
     let arm = attack.arm;
     let count = dice_to_roll(rng, attack, me, struck, setting);
     let rolled = roll_dice(rng, arm.rolls(attack.mode), count);
-    let mut damage = reduce(damage_of(arm.percent, rolled) as i32, struck.body.armour.reduction);
+    let mut damage = reduce(damage_of(arm.percent, rolled) as i32, struck.body.reduction.0);
     let mut effects = arm.effects;
     if fumbled {
         if damage > 0 {
@@ -132,7 +132,7 @@ pub fn dealt(effects: impl IntoIterator<Item = Effect>) -> Dealt {
 mod tests {
     use super::super::arena::{NORMAL, arena, arm, duel, monster, swing};
     use super::*;
-    use crate::game::actors::Armour;
+    use crate::game::actors::Reduction;
     use crate::game::characters::Vitals;
     use crate::game::combat::approach::{CombatMove, MoveGoal};
     use crate::game::combat::attack::Surprise;
@@ -229,7 +229,7 @@ mod tests {
         *world.get_mut::<Vitals>(pair.1).unwrap() = Vitals::full(3, 100);
         assert_eq!(astray(&mut world, true), 1);
         // What its armour cut to nothing stays nothing.
-        world.get_mut::<Armour>(pair.1).unwrap().reduction = 100;
+        world.get_mut::<Reduction>(pair.1).unwrap().0 = 100;
         assert_eq!(astray(&mut world, true), 0);
     }
 

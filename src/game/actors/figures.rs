@@ -9,11 +9,11 @@ use bevy::prelude::*;
 use enum_map::EnumMap;
 use enumset::EnumSet;
 
-use super::arms::{self, Hands, Held};
+use super::arms::{Hands, Held};
 use super::modifiers::Modifiers;
 use super::sources::{Abilities, Drained, Frame, Kind, NaturalArms, Nature, Traits};
 use super::time::Mending;
-use super::{Armour, Attacks, Attributes, Level, Resistances, Skills};
+use super::{Attacks, Attributes, Level, MissileShield, Reduction, Resistances, Skills};
 use crate::content::characters::{Attribute, Skill, Trait};
 use crate::game::characters::{
     Birth, Calling, Condition, Conditions, Schooling, Trained, Training, Vitals, scale_by_level,
@@ -163,105 +163,36 @@ pub(super) fn resistances(
     }
 }
 
+/// The percent cut off every blow at it: by nature, by training and by the
+/// spells on it, at most all of it; and the chance a Missile Shield turns a
+/// shot aside.
 #[allow(clippy::type_complexity)]
-pub(super) fn armour(
+pub(super) fn reduction(
     mut actors: Query<
         (
-            Entity,
-            (&Nature, &Traits, &Modifiers, &Conditions, &Vitals),
-            Option<(Schooling, &Burden)>,
+            &Nature,
+            &Modifiers,
+            Option<Schooling>,
             (&Attributes, &Skills),
-            &mut Armour,
+            (&mut Reduction, &mut MissileShield),
         ),
         Or<(
             Changed<Nature>,
             Changed<Traits>,
             Changed<Modifiers>,
-            Changed<Conditions>,
-            Changed<Vitals>,
             Changed<Calling>,
-            Changed<Burden>,
             Changed<Attributes>,
             Changed<Skills>,
         )>,
     >,
-    items: Items,
 ) {
-    for (
-        entity,
-        (nature, traits, modifiers, conditions, vitals),
-        trained,
-        (a, skills),
-        mut written,
-    ) in &mut actors
-    {
-        let laid = modifiers.laid.armour + conditions.armour();
-        let made = match trained {
-            // By nature: its own guard overall and at each of its places.
-            None => Armour {
-                total: nature.armour + laid,
-                at: nature.armour_at.map(|at| at + laid),
-                by_mode: nature.armour_by_mode,
-                exposed: nature.exposed,
-                braced: (0, 0),
-                tires: nature.fatigue_guards,
-                reduction: (nature.reduction + modifiers.laid.reduction).min(100),
-                missile_shield: modifiers.laid.missiles,
-                hit_locations: nature.hit_locations,
-            },
-            // By training (retail `CalcArmorClasses`).
-            Some((schooling, burden)) => {
-                let c = schooling.view();
-                let protection = |slot| items.protection(entity, slot);
-                // The dead and the missing guard themselves with nothing:
-                // only what they wear still counts.
-                let lively = !vitals.is_dead() && conditions.below(Condition::Missing);
-                let guard = |defending| {
-                    let mut armour = if lively {
-                        arms::armour(
-                            (c, nature.armour),
-                            skills,
-                            a,
-                            protection,
-                            burden.load,
-                            defending,
-                        )
-                    } else {
-                        arms::worn_armour(protection)
-                    };
-                    let laid = if lively { laid } else { 0 };
-                    // One kept from their place is guarded no better than
-                    // -5 overall, before what covers each place is added.
-                    let whole = armour.total + laid;
-                    let held = if conditions.unseats(traits.0) { whole.min(-5) } else { whole };
-                    armour.by_location.values_mut().for_each(|at| *at += held - armour.total);
-                    armour.total = held;
-                    armour
-                };
-                let (standing, bracing) = (guard(false), guard(true));
-                let exposed = |armour: &arms::Armour| armour.speed.max(0) + armour.shield.max(0);
-                Armour {
-                    total: standing.total,
-                    at: std::array::from_fn(|place| {
-                        standing.by_location.values().nth(place).copied().unwrap_or(standing.total)
-                    }),
-                    by_mode: EnumMap::default(),
-                    exposed: exposed(&standing),
-                    braced: (
-                        bracing.total - standing.total,
-                        exposed(&bracing) - exposed(&standing),
-                    ),
-                    tires: nature.fatigue_guards,
-                    reduction: (nature.reduction
-                        + trained_reduction(c, a, skills)
-                        + modifiers.laid.reduction)
-                        .min(100),
-                    missile_shield: modifiers.laid.missiles,
-                    hit_locations: nature.hit_locations,
-                }
-            }
-        };
-        written.set_if_neq(made);
+    for (nature, modifiers, trained, (a, skills), (mut reduction, mut shield)) in &mut actors {
+        let trained =
+            trained.as_ref().map_or(0, |schooling| trained_reduction(schooling.view(), a, skills));
+        reduction.set_if_neq(Reduction(
+            (nature.reduction + trained + modifiers.laid.reduction).min(100),
+        ));
+        shield.set_if_neq(MissileShield(modifiers.laid.missiles));
     }
 }
 

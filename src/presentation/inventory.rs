@@ -789,7 +789,7 @@ fn draw_header_hands(
 ) {
     let catalog = &content.items;
     let view = members.get(screen.member).unwrap();
-    let armour = view.armour();
+    let armour = view.armour;
     let profile = view.profile;
     let worn = |slot| held.worn(screen.member, slot);
     let two_handed = worn(EquipSlot::Primary)
@@ -842,7 +842,7 @@ fn draw_header_hands(
                         .map_or_else(String::new, |count| count.to_string()),
                 );
             }
-            HeaderHand::Armour => value = Some(armour.average().to_string()),
+            HeaderHand::Armour => value = Some(armour.average.to_string()),
         }
         visibility.set_if_neq(visible_if(shown));
         if let (Some(mut picture), Some(mut source)) = (picture, source) {

@@ -9,7 +9,6 @@ use enumset::EnumSet;
 
 use super::Arm;
 use crate::content::characters::{Attribute, Realm, Resist, Trait};
-use crate::content::items::AttackMode;
 use crate::content::species::MonsterKind;
 
 /// The seven attributes before anything is laid on them or ails them.
@@ -38,20 +37,11 @@ impl Traits {
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Kind(pub MonsterKind);
 
-/// What an actor is guarded by, resists and mends by with nothing trained,
-/// worn or laid on it: a monster's from its species, a character's from
+/// What an actor resists and mends by with nothing trained, worn or laid
+/// on it: a monster's from its species, a character's from
 /// their race.
 #[derive(Component, Clone, Debug, PartialEq)]
 pub struct Nature {
-    /// Its guard against being struck at all.
-    pub armour: i32,
-    /// What covers each of its places besides.
-    pub armour_at: [i32; 7],
-    pub armour_by_mode: EnumMap<AttackMode, i32>,
-    /// Where blows land on it, by chance, if it has places of its own.
-    pub hit_locations: Option<[u8; 7]>,
-    /// What a surprise strips from its guard.
-    pub exposed: i32,
     /// Fatigue adds to its guard.
     pub fatigue_guards: bool,
     /// Percent off every blow that lands on it.
@@ -74,23 +64,13 @@ impl Nature {
     /// What a race gives one born of it.
     pub fn of_race(race: crate::content::characters::Race) -> Self {
         let row = race.row();
-        Self {
-            armour: row.armour,
-            resistance: row.resistance,
-            carry_factor: row.carry_factor,
-            ..default()
-        }
+        Self { resistance: row.resistance, carry_factor: row.carry_factor, ..default() }
     }
 }
 
 impl Default for Nature {
     fn default() -> Self {
         Self {
-            armour: 0,
-            armour_at: [0; 7],
-            armour_by_mode: EnumMap::default(),
-            hit_locations: None,
-            exposed: 0,
             fatigue_guards: false,
             reduction: 0,
             resistance: EnumMap::default(),
