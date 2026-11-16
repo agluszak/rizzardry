@@ -252,8 +252,8 @@ fn breathe(
     _: On<Start<Breathe>>,
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
-    party: Query<(&avian3d::prelude::Position, &PartyBody)>,
-    battle: Query<&crate::game::combat::Combatants>,
+    party: Single<(&avian3d::prelude::Position, &PartyBody)>,
+    combatants: Option<Single<&crate::game::combat::Combatants>>,
     monsters: Query<(
         Entity,
         (&crate::game::world::population::Monster, &crate::game::characters::Vitals),
@@ -262,11 +262,10 @@ fn breathe(
     content: If<Res<crate::game::data::Catalogs>>,
     mut orders: MessageWriter<crate::game::combat::GiveOrder>,
 ) {
-    let (Some(member), Ok((position, body)), Ok(combatants)) =
-        (selected.member(&roster), party.single(), battle.single())
-    else {
+    let (Some(member), Some(combatants)) = (selected.member(&roster), combatants) else {
         return;
     };
+    let (position, body) = *party;
     let spell = &content.spells[crate::content::spells::SpellId::SPECIAL_ATTACK_CONE];
     let eye = PartyBody::eye(position);
     if let Some(target) = crate::game::magic::reach::ahead(
@@ -293,8 +292,8 @@ fn text_box_key(
     key: On<Start<TextBoxKey>>,
     commands: Query<&TextBoxKeyCommand>,
     mut log: ResMut<TextLog>,
-) {
-    let Ok(TextBoxKeyCommand(command)) = commands.get(key.action) else { return };
+) -> Result {
+    let TextBoxKeyCommand(command) = commands.get(key.action)?;
     match command {
         TextBoxCommand::PageUp => log.scroll_up(VISIBLE_LINES),
         TextBoxCommand::PageDown => log.scroll_down(VISIBLE_LINES),
@@ -302,4 +301,5 @@ fn text_box_key(
         TextBoxCommand::End => log.scroll_to_end(),
         TextBoxCommand::Clear => log.clear(),
     }
+    Ok(())
 }

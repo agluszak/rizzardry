@@ -91,15 +91,15 @@ pub(super) fn ask(
     mut story: ResMut<StoryFacts>,
     mut rng: ResMut<GameRng>,
     mut commands: Commands,
-) {
+) -> Result {
     let conversation = ask.conversation;
-    let Ok(mut talk) = talks.get_mut(conversation) else { return };
+    let mut talk = talks.get_mut(conversation)?;
     if !talk.idle() || talk.conversation.menu {
-        return;
+        return Ok(());
     }
     let actor = talk.conversation.actor;
     let (Some(script), Some(speaker)) = (scripts.get(actor), actors.definition(actor)) else {
-        return;
+        return Ok(());
     };
     let cleaned: String = ask
         .text
@@ -108,11 +108,11 @@ pub(super) fn ask(
         .collect();
     let cleaned = cleaned.trim();
     if cleaned.is_empty() {
-        return;
+        return Ok(());
     }
     if WHERE_IS.joins.iter().any(|word| begins(cleaned, word)) {
         commands.trigger(Invite { conversation });
-        return;
+        return Ok(());
     }
     let region = actors
         .level()
@@ -153,4 +153,5 @@ pub(super) fn ask(
         }
     }
     commands.trigger(Continue { conversation });
+    Ok(())
 }

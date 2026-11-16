@@ -390,8 +390,6 @@ impl Plugin for MagicPlugin {
             .add_observer(casting::cast)
             .add_observer(casting::pay)
             .add_observer(casting::refuse)
-            .add_observer(landed::drain_back)
-            .add_observer(landed::settle)
             .add_observer(utilities::identify)
             .add_observer(dialogue::cast)
             .add_observer(portals::cast)

@@ -147,11 +147,16 @@ impl Npc {
         }
     }
 }
-/// A trigger can provide an interaction binding without a monster.
-#[derive(Component, Debug)]
-pub struct NpcTrigger(pub Entity);
-#[derive(Component)]
+/// A device that speaks for someone: using it is speaking with them, with
+/// no body of theirs needed.
+#[derive(Component, Clone, Copy, Debug)]
+#[relationship(relationship_target = SpokenFor)]
 pub struct NpcSpeaker(pub Entity);
+
+/// The devices that speak for someone.
+#[derive(Component, Debug, Default)]
+#[relationship_target(relationship = NpcSpeaker)]
+pub struct SpokenFor(Vec<Entity>);
 #[derive(Resource, Default)]
 pub struct NpcAssets {
     pub scripts: HashMap<NpcId, Handle<DialogueScript>>,
@@ -201,8 +206,6 @@ impl Plugin for NpcPlugin {
             .add_observer(story::follows_cycle)
             .add_observer(story::faded)
             .add_observer(story::befalls_if)
-            .add_observer(devices::ask)
-            .add_observer(devices::speak)
             .add_observer(devices::watch)
             .add_observer(devices::shoots)
             .add_observer(devices::crush_begins)

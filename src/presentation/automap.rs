@@ -540,8 +540,8 @@ fn click_map(
     mut commits: MessageWriter<CommitNote>,
     mut commands: Commands,
     editors: Query<Entity, With<note_input::NoteInput>>,
-) {
-    let (Some(mut map), Some(hit)) = (map, click.hit.position) else { return };
+) -> Result {
+    let (Some(mut map), Some(hit)) = (map, click.hit.position) else { return Ok(()) };
     for editor in &editors {
         commands.entity(editor).despawn();
     }
@@ -549,13 +549,13 @@ fn click_map(
     if click.button == PointerButton::Secondary {
         map.editing = None;
         map.zoom_out();
-        return;
+        return Ok(());
     }
     if click.button != PointerButton::Primary {
-        return;
+        return Ok(());
     }
     map.editing = None;
-    let Ok(notes) = levels.get(map.level) else { return };
+    let notes = levels.get(map.level)?;
     let point = map.unproject((hit.truncate() + 0.5) * VIEWPORT);
     let reach = MARKER / map.pixels_per_metre();
     let original = notes.nearest(point, reach, map.layer);
@@ -591,24 +591,24 @@ fn click_map(
             }
         }
     }
+    Ok(())
 }
 
 pub fn draw_notes(
     mut commands: Commands,
-    layer: Query<(Entity, Ref<NotesLayer>)>,
+    layer: Single<(Entity, Ref<NotesLayer>)>,
     automap: Option<Single<Ref<Automap>>>,
     notes: Query<Ref<MapNotes>>,
     art: Res<AutomapArt>,
     mut views: Query<(Entity, &NoteView, &mut Node, &mut Visibility, &Children)>,
     mut labels: Query<(&mut BitmapText, &mut Visibility), Without<NoteView>>,
-) {
-    let (Some(map), Ok((layer, built))) = (automap, layer.single()) else {
-        return;
-    };
-    let Ok(notes) = notes.get(map.level) else { return };
+) -> Result {
+    let Some(map) = automap else { return Ok(()) };
+    let (layer, built) = layer.into_inner();
+    let notes = notes.get(map.level)?;
     // The layer may be built after its art arrives, with the map unchanged.
     if !map.is_changed() && !notes.is_changed() && !built.is_added() && !art.is_changed() {
-        return;
+        return Ok(());
     }
     // Retain each marker/label while panning, editing and changing layers.
     let displayed = notes
@@ -664,6 +664,7 @@ pub fn draw_notes(
             commands.entity(entity).despawn();
         }
     }
+    Ok(())
 }
 
 pub fn glow_note_markers(time: Res<Time>, mut markers: Query<&mut ImageNode, With<NoteMarker>>) {
@@ -678,16 +679,16 @@ pub fn glow_note_markers(time: Res<Time>, mut markers: Query<&mut ImageNode, Wit
 pub fn update_map_view(
     automap: Single<Ref<Automap>>,
     levels: PlayedLevel,
-    plans: Query<(Entity, &ImageNode), With<FloorPlan>>,
+    plan: Option<Single<(Entity, &ImageNode), With<FloorPlan>>>,
     mut images: ResMut<Assets<Image>>,
-    party: Query<&Transform, With<PartyBody>>,
+    party: Option<Single<&Transform, With<PartyBody>>>,
     mut markers: Query<&mut Node, With<PartyMarker>>,
     mut previous: Local<Option<(Entity, Vec2, f32, usize)>>,
 ) {
     let Some(level) = levels.of(automap.level) else {
         return;
     };
-    if let Ok(party) = party.single() {
+    if let Some(party) = party {
         let at = automap.project(party.translation.xz()) - MARKER / 2.0;
         for mut marker in &mut markers {
             if (marker.left, marker.top) != (Val::Px(at.x), Val::Px(at.y)) {
@@ -695,7 +696,7 @@ pub fn update_map_view(
             }
         }
     }
-    let Ok((entity, image)) = plans.single() else { return };
+    let Some(&(entity, image)) = plan.as_deref() else { return };
     let view = (entity, automap.centre, automap.span, automap.layer);
     if *previous == Some(view) {
         return;
@@ -728,20 +729,20 @@ pub fn draw_layer_label(
 /// hotspot at its tip).
 pub fn update_map_cursor(
     mut commands: Commands,
-    windows: Query<(Entity, Option<&bevy::window::CursorIcon>), With<bevy::window::PrimaryWindow>>,
+    window: Single<(Entity, Option<&bevy::window::CursorIcon>), With<bevy::window::PrimaryWindow>>,
     automap: Option<Single<Ref<Automap>>>,
     art: Res<AutomapArt>,
     sheets: Res<Assets<SpriteSheet>>,
-    viewport: Query<&Hovered, With<MapViewport>>,
+    viewport: Option<Single<&Hovered, With<MapViewport>>>,
     assets: Res<AssetServer>,
     mut arrow: Local<Option<Handle<SpriteSheet>>>,
 ) {
     use bevy::window::{CursorIcon, CustomCursor, CustomCursorImage};
-    let Ok((window, current)) = windows.single() else { return };
+    let (window, current) = *window;
     let arrow = arrow.get_or_insert_with(|| assets.load("retail://data/cursors/2d-cursors.sti"));
     let cursor = match automap {
         Some(map) => {
-            let inside = viewport.single().is_ok_and(|hovered| hovered.get());
+            let inside = viewport.as_deref().is_some_and(|hovered| hovered.get());
             let index = match map.tool {
                 Some(MapTool::AddNote) => 2,
                 Some(MapTool::EraseNote) => 3,

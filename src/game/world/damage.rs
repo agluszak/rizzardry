@@ -39,23 +39,22 @@ pub fn clear_the_fallen(
 /// vertical physics stay.
 pub fn halt(
     death: On<Add<crate::game::characters::Dead>>,
-    mut motion: Query<
-        (
-            Option<&mut AgentTarget3d>,
-            Option<&mut TnuaController<WalkerMotion>>,
-            Option<&mut TnuaMotor>,
-            Option<&mut LinearVelocity>,
-            Option<&mut Velocity3d>,
-        ),
-        With<Monster>,
-    >,
+    mut motion: Query<(
+        Option<&mut AgentTarget3d>,
+        Option<&mut TnuaController<WalkerMotion>>,
+        Option<&mut TnuaMotor>,
+        Option<&mut LinearVelocity>,
+        Option<&mut Velocity3d>,
+        Has<Monster>,
+    )>,
     mut commands: Commands,
-) {
-    let Ok((targeting, controller, motor, velocity, navigation_velocity)) =
-        motion.get_mut(death.entity)
-    else {
-        return;
-    };
+) -> Result {
+    let (targeting, controller, motor, velocity, navigation_velocity, monster) =
+        motion.get_mut(death.entity)?;
+    // Only a monster walks on its own.
+    if !monster {
+        return Ok(());
+    }
     if let Some(mut targeting) = targeting {
         *targeting = AgentTarget3d::None;
     }
@@ -72,6 +71,7 @@ pub fn halt(
         velocity.velocity = Vec3::ZERO;
     }
     commands.entity(death.entity).remove_with_requires::<Crossing>();
+    Ok(())
 }
 
 /// A dead monster drops its loot where it stood and pays its gold into the
@@ -81,8 +81,10 @@ pub fn leave_loot(
     death: On<Add<crate::game::characters::Dead>>,
     mut commands: Commands,
     monsters: Query<
-        (&Monster, ActorPose, Option<&Walker>, &LevelOwned),
-        Without<crate::game::magic::pointcasts::SummonedBy>,
+        Option<(
+            (&Monster, ActorPose, Option<&Walker>, &LevelOwned),
+            Has<crate::game::magic::pointcasts::SummonedBy>,
+        )>,
     >,
     (bodies, npcs): (Query<&crate::game::npcs::Embodies>, Query<&crate::game::npcs::ActorId>),
     mut purse: Single<&mut PartyInventory>,
@@ -92,9 +94,10 @@ pub fn leave_loot(
     >,
     content: If<Res<crate::game::data::Catalogs>>,
     mut rng: ResMut<GameRng>,
-) {
+) -> Result {
     let target = death.entity;
-    let Ok((monster, at, walker, owner)) = monsters.get(target) else { return };
+    // A member leaves nothing, nor does one summoned.
+    let Some(((monster, at, walker, owner), false)) = monsters.get(target)? else { return Ok(()) };
     let (catalog, tables) = (&content.items, &content.loot);
     let rng = &mut *rng;
     let npc = bodies.get(target).ok().and_then(|body| npcs.get(body.0).ok());
@@ -111,4 +114,5 @@ pub fn leave_loot(
     purse.gold += gold;
     let position = feet(at.translation(), walker);
     drop_loot(&mut commands, owner.0, position, &found, (catalog, rng));
+    Ok(())
 }

@@ -4,10 +4,11 @@
 
 use bevy::prelude::*;
 
+use super::PartyGap;
+use super::aim::Considers;
 use super::aim::{Toward, Viewed, Views};
 use super::conduct::Conduct;
-use super::spell::NoSpell;
-use super::{Deliberating, PartyGap};
+use super::spell::CastsNothing;
 use crate::content::characters::Attribute;
 use crate::game::actors::arm::{Furthest, GuardReach};
 use crate::game::actors::{Attributes, BlindFighting, CanGuard, Level};
@@ -26,9 +27,9 @@ use crate::game::world::population::Temper;
 /// Otherwise it strikes.
 #[allow(clippy::type_complexity)]
 pub(super) fn strike_or_guard(
-    spent: On<Add<NoSpell>>,
+    spent: On<CastsNothing>,
     mut commands: Commands,
-    deliberations: Query<(&Deliberating, &PartyGap, &Views)>,
+    deliberations: Query<(&Considers, &PartyGap, &Views)>,
     views: Query<(&Viewed, &Toward)>,
     monsters: Query<(
         (&Temper, &Attributes, &Conditions, &Level),
@@ -37,27 +38,23 @@ pub(super) fn strike_or_guard(
     fellows: Query<(&Vitals, &Level)>,
     places: crate::game::actors::Places,
     mut rng: ResMut<GameRng>,
-) {
-    let deliberation = spent.entity;
-    let Ok((&Deliberating(monster), &PartyGap(gap), viewed)) = deliberations.get(deliberation)
-    else {
-        return;
-    };
+) -> Result {
+    let deliberation = spent.deliberation;
+    let (&Considers(monster), &PartyGap(gap), viewed) = deliberations.get(deliberation)?;
     commands.entity(deliberation).despawn();
-    let Ok(((temper, a, conditions, level), (reach, guard_reach, fights_blind, can_guard))) =
-        monsters.get(monster)
-    else {
-        return;
-    };
+    let ((temper, a, conditions, level), (reach, guard_reach, fights_blind, can_guard)) =
+        monsters.get(monster)?;
     let decided = |decision| Decided { actor: monster, decision, own_will: true };
     let blind = conditions.has(Condition::Blind) && !fights_blind;
     if reach.0.is_none() || (blind && !reach.reaches(gap)) {
         let retreats = Decision::Retreat(Retreats { conduct: Conduct::Withdraw, quiet: false });
-        return commands.trigger(decided(retreats));
+        commands.trigger(decided(retreats));
+        return Ok(());
     }
     let fights = |waits| Decision::Fight(Fights { waits, berserk: false });
     if !reach.reaches(gap) {
-        return commands.trigger(decided(fights(false)));
+        commands.trigger(decided(fights(false)));
+        return Ok(());
     }
     let temper = &temper.0;
     let intelligence = a[Attribute::Intelligence];
@@ -83,4 +80,5 @@ pub(super) fn strike_or_guard(
     } else {
         fights(temper.wary && rng.below(100) < intelligence)
     }));
+    Ok(())
 }

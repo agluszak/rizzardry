@@ -116,7 +116,7 @@ pub(super) fn control_combat(
 /// move when it is spent.
 pub fn track_party_move(
     fight: Option<Single<(&Round, &mut PartyMove), With<Battle>>>,
-    party: Query<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>,
+    party: Single<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>,
     mut rng: ResMut<GameRng>,
     roster: Single<&PartyRoster>,
     mut movers: Query<
@@ -127,7 +127,7 @@ pub fn track_party_move(
     mut news: MessageWriter<CombatNews>,
 ) {
     let Some((round, mut party_move)) = fight.map(Single::into_inner) else { return };
-    let Ok(position) = party.single() else { return };
+    let position = *party;
     let spent = {
         let PartyMove::Moving { budget, moved, last, .. } = &mut *party_move else {
             return;

@@ -81,15 +81,15 @@ pub(super) fn picked(
     held: Items,
     mut remarks: MessageWriter<PartyRemark>,
     mut commands: Commands,
-) {
+) -> Result {
     let member = picked.member;
     if picks.is_empty() || !roster.contains(&member) {
-        return;
+        return Ok(());
     }
     for pick in &picks {
         commands.entity(pick).despawn();
     }
-    let Ok((character, can_fight, companion)) = members.get(member) else { return };
+    let (character, can_fight, companion) = members.get(member)?;
     let table = &FACTS.chosen;
     let mut set = |name: &String, value| {
         commands.trigger(Befalls(StoryAct::Fact(name.clone(), value).into()));
@@ -118,6 +118,7 @@ pub(super) fn picked(
     } else {
         set(&table.undressed, 1);
     }
+    Ok(())
 }
 
 /// The chosen one is smitten once out of battle and away from her halls;

@@ -381,7 +381,7 @@ pub fn settle(market: &mut ParamSet<(Pricing, Settlement)>, q: Quote) -> Result<
 fn maintain(
     visit: On<Visit>,
     deliveries: Query<(Entity, &Delivery)>,
-    mut stocks: Query<(&ActorId, &mut MerchantStock)>,
+    mut stocks: Query<(&ActorId, Option<&mut MerchantStock>)>,
     held: Items,
     content: If<Res<Catalogs>>,
     clock: Res<GameClock>,
@@ -390,14 +390,15 @@ fn maintain(
     members: Query<&Calling>,
     mut rng: ResMut<GameRng>,
     mut commands: Commands,
-) {
+) -> Result {
     let average = crate::game::party::average_level(
         party.iter().flat_map(|p| p.iter()).filter_map(|m| members.get(m).ok()).map(Calling::level),
     );
     let items = &content.items;
     {
         let merchant = visit.merchant;
-        let Ok((id, mut stock)) = stocks.get_mut(merchant) else { return };
+        // One who keeps no stock has none to see to.
+        let (id, Some(mut stock)) = stocks.get_mut(merchant)? else { return Ok(()) };
         // What was to come has come.
         for (delivery, due) in &deliveries {
             if due.merchant == merchant && due.due <= clock.ms {
@@ -439,4 +440,5 @@ fn maintain(
             stock.restocked = clock.ms;
         }
     }
+    Ok(())
 }

@@ -24,17 +24,35 @@ use crate::game::world::identify::{GroupMember, GroupMembers};
 use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::population::SpellBudget;
 
-/// A deed of magic: what it did is told as magic's news once it has landed.
+/// A deed of magic: what follows it once it has landed is magic's
+/// ([`settle`]), its own observer from the moment it is made, before it
+/// lands.
 #[derive(Component, Clone, Copy, Debug, Default)]
+#[component(on_add = watched_as_magic)]
 pub struct Magical;
+
+fn watched_as_magic(
+    mut world: bevy::ecs::world::DeferredWorld,
+    context: bevy::ecs::lifecycle::HookContext,
+) {
+    world.commands().entity(context.entity).observe(settle);
+}
+
+fn drains_back(
+    mut world: bevy::ecs::world::DeferredWorld,
+    context: bevy::ecs::lifecycle::HookContext,
+) {
+    world.commands().entity(context.entity).observe(drain_back);
+}
 
 /// The share of Lifesteal's damage that heals, in percent.
 const LIFESTEAL_SHARE: u32 = 70;
 
 /// A leeching deed: what its damage drained goes to its caster's side once
-/// all of it has landed.
+/// all of it has landed ([`drain_back`], its own observer).
 #[derive(Component, Clone, Copy, Debug)]
 #[require(Magical)]
+#[component(on_add = drains_back)]
 pub struct Leech {
     pub caster: Entity,
     pub gives: Leeches,
@@ -109,8 +127,8 @@ pub fn drain_back(
         Option<&mut SpellBudget>,
     )>,
     mut news: MessageWriter<MagicNews>,
-) {
-    let Ok(&leech) = leeches.get(landed.deed) else { return };
+) -> Result {
+    let &leech = leeches.get(landed.deed)?;
     let drained = landed.harm;
     let candidates: Vec<Entity> =
         if members.contains(leech.caster) { roster.iter().collect() } else { vec![leech.caster] };
@@ -134,9 +152,9 @@ pub fn drain_back(
         .min_by_key(|&(_, short)| short)
         .map(|(victim, _)| victim)
     else {
-        return;
+        return Ok(());
     };
-    let Ok((mut vitals, spells, budget)) = bodies.get_mut(victim) else { return };
+    let (mut vitals, spells, budget) = bodies.get_mut(victim)?;
     let effect = match (leech.gives, spells, budget) {
         (Leeches::Health, ..) => {
             let amount = vitals.heal(drained * LIFESTEAL_SHARE / 100);
@@ -148,11 +166,12 @@ pub fn drain_back(
         }
         (Leeches::Points, None, Some(mut budget)) => {
             budget.0 += drained / 2;
-            return;
+            return Ok(());
         }
-        (Leeches::Points, None, None) => return,
+        (Leeches::Points, None, None) => return Ok(()),
     };
     news.write(MagicNews::Landed { effects: vec![effect] });
+    Ok(())
 }
 
 /// What follows a deed of magic once all of it has landed, in this order:
@@ -161,7 +180,7 @@ pub fn drain_back(
 /// anyone; an auto cast is asked for again; and what it did is told.
 pub fn settle(
     landed: On<Landed>,
-    deeds: Query<(&Deed, Option<&Spell>, Option<&Practice>, Option<&Recast>), With<Magical>>,
+    deeds: Query<(&Deed, Option<&Spell>, Option<&Practice>, Option<&Recast>)>,
     bodies: Query<Body>,
     roster: Single<&PartyRoster>,
     combatants: Option<Single<&Combatants, With<Battle>>>,
@@ -172,8 +191,8 @@ pub fn settle(
     mut requests: MessageWriter<MagicRequest>,
     mut news: MessageWriter<MagicNews>,
     mut commands: Commands,
-) {
-    let Ok((deed, spell, practice, recast)) = deeds.get(landed.deed) else { return };
+) -> Result {
+    let (deed, spell, practice, recast) = deeds.get(landed.deed)?;
     let mut effects = landed.effects.clone();
     if let Some(spell) = spell {
         let field = Field {
@@ -213,6 +232,7 @@ pub fn settle(
     if !effects.is_empty() {
         news.write(MagicNews::Landed { effects });
     }
+    Ok(())
 }
 
 /// Each of a cast's victims that died bursts where it fell, if the spell's

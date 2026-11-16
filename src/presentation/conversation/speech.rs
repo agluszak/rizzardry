@@ -28,9 +28,9 @@ fn play_line(
     mut commands: Commands,
     lines: Query<&ConversationSpeech>,
     assets: Res<AssetServer>,
-) {
+) -> Result {
     let e = event.entity;
-    let Ok(line) = lines.get(e) else { return };
+    let line = lines.get(e)?;
     commands.entity(e).insert(LinePace::Text { remaining: text_seconds(&line.text) });
     if let Some(voice) = &line.voice {
         commands.entity(e).insert((
@@ -50,6 +50,7 @@ fn play_line(
             bevy::audio::PlaybackSettings::DESPAWN,
         ));
     }
+    Ok(())
 }
 /// A line whose speech plays shows while it does, then holds briefly; one
 /// whose speech never plays shows for its text's time.

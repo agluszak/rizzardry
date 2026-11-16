@@ -185,12 +185,13 @@ pub fn pay(
         &mut crate::game::characters::Vitals,
         Option<&mut crate::game::magic::SpellPoints>,
     )>,
-) {
-    let Ok((mut vitals, pool)) = casters.get_mut(pays.caster) else { return };
+) -> Result {
+    let (mut vitals, pool) = casters.get_mut(pays.caster)?;
     if let (Some((realm, amount)), Some(mut pool)) = (pays.points, pool) {
         pool.spend(realm, amount);
     }
     vitals.tire(pays.stamina);
+    Ok(())
 }
 
 /// A utility spell has been paid for and rolled: it now does what it is for

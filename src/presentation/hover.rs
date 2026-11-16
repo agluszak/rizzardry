@@ -81,7 +81,7 @@ pub fn show_tooltip(
     ),
     pointers: Query<(&PointerId, &PointerLocation)>,
     scale: Res<UiScale>,
-    cameras: Query<&Camera, With<bevy::ui::IsDefaultUiCamera>>,
+    interface: Option<Single<&Camera, With<bevy::ui::IsDefaultUiCamera>>>,
     (content, sheets, assets): (
         If<Res<crate::game::data::Catalogs>>,
         Res<Assets<SpriteSheet>>,
@@ -102,7 +102,7 @@ pub fn show_tooltip(
     let wanted = (|| {
         let (entity, at) =
             hovered.entity.filter(|_| hovered.held.elapsed_secs() >= TOOLTIP_DELAY).zip(cursor)?;
-        let target = cameras.single().ok()?.logical_target_size()? / scale.0;
+        let target = interface.as_ref()?.logical_target_size()? / scale.0;
         let sheet = sheets.get(&*font)?;
         let text = if let Some(name) = items.name(entity, &content.items, true) {
             // "Bullets (Unidentified) (16)".

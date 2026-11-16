@@ -247,8 +247,8 @@ fn stand(
     mut groups: Query<(&mut MonsterGroup, Option<&GroupMembers>)>,
     mut monsters: Query<(&Allegiance, &mut Side)>,
     (factions, clock): (Res<Factions>, Res<GameClock>),
-) {
-    let Ok((mut group, members)) = groups.get_mut(event.group) else { return };
+) -> Result {
+    let (mut group, members) = groups.get_mut(event.group)?;
     group.set = event.stance.map(|stance| SetStance { stance, at: clock.ms });
     for member in members.into_iter().flat_map(GroupMembers::iter) {
         if let Ok((allegiance, mut side)) = monsters.get_mut(member) {
@@ -256,59 +256,65 @@ fn stand(
             side.set_if_neq(Side(stance));
         }
     }
+    Ok(())
 }
 
 /// A monster made, or come into a group, takes the side its group stands
 /// on, or its kind's.
 fn take_side(
     monster: Entity,
-    monsters: &mut Query<(&Allegiance, &mut Side, Option<&GroupMember>)>,
+    monsters: &mut Query<(Option<&Allegiance>, &mut Side, Option<&GroupMember>)>,
     groups: &Query<&MonsterGroup>,
     factions: &Factions,
 ) {
-    let Ok((allegiance, mut side, member)) = monsters.get_mut(monster) else { return };
-    let set = member.and_then(|member| groups.get(member.0).ok()).and_then(|group| group.set);
+    let (allegiance, mut side, member) = monsters.get_mut(monster).expect("a body");
+    // One that owes nobody, a member, keeps the side it has.
+    let Some(allegiance) = allegiance else { return };
+    let set =
+        member.map(|member| groups.get(member.0).expect("a group")).and_then(|group| group.set);
     let stance = set.map_or_else(|| allegiance.default_stance(factions), |set| set.stance);
     side.set_if_neq(Side(stance));
 }
 
 fn made(
     made: On<Insert<Allegiance>>,
-    mut monsters: Query<(&Allegiance, &mut Side, Option<&GroupMember>)>,
-    mut loyalties: Query<(&Allegiance, &super::population::Monster, &mut Loyalty)>,
+    mut monsters: Query<(Option<&Allegiance>, &mut Side, Option<&GroupMember>)>,
+    mut loyalties: Query<(&Allegiance, Option<&super::population::Monster>, &mut Loyalty)>,
     groups: Query<&MonsterGroup>,
     factions: Res<Factions>,
-) {
+) -> Result {
     take_side(made.entity, &mut monsters, &groups, &factions);
-    if let Ok((allegiance, monster, mut loyalty)) = loyalties.get_mut(made.entity) {
+    // Only a monster's kind gives it a loyalty.
+    if let (allegiance, Some(monster), mut loyalty) = loyalties.get_mut(made.entity)? {
         *loyalty = allegiance.loyalty(monster.species);
     }
+    Ok(())
 }
 
 /// A member raised is the party's again, whatever had turned them as they
 /// died.
 fn raised(
     raised: On<Remove<crate::game::characters::Dead>>,
-    mut members: Query<&mut Side, With<crate::game::party::roster::PartyMember>>,
-) {
-    if let Ok(mut side) = members.get_mut(raised.entity) {
+    mut bodies: Query<(&mut Side, Has<crate::game::party::roster::PartyMember>)>,
+) -> Result {
+    if let (mut side, true) = bodies.get_mut(raised.entity)? {
         *side = Side::FRIENDLY;
     }
+    Ok(())
 }
 
 /// Whoever joins the party is on its side.
 fn joined(
     joined: On<Insert<crate::game::party::roster::PartyMember>>,
     mut sides: Query<&mut Side>,
-) {
-    if let Ok(mut side) = sides.get_mut(joined.entity) {
-        *side = Side::FRIENDLY;
-    }
+) -> Result {
+    *sides.get_mut(joined.entity)? = Side::FRIENDLY;
+    Ok(())
 }
 
 fn grouped(
     grouped: On<Insert<GroupMember>>,
-    mut monsters: Query<(&Allegiance, &mut Side, Option<&GroupMember>)>,
+    mut monsters: Query<(Option<&Allegiance>, &mut Side, Option<&GroupMember>)>,
     groups: Query<&MonsterGroup>,
     factions: Res<Factions>,
 ) {
@@ -391,17 +397,20 @@ pub struct Provoked;
 /// nobody.
 pub fn take_offence(
     offence: On<Provocation>,
-    monsters: Query<(&Side, &Vitals, &Conditions, &GroupMember)>,
+    monsters: Query<(&Side, &Vitals, &Conditions, Option<&GroupMember>)>,
     mut commands: Commands,
-) {
-    let Ok((side, vitals, conditions, member)) = monsters.get(offence.monster) else { return };
+) -> Result {
+    let (side, vitals, conditions, member) = monsters.get(offence.monster)?;
+    // One of no group (a member struck by a turned friend) turns nobody.
+    let Some(member) = member else { return Ok(()) };
     commands.entity(member.0).insert(Provoked);
     if vitals.is_dead() || conditions.has(Condition::Turncoat) {
-        return;
+        return Ok(());
     }
     if side.own() != Stance::Hostile {
         commands.trigger(Stand { group: member.0, stance: Some(Stance::Hostile) });
     }
+    Ok(())
 }
 
 /// A death counts against the dead one's faction when a member of the
@@ -409,24 +418,24 @@ pub fn take_offence(
 /// counts for nothing (retail `RecordMonsterKill`).
 pub fn answer_for(
     died: On<Add<crate::game::characters::Dead>>,
-    dead: Query<
-        (&crate::game::characters::Dead, &Allegiance),
-        Without<crate::game::magic::pointcasts::SummonedBy>,
-    >,
+    dead: Query<(
+        &crate::game::characters::Dead,
+        Option<&Allegiance>,
+        Has<crate::game::magic::pointcasts::SummonedBy>,
+    )>,
     killers: Query<(&Side, Has<crate::game::party::roster::PartyMember>)>,
     (mut factions, clock): (ResMut<Factions>, Res<GameClock>),
     mut news: MessageWriter<crate::game::factions::FactionNews>,
-) {
-    let Ok((&crate::game::characters::Dead { by: Some(killer) }, allegiance)) =
-        dead.get(died.entity)
-    else {
-        return;
-    };
+) -> Result {
+    let (&crate::game::characters::Dead { by }, allegiance, summoned) = dead.get(died.entity)?;
+    // Only a death someone brought counts, of one owing a faction, not summoned.
+    let (Some(killer), Some(allegiance), false) = (by, allegiance, summoned) else { return Ok(()) };
     let answers =
         killers.get(killer).is_ok_and(|(side, member)| member || side.own() == Stance::Friendly);
     if answers {
         news.write_batch(factions.record_offence(allegiance.faction, allegiance.offence, clock.ms));
     }
+    Ok(())
 }
 
 pub fn plugin(app: &mut App) {

@@ -89,7 +89,7 @@ impl Sight<'_, '_> {
     /// Whether a body's eyes make out the party, which hides by its lowest
     /// able level and by Chameleon.
     fn sees_party(&self, watcher: Entity) -> bool {
-        let Ok(eyes) = self.eyes.get(watcher) else { return false };
+        let eyes = self.eyes.get(watcher).expect("a body has eyes");
         let members = self
             .roster()
             .iter()
@@ -107,9 +107,8 @@ impl Sight<'_, '_> {
 
     /// Whether a body's eyes make out a monster, which hides by its level.
     pub fn sees(&self, watcher: Entity, watched: Entity) -> bool {
-        let (Ok(eyes), Ok((level, _))) = (self.eyes.get(watcher), self.hiding.get(watched)) else {
-            return false;
-        };
+        let eyes = self.eyes.get(watcher).expect("a body has eyes");
+        let (level, _) = self.hiding.get(watched).expect("a body has a level");
         eyes.see(
             &self.places.of(watcher),
             (&self.places.of(watched), Hidden::alone(*level)),

@@ -135,16 +135,15 @@ fn choice_group(commands: &mut Commands, root: Entity, assets: &AssetServer, per
 fn select(
     event: On<ValueChange<Entity>>,
     choices: Query<&Choice>,
-    mut sessions: Query<&mut Creation>,
-) {
-    let (Ok(choice), Ok(mut session)) = (choices.get(event.value), sessions.single_mut()) else {
-        return;
-    };
-    let Some(draft) = session.mode.draft_mut() else { return };
+    mut session: Single<&mut Creation>,
+) -> Result {
+    let choice = choices.get(event.value)?;
+    let Some(draft) = session.mode.draft_mut() else { return Ok(()) };
     match choice {
         Choice::Personality(value) => draft.personality = *value,
         Choice::Voice(value) => draft.voice = *value,
     }
+    Ok(())
 }
 
 pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer) {

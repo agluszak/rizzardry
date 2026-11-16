@@ -40,15 +40,13 @@ fn advance(
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<ItemNews>,
     mut commands: Commands,
-) {
+) -> Result {
     let Advanced { party, member } = *event;
-    let (Ok((calling, birth, identity)), Ok(roster)) = (characters.get(member), rosters.get(party))
-    else {
-        return;
-    };
+    let (calling, birth, identity) = characters.get(member)?;
+    let roster = rosters.get(party)?;
     // Asked of the calling itself: the level was only just gained.
     if !traits_of(birth.race, calling).contains(Trait::MergeGadgets) {
-        return;
+        return Ok(());
     }
     let omnigun = |&item: &Entity| kinds.get(item).is_ok_and(|kind| kind.0 == ItemKind::OMNIGUN);
     let carries = |owner: Entity| items.carried(owner).find(omnigun);
@@ -58,12 +56,12 @@ fn advance(
     if level == 1 {
         let definition = &content.items[WEAPONS.omnigun.first];
         if carries(member).is_some() {
-            return;
+            return Ok(());
         }
         let room = items.pack_room(member, definition.id, true, 1)
             + items.pool_room(party, definition.id, true, 1);
         if room == 0 {
-            return;
+            return Ok(());
         }
         let given = make(&mut commands, definition, roll_amount(definition, &mut rng, false), true);
         commands.entity(given).insert(Known { identified: true, spell: false, curse: true });
@@ -75,16 +73,16 @@ fn advance(
             told: true,
         });
         news.write(told(0));
-        return;
+        return Ok(());
     }
-    let Some((id, tier)) = WEAPONS.omnigun.tier(level) else { return };
+    let Some((id, tier)) = WEAPONS.omnigun.tier(level) else { return Ok(()) };
     let current = carries(member)
         .or_else(|| items.held(party).filter(omnigun))
         .or_else(|| roster.iter().find_map(carries))
         .or_else(|| items.pool(party).iter().copied().find(omnigun));
     let Some(current) = current.filter(|&current| items.id(current).is_some_and(|now| now < id))
     else {
-        return;
+        return Ok(());
     };
     // The same gun, grown: what it is made of is read again from the
     // definition it has risen to.
@@ -94,4 +92,5 @@ fn advance(
     let full = definition.initial_quantity.maximum() as u16;
     commands.entity(current).entry::<Charges>().and_modify(move |mut charges| charges.full = full);
     news.write(told(tier));
+    Ok(())
 }

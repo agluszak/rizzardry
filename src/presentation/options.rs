@@ -16,7 +16,9 @@ struct OptionsView {
     draft: SavedSettings,
     error: String,
 }
+/// A control; pressed, it does what it is ([`activate`], its own observer).
 #[derive(Component, Clone, Copy)]
+#[component(on_add = chosen)]
 enum Choice {
     Difficulty,
     Combat,
@@ -26,6 +28,10 @@ enum Choice {
     Fullscreen,
     Apply,
     Cancel,
+}
+
+fn chosen(mut world: bevy::ecs::world::DeferredWorld, context: bevy::ecs::lifecycle::HookContext) {
+    world.commands().entity(context.entity).observe(activate);
 }
 #[derive(Component)]
 struct Status;
@@ -46,8 +52,7 @@ pub fn plugin(app: &mut App) {
                 .before(super::music::play_music)
                 .before(super::ambience::play_ambient_sounds),
         )
-        .add_systems(OnEnter(Screen::Options), enter)
-        .add_observer(activate);
+        .add_systems(OnEnter(Screen::Options), enter);
 }
 fn request(
     mut requests: MessageReader<OpenOptions>,
@@ -174,8 +179,9 @@ fn activate(
     mut combat: ResMut<CombatSettings>,
     mut next: ResMut<NextState<Screen>>,
     mut menu: Option<ResMut<NextState<super::frontend::MenuPage>>>,
-) {
-    let (Ok(choice), Some(view)) = (choices.get(event.entity), view.as_mut()) else { return };
+) -> Result {
+    let choice = choices.get(event.entity)?;
+    let Some(view) = view.as_mut() else { return Ok(()) };
     match choice {
         Choice::Difficulty => {
             view.draft.difficulty = match view.draft.difficulty {
@@ -211,6 +217,7 @@ fn activate(
             }
         },
     }
+    Ok(())
 }
 /// A button's colour follows whether it is pressed or hovered; an unchanged
 /// colour is left untouched.

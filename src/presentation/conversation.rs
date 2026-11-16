@@ -149,8 +149,18 @@ enum Caption {
 }
 #[derive(Component)]
 struct TopicList;
+/// A topic offered; pressed, it is asked ([`activate_topic`], its own
+/// observer).
 #[derive(Component)]
+#[component(on_add = topic_pressed)]
 struct TopicRow(String);
+fn topic_pressed(
+    mut world: bevy::ecs::world::DeferredWorld,
+    context: bevy::ecs::lifecycle::HookContext,
+) {
+    world.commands().entity(context.entity).observe(activate_topic);
+}
+
 #[derive(Component)]
 struct QuoteBubble;
 #[derive(Component)]
@@ -206,10 +216,19 @@ enum Answer {
     Reply(String),
     Price(bool),
 }
+/// A reply offered; pressed, it is given ([`activate_choice`]).
 #[derive(Component, PartialEq)]
+#[component(on_add = choice_pressed)]
 struct Choice {
     index: usize,
     answer: Answer,
+}
+
+fn choice_pressed(
+    mut world: bevy::ecs::world::DeferredWorld,
+    context: bevy::ecs::lifecycle::HookContext,
+) {
+    world.commands().entity(context.entity).observe(activate_choice);
 }
 #[derive(Component)]
 pub(crate) struct TopicInput;
@@ -222,18 +241,24 @@ enum SubmitTopic {
 }
 #[derive(Component)]
 struct TradeList;
+/// A thing to trade; pressed, it is chosen ([`activate_trade`]).
 #[derive(Component, Clone, Copy, PartialEq)]
+#[component(on_add = trade_pressed)]
 struct TradeRow {
     source: TradeSource,
     quantity: u32,
+}
+
+fn trade_pressed(
+    mut world: bevy::ecs::world::DeferredWorld,
+    context: bevy::ecs::lifecycle::HookContext,
+) {
+    world.commands().entity(context.entity).observe(activate_trade);
 }
 pub struct ConversationViewPlugin;
 impl Plugin for ConversationViewPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(speech::plugin)
-            .add_observer(activate_choice)
-            .add_observer(activate_trade)
-            .add_observer(activate_topic)
             .add_observer(create_view)
             .add_observer(close_views)
             .add_systems(
@@ -339,7 +364,7 @@ fn project_text(
     (speaking, speech): (Query<&Speaking>, Query<&ConversationSpeech>),
     npcs: Query<&crate::game::npcs::ActorId>,
     catalogs: If<Res<Catalogs>>,
-    parties: Query<&PartyInventory, With<crate::game::party::roster::Party>>,
+    purse: Option<Single<&PartyInventory, With<crate::game::party::roster::Party>>>,
     mut labels: Query<(&Caption, &mut BitmapText)>,
 ) {
     for (caption, mut text) in &mut labels {
@@ -352,7 +377,7 @@ fn project_text(
                 Mode::Sell => "Sell".into(),
                 Mode::Give => "Give".into(),
             },
-            Caption::Gold => parties.single().map(|p| format!("{}g", p.gold)).unwrap_or_default(),
+            Caption::Gold => purse.as_ref().map(|p| format!("{}g", p.gold)).unwrap_or_default(),
             Caption::TradeAction => match state.mode {
                 Mode::Buy => "Buy",
                 Mode::Give => "Give",
@@ -567,37 +592,40 @@ fn activate_choice(
     views: ViewScope,
     choices: Query<&Choice>,
     mut commands: Commands,
-) {
-    let Ok(choice) = choices.get(event.entity) else { return };
+) -> Result {
+    let choice = choices.get(event.entity)?;
     let reply = match &choice.answer {
         Answer::Reply(text) => Reply::Word(text.clone()),
         Answer::Price(accept) => Reply::Accept(*accept),
     };
     commands
         .trigger(crate::game::npcs::conversation::Answer { conversation: views.session(), reply });
+    Ok(())
 }
 fn activate_trade(
     event: On<Activate>,
     views: ViewScope,
     rows: Query<&TradeRow>,
     mut commands: Commands,
-) {
-    let Ok(row) = rows.get(event.entity) else { return };
+) -> Result {
+    let row = rows.get(event.entity)?;
     let root = views.root();
     let (source, quantity) = (row.source, row.quantity);
     commands.queue(move |world: &mut World| select(world, root, source, quantity));
+    Ok(())
 }
 fn activate_topic(
     event: On<Activate>,
     _views: ViewScope,
     rows: Query<&TopicRow>,
     mut inputs: Query<(Entity, &mut EditableText), With<TopicInput>>,
-) {
-    let Ok(row) = rows.get(event.entity) else { return };
+) -> Result {
+    let row = rows.get(event.entity)?;
     for (_, mut input) in &mut inputs {
         input.clear();
         input.queue_edit(bevy::text::TextEdit::Insert(row.0.clone().into()));
     }
+    Ok(())
 }
 fn sync_choices(
     views: ViewScope,
@@ -605,7 +633,7 @@ fn sync_choices(
     sheets: Res<Assets<SpriteSheet>>,
     strings: super::screen_art::GameStrings,
     questions: Query<&Asked>,
-    parties: Query<&PartyInventory, With<crate::game::party::roster::Party>>,
+    purse: Option<Single<&PartyInventory, With<crate::game::party::roster::Party>>>,
     focus: Res<InputFocus>,
     mut overlays: Query<(Entity, &mut Node), (With<ChoiceOverlay>, Without<Choices>)>,
     mut lists: Query<
@@ -685,7 +713,7 @@ fn sync_choices(
                             format!(
                                 "{} {}g",
                                 string(0x7e6, "Party gold:"),
-                                parties.single().map_or(0, |p| p.gold)
+                                purse.as_ref().map_or(0, |p| p.gold)
                             )
                         } else {
                             String::new()

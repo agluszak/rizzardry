@@ -58,7 +58,6 @@ impl Plugin for FrontendPlugin {
                     .after(bevy::input::InputSystems)
                     .before(EnhancedInputSystems::Update),
             )
-            .add_observer(activate)
             .add_observer(confirmation::resolve)
             .add_systems(PostUpdate, commit_creation.after(bevy::text::EditableTextSystems))
             .add_systems(OnEnter(MenuPage::Main), main_menu)
@@ -242,7 +241,10 @@ enum CreatorChoice {
     Race,
     Gender,
 }
+/// A menu button; pressed, it does what it is ([`activate`], its own
+/// observer).
 #[derive(Component, Clone, Copy, PartialEq)]
+#[component(on_add = pressed)]
 enum Action {
     NewGame,
     Options,
@@ -271,6 +273,10 @@ enum Action {
     PortraitGroup(i32),
     Attribute(Attribute, bool),
     Skill(Skill, bool),
+}
+
+fn pressed(mut world: bevy::ecs::world::DeferredWorld, context: bevy::ecs::lifecycle::HookContext) {
+    world.commands().entity(context.entity).observe(activate);
 }
 #[derive(Component)]
 struct NameInput;
@@ -517,7 +523,7 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
 }
 fn activate(
     click: On<Activate>,
-    buttons: Query<&Action, Without<InteractionDisabled>>,
+    buttons: Query<(&Action, Has<InteractionDisabled>)>,
     mut sessions: Query<(Entity, &mut Creation)>,
     mut next: ResMut<NextState<Session>>,
     mut menu: ResMut<NextState<MenuPage>>,
@@ -531,11 +537,14 @@ fn activate(
         Or<(With<NameInput>, With<NicknameInput>)>,
     >,
     dialogs: Query<(), With<confirmation::ConfirmDialog>>,
-) {
+) -> Result {
     if !dialogs.is_empty() {
-        return;
+        return Ok(());
     }
-    let Ok(action) = buttons.get(click.entity) else { return };
+    let (action, disabled) = buttons.get(click.entity)?;
+    if disabled {
+        return Ok(());
+    }
     if matches!(
         action,
         Action::NewGame
@@ -551,11 +560,11 @@ fn activate(
     match action {
         Action::NewGame => {
             next.set(Session::Creation);
-            return;
+            return Ok(());
         }
         Action::Quit => {
             exit.write(AppExit::Success);
-            return;
+            return Ok(());
         }
         Action::Options => {
             menu.set(MenuPage::Options);
@@ -564,15 +573,15 @@ fn activate(
         Action::Credits => {
             focus.clear();
             menu.set(MenuPage::Credits);
-            return;
+            return Ok(());
         }
         Action::Menu => {
             next.set(Session::MainMenu);
-            return;
+            return Ok(());
         }
         _ => {}
     }
-    let Ok((session_entity, mut session)) = sessions.single_mut() else { return };
+    let Ok((session_entity, mut session)) = sessions.single_mut() else { return Ok(()) };
     session.message.clear();
     if !matches!(action, Action::ToggleChoice(_)) {
         session.choices.open = None;
@@ -685,7 +694,7 @@ fn activate(
                 .collect();
             let Some(drafts) = drafts else {
                 session.message = "A party member is no longer available.".into();
-                return;
+                return Ok(());
             };
             commands.queue(move |world: &mut World| {
                 if let Err(message) = begin_adventure(world, &drafts)
@@ -697,7 +706,7 @@ fn activate(
         }
         action => {
             let choices = session.choices;
-            let Some(draft) = session.mode.draft_mut() else { return };
+            let Some(draft) = session.mode.draft_mut() else { return Ok(()) };
             let result = match action {
                 Action::ResetSpells => {
                     draft.reset_spells();
@@ -832,6 +841,7 @@ fn activate(
             ));
         }
     }
+    Ok(())
 }
 
 fn commit_creation(
@@ -879,13 +889,9 @@ fn commit_creation(
 fn update_name(
     event: On<TextEditChange>,
     names: Query<(&EditableText, Has<NicknameInput>), Or<(With<NameInput>, With<NicknameInput>)>>,
-    mut sessions: Query<&mut Creation>,
-) {
-    let (Ok((name, nickname)), Ok(mut session)) =
-        (names.get(event.event_target()), sessions.single_mut())
-    else {
-        return;
-    };
+    mut session: Single<&mut Creation>,
+) -> Result {
+    let (name, nickname) = names.get(event.event_target())?;
     if let Some(draft) = session.mode.draft_mut() {
         let value = name.value().to_string();
         let field = if nickname { &mut draft.nickname } else { &mut draft.name };
@@ -893,6 +899,7 @@ fn update_name(
             *field = value;
         }
     }
+    Ok(())
 }
 
 fn finish_name(

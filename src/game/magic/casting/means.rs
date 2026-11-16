@@ -48,11 +48,12 @@ pub fn reaches(from: &Place, to: &Place, reach: f32, obstacles: &WorldObstacles)
 pub struct Circumstances<'w, 's> {
     freedom: Freedom<'w, 's>,
     camp: Option<Res<'w, Camp>>,
-    attempts: Query<'w, 's, &'static DeviceInteraction>,
+    attempt: Option<Single<'w, 's, &'static DeviceInteraction>>,
     conversation: Option<Single<'w, 's, DialogueReadOnly>>,
-    states: Query<'w, 's, &'static LevelState, With<Level>>,
-    footing:
-        Query<'w, 's, &'static bevy_tnua::TnuaController<crate::game::party::body::PartyMotion>>,
+    state: Option<Single<'w, 's, &'static LevelState, With<Level>>>,
+    footing: Option<
+        Single<'w, 's, &'static bevy_tnua::TnuaController<crate::game::party::body::PartyMotion>>,
+    >,
     parts: Query<'w, 's, (), With<crate::game::world::props::PropPart>>,
 }
 
@@ -227,7 +228,7 @@ impl Circumstances<'_, '_> {
     pub fn moment(&self, spell: &SpellDefinition, fighting: bool) -> may::Moment {
         let context = if fighting {
             UseContext::Combat
-        } else if let Some(attempt) = self.attempts.iter().next() {
+        } else if let Some(attempt) = self.attempt.as_deref() {
             match attempt.work {
                 Work::Disarming(_) => UseContext::Trap,
                 _ => UseContext::Lock,
@@ -251,7 +252,7 @@ impl Circumstances<'_, '_> {
     /// The party is not on steady ground: in the air, or standing on a
     /// prop (retail `HasLevelWalkableContact`, the prop-contact flag).
     fn unsteady(&self) -> bool {
-        self.footing.iter().next().is_some_and(|controller| {
+        self.footing.as_deref().is_some_and(|controller| {
             let airborne = controller.is_airborne().unwrap_or(false);
             let on = controller.basis_access().ok().and_then(|b| b.memory.standing_on_entity());
             airborne || on.is_some_and(|on| self.parts.contains(on))
@@ -260,7 +261,7 @@ impl Circumstances<'_, '_> {
 
     /// Whether the party is under water, which quenches Fire.
     pub fn underwater(&self) -> bool {
-        self.states.single().is_ok_and(|state| state.camera_sway)
+        self.state.as_deref().is_some_and(|state| state.camera_sway)
     }
 }
 

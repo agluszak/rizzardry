@@ -454,10 +454,9 @@ fn build_offer(world: &mut World, group: Entity, root: Entity, canvas: Entity) {
               mut states: Query<&mut DialogueState>,
               roots: Query<&ConversationView>,
               gold: Query<&EditableText, With<GiftGold>>,
-              mut commands: Commands| {
-            let (Ok(mut state), Ok(view)) = (states.get_mut(root), roots.get(root)) else {
-                return;
-            };
+              mut commands: Commands|
+              -> Result {
+            let (mut state, view) = (states.get_mut(root)?, roots.get(root)?);
             let amount = gold.get(gift_gold).map_or(0, gift_amount);
             match state.selection {
                 Some(Selection::Priced(quote)) => {
@@ -479,6 +478,7 @@ fn build_offer(world: &mut World, group: Entity, root: Entity, canvas: Entity) {
                 }
                 _ => {}
             }
+            Ok(())
         },
     );
     label(world, right, "Party gold:", Vec2::new(5., 77.), 76.);
@@ -653,16 +653,18 @@ pub(super) fn build(world: &mut World, session: Entity) -> Entity {
     world.entity_mut(root).observe(
         move |mut event: On<FocusedInput<KeyboardInput>>,
               mut states: Query<(&ConversationView, &mut DialogueState)>,
-              mut commands: Commands| {
+              mut commands: Commands|
+              -> Result {
             if event.input.state.is_pressed() && event.input.logical_key == Key::Escape {
                 event.propagate(false);
-                let Ok((view, mut state)) = states.get_mut(root) else { return };
+                let (view, mut state) = states.get_mut(root)?;
                 if state.mode != Mode::Talk {
                     state.set_mode(Mode::Talk);
                 } else {
                     commands.trigger(Leave { conversation: view.0 });
                 }
             }
+            Ok(())
         },
     );
     let canvas = world

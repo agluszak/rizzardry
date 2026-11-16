@@ -323,22 +323,23 @@ impl OwnedDefinitions<'_, '_> {
 /// The level being played, and its geometry.
 #[derive(SystemParam)]
 pub struct PlayedLevel<'w, 's> {
-    levels: Query<'w, 's, (Entity, &'static Level)>,
+    played: Option<Single<'w, 's, (Entity, &'static Level)>>,
+    levels: Query<'w, 's, &'static Level>,
     definitions: Res<'w, Assets<LevelDefinition>>,
 }
 
 impl PlayedLevel<'_, '_> {
     pub fn entity(&self) -> Option<Entity> {
-        self.levels.single().ok().map(|(entity, _)| entity)
+        self.played.as_deref().map(|&(entity, _)| entity)
     }
 
     pub fn definition(&self) -> Option<&LevelDefinition> {
-        self.definitions.get(&self.levels.single().ok()?.1.definition)
+        self.definitions.get(&self.played.as_deref()?.1.definition)
     }
 
     /// A level's definition, by the level.
     pub fn of(&self, level: Entity) -> Option<&LevelDefinition> {
-        self.definitions.get(&self.levels.get(level).ok()?.1.definition)
+        self.definitions.get(&self.levels.get(level).ok()?.definition)
     }
 
     pub fn view_distance(&self) -> Option<f32> {

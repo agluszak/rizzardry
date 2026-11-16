@@ -402,17 +402,17 @@ pub(super) fn answer(
     factions: Res<Factions>,
     mut inventory: Single<&mut PartyInventory>,
     mut commands: Commands,
-) {
+) -> Result {
     let conversation = answer.conversation;
-    let Ok(mut talk) = talks.get_mut(conversation) else { return };
+    let mut talk = talks.get_mut(conversation)?;
     let actor = talk.conversation.actor;
     if talk.closing {
-        return;
+        return Ok(());
     }
     match (talk.asked.cloned(), &answer.reply) {
         (Some(Asked::Options { quote, words, .. }), Reply::Word(text)) => {
             let Some(q) = scripts.get(actor).and_then(|s| s.quotes.get(usize::from(quote))) else {
-                return;
+                return Ok(());
             };
             let listed = words.iter().any(|word| word.eq_ignore_ascii_case(text));
             let replies = || {
@@ -426,13 +426,13 @@ pub(super) fn answer(
                     *role == 3 && listed && words.iter().any(|w| w.eq_ignore_ascii_case(text))
                 })
                 .or_else(|| replies().find(|(_, role, _)| *role == if listed { 1 } else { 2 }));
-            let Some((next, ..)) = own else { return };
+            let Some((next, ..)) = own else { return Ok(()) };
             talk.conversation.transcript.push(TranscriptLine::Reply(text.clone()));
             talk.script.say(next);
         }
         (Some(Asked::Price { quote, gold, always }), &Reply::Accept(accept)) => {
             let Some(q) = scripts.get(actor).and_then(|s| s.quotes.get(usize::from(quote))) else {
-                return;
+                return Ok(());
             };
             if !accept {
                 for op in &q.operations {
@@ -470,13 +470,14 @@ pub(super) fn answer(
             if accept {
                 commands.entity(conversation).remove::<Asked>();
                 commands.trigger(OfferGold { conversation, amount: gold, sure: true });
-                return;
+                return Ok(());
             }
         }
-        _ => return,
+        _ => return Ok(()),
     }
     commands.entity(conversation).remove::<Asked>();
     commands.trigger(Continue { conversation });
+    Ok(())
 }
 
 /// Offer gold: all the party has asks for confirmation first. A friend
@@ -491,25 +492,25 @@ pub(super) fn offer_gold(
     factions: Res<Factions>,
     mut inventory: Single<&mut PartyInventory>,
     mut commands: Commands,
-) {
+) -> Result {
     let OfferGold { conversation, amount, sure } = *offer;
-    let Ok(mut talk) = talks.get_mut(conversation) else { return };
+    let mut talk = talks.get_mut(conversation)?;
     if !talk.idle() {
-        return;
+        return Ok(());
     }
     if amount == 0 || amount > inventory.gold {
         let why = if amount == 0 { TradeError::InvalidQuantity } else { TradeError::Funds };
         talk.conversation.transcript.push(TranscriptLine::Told(Outcome::GiftRefused(why)));
-        return;
+        return Ok(());
     }
     if amount == inventory.gold && !sure {
         commands.entity(conversation).insert(Asked::GiveAll { gold: amount });
-        return;
+        return Ok(());
     }
     let (Some(regard), Ok(mut npc)) =
         (Regard::of(&talk, &actors, &voices, &factions), npcs.get_mut(talk.conversation.actor))
     else {
-        return;
+        return Ok(());
     };
     let cold = regard.band(&npc) != Band::Friendly;
     if cold && regard.d.trade_pool == 0 {
@@ -522,6 +523,7 @@ pub(super) fn offer_gold(
         talk.script.say_free(if regard.band(&npc) == Band::Friendly { 0x10 } else { 7 });
     }
     commands.trigger(Continue { conversation });
+    Ok(())
 }
 
 /// Offer an item (retail `HandleNpcDialogueItem`). A friend answers with
@@ -539,12 +541,12 @@ pub(super) fn offer(
     factions: Res<Factions>,
     held: Items,
     mut commands: Commands,
-) {
+) -> Result {
     let Offer { conversation, item: source } = *offer;
-    let Ok(mut talk) = talks.get_mut(conversation) else { return };
+    let mut talk = talks.get_mut(conversation)?;
     let actor = talk.conversation.actor;
     if !talk.idle() {
-        return;
+        return Ok(());
     }
     // What may be given: what could be sold, or what the party's hand holds,
     // which is how the original gives anything.
@@ -554,12 +556,12 @@ pub(super) fn offer(
     let Some(id) = offered else {
         let stale = Outcome::GiftRefused(TradeError::StaleSelection);
         talk.conversation.transcript.push(TranscriptLine::Told(stale));
-        return;
+        return Ok(());
     };
     let (Some(regard), Some(script), Ok(mut npc)) =
         (Regard::of(&talk, &actors, &voices, &factions), scripts.get(actor), npcs.get_mut(actor))
     else {
-        return;
+        return Ok(());
     };
     let d = regard.d;
     let item = &actors.content.items[id];
@@ -582,7 +584,7 @@ pub(super) fn offer(
     } else if cold {
         (None, true, true)
     } else if d.voice_script {
-        return;
+        return Ok(());
     } else if item.crucial {
         (Some(0x11), false, false)
     } else {
@@ -592,7 +594,7 @@ pub(super) fn offer(
     for quote in quote.map_or(vec![0x10, 7], |quote| vec![quote]) {
         if script.quotes.get(usize::from(quote)).is_none() {
             fall_silent(&mut talk, &mut commands, &format!("no answer {quote} to a gift"));
-            return;
+            return Ok(());
         }
     }
     if keeps {
@@ -604,6 +606,7 @@ pub(super) fn offer(
     let thanks = if regard.band(&npc) == Band::Friendly { 0x10 } else { 7 };
     talk.script.say(quote.unwrap_or(thanks));
     commands.trigger(Continue { conversation });
+    Ok(())
 }
 
 /// Charm or small talk (retail `ApplyNpcInteraction`), each once in twelve
@@ -620,17 +623,17 @@ pub(super) fn sway(
     factions: Res<Factions>,
     clock: Res<GameClock>,
     mut commands: Commands,
-) {
+) -> Result {
     let Sway { conversation, approach } = *sway;
-    let Ok(mut talk) = talks.get_mut(conversation) else { return };
+    let mut talk = talks.get_mut(conversation)?;
     let actor = talk.conversation.actor;
     if !talk.idle() || !talk.conversation.menu {
-        return;
+        return Ok(());
     }
     let (Some(regard), Ok(mut npc)) =
         (Regard::of(&talk, &actors, &voices, &factions), npcs.get_mut(actor))
     else {
-        return;
+        return Ok(());
     };
     let d = regard.d;
     let (last, scale, usage) = match approach {
@@ -638,9 +641,9 @@ pub(super) fn sway(
         Approach::SmallTalk => (npc.small_talk_at, d.talk_scale, 8),
     };
     if !approach_ready(last, clock.ms) {
-        return;
+        return Ok(());
     }
-    let Some(member) = voices.best() else { return };
+    let Some(member) = voices.best() else { return Ok(()) };
     let scale = i32::from(scale);
     let mut delta = scale + voices.skill() as i32 * (scale.abs() / 5) / 100;
     if approach == Approach::Charm && delta > 0 {
@@ -665,6 +668,7 @@ pub(super) fn sway(
     }
     commands.trigger(Practise { member, skill: Skill::Communication, usage });
     commands.trigger(Continue { conversation });
+    Ok(())
 }
 
 /// Ask the person to join (retail `RequestNpcJoinParty`): no room, 0xc;
@@ -674,10 +678,10 @@ pub(super) fn invite(
     mut talks: Query<Dialogue>,
     mut recruiter: Recruiter,
     mut commands: Commands,
-) {
-    let Ok(mut talk) = talks.get_mut(invite.conversation) else { return };
+) -> Result {
+    let mut talk = talks.get_mut(invite.conversation)?;
     if !talk.idle() {
-        return;
+        return Ok(());
     }
     match recruiter.admit(talk.conversation.actor) {
         Ok(()) => {
@@ -688,6 +692,7 @@ pub(super) fn invite(
         Err(JoinRefusal::Declines) => talk.script.say(0xb),
     }
     commands.trigger(Continue { conversation: invite.conversation });
+    Ok(())
 }
 
 /// Buy or sell at a quoted price: the merchant's rules settle it, and the
@@ -696,10 +701,10 @@ pub(super) fn trade(
     trade: On<TradeQuote>,
     mut talks: Query<Dialogue>,
     mut market: ParamSet<(trade::Pricing, trade::Settlement)>,
-) {
-    let Ok(mut talk) = talks.get_mut(trade.conversation) else { return };
+) -> Result {
+    let mut talk = talks.get_mut(trade.conversation)?;
     if !talk.idle() {
-        return;
+        return Ok(());
     }
     let outcome = if trade.offer.merchant != talk.conversation.actor {
         Outcome::TradeRefused(TradeError::StaleSelection)
@@ -710,6 +715,7 @@ pub(super) fn trade(
         }
     };
     talk.conversation.transcript.push(TranscriptLine::Told(outcome));
+    Ok(())
 }
 
 /// The quote a friend says as the party takes its leave.
@@ -724,11 +730,11 @@ pub(super) fn leave(
     mut talks: Query<Dialogue>,
     scripts: Scripts,
     mut commands: Commands,
-) {
+) -> Result {
     let conversation = leave.conversation;
-    let Ok(mut talk) = talks.get_mut(conversation) else { return };
+    let mut talk = talks.get_mut(conversation)?;
     if talk.closing || talk.parting {
-        return;
+        return Ok(());
     }
     talk.conversation.charms.clear();
     let says_farewell = scripts
@@ -743,6 +749,7 @@ pub(super) fn leave(
         commands.entity(conversation).insert(Closing);
     }
     commands.trigger(Continue { conversation });
+    Ok(())
 }
 
 /// Turn on the person: the party is asked whether it means it.

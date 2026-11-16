@@ -129,14 +129,14 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
 }
 fn offer(
     mut commands: Commands,
-    screens: Query<&InventoryScreen>,
+    screen: Option<Single<&InventoryScreen>>,
     mut buttons: Query<(Entity, Has<InteractionDisabled>, &mut Node), With<Open>>,
     progression: Progression,
     editors: Query<(), With<Editor>>,
     mut focus: ResMut<InputFocus>,
 ) {
-    let enabled = editors.is_empty()
-        && screens.single().is_ok_and(|s| progression.eligibility(s.member).is_ok());
+    let enabled =
+        editors.is_empty() && screen.is_some_and(|s| progression.eligibility(s.member).is_ok());
     for (id, disabled, mut node) in &mut buttons {
         set_enabled(&mut commands, id, enabled, disabled);
         // Retail hides the offer altogether when advancement is unavailable.
@@ -149,7 +149,7 @@ fn offer(
 fn open(
     _: On<Activate>,
     mut commands: Commands,
-    screens: Query<(Entity, &InventoryScreen)>,
+    screen: Single<(Entity, &InventoryScreen)>,
     editors: Query<(), With<Editor>>,
     progression: Progression,
     content: If<Res<Catalogs>>,
@@ -159,7 +159,7 @@ fn open(
     if !editors.is_empty() {
         return;
     }
-    let Ok((parent, screen)) = screens.single() else { return };
+    let (parent, screen) = *screen;
     let Ok(draft) = progression.begin(screen.member) else { return };
     let spells = &content.spells;
     let root = commands.spawn_scene(bsn! {
@@ -290,9 +290,9 @@ fn cancel(
     event: On<Start<Cancel>>,
     mut commands: Commands,
     mut focus: ResMut<InputFocus>,
-    offers: Query<Entity, With<Open>>,
+    offer: Option<Single<Entity, With<Open>>>,
 ) {
-    if let Ok(button) = offers.single() {
+    if let Some(button) = offer.map(|offer| *offer) {
         focus.set(button, bevy::input_focus::FocusCause::Navigated);
     }
     commands.entity(event.context).despawn();
@@ -301,14 +301,14 @@ fn press(
     event: On<Activate>,
     mut commands: Commands,
     actions: Query<&Action>,
-    mut editors: Query<(Entity, &mut Editor)>,
+    editor: Single<(Entity, &mut Editor)>,
     content: If<Res<Catalogs>>,
     mut progression: Progression,
     mut focus: ResMut<InputFocus>,
-    offers: Query<Entity, With<Open>>,
-) {
-    let Ok(action) = actions.get(event.entity) else { return };
-    let Ok((id, mut editor)) = editors.single_mut() else { return };
+    offer: Option<Single<Entity, With<Open>>>,
+) -> Result {
+    let action = actions.get(event.entity)?;
+    let (id, mut editor) = editor.into_inner();
     let spells = &content.spells;
     editor.message.clear();
     match *action {
@@ -317,7 +317,7 @@ fn press(
                 && let Err(error) = progression.accept(&editor.draft)
             {
                 editor.message = error.into();
-                return;
+                return Ok(());
             }
             // Experience enough for another level opens its review straight away.
             if matches!(action, Action::Accept)
@@ -325,9 +325,9 @@ fn press(
             {
                 editor.draft = next;
                 editor.page = Page::Attributes;
-                return;
+                return Ok(());
             }
-            if let Ok(button) = offers.single() {
+            if let Some(button) = offer.map(|offer| *offer) {
                 focus.set(button, bevy::input_focus::FocusCause::Navigated);
             }
             commands.entity(id).despawn();
@@ -353,6 +353,7 @@ fn press(
             editor.draft.toggle_spell(s, spells);
         }
     }
+    Ok(())
 }
 /// Keep the focused control in view.
 fn scroll_to_focus(

@@ -103,25 +103,23 @@ pub(super) fn lands(
     difficulty: Res<Difficulty>,
     mut rng: ResMut<GameRng>,
     mut commands: Commands,
-) {
+) -> Result {
     let Lands { deed: id, victim, row } = *lands;
-    let Ok(mut deed) = deeds.get_mut(id) else { return };
+    let mut deed = deeds.get_mut(id)?;
     if row == 0 {
         deed.outcome = None;
     }
-    let Some(spec) = deed.rows.get(row).cloned() else { return };
-    let Ok((vitals, level, standing, resistances, member)) = victims.get(victim) else {
-        return;
-    };
+    let Some(spec) = deed.rows.get(row).cloned() else { return Ok(()) };
+    let (vitals, level, standing, resistances, member) = victims.get(victim)?;
     let next = Lands { row: row + 1, ..*lands };
     if !applied::is_for(&spec, member, resistances.kind) {
         commands.trigger(next);
-        return;
+        return Ok(());
     }
     if applied::waits(&spec, deed.outcome) {
         deed.outcome = Some(Outcome::Missed);
         commands.trigger(next);
-        return;
+        return Ok(());
     }
     let spec = spec.pick(&mut rng);
     let strike = &deed.strike;
@@ -156,6 +154,7 @@ pub(super) fn lands(
         }
     }
     commands.trigger(next);
+    Ok(())
 }
 
 /// What a row does to health and stamina: harm, a drain of the most there
@@ -169,13 +168,11 @@ fn health(
     mut laying: Laying,
     mut rng: ResMut<GameRng>,
     mut damaged: MessageWriter<Damaged>,
-) {
+) -> Result {
     use EffectKind as K;
     let Applies { deed, victim, ref row, magnitude } = *applies;
-    let Ok(mut deed) = deeds.get_mut(deed) else { return };
-    let Ok((mut vitals, mut conditions, mut drained, a, trained)) = victims.get_mut(victim) else {
-        return;
-    };
+    let mut deed = deeds.get_mut(deed)?;
+    let (mut vitals, mut conditions, mut drained, a, trained) = victims.get_mut(victim)?;
     let by = deed.strike.by;
     let nothing_or =
         |amount: u32, effect: Effect| if amount == 0 { Effect::Nothing { victim } } else { effect };
@@ -191,20 +188,23 @@ fn health(
         K::Slay => (vitals.slay(by), false),
         K::Tire => {
             let amount = vitals.tire(magnitude);
-            return deed.landed(Effect::Tired { victim, amount });
+            deed.landed(Effect::Tired { victim, amount });
+            return Ok(());
         }
         K::Heal => {
             let amount = vitals.heal(magnitude);
-            return deed.landed(nothing_or(amount, Effect::Healed { victim, amount }));
+            deed.landed(nothing_or(amount, Effect::Healed { victim, amount }));
+            return Ok(());
         }
         K::Refresh => {
             let amount = vitals.rest(magnitude);
-            return deed.landed(nothing_or(amount, Effect::Refreshed { victim, amount }));
+            deed.landed(nothing_or(amount, Effect::Refreshed { victim, amount }));
+            return Ok(());
         }
         // Only one who trained is raised.
         K::Raise if trained && !vitals.is_dead() => {
             deed.effects.push(Effect::Nothing { victim });
-            return;
+            return Ok(());
         }
         K::Raise if trained => {
             let (health, stamina) = applied::raised(
@@ -214,9 +214,10 @@ fn health(
                 a[Attribute::Vitality],
             );
             vitals.raise(health, stamina);
-            return deed.landed(Effect::Raised { victim });
+            deed.landed(Effect::Raised { victim });
+            return Ok(());
         }
-        _ => return,
+        _ => return Ok(()),
     };
     deed.landed(Effect::Damaged { victim, amount: lost });
     if lost > 0 {
@@ -225,6 +226,7 @@ fn health(
     if harm && lost > 0 && !vitals.is_dead() {
         conditions.wake_on_hit(a[Attribute::Senses], &mut rng);
     }
+    Ok(())
 }
 
 /// What a row does to what ails a victim: afflicting it, swallowing it,
@@ -236,16 +238,16 @@ fn ailments(
     mut laying: Laying,
     mut rng: ResMut<GameRng>,
     mut commands: Commands,
-) {
+) -> Result {
     use EffectKind as K;
     let Applies { deed, victim, ref row, magnitude } = *applies;
-    let Ok(mut deed) = deeds.get_mut(deed) else { return };
-    let Ok((mut conditions, mut drained, standing)) = victims.get_mut(victim) else { return };
+    let mut deed = deeds.get_mut(deed)?;
+    let (mut conditions, mut drained, standing) = victims.get_mut(victim)?;
     let effect = match row.kind {
         K::Afflict { condition, poison, indefinite } => {
             let stance = standing.stance;
             let Some(lasting) = applied::afflicts(condition, stance, indefinite, magnitude) else {
-                return;
+                return Ok(());
             };
             if condition == Condition::Poisoned {
                 conditions.poison(lasting, poison);
@@ -257,7 +259,7 @@ fn ailments(
             Effect::Inflicted { victim, condition }
         }
         K::Swallow => {
-            let Some(by) = deed.strike.by else { return };
+            let Some(by) = deed.strike.by else { return Ok(()) };
             conditions.afflict(Condition::Missing, Lasting::Indefinite);
             commands.entity(victim).insert(Swallowed(by));
             Effect::Inflicted { victim, condition: Condition::Missing }
@@ -292,9 +294,10 @@ fn ailments(
             Effect::Cured { victim, condition: Condition::Drained }
         }
         K::Renew => Effect::Nothing { victim },
-        _ => return,
+        _ => return Ok(()),
     };
     deed.landed(effect);
+    Ok(())
 }
 
 /// What a row does to a victim's spell points, or a monster's budget of
@@ -302,23 +305,25 @@ fn ailments(
 fn points(
     applies: On<Applies>,
     mut deeds: Query<&mut Deed>,
-    mut casters: Query<&mut SpellPoints>,
-    mut budgets: Query<&mut SpellBudget>,
+    mut pools: Query<(Option<&mut SpellPoints>, Option<&mut SpellBudget>)>,
     mut rng: ResMut<GameRng>,
-) {
+) -> Result {
     use EffectKind as K;
     let Applies { deed, victim, ref row, magnitude } = *applies;
-    let Ok(mut deed) = deeds.get_mut(deed) else { return };
+    let mut deed = deeds.get_mut(deed)?;
     if row.kind == K::DrainBudget {
-        let Ok(mut budget) = budgets.get_mut(victim) else { return };
+        // Only a monster has a budget of spell points.
+        let (_, Some(mut budget)) = pools.get_mut(victim)? else { return Ok(()) };
         let amount = budget.0.min(magnitude);
         budget.0 -= amount;
-        return deed.landed(Effect::Drained { victim, amount });
+        deed.landed(Effect::Drained { victim, amount });
+        return Ok(());
     }
     if !matches!(row.kind, K::DrainPool | K::DrainRealm(_) | K::Replenish) {
-        return;
+        return Ok(());
     }
-    let Ok(mut pool) = casters.get_mut(victim) else { return };
+    // Only a member has spell points of their own.
+    let (Some(mut pool), _) = pools.get_mut(victim)? else { return Ok(()) };
     let effect = match row.kind {
         K::Replenish => {
             let amount = pool.restore_evenly(magnitude);
@@ -336,6 +341,7 @@ fn points(
         _ => Effect::Drained { victim, amount: pool.drain(magnitude, &mut rng) },
     };
     deed.landed(effect);
+    Ok(())
 }
 
 /// What a row does to the spells laid on a victim: purifying them, and
@@ -348,22 +354,23 @@ fn laid(
     mut laying: Laying,
     content: Res<Catalogs>,
     mut rng: ResMut<GameRng>,
-) {
+) -> Result {
     use EffectKind as K;
     let Applies { deed, victim, ref row, magnitude } = *applies;
-    let Ok(mut deed) = deeds.get_mut(deed) else { return };
+    let mut deed = deeds.get_mut(deed)?;
     let strength = deed.strike.strength;
     let own = || deed.strike.spell.as_ref().expect("only a spell's row is the spell's own");
     let (spell, answers_slowing) = match &row.kind {
         K::SpellPurify => {
             laying.purify(victim, magnitude + own().level);
-            return deed.landed(Effect::Purified { victim });
+            deed.landed(Effect::Purified { victim });
+            return Ok(());
         }
         K::Enchant(spell) => (*spell, answers_slowing(&content.spells[*spell])),
         K::SpellEnchant => (own().id, answers_slowing(own())),
-        _ => return,
+        _ => return Ok(()),
     };
-    let Ok((vitals, mut conditions)) = victims.get_mut(victim) else { return };
+    let (vitals, mut conditions) = victims.get_mut(victim)?;
     let turns = if answers_slowing { conditions.hasted(magnitude) } else { magnitude };
     let dead = vitals.is_dead();
     let laid = !dead && lay(&mut laying, victim, spell, turns, strength, &content, &mut rng);
@@ -373,6 +380,7 @@ fn laid(
     } else {
         Effect::Nothing { victim }
     });
+    Ok(())
 }
 
 /// Heat takes what one who trained carries.
@@ -383,15 +391,16 @@ fn burn(
     held: Items,
     mut rng: ResMut<GameRng>,
     mut commands: Commands,
-) {
+) -> Result {
     let Applies { deed, victim, ref row, magnitude } = *applies;
     if row.kind != EffectKind::Burn || !trained.contains(victim) {
-        return;
+        return Ok(());
     }
-    let Ok(mut deed) = deeds.get_mut(deed) else { return };
+    let mut deed = deeds.get_mut(deed)?;
     deed.outcome = Some(Outcome::Landed);
     let burnt = scorch(held.carried(victim), &held, magnitude, &mut rng, &mut commands);
     deed.effects.extend(burnt);
+    Ok(())
 }
 
 /// One whose health a row ran out has fallen, and it is settled before
@@ -417,9 +426,9 @@ fn lands_on_party(
     content: Res<Catalogs>,
     mut rng: ResMut<GameRng>,
     mut commands: Commands,
-) {
+) -> Result {
     use EffectKind as K;
-    let Ok(mut deed) = deeds.get_mut(lands.deed) else { return };
+    let mut deed = deeds.get_mut(lands.deed)?;
     let (party, mut inventory, roster) = party.into_inner();
     let victim = party;
     let strike = deed.strike.clone();
@@ -484,6 +493,7 @@ fn lands_on_party(
         }
         previous = Some(Outcome::Landed);
     }
+    Ok(())
 }
 
 /// Lay a spell on a bearer for `turns` at a cast's strength; the absorption of

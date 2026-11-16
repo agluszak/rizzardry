@@ -2,8 +2,9 @@
 //! function of the monster's body, of the plain data of its kind (its
 //! temper, its special attack, its spells) and of what it makes out
 //! ([`sight::Sight`]); one that rolls takes the random-number generator; none
-//! changes anything. [`deliberate`], the observer of [`Deliberates`], reads
-//! the kind's components and asks the decisions in the order of section 4;
+//! changes anything. [`deliberate`], the observer of [`Deliberates`], begins a
+//! deliberation, whose steps decide in the order of section 4, each saying
+//! which comes next by an event;
 //! the observers of [`super::turn`], [`super::engage`] and
 //! [`super::round_end`] make happen what they decide.
 //!
@@ -45,11 +46,21 @@ pub struct Deliberates {
     pub monster: Entity,
 }
 
-/// A deliberation: whose. Its facts are added in the order of section 4 by
-/// the observers of this module; what it comes to is said as [`Decided`],
-/// and it is gone.
-#[derive(Component, Clone, Copy, Debug)]
-pub struct Deliberating(pub Entity);
+/// A deliberation, an entity that [`aim::Considers`] its monster, is begun:
+/// its conduct and whether it closes in are worked out.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Begun {
+    #[event_target]
+    pub deliberation: Entity,
+}
+
+/// A deliberation's conduct is known: it retreats, or goes on to weigh its
+/// special attack.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Conducted {
+    #[event_target]
+    pub deliberation: Entity,
+}
 
 /// How far the party is from the monster deliberating, at its moment.
 #[derive(Component, Clone, Copy, Debug)]
@@ -62,7 +73,9 @@ pub struct ClosesIn(pub bool);
 
 /// A monster deliberates at its moment, considering the fight's combatants,
 /// with the party as far off as it is and its eyes making it out or not.
-/// It views each living combatant before it deliberates.
+/// It views each living combatant, and the deliberation is begun; once its
+/// conduct is known, it goes on. Each step decides the next; what it comes
+/// to is said as [`Decided`], and it is gone.
 pub(super) fn deliberate(
     deliberates: On<Deliberates>,
     sight: Sight,
@@ -75,37 +88,48 @@ pub(super) fn deliberate(
         commands.spawn((PartyGap(sight.party_gap(monster)), aim::Considers(monster))).id();
     let living = considered.iter().copied().filter(|&body| sight.alive(body));
     aim::view(&mut commands, deliberation, living);
-    commands.entity(deliberation).insert(Deliberating(monster));
+    commands.trigger(Begun { deliberation });
+    commands.trigger(Conducted { deliberation });
 }
 
-/// One that does not fight retreats as its conduct says; one that fights
-/// may close in.
-fn conducted(
-    conducted: On<Add<conduct::Conducts>>,
+/// Whether a monster that fights closes in (section 4).
+fn closing(
+    begun: On<Begun>,
     mut commands: Commands,
-    deliberations: Query<(&Deliberating, &PartyGap, &conduct::Conducts)>,
+    deliberations: Query<(&aim::Considers, &PartyGap)>,
     monsters: Query<(&Temper, &crate::game::actors::arm::Furthest)>,
-) {
-    let deliberation = conducted.entity;
-    let Ok((&Deliberating(monster), &PartyGap(gap), &conduct::Conducts(conduct))) =
-        deliberations.get(deliberation)
-    else {
-        return;
-    };
-    if conduct != Conduct::Fight {
-        let retreats = Decision::Retreat(Retreats { conduct, quiet: false });
-        commands.trigger(Decided { actor: monster, decision: retreats, own_will: true });
-        commands.entity(deliberation).despawn();
-        return;
+) -> Result {
+    let deliberation = begun.deliberation;
+    let (&aim::Considers(monster), &PartyGap(gap)) = deliberations.get(deliberation)?;
+    let (temper, &reach) = monsters.get(monster)?;
+    commands.entity(deliberation).insert(ClosesIn(close::closes_in(reach, &temper.0, gap)));
+    Ok(())
+}
+
+/// One that does not fight retreats as its conduct says, and its
+/// deliberation is over; one that fights weighs its special attack.
+fn conducted(
+    conducted: On<Conducted>,
+    mut commands: Commands,
+    deliberations: Query<(&aim::Considers, &conduct::Conducts)>,
+) -> Result {
+    let deliberation = conducted.deliberation;
+    let (&aim::Considers(monster), &conduct::Conducts(conduct)) =
+        deliberations.get(deliberation)?;
+    if conduct == Conduct::Fight {
+        commands.trigger(special::WeighsSpecial { deliberation });
+        return Ok(());
     }
-    let closes =
-        monsters.get(monster).is_ok_and(|(temper, &reach)| close::closes_in(reach, &temper.0, gap));
-    commands.entity(deliberation).insert(ClosesIn(closes));
+    let retreats = Decision::Retreat(Retreats { conduct, quiet: false });
+    commands.trigger(Decided { actor: monster, decision: retreats, own_will: true });
+    commands.entity(deliberation).despawn();
+    Ok(())
 }
 
 pub(super) fn plugin(app: &mut App) {
     app.add_observer(deliberate)
         .add_observer(conduct::conduct)
+        .add_observer(closing)
         .add_observer(conducted)
         .add_observer(guard::strike_or_guard)
         .add_observer(slot::fill)

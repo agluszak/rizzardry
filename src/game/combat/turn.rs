@@ -316,12 +316,9 @@ fn take_up(
         Has<crate::game::actors::arm::Sword>,
     )>,
     mut rng: ResMut<GameRng>,
-) {
+) -> Result {
     let TakesUp { actor, surprised } = *takes;
-    let Ok(((conditions, can_fight), (own, tempo, wielding), ordered, held)) = actors.get(actor)
-    else {
-        return;
-    };
+    let ((conditions, can_fight), (own, tempo, wielding), ordered, held) = actors.get(actor)?;
     let mains: Vec<_> = held
         .entities()
         .iter()
@@ -387,6 +384,7 @@ fn take_up(
             entity.remove::<Ordered>();
         }
     }
+    Ok(())
 }
 
 /// The party's own move takes the phase its slowest living member allows,
@@ -443,17 +441,14 @@ pub(super) fn take_turn(
     living: Query<&Vitals>,
     combatants: Single<Option<&super::Combatants>, With<Battle>>,
     content: Res<Catalogs>,
-) {
+) -> Result {
     let actor = moment.actor;
     let combatants = *combatants;
     let combatants = combatants.map_or(&[][..], super::Combatants::entities);
     let (places, obstacles) = (&sight.places, &sight.obstacles);
-    let Ok((mut turn, ordered)) = turns.get_mut(actor) else { return };
-    let (Ok((can_fight, trained, (traits, vitals, level))), Ok((wielding, tempo))) =
-        (actors.get(actor), held.get(actor))
-    else {
-        return;
-    };
+    let (mut turn, ordered) = turns.get_mut(actor)?;
+    let (can_fight, trained, (traits, vitals, level)) = actors.get(actor)?;
+    let (wielding, tempo) = held.get(actor)?;
     let order = ordered.as_ref().map(|ordered| ordered.0);
     // The weapons accepted, or nothing where one was used up.
     let weapons_hold =
@@ -466,7 +461,7 @@ pub(super) fn take_turn(
         };
     if !able {
         turn.end();
-        return;
+        return Ok(());
     }
     let fights = Fights { waits: false, berserk: false };
     let fights_on = Decision::Fight(fights);
@@ -474,7 +469,7 @@ pub(super) fn take_turn(
         && (turn.attacks[WeaponSlot::Primary] != tempo.attacks[WeaponSlot::Primary] || turn.moved)
     {
         commands.trigger(Strike { actor, fights });
-        return;
+        return Ok(());
     }
     let action = match order {
         Some(Action::Attack { berserk }) => Decision::Fight(Fights { waits: false, berserk }),
@@ -497,7 +492,7 @@ pub(super) fn take_turn(
             if !(trained && aimed && super::breath::available(actor, traits, vitals, &laid)) {
                 ordered.unwrap().0 = Action::Defend;
                 turn.end();
-                return;
+                return Ok(());
             }
             Decision::Special(Breathes {
                 special: None,
@@ -511,11 +506,12 @@ pub(super) fn take_turn(
         Some(Action::Defend) => unreachable!("defending takes no turn"),
         None if sight.tempers.contains(actor) => {
             commands.trigger(monster::Deliberates { monster: actor });
-            return;
+            return Ok(());
         }
         None => fights_on,
     };
     commands.trigger(Decided { actor, decision: action, own_will: order.is_none() });
+    Ok(())
 }
 
 /// What an actor decided to do with its moment, before its conditions have
@@ -556,15 +552,12 @@ pub(super) fn act(
         Query<&crate::game::magic::pointcasts::LureInfluence>,
         Query<&Transform, With<crate::game::magic::pointcasts::Lure>>,
     ),
-) {
+) -> Result {
     let Decided { actor, decision: action, own_will } = *decided;
     let (mut pause, combatants) = fight.into_inner();
     let combatants = combatants.map_or(&[][..], super::Combatants::entities);
-    let (Ok(mut turn), Ok((conditions, a, fights_blind, nature))) =
-        (turns.get_mut(actor), ailing.get(actor))
-    else {
-        return;
-    };
+    let mut turn = turns.get_mut(actor)?;
+    let (conditions, a, fights_blind, nature) = ailing.get(actor)?;
     let fights_on = Decision::Fight(Fights { waits: false, berserk: false });
     let against_foes = match action {
         Decision::Magic(choice) => choice
@@ -617,7 +610,7 @@ pub(super) fn act(
             commands.trigger(Exerted { actor, effort: Effort::Wait });
             turn.end();
             pause.0 = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
-            return;
+            return Ok(());
         }
         Some(interrupt) => {
             if interrupt == Interrupt::Freed {
@@ -630,7 +623,7 @@ pub(super) fn act(
             news.write(CombatNews::Interrupted { actor, interrupt });
             turn.end();
             pause.0 = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
-            return;
+            return Ok(());
         }
     };
     match action {
@@ -646,11 +639,12 @@ pub(super) fn act(
             pause.0 = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
             let Some(spell) = choice.source.spell_id(&held) else {
                 commands.trigger(Refused { caster: actor, refusal: Refusal::NoItem });
-                return;
+                return Ok(());
             };
             commands.trigger(Cast { caster: actor, spell, choice, again: false });
         }
     }
+    Ok(())
 }
 
 /// Run, withdraw or hold back, the action holding the fight for its pause:
@@ -669,17 +663,15 @@ pub(super) fn retreat(
     places: crate::game::actors::Places,
     party: Single<Entity, With<PartyRoster>>,
     mut news: MessageWriter<CombatNews>,
-) {
+) -> Result {
     let Retreat { actor, retreats } = *retreat;
-    let Ok((mut turn, walker, (nature, modifiers), conditions)) = actors.get_mut(actor) else {
-        return;
-    };
+    let (mut turn, walker, (nature, modifiers), conditions) = actors.get_mut(actor)?;
     turn.end();
     pause.0 = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
     if !walker.is_some_and(|w| w.speed > 0.0) || turn.moved {
         turn.waited = true;
         commands.trigger(Exerted { actor, effort: Effort::Wait });
-        return;
+        return Ok(());
     }
     turn.moved = true;
     let effort = if retreats.conduct == Conduct::Flee { Effort::Run } else { Effort::Return };
@@ -699,6 +691,7 @@ pub(super) fn retreat(
             _ => CombatNews::Withdraws { monster: actor },
         });
     }
+    Ok(())
 }
 
 /// Hold back and rest: done for the round, without a pause.
@@ -716,15 +709,16 @@ pub(super) fn guard(
     mut commands: Commands,
     mut actors: Query<(&mut Turn, &crate::game::actors::arm::Tempo)>,
     mut pause: Single<&mut Pause, With<Battle>>,
-) {
+) -> Result {
     let Guard { actor, ward } = *guard;
-    let Ok((mut turn, tempo)) = actors.get_mut(actor) else { return };
+    let (mut turn, tempo) = actors.get_mut(actor)?;
     turn.end();
     pause.0 = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
     commands.entity(actor).insert((
         Guarding(ward),
         Interceptions { taken: 0, allowed: tempo.attacks[WeaponSlot::Primary] },
     ));
+    Ok(())
 }
 
 /// Make the special attack or breath (retail `ExecuteMonsterSpecialAttack`,
@@ -742,12 +736,12 @@ pub(super) fn breathe(
     obstacles: WorldObstacles,
     content: Res<Catalogs>,
     mut news: MessageWriter<CombatNews>,
-) {
+) -> Result {
     let Breathe { actor, breathes } = *breathe;
     let (mut round, mut pause, combatants) = fight.into_inner();
     let combatants = combatants.map_or(&[][..], super::Combatants::entities);
-    let Ok(mut turn) = turns.get_mut(actor) else { return };
-    let Ok(mut own) = vitals.get_mut(actor) else { return };
+    let mut turn = turns.get_mut(actor)?;
+    let mut own = vitals.get_mut(actor)?;
     turn.end();
     pause.0 = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
     turn.special = true;
@@ -780,21 +774,15 @@ pub(super) fn breathe(
             })
             .collect::<Vec<Entity>>();
         let strike = effects::Strike::new(rows, breathes.strength, Some(actor), &content);
-        commands.spawn((Deed::at(strike, victims), Breath));
+        // Watched before it lands, which it does as it is made.
+        commands.spawn_empty().observe(tell_breath).insert(Deed::at(strike, victims));
     }
+    Ok(())
 }
 
-/// A deed that is a breath or another special attack.
-#[derive(Component)]
-pub(super) struct Breath;
-
-/// What a breath did is told as the fight's news.
-pub(super) fn tell_breath(
-    landed: On<Landed>,
-    breaths: Query<(), With<Breath>>,
-    mut news: MessageWriter<CombatNews>,
-) {
-    if breaths.contains(landed.deed) && !landed.effects.is_empty() {
+/// What a breath did is told as the fight's news: its deed's own observer.
+fn tell_breath(landed: On<Landed>, mut news: MessageWriter<CombatNews>) {
+    if !landed.effects.is_empty() {
         news.write(CombatNews::Effects(landed.effects.clone()));
     }
 }

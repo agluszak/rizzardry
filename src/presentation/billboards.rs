@@ -16,11 +16,11 @@ pub struct FaceCamera;
 /// The party body's rotation is locked, so the camera's own rotation is its
 /// rotation in the world. The sky camera shares it.
 pub fn face_camera(
-    camera: Query<&Transform, With<PartyCamera>>,
+    camera: Single<&Transform, With<PartyCamera>>,
     parents: Query<&Transform, (Without<FaceCamera>, Without<PartyCamera>)>,
     mut sprites: Query<(&ChildOf, &mut Transform), (With<FaceCamera>, Without<PartyCamera>)>,
 ) {
-    let Ok(camera) = camera.single() else { return };
+    let camera = *camera;
     for (parent, mut sprite) in &mut sprites {
         let Ok(parent) = parents.get(parent.parent()) else { continue };
         let rotation = parent.rotation.inverse() * camera.rotation;

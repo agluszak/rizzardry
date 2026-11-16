@@ -573,24 +573,24 @@ fn press(
         (With<Conversation>, Without<crate::game::npcs::conversation::Closing>),
     >,
     picks: Query<(), With<crate::game::npcs::scenes::MemberPick>>,
-) {
+) -> Result {
     if click.button != PointerButton::Primary {
-        return;
+        return Ok(());
     }
-    let Ok(mut button) = buttons.get_mut(click.entity) else { return };
+    let mut button = buttons.get_mut(click.entity)?;
     let member = button.member;
     if !roster.contains(&member) {
-        return;
+        return Ok(());
     }
     // The story has the player offer one of the party.
     if !picks.is_empty() {
         commands.trigger(crate::game::npcs::scenes::Picked { member });
-        return;
+        return Ok(());
     }
     if !conversations.is_empty() {
         review.selected.set_if_neq(SelectedMember(Some(member)));
         button.review_armed = false;
-        return;
+        return Ok(());
     }
     // A spell for one party member is aimed by clicking their portrait
     // (retail `AimAtCharacter`).
@@ -598,12 +598,12 @@ fn press(
         && view.wants_member(&targeting)
     {
         view.aim_at(member);
-        return;
+        return Ok(());
     }
     if held.held(*party).is_some() {
         commands.trigger(crate::game::items::Pass { party: *party, to: member });
         button.review_armed = false;
-        return;
+        return Ok(());
     }
     let already_selected = review.selected.0 == Some(member);
     review.selected.set_if_neq(SelectedMember(Some(member)));
@@ -611,6 +611,7 @@ fn press(
         review.open(member);
     }
     button.review_armed = true;
+    Ok(())
 }
 
 /// How long retail's right button must stay down on a portrait to open the
@@ -639,7 +640,7 @@ fn press_right(
 
 fn release_right(
     release: On<PointerRelease>,
-    buttons: Query<(&SlotButton, &RightHold)>,
+    buttons: Query<(&SlotButton, Option<&RightHold>)>,
     time: Res<Time<Real>>,
     keys: Option<Res<ButtonInput<KeyCode>>>,
     (party, held): (
@@ -652,11 +653,13 @@ fn release_right(
         (),
         (With<Conversation>, Without<crate::game::npcs::conversation::Closing>),
     >,
-) {
+) -> Result {
     if release.button != PointerButton::Secondary || !conversations.is_empty() {
-        return;
+        return Ok(());
     }
-    let Ok((button, hold)) = buttons.get(release.entity) else { return };
+    let (button, hold) = buttons.get(release.entity)?;
+    // A release with no press held before it does nothing.
+    let Some(hold) = hold else { return Ok(()) };
     commands.entity(release.entity).remove::<RightHold>();
     let member = button.member;
     let control =
@@ -666,10 +669,11 @@ fn release_right(
         // (`force_to_party`); this uses the left click's pool rule.
         if held.held(*party).is_some() {
             commands.trigger(crate::game::items::Pass { party: *party, to: member });
-            return;
+            return Ok(());
         }
     }
     review.open(member);
+    Ok(())
 }
 
 fn leave(out: On<PointerOut>, mut commands: Commands, holds: Query<(), With<RightHold>>) {

@@ -77,7 +77,7 @@ pub fn play_ambient_sounds(
     mut commands: Commands,
     time: Res<Time>,
     assets: Res<AssetServer>,
-    listener: Query<&GlobalTransform, With<PartyCamera>>,
+    listener: Single<&GlobalTransform, With<PartyCamera>>,
     levels: Query<(&LevelAppearance, Option<&crate::game::world::triggers::LevelState>)>,
     geometry: Res<Assets<LevelGeometry>>,
     mut emitters: Query<(
@@ -92,7 +92,7 @@ pub fn play_ambient_sounds(
     master: Option<Res<bevy::audio::GlobalVolume>>,
     mut rng: ResMut<PresentationRng>,
 ) {
-    let Ok(listener) = listener.single() else { return };
+    let listener = *listener;
     let ear = listener.translation();
     for (entity, mut emitter, at, owner, playing, sink, settings) in &mut emitters {
         let Ok((appearance, state)) = levels.get(owner.parent()) else { continue };

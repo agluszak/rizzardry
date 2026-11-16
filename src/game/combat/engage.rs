@@ -198,7 +198,7 @@ pub(super) fn look_to_open(
 #[allow(clippy::type_complexity)]
 fn open_if_able(
     looked: On<Looked>,
-    groups: Query<&Looks>,
+    groups: Query<Option<&Looks>>,
     looks: Query<(&Considers, Option<&AimsMade>)>,
     fighters: Query<(
         &Monster,
@@ -208,10 +208,11 @@ fn open_if_able(
     good: Query<(), (With<Worth>, Without<Spoiled>)>,
     sight: Sight,
     mut commands: Commands,
-) {
-    let Ok(taken) = groups.get(looked.group) else { return };
+) -> Result {
+    // A group none of whose fighters looked has nothing to weigh.
+    let Some(taken) = groups.get(looked.group)? else { return Ok(()) };
     let can_act = |(&Considers(fighter), made): (&Considers, Option<&AimsMade>)| {
-        let Ok((monster, reach, fit)) = fighters.get(fighter) else { return false };
+        let (monster, reach, fit) = fighters.get(fighter).expect("a fighter is a monster");
         let close = reach.0.is_some_and(|r| r <= crate::content::species::Reach::Short);
         let aimed = made.is_some_and(|aims| aims.iter().any(|aim| good.contains(aim)));
         fit && (reach.reaches(sight.party_gap(fighter))
@@ -224,6 +225,7 @@ fn open_if_able(
         }
     }
     commands.entity(looked.group).despawn_related::<Looks>();
+    Ok(())
 }
 
 /// Into a running fight a hostile group comes when one of its fighters
@@ -256,7 +258,7 @@ pub(super) fn join(
     let leader_in_reach = |fighters: &[Entity]| {
         let leader = fighters.iter().copied().find(|&m| leading.contains(m));
         let Some(leader) = leader.or(fighters.first().copied()) else { return false };
-        let Ok((monster, nature, reach)) = bodies.get(leader) else { return false };
+        let (monster, nature, reach) = bodies.get(leader).expect("a fighter is a monster");
         let reach = reach.0.map_or(0.0, |reach| reach.metres()) + nature.stride.unwrap_or(0.0);
         let reach = reach.max(ENGAGEMENT_RANGE + ENGAGEMENT_FLOOR);
         let archipelago = navigation.as_ref().and_then(|navigation| {
@@ -308,12 +310,13 @@ fn turn_as_it_comes(
     monsters: Query<(&Allegiance, &GroupMember)>,
     sight: Sight,
     mut commands: Commands,
-) {
+) -> Result {
     let monster = coming.entity;
-    let Ok((allegiance, &GroupMember(group))) = monsters.get(monster) else { return };
+    let (allegiance, &GroupMember(group)) = monsters.get(monster)?;
     if sight.side(monster) == Some(Stance::Neutral) && allegiance.hostility_radius().is_some() {
         commands.trigger(Stand { group, stance: Some(Stance::Hostile) });
     }
+    Ok(())
 }
 
 /// Those coming in are told of together, in the order of their places in the
@@ -345,7 +348,7 @@ pub(super) fn plugin(app: &mut App) {
 pub(super) fn open_battle(
     mut commands: Commands,
     mut engaged: MessageReader<Engaged>,
-    battles: Query<Entity, With<Battle>>,
+    battle: Option<Single<Entity, With<Battle>>>,
     camp: Option<Res<crate::game::camp::Camp>>,
     search: Res<crate::game::world::search::Search>,
     monsters: Query<(&Monster, &Vitals, &Level, Option<&Camouflage>)>,
@@ -374,7 +377,7 @@ pub(super) fn open_battle(
     mut rng: ResMut<GameRng>,
 ) {
     let Some(Engaged(joined)) = engaged.read().last() else { return };
-    if let Ok(battle) = battles.single() {
+    if let Some(battle) = battle.map(|battle| *battle) {
         for &monster in joined {
             commands.entity(monster).insert(Combatant(battle));
         }

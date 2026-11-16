@@ -155,9 +155,8 @@ pub fn shake_camera(
     time: Res<Time>,
     mut shake: ResMut<CameraShake>,
     mut rng: ResMut<PresentationRng>,
-    mut camera: Query<&mut Transform, With<PartyCamera>>,
+    mut camera: Single<&mut Transform, With<PartyCamera>>,
 ) {
-    let Ok(mut camera) = camera.single_mut() else { return };
     let rest = Vec3::Y * EYE_ABOVE_CENTRE;
     if shake.timer.as_ref().is_none_or(Timer::is_finished) {
         if camera.translation != rest {

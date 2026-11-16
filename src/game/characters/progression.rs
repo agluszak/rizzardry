@@ -349,7 +349,7 @@ fn selection_key(id: SpellId) -> SpellId {
 
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct Progression<'w, 's> {
-    roster: Query<'w, 's, (Entity, &'static PartyRoster)>,
+    roster: Option<Single<'w, 's, (Entity, &'static PartyRoster)>>,
     members:
         Query<'w, 's, (super::Paper, &'static Vitals, &'static mut LearnedSpells, &'static Skills)>,
     blocked: Query<
@@ -371,7 +371,7 @@ impl Progression<'_, '_> {
         if !self.blocked.is_empty() {
             return Err("Finish the current encounter or journey first.");
         }
-        if !self.roster.single().is_ok_and(|(_, r)| r.contains(&member)) {
+        if !self.roster.as_deref().is_some_and(|(_, r)| r.contains(&member)) {
             return Err("This character is no longer in the party.");
         }
         let (paper, v, ..) = self.members.get(member).unwrap();
@@ -394,7 +394,7 @@ impl Progression<'_, '_> {
             return Err("This character's training changed. Reopen level-up.");
         }
         let (next, learned) = draft.finish(spells)?;
-        let (party, _) = self.roster.single().map_err(|_| "The party is unavailable.")?;
+        let &(party, _) = self.roster.as_deref().ok_or("The party is unavailable.")?;
         let member = draft.member;
         // Deficits, conditions and recovery fractions stay; advancement is
         // not a full heal. The maxima follow as figures do.

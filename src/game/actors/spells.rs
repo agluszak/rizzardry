@@ -297,7 +297,9 @@ impl Laying<'_, '_> {
     /// Take `turns` off a spell laid; with none left it is lifted. The turns
     /// it had.
     fn shorten(&mut self, entity: Entity, turns: u32) -> u32 {
-        let Ok((_, Some(mut left), _)) = self.spells.get_mut(entity) else { return 0 };
+        let (_, left, _) = self.spells.get_mut(entity).expect("a spell laid");
+        // One laid without end is not shortened.
+        let Some(mut left) = left else { return 0 };
         let had = left.0;
         left.0 -= turns.min(had);
         if left.0 == 0 {

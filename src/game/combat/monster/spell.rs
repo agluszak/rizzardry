@@ -8,9 +8,9 @@
 
 use bevy::prelude::*;
 
-use super::aim::{AimsMade, At, By, Spoiled, Weigh, Worth};
+use super::aim::{AimsMade, At, BySlot, Considers, Spoiled, Weigh, Worth};
 use super::slot::{Breath, Castable, SlotOf, Slots, Weight};
-use super::{ClosesIn, Deliberating, PartyGap};
+use super::{ClosesIn, PartyGap};
 use crate::content::spells::{MAX_POWER, SpellDefinition};
 use crate::game::actors::Level;
 use crate::game::actors::arm::Furthest;
@@ -22,9 +22,19 @@ use crate::game::magic::roll::spell_failure;
 use crate::game::rng::{GameRng, weighted};
 use crate::game::world::population::{CastChance, SpellBudget};
 
+/// A deliberation that made no special attack weighs its spells.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct WeighsSpells {
+    #[event_target]
+    pub deliberation: Entity,
+}
+
 /// The deliberation casts none of its spells.
-#[derive(Component, Clone, Copy, Debug, Default)]
-pub struct NoSpell;
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct CastsNothing {
+    #[event_target]
+    pub deliberation: Entity,
+}
 
 /// A deliberation picks among the slots it weighed.
 #[derive(EntityEvent, Clone, Copy, Debug)]
@@ -37,28 +47,24 @@ struct PicksSpell {
 /// cast now (section 5), unless it closes in or never casts; then it picks
 /// among them.
 pub(super) fn weigh_spells(
-    weighed: On<Add<super::special::NoSpecial>>,
+    weighs: On<WeighsSpells>,
     mut commands: Commands,
-    deliberations: Query<(&Deliberating, &ClosesIn)>,
+    deliberations: Query<(&Considers, &ClosesIn)>,
     casters: Query<(&CastChance, &Slots)>,
     castable: Query<(), (With<Castable>, Without<Breath>)>,
-) {
-    let deliberation = weighed.entity;
-    let Ok((&Deliberating(monster), &ClosesIn(closes))) = deliberations.get(deliberation) else {
-        return;
+) -> Result {
+    let deliberation = weighs.deliberation;
+    let (&Considers(monster), &ClosesIn(closes)) = deliberations.get(deliberation)?;
+    let caster = casters.get(monster).ok().filter(|(chance, _)| !closes && chance.0 != 0);
+    let Some((_, slots)) = caster else {
+        commands.trigger(CastsNothing { deliberation });
+        return Ok(());
     };
-    let Ok((chance, slots)) = casters.get(monster) else {
-        commands.entity(deliberation).insert(NoSpell);
-        return;
-    };
-    if closes || chance.0 == 0 {
-        commands.entity(deliberation).insert(NoSpell);
-        return;
-    }
     for slot in slots.iter().filter(|&slot| castable.contains(slot)) {
         commands.trigger(Weigh { slot, considering: deliberation });
     }
     commands.trigger(PicksSpell { deliberation });
+    Ok(())
 }
 
 /// Whether it casts, and what (section 5): its chance (the species' while
@@ -70,25 +76,20 @@ pub(super) fn weigh_spells(
 fn pick(
     picks: On<PicksSpell>,
     mut commands: Commands,
-    deliberations: Query<(&Deliberating, &PartyGap, Option<&AimsMade>)>,
-    aims: Query<(&By, &At), (With<Worth>, Without<Spoiled>)>,
+    deliberations: Query<(&Considers, &PartyGap, Option<&AimsMade>)>,
+    aims: Query<(&BySlot, &At), (With<Worth>, Without<Spoiled>)>,
     slots: Query<(&super::slot::Casts, &Weight), (With<SlotOf>, Without<Breath>)>,
     casters: Query<(&CastChance, &Furthest, &Level, &SpellBudget)>,
     content: Res<Catalogs>,
     mut rng: ResMut<GameRng>,
-) {
+) -> Result {
     let deliberation = picks.deliberation;
-    let Ok((&Deliberating(monster), &PartyGap(gap), made)) = deliberations.get(deliberation) else {
-        return;
-    };
-    let Ok((chance, reach, level, &SpellBudget(budget))) = casters.get(monster) else {
-        commands.entity(deliberation).insert(NoSpell);
-        return;
-    };
+    let (&Considers(monster), &PartyGap(gap), made) = deliberations.get(deliberation)?;
+    let (chance, reach, level, &SpellBudget(budget)) = casters.get(monster)?;
     // Each slot with a good aim, in the order its aims were made, which is
     // the order of the slots.
     let mut usable: Vec<(Entity, Vec<Aim>)> = Vec::new();
-    for (&By(slot), &At(at)) in
+    for (&BySlot(slot), &At(at)) in
         aims.iter_many(made.into_iter().flat_map(|made| made.iter())).flatten()
     {
         if !slots.contains(slot) {
@@ -101,13 +102,13 @@ fn pick(
     }
     let chance = if reach.reaches(gap) { u32::from(chance.0) } else { 100 };
     if usable.is_empty() || rng.below(100) >= chance {
-        commands.entity(deliberation).insert(NoSpell);
-        return;
+        commands.trigger(CastsNothing { deliberation });
+        return Ok(());
     }
     let weights = || usable.iter().filter_map(|(slot, _)| slots.get(*slot).ok()).map(|s| s.1.0);
     let which = weighted(rng.below(weights().sum()), weights()).unwrap_or(usable.len() - 1);
     let (slot, ref aims) = usable[which];
-    let Ok((&super::slot::Casts(spell), _)) = slots.get(slot) else { return };
+    let (&super::slot::Casts(spell), _) = slots.get(slot)?;
     let aim = aims[rng.below(aims.len() as u32) as usize];
     let power = power(&mut rng, budget, &content.spells[spell]);
     let source = Source::Innate { spell, power, budget, level: level.0 as u8 };
@@ -117,6 +118,7 @@ fn pick(
         own_will: true,
     });
     commands.entity(deliberation).despawn();
+    Ok(())
 }
 
 pub(super) fn plugin(app: &mut App) {

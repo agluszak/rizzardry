@@ -3,9 +3,10 @@
 
 use bevy::prelude::*;
 
-use super::aim::{AimsMade, At, By, Spoiled, Weigh, Worth};
+use super::aim::{AimsMade, At, BySlot, Considers, Spoiled, Weigh, Worth};
 use super::slot::{Breath, Slots};
-use super::{ClosesIn, Deliberating, PartyGap};
+use super::spell::WeighsSpells;
+use super::{ClosesIn, PartyGap};
 use crate::content::species::{Reach, SpecialAttack};
 use crate::game::actors::arm::Furthest;
 use crate::game::characters::{Condition, Conditions, Vitals};
@@ -64,43 +65,45 @@ pub(crate) fn ready(
     }
 }
 
-/// A deliberation that weighed the special attack and did not make it.
-#[derive(Component, Clone, Copy, Debug, Default)]
-pub struct NoSpecial;
+/// A deliberation of a monster that fights weighs its special attack.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct WeighsSpecial {
+    #[event_target]
+    pub deliberation: Entity,
+}
 
 /// A monster that fights and does not close in makes its special attack if
 /// it is ready and placed: a summoning needs the party within long reach
 /// and the summoner not friendly to it; a breath needs an aim, as a cone
-/// spell's, so its breath's slot is weighed as a spell's is.
+/// spell's, so its breath's slot is weighed as a spell's is. Otherwise it
+/// weighs its spells.
 #[allow(clippy::type_complexity)]
 pub(super) fn special_attack(
-    weighed: On<Add<ClosesIn>>,
+    weighs: On<WeighsSpecial>,
     mut commands: Commands,
-    deliberations: Query<(&Deliberating, &PartyGap, &ClosesIn)>,
+    deliberations: Query<(&Considers, &PartyGap, &ClosesIn)>,
     monsters: Query<(&Special, &Standing, Option<&Slots>), With<SpecialReady>>,
     breaths: Query<(), With<Breath>>,
-) {
-    let deliberation = weighed.entity;
-    let Ok((&Deliberating(monster), &PartyGap(gap), &ClosesIn(closes))) =
-        deliberations.get(deliberation)
-    else {
-        return;
-    };
+) -> Result {
+    let deliberation = weighs.deliberation;
+    let (&Considers(monster), &PartyGap(gap), &ClosesIn(closes)) =
+        deliberations.get(deliberation)?;
     let (false, Ok((Special(attack), standing, slots))) = (closes, monsters.get(monster)) else {
-        commands.entity(deliberation).insert(NoSpecial);
-        return;
+        commands.trigger(WeighsSpells { deliberation });
+        return Ok(());
     };
     if summons(attack) {
         let placed = gap <= Reach::Long.metres() && standing.stance != Stance::Friendly;
         let placed = if placed { Placed::Summoning } else { Placed::Not };
         commands.trigger(Makes { deliberation, placed });
-        return;
+        return Ok(());
     }
     let breath = slots.and_then(|slots| slots.iter().find(|&slot| breaths.contains(slot)));
     if let Some(slot) = breath {
         commands.trigger(Weigh { slot, considering: deliberation });
     }
     commands.trigger(ConeWeighed { deliberation });
+    Ok(())
 }
 
 /// A breath's cone has been weighed.
@@ -116,7 +119,7 @@ fn aim_breath(
     breathes: On<ConeWeighed>,
     mut commands: Commands,
     made: Query<&AimsMade>,
-    aims: Query<(&By, &At), (With<Worth>, Without<Spoiled>)>,
+    aims: Query<(&BySlot, &At), (With<Worth>, Without<Spoiled>)>,
     breaths: Query<(), With<Breath>>,
     mut rng: ResMut<GameRng>,
 ) {
@@ -157,21 +160,20 @@ struct Makes {
 /// A special attack placed is made if its chance comes up: the species'
 /// while one of its attacks reaches the party, 100 when none does. It costs a
 /// tenth of the monster's most stamina, and catches whoever stands in its
-/// cone; a summoning calls up its group (section 7).
+/// cone; a summoning calls up its group (section 7). One not made leaves
+/// the monster to weigh its spells.
 #[allow(clippy::type_complexity)]
 fn make(
     makes: On<Makes>,
     mut commands: Commands,
-    deliberations: Query<(&Deliberating, &PartyGap)>,
+    deliberations: Query<(&Considers, &PartyGap)>,
     monsters: Query<(&Special, &Furthest, &Vitals, &crate::game::actors::Level)>,
     places: crate::game::actors::Places,
     mut rng: ResMut<GameRng>,
-) {
+) -> Result {
     let Makes { deliberation, placed } = *makes;
-    let Ok((&Deliberating(monster), &PartyGap(gap))) = deliberations.get(deliberation) else {
-        return;
-    };
-    let Ok((Special(attack), &reach, vitals, level)) = monsters.get(monster) else { return };
+    let (&Considers(monster), &PartyGap(gap)) = deliberations.get(deliberation)?;
+    let (Special(attack), &reach, vitals, level) = monsters.get(monster)?;
     let chance = if reach.reaches(gap) { u32::from(attack.chance) } else { 100 };
     let toward = match placed {
         Placed::Not => None,
@@ -179,8 +181,8 @@ fn make(
         Placed::Breath(aim) => Some(aim.body().unwrap_or(monster)),
     };
     let Some(toward) = toward.filter(|_| rng.below(100) < chance) else {
-        commands.entity(deliberation).insert(NoSpecial);
-        return;
+        commands.trigger(WeighsSpells { deliberation });
+        return Ok(());
     };
     let kind = attack.kind.expect("one that is ready has an attack");
     commands.trigger(Decided {
@@ -196,6 +198,7 @@ fn make(
         own_will: true,
     });
     commands.entity(deliberation).despawn();
+    Ok(())
 }
 
 pub(super) fn plugin(app: &mut App) {

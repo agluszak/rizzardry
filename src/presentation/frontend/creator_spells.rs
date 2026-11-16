@@ -170,14 +170,14 @@ pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer)
 
 fn select_spell(
     event: On<Activate>,
-    choices: Query<&SpellOption, Without<InteractionDisabled>>,
+    choices: Query<(&SpellOption, Has<InteractionDisabled>)>,
     content: If<Res<Catalogs>>,
     mut session: Single<&mut Creation>,
-) {
-    let (Ok(choice), Some(draft)) = (choices.get(event.entity), session.mode.draft_mut()) else {
-        return;
-    };
+) -> Result {
+    let (choice, disabled) = choices.get(event.entity)?;
+    let (false, Some(draft)) = (disabled, session.mode.draft_mut()) else { return Ok(()) };
     draft.toggle_spell(&content.spells, choice.0);
+    Ok(())
 }
 
 pub(super) fn refresh(

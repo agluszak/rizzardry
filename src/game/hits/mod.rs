@@ -2,8 +2,9 @@
 //! others (a cast, a breath, a cloud's pulse, a trap) makes a [`Deed`] aimed
 //! at its victims; it lands on each as it arrives and, once all of it has
 //! landed, says so ([`Landed`]) and is gone. What follows a deed is its
-//! maker's business: whatever the maker put beside the deed is there for
-//! the maker's own observer of [`Landed`] to read.
+//! maker's business: the maker sets its own observer of [`Landed`] on the
+//! deed before it lands (it lands as it is made, unless a missile flies),
+//! and whatever it put beside the deed is there for that observer to read.
 //! A weapon's blows land the same way, swing by swing, within their attack.
 
 pub mod applied;
@@ -204,13 +205,16 @@ fn arrive(
     mut commands: Commands,
     mut deeds: Query<&mut Deed>,
     members: Query<(), With<PartyMember>>,
-) {
-    let Ok(mut deed) = deeds.get_mut(arrival.deed) else { return };
+    bodies: Query<(), With<crate::game::characters::Vitals>>,
+) -> Result {
+    let mut deed = deeds.get_mut(arrival.deed)?;
     let (due, waiting): (Vec<_>, _) = std::mem::take(&mut deed.arrivals)
         .into_iter()
         .partition(|(_, timer)| timer.as_ref().is_none_or(Timer::is_finished));
     deed.arrivals = waiting;
-    for (victim, _) in due {
+    // One gone from the world while a missile flew at them is reached by
+    // nothing.
+    for (victim, _) in due.into_iter().filter(|&(victim, _)| bodies.contains(victim)) {
         commands.trigger(effects::Lands { deed: arrival.deed, victim, row: 0 });
         if members.contains(victim) && !deed.party_reached {
             deed.party_reached = true;
@@ -220,6 +224,7 @@ fn arrive(
     if deed.arrivals.is_empty() {
         commands.trigger(Reached { deed: arrival.deed });
     }
+    Ok(())
 }
 
 /// A deed has reached everyone it was aimed at: it has landed, and is gone.
@@ -229,14 +234,15 @@ struct Reached {
     deed: Entity,
 }
 
-fn reached(reached: On<Reached>, mut deeds: Query<&mut Deed>, mut commands: Commands) {
-    let Ok(mut deed) = deeds.get_mut(reached.deed) else { return };
+fn reached(reached: On<Reached>, mut deeds: Query<&mut Deed>, mut commands: Commands) -> Result {
+    let mut deed = deeds.get_mut(reached.deed)?;
     commands.trigger(Landed {
         deed: reached.deed,
         effects: std::mem::take(&mut deed.effects),
         harm: deed.harm,
     });
     commands.entity(reached.deed).despawn();
+    Ok(())
 }
 
 pub struct HitsPlugin;

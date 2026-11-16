@@ -8,7 +8,7 @@ use crate::{
         rng::GameRng,
         time::GameClock,
         world::{
-            level::{Destination, Entry, LevelOwned},
+            level::{Destination, Entry},
             population::{Newborn, ScaledBody},
         },
     },
@@ -24,12 +24,12 @@ pub(super) fn initialize(
     clock: Res<GameClock>,
     party: Query<&PartyRoster>,
     characters: Query<&Calling>,
-    destinations: Query<&Destination>,
+    destination: Single<&Destination>,
 ) {
     if peopled.is_some() {
         return;
     }
-    let Ok(destination) = destinations.single() else { return };
+    let destination = *destination;
     let average = match &destination.entry {
         Entry::NewGame(profiles) => crate::game::party::average_level(
             profiles.iter().map(|(character, _)| character.calling.level()),
@@ -191,14 +191,14 @@ fn bind(
 /// Trigger interaction is a binding in its own right, with no synthetic monster.
 pub(super) fn bind_triggers(
     devices: Query<
-        (Entity, &crate::game::world::triggers::Device, &LevelOwned),
+        (Entity, &crate::game::world::triggers::Device),
         Added<crate::game::world::triggers::Device>,
     >,
     content: If<Res<Catalogs>>,
     people: Query<(Entity, &ActorId)>,
     mut commands: Commands,
 ) {
-    for (entity, device, owner) in &devices {
+    for (entity, device) in &devices {
         let Some((id, _)) = content.npcs.0.iter().enumerate().find(|(_, d)| {
             (d.merchant || d.voice_script)
                 && device.name.eq_ignore_ascii_case(&format!("_{}", d.source_name))
@@ -207,8 +207,7 @@ pub(super) fn bind_triggers(
         };
         let named = people.iter().find(|(_, actor)| actor.0 == NpcId(id as u16));
         if let Some((actor, _)) = named {
-            commands.entity(actor).insert(NpcTrigger(owner.0));
-            commands.entity(entity).insert(NpcSpeaker(actor));
+            commands.entity(entity).insert(NpcSpeaker(actor)).observe(super::devices::speak);
         }
     }
 }

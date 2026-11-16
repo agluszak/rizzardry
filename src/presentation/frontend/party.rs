@@ -266,14 +266,13 @@ fn spawn_row_parts(
 pub(super) fn sync_views(
     mut commands: Commands,
     session: Option<Single<&Creation>>,
-    page: Query<Entity, With<AssemblyPage>>,
+    page: Single<Entity, With<AssemblyPage>>,
     mut views: Query<(Entity, &CandidateView, &mut Node)>,
     assets: Res<AssetServer>,
     strings: GameStrings,
 ) {
-    let (Some(session), Ok(page), Some(_)) = (session, page.single(), strings.table()) else {
-        return;
-    };
+    let (Some(session), Some(_)) = (session, strings.table()) else { return };
+    let page = *page;
     for (entity, view, _) in &views {
         if candidate(&session, view.id).is_none()
             || (view.joined && !session.party.contains(&view.id))

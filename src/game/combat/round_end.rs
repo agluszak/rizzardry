@@ -138,15 +138,15 @@ pub struct RoundEnded {
 #[allow(clippy::type_complexity)]
 pub(super) fn leave_fight(
     leave: On<GroupsLeave>,
-    mut fights: Query<(&Combatants, &mut Round)>,
+    mut fights: Query<(Option<&Combatants>, &mut Round)>,
     groups: Query<&GroupMembers>,
     members: Query<(), With<crate::game::party::roster::PartyMember>>,
     making_out: Query<(), With<super::monster::sight::MakesOutParty>>,
     reinforcing: Query<(), With<super::monster::sight::Reinforces>>,
     sight: Sight,
-) {
-    let Ok((combatants, mut round)) = fights.get_mut(leave.fight) else { return };
-    let combatants = combatants.entities();
+) -> Result {
+    let (combatants, mut round) = fights.get_mut(leave.fight)?;
+    let combatants = combatants.map_or(&[][..], Combatants::entities);
     let group_of = |monster: Entity| sight.groups.get(monster).ok().map(|group| group.0);
     let sees_foe = |m: Entity| {
         combatants.iter().any(|&other| {
@@ -191,6 +191,7 @@ pub(super) fn leave_fight(
         .copied()
         .filter(|&combatant| !engaged || group_of(combatant).is_some_and(|g| going.contains(&g)))
         .collect();
+    Ok(())
 }
 
 /// Whoever held back this round (a body that waited, a member who
@@ -199,19 +200,17 @@ pub(super) fn leave_fight(
 /// from one to 255 sides, which one who gets their wind back fast scales.
 pub(super) fn rest_the_idle(
     rests: On<Rests>,
-    fights: Query<&Combatants>,
+    fights: Query<Option<&Combatants>>,
     mut bodies: Query<(
         (&mut Vitals, &crate::game::characters::Conditions),
         Option<&Turn>,
         &Mending,
     )>,
     mut rng: ResMut<GameRng>,
-) {
-    let Ok(combatants) = fights.get(rests.fight) else { return };
-    for &body in combatants.entities() {
-        let Ok(((mut vitals, conditions), turn, mending)) = bodies.get_mut(body) else {
-            continue;
-        };
+) -> Result {
+    let combatants = fights.get(rests.fight)?;
+    for &body in combatants.map_or(&[][..], Combatants::entities) {
+        let ((mut vitals, conditions), turn, mending) = bodies.get_mut(body)?;
         let resting = turn.is_some_and(|turn| turn.waited)
             || matches!(conditions.worst(), Some(Condition::Asleep | Condition::Unconscious));
         if vitals.is_dead() || !resting {
@@ -225,24 +224,27 @@ pub(super) fn rest_the_idle(
             vitals.rest(gained);
         }
     }
+    Ok(())
 }
 
 /// A special attack cools down over the rounds the monster does not make
 /// one (retail `AdvanceCombatRound`).
 pub(super) fn cool_specials(
     rests: On<Rests>,
-    fights: Query<&Combatants>,
-    mut monsters: Query<(&mut SpecialCooldown, Option<&Turn>)>,
-) {
-    let Ok(combatants) = fights.get(rests.fight) else { return };
-    for &monster in combatants.entities() {
-        if let Ok((mut cooldown, turn)) = monsters.get_mut(monster)
+    fights: Query<Option<&Combatants>>,
+    mut monsters: Query<(Option<&mut SpecialCooldown>, Option<&Turn>)>,
+) -> Result {
+    let combatants = fights.get(rests.fight)?;
+    for &monster in combatants.map_or(&[][..], Combatants::entities) {
+        // Only one with a special attack has a cooldown.
+        if let (Some(mut cooldown), turn) = monsters.get_mut(monster)?
             && cooldown.0 > 0
             && !turn.is_some_and(|turn| turn.special)
         {
             cooldown.0 -= 1;
         }
     }
+    Ok(())
 }
 
 /// Each pulsing spell laid pulses on whoever it hangs over (retail
@@ -254,23 +256,23 @@ pub(super) fn cool_specials(
 pub(super) fn pulse_clouds(
     pulse: On<CloudsPulse>,
     mut commands: Commands,
-    fights: Query<&Combatants>,
+    fights: Query<Option<&Combatants>>,
     pulsing: Query<(&LaidOn, &Pulses)>,
     bodies: Query<Body>,
     grouping: (Query<&'static GroupMember>, Query<&'static GroupMembers>),
     places: Places,
     party: Single<(Entity, &Position, &PartyRoster)>,
     obstacles: WorldObstacles,
-) {
+) -> Result {
     let (party, position, roster) = *party;
-    let Ok(combatants) = fights.get(pulse.fight) else { return };
+    let combatants = fights.get(pulse.fight)?.map_or(&[][..], Combatants::entities);
     let alive = |body: Entity| bodies.get(body).is_ok_and(|body| !body.vitals.is_dead());
     let field = Field {
         bodies: &bodies,
         places: &places,
         obstacles: &obstacles,
         roster,
-        combatants: combatants.entities(),
+        combatants,
         memberships: &grouping.0,
         groups: &grouping.1,
     };
@@ -290,30 +292,21 @@ pub(super) fn pulse_clouds(
         } else if bearer == party {
             roster.iter().filter(|&member| alive(member)).collect()
         } else {
-            combatants.entities().iter().copied().filter(|&m| m == bearer && alive(m)).collect()
+            combatants.iter().copied().filter(|&m| m == bearer && alive(m)).collect()
         };
-        commands.spawn((
-            Deed::at(strike.clone(), victims),
-            crate::game::magic::landed::Magical,
-            Pulse,
-        ));
+        // Watched before it lands, which it does as it is made.
+        commands
+            .spawn(crate::game::magic::landed::Magical)
+            .observe(count_pulse)
+            .insert(Deed::at(strike.clone(), victims));
     }
+    Ok(())
 }
 
-/// A deed that is a cloud's pulse.
-#[derive(Component)]
-pub(super) struct Pulse;
-
 /// A cloud's pulse that did something to someone keeps the fight going as
-/// an attack would.
-pub(super) fn count_pulse(
-    landed: On<Landed>,
-    pulses: Query<(), With<Pulse>>,
-    mut rounds: Query<&mut Round, With<Battle>>,
-) {
-    if pulses.contains(landed.deed)
-        && let Ok(mut round) = rounds.single_mut()
-    {
+/// an attack would: its deed's own observer.
+fn count_pulse(landed: On<Landed>, round: Option<Single<&mut Round, With<Battle>>>) {
+    if let Some(mut round) = round {
         round.attacked(landed.affected());
     }
 }
@@ -325,7 +318,7 @@ pub(super) fn count_pulse(
 #[allow(clippy::type_complexity)]
 pub(super) fn judge_victory(
     judged: On<FightJudged>,
-    mut fights: Query<(&mut Battle, &mut Round, &Spoils, &mut Pause, &Combatants)>,
+    mut fights: Query<(&mut Battle, &mut Round, &Spoils, &mut Pause, Option<&Combatants>)>,
     mut members: Query<(&mut crate::game::characters::Experience, &Vitals)>,
     monsters: Query<(
         &crate::game::actors::arm::Furthest,
@@ -336,15 +329,14 @@ pub(super) fn judge_victory(
     places: Places,
     roster: Single<&PartyRoster>,
     mut news: MessageWriter<CombatNews>,
-) {
-    let Ok((mut battle, mut round, spoils, mut pause, combatants)) = fights.get_mut(judged.fight)
-    else {
-        return;
-    };
+) -> Result {
+    let (mut battle, mut round, spoils, mut pause, combatants) = fights.get_mut(judged.fight)?;
+    // A fight nobody is in is not judged.
+    let Some(combatants) = combatants else { return Ok(()) };
     let living: Vec<Entity> =
         roster.iter().filter(|&m| members.get(m).is_ok_and(|(_, v)| !v.is_dead())).collect();
     if living.is_empty() {
-        return;
+        return Ok(());
     }
     pause.0 = Timer::from_seconds(ROUND_SECONDS, TimerMode::Once);
     let approaching = combatants.entities().iter().any(|&entity| {
@@ -366,7 +358,7 @@ pub(super) fn judge_victory(
             })
     });
     if hostiles_left && battle.passive_rounds < PASSIVE_ROUNDS {
-        return;
+        return Ok(());
     }
     let each = spoils.experience / living.len() as u32;
     if each > 0 {
@@ -380,6 +372,7 @@ pub(super) fn judge_victory(
         CombatNews::Over
     });
     round.over = true;
+    Ok(())
 }
 
 /// Recognition is part of each round's end, before the next accepted action
@@ -387,29 +380,34 @@ pub(super) fn judge_victory(
 /// it fights.
 pub(super) fn look_again(
     looks: On<PartyLooksAgain>,
-    fights: Query<&Combatants>,
-    party: Query<(Entity, &Position, &PartyBody)>,
+    fights: Query<Option<&Combatants>>,
+    party: Single<(Entity, &Position, &PartyBody)>,
     laid: Laid,
     mut recognition: GroupRecognition,
     mut rng: ResMut<GameRng>,
-) {
-    let Ok((party, position, body)) = party.single() else { return };
-    let Ok(combatants) = fights.get(looks.fight) else { return };
+) -> Result {
+    let (party, position, body) = *party;
+    let combatants = fights.get(looks.fight)?.map_or(&[][..], Combatants::entities);
     recognition.detect(
         PartyBody::eye(position),
         body.forward(),
-        Some(combatants.entities()),
+        Some(combatants),
         laid.bonus(party).warns,
         false,
         &mut rng,
     );
+    Ok(())
 }
 
 /// The round has ended: those leaving leave, the next round waits to be
 /// accepted, and a fight that is over goes; what lasted only the fight is
 /// lifted as it does.
-pub fn end_round(ended: On<RoundEnded>, mut commands: Commands, mut fights: Query<&mut Round>) {
-    let Ok(mut round) = fights.get_mut(ended.fight) else { return };
+pub fn end_round(
+    ended: On<RoundEnded>,
+    mut commands: Commands,
+    mut fights: Query<&mut Round>,
+) -> Result {
+    let mut round = fights.get_mut(ended.fight)?;
     for monster in round.leaving.drain(..) {
         commands.entity(monster).remove::<Combatant>();
     }
@@ -418,4 +416,5 @@ pub fn end_round(ended: On<RoundEnded>, mut commands: Commands, mut fights: Quer
     if std::mem::take(&mut round.over) {
         commands.entity(ended.fight).despawn();
     }
+    Ok(())
 }

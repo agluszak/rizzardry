@@ -690,19 +690,22 @@ monster makes it out.
 
 **A deliberation is such a consideration**, made at the monster's moment
 (`Deliberates`) with the fight's combatants and the party's gap
-(`PartyGap`); its facts are added in the order of section 4 by small
-observers, each reading only what its fact comes from:
+(`PartyGap`), related to the monster it `Considers` and gone with it. It
+goes by events in the order of section 4. Once `Begun`, its conduct and
+whether it closes in are worked out side by side; then each step decides
+the next:
 
-| Fact | What it reads |
-| --- | --- |
-| its conduct (`Conducts`), and `Fleeing` on the monster | `Standing`, `Vitals`, `Temper`, `Fleeing`, being an NPC; the gap |
-| whether it closes in (`ClosesIn`) | `Temper`, `Furthest`; the gap |
-| its special attack made, or `NoSpecial` | `SpecialReady`, `Special`, `Standing`; for a breath, its slot's aims worth making; `Furthest`, `Vitals`, `Level` |
-| the slots weighed, then the one cast, or `NoSpell` | `CastChance`, `Slots` that are `Castable`; their aims worth casting and not spoiled; `Furthest`, `Level`, `SpellBudget` |
-| withdrawing, guarding, holding back or striking | `Conditions`, `BlindFighting`, `Furthest`, `GuardReach`, `Temper`, `Attributes`, `CanGuard`, `Level`; fellows' `Standing`, `Vitals`, `Level` |
+| Step | What it reads | What comes next |
+| --- | --- | --- |
+| its conduct (`Conducts`), and `Fleeing` on the monster | `Standing`, `Vitals`, `Temper`, `Fleeing`, being an NPC; the gap | with whether it closes in (`ClosesIn`, from `Temper`, `Furthest` and the gap): a retreat, or `WeighsSpecial` |
+| its special attack | `SpecialReady`, `Special`, `Standing`; for a breath, its slot's aims worth making; `Furthest`, `Vitals`, `Level` | the attack made, or `WeighsSpells` |
+| its spells: the slots weighed, then the one cast | `CastChance`, `Slots` that are `Castable`; their aims worth casting and not spoiled; `Furthest`, `Level`, `SpellBudget` | the spell cast, or `CastsNothing` |
+| withdrawing, guarding, holding back or striking | `Conditions`, `BlindFighting`, `Furthest`, `GuardReach`, `Temper`, `Attributes`, `CanGuard`, `Level`; fellows' `Standing`, `Vitals`, `Level` | |
 
 What it decided is said as `Decided`, and the deliberation is gone with
-what it weighed.
+what it weighed. A slot is watched by the observer of its kind of aim (at
+one body, a group, a cone or blast, or ahead), set as the slot is made, so
+weighing a slot reaches only that one.
 
 **What a monster makes out is kept on it.** Two markers, kept by one
 system as monsters and the party move: its eyes make out the party

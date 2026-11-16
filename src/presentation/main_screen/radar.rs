@@ -175,16 +175,16 @@ pub fn track_radar_items(
 /// and the items once seen, grey to white.
 pub fn update_radar(
     mut commands: Commands,
-    party: Query<(
+    party: Single<(
         &avian3d::prelude::Position,
         &crate::game::party::body::PartyBody,
         Entity,
         Option<&crate::game::party::roster::PartyRoster>,
     )>,
     laid: crate::game::actors::Laid,
-    camera: Query<(&Projection, &GlobalTransform), With<PartyCamera>>,
+    camera: Option<Single<(&Projection, &GlobalTransform), With<PartyCamera>>>,
     mut rims: Query<&mut UiTransform, With<RadarRim>>,
-    layers: Query<Entity, With<RadarBlips>>,
+    layer: Single<Entity, With<RadarBlips>>,
     members: Query<
         (
             &crate::game::actors::Traits,
@@ -219,10 +219,8 @@ pub fn update_radar(
         Query<(), With<crate::game::world::level::Level>>,
     ),
 ) {
-    let (Ok((position, body, effects, roster)), Ok(layer)) = (party.single(), layers.single())
-    else {
-        return;
-    };
+    let (position, body, effects, roster) = *party;
+    let layer = *layer;
     for mut rim in &mut rims {
         // North stays put while the view turns.
         let rotation = Rot2::radians(body.yaw);
@@ -230,9 +228,9 @@ pub fn update_radar(
             rim.rotation = rotation;
         }
     }
-    let (far, eye) = match camera.single() {
-        Ok((p, eye)) => (bevy::camera::CameraProjection::far(&**p), eye.translation()),
-        _ => (0.0, position.0),
+    let (far, eye) = match camera.as_deref() {
+        Some(&(p, eye)) => (bevy::camera::CameraProjection::far(&**p), eye.translation()),
+        None => (0.0, position.0),
     };
     let xray = laid.has(effects, crate::content::spells::SpellId::X_RAY);
     // Each blip's visibility is decided once, so one that stays in view

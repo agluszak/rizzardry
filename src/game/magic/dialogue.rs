@@ -28,16 +28,15 @@ pub(crate) fn cast(
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<MagicNews>,
     mut commands: Commands,
-) {
+) -> Result {
     let (talk, mut conversation, mut script) = conversation.into_inner();
     let Worked { working, mut report, strength, marked, .. } = worked.event().clone();
     if !matches!(working, Working::Charm | Working::Mindread) {
-        return;
+        return Ok(());
     }
-    let Marked::Body(body) = marked else { return };
-    let (Ok(mut npc), Ok(their)) = (speakers.get_mut(conversation.actor), bodies.get(body)) else {
-        return;
-    };
+    let Marked::Body(body) = marked else { return Ok(()) };
+    let mut npc = speakers.get_mut(conversation.actor)?;
+    let their = bodies.get(body)?;
     let spoken = workings::speak(
         &mut rng,
         (working == Working::Mindread, report.outcome),
@@ -58,4 +57,5 @@ pub(crate) fn cast(
     }
     commands.trigger(Continue { conversation: talk });
     news.write(MagicNews::Done(report));
+    Ok(())
 }

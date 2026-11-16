@@ -105,12 +105,12 @@ fn move_particles(
     time: Res<Time<Virtual>>,
     definitions: OwnedDefinitions,
     emitters: Query<(&LevelOwned, &Emitter)>,
-    party: Query<&avian3d::prelude::Position, With<PartyBody>>,
+    party: Option<Single<&avian3d::prelude::Position, With<PartyBody>>>,
     mut particles: Query<(Entity, &ChildOf, &mut Particle, &mut Transform)>,
     obstacles: WorldObstacles,
     mut commands: Commands,
 ) {
-    let eye = party.single().ok().map(PartyBody::eye);
+    let eye = party.map(|party| PartyBody::eye(*party));
     for (entity, emitter, mut particle, mut transform) in &mut particles {
         let Ok((owner, emitter)) = emitters.get(emitter.parent()) else { continue };
         let Some(config) = config(&definitions, owner, emitter) else {
@@ -140,12 +140,12 @@ fn emit_particles(
     definitions: OwnedDefinitions,
     mut emitters: Query<(Entity, &LevelOwned, &Emitter, &mut Emission, Option<&Children>)>,
     particles: Query<&Particle>,
-    party: Query<&avian3d::prelude::Position, With<PartyBody>>,
+    party: Option<Single<&avian3d::prelude::Position, With<PartyBody>>>,
     mut rng: ResMut<PresentationRng>,
     mut spent_emitters: MessageWriter<EmissionSpent>,
     mut commands: Commands,
 ) {
-    let eye = party.single().ok().map(PartyBody::eye);
+    let eye = party.map(|party| PartyBody::eye(*party));
     let now = time.elapsed();
     for (entity, owner, emitter, mut emission, produced) in &mut emitters {
         let Some(config) = config(&definitions, owner, emitter) else { continue };

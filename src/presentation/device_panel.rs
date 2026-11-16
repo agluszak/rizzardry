@@ -375,7 +375,7 @@ fn draw_device_panel(
     difficulty: Res<crate::game::difficulty::Difficulty>,
     mut commands: Commands,
     attempts: Query<(&DeviceInteraction, &AttemptOn)>,
-    panels: Query<(&PanelOf, &DevicePanel)>,
+    panel: Single<(&PanelOf, &DevicePanel)>,
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
     members: Query<(
@@ -390,9 +390,9 @@ fn draw_device_panel(
     strings: crate::presentation::screen_art::GameStrings,
     mut captions: Query<(&Caption, &mut BitmapText)>,
     mut buttons: Query<(Entity, &Control, &mut BackgroundColor, Has<InteractionDisabled>)>,
-) {
-    let Ok((panel_of, panel)) = panels.single() else { return };
-    let Ok((interaction, on)) = attempts.get(panel_of.0) else { return };
+) -> Result {
+    let (panel_of, panel) = *panel;
+    let (interaction, on) = attempts.get(panel_of.0)?;
     let member = selected.member(&roster).map(|m| (m, members.get(m).unwrap()));
     // What the selected member can do, they can do only while they can act.
     let able = member.as_ref().filter(|(m, _)| able.contains(*m));
@@ -525,25 +525,26 @@ fn draw_device_panel(
         };
         background.set_if_neq(BackgroundColor(colour));
     }
+    Ok(())
 }
 
 fn press(
     click: On<Activate>,
     magic_art: Option<Res<super::main_screen::magic_view::MagicViewArt>>,
-    controls: Query<&Control, Without<InteractionDisabled>>,
-    mut panels: Query<(&PanelOf, &mut DevicePanel)>,
+    controls: Query<(&Control, Has<InteractionDisabled>)>,
+    panel: Single<(&PanelOf, &mut DevicePanel)>,
     attempts: Query<&AttemptOn>,
     held: Items,
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
     mut commands: Commands,
-) {
-    let (Ok(&control), Ok((&PanelOf(on), mut panel))) =
-        (controls.get(click.entity), panels.single_mut())
-    else {
-        return;
-    };
-    let Ok(&AttemptOn(device)) = attempts.get(on) else { return };
+) -> Result {
+    let (&control, disabled) = controls.get(click.entity)?;
+    if disabled {
+        return Ok(());
+    }
+    let (&PanelOf(on), mut panel) = panel.into_inner();
+    let &AttemptOn(device) = attempts.get(on)?;
     let actor = selected.member(&roster);
     let count = |id: Entity| held.units(id) as u16;
     match control {
@@ -615,7 +616,7 @@ fn press(
                 Control::TakeToParty => Recipient::Party,
                 _ => match actor {
                     Some(actor) => Recipient::Member(actor),
-                    None => return,
+                    None => return Ok(()),
                 },
             };
             let picks = std::mem::take(&mut panel.chosen);
@@ -625,4 +626,5 @@ fn press(
             commands.trigger(Leave { attempt: on });
         }
     }
+    Ok(())
 }

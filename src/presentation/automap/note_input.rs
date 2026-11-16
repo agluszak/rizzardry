@@ -70,18 +70,19 @@ fn finish(
     mut event: On<FocusedInput<KeyboardInput>>,
     inputs: Query<&EditableText, With<NoteInput>>,
     mut commands: Commands,
-) {
-    let Ok(input) = inputs.get(event.original_event_target()) else { return };
+) -> Result {
+    let input = inputs.get(event.original_event_target())?;
     if !event.input.state.is_pressed() || input.is_composing() {
-        return;
+        return Ok(());
     }
     if !matches!(event.input.logical_key, Key::Enter | Key::Escape) {
-        return;
+        return Ok(());
     }
     event.propagate(false);
     let outcome =
         if event.input.logical_key == Key::Enter { FinishNote::Accept } else { FinishNote::Cancel };
     commands.entity(event.original_event_target()).insert((outcome, InteractionDisabled));
+    Ok(())
 }
 
 pub(super) fn cancel_from_controls(

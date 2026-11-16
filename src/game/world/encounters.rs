@@ -349,8 +349,8 @@ pub fn retire(
     retire: On<Retire>,
     groups: Query<(Option<&GroupMembers>, Option<&Escorts>)>,
     mut commands: Commands,
-) {
-    let Ok((_, escorts)) = groups.get(retire.group) else { return };
+) -> Result {
+    let (_, escorts) = groups.get(retire.group)?;
     let retired = std::iter::once(retire.group).chain(escorts.into_iter().flat_map(|e| e.iter()));
     for group in retired {
         if let Ok((members, _)) = groups.get(group) {
@@ -360,6 +360,7 @@ pub fn retire(
         }
         commands.entity(group).try_despawn();
     }
+    Ok(())
 }
 
 /// The played level's generators, on the fixed step once physics has placed
@@ -371,17 +372,14 @@ pub fn retire(
 /// whether or not it called anything up.
 fn poll_generators(
     mut commands: Commands,
-    mut budgets: Query<(Entity, &mut EncounterBudget, Option<&Arrival>), With<Level>>,
+    budgets: Single<(Entity, &mut EncounterBudget, Option<&Arrival>), With<Level>>,
     mut generators: Query<(Entity, &mut EncounterGenerator, &LevelOwned)>,
     mut encounters: Query<(Entity, &mut Encounter, &LevelOwned)>,
-    party: Query<(), With<PartyBody>>,
+    _party: Single<(), With<PartyBody>>,
     time: Res<Time<Fixed>>,
     mut rng: ResMut<GameRng>,
 ) {
-    let Ok((root, mut budget, arrival)) = budgets.single_mut() else { return };
-    if party.single().is_err() {
-        return;
-    }
+    let (root, mut budget, arrival) = budgets.into_inner();
     let mut order: Vec<_> = generators
         .iter()
         .filter(|(_, _, owner)| owner.0 == root)
@@ -483,24 +481,25 @@ fn admit_and_retire(
     mut commands: Commands,
     generators: Query<(&EncounterGenerator, &Transform, &LevelOwned)>,
     budgets: Query<&EncounterBudget>,
-    party: Query<&Position, With<PartyBody>>,
+    party: Single<&Position, With<PartyBody>>,
     battle: Query<(), With<crate::game::combat::Battle>>,
     talking: Query<(), With<crate::game::npcs::conversation::Conversation>>,
     population: Population,
     obstacles: WorldObstacles,
     clock: Res<GameClock>,
-) {
-    let Ok((generator, at, owner)) = generators.get(attempt.generator) else { return };
-    let (Ok(budget), Ok(party)) = (budgets.get(owner.0), party.single()) else { return };
+) -> Result {
+    let (generator, at, owner) = generators.get(attempt.generator)?;
+    let budget = budgets.get(owner.0)?;
+    let party = *party;
     if !battle.is_empty() || !talking.is_empty() || !generator.enabled {
-        return;
+        return Ok(());
     }
     let eye = PartyBody::eye(party);
     if !attempt.forced
         && (!(NEAREST..=FARTHEST).contains(&eye.distance(at.translation))
             || obstacles.clear(eye, at.translation + Vec3::Y * STEP_HEIGHT))
     {
-        return;
+        return Ok(());
     }
     if population.count(owner.0) >= budget.capacity() {
         let now_s = clock.ms / 1000;
@@ -519,6 +518,7 @@ fn admit_and_retire(
         }
     }
     commands.trigger(SpawnEncounter { generator: attempt.generator, forced: attempt.forced });
+    Ok(())
 }
 
 /// One encounter from a generator (retail `MonGen::GenerateEncounter`), if
@@ -533,7 +533,7 @@ fn spawn_encounter(
     generators: Query<(&EncounterGenerator, &Transform, &LevelOwned)>,
     mut levels: Query<(&EncounterBudget, &LevelNavigation, &mut Unborn, &MonsterBodies)>,
     population: Population,
-    party: Query<(&Position, &crate::game::party::roster::PartyRoster), With<PartyBody>>,
+    party: Single<(&Position, &crate::game::party::roster::PartyRoster), With<PartyBody>>,
     characters: Query<(&crate::game::characters::Calling, Has<crate::game::npcs::Npc>)>,
     obstacles: WorldObstacles,
     definitions: Res<Assets<MonsterBody>>,
@@ -542,20 +542,20 @@ fn spawn_encounter(
     difficulty: Res<Difficulty>,
     mut rng: ResMut<GameRng>,
     content: Res<crate::game::data::Catalogs>,
-) {
-    let Ok((generator, at, owner)) = generators.get(attempt.generator) else { return };
-    let Ok((budget, navigation, mut unborn, bodies)) = levels.get_mut(owner.0) else { return };
-    let Ok((party_at, roster)) = party.single() else { return };
+) -> Result {
+    let (generator, at, owner) = generators.get(attempt.generator)?;
+    let (budget, navigation, mut unborn, bodies) = levels.get_mut(owner.0)?;
+    let (party_at, roster) = *party;
     if population.count(owner.0) >= budget.capacity()
         || (!attempt.forced
             && (population.occupied(owner.0, at.translation)
                 || (rng.below(100) as i32) >= generator.chance))
     {
-        return;
+        return Ok(());
     }
     // Harassment's possession gate is not implemented yet.
     if generator.harasses {
-        return;
+        return Ok(());
     }
     let party_level = crate::game::party::mean_level(crate::game::party::averaged_places(
         roster.iter().map(|member| {
@@ -564,7 +564,7 @@ fn spawn_encounter(
         }),
     ));
     let Some(chosen) = choose_entry(&generator.table, party_level, night(&clock), &mut rng) else {
-        return;
+        return Ok(());
     };
     let species = &content.species;
     let id = generator.table.entries[chosen].species;
@@ -572,7 +572,7 @@ fn spawn_encounter(
     // One whose body is not ready yet does not come.
     let ready = |species: u32| bodies.get(species, &definitions).is_some();
     if !ready(id) || !kind.companions.iter().flatten().all(|&(species, _)| ready(species)) {
-        return;
+        return Ok(());
     }
     let script = generator.table.entries[chosen].script.clone();
     let count = group_size(kind, party_level, *difficulty, &mut rng);
@@ -606,7 +606,7 @@ fn spawn_encounter(
             rng,
         )
     };
-    let Some(leader) = spawn(id, count, Some(&script), &mut rng) else { return };
+    let Some(leader) = spawn(id, count, Some(&script), &mut rng) else { return Ok(()) };
     let mut escorts = Vec::new();
     for &(companion, chance) in kind.companions.iter().flatten() {
         if rng.below(100) < u32::from(chance) {
@@ -621,18 +621,19 @@ fn spawn_encounter(
         commands.entity(escort).insert(EscortOf(leader));
     }
     debug!(generator = ?attempt.generator, group = ?leader, "generated encounter");
+    Ok(())
 }
 
 /// An encounter wiped out is written off, and in a fight it costs the
 /// budget one (retail `UnregisterActiveEncounterGroup`).
 pub fn write_off_wiped_out(
     mut commands: Commands,
-    mut levels: Query<(Entity, &mut EncounterBudget), With<Level>>,
+    levels: Single<(Entity, &mut EncounterBudget), With<Level>>,
     groups: Query<(Entity, &LevelOwned, Option<&GroupMembers>), With<Encounter>>,
     monsters: Query<&crate::game::characters::Vitals, With<Monster>>,
     battle: Option<Single<(), With<crate::game::combat::Battle>>>,
 ) {
-    let Ok((root, mut budget)) = levels.single_mut() else { return };
+    let (root, mut budget) = levels.into_inner();
     for (entity, owner, members) in &groups {
         if owner.0 != root {
             continue;

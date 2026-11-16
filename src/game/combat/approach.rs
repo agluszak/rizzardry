@@ -46,7 +46,7 @@ pub enum MoveGoal {
 /// charged nothing for time before it.
 pub fn steer_moves(
     mut commands: Commands,
-    party: Query<(Entity, &Position), With<PartyBody>>,
+    party: Single<(Entity, &Position), With<PartyBody>>,
     mut walkers: Query<(
         Entity,
         (
@@ -62,7 +62,7 @@ pub fn steer_moves(
     )>,
     targets: Query<(&Monster, &Vitals, ActorPose, Option<&Walker>)>,
 ) {
-    let Ok((party, party_at)) = party.single() else { return };
+    let (party, party_at) = *party;
     let party_eye = PartyBody::eye(party_at);
     for (entity, (monster, vitals, arms, can_fight), at, walker, mut target, movement) in
         &mut walkers

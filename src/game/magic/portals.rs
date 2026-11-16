@@ -27,7 +27,7 @@ pub struct Portal {
 pub(crate) fn cast(
     worked: On<Worked>,
     mut commands: Commands,
-    portals: Query<&Portal>,
+    portals: Query<Option<&Portal>>,
     mut party: Single<(
         &mut PartyBody,
         &mut Position,
@@ -38,24 +38,25 @@ pub(crate) fn cast(
     mut level: Single<(&Level, &mut LevelState)>,
     assets: Res<AssetServer>,
     mut news: MessageWriter<MagicNews>,
-) {
+) -> Result {
     let Worked { caster, working, report, .. } = worked.event().clone();
     if !matches!(working, Working::SetPortal | Working::ReturnToPortal) {
-        return;
+        return Ok(());
     }
     let outcome = report.outcome;
     news.write(MagicNews::Done(report));
     if outcome != Outcome::Cast {
-        return;
+        return Ok(());
     }
     let (body, at, transform, velocity, movement) = &mut *party;
     let (level, state) = &mut *level;
     if working == Working::SetPortal {
         let (eye, level) = (PartyBody::eye(at), level.path.clone());
         commands.entity(caster).insert(Portal { level, eye, yaw: body.yaw, pitch: body.pitch });
-        return;
+        return Ok(());
     }
-    let Ok(portal) = portals.get(caster).cloned() else { return };
+    // One who never set a portal has nowhere to return to.
+    let Some(portal) = portals.get(caster)?.cloned() else { return Ok(()) };
     if portal.level != level.path {
         commands.spawn(Destination::new(
             Level::load(&portal.level, &assets),
@@ -76,4 +77,5 @@ pub(crate) fn cast(
         state.arrive(portal.eye);
     }
     **movement = default();
+    Ok(())
 }

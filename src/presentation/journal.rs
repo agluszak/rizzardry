@@ -38,12 +38,18 @@ struct Row(usize, bool);
 struct PageLabel;
 #[derive(Component)]
 struct Heading(bool);
+/// A control; pressed, it does what it is ([`activate`], its own observer).
 #[derive(Component, Clone, Copy)]
+#[component(on_add = chosen)]
 enum Choice {
     Previous,
     Next,
     Topics,
     Close,
+}
+
+fn chosen(mut world: bevy::ecs::world::DeferredWorld, context: bevy::ecs::lifecycle::HookContext) {
+    world.commands().entity(context.entity).observe(activate);
 }
 #[derive(Message)]
 pub struct OpenJournal;
@@ -61,8 +67,7 @@ pub fn plugin(app: &mut App) {
     app.add_message::<OpenJournal>()
         .add_input_context::<Journal>()
         .add_systems(Update, (request, refresh).chain())
-        .add_systems(OnEnter(Screen::Journal), enter)
-        .add_observer(activate);
+        .add_systems(OnEnter(Screen::Journal), enter);
 }
 fn request(
     mut requests: MessageReader<OpenJournal>,
@@ -198,8 +203,9 @@ fn activate(
     choices: Query<&Choice>,
     mut view: Option<Single<&mut Journal>>,
     mut next: ResMut<NextState<Screen>>,
-) {
-    let (Ok(choice), Some(view)) = (choices.get(event.entity), view.as_mut()) else { return };
+) -> Result {
+    let choice = choices.get(event.entity)?;
+    let Some(view) = view.as_mut() else { return Ok(()) };
     match choice {
         Choice::Previous => view.pages_back += 1,
         Choice::Next => view.pages_back -= view.pages_back.min(1),
@@ -209,6 +215,7 @@ fn activate(
         }
         Choice::Close => next.set(Screen::World),
     }
+    Ok(())
 }
 /// Show the journal's page. It is redrawn only when what it shows changes:
 /// the view's page or mode, the history, the difficulty, the factions, or

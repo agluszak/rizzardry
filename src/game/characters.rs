@@ -1240,12 +1240,13 @@ pub struct Improved {
 /// trained practises nothing.
 pub(crate) fn practise(
     event: On<Practise>,
-    mut trained: Query<(&Calling, &Abilities, &mut Training, &mut Practice)>,
+    mut trained: Query<Option<(&Calling, &Abilities, &mut Training, &mut Practice)>>,
     mut rng: ResMut<GameRng>,
     mut improved: MessageWriter<Improved>,
-) {
-    let Ok((calling, abilities, mut training, mut practice)) = trained.get_mut(event.member) else {
-        return;
+) -> Result {
+    let Some((calling, abilities, mut training, mut practice)) = trained.get_mut(event.member)?
+    else {
+        return Ok(());
     };
     // Counted on a copy first, so that practice which changes nothing does
     // not mark the training as changed.
@@ -1262,6 +1263,7 @@ pub(crate) fn practise(
     if rose {
         improved.write(Improved { member: event.member, skill: event.skill });
     }
+    Ok(())
 }
 
 /// An actor's health has run out. Said of that actor by whatever hurt it,
@@ -1286,25 +1288,24 @@ pub struct Settled;
 pub fn fall(
     fell: On<Fell>,
     mut commands: Commands,
-    mut bodies: Query<
-        (
-            &mut Vitals,
-            &mut Conditions,
-            &mut crate::game::world::hostility::Side,
-            (&crate::game::actors::Traits, &crate::game::actors::Mastery),
-            Option<&mut Tally>,
-            Option<&CheatedDeathIn>,
-        ),
-        Without<Dead>,
-    >,
+    mut bodies: Query<(
+        &mut Vitals,
+        &mut Conditions,
+        &mut crate::game::world::hostility::Side,
+        (&crate::game::actors::Traits, &crate::game::actors::Mastery),
+        Option<&mut Tally>,
+        Option<&CheatedDeathIn>,
+        Has<Dead>,
+    )>,
     fight: Option<Single<Entity, With<crate::game::combat::Battle>>>,
     mut rng: ResMut<GameRng>,
-) {
-    let Ok((mut vitals, mut conditions, mut side, (traits, mastery), tally, cheated)) =
-        bodies.get_mut(fell.body)
-    else {
-        return;
-    };
+) -> Result {
+    let (mut vitals, mut conditions, mut side, (traits, mastery), tally, cheated, dead) =
+        bodies.get_mut(fell.body)?;
+    // One already dead does not fall again.
+    if dead {
+        return Ok(());
+    }
     let fight = fight.map(|fight| *fight);
     let first = fight.is_some_and(|fight| cheated != Some(&CheatedDeathIn(fight)));
     let cheats = vitals.is_dead()
@@ -1323,6 +1324,7 @@ pub fn fall(
         commands.entity(fell.body).insert(Dead { by: vitals.fell_to });
     }
     commands.trigger(Settled);
+    Ok(())
 }
 
 #[cfg(test)]

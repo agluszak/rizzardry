@@ -121,7 +121,7 @@ pub fn request_camp(
     freedom: crate::game::freedom::Freedom,
     mut button: MessageReader<CampRequest>,
     battle: Option<Single<&Battle>>,
-    party: Query<&LinearVelocity, With<PartyBody>>,
+    party: Option<Single<&LinearVelocity, With<PartyBody>>>,
     mut news: MessageWriter<CampNews>,
 ) {
     let asked = button.read().count() > 0;
@@ -132,7 +132,7 @@ pub fn request_camp(
         news.write(CampNews::InCombat);
         return;
     }
-    if !party.single().is_ok_and(|v| v.length() < STILL_BELOW) {
+    if !party.is_some_and(|v| v.length() < STILL_BELOW) {
         news.write(CampNews::Moving);
         return;
     }

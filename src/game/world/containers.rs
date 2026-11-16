@@ -46,16 +46,17 @@ pub(crate) fn open(
     mut rng: ResMut<GameRng>,
     mut outcomes: MessageWriter<TriggerEffect>,
     mut commands: Commands,
-) {
+) -> Result {
     let (entity, doing, Open(animation)) = (act.device, act.doing, act.what);
     let (party, roster) = *party;
-    let Ok((mut container, motion, busy)) = containers.get_mut(entity) else { return };
+    let (mut container, motion, busy) = containers.get_mut(entity)?;
     if let Some(item) = held.held(party) {
         commands.trigger(Put { item, at: Place::Container(entity) });
-        return;
+        return Ok(());
     }
     if busy {
-        return doing.decline(&mut outcomes);
+        doing.decline(&mut outcomes);
+        return Ok(());
     }
     let catalog = &content.items;
     let mut inside = held.stowed(entity).to_vec();
@@ -98,6 +99,7 @@ pub(crate) fn open(
             }
         }
     }
+    Ok(())
 }
 
 /// Where taken items go.
@@ -133,20 +135,18 @@ pub(crate) fn take(
         Query<(), With<super::level::Destination>>,
         Query<(), With<crate::game::combat::Battle>>,
     ),
-) {
+) -> Result {
     let party = *party;
-    let Ok((DeviceInteraction { work: Work::Looting }, &AttemptOn(device))) =
-        attempts.get(take.attempt)
-    else {
-        return;
-    };
+    let (interaction, &AttemptOn(device)) = attempts.get(take.attempt)?;
+    // Only an attempt at looting takes anything.
+    let DeviceInteraction { work: Work::Looting } = interaction else { return Ok(()) };
     if !entering.is_empty() || !battle.is_empty() {
-        return;
+        return Ok(());
     }
     let receiver = match take.to {
         Recipient::Party => None,
         Recipient::Member(member) if able.contains(member) => Some(member),
-        Recipient::Member(_) => return,
+        Recipient::Member(_) => return Ok(()),
     };
     let inside = held.stowed(device);
     for &(item, amount) in &take.picks {
@@ -169,6 +169,7 @@ pub(crate) fn take(
             commands.trigger(Rejoin { part: taking, whole: item });
         }
     }
+    Ok(())
 }
 
 /// A looked-through container with nothing left in it is done with.

@@ -288,15 +288,16 @@ pub(super) fn spells_are_heard(
     deeds: Query<&Deed>,
     positions: Query<&Position>,
     mut commands: Commands,
-) {
-    let Ok(deed) = deeds.get(made.entity) else { return };
-    let Some(spell) = &deed.strike.spell else { return };
-    let Some(loud) = LOUD.get(&spell.id.0) else { return };
+) -> Result {
+    let deed = deeds.get(made.entity)?;
+    let Some(spell) = &deed.strike.spell else { return Ok(()) };
+    let Some(loud) = LOUD.get(&spell.id.0) else { return Ok(()) };
     let aimed = deed.aimed_at().find_map(|victim| positions.get(victim).ok());
     if let Some(at) = aimed {
         let reach = loud.carries + loud.a_power * deed.strike.strength.power as f32;
         commands.trigger(Noise { at: at.0, reach, to: Hearers::Hostile });
     }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -647,12 +647,13 @@ pub struct Faded {
     pub fade: Entity,
 }
 
-pub(super) fn faded(faded: On<Faded>, fades: Query<&Fading>, mut commands: Commands) {
-    let Ok(fading) = fades.get(faded.fade) else { return };
+pub(super) fn faded(faded: On<Faded>, fades: Query<&Fading>, mut commands: Commands) -> Result {
+    let fading = fades.get(faded.fade)?;
     for row in &fading.then {
         commands.trigger(Befalls(row.clone()));
     }
     commands.entity(faded.fade).despawn();
+    Ok(())
 }
 
 /// Something that befalls only if a reading holds, wherever it was put off
@@ -688,16 +689,18 @@ pub(super) fn follows_cycle(played: On<Played>, after: Query<&After>, mut bodies
 /// `HandleScriptedNpcDeath`): what the table gives for the species befalls.
 pub(super) fn slain(
     died: On<Add<crate::game::characters::Dead>>,
-    monsters: Query<&Monster>,
+    monsters: Query<Option<&Monster>>,
     readings: Readings,
     (story, factions): (Res<StoryFacts>, Res<Factions>),
     mut commands: Commands,
-) {
-    let Ok(monster) = monsters.get(died.entity) else { return };
+) -> Result {
+    // The story speaks only of monsters' deaths.
+    let Some(monster) = monsters.get(died.entity)? else { return Ok(()) };
     let rows = FACTS.slain.get(&monster.species).into_iter().flatten();
     for row in unfold(rows, None, &readings, &story, &factions) {
         commands.trigger(Befalls(row.clone()));
     }
+    Ok(())
 }
 
 /// The story has something to say of an item the party takes up (retail
@@ -708,12 +711,13 @@ pub(super) fn taken_up(
     readings: Readings,
     (story, factions): (Res<StoryFacts>, Res<Factions>),
     mut commands: Commands,
-) {
-    let Ok(item) = items.get(taken.entity) else { return };
+) -> Result {
+    let item = items.get(taken.entity)?;
     let rows = FACTS.taken.get(&item.0.0).into_iter().flatten();
     for row in unfold(rows, None, &readings, &story, &factions) {
         commands.trigger(Befalls(row.clone()));
     }
+    Ok(())
 }
 
 /// Every hostile monster of the level dies, as anything killed does.
@@ -791,7 +795,7 @@ pub(super) fn befalls_the_story(
         ),
         Without<crate::game::characters::Dead>,
     >,
-    (roster, levels): (Single<&PartyRoster>, Query<&Level>),
+    (roster, played): (Single<&PartyRoster>, Option<Single<&Level>>),
     (content, clock): (Res<Catalogs>, Res<GameClock>),
     (mut news, mut told, mut remarks): (
         MessageWriter<FactionNews>,
@@ -803,13 +807,13 @@ pub(super) fn befalls_the_story(
     match &befalls.0 {
         // One the game's records do not name, by its number.
         StoryAct::FactNumbered(number, value) => {
-            let level = levels.iter().next().map_or("", |level| level.path.as_str());
+            let level = played.as_deref().map_or("", |level| level.path.as_str());
             story.set(FactId(*number), *value, &content.facts, level);
             commands.trigger(FactSet { fact: FactId(*number), value: *value });
         }
         StoryAct::Fact(name, value) => {
             let Some(other) = content.facts.0.iter().find(|d| &d.symbol == name) else { return };
-            let level = levels.iter().next().map_or("", |level| level.path.as_str());
+            let level = played.as_deref().map_or("", |level| level.path.as_str());
             story.set(other.id, *value, &content.facts, level);
             commands.trigger(FactSet { fact: other.id, value: *value });
         }
@@ -1132,7 +1136,7 @@ pub(super) fn befalls_someone(
             }
         }
         PersonAct::SelfGone => {
-            if let Some((_, talk)) = conversations.iter().next() {
+            if let Ok((_, talk)) = conversations.single() {
                 leave(talk.actor, &people, &mut commands);
             }
         }
@@ -1285,7 +1289,7 @@ fn depart(
     content: &Catalogs,
     commands: &mut Commands,
 ) {
-    let Ok(kind) = people.get(actor).map(|person| content.npcs[person.id.0].kind) else { return };
+    let kind = content.npcs[people.get(actor).expect("a marked person").id.0].kind;
     let rows = u16::try_from(kind).ok().and_then(|kind| FACTS.marked.get(&kind));
     let rows = unfold(rows.into_iter().flatten(), None, readings, story, factions);
     let stays = rows.iter().any(|row| matches!(row, Consequence::Flow(Flow::Stays)));
@@ -1376,27 +1380,26 @@ fn leave(actor: Entity, people: &Query<Person>, commands: &mut Commands) {
 /// The named spots of the level the party is in.
 #[derive(SystemParam)]
 pub(super) struct Spots<'w, 's> {
-    levels: Query<'w, 's, (Entity, &'static Level)>,
+    played: Option<Single<'w, 's, (Entity, &'static Level)>>,
     definitions: Res<'w, Assets<LevelDefinition>>,
 }
 
 impl Spots<'_, '_> {
     fn level(&self) -> Option<Entity> {
-        self.levels.iter().next().map(|(level, _)| level)
+        self.played.as_deref().map(|&(level, _)| level)
     }
 
     fn definition(&self) -> Option<&LevelDefinition> {
-        let (_, level) = self.levels.iter().next()?;
+        let (_, level) = self.played.as_deref()?;
         self.definitions.get(&level.definition)
     }
 
     fn path(&self) -> Option<String> {
-        self.levels.iter().next().map(|(_, level)| level.path.clone())
+        self.played.as_deref().map(|(_, level)| level.path.clone())
     }
 
     fn named(&self, name: &str) -> Option<Vec3> {
-        let (_, level) = self.levels.iter().next()?;
-        self.definitions.get(&level.definition)?.spot(name)
+        self.definition()?.spot(name)
     }
 }
 
@@ -1422,7 +1425,7 @@ pub struct Readings<'w, 's> {
     doors: Query<'w, 's, &'static triggers::DoorState>,
     parts: Query<'w, 's, &'static Children>,
     bounds: Query<'w, 's, &'static avian3d::prelude::ColliderAabb>,
-    footing: Query<'w, 's, &'static Position, With<PartyBody>>,
+    footing: Option<Single<'w, 's, &'static Position, With<PartyBody>>>,
     bodies: Query<'w, 's, &'static Monster>,
     levels: Query<'w, 's, (&'static Level, &'static LevelState)>,
     content: Res<'w, Catalogs>,
@@ -1515,7 +1518,7 @@ impl Readings<'_, '_> {
             Reading::On(name) => {
                 let device = self.names.iter().find_map(|names| names.named(name));
                 let parts = device.and_then(|device| self.parts.get(device).ok());
-                let at = self.footing.iter().next();
+                let at = self.footing.as_deref();
                 parts.zip(at).is_some_and(|(parts, at)| {
                     parts.iter().filter_map(|part| self.bounds.get(part).ok()).any(|bounds| {
                         (bounds.min.x..=bounds.max.x).contains(&at.x)

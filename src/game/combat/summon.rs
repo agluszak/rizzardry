@@ -43,11 +43,11 @@ pub fn summon(
     summon: On<Summon>,
     mut commands: Commands,
     battle: Option<Single<Entity, With<Battle>>>,
-    party: Query<(&Position, &PartyBody)>,
+    party: Single<(&Position, &PartyBody)>,
     monsters: Query<(&Monster, ActorPose, Option<&Walker>, &Vitals)>,
     groups: Query<&MonsterGroup>,
     sides: Query<&hostility::Standing>,
-    mut levels: Query<(Entity, &LevelNavigation, &mut Unborn, &MonsterBodies), With<Level>>,
+    levels: Single<(Entity, &LevelNavigation, &mut Unborn, &MonsterBodies), With<Level>>,
     level: PlayedLevel,
     obstacles: WorldObstacles,
     definitions: Res<Assets<MonsterBody>>,
@@ -59,8 +59,8 @@ pub fn summon(
 ) {
     let (Some(battle), Some(far)) = (battle, level.view_distance()) else { return };
     let species = &content.species;
-    let Ok((party_at, party_body)) = party.single() else { return };
-    let Ok((root, navigation, mut unborn, bodies)) = levels.single_mut() else { return };
+    let (party_at, party_body) = *party;
+    let (root, navigation, mut unborn, bodies) = levels.into_inner();
     let eye = PartyBody::eye(party_at);
     // The next free ids, the unborn's counted too.
     let (next_location, authored) = population::next_ids(

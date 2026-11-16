@@ -681,7 +681,7 @@ fn rating(chance: u32) -> usize {
 /// was opened for is gone.
 pub(super) fn follow_caster(
     mut commands: Commands,
-    mut views: Query<(Entity, &mut MagicView, Option<&CastsAt>, Option<&ConversationTarget>)>,
+    view: Single<(Entity, &mut MagicView, Option<&CastsAt>, Option<&ConversationTarget>)>,
     (selected, roster): (Res<super::SelectedMember>, Single<&PartyRoster>),
     able: Query<(), With<crate::game::actors::CanAct>>,
     (battle, camp, interaction, conversations): (
@@ -691,9 +691,7 @@ pub(super) fn follow_caster(
         Query<crate::game::npcs::conversation::DialogueReadOnly>,
     ),
 ) {
-    let Ok((root, mut view, casts_at, conversation_target)) = views.single_mut() else {
-        return;
-    };
+    let (root, mut view, casts_at, conversation_target) = view.into_inner();
     let attempt = casts_at.map(|casts_at| casts_at.0);
     if let Some(member) = selected.member(&roster)
         && member != view.caster
@@ -731,7 +729,7 @@ pub(super) fn follow_caster(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw_magic_view(
     mut commands: Commands,
-    mut views: Query<(&mut MagicView, &MagicScroll, Option<&CastsAt>, Option<&ConversationTarget>)>,
+    view: Single<(&mut MagicView, &MagicScroll, Option<&CastsAt>, Option<&ConversationTarget>)>,
     sliders: Query<(&SliderValue, &SliderRange)>,
     members: Query<(
         crate::game::characters::PaperReadOnly,
@@ -772,10 +770,8 @@ pub(super) fn draw_magic_view(
     )>,
     mut icons: Query<(&RealmIcon, &mut Picture), (Without<ItemIcon>, Without<Pip>)>,
     time: Res<Time<Real>>,
-) {
-    let Ok((mut view, scroll, casts_at, conversation_target)) = views.single_mut() else {
-        return;
-    };
+) -> Result {
+    let (mut view, scroll, casts_at, conversation_target) = view.into_inner();
     let attempt = casts_at.map(|casts_at| casts_at.0);
     let (spells, items) = (&content.spells, &content.items);
     let Some(context) = context(
@@ -786,7 +782,7 @@ pub(super) fn draw_magic_view(
         camp.is_some(),
         &interaction,
     ) else {
-        return;
+        return Ok(());
     };
     let (paper, conditions, attributes, skills) = members.get(view.caster).unwrap();
     let character = paper.trained();
@@ -843,7 +839,7 @@ pub(super) fn draw_magic_view(
         context,
         conditions,
     );
-    let Ok((scroll_value, scroll_range)) = sliders.get(scroll.0) else { return };
+    let (scroll_value, scroll_range) = sliders.get(scroll.0)?;
     let maximum = offers.len().max(ROWS) - ROWS;
     set_scroll_maximum(&mut commands, scroll.0, scroll_value, scroll_range, maximum as f32);
     let offset = (scroll_value.0 as usize).min(maximum);
@@ -973,6 +969,7 @@ pub(super) fn draw_magic_view(
             }
         }
     }
+    Ok(())
 }
 
 /// Commit once the source, its power and its target are all chosen. A
@@ -980,7 +977,7 @@ pub(super) fn draw_magic_view(
 /// power as soon as it is chosen (retail `SC:990-1002`).
 pub(super) fn commit_magic_choice(
     mut commands: Commands,
-    mut views: Query<(Entity, &mut MagicView, Option<&CastsAt>, Option<&ConversationTarget>)>,
+    view: Single<(Entity, &mut MagicView, Option<&CastsAt>, Option<&ConversationTarget>)>,
     (the_party, held): (Single<Entity, With<PartyRoster>>, Items),
     content: If<Res<Catalogs>>,
     (conversations, speakers, monsters, party): (
@@ -993,13 +990,11 @@ pub(super) fn commit_magic_choice(
         Query<(&avian3d::prelude::Position, &PartyBody)>,
     ),
     mut requests: MessageWriter<MagicRequest>,
-) {
-    let Ok((root, mut view, casts_at, conversation_target)) = views.single_mut() else {
-        return;
-    };
+) -> Result {
+    let (root, mut view, casts_at, conversation_target) = view.into_inner();
     let attempt = casts_at.map(|casts_at| casts_at.0);
-    let Some(source) = view.source else { return };
-    let Some(id) = source.spell_id(&held) else { return };
+    let Some(source) = view.source else { return Ok(()) };
+    let Some(id) = source.spell_id(&held) else { return Ok(()) };
     let spell = &content.spells[id];
     if !view.items && view.power.is_none() {
         match spell.power {
@@ -1010,16 +1005,16 @@ pub(super) fn commit_magic_choice(
     }
     // An item casts at its own power.
     let power = if view.items { Some(1) } else { view.power };
-    let Some(power) = power else { return };
+    let Some(power) = power else { return Ok(()) };
     let aim = if let Some(relation) = conversation_target {
-        let Ok(conversation) = conversations.get(relation.0) else { return };
+        let conversation = conversations.get(relation.0)?;
         let Some((body, _, _)) = monsters.iter().find(|(entity, vitals, _)| {
             !vitals.is_dead()
                 && speakers
                     .get(*entity)
                     .is_ok_and(|binding| binding.0 == conversation.conversation.actor)
         }) else {
-            return;
+            return Ok(());
         };
         Aim::Body(body)
     } else if let Some(attempt) = attempt {
@@ -1029,17 +1024,17 @@ pub(super) fn commit_magic_choice(
             Targeting::Point => {
                 // On the ground ahead of the party, as far as the spell
                 // reaches (ten metres at most).
-                let Ok((position, body)) = party.single() else { return };
+                let Ok((position, body)) = party.single() else { return Ok(()) };
                 let feet = PartyBody::feet(position);
                 Aim::Point(feet + body.forward() * spell.reach.metres().min(10.0))
             }
             Targeting::Item => match held.held(*the_party) {
                 Some(item) => Aim::Item(item),
-                None => return,
+                None => return Ok(()),
             },
             Targeting::Ally => match view.member {
                 Some(member) => Aim::Body(member),
-                None => return,
+                None => return Ok(()),
             },
             // The game picks the monster ahead when the spell is cast.
             Targeting::Enemy | Targeting::EnemyGroup | Targeting::Cone | Targeting::Radius => {
@@ -1054,35 +1049,34 @@ pub(super) fn commit_magic_choice(
     };
     requests.write(MagicRequest { caster: view.caster, choice: MagicChoice { source, aim } });
     commands.entity(root).despawn();
+    Ok(())
 }
 
-fn toggle_pool(_: On<Activate>, mut views: Query<&mut MagicView>) {
-    if let Ok(mut view) = views.single_mut() {
-        view.pool = !view.pool;
-        view.source = None;
-        view.power = None;
-        view.member = None;
-    }
+fn toggle_pool(_: On<Activate>, mut view: Single<&mut MagicView>) {
+    view.pool = !view.pool;
+    view.source = None;
+    view.power = None;
+    view.member = None;
 }
 
 fn choose_realm(
     click: On<Activate>,
     realms: Query<&RealmButton>,
-    mut views: Query<&mut MagicView>,
-) {
-    if let (Ok(realm), Ok(mut view)) = (realms.get(click.entity), views.single_mut()) {
-        view.realm = Some(realm.0);
-        view.source = None;
-        view.power = None;
-        view.member = None;
-    }
+    mut view: Single<&mut MagicView>,
+) -> Result {
+    let realm = realms.get(click.entity)?;
+    view.realm = Some(realm.0);
+    view.source = None;
+    view.power = None;
+    view.member = None;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
 fn choose_row(
     click: On<Activate>,
     rows: Query<&Row>,
-    mut views: Query<(&mut MagicView, Option<&CastsAt>, Option<&ConversationTarget>)>,
+    view: Single<(&mut MagicView, Option<&CastsAt>, Option<&ConversationTarget>)>,
     members: Query<(
         crate::game::characters::PaperReadOnly,
         &crate::game::characters::Conditions,
@@ -1098,12 +1092,9 @@ fn choose_row(
     ),
     content: If<Res<Catalogs>>,
     conversations: Query<crate::game::npcs::conversation::DialogueReadOnly>,
-) {
-    let (Ok(row), Ok((mut view, casts_at, conversation_target))) =
-        (rows.get(click.entity), views.single_mut())
-    else {
-        return;
-    };
+) -> Result {
+    let row = rows.get(click.entity)?;
+    let (mut view, casts_at, conversation_target) = view.into_inner();
     let spells = &content.spells;
     let (paper, conditions, attributes, skills) = members.get(view.caster).unwrap();
     let character = paper.trained();
@@ -1125,13 +1116,13 @@ fn choose_row(
             &interaction,
         ) {
             Some(c) => c,
-            None => return,
+            None => return Ok(()),
         },
         conditions,
     );
     // The offer the row showed, as it stands now. Unavailable rows only
     // explain themselves in retail; here they do nothing.
-    let Some(shown) = row.1 else { return };
+    let Some(shown) = row.1 else { return Ok(()) };
     if let Some(offer) =
         offers.iter().find(|o| same_source(o.source, shown)).filter(|o| o.available)
     {
@@ -1139,16 +1130,22 @@ fn choose_row(
         view.power = None;
         view.member = None;
     }
+    Ok(())
 }
 
-fn choose_power(click: On<Activate>, pips: Query<&Pip>, mut views: Query<&mut MagicView>) {
-    let (Ok(pip), Ok(mut view)) = (pips.get(click.entity), views.single_mut()) else { return };
+fn choose_power(
+    click: On<Activate>,
+    pips: Query<&Pip>,
+    mut view: Single<&mut MagicView>,
+) -> Result {
+    let pip = pips.get(click.entity)?;
     if view.source.is_none() {
-        return;
+        return Ok(());
     }
     let power = if pip.0 >= 7 { AUTO_POWER } else { (pip.0 + 1).min(MAX_POWER) };
     // Clicking the lit pip again takes the choice back.
     view.power = if view.power == Some(power) { None } else { Some(power) };
+    Ok(())
 }
 
 fn cancel_view(_: On<Activate>, views: Query<Entity, With<MagicView>>, mut commands: Commands) {

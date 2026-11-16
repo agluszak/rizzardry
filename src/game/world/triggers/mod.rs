@@ -445,17 +445,15 @@ fn links_moving(
 #[allow(clippy::type_complexity)]
 fn activate(
     activate: On<Activate>,
-    mut devices: Query<
-        (
-            &Device,
-            &Uses,
-            &mut TriggerState,
-            &LevelOwned,
-            (Has<Usable>, Has<Once>, Has<Guarded>),
-            (Option<&Requires>, Option<&Reach>, Option<&Children>),
-        ),
-        Without<NpcSpeaker>,
-    >,
+    mut devices: Query<(
+        &Device,
+        &Uses,
+        &mut TriggerState,
+        &LevelOwned,
+        (Has<Usable>, Has<Once>, Has<Guarded>),
+        (Option<&Requires>, Option<&Reach>, Option<&Children>),
+        Has<NpcSpeaker>,
+    )>,
     mut doors: Query<(&mut DoorState, Option<&Key>)>,
     (recipients, motions): (Query<&Recipients>, Query<&PropMotion>),
     (levels, moving): (Query<&LevelState>, Query<(), With<PendingPartyMove>>),
@@ -464,13 +462,21 @@ fn activate(
     (freedom, items): (crate::game::freedom::Freedom, Items),
     mut effects: MessageWriter<TriggerEffect>,
     mut commands: Commands,
-) {
+) -> Result {
     let (device, by) = (activate.device, activate.by);
-    let Ok((named, uses, mut state, owner, (usable, once, guarded), (requires, reach, children))) =
-        devices.get_mut(device)
-    else {
-        return;
-    };
+    let (
+        named,
+        uses,
+        mut state,
+        owner,
+        (usable, once, guarded),
+        (requires, reach, children),
+        speaks,
+    ) = devices.get_mut(device)?;
+    // A device that speaks for someone is used by being spoken through.
+    if speaks {
+        return Ok(());
+    }
     let ready = usable && state.on && !(once && state.fired);
     let (party, at) = *party;
     match by {
@@ -478,17 +484,17 @@ fn activate(
             // Reach is from the party's eye to the prop's nearest part, or
             // its centre for one with nothing solid.
             let eye = PartyBody::eye(at);
-            let Some(reach) = reach else { return };
+            let Some(reach) = reach else { return Ok(()) };
             let solid = children.into_iter().flatten().filter_map(|&c| parts.get(c).ok());
             let distance = solid
                 .map(|(at, shape)| shape.distance_to_point(at.translation, at.rotation, eye, true))
                 .min_by(f32::total_cmp)
                 .unwrap_or_else(|| eye.distance(reach.centre));
             if !freedom.free() || !ready || !(reach.range.0..=reach.range.1).contains(&distance) {
-                return;
+                return Ok(());
             }
         }
-        By::Walking if !ready || moving.contains(owner.0) => return,
+        By::Walking if !ready || moving.contains(owner.0) => return Ok(()),
         _ => {}
     }
     let decline = |effects: &mut MessageWriter<TriggerEffect>| {
@@ -498,19 +504,21 @@ fn activate(
     };
     if by.depth() > MAX_DEPTH {
         warn!("trigger {} recurses too deeply", named.name);
-        return;
+        return Ok(());
     }
     let mut door = doors.get_mut(device).ok();
     // A door waits while any device it runs is still moving (retail
     // `CanRunLinkedTriggers`), before a key is tried.
     if door.is_some() && links_moving(device, 0, &recipients, &motions) {
-        return decline(&mut effects);
+        decline(&mut effects);
+        return Ok(());
     }
     let running = state.awaits_animation
         && motions.get(device).is_ok_and(|m| m.frame != m.target)
         && !matches!(uses.initial.action, TriggerAction::Shake { .. });
     if !state.on || (once && state.fired) || running {
-        return decline(&mut effects);
+        decline(&mut effects);
+        return Ok(());
     }
     let level = levels.get(owner.0).unwrap();
     let fallback = || {
@@ -548,7 +556,7 @@ fn activate(
             // selection and lock stay as they were.
             if let TriggerAction::Unsupported(code) = uses.get(slot).action {
                 effects.write(TriggerEffect::Unsupported { device: named.name.clone(), code });
-                return;
+                return Ok(());
             }
             if keyed && let Some((door, _)) = &mut door {
                 door.locked = false;
@@ -562,6 +570,7 @@ fn activate(
             commands.trigger(Activating { device, doing: Doing { by, slot } });
         }
     }
+    Ok(())
 }
 
 /// A device nobody has a say in goes on.
@@ -577,9 +586,9 @@ fn perform(
     perform: On<Perform>,
     devices: Query<(&Uses, Has<super::containers::Container>)>,
     mut commands: Commands,
-) {
+) -> Result {
     let (device, doing) = (perform.device, perform.doing);
-    let Ok((uses, container)) = devices.get(device) else { return };
+    let (uses, container) = devices.get(device)?;
     match &uses.get(doing.slot).action {
         TriggerAction::Nothing => commands.trigger(Committed { device, doing }),
         TriggerAction::NoRuntimeAction => commands.trigger(Act { device, doing, what: acts::Idle }),
@@ -636,6 +645,7 @@ fn perform(
         }
         TriggerAction::Unsupported(_) => unreachable!("refused as the use is chosen"),
     }
+    Ok(())
 }
 
 /// A device whose act is done sounds if it sounds then, and runs what it is
@@ -645,9 +655,9 @@ fn committed(
     devices: Query<(Option<&DeviceSound>, Has<FiresLinked>, Option<&Recipients>)>,
     mut effects: MessageWriter<TriggerEffect>,
     mut commands: Commands,
-) {
+) -> Result {
     let (device, doing) = (committed.device, committed.doing);
-    let Ok((sound, links, recipients)) = devices.get(device) else { return };
+    let (sound, links, recipients) = devices.get(device)?;
     if let Some(DeviceSound { sound, at, on_commit: true }) = sound {
         let (path, volume) = (sound.path.clone(), sound.volume);
         effects.write(TriggerEffect::Sound { path, volume, at: *at });
@@ -658,6 +668,7 @@ fn committed(
         }
     }
     commands.trigger(Fired { device, doing });
+    Ok(())
 }
 
 /// A device settles: the variable it changes (a dial has set its own), the
@@ -667,10 +678,10 @@ fn fired(
     mut devices: Query<(&Uses, &mut TriggerState, &LevelOwned, Option<&ChangesState>)>,
     mut levels: Query<(&Level, &mut LevelState)>,
     mut effects: MessageWriter<TriggerEffect>,
-) {
-    let Ok((uses, mut state, owner, changes)) = devices.get_mut(fired.device) else { return };
+) -> Result {
+    let (uses, mut state, owner, changes) = devices.get_mut(fired.device)?;
     let chosen = uses.get(fired.doing.slot);
-    let Ok((level, mut variables)) = levels.get_mut(owner.0) else { return };
+    let (level, mut variables) = levels.get_mut(owner.0)?;
     if let Some(ChangesState(name, change)) = changes
         && !matches!(chosen.action, TriggerAction::Dial)
     {
@@ -685,17 +696,18 @@ fn fired(
     if !state.fired {
         state.fired = true;
     }
+    Ok(())
 }
 
 /// Carry out the story's bidding on the level the party is in.
 fn bid(
     bid: On<Bid>,
-    mut levels: Query<(&DeviceNames, &mut LevelState), With<Level>>,
+    levels: Single<(&DeviceNames, &mut LevelState), With<Level>>,
     mut states: Query<&mut TriggerState>,
     mut doors: Query<&mut DoorState>,
     mut commands: Commands,
 ) {
-    let Ok((names, mut variables)) = levels.single_mut() else { return };
+    let (names, mut variables) = levels.into_inner();
     let mut run = |name: &str| {
         if let Some(device) = names.named(name) {
             commands.trigger(Activate { device, by: By::Level });

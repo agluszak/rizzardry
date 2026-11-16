@@ -116,10 +116,10 @@ pub(super) fn resolve(
     dialogs: Query<(&ConfirmDialog, &ContextActivity<ConfirmDialog>)>,
     mut sessions: Query<&mut Creation>,
     mut commands: Commands,
-) {
-    let Ok((dialog, active)) = dialogs.get(answer.dialog) else { return };
+) -> Result {
+    let (dialog, active) = dialogs.get(answer.dialog)?;
     if !**active {
-        return;
+        return Ok(());
     }
     if answer.accepted
         && let Ok(mut session) = sessions.single_mut()
@@ -145,6 +145,7 @@ pub(super) fn resolve(
         }
     }
     commands.entity(answer.dialog).despawn();
+    Ok(())
 }
 
 /// Word the question once its font and strings are there, each line centred

@@ -46,16 +46,17 @@ pub(super) fn drink(
     content: Res<Catalogs>,
     mut outcomes: MessageWriter<TriggerEffect>,
     mut commands: Commands,
-) {
+) -> Result {
     let (water, doing) = (act.what, act.doing);
-    let Ok(mut supply) = fountains.get_mut(act.device) else { return };
+    let mut supply = fountains.get_mut(act.device)?;
     let now = clock.ms;
     if supply
         .used
         .as_ref()
         .is_some_and(|s| s.left == Some(0) && !s.refills_at.is_some_and(|at| at <= now))
     {
-        return doing.decline(&mut outcomes);
+        doing.decline(&mut outcomes);
+        return Ok(());
     }
     let used = supply.used.get_or_insert(Uses { left: water.uses, refills_at: None });
     if used.refills_at.is_some_and(|at| at <= now) {
@@ -63,7 +64,8 @@ pub(super) fn drink(
     }
     if let Some(left) = &mut used.left {
         if *left == 0 {
-            return doing.decline(&mut outcomes);
+            doing.decline(&mut outcomes);
+            return Ok(());
         }
         *left -= 1;
         if used.refills_at.is_none() {
@@ -113,4 +115,5 @@ pub(super) fn drink(
     ));
     outcomes.write(TriggerEffect::FountainUsed { at: supply.at });
     commands.trigger(Committed { device: act.device, doing });
+    Ok(())
 }

@@ -59,7 +59,6 @@ impl Plugin for CombatPlugin {
         .add_observer(round_end::rest_the_idle)
         .add_observer(round_end::cool_specials)
         .add_observer(round_end::pulse_clouds)
-        .add_observer(round_end::count_pulse)
         .add_observer(count_cast)
         .add_observer(round_end::judge_victory)
         .add_observer(round_end::look_again)
@@ -71,7 +70,6 @@ impl Plugin for CombatPlugin {
         .add_observer(turn::take_turn)
         .add_observer(turn::act)
         .add_observer(turn::breathe)
-        .add_observer(turn::tell_breath)
         .add_observer(turn::guard)
         .add_observer(turn::retreat)
         .add_observer(turn::hold)
@@ -446,19 +444,20 @@ pub fn settle_defeat(
 /// `RecordMonsterKill`); everyone's is announced.
 fn credit_death(
     died: On<Add<Dead>>,
-    bodies: Query<
-        (
-            &Side,
-            Option<&crate::game::world::population::Worth>,
-            Has<crate::game::magic::pointcasts::SummonedBy>,
-        ),
-        With<Combatant>,
-    >,
+    bodies: Query<(
+        &Side,
+        Option<&crate::game::world::population::Worth>,
+        Has<crate::game::magic::pointcasts::SummonedBy>,
+        Has<Combatant>,
+    )>,
     mut spoils: Single<&mut Spoils, With<Battle>>,
     mut news: MessageWriter<CombatNews>,
-) {
+) -> Result {
     let actor = died.entity;
-    let Ok((side, worth, summoned)) = bodies.get(actor) else { return };
+    let (side, worth, summoned, fighting) = bodies.get(actor)?;
+    if !fighting {
+        return Ok(());
+    }
     if let Some(worth) = worth
         && side.own() == Stance::Hostile
     {
@@ -468,6 +467,7 @@ fn credit_death(
         }
     }
     news.write(CombatNews::Killed { actor });
+    Ok(())
 }
 
 /// A member who killed a hostile in the fight has it on their tally; if it
@@ -476,29 +476,33 @@ fn credit_death(
 #[allow(clippy::type_complexity)]
 fn count_kill(
     died: On<Add<Dead>>,
-    killed: Query<
-        (&Dead, &Side, &crate::game::actors::Level, Has<crate::game::world::population::Notable>),
-        (With<Combatant>, With<crate::game::world::population::Worth>),
-    >,
+    killed: Query<(
+        (&Dead, &Side, &crate::game::actors::Level),
+        (Has<crate::game::world::population::Notable>, Has<Combatant>),
+        Has<crate::game::world::population::Worth>,
+    )>,
     mut members: Query<
         (&mut crate::game::characters::Tally, &crate::game::actors::Level),
         With<crate::game::party::roster::PartyMember>,
     >,
+    tallied: Query<Has<crate::game::party::roster::PartyMember>>,
     mut news: MessageWriter<CombatNews>,
-) {
-    let Ok((&Dead { by: Some(killer) }, side, level, notable)) = killed.get(died.entity) else {
-        return;
+) -> Result {
+    let ((&Dead { by }, side, level), (notable, fighting), worth) = killed.get(died.entity)?;
+    let Some(killer) = by.filter(|&killer| tallied.get(killer).is_ok_and(|member| member)) else {
+        return Ok(());
     };
-    if side.own() != Stance::Hostile {
-        return;
+    if !fighting || !worth || side.own() != Stance::Hostile {
+        return Ok(());
     }
     let (sum, count) =
         members.iter().fold((0, 0), |(sum, count), (_, level)| (sum + level.0, count + 1));
-    let Ok((mut tally, _)) = members.get_mut(killer) else { return };
+    let (mut tally, _) = members.get_mut(killer)?;
     tally.kills += 1;
     if notable && sum / count + 2 <= level.0 {
         news.write(CombatNews::Feat { member: killer });
     }
+    Ok(())
 }
 
 /// Starting the round while the party moves ends its move (retail
@@ -675,9 +679,9 @@ pub(crate) fn participants<'a>(
 /// going.
 fn count_cast(
     _: On<Add<crate::game::magic::landed::Spell>>,
-    mut rounds: Query<&mut Round, With<Battle>>,
+    round: Option<Single<&mut Round, With<Battle>>>,
 ) {
-    if let Ok(mut round) = rounds.single_mut() {
+    if let Some(mut round) = round {
         round.attacked(true);
     }
 }

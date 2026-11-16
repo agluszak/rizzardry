@@ -12,12 +12,14 @@ use crate::game::{
         population::Monster,
     },
 };
+use bevy::ecs::relationship::RelationshipTarget;
 use bevy::ecs::system::SystemParam;
 
 /// The people there are, and where each can be met.
 #[derive(SystemParam)]
 pub struct NpcActors<'w, 's> {
-    persons: Query<'w, 's, (Entity, &'static ActorId, Option<&'static NpcTrigger>)>,
+    persons: Query<'w, 's, (Entity, &'static ActorId, Option<&'static SpokenFor>)>,
+    speakers: Query<'w, 's, &'static LevelOwned, With<NpcSpeaker>>,
     people: People<'w, 's>,
     bodies: Query<
         'w,
@@ -38,7 +40,7 @@ pub struct NpcActors<'w, 's> {
 }
 impl NpcActors<'_, '_> {
     pub fn level(&self) -> Option<(Entity, &Level)> {
-        self.levels.iter().next()
+        self.levels.single().ok()
     }
     pub fn now(&self) -> u64 {
         self.clock.ms
@@ -78,11 +80,13 @@ impl NpcActors<'_, '_> {
         self.member(person).is_some()
     }
     pub fn available(&self, person: Entity) -> bool {
-        let Ok((_, _, trigger)) = self.persons.get(person) else { return false };
+        let (_, _, spoken_for) = self.persons.get(person).expect("a person");
         if let Some(member) = self.member(person) {
             return self.members.get(member).is_ok_and(|v| !v.is_dead());
         }
-        if trigger.is_some_and(|t| self.levels.contains(t.0)) {
+        // A device in the level played speaks for them.
+        let speaks = |device| self.speakers.get(device).is_ok_and(|on| self.levels.contains(on.0));
+        if spoken_for.is_some_and(|devices| devices.iter().any(speaks)) {
             return true;
         }
         let Some(body) = self.active_body(person) else { return false };

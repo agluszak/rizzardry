@@ -1032,7 +1032,7 @@ fn answer(
     let blow = Blow { damage: answer, effects: AttackEffects::default(), by_monster: false };
     let strike =
         effects::Strike::new(Rows::Blow(blow), Strength::default(), Some(victim), &content);
-    commands.spawn((Deed::at(strike, [actor]), AnswerTo(swing)));
+    commands.spawn(AnswerTo(swing)).observe(answered).insert(Deed::at(strike, [actor]));
     Ok(())
 }
 
@@ -1140,24 +1140,26 @@ fn blow(
     let blow = Blow { damage, effects: carried, by_monster };
     let strength = attack::effect_strength(level.0);
     let strike = effects::Strike::new(Rows::Blow(blow), strength, Some(actor), &content);
-    commands.spawn((Deed::at(strike, [victim]), BlowOf(swing)));
+    // Watched before it lands, which it does as it is made.
+    commands.spawn(BlowOf(swing)).observe(blew).insert(Deed::at(strike, [victim]));
     Ok(())
 }
 
-/// What a swing's blow did, once it has landed.
-fn blew(landed: On<Landed>, blows: Query<&BlowOf>, mut commands: Commands) {
-    if let Ok(&BlowOf(swing)) = blows.get(landed.deed) {
-        let done = attack::dealt(landed.effects.iter().copied());
-        commands.entity(swing).insert(Blew(done));
-    }
+/// What a swing's blow did, once it has landed: its deed's own observer.
+fn blew(landed: On<Landed>, blows: Query<&BlowOf>, mut commands: Commands) -> Result {
+    let &BlowOf(swing) = blows.get(landed.deed)?;
+    let done = attack::dealt(landed.effects.iter().copied());
+    commands.entity(swing).insert(Blew(done));
+    Ok(())
 }
 
-/// What Razor Cloak's answer did, once it has landed.
-fn answered(landed: On<Landed>, answers: Query<&AnswerTo>, mut commands: Commands) {
-    if let Ok(&AnswerTo(swing)) = answers.get(landed.deed) {
-        let done = attack::dealt(landed.effects.iter().copied());
-        commands.entity(swing).insert(Answered(done));
-    }
+/// What Razor Cloak's answer did, once it has landed: its deed's own
+/// observer.
+fn answered(landed: On<Landed>, answers: Query<&AnswerTo>, mut commands: Commands) -> Result {
+    let &AnswerTo(swing) = answers.get(landed.deed)?;
+    let done = attack::dealt(landed.effects.iter().copied());
+    commands.entity(swing).insert(Answered(done));
+    Ok(())
 }
 
 /// A settled swing is told (section 7). One gone astray is told on its own
@@ -1203,13 +1205,13 @@ fn tell(
 fn trains(
     settling: On<Settling>,
     mut commands: Commands,
-    swings: Query<(&SwingOf, &Fate), With<Blew>>,
+    swings: Query<(&SwingOf, &Fate, Has<Blew>)>,
     attacks: Query<(&AttackBy, &AttackWith)>,
     arms: Query<Option<&Trains>>,
     trained: Query<(&Calling, &Abilities)>,
 ) -> Result {
-    let Ok((&SwingOf(attack), fate)) = swings.get(settling.swing) else { return Ok(()) };
-    if matches!(fate, Fate::Astray { .. }) {
+    let (&SwingOf(attack), fate, blew) = swings.get(settling.swing)?;
+    if !blew || matches!(fate, Fate::Astray { .. }) {
         return Ok(());
     }
     let (&AttackBy(actor), with) = attacks.get(attack)?;
@@ -1231,15 +1233,15 @@ fn tire(
     mut commands: Commands,
     swings: Query<&SwingOf>,
     attacks: Query<(&AttackBy, &AttackWith, Has<Fury>)>,
-    arms: Query<Option<&Heft>, With<TiresToSwing>>,
+    arms: Query<(Option<&Heft>, Has<TiresToSwing>)>,
     attackers: Query<(&Conditions, &Modifiers, Option<&Burden>)>,
     mut rng: ResMut<GameRng>,
 ) -> Result {
     let &SwingOf(attack) = swings.get(settling.swing)?;
     let (&AttackBy(actor), with, fury) = attacks.get(attack)?;
-    let Ok(heft) = arms.get(with.arm) else { return Ok(()) };
+    let (heft, tires) = arms.get(with.arm)?;
     let (conditions, own, burden) = attackers.get(actor)?;
-    let Some(burden) = burden else { return Ok(()) };
+    let (Some(burden), true) = (burden, tires) else { return Ok(()) };
     let (below, add) = attack::stamina_draw(with.mode, heft.map(|heft| heft.0));
     let cost = (rng.below(below) + add)
         * if fury { 2 } else { 1 }
@@ -1261,16 +1263,17 @@ fn spend(
     mut commands: Commands,
     swings: Query<&SwingOf>,
     attacks: Query<(&AttackBy, &AttackWith, &SwingCount)>,
-    arms: Query<(&Hand, &Grip, Has<Loaded>)>,
+    arms: Query<(&Hand, Option<&Grip>, Has<Loaded>)>,
     mut turns: Query<&mut Turn>,
     strikers: Query<(Option<&Weapon>, Option<&Missile>)>,
     held: Items,
 ) -> Result {
     let &SwingOf(attack) = swings.get(settling.swing)?;
     let (&AttackBy(actor), with, count) = attacks.get(attack)?;
-    let Ok((hand, grip, loaded)) = arms.get(with.arm) else { return Ok(()) };
+    let (hand, grip, loaded) = arms.get(with.arm)?;
+    // A monster's natural attack has no grip, and shoots nothing.
     let ranged = grip
-        .weapon()
+        .and_then(|grip| grip.weapon())
         .and_then(|item| strikers.get(item).ok())
         .is_some_and(|(weapon, _)| weapon.is_some_and(|weapon| weapon.ranged));
     let slot = if loaded { hand.0.other() } else { hand.0 };
@@ -1359,8 +1362,6 @@ pub(super) fn plugin(app: &mut App) {
         .add_observer(answer)
         .add_observer(struck)
         .add_observer(blow)
-        .add_observer(blew)
-        .add_observer(answered)
         .add_observer(tell)
         .add_observer(trains)
         .add_observer(tire)

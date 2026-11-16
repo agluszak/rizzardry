@@ -794,22 +794,18 @@ impl Items<'_, '_> {
     /// Whether two are stacks of the same thing, which meet by joining (if
     /// the party knows them alike) and never by changing places.
     pub fn alike(&self, a: Entity, b: Entity) -> bool {
-        let (Ok((item, Some(_), ..)), Ok((other, Some(_), ..))) =
-            (self.items.get(a), self.items.get(b))
-        else {
-            return false;
-        };
-        a != b && item == other
+        let (item, count, ..) = self.items.get(a).expect("an item");
+        let (other, theirs, ..) = self.items.get(b).expect("an item");
+        a != b && count.is_some() && theirs.is_some() && item == other
     }
 
     /// How many of `source` could join `target`: they are alike (made from
     /// the same definition, known the same) and stack, up to the limit.
     pub fn room(&self, target: Entity, source: Entity) -> u16 {
-        let (Ok((item, Some(count), _, known, _)), Ok((other, Some(_), _, theirs, _))) =
-            (self.items.get(target), self.items.get(source))
-        else {
-            return 0;
-        };
+        let (item, count, _, known, _) = self.items.get(target).expect("an item");
+        let (other, stacks, _, theirs, _) = self.items.get(source).expect("an item");
+        // Only stacks join.
+        let (Some(count), Some(_)) = (count, stacks) else { return 0 };
         if target == source || item != other || known.identified != theirs.identified {
             return 0;
         }
@@ -953,14 +949,15 @@ pub struct Stack {
     pub from: Entity,
 }
 
-fn stack(event: On<Stack>, mut stacks: Query<(&Item, &mut Count, &Known)>, mut commands: Commands) {
-    let Ok([(item, mut onto, known), (other, mut from, theirs)]) =
-        stacks.get_many_mut([event.onto, event.from])
-    else {
-        return;
-    };
+fn stack(
+    event: On<Stack>,
+    mut stacks: Query<(&Item, &mut Count, &Known)>,
+    mut commands: Commands,
+) -> Result {
+    let [(item, mut onto, known), (other, mut from, theirs)] =
+        stacks.get_many_mut([event.onto, event.from])?;
     if item != other || known.identified != theirs.identified {
-        return;
+        return Ok(());
     }
     let moved = (onto.limit.max(onto.of) - onto.of).min(from.of);
     onto.of += moved;
@@ -968,6 +965,7 @@ fn stack(event: On<Stack>, mut stacks: Query<(&Item, &mut Count, &Known)>, mut c
     if from.of == 0 {
         commands.entity(event.from).despawn();
     }
+    Ok(())
 }
 
 /// What is left of a part taken from a stack, still stowed beside the stack
@@ -980,11 +978,12 @@ pub struct Rejoin {
     pub whole: Entity,
 }
 
-fn rejoin(event: On<Rejoin>, stowed: Query<&Stowed>, mut commands: Commands) {
-    let (Ok(part), Ok(whole)) = (stowed.get(event.part), stowed.get(event.whole)) else { return };
-    if part == whole {
+fn rejoin(event: On<Rejoin>, stowed: Query<Option<&Stowed>>, mut commands: Commands) -> Result {
+    let (part, whole) = (stowed.get(event.part)?, stowed.get(event.whole)?);
+    if part.is_some() && part == whole {
         commands.trigger(Stack { onto: event.whole, from: event.part });
     }
+    Ok(())
 }
 
 /// An item goes to a place, leaving wherever it was. Whoever asks has
@@ -1061,26 +1060,28 @@ pub struct Load {
 
 fn load(
     event: On<Load>,
-    mut charges: Query<&mut Charges>,
-    mut counts: Query<&mut Count>,
-    keeps: Query<(), With<KeepsEmpty>>,
+    mut stock: Query<(Option<&mut Charges>, Option<&mut Count>, Has<KeepsEmpty>)>,
     mut commands: Commands,
-) {
-    let Ok(taking) = charges.get(event.into).copied() else { return };
-    let stacked = counts.get(event.from).ok().map(|count| count.of);
-    let Some(available) = stacked.or(charges.get(event.from).ok().map(|from| from.left)) else {
-        return;
-    };
+) -> Result {
+    // Only what holds charges is loaded.
+    let (Some(&taking), ..) = stock.get(event.into)? else { return Ok(()) };
+    let (charges, count, keeps) = stock.get(event.from)?;
+    let stacked = count.map(|count| count.of);
+    let Some(available) = stacked.or(charges.map(|from| from.left)) else { return Ok(()) };
     let moved = available.min(taking.full.max(taking.left) - taking.left);
-    charges.get_mut(event.into).unwrap().left += moved;
-    let left = available - moved;
-    match counts.get_mut(event.from) {
-        Ok(mut count) => count.of = left,
-        Err(_) => charges.get_mut(event.from).unwrap().left = left,
+    if let (Some(mut into), ..) = stock.get_mut(event.into)? {
+        into.left += moved;
     }
-    if left == 0 && (stacked.is_some() || !keeps.contains(event.from)) {
+    let left = available - moved;
+    match stock.get_mut(event.from)? {
+        (_, Some(mut count), _) => count.of = left,
+        (Some(mut charges), None, _) => charges.left = left,
+        (None, None, _) => {}
+    }
+    if left == 0 && (stacked.is_some() || !keeps) {
         commands.entity(event.from).despawn();
     }
+    Ok(())
 }
 
 /// An item is used: a charge is spent, or one of a stack, or the thing
@@ -1097,8 +1098,8 @@ fn spend(
     event: On<Spend>,
     mut items: Query<(Option<&mut Charges>, Option<&mut Count>, Has<SpentByUse>, Has<KeepsEmpty>)>,
     mut commands: Commands,
-) {
-    let Ok((charges, count, spent_by_use, keeps)) = items.get_mut(event.item) else { return };
+) -> Result {
+    let (charges, count, spent_by_use, keeps) = items.get_mut(event.item)?;
     let gone = match (charges, count) {
         (Some(mut charges), _) => {
             charges.left -= charges.left.min(event.amount);
@@ -1113,6 +1114,7 @@ fn spend(
     if gone {
         commands.entity(event.item).despawn();
     }
+    Ok(())
 }
 
 /// Some of an item leave the party for good, sold, given away or burnt: that
@@ -1182,9 +1184,9 @@ fn give(
     content: Res<Catalogs>,
     mut news: MessageWriter<ItemNews>,
     mut commands: Commands,
-) {
+) -> Result {
     let Give { item, to, party, pool_first, told } = *event;
-    let Ok((&Item(id), known)) = shown.get(item) else { return };
+    let (&Item(id), known) = shown.get(item)?;
     let mut left = items.units(item) as u16;
     let mut taker = None;
     if pool_first && take_into_pool(&items, &mut commands, (item, party), &mut left) {
@@ -1199,7 +1201,7 @@ fn give(
         taker = Some(None);
     }
     if !told {
-        return;
+        return Ok(());
     }
     let name = content.items[id].known_name(known.identified).to_owned();
     if let Some(member) = taker {
@@ -1212,6 +1214,7 @@ fn give(
     if left > 0 {
         news.write(ItemNews::NoRoom);
     }
+    Ok(())
 }
 
 /// A member takes what they can of an item: into what they carry alike,
@@ -1320,12 +1323,9 @@ fn loads(
     gun: Entity,
     ammunition: Entity,
 ) -> bool {
-    let (Ok((_, _, true, Some(loaded_by))), Ok((ammunition, ..))) =
-        (things.get(gun), things.get(ammunition))
-    else {
-        return false;
-    };
-    loaded_by.0 == ammunition.0
+    let (_, _, charged, loaded_by) = things.get(gun).expect("an item");
+    let (ammunition, ..) = things.get(ammunition).expect("an item");
+    charged && loaded_by.is_some_and(|loaded_by| loaded_by.0 == ammunition.0)
 }
 
 /// The hand meets something a member carries: a slot they wear in, or one
@@ -1681,22 +1681,24 @@ pub struct Identify {
 
 fn identify(
     event: On<Identify>,
-    shown: Query<(&Known, &Obscure)>,
+    shown: Query<(&Known, Option<&Obscure>)>,
     rosters: Query<&PartyRoster>,
-    members: Query<&Skills, With<crate::game::actors::Lucid>>,
+    members: Query<(&Skills, Has<crate::game::actors::Lucid>)>,
     mut commands: Commands,
-) {
-    let (Ok((&known, &Obscure(difficulty))), Ok(roster)) =
-        (shown.get(event.item), rosters.get(event.party))
-    else {
-        return;
-    };
+) -> Result {
+    let (&known, obscure) = shown.get(event.item)?;
+    let roster = rosters.get(event.party)?;
+    // What is not obscure was never unknown.
+    let Some(&Obscure(difficulty)) = obscure else { return Ok(()) };
     if known.identified {
-        return;
+        return Ok(());
     }
     let (mut identified, mut binding) = (false, false);
     for attempting in roster.iter() {
-        let Ok(skills) = members.get(attempting) else { continue };
+        let (skills, lucid) = members.get(attempting)?;
+        if !lucid {
+            continue;
+        }
         let Some(attempt) = identify_attempt(skills, difficulty) else { continue };
         identified = true;
         binding |= attempt.binding;
@@ -1711,6 +1713,7 @@ fn identify(
             curse: known.curse || binding,
         });
     }
+    Ok(())
 }
 
 /// What one member's go at identifying an item came to.
@@ -1748,17 +1751,15 @@ pub struct Outfit {
 fn outfit(
     event: On<Outfit>,
     items: Items,
-    fit: Query<Fit>,
+    fit: Query<Option<Fit>>,
     characters: Query<((&Calling, &Birth), &Training, &Attributes, &Skills)>,
     mut commands: Commands,
-) {
+) -> Result {
     let Outfit { member, item } = *event;
-    let (Ok((character, training, attributes, skills)), Ok(coming)) =
-        (characters.get(member), fit.get(item))
-    else {
-        return;
-    };
-    let worn = |slot| items.worn(member, slot).and_then(|worn| fit.get(worn).ok());
+    let (character, training, attributes, skills) = characters.get(member)?;
+    // What cannot be worn is not put on.
+    let Some(coming) = fit.get(item)? else { return Ok(()) };
+    let worn = |slot| items.worn(member, slot).and_then(|worn| fit.get(worn).ok().flatten());
     let slot = creation_slot(&coming, &worn, training).filter(|slot| {
         coming.wear.users.admit(character, attributes, skills)
             && fits(coming.wear, |slot| worn(slot).map(|worn| worn.wear), &[]).contains(slot)
@@ -1768,12 +1769,12 @@ fn outfit(
         match items.worn(member, slot) {
             None => {
                 commands.trigger(Put { item, at: Place::Slot { member, slot } });
-                return;
+                return Ok(());
             }
             Some(there) => {
                 join(&items, &mut commands, item, [there], &mut left);
                 if left == 0 {
-                    return;
+                    return Ok(());
                 }
             }
         }
@@ -1781,6 +1782,7 @@ fn outfit(
     if !take_into_pack(&items, &mut commands, (item, member), &mut left) {
         warn!("no room for {:?} in their pack", coming.item.0);
     }
+    Ok(())
 }
 
 /// Where creation puts an item (retail `GetItemDefaultEquipSlot` with the

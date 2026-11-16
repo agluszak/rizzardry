@@ -117,7 +117,7 @@ pub(super) fn gate_devices(
         let Some(gates) = gates else { continue };
         let cases = gates.devices.iter().find(|(gated, _)| gated.eq_ignore_ascii_case(&made.name));
         if let (Some((_, cases)), true) = (cases, names.named(&made.name) == Some(device)) {
-            commands.entity(device).insert(Gate(cases));
+            commands.entity(device).insert(Gate(cases)).observe(ask);
         }
     }
 }
@@ -139,34 +139,38 @@ fn lets_through(
     case.runs
 }
 
-/// A gated device is about to do its act: its gate decides.
-pub(super) fn ask(
+/// A gated device is about to do its act: its gate decides. The gate's own
+/// observer, set with it.
+fn ask(
     asking: On<Activating>,
     gates: Query<&Gate>,
     readings: Readings,
     (story, factions): (Res<StoryFacts>, Res<Factions>),
     mut commands: Commands,
-) {
-    let Ok(gate) = gates.get(asking.device) else { return };
+) -> Result {
+    let gate = gates.get(asking.device)?;
     if lets_through(gate, &readings, (&story, &factions), &mut commands) {
         commands.trigger(Perform { device: asking.device, doing: asking.doing });
     }
+    Ok(())
 }
 
 /// A device that speaks for someone is used: if its gate lets it, they are
 /// spoken with, and are handed what the party holds as the talk begins
-/// (retail `NotifyNpcTriggerActivation`).
+/// (retail `NotifyNpcTriggerActivation`). The speaking device's own
+/// observer, set as it is bound.
 pub(super) fn speak(
     used: On<Activate>,
     speakers: Query<(&NpcSpeaker, Option<&Gate>)>,
     readings: Readings,
     (story, factions): (Res<StoryFacts>, Res<Factions>),
     mut commands: Commands,
-) {
-    let Ok((&NpcSpeaker(actor), gate)) = speakers.get(used.device) else { return };
+) -> Result {
+    let (&NpcSpeaker(actor), gate) = speakers.get(used.device)?;
     if gate.is_none_or(|gate| lets_through(gate, &readings, (&story, &factions), &mut commands)) {
         commands.trigger(Begin { actor, quote: None, with_held: true });
     }
+    Ok(())
 }
 
 /// What a device's gate does to the party and its level: a message of the
@@ -177,7 +181,7 @@ pub(super) fn befalls_at_a_device(
     befalls: On<Befell<DeviceAct>>,
     party: Single<(Entity, &PartyRoster)>,
     mut members: Query<(&mut Experience, &Vitals)>,
-    mut levels: Query<(&Level, &Unborn, &mut MonsterBodies)>,
+    mut played: Option<Single<(&Level, &Unborn, &mut MonsterBodies)>>,
     mut generators: Query<(&Name, &mut EncounterGenerator, &LevelOwned)>,
     (definitions, server): (Res<Assets<LevelDefinition>>, Res<AssetServer>),
     held: Items,
@@ -195,7 +199,7 @@ pub(super) fn befalls_at_a_device(
             told.write(StoryTold { string: *string });
         }
         DeviceAct::Message(id) => {
-            if let Some((level, ..)) = levels.iter().next() {
+            if let Some((level, ..)) = played.as_deref() {
                 effects.write(TriggerEffect::Message { source: level.messages.clone(), id: *id });
             }
         }
@@ -212,14 +216,14 @@ pub(super) fn befalls_at_a_device(
         // The generators that draw from one table draw from another from
         // now on (retail `SetEncounterTable`); what it holds is made ready.
         DeviceAct::Breeds { from, to } => {
-            for (level, _, mut bodies) in &mut levels {
-                let Some(definition) = definitions.get(&level.definition) else { continue };
-                let encounters = &definition.encounters;
-                let Some(other) =
-                    encounters.tables.iter().find(|table| table.name.eq_ignore_ascii_case(to))
-                else {
-                    continue;
-                };
+            if let Some((level, _, bodies)) = played.as_deref_mut()
+                && let Some(definition) = definitions.get(&level.definition)
+                && let Some(other) = definition
+                    .encounters
+                    .tables
+                    .iter()
+                    .find(|table| table.name.eq_ignore_ascii_case(to))
+            {
                 for entry in &other.entries {
                     let kinds = std::iter::once(entry.species).chain(
                         content.species[entry.species].companions.iter().flatten().map(|c| c.0),
@@ -249,7 +253,7 @@ pub(super) fn befalls_at_a_device(
         // Every group of a species still to be born is (retail
         // `GiveBirthToMonster` on each).
         DeviceAct::Births(species) => {
-            for (_, unborn, _) in &levels {
+            if let Some((_, unborn, _)) = played.as_deref() {
                 let of_species = unborn.0.iter().filter(|one| one.monster.species == *species);
                 let groups: std::collections::BTreeSet<i32> =
                     of_species.filter_map(|one| one.group).collect();

@@ -42,7 +42,7 @@ pub struct Breath;
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Range(pub f32);
 
-/// Whom its spell is cast at.
+/// Whom a spell at one body is cast at.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CastAt {
     Itself,
@@ -55,24 +55,12 @@ pub enum CastAt {
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct AtEnemies;
 
-/// One aim of it takes in the body aimed at.
-#[derive(Component, Clone, Copy, Debug, Default)]
-pub struct OneBody;
-
-/// One aim of it takes in a group: the party or a monster group.
-#[derive(Component, Clone, Copy, Debug, Default)]
-pub struct OneGroup;
-
 /// One aim of it takes in whoever stands in its cone or its blast.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Area {
     Cone,
     Blast,
 }
-
-/// It is cast ahead, and takes in every foe.
-#[derive(Component, Clone, Copy, Debug, Default)]
-pub struct Ahead;
 
 /// What its spell does, by which a body would feel it or not. A breath has
 /// none: every body would feel it (retail lists the cone with the damage
@@ -105,8 +93,10 @@ pub fn of_kind(kind: &Species) -> impl Bundle {
     }))
 }
 
-/// A slot's spell, as it is made, gives it its reach, whom it is cast at, what
-/// one aim of it takes in and what it does. A spell a monster cannot cast at
+/// A slot's spell, as it is made, gives it its reach, what it does, and how
+/// its aims are made: the observer of its kind of aim watches it, at one
+/// body (cast at itself, friends or foes), a group, a cone or a blast, or
+/// ahead. A spell a monster cannot cast at
 /// all (retail `IsSpellUsableByMonster`: monsters may not cast it, the game
 /// does not resolve it, or it is aimed at the party, a point, an item or a
 /// lock) leaves no slot.
@@ -115,30 +105,31 @@ pub(super) fn fill(
     mut commands: Commands,
     slots: Query<(&Casts, Has<Breath>)>,
     content: Res<Catalogs>,
-) {
+) -> Result {
     let slot = made.entity;
-    let Ok((&Casts(id), breath)) = slots.get(slot) else { return };
-    let Some(spell) = content.spells.get(id) else { return };
+    let (&Casts(id), breath) = slots.get(slot)?;
+    let Some(spell) = content.spells.get(id) else { return Ok(()) };
     let row = crate::game::hits::definitions::row(spell);
     let mut slot = commands.entity(slot);
     if !breath {
         let (Some(row), true) = (row, spell.monsters_cast) else {
             slot.despawn();
-            return;
+            return Ok(());
         };
         slot.insert(Works(row));
     }
+    use super::aim;
     match spell.targeting {
-        Targeting::Caster => slot.insert((CastAt::Itself, OneBody)),
-        Targeting::Ally => slot.insert((CastAt::Friends, OneBody)),
-        Targeting::Enemy => slot.insert((CastAt::Foes, OneBody)),
-        Targeting::EnemyGroup => slot.insert((CastAt::Foes, OneGroup)),
-        Targeting::Cone => slot.insert((CastAt::Foes, Area::Cone)),
-        Targeting::Radius => slot.insert((CastAt::Foes, Area::Blast)),
-        Targeting::AllEnemies => slot.insert((CastAt::Foes, Ahead)),
+        Targeting::Caster => slot.insert(CastAt::Itself).observe(aim::at_bodies),
+        Targeting::Ally => slot.insert(CastAt::Friends).observe(aim::at_bodies),
+        Targeting::Enemy => slot.insert(CastAt::Foes).observe(aim::at_bodies),
+        Targeting::EnemyGroup => slot.observe(aim::at_groups),
+        Targeting::Cone => slot.insert(Area::Cone).observe(aim::at_areas),
+        Targeting::Radius => slot.insert(Area::Blast).observe(aim::at_areas),
+        Targeting::AllEnemies => slot.observe(aim::ahead),
         Targeting::Party | Targeting::Point | Targeting::Item | Targeting::LockOrTrap => {
             slot.despawn();
-            return;
+            return Ok(());
         }
     };
     slot.insert(Range(spell.reach.metres()));
@@ -148,6 +139,7 @@ pub(super) fn fill(
     if spell.books.contains(Spellbook::Alchemy) {
         slot.insert(Alchemy);
     }
+    Ok(())
 }
 
 /// A slot may be cast while no silence stops it: a silence stops all but

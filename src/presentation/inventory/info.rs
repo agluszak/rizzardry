@@ -69,17 +69,13 @@ pub(super) fn open_info(
     mut commands: Commands,
     tabs: Option<Single<&SelectedTab, With<super::review::PageTabs>>>,
     mut focus: Option<ResMut<InputFocus>>,
-) {
+) -> Result {
     if click.button != PointerButton::Secondary || !existing.is_empty() {
-        return;
+        return Ok(());
     }
-    let (Ok(target), Ok((profile, skills)), Some(font), Some(strings)) = (
-        targets.get(click.entity),
-        profiles.get(screen.member),
-        sheets.get(&art.font),
-        strings.table(),
-    ) else {
-        return;
+    let (target, (profile, skills)) = (targets.get(click.entity)?, profiles.get(screen.member)?);
+    let (Some(font), Some(strings)) = (sheets.get(&art.font), strings.table()) else {
+        return Ok(());
     };
     let learned = learned.get(screen.member).unwrap();
     let string = |id| strings.get(id).unwrap_or("");
@@ -218,6 +214,7 @@ pub(super) fn open_info(
     if let Some(focus) = focus.as_mut() {
         focus.set(close_button, FocusCause::Navigated);
     }
+    Ok(())
 }
 
 fn text(
@@ -276,10 +273,10 @@ fn dismiss_right(
 /// Pointer-focus handling can clear the clicked non-focusable skill row;
 /// initialize after the popup and its controls have been spawned.
 pub(super) fn initialize_focus(
-    buttons: Query<Entity, Added<CloseButton>>,
+    button: Option<Single<Entity, Added<CloseButton>>>,
     mut focus: Option<ResMut<InputFocus>>,
 ) {
-    if let (Ok(button), Some(focus)) = (buttons.single(), focus.as_mut()) {
+    if let (Some(button), Some(focus)) = (button.map(|button| *button), focus.as_mut()) {
         focus.set(button, FocusCause::Navigated);
     }
 }

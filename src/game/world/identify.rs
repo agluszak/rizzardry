@@ -88,7 +88,7 @@ pub(super) fn first_leads(
 pub(super) struct Succession<'w, 's> {
     groups: Query<'w, 's, &'static GroupMembers>,
     leading: Query<'w, 's, (), With<Leads>>,
-    members: Query<'w, 's, &'static GroupMember>,
+    members: Query<'w, 's, Option<&'static GroupMember>>,
     fit: Query<
         'w,
         's,
@@ -105,8 +105,9 @@ impl Succession<'_, '_> {
     /// or else the first still living; it takes up the script the old
     /// leader followed (retail `ElectGroupLeaderMember`).
     fn after(&mut self, gone: Entity) {
-        let Ok(&GroupMember(group)) = self.members.get(gone) else { return };
-        let Ok(members) = self.groups.get(group) else { return };
+        // One of no group led none.
+        let Some(&GroupMember(group)) = self.members.get(gone).expect("a body") else { return };
+        let members = self.groups.get(group).expect("a group has its members");
         if !self.leading.contains(gone) {
             return;
         }

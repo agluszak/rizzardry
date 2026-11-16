@@ -509,7 +509,7 @@ pub(super) fn refresh(
     strings: crate::presentation::screen_art::GameStrings,
     mut fields: Query<(&Field, &mut BitmapText)>,
     mut info_background: Query<&mut Picture, With<InfoBackground>>,
-) {
+) -> Result {
     let view = characters.get(screen.member).unwrap();
 
     let tally = tallies.get(screen.member).copied().unwrap_or_default();
@@ -524,14 +524,14 @@ pub(super) fn refresh(
     } = view;
     // The sheet shows the primary weapon slot's numbers.
     let primary = crate::game::inventory::WeaponSlot::Primary;
-    let Ok((arms, attacks)) = bearers.get(member) else { return };
+    let (arms, attacks) = bearers.get(member)?;
     let Some((_, rolls, percent, a_round, swings, to_hit, hand_initiative)) = arms
         .entities()
         .iter()
         .filter_map(|&arm| hands.get(arm).ok())
         .find(|(hand, ..)| hand.0 == primary)
     else {
-        return;
+        return Ok(());
     };
     let armour_view = info.as_ref().is_some_and(|info| info.armour);
     let effect_filter = info.as_ref().map_or(EffectFilter::All, |info| info.filter);
@@ -753,6 +753,7 @@ pub(super) fn refresh(
             picture.frame = frame;
         }
     }
+    Ok(())
 }
 
 pub(super) fn layout_skills(

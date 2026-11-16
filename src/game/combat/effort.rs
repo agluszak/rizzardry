@@ -70,13 +70,17 @@ pub(super) fn tires(tires: On<Tires>, mut actors: Query<&mut Vitals>) {
 /// One that tires by what it does pays for it, twice over when diseased.
 pub(super) fn tire(
     exerted: On<Exerted>,
-    mut actors: Query<(&mut Vitals, &Conditions), With<Labours>>,
+    mut actors: Query<(&mut Vitals, &Conditions, Has<Labours>)>,
     mut rng: ResMut<GameRng>,
-) {
-    let Ok((mut vitals, conditions)) = actors.get_mut(exerted.actor) else { return };
+) -> Result {
+    let (mut vitals, conditions, labours) = actors.get_mut(exerted.actor)?;
+    if !labours {
+        return Ok(());
+    }
     let Cost { below, add } = COSTS[&exerted.effort];
     let cost = rng.below(below) + add;
     vitals.tire(if conditions.has(Condition::Diseased) { cost * 2 } else { cost });
+    Ok(())
 }
 
 #[cfg(test)]

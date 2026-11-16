@@ -162,7 +162,7 @@ impl Recruiter<'_, '_> {
 pub fn dismiss(
     In((person, stands)): In<(Entity, bool)>,
     party: Single<(Entity, &PartyRoster, &Position, &PartyBody)>,
-    persons: Query<(&ActorId, &Shape), With<Npc>>,
+    persons: Query<(&ActorId, Option<&Shape>), With<Npc>>,
     people: People,
     companions: Query<(&Vitals, &Conditions)>,
     (held, cursed): (Items, Query<&Cursed>),
@@ -177,8 +177,10 @@ pub fn dismiss(
     let Some(companion) = people.companion(person).filter(|member| roster.contains(member)) else {
         return false;
     };
-    let Ok((id, &Shape(species))) = persons.get(person) else { return false };
-    let Ok((v, conditions)) = companions.get(companion) else { return false };
+    let (id, shape) = persons.get(person).expect("a person");
+    // One with no body of a species has none to walk away in.
+    let Some(&Shape(species)) = shape else { return false };
+    let (v, conditions) = companions.get(companion).expect("a companion has a body");
     let (root, navigation, handles) = *level;
     let Some(shape) = handles.get(species, &body_assets) else { return false };
     let feet = PartyBody::feet(at)

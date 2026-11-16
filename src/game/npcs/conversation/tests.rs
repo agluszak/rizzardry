@@ -14,7 +14,7 @@ use crate::content::npcs::{
 use crate::game::characters::{Character, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::inventory::PartyInventory;
-use crate::game::npcs::{ActorId, Npc, NpcAssets, NpcTrigger};
+use crate::game::npcs::{ActorId, Npc, NpcAssets, NpcSpeaker};
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster::{Party, PartyMember};
 use crate::game::rng::GameRng;
@@ -104,7 +104,8 @@ fn scene(definition: NpcDefinition) -> Scene {
     let vitals = Vitals::new(&sheet);
     let speaker = world.spawn((sheet, vitals, PartyMember(party))).id();
     let npc = Npc::from_definition(&world.resource::<Catalogs>().npcs.0[0]);
-    let person = world.spawn((ActorId(NpcId(0)), npc, NpcTrigger(level))).id();
+    let person = world.spawn((ActorId(NpcId(0)), npc)).id();
+    world.spawn((NpcSpeaker(person), crate::game::world::level::LevelOwned(level)));
     world.flush();
     Scene { app, party, speaker, person }
 }

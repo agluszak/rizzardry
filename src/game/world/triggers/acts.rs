@@ -243,9 +243,9 @@ fn particles(
     mut emitters: Query<(&mut Emitter, &LevelOwned)>,
     mut effects: MessageWriter<TriggerEffect>,
     mut commands: Commands,
-) {
+) -> Result {
     let Particles(sources, change) = &act.what;
-    let Ok(&LevelOwned(level)) = owners.get(act.device) else { return };
+    let &LevelOwned(level) = owners.get(act.device)?;
     let mut any = false;
     for (mut emitter, owner) in &mut emitters {
         if owner.0 == level && sources.contains(&emitter.definition()) {
@@ -255,9 +255,11 @@ fn particles(
         }
     }
     if !any {
-        return act.doing.decline(&mut effects);
+        act.doing.decline(&mut effects);
+        return Ok(());
     }
     commands.trigger(Committed { device: act.device, doing: act.doing });
+    Ok(())
 }
 
 fn ambient_sounds(
@@ -280,10 +282,15 @@ fn ambient_sounds(
 }
 
 /// The party is to be moved, once the devices are done.
-fn move_party(act: On<Act<PartyMove>>, owners: Query<&LevelOwned>, mut commands: Commands) {
-    let Ok(&LevelOwned(level)) = owners.get(act.device) else { return };
+fn move_party(
+    act: On<Act<PartyMove>>,
+    owners: Query<&LevelOwned>,
+    mut commands: Commands,
+) -> Result {
+    let &LevelOwned(level) = owners.get(act.device)?;
     commands.entity(level).insert(PendingPartyMove(act.what.clone()));
     commands.trigger(Committed { device: act.device, doing: act.doing });
+    Ok(())
 }
 
 /// One of several places, chosen as it runs. The original takes the wall

@@ -101,8 +101,8 @@ pub(super) fn jump(
     jump: On<Jump>,
     mut running: Query<&mut Running>,
     scripts: Res<Assets<MonsterScript>>,
-) {
-    let Ok(mut running) = running.get_mut(jump.body) else { return };
+) -> Result {
+    let mut running = running.get_mut(jump.body)?;
     let label = jump.label.to_ascii_uppercase();
     let to = scripts.get(&running.script).and_then(|script| script.labels.get(&label)).copied();
     if let Some(to) = to {
@@ -110,6 +110,7 @@ pub(super) fn jump(
         running.wait = None;
         running.conditions.clear();
     }
+    Ok(())
 }
 
 /// A monster given a script begins it from the top, with home where it
@@ -120,9 +121,9 @@ pub(super) fn begin(
     places: Places,
     assets: Res<AssetServer>,
     mut commands: Commands,
-) {
+) -> Result {
     let body = given.entity;
-    let Ok((Script(name), has_home)) = bodies.get(body) else { return };
+    let (Script(name), has_home) = bodies.get(body)?;
     let path = format!("retail://data/monsters/scripts/{}", name.to_lowercase());
     let mut entity = commands.entity(body);
     entity.remove::<Orders>().insert(Running {
@@ -134,6 +135,7 @@ pub(super) fn begin(
     if !has_home {
         entity.insert(Home(places.of(body).feet));
     }
+    Ok(())
 }
 
 /// Carry each script on (retail `ProcessScript`), for monsters not in a

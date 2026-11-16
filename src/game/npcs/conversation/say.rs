@@ -140,12 +140,16 @@ pub(super) struct Reward {
 /// A line that was heard out is gone, and the conversation goes on.
 pub(super) fn spoken(
     spoken: On<Spoken>,
-    lines: Query<&SaidIn, With<ConversationSpeech>>,
+    lines: Query<(&SaidIn, Has<ConversationSpeech>)>,
     mut commands: Commands,
-) {
-    let Ok(&SaidIn(conversation)) = lines.get(spoken.speech) else { return };
+) -> Result {
+    let (&SaidIn(conversation), conversing) = lines.get(spoken.speech)?;
+    if !conversing {
+        return Ok(());
+    }
     commands.entity(spoken.speech).despawn();
     commands.trigger(Continue { conversation });
+    Ok(())
 }
 
 /// A fight or a journey ends every conversation.
@@ -191,31 +195,31 @@ pub(super) fn carry_on(
         MessageWriter<FactionNews>,
     ),
     mut commands: Commands,
-) {
+) -> Result {
     let conversation = go.conversation;
-    let Ok(mut talk) = talks.get_mut(conversation) else { return };
+    let mut talk = talks.get_mut(conversation)?;
     let closing = talk.closing;
     // The person must still be there to talk with, and the party free to.
     if !occupied.is_empty() || camp.is_some() || !actors.available(talk.conversation.actor) {
         commands.entity(conversation).despawn();
-        return;
+        return Ok(());
     }
     if talk.speaking.is_some() {
-        return;
+        return Ok(());
     }
     if talk.asked.is_some() {
         if closing {
             commands.entity(conversation).despawn();
         }
-        return;
+        return Ok(());
     }
     loop {
         let actor = talk.conversation.actor;
-        let Some(def) = actors.definition(actor) else { return };
+        let Some(def) = actors.definition(actor) else { return Ok(()) };
         let Some(step) = talk.script.0.pop_front() else {
             if closing {
                 commands.entity(conversation).despawn();
-                return;
+                return Ok(());
             }
             // One who has become a friend greets the party as one.
             if let Ok(npc) = npcs.get(actor)
@@ -227,7 +231,7 @@ pub(super) fn carry_on(
                 talk.script.say(greeting(npc, def));
                 continue;
             }
-            return;
+            return Ok(());
         };
         let (quote, line, free) = match step {
             // Leaving one who has a body and is no merchant, a member has
@@ -242,7 +246,7 @@ pub(super) fn carry_on(
                     remarks.write(PartyRemark { event: PARTING_REMARK, after: 1.0, speaker: None });
                 }
                 commands.entity(conversation).despawn();
-                return;
+                return Ok(());
             }
             // They are cool toward the party at best, and their group is
             // against it (retail `ResumeNpc`).
@@ -257,7 +261,7 @@ pub(super) fn carry_on(
                     commands.trigger(Stand { group, stance: Some(Stance::Hostile) });
                 }
                 commands.entity(conversation).despawn();
-                return;
+                return Ok(());
             }
             Step::Ask(asked) => {
                 if closing {
@@ -265,19 +269,19 @@ pub(super) fn carry_on(
                 } else {
                     commands.entity(conversation).insert(asked);
                 }
-                return;
+                return Ok(());
             }
             // It is given before anything more is said.
             Step::Give { gift, giver } => {
                 commands.trigger(Reward { conversation, giver, gift });
                 commands.trigger(Continue { conversation });
-                return;
+                return Ok(());
             }
             Step::Say { quote, line, free } => (quote, line, free),
         };
         let Some(q) = scripts.get(actor).and_then(|s| s.quotes.get(usize::from(quote))) else {
             fall_silent(&mut talk, &mut commands, &format!("no quote {quote}"));
-            return;
+            return Ok(());
         };
         // A quote with a price is asked for before any of it is said,
         // unless it was paid for: the charm on the person takes its percent
@@ -413,7 +417,7 @@ pub(super) fn carry_on(
             }
             if let Some(why) = failure {
                 fall_silent(&mut talk, &mut commands, &why);
-                return;
+                return Ok(());
             }
         } else {
             talk.script.0.push_front(Step::Say { quote, line: line + 1, free: true });
@@ -461,7 +465,7 @@ pub(super) fn carry_on(
             speech.write(NpcSpeech { speaker: def.source_name.clone(), text: text.clone() });
         }
         talk.conversation.transcript.push(TranscriptLine::Npc(text));
-        return;
+        return Ok(());
     }
 }
 

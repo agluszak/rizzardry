@@ -301,15 +301,14 @@ pub fn give_focus_back(
     views: Query<&RestoreFocus>,
     exists: Query<()>,
     mut focus: Option<ResMut<InputFocus>>,
-) {
-    let (Ok(RestoreFocus(previous)), Some(focus)) = (views.get(remove.entity), focus.as_mut())
-    else {
-        return;
-    };
+) -> Result {
+    let RestoreFocus(previous) = views.get(remove.entity)?;
+    let Some(focus) = focus.as_mut() else { return Ok(()) };
     match previous.filter(|&entity| exists.contains(entity)) {
         Some(entity) => focus.set(entity, bevy::input_focus::FocusCause::Navigated),
         None => focus.clear(),
     }
+    Ok(())
 }
 
 /// Bevy 0.20's native button presses, and so activates, with any pointer

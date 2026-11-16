@@ -337,11 +337,11 @@ pub fn turn_party(
 /// Turn and walk on the fixed simulation step, feeding Tnua.
 pub fn drive_party(
     time: Res<Time>,
-    mut party: Query<(&mut PartyBody, &mut TnuaController<PartyMotion>, &PartyMovement)>,
+    party: Single<(&mut PartyBody, &mut TnuaController<PartyMotion>, &PartyMovement)>,
     freedom: crate::game::freedom::Freedom,
     battle: Option<Single<&crate::game::combat::PartyMove, With<crate::game::combat::Battle>>>,
 ) {
-    let Ok((mut body, mut controller, movement)) = party.single_mut() else { return };
+    let (mut body, mut controller, movement) = party.into_inner();
     // A party held by a camp or a question stands still; a screen over the
     // world stops its walking input instead.
     let free = freedom.free();

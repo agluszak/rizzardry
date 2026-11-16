@@ -3,9 +3,10 @@
 
 use bevy::prelude::*;
 
-use super::{Deliberating, PartyGap};
+use super::{Begun, PartyGap};
 use crate::content::species::Reach;
 use crate::game::characters::Vitals;
+use crate::game::combat::monster::aim::Considers;
 use crate::game::combat::turn::Fleeing;
 use crate::game::npcs::Embodies;
 use crate::game::rng::GameRng;
@@ -38,17 +39,15 @@ pub struct Conducts(pub Conduct);
 /// Whether it runs for its life from now on is marked on it.
 #[allow(clippy::type_complexity)]
 pub(super) fn conduct(
-    deliberating: On<Add<Deliberating>>,
+    begun: On<Begun>,
     mut commands: Commands,
-    deliberations: Query<(&Deliberating, &PartyGap)>,
+    deliberations: Query<(&Considers, &PartyGap)>,
     monsters: Query<(&Standing, &Vitals, &Temper, Has<Fleeing>, Has<Embodies>)>,
     mut rng: ResMut<GameRng>,
-) {
-    let deliberation = deliberating.entity;
-    let Ok((&Deliberating(monster), &PartyGap(gap))) = deliberations.get(deliberation) else {
-        return;
-    };
-    let Ok((standing, vitals, temper, fleeing, npc)) = monsters.get(monster) else { return };
+) -> Result {
+    let deliberation = begun.deliberation;
+    let (&Considers(monster), &PartyGap(gap)) = deliberations.get(deliberation)?;
+    let (standing, vitals, temper, fleeing, npc) = monsters.get(monster)?;
     let temper = &temper.0;
     let (conduct, runs_on) = if standing.loyalty == Loyalty::Bystander {
         (Conduct::Hold, fleeing)
@@ -84,4 +83,5 @@ pub(super) fn conduct(
         _ => {}
     }
     commands.entity(deliberation).insert(Conducts(conduct));
+    Ok(())
 }

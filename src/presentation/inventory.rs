@@ -121,11 +121,9 @@ fn press_item_action(
     party: Single<Entity, With<PartyRoster>>,
     held: Items,
     mut commands: Commands,
-) {
-    let (Ok(&ItemActionButton(pressed)), Some(mut action)) = (buttons.get(click.entity), screen)
-    else {
-        return;
-    };
+) -> Result {
+    let &ItemActionButton(pressed) = buttons.get(click.entity)?;
+    let Some(mut action) = screen else { return Ok(()) };
     **action = if **action == pressed {
         ItemAction::None
     } else if let Some(item) = held.held(*party).filter(|_| pressed == ItemAction::Identify) {
@@ -134,6 +132,7 @@ fn press_item_action(
     } else {
         pressed
     };
+    Ok(())
 }
 
 /// The armed action's button shows pressed.
@@ -1121,18 +1120,16 @@ fn click_cell(
         ),
     >,
     mut commands: Commands,
-) {
+) -> Result {
     if !conversations.is_empty() {
-        return;
+        return Ok(());
     }
-    let (Ok(cell), Some(screen), Some(selected)) = (cells.get(click.entity), screen, selected)
-    else {
-        return;
-    };
+    let cell = cells.get(click.entity)?;
+    let (Some(screen), Some(selected)) = (screen, selected) else { return Ok(()) };
     if selected.0.and_then(|entity| tabs.get(entity).ok()).map(|tab| tab.0)
         != Some(review::Page::Items)
     {
-        return;
+        return Ok(());
     }
     let (screen, mut action) = screen.into_inner();
     let pool_start = pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2);
@@ -1145,7 +1142,7 @@ fn click_cell(
                 commands.trigger(Identify { item, party });
             }
             *action = ItemAction::None;
-            return;
+            return Ok(());
         }
         // Retail keeps merging armed until something is made or stacked: the
         // merge says so ([`ItemNews::Merged`], see [`disarm_merge`]).
@@ -1154,11 +1151,12 @@ fn click_cell(
                 Some(onto) => commands.trigger(Merge { party, member, onto }),
                 None => *action = ItemAction::None,
             }
-            return;
+            return Ok(());
         }
         _ => {}
     }
     commands.trigger(Swap { party, at: cell.cell.place(member, party, pool_start) });
+    Ok(())
 }
 
 /// Merging is spent once something is made or stacked, or when it has

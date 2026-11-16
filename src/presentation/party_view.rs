@@ -35,10 +35,12 @@ pub fn attach_camera(add: On<Add<PartyBody>>, mut commands: Commands) {
 
 /// Point the camera along the party's facing.
 pub fn aim_camera(
-    party: Query<(&PartyBody, crate::game::world::ActorPose), Without<PartyCamera>>,
-    conversations: Query<
-        &crate::game::npcs::conversation::Conversation,
-        Without<crate::game::npcs::conversation::Closing>,
+    party: Single<(&PartyBody, crate::game::world::ActorPose), Without<PartyCamera>>,
+    conversation: Option<
+        Single<
+            &crate::game::npcs::conversation::Conversation,
+            Without<crate::game::npcs::conversation::Closing>,
+        >,
     >,
     people: crate::game::npcs::People,
     actors: Query<
@@ -49,28 +51,25 @@ pub fn aim_camera(
         ),
         Without<PartyCamera>,
     >,
-    mut camera: Query<&mut Transform, With<PartyCamera>>,
+    mut camera: Single<&mut Transform, With<PartyCamera>>,
 ) {
-    if let (Ok((body, pose)), Ok(mut camera)) = (party.single(), camera.single_mut()) {
-        let ordinary = Quat::from_rotation_y(body.yaw) * Quat::from_rotation_x(body.pitch);
-        let rotation = conversations
-            .single()
-            .ok()
-            .and_then(|c| people.body(c.actor))
-            .and_then(|body| actors.get(body).ok())
-            .map_or(ordinary, |(target, monster, walker)| {
-                let direction = monster
-                    .eye(crate::game::world::navigation::feet(target.translation(), walker))
-                    - (pose.translation() + camera.translation);
-                if direction.length_squared() < 0.0001 {
-                    ordinary
-                } else {
-                    Transform::IDENTITY.looking_to(direction, Vec3::Y).rotation
-                }
-            });
-        if camera.rotation != rotation {
-            camera.rotation = rotation;
-        }
+    let (body, pose) = party.into_inner();
+    let ordinary = Quat::from_rotation_y(body.yaw) * Quat::from_rotation_x(body.pitch);
+    let rotation = conversation
+        .and_then(|c| people.body(c.actor))
+        .and_then(|body| actors.get(body).ok())
+        .map_or(ordinary, |(target, monster, walker)| {
+            let direction = monster
+                .eye(crate::game::world::navigation::feet(target.translation(), walker))
+                - (pose.translation() + camera.translation);
+            if direction.length_squared() < 0.0001 {
+                ordinary
+            } else {
+                Transform::IDENTITY.looking_to(direction, Vec3::Y).rotation
+            }
+        });
+    if camera.rotation != rotation {
+        camera.rotation = rotation;
     }
 }
 

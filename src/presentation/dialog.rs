@@ -88,18 +88,18 @@ pub fn open_travel_question(add: On<Add<TravelQuestion>>, mut commands: Commands
 pub fn show_travel_question(
     mut commands: Commands,
     questions: Query<&TravelQuestion>,
-    dialogs: Query<(Entity, &QuestionDialog), Without<DialogBuilt>>,
+    dialog: Single<(Entity, &QuestionDialog), Without<DialogBuilt>>,
     art: Res<DialogArt>,
     sheets: Res<Assets<SpriteSheet>>,
     game_strings: crate::presentation::screen_art::GameStrings,
-) {
-    let Ok((dialog, owner)) = dialogs.single() else { return };
+) -> Result {
+    let (dialog, owner) = *dialog;
     let question_id = owner.0;
-    let Ok(question) = questions.get(question_id) else { return };
+    let question = questions.get(question_id)?;
     let (Some(ok), Some(cancel), Some(_font), Some(strings)) =
         (sheets.get(&art.ok), sheets.get(&art.cancel), sheets.get(&art.font), game_strings.table())
     else {
-        return;
+        return Ok(());
     };
     let level = LevelInfo::for_entrance(&question.entrance)
         .and_then(LevelInfo::name_string)
@@ -139,6 +139,7 @@ pub fn show_travel_question(
                 Children [ {buttons} ]
             ]
     });
+    Ok(())
 }
 
 pub fn focus_ready_question(
