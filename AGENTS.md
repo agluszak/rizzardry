@@ -89,16 +89,20 @@ work here.
 - Spend little time on tests during a refactor. When a refactor removes the
   types a test was written against, delete the test unless it pins a real rule
   cheaply. Fewer tests is not no tests.
-- Run the unit suite once per slice, not after every edit. Run the retail
-  tests (`RIZZARDRY_RETAIL=<install> cargo nextest run --run-ignored only`)
-  before committing a change to gameplay. The heavy tests are limited to two at
-  a time in `.config/nextest.toml`; all at once run the machine out of memory.
+- CI runs `cargo fmt --check`, clippy and the unit suite on every pull
+  request, so they need not be run before a commit or a push; while working,
+  compile-check (clippy) instead. CI has no Wizardry 8 install, so the retail
+  tests (`RIZZARDRY_RETAIL=<install> cargo nextest run --run-ignored only`) run
+  only locally: once a slice of gameplay is done, not as a gate on each
+  commit. The heavy tests are limited to two at a time in
+  `.config/nextest.toml`; all at once run the machine out of memory.
 
 ## Git
 
-- Commit and push only when asked. Check that the checks passed before the
-  commit, not in the same command.
-- Stage by explicit path. Never `git add -A`, `git add .` or `git commit -a`:
-  the working tree holds private notes that must never be committed.
+- Commit and push only when asked. A failing check in CI is fixed forward on
+  the branch.
+- Staging everything (`git add -A`) is fine. Private notes in the working
+  tree are kept out by `.git/info/exclude`; a new one goes there before
+  anything is committed.
 - Never send anything upstream: no issues, pull requests, comments or pushes to
   third-party repositories. Fixes to third-party code stay in `third_party/`.
