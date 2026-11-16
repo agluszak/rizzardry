@@ -158,14 +158,14 @@ fn see(
     considering: Query<&Considers>,
     members: Query<(), With<PartyMember>>,
     making_out: Query<(), With<MakesOutParty>>,
-    sight: super::sight::Sight,
+    eyesight: super::sight::Eyesight,
 ) -> Result {
     let view = made.entity;
     let (&ViewOf(parent), &Viewed(body)) = views.get(view)?;
     let &Considers(monster) = considering.get(parent)?;
     let seen = match members.contains(body) {
         true => making_out.contains(monster),
-        false => body == monster || sight.sees(monster, body),
+        false => body == monster || eyesight.sees(monster, body),
     };
     if seen {
         commands.entity(view).insert(Seen);

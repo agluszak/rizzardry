@@ -949,26 +949,49 @@ into the sections above.
 The sections above are the rules. This says how the code is to be shaped
 around them; where the code differs from it, the code is wrong.
 
-**A rule is a function of the caster, the means and the spell.** What a
-cast comes from is read once: a learned spell at the power asked, an item
-with what it casts and how it is used, or a monster's own casting. Each rule
-above takes the caster itself, those means and the spell, and asks the means
-wherever the three differ: how likely it fails, what it goes off at, what it
-costs. None is handed a struct of facts copied out of the caster, the item's
-record or the spell.
+**A cast is an entity** (`CastBy` its caster), made by `Cast` with the
+spell's definition read from content as it is made, what it is cast with,
+and what was aimed at. It is gone when it is released or refused. Each fact
+of it is added by its own observer, in the order of this page, each reading
+only what that fact comes from; each step is one event, and the next is
+triggered by the one before:
 
-What an item casts, who may use it and how hard it is to identify are on the
-item, written when it is made; no rule looks an item's record up.
+| Step | Fact | Reads |
+| --- | --- | --- |
+| what it is cast with | `Learned { power }`, `FromItem(item)` or `Innate { power, budget, level }`, one of them; the rules that differ by it are observers set by that component's hook | the choice |
+| whether it may be cast (section 2) | refused, or on | the caster's `CanAct`, `Lucid`, `Conditions`, its learned spells and points, the item's `Casts` and users, the fight's moment, the place |
+| whom it reaches (section 5) | an aim (`AimOf` the cast) and whom it takes in | below |
+| its power (section 3) | `Power` | the means; a learned spell's points; an instrument's player |
+| the roll (section 4) | `Came`: cast, fizzled or backfired | the means' failure chance, the pace, being under water |
+| a blind caster's aim gone astray | a new aim in place of the old | `Conditions`, the trait, the spell's realm |
+| what a backfire turns on | a new aim, at the caster's side | the spell's kind of target |
+| what it costs and trains | `Pays`, `Spend`, `Practise` | the means, the spell, the power |
+| its release | a deed with what follows it beside it; a utility spell's `Worked`; a fizzle's report and an auto cast again | |
 
-Whom a cast reaches is read from the actors where they stand: who is in the
-fight and in what order, who is of whose group, who is reached. The same
-reading serves a blast, a burst where a victim fell, a spell turned back and
-a cloud's pulse.
+**Whom a cast reaches is the monster's aim.** A cast's aim is an aim
+entity as a monster's slot makes one (`AimOf`, `At`), and what it takes in
+are the same `TakenIn` entities, filled by the same observer of its kind
+of target (one body, a friend, the party, a foe, a foe's group, every foe,
+a cone, a blast's spot, ahead), set by the aim's own component's hook. A
+utility spell's mark (a lock, an item, the one spoken with, a spot in
+sight) is an aim kind of its own. So "who a spell takes in" is one rule for
+a monster weighing a slot and for any cast going off. A blind caster's
+aim gone astray, and a backfire, are new aims; whom they take in follows.
 
-**A cast is one chain.** The observer of `Cast` reads what the rules need,
-asks them in the order of this page, and makes happen what they decide:
-points and charges are spent, a group provoked, the player told, and the
-deed made. It holds no arithmetic and no constant.
+**Who may be taken is a figure.** Each body magic may take carries
+`TakeOrder`, its place in the fight's order (the party by seat, the
+combatants as they joined, then the rest of their monster groups), written
+by one system as the fight and the party change; one magic never targets
+has none. A blast, a cone and every aim take in by it, in its order;
+nothing gathers the field.
+
+**What a cast is cast with says how it pays and how strong it is.** A
+learned spell pays points from its realm, an item a use, a monster's own
+nothing; each is an observer of the paying step set by the means'
+component. The strength, the failure chance and the power likewise.
+
+`Field`, `Aiming`, `Means`, `Circumstances`, `Marks`, `Body` and
+`engage::Fighters` go: nothing hands a rule the world or an actor whole.
 
 **A deed is a thing.** What a cast does to others is an entity (`Deed`): the
 rows it follows, its strength, and whom it has yet to reach. It lands on each

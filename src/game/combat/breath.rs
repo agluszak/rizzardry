@@ -1,14 +1,27 @@
-//! Breathing: the racial or spell-granted breath a member may take as their
-//! action ([`super::member_turn::start_breath`]).
-use crate::content::characters::Trait;
-use crate::game::actors::Laid;
-use crate::game::actors::Traits;
-use crate::game::characters::Vitals;
-use bevy::prelude::Entity;
+//! A member's breath: of a breathing race, or under Dracon Breath.
+use bevy::prelude::*;
 
-/// Whether a member who can fight has a breath to take now: of a breathing
-/// race or under Dracon Breath, with a fifth of their stamina.
-pub fn available(member: Entity, traits: &Traits, vitals: &Vitals, laid: &Laid) -> bool {
-    (traits.has(Trait::Breathe) || laid.bonus(member).breath)
-        && vitals.stamina.current >= vitals.stamina.max / 5
+use crate::content::characters::Trait;
+use crate::game::actors::{Modifiers, Traits};
+use crate::game::characters::Vitals;
+
+/// It has a breath to take now: of a breathing race or under Dracon Breath,
+/// with a fifth of its stamina.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct CanBreathe;
+
+/// Having a breath to take follows the race, the breath laid and stamina.
+pub(crate) fn ready(
+    members: Query<(Entity, &Traits, &Modifiers, &Vitals, Has<CanBreathe>)>,
+    mut commands: Commands,
+) {
+    for (member, traits, modifiers, vitals, was) in &members {
+        let now = (traits.has(Trait::Breathe) || modifiers.laid.breath)
+            && vitals.stamina.current >= vitals.stamina.max / 5;
+        if now && !was {
+            commands.entity(member).insert(CanBreathe);
+        } else if !now && was {
+            commands.entity(member).remove::<CanBreathe>();
+        }
+    }
 }

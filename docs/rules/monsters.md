@@ -474,30 +474,49 @@ The summoning of an elemental by a spell is [casting](casting.md) section 8.
 
 ## 8. What ailments do to its choices
 
-The conditions of [actors](actors.md) *Conditions* decide what a monster may do:
+The conditions of [actors](actors.md) *Conditions* decide what an actor may do:
 **asleep or worse** (webbed is not) takes its action altogether; **Blind**
-shuts its eyes (section 2). When its action comes, and it is one that attacks
-or casts at someone - and **before** it is done - its ailments may take it
-(retail `GetConditionInterrupt`), the first that applies:
+shuts its eyes (section 2). When its action comes, and before it is done,
+its ailments may take it (retail `GetConditionInterrupt`, `Combat.cpp:2940`;
+a member's at `:2176`, a monster's at `:2429`), the first that applies:
 
 | Ailment | What happens |
 | --- | --- |
 | Nauseated | 25 percent: it loses the action |
 | Webbed | it breaks free with chance `Strength / 3` percent (the web is lifted; the action is lost anyway); else the web holds it and it loses the action |
-| Blind | 20 percent, unless it fights blind (a Monk monster): it loses the action |
-| Insane | 80 percent: if one of its arms reaches a friend and it has not yet turned this round, 40 percent it **turns on its friends** (below); else it loses the action in one of three fits (below(3)) |
-| Afraid | 25 percent, unless it is running: it loses the action. Then, 40 percent: it **runs for its life**, unannounced, and is fleeing from now on |
-| Turncoat | nothing: an action against its new foes stands |
+| Blind | 20 percent, unless it fights blind (a member's trait, a Monk monster): it loses the action |
+| Insane | 80 percent: if one of its arms reaches a living friend and it is not berserk yet, 40 percent it **turns on its friends** (below); else it loses the action in one of three fits (below(3)) |
+| Afraid | 25 percent, unless the action is a run (a member running with the party, a monster running for its life): it loses the action |
+| Afraid, a monster | then 40 percent: it **runs for its life** and is fleeing from now on |
+| Lured | a lure holds it: it walks toward the lure instead |
+| Turncoat | a monster's action against its new foes stands. A member who can strike nobody swaps weapon sets, and if that lets them strike, says so (string `0x23d`) and attacks; otherwise the action is lost |
 
-A monster that **turns on its friends** is berserk for the rest of the round:
-it attacks (the strike on [attack](attack.md)) against friends instead of
-foes, if any is in reach; if nobody is, it loses the action. 
+"An arm reaches a friend" is retail's attack check in its friendly band
+(`RateMonsterBestAttack(…, true)`, `MonsterAttackReachesAnyone`,
+`CanPartySlotAttackAnyTarget(…, true)`, `Combat Range.cpp:77`, `:533`): a
+living friend within an arm's reach, nothing more (no Stealth roll).
 
-An ailment that takes the action ends the monster's moment (and the pause after
-it), and the player is told which. Fear, blindness and nausea do not
-change the *choice*; they take the action it made. Blind eyes mean the monster
-sees nobody (section 5, 2). A monster under **Turncoat** has the opposite side
-and so chooses foes among its former fellows.
+Each is told by its notice (retail `g_condition_interrupt_notices`,
+strings `0x3a0` to `0x3ab`, by the numbers of `Interrupt`): Turncoat and
+the lure too. Panic's number, 12, is past the end of retail's table, so it
+is told by nothing.
+
+An actor that **turns on its friends** is **berserk** for the rest of the
+round (retail `pCombat->berserk`, cleared as the round is set up): whom its
+blows seek is its friends, whatever it decided; and whenever an ailment
+takes one of its later actions that round, it strikes at its friends
+instead of losing it (`Combat.cpp:2461`), losing it only when none is in
+reach. A member turned so strikes in the berserk mode when their best
+hand's reach is short of long, else in their own (`:2207`).
+
+An action an ailment took, or one made berserk, does not provoke whom it is
+aimed at (`Combat.cpp:2238`, `:2479`).
+
+An ailment that takes the action ends the actor's moment and the pause after
+it. Fear, blindness and nausea do not change the *choice*; they take the
+action it made. Blind eyes mean the monster sees nobody (section 5, 2). An
+actor under **Turncoat** has the opposite side and so chooses foes among its
+former fellows.
 
 ## 9. Open questions
 
@@ -736,11 +755,61 @@ those who come in (`ComingIn`), and those marked are told together
 fighters reinforces (neutral), makes out the party or sees a foe of its own
 (hostile), or sees a foe (friendly).
 
-**Deciding is separate from doing.** An actor's moment (`Moment`) is
-revalidated; a member under orders has decided by them, and a monster
-deliberates. Either way what it decided is said as `Decided`, whose
-observer lets the actor's conditions take the action off it and then does
-what is left, by the same event a member's order leads to.
+**A turn is facts of the actor, for the round.** Taking up its turn
+(`TakesUp`) writes each as its own component: its next moment
+(`NextMoment`), the attacks each hand has left and the hand due
+(`AttacksLeft`), the weapons it accepted them with (`AcceptedWith`), a
+readied Lightning Strike (`Lightning`, only on one who readied it). What the
+round has done to it is a marker each, gone as the next round is taken up:
+`Moved`, `MadeSpecial`, `Waited`, `Berserk`. A member's order is locked
+(`Ordered`) by an observer of `TakesUp` set where the order is made (the
+`Order` component's hook), so taking up a turn does not branch on kind.
+
+**A moment is a chain of events**, each with one observer: `Moment`
+revalidates (in the fight, able, its weapons the ones accepted, not
+defending; otherwise its moment is `Done`); `Goes` fights on for one with
+attacks spent or having moved; `Decides` is heard by an observer set where
+the actor's kind is made: one with an order follows it (a breath order
+checked by its own observer against `CanBreathe` and the cone), one with a
+temper deliberates. Either way it ends in `Decided`.
+
+**An action is an entity**, made by whoever decided (`ActionOf` the actor).
+What it is is which component it has: `Strikes`, `Retreats`, `Holds`,
+`Protects`, `Breathes`, `Casts`; one aimed at foes is also `AtFoes`,
+written by its maker (a cast's from its spell's definition). Each kind's
+doer is set on the action as it is made (the kind's hook), and hears
+`Unhindered`. Before that its ailments weigh it in the order of section 8,
+each one event and one observer reading only its own sources:
+
+| Step | Reads | Takes it as |
+| --- | --- | --- |
+| nausea | `Conditions` | `Nauseated` |
+| web | `Conditions`, `Attributes` | `BrokeFree` or `HeldByWeb` |
+| blindness | `Conditions`, `BlindFighting` | `BlindedOut` |
+| insanity | `Conditions`, `Berserk`, `Furthest`; friends' `Standing`, `Vitals`, places | `TurnsOnFriends`, or `Fit` |
+| fear | `Conditions`; the action a run | `Frozen` |
+| panic | `Conditions`; a monster | `Panics` |
+| lure | `LureInfluence` | `Lured` |
+| Turncoat | `Conditions`, `AtFoes`; a member's reach | `TurncoatStands`, `Disarmed`, or `Lost` |
+
+A step either takes the action, by triggering the event of what took it,
+or passes it on; past the last it is `Unhindered`. Each of those events is
+its own observer: it is told (but panic); a break-out lifts the web; panic
+makes the monster `Fleeing` and runs it quietly; a lure walks it at half its
+stride; turning on friends marks it `Berserk` and strikes. When an actor
+already `Berserk` loses an action, it strikes at friends instead (an
+observer of the losing events, reading `Berserk`). Insanity's question is
+the strike's own reach rule (`reaches`), asked of the living friends. A
+taken or berserk action does not provoke. The action is gone when the
+moment ends.
+
+**A moment ends by two facts**: `Done`, nothing left to it this round, and
+`Shown`, it did something the player watches, holding the fight for the
+pause. Each is one event with one observer. An interruption, a cast, a
+retreat, a guard and a breath are both; a strike only `Shown`, its attacks
+going on; holding back, a lost or refused turn, the party's move costing a
+member its moment, waiting instead of striking and standing for want of a
+goal only `Done`. Nothing else ends a turn or starts the pause.
 
 **What a monster knows is read from its own components.** What its kind can do
 was written onto it when it was made. No decision asks the species record.

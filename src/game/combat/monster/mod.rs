@@ -16,10 +16,8 @@
 //! - [`guard`]: guarding a fellow, holding back warily (4)
 //! - [`close`]: reaching, closing in, withdrawing when it can strike nobody,
 //!   and how far a move goes (4, 6)
-//! - [`ailments`]: what a monster's conditions do to its action (8)
 //! - [`noticing`]: whether a watcher makes out someone watched (2)
 
-pub mod ailments;
 pub mod aim;
 pub mod close;
 pub mod conduct;
@@ -32,10 +30,8 @@ pub mod spell;
 
 use bevy::prelude::*;
 
-pub use self::ailments::Interrupt;
 use self::conduct::Conduct;
-use self::sight::Sight;
-use super::turn::{Decided, Decision, Retreats};
+use super::action::{ActionOf, Holds, Retreats};
 use super::{Battle, Combatants};
 use crate::game::world::population::Temper;
 
@@ -75,21 +71,28 @@ pub struct ClosesIn(pub bool);
 /// with the party as far off as it is and its eyes making it out or not.
 /// It views each living combatant, and the deliberation is begun; once its
 /// conduct is known, it goes on. Each step decides the next; what it comes
-/// to is said as [`Decided`], and it is gone.
+/// to is an action ([`super::action`]), and it is gone.
 pub(super) fn deliberate(
     deliberates: On<Deliberates>,
-    sight: Sight,
     fight: Single<Option<&Combatants>, With<Battle>>,
+    bodies: Query<&crate::game::characters::Vitals>,
+    party: Single<Entity, With<crate::game::party::roster::Party>>,
+    places: crate::game::actors::Places,
     mut commands: Commands,
-) {
+) -> Result {
     let monster = deliberates.monster;
-    let considered = fight.map_or(&[][..], |fight| fight.entities());
-    let deliberation =
-        commands.spawn((PartyGap(sight.party_gap(monster)), aim::Considers(monster))).id();
-    let living = considered.iter().copied().filter(|&body| sight.alive(body));
-    aim::view(&mut commands, deliberation, living);
+    let gap = places.gap(monster, *party);
+    let deliberation = commands.spawn((PartyGap(gap), aim::Considers(monster))).id();
+    let mut living = Vec::new();
+    for &body in fight.map_or(&[][..], |fight| fight.entities()) {
+        if !bodies.get(body)?.is_dead() {
+            living.push(body);
+        }
+    }
+    aim::view(&mut commands, deliberation, living.into_iter());
     commands.trigger(Begun { deliberation });
     commands.trigger(Conducted { deliberation });
+    Ok(())
 }
 
 /// Whether a monster that fights closes in (section 4).
@@ -102,7 +105,9 @@ fn closing(
     let deliberation = begun.deliberation;
     let (&aim::Considers(monster), &PartyGap(gap)) = deliberations.get(deliberation)?;
     let (temper, &reach) = monsters.get(monster)?;
-    commands.entity(deliberation).insert(ClosesIn(close::closes_in(reach, &temper.0, gap)));
+    // It prefers blows, has some, and none reaches the party.
+    let closes_in = !temper.0.prefers_range && reach.0.is_some() && !reach.reaches(gap);
+    commands.entity(deliberation).insert(ClosesIn(closes_in));
     Ok(())
 }
 
@@ -120,8 +125,11 @@ fn conducted(
         commands.trigger(special::WeighsSpecial { deliberation });
         return Ok(());
     }
-    let retreats = Decision::Retreat(Retreats { conduct, quiet: false });
-    commands.trigger(Decided { actor: monster, decision: retreats, own_will: true });
+    if conduct == Conduct::Hold {
+        commands.spawn((ActionOf(monster), Holds));
+    } else {
+        commands.spawn((ActionOf(monster), Retreats { conduct, quiet: false }));
+    }
     commands.entity(deliberation).despawn();
     Ok(())
 }
@@ -136,6 +144,7 @@ pub(super) fn plugin(app: &mut App) {
         .add_plugins((special::plugin, spell::plugin, aim::plugin))
         .add_systems(
             crate::game::actors::Settle,
-            (special::ready, slot::castable).in_set(crate::game::actors::Written),
+            (special::ready, slot::castable, super::breath::ready, close::moves, close::charging)
+                .in_set(crate::game::actors::Written),
         );
 }

@@ -22,7 +22,8 @@ use crate::game::rng::GameRng;
     crate::game::inventory::PartyInventory,
     crate::game::items::Pool,
     crate::game::items::Hand,
-    super::body::PartyMovement
+    super::body::PartyMovement,
+    crate::game::combat::monster::sight::PartyHides
 )]
 pub struct Party;
 

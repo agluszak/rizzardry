@@ -2,6 +2,7 @@
 //! and round history live on the actors ([`turn`]); attacks and magic settle
 //! their consequences before the scheduler advances to the next actor.
 
+pub mod action;
 pub mod approach;
 pub mod attack;
 pub mod breath;
@@ -18,10 +19,10 @@ pub mod turn;
 mod tests;
 
 use crate::game::GameplaySet;
-pub use monster::Interrupt;
+pub use action::Interrupt;
 pub use orders::*;
 pub use round_end::{RoundEnds, end_round};
-pub use turn::{Action, Ordered, Turn};
+pub use turn::{Action, Ordered};
 
 use crate::game::world::level::LevelOwned;
 use crate::game::world::level::PlayedLevel;
@@ -47,14 +48,15 @@ impl Plugin for CombatPlugin {
             hostility::plugin,
             swings::plugin,
             turn::plugin,
+            action::plugin,
             monster::plugin,
             engage::plugin,
         ))
         .add_observer(credit_death)
         .add_observer(count_kill)
         .add_observer(settle_defeat.run_if(resource_exists::<Battle>))
-        .add_observer(turn::defend_instead)
         .add_observer(round_end::end_the_round)
+        .add_observer(orders::end_party_move)
         .add_observer(round_end::leave_fight)
         .add_observer(round_end::rest_the_idle)
         .add_observer(round_end::cool_specials)
@@ -64,15 +66,8 @@ impl Plugin for CombatPlugin {
         .add_observer(round_end::look_again)
         .add_observer(round_end::end_round)
         .add_observer(join_party)
-        .add_observer(turn::clear_fight)
         .add_observer(approach::end_move)
         .add_observer(approach::stop_walking)
-        .add_observer(turn::take_turn)
-        .add_observer(turn::act)
-        .add_observer(turn::breathe)
-        .add_observer(turn::guard)
-        .add_observer(turn::retreat)
-        .add_observer(turn::hold)
         .add_observer(effort::tire)
         .add_observer(effort::tires)
         .add_observer(summon::summon)
@@ -151,14 +146,14 @@ impl Plugin for CombatPlugin {
         // frame's engagement and the fixed step's fighting and charging.
         .add_systems(
             Update,
-            (monster::sight::look, monster::sight::reinforce)
+            (monster::sight::hiding, monster::sight::look, monster::sight::reinforce)
                 .chain()
                 .in_set(GameplaySet::Bodies)
                 .run_if(crate::game::world::level::level_active),
         )
         .add_systems(
             FixedPreUpdate,
-            (monster::sight::look, monster::sight::reinforce)
+            (monster::sight::hiding, monster::sight::look, monster::sight::reinforce)
                 .chain()
                 .run_if(crate::game::world::level::level_active),
         )
@@ -520,23 +515,17 @@ fn count_kill(
 /// Starting the round while the party moves ends its move (retail
 /// `MGSKeyboard.cpp:568-573`).
 pub fn stop_party_move(
-    fight: Option<Single<(&Round, &mut PartyMove), With<Battle>>>,
-    mut rng: ResMut<GameRng>,
-    roster: Single<&PartyRoster>,
-    mut movers: Query<
-        (&mut Vitals, &crate::game::characters::Conditions, &crate::game::items::Burden),
-        With<Turn>,
-    >,
-    mut turns: Query<&mut Turn>,
+    mut commands: Commands,
+    fight: Option<Single<&PartyMove, With<Battle>>>,
     mut news: MessageWriter<CombatNews>,
     mut starts: MessageReader<StartRound>,
 ) {
-    let Some((round, mut party_move)) = fight.map(Single::into_inner) else {
+    let Some(party_move) = fight else {
         starts.clear();
         return;
     };
-    if starts.read().count() > 0 && matches!(*party_move, PartyMove::Moving { .. }) {
-        finish_party_move((round, &mut party_move), &mut rng, &roster, &mut movers, &mut turns);
+    if starts.read().count() > 0 && matches!(**party_move, PartyMove::Moving { .. }) {
+        commands.trigger(PartyMoveEnds);
         news.write(CombatNews::PartyStops);
     }
 }
@@ -607,7 +596,7 @@ fn next_moment(
     roster: Single<&PartyRoster>,
     places: crate::game::actors::Places,
     laid: crate::game::actors::Laid,
-    turns: Query<&Turn>,
+    turns: Query<&turn::NextMoment>,
     in_flight: Query<(), With<crate::game::hits::Deed>>,
     moving: Query<(), With<approach::CombatMove>>,
     mut news: MessageWriter<CombatNews>,
@@ -631,7 +620,7 @@ fn next_moment(
         .iter()
         .copied()
         .filter(|actor| !party_waits || !roster.contains(actor))
-        .filter_map(|actor| Some((actor, turns.get(actor).ok()?.when?)))
+        .filter_map(|actor| Some((actor, turns.get(actor).ok()?.0)))
         .min_by_key(|&(_, when)| when);
     if let PartyMove::Pending { pace, phase } = *party_move
         && next.is_none_or(|(_, when)| phase <= when)

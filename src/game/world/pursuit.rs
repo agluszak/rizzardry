@@ -9,7 +9,6 @@ use super::hostility::Stance;
 use super::identify::{GroupMembers, MonsterGroup};
 use super::population::Monster;
 use crate::game::combat::Combatant;
-use crate::game::combat::monster::sight::Sight;
 use crate::game::npcs::conversation::Conversation;
 use crate::game::time::GameClock;
 
@@ -37,12 +36,15 @@ pub struct Charging;
 pub(super) fn charge(
     groups: Query<(Entity, &GroupMembers, Option<&SawParty>), With<MonsterGroup>>,
     mut walkers: Query<(&mut AgentTarget3d, Has<Charging>), (With<Monster>, Without<Combatant>)>,
-    sight: Sight,
+    eyesight: crate::game::combat::monster::sight::Eyesight,
+    party: Single<Entity, With<crate::game::party::roster::Party>>,
+    places: crate::game::actors::Places,
     making_out: Query<(), With<crate::game::combat::monster::sight::MakesOutParty>>,
     bodies: Query<(
         &crate::game::characters::Vitals,
         &crate::game::characters::Conditions,
         Has<crate::game::actors::CanFight>,
+        &crate::game::world::hostility::Side,
     )>,
     clock: Res<GameClock>,
     conversations: Query<(), With<Conversation>>,
@@ -51,11 +53,11 @@ pub(super) fn charge(
     if !conversations.is_empty() {
         return;
     }
-    let party = sight.party();
+    let party = *party;
     for (group, members, saw) in &groups {
         // Those whose eyes count: alive and not blinded or worse.
         let watching = |member: &Entity| {
-            bodies.get(*member).is_ok_and(|(vitals, conditions, _)| {
+            bodies.get(*member).is_ok_and(|(vitals, conditions, ..)| {
                 !vitals.is_dead() && conditions.below(crate::game::characters::Condition::Blind)
             })
         };
@@ -67,15 +69,16 @@ pub(super) fn charge(
         for member in members.iter() {
             let Ok((mut target, charging)) = walkers.get_mut(member) else { continue };
             let pursues = recent
-                && sight.side(member) == Some(Stance::Hostile)
-                && bodies.get(member).is_ok_and(|(.., fit)| fit);
+                && bodies
+                    .get(member)
+                    .is_ok_and(|(.., fit, side)| fit && side.own() == Stance::Hostile);
             let hurt = bodies.get(member).is_ok_and(|(vitals, ..)| {
                 vitals.health.current * 100 <= vitals.health.max * TOO_HURT
             });
             if pursues {
                 // The hurt keep their distance, closing only when it grows
                 // past theirs.
-                let closes = !hurt || sight.party_gap(member) > sight.far() * SHADOWS_WITHIN;
+                let closes = !hurt || places.gap(member, party) > eyesight.far() * SHADOWS_WITHIN;
                 *target = if closes { AgentTarget3d::Entity(party) } else { AgentTarget3d::None };
                 if !charging {
                     commands.entity(member).insert(Charging);

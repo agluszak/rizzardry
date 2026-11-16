@@ -14,7 +14,7 @@ use super::{ClosesIn, PartyGap};
 use crate::content::spells::{MAX_POWER, SpellDefinition};
 use crate::game::actors::Level;
 use crate::game::actors::arm::Furthest;
-use crate::game::combat::turn::{Decided, Decision};
+use crate::game::combat::action::{ActionOf, AtFoes, Casts};
 use crate::game::data::Catalogs;
 use crate::game::magic::casting::{MagicChoice, Source};
 use crate::game::magic::reach::Aim;
@@ -113,11 +113,10 @@ fn pick(
     let aim = aims[rng.below(aims.len() as u32) as usize];
     let power = power(&mut rng, budget, &content.spells[spell]);
     let source = Source::Innate { spell, power, budget, level: level.0 as u8 };
-    commands.trigger(Decided {
-        actor: monster,
-        decision: Decision::Magic(MagicChoice { source, aim }),
-        own_will: true,
-    });
+    let mut action = commands.spawn((ActionOf(monster), Casts(MagicChoice { source, aim })));
+    if content.spells[spell].aimed_at_enemies() {
+        action.insert(AtFoes);
+    }
     commands.entity(deliberation).despawn();
     Ok(())
 }

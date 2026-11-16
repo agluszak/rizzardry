@@ -1,15 +1,15 @@
 //! What a monster makes out (`docs/rules/monsters.md` sections 2 and 4):
-//! who stands where, on which side, and who sees whom ([`Sight`]).
+//! who sees whom ([`Eyesight`]), and what each monster makes out, kept on
+//! it as markers.
 
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
-use crate::game::actors::{CanFight, Level};
-use crate::game::actors::{Eyes, Hidden, Laid, Places};
+use crate::game::actors::{CanFight, Laid, Level};
+use crate::game::actors::{Eyes, Hidden, Places};
 use crate::game::characters::Vitals;
-use crate::game::party::roster::PartyRoster;
-use crate::game::world::hostility::{self, Side, Stance, Standing};
-use crate::game::world::identify::GroupMember;
+use crate::game::party::roster::{Party, PartyRoster};
+use crate::game::world::hostility::{Side, Stance};
 use crate::game::world::level::PlayedLevel;
 use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::population::{Monster, Temper};
@@ -21,100 +21,72 @@ pub const ENGAGEMENT_RANGE: f32 = 50.0;
 /// from the party to a hostile.
 const REINFORCEMENT_SLACK: f32 = 1.15;
 
-/// Everyone in the played level, where they stand, and who makes out whom.
+/// How hard the party is to make out: by the lowest level among its members
+/// who can fight, and by what Chameleon adds.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PartyHides(pub Hidden);
+
+/// How hard the party is to make out follows its members and Chameleon.
+pub(crate) fn hiding(
+    party: Single<(Entity, &PartyRoster, &PartyHides), With<Party>>,
+    members: Query<(&Level, Has<CanFight>)>,
+    laid: Laid,
+    mut commands: Commands,
+) -> Result {
+    let (party, roster, &was) = *party;
+    let mut able = Vec::new();
+    for member in roster.iter() {
+        let (level, fit) = members.get(member)?;
+        if fit {
+            able.push(level);
+        }
+    }
+    let now = PartyHides(Hidden::party(able, laid.bonus(party).concealment));
+    if was != now {
+        commands.entity(party).insert(now);
+    }
+    Ok(())
+}
+
+/// Who sees whom in the played level: a watcher's eyes, where both stand,
+/// how hard the watched is to make out, the far clip and what stands
+/// between.
 #[derive(SystemParam)]
-pub struct Sight<'w, 's> {
-    /// Who is alive, and on which side.
-    standing: Query<'w, 's, (&'static Vitals, &'static Side, &'static Standing)>,
-    /// How each hides: by its level, if it can fight.
-    hiding: Query<'w, 's, (&'static Level, Has<CanFight>)>,
-    /// The group each is of, if any.
-    pub groups: Query<'w, 's, &'static GroupMember>,
-    /// The temper of each that decides for itself.
-    pub tempers: Query<'w, 's, &'static Temper>,
+pub struct Eyesight<'w, 's> {
     eyes: Query<'w, 's, &'static Eyes>,
-    pub places: Places<'w, 's>,
-    pub laid: Laid<'w, 's>,
-    pub obstacles: WorldObstacles<'w, 's>,
-    party: Single<'w, 's, (Entity, &'static PartyRoster)>,
+    levels: Query<'w, 's, &'static Level>,
+    party: Single<'w, 's, (Entity, &'static PartyHides), With<Party>>,
+    places: Places<'w, 's>,
+    obstacles: WorldObstacles<'w, 's>,
     level: PlayedLevel<'w, 's>,
 }
 
-impl Sight<'_, '_> {
-    /// The party, which every member stands in.
-    pub fn party(&self) -> Entity {
-        self.party.0
-    }
-
-    pub fn roster(&self) -> &PartyRoster {
-        self.party.1
-    }
-
-    /// The far clip, past which nobody sees anybody.
+impl Eyesight<'_, '_> {
     /// How far the level lets one see: its far clip.
     pub fn far(&self) -> f32 {
         self.level.view_distance().unwrap_or(0.0)
     }
 
-    pub fn alive(&self, body: Entity) -> bool {
-        self.standing.get(body).is_ok_and(|(vitals, ..)| !vitals.is_dead())
-    }
-
-    /// The side a body's group or kind has it on, its own turning aside.
-    pub fn side(&self, body: Entity) -> Option<Stance> {
-        self.standing.get(body).ok().map(|(_, side, _)| side.own())
-    }
-
-    /// How one living body stands toward another, itself a friend.
-    pub fn toward(&self, own: Entity, other: Entity) -> Option<Stance> {
-        let (_, _, mine) = self.standing.get(own).ok()?;
-        let (vitals, _, theirs) = self.standing.get(other).ok()?;
-        if vitals.is_dead() {
-            return None;
-        }
-        Some(if other == own { Stance::Friendly } else { hostility::between(*mine, *theirs) })
-    }
-
-    /// How far a body is from the party.
-    pub fn party_gap(&self, body: Entity) -> f32 {
-        self.places.gap(body, self.party())
-    }
-
     /// Whether the party has a clear line to a body within the far clip.
-    fn in_party_view(&self, body: Entity) -> bool {
-        let party = self.places.of(self.party());
+    pub fn in_party_view(&self, body: Entity) -> bool {
+        let party = self.places.of(self.party.0);
         party.in_view(&self.places.of(body), self.far(), &self.obstacles)
     }
 
-    /// Whether a body's eyes make out the party, which hides by its lowest
-    /// able level and by Chameleon.
-    fn sees_party(&self, watcher: Entity) -> bool {
+    /// Whether a body's eyes make out the party.
+    pub fn sees_party(&self, watcher: Entity) -> bool {
         let eyes = self.eyes.get(watcher).expect("a body has eyes");
-        let members = self
-            .roster()
-            .iter()
-            .filter_map(|member| self.hiding.get(member).ok())
-            .filter(|(_, fit)| *fit)
-            .map(|(level, _)| level);
-        let hidden = Hidden::party(members, self.laid.bonus(self.party()).concealment);
-        eyes.see(
-            &self.places.of(watcher),
-            (&self.places.of(self.party()), hidden),
-            self.far(),
-            &self.obstacles,
-        )
+        let (party, hides) = *self.party;
+        let party = (&self.places.of(party), hides.0);
+        eyes.see(&self.places.of(watcher), party, self.far(), &self.obstacles)
     }
 
     /// Whether a body's eyes make out a monster, which hides by its level.
     pub fn sees(&self, watcher: Entity, watched: Entity) -> bool {
         let eyes = self.eyes.get(watcher).expect("a body has eyes");
-        let (level, _) = self.hiding.get(watched).expect("a body has a level");
-        eyes.see(
-            &self.places.of(watcher),
-            (&self.places.of(watched), Hidden::alone(*level)),
-            self.far(),
-            &self.obstacles,
-        )
+        let level = self.levels.get(watched).expect("a body has a level");
+        let watched = (&self.places.of(watched), Hidden::alone(*level));
+        eyes.see(&self.places.of(watcher), watched, self.far(), &self.obstacles)
     }
 }
 
@@ -151,15 +123,15 @@ fn mark<M: Component + Default>(commands: &mut Commands, body: Entity, (now, was
 /// What each living monster makes out of the party, and whether the party
 /// has it in view, follow where they stand.
 pub(crate) fn look(
-    monsters: Query<(Entity, Has<MakesOutParty>, Has<InPartyView>), With<Monster>>,
-    sight: Sight,
+    monsters: Query<(Entity, &Vitals, Has<MakesOutParty>, Has<InPartyView>), With<Monster>>,
+    eyesight: Eyesight,
     mut commands: Commands,
 ) {
-    for (monster, made_out, in_view) in &monsters {
-        let alive = sight.alive(monster);
-        let now = alive && sight.sees_party(monster);
+    for (monster, vitals, made_out, in_view) in &monsters {
+        let alive = !vitals.is_dead();
+        let now = alive && eyesight.sees_party(monster);
         mark::<MakesOutParty>(&mut commands, monster, (now, made_out));
-        let now = alive && sight.in_party_view(monster);
+        let now = alive && eyesight.in_party_view(monster);
         mark::<InPartyView>(&mut commands, monster, (now, in_view));
     }
 }
@@ -168,25 +140,30 @@ pub(crate) fn look(
 /// hostiles fighting stand.
 #[allow(clippy::type_complexity)]
 pub(crate) fn reinforce(
-    monsters: Query<(Entity, Has<InPartyView>, Has<Reinforces>), With<Monster>>,
-    fighting: Query<Entity, (With<InPartyView>, With<crate::game::combat::Combatant>)>,
-    sight: Sight,
+    monsters: Query<(Entity, &Temper, Has<InPartyView>, Has<Reinforces>), With<Monster>>,
+    fighting: Query<
+        (Entity, &Vitals, &Side),
+        (With<InPartyView>, With<crate::game::combat::Combatant>),
+    >,
+    party: Single<Entity, With<Party>>,
+    places: Places,
     mut commands: Commands,
 ) {
     let hostiles: Vec<Entity> = fighting
         .iter()
-        .filter(|&h| sight.alive(h) && sight.side(h) == Some(Stance::Hostile))
+        .filter(|(_, vitals, side)| !vitals.is_dead() && side.own() == Stance::Hostile)
+        .map(|(hostile, ..)| hostile)
         .collect();
-    for (monster, in_view, was) in &monsters {
-        let hidden = sight.tempers.get(monster).is_ok_and(|temper| temper.0.camouflaged);
-        let gap = sight.party_gap(monster);
-        let feet = sight.places.of(monster).feet;
+    let party_gap = |body| places.gap(body, *party);
+    for (monster, temper, in_view, was) in &monsters {
+        let gap = party_gap(monster);
+        let feet = places.of(monster).feet;
         let now = in_view
-            && !hidden
+            && !temper.0.camouflaged
             && gap <= ENGAGEMENT_RANGE
             && hostiles.iter().filter(|&&h| h != monster).any(|&hostile| {
-                let theirs = sight.party_gap(hostile);
-                let between = feet.distance(sight.places.of(hostile).feet);
+                let theirs = party_gap(hostile);
+                let between = feet.distance(places.of(hostile).feet);
                 between + gap < theirs * REINFORCEMENT_SLACK && (gap < theirs || between < theirs)
             });
         mark::<Reinforces>(&mut commands, monster, (now, was));

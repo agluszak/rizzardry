@@ -12,7 +12,6 @@ use super::population::Monster;
 use super::pursuit::Charging;
 use super::search::Search;
 use crate::game::combat::Combatant;
-use crate::game::combat::monster::sight::Sight;
 use crate::game::data::Catalogs;
 use crate::game::hits::Deed;
 use crate::game::party::body::{PartyBody, PartyMovement};
@@ -57,17 +56,20 @@ pub struct Investigating;
 pub(super) fn hear(
     noise: On<Noise>,
     groups: Query<Option<&Heard>, With<MonsterGroup>>,
-    leaders: Query<(Entity, &Leads, &Monster, &Position, Option<&Orders>, Has<Combatant>)>,
-    sight: Sight,
+    leaders: Query<(
+        (&Leads, &Monster, &Position, &crate::game::world::hostility::Side),
+        Option<&Orders>,
+        Has<Combatant>,
+    )>,
     content: If<Res<Catalogs>>,
     mut rng: ResMut<GameRng>,
     mut commands: Commands,
 ) {
-    for (leader, &Leads(group), monster, at, orders, fighting) in &leaders {
+    for ((&Leads(group), monster, at, side), orders, fighting) in &leaders {
         let Ok(heard) = groups.get(group) else { continue };
         let deaf = orders.is_some_and(|Orders(orders)| orders.deaf);
         let passes = match noise.to {
-            Hearers::Hostile => sight.side(leader) != Some(Stance::Hostile),
+            Hearers::Hostile => side.own() != Stance::Hostile,
             Hearers::All => fighting,
         };
         if deaf || passes {

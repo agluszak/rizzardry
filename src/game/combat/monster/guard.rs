@@ -13,7 +13,7 @@ use crate::content::characters::Attribute;
 use crate::game::actors::arm::{Furthest, GuardReach};
 use crate::game::actors::{Attributes, BlindFighting, CanGuard, Level};
 use crate::game::characters::{Condition, Conditions, Vitals};
-use crate::game::combat::turn::{Decided, Decision, Fights, Retreats};
+use crate::game::combat::action::{ActionOf, Fights, Protects, Retreats, Strikes};
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::Stance;
 use crate::game::world::population::Temper;
@@ -44,16 +44,14 @@ pub(super) fn strike_or_guard(
     commands.entity(deliberation).despawn();
     let ((temper, a, conditions, level), (reach, guard_reach, fights_blind, can_guard)) =
         monsters.get(monster)?;
-    let decided = |decision| Decided { actor: monster, decision, own_will: true };
     let blind = conditions.has(Condition::Blind) && !fights_blind;
     if reach.0.is_none() || (blind && !reach.reaches(gap)) {
-        let retreats = Decision::Retreat(Retreats { conduct: Conduct::Withdraw, quiet: false });
-        commands.trigger(decided(retreats));
+        commands.spawn((ActionOf(monster), Retreats { conduct: Conduct::Withdraw, quiet: false }));
         return Ok(());
     }
-    let fights = |waits| Decision::Fight(Fights { waits, berserk: false });
+    let strikes = |waits| (ActionOf(monster), Strikes(Fights { waits, berserk: false }));
     if !reach.reaches(gap) {
-        commands.trigger(decided(fights(false)));
+        commands.spawn(strikes(false));
         return Ok(());
     }
     let temper = &temper.0;
@@ -75,10 +73,11 @@ pub(super) fn strike_or_guard(
             .collect(),
         _ => Vec::new(),
     };
-    commands.trigger(decided(if !wards.is_empty() {
-        Decision::Protect(wards[rng.below(wards.len() as u32) as usize])
+    if wards.is_empty() {
+        commands.spawn(strikes(temper.wary && rng.below(100) < intelligence));
     } else {
-        fights(temper.wary && rng.below(100) < intelligence)
-    }));
+        let ward = wards[rng.below(wards.len() as u32) as usize];
+        commands.spawn((ActionOf(monster), Protects(ward)));
+    }
     Ok(())
 }

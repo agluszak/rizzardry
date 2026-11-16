@@ -15,8 +15,7 @@ use avian3d::prelude::Position;
 use bevy::prelude::*;
 
 use super::monster;
-use super::monster::sight::Sight;
-use super::turn::{SpecialCooldown, Turn};
+use super::turn::{MadeSpecial, SpecialCooldown, Waited};
 use super::{
     Battle, CombatNews, Combatant, Combatants, PASSIVE_ROUNDS, Pause, ROUND_SECONDS, Round, Spoils,
 };
@@ -143,18 +142,33 @@ pub(super) fn leave_fight(
     members: Query<(), With<crate::game::party::roster::PartyMember>>,
     making_out: Query<(), With<super::monster::sight::MakesOutParty>>,
     reinforcing: Query<(), With<super::monster::sight::Reinforces>>,
-    sight: Sight,
+    bodies: Query<(
+        &Vitals,
+        &crate::game::world::hostility::Side,
+        &crate::game::world::hostility::Standing,
+        Option<&crate::game::world::identify::GroupMember>,
+    )>,
+    eyesight: super::monster::sight::Eyesight,
 ) -> Result {
     let (combatants, mut round) = fights.get_mut(leave.fight)?;
     let combatants = combatants.map_or(&[][..], Combatants::entities);
-    let group_of = |monster: Entity| sight.groups.get(monster).ok().map(|group| group.0);
+    let body = |actor: Entity| bodies.get(actor).expect("a combatant has a body");
+    // A member is of no group.
+    let group_of = |actor: Entity| body(actor).3.map(|group| group.0);
+    let alive = |actor: Entity| !body(actor).0.is_dead();
+    // A living foe, by how they stand; the dead are nobody's foe.
+    let foe_of = |m: Entity, other: Entity| {
+        other != m
+            && alive(other)
+            && crate::game::world::hostility::between(*body(m).2, *body(other).2) == Stance::Hostile
+    };
     let sees_foe = |m: Entity| {
         combatants.iter().any(|&other| {
-            let foe = sight.toward(m, other) == Some(Stance::Hostile);
-            foe && match members.contains(other) {
-                true => making_out.contains(m),
-                false => sight.sees(m, other),
-            }
+            foe_of(m, other)
+                && match members.contains(other) {
+                    true => making_out.contains(m),
+                    false => eyesight.sees(m, other),
+                }
         })
     };
     let mut fought: Vec<Entity> = Vec::new();
@@ -168,8 +182,8 @@ pub(super) fn leave_fight(
     for group in fought {
         let Ok(group_members) = groups.get(group) else { continue };
         let fellows: Vec<Entity> =
-            group_members.iter().filter(|&m| combatants.contains(&m) && sight.alive(m)).collect();
-        let Some(side) = fellows.first().and_then(|&m| sight.side(m)) else {
+            group_members.iter().filter(|&m| combatants.contains(&m) && alive(m)).collect();
+        let Some(side) = fellows.first().map(|&m| body(m).1.own()) else {
             going.push(group);
             continue;
         };
@@ -201,17 +215,13 @@ pub(super) fn leave_fight(
 pub(super) fn rest_the_idle(
     rests: On<Rests>,
     fights: Query<Option<&Combatants>>,
-    mut bodies: Query<(
-        (&mut Vitals, &crate::game::characters::Conditions),
-        Option<&Turn>,
-        &Mending,
-    )>,
+    mut bodies: Query<((&mut Vitals, &crate::game::characters::Conditions), Has<Waited>, &Mending)>,
     mut rng: ResMut<GameRng>,
 ) -> Result {
     let combatants = fights.get(rests.fight)?;
     for &body in combatants.map_or(&[][..], Combatants::entities) {
-        let ((mut vitals, conditions), turn, mending) = bodies.get_mut(body)?;
-        let resting = turn.is_some_and(|turn| turn.waited)
+        let ((mut vitals, conditions), waited, mending) = bodies.get_mut(body)?;
+        let resting = waited
             || matches!(conditions.worst(), Some(Condition::Asleep | Condition::Unconscious));
         if vitals.is_dead() || !resting {
             continue;
@@ -232,14 +242,14 @@ pub(super) fn rest_the_idle(
 pub(super) fn cool_specials(
     rests: On<Rests>,
     fights: Query<Option<&Combatants>>,
-    mut monsters: Query<(Option<&mut SpecialCooldown>, Option<&Turn>)>,
+    mut monsters: Query<(Option<&mut SpecialCooldown>, Has<MadeSpecial>)>,
 ) -> Result {
     let combatants = fights.get(rests.fight)?;
     for &monster in combatants.map_or(&[][..], Combatants::entities) {
         // Only one with a special attack has a cooldown.
-        if let (Some(mut cooldown), turn) = monsters.get_mut(monster)?
+        if let (Some(mut cooldown), made_special) = monsters.get_mut(monster)?
             && cooldown.0 > 0
-            && !turn.is_some_and(|turn| turn.special)
+            && !made_special
         {
             cooldown.0 -= 1;
         }

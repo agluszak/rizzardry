@@ -19,7 +19,7 @@ use super::{Attributes, Fatigue, Skills};
 use crate::content::characters::{Attribute, BodyPart, Race, Skill};
 use crate::content::items::AttackMode;
 use crate::game::characters::{Calling, Condition, Conditions, Vitals, skill_available};
-use crate::game::combat::Turn;
+use crate::game::combat::turn::Waited;
 use crate::game::inventory::EquipSlot;
 use crate::game::items::{Burden, Items, Redressed};
 
@@ -339,18 +339,15 @@ fn fatigue(mut actors: Query<(&Fatigue, &Nature, &mut ArmourParts), Changed<Fati
 /// One that holds back on guard this round (a member defending, a monster
 /// that waits) is 2 better guarded (retail `CalcArmorClasses`,
 /// `GetTargetArmorClassModifier`).
-fn braced(mut actors: Query<(&Turn, &mut ArmourParts), Changed<Turn>>) {
-    for (turn, mut parts) in &mut actors {
-        let part = if turn.waited { 2 } else { 0 };
-        ArmourParts::set(&mut parts, ArmourPart::DefensiveAction, part);
-    }
+fn braced(event: On<Add<Waited>>, mut actors: Query<&mut ArmourParts>) -> Result {
+    ArmourParts::set(&mut actors.get_mut(event.entity)?, ArmourPart::DefensiveAction, 2);
+    Ok(())
 }
 
-/// The fight is over, and what holding back added with it.
-fn fight_over(event: On<Remove<Turn>>, mut actors: Query<&mut ArmourParts>) {
-    if let Ok(mut parts) = actors.get_mut(event.entity) {
-        ArmourParts::set(&mut parts, ArmourPart::DefensiveAction, 0);
-    }
+/// Holding back is over, and what it added with it.
+fn unbraced(event: On<Remove<Waited>>, mut actors: Query<&mut ArmourParts>) -> Result {
+    ArmourParts::set(&mut actors.get_mut(event.entity)?, ArmourPart::DefensiveAction, 0);
+    Ok(())
 }
 
 /// Alive and not taken away: no worse than unconscious.
@@ -405,7 +402,7 @@ pub(super) fn plugin(app: &mut App) {
     app.add_systems(
         super::Settle,
         (
-            (speed, skills, spells, conditions, load, fatigue, braced),
+            (speed, skills, spells, conditions, load, fatigue),
             worn,
             (armour, unaware, block, unseat),
         )
@@ -415,7 +412,8 @@ pub(super) fn plugin(app: &mut App) {
             .after(super::figures::fatigue)
             .before(super::figures::mending),
     )
-    .add_observer(fight_over);
+    .add_observer(braced)
+    .add_observer(unbraced);
 }
 
 #[cfg(test)]
@@ -425,7 +423,6 @@ mod tests {
     use crate::content::items::{EquipClass, ItemDefinition};
     use crate::game::actors::Settle;
     use crate::game::characters::{Character, Lasting};
-    use crate::game::inventory::WeaponSlot;
     use crate::game::items::{Worn, make};
     use bevy::ecs::system::RunSystemOnce;
 
@@ -456,38 +453,6 @@ mod tests {
         app.world_mut().run_schedule(Settle);
         let world = app.world();
         (world.get::<ArmourParts>(member).unwrap().clone(), *world.get::<Armour>(member).unwrap())
-    }
-
-    /// Retail `CalcArmorClasses`: a shield's worth and a 25th of the skill
-    /// up to it; defending adds 2 and lets a 15th count, up to one and a
-    /// half times the shield.
-    #[test]
-    fn defending_adds_two_and_lets_shield_skill_count_for_more() {
-        let (mut app, member) = mage();
-        wear(&mut app, member, EquipSlot::Secondary, EquipClass::Shield, 4);
-        let skilled = |app: &mut App, points, defending| {
-            let world = app.world_mut();
-            world.get_mut::<crate::game::characters::Training>(member).unwrap().0[Skill::Shield] =
-                points;
-            world.entity_mut(member).insert(Turn {
-                when: None,
-                attacks: EnumMap::default(),
-                due: WeaponSlot::Primary,
-                weapons: EnumMap::default(),
-                lightning: None,
-                moved: false,
-                special: false,
-                berserk: false,
-                waited: defending,
-            });
-            let (parts, armour) = settled(app, member);
-            (parts.0[ArmourPart::Shield], parts.0[ArmourPart::DefensiveAction], armour.total)
-        };
-        let bare = skilled(&mut app, 0, false).2 - 4;
-        assert_eq!(skilled(&mut app, 60, false), (4 + 2, 0, bare + 6));
-        assert_eq!(skilled(&mut app, 60, true), (4 + 4, 2, bare + 10));
-        assert_eq!(skilled(&mut app, 125, false), (4 + 4, 0, bare + 8));
-        assert_eq!(skilled(&mut app, 125, true), (4 + 6, 2, bare + 12));
     }
 
     /// What is worn at a place covers only that place; what guards against

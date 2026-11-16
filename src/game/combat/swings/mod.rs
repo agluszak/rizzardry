@@ -17,12 +17,16 @@
 
 use bevy::prelude::*;
 
+use super::action::Fights;
 use super::approach::{CombatMove, MoveGoal};
 use super::attack::{self, Surprise};
 use super::effort::{Effort, Exerted, Tires};
-use super::monster::close::{self, MoveBudget};
-use super::turn::{Fights, Guards, Interceptions, Ordered, Spotted, Turn};
-use super::{Announcement, Battle, CombatNews, Combatants, Pause, Round};
+use super::monster::close::{self, Charges, Move};
+use super::turn::{
+    AttacksLeft, Berserk, Done, Guards, Interceptions, Lightning, Moved, NextMoment, Ordered,
+    Shown, Spotted, Waited,
+};
+use super::{Announcement, Battle, CombatNews, Combatants, Round};
 use crate::content::characters::{Attribute, Skill};
 use crate::content::items::{AttackEffects, AttackMode};
 use crate::game::actors::arm::{
@@ -33,8 +37,7 @@ use crate::game::actors::arm::{
 use crate::game::actors::{
     Abilities, Against, Agility, AimBonus, Armour, Attributes, Backstab, BlindFighting, Blinded,
     Block, CanFight, CanGuard, Fatigue, HitPlaces, KnockOut, Laying, Level, MissileShield,
-    Modifiers, Nature, Places, Pressing, Reduction, Resistances, Skills, Unaware, Unseated,
-    reaches,
+    Modifiers, Places, Pressing, Reduction, Resistances, Skills, Unaware, Unseated, reaches,
 };
 use crate::game::characters::{Calling, Condition, Conditions, Practise, Vitals, skill_available};
 use crate::game::data::Catalogs;
@@ -336,12 +339,8 @@ fn moving(member: bool, walking: bool, round: &Round) -> bool {
 
 /// An actor that fights chooses whom to strike and how, or what it does
 /// instead (section 2). Attacking holds the fight for the action's pause.
-pub(super) fn strike(
-    strike: On<Strike>,
-    mut commands: Commands,
-    mut pause: Single<&mut Pause, With<Battle>>,
-) {
-    pause.0 = Timer::from_seconds(super::ACTION_SECONDS, TimerMode::Once);
+pub(super) fn strike(strike: On<Strike>, mut commands: Commands) {
+    commands.trigger(Shown { actor: strike.actor });
     let attack = commands.spawn((AttackBy(strike.actor), Choosing(strike.fights))).id();
     commands.trigger(Seeks { attack });
 }
@@ -353,7 +352,7 @@ fn seek(
     seeks: On<Seeks>,
     mut commands: Commands,
     attacks: Query<&AttackBy>,
-    actors: Query<(&Turn, &Standing, Has<Ordered>)>,
+    actors: Query<(Has<Berserk>, &Standing, Has<Ordered>)>,
     candidates: Query<(&Vitals, &Standing, &Skills)>,
     fight: Single<Option<&Combatants>, With<Battle>>,
     roster: Single<&PartyRoster>,
@@ -361,8 +360,8 @@ fn seek(
 ) -> Result {
     let attack = seeks.attack;
     let &AttackBy(actor) = attacks.get(attack)?;
-    let (turn, standing, ordered) = actors.get(actor)?;
-    let seeks = if turn.berserk { Stance::Friendly } else { Stance::Hostile };
+    let (berserk, standing, ordered) = actors.get(actor)?;
+    let seeks = if berserk { Stance::Friendly } else { Stance::Hostile };
     let mut sought = Vec::new();
     for &other in fight.map_or(&[][..], Combatants::entities).iter().filter(|&&o| o != actor) {
         let (their, theirs, skills) = candidates.get(other)?;
@@ -388,7 +387,7 @@ fn find_ways(
     finds: On<FindsWays>,
     mut commands: Commands,
     attacks: Query<(&AttackBy, &Sought)>,
-    actors: Query<(&Turn, &Arms, Has<Ordered>)>,
+    actors: Query<(&AttacksLeft, &Arms, Has<Ordered>)>,
     arms: Query<(&Hand, &Reaches, &Modes)>,
     npcs: Query<(), With<Embodies>>,
     trained: Query<(&Calling, &Abilities)>,
@@ -399,12 +398,12 @@ fn find_ways(
 ) -> Result {
     let attack = finds.attack;
     let (&AttackBy(actor), Sought(sought)) = attacks.get(attack)?;
-    let (turn, held, ordered) = actors.get(actor)?;
+    let (left, held, ordered) = actors.get(actor)?;
     let at = places.of(actor);
     let mut evaded = Vec::new();
     let mut found = None;
-    for slot in [turn.due, turn.due.other()] {
-        if turn.attacks[slot] == 0 {
+    for slot in [left.due, left.due.other()] {
+        if left.left[slot] == 0 {
             continue;
         }
         let mut ways = Vec::new();
@@ -459,7 +458,7 @@ fn pick(
     found: On<Found>,
     mut commands: Commands,
     attacks: Query<(&AttackBy, &Choosing)>,
-    mut actors: Query<(&mut Turn, Has<Ordered>)>,
+    mut actors: Query<(&mut AttacksLeft, Has<Ordered>)>,
     modes: Query<&Modes>,
     candidates: Query<(&Conditions, &Furthest)>,
     places: Places,
@@ -469,7 +468,7 @@ fn pick(
     use crate::game::party::formation::Row;
     let Found { attack, slot, ref ways } = *found;
     let (&AttackBy(actor), &Choosing(fights)) = attacks.get(attack)?;
-    let (mut turn, ordered) = actors.get_mut(actor)?;
+    let (mut left, ordered) = actors.get_mut(actor)?;
     let at = places.of(actor);
     let picked = if ordered {
         let mut ranked = Vec::with_capacity(ways.len());
@@ -498,14 +497,14 @@ fn pick(
         (pick >= waits).then(|| ways[pick - waits])
     };
     let Some(Way { arm, mode, target }) = picked else {
-        turn.waited = true;
-        turn.end();
+        commands.entity(actor).insert(Waited);
+        commands.trigger(Done { actor });
         commands.trigger(Exerted { actor, effort: Effort::Wait });
         commands.entity(attack).despawn();
         return Ok(());
     };
-    turn.due = slot;
-    turn.attacks[slot] -= 1;
+    left.due = slot;
+    left.left[slot] -= 1;
     let mut made = commands.entity(attack);
     made.insert((AttackWith { arm, mode }, AttackAt(target), Tally::default()));
     if fights.berserk {
@@ -527,9 +526,9 @@ fn close_in(
     nobody: On<Nobody>,
     mut commands: Commands,
     attacks: Query<(&AttackBy, &Sought)>,
-    mut actors: Query<(
-        (&mut Turn, Option<&Walker>),
-        ((&Nature, &Modifiers), &Furthest, &Standing, &Vitals, &Conditions),
+    actors: Query<(
+        (Has<Moved>, Option<&Walker>, Option<&Move>, Has<Charges>),
+        (&Furthest, &Standing, &Vitals),
     )>,
     living: Query<(), With<Vitals>>,
     places: Places,
@@ -540,10 +539,9 @@ fn close_in(
     let attack = nobody.attack;
     commands.entity(attack).despawn();
     let (&AttackBy(actor), Sought(sought)) = attacks.get(attack)?;
-    let ((mut turn, walker), ((nature, laid), furthest, standing, vitals, conditions)) =
-        actors.get_mut(actor)?;
-    let Some(walker) = walker.filter(|_| nature.stride.is_some() && !turn.moved) else {
-        turn.end();
+    let ((moved, walker, moves, charges), (furthest, standing, vitals)) = actors.get(actor)?;
+    let (Some(walker), Some(moves)) = (walker, moves.filter(|_| !moved)) else {
+        commands.trigger(Done { actor });
         return Ok(());
     };
     let at = places.of(actor);
@@ -567,17 +565,17 @@ fn close_in(
         Stance::Neutral => None,
     };
     let Some(goal) = goal else {
-        turn.end();
+        commands.trigger(Done { actor });
         return Ok(());
     };
-    let health = (vitals.health.current, vitals.health.max);
-    let stride = (nature.stride, laid.laid.stride);
-    let budget = MoveBudget::of(stride, health, conditions.has(Condition::Slowed));
-    turn.moved = true;
-    turn.when = Some((round.moment * 2).min(100));
-    commands.entity(actor).insert(CombatMove { budget: budget.metres, moved: 0.0, goal });
-    news.write(CombatNews::Moves { monster: actor, charge: budget.charge });
-    let effort = if budget.charge { Effort::Charge } else { Effort::Approach };
+    let budget = if charges { moves.charging } else { moves.walking };
+    commands.entity(actor).insert((
+        Moved,
+        NextMoment((round.moment * 2).min(100)),
+        CombatMove { budget, moved: 0.0, goal },
+    ));
+    news.write(CombatNews::Moves { monster: actor, charge: charges });
+    let effort = if charges { Effort::Charge } else { Effort::Approach };
     commands.trigger(Exerted { actor, effort });
     Ok(())
 }
@@ -587,15 +585,17 @@ fn count_attack(_: On<Opens>, mut fight: Single<&mut Round, With<Battle>>) {
     fight.attacked(true);
 }
 
-/// A member under orders, and not turned, provokes whom they strike.
+/// A member under orders, and neither turned nor berserk, provokes whom
+/// they strike (retail `Combat.cpp:2238`).
 fn provoke(
     opens: On<Opens>,
     mut commands: Commands,
     attacks: Query<(&AttackBy, &AttackAt)>,
-    attackers: Query<&Conditions, With<Ordered>>,
+    attackers: Query<(&Conditions, Has<Ordered>, Has<Berserk>)>,
 ) -> Result {
     let (&AttackBy(actor), &AttackAt(target)) = attacks.get(opens.attack)?;
-    if attackers.get(actor).is_ok_and(|ailing| !ailing.has(Condition::Turncoat)) {
+    let (ailing, ordered, berserk) = attackers.get(actor)?;
+    if ordered && !berserk && !ailing.has(Condition::Turncoat) {
         commands.trigger(Provocation { monster: target });
     }
     Ok(())
@@ -661,21 +661,20 @@ fn count(
     opens: On<Opens>,
     mut commands: Commands,
     attacks: Query<(&AttackBy, &AttackWith)>,
-    mut attackers: Query<(&mut Turn, &Conditions)>,
+    attackers: Query<(Option<&Lightning>, &Conditions)>,
     arms: Query<(&Hand, &Swings, Has<Sword>)>,
     mut rng: ResMut<GameRng>,
 ) -> Result {
     let attack = opens.attack;
     let (&AttackBy(actor), with) = attacks.get(attack)?;
-    let (mut turn, conditions) = attackers.get_mut(actor)?;
+    let (lightning, conditions) = attackers.get(actor)?;
     let (hand, swings, sword) = arms.get(with.arm)?;
     let mut most = (rng.below(swings.most) as i32 + 1 + swings.extra).max(1) as u32;
-    let readied = turn.lightning.filter(|_| hand.0 == WeaponSlot::Primary);
-    if let Some(level) = readied {
+    if let Some(&Lightning(level)) = lightning.filter(|_| hand.0 == WeaponSlot::Primary) {
         if sword && !conditions.has(Condition::Slowed) {
             most += if rng.below(11) + u32::from(level) < 20 { 3 } else { 4 };
         }
-        turn.lightning = None;
+        commands.entity(actor).remove::<Lightning>();
     }
     commands.entity(attack).insert(SwingCount { most, made: 0 });
     Ok(())
@@ -1269,7 +1268,7 @@ fn spend(
     swings: Query<&SwingOf>,
     attacks: Query<(&AttackBy, &AttackWith, &SwingCount)>,
     arms: Query<(&Hand, Option<&Grip>, Has<Loaded>)>,
-    mut turns: Query<&mut Turn>,
+    mut turns: Query<&mut AttacksLeft>,
     strikers: Query<(Option<&Weapon>, Option<&Missile>)>,
     held: Items,
 ) -> Result {
@@ -1332,17 +1331,18 @@ fn report(
 fn next(
     ends: On<AttackEnds>,
     attacks: Query<&AttackBy>,
-    mut turns: Query<(&mut Turn, &Tempo)>,
+    mut commands: Commands,
+    mut turns: Query<(&mut AttacksLeft, &Tempo)>,
     round: Single<&Round, With<Battle>>,
 ) -> Result {
     let &AttackBy(actor) = attacks.get(ends.attack)?;
-    let (mut turn, tempo) = turns.get_mut(actor)?;
-    match attack::next_attack(turn.attacks, tempo.initiative, turn.due, round.moment) {
+    let (mut left, tempo) = turns.get_mut(actor)?;
+    match attack::next_attack(left.left, tempo.initiative, left.due, round.moment) {
         Some(next) => {
-            turn.due = next.slot;
-            turn.when = Some(next.moment);
+            left.due = next.slot;
+            commands.entity(actor).insert(NextMoment(next.moment));
         }
-        None => turn.end(),
+        None => commands.trigger(Done { actor }),
     }
     Ok(())
 }
