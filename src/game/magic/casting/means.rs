@@ -32,7 +32,7 @@ use crate::game::rng::GameRng;
 use crate::game::world::interaction::{AttemptOn, DeviceInteraction, Guarded, Work};
 use crate::game::world::level::{Level, LevelOwned};
 use crate::game::world::obstacles::WorldObstacles;
-use crate::game::world::population::{Monster, Spellcasting};
+use crate::game::world::population::Monster;
 use crate::game::world::triggers::LevelState;
 
 /// Whether a body at `from` reaches one at `to` with a spell of `reach`:
@@ -261,15 +261,6 @@ impl Circumstances<'_, '_> {
     /// Whether the party is under water, which quenches Fire.
     pub fn underwater(&self) -> bool {
         self.states.single().is_ok_and(|state| state.camera_sway)
-    }
-}
-
-/// Whether a silence leaves a caster their Alchemy: a member with the skill,
-/// a monster of a kind that keeps it.
-pub fn keeps_alchemy(caster: &BodyItem, kinds: &Query<&Spellcasting>) -> bool {
-    match caster.calling {
-        Some(_) => caster.skills[Skill::Alchemy] > 0,
-        None => kinds.get(caster.entity).is_ok_and(|casting| casting.silent_alchemy),
     }
 }
 

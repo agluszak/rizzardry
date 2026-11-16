@@ -146,6 +146,24 @@ pub(super) fn blind(
     }
 }
 
+/// A member keeps their Alchemy under a silence while they have the skill.
+pub(super) fn keeps_alchemy(
+    actors: Query<(Entity, &Skills, Has<super::KeepsAlchemy>), (With<Calling>, Changed<Skills>)>,
+    mut commands: Commands,
+) {
+    for (actor, skills, was) in &actors {
+        match (skills[crate::content::characters::Skill::Alchemy] > 0, was) {
+            (true, false) => {
+                commands.entity(actor).insert(super::KeepsAlchemy);
+            }
+            (false, true) => {
+                commands.entity(actor).remove::<super::KeepsAlchemy>();
+            }
+            _ => {}
+        }
+    }
+}
+
 /// The most spell points each realm can hold, by the spells learned
 /// ([`crate::game::magic::max_points`]); what is spent stays spent.
 #[allow(clippy::type_complexity)]

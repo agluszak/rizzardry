@@ -28,8 +28,8 @@ pub enum Rows {
     /// A spell laid that pulses as a round ends.
     Pulse(SpellId),
     Special(SpecialAttackKind),
-    /// A weapon's blow.
-    Blow,
+    /// A weapon's blow, or harm landing as one.
+    Blow(Blow),
 }
 
 /// What a blow does, from the table the game ships.
@@ -43,7 +43,7 @@ impl Rows {
     pub fn spell(self) -> Option<SpellId> {
         match self {
             Self::Spell(spell) | Self::Backfire(spell) | Self::Pulse(spell) => Some(spell),
-            Self::Special(_) | Self::Blow => None,
+            Self::Special(_) | Self::Blow(_) => None,
         }
     }
 
@@ -62,7 +62,7 @@ impl Rows {
             }),
             Self::Pulse(spell) => row(spell).map_or(&[], |row| &row.pulse),
             Self::Special(kind) => &super::specials::special(kind).effects,
-            Self::Blow => &WEAPON_EFFECTS,
+            Self::Blow(_) => &WEAPON_EFFECTS,
         }
     }
 }
@@ -89,7 +89,7 @@ pub enum Restores {
 /// A weapon blow behind a strike: the damage it deals and its weapon's
 /// effects, each landing at the weapon's chance for it, a poison at the
 /// weapon's strength.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Blow {
     pub damage: u32,
     pub effects: AttackEffects,

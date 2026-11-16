@@ -779,7 +779,7 @@ pub(super) fn breathe(
                 })
             })
             .collect::<Vec<Entity>>();
-        let strike = effects::Strike::new(rows, breathes.strength, None, Some(actor), &content);
+        let strike = effects::Strike::new(rows, breathes.strength, Some(actor), &content);
         commands.spawn((Deed::at(strike, victims), Breath));
     }
 }

@@ -671,9 +671,9 @@ a fumble struck).
 In this order:
 
 1. The attack is announced (section 3).
-2. As they happen: a guard stepping in; a fumble. A fumble's blow, and a Razor
-   Cloak answer, are each told at once as a single hit with its damage, followed by
-   any other effects it had.
+2. As they happen: a guard stepping in; a fumble. As each swing is settled, a
+   fumble's blow and then a Razor Cloak answer are each told as a single hit with
+   its damage (0 if it did none), followed by any other effects it had.
 3. When the swings are done: the attack's result, `hits` and `damage`, the target
    and the attacker, and then, if any, everything its blows did besides damage.
 4. Deaths are settled and told; health lost is told for display.
@@ -828,15 +828,26 @@ what the hand holds and the member's training, or made with the monster
 from its species. What a bearer's arms come to (`Wielding`, `Tempo`,
 `Furthest`, `GuardReach`, `Pressing`, `AimBonus`) is a figure of the bearer.
 
-**An attack is an entity, and so is each swing.** `Strike` chooses (2) and
-makes the attack: who, at whom, with which arm and how. Its opening counts
-the swings and catches the target unaware (3). Each swing is an entity of
-the attack whose facts are added by small observers, each reading only what
-its fact comes from: its `Aim`, its `Fate`, whom it `Strikes` once a guard
-has had its say, a near miss blocked, whether it gets `Through` and where,
-the blow (a deed) and a cloak's answer (4, 5, 7). A settled swing pays its
-stamina and spends what it shoots (6); then the next swing, or the attack's
-end, which tells what it came to and sets the next attack (7). The
+**An attack is an entity, and so is each swing.** An attack is related to
+its attacker (`AttackBy`, gone with them) and to its target (`AttackAt`);
+a swing to its attack (`SwingOf`, gone with it); a swing to whom it
+`Strikes`; the deeds of a blow and of a cloak's answer to their swing
+(`BlowOf`, `AnswerTo`). What happens goes by events, each a moment of the
+rules; the observers of one event are independent of one another, and the
+one that starts a sequence queues its moments in order, each carried out
+in full before the next. Choosing (2) is a chain whose steps branch:
+`Strike` seeks whom it could strike, finds the ways (or nobody, and closes
+in), and picks one (or waits). The pick makes the attack, which `Opens`
+(it keeps the fight going, may provoke, `Caught` and `SwingCount` are
+worked out), is announced, and swings (3). A swing aims, fares (its
+`Fate`), is guarded (whom it `Strikes`), lands (a near miss blocked,
+whether it gets `Through`, a cloak's answer), hits (the blow struck, the
+blow itself) and is settled (4, 5, 7): it is told, on its own if it went
+astray and toward its attack's tally otherwise, then the answer, from what
+the deeds did once landed (`Blew`, `Answered`); a blow that did damage
+trains; it pays its stamina and spends what it shoots, which may run the
+attack out (6). Then the next swing, or the attack's end, when the effort
+is taken, what it came to is told and the next attack is set (7). The
 formulas that are functions of a few numbers (a mode's to-hit, the fumble
 odds, scatter, where a blow lands, a backstab's dice) are in
 `combat::attack`.

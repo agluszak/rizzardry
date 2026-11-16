@@ -11,6 +11,7 @@ use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
 use crate::game::actors::{Enchantment, Laid, Laying};
 use crate::game::characters::Character;
 use crate::game::characters::{Gender, Profession, Race};
+use crate::game::data::Catalogs;
 use crate::game::hits;
 use crate::game::magic::casting::{Cast, MagicChoice, MagicNews, Source, learned_chance};
 use crate::game::magic::may::Refusal;
@@ -132,6 +133,21 @@ fn lay(world: &mut World, bearer: Entity, spell: SpellId, turns: u32, absorbs: u
 fn is_laid(world: &mut World, bearer: Entity, spell: SpellId) -> bool {
     use bevy::ecs::system::RunSystemOnce;
     world.run_system_once(move |laid: Laid| laid.has(bearer, spell)).unwrap()
+}
+
+/// Who comes into a fight is looked at, as the frame's engagement does:
+/// what monsters make out, then each rule, then who is told of.
+fn engage(world: &mut World) {
+    use crate::game::combat::monster::sight;
+    world.run_system_cached(sight::look).unwrap();
+    world.run_system_cached(sight::reinforce).unwrap();
+    world.run_system_cached(engage::turn_by_radius).unwrap();
+    world.run_system_cached(engage::come_in_provoked).unwrap();
+    match world.query_filtered::<(), With<Battle>>().iter(world).next() {
+        Some(()) => world.run_system_cached(engage::join).unwrap(),
+        None => world.run_system_cached(engage::look_to_open).unwrap(),
+    }
+    world.run_system_cached(engage::tell).unwrap();
 }
 
 fn refresh(world: &mut World) {
@@ -492,7 +508,7 @@ fn a_provoked_neutral_group_stands_hostile_and_enters_the_fight() {
     use crate::game::characters::{Condition, Lasting};
     use crate::game::world::hostility::{Allegiance, Provocation, Stand};
     use crate::game::world::level::LevelOwned;
-    use crate::game::world::population::{Special, Spellcasting, Temper};
+    use crate::game::world::population::{CastChance, Special, Temper};
     let (mut app, ..) = app();
     let world = app.world_mut();
     let level = world.query_filtered::<Entity, With<Level>>().single(world).unwrap();
@@ -506,7 +522,7 @@ fn a_provoked_neutral_group_stands_hostile_and_enters_the_fight() {
             Allegiance::of(&Species::default()),
             Temper(default()),
             Special(default()),
-            Spellcasting { chance: 0, spells: [None; 10], silent_alchemy: false },
+            CastChance(0),
         ));
         world.trigger(Stand { group, stance: Some(Stance::Neutral) });
         world.flush();
@@ -522,7 +538,7 @@ fn a_provoked_neutral_group_stands_hostile_and_enters_the_fight() {
     world.trigger(Provocation { monster: turned });
     world.flush();
     assert_eq!(world.get::<Side>(turned).unwrap().own(), Stance::Neutral);
-    world.run_system_cached(engage::engage).unwrap();
+    engage(world);
     assert!(world.resource_mut::<Messages<engage::Engaged>>().drain().next().is_none());
     let (foe, _) = neutral(world);
     world.trigger(Provocation { monster: foe });
@@ -530,7 +546,7 @@ fn a_provoked_neutral_group_stands_hostile_and_enters_the_fight() {
     assert_eq!(world.get::<Side>(foe).unwrap().own(), Stance::Hostile);
     // Engagement looks at it the same step: the provoked hostile group
     // enters, far off as it is, which nothing else brings it to do.
-    world.run_system_cached(engage::engage).unwrap();
+    engage(world);
     let engaged: Vec<_> = world.resource_mut::<Messages<engage::Engaged>>().drain().collect();
     assert!(engaged.iter().any(|engage::Engaged(group)| group.contains(&foe)));
 }
@@ -874,20 +890,20 @@ fn what_ails_a_member_is_in_their_figures_and_their_seat_as_it_comes_and_goes() 
 /// A monster that casts, with its spells in its slots and a budget, of a
 /// kind that neither runs nor breathes.
 fn caster(world: &mut World, monster: Entity, spells: &[SpellId]) {
-    use crate::game::world::population::{Special, SpellBudget, Spellcasting, Temper};
-    let mut slots = [None; 10];
-    for (slot, &spell) in slots.iter_mut().zip(spells) {
-        *slot = Some(spell);
-        let mut catalog = std::mem::take(&mut world.resource_mut::<Catalogs>().spells.0);
-        catalog[spell.0 as usize].monsters_cast = true;
-        world.resource_mut::<Catalogs>().spells = SpellCatalog::new(catalog);
-    }
+    use crate::game::combat::monster::slot::{Casts, SlotOf, Weight};
+    use crate::game::world::population::{CastChance, Special, SpellBudget, Temper};
     world.entity_mut(monster).insert((
         Temper(default()),
         Special(default()),
-        Spellcasting { chance: 100, spells: slots, silent_alchemy: false },
+        CastChance(100),
         SpellBudget(100),
     ));
+    for &spell in spells {
+        let mut catalog = std::mem::take(&mut world.resource_mut::<Catalogs>().spells.0);
+        catalog[spell.0 as usize].monsters_cast = true;
+        world.resource_mut::<Catalogs>().spells = SpellCatalog::new(catalog);
+        world.spawn((SlotOf(monster), Casts(spell), Weight(5)));
+    }
 }
 
 /// A monster weighing a heal aims it at a hurt fellow, not at a whole one
@@ -915,6 +931,8 @@ fn a_monster_heals_a_hurt_fellow_and_not_a_whole_one() {
     let turn = due_at(world, healer, 1, 1);
     world.entity_mut(healer).insert(turn);
     play(world, fight, 1);
+    world.run_system_cached(crate::game::combat::monster::sight::look).unwrap();
+    world.flush();
     world.trigger(monster::Deliberates { monster: healer });
     world.flush();
     assert_eq!(world.get::<Vitals>(hurt).unwrap().health.current, 15);
@@ -953,7 +971,7 @@ fn a_group_whose_spell_reaches_the_party_opens_a_fight() {
         foe
     };
     let engaged = |world: &mut World| -> Vec<Entity> {
-        world.run_system_cached(engage::engage).unwrap();
+        engage(world);
         world.flush();
         let mut told = world.resource_mut::<Messages<engage::Engaged>>();
         told.drain().flat_map(|engage::Engaged(group)| group).collect()
@@ -963,4 +981,81 @@ fn a_group_whose_spell_reaches_the_party_opens_a_fight() {
     world.despawn(idle);
     let blaster = standing_still(world, &[SpellId::ENERGY_BLAST]);
     assert!(engaged(world).contains(&blaster), "its spell reaches the party");
+}
+
+/// A close blow that reaches one wearing Razor Cloak is answered: the
+/// cloak's dice land on the attacker, told on their own as a hit of the
+/// wearer's before the attack's own result, and the cloak, spending its only
+/// point of power, is lifted.
+#[test]
+fn razor_cloak_answers_a_close_blow_on_its_own_and_spends_itself() {
+    let (mut app, _, member) = app();
+    let world = app.world_mut();
+    let cloak = &mut world.resource_mut::<Catalogs>().spells.0[SpellId::RAZOR_CLOAK.0 as usize];
+    cloak.dice = Some(Dice { count: 0, sides: 1, base: 5 });
+    cloak.facts.laid.answers_blows = true;
+    world.resource_mut::<Catalogs>().species.0[0].attacks[0].score = 255;
+    world.entity_mut(member).insert(crate::game::actors::armour::born(Race::Human));
+    let fight = world.spawn(Battle::default()).id();
+    let striker = monster(world, fight, 0.8);
+    refresh(world);
+    lay(world, member, SpellId::RAZOR_CLOAK, 10, 0);
+    let turn = due_at(world, striker, 10, 1);
+    world.entity_mut(striker).insert(turn);
+    play(world, fight, 0);
+    step(world);
+    let results: Vec<_> = world
+        .resource_mut::<Messages<CombatNews>>()
+        .drain()
+        .filter_map(|news| match news {
+            CombatNews::Result { attacker, target, hits, damage } => {
+                Some((attacker, target, hits, damage))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.first(), Some(&(member, striker, 1, 5)), "{results:?}");
+    assert_eq!(results.get(1).map(|result| result.0), Some(striker), "{results:?}");
+    assert!(!is_laid(world, member, SpellId::RAZOR_CLOAK));
+}
+
+/// A monster ready to breathe, with a member it stands against in front of
+/// it, breathes at them: every body would feel a breath (retail lists the
+/// cone with the damage spells).
+#[test]
+fn a_monster_ready_to_breathe_breathes_at_a_foe_in_its_cone() {
+    use crate::content::species::{SpecialAttack, SpecialAttackKind};
+    use crate::content::spells::{Reach, Targeting};
+    use crate::game::combat::monster::slot::{Breath, Casts, SlotOf, Weight};
+    use crate::game::world::population::{CastChance, Special, SpellBudget, Temper};
+    let (mut app, _, member) = app();
+    let world = app.world_mut();
+    let mut catalog = std::mem::take(&mut world.resource_mut::<Catalogs>().spells.0);
+    let cone = &mut catalog[SpellId::SPECIAL_ATTACK_CONE.0 as usize];
+    (cone.targeting, cone.reach) = (Targeting::Cone, Reach::Short);
+    world.resource_mut::<Catalogs>().spells = SpellCatalog::new(catalog);
+    let fight = world.spawn(Battle::default()).id();
+    world.entity_mut(member).insert(Combatant(fight));
+    let dragon = monster(world, fight, 3.0);
+    let kind = SpecialAttackKind::WoundAndTireFire;
+    world.entity_mut(dragon).insert((
+        Temper(default()),
+        Special(SpecialAttack { kind: Some(kind), chance: 100, cooldown: 2 }),
+        CastChance(0),
+        SpellBudget(0),
+    ));
+    world.spawn((SlotOf(dragon), Casts(SpellId::SPECIAL_ATTACK_CONE), Weight(0), Breath));
+    refresh(world);
+    let turn = due_at(world, dragon, 1, 1);
+    world.entity_mut(dragon).insert(turn);
+    play(world, fight, 1);
+    world.run_system_cached(crate::game::combat::monster::sight::look).unwrap();
+    world.flush();
+    world.trigger(monster::Deliberates { monster: dragon });
+    world.flush();
+    let news: Vec<_> = world.resource_mut::<Messages<CombatNews>>().drain().collect();
+    assert!(
+        news.iter().any(|n| matches!(n, CombatNews::Special { monster, .. } if *monster == dragon)),
+        "{news:?}"
+    );
 }

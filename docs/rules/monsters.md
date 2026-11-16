@@ -361,7 +361,7 @@ its Intelligence percent, it looks for a **ward**: a living fellow on its side
 than it, and at **less than 40 percent** of its health. If there is one it picks
 one at random and spends its moment guarding for the round: it takes blows
 meant for the ward ([attack](attack.md) *Guards intercepting*). The original
-also counts a fellow "out of formation" (see *Open questions*). A party member
+also counts a fellow "out of formation" (see *Open questions* 15). A party member
 under Turncoat is a friend of the monsters, and is a ward by the same rule.
 
 ### Holding back warily
@@ -388,22 +388,27 @@ A monster has ten **spell slots**. Slots weigh in the choice 5, 5, 5, 10, 10,
    between its eye and theirs - itself among them - and the living members of
    the party **if its eyes make out the party** (section 2); a blind monster
    does not make out the party.
-3. **At whom each castable spell may be aimed** (each one choice):
+3. **At whom each castable spell may be aimed.** Each choice (an *aim*)
+   takes in some bodies:
 
-   | The spell is aimed at | The choices |
-   | --- | --- |
-   | the caster | itself, if the spell would do something to it |
-   | a friend | each friend seen and in reach, monster first, then member |
-   | an enemy | each foe seen and in reach, monster first, then member |
-   | a group | each other monster group in the fight at least half of whose hostile members would feel the spell and one of which is in reach, aimed at the first such member in reach, with no sight asked of them; then the party, if at least half of the members seen would feel it and one of them is in reach |
-   | a cone or a blast | each foe monster seen and in reach; and each hostile member in reach once for each member the monster stands against, if at least half the party would feel it |
-   | all enemies | ahead, if any foe is seen and in reach |
+   | The spell is aimed at | The choices | What one takes in |
+   | --- | --- | --- |
+   | the caster | itself | itself |
+   | a friend | each friend seen and in reach | that friend |
+   | an enemy | each foe seen and in reach | that foe |
+   | a group | each other group, the party or a monster group, aimed at the first of its members against the monster in reach (the party only if the monster makes it out; no sight is asked of a monster group) | its members against the monster |
+   | a cone or a blast | each foe seen and in reach | every living body in its cone (within its reach and arc) or its blast (within its radius of the foe, with a clear line; the radius is taken at the power the monster's budget comfortably covers, where the original rolls a power each time it asks: see *Open questions*) |
+   | all enemies | ahead, if any foe is seen and in reach | every foe |
 
-   *In reach* is the gap within the spell's reach. A spell would do something to
-   a victim when (retail `MonsterSpellTargetOK`): a heal, if it is hurt; a
-   refresh, if it is tired; a condition, if it does not have it; an
-   enchantment, if it is not laid on it; a cure, if it bears what the spell
+   *In reach* is the gap within the spell's reach. **A choice is worth
+   casting when at least half of what it takes in would feel the spell, and
+   one does** (retail `MonsterSpellTargetOK`, `MonsterGroupHalfSpellTargetsValid`,
+   `PartyHalfSpellTargetsValid`, one rule). A body would feel it when: a
+   heal, it is hurt; a refresh, it is tired; a condition, it does not have
+   it; an enchantment, it is not laid on it; a cure, it bears what the spell
    cures. A spell that does none of these (a damage spell) always would.
+   A choice that would take in a living monster standing with neither side,
+   other than the caster, is never cast (retail `SpellAreaHitsNeutralMonster`).
 4. **The roll to cast.** Of the slots with a castable spell with at least one
    choice, the monster casts with its chance (section 4), rolled once.
 5. **Which spell.** If it casts: below(total of the weights of the castable slots
@@ -411,8 +416,7 @@ A monster has ten **spell slots**. Slots weigh in the choice 5, 5, 5, 10, 10,
    choices at random.
 6. **Its power** ([casting](casting.md) section 3): from its budget.
 
-A neutral monster never has a cone or blast aimed so as to hit it (the
-original); see *Open questions*. A monster under Turncoat stands with the party
+A monster under Turncoat stands with the party
 and against its former fellows, so the same rules choose its aims against
 them.
 
@@ -635,6 +639,12 @@ lines are in `src/game/`.
     fellows included (`combat/turn.rs` `breathe`). The function that carries the
     breath out in the original (`ExecuteMonsterSpecialAttack`) was not read, so
     whether the breath uses that rule is not settled.
+15. **The blast an aim is judged by.** The original judges a blast's aim by
+    who stands within its radius at a power it rolls for that one question
+    (`ChooseMonsterSpellPowerLevel`, from `MonsterSpellTargetOK` and
+    `SpellAreaHitsNeutralMonster`); the Rust takes the power the budget
+    comfortably covers, before that roll's one up or down, so that looking at
+    the party from outside a fight draws nothing.
 
 ## How this is built
 
@@ -648,16 +658,37 @@ by a silence it honours. Its own system keeps it from `Special`,
 `SpecialCooldown`, `Vitals` and `Conditions`; deliberating and coming into a
 fight read it alike.
 
-**A monster weighing whom it could act on is an entity** (`Considers`: whose,
-and whom it considers), with whether its eyes make out the party at that
-moment (`SeesParty`). Each spell it weighs is a child entity (`Weighs`, the
-slot's weight), the breath's cone among them (`Breath`): one observer adds
-whom it may be aimed at (`Aims`), reading each body's `Standing`, `Vitals`,
-`Conditions`, group and place and what is laid on it; another keeps the aims
-that spare the neutral (`Spared`). Castability (section 5, 1) is asked as the
-spells are weighed.
+**A monster's spell slots are entities**, made with it as its arms are
+(`SlotOf`): the spell, the slot's weight, its reach, the side it is cast at
+and what one aim of it takes in are components written from its kind once.
+That it may be cast now (section 5, 1) is a marker kept by its own system,
+as `SpecialReady` is. The breath's cone is a slot of the monster too.
 
-**A deliberation is such an entity**, made at the monster's moment
+**A monster considering whom it could act on is an entity** (`Considers`),
+with whether its eyes make out the party then (`SeesParty`), and a view of
+each living body it considers (`ViewOf`): whether it sees the body (`Seen`)
+and how the body stands toward it (`Toward`), each written once by its own
+observer and read by its aims and its guarding alike.
+
+**An aim is an entity**: one way a slot could be cast, at a body, a group,
+the party or ahead, made when the monster weighs its slots for whatever the
+slot reaches (it sees it and has it within reach; the party by the monster
+making it out). What an aim would take in are entities of their own, one a
+body (the body aimed at; a group's or the party's members against the
+caster; whoever stands in a cone or a blast).
+
+**One rule judges every aim** (retail `MonsterSpellTargetOK` and the two
+`HalfSpellTargetsValid`, which are the same rule): an aim is worth casting
+when at least half of those it takes in would feel it, and one does. A body
+aimed at alone is half of itself. Whether a body would feel a spell is one
+fact, written by one system from its `Vitals`, `Conditions` and what is laid
+on it; an aim of a spell against enemies that would take in a neutral
+monster is spoiled by another. Only sight tells members from monsters, as
+the original does: a member is seen when the monster makes out the party, a
+monster by a clear line, and a group spell reaches the party only when the
+monster makes it out.
+
+**A deliberation is such a consideration**, made at the monster's moment
 (`Deliberates`) with the fight's combatants and the party's gap
 (`PartyGap`); its facts are added in the order of section 4 by small
 observers, each reading only what its fact comes from:
@@ -666,20 +697,41 @@ observers, each reading only what its fact comes from:
 | --- | --- |
 | its conduct (`Conducts`), and `Fleeing` on the monster | `Standing`, `Vitals`, `Temper`, `Fleeing`, being an NPC; the gap |
 | whether it closes in (`ClosesIn`) | `Temper`, `Furthest`; the gap |
-| its special attack made, or `NoSpecial` | `SpecialReady`, `Special`, `Standing`; for a breath, the cone's `Aims`; `Furthest`, `Vitals`, `Level` |
-| the spells weighed, then the one cast, or `NoSpell` | `Spellcasting`, `Conditions`; the spells' `Spared` aims; `Furthest`, `Level`, `SpellBudget` |
+| its special attack made, or `NoSpecial` | `SpecialReady`, `Special`, `Standing`; for a breath, its slot's aims worth making; `Furthest`, `Vitals`, `Level` |
+| the slots weighed, then the one cast, or `NoSpell` | `CastChance`, `Slots` that are `Castable`; their aims worth casting and not spoiled; `Furthest`, `Level`, `SpellBudget` |
 | withdrawing, guarding, holding back or striking | `Conditions`, `BlindFighting`, `Furthest`, `GuardReach`, `Temper`, `Attributes`, `CanGuard`, `Level`; fellows' `Standing`, `Vitals`, `Level` |
 
 What it decided is said as `Decided`, and the deliberation is gone with
 what it weighed.
 
-**Coming into a fight weighs the same way.** When whether a fighter can act
-on the party is asked (a group outside a fight that would open one by it:
-hostile or turning so by its radius, not provoked, a member seeing the
-party), each of its fighters gets such an entity, considering itself and the
-party, weighing its spells aimed at enemies and its breath if ready; the
-neutral are not spared there. `ComesIn` then reads what they found, and
-those who come in are told together (`Told`).
+**What a monster makes out is kept on it.** Two markers, kept by one
+system as monsters and the party move: its eyes make out the party
+(`MakesOutParty`), and the party has it in view (`InPartyView`). A third,
+`Reinforces`, says it stands between the party and a hostile fighting
+(section 3, *stands with the fight*). Coming in, leaving, charging and
+deliberating read them; nothing asks sight again.
+
+**Every monster that fights is of a group**: a placed monster always is,
+and only an NPC's body stands alone, which never fights. Coming in and
+leaving are each one rule over groups.
+
+**Coming into a fight is four rules**, each its own system, each marking
+those who come in (`ComingIn`), and those marked are told together
+(`Told`):
+
+- *turning by a radius* (a hostility rule, beside alerting a faction);
+- *provoked*: a group the party has just acted against;
+- *opening a fight*: with none on, each fighter of a hostile group one of
+  whose members makes out the party looks at the party as it would
+  deliberate, weighing its slots at enemies and its breath, and the group
+  comes in if one of them can act on it;
+- *joining a running one*: a hostile group by its leader's reach or a
+  member seen near, a neutral group by a member that reinforces, turning
+  hostile as it comes in if its kind has a radius.
+
+**Leaving** reads the same markers: a group stays while one of its
+fighters reinforces (neutral), makes out the party or sees a foe of its own
+(hostile), or sees a foe (friendly).
 
 **Deciding is separate from doing.** An actor's moment (`Moment`) is
 revalidated; a member under orders has decided by them, and a monster

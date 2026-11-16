@@ -3,10 +3,10 @@
 
 use bevy::prelude::*;
 
-use super::spell::{Aims, Breath, WeighedIn, Weighs};
+use super::aim::{AimsMade, At, By, Spoiled, Weigh, Worth};
+use super::slot::{Breath, Slots};
 use super::{ClosesIn, Deliberating, PartyGap};
 use crate::content::species::{Reach, SpecialAttack};
-use crate::content::spells::SpellId;
 use crate::game::actors::arm::Furthest;
 use crate::game::characters::{Condition, Conditions, Vitals};
 use crate::game::combat::turn::{Breathes, Decided, Decision, SpecialCooldown};
@@ -71,13 +71,14 @@ pub struct NoSpecial;
 /// A monster that fights and does not close in makes its special attack if
 /// it is ready and placed: a summoning needs the party within long reach
 /// and the summoner not friendly to it; a breath needs an aim, as a cone
-/// spell's, so the cone is weighed as a spell is.
+/// spell's, so its breath's slot is weighed as a spell's is.
 #[allow(clippy::type_complexity)]
 pub(super) fn special_attack(
     weighed: On<Add<ClosesIn>>,
     mut commands: Commands,
     deliberations: Query<(&Deliberating, &PartyGap, &ClosesIn)>,
-    monsters: Query<(&Special, &Standing), With<SpecialReady>>,
+    monsters: Query<(&Special, &Standing, Option<&Slots>), With<SpecialReady>>,
+    breaths: Query<(), With<Breath>>,
 ) {
     let deliberation = weighed.entity;
     let Ok((&Deliberating(monster), &PartyGap(gap), &ClosesIn(closes))) =
@@ -85,7 +86,7 @@ pub(super) fn special_attack(
     else {
         return;
     };
-    let (false, Ok((Special(attack), standing))) = (closes, monsters.get(monster)) else {
+    let (false, Ok((Special(attack), standing, slots))) = (closes, monsters.get(monster)) else {
         commands.entity(deliberation).insert(NoSpecial);
         return;
     };
@@ -95,9 +96,11 @@ pub(super) fn special_attack(
         commands.trigger(Makes { deliberation, placed });
         return;
     }
-    let cone = Weighs { spell: SpellId::SPECIAL_ATTACK_CONE, weight: 0 };
-    let breath = commands.spawn((cone, Breath, WeighedIn(deliberation))).id();
-    commands.trigger(ConeWeighed { deliberation, breath });
+    let breath = slots.and_then(|slots| slots.iter().find(|&slot| breaths.contains(slot)));
+    if let Some(slot) = breath {
+        commands.trigger(Weigh { slot, considering: deliberation });
+    }
+    commands.trigger(ConeWeighed { deliberation });
 }
 
 /// A breath's cone has been weighed.
@@ -105,24 +108,30 @@ pub(super) fn special_attack(
 struct ConeWeighed {
     #[event_target]
     deliberation: Entity,
-    breath: Entity,
 }
 
-/// A breath with an aim is aimed at one of them at random; one with none is
-/// not made. The cone weighed is gone.
+/// A breath with an aim worth making that spoils nothing is aimed at one of
+/// them at random; one with none is not made.
 fn aim_breath(
     breathes: On<ConeWeighed>,
     mut commands: Commands,
-    aims: Query<&Aims>,
+    made: Query<&AimsMade>,
+    aims: Query<(&By, &At), (With<Worth>, Without<Spoiled>)>,
+    breaths: Query<(), With<Breath>>,
     mut rng: ResMut<GameRng>,
 ) {
-    let ConeWeighed { deliberation, breath } = *breathes;
-    let aims = aims.get(breath).map_or(&[][..], |aims| &aims.0[..]);
+    let deliberation = breathes.deliberation;
+    let made = made.get(deliberation).into_iter().flat_map(|made| made.iter());
+    let aims: Vec<_> = aims
+        .iter_many(made)
+        .flatten()
+        .filter(|(by, _)| breaths.contains(by.0))
+        .map(|(_, at)| at.0)
+        .collect();
     let placed = match aims.len() {
         0 => Placed::Not,
         count => Placed::Breath(aims[rng.below(count as u32) as usize]),
     };
-    commands.entity(breath).despawn();
     commands.trigger(Makes { deliberation, placed });
 }
 

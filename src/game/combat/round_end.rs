@@ -129,50 +129,57 @@ pub struct RoundEnded {
 /// Groups with nothing left to fight leave it (retail
 /// `CheckMonsterGroupsLeaveCombat`), each by its members still fighting: a
 /// hostile group stays while a member makes out the party or sees a foe of
-/// its own, and keeps the fight engaged only by the party; a friendly one
-/// stays while a member sees a foe; a neutral one while it stands with the
-/// fight. When no hostile group is left engaged, everyone leaves. One
-/// outside any group keeps hostile groups engaged.
+/// its own, and keeps the fight engaged only by making out the party; a
+/// friendly one stays while a member sees a foe; a neutral one while a
+/// member stands with the fight. When no hostile group is left engaged,
+/// everyone leaves. A foe of its own a member sees is another fighting
+/// monster against it that its eyes make out, or the party, if a member
+/// stands against it and its eyes make the party out.
+#[allow(clippy::type_complexity)]
 pub(super) fn leave_fight(
     leave: On<GroupsLeave>,
     mut fights: Query<(&Combatants, &mut Round)>,
     groups: Query<&GroupMembers>,
+    members: Query<(), With<crate::game::party::roster::PartyMember>>,
+    making_out: Query<(), With<super::monster::sight::MakesOutParty>>,
+    reinforcing: Query<(), With<super::monster::sight::Reinforces>>,
     sight: Sight,
 ) {
     let Ok((combatants, mut round)) = fights.get_mut(leave.fight) else { return };
     let combatants = combatants.entities();
-    let hostile = |c: Entity| sight.alive(c) && sight.side(c) == Some(Stance::Hostile);
     let group_of = |monster: Entity| sight.groups.get(monster).ok().map(|group| group.0);
-    let hostiles: Vec<Entity> = combatants.iter().copied().filter(|&c| hostile(c)).collect();
-    // A monster outside any group keeps hostile groups engaged.
-    let mut engaged = combatants
-        .iter()
-        .any(|&c| sight.tempers.contains(c) && group_of(c).is_none() && hostile(c));
+    let sees_foe = |m: Entity| {
+        combatants.iter().any(|&other| {
+            let foe = sight.toward(m, other) == Some(Stance::Hostile);
+            foe && match members.contains(other) {
+                true => making_out.contains(m),
+                false => sight.sees(m, other),
+            }
+        })
+    };
     let mut fought: Vec<Entity> = Vec::new();
     for group in combatants.iter().filter_map(|&c| group_of(c)) {
         if !fought.contains(&group) {
             fought.push(group);
         }
     }
-    // Each group fought in, by its members still in the fight.
+    let mut engaged = false;
     let mut going: Vec<Entity> = Vec::new();
     for group in fought {
-        let Ok(members) = groups.get(group) else { continue };
-        let Some(side) =
-            members.iter().find(|m| combatants.contains(m)).and_then(|m| sight.side(m))
-        else {
+        let Ok(group_members) = groups.get(group) else { continue };
+        let fellows: Vec<Entity> =
+            group_members.iter().filter(|&m| combatants.contains(&m) && sight.alive(m)).collect();
+        let Some(side) = fellows.first().and_then(|&m| sight.side(m)) else {
+            going.push(group);
             continue;
         };
-        let fellows: Vec<Entity> =
-            members.iter().filter(|&m| combatants.contains(&m) && sight.alive(m)).collect();
-        let sees_foe = || fellows.iter().any(|&m| sight.sees_foe(m, combatants));
         let (stays, engages) = match side {
-            Stance::Neutral => (sight.stands_with(&fellows, &hostiles), false),
+            Stance::Neutral => (fellows.iter().any(|&m| reinforcing.contains(m)), false),
             Stance::Hostile => {
-                let engages = fellows.iter().any(|&m| sight.sees_party(m));
-                (engages || sees_foe(), engages)
+                let engages = fellows.iter().any(|&m| making_out.contains(m));
+                (engages || fellows.iter().any(|&m| sees_foe(m)), engages)
             }
-            Stance::Friendly => (sees_foe(), false),
+            Stance::Friendly => (fellows.iter().any(|&m| sees_foe(m)), false),
         };
         engaged |= engages;
         if !stays {

@@ -155,6 +155,11 @@ impl Fatigue {
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Pressing(pub i32);
 
+/// A silence leaves it its Alchemy (retail `IsSpellBlockedForMonster`): a
+/// member with the skill, a monster of a kind that keeps it.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KeepsAlchemy;
+
 /// It is blind: its aim past 10 is lost unless it fights blind.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Blinded;

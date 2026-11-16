@@ -66,7 +66,7 @@ pub(super) fn plugin(app: &mut App) {
             crate::game::world::hostility::follow_side,
             figures::follow_calling,
             (figures::attributes, figures::agility),
-            figures::skills,
+            (figures::skills, figures::keeps_alchemy).chain(),
             figures::spell_points,
             (figures::maxima, figures::fatigue),
             (figures::resistances, figures::reduction, figures::mending),

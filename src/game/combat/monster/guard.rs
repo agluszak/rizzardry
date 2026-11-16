@@ -4,8 +4,9 @@
 
 use bevy::prelude::*;
 
+use super::aim::{Toward, Viewed, Views};
 use super::conduct::Conduct;
-use super::spell::{Considers, NoSpell};
+use super::spell::NoSpell;
 use super::{Deliberating, PartyGap};
 use crate::content::characters::Attribute;
 use crate::game::actors::arm::{Furthest, GuardReach};
@@ -13,32 +14,32 @@ use crate::game::actors::{Attributes, BlindFighting, CanGuard, Level};
 use crate::game::characters::{Condition, Conditions, Vitals};
 use crate::game::combat::turn::{Decided, Decision, Fights, Retreats};
 use crate::game::rng::GameRng;
-use crate::game::world::hostility::{self, Stance, Standing};
+use crate::game::world::hostility::Stance;
 use crate::game::world::population::Temper;
 
 /// One with no attack, or one blind (and not fighting blind) with nothing in
 /// reach, withdraws. One with someone in reach of the party may guard, or
 /// hold back, each with a chance of its Intelligence in percent: a bodyguard
-/// able to guard takes one of its wards at random (the living it considers
-/// on its side, within reach of its first arm, of a higher level than it and
+/// able to guard takes one of its wards at random (the others it views on
+/// its side, within reach of its first arm, of a higher level than it and
 /// under 40 percent of their health); failing that, a wary kind holds back.
 /// Otherwise it strikes.
 #[allow(clippy::type_complexity)]
 pub(super) fn strike_or_guard(
     spent: On<Add<NoSpell>>,
     mut commands: Commands,
-    deliberations: Query<(&Deliberating, &PartyGap, &Considers)>,
+    deliberations: Query<(&Deliberating, &PartyGap, &Views)>,
+    views: Query<(&Viewed, &Toward)>,
     monsters: Query<(
         (&Temper, &Attributes, &Conditions, &Level),
         (&Furthest, &GuardReach, Has<BlindFighting>, Has<CanGuard>),
     )>,
-    fellows: Query<(&Standing, &Vitals, &Level)>,
+    fellows: Query<(&Vitals, &Level)>,
     places: crate::game::actors::Places,
     mut rng: ResMut<GameRng>,
 ) {
     let deliberation = spent.entity;
-    let Ok((&Deliberating(monster), &PartyGap(gap), Considers { bodies: considered, .. })) =
-        deliberations.get(deliberation)
+    let Ok((&Deliberating(monster), &PartyGap(gap), viewed)) = deliberations.get(deliberation)
     else {
         return;
     };
@@ -60,25 +61,21 @@ pub(super) fn strike_or_guard(
     }
     let temper = &temper.0;
     let intelligence = a[Attribute::Intelligence];
-    let Ok((mine, ..)) = fellows.get(monster) else { return };
     let wards: Vec<Entity> = match guard_reach.0 {
-        Some(guards) if temper.bodyguard && can_guard && rng.below(100) < intelligence => {
-            considered
-                .iter()
-                .copied()
-                .filter(|&other| other != monster)
-                .filter(|&other| {
-                    fellows.get(other).is_ok_and(|(theirs, vitals, theirs_level)| {
-                        let health = vitals.health;
-                        !vitals.is_dead()
-                            && hostility::between(*mine, *theirs) == Stance::Friendly
-                            && places.gap(monster, other) <= guards.metres()
-                            && theirs_level > level
-                            && health.current * 100 / health.max.max(1) < 40
-                    })
+        Some(guards) if temper.bodyguard && can_guard && rng.below(100) < intelligence => views
+            .iter_many(viewed.iter())
+            .flatten()
+            .filter(|&(&Viewed(other), toward)| other != monster && toward.0 == Stance::Friendly)
+            .map(|(&Viewed(other), _)| other)
+            .filter(|&other| {
+                fellows.get(other).is_ok_and(|(vitals, theirs_level)| {
+                    let health = vitals.health;
+                    places.gap(monster, other) <= guards.metres()
+                        && theirs_level > level
+                        && health.current * 100 / health.max.max(1) < 40
                 })
-                .collect()
-        }
+            })
+            .collect(),
         _ => Vec::new(),
     };
     commands.trigger(decided(if !wards.is_empty() {

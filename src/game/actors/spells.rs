@@ -276,7 +276,7 @@ impl Laying<'_, '_> {
                 power::strength(0, laid.power, laid.boost, definition)
             };
             let rows = Rows::Pulse(laid.spell);
-            let strike = Strike::new(rows, strength, None, None, &self.content);
+            let strike = Strike::new(rows, strength, None, &self.content);
             spell.insert(Pulses { pulse, level: definition.level, strike });
         }
         let row = row(definition);

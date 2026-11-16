@@ -46,14 +46,12 @@ pub struct Strike {
 
 impl Strike {
     /// Resolve the authored effects once. Landing reads the deed, never its table again.
-    pub fn new(
-        rows: Rows,
-        strength: Strength,
-        blow: Option<Blow>,
-        by: Option<Entity>,
-        content: &Catalogs,
-    ) -> Self {
+    pub fn new(rows: Rows, strength: Strength, by: Option<Entity>, content: &Catalogs) -> Self {
         let spell = rows.spell().map(|id| content.spells[id].clone());
+        let blow = match rows {
+            Rows::Blow(blow) => Some(blow),
+            _ => None,
+        };
         Self { effects: rows.effects(content).into(), spell, strength, blow, by }
     }
 }

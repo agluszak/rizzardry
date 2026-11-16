@@ -222,7 +222,7 @@ pub fn cast(
     (memberships, groups, kinds): (
         Query<&'static GroupMember>,
         Query<&'static GroupMembers>,
-        Query<&crate::game::world::population::Spellcasting>,
+        Query<(), With<crate::game::actors::KeepsAlchemy>>,
     ),
     fight: Option<Single<(&crate::game::combat::Round, Option<&crate::game::combat::Combatants>)>>,
     roster: Single<&PartyRoster>,
@@ -251,7 +251,7 @@ pub fn cast(
         return;
     }
     let moment = circumstances.moment(spell, fighting);
-    let asked = (means::affordable(&body, spell), means::keeps_alchemy(&body, &kinds));
+    let asked = (means::affordable(&body, spell), kinds.contains(body.entity));
     let resolved = resolvable(spell);
     if let Err(refusal) = may::may(spell, &body, choice.source, &held, asked, moment, resolved) {
         commands.trigger(Refused { caster, refusal });
@@ -459,7 +459,7 @@ pub fn cast(
         };
         flies.then(|| reach::flight(stand.eye, to))
     };
-    let strike = Strike::new(rows, strength, None, Some(caster), &content);
+    let strike = Strike::new(rows, strength, Some(caster), &content);
     // What follows the deed is put beside it before it is let go.
     let arrivals: Vec<_> = victims.iter().map(|&victim| (victim, flight(victim))).collect();
     let mut deed = commands.spawn(Spell { backfired, victims: victims.clone(), ..spell_of });

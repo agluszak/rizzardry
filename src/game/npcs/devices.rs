@@ -276,7 +276,7 @@ pub(super) fn befalls_at_a_device(
                 living = vec![living[rng.below(living.len() as u32) as usize]];
             }
             let strength = power::strength(0, *power, 0, spell);
-            let strike = Strike::new(Rows::Spell(id), strength, None, None, &content);
+            let strike = Strike::new(Rows::Spell(id), strength, None, &content);
             commands.spawn((Deed::at(strike, living), Magical));
         }
         DeviceAct::LoseHeld => {

@@ -78,7 +78,6 @@ pub(super) fn drink(
                 Rows::Spell(SpellId::HEAL_ALL),
                 Strength { power, ..default() },
                 None,
-                None,
                 &content,
             );
             let mut effects = if power > 0 { strike.effects.to_vec() } else { Vec::new() };

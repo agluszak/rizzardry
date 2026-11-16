@@ -1,11 +1,16 @@
 //! Weapon attacks in a fight (`docs/rules/attack.md`). An attack is an
-//! entity: who makes it, at whom, with which arm and how, and what its
-//! swings come to. Each swing is an entity of its attack, and each fact of
-//! it is a component added by a small observer that reads only what that
-//! fact comes from: its [`Aim`], its [`Fate`], whom it [`Strikes`] once a
-//! guard has had its say, whether it gets [`Through`], and the blow, a
-//! [`Deed`]. Bevy carries each out before the next is begun, so every swing
-//! sees what the one before did.
+//! entity related to who makes it ([`AttackBy`]) and, once chosen, to whom
+//! it is made at ([`AttackAt`]); each swing is an entity of its attack
+//! ([`SwingOf`]). What happens to them goes by events, each a moment of the
+//! rules: an attack is chosen step by step ([`Seeks`], [`Found`]), opened
+//! ([`Opens`]), announced, and swings until it ends ([`AttackEnds`]); a
+//! swing aims, fares, is guarded, lands, hits and is settled, each a stage
+//! whose observers are independent of one another and add the facts later
+//! stages read: its [`Aim`], its [`Fate`], whom it [`Strikes`], whether it
+//! gets [`Through`], and the deeds of its blow ([`BlowOf`]) and of a cloak's
+//! answer ([`AnswerTo`]), whose outcomes are kept on it ([`Blew`],
+//! [`Answered`]). The one that starts a sequence queues its stages in order;
+//! Bevy carries out each, and all it sets off, before the next.
 //!
 //! Retail's voices on a miss, a kill or a fumble draw from the same random
 //! numbers as the rules; here they draw nothing.
@@ -58,11 +63,23 @@ pub struct Strike {
 
 /// An attack: who makes it.
 #[derive(Component, Clone, Copy, Debug)]
+#[relationship(relationship_target = Attacking)]
 pub struct AttackBy(pub Entity);
+
+/// The attack an actor is making, or choosing; it goes with the actor.
+#[derive(Component, Debug, Default)]
+#[relationship_target(relationship = AttackBy, linked_spawn)]
+pub struct Attacking(Vec<Entity>);
 
 /// At whom an attack is made.
 #[derive(Component, Clone, Copy, Debug)]
+#[relationship(relationship_target = AttackedBy)]
 pub struct AttackAt(pub Entity);
+
+/// The attacks made at an actor.
+#[derive(Component, Debug, Default)]
+#[relationship_target(relationship = AttackAt)]
+pub struct AttackedBy(Vec<Entity>);
 
 /// The arm an attack is made with, and how.
 #[derive(Component, Clone, Copy, Debug)]
@@ -80,12 +97,16 @@ pub struct Fury;
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct Caught(pub Surprise);
 
-/// The swings an attack makes, and those made.
+/// The swings an attack makes, and those begun.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct SwingCount {
     pub most: u32,
     pub made: u32,
 }
+
+/// What an attack shoots or throws is used up: it swings no more.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct RunOut;
 
 /// What an attack's swings came to.
 #[derive(Component, Clone, Debug, Default)]
@@ -97,7 +118,13 @@ pub struct Tally {
 
 /// A swing of an attack.
 #[derive(Component, Clone, Copy, Debug)]
+#[relationship(relationship_target = Swinging)]
 pub struct SwingOf(pub Entity);
+
+/// The swing an attack is making; it goes with the attack.
+#[derive(Component, Debug)]
+#[relationship_target(relationship = SwingOf, linked_spawn)]
+pub struct Swinging(Entity);
 
 /// A swing's aim, to be at least the roll; and the figure the fumble chance
 /// is worked from (the base with the blind rule and difficulty applied, but
@@ -129,18 +156,106 @@ pub enum Fate {
 
 /// Whom a swing that reached strikes, once a guard has stepped in or not.
 #[derive(Component, Clone, Copy, Debug)]
+#[relationship(relationship_target = StruckBy)]
 pub struct Strikes(pub Entity);
+
+/// The swings striking an actor.
+#[derive(Component, Debug, Default)]
+#[relationship_target(relationship = Strikes)]
+pub struct StruckBy(Vec<Entity>);
 
 /// A swing that gets through armour: where it lands, by its order among the
 /// places of the one struck.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Through(pub usize);
 
-/// A swing has been settled.
+/// A deed that is a swing's blow.
+#[derive(Component, Clone, Copy, Debug)]
+#[relationship(relationship_target = SwingBlow)]
+pub struct BlowOf(pub Entity);
+
+/// The deed of a swing's blow, while it lands.
+#[derive(Component, Debug)]
+#[relationship_target(relationship = BlowOf, linked_spawn)]
+pub struct SwingBlow(Entity);
+
+/// A deed that is Razor Cloak's answer to a swing.
+#[derive(Component, Clone, Copy, Debug)]
+#[relationship(relationship_target = SwingAnswer)]
+pub struct AnswerTo(pub Entity);
+
+/// The deed of Razor Cloak's answer to a swing, while it lands.
+#[derive(Component, Debug)]
+#[relationship_target(relationship = AnswerTo, linked_spawn)]
+pub struct SwingAnswer(Entity);
+
+/// What a swing's blow did once it landed.
+#[derive(Component, Clone, Debug)]
+pub struct Blew(pub attack::Dealt);
+
+/// What Razor Cloak's answer to a swing did.
+#[derive(Component, Clone, Debug)]
+pub struct Answered(pub attack::Dealt);
+
+/// An attack being chosen, by an actor that fights as its turn says.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Choosing(pub Fights);
+
+/// Those an attack being chosen looks for: the living combatants on the side
+/// it seeks, each with whether its eye misses them this time.
+#[derive(Component, Clone, Debug)]
+pub struct Sought(pub Vec<(Entity, bool)>);
+
+/// A way to strike: an arm, one of its modes, someone it reaches.
+#[derive(Clone, Copy, Debug)]
+pub struct Way {
+    arm: Entity,
+    mode: AttackMode,
+    target: Entity,
+}
+
+/// An attack being chosen looks for whom it could strike.
 #[derive(EntityEvent, Clone, Copy, Debug)]
-struct Swung {
+struct Seeks {
     #[event_target]
-    swing: Entity,
+    attack: Entity,
+}
+
+/// An attack being chosen looks for the ways it could strike them.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+struct FindsWays {
+    #[event_target]
+    attack: Entity,
+}
+
+/// An attack being chosen found ways to strike, with the hand they are in.
+#[derive(EntityEvent, Clone, Debug)]
+struct Found {
+    #[event_target]
+    attack: Entity,
+    slot: WeaponSlot,
+    ways: Vec<Way>,
+}
+
+/// An attack being chosen found nobody to strike.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+struct Nobody {
+    #[event_target]
+    attack: Entity,
+}
+
+/// An attack is made, at whom and how, and opens.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+struct Opens {
+    #[event_target]
+    attack: Entity,
+}
+
+/// An opened attack is announced.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+struct Announces {
+    #[event_target]
+    attack: Entity,
 }
 
 /// An attack swings again, if it may.
@@ -157,19 +272,46 @@ struct AttackEnds {
     attack: Entity,
 }
 
-/// A blow of an attack: one gone astray is told of on its own.
-#[derive(Component, Clone, Copy, Debug)]
-pub struct Blown {
-    attack: Entity,
-    victim: Entity,
-    astray: bool,
+/// A swing is aimed.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+struct Aiming {
+    #[event_target]
+    swing: Entity,
 }
 
-/// Razor Cloak's answer to a close blow, told of on its own.
-#[derive(Component, Clone, Copy, Debug)]
-pub struct Answer {
-    by: Entity,
-    at: Entity,
+/// What becomes of an aimed swing.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+struct Faring {
+    #[event_target]
+    swing: Entity,
+}
+
+/// A swing that reached someone may be taken by a guard.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+struct Guarding {
+    #[event_target]
+    swing: Entity,
+}
+
+/// A swing comes down on whom it strikes.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+struct Landing {
+    #[event_target]
+    swing: Entity,
+}
+
+/// A swing that got through is a blow.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+struct Hitting {
+    #[event_target]
+    swing: Entity,
+}
+
+/// A swing is settled.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+struct Settling {
+    #[event_target]
+    swing: Entity,
 }
 
 /// One who trained practises a skill they may use.
@@ -192,37 +334,6 @@ fn moving(member: bool, walking: bool, round: &Round) -> bool {
     if member { round.pace == Some(super::PartyPace::Run) } else { walking }
 }
 
-/// An attack being chosen, by an actor that fights as its turn says.
-#[derive(Component, Clone, Copy, Debug)]
-pub struct Choosing(pub Fights);
-
-/// Those an attack being chosen looks for: the living combatants on the side
-/// it seeks, each with whether its eye misses them this time.
-#[derive(Component, Clone, Debug)]
-pub struct Sought(pub Vec<(Entity, bool)>);
-
-/// A way to strike: an arm, one of its modes, someone it reaches.
-#[derive(Clone, Copy, Debug)]
-pub struct Way {
-    arm: Entity,
-    mode: AttackMode,
-    target: Entity,
-}
-
-/// The ways an attack being chosen could strike, with the hand they are in.
-#[derive(Component, Clone, Debug)]
-pub struct Ways {
-    slot: WeaponSlot,
-    ways: Vec<Way>,
-}
-
-/// An attack being chosen found nobody to strike.
-#[derive(EntityEvent, Clone, Copy, Debug)]
-struct Nobody {
-    #[event_target]
-    attack: Entity,
-}
-
 /// An actor that fights chooses whom to strike and how, or what it does
 /// instead (section 2). Attacking holds the fight for the action's pause.
 pub(super) fn strike(
@@ -231,15 +342,15 @@ pub(super) fn strike(
     mut pause: Single<&mut Pause, With<Battle>>,
 ) {
     pause.0 = Timer::from_seconds(super::ACTION_SECONDS, TimerMode::Once);
-    commands.spawn((AttackBy(strike.actor), Choosing(strike.fights)));
+    let attack = commands.spawn((AttackBy(strike.actor), Choosing(strike.fights))).id();
+    commands.trigger(Seeks { attack });
 }
 
 /// Whom it looks for among the living combatants: foes, or friends when
 /// insanity has turned it on its own this round. Anyone not under orders
 /// misses a party member with chance `Stealth * 75 / 100` percent.
-#[allow(clippy::type_complexity)]
 fn seek(
-    chosen: On<Add<Choosing>>,
+    seeks: On<Seeks>,
     mut commands: Commands,
     attacks: Query<&AttackBy>,
     actors: Query<(&Turn, &Standing, Has<Ordered>)>,
@@ -247,14 +358,14 @@ fn seek(
     fight: Single<Option<&Combatants>, With<Battle>>,
     roster: Single<&PartyRoster>,
     mut rng: ResMut<GameRng>,
-) {
-    let attack = chosen.entity;
-    let Ok(&AttackBy(actor)) = attacks.get(attack) else { return };
-    let Ok((turn, standing, ordered)) = actors.get(actor) else { return };
+) -> Result {
+    let attack = seeks.attack;
+    let &AttackBy(actor) = attacks.get(attack)?;
+    let (turn, standing, ordered) = actors.get(actor)?;
     let seeks = if turn.berserk { Stance::Friendly } else { Stance::Hostile };
     let mut sought = Vec::new();
     for &other in fight.map_or(&[][..], Combatants::entities).iter().filter(|&&o| o != actor) {
-        let Ok((their, theirs, skills)) = candidates.get(other) else { continue };
+        let (their, theirs, skills) = candidates.get(other)?;
         if their.is_dead() || hostility::between(*standing, *theirs) != seeks {
             continue;
         }
@@ -263,6 +374,8 @@ fn seek(
         sought.push((other, lost));
     }
     commands.entity(attack).insert(Sought(sought));
+    commands.trigger(FindsWays { attack });
+    Ok(())
 }
 
 /// The ways it could strike: with an arm of the hand due if it has attacks
@@ -272,7 +385,7 @@ fn seek(
 /// it could otherwise have struck, learns Stealth from it half the time.
 #[allow(clippy::type_complexity)]
 fn find_ways(
-    sought: On<Add<Sought>>,
+    finds: On<FindsWays>,
     mut commands: Commands,
     attacks: Query<(&AttackBy, &Sought)>,
     actors: Query<(&Turn, &Arms, Has<Ordered>)>,
@@ -283,10 +396,10 @@ fn find_ways(
     formation: Single<&Formation>,
     obstacles: WorldObstacles,
     mut rng: ResMut<GameRng>,
-) {
-    let attack = sought.entity;
-    let Ok((&AttackBy(actor), Sought(sought))) = attacks.get(attack) else { return };
-    let Ok((turn, held, ordered)) = actors.get(actor) else { return };
+) -> Result {
+    let attack = finds.attack;
+    let (&AttackBy(actor), Sought(sought)) = attacks.get(attack)?;
+    let (turn, held, ordered) = actors.get(actor)?;
     let at = places.of(actor);
     let mut evaded = Vec::new();
     let mut found = None;
@@ -296,7 +409,7 @@ fn find_ways(
         }
         let mut ways = Vec::new();
         for &arm in held.entities() {
-            let Ok((hand, reach, modes)) = arms.get(arm) else { continue };
+            let (hand, reach, modes) = arms.get(arm)?;
             if hand.0 != slot {
                 continue;
             }
@@ -318,7 +431,7 @@ fn find_ways(
             }
         }
         if !ways.is_empty() {
-            found = Some(Ways { slot, ways });
+            found = Some((slot, ways));
             break;
         }
     }
@@ -326,11 +439,10 @@ fn find_ways(
         practise(member, Skill::Stealth, &trained, &mut commands);
     }
     match found {
-        Some(ways) => {
-            commands.entity(attack).insert(ways);
-        }
+        Some((slot, ways)) => commands.trigger(Found { attack, slot, ways }),
         None => commands.trigger(Nobody { attack }),
     }
+    Ok(())
 }
 
 /// The way it strikes. A member under orders strikes whoever is in the
@@ -341,50 +453,43 @@ fn find_ways(
 /// Berserk order and otherwise in one of the arm's modes. For anyone else
 /// every way to strike has an equal chance, and so has waiting, for one that
 /// may hold back (retail `ChooseMonsterTarget`). The hand's attacks go down
-/// by one.
+/// by one, and the attack is made: it opens, is announced and swings.
 #[allow(clippy::type_complexity)]
 fn pick(
-    found: On<Add<Ways>>,
+    found: On<Found>,
     mut commands: Commands,
-    attacks: Query<(&AttackBy, &Choosing, &Ways)>,
+    attacks: Query<(&AttackBy, &Choosing)>,
     mut actors: Query<(&mut Turn, Has<Ordered>)>,
     modes: Query<&Modes>,
     candidates: Query<(&Conditions, &Furthest)>,
     places: Places,
     formation: Single<&Formation>,
     mut rng: ResMut<GameRng>,
-) {
+) -> Result {
     use crate::game::party::formation::Row;
-    let attack = found.entity;
-    let Ok((&AttackBy(actor), &Choosing(fights), Ways { slot, ways })) = attacks.get(attack) else {
-        return;
-    };
-    let Ok((mut turn, ordered)) = actors.get_mut(actor) else { return };
+    let Found { attack, slot, ref ways } = *found;
+    let (&AttackBy(actor), &Choosing(fights)) = attacks.get(attack)?;
+    let (mut turn, ordered) = actors.get_mut(actor)?;
     let at = places.of(actor);
     let picked = if ordered {
-        let key = |way: &Way| {
+        let mut ranked = Vec::with_capacity(ways.len());
+        for &way in ways {
             let there = places.of(way.target);
-            let (worst, armed) = candidates
-                .get(way.target)
-                .map_or((None, false), |(ailing, reach)| (ailing.worst(), reach.0.is_some()));
+            let (ailing, reach) = candidates.get(way.target)?;
             let side = at.quadrant(there.feet);
-            let reached = armed
+            let reached = reach.0.is_some()
                 && (side == Row::Rear
                     || (!formation.occupied(side) && formation.occupied(Row::Center)));
-            (worst, !reached, at.gap(&there))
-        };
-        let best = ways
-            .iter()
-            .min_by(|a, b| {
-                let (a, b) = (key(a), key(b));
-                a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.total_cmp(&b.2))
-            })
-            .copied()
-            .unwrap();
+            ranked.push((way, (ailing.worst(), !reached, at.gap(&there))));
+        }
+        let (best, _) = ranked
+            .into_iter()
+            .min_by(|(_, a), (_, b)| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.total_cmp(&b.2)))
+            .expect("ways are found only when there is one");
         let mode = if fights.berserk {
             AttackMode::Berserk
         } else {
-            attack::choose_mode(&mut rng, modes.get(best.arm).map_or(Default::default(), |m| m.0))
+            attack::choose_mode(&mut rng, modes.get(best.arm)?.0)
         };
         Some(Way { mode, ..best })
     } else {
@@ -397,16 +502,19 @@ fn pick(
         turn.end();
         commands.trigger(Exerted { actor, effort: Effort::Wait });
         commands.entity(attack).despawn();
-        return;
+        return Ok(());
     };
-    turn.due = *slot;
-    turn.attacks[*slot] -= 1;
+    turn.due = slot;
+    turn.attacks[slot] -= 1;
     let mut made = commands.entity(attack);
-    made.insert((AttackWith { arm, mode }, Caught::default(), Tally::default()));
+    made.insert((AttackWith { arm, mode }, AttackAt(target), Tally::default()));
     if fights.berserk {
         made.insert(Fury);
     }
-    made.insert(AttackAt(target));
+    commands.trigger(Opens { attack });
+    commands.trigger(Announces { attack });
+    commands.trigger(SwingsAgain { attack });
+    Ok(())
 }
 
 /// With nobody to strike, one that walks and has not moved closes in: on
@@ -428,17 +536,15 @@ fn close_in(
     round: Single<&Round, With<Battle>>,
     roster: Single<&PartyRoster>,
     mut news: MessageWriter<CombatNews>,
-) {
+) -> Result {
     let attack = nobody.attack;
     commands.entity(attack).despawn();
-    let Ok((&AttackBy(actor), Sought(sought))) = attacks.get(attack) else { return };
-    let Ok(((mut turn, walker), ((nature, laid), furthest, standing, vitals, conditions))) =
-        actors.get_mut(actor)
-    else {
-        return;
-    };
+    let (&AttackBy(actor), Sought(sought)) = attacks.get(attack)?;
+    let ((mut turn, walker), ((nature, laid), furthest, standing, vitals, conditions)) =
+        actors.get_mut(actor)?;
     let Some(walker) = walker.filter(|_| nature.stride.is_some() && !turn.moved) else {
-        return turn.end();
+        turn.end();
+        return Ok(());
     };
     let at = places.of(actor);
     let walks = !vitals.is_dead() && walker.speed > 0.0;
@@ -460,7 +566,10 @@ fn close_in(
             .map(|_| MoveGoal::Party),
         Stance::Neutral => None,
     };
-    let Some(goal) = goal else { return turn.end() };
+    let Some(goal) = goal else {
+        turn.end();
+        return Ok(());
+    };
     let health = (vitals.health.current, vitals.health.max);
     let stride = (nature.stride, laid.laid.stride);
     let budget = MoveBudget::of(stride, health, conditions.has(Condition::Slowed));
@@ -470,76 +579,55 @@ fn close_in(
     news.write(CombatNews::Moves { monster: actor, charge: budget.charge });
     let effort = if budget.charge { Effort::Charge } else { Effort::Approach };
     commands.trigger(Exerted { actor, effort });
+    Ok(())
 }
 
-/// An attack is opened (sections 2 and 3): its swings are counted
-/// (`below(swings) + 1`, the weapon's extra swings added, at least one; a
-/// readied Lightning Strike adds 3 or 4 with a sword in the main hand when
-/// not slowed, and is used up by the main hand's first attack); it may catch
-/// its target unaware; a member provokes whom they strike; it is announced;
-/// and it swings.
+/// An attack made keeps the fight going this round.
+fn count_attack(_: On<Opens>, mut fight: Single<&mut Round, With<Battle>>) {
+    fight.attacked(true);
+}
+
+/// A member under orders, and not turned, provokes whom they strike.
+fn provoke(
+    opens: On<Opens>,
+    mut commands: Commands,
+    attacks: Query<(&AttackBy, &AttackAt)>,
+    attackers: Query<&Conditions, With<Ordered>>,
+) -> Result {
+    let (&AttackBy(actor), &AttackAt(target)) = attacks.get(opens.attack)?;
+    if attackers.get(actor).is_ok_and(|ailing| !ailing.has(Condition::Turncoat)) {
+        commands.trigger(Provocation { monster: target });
+    }
+    Ok(())
+}
+
+/// How an attack catches its target (section 3, retail
+/// `IsPartyLookingAwayFrom`): a seated member faces the way the formation
+/// says, anyone else its own front; only a touch or short blow can catch one
+/// unaware; a member keeping watch (defending, alive, not spent, nothing as
+/// bad as Webbed, not blind) who notices turns to face it instead; anyone
+/// else is caught if the attacker is exactly across from the way they face.
+/// An arm that ambushes strikes naturally whether or not the target faces
+/// it.
 #[allow(clippy::type_complexity)]
-fn open(
-    opened: On<Add<AttackAt>>,
+fn catch(
+    opens: On<Opens>,
     mut commands: Commands,
     attacks: Query<(&AttackBy, &AttackAt, &AttackWith)>,
-    mut attackers: Query<(&mut Turn, &Conditions, Has<Ordered>)>,
-    arms: Query<(
-        &Hand,
-        &Swings,
-        &Reaches,
-        Has<Sword>,
-        Has<Ambushes>,
-        Option<&Word>,
-        Option<&SoundClass>,
-    )>,
+    arms: Query<(&Reaches, Has<Ambushes>)>,
     mut targets: Query<(Option<&mut Spotted>, Option<&Ordered>, &Vitals, &Conditions, &Attributes)>,
     places: Places,
-    mut fight: Single<&mut Round, With<Battle>>,
     mut formation: Single<&mut Formation>,
     mut rng: ResMut<GameRng>,
-    mut news: MessageWriter<CombatNews>,
-) {
-    let attack = opened.entity;
-    let Ok((&AttackBy(actor), &AttackAt(target), &AttackWith { arm, mode })) = attacks.get(attack)
-    else {
-        return;
-    };
-    let (
-        Ok((mut turn, conditions, ordered)),
-        Ok((hand, swings, reach, sword, ambushes, word, sound)),
-    ) = (attackers.get_mut(actor), arms.get(arm))
-    else {
-        return;
-    };
-    let mut count = (rng.below(swings.most) as i32 + 1 + swings.extra).max(1) as u32;
-    let readied = turn.lightning.filter(|_| hand.0 == WeaponSlot::Primary);
-    if let Some(level) = readied
-        && sword
-        && !conditions.has(Condition::Slowed)
-    {
-        count += if rng.below(11) + u32::from(level) < 20 { 3 } else { 4 };
-    }
-    if readied.is_some() {
-        turn.lightning = None;
-    }
-    fight.attacked(true);
-    let provokes = ordered && !conditions.has(Condition::Turncoat);
-
-    // Catching the target unaware (retail `IsPartyLookingAwayFrom`): a seated
-    // member faces the way the formation says, anyone else its own front;
-    // only a touch or short blow can; a member keeping watch (defending,
-    // alive, not spent, nothing as bad as Webbed, not blind) who notices
-    // turns to face it instead; anyone else is caught if the attacker is
-    // exactly across from the way they face. An arm that ambushes strikes
-    // naturally whether or not the target faces it.
+) -> Result {
+    let attack = opens.attack;
+    let (&AttackBy(actor), &AttackAt(target), with) = attacks.get(attack)?;
+    let (reach, ambushes) = arms.get(with.arm)?;
     let attacker_on = places.of(target).quadrant(places.of(actor).feet);
     let facing = formation.facing(target).unwrap_or(crate::game::party::formation::Row::Front);
     let mut surprise = Surprise { unaware: false, natural: ambushes };
-    if let Ok((spotted, orders, their, ailing, a)) = targets.get_mut(target)
-        && reach.0 <= crate::content::species::Reach::Short
-        && facing != attacker_on
-    {
+    if reach.0 <= crate::content::species::Reach::Short && facing != attacker_on {
+        let (spotted, orders, their, ailing, a) = targets.get_mut(target)?;
         let watching = orders.is_some_and(Ordered::defends)
             && !their.is_dead()
             && their.stamina.current > 0
@@ -561,39 +649,91 @@ fn open(
             surprise.unaware = facing.opposite() == Some(attacker_on);
         }
     }
-    if provokes {
-        commands.trigger(Provocation { monster: target });
+    commands.entity(attack).insert(Caught(surprise));
+    Ok(())
+}
+
+/// The swings an attack makes (section 4): `below(swings) + 1`, the
+/// weapon's extra swings added, at least one. A readied Lightning Strike
+/// adds 3 or 4 with a sword in the main hand when not slowed, and is used
+/// up by the main hand's first attack whether or not it adds any.
+fn count(
+    opens: On<Opens>,
+    mut commands: Commands,
+    attacks: Query<(&AttackBy, &AttackWith)>,
+    mut attackers: Query<(&mut Turn, &Conditions)>,
+    arms: Query<(&Hand, &Swings, Has<Sword>)>,
+    mut rng: ResMut<GameRng>,
+) -> Result {
+    let attack = opens.attack;
+    let (&AttackBy(actor), with) = attacks.get(attack)?;
+    let (mut turn, conditions) = attackers.get_mut(actor)?;
+    let (hand, swings, sword) = arms.get(with.arm)?;
+    let mut most = (rng.below(swings.most) as i32 + 1 + swings.extra).max(1) as u32;
+    let readied = turn.lightning.filter(|_| hand.0 == WeaponSlot::Primary);
+    if let Some(level) = readied {
+        if sword && !conditions.has(Condition::Slowed) {
+            most += if rng.below(11) + u32::from(level) < 20 { 3 } else { 4 };
+        }
+        turn.lightning = None;
     }
+    commands.entity(attack).insert(SwingCount { most, made: 0 });
+    Ok(())
+}
+
+/// The attack is announced (section 3): who strikes whom, how, with how many
+/// swings, and whether by surprise; a member's weapon is heard swung (retail
+/// `MakePCAttackSound`).
+fn announce(
+    announces: On<Announces>,
+    attacks: Query<(&AttackBy, &AttackAt, &AttackWith, &Caught, &SwingCount)>,
+    arms: Query<(Option<&Word>, Option<&SoundClass>)>,
+    mut news: MessageWriter<CombatNews>,
+) -> Result {
+    let (&AttackBy(attacker), &AttackAt(target), with, &Caught(surprise), count) =
+        attacks.get(announces.attack)?;
+    let (word, sound) = arms.get(with.arm)?;
     let how = match word {
-        Some(&Word(word, named)) => Announcement::Monster { word, mode, named },
-        None => Announcement::Mode(mode),
+        Some(&Word(word, named)) => Announcement::Monster { word, mode: with.mode, named },
+        None => Announcement::Mode(with.mode),
     };
-    news.write(CombatNews::Attack { attacker: actor, target, how, swings: count, surprise });
-    // A member's weapon is heard swung (retail `MakePCAttackSound`).
+    news.write(CombatNews::Attack { attacker, target, how, swings: count.most, surprise });
     if word.is_none() {
         news.write(CombatNews::Swung { sound_class: sound.map(|sound| sound.0) });
     }
-    commands.entity(attack).insert((Caught(surprise), SwingCount { most: count, made: 0 }));
-    commands.trigger(SwingsAgain { attack });
+    Ok(())
 }
 
-/// An attack swings again while it has swings left, its attacker can fight
-/// and its target lives; otherwise it is over.
+/// An attack swings again while it has swings left, has not run out of what
+/// it shoots, its attacker can fight and its target lives: the swing aims,
+/// fares, may be taken by a guard, lands, hits, is settled and is gone, and
+/// the attack swings again. Otherwise the attack ends, and is gone.
 fn swing_again(
     again: On<SwingsAgain>,
     mut commands: Commands,
-    attacks: Query<(&AttackBy, &AttackAt, &SwingCount)>,
+    mut attacks: Query<(&AttackBy, &AttackAt, &mut SwingCount, Has<RunOut>)>,
     able: Query<(), With<CanFight>>,
     vitals: Query<&Vitals>,
-) {
+) -> Result {
     let attack = again.attack;
-    let Ok((&AttackBy(actor), &AttackAt(target), count)) = attacks.get(attack) else { return };
-    let alive = vitals.get(target).is_ok_and(|vitals| !vitals.is_dead());
-    if count.made < count.most && able.contains(actor) && alive {
-        commands.spawn(SwingOf(attack));
+    let (&AttackBy(actor), &AttackAt(target), mut count, run_out) = attacks.get_mut(attack)?;
+    let alive = !vitals.get(target)?.is_dead();
+    if count.made < count.most && !run_out && able.contains(actor) && alive {
+        count.made += 1;
+        let swing = commands.spawn(SwingOf(attack)).id();
+        commands.trigger(Aiming { swing });
+        commands.trigger(Faring { swing });
+        commands.trigger(Guarding { swing });
+        commands.trigger(Landing { swing });
+        commands.trigger(Hitting { swing });
+        commands.trigger(Settling { swing });
+        commands.entity(swing).despawn();
+        commands.trigger(SwingsAgain { attack });
     } else {
         commands.trigger(AttackEnds { attack });
+        commands.entity(attack).despawn();
     }
+    Ok(())
 }
 
 /// A swing's aim (section 4):
@@ -610,7 +750,7 @@ fn swing_again(
 /// share by level for one who fights blind; then the attacker's difficulty.
 #[allow(clippy::type_complexity)]
 fn aim(
-    swung: On<Add<SwingOf>>,
+    aiming: On<Aiming>,
     mut commands: Commands,
     swings: Query<&SwingOf>,
     attacks: Query<(&AttackBy, &AttackAt, &AttackWith, &Caught)>,
@@ -626,20 +766,13 @@ fn aim(
     targets: Query<(&Armour, &Unaware, Has<Unseated>, &Agility, Has<PartyMember>, Has<CombatMove>)>,
     round: Single<&Round, With<Battle>>,
     difficulty: Res<Difficulty>,
-) {
-    let swing = swung.entity;
-    let Ok(&SwingOf(attack)) = swings.get(swing) else { return };
-    let Ok((&AttackBy(actor), &AttackAt(target), with, &Caught(surprise))) = attacks.get(attack)
-    else {
-        return;
-    };
-    let (Ok((rating, modern)), Ok(attacker), Ok(aimed)) =
-        (arms.get(with.arm), attackers.get(actor), targets.get(target))
-    else {
-        return;
-    };
-    let (bonus, fatigue, agility, standing, own, blind) = attacker;
-    let (armour, unaware, unseated, their_agility, member, walking) = aimed;
+) -> Result {
+    let swing = aiming.swing;
+    let &SwingOf(attack) = swings.get(swing)?;
+    let (&AttackBy(actor), &AttackAt(target), with, &Caught(surprise)) = attacks.get(attack)?;
+    let (rating, modern) = arms.get(with.arm)?;
+    let (bonus, fatigue, agility, standing, own, blind) = attackers.get(actor)?;
+    let (armour, unaware, unseated, their_agility, member, walking) = targets.get(target)?;
     let tired = if modern { fatigue.0 / 2 } else { fatigue.0 };
     let surprised = 10 * i32::from(surprise.unaware) + 10 * i32::from(surprise.natural);
     let base = rating.0 + bonus.0 + attack::mode_to_hit(with.mode) + surprised - tired;
@@ -653,20 +786,20 @@ fn aim(
         difficulty.scale(blinded, standing.stance)
     };
     commands.entity(swing).insert(Aim { aim: capped(aim), fumble_odds: capped(base) });
+    Ok(())
 }
 
 /// What becomes of a swing (section 4): a close one rolls against its aim
 /// and may go astray onto one of the living in reach of its arm other than
 /// its target (friends, foes and the attacker alike), by odds cubic in what
 /// the aim falls short of 100; a shot is scattered about its target and
-/// strikes or misses. Then the swing is settled.
+/// strikes or misses.
 #[allow(clippy::type_complexity)]
 fn fate(
-    aimed: On<Add<Aim>>,
+    faring: On<Faring>,
     mut commands: Commands,
     swings: Query<(&SwingOf, &Aim)>,
-    attacks: Query<(&AttackBy, &AttackAt, &AttackWith)>,
-    mut caught: Query<&mut Caught>,
+    mut attacks: Query<(&AttackBy, &AttackAt, &AttackWith, &mut Caught)>,
     arms: Query<(&Reaches, Has<SureThrow>)>,
     blinded: Query<(), With<Blinded>>,
     vitals: Query<&Vitals>,
@@ -675,11 +808,11 @@ fn fate(
     formation: Single<&Formation>,
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<CombatNews>,
-) {
-    let swing = aimed.entity;
-    let Ok((&SwingOf(attack), aim)) = swings.get(swing) else { return };
-    let Ok((&AttackBy(actor), &AttackAt(target), with)) = attacks.get(attack) else { return };
-    let Ok((reach, sure_throw)) = arms.get(with.arm) else { return };
+) -> Result {
+    let swing = faring.swing;
+    let (&SwingOf(attack), aim) = swings.get(swing)?;
+    let (&AttackBy(actor), &AttackAt(target), with, mut caught) = attacks.get_mut(attack)?;
+    let (reach, sure_throw) = arms.get(with.arm)?;
     let combatants = fight.map_or(&[][..], Combatants::entities);
     let (from, at) = (places.of(actor), places.of(target));
     let fate = if attack::is_missile(reach.0) {
@@ -691,16 +824,15 @@ fn fate(
             Fate::Missed
         }
     } else {
-        let astray: Vec<Entity> = combatants
-            .iter()
-            .copied()
-            .filter(|&other| other != target)
-            .filter(|&other| vitals.get(other).is_ok_and(|vitals| !vitals.is_dead()))
-            .filter(|&other| {
-                other == actor
-                    || reaches(&formation, (actor, &from), (other, &places.of(other)), reach.0)
-            })
-            .collect();
+        let mut astray = Vec::new();
+        for &other in combatants.iter().filter(|&&other| other != target) {
+            if !vitals.get(other)?.is_dead()
+                && (other == actor
+                    || reaches(&formation, (actor, &from), (other, &places.of(other)), reach.0))
+            {
+                astray.push(other);
+            }
+        }
         let roll = rng.below(100) + 1;
         let odds = attack::fumble_chance(astray.len(), aim.fumble_odds);
         match attack::verdict(roll, astray.len(), odds) {
@@ -710,16 +842,14 @@ fn fate(
             }
             attack::Verdict::Fumbles => {
                 let victim = astray[rng.below(astray.len() as u32) as usize];
-                if let Ok(mut caught) = caught.get_mut(attack) {
-                    caught.0 = Surprise::default();
-                }
+                caught.0 = Surprise::default();
                 news.write(CombatNews::Fumble { attacker: actor, victim });
                 Fate::Astray { victim, roll: rng.below(100) + 1 }
             }
         }
     };
     commands.entity(swing).insert(fate);
-    commands.trigger(Swung { swing });
+    Ok(())
 }
 
 /// A guard of the one a swing reached may step in to take the blow (section
@@ -731,81 +861,76 @@ fn fate(
 /// known.
 #[allow(clippy::type_complexity)]
 fn step_in(
-    fated: On<Add<Fate>>,
+    guarding: On<Guarding>,
     mut commands: Commands,
     swings: Query<(&SwingOf, &Fate)>,
-    attacks: Query<(&AttackBy, &AttackAt)>,
-    mut caught: Query<&mut Caught>,
+    mut attacks: Query<(&AttackBy, &AttackAt, &mut Caught)>,
     pressing: Query<&Pressing>,
     wards: Query<&Guards>,
     mut guards: Query<(Has<CanGuard>, &GuardReach, &mut Interceptions)>,
     places: Places,
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<CombatNews>,
-) {
-    let swing = fated.entity;
-    let Ok((&SwingOf(attack), fate)) = swings.get(swing) else { return };
-    let Ok((&AttackBy(actor), &AttackAt(target))) = attacks.get(attack) else { return };
+) -> Result {
+    let swing = guarding.swing;
+    let (&SwingOf(attack), fate) = swings.get(swing)?;
+    let (&AttackBy(actor), &AttackAt(target), mut caught) = attacks.get_mut(attack)?;
     let ward = match *fate {
-        Fate::Missed => return,
+        Fate::Missed => return Ok(()),
         Fate::Reached { .. } => target,
         Fate::Astray { victim, .. } => victim,
     };
-    let Ok(mut surprise) = caught.get_mut(attack) else { return };
-    let theirs = pressing.get(actor).map_or(0, |pressing| pressing.0);
+    let pressed = pressing.get(actor)?.0
+        + 10 * i32::from(caught.0.unaware)
+        + 10 * i32::from(caught.0.natural);
     let at = places.of(ward);
-    let stepping: Vec<Entity> = wards
-        .get(ward)
-        .map(|ward| ward.entities().to_vec())
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|&guard| {
-            guards.get(guard).is_ok_and(|(able, reach, made)| {
-                let pressed = theirs
-                    + 10 * i32::from(surprise.0.unaware)
-                    + 10 * i32::from(surprise.0.natural);
-                let own = pressing.get(guard).map_or(0, |pressing| pressing.0);
-                let chance = (own - pressed + 50).clamp(5, 95) as u32;
-                able && reach.0.is_some_and(|reach| places.of(guard).gap(&at) <= reach.metres())
-                    && made.taken < made.allowed
-                    && rng.below(100) < chance
-            })
-        })
-        .collect();
+    let mut stepping = Vec::new();
+    for &guard in wards.get(ward).map_or(&[][..], |ward| ward.entities()) {
+        let (able, reach, made) = guards.get(guard)?;
+        let chance = (pressing.get(guard)?.0 - pressed + 50).clamp(5, 95) as u32;
+        if able
+            && reach.0.is_some_and(|reach| places.of(guard).gap(&at) <= reach.metres())
+            && made.taken < made.allowed
+            && rng.below(100) < chance
+        {
+            stepping.push(guard);
+        }
+    }
     let mut victim = ward;
     if !stepping.is_empty() {
         let guard = stepping[rng.below(stepping.len() as u32) as usize];
-        if let Ok((.., mut made)) = guards.get_mut(guard) {
-            made.take();
-        }
+        guards.get_mut(guard)?.2.take();
         commands.trigger(Tires { actor: guard, stamina: rng.below(3) + 2 });
-        surprise.0 = Surprise::default();
+        caught.0 = Surprise::default();
         news.write(CombatNews::Intercepts { guard, ward });
         victim = guard;
     }
     commands.entity(swing).insert(Strikes(victim));
+    Ok(())
 }
 
 /// A near miss is blocked, and heard, where a miss is not: by its target's
 /// block, when it saw the blow coming or was caught unaware.
 fn block(
-    struck: On<Add<Strikes>>,
-    swings: Query<(&SwingOf, &Fate, &Aim, &Strikes)>,
+    landing: On<Landing>,
+    swings: Query<(&SwingOf, &Fate, &Aim, Option<&Strikes>)>,
     attacks: Query<(&AttackWith, &Caught)>,
     blocks: Query<&Block>,
     sounds: Query<&SoundClass>,
     mut news: MessageWriter<CombatNews>,
-) {
-    let Ok((&SwingOf(attack), &fate, aim, &Strikes(victim))) = swings.get(struck.entity) else {
-        return;
+) -> Result {
+    let (&SwingOf(attack), &fate, aim, strikes) = swings.get(landing.swing)?;
+    let (Fate::Reached { roll, lands: false, .. }, Some(&Strikes(victim))) = (fate, strikes) else {
+        return Ok(());
     };
-    let Fate::Reached { roll, lands: false, .. } = fate else { return };
-    let (Ok((with, caught)), Ok(block)) = (attacks.get(attack), blocks.get(victim)) else { return };
+    let (with, caught) = attacks.get(attack)?;
+    let block = blocks.get(victim)?;
     let within = if caught.0.any() { block.unaware } else { block.aware };
     if roll as i32 - aim.aim <= within {
         let sound_class = sounds.get(with.arm).ok().map(|sound| sound.0);
         news.write(CombatNews::Blocked { victim, sound_class });
     }
+    Ok(())
 }
 
 /// A swing that lands (section 4) lands somewhere on the one struck, by the
@@ -822,14 +947,13 @@ fn block(
 ///
 /// where the armour at the place is less what it has against the mode, and
 /// what the blow gets past counts twice in it (retail
-/// `TargetArmorClassAtLocation`). A swing gone astray that does not get
-/// through is told of on its own.
+/// `TargetArmorClassAtLocation`).
 #[allow(clippy::type_complexity)]
 fn land(
-    struck: On<Add<Strikes>>,
+    landing: On<Landing>,
     mut commands: Commands,
-    swings: Query<(&SwingOf, &Fate, &Strikes)>,
-    mut attacks: Query<(&AttackBy, &AttackWith, &Caught, &mut Tally)>,
+    swings: Query<(&SwingOf, &Fate, Option<&Strikes>)>,
+    attacks: Query<(&AttackBy, &AttackWith, &Caught)>,
     arms: Query<(&Rating, Has<FatiguePierces>, Option<&Loaded>, Option<&LandsOnParty>)>,
     attackers: Query<(&AimBonus, &Fatigue, &Agility, &Standing)>,
     victims: Query<(
@@ -839,25 +963,20 @@ fn land(
     round: Single<&Round, With<Battle>>,
     difficulty: Res<Difficulty>,
     mut rng: ResMut<GameRng>,
-    mut news: MessageWriter<CombatNews>,
-) {
-    let swing = struck.entity;
-    let Ok((&SwingOf(attack), &fate, &Strikes(victim))) = swings.get(swing) else { return };
-    let (roll, sure, astray) = match fate {
-        Fate::Reached { roll, lands: true, sure } => (roll, sure, false),
-        Fate::Astray { roll, .. } => (roll, false, true),
-        _ => return,
+) -> Result {
+    let swing = landing.swing;
+    let (&SwingOf(attack), &fate, strikes) = swings.get(swing)?;
+    let (roll, sure) = match fate {
+        Fate::Reached { roll, lands: true, sure } => (roll, sure),
+        Fate::Astray { roll, .. } => (roll, false),
+        _ => return Ok(()),
     };
-    let Ok((&AttackBy(actor), with, caught, mut tally)) = attacks.get_mut(attack) else { return };
-    tally.hits += u32::from(!astray);
-    let (Ok((rating, pierces_tired, loaded, lands_on_party)), Ok(attacker), Ok(there)) =
-        (arms.get(with.arm), attackers.get(actor), victims.get(victim))
-    else {
-        return;
-    };
-    let (bonus, fatigue, agility, standing) = attacker;
+    let &Strikes(victim) = strikes.expect("a swing that lands strikes someone");
+    let (&AttackBy(actor), with, caught) = attacks.get(attack)?;
+    let (rating, pierces_tired, loaded, lands_on_party) = arms.get(with.arm)?;
+    let (bonus, fatigue, agility, standing) = attackers.get(actor)?;
     let ((places, armour, against, shield), (unaware, unseated, their_agility, member, walking)) =
-        there;
+        victims.get(victim)?;
     let place = attack::lands_at(rng.below(100), places, lands_on_party.map(|lands| &lands.0));
     let by = attack::piercing_mode(&mut rng, with.mode, loaded.map(|loaded| loaded.0));
     let in_place = moving(member, walking, &round) && !unseated;
@@ -873,34 +992,91 @@ fn land(
     let aside = attack::turned_aside(with.mode, shield.0, rng.below(100));
     if !aside && (sure || penetration >= roll as i32) {
         commands.entity(swing).insert(Through(place.0));
-    } else if astray {
-        news.write(CombatNews::Result { attacker: actor, target: victim, hits: 1, damage: 0 });
     }
+    Ok(())
 }
 
-/// The blow of a swing that got through (section 5): heard where it lands,
-/// and training the struck one's Iron Skin. Its dice are rolled twice for a
-/// close blow that is unaware or at one on the move, with the backstab's
-/// extra dice for a natural close blow, one more in a berserk mode, one less
-/// (if more than one) at one defending a blow not unaware, and one more for
-/// each kind the arm slays that the one struck is; raised by the arm's
-/// percent, at least one, and cut by the one struck's reduction. One gone
-/// astray takes at most a fifth of its victim's health, at least one, and
-/// trains nothing; otherwise the attacker's training raises the Kill chance
-/// (a point per 25 of its critical skill, one more with chance `(skill mod
-/// 25) / 25`) and the Knock Out chance (5 scaled by the level of one with the
-/// trait), each held to 100. A blow that does damage is a deed of its own,
-/// and trains the arm's skills.
+/// A spell laid on one a close swing lands on may answer it (Razor Cloak,
+/// section 7): the spell's dice rolled `count * power` times at the power the
+/// cloak had, less the attacker's own reduction, a deed at the attacker if
+/// it comes to anything.
+#[allow(clippy::type_complexity)]
+fn answer(
+    landing: On<Landing>,
+    mut commands: Commands,
+    swings: Query<(&SwingOf, &Fate, Option<&Strikes>)>,
+    attacks: Query<(&AttackBy, &AttackWith)>,
+    arms: Query<&Reaches>,
+    reductions: Query<&Reduction>,
+    mut laying: Laying,
+    content: Res<Catalogs>,
+    mut rng: ResMut<GameRng>,
+) -> Result {
+    let swing = landing.swing;
+    let (&SwingOf(attack), fate, strikes) = swings.get(swing)?;
+    let Some(&Strikes(victim)) = strikes else { return Ok(()) };
+    if matches!(fate, Fate::Reached { lands: false, .. } | Fate::Missed) {
+        return Ok(());
+    }
+    let (&AttackBy(actor), with) = attacks.get(attack)?;
+    if attack::is_missile(arms.get(with.arm)?.0) {
+        return Ok(());
+    }
+    let Some((cloak, dice)) = laying.answer_blow(victim) else { return Ok(()) };
+    let reduction = reductions.get(actor)?.0;
+    let answer = attack::riposte(&mut rng, Some(dice), cloak.power, reduction);
+    if answer == 0 {
+        commands.entity(swing).insert(Answered(attack::Dealt::default()));
+        return Ok(());
+    }
+    let blow = Blow { damage: answer, effects: AttackEffects::default(), by_monster: false };
+    let strike =
+        effects::Strike::new(Rows::Blow(blow), Strength::default(), Some(victim), &content);
+    commands.spawn((Deed::at(strike, [actor]), AnswerTo(swing)));
+    Ok(())
+}
+
+/// A swing that got through is heard where it lands, and the one struck
+/// practises Iron Skin, whether or not the blow then does damage (sections 5
+/// and 6).
+fn struck(
+    hitting: On<Hitting>,
+    mut commands: Commands,
+    swings: Query<(&SwingOf, Option<&Strikes>, Option<&Through>)>,
+    attacks: Query<&AttackWith>,
+    sounds: Query<&SoundClass>,
+    trained: Query<(&Calling, &Abilities)>,
+    mut news: MessageWriter<CombatNews>,
+) -> Result {
+    let (&SwingOf(attack), strikes, through) = swings.get(hitting.swing)?;
+    let (Some(&Strikes(victim)), Some(&Through(place))) = (strikes, through) else {
+        return Ok(());
+    };
+    let with = attacks.get(attack)?;
+    let sound_class = sounds.get(with.arm).ok().map(|sound| sound.0);
+    news.write(CombatNews::Struck { victim, place, sound_class });
+    practise(victim, Skill::IronSkin, &trained, &mut commands);
+    Ok(())
+}
+
+/// The blow of a swing that got through (section 5). Its dice are rolled
+/// twice for a close blow that is unaware or at one on the move, with the
+/// backstab's extra dice for a natural close blow, one more in a berserk
+/// mode, one less (if more than one) at one defending a blow not unaware,
+/// and one more for each kind the arm slays that the one struck is; raised
+/// by the arm's percent, at least one, and cut by the one struck's
+/// reduction. One gone astray takes at most a fifth of its victim's health,
+/// at least one; otherwise the attacker's training raises the Kill chance (a
+/// point per 25 of its critical skill, one more with chance `(skill mod 25) /
+/// 25`) and the Knock Out chance (5 scaled by the level of one with the
+/// trait), each held to 100. A blow that does damage is a deed of its own.
 #[allow(clippy::type_complexity)]
 fn blow(
-    through: On<Add<Through>>,
+    hitting: On<Hitting>,
     mut commands: Commands,
-    swings: Query<(&SwingOf, &Fate, &Strikes, &Through)>,
+    swings: Query<(&SwingOf, &Fate, Option<&Strikes>, Has<Through>)>,
     attacks: Query<(&AttackBy, &AttackWith, &Caught)>,
-    arms: Query<(
-        (&Rolls, &DamagePercent, &BlowEffects, &Slays),
-        (Option<&Critical>, Option<&Trains>, Option<&Word>, Option<&SoundClass>),
-    )>,
+    arms: Query<(&Rolls, &DamagePercent, &BlowEffects, &Slays, Option<&Critical>, Has<Word>)>,
     attackers: Query<(&Backstab, Option<&KnockOut>, &Level)>,
     victims: Query<(
         &Reduction,
@@ -910,29 +1086,19 @@ fn blow(
         Has<PartyMember>,
         Has<CombatMove>,
     )>,
-    trained: Query<(&Calling, &Abilities)>,
     round: Single<&Round, With<Battle>>,
     content: Res<Catalogs>,
     mut rng: ResMut<GameRng>,
-    mut news: MessageWriter<CombatNews>,
-) {
+) -> Result {
     use crate::content::items::AttackEffect;
-    let Ok((&SwingOf(attack), fate, &Strikes(victim), &Through(place))) =
-        swings.get(through.entity)
-    else {
-        return;
-    };
+    let swing = hitting.swing;
+    let (&SwingOf(attack), fate, strikes, through) = swings.get(swing)?;
+    let (Some(&Strikes(victim)), true) = (strikes, through) else { return Ok(()) };
     let astray = matches!(fate, Fate::Astray { .. });
-    let Ok((&AttackBy(actor), with, caught)) = attacks.get(attack) else { return };
-    let (Ok(arm), Ok((backstab, knock_out, level)), Ok(struck)) =
-        (arms.get(with.arm), attackers.get(actor), victims.get(victim))
-    else {
-        return;
-    };
-    let ((rolls, percent, effects, slays), (critical, trains, word, sound)) = arm;
-    let (reduction, vitals, resistances, orders, member, walking) = struck;
-    news.write(CombatNews::Struck { victim, place, sound_class: sound.map(|sound| sound.0) });
-    practise(victim, Skill::IronSkin, &trained, &mut commands);
+    let (&AttackBy(actor), with, caught) = attacks.get(attack)?;
+    let (rolls, percent, effects, slays, critical, by_monster) = arms.get(with.arm)?;
+    let (backstab, knock_out, level) = attackers.get(actor)?;
+    let (reduction, vitals, resistances, orders, member, walking) = victims.get(victim)?;
 
     let close = !attack::keeps_distance(with.mode);
     let surprise = caught.0;
@@ -969,191 +1135,200 @@ fn blow(
         }
     }
     if damage == 0 {
-        if astray {
-            news.write(CombatNews::Result { attacker: actor, target: victim, hits: 1, damage: 0 });
-        }
-        return;
+        return Ok(());
     }
-    let blow = Blow { damage, effects: carried, by_monster: word.is_some() };
+    let blow = Blow { damage, effects: carried, by_monster };
     let strength = attack::effect_strength(level.0);
-    let strike = effects::Strike::new(Rows::Blow, strength, Some(blow), Some(actor), &content);
-    commands.spawn((Deed::at(strike, [victim]), Blown { attack, victim, astray }));
-    if !astray {
-        for &skill in trains.map_or(&[][..], |trains| trains.0) {
-            practise(actor, skill, &trained, &mut commands);
-        }
+    let strike = effects::Strike::new(Rows::Blow(blow), strength, Some(actor), &content);
+    commands.spawn((Deed::at(strike, [victim]), BlowOf(swing)));
+    Ok(())
+}
+
+/// What a swing's blow did, once it has landed.
+fn blew(landed: On<Landed>, blows: Query<&BlowOf>, mut commands: Commands) {
+    if let Ok(&BlowOf(swing)) = blows.get(landed.deed) {
+        let done = attack::dealt(landed.effects.iter().copied());
+        commands.entity(swing).insert(Blew(done));
     }
 }
 
-/// A spell laid on one a close swing lands on may answer it (Razor Cloak,
-/// section 7): the spell's dice rolled `count * power` times at the power the
-/// cloak had, less the attacker's own reduction, a deed at the attacker.
-#[allow(clippy::type_complexity)]
-fn answer(
-    struck: On<Add<Strikes>>,
-    mut commands: Commands,
-    swings: Query<(&SwingOf, &Fate, &Strikes)>,
-    attacks: Query<(&AttackBy, &AttackWith)>,
-    arms: Query<&Reaches>,
-    reductions: Query<&Reduction>,
-    mut laying: Laying,
-    content: Res<Catalogs>,
-    mut rng: ResMut<GameRng>,
+/// What Razor Cloak's answer did, once it has landed.
+fn answered(landed: On<Landed>, answers: Query<&AnswerTo>, mut commands: Commands) {
+    if let Ok(&AnswerTo(swing)) = answers.get(landed.deed) {
+        let done = attack::dealt(landed.effects.iter().copied());
+        commands.entity(swing).insert(Answered(done));
+    }
+}
+
+/// A settled swing is told (section 7). One gone astray is told on its own
+/// as a single hit, whatever its blow did; one that landed on whom it was
+/// meant for, or a guard, is a hit of its attack, and what its blow did
+/// counts toward the attack's tally. Then Razor Cloak's answer, if one was
+/// made, is told on its own.
+fn tell(
+    settling: On<Settling>,
+    swings: Query<(&SwingOf, &Fate, Option<&Strikes>, Option<&Blew>, Option<&Answered>)>,
+    mut attacks: Query<(&AttackBy, &mut Tally)>,
     mut news: MessageWriter<CombatNews>,
-) {
-    let Ok((&SwingOf(attack), fate, &Strikes(victim))) = swings.get(struck.entity) else { return };
-    if matches!(fate, Fate::Reached { lands: false, .. } | Fate::Missed) {
-        return;
+) -> Result {
+    let (&SwingOf(attack), fate, strikes, blew, answered) = swings.get(settling.swing)?;
+    let Some(&Strikes(victim)) = strikes else { return Ok(()) };
+    let (&AttackBy(attacker), mut tally) = attacks.get_mut(attack)?;
+    let mut alone = |by, at, done: Option<&attack::Dealt>| {
+        let damage = done.map_or(0, |done| done.damage);
+        news.write(CombatNews::Result { attacker: by, target: at, hits: 1, damage });
+        if let Some(done) = done.filter(|done| !done.rest.is_empty()) {
+            news.write(CombatNews::Effects(done.rest.clone()));
+        }
+    };
+    match fate {
+        Fate::Astray { .. } => alone(attacker, victim, blew.map(|blew| &blew.0)),
+        Fate::Reached { lands: true, .. } => {
+            tally.hits += 1;
+            if let Some(Blew(done)) = blew {
+                tally.damage += done.damage;
+                tally.effects.extend(done.rest.iter().copied());
+            }
+        }
+        _ => {}
     }
-    let Ok((&AttackBy(actor), with)) = attacks.get(attack) else { return };
-    if arms.get(with.arm).is_ok_and(|reach| attack::is_missile(reach.0)) {
-        return;
+    if let Some(Answered(done)) = answered {
+        alone(victim, attacker, Some(done));
     }
-    let Some((cloak, dice)) = laying.answer_blow(victim) else { return };
-    let reduction = reductions.get(actor).map_or(0, |reduction| reduction.0);
-    let answer = attack::riposte(&mut rng, Some(dice), cloak.power, reduction);
-    if answer == 0 {
-        news.write(CombatNews::Result { attacker: victim, target: actor, hits: 1, damage: 0 });
-        return;
-    }
-    let blow = Blow { damage: answer, effects: AttackEffects::default(), by_monster: false };
-    let strike =
-        effects::Strike::new(Rows::Blow, Strength::default(), Some(blow), Some(victim), &content);
-    commands.spawn((Deed::at(strike, [actor]), Answer { by: victim, at: actor }));
+    Ok(())
 }
 
-/// A swing is settled (section 6): it costs its attacker stamina, landed or
-/// not, if its arm tires them: the draw (a punch `2 + below(3)`, a kick `3 +
+/// A blow that did damage, not gone astray, trains the arm's skills
+/// (section 6).
+fn trains(
+    settling: On<Settling>,
+    mut commands: Commands,
+    swings: Query<(&SwingOf, &Fate), With<Blew>>,
+    attacks: Query<(&AttackBy, &AttackWith)>,
+    arms: Query<Option<&Trains>>,
+    trained: Query<(&Calling, &Abilities)>,
+) -> Result {
+    let Ok((&SwingOf(attack), fate)) = swings.get(settling.swing) else { return Ok(()) };
+    if matches!(fate, Fate::Astray { .. }) {
+        return Ok(());
+    }
+    let (&AttackBy(actor), with) = attacks.get(attack)?;
+    for &skill in arms.get(with.arm)?.map_or(&[][..], |trains| trains.0) {
+        practise(actor, skill, &trained, &mut commands);
+    }
+    Ok(())
+}
+
+/// A settled swing costs its attacker stamina, landed or not, if its arm
+/// tires them (section 6): the draw (a punch `2 + below(3)`, a kick `3 +
 /// below(3)`, a weapon without a weight `3 + below(4)`, one of weight `w`
 /// `below(band) + 1 + band` with `band = w / 40 + 1`), doubled in a fury and
 /// again by disease, then scaled by the load (retail `FatigueCharacter`).
-/// What a missile weapon shoots or throws is spent: a launcher one of the
-/// missiles in the other hand, a thrown weapon or a gun one of itself; a
-/// weapon that casts its spell, or a thrown missile that is kept, spends
-/// nothing. Once what it counts is used up, the hand has no attacks left and
-/// the attack ends; otherwise it swings again.
+/// One who carries no load (a monster) pays none.
 #[allow(clippy::type_complexity)]
-fn settle(
-    swung: On<Swung>,
+fn tire(
+    settling: On<Settling>,
     mut commands: Commands,
     swings: Query<&SwingOf>,
-    mut attacks: Query<(&AttackBy, &AttackWith, &mut SwingCount, Has<Fury>)>,
-    arms: Query<(&Hand, Option<&Grip>, Option<&Heft>, Has<TiresToSwing>, Has<Loaded>)>,
-    mut attackers: Query<(&mut Turn, &Conditions, &Modifiers, Option<&Burden>)>,
+    attacks: Query<(&AttackBy, &AttackWith, Has<Fury>)>,
+    arms: Query<Option<&Heft>, With<TiresToSwing>>,
+    attackers: Query<(&Conditions, &Modifiers, Option<&Burden>)>,
+    mut rng: ResMut<GameRng>,
+) -> Result {
+    let &SwingOf(attack) = swings.get(settling.swing)?;
+    let (&AttackBy(actor), with, fury) = attacks.get(attack)?;
+    let Ok(heft) = arms.get(with.arm) else { return Ok(()) };
+    let (conditions, own, burden) = attackers.get(actor)?;
+    let Some(burden) = burden else { return Ok(()) };
+    let (below, add) = attack::stamina_draw(with.mode, heft.map(|heft| heft.0));
+    let cost = (rng.below(below) + add)
+        * if fury { 2 } else { 1 }
+        * if conditions.has(Condition::Diseased) { 2 } else { 1 };
+    let slowed = conditions.has(Condition::Slowed);
+    let stamina = burden.load.scale_fatigue(cost, slowed, own.laid.stride > 0.0);
+    commands.trigger(Tires { actor, stamina });
+    Ok(())
+}
+
+/// A settled swing of a missile weapon spends what it shoots or throws
+/// (section 6): a launcher one of the missiles in the other hand, a thrown
+/// weapon or a gun one of itself; a weapon that casts its spell, or a thrown
+/// missile that is kept, spends nothing. Once what it counts is used up, the
+/// hand has no attacks left and the attack has run out.
+#[allow(clippy::type_complexity)]
+fn spend(
+    settling: On<Settling>,
+    mut commands: Commands,
+    swings: Query<&SwingOf>,
+    attacks: Query<(&AttackBy, &AttackWith, &SwingCount)>,
+    arms: Query<(&Hand, &Grip, Has<Loaded>)>,
+    mut turns: Query<&mut Turn>,
     strikers: Query<(Option<&Weapon>, Option<&Missile>)>,
     held: Items,
-    mut rng: ResMut<GameRng>,
-) {
-    let swing = swung.swing;
-    let Ok(&SwingOf(attack)) = swings.get(swing) else { return };
-    commands.entity(swing).despawn();
-    let Ok((&AttackBy(actor), with, mut count, fury)) = attacks.get_mut(attack) else { return };
-    count.made += 1;
-    let (Ok((hand, grip, heft, tires, loaded)), Ok((mut turn, conditions, own, burden))) =
-        (arms.get(with.arm), attackers.get_mut(actor))
-    else {
-        return;
-    };
-    if let Some(load) = burden.map(|burden| burden.load).filter(|_| tires) {
-        let (below, add) = attack::stamina_draw(with.mode, heft.map(|heft| heft.0));
-        let cost = (rng.below(below) + add)
-            * if fury { 2 } else { 1 }
-            * if conditions.has(Condition::Diseased) { 2 } else { 1 };
-        let slowed = conditions.has(Condition::Slowed);
-        commands.trigger(Tires {
-            actor,
-            stamina: load.scale_fatigue(cost, slowed, own.laid.stride > 0.0),
-        });
-    }
-    let weapon = grip.and_then(|grip| grip.weapon());
-    let ranged = weapon
+) -> Result {
+    let &SwingOf(attack) = swings.get(settling.swing)?;
+    let (&AttackBy(actor), with, count) = attacks.get(attack)?;
+    let Ok((hand, grip, loaded)) = arms.get(with.arm) else { return Ok(()) };
+    let ranged = grip
+        .weapon()
         .and_then(|item| strikers.get(item).ok())
-        .is_some_and(|(w, _)| w.is_some_and(|w| w.ranged));
-    if ranged {
-        let slot = if loaded { hand.0.other() } else { hand.0 };
-        if let Some(item) = held.worn(actor, slot.equip()) {
-            let kept = strikers.get(item).is_ok_and(|(weapon, missile)| {
-                weapon.is_some_and(|weapon| weapon.casts) || missile.is_some_and(|m| m.kept)
-            });
-            if !(kept && !loaded) {
-                commands.trigger(Spend { item, amount: 1 });
-                let left = held.charges(item).or(held.count(item));
-                if attack::runs_out(left, count.made as usize) {
-                    turn.run_out(hand.0);
-                    return commands.trigger(AttackEnds { attack });
-                }
-            }
-        }
+        .is_some_and(|(weapon, _)| weapon.is_some_and(|weapon| weapon.ranged));
+    let slot = if loaded { hand.0.other() } else { hand.0 };
+    let Some(item) = held.worn(actor, slot.equip()).filter(|_| ranged) else { return Ok(()) };
+    let kept = strikers.get(item).is_ok_and(|(weapon, missile)| {
+        weapon.is_some_and(|weapon| weapon.casts) || missile.is_some_and(|missile| missile.kept)
+    });
+    if kept && !loaded {
+        return Ok(());
     }
-    commands.trigger(SwingsAgain { attack });
-}
-
-/// What a blow did counts toward its attack's tally; one gone astray is told
-/// of on its own.
-fn blown(
-    landed: On<Landed>,
-    blows: Query<&Blown>,
-    mut tallies: Query<(&AttackBy, &mut Tally)>,
-    mut news: MessageWriter<CombatNews>,
-) {
-    let Ok(&Blown { attack, victim, astray }) = blows.get(landed.deed) else { return };
-    let done = attack::dealt(landed.effects.iter().copied());
-    let Ok((&AttackBy(attacker), mut tally)) = tallies.get_mut(attack) else { return };
-    if astray {
-        told_alone((attacker, victim), done, &mut news);
-    } else {
-        tally.damage += done.damage;
-        tally.effects.extend(done.rest);
+    commands.trigger(Spend { item, amount: 1 });
+    let left = held.charges(item).or(held.count(item));
+    if attack::runs_out(left, count.made as usize) {
+        turns.get_mut(actor)?.run_out(hand.0);
+        commands.entity(attack).insert(RunOut);
     }
+    Ok(())
 }
 
-/// Razor Cloak's answer is told of on its own.
-fn answered(landed: On<Landed>, answers: Query<&Answer>, mut news: MessageWriter<CombatNews>) {
-    let Ok(&Answer { by, at }) = answers.get(landed.deed) else { return };
-    told_alone((by, at), attack::dealt(landed.effects.iter().copied()), &mut news);
-}
-
-/// A blow told of on its own: one gone astray, or Razor Cloak's answer.
-fn told_alone(
-    (by, at): (Entity, Entity),
-    done: attack::Dealt,
-    news: &mut MessageWriter<CombatNews>,
-) {
-    news.write(CombatNews::Result { attacker: by, target: at, hits: 1, damage: done.damage });
-    if !done.rest.is_empty() {
-        news.write(CombatNews::Effects(done.rest));
-    }
-}
-
-/// What the attack came to is told, and took out of one that tires by what
-/// it does; the attacker's next attack is set (section 7); the attack is
-/// gone.
-fn attack_ends(
+/// An attack that ends took out of one that tires by what it does: twice
+/// as much in a fury.
+fn exert(
     ends: On<AttackEnds>,
     mut commands: Commands,
-    attacks: Query<(&AttackBy, &AttackAt, &AttackWith, &Tally, Has<Fury>)>,
-    mut turns: Query<(&mut Turn, &Tempo)>,
-    round: Single<&Round, With<Battle>>,
-    mut news: MessageWriter<CombatNews>,
-) {
-    let attack = ends.attack;
-    let Ok((&AttackBy(actor), &AttackAt(target), with, tally, fury)) = attacks.get(attack) else {
-        return;
-    };
-    commands.entity(attack).despawn();
+    attacks: Query<(&AttackBy, &AttackWith, Has<Fury>)>,
+) -> Result {
+    let (&AttackBy(actor), with, fury) = attacks.get(ends.attack)?;
     let effort =
         if fury || with.mode == AttackMode::Berserk { Effort::Fury } else { Effort::Attack };
     commands.trigger(Exerted { actor, effort });
-    news.write(CombatNews::Result {
-        attacker: actor,
-        target,
-        hits: tally.hits,
-        damage: tally.damage,
-    });
+    Ok(())
+}
+
+/// What the attack came to is told (section 7): its hits and damage, then
+/// what else its blows did.
+fn report(
+    ends: On<AttackEnds>,
+    attacks: Query<(&AttackBy, &AttackAt, &Tally)>,
+    mut news: MessageWriter<CombatNews>,
+) -> Result {
+    let (&AttackBy(attacker), &AttackAt(target), tally) = attacks.get(ends.attack)?;
+    news.write(CombatNews::Result { attacker, target, hits: tally.hits, damage: tally.damage });
     if !tally.effects.is_empty() {
         news.write(CombatNews::Effects(tally.effects.clone()));
     }
-    let Ok((mut turn, tempo)) = turns.get_mut(actor) else { return };
+    Ok(())
+}
+
+/// The attacker's next attack is set (section 7): the slot and moment it
+/// comes at, or its turn is over.
+fn next(
+    ends: On<AttackEnds>,
+    attacks: Query<&AttackBy>,
+    mut turns: Query<(&mut Turn, &Tempo)>,
+    round: Single<&Round, With<Battle>>,
+) -> Result {
+    let &AttackBy(actor) = attacks.get(ends.attack)?;
+    let (mut turn, tempo) = turns.get_mut(actor)?;
     match attack::next_attack(turn.attacks, tempo.initiative, turn.due, round.moment) {
         Some(next) => {
             turn.due = next.slot;
@@ -1161,6 +1336,7 @@ fn attack_ends(
         }
         None => turn.end(),
     }
+    Ok(())
 }
 
 pub(super) fn plugin(app: &mut App) {
@@ -1169,17 +1345,27 @@ pub(super) fn plugin(app: &mut App) {
         .add_observer(find_ways)
         .add_observer(pick)
         .add_observer(close_in)
-        .add_observer(open)
+        .add_observer(count_attack)
+        .add_observer(provoke)
+        .add_observer(catch)
+        .add_observer(count)
+        .add_observer(announce)
         .add_observer(swing_again)
         .add_observer(aim)
         .add_observer(fate)
         .add_observer(step_in)
         .add_observer(block)
         .add_observer(land)
-        .add_observer(blow)
         .add_observer(answer)
-        .add_observer(settle)
-        .add_observer(blown)
+        .add_observer(struck)
+        .add_observer(blow)
+        .add_observer(blew)
         .add_observer(answered)
-        .add_observer(attack_ends);
+        .add_observer(tell)
+        .add_observer(trains)
+        .add_observer(tire)
+        .add_observer(spend)
+        .add_observer(exert)
+        .add_observer(report)
+        .add_observer(next);
 }

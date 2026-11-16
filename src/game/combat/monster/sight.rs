@@ -12,7 +12,7 @@ use crate::game::world::hostility::{self, Side, Stance, Standing};
 use crate::game::world::identify::GroupMember;
 use crate::game::world::level::PlayedLevel;
 use crate::game::world::obstacles::WorldObstacles;
-use crate::game::world::population::Temper;
+use crate::game::world::population::{Monster, Temper};
 
 /// How far from the party a group still takes part (retail's 50 m).
 pub const ENGAGEMENT_RANGE: f32 = 50.0;
@@ -81,14 +81,14 @@ impl Sight<'_, '_> {
     }
 
     /// Whether the party has a clear line to a body within the far clip.
-    pub fn in_party_view(&self, body: Entity) -> bool {
+    fn in_party_view(&self, body: Entity) -> bool {
         let party = self.places.of(self.party());
         party.in_view(&self.places.of(body), self.far(), &self.obstacles)
     }
 
     /// Whether a body's eyes make out the party, which hides by its lowest
     /// able level and by Chameleon.
-    pub fn sees_party(&self, watcher: Entity) -> bool {
+    fn sees_party(&self, watcher: Entity) -> bool {
         let Ok(eyes) = self.eyes.get(watcher) else { return false };
         let members = self
             .roster()
@@ -117,39 +117,79 @@ impl Sight<'_, '_> {
             &self.obstacles,
         )
     }
+}
 
-    /// Whether a body sees a living foe of its own among `others`: another
-    /// monster it sees, or the party, if it makes it out and a member
-    /// stands against it.
-    pub fn sees_foe(&self, watcher: Entity, others: &[Entity]) -> bool {
-        let foe = |other: Entity| self.toward(watcher, other) == Some(Stance::Hostile);
-        let member = |other: &Entity| self.roster().contains(other);
-        others.iter().any(|&other| !member(&other) && foe(other) && self.sees(watcher, other))
-            || (others.iter().any(|&other| member(&other) && foe(other))
-                && self.sees_party(watcher))
+/// Its eyes make out the party (section 2).
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct MakesOutParty;
+
+/// The party has a clear line to it within the far clip.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct InPartyView;
+
+/// It stands with the fight (retail `MonsterGroupHasReinforcement`): in the
+/// party's view, not of a kind that keeps hidden and within 50 m of the
+/// party, it stands between the party and a hostile fighting in the party's
+/// view: the way from the party by it to the hostile is under 1.15 times the
+/// hostile's own gap, and it is nearer the party, or nearer the hostile,
+/// than the hostile is to the party.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct Reinforces;
+
+/// Puts a marker on or takes it off, as it now holds or not.
+fn mark<M: Component + Default>(commands: &mut Commands, body: Entity, (now, was): (bool, bool)) {
+    match (now, was) {
+        (true, false) => {
+            commands.entity(body).insert(M::default());
+        }
+        (false, true) => {
+            commands.entity(body).remove::<M>();
+        }
+        _ => {}
     }
+}
 
-    /// Whether a group stands with the fight (retail
-    /// `MonsterGroupHasReinforcement`): one of its `members` in the party's
-    /// view, not of a kind that keeps hidden and within 50 m of the party,
-    /// stands between the party and one of the fight's `hostiles` in its
-    /// view: the way from the party by the member to the hostile is under
-    /// 1.15 times the hostile's own gap, and the member is nearer the party,
-    /// or nearer the hostile, than the hostile is to the party.
-    pub fn stands_with(&self, members: &[Entity], hostiles: &[Entity]) -> bool {
-        let hidden = |m| self.tempers.get(m).is_ok_and(|temper| temper.0.camouflaged);
-        members
-            .iter()
-            .filter(|&&m| self.in_party_view(m) && !hidden(m))
-            .filter(|&&m| self.party_gap(m) <= ENGAGEMENT_RANGE)
-            .any(|&member| {
-                let (gap, feet) = (self.party_gap(member), self.places.of(member).feet);
-                hostiles.iter().filter(|&&h| h != member && self.in_party_view(h)).any(|&hostile| {
-                    let theirs = self.party_gap(hostile);
-                    let between = feet.distance(self.places.of(hostile).feet);
-                    between + gap < theirs * REINFORCEMENT_SLACK
-                        && (gap < theirs || between < theirs)
-                })
-            })
+/// What each living monster makes out of the party, and whether the party
+/// has it in view, follow where they stand.
+pub(crate) fn look(
+    monsters: Query<(Entity, Has<MakesOutParty>, Has<InPartyView>), With<Monster>>,
+    sight: Sight,
+    mut commands: Commands,
+) {
+    for (monster, made_out, in_view) in &monsters {
+        let alive = sight.alive(monster);
+        let now = alive && sight.sees_party(monster);
+        mark::<MakesOutParty>(&mut commands, monster, (now, made_out));
+        let now = alive && sight.in_party_view(monster);
+        mark::<InPartyView>(&mut commands, monster, (now, in_view));
+    }
+}
+
+/// Whether each monster stands with the fight follows where it and the
+/// hostiles fighting stand.
+#[allow(clippy::type_complexity)]
+pub(crate) fn reinforce(
+    monsters: Query<(Entity, Has<InPartyView>, Has<Reinforces>), With<Monster>>,
+    fighting: Query<Entity, (With<InPartyView>, With<crate::game::combat::Combatant>)>,
+    sight: Sight,
+    mut commands: Commands,
+) {
+    let hostiles: Vec<Entity> = fighting
+        .iter()
+        .filter(|&h| sight.alive(h) && sight.side(h) == Some(Stance::Hostile))
+        .collect();
+    for (monster, in_view, was) in &monsters {
+        let hidden = sight.tempers.get(monster).is_ok_and(|temper| temper.0.camouflaged);
+        let gap = sight.party_gap(monster);
+        let feet = sight.places.of(monster).feet;
+        let now = in_view
+            && !hidden
+            && gap <= ENGAGEMENT_RANGE
+            && hostiles.iter().filter(|&&h| h != monster).any(|&hostile| {
+                let theirs = sight.party_gap(hostile);
+                let between = feet.distance(sight.places.of(hostile).feet);
+                between + gap < theirs * REINFORCEMENT_SLACK && (gap < theirs || between < theirs)
+            });
+        mark::<Reinforces>(&mut commands, monster, (now, was));
     }
 }

@@ -243,30 +243,10 @@ pub struct Temper(pub crate::content::species::Temper);
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Special(pub crate::content::species::SpecialAttack);
 
-/// What a body may cast at its turn when it decides for itself: the chance
-/// it does, its ten spell slots, and whether a silence leaves it its
-/// alchemy (retail `IsSpellBlockedForMonster`).
+/// The chance in percent a body casts at its turn when it decides for
+/// itself and has a spell worth casting.
 #[derive(Component, Clone, Copy, Debug)]
-pub struct Spellcasting {
-    pub chance: u8,
-    pub spells: [Option<crate::content::spells::SpellId>; 10],
-    pub silent_alchemy: bool,
-}
-
-impl Spellcasting {
-    /// A species' casting.
-    pub fn of(kind: &crate::content::species::Species) -> Self {
-        use crate::content::species::MonsterKind;
-        Self {
-            chance: kind.magic.chance,
-            spells: kind.magic.spells,
-            silent_alchemy: matches!(
-                kind.kind,
-                MonsterKind::Ranger | MonsterKind::Alchemist | MonsterKind::Ninja
-            ),
-        }
-    }
-}
+pub struct CastChance(pub u8);
 
 /// What a species makes one of its own of: its abilities, level, kind and
 /// what that lets it do, its natural guard, resistances and mending, and
@@ -382,8 +362,17 @@ pub(crate) fn embody(
         Camouflage(kind.camouflage),
         Temper(kind.temper),
         Special(kind.special),
-        Spellcasting::of(kind),
+        CastChance(kind.magic.chance),
+        crate::game::combat::monster::slot::of_kind(kind),
     ));
+    if matches!(
+        kind.kind,
+        crate::content::species::MonsterKind::Ranger
+            | crate::content::species::MonsterKind::Alchemist
+            | crate::content::species::MonsterKind::Ninja
+    ) {
+        entity.insert(crate::game::actors::KeepsAlchemy);
+    }
     if kind.notable {
         entity.insert(Notable);
     }

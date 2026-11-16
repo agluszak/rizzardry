@@ -38,6 +38,7 @@ pub(super) fn charge(
     groups: Query<(Entity, &GroupMembers, Option<&SawParty>), With<MonsterGroup>>,
     mut walkers: Query<(&mut AgentTarget3d, Has<Charging>), (With<Monster>, Without<Combatant>)>,
     sight: Sight,
+    making_out: Query<(), With<crate::game::combat::monster::sight::MakesOutParty>>,
     bodies: Query<(
         &crate::game::characters::Vitals,
         &crate::game::characters::Conditions,
@@ -58,7 +59,7 @@ pub(super) fn charge(
                 !vitals.is_dead() && conditions.below(crate::game::characters::Condition::Blind)
             })
         };
-        let sees = members.iter().filter(watching).any(|member| sight.sees_party(member));
+        let sees = members.iter().filter(watching).any(|member| making_out.contains(member));
         if sees {
             commands.entity(group).insert(SawParty(clock.ms));
         }

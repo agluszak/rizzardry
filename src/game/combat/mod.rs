@@ -18,7 +18,6 @@ pub mod turn;
 mod tests;
 
 use crate::game::GameplaySet;
-use crate::game::data::Catalogs;
 pub use monster::Interrupt;
 pub use orders::*;
 pub use round_end::{RoundEnds, end_round};
@@ -91,9 +90,13 @@ impl Plugin for CombatPlugin {
             Update,
             (
                 give_orders,
-                // alerts, then engagement, then the opening,
+                // alerts and turning, then who comes in, then the opening,
                 engage::alert_factions.run_if(any_with_component::<Battle>),
-                engage::engage,
+                engage::turn_by_radius,
+                engage::come_in_provoked,
+                engage::look_to_open.run_if(not(any_with_component::<Battle>)),
+                engage::join.run_if(any_with_component::<Battle>),
+                engage::tell,
                 engage::open_battle,
                 control_combat,
             )
@@ -146,6 +149,21 @@ impl Plugin for CombatPlugin {
         )
         // Monsters' moves likewise: headed before navigation plans the
         // step, charged once physics has walked it.
+        // What monsters make out follows where everyone stands: before the
+        // frame's engagement and the fixed step's fighting and charging.
+        .add_systems(
+            Update,
+            (monster::sight::look, monster::sight::reinforce)
+                .chain()
+                .in_set(GameplaySet::Bodies)
+                .run_if(crate::game::world::level::level_active),
+        )
+        .add_systems(
+            FixedPreUpdate,
+            (monster::sight::look, monster::sight::reinforce)
+                .chain()
+                .run_if(crate::game::world::level::level_active),
+        )
         .add_systems(
             FixedPreUpdate,
             approach::steer_moves
