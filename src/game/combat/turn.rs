@@ -319,12 +319,13 @@ fn take_up(
 ) -> Result {
     let TakesUp { actor, surprised } = *takes;
     let ((conditions, can_fight), (own, tempo, wielding), ordered, held) = actors.get(actor)?;
-    let mains: Vec<_> = held
-        .entities()
-        .iter()
-        .filter_map(|&arm| arms.get(arm).ok())
-        .filter(|(hand, _, attacks, _)| hand.0 == WeaponSlot::Primary && attacks.0 > 0)
-        .collect();
+    let mut mains = Vec::new();
+    for &arm in held.entities() {
+        let arm = arms.get(arm)?;
+        if arm.0.0 == WeaponSlot::Primary && arm.2.0 > 0 {
+            mains.push(arm);
+        }
+    }
     let striking = tempo.attacks.values().any(|&attacks| attacks > 0);
     let action = ordered.map(|(order, traits, _)| match *order {
         _ if conditions.has(Condition::Turncoat) => Action::Attack { berserk: false },
@@ -695,11 +696,10 @@ pub(super) fn retreat(
 }
 
 /// Hold back and rest: done for the round, without a pause.
-pub(super) fn hold(hold: On<Hold>, mut turns: Query<&mut Turn>, mut commands: Commands) {
-    if let Ok(mut turn) = turns.get_mut(hold.actor) {
-        turn.end();
-        commands.trigger(Exerted { actor: hold.actor, effort: Effort::Wait });
-    }
+pub(super) fn hold(hold: On<Hold>, mut turns: Query<&mut Turn>, mut commands: Commands) -> Result {
+    turns.get_mut(hold.actor)?.end();
+    commands.trigger(Exerted { actor: hold.actor, effort: Effort::Wait });
+    Ok(())
 }
 
 /// Guard the fellow chosen this round, taking blows in its ward's place up
@@ -789,10 +789,15 @@ fn tell_breath(landed: On<Landed>, mut news: MessageWriter<CombatNews>) {
 
 /// A member whose cast was refused, whoever refused it, defends instead
 /// (retail `ExecuteCharacterAction`), the turn spent.
-pub(super) fn defend_instead(refused: On<Refused>, mut orders: Query<&mut Ordered>) {
-    if let Ok(mut ordered) = orders.get_mut(refused.caster)
+/// A monster's cast has no order to change.
+pub(super) fn defend_instead(
+    refused: On<Refused>,
+    mut orders: Query<Option<&mut Ordered>>,
+) -> Result {
+    if let Some(mut ordered) = orders.get_mut(refused.caster)?
         && matches!(ordered.0, Action::Magic(_))
     {
         ordered.0 = Action::Defend;
     }
+    Ok(())
 }
