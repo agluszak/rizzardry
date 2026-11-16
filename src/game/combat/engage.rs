@@ -176,7 +176,6 @@ pub(super) fn open_battle(
     battles: Query<Entity, With<Battle>>,
     camp: Option<Res<crate::game::camp::Camp>>,
     search: Res<crate::game::world::search::Search>,
-    mut camp_news: MessageWriter<crate::game::camp::CampNews>,
     monsters: Query<(&Monster, &Vitals, &Level, Option<&Camouflage>)>,
     (laid, places): (crate::game::actors::Laid, Places),
     party: Single<(
@@ -238,10 +237,6 @@ pub(super) fn open_battle(
         watch.iter_many(roster.iter()).matched(),
         &mut rng,
     );
-    if camp.is_some() {
-        commands.remove_resource::<crate::game::camp::Camp>();
-        camp_news.write(crate::game::camp::CampNews::Interrupted);
-    }
     // The nearest of them, which the view may turn to (retail `StartCombat`
     // hands it to `PointCameraAtMonster`); the party's facing is the
     // player's.

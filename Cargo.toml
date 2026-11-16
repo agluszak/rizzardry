@@ -30,6 +30,10 @@ ron = "0.12"
 write-fonts = "0.52.0"
 png = "0.18"
 
+[features]
+# Developer conveniences: screenshots, logging, scripted starts.
+dev = []
+
 [dev-dependencies]
 write-fonts = { version = "0.52.0", features = ["read"] }
 

@@ -77,7 +77,6 @@ pub fn aims(
     sight: &Sight,
     own: &BodyReadOnlyItem,
     spell: &SpellDefinition,
-    content: &Catalogs,
     fray: Fray,
 ) -> Vec<Aim> {
     let (targeting, caster) = (spell.targeting, own.entity);
@@ -103,7 +102,7 @@ pub fn aims(
                 },
                 stance,
                 reached: sight.places.gap(caster, body) <= spell.reach.metres(),
-                worth: content.spell_row(spell.id).is_some_and(|row| {
+                worth: crate::game::hits::definitions::row(spell).is_some_and(|row| {
                     row.worthwhile((their.vitals, their.conditions), sight.laid.has(body, spell.id))
                 }),
             })
@@ -204,10 +203,10 @@ fn usable<'a>(
         .zip(SLOT_WEIGHTS)
         .filter_map(|(id, weight)| Some((weight, content.spells.get((*id)?)?)))
         .filter(|(_, spell)| {
-            let modelled = content.spell_row(spell.id).is_some();
+            let modelled = crate::game::hits::definitions::row(spell).is_some();
             castable(spell, modelled, silenced, mind.casting.silent_alchemy)
         })
-        .map(|(weight, spell)| (weight, spell, aims(sight, own, spell, content, fray)))
+        .map(|(weight, spell)| (weight, spell, aims(sight, own, spell, fray)))
         .filter(|(.., aims)| !aims.is_empty())
         .collect()
 }

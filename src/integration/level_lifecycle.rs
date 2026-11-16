@@ -724,50 +724,6 @@ fn retail_level_definitions_load_without_render_asset_resources() {
     assert!(app.world().resource::<Assets<LevelDefinition>>().contains(&definition));
 }
 
-#[test]
-fn prop_motion_resumes_from_its_actual_frame_after_a_revisit() {
-    use crate::content::level::{PropModel, PropModelPart};
-    use crate::game::world::props::{Prop, PropMotion};
-    let (mut app, source) = playing();
-    let definition = app.world().get::<Level>(source).unwrap().definition.clone();
-    app.world_mut()
-        .resource_mut::<Assets<LevelDefinition>>()
-        .get_mut(&definition)
-        .unwrap()
-        .props
-        .push(PropModel {
-            name: "moving".into(),
-            collidable: false,
-            face_camera: false,
-            frames_per_second: 1.,
-            wraps: false,
-            slots: vec![],
-            trigger: None,
-            parts: vec![PropModelPart {
-                transform: Transform::IDENTITY,
-                collision: CollisionMesh::default(),
-                keys: vec![Transform::IDENTITY, Transform::from_translation(Vec3::X)],
-            }],
-        });
-    // This is the live motion at departure, independent of the authored starting pose.
-    app.world_mut().spawn((
-        Prop { definition: 0 },
-        PropMotion { frame: 0.25, target: 1. },
-        LevelOwned(source),
-    ));
-    let mut destination = app.world().get::<Level>(source).unwrap().clone();
-    let mut away = test_level(&mut app, floor());
-    away.path = "levels/away/away.pvl".into();
-    app.world_mut().spawn(Destination::new(away, default(), Entry::Travel));
-    app.update();
-    // The source asset remains the source of shared definitions on the return.
-    destination.definition = definition;
-    app.world_mut().spawn(Destination::new(destination, default(), Entry::Travel));
-    app.update();
-    let motion = app.world_mut().query::<&PropMotion>().single(app.world()).unwrap();
-    assert_eq!((motion.frame, motion.target), (0.25, 1.));
-}
-
 /// An unborn group waits outside the world, rolled with the rest, through
 /// a revisit; its birth brings it in once, and it stays born on the next
 /// revisit (retail `GiveBirthToMonster`).

@@ -66,7 +66,7 @@ fn deal(
     (log, laying): (&mut Log, &mut Laying),
 ) -> attack::Dealt {
     let Ok(mut fighter) = fighters.get_mut(victim) else { return attack::Dealt::default() };
-    let strike = effects::Strike { rows: Rows::Blow, strength, blow: Some(blow), by: Some(by) };
+    let strike = effects::Strike::new(Rows::Blow, strength, Some(blow), Some(by), rules.content);
     effects::land(&strike, &mut fighter.body, rules, rng, log, laying);
     attack::dealt(log.effects.drain(..))
 }
@@ -323,9 +323,9 @@ pub(super) fn strike(
 
             // A spell laid on the victim may answer a close blow (Razor Cloak).
             if !attack::is_missile(arm.reach)
-                && let Some(cloak) = laying.answer_blow(victim)
+                && let Some((cloak, dice)) = laying.answer_blow(victim)
             {
-                let dice = content.spells[cloak.spell].dice;
+                let dice = Some(dice);
                 let reduction = fighters.get(actor).map_or(0, |me| me.body.reduction.0);
                 let answer = attack::riposte(&mut rng, dice, cloak.power, reduction);
                 let done = if answer > 0 {

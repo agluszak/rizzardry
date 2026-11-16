@@ -422,7 +422,7 @@ pub fn power_of(
                 _ => None,
             };
             let victim = cast.choice.aim.body().and_then(|aimed| bodies.get(aimed).ok());
-            let row = content.spell_row(spell.id);
+            let row = crate::game::hits::definitions::row(spell);
             let failure = std::array::from_fn(|power| {
                 roll::learned(*character, skills, spell, power as u32 + 1, pace, false)
             });
@@ -479,8 +479,8 @@ pub fn goes_again(caster: &BodyReadOnlyItem, spell: &SpellDefinition, content: &
 
 /// Whether the game resolves a spell it is asked about: it has a row, or is a
 /// utility spell (what menus offer).
-pub fn resolvable(spell: &SpellDefinition, content: &Catalogs) -> bool {
-    content.spell_row(spell.id).is_some() || spell.facts.working.is_some()
+pub fn resolvable(spell: &SpellDefinition) -> bool {
+    crate::game::hits::definitions::row(spell).is_some() || spell.facts.working.is_some()
 }
 
 /// The spells and items an actor could use: what menus offer. Execution
@@ -520,6 +520,6 @@ pub fn usable_item(
     let cast = held.casts(item)?;
     (may::activates(cast, worn, character, attributes, skills)
         && held.charges(item) != Some(0)
-        && resolvable(content.spells.get(cast.spell)?, content))
+        && resolvable(content.spells.get(cast.spell)?))
     .then_some(cast.spell)
 }

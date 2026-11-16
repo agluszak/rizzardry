@@ -34,11 +34,15 @@ Options:
   combat mode in both windowed and headless runs. Saved gameplay settings load
   before startup in either mode; a new-game difficulty choice applies afterward.
 
-Developer options:
-
 - `--headless`: no window or sound; updates run as fast as the machine
-  allows, with what happens written to the log. `--run-for <s>` stops after
-  that much play, `--seed <n>` fixes gameplay's random numbers.
+  allows.
+
+Developer options, built with `--features dev` (e.g. `cargo run --features
+dev -- --headless --run-for 60`); headless, these runs also write what
+happens to the log:
+
+- `--run-for <s>` stops after that much play, `--seed <n>` fixes gameplay's
+  random numbers.
 - `--screenshot <file.png>` (with `--screenshot-after <s>`): capture the view
   after entering, then exit; with `--headless`, rendered offscreen.
 - `--talk-to <name>`: open a nearby NPC conversation through normal gameplay validation.

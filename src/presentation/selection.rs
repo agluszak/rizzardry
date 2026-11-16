@@ -4,12 +4,11 @@ use super::controls::Interact;
 use super::morph_picking::MorphRayCast;
 use super::party_view::PartyCamera;
 use crate::game::items::{Items, Lying};
-use crate::game::world::ActivateDevice;
 use crate::game::world::items::{DropHeld, TakeItem};
 use crate::game::world::level::Level;
 use crate::game::world::population::Monster;
 use crate::game::world::props::Prop;
-use crate::game::world::triggers::Device;
+use crate::game::world::triggers::{Activate, By, Device};
 use bevy::camera::visibility::RenderLayers;
 use bevy::picking::hover::HoverMap;
 use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings};
@@ -76,7 +75,7 @@ pub fn activate_selection(
     held: Items,
     npcs: Query<&crate::game::npcs::Embodies>,
     mut commands: Commands,
-    mut requests: (MessageWriter<ActivateDevice>, MessageWriter<TakeItem>, MessageWriter<DropHeld>),
+    mut requests: (MessageWriter<TakeItem>, MessageWriter<DropHeld>),
 ) {
     if !interact.contains(ActionEvents::START) {
         return;
@@ -96,7 +95,7 @@ pub fn activate_selection(
         && let Ok(device) = props.get(hit.entity)
     {
         if device {
-            requests.0.write(ActivateDevice { device: hit.entity, player: true });
+            commands.trigger(Activate { device: hit.entity, by: By::Party });
         }
         return;
     }
@@ -104,9 +103,9 @@ pub fn activate_selection(
         // Only where the pointer aims matters; gameplay throws from the
         // party's eye, not the drawn (perhaps shaking) camera.
         let (Some(level), Some(ray)) = (selection.level, selection.ray) else { return };
-        requests.2.write(DropHeld { level, aim: ray.direction });
+        requests.1.write(DropHeld { level, aim: ray.direction });
     } else if let Some(hit) = selection.hit {
-        requests.1.write(TakeItem { item: hit.entity });
+        requests.0.write(TakeItem { item: hit.entity });
     }
 }
 

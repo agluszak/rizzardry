@@ -155,9 +155,24 @@ set again.
 the talk begins, in place of the greeting (retail
 `NotifyNpcTriggerActivation`).
 
-**A device asks.** `triggers::Activating` is an event at the device; whoever
-observes it may stop the device. The device's own code knows nothing of the
-story.
+**What a device is** is read from its level as it is made: its uses, what
+it requires and changes, its reach, its sound, its key, its lock or trap,
+its container or fountain, and the devices it is linked to, each a
+component. Nothing looks the level's definition up again as it runs.
+
+**A use is a chain of events**, in the original's order: `Activate` (who
+sets it going, checked by who it is) chooses the use and commits to it;
+`Activating` asks whoever has a say; `Perform` turns the use into its act,
+one `Act<T>` per kind with one observer each; an act that comes off is
+`Committed`, which sounds and runs the linked devices, and then `Fired`.
+Bevy carries a cascade out depth-first, so linked devices run before the
+one that ran them settles, as in the original. The story and a monster's
+script reach a named device or variable by `Bid`; anything that hurts the
+party does so by `HurtParty`.
+
+**A device asks.** `triggers::Activating` is an event at the device; a
+device with a `Gate` is let through by its cases, any other goes on. The
+device's own code knows nothing of the story.
 
 **The cases are content.** `npcs::devices::Gate` holds a device's cases, given
 as its level is entered. No level or device is named in game code.

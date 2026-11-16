@@ -124,14 +124,8 @@ fn the_party_fights_rests_and_finds_the_dead_still_dead() {
 
 /// A device of the level being played, by its name.
 fn device(world: &mut World, name: &str) -> Entity {
-    use crate::content::level::LevelDefinition;
-    use crate::game::world::triggers::Device;
-    let handle = world.query::<&Level>().iter(world).next().unwrap().definition.clone();
-    let definitions = world.resource::<Assets<LevelDefinition>>();
-    let mut named = definitions.get(&handle).unwrap().triggers.iter();
-    let index = named.rposition(|trigger| trigger.name.eq_ignore_ascii_case(name)).unwrap();
-    let mut devices = world.query::<(Entity, &Device)>();
-    devices.iter(world).find(|(_, device)| device.definition == index).unwrap().0
+    use crate::game::world::triggers::DeviceNames;
+    world.query::<&DeviceNames>().single(world).unwrap().named(name).unwrap()
 }
 
 /// How many of a species are in the level.
@@ -145,16 +139,16 @@ fn of_species(world: &mut World, species: u32) -> usize {
 #[test]
 #[ignore = "requires a retail installation"]
 fn a_coffin_lid_lets_the_head_out_once() {
-    use crate::game::world::triggers::activate;
+    use crate::game::world::triggers::{Activate, By};
     const HEAD: u32 = 0x12d;
     let mut app = game(&["--continuous"]);
     step_until(&mut app, "the Monastery becoming active", |w| playing(w).is_some());
     app.update();
     let lid = device(app.world_mut(), "Coffinlide");
     assert_eq!(of_species(app.world_mut(), HEAD), 0);
-    activate(app.world_mut(), lid, false);
+    app.world_mut().trigger(Activate { device: lid, by: By::Level });
     step_until(&mut app, "the head coming out", |w| of_species(w, HEAD) == 1);
-    activate(app.world_mut(), lid, false);
+    app.world_mut().trigger(Activate { device: lid, by: By::Level });
     for _ in 0..256 {
         app.update();
     }
@@ -162,7 +156,9 @@ fn a_coffin_lid_lets_the_head_out_once() {
 
     // And a device the story stops does nothing: the wheel wants its key.
     let wheel = device(app.world_mut(), "wheel_star");
-    assert!(!activate(app.world_mut(), wheel, false), "the wheel turned without the star key");
+    app.world_mut().trigger(Activate { device: wheel, by: By::Level });
+    let fired = app.world().get::<crate::game::world::triggers::TriggerState>(wheel).unwrap().fired;
+    assert!(!fired, "the wheel turned without the star key");
 }
 
 /// A walk over the navmesh is found between the party and a monster of the
@@ -215,7 +211,7 @@ fn the_arrow_trap_strikes_a_party_in_its_way() {
     use crate::game::characters::Vitals;
     use crate::game::party::body::PartyBody;
     use crate::game::party::roster::PartyRoster;
-    use crate::game::world::triggers::activate;
+    use crate::game::world::triggers::{Activate, By};
     use avian3d::prelude::Position;
     let mut app = game(&["--continuous"]);
     app.world_mut().write_message(Travel { entrance: "MR201".into() });
@@ -240,7 +236,7 @@ fn the_arrow_trap_strikes_a_party_in_its_way() {
     let before = health(app.world_mut());
     let trap = device(app.world_mut(), "Arrowtraptrigger");
     for _ in 0..8 {
-        activate(app.world_mut(), trap, false);
+        app.world_mut().trigger(Activate { device: trap, by: By::Level });
         app.update();
     }
     assert!(health(app.world_mut()) < before, "the party stood in the arrows' way was struck");
@@ -252,7 +248,7 @@ fn the_arrow_trap_strikes_a_party_in_its_way() {
 #[test]
 #[ignore = "requires a retail installation"]
 fn an_arnika_lift_goes_through_its_turn() {
-    use crate::game::world::triggers::{LevelState, activate};
+    use crate::game::world::triggers::{Activate, By, LevelState};
     let mut app = game(&["--continuous"]);
     app.world_mut().write_message(Travel { entrance: "ARN01".into() });
     wait_for_level(&mut app, "levels/arnika/arnika2.pvl");
@@ -265,13 +261,13 @@ fn an_arnika_lift_goes_through_its_turn() {
     };
     assert_eq!(state(app.world_mut()), 1, "the lift waits above, its gate shut");
     let call = device(app.world_mut(), "El1-TopButtons");
-    activate(app.world_mut(), call, false);
+    app.world_mut().trigger(Activate { device: call, by: By::Level });
     step_until(&mut app, "the gate above opening", |w| state(w) == 3);
     // The button is pressed again once it has come back up.
     step_until(&mut app, "the button coming back", |w| {
         w.get::<crate::game::world::props::PropMotion>(call).is_none_or(|m| m.frame == m.target)
     });
-    activate(app.world_mut(), call, false);
+    app.world_mut().trigger(Activate { device: call, by: By::Level });
     step_until(&mut app, "the lift down with the gate below open", |w| state(w) == 7);
 }
 
@@ -282,7 +278,7 @@ fn an_arnika_lift_goes_through_its_turn() {
 #[ignore = "requires a retail installation"]
 fn the_crusher_closes_on_what_stands_between_its_plates() {
     use crate::game::characters::Vitals;
-    use crate::game::world::triggers::{LevelState, activate};
+    use crate::game::world::triggers::{Activate, By, LevelState};
     use avian3d::prelude::{ColliderAabb, Position};
     let mut app = game(&["--continuous"]);
     app.world_mut().write_message(Travel { entrance: "MR201".into() });
@@ -315,7 +311,7 @@ fn the_crusher_closes_on_what_stands_between_its_plates() {
     let victim = world.query_filtered::<Entity, With<Monster>>().iter(world).next().unwrap();
     world.get_mut::<Position>(victim).unwrap().0 = between;
     let controls = device(app.world_mut(), "SquisherControls");
-    activate(app.world_mut(), controls, false);
+    app.world_mut().trigger(Activate { device: controls, by: By::Level });
     step_until(&mut app, "the crusher closing", |w| crusher(w) == 1);
     step_until(&mut app, "the plates stopping", |w| crusher(w) == 0);
     let world = app.world_mut();
@@ -351,5 +347,6 @@ fn the_game_ends_with_the_ending_the_story_chose() {
     world.trigger(FactSet { fact: congratulated, value: 1 });
     step_until(&mut app, "the game ending", |w| w.contains_resource::<Ended>());
     assert_eq!(*app.world().resource::<Ended>(), Ended(Ending::Savant));
-    assert!(!crate::game::freedom::free_in(app.world_mut()), "the party can do nothing more");
+    let free = app.world_mut().run_system_cached(crate::game::freedom::party_free).unwrap();
+    assert!(!free, "the party can do nothing more");
 }

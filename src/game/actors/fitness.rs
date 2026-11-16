@@ -63,7 +63,6 @@ pub(super) fn plugin(app: &mut App) {
             notice_the_fallen,
             notice_the_raised,
             crate::game::items::weigh,
-            super::modifiers::gear_changed,
             figures::follow_calling,
             figures::attributes,
             figures::skills,

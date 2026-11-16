@@ -15,7 +15,6 @@ use crate::game::combat::Combatant;
 use crate::game::combat::monster::sight::Sight;
 use crate::game::data::Catalogs;
 use crate::game::hits::Deed;
-use crate::game::hits::definitions::Rows;
 use crate::game::party::body::{PartyBody, PartyMovement};
 use crate::game::rng::GameRng;
 
@@ -291,8 +290,8 @@ pub(super) fn spells_are_heard(
     mut commands: Commands,
 ) {
     let Ok(deed) = deeds.get(made.entity) else { return };
-    let Rows::Spell(spell) = deed.strike.rows else { return };
-    let Some(loud) = LOUD.get(&spell.0) else { return };
+    let Some(spell) = &deed.strike.spell else { return };
+    let Some(loud) = LOUD.get(&spell.id.0) else { return };
     let aimed = deed.aimed_at().find_map(|victim| positions.get(victim).ok());
     if let Some(at) = aimed {
         let reach = loud.carries + loud.a_power * deed.strike.strength.power as f32;

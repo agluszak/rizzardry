@@ -6,8 +6,7 @@ use bevy::prelude::*;
 use crate::content::items::{ItemCatalog, LootTables};
 use crate::content::npcs::{FactCatalog, NpcCatalog};
 use crate::content::species::MonsterCatalog;
-use crate::content::spells::{SpellCatalog, SpellId};
-use crate::game::hits::definitions::{SpellEffects, SpellRow};
+use crate::content::spells::SpellCatalog;
 
 /// The databases, present once every one has loaded. A level cannot be
 /// entered before, so whatever runs in play may rely on them.
@@ -17,19 +16,8 @@ pub struct Catalogs {
     pub loot: LootTables,
     pub species: MonsterCatalog,
     pub spells: SpellCatalog,
-    /// What each spell does, from the table the game ships.
-    pub spell_effects: SpellEffects,
     pub npcs: NpcCatalog,
     pub facts: FactCatalog,
-}
-
-impl Catalogs {
-    /// What a spell does, if the game resolves it: its row of the effects
-    /// table, for a spell of a realm.
-    pub fn spell_row(&self, spell: SpellId) -> Option<&SpellRow> {
-        self.spells.get(spell).filter(|spell| spell.realm.is_some())?;
-        self.spell_effects.get(spell)
-    }
 }
 
 /// The databases while they load.
@@ -91,7 +79,6 @@ pub fn publish_catalogs(
         loot: loot.remove(&loading.loot).unwrap(),
         species: species.remove(&loading.species).unwrap(),
         spells: spells.remove(&loading.spells).unwrap(),
-        spell_effects: SpellEffects::default(),
         npcs: npcs.remove(&loading.npcs).unwrap(),
         facts: facts.remove(&loading.facts).unwrap(),
     });

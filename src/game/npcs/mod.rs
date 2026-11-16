@@ -202,6 +202,7 @@ impl Plugin for NpcPlugin {
             .add_observer(story::faded)
             .add_observer(story::befalls_if)
             .add_observer(devices::ask)
+            .add_observer(devices::speak)
             .add_observer(devices::watch)
             .add_observer(devices::shoots)
             .add_observer(devices::crush_begins)

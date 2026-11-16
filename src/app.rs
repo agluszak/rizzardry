@@ -6,9 +6,6 @@ use std::sync::Arc;
 use bevy::prelude::*;
 use bevy_enhanced_input::EnhancedInputPlugin;
 
-use crate::dev::{
-    OverheadView, SayLine, ScreenshotAndExit, overhead_view, say_line, screenshot_and_exit,
-};
 use crate::game::party::body::PartyStart;
 use crate::game::party::roster::Recruit;
 use crate::game::time::GameClock;
@@ -46,58 +43,25 @@ pub struct Options {
     /// Initial pitch in degrees, up positive; retail allows ±45.
     #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
     pub pitch: f32,
-    /// Developer: capture the view shortly after entering, then exit.
-    #[arg(long, value_name = "FILE.png")]
-    pub screenshot: Option<PathBuf>,
-    /// Developer: seconds after entering to take the screenshot (default 2).
-    #[arg(long, value_name = "SECONDS")]
-    pub screenshot_after: Option<f32>,
     /// Skip the menus and start with a party file. Headless runs default to assets/party.ron.
     #[arg(long, value_name = "FILE.ron")]
     pub party: Option<PathBuf>,
     /// Start at this hour of the day (0-24) instead of a new game's noon.
     #[arg(long, value_name = "HOUR")]
     pub hour: Option<f32>,
-    /// Run without a window or sound: gameplay only, with what happens
-    /// written to the log; with --screenshot, also rendered offscreen. Each
-    /// update is one fixed step of game time and they run as fast as the
-    /// machine allows, not at the display's pace.
+    /// Run without a window or sound: gameplay only (with the dev feature,
+    /// what happens is written to the log, and with --screenshot rendered
+    /// offscreen). Each update is one fixed step of game time and they run
+    /// as fast as the machine allows, not at the display's pace.
     #[arg(long)]
     pub headless: bool,
-    /// Stop after this many seconds of play (game time while a level is
-    /// played, not loading).
-    #[arg(long, value_name = "SECONDS")]
-    pub run_for: Option<f32>,
     /// Fight continuously (retail's setting): rounds follow each other
     /// without waiting for the player.
     #[arg(long)]
     pub continuous: bool,
-    /// Developer: seed gameplay's random numbers, for another reproducible
-    /// run.
-    #[arg(long, value_name = "SEED")]
-    pub seed: Option<u64>,
-    /// Developer: speak this retail voice line on entry, e.g.
-    /// `npc_aletheides_000`.
-    #[arg(long, value_name = "LINE")]
-    pub say: Option<String>,
-    /// Developer: open a nearby named NPC's real conversation after entering.
-    /// Combine with --start and --screenshot for reproducible UI captures.
-    #[arg(long)]
-    pub talk_to: Option<String>,
-    /// Developer: open the automap through its normal request after entering.
-    /// Combine with --screenshot for UI captures.
-    #[arg(long)]
-    pub open_automap: bool,
-    /// Developer: open the first member's inventory through its normal
-    /// request after entering. Combine with --screenshot for UI captures.
-    #[arg(long)]
-    pub open_inventory: bool,
-    /// Developer: draw the navmesh, agent paths and avoidance.
-    #[arg(long)]
-    pub nav_debug: bool,
-    /// Developer: view the party from this many metres straight above.
-    #[arg(long, value_name = "METRES")]
-    pub overhead: Option<f32>,
+    #[cfg(feature = "dev")]
+    #[command(flatten)]
+    pub dev: crate::dev::Options,
 }
 
 fn parse_vec3(text: &str) -> Result<Vec3, String> {
@@ -153,7 +117,11 @@ pub fn build(options: &Options) -> Result<App, String> {
         Ok(level) if files.contains(&level) => level,
         _ => return Err(format!("{} is not in the retail installation", options.level)),
     };
-    let quick_start = options.headless || options.party.is_some() || options.screenshot.is_some();
+    #[cfg(feature = "dev")]
+    let screenshot = options.dev.screenshot.is_some();
+    #[cfg(not(feature = "dev"))]
+    let screenshot = false;
+    let quick_start = options.headless || options.party.is_some() || screenshot;
     let party = if quick_start {
         let path = options.party.clone().unwrap_or_else(|| "assets/party.ron".into());
         let text = std::fs::read_to_string(&path)
@@ -172,7 +140,7 @@ pub fn build(options: &Options) -> Result<App, String> {
     let mut app = App::new();
     app.add_plugins(RetailPlugin { files, navmesh_classes: SIZE_CLASSES.len() });
     let asset_plugin = AssetPlugin::default();
-    let rendered = !options.headless || options.screenshot.is_some();
+    let rendered = !options.headless || screenshot;
     if rendered {
         // Bevy #25966: GPU instance-buffer construction can retain a missing
         // morph descriptor after a hidden cycle becomes visible. CPU instance
@@ -193,11 +161,6 @@ pub fn build(options: &Options) -> Result<App, String> {
                         global_volume: bevy::audio::GlobalVolume::new(bevy::audio::Volume::SILENT),
                         ..default()
                     }),
-            )
-            .add_systems(Startup, crate::dev::create_offscreen)
-            .add_systems(
-                First,
-                crate::dev::draw_offscreen.run_if(resource_exists::<crate::dev::Offscreen>),
             );
         } else {
             app.add_plugins(plugins.set(WindowPlugin {
@@ -230,8 +193,7 @@ pub fn build(options: &Options) -> Result<App, String> {
         if rendered {
             app.add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(std::time::Duration::ZERO));
         }
-        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(FIXED_STEP))
-            .add_systems(Update, crate::dev::log_news);
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(FIXED_STEP));
     }
     app.add_plugins(crate::game::GamePlugin);
     // What the player sees and hears: with the window, or offscreen for a
@@ -249,59 +211,15 @@ pub fn build(options: &Options) -> Result<App, String> {
         crate::settings::SettingsFile::default(),
         options.continuous,
     );
-    if let Some(seconds) = options.run_for {
-        app.insert_resource(crate::dev::RunFor(Timer::from_seconds(seconds, TimerMode::Once)))
-            .add_systems(Update, crate::dev::exit_after_run);
-    }
     app.insert_resource(crate::game::session::NewGameDestination {
         path: level.clone(),
         start: start.clone(),
     });
-    if let Some(path) = options.screenshot.clone() {
-        let after = options.screenshot_after.unwrap_or(2.0);
-        app.insert_resource(ScreenshotAndExit::new(path, after))
-            .add_systems(Update, screenshot_and_exit);
-    }
-    if options.open_automap {
-        app.add_systems(
-            Update,
-            crate::dev::open_automap
-                .run_if(any_with_component::<crate::game::party::body::PartyBody>),
-        );
-    }
-    if options.open_inventory {
-        app.add_systems(
-            Update,
-            crate::dev::open_inventory
-                .run_if(any_with_component::<crate::game::party::body::PartyBody>),
-        );
-    }
-    if let Some(name) = options.talk_to.clone() {
-        app.insert_resource(crate::dev::TalkTo(name)).add_systems(
-            Update,
-            crate::dev::talk_to_npc.after(crate::game::GameplaySet::LevelActivation),
-        );
-    }
-    if let Some(line) = options.say.clone() {
-        app.insert_resource(SayLine { line, started: None }).add_systems(Update, say_line);
-    }
-    if let Some(seed) = options.seed {
-        app.insert_resource(crate::game::rng::GameRng::seeded(seed));
-    }
     if let Some(hour) = options.hour {
         app.insert_resource(GameClock::at((hour.rem_euclid(24.0) * 3_600_000.0) as u64));
     }
-    if options.nav_debug {
-        app.add_plugins(bevy_landmass::debug::Landmass3dDebugPlugin::default());
-    }
-    if let Some(height) = options.overhead {
-        app.insert_resource(OverheadView { height }).add_systems(
-            PostUpdate,
-            overhead_view
-                .before(crate::presentation::sky::follow_with_sky_camera)
-                .before(TransformSystems::Propagate),
-        );
-    }
+    #[cfg(feature = "dev")]
+    crate::dev::install(&mut app, &options.dev, options.headless);
     // Explicit developer/headless bootstrap: a new campaign with the party
     // file's members. Interactive play commits from the creation flow.
     if quick_start {

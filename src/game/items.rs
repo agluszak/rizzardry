@@ -587,6 +587,30 @@ pub fn roll_amount(definition: &ItemDefinition, rng: &mut GameRng, maximum: bool
 }
 
 /// The items there are and where they are, to read.
+/// Those whose wearing changed since the system asking last looked:
+/// something put on or taken off, or something worn that is not what it was
+/// (out of shots, grown into a better one).
+#[derive(SystemParam)]
+pub struct Redressed<'w, 's> {
+    wearing: Query<'w, 's, Entity, Changed<Wears>>,
+    undressed: RemovedComponents<'w, 's, Wears>,
+    changed: Query<
+        'w,
+        's,
+        &'static Worn,
+        Or<(Changed<Worn>, Changed<Item>, Changed<Charges>, Changed<Protection>)>,
+    >,
+}
+
+impl Redressed<'_, '_> {
+    pub fn wearers(&mut self) -> bevy::ecs::entity::EntityHashSet {
+        let mut wearers: bevy::ecs::entity::EntityHashSet = self.wearing.iter().collect();
+        wearers.extend(self.undressed.read());
+        wearers.extend(self.changed.iter().map(|worn| worn.by));
+        wearers
+    }
+}
+
 #[derive(SystemParam)]
 pub struct Items<'w, 's> {
     items: Query<

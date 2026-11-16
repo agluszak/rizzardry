@@ -194,20 +194,14 @@ pub(super) fn bind_triggers(
         (Entity, &crate::game::world::triggers::Device, &LevelOwned),
         Added<crate::game::world::triggers::Device>,
     >,
-    levels: Query<&crate::game::world::level::Level>,
-    geometry: Res<Assets<crate::content::level::LevelDefinition>>,
     content: If<Res<Catalogs>>,
     people: Query<(Entity, &ActorId)>,
     mut commands: Commands,
 ) {
     for (entity, device, owner) in &devices {
-        let Some(level) = levels.get(owner.0).ok().and_then(|l| geometry.get(&l.definition)) else {
-            continue;
-        };
-        let Some(trigger) = level.triggers.get(device.definition) else { continue };
         let Some((id, _)) = content.npcs.0.iter().enumerate().find(|(_, d)| {
             (d.merchant || d.voice_script)
-                && trigger.name.eq_ignore_ascii_case(&format!("_{}", d.source_name))
+                && device.name.eq_ignore_ascii_case(&format!("_{}", d.source_name))
         }) else {
             continue;
         };

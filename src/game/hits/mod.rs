@@ -207,7 +207,7 @@ fn arrive(
         held: &held,
     };
     let mut log = Log::default();
-    let strike = deed.strike;
+    let strike = deed.strike.clone();
     let (due, waiting) = std::mem::take(&mut deed.arrivals)
         .into_iter()
         .partition(|(_, timer)| timer.as_ref().is_none_or(Timer::is_finished));

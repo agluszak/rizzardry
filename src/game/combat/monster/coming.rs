@@ -64,7 +64,7 @@ pub fn acts_on_party(sight: &Sight, fighter: Entity, content: &Catalogs) -> bool
         content
             .spells
             .get(SpellId::SPECIAL_ATTACK_CONE)
-            .map_or(Vec::new(), |cone| spell::aims(sight, &own, cone, content, fray))
+            .map_or(Vec::new(), |cone| spell::aims(sight, &own, cone, fray))
     };
     reaches_party(own.attacks, gap)
         || (close && mind.monster.body.speed > 0.0)

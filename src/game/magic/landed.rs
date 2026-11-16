@@ -226,9 +226,13 @@ pub fn settle(
 /// within its radius (the owner's own side if the spell backfired, anyone
 /// if it has no owner), as strong as its owner.
 fn bursts(spell: &Spell, strength: Strength, field: &Field, content: &Catalogs) -> Vec<Deed> {
-    let into = content.spell_row(spell.id).and_then(|row| row.bursts_into);
+    let into = content
+        .spells
+        .get(spell.id)
+        .and_then(crate::game::hits::definitions::row)
+        .and_then(|row| row.bursts_into);
     let Some(explosion) = into.and_then(|into| content.spells.get(into)) else { return vec![] };
-    if content.spell_row(explosion.id).is_none() {
+    if crate::game::hits::definitions::row(explosion).is_none() {
         return vec![];
     }
     let rows = Rows::Spell(explosion.id);
@@ -250,7 +254,7 @@ fn bursts(spell: &Spell, strength: Strength, field: &Field, content: &Catalogs) 
         .map(|body| {
             let at = field.places.of(body.entity).feet;
             let victims = field.within(at, at, radius, recipients);
-            Deed::at(Strike { rows, strength, blow: None, by: spell.owner }, victims)
+            Deed::at(Strike::new(rows, strength, None, spell.owner, content), victims)
         })
         .collect()
 }
@@ -274,7 +278,7 @@ fn reflection(
 ) -> Option<(Entity, (Deed, Spell))> {
     let Field { bodies, places, roster, .. } = *field;
     let spell = &content.spells[cast.id];
-    content.spell_row(cast.id)?;
+    crate::game::hits::definitions::row(spell)?;
     if !spell.aimed_at_enemies() || cast.backfired || cast.reflected {
         return None;
     }
@@ -351,7 +355,7 @@ fn reflection(
         .collect();
     let strength = owners_strength(source, spell, (power, strength.boost), bodies);
     let deed = Deed::flying(
-        Strike { rows: Rows::Spell(spell.id), strength, blow: None, by: Some(charged) },
+        Strike::new(Rows::Spell(spell.id), strength, None, Some(charged), content),
         flights,
     );
     let turned = Spell {

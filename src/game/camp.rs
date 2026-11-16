@@ -72,7 +72,21 @@ impl Plugin for CampPlugin {
             .add_systems(
                 FixedPostUpdate,
                 advance_camp.after(crate::game::time::pass_time).run_if(level_active),
-            );
+            )
+            .add_observer(broken_up);
+    }
+}
+
+/// A fight breaks up the camp.
+fn broken_up(
+    _: On<Add<Battle>>,
+    camp: Option<Res<Camp>>,
+    mut news: MessageWriter<CampNews>,
+    mut commands: Commands,
+) {
+    if camp.is_some() {
+        commands.remove_resource::<Camp>();
+        news.write(CampNews::Interrupted);
     }
 }
 

@@ -12,8 +12,12 @@ use bevy::prelude::*;
 use enum_map::EnumMap;
 
 use crate::content::characters::{Attribute, Realm};
+use crate::content::items::Dice;
 use crate::content::spells::{Amount, Boost, Pulse, Pulsing, SpellId, Spread, WhileLaid};
 use crate::game::data::Catalogs;
+use crate::game::hits::definitions::{Rows, row};
+use crate::game::hits::effects::Strike;
+use crate::game::magic::{Strength, power};
 
 /// A spell laid: which, and the power and boost it was cast at. Razor Cloak
 /// and Eye for an Eye lose a point of power each time they answer.
@@ -68,9 +72,15 @@ pub struct Turns(pub u32);
 pub struct CombatOnly;
 
 /// It pulses as each round ends, as its row says: the clouds and burning on
-/// whoever they hang over, and Ring of Fire about the party.
+/// whoever they hang over, and Ring of Fire about the party. What each pulse
+/// does, and how strongly, is settled as it is laid; Purify Air weighs the
+/// cloud's level.
 #[derive(Component, Debug)]
-pub struct Pulses(pub Pulse);
+pub struct Pulses {
+    pub pulse: Pulse,
+    pub level: u32,
+    pub strike: Strike,
+}
 
 /// What Guardian Angel can still absorb, rolled as it was laid.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,8 +118,8 @@ pub struct Bonus {
 pub struct Answers {
     /// A slowing first spends itself against it.
     pub slowing: bool,
-    /// It answers a close blow with its dice.
-    pub blows: bool,
+    /// It answers a close blow with these dice.
+    pub blows: Option<Dice>,
     /// It turns back a spell aimed at enemies that lands on its bearer.
     pub spells: bool,
 }
@@ -211,6 +221,8 @@ pub struct Laying<'w, 's> {
         (&'static mut Enchantment, Option<&'static mut Turns>, Option<&'static mut Absorbs>),
     >,
     answers: Query<'w, 's, &'static Answers>,
+    pulses: Query<'w, 's, &'static Pulses>,
+    combat_only: Query<'w, 's, (), With<CombatOnly>>,
 }
 
 impl Laying<'_, '_> {
@@ -238,7 +250,8 @@ impl Laying<'_, '_> {
     /// it was laid.
     pub fn lay(&mut self, bearer: Entity, laid: Enchantment, turns: u32, absorbs: u32) -> bool {
         let old = self.find(bearer, laid.spell);
-        let facts = &self.content.spells[laid.spell].facts;
+        let definition = &self.content.spells[laid.spell];
+        let facts = &definition.facts;
         let weaker = facts.personal
             && old.is_some_and(|old| {
                 self.spells.get(old).is_ok_and(|(old, ..)| laid.power < old.power)
@@ -255,18 +268,27 @@ impl Laying<'_, '_> {
             spell.insert(CombatOnly);
         }
         if let Some(pulse) = facts.pulse {
-            spell.insert(Pulses(pulse));
+            // Ring of Fire about the party is as strong as three times its
+            // power; any other pulse is as strong as its casting.
+            let strength = if pulse.on == Pulsing::AroundParty {
+                Strength { power: laid.power, boost: 0, against: laid.power * 3 }
+            } else {
+                power::strength(0, laid.power, laid.boost, definition)
+            };
+            let rows = Rows::Pulse(laid.spell);
+            let strike = Strike::new(rows, strength, None, None, &self.content);
+            spell.insert(Pulses { pulse, level: definition.level, strike });
         }
-        let row = self.content.spell_effects.get(laid.spell);
+        let row = row(definition);
         if row.is_some_and(|row| row.absorbs) {
             spell.insert(Absorbs(absorbs));
         }
         let answers = Answers {
             slowing: row.is_some_and(|row| row.answers_slowing),
-            blows: facts.laid.answers_blows,
+            blows: if facts.laid.answers_blows { definition.dice } else { None },
             spells: row.is_some_and(|row| row.turns_back),
         };
-        if answers.slowing || answers.blows || answers.spells {
+        if answers.slowing || answers.blows.is_some() || answers.spells {
             spell.insert(answers);
         }
         true
@@ -312,14 +334,11 @@ impl Laying<'_, '_> {
     /// Purify Air shortens each cloud hanging over a bearer by `strength`
     /// less the cloud's own level.
     pub fn purify(&mut self, bearer: Entity, strength: u32) {
-        let hanging: Vec<Entity> = self.bearers.get(bearer).map_or(vec![], |laid| laid.0.clone());
-        for entity in hanging {
-            let Ok((laid, ..)) = self.spells.get(entity) else { continue };
-            let spell = laid.spell;
-            let cloud = &self.content.spells[spell];
-            let hangs = cloud.facts.pulse.is_some_and(|pulse| pulse.on == Pulsing::Bearer);
-            let by = strength.max(cloud.level) - cloud.level;
-            if hangs {
+        let laid: Vec<Entity> = self.bearers.get(bearer).map_or(vec![], |laid| laid.0.clone());
+        for entity in laid {
+            let Ok(cloud) = self.pulses.get(entity) else { continue };
+            if cloud.pulse.on == Pulsing::Bearer {
+                let by = strength.max(cloud.level) - cloud.level;
                 self.shorten(entity, by);
             }
         }
@@ -329,11 +348,7 @@ impl Laying<'_, '_> {
     pub fn dispel(&mut self, bearer: Entity) {
         let laid: Vec<Entity> = self.bearers.get(bearer).map_or(vec![], |laid| laid.0.clone());
         for entity in laid {
-            if self
-                .spells
-                .get(entity)
-                .is_ok_and(|(laid, ..)| !self.content.spells[laid.spell].facts.only_in_a_fight)
-            {
+            if !self.combat_only.contains(entity) {
                 self.commands.entity(entity).despawn();
             }
         }
@@ -361,9 +376,10 @@ impl Laying<'_, '_> {
 
     /// A spell on a bearer that answers close blows (Razor Cloak) answers
     /// one: what it was as it answered.
-    pub fn answer_blow(&mut self, bearer: Entity) -> Option<Enchantment> {
-        let entity = self.answering(bearer, |answers| answers.blows)?;
-        self.spend_point(entity)
+    pub fn answer_blow(&mut self, bearer: Entity) -> Option<(Enchantment, Dice)> {
+        let entity = self.answering(bearer, |answers| answers.blows.is_some())?;
+        let dice = self.answers.get(entity).ok()?.blows?;
+        Some((self.spend_point(entity)?, dice))
     }
 
     /// How strong the spell on a bearer that turns spells back is (Eye for
@@ -420,17 +436,18 @@ impl Turns {
     }
 }
 
-/// The spells laid in a level that was away wear by the time it missed.
+/// The spells laid on what is in a level that was away wear by the time it
+/// missed.
 pub(crate) fn age_the_woken(
     woke: On<crate::game::world::level::Woke>,
-    belongings: crate::game::world::level::Belongings,
-    mut spells: Query<&mut Turns>,
+    mut spells: Query<(Entity, &mut Turns, &LaidOn)>,
+    owners: Query<&crate::game::world::level::LevelOwned>,
     mut commands: Commands,
 ) {
     let ticks = (woke.away_ms / crate::game::time::AGING_TICK_MS) as u32;
-    for entity in belongings.of(woke.level) {
-        if let Ok(mut turns) = spells.get_mut(entity) {
-            turns.wear(entity, ticks, &mut commands);
+    for (spell, mut turns, &LaidOn(bearer)) in &mut spells {
+        if owners.get(bearer).is_ok_and(|owner| owner.0 == woke.level) {
+            turns.wear(spell, ticks, &mut commands);
         }
     }
 }

@@ -4,6 +4,7 @@ pub mod bidden;
 pub mod containers;
 pub mod damage;
 pub mod encounters;
+mod fountains;
 pub mod hostility;
 pub mod identify;
 pub mod interaction;
@@ -85,17 +86,18 @@ impl Plugin for WorldPlugin {
             .init_resource::<search::Search>()
             .add_message::<triggers::TriggerEffect>()
             .add_message::<interaction::LockNews>()
-            .add_message::<ActivateDevice>()
             .add_message::<items::TakeItem>()
             .add_message::<items::DropHeld>()
             .add_message::<population::Birth>()
             .add_message::<particles::EmissionSpent>()
             .add_message::<crate::game::automap::CommitNote>()
-            .add_plugins(interaction::plugin)
+            .add_plugins((interaction::plugin, encounters::plugin, triggers::plugin))
+            .add_observer(fountains::drink)
             .add_observer(interaction::end_attempts)
             .add_observer(damage::halt)
             .add_observer(damage::leave_loot)
             .add_observer(damage::clear_the_fallen)
+            .add_observer(containers::open)
             .add_observer(containers::emptied)
             .add_observer(containers::bag_emptied)
             // Resolve travel intent early; activation owns the later level swap.
@@ -112,12 +114,7 @@ impl Plugin for WorldPlugin {
                 Update,
                 (
                     level::activate_level.in_set(GameplaySet::LevelActivation),
-                    (
-                        activate_devices,
-                        items::take_items,
-                        items::drop_held,
-                        crate::game::automap::commit_notes,
-                    )
+                    (items::take_items, items::drop_held, crate::game::automap::commit_notes)
                         .chain()
                         .after(GameplaySet::Bodies)
                         .before(GameplaySet::Combat),
@@ -126,14 +123,6 @@ impl Plugin for WorldPlugin {
                     population::come.run_if(level::level_active).before(GameplaySet::Combat),
                     search::toggle_search.run_if(level::level_active).after(level::activate_level),
                 ),
-            )
-            // Encounters come over ground physics has placed.
-            .add_systems(
-                FixedPostUpdate,
-                (encounters::write_off_wiped_out, encounters::run_encounters)
-                    .chain()
-                    .after(avian3d::prelude::PhysicsSystems::Writeback)
-                    .run_if(level::level_active),
             )
             .add_systems(
                 FixedPreUpdate,
@@ -163,23 +152,5 @@ impl Plugin for WorldPlugin {
                     .chain()
                     .run_if(level::level_active),
             );
-    }
-}
-
-/// The player uses a device, its reach checked when the request executes.
-#[derive(Message, Clone, Copy, Debug, PartialEq)]
-pub struct ActivateDevice {
-    pub device: Entity,
-    /// The player uses it, within reach; otherwise it runs whatever the
-    /// party's reach, as when its lock or trap is overcome.
-    pub player: bool,
-}
-
-/// Run the devices the player uses, in order: the trigger interpreter
-/// needs the whole world.
-pub fn activate_devices(world: &mut World) {
-    let requests: Vec<_> = world.resource_mut::<Messages<ActivateDevice>>().drain().collect();
-    for ActivateDevice { device, player } in requests {
-        triggers::activate(world, device, player);
     }
 }

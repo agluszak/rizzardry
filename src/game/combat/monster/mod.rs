@@ -79,7 +79,7 @@ pub fn deliberate(
         return thought(Deliberated::Conducts(conducted.conduct));
     }
     let breath = match content.spells.get(SpellId::SPECIAL_ATTACK_CONE) {
-        Some(cone) if !special::summons(&mind) => spell::aims(sight, &own, cone, content, fray),
+        Some(cone) if !special::summons(&mind) => spell::aims(sight, &own, cone, fray),
         _ => Vec::new(),
     };
     if let Some(made) = special::makes(rng, &own, &mind, gap, fray.fighting, &breath) {

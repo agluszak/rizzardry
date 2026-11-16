@@ -200,8 +200,7 @@ pub(crate) fn cast(
         .buffed
         .then(|| {
             spells.spells.0.iter().find(|candidate| {
-                spells
-                    .spell_row(candidate.id)
+                crate::game::hits::definitions::row(candidate)
                     .is_some_and(|row| row.buffs_elemental == Some(element))
             })
         })

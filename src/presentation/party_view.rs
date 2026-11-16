@@ -74,25 +74,6 @@ pub fn aim_camera(
     }
 }
 
-/// Whom the view turns to in a fight (retail `camera_rotation_mode`; new
-/// games track every target, `Gameplay Init.cpp`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum ViewTracking {
-    Off,
-    /// Only a monster going for the selected member.
-    SelectedMember,
-    #[default]
-    AllTargets,
-}
-
-/// How the view turns (retail `camera_rotation_style`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum ViewTurning {
-    #[default]
-    Smooth,
-    Snap,
-}
-
 /// When a fight begins, turn the party to the nearest monster in it, as the
 /// player's settings say (retail `StartCombat`'s `PointCameraAtMonster`):
 /// not with tracking off, nor in selected-member mode (no monster goes for
@@ -115,7 +96,7 @@ pub fn track_fights(
         let crate::game::combat::CombatNews::Began { nearest: Some(nearest) } = *notice else {
             continue;
         };
-        if preferences.view_tracking != ViewTracking::AllTargets {
+        if preferences.view_tracking != crate::settings::ViewTracking::AllTargets {
             continue;
         }
         let (Ok(at), Ok((pose, monster, walker))) = (party.single(), monsters.get(nearest)) else {
@@ -128,7 +109,7 @@ pub fn track_fights(
                 crate::game::party::body::yaw_toward(toward),
                 toward.y.atan2(toward.xz().length()),
             ),
-            smooth: preferences.view_turning == ViewTurning::Smooth,
+            smooth: preferences.view_turning == crate::settings::ViewTurning::Smooth,
         });
     }
 }

@@ -21,7 +21,7 @@ use crate::content::items::AttackMode;
 use crate::game::characters::{Calling, Condition, Conditions, Vitals, skill_available};
 use crate::game::combat::Turn;
 use crate::game::inventory::EquipSlot;
-use crate::game::items::{Burden, Items};
+use crate::game::items::{Burden, Items, Redressed};
 
 /// A part of an actor's armour, as the character screen lists them.
 #[derive(Enum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,19 +193,15 @@ const GUARDING: [EquipSlot; 5] = [
 /// `CalcArmorClasses`).
 #[allow(clippy::type_complexity)]
 fn worn(
-    mut actors: Query<
-        (Entity, &Skills, &Vitals, &Conditions, &mut ArmourParts, &mut HitPlaces),
-        Or<(
-            Changed<Modifiers>,
-            Changed<Skills>,
-            Changed<Vitals>,
-            Changed<Conditions>,
-            Changed<ArmourParts>,
-        )>,
-    >,
-    items: Items,
+    mut actors: Query<(Entity, &Skills, &Vitals, &Conditions, &mut ArmourParts, &mut HitPlaces)>,
+    changed: Query<(), Or<(Changed<Skills>, Changed<Vitals>, Changed<Conditions>)>>,
+    (items, mut redressed): (Items, Redressed),
 ) {
+    let dressed = redressed.wearers();
     for (actor, skills, vitals, conditions, mut parts, mut places) in &mut actors {
+        if !changed.contains(actor) && !parts.is_changed() && !dressed.contains(&actor) {
+            continue;
+        }
         let (mut shield, mut others) = (0, 0);
         for (protection, is_shield) in
             GUARDING.into_iter().filter_map(|slot| items.protection(actor, slot))

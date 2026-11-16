@@ -8,7 +8,6 @@
 
 use avian3d::prelude::*;
 use bevy::ecs::entity_disabling::Disabled;
-use bevy::ecs::relationship::RelationshipTarget;
 use bevy::prelude::*;
 use bevy_landmass::NavMesh3d;
 
@@ -205,49 +204,42 @@ pub struct Woke {
     pub away_ms: u64,
 }
 
-/// What belongs to a level: its root; whatever it owns; whatever hangs under
-/// any of these in the hierarchy; and whatever any of these hold (what is
-/// stowed in a container or bag, what a body wears or packs, the spells laid
-/// on it). It sees what is set aside too.
+/// What belongs to a level: whatever would be despawned with it. That is
+/// its root, whatever it owns, and whatever any of these hold that goes
+/// with its holder (the children of a prop, what a container stows, what a
+/// body wears or packs, the spells laid on it), set aside or not.
 #[derive(SystemParam)]
-pub struct Belongings<'w, 's> {
-    holds: Query<
-        'w,
-        's,
-        (
-            Option<&'static LevelEntities>,
-            Option<&'static Children>,
-            Option<&'static crate::game::items::Stows>,
-            Option<&'static crate::game::items::Wears>,
-            Option<&'static crate::game::items::Pack>,
-            Option<&'static crate::game::actors::spells::Spells>,
-        ),
-        Allow<Disabled>,
-    >,
+pub struct Belongings<'w> {
+    world: &'w World,
 }
 
-impl Belongings<'_, '_> {
+impl Belongings<'_> {
     /// Everything that belongs to the level at `root`, the root first.
     pub fn of(&self, root: Entity) -> Vec<Entity> {
-        fn held<T: RelationshipTarget>(targets: Option<&T>) -> impl Iterator<Item = Entity> + '_ {
-            targets.into_iter().flat_map(|targets| targets.iter())
-        }
+        use bevy::ecs::relationship::RelationshipAccessor;
         let mut found = vec![root];
         let mut next = 0;
         while let Some(&entity) = found.get(next) {
             next += 1;
-            let Ok((owned, children, stowed, worn, packed, laid)) = self.holds.get(entity) else {
-                continue;
-            };
-            let more = held(owned)
-                .chain(held(children))
-                .chain(held(stowed))
-                .chain(held(worn))
-                .chain(held(packed))
-                .chain(held(laid));
-            for entity in more {
-                if !found.contains(&entity) {
-                    found.push(entity);
+            let Ok(holder) = self.world.get_entity(entity) else { continue };
+            for component in holder.archetype().iter_components() {
+                let accessor = self
+                    .world
+                    .components()
+                    .get_info(component)
+                    .and_then(|info| info.relationship_accessor().copied());
+                let Some(RelationshipAccessor::RelationshipTarget {
+                    iter, linked_spawn: true, ..
+                }) = accessor
+                else {
+                    continue;
+                };
+                let held = holder.get_by_id(component).expect("in its archetype");
+                // SAFETY: `held` is the component the accessor was registered for.
+                for entity in unsafe { iter(held) } {
+                    if !found.contains(&entity) {
+                        found.push(entity);
+                    }
                 }
             }
         }

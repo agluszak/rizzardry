@@ -88,8 +88,10 @@ const FORCE_STRENGTH: u32 = 50;
 
 /// The lock or trap still standing on a device; removed once it is picked,
 /// forced or disarmed. Its authored kind and grade stay in the definition.
-#[derive(Component, Clone, Debug, Default, PartialEq)]
+#[derive(Component, Clone, Debug, PartialEq)]
 pub struct Guarded {
+    /// The lock or trap, as the level authored it.
+    pub lock: Lock,
     /// A trap's type, authored or rolled from its grade when first faced
     /// (retail `SelectTrapType`), and then kept.
     pub trap: Option<u8>,
@@ -101,12 +103,11 @@ pub struct Guarded {
 
 impl Guarded {
     pub fn new(lock: Lock) -> Self {
-        match lock {
-            Lock::Trap { kind, .. } => Guarded { trap: kind, ..default() },
-            Lock::Pickable { difficulty } => {
-                Guarded { practice_left: difficulty.clamp(2, 8) * 3, ..default() }
-            }
-        }
+        let (trap, practice_left) = match lock {
+            Lock::Trap { kind, .. } => (kind, 0),
+            Lock::Pickable { difficulty } => (None, difficulty.clamp(2, 8) * 3),
+        };
+        Guarded { lock, trap, faced_at: None, practice_left }
     }
 }
 
@@ -135,11 +136,6 @@ pub fn current(world: &World) -> Option<(Entity, Entity)> {
     let mut attempts =
         world.try_query_filtered::<(Entity, &AttemptOn), With<DeviceInteraction>>()?;
     attempts.iter(world).next().map(|(attempt, on)| (attempt, on.0))
-}
-
-/// Start an attempt on a device.
-pub(crate) fn begin(world: &mut World, device: Entity, work: Work) -> Entity {
-    world.spawn((DeviceInteraction { work }, AttemptOn(device))).id()
 }
 
 #[derive(Debug)]
@@ -292,37 +288,45 @@ pub fn force_chance(
     Some((strength - FORCE_STRENGTH) >> (divisor - 2))
 }
 
+/// A device's lock or trap stops its use.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Confront {
+    #[event_target]
+    pub device: Entity,
+}
+
 /// A device's lock or trap stops its use: start working on it (retail
-/// `OpenLockInteraction`, `OpenTrapInteraction`). Facing a trap rolls its
-/// type the first time.
-pub(crate) fn confront(world: &mut World, device: Entity, lock: Lock) {
-    if current(world).is_some() {
+/// `OpenLockInteraction`, `OpenTrapInteraction`), unless something is being
+/// worked on already, or in a fight. Facing a trap rolls its type the first
+/// time.
+fn confront(
+    confront: On<Confront>,
+    mut guarded: Query<&mut Guarded>,
+    attempts: Query<(), With<DeviceInteraction>>,
+    battle: Query<(), With<Battle>>,
+    clock: Res<GameClock>,
+    mut rng: ResMut<GameRng>,
+    mut news: MessageWriter<LockNews>,
+    mut commands: Commands,
+) {
+    let Ok(mut guarded) = guarded.get_mut(confront.device) else { return };
+    if !attempts.is_empty() {
         return;
     }
-    if world.query_filtered::<Entity, With<Battle>>().iter(world).next().is_some() {
-        world.write_message(LockNews::NotInCombat);
+    if !battle.is_empty() {
+        news.write(LockNews::NotInCombat);
         return;
     }
-    let work = match lock {
+    let work = match guarded.lock {
         Lock::Pickable { difficulty } => {
-            world.write_message(LockNews::Locked);
+            news.write(LockNews::Locked);
             Work::Picking(Picking::new(difficulty))
         }
         Lock::Trap { difficulty, .. } => {
-            let now = world.resource::<GameClock>().ms;
-            let mut guarded = world.get_mut::<Guarded>(device).unwrap();
-            let remark = guarded.faced_at.is_none_or(|at| now - at > REMARK_AGAIN_MS);
-            guarded.faced_at = Some(now);
-            let trap = match guarded.trap {
-                Some(trap) => trap,
-                None => {
-                    let trap = world
-                        .resource_scope(|_, mut rng: Mut<GameRng>| roll_trap(difficulty, &mut rng));
-                    world.get_mut::<Guarded>(device).unwrap().trap = Some(trap);
-                    trap
-                }
-            };
-            world.write_message(LockNews::Trapped { remark });
+            let remark = guarded.faced_at.is_none_or(|at| clock.ms - at > REMARK_AGAIN_MS);
+            guarded.faced_at = Some(clock.ms);
+            let trap = *guarded.trap.get_or_insert_with(|| roll_trap(difficulty, &mut rng));
+            news.write(LockNews::Trapped { remark });
             Work::Disarming(Disarming {
                 difficulty,
                 trap,
@@ -332,7 +336,7 @@ pub(crate) fn confront(world: &mut World, device: Entity, lock: Lock) {
             })
         }
     };
-    begin(world, device, work);
+    commands.spawn((DeviceInteraction { work }, AttemptOn(confront.device)));
 }
 
 /// Retail `SelectTrapType`: draw types until one's grade lies within four
@@ -762,7 +766,6 @@ fn overcome(
     overcome: On<Overcome>,
     attempts: Query<&AttemptOn>,
     mut doors: Query<&mut DoorState>,
-    mut activations: MessageWriter<super::ActivateDevice>,
     mut commands: Commands,
 ) {
     let Ok(&AttemptOn(device)) = attempts.get(overcome.attempt) else { return };
@@ -771,7 +774,7 @@ fn overcome(
     if let Ok(mut door) = doors.get_mut(device) {
         door.locked = false;
     }
-    activations.write(super::ActivateDevice { device, player: false });
+    commands.trigger(super::triggers::Activate { device, by: super::triggers::By::Level });
 }
 
 /// The device attempt magic may be aimed at now: the one under way, unless
@@ -807,7 +810,8 @@ pub(crate) fn end_attempts(
 }
 
 pub(crate) fn plugin(app: &mut App) {
-    app.add_observer(pick)
+    app.add_observer(confront)
+        .add_observer(pick)
         .add_observer(force)
         .add_observer(inspect)
         .add_observer(disarm)
@@ -825,6 +829,7 @@ mod tests {
     use super::*;
     use crate::content::characters::{Gender, Profession, Race};
     use crate::game::characters::Character;
+    use crate::game::world::triggers::{Activate, By};
 
     /// A lock of two tumblers, picked by one skilled enough never to drop a
     /// pin: the first leaves it locked, the second opens it, and the device
@@ -838,7 +843,8 @@ mod tests {
             .init_resource::<Catalogs>()
             .add_message::<LockNews>()
             .add_message::<MagicNews>()
-            .add_message::<crate::game::world::ActivateDevice>()
+            .init_resource::<Ran>()
+            .add_observer(|run: On<Activate>, mut ran: ResMut<Ran>| ran.0.push(*run.event()))
             .add_plugins((plugin, crate::game::actors::plugin));
         let world = app.world_mut();
         let mut thief = Character::new("Thief", Race::Human, Gender::Male, Profession::Rogue);
@@ -848,7 +854,9 @@ mod tests {
         world.run_schedule(crate::game::actors::Settle);
         let lock = Lock::Pickable { difficulty: 2 };
         let door = world.spawn(Guarded::new(lock)).id();
-        let attempt = begin(world, door, Work::Picking(Picking::new(2)));
+        let attempt = world
+            .spawn((DeviceInteraction { work: Work::Picking(Picking::new(2)) }, AttemptOn(door)))
+            .id();
         world.flush();
         world.trigger(Pick { attempt, actor: member, tumbler: 0 });
         world.flush();
@@ -857,8 +865,10 @@ mod tests {
         world.flush();
         assert!(world.get::<Guarded>(door).is_none());
         assert!(world.get_entity(attempt).is_err(), "the attempt is over");
-        let ran: Vec<_> =
-            world.resource_mut::<Messages<crate::game::world::ActivateDevice>>().drain().collect();
-        assert!(matches!(ran.as_slice(), [run] if run.device == door && !run.player));
+        let ran = &world.resource::<Ran>().0;
+        assert!(matches!(ran.as_slice(), [run] if run.device == door && run.by == By::Level));
     }
+
+    #[derive(Resource, Default)]
+    struct Ran(Vec<Activate>);
 }

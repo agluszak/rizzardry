@@ -1,17 +1,14 @@
-//! What bears on an actor's numbers from outside it: the spells laid on it
-//! and on its party, and what it wears. The actor carries the running
-//! total, written as each comes or goes; the figures that read it are
-//! rewritten when it changes.
+//! What the spells laid on an actor, and on its party, add to its numbers.
+//! The actor carries the running total, written as each spell comes or
+//! goes; the figures that read it are rewritten when it changes. What it
+//! wears the figures read themselves ([`crate::game::items::Redressed`]).
 
 use bevy::prelude::*;
 
 use super::spells::{Bonus, LaidOn, Spells};
-use crate::game::items::{Charges, Item, Worn};
 use crate::game::party::roster::{PartyMember, PartyRoster};
 
-/// What is laid on an actor, summed, with what is laid on its party. What
-/// it wears is read through its relationships; their changing marks this
-/// changed.
+/// What is laid on an actor, summed, with what is laid on its party.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
 pub struct Modifiers {
     pub laid: Bonus,
@@ -86,36 +83,6 @@ fn left(event: On<Remove<PartyMember>>, mut sums: Sums) {
     }
 }
 
-fn put_on(event: On<Add<Worn>>, worn: Query<&Worn>, mut wearers: Query<&mut Modifiers>) {
-    if let Ok(mut total) = worn.get(event.entity).and_then(|worn| wearers.get_mut(worn.by)) {
-        total.set_changed();
-    }
-}
-
-fn taken_off(event: On<Remove<Worn>>, worn: Query<&Worn>, mut wearers: Query<&mut Modifiers>) {
-    if let Ok(mut total) = worn.get(event.entity).and_then(|worn| wearers.get_mut(worn.by)) {
-        total.set_changed();
-    }
-}
-
-/// A worn thing that is itself no longer what it was (out of shots, grown
-/// into a better one) bears differently on its wearer.
-pub(super) fn gear_changed(
-    gear: Query<&Worn, Or<(Changed<Item>, Changed<Charges>)>>,
-    mut wearers: Query<&mut Modifiers>,
-) {
-    for worn in &gear {
-        if let Ok(mut total) = wearers.get_mut(worn.by) {
-            total.set_changed();
-        }
-    }
-}
-
 pub(super) fn plugin(app: &mut App) {
-    app.add_observer(laid)
-        .add_observer(lifted)
-        .add_observer(joined)
-        .add_observer(left)
-        .add_observer(put_on)
-        .add_observer(taken_off);
+    app.add_observer(laid).add_observer(lifted).add_observer(joined).add_observer(left);
 }

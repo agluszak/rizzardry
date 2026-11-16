@@ -25,17 +25,13 @@ use crate::content::spells::Pulsing;
 use crate::game::actors::Laid;
 use crate::game::actors::Places;
 use crate::game::actors::spells::Aged;
-use crate::game::actors::spells::{Enchantment, LaidOn, Pulses};
+use crate::game::actors::spells::{LaidOn, Pulses};
 use crate::game::actors::time::{Elapsed, Mending, Pace};
 use crate::game::characters::Condition;
 use crate::game::characters::Vitals;
-use crate::game::data::Catalogs;
-use crate::game::hits::definitions::Rows;
 use crate::game::hits::effects::BodyReadOnly;
-use crate::game::hits::effects::Strike;
 use crate::game::hits::reach::{Field, Recipients};
 use crate::game::hits::{Deed, Landed};
-use crate::game::magic::{Strength, power};
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
@@ -242,13 +238,12 @@ pub(super) fn pulse_clouds(
     pulse: On<CloudsPulse>,
     mut commands: Commands,
     fights: Query<&Combatants>,
-    pulsing: Query<(&Enchantment, &LaidOn, &Pulses)>,
+    pulsing: Query<(&LaidOn, &Pulses)>,
     bodies: Query<BodyReadOnly>,
     grouping: (Query<&'static GroupMember>, Query<&'static GroupMembers>),
     places: Places,
     party: Single<(Entity, &Position, &PartyRoster)>,
     obstacles: WorldObstacles,
-    content: Res<Catalogs>,
 ) {
     let (party, position, roster) = *party;
     let Ok(combatants) = fights.get(pulse.fight) else { return };
@@ -264,10 +259,9 @@ pub(super) fn pulse_clouds(
     };
     // The party's first, then each monster's, in the order clouds pulse.
     let mut order: Vec<_> = pulsing.iter().collect();
-    order.sort_by_key(|(_, on, pulse)| (on.0 != party, pulse.0.order));
-    for (laid, &LaidOn(bearer), &Pulses(pulse)) in order {
-        let rows = Rows::Pulse(laid.spell);
-        if rows.effects(&content).is_empty() {
+    order.sort_by_key(|(on, pulses)| (on.0 != party, pulses.pulse.order));
+    for (&LaidOn(bearer), Pulses { pulse, strike, .. }) in order {
+        if strike.effects.is_empty() {
             continue;
         }
         let around = pulse.on == Pulsing::AroundParty;
@@ -281,13 +275,8 @@ pub(super) fn pulse_clouds(
         } else {
             combatants.entities().iter().copied().filter(|&m| m == bearer && alive(m)).collect()
         };
-        let strength = if around {
-            Strength { power: laid.power, boost: 0, against: laid.power * 3 }
-        } else {
-            power::strength(0, laid.power, laid.boost, &content.spells[laid.spell])
-        };
         commands.spawn((
-            Deed::at(Strike { rows, strength, blow: None, by: None }, victims),
+            Deed::at(strike.clone(), victims),
             crate::game::magic::landed::Magical,
             Pulse,
         ));

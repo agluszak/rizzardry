@@ -1,4 +1,5 @@
-//! Developer conveniences that are not part of the game.
+//! Developer conveniences that are not part of the game, built only with
+//! the `dev` feature.
 
 use std::path::PathBuf;
 
@@ -255,4 +256,94 @@ pub fn talk_to_npc(
         with_held: false,
     });
     *requested = true;
+}
+
+/// The developer's command-line options.
+#[derive(Debug, Clone, Default, clap::Args)]
+pub struct Options {
+    /// Developer: capture the view shortly after entering, then exit.
+    #[arg(long, value_name = "FILE.png")]
+    pub screenshot: Option<PathBuf>,
+    /// Developer: seconds after entering to take the screenshot (default 2).
+    #[arg(long, value_name = "SECONDS")]
+    pub screenshot_after: Option<f32>,
+    /// Developer: stop after this many seconds of play (game time while a
+    /// level is played, not loading).
+    #[arg(long, value_name = "SECONDS")]
+    pub run_for: Option<f32>,
+    /// Developer: seed gameplay's random numbers, for another reproducible
+    /// run.
+    #[arg(long, value_name = "SEED")]
+    pub seed: Option<u64>,
+    /// Developer: speak this retail voice line on entry, e.g.
+    /// `npc_aletheides_000`.
+    #[arg(long, value_name = "LINE")]
+    pub say: Option<String>,
+    /// Developer: open a nearby named NPC's real conversation after entering.
+    /// Combine with --start and --screenshot for reproducible UI captures.
+    #[arg(long)]
+    pub talk_to: Option<String>,
+    /// Developer: open the automap through its normal request after entering.
+    /// Combine with --screenshot for UI captures.
+    #[arg(long)]
+    pub open_automap: bool,
+    /// Developer: open the first member's inventory through its normal
+    /// request after entering. Combine with --screenshot for UI captures.
+    #[arg(long)]
+    pub open_inventory: bool,
+    /// Developer: draw the navmesh, agent paths and avoidance.
+    #[arg(long)]
+    pub nav_debug: bool,
+    /// Developer: view the party from this many metres straight above.
+    #[arg(long, value_name = "METRES")]
+    pub overhead: Option<f32>,
+}
+
+/// Add what the developer asked for. Headless, what happens goes to the
+/// log, and a screenshot is rendered offscreen.
+pub fn install(app: &mut App, options: &Options, headless: bool) {
+    let party_in = any_with_component::<PartyBody>;
+    if headless {
+        app.add_systems(Update, log_news);
+        if options.screenshot.is_some() {
+            app.add_systems(Startup, create_offscreen)
+                .add_systems(First, draw_offscreen.run_if(resource_exists::<Offscreen>));
+        }
+    }
+    if let Some(path) = options.screenshot.clone() {
+        let after = options.screenshot_after.unwrap_or(2.0);
+        app.insert_resource(ScreenshotAndExit::new(path, after))
+            .add_systems(Update, screenshot_and_exit);
+    }
+    if let Some(seconds) = options.run_for {
+        app.insert_resource(RunFor(Timer::from_seconds(seconds, TimerMode::Once)))
+            .add_systems(Update, exit_after_run);
+    }
+    if options.open_automap {
+        app.add_systems(Update, open_automap.run_if(party_in));
+    }
+    if options.open_inventory {
+        app.add_systems(Update, open_inventory.run_if(party_in));
+    }
+    if let Some(name) = options.talk_to.clone() {
+        app.insert_resource(TalkTo(name))
+            .add_systems(Update, talk_to_npc.after(crate::game::GameplaySet::LevelActivation));
+    }
+    if let Some(line) = options.say.clone() {
+        app.insert_resource(SayLine { line, started: None }).add_systems(Update, say_line);
+    }
+    if let Some(seed) = options.seed {
+        app.insert_resource(crate::game::rng::GameRng::seeded(seed));
+    }
+    if options.nav_debug {
+        app.add_plugins(bevy_landmass::debug::Landmass3dDebugPlugin::default());
+    }
+    if let Some(height) = options.overhead {
+        app.insert_resource(OverheadView { height }).add_systems(
+            PostUpdate,
+            overhead_view
+                .before(crate::presentation::sky::follow_with_sky_camera)
+                .before(TransformSystems::Propagate),
+        );
+    }
 }

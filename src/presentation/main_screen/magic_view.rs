@@ -647,10 +647,7 @@ fn offers<'a>(
                 spell: s,
                 label: format!("{} {}", glyph(s.targeting), s.name),
                 cost: s.cost.to_string(),
-                available: affordable > 0
-                    && resolvable(s, content)
-                    && usable_now(s, context)
-                    && !silenced,
+                available: affordable > 0 && resolvable(s) && usable_now(s, context) && !silenced,
                 silenced,
             }
         })

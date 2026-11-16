@@ -19,6 +19,7 @@ use crate::game::characters::{
     Birth, Calling, Condition, Conditions, Schooling, Trained, Training, Vitals, scale_by_level,
     trained_stamina, traits_of,
 };
+use crate::game::items::Redressed;
 use crate::game::items::{Burden, Items};
 
 /// The level a trait's strength grows with: the level in the profession
@@ -105,14 +106,15 @@ pub(super) fn maxima(
 
 #[allow(clippy::type_complexity)]
 pub(super) fn resistances(
-    mut actors: Query<
-        (
-            Entity,
-            (&Nature, Option<&Kind>, &Traits, &Level),
-            Option<Schooling>,
-            (&Attributes, &Skills, &Modifiers),
-            &mut Resistances,
-        ),
+    mut actors: Query<(
+        Entity,
+        (&Nature, Option<&Kind>, &Traits, &Level),
+        Option<Schooling>,
+        (&Attributes, &Skills, &Modifiers),
+        &mut Resistances,
+    )>,
+    changed: Query<
+        (),
         Or<(
             Changed<Nature>,
             Changed<Traits>,
@@ -123,11 +125,15 @@ pub(super) fn resistances(
             Changed<Modifiers>,
         )>,
     >,
-    items: Items,
+    (items, mut redressed): (Items, Redressed),
 ) {
+    let dressed = redressed.wearers();
     for (entity, (nature, kind, traits, level), trained, (a, skills, modifiers), mut written) in
         &mut actors
     {
+        if !changed.contains(entity) && !dressed.contains(&entity) {
+            continue;
+        }
         let trained = trained.as_ref().map(|schooling| schooling.view());
         let own = crate::game::characters::resistance::resistances(
             (nature, trained),
@@ -232,14 +238,15 @@ pub fn trained_initiative(
 
 #[allow(clippy::type_complexity)]
 pub(super) fn attacks(
-    mut actors: Query<
-        (
-            Entity,
-            (&Nature, Option<&NaturalArms>, &Traits, &Level, &Modifiers, &Conditions),
-            Option<(Schooling, &Burden)>,
-            (&Attributes, &Skills),
-            &mut Attacks,
-        ),
+    mut actors: Query<(
+        Entity,
+        (&Nature, Option<&NaturalArms>, &Traits, &Level, &Modifiers, &Conditions),
+        Option<(Schooling, &Burden)>,
+        (&Attributes, &Skills),
+        &mut Attacks,
+    )>,
+    changed: Query<
+        (),
         Or<(
             Changed<Nature>,
             Changed<NaturalArms>,
@@ -254,8 +261,9 @@ pub(super) fn attacks(
             Changed<Skills>,
         )>,
     >,
-    (items, hands): (Items, Query<Held>),
+    (items, hands, mut redressed): (Items, Query<Held>, Redressed),
 ) {
+    let dressed = redressed.wearers();
     for (
         entity,
         (nature, natural, traits, level, modifiers, conditions),
@@ -264,6 +272,9 @@ pub(super) fn attacks(
         mut written,
     ) in &mut actors
     {
+        if !changed.contains(entity) && !dressed.contains(&entity) {
+            continue;
+        }
         let hit = modifiers.laid.to_hit + conditions.to_hit();
         let scale = mastery(trained.as_ref().map(|(schooling, _)| schooling.view().calling), level);
         let mut made = match trained {
@@ -308,19 +319,15 @@ pub(super) fn attacks(
 
 #[allow(clippy::type_complexity)]
 pub(super) fn mending(
-    mut actors: Query<
-        (Entity, &Nature, &Traits, &Level, &Modifiers, Option<&Calling>, &mut Mending),
-        Or<(
-            Changed<Nature>,
-            Changed<Traits>,
-            Changed<Level>,
-            Changed<Modifiers>,
-            Changed<Calling>,
-        )>,
-    >,
-    items: Items,
+    mut actors: Query<(Entity, &Nature, &Traits, &Level, Option<&Calling>, &mut Mending)>,
+    changed: Query<(), Or<(Changed<Nature>, Changed<Traits>, Changed<Level>, Changed<Calling>)>>,
+    (items, mut redressed): (Items, Redressed),
 ) {
-    for (entity, nature, traits, level, _, calling, mut written) in &mut actors {
+    let dressed = redressed.wearers();
+    for (entity, nature, traits, level, calling, mut written) in &mut actors {
+        if !changed.contains(entity) && !dressed.contains(&entity) {
+            continue;
+        }
         let mut worn = [0; 3];
         for (slot, _) in items.in_use(entity) {
             if let Some((protection, _)) = items.protection(entity, slot) {

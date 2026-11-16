@@ -8,6 +8,8 @@ use std::sync::LazyLock;
 use bevy::prelude::*;
 use serde::Deserialize;
 
+use super::NpcSpeaker;
+use super::conversation::Begin;
 use super::story::{
     Befell, Consequence, Crush, DeviceAct, Due, Reading, Readings, Shooting, StoryFacts, StoryTold,
     Watch,
@@ -33,13 +35,15 @@ use crate::game::magic::power;
 use crate::game::party::damage_member;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
-use crate::game::world::encounters::EncounterState;
+use crate::game::world::encounters::EncounterGenerator;
 use crate::game::world::level::{Level, LevelOwned, LevelReady, SetAside};
 use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::population::Monster;
 use crate::game::world::population::{Birth, MonsterBodies, Unborn};
 use crate::game::world::props::PropMotion;
-use crate::game::world::triggers::{self, Activating, Device, DeviceNames, TriggerEffect};
+use crate::game::world::triggers::{
+    self, Activate, Activating, Device, DeviceNames, Perform, TriggerEffect,
+};
 use avian3d::prelude::{ColliderAabb, Position};
 
 /// One case of a device's gate.
@@ -104,41 +108,64 @@ pub struct Gate(&'static [Case]);
 /// the original finds it.
 pub(super) fn gate_devices(
     devices: Query<(Entity, &Device, &LevelOwned), Added<Device>>,
-    levels: Query<&Level>,
-    definitions: Res<Assets<LevelDefinition>>,
+    levels: Query<(&Level, &DeviceNames)>,
     mut commands: Commands,
 ) {
     for (device, made, owner) in &devices {
-        let Ok(level) = levels.get(owner.0) else { continue };
+        let Ok((level, names)) = levels.get(owner.0) else { continue };
         let gates = LevelInfo::for_path(&level.path).and_then(|info| GATES.get(info.location));
-        let (Some(gates), Some(definition)) = (gates, definitions.get(&level.definition)) else {
-            continue;
-        };
-        let name = &definition.triggers[made.definition].name;
-        let last = definition.triggers.iter().rposition(|t| t.name.eq_ignore_ascii_case(name));
-        let cases = gates.devices.iter().find(|(gated, _)| gated.eq_ignore_ascii_case(name));
-        if let (Some((_, cases)), true) = (cases, last == Some(made.definition)) {
+        let Some(gates) = gates else { continue };
+        let cases = gates.devices.iter().find(|(gated, _)| gated.eq_ignore_ascii_case(&made.name));
+        if let (Some((_, cases)), true) = (cases, names.named(&made.name) == Some(device)) {
             commands.entity(device).insert(Gate(cases));
         }
     }
 }
 
-/// A gated device is used: its first case that holds decides whether it
-/// goes on. What the case sets off befalls once the device is done.
+/// Whether a gate lets its device go on: its first case that holds decides,
+/// and sets off what follows, which befalls once the device is done. With
+/// none holding, it goes on.
+fn lets_through(
+    Gate(cases): &Gate,
+    readings: &Readings,
+    (story, factions): (&StoryFacts, &Factions),
+    commands: &mut Commands,
+) -> bool {
+    let holds = |case: &&Case| readings.answer(&case.when, None, story, factions) != 0;
+    let Some(case) = cases.iter().find(holds) else { return true };
+    if !case.then.is_empty() {
+        commands.spawn(Due::now(case.then.clone()));
+    }
+    case.runs
+}
+
+/// A gated device is about to do its act: its gate decides.
 pub(super) fn ask(
-    mut asking: On<Activating>,
+    asking: On<Activating>,
     gates: Query<&Gate>,
     readings: Readings,
     (story, factions): (Res<StoryFacts>, Res<Factions>),
     mut commands: Commands,
 ) {
-    let Ok(Gate(cases)) = gates.get(asking.device) else { return };
-    let holds = |case: &&Case| readings.answer(&case.when, None, &story, &factions) != 0;
-    if let Some(case) = cases.iter().find(holds) {
-        asking.proceeds = case.runs;
-        if !case.then.is_empty() {
-            commands.spawn(Due::now(case.then.clone()));
-        }
+    let Ok(gate) = gates.get(asking.device) else { return };
+    if lets_through(gate, &readings, (&story, &factions), &mut commands) {
+        commands.trigger(Perform { device: asking.device, doing: asking.doing });
+    }
+}
+
+/// A device that speaks for someone is used: if its gate lets it, they are
+/// spoken with, and are handed what the party holds as the talk begins
+/// (retail `NotifyNpcTriggerActivation`).
+pub(super) fn speak(
+    used: On<Activate>,
+    speakers: Query<(&NpcSpeaker, Option<&Gate>)>,
+    readings: Readings,
+    (story, factions): (Res<StoryFacts>, Res<Factions>),
+    mut commands: Commands,
+) {
+    let Ok((&NpcSpeaker(actor), gate)) = speakers.get(used.device) else { return };
+    if gate.is_none_or(|gate| lets_through(gate, &readings, (&story, &factions), &mut commands)) {
+        commands.trigger(Begin { actor, quote: None, with_held: true });
     }
 }
 
@@ -150,7 +177,8 @@ pub(super) fn befalls_at_a_device(
     befalls: On<Befell<DeviceAct>>,
     party: Single<(Entity, &PartyRoster)>,
     mut members: Query<(&mut Experience, &Vitals)>,
-    mut levels: Query<(&Level, &mut EncounterState, &Unborn, &mut MonsterBodies)>,
+    mut levels: Query<(&Level, &Unborn, &mut MonsterBodies)>,
+    mut generators: Query<(&Name, &mut EncounterGenerator, &LevelOwned)>,
     (definitions, server): (Res<Assets<LevelDefinition>>, Res<AssetServer>),
     held: Items,
     (content, mut rng): (Res<Catalogs>, ResMut<GameRng>),
@@ -184,15 +212,15 @@ pub(super) fn befalls_at_a_device(
         // The generators that draw from one table draw from another from
         // now on (retail `SetEncounterTable`); what it holds is made ready.
         DeviceAct::Breeds { from, to } => {
-            for (level, mut state, _, mut bodies) in &mut levels {
+            for (level, _, mut bodies) in &mut levels {
                 let Some(definition) = definitions.get(&level.definition) else { continue };
                 let encounters = &definition.encounters;
                 let Some(other) =
-                    encounters.tables.iter().position(|table| table.name.eq_ignore_ascii_case(to))
+                    encounters.tables.iter().find(|table| table.name.eq_ignore_ascii_case(to))
                 else {
                     continue;
                 };
-                for entry in &encounters.tables[other].entries {
+                for entry in &other.entries {
                     let kinds = std::iter::once(entry.species).chain(
                         content.species[entry.species].companions.iter().flatten().map(|c| c.0),
                     );
@@ -204,22 +232,16 @@ pub(super) fn befalls_at_a_device(
                             .or_insert_with(|| server.load(crate::content::paths::monster(model)));
                     }
                 }
-                for (index, generator) in encounters.generators.iter().enumerate() {
-                    let named = generator.table.as_ref().map(|table| table.name.as_str());
-                    if named.is_some_and(|named| named.eq_ignore_ascii_case(from))
-                        && let Some(generator) = state.generators.get_mut(index)
-                    {
-                        generator.table = Some(other);
+                for (_, mut generator, _) in &mut generators {
+                    if generator.table.name.eq_ignore_ascii_case(from) {
+                        generator.table = other.clone();
                     }
                 }
             }
         }
         DeviceAct::Generator(name, on) => {
-            for (level, mut state, ..) in &mut levels {
-                let Some(definition) = definitions.get(&level.definition) else { continue };
-                let named = &definition.encounters.generators;
-                let named = named.iter().position(|g| g.name.eq_ignore_ascii_case(name));
-                if let Some(generator) = named.and_then(|index| state.generators.get_mut(index)) {
+            for (named, mut generator, _) in &mut generators {
+                if named.as_str().eq_ignore_ascii_case(name) {
                     generator.enabled = *on;
                 }
             }
@@ -227,7 +249,7 @@ pub(super) fn befalls_at_a_device(
         // Every group of a species still to be born is (retail
         // `GiveBirthToMonster` on each).
         DeviceAct::Births(species) => {
-            for (_, _, unborn, _) in &levels {
+            for (_, unborn, _) in &levels {
                 let of_species = unborn.0.iter().filter(|one| one.monster.species == *species);
                 let groups: std::collections::BTreeSet<i32> =
                     of_species.filter_map(|one| one.group).collect();
@@ -236,9 +258,7 @@ pub(super) fn befalls_at_a_device(
         }
         DeviceAct::Hurt(count, sides, base) => {
             let dice = Dice { count: *count, sides: *sides, base: *base };
-            commands.queue(move |world: &mut World| {
-                let _ = world.run_system_cached_with(triggers::damage_party, dice);
-            });
+            commands.trigger(triggers::HurtParty(dice));
         }
         // A spell with no caster (retail `PointCastSpell`): one aimed at a
         // single being lands on a living member at random, any other on
@@ -255,12 +275,8 @@ pub(super) fn befalls_at_a_device(
             if single && !living.is_empty() {
                 living = vec![living[rng.below(living.len() as u32) as usize]];
             }
-            let strike = Strike {
-                rows: Rows::Spell(id),
-                strength: power::strength(0, *power, 0, spell),
-                blow: None,
-                by: None,
-            };
+            let strength = power::strength(0, *power, 0, spell);
+            let strike = Strike::new(Rows::Spell(id), strength, None, None, &content);
             commands.spawn((Deed::at(strike, living), Magical));
         }
         DeviceAct::LoseHeld => {

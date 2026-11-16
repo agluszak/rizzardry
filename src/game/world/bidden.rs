@@ -13,7 +13,7 @@ use super::identify::GroupMember;
 use super::level::{Level, LevelOwned};
 use super::obstacles::WorldObstacles;
 use super::population::Monster;
-use super::triggers::{self, Bidding};
+use super::triggers::Bid;
 use crate::content::level::LevelDefinition;
 use crate::content::scripts::{
     Duty, MonsterScript, ScriptCondition, ScriptPlace, ScriptStance, ScriptStep, StandingOrders,
@@ -288,8 +288,7 @@ pub(super) fn run(
                     }
                 }
                 ScriptStep::Trigger(name) => {
-                    let run = Bidding::Run(name.clone());
-                    commands.queue(move |world: &mut World| triggers::bid(world, run));
+                    commands.trigger(Bid::Run(name.clone()));
                 }
                 ScriptStep::Delay(seconds) => {
                     running.wait =
@@ -374,7 +373,7 @@ pub(super) fn keep_orders(
         ),
     >,
     bodies: Query<(Has<crate::game::actors::CanFight>, Option<&GroupMember>), With<Monster>>,
-    groups: Query<&super::identify::MonsterGroup>,
+    encounters: Query<(), With<super::encounters::Encounter>>,
     (levels, definitions): (Query<&Level>, Res<Assets<LevelDefinition>>),
     (places, party): (Places, Single<Entity, With<PartyBody>>),
     conversations: Query<(), With<Conversation>>,
@@ -444,10 +443,7 @@ pub(super) fn keep_orders(
                 // (retail `HandleMonsterPatrolFailure`).
                 if aimed && matches!(*state, AgentState::NoPath | AgentState::TargetNotOnNavMesh) {
                     let group = member.map(|member| member.0);
-                    let encounter = group.and_then(|group| groups.get(group).ok());
-                    if let (Some(group), Some(true)) =
-                        (group, encounter.map(|group| group.encounter.is_some()))
-                    {
+                    if let Some(group) = group.filter(|&group| encounters.contains(group)) {
                         commands.trigger(super::encounters::Retire { group });
                         continue;
                     }

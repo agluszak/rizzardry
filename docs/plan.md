@@ -365,7 +365,10 @@ level's `script` field and `TriggerEffect::BellRang`: the bells are a row.
 
 **New types, and no others.** `triggers::Activating`, the question a device
 asks. `npcs::devices::Gate`, a device's cases. Readings and consequences are
-added to the story's enums as levels need them.
+added to the story's enums as levels need them. Since then a device is its
+components and a use a chain of events (`Activate`, `Activating`,
+`Perform`, `Act<T>`, `Committed`, `Fired`), and the interpreter over the
+whole world is gone.
 
 **Order of work.** Levels by size, smallest first; each ends with a retail
 test still passing that every gate names a device its level has. Then what a
@@ -374,54 +377,51 @@ same kinds. Arnika and Marten's Bluff last.
 
 ## Still in the way
 
-A review of the code on 2026-11-16, each finding checked against the source.
-Numbers are as of that day. Each belongs to the slice named; the order is the
-order to do them in.
+A review of the code on 2026-11-16, each finding checked against the source,
+brought up to date the same day after the devices, the spells' rows and the
+small defects were dealt with (with PR #280's encounters and prop playback).
+Each belongs to the slice named; the order is the order to do them in.
 
 1. **Figures still read through bundles** (slices 1 and 2). `hits::effects::Body`
    gathers 27 components, and `combat::attack::Fighter` adds the armour's parts,
    places and `Against` to it, so a rule can be read only with all of them in
-   mind. It shrinks as each figure is rebuilt as
-   [actors-from-scratch.md](actors-from-scratch.md) says, a rule querying what
-   it reads; it is not split by hand first.
-2. **A device's acts are one `&mut World` interpreter** (slice 10).
-   `world/triggers/mod.rs` (931 lines) carries out every device through
-   `activate`, `bid` and `execute` over the whole world, from the exclusive
-   `activate_devices`. It hurts the party, works fountains and props and calls
-   other systems as functions (`run_system_cached_with`, here and in
-   `triggers/walk.rs`), and looks the level's definition up again each time.
-   That is the broad kind of interpreter the agent guidelines forbid. To do:
-   what a device is becomes components when it is made, and each act an event
-   with one observer, as slice 6 did for locks and traps.
-3. **Rules look content up as they run** (slices 3 and 5). 29 files in `game`
-   read `Catalogs`; 20 places take `Option<Res<Catalogs>>` or `If<Res<...>>`,
-   so a rule quietly does nothing without it. `SpellEffects::default()` parses
-   its table. To do, area by area as each is reworked: the record becomes
-   components where the thing is made, and the rule reads those.
-4. **Small, each on its own:**
-   - `Modifiers` doubles as a dirty bit: putting on, taking off and a worn
-     thing changing call `set_changed()` on it so that armour and mending
-     notice gear. They should notice what is worn themselves.
-   - `settings.rs` names `presentation::party_view::ViewTracking` and
-     `ViewTurning`; those preferences belong outside presentation.
-   - `dev` is compiled into every build; it should be behind a feature.
-   - `world::level::Belongings` lists six relationships by hand; one added
-     later is missed when a level is set aside.
-   - `combat::engage` removes `Camp` and tells `CampNews` itself; the camp
-     should hear that a fight began and end itself.
-   - Test apps are wired by hand (`integration/level_lifecycle.rs`,
-     `combat/tests.rs`), so one can miss what the game has (a resource, an
-     observer). Tests that drive the real plugins are preferred.
+   mind; `characters::Schooling`/`Trained` gather a member's training the same
+   way, and the figure systems fork on `Option<&Calling>`. To do: each figure
+   rebuilt as [actors-from-scratch.md](actors-from-scratch.md) says, a sum of
+   parts written by small systems over the actors that have what each part
+   comes from, and each rule querying what it reads.
+2. **Rules look content up as they run** (slices 3 and 5). 45 files in `game`
+   name `Catalogs`; 16 places take `Option<Res<Catalogs>>` or
+   `If<Res<...>>`, so a rule quietly does nothing without it. Spells are done:
+   their rows are a table read by the definition (`hits::definitions::row`),
+   a deed carries its spell's definition, and a laid spell what it pulses,
+   absorbs and answers with. To do, area by area: an item's name, value,
+   class and stack limit; a monster's faction, stride, senses and treasure; a
+   person's names, merchant and voice, faction, persuasion and what they know
+   (then `npcs::access::NpcActors` keeps only where each can be met).
+3. **Test apps are wired by hand** (`integration/level_lifecycle.rs`,
+   `combat/tests.rs`), so one can miss what the game has (a resource, an
+   observer). Tests that drive the real plugins are preferred.
+
+Done on 2026-11-16, so not to be looked for again: devices are components
+and events (`docs/rules/devices.md`, "How this is built"); `Modifiers` is
+no longer a dirty bit (`items::Redressed`); the view preferences live in
+`settings`; `dev` is behind the `dev` feature; `Belongings` follows every
+relationship that despawns with its holder; the camp breaks itself up when a
+fight begins.
 
 Checked and **not** a problem, so not to be chased:
 
 - Modules of `game` importing each other's components: reading another
   domain's state (whether a `Battle` is on) is how an ECS works. Only a domain
-  changing another's state (item 4, the camp) is a defect.
+  changing another's state is a defect.
 - Two ways of loading content: the retail files are assets because they need
   the install; our own tables are compiled in. Merging them gains nothing.
 - `Items` is the cohesive "what is held" accessor the guidelines allow;
   `npcs::story::Readings` is the one reader of the story's facts (slice 9).
+- A level reading its own definition (spots, view distance, camera paths)
+  through its handle: that is the level's own content, not a record looked
+  up again.
 - Test helpers in main source files are all `#[cfg(test)]`, and tests in a
   `#[cfg(test)] mod tests` beside their code are the Rust convention.
 - Large files are not by themselves a defect.

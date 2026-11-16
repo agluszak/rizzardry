@@ -226,7 +226,7 @@ pub fn cast(
         let moment = circumstances.moment(spell, fighting);
         let asked =
             (means::affordable(&body, spell, &content.spells), means::keeps_alchemy(&body, &kinds));
-        let resolved = resolvable(spell, &content);
+        let resolved = resolvable(spell);
         if let Err(refusal) = may::may(spell, &body, choice.source, &held, asked, moment, resolved)
         {
             commands.trigger(Refused { caster, refusal });
@@ -430,7 +430,8 @@ pub fn cast(
             let from = stand.eye;
             (caster, Spell { owner: Some(caster), from, aim, ..Spell::of(id, caster) }, victims)
         };
-        let row = content.spell_row(id).expect("a checked spell has a row");
+        let row = crate::game::hits::definitions::row(&content.spells[id])
+            .expect("a checked spell has a row");
         // Turned on its caster's side it gives nothing back when it follows
         // rows of its own.
         let (rows, leeches) = match backfired {
@@ -450,7 +451,7 @@ pub fn cast(
             };
             flies.then(|| reach::flight(stand.eye, to))
         };
-        let strike = Strike { rows, strength, blow: None, by: Some(caster) };
+        let strike = Strike::new(rows, strength, None, Some(caster), &content);
         // What follows the deed is put beside it before it is let go.
         let arrivals: Vec<_> = victims.iter().map(|&victim| (victim, flight(victim))).collect();
         let mut deed = commands.spawn(Spell { backfired, victims: victims.clone(), ..spell_of });

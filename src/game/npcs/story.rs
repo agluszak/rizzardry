@@ -35,7 +35,7 @@ use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::particles::Emitter;
 use crate::game::world::perception::in_view;
 use crate::game::world::population::{Coming, Monster};
-use crate::game::world::triggers::{self, Bidding};
+use crate::game::world::triggers::{self, Bid};
 use crate::game::world::triggers::{LevelState, PartyMove, PendingPartyMove, TriggerEffect};
 use avian3d::prelude::{Position, Rotation};
 #[derive(Resource, Debug, Default)]
@@ -884,23 +884,22 @@ pub(super) fn befalls_the_level(
         let of_kind = || monsters.iter().filter(|(_, monster, _)| monster.species == *species);
         of_kind().find(|&(body, ..)| leading.contains(body)).or_else(|| of_kind().next())
     };
-    let mut bid = |bidding: Bidding| {
-        commands.queue(move |world: &mut World| triggers::bid(world, bidding));
-    };
     match &befalls.0 {
         LevelAct::HostilesDie => commands.run_system_cached(hostiles_die),
-        LevelAct::Trigger(name) => bid(Bidding::Run(name.clone())),
-        LevelAct::TriggerOnce(name) => bid(Bidding::RunOnce(name.clone())),
-        LevelAct::TriggerOff(name) => bid(Bidding::SwitchOff(name.clone())),
-        LevelAct::TriggerOn(name) => bid(Bidding::SwitchOn(name.clone())),
-        LevelAct::TriggerEnabled(name) => bid(Bidding::Enable(name.clone())),
+        LevelAct::Trigger(name) => commands.trigger(Bid::Run(name.clone())),
+        LevelAct::TriggerOnce(name) => commands.trigger(Bid::RunOnce(name.clone())),
+        LevelAct::TriggerOff(name) => commands.trigger(Bid::SwitchOff(name.clone())),
+        LevelAct::TriggerOn(name) => commands.trigger(Bid::SwitchOn(name.clone())),
+        LevelAct::TriggerEnabled(name) => commands.trigger(Bid::Enable(name.clone())),
         LevelAct::LevelVarStep(name, count) => {
-            bid(Bidding::Step(name.as_str().into(), *count));
+            commands.trigger(Bid::Step(name.as_str().into(), *count));
         }
-        LevelAct::Unlock(name) => bid(Bidding::Unlock(name.clone())),
-        LevelAct::LevelVar(name, value) => bid(Bidding::Set(name.as_str().into(), *value)),
+        LevelAct::Unlock(name) => commands.trigger(Bid::Unlock(name.clone())),
+        LevelAct::LevelVar(name, value) => {
+            commands.trigger(Bid::Set(name.as_str().into(), *value));
+        }
         LevelAct::LevelVarOr(name, bits) => {
-            bid(Bidding::SetBits(name.as_str().into(), *bits));
+            commands.trigger(Bid::SetBits(name.as_str().into(), *bits));
         }
         LevelAct::Group(species, stance) => {
             if let Some((_, _, member)) = first(species) {
