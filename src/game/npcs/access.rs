@@ -82,7 +82,7 @@ impl NpcActors<'_, '_> {
     pub fn available(&self, person: Entity) -> bool {
         let (_, _, spoken_for) = self.persons.get(person).expect("a person");
         if let Some(member) = self.member(person) {
-            return self.members.get(member).is_ok_and(|v| !v.is_dead());
+            return !self.members.get(member).expect("a member").is_dead();
         }
         // A device in the level played speaks for them.
         let speaks = |device| self.speakers.get(device).is_ok_and(|on| self.levels.contains(on.0));
@@ -90,15 +90,17 @@ impl NpcActors<'_, '_> {
             return true;
         }
         let Some(body) = self.active_body(person) else { return false };
-        self.sides.get(body).is_ok_and(|side| side.own() != Stance::Hostile)
+        self.sides.get(body).expect("a body").own() != Stance::Hostile
     }
     pub fn turned(&self, person: Entity) -> bool {
-        self.active_body(person).and_then(|b| self.bodies.get(b).ok()).is_some_and(
-            |((_, conditions), ..)| conditions.has(crate::game::characters::Condition::Turncoat),
-        )
+        self.active_body(person).is_some_and(|body| {
+            let ((_, conditions), ..) = self.bodies.get(body).expect("an active body");
+            conditions.has(crate::game::characters::Condition::Turncoat)
+        })
     }
     pub fn species_level(&self, person: Entity) -> u32 {
-        self.active_body(person).and_then(|b| self.bodies.get(b).ok()).map_or(1, |r| r.3.0.max(1))
+        self.active_body(person)
+            .map_or(1, |body| self.bodies.get(body).expect("an active body").3.0.max(1))
     }
 }
 #[derive(SystemParam)]

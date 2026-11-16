@@ -207,9 +207,8 @@ pub(super) fn befalls_at_a_device(
         // Each living member wins as much (retail `AwardPartyExperience`).
         DeviceAct::Experience(amount) => {
             for member in roster.iter() {
-                if let Ok((mut experience, vitals)) = members.get_mut(member)
-                    && !vitals.is_dead()
-                {
+                let (mut experience, vitals) = members.get_mut(member).expect("a member");
+                if !vitals.is_dead() {
                     experience.earned += u64::from(*amount);
                 }
             }
@@ -273,7 +272,7 @@ pub(super) fn befalls_at_a_device(
             let Some(spell) = content.spells.get(id) else { return };
             let mut living: Vec<Entity> = roster
                 .iter()
-                .filter(|&member| members.get(member).is_ok_and(|(_, vitals)| !vitals.is_dead()))
+                .filter(|&member| !members.get(member).expect("a member").1.is_dead())
                 .collect();
             let single =
                 matches!(spell.targeting, Targeting::Caster | Targeting::Ally | Targeting::Enemy);
@@ -340,7 +339,7 @@ pub(super) fn shoots(
         }
         let living: Vec<Entity> = roster
             .iter()
-            .filter(|&member| members.get(member).is_ok_and(|(vitals, ..)| !vitals.is_dead()))
+            .filter(|&member| !members.get(member).expect("a member").0.is_dead())
             .collect();
         if living.is_empty() {
             continue;
@@ -435,9 +434,8 @@ pub(super) fn crush(
                 vitals.slay(None);
                 if monster.species == crushing.prize.0 {
                     for member in roster.iter() {
-                        if let Ok((mut experience, vitals)) = members.get_mut(member)
-                            && !vitals.is_dead()
-                        {
+                        let (mut experience, vitals) = members.get_mut(member).expect("a member");
+                        if !vitals.is_dead() {
                             experience.earned += u64::from(crushing.prize.1);
                         }
                     }

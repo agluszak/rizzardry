@@ -717,12 +717,14 @@ fn bid(
     match bid.event() {
         Bid::Run(name) => run(name),
         Bid::RunOnce(name) => {
-            if names.named(name).and_then(|d| states.get(d).ok()).is_some_and(|s| !s.fired) {
+            let state = names.named(name).map(|d| states.get(d).expect("a device"));
+            if state.is_some_and(|state| !state.fired) {
                 run(name);
             }
         }
         Bid::SwitchOff(name) | Bid::SwitchOn(name) | Bid::Enable(name) => {
-            if let Some(mut state) = names.named(name).and_then(|d| states.get_mut(d).ok()) {
+            if let Some(device) = names.named(name) {
+                let mut state = states.get_mut(device).expect("a device");
                 state.on = !matches!(bid.event(), Bid::SwitchOff(_));
             }
             if matches!(bid.event(), Bid::SwitchOn(_)) {

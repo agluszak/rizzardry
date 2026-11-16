@@ -29,7 +29,7 @@ impl Sums<'_, '_> {
     fn on(&self, bearer: Entity, going: Option<Entity>) -> Bonus {
         let laid = self.bearers.get(bearer).into_iter().flat_map(|spells| spells.iter());
         laid.filter(|&spell| Some(spell) != going)
-            .filter_map(|spell| self.spells.get(spell).ok())
+            .map(|spell| self.spells.get(spell).expect("a spell laid"))
             .fold(Bonus::default(), |mut sum, bonus| {
                 sum += *bonus;
                 sum
@@ -58,16 +58,16 @@ impl Sums<'_, '_> {
     }
 }
 
-fn laid(event: On<Add<LaidOn>>, on: Query<&LaidOn>, mut sums: Sums) {
-    if let Ok(&LaidOn(bearer)) = on.get(event.entity) {
-        sums.changed(bearer, None);
-    }
+fn laid(event: On<Add<LaidOn>>, on: Query<&LaidOn>, mut sums: Sums) -> Result {
+    let &LaidOn(bearer) = on.get(event.entity)?;
+    sums.changed(bearer, None);
+    Ok(())
 }
 
-fn lifted(event: On<Remove<LaidOn>>, on: Query<&LaidOn>, mut sums: Sums) {
-    if let Ok(&LaidOn(bearer)) = on.get(event.entity) {
-        sums.changed(bearer, Some(event.entity));
-    }
+fn lifted(event: On<Remove<LaidOn>>, on: Query<&LaidOn>, mut sums: Sums) -> Result {
+    let &LaidOn(bearer) = on.get(event.entity)?;
+    sums.changed(bearer, Some(event.entity));
+    Ok(())
 }
 
 /// One who joins a party is under its spells.
