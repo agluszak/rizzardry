@@ -3,7 +3,7 @@
 //! checked on its state. They need `RIZZARDRY_RETAIL` and fail without it.
 //!
 //! ```sh
-//! RIZZARDRY_RETAIL=/path/to/wizardry8 cargo nextest run --run-ignored only -E 'test(/^scenarios::/)'
+//! RIZZARDRY_RETAIL=/path/to/wizardry8 cargo nextest run --lib --run-ignored only -E 'test(/scenarios::/)'
 //! ```
 
 use crate::app::{Options, build};

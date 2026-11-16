@@ -122,6 +122,29 @@ impl AssetLoader for SpellCatalogLoader {
     }
 }
 
+#[derive(Default, TypePath)]
+pub struct SpellTextLoader;
+impl AssetLoader for SpellTextLoader {
+    type Asset = crate::content::spells::SpellText;
+    type Settings = ();
+    type Error = super::LoadError;
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _: &(),
+        _: &mut LoadContext<'_>,
+    ) -> Result<crate::content::spells::SpellText, super::LoadError> {
+        let mut data = Vec::new();
+        reader.read_to_end(&mut data).await?;
+        crate::retail::strings::read_messages(&data)
+            .map(crate::content::spells::SpellText)
+            .ok_or_else(super::text_loader::malformed_messages)
+    }
+    fn extensions(&self) -> &[&str] {
+        &["dbs"]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,28 +178,5 @@ mod tests {
             (Some(Realm::Air), Targeting::EnemyGroup, 1, 0)
         );
         assert!(sleep.books.contains(Spellbook::Wizardry));
-    }
-}
-
-#[derive(Default, TypePath)]
-pub struct SpellTextLoader;
-impl AssetLoader for SpellTextLoader {
-    type Asset = crate::content::spells::SpellText;
-    type Settings = ();
-    type Error = super::LoadError;
-    async fn load(
-        &self,
-        reader: &mut dyn Reader,
-        _: &(),
-        _: &mut LoadContext<'_>,
-    ) -> Result<crate::content::spells::SpellText, super::LoadError> {
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).await?;
-        crate::retail::strings::read_messages(&data)
-            .map(crate::content::spells::SpellText)
-            .ok_or_else(super::text_loader::malformed_messages)
-    }
-    fn extensions(&self) -> &[&str] {
-        &["dbs"]
     }
 }

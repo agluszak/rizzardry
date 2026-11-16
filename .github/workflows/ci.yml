@@ -38,4 +38,4 @@ jobs:
       - run: cargo fmt --package rizzardry --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       # Retail tests are ignored: CI has no Wizardry 8 installation.
-      - run: cargo nextest run --locked --no-fail-fast
+      - run: cargo nextest run --locked --lib --no-fail-fast

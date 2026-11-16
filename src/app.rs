@@ -220,6 +220,14 @@ pub fn build(options: &Options) -> Result<App, String> {
     }
     #[cfg(feature = "dev")]
     crate::dev::install(&mut app, &options.dev, options.headless);
+    // Gameplay alone runs fastest on one thread: handing its many small
+    // systems out to a thread pool cost a headless game three times its work.
+    if !rendered {
+        let mut schedules = app.world_mut().resource_mut::<Schedules>();
+        for (_, schedule) in schedules.iter_mut() {
+            schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
+        }
+    }
     // Explicit developer/headless bootstrap: a new campaign with the party
     // file's members. Interactive play commits from the creation flow.
     if quick_start {

@@ -76,7 +76,7 @@ connectivity. Both read `RIZZARDRY_RETAIL`. Retail-dependent tests are ignored
 by default; run them explicitly against your installation:
 
 ```sh
-RIZZARDRY_RETAIL=/path/to/wizardry8 cargo nextest run --locked --run-ignored only
+RIZZARDRY_RETAIL=/path/to/wizardry8 cargo nextest run --locked --lib --run-ignored only
 ```
 
 Behavioral research compares

@@ -58,10 +58,10 @@ debug = "line-tables-only"
 [profile.dev]
 opt-level = 1
 
-# Tests spend their time in the optimised dependencies; compiling the crate
-# itself unoptimised for them builds the suite faster.
+# Tests keep the dev profile's opt-level 1: the retail scenarios step the game
+# thousands of times, much of it in Bevy's generic code compiled into this
+# crate; opt-level 0 made them twice as slow and saved little rebuild time.
 [profile.test]
-opt-level = 0
 # Full debuginfo of this crate was over a gigabyte of each test binary;
 # line tables still give usable backtraces.
 debug = "line-tables-only"

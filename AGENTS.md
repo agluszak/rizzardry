@@ -93,10 +93,10 @@ work here.
 - CI runs `cargo fmt --check`, clippy and the unit suite on every pull
   request, so they need not be run before a commit or a push; while working,
   compile-check (clippy) instead. CI has no Wizardry 8 install, so the retail
-  tests (`RIZZARDRY_RETAIL=<install> cargo nextest run --run-ignored only`) run
-  only locally: once a slice of gameplay is done, not as a gate on each
-  commit. The heavy tests are limited to two at a time in
-  `.config/nextest.toml`; all at once run the machine out of memory.
+  tests (`RIZZARDRY_RETAIL=<install> cargo nextest run --lib --run-ignored
+  only`) run only locally: once a slice of gameplay is done, not as a gate on
+  each commit. `--lib` keeps the examples, and a second build of the crate
+  for them, out of a test run.
 
 ## Git
 
