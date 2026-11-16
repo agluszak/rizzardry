@@ -7,10 +7,11 @@ use bevy::prelude::Entity;
 use super::close::reaches_party;
 use super::sight::{Fray, Sight};
 use super::{special, spell};
-use crate::content::species::Reach;
+use crate::content::species::{Reach, SpecialAttack};
 use crate::content::spells::SpellId;
 use crate::game::data::Catalogs;
 use crate::game::world::hostility::Stance;
+use crate::game::world::population::Spellcasting;
 
 /// How far from the party a group still takes part (retail's 50 m).
 pub const ENGAGEMENT_RANGE: f32 = 50.0;
@@ -29,7 +30,7 @@ pub const REINFORCEMENT_SLACK: f32 = 1.15;
 /// times the hostile's own gap, and the member is nearer the party, or
 /// nearer the hostile, than the hostile is to the party.
 pub fn stands_with(sight: &Sight, members: &[Entity], hostiles: &[Entity]) -> bool {
-    let hidden = |m| sight.minds.get(m).is_ok_and(|mind| mind.temper.0.camouflaged);
+    let hidden = |m| sight.tempers.get(m).is_ok_and(|temper| temper.0.camouflaged);
     members
         .iter()
         .filter(|&&m| sight.in_party_view(m) && !hidden(m))
@@ -48,8 +49,13 @@ pub fn stands_with(sight: &Sight, members: &[Entity], hostiles: &[Entity]) -> bo
 /// fight, and an arm reaches the party, or it walks and its arms are for
 /// close quarters, or it could cast at its foes, or its special attack is
 /// ready.
-pub fn acts_on_party(sight: &Sight, fighter: Entity, content: &Catalogs) -> bool {
-    let Some((own, mind)) = sight.monster(fighter) else { return false };
+pub fn acts_on_party(
+    sight: &Sight,
+    fighter: Entity,
+    (attack, cooldown, casting, walks): (&SpecialAttack, u8, &Spellcasting, bool),
+    content: &Catalogs,
+) -> bool {
+    let Ok(own) = sight.bodies.get(fighter) else { return false };
     if !own.can_fight {
         return false;
     }
@@ -67,9 +73,9 @@ pub fn acts_on_party(sight: &Sight, fighter: Entity, content: &Catalogs) -> bool
             .map_or(Vec::new(), |cone| spell::aims(sight, &own, cone, fray))
     };
     reaches_party(own.attacks, gap)
-        || (close && mind.monster.body.speed > 0.0)
-        || spell::casts_at_foes(sight, &own, &mind, content, fray)
-        || special::ready(&own, &mind, gap, false, &breath())
+        || (close && walks)
+        || spell::casts_at_foes(sight, &own, casting, content, fray)
+        || special::ready(&own, (attack, cooldown), gap, false, &breath())
 }
 
 /// What became of a group outside the fight.
@@ -102,7 +108,7 @@ pub fn comes_in(
     (stance, radius): (Stance, Option<f32>),
     (fight_running, provoked): (bool, bool),
     hostiles: &[Entity],
-    content: &Catalogs,
+    acts: impl Fn(Entity) -> bool,
     walks: impl Fn(Entity, f32) -> bool,
 ) -> Entered {
     let nearest = fighters.iter().map(|&m| sight.party_gap(m)).fold(f32::INFINITY, f32::min);
@@ -117,7 +123,7 @@ pub fn comes_in(
             sight.party_gap(leader.entity) <= reach && walks(leader.entity, reach)
         })
     };
-    let hidden = |m: Entity| sight.minds.get(m).is_ok_and(|mind| mind.temper.0.camouflaged);
+    let hidden = |m: Entity| sight.tempers.get(m).is_ok_and(|temper| temper.0.camouflaged);
     let in_sight_near = || {
         fighters.iter().any(|&m| {
             sight.in_party_view(m) && !hidden(m) && sight.party_gap(m) <= Reach::Extreme.metres()
@@ -126,7 +132,7 @@ pub fn comes_in(
     let enters = match if turns { Stance::Hostile } else { stance } {
         Stance::Hostile if provoked => true,
         Stance::Hostile if fight_running => (sees() && leader_in_reach()) || in_sight_near(),
-        Stance::Hostile => sees() && fighters.iter().any(|&m| acts_on_party(sight, m, content)),
+        Stance::Hostile => sees() && fighters.iter().any(|&m| acts(m)),
         Stance::Neutral if fight_running => stands_with(sight, fighters, hostiles),
         _ => false,
     };

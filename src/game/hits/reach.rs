@@ -3,7 +3,7 @@
 
 use bevy::prelude::*;
 
-use super::effects::BodyReadOnly;
+use crate::game::actors::Body;
 use crate::game::actors::Places;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::hostility::Stance;
@@ -40,7 +40,7 @@ impl Recipients {
 /// by seat, then the combatants as they joined, then anyone else.
 #[derive(Clone, Copy)]
 pub struct Field<'a, 'w, 's> {
-    pub bodies: &'a Query<'w, 's, BodyReadOnly>,
+    pub bodies: &'a Query<'w, 's, Body>,
     pub places: &'a Places<'w, 's>,
     pub obstacles: &'a WorldObstacles<'w, 's>,
     pub roster: &'a PartyRoster,

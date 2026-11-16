@@ -90,7 +90,6 @@ pub struct Advancement {
 pub struct Evaluation {
     baseline: Character,
     pub preview: Character,
-    learned: LearnedSpells,
     attributes_left: u32,
 }
 
@@ -177,12 +176,7 @@ impl Advancement {
     pub fn evaluate(&self) -> Evaluation {
         let baseline = self.baseline();
         let preview = self.allocate(baseline.clone());
-        Evaluation {
-            attributes_left: self.attributes_left(&preview),
-            learned: self.learned(),
-            baseline,
-            preview,
-        }
+        Evaluation { attributes_left: self.attributes_left(&preview), baseline, preview }
     }
     fn attributes_left(&self, preview: &Character) -> u32 {
         6 - preview.abilities.0.iter().map(|(a, &n)| n - self.original.abilities.0[a]).sum::<u32>()
@@ -231,13 +225,13 @@ impl Advancement {
         }
         true
     }
-    pub fn learned(&self) -> LearnedSpells {
-        let mut known = self.known.clone();
-        known.0.extend(self.spells.iter().copied());
-        if self.spells.contains(&SpellId::SET_PORTAL) {
-            known.0.extend([SpellId::RETURN_TO_PORTAL]);
-        }
-        known
+    /// What the member would know with the spells picked: Set Portal
+    /// brings Return to Portal with it.
+    pub fn learned(&self, catalog: &SpellCatalog) -> LearnedSpells {
+        let portal =
+            self.spells.contains(&SpellId::SET_PORTAL).then_some(SpellId::RETURN_TO_PORTAL);
+        let picked = LearnedSpells::of(self.spells.iter().copied().chain(portal), catalog);
+        self.known.clone().with(&picked)
     }
     pub fn can_adjust_skill(&self, s: Skill, up: bool, catalog: &SpellCatalog) -> bool {
         self.skill_adjustable(&self.evaluate(), s, up, catalog)
@@ -256,7 +250,7 @@ impl Advancement {
         self.skill_remaining() > 0
             && self.skills[s] < 3
             && c.training.0[s] < 75
-            && magic::skill_available(c.trained(), &draft.learned, catalog, s)
+            && magic::skill_available(c.trained(), &self.learned(catalog), s)
     }
     pub fn adjust_skill(&mut self, s: Skill, up: bool, catalog: &SpellCatalog) -> bool {
         if !self.can_adjust_skill(s, up, catalog) {
@@ -274,7 +268,7 @@ impl Advancement {
     }
     pub fn learnable(&self, draft: &Evaluation, id: SpellId, catalog: &SpellCatalog) -> bool {
         // Retail excludes this draft's magic-skill allocations from spell eligibility.
-        !self.known.0.contains(&id)
+        !self.known.knows(id)
             && catalog.get(id).is_some_and(|s| {
                 magic::can_learn(
                     (draft.baseline.trained(), &draft.baseline.training),
@@ -311,9 +305,9 @@ impl Advancement {
                 return false;
             }
         }
-        let learned = self.learned();
+        let learned = self.learned(catalog);
         for s in EnumSet::<Skill>::all() {
-            if !magic::skill_available(draft.preview.trained(), &learned, catalog, s) {
+            if !magic::skill_available(draft.preview.trained(), &learned, s) {
                 self.skills[s] = 0;
             }
         }
@@ -324,21 +318,24 @@ impl Advancement {
             return Err("This profession is unavailable.");
         }
         let draft = self.evaluate();
+        let learned = self.learned(catalog);
         if EnumSet::<Attribute>::all().iter().any(|a| self.attribute_adjustable(&draft, a, true)) {
             return Err("Allocate the remaining attribute points.");
         }
         if EnumSet::<Skill>::all().iter().any(|s| self.skill_adjustable(&draft, s, true, catalog)) {
             return Err("Allocate the remaining skill points.");
         }
-        if self.skills.iter().any(|(s, &n)| {
-            n > 0 && !magic::skill_available(draft.preview.trained(), &draft.learned, catalog, s)
-        }) {
+        if self
+            .skills
+            .iter()
+            .any(|(s, &n)| n > 0 && !magic::skill_available(draft.preview.trained(), &learned, s))
+        {
             return Err("Refund training in unavailable skills.");
         }
         let picks = self
             .remaining_picks(&draft, catalog)
             .ok_or("The spell selection is no longer valid.")?;
-        let Evaluation { mut preview, learned, .. } = draft;
+        let Evaluation { mut preview, .. } = draft;
         preview.picks = picks;
         Ok((preview, learned))
     }

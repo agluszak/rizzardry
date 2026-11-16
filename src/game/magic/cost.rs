@@ -5,8 +5,8 @@
 use crate::content::characters::{Realm, Skill};
 use crate::content::items::UseType;
 use crate::content::spells::SpellDefinition;
+use crate::game::actors::BodyItem;
 use crate::game::characters::{Condition, Load, Trained};
-use crate::game::hits::effects::BodyReadOnlyItem;
 use crate::game::magic::best_book;
 use crate::game::rng::GameRng;
 
@@ -25,7 +25,7 @@ const PLAYED_BESIDES: u32 = 20;
 /// otherwise a quarter more hasted; a monster's stands.
 pub fn stamina(
     rng: &mut GameRng,
-    body: &BodyReadOnlyItem,
+    body: &BodyItem,
     used: Option<UseType>,
     spell: &SpellDefinition,
     power: u32,

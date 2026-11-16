@@ -49,7 +49,7 @@ pub(super) fn charge(
     for (group, members, saw) in &groups {
         // Those whose eyes count: alive and not blinded or worse.
         let watching = |member: &Entity| {
-            sight.monster(*member).is_some_and(|(body, _)| {
+            sight.bodies.get(*member).is_ok_and(|body| {
                 !body.vitals.is_dead()
                     && body.conditions.below(crate::game::characters::Condition::Blind)
             })
@@ -63,8 +63,8 @@ pub(super) fn charge(
             let Ok((mut target, charging)) = walkers.get_mut(member) else { continue };
             let pursues = recent
                 && sight.side(member) == Some(Stance::Hostile)
-                && sight.monster(member).is_some_and(|(body, _)| body.can_fight);
-            let hurt = sight.monster(member).is_some_and(|(body, _)| {
+                && sight.bodies.get(member).is_ok_and(|body| body.can_fight);
+            let hurt = sight.bodies.get(member).is_ok_and(|body| {
                 body.vitals.health.current * 100 <= body.vitals.health.max * TOO_HURT
             });
             if pursues {

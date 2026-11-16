@@ -147,6 +147,12 @@ the realm that is most short first (retail `RecalculateRealmSpellPoints`,
 maximum less what has been spent, so a drop in the maximum leaves a deficit
 that a later rise does not refill.
 
+The maximum is a figure of the actor's (`SpellPoints`), written by its own
+system as the spells learned, the level, Piety or the skills change; nothing
+works it out as it reads it. A spell learned carries its realm and cost,
+read from the spell as it is learned (`LearnedSpells`), so neither the
+figure nor whether a realm's skill is open looks the spell up again.
+
 **Auto power** is chosen for the aimed victim, never above what is affordable
 (retail `ChooseSpellPowerLevelForTarget`):
 
@@ -970,9 +976,22 @@ as it arrives, says `Landed` once all of it has, and is gone. What follows a
 deed is whatever its maker put beside it, read by the maker's own observer of
 `Landed`: a drain's share, the spell that may burst or be turned back, the
 caster's practice, an auto recast. The code that lands a deed knows nothing
-of spells, casters or fights; a breath, a cloud's pulse and a trap are deeds
-too, each followed by its own maker. A cast is told as it is made, and what
-its deed did as it lands.
+of spells, casters or fights; a breath, a cloud's pulse, a trap and a blow
+are deeds too, each followed by its own maker. A cast is told as it is made,
+and what its deed did as it lands.
+
+**A deed lands as events.** On each victim it reaches, each row is weighed
+(`Lands`: whether it is for them, whether it waits on the row before, its
+roll, the defences) and what gets through is applied (`Applies`), by the
+observer of what the row changes: health, what ails the victim, its spell
+points, the spells laid on it, what heat takes of what it carries. Each reads
+only what it changes. One who was alive before a row and is not after may
+cheat death (`Settles`) before the next row is weighed. The party's own rows
+land once, with the first member reached.
+
+**Paying is an event.** A cast pays its points and stamina through `Pays`;
+an auto cast that fizzled is cast again (`Cast` with `again`), and goes on
+while stamina and points last.
 
 **What a spell does is its rows.** The code that applies an effect row never
 names a spell. Where one spell truly behaves alone, that is a kind of effect

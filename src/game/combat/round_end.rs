@@ -22,6 +22,7 @@ use super::{
     Battle, CombatNews, Combatant, Combatants, PASSIVE_ROUNDS, Pause, ROUND_SECONDS, Round, Spoils,
 };
 use crate::content::spells::Pulsing;
+use crate::game::actors::Body;
 use crate::game::actors::Laid;
 use crate::game::actors::Places;
 use crate::game::actors::spells::Aged;
@@ -29,7 +30,6 @@ use crate::game::actors::spells::{LaidOn, Pulses};
 use crate::game::actors::time::{Elapsed, Mending, Pace};
 use crate::game::characters::Condition;
 use crate::game::characters::Vitals;
-use crate::game::hits::effects::BodyReadOnly;
 use crate::game::hits::reach::{Field, Recipients};
 use crate::game::hits::{Deed, Landed};
 use crate::game::party::body::PartyBody;
@@ -141,11 +141,12 @@ pub(super) fn leave_fight(
     let Ok((combatants, mut round)) = fights.get_mut(leave.fight) else { return };
     let combatants = combatants.entities();
     let hostile = |c: Entity| sight.alive(c) && sight.side(c) == Some(Stance::Hostile);
-    let group_of = |monster: Entity| sight.minds.get(monster).ok()?.group.map(|group| group.0);
+    let group_of = |monster: Entity| sight.groups.get(monster).ok().map(|group| group.0);
     let hostiles: Vec<Entity> = combatants.iter().copied().filter(|&c| hostile(c)).collect();
     // A monster outside any group keeps hostile groups engaged.
-    let mut engaged =
-        combatants.iter().any(|&c| sight.minds.contains(c) && group_of(c).is_none() && hostile(c));
+    let mut engaged = combatants
+        .iter()
+        .any(|&c| sight.tempers.contains(c) && group_of(c).is_none() && hostile(c));
     let mut fought: Vec<Entity> = Vec::new();
     for group in combatants.iter().filter_map(|&c| group_of(c)) {
         if !fought.contains(&group) {
@@ -239,7 +240,7 @@ pub(super) fn pulse_clouds(
     mut commands: Commands,
     fights: Query<&Combatants>,
     pulsing: Query<(&LaidOn, &Pulses)>,
-    bodies: Query<BodyReadOnly>,
+    bodies: Query<Body>,
     grouping: (Query<&'static GroupMember>, Query<&'static GroupMembers>),
     places: Places,
     party: Single<(Entity, &Position, &PartyRoster)>,

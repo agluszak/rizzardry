@@ -27,11 +27,11 @@ use super::triggers::DoorState;
 use crate::content::characters::{Attribute, Skill};
 use crate::content::level::{Lock, TRAP_TYPES};
 use crate::content::spells::Working;
+use crate::game::actors::{Attributes, Body, BodyItem};
 use crate::game::characters::{Calling, Practise, Trained, Vitals};
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
-use crate::game::hits::effects::{Body, BodyItem};
 use crate::game::magic::Outcome;
 use crate::game::magic::casting::{MagicNews, Worked};
 use crate::game::magic::reach::Marked;
@@ -470,7 +470,7 @@ fn pick(
     pick: On<Pick>,
     mut attempts: Query<(&mut DeviceInteraction, &AttemptOn)>,
     mut guards: Query<&mut Guarded>,
-    mut bodies: Query<Body>,
+    bodies: Query<Body>,
     busy: Busy,
     setting: Res<Difficulty>,
     mut rng: ResMut<GameRng>,
@@ -480,7 +480,7 @@ fn pick(
     let Pick { attempt, actor, tumbler } = *pick;
     let Ok((mut interaction, &AttemptOn(device))) = attempts.get_mut(attempt) else { return };
     let Work::Picking(picking) = &mut interaction.work else { return };
-    let Some(skill) = bodies.get_mut(actor).ok().filter(|_| !busy.busy()).and_then(|b| skill(&b))
+    let Some(skill) = bodies.get(actor).ok().filter(|_| !busy.busy()).and_then(|b| skill(&b))
     else {
         return;
     };
@@ -525,7 +525,7 @@ fn pick(
 fn force(
     force: On<Force>,
     mut attempts: Query<&mut DeviceInteraction>,
-    mut bodies: Query<Body>,
+    mut members: Query<(&mut Vitals, &Attributes, Has<crate::game::actors::CanAct>)>,
     busy: Busy,
     setting: Res<Difficulty>,
     mut rng: ResMut<GameRng>,
@@ -535,14 +535,14 @@ fn force(
     let Force { attempt, actor: member } = *force;
     let Ok(mut interaction) = attempts.get_mut(attempt) else { return };
     let Work::Picking(picking) = &interaction.work else { return };
-    let Ok(mut body) = bodies.get_mut(member) else { return };
-    let strength = body.attributes[Attribute::Strength];
-    let Some(chance) = force_chance(strength, &body.vitals, picking.tumblers.len(), *setting)
-        .filter(|_| body.can_act && !busy.busy())
+    let Ok((mut vitals, a, can_act)) = members.get_mut(member) else { return };
+    let Some(chance) =
+        force_chance(a[Attribute::Strength], &vitals, picking.tumblers.len(), *setting)
+            .filter(|_| can_act && !busy.busy())
     else {
         return;
     };
-    body.vitals.tire(FORCE_STAMINA);
+    vitals.tire(FORCE_STAMINA);
     // The panel redraws from the attempt: what its members can do changed.
     interaction.set_changed();
     if rng.below(100) < chance {
@@ -559,7 +559,7 @@ fn inspect(
     inspect: On<Inspect>,
     mut attempts: Query<(&mut DeviceInteraction, &AttemptOn)>,
     guards: Query<(), With<Guarded>>,
-    mut bodies: Query<Body>,
+    bodies: Query<Body>,
     busy: Busy,
     (content, setting): (Res<Catalogs>, Res<Difficulty>),
     mut rng: ResMut<GameRng>,
@@ -572,7 +572,7 @@ fn inspect(
     if !ready(trap, guards.contains(device), &content, &mut news) || busy.busy() {
         return;
     }
-    let Some(skill) = bodies.get_mut(actor).ok().and_then(|body| skill(&body)) else { return };
+    let Some(skill) = bodies.get(actor).ok().and_then(|body| skill(&body)) else { return };
     let chance = trap.inspection_chance(Some(skill), *setting);
     if rng.below(100) >= chance {
         commands.trigger(Sprung { attempt, by: Some(actor) });
@@ -601,7 +601,7 @@ fn disarm(
     disarm: On<Disarm>,
     mut attempts: Query<(&mut DeviceInteraction, &AttemptOn)>,
     guards: Query<(), With<Guarded>>,
-    mut bodies: Query<Body>,
+    bodies: Query<Body>,
     busy: Busy,
     (content, setting): (Res<Catalogs>, Res<Difficulty>),
     mut rng: ResMut<GameRng>,
@@ -614,7 +614,7 @@ fn disarm(
     if !ready(trap, guards.contains(device), &content, &mut news) || busy.busy() {
         return;
     }
-    let Some(skill) = bodies.get_mut(actor).ok().and_then(|body| skill(&body)) else { return };
+    let Some(skill) = bodies.get(actor).ok().and_then(|body| skill(&body)) else { return };
     if component >= COMPONENTS || trap.disarmed[component] {
         return;
     }

@@ -65,8 +65,9 @@ one that trained has a `Calling`, and what a `Calling` adds is in the one
 formula.
 
 Each figure has one system, which writes it for every actor one of whose
-sources changed since it last ran: attributes, skills, the maxima of health
-and stamina, resistances, armour, attacks, mending. They run in that order
+sources changed since it last ran: attributes, skills, the most spell points
+of each realm, the maxima of health and stamina, resistances, armour,
+attacks, mending. They run in that order
 as part of settling bodies (see Fitness), so the figures follow their sources
 by the next time rules read them, not inside the operation that changed the
 source. Nothing asks for a figure to be written, and nothing is told that

@@ -642,12 +642,7 @@ pub(super) fn refresh(
                 Some(art.green.clone())
             }
             Field::SkillName(skill) => {
-                let active = crate::game::magic::skill_available(
-                    profile.trained(),
-                    learned,
-                    spell_catalog,
-                    skill,
-                );
+                let active = crate::game::magic::skill_available(profile.trained(), learned, skill);
                 let level = skills[skill];
                 let best = level > 0
                     && roster.as_ref().is_some_and(|roster| {
@@ -758,7 +753,7 @@ pub(super) fn refresh(
 }
 
 pub(super) fn layout_skills(
-    spell_state: (Query<&LearnedSpells>, If<Res<Catalogs>>),
+    learned: Query<&LearnedSpells>,
     screen: Single<&InventoryScreen>,
     characters: Query<(crate::game::characters::PaperReadOnly, &crate::game::actors::Skills)>,
     mut rows: Query<
@@ -770,8 +765,7 @@ pub(super) fn layout_skills(
     mut icons: Query<(&CategoryIcon, &mut Visibility), Without<SkillRow>>,
 ) {
     let (profile, skills) = characters.get(screen.member).unwrap();
-    let learned = spell_state.0.get(screen.member).unwrap();
-    let spell_catalog = &spell_state.1.spells;
+    let learned = learned.get(screen.member).unwrap();
     let mut ordered: Vec<_> =
         rows.iter().map(|(entity, row, _, _)| (row.0 as usize, entity)).collect();
     ordered.sort_unstable_by_key(|(skill, _)| *skill);
@@ -780,10 +774,9 @@ pub(super) fn layout_skills(
     for (_, entity) in ordered {
         let Ok((_, row, mut node, mut visibility)) = rows.get_mut(entity) else { continue };
         let category = skill_category(row.0);
-        let shown =
-            crate::game::magic::skill_available(profile.trained(), learned, spell_catalog, row.0)
-                || profile.training.0[row.0] > 0
-                || skills[row.0] > 0;
+        let shown = crate::game::magic::skill_available(profile.trained(), learned, row.0)
+            || profile.training.0[row.0] > 0
+            || skills[row.0] > 0;
         crate::presentation::screen_art::display_if(&mut node, shown);
         visibility.set_if_neq(visible_if(shown));
         if shown {

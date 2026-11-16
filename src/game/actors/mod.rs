@@ -3,6 +3,7 @@
 
 pub mod armour;
 pub mod arms;
+mod body;
 pub mod figures;
 pub mod fitness;
 pub mod modifiers;
@@ -15,6 +16,7 @@ pub mod time;
 pub use armour::{
     Against, Armour, ArmourPart, ArmourParts, HitPlace, HitPlaces, VulnerableFromBehind,
 };
+pub use body::{Body, BodyItem};
 pub use fitness::{CanAct, CanFight, CanGuard, Lucid, Settle, Written, settle};
 pub use modifiers::Modifiers;
 pub use place::{Eyes, Hidden, Place, Places};

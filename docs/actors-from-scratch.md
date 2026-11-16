@@ -80,16 +80,29 @@ Done. The rule is in [rules/arms.md](rules/arms.md), "Armour"; the code in
 - What a monster's places are called (by its build, six of them), for the
   blow-by-blow lines, which are not ported.
 
+## Spell points
+
+Done. The rule is in [rules/casting.md](rules/casting.md), "Spell points".
+`SpellPoints` holds the most each realm can hold beside what is spent; one
+system (`figures::spell_points`) writes the most from `LearnedSpells`,
+`Level`, Piety and `Skills`. A learned spell carries its realm and cost
+from the moment it is learned. Readers (casting, draining, recovery, the
+magic screen, creation) read the pool; `max_points` is called only by the
+figure system.
+
 ## Not designed yet
 
-Everything but armour: attributes, skills, the maxima, resistances, attacks,
-mending, damage reduction, missile shield; what a calling writes as sources;
-drafts as entities; casting and combat without sheet fields on `Body` and
+Everything but armour and spell points: attributes, skills, the maxima,
+resistances, attacks, mending, damage reduction, missile shield; what a
+calling writes as sources; drafts as entities (creation's draft is an actor
+for armour, attributes, resistances and spell points; the level-up draft is
+not); casting and combat without sheet fields on `Body` and
 `Means`. Each is to go through the same steps: the rule in words from the
 original, then components, then systems.
 
 What the armour left for the next figure (see [plan.md](plan.md), "Still in
-the way"): `Body` and `Fighter` still gather every figure, armour's
-included, and should shrink to what each rule reads as figures are rebuilt.
+the way"): `Body` and `Fighter` still gather every figure for reading,
+armour's included, and should shrink to what each rule reads as figures are
+rebuilt. Nothing writes through them any more.
 Armour, mending, resistances and attacks now notice what is worn themselves
 (`items::Redressed`); `Modifiers` is only the sum of what is laid.

@@ -3,8 +3,8 @@ use super::{Action, Creation, Page, creator_stats};
 use crate::content::characters::Realm;
 use crate::content::spells::SpellId;
 use crate::content::ui::SpriteSheet;
-use crate::game::actors::Attributes;
 use crate::game::data::Catalogs;
+use crate::game::magic::SpellPoints;
 use crate::presentation::retail_controls::set_enabled;
 use crate::presentation::screen_art::visible_if;
 use crate::presentation::screen_art::{BitmapText, absolute, spawn_picture};
@@ -195,10 +195,18 @@ pub(super) fn refresh(
     mut labels: Query<(&mut BitmapText, Option<&RealmValue>, Option<&SpellText>)>,
     mut headers: Query<(&RealmHeader, &mut Visibility), Without<SpellOption>>,
     added: Query<(), Or<(Added<SpellOption>, Added<RealmValue>, Added<RealmHeader>)>>,
+    actor: Option<Single<Ref<SpellPoints>, With<creator_stats::DraftActor>>>,
     mut commands: Commands,
 ) {
     let (Some(session), Some(art)) = (session, art) else { return };
-    if !session.is_changed() && !art.is_changed() && !content.is_changed() && added.is_empty() {
+    let points = actor.as_deref().map(|points| &**points);
+    let figures_changed = actor.as_ref().is_some_and(|points| points.is_changed());
+    if !session.is_changed()
+        && !art.is_changed()
+        && !content.is_changed()
+        && !figures_changed
+        && added.is_empty()
+    {
         return;
     }
     let Some(draft) = session.mode.draft() else { return };
@@ -208,15 +216,8 @@ pub(super) fn refresh(
         let Some(role) = role else { continue };
         let skill = role.0.skill();
         let value = if role.1 {
-            let learned = crate::game::magic::LearnedSpells(draft.spells());
-            let points = crate::game::magic::max_points(
-                u32::from(profile.calling.level()),
-                &Attributes::of_sheet(&profile),
-                &learned,
-                catalog,
-                &crate::game::actors::Skills::of_sheet(&profile),
-            )[role.0];
-            format!("{points}/{points}")
+            let most = points.map_or(0, |points| points.most(role.0));
+            format!("{most}/{most}")
         } else {
             profile.training.0[skill].to_string()
         };

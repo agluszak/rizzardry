@@ -52,6 +52,21 @@ pub struct Exerted {
     pub effort: Effort,
 }
 
+/// Something an actor did cost it stamina: a swing, or stepping in to take
+/// a blow.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Tires {
+    #[event_target]
+    pub actor: Entity,
+    pub stamina: u32,
+}
+
+pub(super) fn tires(tires: On<Tires>, mut actors: Query<&mut Vitals>) {
+    if let Ok(mut vitals) = actors.get_mut(tires.actor) {
+        vitals.tire(tires.stamina);
+    }
+}
+
 /// One that tires by what it does pays for it, twice over when diseased.
 pub(super) fn tire(
     exerted: On<Exerted>,

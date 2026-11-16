@@ -6,9 +6,9 @@ use bevy::prelude::Entity;
 
 use super::sight::Sight;
 use crate::content::characters::Attribute;
+use crate::game::actors::BodyItem;
 use crate::game::actors::{Arm, reaches};
 use crate::game::characters::Condition;
-use crate::game::hits::effects::BodyReadOnlyItem;
 use crate::game::party::formation::Formation;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::Stance;
@@ -75,7 +75,7 @@ pub struct Plans {
 /// living body on its side.
 pub fn friend_in_reach(
     sight: &Sight,
-    own: &BodyReadOnlyItem,
+    own: &BodyItem,
     combatants: &[Entity],
     formation: &Formation,
 ) -> bool {
@@ -108,7 +108,7 @@ pub fn friend_in_reach(
 /// - Turncoat: an action against its new foes stands, and is told.
 pub fn interrupt(
     rng: &mut GameRng,
-    own: &BodyReadOnlyItem,
+    own: &BodyItem,
     plans: Plans,
     friend_in_reach: bool,
 ) -> Option<Interrupt> {

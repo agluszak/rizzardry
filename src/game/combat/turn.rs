@@ -17,8 +17,8 @@ use super::attack::phase;
 use super::effort::{Effort, Exerted};
 use super::monster::ailments::Plans;
 use super::monster::conduct::Conduct;
-use super::monster::sight::{Fray, Sight};
-use super::monster::{self, Deliberated, Interrupt, ailments, close};
+use super::monster::sight::Sight;
+use super::monster::{self, Interrupt, ailments, close};
 use super::swings::Strike;
 use super::{ACTION_SECONDS, Battle, CombatNews, Combatant, PartyMove, Pause, Round, summon};
 use crate::content::characters::Trait;
@@ -28,14 +28,14 @@ use crate::game::actors::Attacks;
 use crate::game::characters::{Condition, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::hits::definitions::Rows;
-use crate::game::hits::effects::{self, Body};
+use crate::game::hits::effects;
 use crate::game::hits::{Deed, Landed};
 use crate::game::inventory::WeaponSlot;
 use crate::game::items::Items;
 use crate::game::magic::Strength;
-use crate::game::magic::casting::{Cast, MagicChoice, Refused, Source, reaches as spell_reaches};
+use crate::game::magic::casting::{Cast, MagicChoice, Refused, reaches as spell_reaches};
 use crate::game::magic::may::Refusal;
-use crate::game::magic::reach::{Aim, in_cone};
+use crate::game::magic::reach::in_cone;
 use crate::game::party::Order;
 use crate::game::party::formation::Formation;
 use crate::game::party::roster::PartyRoster;
@@ -376,11 +376,8 @@ pub fn accept_round(
 /// fight or able, or whose weapons changed since its attacks were accepted,
 /// loses its turn; defending takes no turn. One going on with its turn
 /// after moving, or with attacks already spent, fights on. Otherwise a
-/// member follows its orders and anyone else decides for itself
-/// ([`monster::deliberate`]); then its conditions may take the action off it (retail
-/// `GetConditionInterrupt`): insanity may turn it on its friends this round,
-/// fear send a monster running unannounced. What is left it does, as one
-/// event at it; a cast is cast, or for a point cast the utility magic it is.
+/// member follows its orders and a monster decides for itself
+/// ([`monster::Deliberates`]); either way what it decided is [`Decided`].
 #[allow(clippy::type_complexity)]
 pub(super) fn take_turn(
     moment: On<Moment>,
@@ -388,19 +385,11 @@ pub(super) fn take_turn(
     mut turns: Query<(&mut Turn, Option<&mut Ordered>), With<Combatant>>,
     sight: Sight,
     laid: crate::game::actors::Laid,
-    fight: Single<(&mut Pause, Option<&super::Combatants>), With<Battle>>,
-    formation: Single<&Formation>,
-    held: Items,
+    combatants: Single<Option<&super::Combatants>, With<Battle>>,
     content: Res<Catalogs>,
-    mut rng: ResMut<GameRng>,
-    mut news: MessageWriter<CombatNews>,
-    (lured, lures): (
-        Query<&crate::game::magic::pointcasts::LureInfluence>,
-        Query<&Transform, With<crate::game::magic::pointcasts::Lure>>,
-    ),
 ) {
     let actor = moment.actor;
-    let (mut pause, combatants) = fight.into_inner();
+    let combatants = *combatants;
     let combatants = combatants.map_or(&[][..], super::Combatants::entities);
     let (places, obstacles) = (&sight.places, &sight.obstacles);
     let Ok((mut turn, ordered)) = turns.get_mut(actor) else { return };
@@ -468,66 +457,53 @@ pub(super) fn take_turn(
             })
         }
         Some(Action::Defend) => unreachable!("defending takes no turn"),
-        None => match sight.minds.get(actor) {
-            Ok(mind) => {
-                let fray = Fray {
-                    bodies: combatants,
-                    fighting: true,
-                    sees_party: sight.sees_party(actor),
-                };
-                let thought = monster::deliberate(&mut rng, &sight, actor, fray, &content).unwrap();
-                match (mind.fleeing, thought.fleeing) {
-                    (false, true) => {
-                        commands.entity(actor).insert(Fleeing);
-                    }
-                    (true, false) => {
-                        commands.entity(actor).remove::<Fleeing>();
-                    }
-                    _ => {}
-                }
-                let retreat = |conduct| Decision::Retreat(Retreats { conduct, quiet: false });
-                match thought.deliberated {
-                    Deliberated::Conducts(conduct) => retreat(conduct),
-                    Deliberated::Withdraws => retreat(Conduct::Withdraw),
-                    Deliberated::Guards(ward) => Decision::Protect(ward),
-                    Deliberated::HoldsBack => {
-                        Decision::Fight(Fights { waits: true, berserk: false })
-                    }
-                    Deliberated::Strikes => fights_on,
-                    Deliberated::Casts(cast) => Decision::Magic(MagicChoice {
-                        source: Source::Innate {
-                            spell: cast.spell,
-                            power: cast.power,
-                            budget: own.budget.map_or(0, |budget| budget.0),
-                            level: own.level.0 as u8,
-                        },
-                        aim: cast.aim,
-                    }),
-                    Deliberated::Breathes(made) => {
-                        let special = mind.special.0;
-                        let kind = special.kind.unwrap();
-                        let feet = places.of(actor).feet;
-                        Decision::Special(Breathes {
-                            special: Some(kind),
-                            summons: crate::game::hits::specials::special(kind).summons,
-                            strength: crate::game::hits::specials::strength(
-                                own.level.0 as u8,
-                                own.vitals.stamina,
-                            ),
-                            toward: made
-                                .aim
-                                .and_then(Aim::body)
-                                .and_then(|aimed| sight.bodies.get(aimed).ok())
-                                .map_or(feet, |there| places.of(there.entity).feet),
-                            cost: made.cost,
-                            cooldown: special.cooldown,
-                        })
-                    }
-                }
-            }
-            Err(_) => fights_on,
-        },
+        None if sight.tempers.contains(actor) => {
+            commands.trigger(monster::Deliberates { monster: actor });
+            return;
+        }
+        None => fights_on,
     };
+    commands.trigger(Decided { actor, decision: action, own_will: order.is_none() });
+}
+
+/// What an actor decided to do with its moment, before its conditions have
+/// their say; `own_will` when it decided for itself rather than by orders.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Decided {
+    #[event_target]
+    pub actor: Entity,
+    pub decision: Decision,
+    pub own_will: bool,
+}
+
+/// What an actor decided, its conditions may take off it (retail
+/// `GetConditionInterrupt`): insanity may turn it on its friends this round,
+/// fear send a monster running unannounced, a lure draw it. What is left it
+/// does, as one event at it; a cast is cast, or for a point cast the utility
+/// magic it is.
+#[allow(clippy::type_complexity)]
+pub(super) fn act(
+    decided: On<Decided>,
+    mut commands: Commands,
+    mut turns: Query<&mut Turn>,
+    sight: Sight,
+    fight: Single<(&mut Pause, Option<&super::Combatants>), With<Battle>>,
+    formation: Single<&Formation>,
+    held: Items,
+    content: Res<Catalogs>,
+    mut rng: ResMut<GameRng>,
+    mut news: MessageWriter<CombatNews>,
+    (lured, lures): (
+        Query<&crate::game::magic::pointcasts::LureInfluence>,
+        Query<&Transform, With<crate::game::magic::pointcasts::Lure>>,
+    ),
+) {
+    let Decided { actor, decision: action, own_will } = *decided;
+    let (mut pause, combatants) = fight.into_inner();
+    let combatants = combatants.map_or(&[][..], super::Combatants::entities);
+    let (Ok(mut turn), Ok(own)) = (turns.get_mut(actor), sight.bodies.get(actor)) else { return };
+    let arms = own.attacks;
+    let fights_on = Decision::Fight(Fights { waits: false, berserk: false });
     let against_foes = match action {
         Decision::Magic(choice) => choice
             .source
@@ -538,7 +514,7 @@ pub(super) fn take_turn(
     let running = matches!(action, Decision::Retreat(r) if r.conduct == Conduct::Flee);
     let lure = lured.get(actor).ok().filter(|hold| hold.response == Response::Controlled);
     let plans = Plans {
-        runs: order.is_none(),
+        runs: own_will,
         running,
         turned_on_friends: turn.berserk,
         against_foes,
@@ -607,7 +583,7 @@ pub(super) fn take_turn(
                 commands.trigger(Refused { caster: actor, refusal: Refusal::NoItem });
                 return;
             };
-            commands.trigger(Cast { caster: actor, spell, choice });
+            commands.trigger(Cast { caster: actor, spell, choice, again: false });
         }
     }
 }
@@ -688,7 +664,7 @@ pub(super) fn breathe(
     breathe: On<Breathe>,
     mut commands: Commands,
     mut turns: Query<&mut Turn>,
-    mut bodies: Query<Body>,
+    mut vitals: Query<&mut Vitals>,
     fight: Single<(&mut Round, &mut Pause, Option<&super::Combatants>), With<Battle>>,
     places: crate::game::actors::Places,
     obstacles: WorldObstacles,
@@ -699,7 +675,7 @@ pub(super) fn breathe(
     let (mut round, mut pause, combatants) = fight.into_inner();
     let combatants = combatants.map_or(&[][..], super::Combatants::entities);
     let Ok(mut turn) = turns.get_mut(actor) else { return };
-    let Ok(mut own) = bodies.get_mut(actor) else { return };
+    let Ok(mut own) = vitals.get_mut(actor) else { return };
     turn.end();
     pause.0 = Timer::from_seconds(ACTION_SECONDS, TimerMode::Once);
     turn.special = true;
@@ -708,7 +684,7 @@ pub(super) fn breathe(
         Some(kind) => CombatNews::Special { monster: actor, kind },
         None => CombatNews::Breathed { actor },
     });
-    own.vitals.tire(breathes.cost);
+    own.tire(breathes.cost);
     if breathes.special.is_some() {
         commands.entity(actor).insert(SpecialCooldown(breathes.cooldown));
     }
@@ -724,10 +700,10 @@ pub(super) fn breathe(
             .copied()
             .filter(|&other| other != actor)
             .filter(|&other| {
-                bodies.get(other).is_ok_and(|their| {
-                    !their.vitals.is_dead()
-                        && spell_reaches(&from, &places.of(their.entity), cone, &obstacles)
-                        && in_cone(toward, places.of(their.entity).feet - from.eye)
+                vitals.get(other).is_ok_and(|their| {
+                    !their.is_dead()
+                        && spell_reaches(&from, &places.of(other), cone, &obstacles)
+                        && in_cone(toward, places.of(other).feet - from.eye)
                 })
             })
             .collect::<Vec<Entity>>();

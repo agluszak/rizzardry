@@ -66,6 +66,7 @@ pub(super) fn plugin(app: &mut App) {
             figures::follow_calling,
             figures::attributes,
             figures::skills,
+            figures::spell_points,
             figures::maxima,
             (figures::resistances, figures::reduction, figures::attacks, figures::mending),
             (judge, super::time::tend, super::time::let_go),

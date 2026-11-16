@@ -77,7 +77,11 @@ fn app() -> (App, Entity, Entity) {
     let world = app.world_mut();
     let profile = Character::new("Priest", Race::Human, Gender::Male, Profession::Priest);
     let member = world
-        .spawn((Vitals::new(&profile), profile, LearnedSpells([SpellId::HEAL_WOUNDS].into())))
+        .spawn((
+            Vitals::new(&profile),
+            profile,
+            LearnedSpells::of([SpellId::HEAL_WOUNDS], &world.resource::<Catalogs>().spells),
+        ))
         .id();
     let party = roster::test_party(world, &[member]);
     world.entity_mut(party).insert((PartyBody::default(), Position::default()));
@@ -243,10 +247,11 @@ fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
     let mut character = world.get_mut::<crate::game::characters::Training>(member).unwrap();
     character.0[Skill::Divinity] = 100;
     character.0[Skill::FireMagic] = 100;
-    world.entity_mut(member).insert((
-        LearnedSpells([SpellId::HEAL_WOUNDS, SpellId::ENERGY_BLAST].into()),
-        SpellPoints::default(),
-    ));
+    let learned = LearnedSpells::of(
+        [SpellId::HEAL_WOUNDS, SpellId::ENERGY_BLAST],
+        &world.resource::<Catalogs>().spells,
+    );
+    world.entity_mut(member).insert((learned, SpellPoints::default()));
     let fight = world.spawn(Battle::default()).id();
     play(world, fight, 1);
     let foe = monster(world, fight, 3.0);
@@ -272,7 +277,7 @@ fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
         source: Source::Spell { spell: SpellId::ENERGY_BLAST, power: 1 },
         aim: Aim::Body(foe),
     };
-    world.trigger(Cast { caster: member, spell: SpellId::ENERGY_BLAST, choice });
+    world.trigger(Cast { caster: member, spell: SpellId::ENERGY_BLAST, choice, again: false });
     world.flush();
     assert_eq!(magic::test_points(world, member, Realm::Fire), points - 1);
     let group = world.get::<GroupMember>(foe).unwrap().0;
@@ -414,10 +419,12 @@ fn deadly_order(world: &mut World, member: Entity, foe: Entity) -> Ordered {
     let mut character = world.get_mut::<crate::game::characters::Training>(member).unwrap();
     character.0[Skill::Divinity] = 100;
     character.0[Skill::FireMagic] = 100;
-    world.entity_mut(member).insert((
-        LearnedSpells([SpellId::HEAL_WOUNDS, SpellId::ENERGY_BLAST].into()),
-        magic::SpellPoints::default(),
-    ));
+    let learned = LearnedSpells::of(
+        [SpellId::HEAL_WOUNDS, SpellId::ENERGY_BLAST],
+        &world.resource::<Catalogs>().spells,
+    );
+    world.entity_mut(member).insert((learned, magic::SpellPoints::default()));
+    refresh(world);
     Ordered(Action::Magic(MagicChoice {
         source: Source::Spell { spell: SpellId::ENERGY_BLAST, power: 1 },
         aim: Aim::Body(foe),
@@ -459,7 +466,7 @@ fn a_cast_refused_in_a_fight_falls_back_to_defending() {
         aim: Aim::Body(foe),
     };
     world.entity_mut(member).insert(Ordered(Action::Magic(choice)));
-    world.trigger(Cast { caster: member, spell: SpellId::ENERGY_BLAST, choice });
+    world.trigger(Cast { caster: member, spell: SpellId::ENERGY_BLAST, choice, again: false });
     world.flush();
     let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
     assert!(matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::NotLearned, .. }]));
@@ -593,9 +600,8 @@ fn teach(world: &mut World, member: Entity, skill: u32, spells: &[SpellId]) {
     character.0 = default();
     character.0[Skill::Divinity] = skill;
     character.0[Realm::Divine.skill()] = skill;
-    world
-        .entity_mut(member)
-        .insert((LearnedSpells(spells.iter().copied().collect()), magic::SpellPoints::default()));
+    let learned = LearnedSpells::of(spells.iter().copied(), &world.resource::<Catalogs>().spells);
+    world.entity_mut(member).insert((learned, magic::SpellPoints::default()));
     magic::test_set_points(world, member, Realm::Divine, 100);
     refresh(world);
 }
@@ -606,7 +612,7 @@ fn cast_in(
     member: Entity,
     (spell, choice): (SpellId, MagicChoice),
 ) -> Vec<MagicNews> {
-    world.trigger(Cast { caster: member, spell, choice });
+    world.trigger(Cast { caster: member, spell, choice, again: false });
     world.flush();
     world.resource_mut::<Messages<MagicNews>>().drain().collect()
 }

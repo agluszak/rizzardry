@@ -5,9 +5,10 @@ use bevy::prelude::Entity;
 
 use super::close::reaches_party;
 use super::conduct::share;
-use super::sight::{MindItem, Sight};
+use super::sight::Sight;
 use crate::content::characters::Attribute;
-use crate::game::hits::effects::BodyReadOnlyItem;
+use crate::content::species::Temper;
+use crate::game::actors::BodyItem;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::Stance;
 
@@ -27,15 +28,15 @@ pub enum Watching {
 pub fn guards(
     rng: &mut GameRng,
     sight: &Sight,
-    own: &BodyReadOnlyItem,
-    mind: &MindItem,
+    own: &BodyItem,
+    temper: &Temper,
     gap: f32,
     bodies: &[Entity],
 ) -> Option<Watching> {
     if !reaches_party(own.attacks, gap) {
         return None;
     }
-    let (temper, intelligence) = (mind.temper.0, own.attributes[Attribute::Intelligence]);
+    let intelligence = own.attributes[Attribute::Intelligence];
     let reach = own.attacks.arms.first().map(|arm| arm.reach.metres());
     let wards: Vec<Entity> = match reach {
         Some(reach) if temper.bodyguard && own.can_guard && rng.below(100) < intelligence => bodies

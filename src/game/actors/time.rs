@@ -12,15 +12,14 @@
 use bevy::prelude::*;
 
 use super::fitness::Present;
-use super::{Abilities, Attributes, Drained, Laying, Level, Skills, Traits};
+use super::{Abilities, Attributes, Drained, Laying, Level, Traits};
 use crate::content::characters::{Attribute, Trait};
 use crate::game::characters::{
     Calling, Condition, Conditions, Dead, Lasting, Recovering, Sickness, Vitals,
 };
 use crate::game::combat::Combatant;
-use crate::game::data::Catalogs;
 use crate::game::hits::Damaged;
-use crate::game::magic::{LearnedSpells, SpellPoints};
+use crate::game::magic::SpellPoints;
 use crate::game::party::roster::{PartyMember, PartyRoster};
 use crate::game::rng::GameRng;
 use crate::game::time::Ticks;
@@ -406,38 +405,27 @@ fn mend(
 /// of the pace, never under a half.
 fn replenish(
     mends: On<Mends>,
-    mut casters: Query<
-        (
-            (&LearnedSpells, &mut SpellPoints),
-            (&Level, &Attributes, &Skills, &Conditions, &Mending),
-            Timed,
-        ),
-        InTime,
-    >,
+    mut casters: Query<(&mut SpellPoints, (&Conditions, &Mending), Timed), InTime>,
     tended: Query<(), With<Tended>>,
-    content: Res<Catalogs>,
 ) {
     let span = mends.0;
     let minutes = span.ticks.aging;
     if minutes == 0 {
         return;
     }
-    for ((known, mut pool), (level, attributes, skills, conditions, mending), timed) in &mut casters
-    {
+    for (mut pool, (conditions, mending), timed) in &mut casters {
         let Some(pace) = timed.pace(&span) else { continue };
         if mending.magic == 0 && !pool.needs_recovery() {
             continue;
         }
-        let maximum =
-            crate::game::magic::max_points(level.0, attributes, known, &content.spells, skills);
         if mending.magic != 0 {
-            pool.adjust(mending.magic * minutes as i32, &maximum);
+            pool.adjust(mending.magic * minutes as i32);
         }
         let boost =
             if timed.member.is_some_and(|member| tended.contains(member.0)) { TENDED } else { 1.0 };
         let ill = if conditions.has(Condition::Diseased) { DISEASED } else { 1.0 };
         let share = (pace.mending() * ill).max(0.5) * mending.magic_rate * boost;
-        pool.recover(minutes, share, &maximum);
+        pool.recover(minutes, share);
     }
 }
 
@@ -475,7 +463,7 @@ mod tests {
     /// A world where time can pass over actors.
     fn world() -> World {
         let mut app = App::new();
-        app.insert_resource(Catalogs::default())
+        app.insert_resource(crate::game::data::Catalogs::default())
             .insert_resource(GameRng::default())
             .add_message::<Damaged>()
             .add_plugins(plugin);

@@ -642,16 +642,19 @@ The sections above are the rules. This says how the code is to be shaped
 around them; where the code differs from it, the code is wrong.
 
 **A choice is a function of the monster and of what it makes out.** Each
-decision above is one function. It takes the monster itself, read through one
-view of an actor and one of what its kind and the fight make of it, and what
+decision above is one function. It takes the monster's body, the plain data
+of its kind (its temper, special attack and spells, which the observer of
+`Deliberates` reads off its components), and what
 it makes out of the level (who stands where, whom it sees); one that rolls
 takes the random-number generator. It changes nothing. Nothing is copied out
 of a monster's components into a struct of facts for a decision to read.
 
-**Deciding is separate from doing.** At a monster's moment the decisions are
-asked in the order of section 4, each reading only what it needs, and what
-the monster will do is said; what it does is the same event a member's order
-leads to.
+**Deciding is separate from doing.** An actor's moment (`Moment`) is
+revalidated; a member under orders has decided by them, and a monster
+deliberates (`Deliberates`), asking the decisions in the order of section 4.
+Either way what it decided is said as `Decided`, whose observer lets the
+actor's conditions take the action off it and then does what is left, by the
+same event a member's order leads to.
 
 **What a monster knows is read from its own components.** What its kind can do
 was written onto it when it was made. No decision asks the species record.

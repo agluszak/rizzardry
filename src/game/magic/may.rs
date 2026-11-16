@@ -4,8 +4,8 @@
 
 use crate::content::items::UseType;
 use crate::content::spells::{PowerChoice, SpellDefinition, Usable, Working};
+use crate::game::actors::BodyItem;
 use crate::game::characters::{Condition, Trained};
-use crate::game::hits::effects::BodyReadOnlyItem;
 use crate::game::items::{Casts, Items};
 use crate::game::magic::casting::Source;
 use crate::game::magic::power::AUTO;
@@ -147,7 +147,7 @@ pub fn suits(spell: &SpellDefinition, moment: Moment, repeats: bool) -> bool {
 /// 7. The moment suits it; a monster's own spell is not judged by the moment.
 pub fn may(
     spell: &SpellDefinition,
-    caster: &BodyReadOnlyItem,
+    caster: &BodyItem,
     source: Source,
     held: &Items,
     (affordable, keeps_alchemy): (u32, bool),
@@ -179,7 +179,7 @@ pub fn may(
             if power == 0 {
                 return Err(Refusal::CannotUse);
             }
-            if !caster.spells.is_some_and(|(learned, _)| learned.0.contains(&id)) {
+            if !caster.spells.is_some_and(|(learned, _)| learned.knows(id)) {
                 return Err(Refusal::NotLearned);
             }
             if affordable == 0 {

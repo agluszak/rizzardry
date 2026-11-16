@@ -382,14 +382,21 @@ brought up to date the same day after the devices, the spells' rows and the
 small defects were dealt with (with PR #280's encounters and prop playback).
 Each belongs to the slice named; the order is the order to do them in.
 
-1. **Figures still read through bundles** (slices 1 and 2). `hits::effects::Body`
-   gathers 27 components, and `combat::attack::Fighter` adds the armour's parts,
-   places and `Against` to it, so a rule can be read only with all of them in
-   mind; `characters::Schooling`/`Trained` gather a member's training the same
+1. **Figures still read through bundles** (slices 1 and 2). Nothing changes
+   an actor through a bundle any more: a deed lands row by row as events, one
+   observer for each thing a row changes (`hits::effects`), a weapon's swings
+   are a chain of events whose blows land as deeds (`combat::swings`), and a
+   cast pays through `Pays`. What is left is reading: `actors::Body` gathers
+   25 components for the rules that decide (the monster's choices, casting,
+   reach), and `combat::attack::Fighter` adds the armour's parts, places and
+   `Against` to it, so such a rule can be read only with all of them in mind;
+   `characters::Schooling`/`Trained` gather a member's training the same
    way, and the figure systems fork on `Option<&Calling>`. To do: each figure
    rebuilt as [actors-from-scratch.md](actors-from-scratch.md) says, a sum of
    parts written by small systems over the actors that have what each part
-   comes from, and each rule querying what it reads.
+   comes from, and each rule querying what it reads. The attack's unit tests
+   went with the arena they were written against; the combat scenarios and
+   the retail fight cover it until the rules are rebuilt.
 2. **Rules look content up as they run** (slices 3 and 5). 45 files in `game`
    name `Catalogs`; 16 places take `Option<Res<Catalogs>>` or
    `If<Res<...>>`, so a rule quietly does nothing without it. Spells are done:
@@ -403,7 +410,11 @@ Each belongs to the slice named; the order is the order to do them in.
    `combat/tests.rs`), so one can miss what the game has (a resource, an
    observer). Tests that drive the real plugins are preferred.
 
-Done on 2026-11-16, so not to be looked for again: devices are components
+Done on 2026-11-16, so not to be looked for again: a turn is a chain
+(`Moment`, `Deliberates`, `Decided`); the most spell points is a figure and
+a learned spell carries its realm and cost; effects land as events
+and blows as deeds, with no bundle written through; the magic tests run on
+`MagicPlugin`; devices are components
 and events (`docs/rules/devices.md`, "How this is built"); `Modifiers` is
 no longer a dirty bit (`items::Redressed`); the view preferences live in
 `settings`; `dev` is behind the `dev` feature; `Belongings` follows every

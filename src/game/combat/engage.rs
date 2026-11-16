@@ -70,6 +70,11 @@ pub(super) fn engage(
     monsters: Query<(Entity, &Monster, &Allegiance, Option<&GroupMember>, Has<Combatant>)>,
     groups: Query<(Entity, &MonsterGroup, &GroupMembers, &LevelOwned, Has<hostility::Provoked>)>,
     leading: Query<(), With<Leads>>,
+    kinds: Query<(
+        &crate::game::world::population::Special,
+        &crate::game::world::population::Spellcasting,
+        Option<&super::turn::SpecialCooldown>,
+    )>,
     sight: Sight,
     level: PlayedLevel,
     content: If<Res<Catalogs>>,
@@ -139,6 +144,14 @@ pub(super) fn engage(
                 .and_then(|archipelago| walking_distance(archipelago, from, to))
                 .is_some_and(|walked| walked <= reach)
         };
+        // Whether one could act on the party with no fight on yet.
+        let acts = |fighter: Entity| {
+            let Ok((_, monster, ..)) = monsters.get(fighter) else { return false };
+            let Ok((special, casting, cooldown)) = kinds.get(fighter) else { return false };
+            let cooldown = cooldown.map_or(0, |cooldown| cooldown.0);
+            let kind = (&special.0, cooldown, casting, monster.body.speed > 0.0);
+            coming::acts_on_party(&sight, fighter, kind, &content)
+        };
         // Its leader, if it is among those who may come; else the first of them.
         let leader =
             fighters.iter().copied().find(|&fighter| leading.contains(fighter)).unwrap_or(first);
@@ -148,7 +161,7 @@ pub(super) fn engage(
             side,
             (running, provoked),
             &hostiles,
-            &content,
+            acts,
             walks,
         );
         if let Some(group) = group

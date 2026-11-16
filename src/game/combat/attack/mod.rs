@@ -18,8 +18,6 @@
 //! the way.
 
 mod aim;
-#[cfg(test)]
-mod arena;
 mod blow;
 mod choose;
 mod cost;
@@ -41,10 +39,10 @@ use super::approach::CombatMove;
 use super::turn::{Guards, Interceptions, Ordered, Spotted};
 use crate::content::items::{AttackMode, Dice};
 use crate::content::species::Reach;
+use crate::game::actors::Body;
 use crate::game::actors::{Against, Arm, ArmourParts, HitPlaces, VulnerableFromBehind};
 use crate::game::characters::{Condition, Vitals};
 use crate::game::difficulty::Difficulty;
-use crate::game::hits::effects::Body;
 use crate::game::magic::Strength;
 use crate::game::npcs::Embodies;
 use crate::game::rng::GameRng;

@@ -12,9 +12,9 @@ use crate::content::monster::MonsterBody;
 use crate::content::spells::Working;
 use crate::game::data::Catalogs;
 use crate::game::{
+    actors::Body,
     characters::Condition,
     combat::{Battle, Combatant},
-    hits::effects::BodyReadOnly,
     rng::GameRng,
     time::{AGING_TICK_MS, GameClock},
     world::{
@@ -72,7 +72,7 @@ fn release_lured(
 pub(crate) fn cast(
     worked: On<Worked>,
     mut commands: Commands,
-    bodies: Query<BodyReadOnly>,
+    bodies: Query<Body>,
     level: Single<(Entity, &Level, &LevelState, &Unborn, &MonsterBodies, &LevelNavigation)>,
     battle: Option<Single<Entity, With<Battle>>>,
     lures: Query<Entity, With<Lure>>,

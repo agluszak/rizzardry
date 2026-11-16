@@ -1,37 +1,17 @@
-//! What a monster is and what it makes out (`docs/rules/monsters.md`
-//! sections 2 and 4): the components of its kind that its decisions rest on
-//! ([`Mind`]), and who it sees from where it stands ([`Sight`]). The decisions
-//! of [`super`] read both; nothing is copied out of them first.
+//! What a monster makes out (`docs/rules/monsters.md` sections 2 and 4):
+//! who stands where, of which group, and who sees whom ([`Sight`]).
 
-use bevy::ecs::query::QueryData;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
+use crate::game::actors::{Body, BodyItem};
 use crate::game::actors::{Eyes, Hidden, Laid, Places};
-use crate::game::combat::turn::{Fleeing, SpecialCooldown};
-use crate::game::hits::effects::{BodyReadOnly, BodyReadOnlyItem};
-use crate::game::npcs::Embodies;
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::hostility::{self, Stance};
 use crate::game::world::identify::GroupMember;
 use crate::game::world::level::PlayedLevel;
 use crate::game::world::obstacles::WorldObstacles;
-use crate::game::world::population::{Monster, Special, Spellcasting, Temper};
-
-/// What a monster's kind and the fight so far make of it.
-#[derive(QueryData)]
-pub struct Mind {
-    pub monster: &'static Monster,
-    pub temper: &'static Temper,
-    pub special: &'static Special,
-    pub casting: &'static Spellcasting,
-    /// Rounds before its next special attack.
-    pub cooldown: Option<&'static SpecialCooldown>,
-    pub npc: Has<Embodies>,
-    /// It ran in an earlier round.
-    pub fleeing: Has<Fleeing>,
-    pub group: Option<&'static GroupMember>,
-}
+use crate::game::world::population::Temper;
 
 /// The fight a monster is deciding in.
 #[derive(Clone, Copy)]
@@ -47,8 +27,11 @@ pub struct Fray<'a> {
 /// Everyone in the played level, where they stand, and who makes out whom.
 #[derive(SystemParam)]
 pub struct Sight<'w, 's> {
-    pub bodies: Query<'w, 's, BodyReadOnly>,
-    pub minds: Query<'w, 's, Mind>,
+    pub bodies: Query<'w, 's, Body>,
+    /// The group each is of, if any.
+    pub groups: Query<'w, 's, &'static GroupMember>,
+    /// The temper of each that decides for itself.
+    pub tempers: Query<'w, 's, &'static Temper>,
     pub places: Places<'w, 's>,
     pub laid: Laid<'w, 's>,
     pub obstacles: WorldObstacles<'w, 's>,
@@ -72,11 +55,6 @@ impl Sight<'_, '_> {
         self.level.view_distance().unwrap_or(0.0)
     }
 
-    /// A monster as its decisions read it.
-    pub fn monster(&self, monster: Entity) -> Option<(BodyReadOnlyItem<'_, '_>, MindItem<'_, '_>)> {
-        self.bodies.get(monster).ok().zip(self.minds.get(monster).ok())
-    }
-
     pub fn alive(&self, body: Entity) -> bool {
         self.bodies.get(body).is_ok_and(|body| !body.vitals.is_dead())
     }
@@ -87,7 +65,7 @@ impl Sight<'_, '_> {
     }
 
     /// How one living body stands toward another, itself a friend.
-    pub fn toward(&self, own: &BodyReadOnlyItem, other: Entity) -> Option<Stance> {
+    pub fn toward(&self, own: &BodyItem, other: Entity) -> Option<Stance> {
         let their = self.bodies.get(other).ok().filter(|their| !their.vitals.is_dead())?;
         Some(if other == own.entity {
             Stance::Friendly

@@ -57,7 +57,7 @@ const DETAILS: [usize; 41] = [
 
 pub(super) fn open_info(
     click: On<PointerClick>,
-    spell_state: (Query<&crate::game::magic::LearnedSpells>, If<Res<crate::game::data::Catalogs>>),
+    learned: Query<&crate::game::magic::LearnedSpells>,
     targets: Query<&InfoTarget>,
     screen: Single<&InventoryScreen>,
     profiles: Query<(crate::game::characters::PaperReadOnly, &crate::game::actors::Skills)>,
@@ -81,8 +81,7 @@ pub(super) fn open_info(
     ) else {
         return;
     };
-    let learned = spell_state.0.get(screen.member).unwrap();
-    let spell_catalog = &spell_state.1.spells;
+    let learned = learned.get(screen.member).unwrap();
     let string = |id| strings.get(id).unwrap_or("");
     let (title_id, detail_id) = match target.subject {
         Subject::Skill(skill) => {
@@ -120,12 +119,7 @@ pub(super) fn open_info(
         for (show, id, palette) in [
             (best, 0x157, &art.yellow),
             (
-                !crate::game::magic::skill_available(
-                    profile.trained(),
-                    learned,
-                    spell_catalog,
-                    skill,
-                ),
+                !crate::game::magic::skill_available(profile.trained(), learned, skill),
                 0x158,
                 &art.gray,
             ),

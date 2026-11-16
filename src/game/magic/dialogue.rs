@@ -8,9 +8,9 @@ use super::casting::{MagicNews, Worked};
 use super::reach::Marked;
 use super::workings::{self, Reply};
 use crate::content::spells::Working;
+use crate::game::actors::Body;
 use crate::game::difficulty::Difficulty;
 use crate::game::hits::Effect;
-use crate::game::hits::effects::BodyReadOnly;
 use crate::game::npcs::Npc;
 use crate::game::npcs::conversation::{Continue, Conversation, Script};
 use crate::game::rng::GameRng;
@@ -23,7 +23,7 @@ pub(crate) fn cast(
     worked: On<Worked>,
     conversation: Single<(Entity, &mut Conversation, &mut Script)>,
     mut speakers: Query<&mut Npc>,
-    bodies: Query<BodyReadOnly>,
+    bodies: Query<Body>,
     difficulty: Res<Difficulty>,
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<MagicNews>,

@@ -840,15 +840,16 @@ components and the rule that reads them.
 | what a swing costs (6) | the attack, the attacker | the stamina |
 | the next attack's moment (7) | attacks left with each hand, each hand's initiative, the moment now | which hand and when, or none |
 
-A rule is tried on fighters made of the components it reads, with the
-expected value worked out from the page, not from running the code.
-
-**The attack itself is one piece that only arranges.** The observer of
-`Strike` reads what the rules need about the attacker, the target and those
-around them, calls the rules in the order of this page, and makes happen what
-they decide: the blow lands at once, since the next swing and what is told
-of the attack depend on what it did; what was shot is spent (`Spend`), skills are practised (`Practise`), a group is provoked
-(`Provocation`), the player is told (`CombatNews`). It holds no rule of its
+**The attack is a chain that only arranges.** The observer of `Strike`
+chooses, catches unaware and announces; each swing is then a `Swing` of its
+own, which calls the rules in the order of this page and makes happen what
+they decide: a blow that gets through lands as a deed on its victim, and so
+does Razor Cloak's answer; a swing's cost and a guard's step are `Tires`;
+what was shot is spent (`Spend`), skills are practised (`Practise`), a group
+is provoked (`Provocation`), the player is told (`CombatNews`). Bevy lands
+each deed before the next swing is begun, so the next swing, and what is told
+of the attack, see what the blow did. What the swings came to is kept on the
+attacker (`Attacking`) until the attack ends. None of it holds a rule of its
 own: no arithmetic, no constant.
 
 **What is read of an actor is one view.** The attacker and the target are read

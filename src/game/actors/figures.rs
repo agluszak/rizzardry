@@ -14,13 +14,14 @@ use super::modifiers::Modifiers;
 use super::sources::{Abilities, Drained, Frame, Kind, NaturalArms, Nature, Traits};
 use super::time::Mending;
 use super::{Attacks, Attributes, Level, MissileShield, Reduction, Resistances, Skills};
-use crate::content::characters::{Attribute, Skill, Trait};
+use crate::content::characters::{Attribute, Realm, Skill, Trait};
 use crate::game::characters::{
     Birth, Calling, Condition, Conditions, Schooling, Trained, Training, Vitals, scale_by_level,
     trained_stamina, traits_of,
 };
 use crate::game::items::Redressed;
 use crate::game::items::{Burden, Items};
+use crate::game::magic::{LearnedSpells, SpellPoints, max_points};
 
 /// The level a trait's strength grows with: the level in the profession
 /// followed now for one who trained, its own level otherwise (retail
@@ -70,6 +71,23 @@ pub(super) fn skills(
 ) {
     for (training, calling, conditions, mut written) in &mut trained {
         written.set_if_neq(Skills::affected(training, calling, conditions));
+    }
+}
+
+/// The most spell points each realm can hold, by the spells learned
+/// ([`crate::game::magic::max_points`]); what is spent stays spent.
+#[allow(clippy::type_complexity)]
+pub(super) fn spell_points(
+    mut casters: Query<
+        (&LearnedSpells, &Level, &Attributes, &Skills, &mut SpellPoints),
+        Or<(Changed<LearnedSpells>, Changed<Level>, Changed<Attributes>, Changed<Skills>)>,
+    >,
+) {
+    for (learned, level, a, skills, mut points) in &mut casters {
+        let most = max_points(level.0, a[Attribute::Piety], |skill| skills[skill], learned);
+        if EnumSet::<Realm>::all().iter().any(|realm| points.most(realm) != most[realm]) {
+            points.set_most(most);
+        }
     }
 }
 

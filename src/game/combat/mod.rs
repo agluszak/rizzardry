@@ -44,7 +44,7 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(hostility::plugin)
+        app.add_plugins((hostility::plugin, swings::plugin))
             .add_observer(credit_death)
             .add_observer(count_kill)
             .add_observer(settle_defeat)
@@ -64,13 +64,15 @@ impl Plugin for CombatPlugin {
             .add_observer(approach::end_move)
             .add_observer(approach::stop_walking)
             .add_observer(turn::take_turn)
-            .add_observer(swings::strike)
+            .add_observer(turn::act)
+            .add_observer(monster::deliberate)
             .add_observer(turn::breathe)
             .add_observer(turn::tell_breath)
             .add_observer(turn::guard)
             .add_observer(turn::retreat)
             .add_observer(turn::hold)
             .add_observer(effort::tire)
+            .add_observer(effort::tires)
             .add_observer(summon::summon)
             .add_message::<CombatNews>()
             .add_message::<CyclePartyMove>()

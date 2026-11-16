@@ -8,19 +8,21 @@ use bevy::prelude::*;
 
 use super::casting::{MagicNews, Practice, Recast};
 use super::reach::{self, Aim, flight, in_cone};
-use super::{MagicRequest, Strength};
+use super::{MagicRequest, SpellPoints, Strength};
 use crate::content::spells::{SpellDefinition, SpellId, Targeting};
+use crate::game::actors::Body;
 use crate::game::actors::{Laying, Places};
 use crate::game::characters::Practise;
 use crate::game::combat::{Battle, Combatants};
 use crate::game::data::Catalogs;
 use crate::game::hits::definitions::{Leeches, Rows};
-use crate::game::hits::effects::{Body, BodyReadOnly, Strike};
+use crate::game::hits::effects::Strike;
 use crate::game::hits::reach::{Field, Recipients};
 use crate::game::hits::{Deed, Effect, Landed};
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::identify::{GroupMember, GroupMembers};
 use crate::game::world::obstacles::WorldObstacles;
+use crate::game::world::population::SpellBudget;
 
 /// A deed of magic: what it did is told as magic's news once it has landed.
 #[derive(Component, Clone, Copy, Debug, Default)]
@@ -81,7 +83,7 @@ pub fn owners_strength(
     owner: Option<Entity>,
     spell: &SpellDefinition,
     (cast_power, boost): (u32, u32),
-    bodies: &Query<BodyReadOnly>,
+    bodies: &Query<Body>,
 ) -> Strength {
     let figure = owner
         .and_then(|owner| bodies.get(owner).ok())
@@ -96,74 +98,71 @@ pub fn owners_strength(
 /// Lifesteal heals 70 percent of the health taken; Might to Magic gives a
 /// member the spell points taken, evenly, and a monster half of them as
 /// budget.
-fn drain_back(
-    leech: Leech,
-    drained: u32,
-    roster: &PartyRoster,
-    bodies: &mut Query<Body>,
-    content: &Catalogs,
-) -> Option<Effect> {
-    let member = bodies.get(leech.caster).ok()?.member;
-    let candidates: Vec<Entity> = if member { roster.iter().collect() } else { vec![leech.caster] };
+pub fn drain_back(
+    landed: On<Landed>,
+    leeches: Query<&Leech>,
+    roster: Single<&PartyRoster>,
+    members: Query<(), With<crate::game::party::roster::PartyMember>>,
+    mut bodies: Query<(
+        &mut crate::game::characters::Vitals,
+        Option<&mut SpellPoints>,
+        Option<&mut SpellBudget>,
+    )>,
+    mut news: MessageWriter<MagicNews>,
+) {
+    let Ok(&leech) = leeches.get(landed.deed) else { return };
+    let drained = landed.harm;
+    let candidates: Vec<Entity> =
+        if members.contains(leech.caster) { roster.iter().collect() } else { vec![leech.caster] };
     // How far from whole each is, in percent; a monster with no points is
     // always in need of budget.
     let need = |victim: Entity| -> Option<u32> {
-        let body = bodies.get(victim).ok().filter(|body| !body.vitals.is_dead())?;
-        match (leech.gives, body.spells) {
-            (Leeches::Health, _) => Some(body.vitals.health.current * 100 / body.vitals.health.max),
-            (Leeches::Points, Some((learned, pool))) => {
-                let maxima = crate::game::magic::max_points(
-                    body.level.0,
-                    body.attributes,
-                    learned,
-                    &content.spells,
-                    body.skills,
-                );
-                let most: u32 = maxima.values().sum();
-                let have: u32 =
-                    maxima.iter().map(|(realm, _)| pool.available(realm, &maxima)).sum();
+        let (vitals, spells, _) =
+            bodies.get(victim).ok().filter(|(vitals, ..)| !vitals.is_dead())?;
+        match (leech.gives, spells) {
+            (Leeches::Health, _) => Some(vitals.health.current * 100 / vitals.health.max),
+            (Leeches::Points, Some(pool)) => {
+                let (have, most) = pool.total();
                 (most != 0).then(|| have * 100 / most)
             }
             (Leeches::Points, None) => Some(0),
         }
     };
-    let victim = candidates
+    let Some(victim) = candidates
         .into_iter()
         .filter_map(|victim| need(victim).filter(|&short| short < 100).map(|short| (victim, short)))
         .min_by_key(|&(_, short)| short)
-        .map(|(victim, _)| victim)?;
-    let mut body = bodies.get_mut(victim).ok()?;
-    match leech.gives {
-        Leeches::Health => {
-            let amount = body.vitals.heal(drained * LIFESTEAL_SHARE / 100);
-            Some(Effect::Healed { victim, amount })
+        .map(|(victim, _)| victim)
+    else {
+        return;
+    };
+    let Ok((mut vitals, spells, budget)) = bodies.get_mut(victim) else { return };
+    let effect = match (leech.gives, spells, budget) {
+        (Leeches::Health, ..) => {
+            let amount = vitals.heal(drained * LIFESTEAL_SHARE / 100);
+            Effect::Healed { victim, amount }
         }
-        Leeches::Points => match body.spells.as_mut() {
-            Some((_, pool)) => {
-                let amount = pool.restore_evenly(drained);
-                Some(Effect::Replenished { victim, amount })
-            }
-            None => {
-                if let Some(budget) = body.budget.as_mut() {
-                    budget.0 += drained / 2;
-                }
-                None
-            }
-        },
-    }
+        (Leeches::Points, Some(mut pool), _) => {
+            let amount = pool.restore_evenly(drained);
+            Effect::Replenished { victim, amount }
+        }
+        (Leeches::Points, None, Some(mut budget)) => {
+            budget.0 += drained / 2;
+            return;
+        }
+        (Leeches::Points, None, None) => return,
+    };
+    news.write(MagicNews::Landed { effects: vec![effect] });
 }
 
 /// What follows a deed of magic once all of it has landed, in this order:
-/// its drain goes back to its caster's side; each victim it killed bursts;
+/// each victim it killed bursts;
 /// an Eye for an Eye turns it back; its caster practises if it affected
 /// anyone; an auto cast is asked for again; and what it did is told.
 pub fn settle(
     landed: On<Landed>,
-    deeds: Query<
-        (&Deed, Option<&Leech>, Option<&Spell>, Option<&Practice>, Option<&Recast>),
-        With<Magical>,
-    >,
-    mut bodies: Query<Body>,
+    deeds: Query<(&Deed, Option<&Spell>, Option<&Practice>, Option<&Recast>), With<Magical>>,
+    bodies: Query<Body>,
     roster: Single<&PartyRoster>,
     combatants: Option<Single<&Combatants, With<Battle>>>,
     grouping: (Query<&'static GroupMember>, Query<&'static GroupMembers>),
@@ -174,15 +173,11 @@ pub fn settle(
     mut news: MessageWriter<MagicNews>,
     mut commands: Commands,
 ) {
-    let Ok((deed, leech, spell, practice, recast)) = deeds.get(landed.deed) else { return };
+    let Ok((deed, spell, practice, recast)) = deeds.get(landed.deed) else { return };
     let mut effects = landed.effects.clone();
-    if let Some(&leech) = leech {
-        effects.extend(drain_back(leech, landed.harm, *roster, &mut bodies, &content));
-    }
     if let Some(spell) = spell {
-        let seen = bodies.as_readonly();
         let field = Field {
-            bodies: &seen,
+            bodies: &bodies,
             places: &places,
             obstacles: &obstacles,
             roster: *roster,
@@ -211,7 +206,7 @@ pub fn settle(
         }
     }
     if let Some(recast) = recast
-        && recast.wanted(&bodies.as_readonly(), &content)
+        && recast.wanted(&bodies, &content)
     {
         requests.write(MagicRequest { caster: recast.caster, choice: recast.choice });
     }

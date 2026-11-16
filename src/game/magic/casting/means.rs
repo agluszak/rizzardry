@@ -9,14 +9,14 @@ use bevy::prelude::*;
 use super::{Cast, Recast, Source};
 use crate::content::characters::Skill;
 use crate::content::items::UseType;
-use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId, Working};
+use crate::content::spells::{SpellDefinition, SpellId, Working};
+use crate::game::actors::{Body, BodyItem};
 use crate::game::actors::{Place, Places};
 use crate::game::camp::Camp;
 use crate::game::characters::{Profession, Trained};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::freedom::Freedom;
-use crate::game::hits::effects::{BodyReadOnly, BodyReadOnlyItem};
 use crate::game::items::{Casts, Items, Place as Stowed};
 use crate::game::magic::may::Refusal;
 use crate::game::magic::may::{self, UseContext};
@@ -149,11 +149,7 @@ impl<'b> Means<'b> {
     /// member's learned spell, or the item they use. None for a monster asked
     /// for a member's means, or an item that is no longer there or casts
     /// nothing.
-    pub fn of(
-        source: Source,
-        caster: &'b BodyReadOnlyItem<'_, '_>,
-        held: &'b Items,
-    ) -> Option<Self> {
+    pub fn of(source: Source, caster: &'b BodyItem<'_, '_>, held: &'b Items) -> Option<Self> {
         Some(match source {
             Source::Innate { power, budget, level, .. } => Means::Own { power, budget, level },
             Source::Spell { power, .. } => {
@@ -270,7 +266,7 @@ impl Circumstances<'_, '_> {
 
 /// Whether a silence leaves a caster their Alchemy: a member with the skill,
 /// a monster of a kind that keeps it.
-pub fn keeps_alchemy(caster: &BodyReadOnlyItem, kinds: &Query<&Spellcasting>) -> bool {
+pub fn keeps_alchemy(caster: &BodyItem, kinds: &Query<&Spellcasting>) -> bool {
     match caster.calling {
         Some(_) => caster.skills[Skill::Alchemy] > 0,
         None => kinds.get(caster.entity).is_ok_and(|casting| casting.silent_alchemy),
@@ -291,7 +287,7 @@ impl Marks<'_, '_> {
         working: Working,
         cast: &Cast,
         spell: &SpellDefinition,
-        (bodies, roster): (&Query<BodyReadOnly>, &PartyRoster),
+        (bodies, roster): (&Query<Body>, &PartyRoster),
         content: &Catalogs,
     ) -> Result<Marked, Refusal> {
         let alive = |body| bodies.get(body).is_ok_and(|body| !body.vitals.is_dead());
@@ -362,22 +358,11 @@ impl Marks<'_, '_> {
 }
 
 /// The highest power of a spell the caster's points pay for now.
-pub fn affordable(
-    caster: &BodyReadOnlyItem,
-    spell: &SpellDefinition,
-    spells: &SpellCatalog,
-) -> u32 {
-    let (Some((learned, pool)), Some(realm)) = (caster.spells, spell.realm) else {
+pub fn affordable(caster: &BodyItem, spell: &SpellDefinition) -> u32 {
+    let (Some((_, pool)), Some(realm)) = (caster.spells, spell.realm) else {
         return 0;
     };
-    let maximum = crate::game::magic::max_points(
-        caster.level.0,
-        caster.attributes,
-        learned,
-        spells,
-        caster.skills,
-    );
-    power::affordable(pool.available(realm, &maximum), spell.cost)
+    power::affordable(pool.available(realm), spell.cost)
 }
 
 /// The power a cast goes off at: a monster's is the one it chose; an item's
@@ -389,12 +374,11 @@ pub fn affordable(
 pub fn power_of(
     rng: &mut GameRng,
     means: &Means,
-    caster: &BodyReadOnlyItem,
+    caster: &BodyItem,
     (cast, spell): (&Cast, &SpellDefinition),
     (boost, pace): (u32, Pace),
-    bodies: &Query<BodyReadOnly>,
+    bodies: &Query<Body>,
     held: &Items,
-    content: &Catalogs,
 ) -> Option<u32> {
     Some(match means {
         Means::Own { power, .. } => *power,
@@ -411,7 +395,7 @@ pub fn power_of(
         }
         Means::Item { item, .. } => item.casts.power,
         Means::Learned { character, asked, skills } => {
-            let affordable = affordable(caster, spell, &content.spells);
+            let affordable = affordable(caster, spell);
             if *asked != power::AUTO {
                 return Some(power::chosen(*asked, affordable, spell.power));
             }
@@ -441,7 +425,7 @@ pub fn power_of(
 impl Recast {
     /// Whether to cast again: a living victim is not yet whole in what the
     /// spell restores, and the caster's stamina and points last.
-    pub fn wanted(&self, bodies: &Query<BodyReadOnly>, content: &Catalogs) -> bool {
+    pub fn wanted(&self, bodies: &Query<Body>, content: &Catalogs) -> bool {
         let Source::Spell { spell, .. } = self.choice.source else { return false };
         let spell = &content.spells[spell];
         let short = |victim: &Entity| {
@@ -452,29 +436,17 @@ impl Recast {
             })
         };
         self.victims.iter().any(short)
-            && bodies.get(self.caster).is_ok_and(|caster| goes_again(&caster, spell, content))
+            && bodies.get(self.caster).is_ok_and(|caster| goes_again(&caster, spell))
     }
 }
 
 /// Whether an auto cast's caster can go again: stamina past the spell's
 /// level and points for it at power 1.
-pub fn goes_again(caster: &BodyReadOnlyItem, spell: &SpellDefinition, content: &Catalogs) -> bool {
-    let (Some((learned, pool)), Some(realm)) = (caster.spells, spell.realm) else {
+pub fn goes_again(caster: &BodyItem, spell: &SpellDefinition) -> bool {
+    let (Some((_, pool)), Some(realm)) = (caster.spells, spell.realm) else {
         return false;
     };
-    let maximum = crate::game::magic::max_points(
-        caster.level.0,
-        caster.attributes,
-        learned,
-        &content.spells,
-        caster.skills,
-    );
-    power::goes_again(
-        caster.vitals.stamina.current,
-        spell.level,
-        pool.available(realm, &maximum),
-        spell.cost,
-    )
+    power::goes_again(caster.vitals.stamina.current, spell.level, pool.available(realm), spell.cost)
 }
 
 /// Whether the game resolves a spell it is asked about: it has a row, or is a

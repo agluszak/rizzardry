@@ -9,15 +9,17 @@
 use bevy::prelude::Entity;
 
 use super::close::{closes_in, reaches_party};
-use super::sight::{Fray, MindItem, Sight};
+use super::sight::{Fray, Sight};
+use crate::content::species::Temper;
 use crate::content::spells::{MAX_POWER, SpellDefinition, SpellId, Spellbook, Targeting};
+use crate::game::actors::BodyItem;
 use crate::game::characters::Condition;
 use crate::game::data::Catalogs;
-use crate::game::hits::effects::BodyReadOnlyItem;
 use crate::game::magic::reach::{Aim, blast_radius, in_cone};
 use crate::game::magic::roll::spell_failure;
 use crate::game::rng::{GameRng, weighted};
 use crate::game::world::hostility::Stance;
+use crate::game::world::population::Spellcasting;
 
 const SLOT_WEIGHTS: [u32; 10] = [5, 5, 5, 10, 10, 10, 10, 15, 15, 15];
 
@@ -73,14 +75,9 @@ struct Candidate {
 ///   member seen in reach once for each member seen, if at least half of the
 ///   party would feel it;
 /// - all enemies: ahead, if any foe is seen and in reach.
-pub fn aims(
-    sight: &Sight,
-    own: &BodyReadOnlyItem,
-    spell: &SpellDefinition,
-    fray: Fray,
-) -> Vec<Aim> {
+pub fn aims(sight: &Sight, own: &BodyItem, spell: &SpellDefinition, fray: Fray) -> Vec<Aim> {
     let (targeting, caster) = (spell.targeting, own.entity);
-    let group_of = |body| sight.minds.get(body).ok().and_then(|mind| mind.group).map(|g| g.0);
+    let group_of = |body| sight.groups.get(body).ok().map(|g| g.0);
     let own_group = group_of(caster);
     let eye = sight.places.of(caster).eye;
     let bodies: Vec<Candidate> = fray
@@ -191,20 +188,20 @@ pub struct Cast {
 /// slot's weight and the aims it has: castable, and with someone to aim at.
 fn usable<'a>(
     sight: &Sight,
-    own: &BodyReadOnlyItem,
-    mind: &MindItem,
+    own: &BodyItem,
+    casting: &Spellcasting,
     content: &'a Catalogs,
     fray: Fray,
 ) -> Vec<(u32, &'a SpellDefinition, Vec<Aim>)> {
     let silenced = own.conditions.has(Condition::Silenced);
-    mind.casting
+    casting
         .spells
         .iter()
         .zip(SLOT_WEIGHTS)
         .filter_map(|(id, weight)| Some((weight, content.spells.get((*id)?)?)))
         .filter(|(_, spell)| {
             let modelled = crate::game::hits::definitions::row(spell).is_some();
-            castable(spell, modelled, silenced, mind.casting.silent_alchemy)
+            castable(spell, modelled, silenced, casting.silent_alchemy)
         })
         .map(|(weight, spell)| (weight, spell, aims(sight, own, spell, fray)))
         .filter(|(.., aims)| !aims.is_empty())
@@ -215,13 +212,13 @@ fn usable<'a>(
 /// a usable spell aimed at enemies.
 pub fn casts_at_foes(
     sight: &Sight,
-    own: &BodyReadOnlyItem,
-    mind: &MindItem,
+    own: &BodyItem,
+    casting: &Spellcasting,
     content: &Catalogs,
     fray: Fray,
 ) -> bool {
-    mind.casting.chance != 0
-        && usable(sight, own, mind, content, fray)
+    casting.chance != 0
+        && usable(sight, own, casting, content, fray)
             .iter()
             .any(|(_, spell, _)| spell.aimed_at_enemies())
 }
@@ -234,21 +231,21 @@ pub fn casts_at_foes(
 pub fn casts(
     rng: &mut GameRng,
     sight: &Sight,
-    own: &BodyReadOnlyItem,
-    mind: &MindItem,
+    own: &BodyItem,
+    (temper, casting): (&Temper, &Spellcasting),
     gap: f32,
     content: &Catalogs,
     fray: Fray,
 ) -> Option<Cast> {
     let budget = own.budget?.0;
-    if mind.casting.chance == 0 || closes_in(own, mind, gap) {
+    if casting.chance == 0 || closes_in(own, temper, gap) {
         return None;
     }
-    let chance = if reaches_party(own.attacks, gap) { u32::from(mind.casting.chance) } else { 100 };
+    let chance = if reaches_party(own.attacks, gap) { u32::from(casting.chance) } else { 100 };
     // A cone or a blast that would take in a monster standing with neither
     // side is not cast there, judged at a power it might cast at (retail
     // `SpellAreaHitsNeutralMonster`, which picks its own).
-    let usable: Vec<_> = usable(sight, own, mind, content, fray)
+    let usable: Vec<_> = usable(sight, own, casting, content, fray)
         .into_iter()
         .map(|(weight, spell, aims)| {
             let at = power(rng, budget, spell);
@@ -276,7 +273,7 @@ pub fn casts(
 /// it lands, a cone within the spell's reach and its arc.
 fn spares_neutrals(
     sight: &Sight,
-    own: &BodyReadOnlyItem,
+    own: &BodyItem,
     spell: &SpellDefinition,
     aim: Aim,
     power: u32,

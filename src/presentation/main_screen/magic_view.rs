@@ -583,7 +583,6 @@ fn offers<'a>(
     (party, held): (Entity, &Items),
     learned: &LearnedSpells,
     points: &SpellPoints,
-    maximum: &enum_map::EnumMap<Realm, u32>,
     spells: &'a SpellCatalog,
     content: &'a Catalogs,
     context: UseContext,
@@ -635,12 +634,11 @@ fn offers<'a>(
     }
     let Some(realm) = view.realm else { return Vec::new() };
     let mut offers: Vec<_> = learned
-        .0
-        .iter()
-        .map(|&id| &spells[id])
+        .ids()
+        .map(|id| &spells[id])
         .filter(|s| s.realm == Some(realm))
         .map(|s| {
-            let affordable = affordable(points, s, maximum);
+            let affordable = affordable(points, s);
             let silenced = silenced && silence_stops(s, skills[Skill::Alchemy] > 0);
             Offer {
                 source: Source::Spell { spell: s.id, power: 1 },
@@ -661,13 +659,9 @@ fn offers<'a>(
 }
 
 /// The most the points pay for of a spell: its realm's points over its cost.
-fn affordable(
-    points: &SpellPoints,
-    spell: &SpellDefinition,
-    maximum: &enum_map::EnumMap<Realm, u32>,
-) -> u32 {
+fn affordable(points: &SpellPoints, spell: &SpellDefinition) -> u32 {
     spell.realm.map_or(0, |realm| {
-        crate::game::magic::power::affordable(points.available(realm, maximum), spell.cost)
+        crate::game::magic::power::affordable(points.available(realm), spell.cost)
     })
 }
 
@@ -797,18 +791,11 @@ pub(super) fn draw_magic_view(
     let (paper, conditions, attributes, skills) = members.get(view.caster).unwrap();
     let character = paper.trained();
     let (learned, points) = casters.get(view.caster).unwrap();
-    let mana_maximum = crate::game::magic::max_points(
-        u32::from(character.calling.level()),
-        attributes,
-        learned,
-        spells,
-        skills,
-    );
     // Realms: their points, the chosen one latched; the first with points
     // chosen when none is.
     if !view.items {
         if view.realm.is_none() {
-            view.realm = EnumSet::<Realm>::all().iter().find(|&r| mana_maximum[r] > 0);
+            view.realm = EnumSet::<Realm>::all().iter().find(|&r| points.most(r) > 0);
         }
         for (button, selected, entity) in &parts.p0() {
             let wanted = view.realm == Some(button.0);
@@ -821,7 +808,7 @@ pub(super) fn draw_magic_view(
             crate::presentation::retail_controls::set_enabled(
                 &mut commands,
                 entity,
-                mana_maximum[button.0] > 0,
+                points.most(button.0) > 0,
                 false,
             );
         }
@@ -838,8 +825,8 @@ pub(super) fn draw_magic_view(
             }
         }
         for (realm, mut label) in &mut parts.p1() {
-            let current = points.current(realm.0, &mana_maximum);
-            let value = format!("{current}/{}", mana_maximum[realm.0]);
+            let current = points.current(realm.0);
+            let value = format!("{current}/{}", points.most(realm.0));
             if label.value != value {
                 label.value = value;
             }
@@ -851,7 +838,6 @@ pub(super) fn draw_magic_view(
         (*party, &held),
         learned,
         points,
-        &mana_maximum,
         spells,
         &content,
         context,
@@ -910,7 +896,7 @@ pub(super) fn draw_magic_view(
     // Pips: as many lit as the chosen power, rated by failure chance;
     // auto pips only where retail offers them.
     if !view.items {
-        let affordable = spell.map_or(0, |s| affordable(points, s, &mana_maximum));
+        let affordable = spell.map_or(0, |s| affordable(points, s));
         for (pip, hovered, mut picture, mut visibility) in &mut parts.p5() {
             let index = pip.0 as usize;
             let shown = match (pip.0, spell.map(|s| s.power)) {
@@ -1122,20 +1108,12 @@ fn choose_row(
     let (paper, conditions, attributes, skills) = members.get(view.caster).unwrap();
     let character = paper.trained();
     let (learned, points) = casters.get(view.caster).unwrap();
-    let mana_maximum = crate::game::magic::max_points(
-        u32::from(character.calling.level()),
-        attributes,
-        learned,
-        spells,
-        skills,
-    );
     let offers = offers(
         &view,
         (view.caster, character, attributes, skills),
         (*party, &held),
         learned,
         points,
-        &mana_maximum,
         spells,
         &content,
         match context(

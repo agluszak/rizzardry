@@ -464,6 +464,7 @@ pub(super) struct DraftActor;
 pub(super) fn embody_draft(
     session: Option<Single<Ref<Creation>>>,
     actors: Query<Entity, With<DraftActor>>,
+    content: If<Res<crate::game::data::Catalogs>>,
     mut commands: Commands,
 ) {
     let session = session.as_ref();
@@ -483,6 +484,7 @@ pub(super) fn embody_draft(
             crate::game::actors::Nature::of_race(profile.birth.race),
             crate::game::actors::armour::born(profile.birth.race),
             crate::game::characters::Vitals::new(&profile),
+            crate::game::magic::LearnedSpells::of(draft.spells(), &content.spells),
             profile,
         ));
     }
@@ -490,7 +492,17 @@ pub(super) fn embody_draft(
 
 pub(super) fn refresh(
     session: Option<Single<Ref<Creation>>>,
-    actor: Option<Single<Ref<crate::game::actors::Armour>, With<DraftActor>>>,
+    actor: Option<
+        Single<
+            (
+                Ref<crate::game::actors::Armour>,
+                &Attributes,
+                &crate::game::actors::Resistances,
+                Ref<crate::game::magic::SpellPoints>,
+            ),
+            With<DraftActor>,
+        >,
+    >,
     art: Option<Single<Ref<StatsAssets>>>,
     strings: crate::presentation::screen_art::GameStrings,
     content: If<Res<crate::game::data::Catalogs>>,
@@ -506,7 +518,7 @@ pub(super) fn refresh(
     // The page shows the draft: redraw it only when the draft, the words
     // or the art change, or when the page gains parts.
     if !session.is_changed()
-        && !actor.as_ref().is_some_and(|armour| armour.is_changed())
+        && !actor.as_ref().is_some_and(|actor| actor.0.is_changed() || actor.3.is_changed())
         && !art.is_changed()
         && !strings.is_changed()
         && !sheets.is_changed()
@@ -526,12 +538,6 @@ pub(super) fn refresh(
             })
             .unwrap_or_default()
     };
-    let resistances = crate::game::characters::resistance::resistances(
-        (&crate::game::actors::Nature::of_race(profile.birth.race), Some(profile.trained())),
-        &Attributes::of_sheet(&profile),
-        &crate::game::actors::Skills::of_sheet(&profile),
-        |_| None,
-    );
     let help = [0xe5, 0xe8, 0xe9, 0xea].map(|id| {
         sheets
             .get(&art.font)
@@ -597,8 +603,10 @@ pub(super) fn refresh(
             })
             .to_owned(),
             Value::Attribute(a) => {
-                if session.choices.race {
-                    Attributes::of_sheet(&profile)[a].to_string()
+                if session.choices.race
+                    && let Some(actor) = actor.as_ref()
+                {
+                    actor.1[a].to_string()
                 } else {
                     String::new()
                 }
@@ -679,22 +687,16 @@ pub(super) fn refresh(
             }
             Value::Armour => {
                 if session.choices.race {
-                    actor.as_ref().map_or_else(String::new, |armour| armour.average.to_string())
+                    actor.as_ref().map_or_else(String::new, |actor| actor.0.average.to_string())
                 } else {
                     String::new()
                 }
             }
             Value::SpellPoints => {
-                if session.choices.race {
-                    let learned = crate::game::magic::LearnedSpells(draft.spells());
-                    let points = crate::game::magic::max_points(
-                        u32::from(profile.calling.level()),
-                        &Attributes::of_sheet(&profile),
-                        &learned,
-                        &content.spells,
-                        &crate::game::actors::Skills::of_sheet(&profile),
-                    );
-                    points.values().sum::<u32>().to_string()
+                if session.choices.race
+                    && let Some(actor) = actor.as_ref()
+                {
+                    actor.3.total().1.to_string()
                 } else {
                     String::new()
                 }
@@ -708,7 +710,7 @@ pub(super) fn refresh(
             }
             Value::Resistance(realm) => {
                 let amount = if session.choices.race || session.choices.profession {
-                    resistances[realm].total - 25
+                    actor.as_ref().map_or(25, |actor| actor.2.realms[realm]) - 25
                 } else {
                     0
                 };

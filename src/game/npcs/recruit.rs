@@ -56,19 +56,10 @@ pub fn companion(
         .unwrap_or_default()
         .into();
     let skills = crate::game::actors::Skills::of_sheet(&c);
-    let spells = LearnedSpells(
-        t.spells
-            .iter()
-            .copied()
-            .filter(|&s| {
-                crate::game::magic::can_learn(
-                    (c.trained(), &c.training),
-                    &skills,
-                    &content.spells[s],
-                )
-            })
-            .collect(),
-    );
+    let learnable = t.spells.iter().copied().filter(|&s| {
+        crate::game::magic::can_learn((c.trained(), &c.training), &skills, &content.spells[s])
+    });
+    let spells = LearnedSpells::of(learnable, &content.spells);
     let vitals = Vitals::new(&c);
     let member = commands
         .spawn((
