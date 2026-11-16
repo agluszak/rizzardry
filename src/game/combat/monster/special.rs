@@ -88,7 +88,8 @@ pub(super) fn special_attack(
     let deliberation = weighs.deliberation;
     let (&Considers(monster), &PartyGap(gap), &ClosesIn(closes)) =
         deliberations.get(deliberation)?;
-    let (false, Ok((Special(attack), standing, slots))) = (closes, monsters.get(monster)) else {
+    let ready = if closes { None } else { monsters.get(monster).ok() };
+    let Some((Special(attack), standing, slots)) = ready else {
         commands.trigger(WeighsSpells { deliberation });
         return Ok(());
     };

@@ -1311,7 +1311,7 @@ pub fn fall(
     let cheats = vitals.is_dead()
         && vitals.cheats_death(&mut conditions, (traits, mastery.0), first, &mut rng);
     if cheats {
-        if let (true, Some(fight)) = (first, fight) {
+        if first && let Some(fight) = fight {
             commands.entity(fell.body).insert(CheatedDeathIn(fight));
         }
     } else if vitals.is_dead() {

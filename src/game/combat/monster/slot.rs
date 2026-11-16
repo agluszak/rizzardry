@@ -112,7 +112,7 @@ pub(super) fn fill(
     let row = crate::game::hits::definitions::row(spell);
     let mut slot = commands.entity(slot);
     if !breath {
-        let (Some(row), true) = (row, spell.monsters_cast) else {
+        let Some(row) = row.filter(|_| spell.monsters_cast) else {
             slot.despawn();
             return Ok(());
         };

@@ -317,7 +317,7 @@ pub(super) fn react_to_wounds(
         }
         let after = AFTER_A_WOUND[rng.0.random_range(0..AFTER_A_WOUND.len())];
         let already = waiting.iter().any(|w| w.actor == hurt.body && w.requested == after);
-        if let (false, Some(voice)) = (already, voice) {
+        if !already && let Some(voice) = voice {
             say(&mut commands, *level, voice, after, 0.0);
         }
     }

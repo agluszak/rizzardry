@@ -1457,7 +1457,7 @@ fn pass(
     mut commands: Commands,
 ) {
     let Pass { to } = *event;
-    let (Some(item), true) = (items.held(*party), members.contains(to)) else { return };
+    let Some(item) = items.held(*party).filter(|_| members.contains(to)) else { return };
     let eligible = able.contains(to);
     let pool_first = !eligible || battle.is_some();
     commands.trigger(Give { item, to: eligible.then_some(to), pool_first, told: true });

@@ -417,7 +417,7 @@ pub(super) fn befalls_the_party(
         PartyAct::RestoreMagic => {
             for member in roster.iter() {
                 let alive = members.get(member).is_ok_and(|(_, (vitals, _), _)| !vitals.is_dead());
-                if let (true, Ok(mut points)) = (alive, points.get_mut(member)) {
+                if alive && let Ok(mut points) = points.get_mut(member) {
                     points.restore_evenly(u32::MAX);
                 }
             }
