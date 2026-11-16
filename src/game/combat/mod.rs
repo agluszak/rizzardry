@@ -44,109 +44,114 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((hostility::plugin, swings::plugin))
-            .add_observer(credit_death)
-            .add_observer(count_kill)
-            .add_observer(settle_defeat)
-            .add_observer(turn::defend_instead)
-            .add_observer(round_end::end_the_round)
-            .add_observer(round_end::leave_fight)
-            .add_observer(round_end::rest_the_idle)
-            .add_observer(round_end::cool_specials)
-            .add_observer(round_end::pulse_clouds)
-            .add_observer(round_end::count_pulse)
-            .add_observer(count_cast)
-            .add_observer(round_end::judge_victory)
-            .add_observer(round_end::look_again)
-            .add_observer(round_end::end_round)
-            .add_observer(join_party)
-            .add_observer(turn::clear_fight)
-            .add_observer(approach::end_move)
-            .add_observer(approach::stop_walking)
-            .add_observer(turn::take_turn)
-            .add_observer(turn::act)
-            .add_observer(monster::deliberate)
-            .add_observer(turn::breathe)
-            .add_observer(turn::tell_breath)
-            .add_observer(turn::guard)
-            .add_observer(turn::retreat)
-            .add_observer(turn::hold)
-            .add_observer(effort::tire)
-            .add_observer(effort::tires)
-            .add_observer(summon::summon)
-            .add_message::<CombatNews>()
-            .add_message::<CyclePartyMove>()
-            .add_message::<StartRound>()
-            .add_message::<CombatControl>()
-            .add_message::<crate::game::camp::CampNews>()
-            .add_message::<GiveOrder>()
-            .add_message::<engage::Engaged>()
-            .init_resource::<CombatSettings>()
-            .add_systems(
-                Update,
-                (
-                    give_orders,
-                    // alerts, then engagement, then the opening,
-                    engage::alert_factions.run_if(any_with_component::<Battle>),
-                    engage::engage,
-                    engage::open_battle,
-                    control_combat,
-                )
+        app.add_plugins((
+            hostility::plugin,
+            swings::plugin,
+            turn::plugin,
+            monster::plugin,
+            engage::plugin,
+        ))
+        .add_observer(credit_death)
+        .add_observer(count_kill)
+        .add_observer(settle_defeat)
+        .add_observer(turn::defend_instead)
+        .add_observer(round_end::end_the_round)
+        .add_observer(round_end::leave_fight)
+        .add_observer(round_end::rest_the_idle)
+        .add_observer(round_end::cool_specials)
+        .add_observer(round_end::pulse_clouds)
+        .add_observer(round_end::count_pulse)
+        .add_observer(count_cast)
+        .add_observer(round_end::judge_victory)
+        .add_observer(round_end::look_again)
+        .add_observer(round_end::end_round)
+        .add_observer(join_party)
+        .add_observer(turn::clear_fight)
+        .add_observer(approach::end_move)
+        .add_observer(approach::stop_walking)
+        .add_observer(turn::take_turn)
+        .add_observer(turn::act)
+        .add_observer(turn::breathe)
+        .add_observer(turn::tell_breath)
+        .add_observer(turn::guard)
+        .add_observer(turn::retreat)
+        .add_observer(turn::hold)
+        .add_observer(effort::tire)
+        .add_observer(effort::tires)
+        .add_observer(summon::summon)
+        .add_message::<CombatNews>()
+        .add_message::<CyclePartyMove>()
+        .add_message::<StartRound>()
+        .add_message::<CombatControl>()
+        .add_message::<crate::game::camp::CampNews>()
+        .add_message::<GiveOrder>()
+        .add_message::<engage::Engaged>()
+        .init_resource::<CombatSettings>()
+        .add_systems(
+            Update,
+            (
+                give_orders,
+                // alerts, then engagement, then the opening,
+                engage::alert_factions.run_if(any_with_component::<Battle>),
+                engage::engage,
+                engage::open_battle,
+                control_combat,
+            )
+                .chain()
+                .in_set(GameplaySet::Combat)
+                .run_if(crate::game::world::level::level_active),
+        )
+        // Rounds run on the fixed step: when each actor acts, and so
+        // every roll, follows simulation time, not how often frames
+        // come. Requests made in Update wait for the next step, and a
+        // move the round starts or ends governs the party's input on
+        // that same step. Spell missiles fly on it too: one lands at
+        // the step its flight ends, its deaths and a defeat it causes
+        // settled before anyone else acts.
+        .add_systems(
+            FixedUpdate,
+            (
+                // What was in the air has landed before anyone acts.
+                crate::game::hits::fly,
+                // The earliest moment comes: its actor decides and acts,
+                // and what the act did lands, its deaths settled, before
+                // the next moment. When none is left the round ends.
+                (stop_party_move, begin_round, next_moment)
                     .chain()
-                    .in_set(GameplaySet::Combat)
-                    .run_if(crate::game::world::level::level_active),
+                    .run_if(any_with_component::<Battle>),
             )
-            // Rounds run on the fixed step: when each actor acts, and so
-            // every roll, follows simulation time, not how often frames
-            // come. Requests made in Update wait for the next step, and a
-            // move the round starts or ends governs the party's input on
-            // that same step. Spell missiles fly on it too: one lands at
-            // the step its flight ends, its deaths and a defeat it causes
-            // settled before anyone else acts.
-            .add_systems(
-                FixedUpdate,
-                (
-                    // What was in the air has landed before anyone acts.
-                    crate::game::hits::fly,
-                    // The earliest moment comes: its actor decides and acts,
-                    // and what the act did lands, its deaths settled, before
-                    // the next moment. When none is left the round ends.
-                    (stop_party_move, begin_round, next_moment)
-                        .chain()
-                        .run_if(any_with_component::<Battle>),
-                )
-                    .chain()
-                    .in_set(GameplaySet::Combat)
-                    .run_if(crate::game::world::level::level_active)
-                    .after(crate::game::party::body::turn_party)
-                    .before(bevy_tnua::TnuaUserControlsSystems),
-            )
-            // What a moment or a round's end did to bodies is settled, and
-            // only then is a closing round judged.
-            .add_systems(
-                FixedUpdate,
-                round_end::close_round
-                    .after(crate::game::actors::settle)
-                    .run_if(crate::game::world::level::level_active),
-            )
-            // The party walks on the fixed step; its move is measured on
-            // every step, once physics has moved it, so how frames batch
-            // those steps changes neither the ground counted nor where the
-            // budget runs out.
-            .add_systems(
-                FixedPostUpdate,
-                (track_party_move, approach::spend_moves)
-                    .after(avian3d::prelude::PhysicsSystems::Writeback)
-                    .run_if(crate::game::world::level::level_active),
-            )
-            // Monsters' moves likewise: headed before navigation plans the
-            // step, charged once physics has walked it.
-            .add_systems(
-                FixedPreUpdate,
-                approach::steer_moves
-                    .before(bevy_landmass::LandmassSystems::SyncExistence)
-                    .run_if(crate::game::world::level::level_active),
-            );
+                .chain()
+                .in_set(GameplaySet::Combat)
+                .run_if(crate::game::world::level::level_active)
+                .after(crate::game::party::body::turn_party)
+                .before(bevy_tnua::TnuaUserControlsSystems),
+        )
+        // What a moment or a round's end did to bodies is settled, and
+        // only then is a closing round judged.
+        .add_systems(
+            FixedUpdate,
+            round_end::close_round
+                .after(crate::game::actors::settle)
+                .run_if(crate::game::world::level::level_active),
+        )
+        // The party walks on the fixed step; its move is measured on
+        // every step, once physics has moved it, so how frames batch
+        // those steps changes neither the ground counted nor where the
+        // budget runs out.
+        .add_systems(
+            FixedPostUpdate,
+            (track_party_move, approach::spend_moves)
+                .after(avian3d::prelude::PhysicsSystems::Writeback)
+                .run_if(crate::game::world::level::level_active),
+        )
+        // Monsters' moves likewise: headed before navigation plans the
+        // step, charged once physics has walked it.
+        .add_systems(
+            FixedPreUpdate,
+            approach::steer_moves
+                .before(bevy_landmass::LandmassSystems::SyncExistence)
+                .run_if(crate::game::world::level::level_active),
+        );
     }
 }
 
@@ -510,30 +515,18 @@ pub fn stop_party_move(
 pub fn begin_round(
     mut commands: Commands,
     time: Res<Time>,
-    fight: Option<
-        Single<(&mut Battle, &mut Round, &mut PartyMove, &mut Pause, Option<&Combatants>)>,
-    >,
-    mut rng: ResMut<GameRng>,
-    roster: Single<&PartyRoster>,
-    bodies: Query<(
-        (&Vitals, &crate::game::characters::Conditions, Has<crate::game::actors::CanFight>),
-        &crate::game::actors::Attacks,
-        Option<(crate::game::characters::Schooling, &crate::game::party::Order)>,
-    )>,
+    fight: Option<Single<(&mut Battle, &Round, &mut Pause)>>,
     settings: Res<CombatSettings>,
     in_flight: Query<(), With<crate::game::hits::Deed>>,
     moving: Query<(), With<approach::CombatMove>>,
     mut starts: MessageReader<StartRound>,
     mut moves: MessageReader<CyclePartyMove>,
 ) {
-    let Some((mut battle, mut round, mut party_move, mut pause, combatants)) =
-        fight.map(Single::into_inner)
-    else {
+    let Some((mut battle, round, mut pause)) = fight.map(Single::into_inner) else {
         starts.clear();
         moves.clear();
         return;
     };
-    let combatants = combatants.map_or(&[][..], Combatants::entities);
     let start = starts.read().count() > 0;
     for _ in moves.read() {
         if !round.executing() {
@@ -546,15 +539,9 @@ pub fn begin_round(
     }
     // Between rounds a phased fight waits for the player; a continuous one
     // goes on.
-    if (start || battle.opening.is_some()) && !round.executing() {
-        turn::accept_round(
-            &mut commands,
-            (&mut battle, &mut round, &mut party_move),
-            combatants,
-            &roster,
-            &bodies,
-            &mut rng,
-        );
+    let accepted = (start || battle.opening.is_some()) && !round.executing();
+    if accepted {
+        commands.trigger(turn::Accepts);
     }
     // A finished pause is not ticked again: a fight waiting for the player
     // stays unchanged.
@@ -566,15 +553,8 @@ pub fn begin_round(
     if !in_flight.is_empty() || !moving.is_empty() {
         return;
     }
-    if !round.executing() && settings.continuous {
-        turn::accept_round(
-            &mut commands,
-            (&mut battle, &mut round, &mut party_move),
-            combatants,
-            &roster,
-            &bodies,
-            &mut rng,
-        );
+    if !accepted && !round.executing() && settings.continuous {
+        commands.trigger(turn::Accepts);
     }
 }
 

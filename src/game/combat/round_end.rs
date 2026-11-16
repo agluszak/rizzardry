@@ -15,7 +15,6 @@ use avian3d::prelude::Position;
 use bevy::prelude::*;
 
 use super::monster;
-use super::monster::coming;
 use super::monster::sight::Sight;
 use super::turn::{SpecialCooldown, Turn};
 use super::{
@@ -36,7 +35,7 @@ use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::{AGING_TICK_MS, GameClock};
-use crate::game::world::hostility::{Side, Stance};
+use crate::game::world::hostility::Stance;
 use crate::game::world::identify::{GroupMember, GroupMembers, GroupRecognition};
 use crate::game::world::obstacles::WorldObstacles;
 use bevy::ecs::relationship::RelationshipTarget;
@@ -128,10 +127,12 @@ pub struct RoundEnded {
 }
 
 /// Groups with nothing left to fight leave it (retail
-/// `CheckMonsterGroupsLeaveCombat`): this reads what each group's members
-/// make out and where its neighbours stand, and asks [`coming::leaves`] who
-/// goes. When no hostile group is left engaged, everyone leaves. One outside
-/// any group stays while hostile groups fight on.
+/// `CheckMonsterGroupsLeaveCombat`), each by its members still fighting: a
+/// hostile group stays while a member makes out the party or sees a foe of
+/// its own, and keeps the fight engaged only by the party; a friendly one
+/// stays while a member sees a foe; a neutral one while it stands with the
+/// fight. When no hostile group is left engaged, everyone leaves. One
+/// outside any group keeps hostile groups engaged.
 pub(super) fn leave_fight(
     leave: On<GroupsLeave>,
     mut fights: Query<(&Combatants, &mut Round)>,
@@ -164,7 +165,15 @@ pub(super) fn leave_fight(
         };
         let fellows: Vec<Entity> =
             members.iter().filter(|&m| combatants.contains(&m) && sight.alive(m)).collect();
-        let (stays, engages) = coming::stays(&sight, side, &fellows, &hostiles, combatants);
+        let sees_foe = || fellows.iter().any(|&m| sight.sees_foe(m, combatants));
+        let (stays, engages) = match side {
+            Stance::Neutral => (sight.stands_with(&fellows, &hostiles), false),
+            Stance::Hostile => {
+                let engages = fellows.iter().any(|&m| sight.sees_party(m));
+                (engages || sees_foe(), engages)
+            }
+            Stance::Friendly => (sees_foe(), false),
+        };
         engaged |= engages;
         if !stays {
             going.push(group);
@@ -312,9 +321,9 @@ pub(super) fn judge_victory(
     mut fights: Query<(&mut Battle, &mut Round, &Spoils, &mut Pause, &Combatants)>,
     mut members: Query<(&mut crate::game::characters::Experience, &Vitals)>,
     monsters: Query<(
-        &crate::game::actors::Attacks,
-        (&Vitals, &crate::game::characters::Conditions),
-        &Side,
+        &crate::game::actors::arm::Furthest,
+        &Vitals,
+        &crate::game::world::hostility::Standing,
         Option<&crate::game::world::navigation::Walker>,
     )>,
     places: Places,
@@ -332,11 +341,11 @@ pub(super) fn judge_victory(
     }
     pause.0 = Timer::from_seconds(ROUND_SECONDS, TimerMode::Once);
     let approaching = combatants.entities().iter().any(|&entity| {
-        monsters.get(entity).is_ok_and(|(arms, (vitals, _), _, walker)| {
+        monsters.get(entity).is_ok_and(|(arms, vitals, _, walker)| {
             let gap = roster.first().map_or(f32::INFINITY, |&member| places.gap(entity, member));
             monster::close::needs_approach(
                 !vitals.is_dead() && walker.is_some_and(|walker| walker.speed > 0.0),
-                arms.reach(),
+                arms.0.unwrap_or(crate::content::species::Reach::Touch),
                 gap,
             )
         })
@@ -345,8 +354,8 @@ pub(super) fn judge_victory(
     battle.passive_rounds = if active { 0 } else { battle.passive_rounds + 1 };
     let hostiles_left = combatants.entities().iter().any(|&entity| {
         !round.leaving.contains(&entity)
-            && monsters.get(entity).is_ok_and(|(_, (vitals, conditions), side, ..)| {
-                !vitals.is_dead() && side.now(conditions) == Stance::Hostile
+            && monsters.get(entity).is_ok_and(|(_, vitals, standing, ..)| {
+                !vitals.is_dead() && standing.stance == Stance::Hostile
             })
     });
     if hostiles_left && battle.passive_rounds < PASSIVE_ROUNDS {

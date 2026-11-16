@@ -1,7 +1,7 @@
 # Items
 
 An item is a thing: a sword, a stack of arrows, a potion with charges left.
-This page is the specification for slice 3 of [the plan](../plan.md). Where the
+This page is the specification. Where the
 code differs, the code is wrong. Numbers and formulas are the original's and
 are cited beside the code that holds them.
 
@@ -96,11 +96,3 @@ asked.
   hand; the off hand strikes only beside a main hand of the same kind (close
   or ranged), never as a shield or ammunition. The arm's numbers come from the
   weapon's components and the member's attributes and skills.
-
-## What goes
-
-`StackId`, `ItemIds`, `ItemStack`, `Equipped`, `Carried`, `ItemPool`, `Hand`,
-`Slot`, `MemberSlot`, `ItemOwner`, `ItemRef`, `ItemAt`, `PoolPosition`,
-`content.items[..]` in any rule, `Grip` and `combat/attack.rs` as a port of the
-original's hand table, `distribute_burden` as a system that scans for changes,
-and a watch on a member's gear that asks for their figures.

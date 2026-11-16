@@ -4,19 +4,16 @@
 
 use bevy::prelude::*;
 use enum_map::EnumMap;
-use enumset::EnumSet;
 
 use super::Place;
 use super::sources::{Abilities, Traits};
 use super::spells::Bonus;
-use crate::content::characters::{Attribute, BodyPart, Realm, Skill};
-use crate::content::items::{AttackEffects, AttackMode, Dice};
-use crate::content::species::{AttackWord, MonsterKind, Reach};
+use crate::content::characters::{Attribute, Realm, Skill};
+use crate::content::species::{MonsterKind, Reach};
 use crate::content::spells::Spellbook;
 use crate::game::characters::{
     Calling, Character, Condition, Conditions, Training, scale_by_level,
 };
-use crate::game::inventory::WeaponSlot;
 use crate::game::party::formation::Formation;
 
 /// An actor's attributes as they stand now, spells counted, each 1 to 125.
@@ -126,6 +123,49 @@ impl Attributes {
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Level(pub u32);
 
+/// Senses, Speed, Dexterity and Intelligence together, which weigh for an
+/// actor's blows and against those at it (retail SSDI): a figure written
+/// with its attributes.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Agility(pub i32);
+
+/// What tiredness takes off an actor's aim and armour, by the share of its
+/// stamina spent (retail `FatigueArmorPenalty`): a figure written as its
+/// stamina changes.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Fatigue(pub i32);
+
+impl Fatigue {
+    /// With this percent of stamina spent: 0 under half, then 5, 10, 20 and
+    /// 40 from 50, 70, 85 and 95.
+    pub fn of_spent(percent: u32) -> Self {
+        Fatigue(match percent {
+            0..50 => 0,
+            50..70 => 5,
+            70..85 => 10,
+            85..=94 => 20,
+            _ => 40,
+        })
+    }
+}
+
+/// How well an actor presses a blow past a guard, or guards against one: its
+/// press less its fatigue, which tells half as much on one whose first
+/// weapon tires little.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pressing(pub i32);
+
+/// It is blind: its aim past 10 is lost unless it fights blind.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Blinded;
+
+/// The level the strength of an actor's traits grows with: a monster's own
+/// level, written as it is made; the level in the profession followed now
+/// for one who trained (retail `ScaleValueByMonsterLevel`,
+/// `ScaleValueByProfessionLevel`).
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Mastery(pub u8);
+
 /// What an actor is to the effects that land on it.
 #[derive(Component, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Resistances {
@@ -163,154 +203,35 @@ pub struct Reduction(pub i32);
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MissileShield(pub u32);
 
-/// One thing an actor strikes with: one of a member's weapon slots as their gear
-/// and stats make it now, or one of a monster's species' attacks. A
-/// member's two slots are its two arms; a monster's attacks all belong to
-/// its primary slot, which shares its attacks a round among them.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Arm {
-    pub slot: WeaponSlot,
-    /// The weapon held, which an accepted attack is locked to.
-    pub weapon: Option<Entity>,
-    pub reach: Reach,
-    pub modes: EnumSet<AttackMode>,
-    /// The dice its blows roll; a punch rolls the off hand's (what it holds,
-    /// else its fist), a kick the main hand's fist.
-    pub dice: Dice,
-    pub punch: Dice,
-    pub kick: Dice,
-    /// How well it strikes: a member's slot rating and five times its
-    /// to-hit, a monster's attack score and five times its to-hit bonus.
-    pub rating: i32,
-    /// What its blows' dice are raised by, in percent.
-    pub percent: i32,
-    pub effects: AttackEffects,
-    /// The monster kinds it slays, each a die more.
-    pub slays: Vec<MonsterKind>,
-    /// Attacks a round with it.
-    pub attacks: u32,
-    /// Its initiative, added to its body's.
-    pub initiative: i32,
-    /// Most swings an attack makes, before what the weapon adds.
-    pub swings: u32,
-    pub extra_swings: i32,
-    /// Its blows are ranged combat: they train Eagle Eye and spend what is
-    /// shot or thrown.
-    pub ranged: bool,
-    /// A launcher's: it shoots the ammunition in the other slot, which
-    /// pierces by these modes.
-    pub loaded: Option<EnumSet<AttackMode>>,
-    /// A Ninja's throw, which gets through armour whenever it strikes.
-    pub sure_throw: bool,
-    /// The wielder's points in the skill whose training adds a kill chance
-    /// to its blows.
-    pub critical: Option<u32>,
-    /// The skills a blow of it that does damage practises.
-    pub practises: &'static [Skill],
-    /// What swinging it weighs, for the stamina it costs; a natural attack
-    /// costs none.
-    pub weight: Option<u16>,
-    /// Swinging it costs stamina.
-    pub tires: bool,
-    /// A modern weapon's: fatigue tells on its aim half as much.
-    pub modern: bool,
-    /// Fatigue tells on its penetration too.
-    pub fatigue_pierces: bool,
-    /// A sword, which a Samurai's Lightning Strike needs.
-    pub sword: bool,
-    /// It strikes naturally from hiding at arm's length: a Rogue's sword or
-    /// dagger, a rogue kind's close attack.
-    pub ambushes: bool,
-    /// How a monster's attack is announced, and whether "at" follows.
-    pub word: Option<(AttackWord, bool)>,
-    /// Where its blows land on a member, by its species' chances.
-    pub lands_on_party: Option<EnumMap<BodyPart, u8>>,
-    /// How its blows sound (a row of the hit-sound table), if at all.
-    pub sound_class: Option<u8>,
-}
+/// When an actor acts in a round, before its weapon's own initiative: its
+/// nature's, and what its training adds.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Initiative(pub i32);
 
-impl Arm {
-    /// The dice a blow of `mode` rolls: a punch the off hand's, a kick the
-    /// main hand's fist, anything else the arm's own.
-    pub fn rolls(&self, mode: AttackMode) -> Dice {
-        match mode {
-            AttackMode::Punch => self.punch,
-            AttackMode::Kick => self.kick,
-            _ => self.dice,
-        }
-    }
-}
+/// What training adds to when one acts in a round (retail `CalcInitiative`);
+/// nothing for one who never trained.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TrainedInitiative(pub i32);
 
-/// What an actor strikes with, and how it fights.
-#[derive(Component, Clone, Debug, Default, PartialEq)]
-pub struct Attacks {
-    pub arms: Vec<Arm>,
-    /// When it acts in a round, before its weapon's own initiative.
-    pub initiative: i32,
-    /// How well it presses a blow past a guard, or guards against one,
-    /// before fatigue (retail `GetCharacterProtectionScore`,
-    /// `GetMonsterProtectionScore`); fatigue tells half as much on one whose
-    /// first weapon `tires_little`.
-    pub press: i32,
-    pub tires_little: bool,
-    /// Effective while blind (a member with the trait, a Monk among
-    /// monsters): its aim past 10 scales by this level instead of being
-    /// held to 10, and its action is not lost to blindness.
-    pub blind_fighting: Option<u8>,
-    /// What its kind adds to its Senses when it looks about.
-    pub keen_sight: u32,
-    /// The percent chance its natural strikes roll extra dice (retail
-    /// `RollBackstabExtraDice`).
-    pub backstab: i32,
-    /// The level of one whose blows knock out more often, by which the
-    /// chance grows: a member with the trait's, in their profession.
-    pub knock_out: Option<u8>,
-    /// How far it may walk in one combat move, in metres; the party walks
-    /// as one, so a member has none.
-    pub stride: Option<f32>,
-    /// The share of its stride Haste adds to a move: a tenth a power.
-    pub hasted: f32,
-}
+/// It fights blind (a member with the trait, a Monk among monsters): its aim
+/// past 10 scales by this level instead of being held to 10, and its action
+/// is not lost to blindness.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlindFighting(pub u8);
 
-impl Attacks {
-    /// The furthest any of its arms reaches.
-    pub fn reach(&self) -> Reach {
-        self.arms.iter().map(|arm| arm.reach).max().unwrap_or(Reach::Touch)
-    }
+/// Its blows knock out more often, by this level: a member with the trait's,
+/// in their profession.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KnockOut(pub u8);
 
-    /// The arms of a slot.
-    pub fn of(&self, slot: WeaponSlot) -> impl Iterator<Item = &Arm> {
-        self.arms.iter().filter(move |arm| arm.slot == slot)
-    }
+/// The percent chance its natural strikes roll extra dice (retail
+/// `RollBackstabExtraDice`), by its mastery.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Backstab(pub i32);
 
-    /// The attacks a round the slot has: its arms' most.
-    pub fn attacks(&self, slot: WeaponSlot) -> u32 {
-        self.of(slot).map(|arm| arm.attacks).max().unwrap_or(0)
-    }
-
-    /// The slot's initiative: its arms' most.
-    pub fn slot_initiative(&self, slot: WeaponSlot) -> i32 {
-        self.of(slot).map(|arm| arm.initiative).max().unwrap_or(0)
-    }
-
-    /// The slot an attack opens with: the one with the most attacks, then
-    /// the bigger initiative (retail `ChooseCharacterAttackHand`).
-    pub fn opening(&self) -> Option<WeaponSlot> {
-        [WeaponSlot::Primary, WeaponSlot::Secondary]
-            .into_iter()
-            .filter(|&slot| self.attacks(slot) > 0)
-            .reduce(|best, slot| {
-                let rank = |slot| (self.attacks(slot), self.slot_initiative(slot));
-                // The main hand keeps it on a tie.
-                if rank(slot) > rank(best) { slot } else { best }
-            })
-    }
-
-    /// The weapons its slots hold.
-    pub fn weapons(&self) -> EnumMap<WeaponSlot, Option<Entity>> {
-        EnumMap::from_fn(|slot| self.of(slot).find_map(|arm| arm.weapon))
-    }
-}
+/// What an actor's spells and conditions add to its aim, five a point.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AimBonus(pub i32);
 
 /// Whether an actor reaches another with `reach` (retail `CloseFormationGap`,
 /// `FrontRankScreens`): a member and someone outside the party by the
@@ -333,5 +254,29 @@ pub fn reaches(
         (true, false) => through_formation(a, from, to),
         (false, true) => through_formation(b, to, from),
         (false, false) => from.gap(to) <= reach.metres(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fatigue_grows_in_bands_of_the_share_of_stamina_spent() {
+        let bands = [
+            (0, 0),
+            (49, 0),
+            (50, 5),
+            (69, 5),
+            (70, 10),
+            (84, 10),
+            (85, 20),
+            (94, 20),
+            (95, 40),
+            (100, 40),
+        ];
+        for (spent, lost) in bands {
+            assert_eq!(Fatigue::of_spent(spent), Fatigue(lost), "{spent} spent");
+        }
     }
 }

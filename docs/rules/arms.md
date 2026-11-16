@@ -1,9 +1,7 @@
 # A member's arms and armour
 
 What a member strikes with and how well they are guarded follow from what is
-in their two hands and on their body. This page is the specification for the
-last phase of slice 3 of [the plan](../plan.md); it replaces `Grip` and the
-member half of `combat/attack.rs`. The formulas are the original's
+in their two hands and on their body. This page is the specification. The formulas are the original's
 (`CalcAttacks`, `CalcArmorClasses`) and are cited beside the code that holds
 them; the shape below is not the original's.
 
@@ -151,12 +149,3 @@ monster that is tired, enchanted or waiting.
 Only in the systems that write `Attacks` and `Armour`, which follow a change to what is worn or to a worn thing
 (a launcher out of shots), and to the member's other sources ([actors.md](actors.md),
 "Sources and figures"). Rules in a fight read `Attacks` and `Armour`.
-
-## What goes
-
-`Grip`, `Holds`, `is_launcher`, `NO_STRENGTH`, `armour()` taking a definition
-lookup, `Character::resistances` taking one, and every `content.items[..]` in
-`actors/stats.rs`, `combat/attack.rs`, `combat/swings.rs`,
-`characters/resistance.rs`. What stays in `combat/attack.rs` is what a swing
-rolls (aim, location, fumble, scatter), which is the round's and belongs to
-slice 6.

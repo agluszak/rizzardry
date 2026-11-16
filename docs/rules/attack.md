@@ -817,48 +817,26 @@ original, not understood rules.
 
 ## 10. How this is built
 
-The sections above are the rules. This section says how the code is to be
-shaped around them; where the code differs from it, the code is wrong.
+The sections above are the rules. This says how the code is shaped around
+them; where the code differs from it, the code is wrong.
 
-**A rule is a function of the fighters it is about.** Each numbered rule
-above is one function. It takes the fighters themselves (the attacker, the one
-struck, a guard), read through one view of an actor in a fight, and the attack
-under way (the arm, the mode, the surprise); one that rolls takes the
-random-number generator. None of them changes anything, and none is handed a
-copy of an actor's numbers: there is no struct of facts between an actor's
-components and the rule that reads them.
+**What an actor strikes with is entities.** Each arm is an entity related
+to its bearer (`actors::arm`): a member's two hands, a monster's natural
+attacks. Every fact of an arm (reach, modes, dice, rating, attacks a round,
+swings, and the rest) is a component written by its own small system from
+what the hand holds and the member's training, or made with the monster
+from its species. What a bearer's arms come to (`Wielding`, `Tempo`,
+`Furthest`, `GuardReach`, `Pressing`, `AimBonus`) is a figure of the bearer.
 
-| Rule | Is about | Gives |
-| --- | --- | --- |
-| who may be struck, and with what (2) | the actor, its turn, everyone in the fight and where they stand | the arm and target, or what to do instead (close in on whom, wait, stand) |
-| catching unaware (3) | the arm, the target, the side the attacker is on | whether the blow is unaware, whether it is natural, whether the target turned |
-| the roll to hit (4) | the attack, the attacker, the target | the chance |
-| the swing's fate (4) | the arm, the chance, how many stand in reach, where the two stand | reaches (and whether surely), misses, or fumbles onto which bystander |
-| who steps in (4) | the one struck and its guards, the attacker | the guard the blow lands on |
-| getting through armour (4) | the attack, the attacker, the one struck, the place and the mode that pierces | the chance |
-| the blow (5) | the attack, the attacker, the one struck | the damage and what else it does |
-| what a swing costs (6) | the attack, the attacker | the stamina |
-| the next attack's moment (7) | attacks left with each hand, each hand's initiative, the moment now | which hand and when, or none |
-
-**The attack is a chain that only arranges.** The observer of `Strike`
-chooses, catches unaware and announces; each swing is then a `Swing` of its
-own, which calls the rules in the order of this page and makes happen what
-they decide: a blow that gets through lands as a deed on its victim, and so
-does Razor Cloak's answer; a swing's cost and a guard's step are `Tires`;
-what was shot is spent (`Spend`), skills are practised (`Practise`), a group
-is provoked (`Provocation`), the player is told (`CombatNews`). Bevy lands
-each deed before the next swing is begun, so the next swing, and what is told
-of the attack, see what the blow did. What the swings came to is kept on the
-attacker (`Attacking`) until the attack ends. None of it holds a rule of its
-own: no arithmetic, no constant.
-
-**What is read of an actor is one view.** The attacker and the target are read
-through the same view of an actor (health and what ails it, attributes, level,
-`Attacks`, `Armour`, side, place), whichever of member and monster they are.
-The places section 8 lists where the two differ are differences in what
-its figures hold, never a branch in a rule here.
-
-**What goes.** `open`, `swing`, `intercept`, `catch_unaware`, `land_blow`,
-`riposte`, `next_attack` as functions that take the world's queries and a
-mutable attack and do several rules each; the `Attack` value threaded mutably
-through them; arithmetic and constants inside the observer.
+**An attack is an entity, and so is each swing.** `Strike` chooses (2) and
+makes the attack: who, at whom, with which arm and how. Its opening counts
+the swings and catches the target unaware (3). Each swing is an entity of
+the attack whose facts are added by small observers, each reading only what
+its fact comes from: its `Aim`, its `Fate`, whom it `Strikes` once a guard
+has had its say, a near miss blocked, whether it gets `Through` and where,
+the blow (a deed) and a cloak's answer (4, 5, 7). A settled swing pays its
+stamina and spends what it shoots (6); then the next swing, or the attack's
+end, which tells what it came to and sets the next attack (7). The
+formulas that are functions of a few numbers (a mode's to-hit, the fumble
+odds, scatter, where a blow lands, a backstab's dice) are in
+`combat::attack`.

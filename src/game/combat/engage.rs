@@ -9,11 +9,17 @@
 //! path to the party is taken as the straight distance, and a rendered member
 //! near the party is not modelled (`docs/rules/monsters.md` section 3).
 
+use super::monster::special::SpecialReady;
+use super::monster::spell::{
+    self, Aims, Breath, Considers, SeesParty, WeighedIn, Weighing, Weighs,
+};
 use super::*;
+use crate::content::spells::SpellId;
+use crate::game::characters::{Condition, Conditions};
 use crate::game::world::navigation::walking_distance;
+use crate::game::world::population::{Special, Spellcasting};
 
-use super::monster::coming;
-use super::monster::sight::Sight;
+use super::monster::sight::{ENGAGEMENT_RANGE, Sight};
 use crate::game::actors::{Level, Places};
 use crate::game::party::body::PartyBody;
 use crate::game::world::hostility::{Allegiance, Stand};
@@ -63,26 +69,25 @@ pub(super) fn alert_factions(
 }
 
 /// Each group outside the fight, in authored order, then any monster without
-/// one, comes in or not ([`coming::comes_in`]). Those who come in are told
-/// of together, in the order of their places in the level.
+/// one, comes in or not ([`ComesIn`]). Whether each of its fighters could act
+/// on the party is looked at first: each weighs the spells of its slots aimed
+/// at enemies, and its breath if it is ready, as it would in a fight, at
+/// itself and the party. Those who come in are told of together, in the
+/// order of their places in the level ([`Told`]).
+#[allow(clippy::type_complexity)]
 pub(super) fn engage(
     battles: Query<(), With<Battle>>,
-    monsters: Query<(Entity, &Monster, &Allegiance, Option<&GroupMember>, Has<Combatant>)>,
+    monsters: Query<(Entity, &Allegiance, Option<&GroupMember>, Has<Combatant>)>,
     groups: Query<(Entity, &MonsterGroup, &GroupMembers, &LevelOwned, Has<hostility::Provoked>)>,
     leading: Query<(), With<Leads>>,
     kinds: Query<(
-        &crate::game::world::population::Special,
-        &crate::game::world::population::Spellcasting,
-        Option<&super::turn::SpecialCooldown>,
+        (&Special, &Spellcasting, &Conditions),
+        Has<SpecialReady>,
+        &crate::game::actors::arm::Furthest,
     )>,
     sight: Sight,
     level: PlayedLevel,
     content: If<Res<Catalogs>>,
-    (navigation, archipelagos): (
-        Option<Single<&crate::game::world::navigation::LevelNavigation>>,
-        Query<&bevy_landmass::Archipelago3d>,
-    ),
-    mut engaged: MessageWriter<Engaged>,
     mut commands: Commands,
 ) {
     // What provoked a group is looked at this once.
@@ -99,7 +104,7 @@ pub(super) fn engage(
     // Those who fight: alive, and not an NPC.
     let fights = |monster: Entity| {
         sight.alive(monster)
-            && monsters.get(monster).is_ok_and(|(_, _, allegiance, ..)| !allegiance.npc)
+            && monsters.get(monster).is_ok_and(|(_, allegiance, ..)| !allegiance.npc)
     };
     // The fight's hostile fighters, whom a neutral group may stand with.
     let hostiles: Vec<Entity> = monsters
@@ -120,64 +125,219 @@ pub(super) fn engage(
     units.extend(
         monsters
             .iter()
-            .filter(|&(monster, .., group, _)| group.is_none() && fights(monster))
+            .filter(|&(monster, _, group, _)| group.is_none() && fights(monster))
             .map(|(monster, ..)| (i32::MAX, None, vec![monster])),
     );
-    let mut joined: Vec<(i32, Entity)> = Vec::new();
     for (_, group, fighters) in units {
         // Those already fighting stay; the rest of their group may join them.
         let fighters: Vec<Entity> =
-            fighters.into_iter().filter(|&m| monsters.get(m).is_ok_and(|m| !m.4)).collect();
+            fighters.into_iter().filter(|&m| monsters.get(m).is_ok_and(|m| !m.3)).collect();
         let Some(&first) = fighters.first() else { continue };
-        let (_, _, allegiance, ..) = monsters.get(first).unwrap();
+        let (_, allegiance, ..) = monsters.get(first).unwrap();
         let side = (sight.side(first).unwrap_or_default(), allegiance.hostility_radius());
-        let provoked = group.is_some_and(|g| provoked.contains(&g));
-        // The way the leader would walk to the party, over the navmesh for
-        // its size (retail `FindNavigatorPathDistance`).
-        let walks = |leader: Entity, reach: f32| {
-            let Ok((_, monster, ..)) = monsters.get(leader) else { return false };
-            let archipelago = navigation.as_ref().and_then(|navigation| {
-                archipelagos.get(navigation.archipelago_for(monster.body.radius)).ok()
-            });
-            let (from, to) = (sight.places.of(leader).feet, sight.places.of(sight.party()).feet);
-            archipelago
-                .and_then(|archipelago| walking_distance(archipelago, from, to))
-                .is_some_and(|walked| walked <= reach)
-        };
-        // Whether one could act on the party with no fight on yet.
-        let acts = |fighter: Entity| {
-            let Ok((_, monster, ..)) = monsters.get(fighter) else { return false };
-            let Ok((special, casting, cooldown)) = kinds.get(fighter) else { return false };
-            let cooldown = cooldown.map_or(0, |cooldown| cooldown.0);
-            let kind = (&special.0, cooldown, casting, monster.body.speed > 0.0);
-            coming::acts_on_party(&sight, fighter, kind, &content)
-        };
         // Its leader, if it is among those who may come; else the first of them.
         let leader =
             fighters.iter().copied().find(|&fighter| leading.contains(fighter)).unwrap_or(first);
-        let came = coming::comes_in(
-            &sight,
-            (&fighters, leader),
+        let provoked = group.is_some_and(|g| provoked.contains(&g));
+        // Whether a fighter can act on the party is asked only of a group
+        // that would open a fight by it: hostile, or turning so by its
+        // radius, not provoked, with a member who sees the party.
+        let asks = !running
+            && !provoked
+            && (side.0 == Stance::Hostile || side.1.is_some())
+            && fighters.iter().any(|&fighter| sight.sees_party(fighter));
+        let mut probes = Vec::new();
+        for &fighter in fighters.iter().filter(|_| asks) {
+            let Ok(((special, casting, conditions), ready, _)) = kinds.get(fighter) else {
+                continue;
+            };
+            let bodies = std::iter::once(fighter).chain(sight.roster().iter()).collect();
+            let probe = commands
+                .spawn((Considers { by: fighter, bodies }, SeesParty(sight.sees_party(fighter))))
+                .id();
+            if casting.chance != 0 {
+                let silenced = conditions.has(Condition::Silenced);
+                for (id, weight) in casting.spells.iter().zip(spell::SLOT_WEIGHTS) {
+                    let Some(spell) = id.and_then(|id| content.spells.get(id)) else { continue };
+                    let modelled = crate::game::hits::definitions::row(spell).is_some();
+                    if spell.aimed_at_enemies()
+                        && spell::castable(spell, modelled, silenced, casting.silent_alchemy)
+                    {
+                        commands.spawn((Weighs { spell: spell.id, weight }, WeighedIn(probe)));
+                    }
+                }
+            }
+            // With no fight on, a special attack is a breath; a summoning
+            // never opens a fight.
+            if ready && !super::monster::special::summons(&special.0) {
+                let cone = Weighs { spell: SpellId::SPECIAL_ATTACK_CONE, weight: 0 };
+                commands.spawn((cone, Breath, WeighedIn(probe)));
+            }
+            probes.push((fighter, probe));
+        }
+        commands.trigger(ComesIn {
+            group,
+            fighters,
+            leader,
             side,
-            (running, provoked),
-            &hostiles,
-            acts,
-            walks,
-        );
-        if let Some(group) = group
-            && came.turns_hostile
-        {
-            commands.trigger(Stand { group, stance: Some(Stance::Hostile) });
+            running,
+            provoked,
+            probes,
+            hostiles: hostiles.clone(),
+        });
+    }
+    commands.trigger(Told);
+}
+
+/// A group outside the fight, or a monster of none, comes in or not.
+#[derive(Event, Clone, Debug)]
+struct ComesIn {
+    group: Option<Entity>,
+    fighters: Vec<Entity>,
+    leader: Entity,
+    side: (Stance, Option<f32>),
+    running: bool,
+    provoked: bool,
+    /// Each fighter's look at the party, its spells and breath weighed.
+    probes: Vec<(Entity, Entity)>,
+    hostiles: Vec<Entity>,
+}
+
+/// One coming into the fight, by its place in the level.
+#[derive(Component, Clone, Copy, Debug)]
+struct ComingIn(i32);
+
+/// A group outside the fight comes in or not (retail `MonsterGroupCanEngage`,
+/// `ShouldMonsterGroupEnterCombat`). A group not hostile whose kind has a
+/// radius turns hostile when a member sees the party and its nearest is
+/// within the radius. A hostile group comes in at once when the party has
+/// just acted against it. Otherwise, with no fight on, it opens one when a
+/// member sees the party and a member can act on it: one able to fight, one
+/// of whose arms reaches the party, or whose longest is for close quarters
+/// and it walks, or one of whose spells weighed or whose breath has an aim.
+/// Into a running fight it comes when a member sees the party and its leader
+/// is in reach of it (its longest reach and a stride, 65 m at the least,
+/// both as the crow flies and by the way it would walk over the navmesh for
+/// its size, retail `FindNavigatorPathDistance`), or when one of its members
+/// the party can see, not of a kind that keeps hidden, stands within extreme
+/// reach (`MonsterGroupHasRenderableMember`). A neutral group joins only a
+/// running fight it stands with, turning hostile as it does if its kind has
+/// a radius. A friendly group never comes in. Those who come in are marked
+/// to be told.
+#[allow(clippy::type_complexity)]
+fn comes_in(
+    group: On<ComesIn>,
+    monsters: Query<(
+        (&Monster, &crate::game::actors::Nature),
+        &crate::game::actors::arm::Furthest,
+        Has<crate::game::actors::CanFight>,
+    )>,
+    weighing: Query<&Weighing>,
+    weighed: Query<&Aims>,
+    sight: Sight,
+    (navigation, archipelagos): (
+        Option<Single<&crate::game::world::navigation::LevelNavigation>>,
+        Query<&bevy_landmass::Archipelago3d>,
+    ),
+    mut commands: Commands,
+) {
+    let ComesIn { group, ref fighters, leader, side, running, provoked, ref probes, ref hostiles } =
+        *group;
+    let (stance, radius) = side;
+    let nearest = fighters.iter().map(|&m| sight.party_gap(m)).fold(f32::INFINITY, f32::min);
+    let sees = || fighters.iter().any(|&m| sight.sees_party(m));
+    let turns = stance != Stance::Hostile && radius.is_some_and(|r| nearest <= r) && sees();
+    let acts = || {
+        probes.iter().any(|&(fighter, probe)| {
+            let Ok(((monster, _), reach, fit)) = monsters.get(fighter) else { return false };
+            let close = reach.0.is_some_and(|r| r <= crate::content::species::Reach::Short);
+            let aimed = weighing.get(probe).is_ok_and(|spells| {
+                spells
+                    .iter()
+                    .filter_map(|spell| weighed.get(spell).ok())
+                    .any(|aims| !aims.0.is_empty())
+            });
+            fit && (reach.reaches(sight.party_gap(fighter))
+                || (close && monster.body.speed > 0.0)
+                || aimed)
+        })
+    };
+    let leader_in_reach = || {
+        let Ok(((monster, nature), reach, _)) = monsters.get(leader) else { return false };
+        let reach = reach.0.map_or(0.0, |reach| reach.metres()) + nature.stride.unwrap_or(0.0);
+        let reach = reach.max(ENGAGEMENT_RANGE + ENGAGEMENT_FLOOR);
+        let archipelago = navigation.as_ref().and_then(|navigation| {
+            archipelagos.get(navigation.archipelago_for(monster.body.radius)).ok()
+        });
+        let (from, to) = (sight.places.of(leader).feet, sight.places.of(sight.party()).feet);
+        sight.party_gap(leader) <= reach
+            && archipelago
+                .and_then(|archipelago| walking_distance(archipelago, from, to))
+                .is_some_and(|walked| walked <= reach)
+    };
+    let hidden = |m: Entity| sight.tempers.get(m).is_ok_and(|temper| temper.0.camouflaged);
+    let in_sight_near = || {
+        fighters.iter().any(|&m| {
+            sight.in_party_view(m)
+                && !hidden(m)
+                && sight.party_gap(m) <= crate::content::species::Reach::Extreme.metres()
+        })
+    };
+    let enters = match if turns { Stance::Hostile } else { stance } {
+        Stance::Hostile if provoked => true,
+        Stance::Hostile if running => (sees() && leader_in_reach()) || in_sight_near(),
+        Stance::Hostile => sees() && acts(),
+        Stance::Neutral if running => sight.stands_with(fighters, hostiles),
+        _ => false,
+    };
+    for &(_, probe) in probes {
+        commands.entity(probe).despawn();
+    }
+    let radius_as_it_enters = enters && stance == Stance::Neutral && radius.is_some();
+    if let Some(group) = group
+        && (turns || radius_as_it_enters)
+    {
+        commands.trigger(Stand { group, stance: Some(Stance::Hostile) });
+    }
+    if enters {
+        for &fighter in fighters {
+            if let Ok(((monster, _), ..)) = monsters.get(fighter) {
+                commands.entity(fighter).insert(ComingIn(monster.location));
+            }
         }
-        if came.enters {
-            joined.extend(fighters.iter().map(|&m| (monsters.get(m).unwrap().1.location, m)));
-        }
+    }
+}
+
+/// What is added to the engagement range for a leader's reach (retail's
+/// 15 m).
+const ENGAGEMENT_FLOOR: f32 = 15.0;
+
+/// Every group has been looked at.
+#[derive(Event, Clone, Copy, Debug)]
+struct Told;
+
+/// Those coming in are told of together, in the order of their places in the
+/// level.
+fn told(
+    _: On<Told>,
+    coming: Query<(Entity, &ComingIn)>,
+    mut engaged: MessageWriter<Engaged>,
+    mut commands: Commands,
+) {
+    let mut joined: Vec<(i32, Entity)> =
+        coming.iter().map(|(monster, &ComingIn(location))| (location, monster)).collect();
+    for &(_, monster) in &joined {
+        commands.entity(monster).remove::<ComingIn>();
     }
     if joined.is_empty() {
         return;
     }
     joined.sort();
-    engaged.write(Engaged(joined.into_iter().map(|(_, e)| e).collect()));
+    engaged.write(Engaged(joined.into_iter().map(|(_, monster)| monster).collect()));
+}
+
+pub(super) fn plugin(app: &mut App) {
+    app.add_observer(comes_in).add_observer(told);
 }
 
 /// Those who came in join the fight under way, or open one: the party may

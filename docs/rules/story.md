@@ -1,6 +1,6 @@
 # The story so far
 
-This page is the specification for slice 9 of [the plan](../plan.md). It says
+This page is the specification. It says
 what the story's facts are in the game's terms and what follows from them.
 The facts, their names and what each sets off are the original's; its
 1000-byte array, its 750-line switch and its queue of numbered commands are

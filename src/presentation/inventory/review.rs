@@ -4,7 +4,6 @@ use super::{InventoryArt, InventoryScreen, absolute};
 use crate::content::characters::{Attribute, Skill};
 use crate::content::items::EquipClass;
 use crate::content::ui::SpriteSheet;
-use crate::game::actors::arms::{Hands, Held};
 use crate::game::data::Catalogs;
 use crate::game::inventory::EquipSlot;
 use crate::game::items::{Cursed, Items};
@@ -484,9 +483,18 @@ pub(super) fn refresh(
         crate::game::actors::Laid,
         Option<Single<Entity, With<crate::game::party::roster::Party>>>,
         Items,
-        Query<Held>,
+        Query<(
+            &crate::game::actors::arm::Hand,
+            &crate::game::actors::arm::Rolls,
+            &crate::game::actors::arm::DamagePercent,
+            &crate::game::actors::arm::AttacksARound,
+            &crate::game::actors::arm::Swings,
+            &crate::game::actors::arm::ToHit,
+            &crate::game::actors::arm::ArmInitiative,
+        )>,
         Query<&Cursed>,
     ),
+    bearers: Query<(&crate::game::actors::arm::Arms, &crate::game::actors::Initiative)>,
     learned_spells: Query<&LearnedSpells>,
     screen: Single<&InventoryScreen>,
     characters: Query<CharacterView>,
@@ -503,7 +511,7 @@ pub(super) fn refresh(
     mut info_background: Query<&mut Picture, With<InfoBackground>>,
 ) {
     let view = characters.get(screen.member).unwrap();
-    let load = view.load();
+
     let tally = tallies.get(screen.member).copied().unwrap_or_default();
     let CharacterViewItem {
         entity: member,
@@ -515,8 +523,16 @@ pub(super) fn refresh(
         ..
     } = view;
     // The sheet shows the primary weapon slot's numbers.
-    let hands = Hands::of(|slot| held.worn(member, slot).and_then(|item| hands.get(item).ok()));
     let primary = crate::game::inventory::WeaponSlot::Primary;
+    let Ok((arms, attacks)) = bearers.get(member) else { return };
+    let Some((_, rolls, percent, a_round, swings, to_hit, hand_initiative)) = arms
+        .entities()
+        .iter()
+        .filter_map(|&arm| hands.get(arm).ok())
+        .find(|(hand, ..)| hand.0 == primary)
+    else {
+        return;
+    };
     let armour_view = info.as_ref().is_some_and(|info| info.armour);
     let effect_filter = info.as_ref().map_or(EffectFilter::All, |info| info.filter);
     let show_items = info.as_ref().is_some_and(|info| info.items);
@@ -707,34 +723,21 @@ pub(super) fn refresh(
                 } else {
                     match index {
                         1 => {
-                            let dice = hands.dice(skills, primary);
+                            let dice = rolls.dice;
                             let min = dice.base + dice.count;
                             let max = dice.base + dice.count * dice.sides;
-                            let scale = 100 + hands.damage_percent(attributes, primary);
+                            let scale = 100 + percent.0;
                             format!(
                                 "{}-{}",
                                 ((min * scale + 50) / 100).max(1),
                                 ((max * scale + 50) / 100).max(1)
                             )
                         }
-                        3 => hands
-                            .attacks_a_round(profile.trained(), skills, attributes, load, primary)
-                            .to_string(),
-                        4 => hands
-                            .swings(profile.trained(), skills, attributes, load, primary)
-                            .to_string(),
-                        5 => format!(
-                            "{:+}",
-                            hands.to_hit(profile.trained(), skills, attributes, load, primary)
-                        ),
-                        7 => format!("{:+}%", hands.damage_percent(attributes, primary)),
-                        8 => (crate::game::actors::figures::trained_initiative(
-                            (u32::from(profile.calling.level()), profile.training),
-                            attributes,
-                            skills,
-                            load,
-                        ) + hands.initiative(skills, primary))
-                        .to_string(),
+                        3 => a_round.0.to_string(),
+                        4 => swings.most.to_string(),
+                        5 => format!("{:+}", to_hit.0),
+                        7 => format!("{:+}%", percent.0),
+                        8 => (attacks.0 + hand_initiative.0).to_string(),
                         _ => String::new(),
                     }
                 }

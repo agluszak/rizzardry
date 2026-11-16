@@ -10,9 +10,7 @@ use avian3d::prelude::Position;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
-use super::{Attacks, Attributes, Level};
-use crate::content::characters::Attribute;
-use crate::game::characters::{Condition, Conditions};
+use super::Level;
 use crate::game::combat::monster::noticing::{Noticing, notices};
 use crate::game::party::body::{self as party_body, PartyBody};
 use crate::game::party::formation::{self, Row};
@@ -114,7 +112,7 @@ impl Places<'_, '_> {
 /// What an actor's eyes are worth (retail `CanMonsterSeeMonster`,
 /// `UpdateMonsterSight`): its Senses and what its kind adds to them; shut
 /// when it cannot fight, or is blind and does not fight blind.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
 pub struct Eyes {
     senses: i32,
     bonus: u32,
@@ -122,17 +120,8 @@ pub struct Eyes {
 }
 
 impl Eyes {
-    pub fn of(
-        (conditions, can_fight): (&Conditions, bool),
-        attributes: &Attributes,
-        attacks: &Attacks,
-    ) -> Self {
-        let blinded = conditions.has(Condition::Blind) && attacks.blind_fighting.is_none();
-        Eyes {
-            senses: attributes[Attribute::Senses] as i32,
-            bonus: attacks.keen_sight,
-            open: can_fight && !blinded,
-        }
+    pub(super) fn of(senses: u32, keen_sight: u32, open: bool) -> Self {
+        Eyes { senses: senses as i32, bonus: keen_sight, open }
     }
 
     /// Whether these eyes, at `from`, make out someone at `to`

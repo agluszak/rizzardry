@@ -274,8 +274,15 @@ impl Spellcasting {
 pub(crate) fn made_of(kind: &crate::content::species::Species) -> impl Bundle {
     use crate::content::characters::{Attribute, Resist, Trait};
     use crate::content::species::{MonsterKind, Reach};
-    use crate::game::actors::{Abilities, Arm, Kind, Level, NaturalArms, Nature, Traits};
+    use crate::game::actors::arm::{
+        Ambushes, ArmInitiative, ArmOf, Arms, AttacksARound, BlowEffects, DamagePercent,
+        FatiguePierces, Hand, LandsOnParty, Modern, Modes, Rating, Reaches, Rolls, Slays,
+        SoundClass, Swings, Word,
+    };
+    use crate::game::actors::{Abilities, Kind, Level, Nature, Traits};
     use crate::game::inventory::WeaponSlot;
+    use bevy::ecs::relationship::RelatedSpawner;
+    use bevy::ecs::spawn::{SpawnRelated, SpawnWith};
     let abilities = Abilities(enum_map::EnumMap::from_fn(|attribute| {
         u32::from(match attribute {
             Attribute::Strength => kind.attributes.strength,
@@ -306,49 +313,42 @@ pub(crate) fn made_of(kind: &crate::content::species::Species) -> impl Bundle {
             kind.combat_move_range * crate::game::combat::monster::close::METRES_PER_MOVE_RANGE,
         ),
     };
-    let arms = kind
-        .attacks
-        .iter()
-        .map(|swung| Arm {
-            slot: WeaponSlot::Primary,
-            weapon: None,
-            reach: swung.reach,
-            modes: swung.modes,
-            dice: swung.damage,
-            punch: swung.damage,
-            kick: swung.damage,
-            rating: i32::from(swung.score),
-            percent: 0,
-            effects: swung.effects,
-            slays: Vec::new(),
-            attacks: u32::from(kind.attacks_per_round),
-            initiative: 0,
-            swings: u32::from(kind.swings_per_round.max(1)),
-            extra_swings: 0,
-            ranged: false,
-            loaded: None,
-            sure_throw: false,
-            critical: None,
-            practises: &[],
-            weight: None,
-            tires: false,
-            modern: swung.tires_little(),
-            fatigue_pierces: swung.tires_little(),
-            sword: false,
-            ambushes: kind.kind == MonsterKind::Rogue && swung.reach <= Reach::Touch,
-            word: Some((swung.word, swung.named())),
-            lands_on_party: Some(kind.hits_on_party),
-            sound_class: swung.sound_class,
-        })
-        .collect();
+    // What it strikes with: each of its species' attacks an arm, all in its
+    // main hand.
+    let rogue = kind.kind == MonsterKind::Rogue;
+    let (attacks, swings) =
+        (u32::from(kind.attacks_per_round), u32::from(kind.swings_per_round.max(1)));
+    let lands = kind.hits_on_party;
+    let natural: Vec<_> = kind.attacks.clone();
+    let arms = Arms::spawn(SpawnWith(move |arms: &mut RelatedSpawner<ArmOf>| {
+        for swung in natural {
+            let mut arm = arms.spawn((
+                (Hand(WeaponSlot::Primary), Reaches(swung.reach), Modes(swung.modes)),
+                Rolls { dice: swung.damage, punch: swung.damage, kick: swung.damage },
+                (BlowEffects(swung.effects), Slays::default(), Rating(i32::from(swung.score))),
+                (DamagePercent(0), AttacksARound(attacks), ArmInitiative(0)),
+                (Swings { most: swings, extra: 0 }, Word(swung.word, swung.named())),
+                LandsOnParty(lands),
+            ));
+            if let Some(sound) = swung.sound_class {
+                arm.insert(SoundClass(sound));
+            }
+            if swung.tires_little() {
+                arm.insert((Modern, FatiguePierces));
+            }
+            if rogue && swung.reach <= Reach::Touch {
+                arm.insert(Ambushes);
+            }
+        }
+    }));
     (
         abilities,
-        Level(u32::from(kind.level)),
+        (Level(u32::from(kind.level)), crate::game::actors::Mastery(kind.level)),
         Traits(traits),
         Kind(kind.kind),
         nature,
         crate::game::actors::armour::of_species(kind),
-        NaturalArms(arms),
+        arms,
     )
 }
 

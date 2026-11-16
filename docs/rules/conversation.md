@@ -1,6 +1,6 @@
 # Talking with someone
 
-This page is the specification for slice 8 of [the plan](../plan.md). It says
+This page is the specification. It says
 what a conversation is in the game's terms. The numbers and the script are the
 original's and are cited beside the code that holds them; its message queue,
 its modal dialogs and its screen layouts are not the design.
@@ -192,8 +192,7 @@ not paid, an item offered and not taken is still the party's.
 
 - The player's own line is shown reworded in the original ("Tell me about
   …?"); here it is shown as typed.
-- The story commands a quote can queue are slice 9's
-  ([story.md](story.md)).
+- The story commands a quote can queue are [story.md](story.md)'s.
 
 ## How this is built
 

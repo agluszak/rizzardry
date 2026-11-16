@@ -1,6 +1,6 @@
 # Levels and who is in them
 
-This page is the specification for slice 4 of [the plan](../plan.md). Where
+This page is the specification. Where
 the code differs, the code is wrong.
 
 ## A level that is left stays
@@ -67,15 +67,6 @@ dead as any member is.
 
 One who is somewhere the party is not is set aside with that level, or on
 their own if they are nowhere.
-
-## What goes
-
-`LevelMemory`, `LevelRecord`, `LevelContents::remember`, `KeptMonster` as a
-record of a monster that exists (making a new monster from its species stays,
-as a spawn), `KeptItem`, `TriggerMemory`, `KeptDevice`, `DeviceRecords`,
-`NpcPopulation::depart` and the placement records it keeps, `Profile`,
-`StoredCharacter`, and with them the last plain item values: `ItemStack`,
-`unpack`, `Items::stack`.
 
 ## What has to be found out before this is built
 

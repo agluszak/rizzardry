@@ -232,7 +232,8 @@ fn bursts(spell: &Spell, strength: Strength, field: &Field, content: &Catalogs) 
     }
     let rows = Rows::Spell(explosion.id);
     let bodies = field.bodies;
-    let side = spell.owner.and_then(|owner| bodies.get(owner).ok()).map(|body| body.stance());
+    let side =
+        spell.owner.and_then(|owner| bodies.get(owner).ok()).map(|body| body.standing.stance);
     let recipients = match side {
         Some(side) if spell.backfired => Recipients::Opponents(side).reversed(),
         Some(side) => Recipients::Opponents(side),
@@ -313,7 +314,7 @@ fn reflection(
         }
     };
     let recipients = match owner.and_then(|owner| bodies.get(owner).ok()) {
-        Some(body) => Recipients::Opponents(body.stance()).reversed(),
+        Some(body) => Recipients::Opponents(body.standing.stance).reversed(),
         None => Recipients::Everyone,
     };
     let power = strength.power.min(eye_power);

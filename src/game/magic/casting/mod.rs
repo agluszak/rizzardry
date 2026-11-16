@@ -312,7 +312,7 @@ pub fn cast(
     };
     // A blast takes whoever stands within its radius of where it lands,
     // but those on its caster's side.
-    let side = body.stance();
+    let side = body.standing.stance;
     let radius = reach::blast_radius(spell, power);
     if let (Targeting::Radius, Some(centre)) = (targeting, spot) {
         victims = field.within(centre, centre, radius, Recipients::Opponents(side));

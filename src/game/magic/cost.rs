@@ -43,7 +43,7 @@ pub fn stamina(
         return toll;
     }
     let load = body.burden.map_or(Load::None, |burden| burden.load);
-    load.scale_fatigue(toll, has(Condition::Slowed), body.attacks.hasted > 0.0)
+    load.scale_fatigue(toll, has(Condition::Slowed), body.modifiers.laid.stride > 0.0)
 }
 
 /// The skills a cast that affected someone practises, and how often (retail

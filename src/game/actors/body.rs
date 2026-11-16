@@ -5,14 +5,14 @@ use bevy::ecs::query::QueryData;
 use bevy::prelude::*;
 
 use super::{
-    Armour, Attacks, Attributes, CanAct, CanFight, CanGuard, Level, Lucid, MissileShield,
-    Reduction, Resistances, Skills, Traits,
+    Armour, Attributes, CanAct, CanFight, CanGuard, Level, Lucid, MissileShield, Reduction,
+    Resistances, Skills, Traits,
 };
 use crate::game::characters::{Calling, Conditions, Schooling, Trained, Vitals};
 use crate::game::items::Burden;
 use crate::game::magic::{LearnedSpells, SpellPoints};
 use crate::game::party::roster::PartyMember;
-use crate::game::world::hostility::{Loyalty, Side, Stance};
+use crate::game::world::hostility::{Side, Standing};
 use crate::game::world::population::{SpellBudget, Untargetable};
 
 /// A member's or a monster's body: what both carry, and what only one of
@@ -27,7 +27,7 @@ pub struct Body {
     pub can_act: Has<CanAct>,
     pub can_fight: Has<CanFight>,
     pub side: &'static Side,
-    pub loyalty: &'static Loyalty,
+    pub standing: &'static Standing,
     pub attributes: &'static Attributes,
     pub skills: &'static Skills,
     pub level: &'static Level,
@@ -35,7 +35,12 @@ pub struct Body {
     pub armour: &'static Armour,
     pub reduction: &'static Reduction,
     pub missile_shield: &'static MissileShield,
-    pub attacks: &'static Attacks,
+    /// What it is of itself: its stride among the rest.
+    pub nature: &'static super::Nature,
+    /// What the spells laid on it add: Haste's share of its stride among the
+    /// rest.
+    pub modifiers: &'static super::Modifiers,
+    pub fights_blind: Has<super::BlindFighting>,
     pub traits: &'static Traits,
     pub calling: Option<&'static Calling>,
     pub schooling: Option<Schooling>,
@@ -47,16 +52,6 @@ pub struct Body {
 }
 
 impl BodyItem<'_, '_> {
-    /// The side it is on now.
-    pub fn stance(&self) -> Stance {
-        self.side.now(self.conditions)
-    }
-
-    /// The side it is on and the band it keeps to now.
-    pub fn standing(&self) -> (Stance, Loyalty) {
-        (self.stance(), self.loyalty.now(self.conditions))
-    }
-
     /// As the formulas of training read it, if it trained.
     pub fn trained(&self) -> Option<Trained<'_>> {
         self.schooling.as_ref().map(|schooling| schooling.view())

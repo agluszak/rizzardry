@@ -144,7 +144,7 @@ pub(super) fn investigate(
     bodies: Query<&Monster>,
     doors: Query<(&super::triggers::DoorState, &Children)>,
     parts: Query<&avian3d::prelude::ColliderAabb>,
-    sight: Sight,
+    fit: Query<(), With<crate::game::actors::CanFight>>,
     mut commands: Commands,
 ) {
     // The bounds of each closed door's prop.
@@ -197,7 +197,7 @@ pub(super) fn investigate(
         let walks = heard.is_some_and(|heard| heard.walks == Some(true));
         for member in members.iter() {
             let Ok((at, mut target, investigating)) = walkers.get_mut(member) else { continue };
-            let fit = sight.bodies.get(member).is_ok_and(|body| body.can_fight);
+            let fit = fit.contains(member);
             match heard.filter(|_| fit) {
                 Some(heard) if walks => {
                     *target = AgentTarget3d::Point(heard.at);

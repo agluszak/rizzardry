@@ -45,7 +45,51 @@ impl Stance {
 /// member the party's, a monster its group's while something has set one
 /// and otherwise what its kind and faction make it.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[require(Loyalty, Standing)]
+#[component(on_insert = stand_as_made)]
 pub struct Side(Stance);
+
+/// Where an actor stands now: the side it is on, its own turned about while
+/// it is Turncoat, and the band it keeps to, which Turncoat breaks. A figure,
+/// written by [`follow_side`] from its `Side`, `Loyalty` and conditions; every rule
+/// that asks whose side an actor is on reads this.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Standing {
+    pub stance: Stance,
+    pub loyalty: Loyalty,
+}
+
+/// What an actor stands on as it is made, before anything has turned it.
+fn stand_as_made(
+    mut world: bevy::ecs::world::DeferredWorld,
+    context: bevy::ecs::lifecycle::HookContext,
+) {
+    let entity = context.entity;
+    let (Some(&Side(stance)), Some(&loyalty)) =
+        (world.get::<Side>(entity), world.get::<Loyalty>(entity))
+    else {
+        return;
+    };
+    if let Some(mut standing) = world.get_mut::<Standing>(entity) {
+        *standing = Standing { stance, loyalty };
+    }
+}
+
+/// Where each actor stands follows its side, its band and what ails it.
+#[allow(clippy::type_complexity)]
+pub fn follow_side(
+    mut actors: Query<
+        (&Side, &Loyalty, &Conditions, &mut Standing),
+        Or<(Changed<Side>, Changed<Loyalty>, Changed<Conditions>)>,
+    >,
+) {
+    for (side, loyalty, conditions, mut standing) in &mut actors {
+        standing.set_if_neq(Standing {
+            stance: side.now(conditions),
+            loyalty: loyalty.now(conditions),
+        });
+    }
+}
 
 impl Side {
     pub const FRIENDLY: Side = Side(Stance::Friendly);
@@ -315,9 +359,9 @@ fn forget(
 /// (retail `MonsterHostility`, `MonsterVsCharDisposition`): a bystander
 /// stays out; alike, friends; either neutral, neutral; otherwise foes, but
 /// for two loyal to one faction, who stay out of it.
-pub fn between(first: (Stance, Loyalty), second: (Stance, Loyalty)) -> Stance {
+pub fn between(first: Standing, second: Standing) -> Stance {
     use Loyalty::*;
-    match (first, second) {
+    match ((first.stance, first.loyalty), (second.stance, second.loyalty)) {
         ((_, Bystander), _) | (_, (_, Bystander)) => Stance::Neutral,
         ((a, _), (b, _)) if a == b => Stance::Friendly,
         ((Stance::Neutral, _), _) | (_, (Stance::Neutral, _)) => Stance::Neutral,
@@ -443,15 +487,16 @@ mod tests {
         assert_eq!(Stance::Neutral.turned(), Stance::Neutral);
         // A member is of no faction, so a monster turned on its own side
         // quarrels with them and its former fellows alike.
-        let foe = (Stance::Hostile, Loyalty::None);
-        let turned = (Stance::Hostile.turned(), Loyalty::None);
+        let at = |stance, loyalty| Standing { stance, loyalty };
+        let foe = at(Stance::Hostile, Loyalty::None);
+        let turned = at(Stance::Hostile.turned(), Loyalty::None);
         assert_eq!(between(foe, foe), Stance::Friendly);
         assert_eq!(between(foe, turned), Stance::Hostile);
-        assert_eq!(between(foe, (Stance::Neutral, Loyalty::None)), Stance::Neutral);
-        let mook = |stance| (stance, Loyalty::Faction(crate::game::factions::MOOK));
+        assert_eq!(between(foe, at(Stance::Neutral, Loyalty::None)), Stance::Neutral);
+        let mook = |stance| at(stance, Loyalty::Faction(crate::game::factions::MOOK));
         assert_eq!(between(mook(Stance::Hostile), mook(Stance::Friendly)), Stance::Neutral);
         assert_eq!(between(mook(Stance::Hostile), turned), Stance::Hostile);
-        assert_eq!(between(foe, (Stance::Hostile, Loyalty::Bystander)), Stance::Neutral);
+        assert_eq!(between(foe, at(Stance::Hostile, Loyalty::Bystander)), Stance::Neutral);
     }
 
     /// A provocation holds for Intelligence² game minutes, and a faction's

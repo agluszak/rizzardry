@@ -129,7 +129,7 @@ impl Aiming<'_, '_, '_> {
 
     /// The side a body is on now.
     fn side(&self, body: Entity) -> Option<Stance> {
-        self.field.bodies.get(body).ok().map(|body| body.stance())
+        self.field.bodies.get(body).ok().map(|body| body.standing.stance)
     }
 
     /// How the caster stands toward a body.
@@ -137,7 +137,7 @@ impl Aiming<'_, '_, '_> {
         let bodies = self.field.bodies;
         match (bodies.get(self.caster), bodies.get(body)) {
             (Ok(mine), Ok(their)) if !mine.untargetable => {
-                hostility::between(mine.standing(), their.standing())
+                hostility::between(*mine.standing, *their.standing)
             }
             _ => Stance::Neutral,
         }

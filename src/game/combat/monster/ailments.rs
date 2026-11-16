@@ -5,9 +5,7 @@
 use bevy::prelude::Entity;
 
 use super::sight::Sight;
-use crate::content::characters::Attribute;
-use crate::game::actors::BodyItem;
-use crate::game::actors::{Arm, reaches};
+use crate::game::actors::reaches;
 use crate::game::characters::Condition;
 use crate::game::party::formation::Formation;
 use crate::game::rng::GameRng;
@@ -75,20 +73,19 @@ pub struct Plans {
 /// living body on its side.
 pub fn friend_in_reach(
     sight: &Sight,
-    own: &BodyItem,
+    actor: Entity,
+    reach: crate::game::actors::arm::Furthest,
     combatants: &[Entity],
     formation: &Formation,
 ) -> bool {
-    let actor = own.entity;
     let at = sight.places.of(actor);
     combatants
         .iter()
         .copied()
-        .filter(|&other| other != actor && sight.toward(own, other) == Some(Stance::Friendly))
+        .filter(|&other| other != actor && sight.toward(actor, other) == Some(Stance::Friendly))
         .any(|other| {
             let there = sight.places.of(other);
-            let reached = |arm: &Arm| reaches(formation, (actor, &at), (other, &there), arm.reach);
-            own.attacks.arms.iter().any(reached)
+            reach.0.is_some_and(|reach| reaches(formation, (actor, &at), (other, &there), reach))
         })
 }
 
@@ -108,19 +105,18 @@ pub fn friend_in_reach(
 /// - Turncoat: an action against its new foes stands, and is told.
 pub fn interrupt(
     rng: &mut GameRng,
-    own: &BodyItem,
+    (has, strength, fights_blind): (impl Fn(Condition) -> bool, u32, bool),
     plans: Plans,
     friend_in_reach: bool,
 ) -> Option<Interrupt> {
-    let has = |condition| own.conditions.has(condition);
     if has(Condition::Nauseated) && rng.below(100) < 25 {
         return Some(Interrupt::Nauseated);
     }
     if has(Condition::Webbed) {
-        let freed = rng.below(100) < own.attributes[Attribute::Strength] / 3;
+        let freed = rng.below(100) < strength / 3;
         return Some(if freed { Interrupt::Freed } else { Interrupt::Webbed });
     }
-    if has(Condition::Blind) && own.attacks.blind_fighting.is_none() && rng.below(100) < 20 {
+    if has(Condition::Blind) && !fights_blind && rng.below(100) < 20 {
         return Some(Interrupt::Blinded);
     }
     if has(Condition::Insane) && rng.below(100) < 80 {

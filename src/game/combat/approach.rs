@@ -16,7 +16,6 @@ use bevy_landmass::prelude::*;
 
 use super::Combatant;
 use super::monster::close;
-use crate::game::actors::Attacks;
 use crate::game::characters::Vitals;
 use crate::game::party::body::PartyBody;
 use crate::game::world::navigation::Walker;
@@ -50,7 +49,12 @@ pub fn steer_moves(
     party: Query<(Entity, &Position), With<PartyBody>>,
     mut walkers: Query<(
         Entity,
-        (&Monster, &Vitals, &Attacks, Has<crate::game::actors::CanFight>),
+        (
+            &Monster,
+            &Vitals,
+            &crate::game::actors::arm::Furthest,
+            Has<crate::game::actors::CanFight>,
+        ),
         ActorPose,
         &Walker,
         &mut AgentTarget3d,
@@ -71,7 +75,7 @@ pub fn steer_moves(
                 (
                     close::needs_approach(
                         !vitals.is_dead() && walker.speed > 0.0,
-                        arms.reach(),
+                        arms.0.unwrap_or(crate::content::species::Reach::Touch),
                         gap,
                     ),
                     AgentTarget3d::Entity(party),
@@ -87,7 +91,10 @@ pub fn steer_moves(
                             target_walker,
                         );
                         !target_vitals.is_dead()
-                            && !close::arrived(arms.reach(), monster.gap(here, target, there))
+                            && !close::arrived(
+                                arms.0.unwrap_or(crate::content::species::Reach::Touch),
+                                monster.gap(here, target, there),
+                            )
                     },
                 );
                 (needed, AgentTarget3d::Entity(entity))

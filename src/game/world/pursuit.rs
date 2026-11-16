@@ -38,6 +38,11 @@ pub(super) fn charge(
     groups: Query<(Entity, &GroupMembers, Option<&SawParty>), With<MonsterGroup>>,
     mut walkers: Query<(&mut AgentTarget3d, Has<Charging>), (With<Monster>, Without<Combatant>)>,
     sight: Sight,
+    bodies: Query<(
+        &crate::game::characters::Vitals,
+        &crate::game::characters::Conditions,
+        Has<crate::game::actors::CanFight>,
+    )>,
     clock: Res<GameClock>,
     conversations: Query<(), With<Conversation>>,
     mut commands: Commands,
@@ -49,9 +54,8 @@ pub(super) fn charge(
     for (group, members, saw) in &groups {
         // Those whose eyes count: alive and not blinded or worse.
         let watching = |member: &Entity| {
-            sight.bodies.get(*member).is_ok_and(|body| {
-                !body.vitals.is_dead()
-                    && body.conditions.below(crate::game::characters::Condition::Blind)
+            bodies.get(*member).is_ok_and(|(vitals, conditions, _)| {
+                !vitals.is_dead() && conditions.below(crate::game::characters::Condition::Blind)
             })
         };
         let sees = members.iter().filter(watching).any(|member| sight.sees_party(member));
@@ -63,9 +67,9 @@ pub(super) fn charge(
             let Ok((mut target, charging)) = walkers.get_mut(member) else { continue };
             let pursues = recent
                 && sight.side(member) == Some(Stance::Hostile)
-                && sight.bodies.get(member).is_ok_and(|body| body.can_fight);
-            let hurt = sight.bodies.get(member).is_ok_and(|body| {
-                body.vitals.health.current * 100 <= body.vitals.health.max * TOO_HURT
+                && bodies.get(member).is_ok_and(|(.., fit)| fit);
+            let hurt = bodies.get(member).is_ok_and(|(vitals, ..)| {
+                vitals.health.current * 100 <= vitals.health.max * TOO_HURT
             });
             if pursues {
                 // The hurt keep their distance, closing only when it grows

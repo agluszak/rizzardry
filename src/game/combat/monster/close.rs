@@ -6,9 +6,7 @@
 use bevy::prelude::Vec3;
 
 use crate::content::species::{Reach, Temper};
-use crate::game::actors::Attacks;
-use crate::game::actors::BodyItem;
-use crate::game::characters::Condition;
+use crate::game::actors::arm::Furthest;
 
 /// Metres per unit of a species' `combat_move_range` (retail `SetUpMonsterTurn`).
 pub const METRES_PER_MOVE_RANGE: f32 = 20.0;
@@ -16,24 +14,11 @@ pub const METRES_PER_MOVE_RANGE: f32 = 20.0;
 /// Stop this far inside an attack's reach (retail `Combat.cpp:2486-2551`).
 const ARRIVAL_MARGIN: f32 = 0.3;
 
-/// Whether one of its arms reaches the party, `gap` metres off.
-pub fn reaches_party(attacks: &Attacks, gap: f32) -> bool {
-    attacks.arms.iter().any(|arm| gap <= arm.reach.metres())
-}
-
 /// Whether it would close in to strike rather than consider a special attack
-/// or a spell: its kind prefers blows, it has some, and none reaches the
-/// party.
-pub fn closes_in(own: &BodyItem, temper: &Temper, gap: f32) -> bool {
-    !temper.prefers_range && !own.attacks.arms.is_empty() && !reaches_party(own.attacks, gap)
-}
-
-/// Whether it can strike nobody and withdraws instead (retail
-/// `UpdateMonsterAI`'s `RETURN_TO_START`): it has no arm, or it is blind,
-/// does not fight blind, and has nobody in reach.
-pub fn cannot_strike(own: &BodyItem, gap: f32) -> bool {
-    let blind = own.conditions.has(Condition::Blind) && own.attacks.blind_fighting.is_none();
-    own.attacks.arms.is_empty() || (blind && !reaches_party(own.attacks, gap))
+/// or a spell: its kind prefers blows, it has some (`reach`), and none
+/// reaches the party `gap` metres off.
+pub fn closes_in(reach: Furthest, temper: &Temper, gap: f32) -> bool {
+    !temper.prefers_range && reach.0.is_some() && !reach.reaches(gap)
 }
 
 /// Hurt enough to charge rather than walk up: at 95 percent of its health or
@@ -45,11 +30,11 @@ pub fn charges(health: u32, most: u32) -> bool {
 /// How far a monster moves in one action: its stride, half again when it
 /// charges, plus the share of it Haste adds, or halved when slowed (retail
 /// `SetUpMonsterTurn`, `Combat.cpp:2855-2909`).
-pub fn metres(attacks: &Attacks, slowed: bool, charge: bool) -> f32 {
-    let stride = attacks.stride.unwrap_or(0.0);
+pub fn metres((stride, haste): (Option<f32>, f32), slowed: bool, charge: bool) -> f32 {
+    let stride = stride.unwrap_or(0.0);
     let budget = if charge { stride * 1.5 } else { stride };
-    if attacks.hasted > 0.0 {
-        budget + stride * attacks.hasted
+    if haste > 0.0 {
+        budget + stride * haste
     } else if slowed {
         budget * 0.5
     } else {
@@ -75,11 +60,11 @@ pub struct MoveBudget {
 }
 
 impl MoveBudget {
-    /// What a monster may move now: it charges when hurt.
-    pub fn of(own: &BodyItem) -> Self {
-        let charge = charges(own.vitals.health.current, own.vitals.health.max);
-        let slowed = own.conditions.has(Condition::Slowed);
-        MoveBudget { metres: metres(own.attacks, slowed, charge), charge }
+    /// What a monster may move now, with this much of its most health,
+    /// slowed or not: it charges when hurt.
+    pub fn of(stride: (Option<f32>, f32), (health, most): (u32, u32), slowed: bool) -> Self {
+        let charge = charges(health, most);
+        MoveBudget { metres: metres(stride, slowed, charge), charge }
     }
 }
 
@@ -103,13 +88,13 @@ mod tests {
 
     #[test]
     fn haste_adds_a_share_of_the_stride_and_slowing_halves_the_move() {
-        let stride = Attacks { stride: Some(40.0), ..Default::default() };
-        assert_eq!((metres(&stride, false, false), metres(&stride, false, true)), (40.0, 60.0));
-        assert_eq!((metres(&stride, true, false), metres(&stride, true, true)), (20.0, 30.0));
+        let stride = (Some(40.0), 0.0);
+        assert_eq!((metres(stride, false, false), metres(stride, false, true)), (40.0, 60.0));
+        assert_eq!((metres(stride, true, false), metres(stride, true, true)), (20.0, 30.0));
         // Haste 0.3 (power 3): 40 + 40 * 0.3 = 52; charging, 60 + 12 = 72. It
         // wins over slowing.
-        let hasted = Attacks { hasted: 0.3, ..stride };
-        assert!((metres(&hasted, true, false) - 52.0).abs() < 0.001);
-        assert!((metres(&hasted, false, true) - 72.0).abs() < 0.001);
+        let hasted = (Some(40.0), 0.3);
+        assert!((metres(hasted, true, false) - 52.0).abs() < 0.001);
+        assert!((metres(hasted, false, true) - 72.0).abs() < 0.001);
     }
 }

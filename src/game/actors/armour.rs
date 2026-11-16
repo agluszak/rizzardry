@@ -15,7 +15,7 @@ use serde::Deserialize;
 
 use super::modifiers::Modifiers;
 use super::sources::{Abilities, Nature, Traits};
-use super::{Attributes, Skills};
+use super::{Attributes, Fatigue, Skills};
 use crate::content::characters::{Attribute, BodyPart, Race, Skill};
 use crate::content::items::AttackMode;
 use crate::game::characters::{Calling, Condition, Conditions, Vitals, skill_available};
@@ -76,6 +76,75 @@ pub struct HitPlaces {
 /// What it has against each way of attacking.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
 pub struct Against(pub EnumMap<AttackMode, i32>);
+
+/// What a blow that catches an actor unaware gets past (retail
+/// `GetTargetArmorClassModifier`): what its quickness and its shield add, and
+/// 2 if it is vulnerable from behind.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Unaware(pub i32);
+
+/// Something it suffers unseats it: it does not keep its place, so a blow at
+/// it on the move gets nothing more past, and its armour is at most -5.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Unseated;
+
+/// How far a blow may miss an actor and be blocked rather than missed
+/// (retail `BlockedForSpecialReason`), when it saw the blow coming and when
+/// it was caught unaware: 10 either way for a monster vulnerable from
+/// behind; otherwise five times its Shield part, and none unaware.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Block {
+    pub aware: i32,
+    pub unaware: i32,
+}
+
+/// What being caught unaware costs follows the armour's speed and shield.
+fn unaware(
+    mut actors: Query<
+        (&ArmourParts, Has<VulnerableFromBehind>, &mut Unaware),
+        Changed<ArmourParts>,
+    >,
+) {
+    for (parts, vulnerable, mut unaware) in &mut actors {
+        let (speed, shield) = (parts.0[ArmourPart::Speed], parts.0[ArmourPart::Shield]);
+        unaware.set_if_neq(Unaware(speed.max(0) + shield.max(0) + 2 * i32::from(vulnerable)));
+    }
+}
+
+/// The block follows the shield.
+fn block(
+    mut actors: Query<(&ArmourParts, Has<VulnerableFromBehind>, &mut Block), Changed<ArmourParts>>,
+) {
+    for (parts, vulnerable, mut block) in &mut actors {
+        let shield = parts.0[ArmourPart::Shield];
+        block.set_if_neq(if vulnerable {
+            Block { aware: 10, unaware: 10 }
+        } else {
+            Block { aware: 5 * shield, unaware: 0 }
+        });
+    }
+}
+
+/// Being unseated follows what ails it, and the traits that ease it.
+fn unseat(
+    actors: Query<
+        (Entity, &Conditions, &Traits, Has<Unseated>),
+        Or<(Changed<Conditions>, Changed<Traits>)>,
+    >,
+    mut commands: Commands,
+) {
+    for (actor, conditions, traits, was) in &actors {
+        match (conditions.unseats(traits.0), was) {
+            (true, false) => {
+                commands.entity(actor).insert(Unseated);
+            }
+            (false, true) => {
+                commands.entity(actor).remove::<Unseated>();
+            }
+            _ => {}
+        }
+    }
+}
 
 /// A monster caught unaware is 2 worse guarded, and it blocks what misses
 /// it by 10 or less (retail monster flag 0x02).
@@ -259,9 +328,9 @@ fn load(mut actors: Query<(&Burden, &mut ArmourParts), Changed<Burden>>) {
 /// share of stamina spent. It is lost, but for one whose tiredness guards
 /// it, who gains it (retail `CalcArmorClasses` takes it from a character;
 /// `GetTargetArmorClassModifier` adds it to a monster).
-fn fatigue(mut actors: Query<(&Vitals, &Nature, &mut ArmourParts), Changed<Vitals>>) {
-    for (vitals, nature, mut parts) in &mut actors {
-        let tenth = crate::game::combat::attack::fatigue(vitals) / 10;
+fn fatigue(mut actors: Query<(&Fatigue, &Nature, &mut ArmourParts), Changed<Fatigue>>) {
+    for (fatigue, nature, mut parts) in &mut actors {
+        let tenth = fatigue.0 / 10;
         let part = if nature.fatigue_guards { tenth } else { -tenth };
         ArmourParts::set(&mut parts, ArmourPart::Fatigue, part);
     }
@@ -335,12 +404,16 @@ pub(super) fn plugin(app: &mut App) {
     // from are written.
     app.add_systems(
         super::Settle,
-        ((speed, skills, spells, conditions, load, fatigue, braced), worn, armour)
+        (
+            (speed, skills, spells, conditions, load, fatigue, braced),
+            worn,
+            (armour, unaware, block, unseat),
+        )
             .chain()
             .in_set(super::Written)
             .after(super::figures::skills)
-            .after(super::figures::maxima)
-            .before(super::figures::attacks),
+            .after(super::figures::fatigue)
+            .before(super::figures::mending),
     )
     .add_observer(fight_over);
 }

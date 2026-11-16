@@ -641,20 +641,51 @@ lines are in `src/game/`.
 The sections above are the rules. This says how the code is to be shaped
 around them; where the code differs from it, the code is wrong.
 
-**A choice is a function of the monster and of what it makes out.** Each
-decision above is one function. It takes the monster's body, the plain data
-of its kind (its temper, special attack and spells, which the observer of
-`Deliberates` reads off its components), and what
-it makes out of the level (who stands where, whom it sees); one that rolls
-takes the random-number generator. It changes nothing. Nothing is copied out
-of a monster's components into a struct of facts for a decision to read.
+**What a monster is ready for is a figure.** `SpecialReady` (a marker) says
+its special attack may be made as far as the monster itself goes: one with a
+chance, not cooling down, stamina at least a tenth of its most, not stopped
+by a silence it honours. Its own system keeps it from `Special`,
+`SpecialCooldown`, `Vitals` and `Conditions`; deliberating and coming into a
+fight read it alike.
+
+**A monster weighing whom it could act on is an entity** (`Considers`: whose,
+and whom it considers), with whether its eyes make out the party at that
+moment (`SeesParty`). Each spell it weighs is a child entity (`Weighs`, the
+slot's weight), the breath's cone among them (`Breath`): one observer adds
+whom it may be aimed at (`Aims`), reading each body's `Standing`, `Vitals`,
+`Conditions`, group and place and what is laid on it; another keeps the aims
+that spare the neutral (`Spared`). Castability (section 5, 1) is asked as the
+spells are weighed.
+
+**A deliberation is such an entity**, made at the monster's moment
+(`Deliberates`) with the fight's combatants and the party's gap
+(`PartyGap`); its facts are added in the order of section 4 by small
+observers, each reading only what its fact comes from:
+
+| Fact | What it reads |
+| --- | --- |
+| its conduct (`Conducts`), and `Fleeing` on the monster | `Standing`, `Vitals`, `Temper`, `Fleeing`, being an NPC; the gap |
+| whether it closes in (`ClosesIn`) | `Temper`, `Furthest`; the gap |
+| its special attack made, or `NoSpecial` | `SpecialReady`, `Special`, `Standing`; for a breath, the cone's `Aims`; `Furthest`, `Vitals`, `Level` |
+| the spells weighed, then the one cast, or `NoSpell` | `Spellcasting`, `Conditions`; the spells' `Spared` aims; `Furthest`, `Level`, `SpellBudget` |
+| withdrawing, guarding, holding back or striking | `Conditions`, `BlindFighting`, `Furthest`, `GuardReach`, `Temper`, `Attributes`, `CanGuard`, `Level`; fellows' `Standing`, `Vitals`, `Level` |
+
+What it decided is said as `Decided`, and the deliberation is gone with
+what it weighed.
+
+**Coming into a fight weighs the same way.** When whether a fighter can act
+on the party is asked (a group outside a fight that would open one by it:
+hostile or turning so by its radius, not provoked, a member seeing the
+party), each of its fighters gets such an entity, considering itself and the
+party, weighing its spells aimed at enemies and its breath if ready; the
+neutral are not spared there. `ComesIn` then reads what they found, and
+those who come in are told together (`Told`).
 
 **Deciding is separate from doing.** An actor's moment (`Moment`) is
 revalidated; a member under orders has decided by them, and a monster
-deliberates (`Deliberates`), asking the decisions in the order of section 4.
-Either way what it decided is said as `Decided`, whose observer lets the
-actor's conditions take the action off it and then does what is left, by the
-same event a member's order leads to.
+deliberates. Either way what it decided is said as `Decided`, whose
+observer lets the actor's conditions take the action off it and then does
+what is left, by the same event a member's order leads to.
 
 **What a monster knows is read from its own components.** What its kind can do
 was written onto it when it was made. No decision asks the species record.

@@ -22,6 +22,8 @@ holds them; nothing else of the original's shape is kept.
 | `Vitals` | Health and stamina, each what is left and the most there can be; what ails it, each condition with how long it lasts | being hurt, tired, healed, rested, afflicted, cured, aged; the maxima follow their sources |
 | `Mending` | What it gains or loses a minute outright; whether its stamina comes back by the breath; what its traits make of recovery | its figure's system |
 | `Side` | The side its group or kind has it on toward the party | the events listed under *Side* |
+| `Standing` | Where it stands now: its side, turned about while Turncoat, and the band it keeps to, which Turncoat breaks | its figure's system |
+| `Fatigue`, `Agility`, `Eyes` | What tiredness takes off aim and armour; Senses, Speed, Dexterity and Intelligence together; what its eyes are worth | their figures' systems |
 | `Loyalty` | The faction it keeps to, if any | being made |
 
 Conditions live with health and stamina because they are one state: running
@@ -48,7 +50,9 @@ sources.
 The sources:
 
 - `Abilities`, the seven attributes before anything is laid on them; `Traits`,
-  what it is able to do; `Kind`; `Level`;
+  what it is able to do; `Kind`; `Level`; `Mastery`, the level its traits'
+  strength grows with (a monster's own level, written as it is made; the
+  level in the profession followed now for one who trained);
 - `Nature`, what it has of itself: damage cut, resistances, initiative,
   mending, what it carries, how far it strides; its armour's `Race` part,
   places and what it has against each mode are written with it; `NaturalArms`, what it strikes with holding nothing; `Frame`,

@@ -7,7 +7,6 @@ use bevy::prelude::*;
 use enum_map::EnumMap;
 use enumset::EnumSet;
 
-use super::Arm;
 use crate::content::characters::{Attribute, Realm, Resist, Trait};
 use crate::content::species::MonsterKind;
 
@@ -83,12 +82,6 @@ impl Default for Nature {
         }
     }
 }
-
-/// What an actor strikes with while it holds nothing: a species' attacks,
-/// each made once, when the actor is. A character has none; its fists are
-/// what its hands make of being empty.
-#[derive(Component, Clone, Debug, Default, PartialEq)]
-pub struct NaturalArms(pub Vec<Arm>);
 
 /// The health and stamina an actor was born with, rolled once.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]

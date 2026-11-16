@@ -1,453 +1,177 @@
 # Rewrite plan
 
 `game/` is being rewritten from the game's rules up, by the rules in
-[design.md](design.md). The current code is a port of the original's procedures
-and record layouts onto an ECS; cleaning it does not change that. Each slice
-below replaces one part of the model. A slice is done when the names it lists
-are gone, the game plays, and its rules are written in `docs/rules/`.
-
-Every slice starts with a contract: what must be gone, the only new types
-allowed, and its expected size. A type outside the contract means stopping to
-ask.
-
-## Where the port shows
-
-| Symptom | What it is really |
-| --- | --- |
-| `judge_defences`, `judge_fighters`, `judge_sides`, `place_bodies` | Members and monsters are two record types, reconciled every step |
-| `StackId`, `ItemIds`, `ItemRef`, `ItemAt`, `Slot`, `MemberSlot` | Items are values in arrays with hand-made ids and addresses |
-| Conditions and enchantments as `Vec`s inside `Vitals` | Things with their own lifetime stored as fields |
-| `content.species[..]`, `content.items[..]` in rules | Entities hold foreign keys; rules join by hand |
-| `KeptMonster`, `LevelRecord`, `LevelMemory`, NPC `Registry`, `StoredCharacter` | Entities serialised into records and rebuilt |
-| `profession_row`, `race_attributes`, trait lists, `define_spell` | Tables written as code |
-| Phases 1–100, `Turn` flags, `Pause` | The original's scheduler |
-| Functions named and shaped after retail routines | The procedure was the unit of design |
-
-## Slices
-
-### 1 and 2. One kind of actor, and what is on it — in progress
-
-Done together: the stats cannot be changed by events until spells are apart
-from health, and side cannot until conditions are.
-
-**Rules.** [rules/actors.md](rules/actors.md).
-
-**Gone.**
-- `judge_defences`, `judge_fighters`, `judge_sides`, `place_bodies`,
-  `sync_member_maxima`, `notice_changes` and every other per-frame or per-step
-  re-derivation of something about an actor.
-- `Footing`, `Eyes`, `Conspicuous` as components copied onto actors.
-- `CharacterStats`, `.stats(`, `.base_stats()`, and `Attributes::with_spells`
-  or `Attributes::of_sheet` anywhere an actor exists to be read.
-- `member_fighter`/`monster_fighter`, `character_defences`/`species_defences`
-  and any other member/monster pair outside refit.
-- `content.species[..]` in any rule under `game/combat`, `game/hits`,
-  `game/magic`.
-- `Vitals::enchantments`, `Vitals::conditions`, `Vitals::poison`,
-  `Vitals::cheated_death_in`, `Vitals::fell_from`; `PartyEffects`.
-- `Stances`, `monster_own`, `monster_stance`.
-- `game/combat/attack.rs` as a port of `CalcAttacks`/`CalcArmorClasses`: the
-  member's numbers are derived in refit from the rule page, with the formulas
-  cited, not from a `Grip` that mirrors the original's hand table.
-
-**New types, and no others.** Components every actor has: `Attributes`,
-`Level`, `Resistances`, `Armour`, `Attacks`, `Vitals`, `Conditions`, `Spells`,
-`Side`. Events: `Refitted`, `Afflicted`, `Recovered`, and the existing `Damaged`
-and `Dead`. One accessor that computes an actor's place when asked.
-
-**Not allowed.** A component that mirrors another. A system that scans actors
-for changes. A helper that rebuilds a stored fact from its sources outside
-refit.
-
-**Size.** `characters.rs`, `attack.rs`, `footing.rs`, `hostility.rs`,
-`enchantments.rs`, `recovery.rs` and the actor parts of `hits/` are about 5,500
-lines. The replacement should be under 3,000.
-
-**Behaviour that changes, on purpose.** Conditions and spells are lifted from
-the dead at death rather than at the next settlement. A member's trait
-immunities apply to every affliction that allows a save. Nothing else; where
-the original's member and monster formulas differ, both are kept.
-
-### 3. Items are things
-
-**Rules.** [rules/items.md](rules/items.md).
-
-An item is an entity. It is in a pack, worn in a slot, lying in the world or in
-a container, by relationship. `StackId`, `ItemIds` and the addressing enums go.
-An item's definition becomes components when it is made.
-
-This slice also takes what slices 1 and 2 could not finish without it: a
-member's arms are read from the weapons in their hands, which replaces `Grip`
-and `combat/attack.rs`; wearing and removing refit by the relationship
-changing, which removes the watch on a member's gear; and burden is worked
-out when what is carried changes.
-
-**Gone.** `StackId`, `ItemIds`, `ItemStack`, `Equipped`, `Carried`, `ItemPool`,
-`Hand`, `PartyInventory` (but for the purse), `Slot`, `MemberSlot`,
-`ItemOwner`, `ItemRef`, `ItemAt`, `PoolPosition`, `WorldItem`/`GroundLoot`
-holding stacks, `Contents` holding stacks; `content.items[..]` in any rule
-outside where an item is made or shown; `Grip`, `Holds`, and
-`combat/attack.rs`'s member half; `distribute_burden` and `refit_regeared`.
-
-**New types, and no others.** On an item: `Item`, `Count`, `Charges`, `Known`,
-and the components its definition becomes (`Weight`, `Wearable`, `Weapon`,
-`Launcher`, `Ammunition`, `Protection`, `Casts`, `Cursed`, `Crucial`). Where it
-is: the relationships `Worn`, `Packed`, `Pooled`, `InHand`, `Stowed`, `Loot`
-and their targets. One read accessor for "what does this member wear and
-pack". The operations of the rule page as events an observer carries out:
-`Take`, `Move`, `Drop`, `Use`, `Load`, `Merge`, `Identify`, each saying what it
-did with `ItemNews`. A destination is one enum (`Place`): a slot of a member, a
-pack slot, the pool before some item or at its end, the hand.
-
-**Not allowed.** An id or index that stands for an item. A value copy of an
-item moved between collections. An operation that takes an item out of one
-place and puts it in another as two steps another rule could see between.
-
-**Order of work.** The item components and relationships and the operations
-over them, with their rules tested through the world; then the party's
-screens over them; then world items, containers, loot and trade; then a
-member's arms and refit from what is worn, which deletes `Grip`; then burden.
-Members out of the party and levels that were left still copy what they hold
-into records until slice 4; that boundary converts to and from item entities
-and is the only place a value copy of an item survives.
-
-### 4. Levels keep what is in them
-
-**Rules.** [rules/levels.md](rules/levels.md).
-
-A level that is left stays, set aside, with its monsters, items and devices. The
-mirror records and the code that copies entities into and out of them go. The
-same for NPCs who are not present and members who are not in the party.
-
-**Gone.** `LevelMemory`, `LevelRecord`, `LevelContents`, `KeptMonster` as a
-record, `KeptItem`, `TriggerMemory`, `KeptDevice`, `DeviceRecords`, `Profile`,
-`StoredCharacter`, `NpcPopulation::depart`, `ItemStack`, `unpack`,
-`Items::stack`.
-
-**New types, and no others.** None for the levels themselves: setting aside is
-`Disabled`. One event for a level waking, carrying how long it was away, which
-the rules that owe it time react to.
-
-**First step.** An experiment, not a design: disable a level's entities with
-the party elsewhere and find out what physics, navigation and drawing still
-see of it.
-
-### 5. Tables are content
-
-**Rules.** [rules/tables.md](rules/tables.md).
-
-Professions, races, traits, spell effects, special attacks and trap types are
-data in `content`, loaded like the rest. The code that reads them is written
-once per kind of rule, not once per row.
-
-**Gone.** `profession_row`, `race_attributes`, the trait lists, `define_spell`,
-the special-attack and trap `match`es, `spells::bonus`/`personal`/
-`combat_only`/`OFFENSIVE`, `LOADED_BY`, `partners`, and every arm that names a
-spell, profession, race or item kind outside the loader.
-
-**New types, and no others.** One row type per table, deserialised from its
-file; the catalogs gain one field per table.
-
-**Order of work.** Spell effects first (the largest, and `EffectSpec` is
-already nearly a row), then spells laid, then professions and races, then the
-small ones.
-
-### 6. A round
-
-What a round of combat is, in the game's terms: who acts when, and what the
-player sees. Designed from that, not from the original's phase counter.
-
-**Rules.** [rules/round.md](rules/round.md).
-
-**Gone.** `RoundPhase` and the loop that steps a counter from 1 to 100 looking
-for someone due; the messages `Called` and `Perform` and the `Chosen` enum
-that carry one actor's moment between four systems chained on the fixed step
-(`call_actor`, `take_turn`, `perform`/`swings::attack`, `casting::cast`,
-`defend_instead`, `summon`); `Release` as a message drained by a later system;
-`Turn::phase == 0` as "done"; turn fields named for the original's where a
-plainer fact says the same.
-
-**New types, and no others.** `Moment { actor }`, an event at the actor whose
-time has come. One event per thing an actor can do with it, each with one
-observer that does all of it: `Strike`, `Cast`, `Breathe`, `Guard`, `Retreat`,
-`Hold`. What a deed does lands as it is released, in the same chain, so a
-moment is decided, done and settled before the round looks for the next. On
-the fight: the round's timeline as data (who is still to act and when), from
-which the earliest is taken.
-
-**Not allowed.** A system that runs every step to see whether a message
-arrived. A marker component whose only job is to hand an actor from one system
-to the next. A function that exists because the original has one of that name.
-
-**Order of work.** The timeline and `Moment`; then deeds landing as they are
-released; then each act as its own event, the attack last because it is the
-largest; then the end of the round as what follows the last moment rather than
-a chain gated on a marker.
-
-### 7. Presentation reads the new model
-
-The screens are rebuilt over the model above as each slice lands, keeping views
-alive and changing what changed. Visual parity is checked in the running game;
-headless tests do not establish it.
-
-### 8. Talking with someone
-
-**Rules.** [rules/conversation.md](rules/conversation.md).
-
-The conversation is today a state machine in one component (`wait`, `after`,
-`incoming`, `transaction`, `result`), fed by one message carrying an enum of
-everything the party can do, and fifteen systems chained in `Update` that each
-look at every conversation every frame for their own variant. That is the
-original's line queue, modal dialogs and `script_busy` flag under other
-names.
-
-**Gone.**
-- `Talk`, `ConversationRequest`, `Conversation::incoming` and `input::receive`:
-  nothing is parked on the conversation for another system to pick up.
-- `ConversationWait`, `After`, `Conversation::transaction` and
-  `Conversation::result` with `Outcome` polled by the screen.
-- The systems `text`, `approach`, `gift`, `gold`, `payment`, `transactions`,
-  `receipts`, `welcome`, `advance`, `deliver`, `practise`, `finish`,
-  `interrupt` and the sets `Input` and `Playback` that order them; `Trading`
-  and `Recruiting` as places in that order.
-- The messages `LineSpoken`, `rewards::Reward`, `rewards::Practice`,
-  `trade::Order`/`Receipt`, `recruit::Join`/`Joined` as messages a later
-  system drains.
-- `playback::NoAnswer` as a resource.
-
-**New types, and no others.**
-- On the conversation: `Conversation` (who is spoken with, the transcript,
-  the topics learned, the charm laid), `Script` (what is still to be said and
-  done), `Asked` (the question put to the party: options, a typed word, a
-  price, giving everything); the existing `Closing` and the spoken
-  line (`ConversationSpeech`), related to its conversation (`SaidIn`,
-  `Speaking`).
-- What the party does, each an event at the conversation with one observer:
-  `Begin`, `Ask`, `Answer` (with its `Reply`), `Offer` (an item), `OfferGold`,
-  `Sway` (charm or small talk), `Invite`, `Trade`, `Leave`; `EditNotebook`.
-- What comes back: `Spoken` (a line ended, from the screen). The merchant
-  and the recruit answer when asked (`trade::settle`, `Recruiter::admit`), so
-  nothing has to come back from them. What the player should hear of an act
-  the person does not answer in words is a line of the transcript.
-- `Dialogue`: the one reading of a conversation and what it waits on, which
-  says whether the party may act.
-- One observer that goes on with a conversation, carrying out a quote's
-  entries by the events that exist for each.
-
-**Not allowed.** A field or enum on the conversation that says which state it
-is in. A system that scans conversations each frame. A message that one
-conversation system writes for another to read. An observer per retail
-dialog or layout.
-
-**Size.** `npcs/conversation/` is 1,370 lines; `trade.rs` and `recruit.rs`
-lose their request and receipt plumbing. The replacement should be under
-1,000, and `presentation/conversation*` changes only where it sends an act or
-reads what is asked.
-
-**Behaviour that changes, on purpose.** An act takes effect when it is made,
-not at a later system that frame. The differences from the original that the
-rule page lists are fixed in this slice, each where its act is rebuilt and
-each checked against the decompilation first; the story commands a quote can
-queue are the exception, being a slice of their own size.
-
-**Order of work.**
-1. Saying: `Script`, the spoken line and `Spoken`, the chain that says the
-   next line, and the entries carried out by events. `advance`, `finish`,
-   `deliver`, `practise`, `LineSpoken` and the reward messages go.
-2. What is asked: `Asked` replaces `ConversationWait` and `After`; `Answer`
-   covers replies, prices and giving everything.
-3. The party's other acts, one at a time, each deleting its system: `Ask`,
-   `Offer`, `OfferGold`, `Approach`, `Leave`, `Begin`.
-4. Trade and joining answer by event; `transaction` and `receipts` go.
-5. Endings as events where they happen; `interrupt` goes.
-6. The screens: send the acts, read `Asked` and `Transcript`.
-
-Tests state the contract, through the plugin: an act is made and what the
-player would see is asserted (what is said, what was paid, how the person now
-stands). One per rule of section 5 that has a number in it (the price, the
-trade pool, charm and small talk), and one whole conversation: greeting, a
-topic, a priced quote paid, a gift, leaving. None asserts a component, a
-queue's contents or which observer ran.
-
-### 9. The story so far
-
-**Rules.** [rules/story.md](rules/story.md).
-
-Today eleven facts can be read and two set; a quote that asks or sets any
-other is refused, which is most of every real conversation. The original
-keeps facts in an array, reads thirty-six of them off the world in one
-routine, and sets off what follows in a switch of 109 cases and a queue of
-some sixty numbered commands.
-
-**Gone.** `StoryFacts::get`'s and `writable`'s lists of fact names;
-`conversation::say::unsupported`, `Blocked`, `block` and the screen's "content
-gap" line (last, when nothing is refused any more); `DialogueOp::Unsupported`,
-`MonsterScriptLabel` and `LeaveParty` as entries nothing carries out.
-
-**New types, and no others.** The table's rows (which facts begin set; a
-derived fact's reading, as one small enum of what is asked of the world; a
-consequence, as one enum of the kinds in the rule page). One accessor that
-answers a fact. One event for a fact being set. What each prerequisite needs
-is contracted when it is reached, since each is a system of its own.
-
-**Order of work.** Each step ends with fewer conversations refused.
-1. Every fact can be read: the stored ones, and the derived ones from the
-   table.
-2. Setting a fact is an event, with the consequences whose means exist:
-   another fact, a faction's band, the party's changes, a group turning.
-3. Named triggers run and switched off from outside; level variables.
-4. A merchant's stock added to later.
-5. A person's presence changed by the story, and what each marked person
-   does.
-6. Monster scripts.
-7. The scenes, the endgame last.
-8. The refusal and its checks deleted.
-
-Steps 5 to 7 are each as large as the conversation slice was.
-
-### What slice 9 left
-
-Nothing a quote asks or sets is refused any more, and the refusal is deleted:
-a fact is always readable and settable, and a conversation whose lines do not
-hold what was to be said falls silent with a warning. What each of the last
-scenes needed is built:
-
-| What | What it is here |
-| --- | --- |
-| An animation played out, and what follows it | `Cycle` on a body; the screen plays it once and says `Played`; `After` holds what follows. Scripts' `CYCLE` waits on the same thing |
-| Something happening after a while | `Due`, a timer with rows |
-| The screen dimmed and restored | `Fading`, answered by `Faded`; a camera path by name, a named particle system, a sound and a shake are rows |
-| The party looking somewhere | `party::body::LookAt`, an event: the party faces the point |
-| A member picked by the player | `MemberPick`, answered by `Picked` from a portrait; `Chosen`, `Pining` |
-| A member taken and returned | `Condition::Missing`, which nothing but the story lifts |
-| Something waiting for a battle to be over | `Awaited` |
-| The game's ending | `Ended(Ending)`, chosen by the table's `endings`; the screen shows its picture, words, voice and music |
-| A fact that stays once seen | `Reading::Once`, noted as a conversation reads it |
-| Leaving the party without a body; an arrival that greets | `dismiss` told whether the leaver stands; `GreetsOnArrival` |
-
-**Known to differ from the original, and not yet seen in the running game.**
-- Al-Sedexus's capture dims the screen, not the world's light, and her
-  moaning plays out instead of being stopped as the party comes round.
-- Her child is not named after the chosen one, and her death does not yet
-  free them (the original does both where a kill is recorded).
-- Nothing on screen asks the player to pick a member; the portraits simply
-  take the pick.
-- A member goes missing only by the story's rows; the level code that takes
-  one (Marten's Bluff) and the day-long absence of the Mook's exchange are
-  not ported.
-- The ending's words are placed, not laid up from the foot of their box;
-  nothing follows the ending screen (the original goes on to its credits),
-  and the endgame's video is not played.
-- The Savant's hack waits "fifty ticks", read here as fifty milliseconds.
-- A script's `PLAY` does not read how far the sound carries; a look turns
-  the party at once and only about the upright.
-- `Unstock` cancels what a merchant was still to get, not what they hold.
-
-**Still to port, beside the story's rows.**
-- The original's story code per level (`level_specific_code/`, 21 files,
-  some 5,300 lines beside its dispatch table): Arnika and Marten's Bluff are
-  the largest. Without it the conversations run but parts of the world they
-  refer to do not happen.
-- Standing orders acted on: guarding, patrolling, looking about.
-- A marked person's `restore` (a companion dismissed going home to their
-  post), which the original does by the same routine.
-
-### 10. What the story has to say about a device
-
-**Rules.** [rules/devices.md](rules/devices.md).
-
-The original's per-level code is some 140 callbacks on named devices, in 21
-files. Here one exists, as a component and a branch in the device's own code
-(`BellButton`).
-
-**Gone.** `world::scripts` (`LevelScript`, `BellButton`, `ring_bell`), the
-level's `script` field and `TriggerEffect::BellRang`: the bells are a row.
-
-**New types, and no others.** `triggers::Activating`, the question a device
-asks. `npcs::devices::Gate`, a device's cases. Readings and consequences are
-added to the story's enums as levels need them. Since then a device is its
-components and a use a chain of events (`Activate`, `Activating`,
-`Perform`, `Act<T>`, `Committed`, `Fired`), and the interpreter over the
-whole world is gone.
-
-**Order of work.** Levels by size, smallest first; each ends with a retail
-test still passing that every gate names a device its level has. Then what a
-level does as the party enters it (the original's setups), as rows of the
-same kinds. Arnika and Marten's Bluff last.
-
-## Still in the way
-
-A review of the code on 2026-11-16, each finding checked against the source,
-brought up to date the same day after the devices, the spells' rows and the
-small defects were dealt with (with PR #280's encounters and prop playback).
-Each belongs to the slice named; the order is the order to do them in.
-
-1. **Figures still read through bundles** (slices 1 and 2). Nothing changes
-   an actor through a bundle any more: a deed lands row by row as events, one
-   observer for each thing a row changes (`hits::effects`), a weapon's swings
-   are a chain of events whose blows land as deeds (`combat::swings`), and a
-   cast pays through `Pays`. What is left is reading: `actors::Body` gathers
-   25 components for the rules that decide (the monster's choices, casting,
-   reach), and `combat::attack::Fighter` adds the armour's parts, places and
-   `Against` to it, so such a rule can be read only with all of them in mind;
-   `characters::Schooling`/`Trained` gather a member's training the same
-   way, and the figure systems fork on `Option<&Calling>`. To do: each figure
-   rebuilt as [actors-from-scratch.md](actors-from-scratch.md) says, a sum of
-   parts written by small systems over the actors that have what each part
-   comes from, and each rule querying what it reads. The attack's unit tests
-   went with the arena they were written against; the combat scenarios and
-   the retail fight cover it until the rules are rebuilt.
-2. **Rules look content up as they run** (slices 3 and 5). 45 files in `game`
-   name `Catalogs`; 16 places take `Option<Res<Catalogs>>` or
-   `If<Res<...>>`, so a rule quietly does nothing without it. Spells are done:
-   their rows are a table read by the definition (`hits::definitions::row`),
-   a deed carries its spell's definition, and a laid spell what it pulses,
-   absorbs and answers with. To do, area by area: an item's name, value,
-   class and stack limit; a monster's faction, stride, senses and treasure; a
-   person's names, merchant and voice, faction, persuasion and what they know
-   (then `npcs::access::NpcActors` keeps only where each can be met).
-3. **Test apps are wired by hand** (`integration/level_lifecycle.rs`,
-   `combat/tests.rs`), so one can miss what the game has (a resource, an
-   observer). Tests that drive the real plugins are preferred.
-
-Done on 2026-11-16, so not to be looked for again: a turn is a chain
-(`Moment`, `Deliberates`, `Decided`); the most spell points is a figure and
-a learned spell carries its realm and cost; effects land as events
-and blows as deeds, with no bundle written through; the magic tests run on
-`MagicPlugin`; devices are components
-and events (`docs/rules/devices.md`, "How this is built"); `Modifiers` is
-no longer a dirty bit (`items::Redressed`); the view preferences live in
-`settings`; `dev` is behind the `dev` feature; `Belongings` follows every
-relationship that despawns with its holder; the camp breaks itself up when a
-fight begins.
-
-Checked and **not** a problem, so not to be chased:
-
-- Modules of `game` importing each other's components: reading another
-  domain's state (whether a `Battle` is on) is how an ECS works. Only a domain
-  changing another's state is a defect.
-- Two ways of loading content: the retail files are assets because they need
-  the install; our own tables are compiled in. Merging them gains nothing.
-- `Items` is the cohesive "what is held" accessor the guidelines allow;
-  `npcs::story::Readings` is the one reader of the story's facts (slice 9).
-- A level reading its own definition (spots, view distance, camera paths)
-  through its handle: that is the level's own content, not a record looked
-  up again.
-- Test helpers in main source files are all `#[cfg(test)]`, and tests in a
-  `#[cfg(test)] mod tests` beside their code are the Rust convention.
-- Large files are not by themselves a defect.
-
-## Status
-
-| Slice | State |
-| --- | --- |
-| Groundwork: combat, effects and magic resolved through messages and plain functions | Done on `refactor/event-driven-combat-and-magic`. An improvement by the old standard only: the functions are still retail routines. Slices 1 and 6 replace them. |
-| 1 and 2. One kind of actor, and what is on it | Mostly landed. Gone: the per-step judges, `place_bodies`, `Footing`/`Eyes`/`Conspicuous`, `judge_sides`, `sync_member_maxima`, `notice_changes`, `Vitals::enchantments`, `PartyEffects`. Spells laid are entities related to their bearer; place and sight are computed on read; side is stored and changed by `Stand`, faction changes and joining. Where the contract was changed while designing, the rule page says why: conditions stay in `Vitals`; Turncoat is read where the side is read, so there are no `Afflicted`/`Recovered` events; `Loyalty` and `Allegiance` are written when a monster is made. Deaths settle from `Damaged`; practice is one `Practise` event whose `Improved` refits the member, and advancement refits when it is accepted. Since then `refit` gave way to one system per figure, written when its sources change ([rules/actors.md](rules/actors.md), "Sources and figures"), and armour to its parts and their sum ([rules/arms.md](rules/arms.md), "Armour"; [actors-from-scratch.md](actors-from-scratch.md)). **Still owed:** the other figures are still rules handed a character (see actors-from-scratch.md). The party's own sight (`world/perception.rs`) still reads species records; `engage`, `leave_fight` and the monster AI are redesigned only as far as place and side, their shape is slice 6's. |
-| 3. Items are things | First phase landed: everything the party holds is item entities placed by relationship (`game/items.rs`), changed by events with one observer each; `Carried`, `ItemPool`, `StackId`, `ItemIds` and the addressing enums are gone; wearing refits and holdings reweigh by the relationships changing. Then what lies in the world, sits in a container or falls as loot became item entities too (`Lying`, `Stowed`), taken by `Give` and thrown by `Throw`. Then a member's arms and armour: what an item is to a hand is components set when it is made (`Weapon`, `Launcher`, `Missile`, `Shield`, `Protection`), and refit reads the two hands ([rules/arms.md](rules/arms.md)); `Grip` and the member half of `combat/attack.rs` are gone. Then what the rules read of an item: what it casts and who may use it (`Casts`), how hard it is to identify (`Obscure`), whether heat takes it (`Flammable`), what a ranged weapon takes and what reloads it (`Takes`, `LoadedBy`) are written as it is made. Then a merchant's stock: the items stowed with the merchant, sold by handing them over and bought back as the things they are; `StockLot`, `StockLotId` and the lot counter are gone. **Still owed:** recipes and trade values are still read from the definition; a monster's loot is made from its species record as it dies; no test yet for `Identify`, burning, or the omnigun. The screens were not checked in the running game. |
-| 4. Levels keep what is in them | First phase landed: a level that is left is set aside (`SetAside`, Bevy's `Disabled` on everything that belongs to it) and woken on return (`Woke`, carrying how long it was away); `LevelMemory`, `LevelRecord`, `KeptItem`, `TriggerMemory`, `KeptDevice`, `DeviceRecords` and `NpcPopulation::depart` are gone. Physics and navigation honour `Disabled` on their own, which a test establishes. Then recruits: a recruitable NPC is their character from the start, wearing and packing item entities, and being in the party is having a seat; `Profile`, `StoredCharacter`, `ItemStack`, `unpack` and `Items::stack` are gone, so no plain item value is left. Then a level that was away owes those in it the time that passed: what ails them and the spells laid on them age as it wakes. An NPC who stands in a level stays two entities, the person and a body, because the body has a lifetime of its own ([rules/levels.md](rules/levels.md)); the registry of NPCs and the death flag kept in step by observers are gone. **Still owed:** `wake` and `set_aside` walk what belongs to a level through `&World`; drawing and sound of a level set aside and woken were not checked in the running game. |
-| 5. Tables are content | First phase landed: what each spell does is `assets/tables/spell_effects.ron`, 101 spells as rows, read into the catalogs; `define_spell` and its 44 arms are gone, after a test showed the table and the code made the same definitions for every spell. A row names its spell's own numbers symbolically (its dice, rounds, realm). Then spells laid: what a spell adds while laid is an amount written as data (`assets/tables/spells_laid.ron`), with whether it is personal, lasts only a fight, pulses and on whom, may backfire, and its death floor; backfires and pulses are rows beside a spell's effects; `bonus`'s match, `personal`, `combat_only`, `OFFENSIVE`, `define_backfire` and `define_pulse` are gone, each after a test found old and new equal for every spell. Then professions and races: each is a row (`assets/tables/professions.ron`, `races.ron`) holding its numbers and traits; `profession_row`, `race_attributes`, the trait arms and fourteen tests of a particular profession or race inside rules are gone, after tests found old and new equal for every profession, race and level 1 to 50. Then special attacks (`special_attacks.ron`) and the kinds of trap (`traps.ron`), each proven equal to the code it replaced. Then the ranged weapons (`weapons.ron`): what each bow, gun and omnigun tier takes, what reloads a gun, and the omnigun's tiers by level. Then what a laid spell does for its bearer beyond numbers (warning, finding, breath, answering a blow, absorbing, answering a slowing) is found by its row, not its name. An NPC's posts and what it waits on before joining are decoded in `retail`. Then what a blow's weapon effects do (`weapon_effects.ron`), proven equal to the code it replaced; and the definitions built from the tables at start-up are gone: a strike names whose rows it follows and the rows are read as it lands. Then what a special attack does is written out as effect rows like a spell's, proven equal to the code that spelled out its five effect words, which is gone. **Still owed:** a breath is aimed by the record of one named cone spell; Set Portal and Return to Portal are paired by name where spells are picked; a fountain heals by the record of Heal All. |
-| 6. A round | First phase landed: the round takes the earliest moment from a timeline (`Moment`); an actor's moment is one chain of events (`Strike`, `Cast`, `Breathe`, `Guard`, `Retreat`, `Hold`); deeds land as they are released; `RoundPhase`, `Called`, `Perform`, `Chosen` and the scheduled `resolve` are gone. Then the end of the round is what follows the last moment (`RoundEnds`, its steps in the rule page's order as events), time passing is an event (`Elapsed`, and `Aged` for spells laid), deaths settle where the hurt was dealt, and provocation, utility casts and refused casts are events. No system on the fixed step polls for a message or a marker any more: the step is `fly`, `stop_party_move`, `begin_round`, `next_moment`. Then the attack ([rules/attack.md](rules/attack.md)) and a monster's choices ([rules/monsters.md](rules/monsters.md)) were rebuilt as rules over structs of facts with a gatherer for each, and then rebuilt again without them: each rule takes the fighters, or the monster and what it makes out (`Sight`), and the attack under way. The facts modules and some forty mirror structs are gone. Casting ([rules/casting.md](rules/casting.md)) likewise as far as who may cast, the failure roll, the cost and the auto power, which read the caster, the means of the cast and the spell. A provoked group carries a mark that engagement reads once. Then whom a cast reaches is read from the actors where they stand, with no list taken as the cast begins. Then a deed became an entity (`Deed`) that lands and says `Landed`; what follows it (a drain's share, a burst, a spell turned back, practice, a recast, the telling) is components beside it that its maker's observer reads, so landing knows nothing of magic or the fight; `Release`, `Act`, `Flight` and the landing queue are gone. Then what the party does to a lock, a trap or a container is an event at the attempt with one observer each (`Pick`, `Force`, `Inspect`, `Disarm`, `Spring`, `Take`, `Leave`), and a trap going off or a device opening is an event too; `DeviceRequest`, `DeviceAct` and the system that polled and matched them are gone. **Still owed:** the cast observer is still some 250 lines; `monster/close.rs` and `noticing.rs` keep a few plain-value rules; what the casting, monster and attack pages record as confirmed but unfixed or missing. Most unit tests of the monster's and the cast's rules went with the fact structs and were not rebuilt: those rules are covered by the combat scenarios and the retail fight only. |
-| 7. Presentation | Adapted as each slice landed; never checked in the running game. |
-| 8. Talking with someone | Landed. A conversation waits on what is there to be seen (a line being spoken, a question asked, a script not yet said out); each thing the party does is an event at it with one observer; saying is one chain that goes on when a line ends; the merchant and the recruit answer when asked. `Talk`, `ConversationRequest`, `ConversationWait`, `After`, `incoming`, `transaction`, `result`, the fifteen chained systems and their sets, and the request and receipt messages of trade and joining are gone. Fixed against the original: a topic with no match is answered; two matching words are both answered and more than two get 0x20; `join` and `where is` are understood, the latter from a table of who knows of whom and which way each region lies; a friend says farewell on being left and a member remarks after; the party can turn on a person, who then stands against it with their group, as does one whose quote closes and resumes; a gift counts against the trade pool by the original's arithmetic. Tests drive conversations through the plugin by what the party does and what is said, paid and felt. The module is some 1,700 lines against a target of under 1,000. Not looked at in the running game. |
-| 9. The story so far | Steps 1 to 3 and most of 4 to 7 landed. Every fact is in `assets/tables/facts.ron` by its own name: which begin set, which are read off the world and how (36, of which four still wait on state this game lacks), and what each of 109 sets off, in full. A fact is read by one accessor (`Readings`). Setting a fact is an event (`FactSet`); each thing it sets off befalls (`Befalls`) and is carried out by the observer it concerns: the story and the party (another fact, a faction, a skill's floor), the level (a named device run, switched or unlocked, a variable, an item appearing, a group turned, given a script, moved or gone), or a person (gone for good, moved, given a script, made to speak, a merchant's delivery). Monster scripts ([rules/scripts.md](rules/scripts.md)) are read from their files and carried out for placed monsters and for those the story gives one; their named happenings are a table. Some twenty-five of the original's scenes are rows of these kinds. A quote's script label and its sending someone out of the party are carried out. Then people: a marked person leaves for good once the party has left the level; one the story stands at a spot of another level takes their place there when the party arrives (`Post`); one of a species can be brought in at a spot (`Coming`); "killed" and "gone" are components of a person, and whether someone was killed can be read as a fact. All of the 17,297 quotes the game ships can be said: the last scenes (the henchman, the Savant's hack, the quake, the book, the explosion, Al-Sedexus's choice and capture, Vi's ending, the endgame) are rows too, in `npcs/scenes.rs` where they turn on the party's own, and the refusal is deleted. None of it has been looked at in the running game. See "What slice 9 left". |
-| 10. What the story has to say about a device | Nearly all of it. A device asks before it acts (`Activating`); a level's cases, and what it does as the party enters, are rows of `assets/tables/devices.ron` in the story's readings and consequences. All twenty of the original's levels with such code have rows, each with gaps the rule page lists; a retail test checks that every device and spot a row names is the level's. What a case sets off may wait for seconds, for a device to stop moving, for a talk to end, or recur (`Due`, `Stilled`, `Parted`, `Recurring`), which is how the lifts, the teleporter and the alarms are rows. `world::scripts` and the level's `script` are gone. Marten's Bluff's arrows, spiked balls and crusher, the Gigas pressure plate, the lift's steps outside Mount Gigas, Trynton's fountain and Arnika's pedestal are in too. Arnika's scanner, the crusher's door controls and Trynton's dead (a generator may now be made to draw from another table) are in too. A retail scenario uses two gated devices of the lower monastery in the real game, headless; nothing has been looked at on screen. |
+[design.md](design.md). Earlier slices made items, levels, tables, the round,
+conversation, the story and devices into entities, events and data; what is
+left of the port is how rules read actors and content. This page says why,
+and the steps that remove it. What was done before is in git.
+
+## What every gameplay change must satisfy
+
+1. Behaviour is a system or an observer. A plain function takes numbers and
+   plain values, never a component handed to it by a caller.
+2. Kind is which components an entity has. No system takes an optional
+   component and branches on it; what differs is data on the entity.
+3. Derived state is a component, written by one system when its inputs
+   change. Nothing recomputes it on demand; screens only query.
+4. Everything rules apply to is an entity. No drafts, previews or templates
+   as values that need the rules as callable functions.
+5. A query is the interface. No `QueryData` or `SystemParam` that gathers a
+   dozen components into an object to pass around.
+6. No raw encodings in `game`; content is decoded into the game's terms
+   where it is read.
+7. No invented concepts. A component is named for a thing the game has.
+
+A rule is first written in words from the original, in its page under
+[rules/](rules/); then its components; then its systems. The existing Rust is
+not a source.
+
+## Why the bundles exist
+
+Rules are still procedures handed a whole actor: `actors::Body` (87 uses),
+`combat::attack::Fighter` (38), `characters::Trained`/`Schooling` (90),
+`hits::reach::Field` (48) and the monster's `Sight`. Each bundle feeds one of
+four causes, and removing a bundle without its cause only moves the
+procedure.
+
+1. **Derived facts are worked out on read.** The side an actor is on now
+   (`side.now(conditions)`, 20 places), fatigue, agility, the eyes: each needs
+   several components, so every rule that reads one needs the actor whole.
+2. **Characters on paper are values.** `Character`, the level-up draft and
+   the `Trained` view exist so that rules can run on a character that does
+   not exist; that is why rules are functions of a view.
+3. **What a thing is is looked up by id.** 45 files in `game` read
+   `Catalogs` as rules run (38 spell lookups alone).
+4. **Rules decide by scanning everyone.** Whom a cast reaches and who
+   notices whom loop over every actor, so they need the world gathered into
+   `Field` and `Sight`.
+
+## Steps
+
+Each step removes one cause and then the bundles that rested on it. Each
+ends with clippy and the retail tests; CI runs the rest. Each reports, before
+and after: uses of `Body`, `Fighter`, `Field`, `Sight`, `Trained`; readers
+of `Catalogs`; `QueryData`/`SystemParam` in `game` (43 at the start).
+
+1. **Derived facts are figures.** Done: where an actor stands now
+   (`hostility::Standing`, its side turned by Turncoat and the band it keeps
+   to), its `Fatigue`, its `Agility` and its `Eyes` are components, each
+   written by one system as part of settling bodies; `Body::stance`,
+   `standing`, `attack::fatigue` and every caller of `Eyes::of` are gone. A
+   figure follows its sources by the next settling, so a Turncoat laid by a
+   deed's row is felt from the next moment, not by the deed's later rows.
+2. **An attack is entities, not a procedure.** Done. No rule function takes a
+   handful of numbers it was handed, no struct (`Attack`, `Fighter`, `Body`)
+   carries copied values to a rule, and no observer is a long procedure.
+   - **An arm is an entity** related to its bearer: a member's hand that
+     strikes (what it holds by relationship, a fist when empty), a monster's
+     natural attack. Each fact of it is a component written by one small
+     system from what it comes from: its rating, reach, modes, dice and
+     punch/kick dice, raise in percent, effects, the kinds it slays, attacks
+     and swings a round, initiative, what it loads, its critical skill, the
+     skills it trains, its weight, whether it tires, is modern, tires on
+     penetration, is a sword, ambushes, its word, where it lands on a member,
+     its sound. A monster's arms are made with it from its species; a
+     member's follow what they hold and their training. `Attacks.arms` and
+     `Hands`'s procedures go.
+   - **The rest of `Attacks` splits** into one component per fact
+     (initiative, `Pressing`, fighting blind, keen sight, backstab, knocking
+     out, stride, haste); what only some actors have is present only on
+     them.
+   - **What catches an actor out** is its own components, each with a small
+     system: `Unaware`, `Unseated`, `Block`, `Blinded` (written already).
+   - **A swing is an entity**, spawned with its attacker, target, arm, mode
+     and how it caught the target. Each fact of it is a component added by
+     a small observer that reads only what that fact comes from: its `Aim`
+     (the arm's rating and the mode's to-hit, the swing's surprise, the
+     attacker's `Fatigue`, `Agility` and blindness, the target's armour,
+     `Unaware` and `Agility`); `Reached`, `Missed` or `Astray`; a guard
+     stepping in (`Pressing` against `Pressing`); a near miss `Blocked`;
+     where it `LandsAt`; whether it gets `Through` (the armour at the place,
+     `Against`, `MissileShield`, the arm's penetration); its `Damage`, which
+     makes the blow's `Deed`; what it costs and uses up. The attack's tally
+     and the next swing follow the swing being done.
+   - **Choosing whom to strike** is likewise facts added to the attack
+     (whom it looks for, whose eye misses, the ways it could strike, the one
+     picked or closing in), each by its own small observer.
+   `Fighter`, `Attack`, `Body`'s use by the attack, and every
+   `chance_to_hit`/`penetration`/`blow`-style function go.
+
+   *Done:* arms are entities (`actors/arm.rs`): a member's two hands, each
+   fact a component with its own system (ported from `Hands`, which is
+   gone), and a monster's natural attacks made with it; what a bearer's
+   arms come to is `Wielding`, `Tempo`, `Furthest`, `GuardReach`,
+   `Pressing` and `AimBonus`. An attack and each of its swings are
+   entities (`combat/swings`), their facts added by small observers;
+   `Fighter`, `Attack`, `Setting`, `NaturalArms`, `accept_round` (now the
+   `Accepts` event and its observers) and the fighter-taking rules are
+   gone. Choosing whom to strike is facts of the attack being chosen
+   (`Sought`, `Ways`, the one picked, or closing in). `Attacks` is split:
+   `Initiative` (with `TrainedInitiative`, nothing for one who never
+   trained), `BlindFighting` and `KnockOut` only on those who have them,
+   `Backstab`; keen sight, stride and haste are read from `Nature` and
+   `Modifiers`. The arms' retail rules are pinned again against the hands.
+
+3. **A cast is an entity, and `Field` goes.** As the attack: the `Cast`
+   event makes a cast entity, with who casts, the spell's definition (read
+   from content as the cast is made) and what was chosen (its source and
+   aim); each fact of it is added by a small observer reading only what
+   that fact comes from, in the order of [rules/casting.md](rules/casting.md):
+   - whether it may be cast at all (`may`), or it is refused and gone;
+   - what it is cast with (`CastWith`: a learned spell, an item, a
+     monster's own), which says how it is paid for and how strong it is;
+   - whom it reaches: one observer per kind of target (the caster, a
+     friend, the party, a foe, a foe's group, every foe, a cone, a blast's
+     spot, a utility spell's mark), each reading where those about stand,
+     their side and their group. The aim is a component of its own, so a
+     blind caster's aim gone astray is a new aim and whom it reaches follows;
+   - its power; the roll (cast, fizzled, backfired); what a backfire turns
+     it on;
+   - what it costs (`Pays`, a use of an item) and trains;
+   - its release: a deed with what follows it beside it, or the utility
+     spell's own event, or a fizzle's report and an auto cast again.
+   Who may be taken (the party, the fight's combatants and the rest of their
+   groups, the targetable among them) is a figure, written once, not worked
+   out by each rule. `Field`, `Aiming`, `Means`, `Circumstances` and `Marks`
+   as bundles, and `BodyItem` in `may`, `cost`, `means`, `workings` and
+   `landed`, go.
+4. **A monster's choices are observers.** Done
+   ([rules/monsters.md](rules/monsters.md), "How this is built"): a
+   deliberation is an entity whose facts are added in the order of section 4;
+   each spell weighed is a child entity with its aims; entering a fight weighs
+   the same way. `Mind`, `Fray`, the candidate struct, `deliberate`'s
+   procedure, `acts_on_party` and every monster rule taking a `BodyItem` are
+   gone; `Sight` keeps who stands where, on which side, and who sees whom.
+5. **Drafts are entities.** Level-up makes an actor for the member to be, as
+   creation does, its figures written by the same systems; accepting writes
+   its sources onto the member. `Character` as a struct, `Trained`,
+   `Schooling`, `of_sheet` and the screens that work from paper go.
+6. **Content is components where things are made**, area by area: what a
+   monster or an item casts carries its spell's definition; an item its name,
+   value, class and stack limit; a monster its faction, stride, senses and
+   treasure; a person their names, merchant, voice, faction and what they
+   know, so that `npcs::access::NpcActors` keeps only where each can be met.
+   `Catalogs` is read only where things are made.
+7. **Tests drive the real plugins.** `combat/tests.rs` and
+   `integration/level_lifecycle.rs` move onto the game's plugins; tests of
+   removed types are deleted, not rebuilt.
+
+## Done, and not to be looked for again
+
+- Effects land as events, one observer for each thing a row changes; blows
+  and Razor Cloak's answer are deeds; a cast pays through `Pays`; nothing
+  writes through a bundle.
+- A turn is a chain (`Moment`, `Deliberates`, `Decided`); the `Mind` bundle
+  is gone.
+- Armour is its parts, summed ([rules/arms.md](rules/arms.md)); the most
+  spell points is a figure, and a learned spell carries its realm and cost
+  ([rules/casting.md](rules/casting.md)); `Mastery` is written where an
+  actor is made; death, cheated or not, is settled in one place (`fall`).
+- Devices, encounters, items, levels, tables, conversation and the story are
+  their rule pages' "How this is built".
+
+Checked and **not** a problem: modules reading another domain's state;
+retail files as assets beside compiled-in tables; `Items` as the "what is
+held" accessor and `npcs::story::Readings` as the one reader of the story's
+facts; a level reading its own definition; `#[cfg(test)]` helpers beside
+their code; large files as such.

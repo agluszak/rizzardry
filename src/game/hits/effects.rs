@@ -18,11 +18,8 @@ use crate::content::characters::{Attribute, Skill};
 use crate::content::items::EquipClass;
 use crate::content::spells::{SpellDefinition, SpellId};
 use crate::game::actors::spells::{Enchantment, Laying};
-use crate::game::actors::{Attributes, Drained, Level, Resistances, Swallowed, Traits};
-use crate::game::characters::{
-    Calling, CheatedDeathIn, Condition, Conditions, Lasting, Practise, Vitals,
-};
-use crate::game::combat::Battle;
+use crate::game::actors::{Attributes, Drained, Level, Resistances, Swallowed};
+use crate::game::characters::{Calling, Condition, Conditions, Lasting, Practise, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::inventory::PartyInventory;
@@ -30,7 +27,7 @@ use crate::game::items::{Items, Lose};
 use crate::game::magic::{SpellPoints, Strength};
 use crate::game::party::roster::{PartyMember, PartyRoster};
 use crate::game::rng::GameRng;
-use crate::game::world::hostility::Side;
+use crate::game::world::hostility::Standing;
 use crate::game::world::population::SpellBudget;
 
 /// One thing landing: the rows it follows at a strength, a weapon's blow
@@ -81,8 +78,8 @@ struct Applies {
     magnitude: u32,
 }
 
-/// A row has been applied to one who was alive before it: if it ran their
-/// health out they may cheat death, before anything else lands on them.
+/// A row has been applied to one who was alive before it, which may have
+/// run their health out.
 #[derive(EntityEvent, Clone, Copy, Debug)]
 struct Settles {
     #[event_target]
@@ -103,7 +100,7 @@ pub(super) struct LandsOnParty {
 pub(super) fn lands(
     lands: On<Lands>,
     mut deeds: Query<&mut Deed>,
-    victims: Query<(&Vitals, &Conditions, &Level, &Side, &Resistances, Has<PartyMember>)>,
+    victims: Query<(&Vitals, &Level, &Standing, &Resistances, Has<PartyMember>)>,
     trained: Query<(), With<Calling>>,
     difficulty: Res<Difficulty>,
     mut rng: ResMut<GameRng>,
@@ -115,7 +112,7 @@ pub(super) fn lands(
         deed.outcome = None;
     }
     let Some(spec) = deed.rows.get(row).cloned() else { return };
-    let Ok((vitals, conditions, level, side, resistances, member)) = victims.get(victim) else {
+    let Ok((vitals, level, standing, resistances, member)) = victims.get(victim) else {
         return;
     };
     let next = Lands { row: row + 1, ..*lands };
@@ -141,7 +138,7 @@ pub(super) fn lands(
         rolled,
         strike.strength,
         *difficulty,
-        (!alive, level.0, side.now(conditions), resistances),
+        (!alive, level.0, standing.stance, resistances),
     );
     match defended {
         defences::Defended::Through(magnitude) => {
@@ -237,7 +234,7 @@ fn health(
 fn ailments(
     applies: On<Applies>,
     mut deeds: Query<&mut Deed>,
-    mut victims: Query<(&mut Conditions, &mut Drained, &Side)>,
+    mut victims: Query<(&mut Conditions, &mut Drained, &Standing)>,
     mut laying: Laying,
     mut rng: ResMut<GameRng>,
     mut commands: Commands,
@@ -245,10 +242,10 @@ fn ailments(
     use EffectKind as K;
     let Applies { deed, victim, ref row, magnitude } = *applies;
     let Ok(mut deed) = deeds.get_mut(deed) else { return };
-    let Ok((mut conditions, mut drained, side)) = victims.get_mut(victim) else { return };
+    let Ok((mut conditions, mut drained, standing)) = victims.get_mut(victim) else { return };
     let effect = match row.kind {
         K::Afflict { condition, poison, indefinite } => {
-            let stance = side.now(&conditions);
+            let stance = standing.stance;
             let Some(lasting) = applied::afflicts(condition, stance, indefinite, magnitude) else {
                 return;
             };
@@ -399,37 +396,11 @@ fn burn(
     deed.effects.extend(burnt);
 }
 
-/// One whose health a row ran out, and who cheats death, does so; the first
-/// time in a fight at full strength.
-fn settles(
-    settles: On<Settles>,
-    mut victims: Query<(
-        &mut Vitals,
-        &mut Conditions,
-        &Traits,
-        &Level,
-        Option<&Calling>,
-        Option<&CheatedDeathIn>,
-    )>,
-    fight: Option<Single<Entity, With<Battle>>>,
-    mut rng: ResMut<GameRng>,
-    mut commands: Commands,
-) {
-    let victim = settles.victim;
-    let Ok((mut vitals, mut conditions, traits, level, calling, cheated)) = victims.get_mut(victim)
-    else {
-        return;
-    };
-    if !vitals.is_dead() {
-        return;
-    }
-    let fight = fight.map(|fight| *fight);
-    let first = fight.is_some_and(|fight| cheated != Some(&CheatedDeathIn(fight)));
-    let mastery = calling.map_or(level.0 as u8, Calling::mastery);
-    if vitals.cheats_death(&mut conditions, (traits, mastery), first, &mut rng)
-        && let (true, Some(fight)) = (first, fight)
-    {
-        commands.entity(victim).insert(CheatedDeathIn(fight));
+/// One whose health a row ran out has fallen, and it is settled before
+/// anything else lands on them ([`crate::game::characters::fall`]).
+fn settles(settles: On<Settles>, victims: Query<&Vitals>, mut commands: Commands) {
+    if victims.get(settles.victim).is_ok_and(Vitals::is_dead) {
+        commands.trigger(crate::game::characters::Fell { body: settles.victim });
     }
 }
 

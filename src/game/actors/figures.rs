@@ -9,11 +9,12 @@ use bevy::prelude::*;
 use enum_map::EnumMap;
 use enumset::EnumSet;
 
-use super::arms::{Hands, Held};
 use super::modifiers::Modifiers;
-use super::sources::{Abilities, Drained, Frame, Kind, NaturalArms, Nature, Traits};
+use super::sources::{Abilities, Drained, Frame, Kind, Nature, Traits};
 use super::time::Mending;
-use super::{Attacks, Attributes, Level, MissileShield, Reduction, Resistances, Skills};
+use super::{
+    Agility, Attributes, Fatigue, Level, Mastery, MissileShield, Reduction, Resistances, Skills,
+};
 use crate::content::characters::{Attribute, Realm, Skill, Trait};
 use crate::game::characters::{
     Birth, Calling, Condition, Conditions, Schooling, Trained, Training, Vitals, scale_by_level,
@@ -23,28 +24,23 @@ use crate::game::items::Redressed;
 use crate::game::items::{Burden, Items};
 use crate::game::magic::{LearnedSpells, SpellPoints, max_points};
 
-/// The level a trait's strength grows with: the level in the profession
-/// followed now for one who trained, its own level otherwise (retail
-/// `ScaleValueByProfessionLevel`, `ScaleValueByMonsterLevel`).
-fn mastery(calling: Option<&Calling>, level: &Level) -> u8 {
-    calling.map_or(level.0 as u8, Calling::mastery)
-}
-
 /// One who trained has the traits of their race and the profession they
-/// follow now, and the level of all their professions together.
+/// follow now, the level of all their professions together, and the level
+/// in the one followed now as their mastery.
 pub(super) fn follow_calling(
-    mut trained: Query<(&Calling, &Birth, &mut Traits, &mut Level), Changed<Calling>>,
+    mut trained: Query<(&Calling, &Birth, &mut Traits, &mut Level, &mut Mastery), Changed<Calling>>,
 ) {
-    for (calling, birth, mut traits, mut level) in &mut trained {
+    for (calling, birth, mut traits, mut level, mut mastery) in &mut trained {
         traits.set_if_neq(Traits(traits_of(birth.race, calling)));
         level.set_if_neq(Level(u32::from(calling.level())));
+        mastery.set_if_neq(Mastery(calling.mastery()));
     }
 }
 
 #[allow(clippy::type_complexity)]
 pub(super) fn attributes(
     mut actors: Query<
-        (&Abilities, &Modifiers, &Conditions, &Traits, &Level, Option<&Calling>, &mut Attributes),
+        (&Abilities, &Modifiers, &Conditions, &Traits, &Mastery, Has<Calling>, &mut Attributes),
         Or<(
             Changed<Abilities>,
             Changed<Modifiers>,
@@ -54,10 +50,10 @@ pub(super) fn attributes(
         )>,
     >,
 ) {
-    for (base, modifiers, conditions, traits, level, calling, mut written) in &mut actors {
+    for (base, modifiers, conditions, traits, mastery, trained, mut written) in &mut actors {
         // Only one who trained makes anything of a trait that eases a
         // condition.
-        let eases = calling.map(|calling| (traits, mastery(Some(calling), level)));
+        let eases = trained.then_some((traits, mastery.0));
         written.set_if_neq(Attributes::affected(base, &modifiers.laid, conditions, eases));
     }
 }
@@ -71,6 +67,82 @@ pub(super) fn skills(
 ) {
     for (training, calling, conditions, mut written) in &mut trained {
         written.set_if_neq(Skills::affected(training, calling, conditions));
+    }
+}
+
+/// Agility follows the attributes.
+pub(super) fn agility(mut actors: Query<(&Attributes, &mut Agility), Changed<Attributes>>) {
+    for (a, mut agility) in &mut actors {
+        agility.set_if_neq(Agility(a.agility()));
+    }
+}
+
+/// Fatigue follows the share of stamina spent: 0 under half, then 5, 10, 20
+/// and 40 from 50, 70, 85 and 95 percent (retail `FatigueArmorPenalty`).
+pub(super) fn fatigue(mut actors: Query<(&Vitals, &mut Fatigue), Changed<Vitals>>) {
+    for (vitals, mut fatigue) in &mut actors {
+        fatigue.set_if_neq(Fatigue::of_spent(vitals.stamina.spent_percent()));
+    }
+}
+
+/// What the eyes are worth follows the Senses, what the kind adds, and
+/// whether it can fight and see: shut when it cannot fight, or is blind and
+/// does not fight blind.
+#[allow(clippy::type_complexity)]
+pub(super) fn eyes(
+    mut actors: Query<(
+        (&Conditions, Has<super::CanFight>, Has<super::BlindFighting>),
+        (&Attributes, &Nature),
+        &mut super::Eyes,
+    )>,
+) {
+    for ((conditions, can_fight, fights_blind), (a, nature), mut eyes) in &mut actors {
+        let blinded = conditions.has(Condition::Blind) && !fights_blind;
+        let now = super::Eyes::of(a[Attribute::Senses], nature.keen_sight, can_fight && !blinded);
+        eyes.set_if_neq(now);
+    }
+}
+
+/// How well an actor presses a blow past a guard, or guards against one
+/// (retail `GetCharacterProtectionScore`, `GetMonsterProtectionScore`): its
+/// Speed, its first arm's rating and what its spells and conditions add to
+/// its aim, less its fatigue, which tells half as much when that arm is
+/// modern.
+#[allow(clippy::type_complexity)]
+pub(super) fn pressing(
+    mut actors: Query<(
+        &Attributes,
+        &super::AimBonus,
+        &Fatigue,
+        &super::arm::Arms,
+        &mut super::Pressing,
+    )>,
+    arms: Query<(&super::arm::Rating, Has<super::arm::Modern>)>,
+) {
+    for (a, bonus, fatigue, own, mut pressing) in &mut actors {
+        let first = own.entities().first().and_then(|&arm| arms.get(arm).ok());
+        let (rating, modern) = first.map_or((0, false), |(rating, modern)| (rating.0, modern));
+        let tired = if modern { fatigue.0 / 2 } else { fatigue.0 };
+        let press = a[Attribute::Speed] as i32 + rating + bonus.0;
+        pressing.set_if_neq(super::Pressing(press - tired));
+    }
+}
+
+/// Being blinded follows what ails it.
+pub(super) fn blind(
+    actors: Query<(Entity, &Conditions, Has<super::Blinded>), Changed<Conditions>>,
+    mut commands: Commands,
+) {
+    for (actor, conditions, was) in &actors {
+        match (conditions.has(Condition::Blind), was) {
+            (true, false) => {
+                commands.entity(actor).insert(super::Blinded);
+            }
+            (false, true) => {
+                commands.entity(actor).remove::<super::Blinded>();
+            }
+            _ => {}
+        }
     }
 }
 
@@ -254,95 +326,97 @@ pub fn trained_initiative(
     initiative - load.penalty()
 }
 
+/// What an actor's spells and conditions add to its aim, five a point.
+pub(super) fn aim_bonus(
+    mut actors: Query<
+        (&Modifiers, &Conditions, &mut super::AimBonus),
+        Or<(Changed<Modifiers>, Changed<Conditions>)>,
+    >,
+) {
+    for (modifiers, conditions, mut bonus) in &mut actors {
+        bonus.set_if_neq(super::AimBonus(5 * (modifiers.laid.to_hit + conditions.to_hit())));
+    }
+}
+
+/// What training adds to when one who trained acts.
 #[allow(clippy::type_complexity)]
-pub(super) fn attacks(
-    mut actors: Query<(
-        Entity,
-        (&Nature, Option<&NaturalArms>, &Traits, &Level, &Modifiers, &Conditions),
-        Option<(Schooling, &Burden)>,
-        (&Attributes, &Skills),
-        &mut Attacks,
-    )>,
-    changed: Query<
-        (),
+pub(super) fn trained_initiative_of(
+    mut trained: Query<
+        (&Training, &Burden, &Level, &Attributes, &Skills, &mut super::TrainedInitiative),
         Or<(
-            Changed<Nature>,
-            Changed<NaturalArms>,
-            Changed<Traits>,
-            Changed<Level>,
-            Changed<Modifiers>,
-            Changed<Conditions>,
-            Changed<Calling>,
             Changed<Training>,
             Changed<Burden>,
+            Changed<Level>,
             Changed<Attributes>,
             Changed<Skills>,
         )>,
     >,
-    (items, hands, mut redressed): (Items, Query<Held>, Redressed),
 ) {
-    let dressed = redressed.wearers();
-    for (
-        entity,
-        (nature, natural, traits, level, modifiers, conditions),
-        trained,
-        (a, skills),
-        mut written,
-    ) in &mut actors
-    {
-        if !changed.contains(entity) && !dressed.contains(&entity) {
-            continue;
+    for (training, burden, level, a, skills, mut written) in &mut trained {
+        let now = trained_initiative((level.0, training), a, skills, burden.load);
+        written.set_if_neq(super::TrainedInitiative(now));
+    }
+}
+
+/// When an actor acts: its nature's initiative and what training adds.
+pub(super) fn initiative(
+    mut actors: Query<
+        (&Nature, &super::TrainedInitiative, &mut super::Initiative),
+        Or<(Changed<Nature>, Changed<super::TrainedInitiative>)>,
+    >,
+) {
+    for (nature, trained, mut initiative) in &mut actors {
+        initiative.set_if_neq(super::Initiative(nature.initiative + trained.0));
+    }
+}
+
+/// Fighting blind and knocking out follow the traits, at the actor's
+/// mastery; the backstab follows its mastery.
+#[allow(clippy::type_complexity)]
+pub(super) fn trait_arms(
+    actors: Query<
+        (
+            Entity,
+            (&Traits, &Mastery),
+            (Option<&super::BlindFighting>, Option<&super::KnockOut>, &super::Backstab),
+        ),
+        Or<(Changed<Traits>, Changed<Mastery>)>,
+    >,
+    mut commands: Commands,
+) {
+    for (actor, (traits, mastery), (blind, knock_out, backstab)) in &actors {
+        let mut actor = commands.entity(actor);
+        let level = mastery.0;
+        let fights_blind =
+            traits.has(Trait::EffectiveWhileBlind).then_some(super::BlindFighting(level));
+        if fights_blind != blind.copied() {
+            match fights_blind {
+                Some(fights) => actor.insert(fights),
+                None => actor.remove::<super::BlindFighting>(),
+            };
         }
-        let hit = modifiers.laid.to_hit + conditions.to_hit();
-        let scale = mastery(trained.as_ref().map(|(schooling, _)| schooling.view().calling), level);
-        let mut made = match trained {
-            // By nature: what it strikes with while holding nothing.
-            None => {
-                let arms: Vec<_> = natural
-                    .into_iter()
-                    .flat_map(|arms| &arms.0)
-                    .map(|arm| super::Arm { rating: arm.rating + 5 * hit, ..arm.clone() })
-                    .collect();
-                let first = natural.and_then(|arms| arms.0.first());
-                Attacks {
-                    initiative: nature.initiative,
-                    press: a[Attribute::Speed] as i32 + first.map_or(0, |arm| arm.rating) + hit * 5,
-                    tires_little: first.is_some_and(|arm| arm.modern),
-                    arms,
-                    ..default()
-                }
-            }
-            // By training: what is in its hands.
-            Some((schooling, burden)) => {
-                let c = schooling.view();
-                let held = Hands::of(|slot| {
-                    items.worn(entity, slot).and_then(|item| hands.get(item).ok())
-                });
-                Attacks {
-                    initiative: nature.initiative
-                        + trained_initiative((level.0, c.training), a, skills, burden.load),
-                    ..held.attacks(c, skills, a, burden.load, hit)
-                }
-            }
-        };
-        made.blind_fighting = traits.has(Trait::EffectiveWhileBlind).then_some(scale);
-        made.knock_out = traits.has(Trait::Knockout).then_some(scale);
-        made.backstab = scale_by_level(scale, 100.0) as i32;
-        made.keen_sight = nature.keen_sight;
-        made.stride = nature.stride;
-        made.hasted = modifiers.laid.stride;
-        written.set_if_neq(made);
+        let knocks = traits.has(Trait::Knockout).then_some(super::KnockOut(level));
+        if knocks != knock_out.copied() {
+            match knocks {
+                Some(knocks) => actor.insert(knocks),
+                None => actor.remove::<super::KnockOut>(),
+            };
+        }
+        let stabs = super::Backstab(scale_by_level(level, 100.0) as i32);
+        if stabs != *backstab {
+            actor.insert(stabs);
+        }
     }
 }
 
 #[allow(clippy::type_complexity)]
 pub(super) fn mending(
-    mut actors: Query<(Entity, &Nature, &Traits, &Level, Option<&Calling>, &mut Mending)>,
-    changed: Query<(), Or<(Changed<Nature>, Changed<Traits>, Changed<Level>, Changed<Calling>)>>,
+    mut actors: Query<(Entity, &Nature, &Traits, &Mastery, Has<Calling>, &mut Mending)>,
+    changed: Query<(), Or<(Changed<Nature>, Changed<Traits>, Changed<Mastery>, Changed<Calling>)>>,
     (items, mut redressed): (Items, Redressed),
 ) {
     let dressed = redressed.wearers();
-    for (entity, nature, traits, level, calling, mut written) in &mut actors {
+    for (entity, nature, traits, mastery, trained, mut written) in &mut actors {
         if !changed.contains(entity) && !dressed.contains(&entity) {
             continue;
         }
@@ -354,7 +428,7 @@ pub(super) fn mending(
                 }
             }
         }
-        let scale = mastery(calling, level);
+        let scale = mastery.0;
         let scaled = |ability, value| traits.has(ability).then(|| scale_by_level(scale, value));
         let mut magic_rate = 1.0;
         if traits.has(Trait::FastMagicRecovery) {
@@ -368,7 +442,7 @@ pub(super) fn mending(
             stamina: nature.mending.1 + worn[1],
             magic: worn[2],
             // One who trained gets their wind back by the breath.
-            breathes: calling.is_some(),
+            breathes: trained,
             hale: scaled(Trait::HealthRegeneration, 16.67),
             tireless: scaled(Trait::StaminaRegeneration, 3.3),
             magic_rate,

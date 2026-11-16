@@ -150,7 +150,7 @@ pub(crate) fn cast(
             // already, able to fight and not blind, within the far clip of
             // the spot on every axis, with a clear line to it (retail
             // `ApplyMonsterControlToNearbyMonsters`).
-            let tested = body.stance() == Stance::Hostile
+            let tested = body.standing.stance == Stance::Hostile
                 && !influence.is_some_and(|held| held.response == Response::Resisted)
                 && body.can_fight
                 && !body.conditions.has(Condition::Blind)

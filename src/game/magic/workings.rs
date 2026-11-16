@@ -80,7 +80,7 @@ pub fn speak(
         }
         Outcome::Cast => {
             let chance = defences::condition_chance(level, resistance, strength.against, 0);
-            let saved = defences::save_roll(rng, difficulty.scale(chance, their.stance()));
+            let saved = defences::save_roll(rng, difficulty.scale(chance, their.standing.stance));
             if mindread {
                 spoken.reply = Reply::Quote(if saved {
                     QUOTE_SAVED

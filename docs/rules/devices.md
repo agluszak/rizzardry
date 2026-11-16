@@ -1,6 +1,6 @@
 # What the story has to say about a device
 
-This page is the specification for slice 10 of [the plan](../plan.md). Where
+This page is the specification. Where
 the code differs, the code is wrong.
 
 The original keeps a routine per level that names some of its devices and

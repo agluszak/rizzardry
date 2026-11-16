@@ -129,7 +129,7 @@ impl Field<'_, '_, '_> {
             .bodies
             .iter()
             .filter(|body| !body.untargetable && (body.member || body.calling.is_none()))
-            .filter(|body| !body.vitals.is_dead() && recipients.admits(body.stance()))
+            .filter(|body| !body.vitals.is_dead() && recipients.admits(body.standing.stance))
             .filter_map(|body| {
                 let at = self.places.of(body.entity);
                 let near = at.centre.distance(centre) - at.radius <= radius;

@@ -873,6 +873,14 @@ impl Pool {
     crate::game::actors::Attributes,
     crate::game::actors::Skills,
     crate::game::actors::Level,
+    crate::game::actors::Mastery,
+    crate::game::actors::Agility,
+    crate::game::actors::Fatigue,
+    crate::game::actors::Eyes,
+    crate::game::actors::Pressing,
+    crate::game::actors::AimBonus,
+    crate::game::actors::Unaware,
+    crate::game::actors::Block,
     crate::game::actors::Resistances,
     crate::game::actors::ArmourParts,
     crate::game::actors::HitPlaces,
@@ -880,7 +888,9 @@ impl Pool {
     crate::game::actors::Armour,
     crate::game::actors::Reduction,
     crate::game::actors::MissileShield,
-    crate::game::actors::Attacks,
+    crate::game::actors::Initiative,
+    crate::game::actors::TrainedInitiative,
+    crate::game::actors::Backstab,
     crate::game::actors::Mending
 )]
 pub struct Vitals {
@@ -1281,7 +1291,7 @@ pub fn fall(
             &mut Vitals,
             &mut Conditions,
             &mut crate::game::world::hostility::Side,
-            (&crate::game::actors::Traits, &crate::game::actors::Level, Option<&Calling>),
+            (&crate::game::actors::Traits, &crate::game::actors::Mastery),
             Option<&mut Tally>,
             Option<&CheatedDeathIn>,
         ),
@@ -1290,16 +1300,15 @@ pub fn fall(
     fight: Option<Single<Entity, With<crate::game::combat::Battle>>>,
     mut rng: ResMut<GameRng>,
 ) {
-    let Ok((mut vitals, mut conditions, mut side, (traits, level, calling), tally, cheated)) =
+    let Ok((mut vitals, mut conditions, mut side, (traits, mastery), tally, cheated)) =
         bodies.get_mut(fell.body)
     else {
         return;
     };
     let fight = fight.map(|fight| *fight);
     let first = fight.is_some_and(|fight| cheated != Some(&CheatedDeathIn(fight)));
-    let mastery = calling.map_or(level.0 as u8, Calling::mastery);
     let cheats = vitals.is_dead()
-        && vitals.cheats_death(&mut conditions, (traits, mastery), first, &mut rng);
+        && vitals.cheats_death(&mut conditions, (traits, mastery.0), first, &mut rng);
     if cheats {
         if let (true, Some(fight)) = (first, fight) {
             commands.entity(fell.body).insert(CheatedDeathIn(fight));

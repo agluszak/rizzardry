@@ -318,12 +318,14 @@ fn record(
 
 /// A turn due at `when` with `attacks` left in the primary slot.
 fn due_at(world: &World, actor: Entity, when: u32, attacks: u32) -> Turn {
-    let arms = world.get::<crate::game::actors::Attacks>(actor).unwrap();
+    let weapons = world
+        .get::<crate::game::actors::arm::Wielding>(actor)
+        .map_or_else(Default::default, |w| w.0);
     let mut due = Turn {
         when: Some(when),
         attacks: enum_map::EnumMap::default(),
         due: crate::game::inventory::WeaponSlot::Primary,
-        weapons: arms.weapons(),
+        weapons,
         lightning: None,
         moved: false,
         special: false,
@@ -867,4 +869,98 @@ fn what_ails_a_member_is_in_their_figures_and_their_seat_as_it_comes_and_goes() 
     let freed = *world.get::<Attributes>(member).unwrap();
     assert_eq!(freed[Attribute::Dexterity], less(Attribute::Dexterity, 20));
     assert!(seated(world), "and take it back once free");
+}
+
+/// A monster that casts, with its spells in its slots and a budget, of a
+/// kind that neither runs nor breathes.
+fn caster(world: &mut World, monster: Entity, spells: &[SpellId]) {
+    use crate::game::world::population::{Special, SpellBudget, Spellcasting, Temper};
+    let mut slots = [None; 10];
+    for (slot, &spell) in slots.iter_mut().zip(spells) {
+        *slot = Some(spell);
+        let mut catalog = std::mem::take(&mut world.resource_mut::<Catalogs>().spells.0);
+        catalog[spell.0 as usize].monsters_cast = true;
+        world.resource_mut::<Catalogs>().spells = SpellCatalog::new(catalog);
+    }
+    world.entity_mut(monster).insert((
+        Temper(default()),
+        Special(default()),
+        Spellcasting { chance: 100, spells: slots, silent_alchemy: false },
+        SpellBudget(100),
+    ));
+}
+
+/// A monster weighing a heal aims it at a hurt fellow, not at a whole one
+/// (`MonsterSpellTargetOK`), and the fellow is healed.
+#[test]
+fn a_monster_heals_a_hurt_fellow_and_not_a_whole_one() {
+    use crate::content::spells::Targeting;
+    let (mut app, ..) = app();
+    let world = app.world_mut();
+    spell_for(
+        world,
+        SpellId::HEAL_WOUNDS,
+        Targeting::Ally,
+        1,
+        Dice { base: 5, count: 0, sides: 1 },
+    );
+    let fight = world.spawn(Battle::default()).id();
+    let group = world.spawn(MonsterGroup::default()).id();
+    let healer = monster_in(world, fight, 3.0, group);
+    let hurt = monster_in(world, fight, 4.0, group);
+    let whole = monster_in(world, fight, 5.0, group);
+    caster(world, healer, &[SpellId::HEAL_WOUNDS]);
+    world.get_mut::<Vitals>(hurt).unwrap().health.current = 10;
+    refresh(world);
+    let turn = due_at(world, healer, 1, 1);
+    world.entity_mut(healer).insert(turn);
+    play(world, fight, 1);
+    world.trigger(monster::Deliberates { monster: healer });
+    world.flush();
+    assert_eq!(world.get::<Vitals>(hurt).unwrap().health.current, 15);
+    assert_eq!(world.get::<Vitals>(whole).unwrap().health.current, 20);
+}
+
+/// A group out of a fight, whose only way to reach the party is a spell,
+/// opens a fight by it; without the spell it does not.
+#[test]
+fn a_group_whose_spell_reaches_the_party_opens_a_fight() {
+    use crate::content::spells::Targeting;
+    use crate::game::world::level::LevelOwned;
+    let (mut app, ..) = app();
+    let world = app.world_mut();
+    spell_for(
+        world,
+        SpellId::ENERGY_BLAST,
+        Targeting::Enemy,
+        1,
+        Dice { base: 5, count: 0, sides: 1 },
+    );
+    let level = world.query_filtered::<Entity, With<Level>>().single(world).unwrap();
+    let standing_still = |world: &mut World, spells: &[SpellId]| {
+        let fight = world.spawn_empty().id();
+        let foe = monster(world, fight, 15.0);
+        let group = world.get::<GroupMember>(foe).unwrap().0;
+        world.entity_mut(group).insert(LevelOwned(level));
+        world.entity_mut(foe).remove::<Combatant>().insert((
+            crate::game::world::hostility::Allegiance::of(&Species::default()),
+            Walker { speed: 0.0, float_height: 0.0 },
+        ));
+        world.get_mut::<Monster>(foe).unwrap().body.speed = 0.0;
+        caster(world, foe, spells);
+        world.despawn(fight);
+        refresh(world);
+        foe
+    };
+    let engaged = |world: &mut World| -> Vec<Entity> {
+        world.run_system_cached(engage::engage).unwrap();
+        world.flush();
+        let mut told = world.resource_mut::<Messages<engage::Engaged>>();
+        told.drain().flat_map(|engage::Engaged(group)| group).collect()
+    };
+    let idle = standing_still(world, &[]);
+    assert!(!engaged(world).contains(&idle), "no way to reach the party");
+    world.despawn(idle);
+    let blaster = standing_still(world, &[SpellId::ENERGY_BLAST]);
+    assert!(engaged(world).contains(&blaster), "its spell reaches the party");
 }
