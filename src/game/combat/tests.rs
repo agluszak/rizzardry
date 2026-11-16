@@ -714,10 +714,11 @@ fn a_pooled_item_cannot_be_used_in_a_fight() {
     let item = world.spawn(crate::game::items::Pooled(party)).id();
     let choice =
         (SpellId::HEAL_WOUNDS, MagicChoice { source: Source::Item(item), aim: Aim::Body(member) });
-    let fight = world.spawn(Battle::default()).id();
+    world.spawn(Battle::default());
     let news = cast_in(world, member, choice);
     assert!(matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::CannotUse, .. }]));
-    world.despawn(fight);
+    world.remove_resource::<Battle>();
+    world.flush();
     let news = cast_in(world, member, choice);
     assert!(!matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::CannotUse, .. }]));
 }

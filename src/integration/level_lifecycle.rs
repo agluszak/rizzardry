@@ -292,11 +292,10 @@ fn the_party_survives_level_replacement_without_duplication() {
     app.update();
     assert_eq!(party_entities(&mut app), party);
 
-    app.world_mut().despawn(first_level);
-    let second_level = spawn_level(&mut app, floor());
-    app.update();
+    leave(&mut app);
 
-    assert!(is_played(&app, second_level));
+    assert!(is_set_aside(&app, first_level));
+    assert_ne!(played(&mut app), first_level);
     assert_eq!(party_entities(&mut app), party);
 }
 

@@ -8,6 +8,7 @@
 
 use avian3d::prelude::*;
 use bevy::ecs::entity_disabling::Disabled;
+use bevy::ecs::resource::IsResource;
 use bevy::prelude::*;
 use bevy_landmass::NavMesh3d;
 
@@ -511,8 +512,11 @@ pub fn activate_level(
                 found_party(&mut commands, characters, catalogs, &mut rng)
             }
         };
+        // A resource stays on its entity until the entity stops being the
+        // resource's: removing `IsResource` takes `InPlay` with it and frees
+        // it for the level entered.
         for left in played.iter().filter(|&left| known.is_none_or(|(level, ..)| level != left)) {
-            commands.entity(left).remove::<InPlay>().insert(SetAside { at_ms: clock.ms });
+            commands.entity(left).remove::<IsResource>().insert(SetAside { at_ms: clock.ms });
         }
         if let Some((level, definition, asleep)) = known.map(|(e, l, a)| (e, &l.definition, a)) {
             if asleep {

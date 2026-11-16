@@ -158,10 +158,8 @@ of `Catalogs`; `QueryData`/`SystemParam` in `game` (43 at the start).
 
 ## In progress: singletons, events and lookups
 
-Taken over mid-slice. The tree compiles and clippy is clean; **no test has
-been run since `8709303`** — run the unit suite, then the retail tests
-(`RIZZARDRY_RETAIL=../wizardry-prepared cargo nextest run --run-ignored
-only`), before going further.
+Taken over mid-slice. The unit suite and the retail tests pass on the
+slice so far.
 
 What this slice settled, as rules for the rest:
 
@@ -181,6 +179,12 @@ What this slice settled, as rules for the rest:
   level's root (moved by `activate_level`). A fight ends by
   `remove_resource::<Battle>()`; `Battle`'s `on_remove` hook takes its
   entity with it.
+- A resource's entity is Bevy's until `IsResource` leaves it: removing only
+  the resource leaves the entity registered, and Bevy then refuses the
+  resource anywhere else (a warning) or panics on a command when the entity
+  is despawned. Moving or ending one removes `IsResource`, which takes the
+  resource with it (`activate_level` for `InPlay`, `Battle`'s hook); nothing
+  despawns a resource's entity directly.
 - "Only while X" / "never while X" is a run condition on the registration
   (`resource_exists::<Battle>`, `not(...)`), or `If<Res<X>>` when the system
   reads X; `Option<Res<X>>` only where both cases do something.
@@ -211,13 +215,11 @@ Left to do:
 4. **Tuple patterns on bools** that predate this slice: `slot.rs:115`,
    `special.rs:91`.
 
-Risks to look for when the tests run: a `?`/`expect` that panics where the
-old code returned quietly (`take_up`/`act` for a monster without arms,
+No test failed on these, but whether any test reaches them is unchecked;
+watch for them in play: a `?`/`expect` that panics where the old code
+returned quietly (`take_up`/`act` for a monster without arms,
 `rest_the_idle` for a combatant without `Mending`, hostility's `made` for an
-`Allegiance` without `Loyalty`); a `Res<Battle>` beside a query over `Battle`
-data, which Bevy rejects at startup (B0002), not at compile time; a test
-that spawns two fights or parties in one world, of which the second is now
-dropped with a warning.
+`Allegiance` without `Loyalty`).
 
 ## Done, and not to be looked for again
 
