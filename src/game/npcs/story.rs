@@ -2,7 +2,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::LazyLock;
 
-use bevy::ecs::query::QueryData;
+use bevy::ecs::entity_disabling::Disabled;
+use bevy::ecs::query::{Allow, QueryData};
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use serde::Deserialize;
@@ -22,7 +23,7 @@ use crate::game::data::Catalogs;
 use crate::game::factions::{Band, FactionNews, Factions};
 use crate::game::items::{Items, Place, Put, make, roll_amount};
 use crate::game::party::body::{LookAt, PartyBody};
-use crate::game::party::roster::{PartyMember, PartyRoster};
+use crate::game::party::roster::{Party, PartyMember, PartyRoster};
 use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
 use crate::game::world::bidden::{Cycle, Played, Script, ScriptAction};
@@ -601,9 +602,8 @@ impl Bodies<'_, '_> {
                     self.commands.entity(body).insert(Script(script.clone()));
                 }
                 Consequence::Body(BodyAct::BodyAsleep(rounds)) => {
-                    if let Ok(mut conditions) = self.conditions.get_mut(body) {
-                        conditions.afflict(Condition::Asleep, Lasting::Rounds(*rounds));
-                    }
+                    let mut conditions = self.conditions.get_mut(body).expect("a body");
+                    conditions.afflict(Condition::Asleep, Lasting::Rounds(*rounds));
                 }
                 Consequence::Body(BodyAct::BodyFacesParty) => {
                     let from = self.places.of(body).feet;
@@ -678,11 +678,16 @@ pub(super) fn befalls_if(
 pub struct After(Vec<Consequence>);
 
 /// An animation has been played out: what was to follow it does.
-pub(super) fn follows_cycle(played: On<Played>, after: Query<&After>, mut bodies: Bodies) {
-    if let Ok(After(rows)) = after.get(played.body) {
+pub(super) fn follows_cycle(
+    played: On<Played>,
+    after: Query<Option<&After>>,
+    mut bodies: Bodies,
+) -> Result {
+    if let Some(After(rows)) = after.get(played.body)? {
         bodies.commands.entity(played.body).try_remove::<After>();
         bodies.befall(played.body, rows);
     }
+    Ok(())
 }
 
 /// The story has something to say of a death (retail `MonsterKilled`,
@@ -787,15 +792,13 @@ pub(super) fn come_due(
 pub(super) fn befalls_the_story(
     befalls: On<Befell<StoryAct>>,
     (mut story, mut factions): (ResMut<StoryFacts>, ResMut<Factions>),
-    mut members: Query<
-        (
-            (&mut crate::game::actors::Abilities, &mut Training),
-            (&Calling, &Birth),
-            Has<crate::game::actors::CanFight>,
-        ),
-        Without<crate::game::characters::Dead>,
-    >,
-    (roster, played): (Single<&PartyRoster>, Option<Single<&Level, With<InPlay>>>),
+    mut members: Query<(
+        (&mut crate::game::actors::Abilities, &mut Training),
+        (&Calling, &Birth),
+        Has<crate::game::actors::CanFight>,
+        Has<crate::game::characters::Dead>,
+    )>,
+    (roster, played): (Single<&PartyRoster, With<Party>>, Option<Single<&Level, With<InPlay>>>),
     (content, clock): (Res<Catalogs>, Res<GameClock>),
     (mut news, mut told, mut remarks): (
         MessageWriter<FactionNews>,
@@ -803,7 +806,7 @@ pub(super) fn befalls_the_story(
         MessageWriter<PartyRemark>,
     ),
     mut commands: Commands,
-) {
+) -> Result {
     match &befalls.0 {
         // One the game's records do not name, by its number.
         StoryAct::FactNumbered(number, value) => {
@@ -812,7 +815,9 @@ pub(super) fn befalls_the_story(
             commands.trigger(FactSet { fact: FactId(*number), value: *value });
         }
         StoryAct::Fact(name, value) => {
-            let Some(other) = content.facts.0.iter().find(|d| &d.symbol == name) else { return };
+            let Some(other) = content.facts.0.iter().find(|d| &d.symbol == name) else {
+                return Ok(());
+            };
             let level = played.as_deref().map_or("", |level| level.path.as_str());
             story.set(other.id, *value, &content.facts, level);
             commands.trigger(FactSet { fact: other.id, value: *value });
@@ -836,7 +841,8 @@ pub(super) fn befalls_the_story(
         // Each member awake gains up to so much, a hundred at most.
         StoryAct::Raise(attribute, by, tells) => {
             for member in roster.iter() {
-                if let Ok(((mut abilities, _), _, true)) = members.get_mut(member) {
+                let ((mut abilities, _), _, awake, dead) = members.get_mut(member)?;
+                if awake && !dead {
                     let base = abilities.0[*attribute];
                     abilities.0[*attribute] = base + (*by).min(100.max(base) - base);
                 }
@@ -846,17 +852,16 @@ pub(super) fn befalls_the_story(
         // Each member of a race who is awake says something.
         StoryAct::RaceRemarks(race, event) => {
             for member in roster.iter() {
-                if members
-                    .get(member)
-                    .is_ok_and(|(_, (_, birth), can_fight)| birth.race == *race && can_fight)
-                {
+                let (_, (_, birth), can_fight, dead) = members.get(member)?;
+                if birth.race == *race && can_fight && !dead {
                     remarks.write(PartyRemark { event: *event, after: 0.0, speaker: Some(member) });
                 }
             }
         }
         StoryAct::SkillFloor(skill, points) => {
             for member in roster.iter() {
-                if let Ok(((abilities, mut training), (calling, _), _)) = members.get_mut(member)
+                let ((abilities, mut training), (calling, _), _, dead) = members.get_mut(member)?;
+                if !dead
                     && crate::game::characters::skill_available(calling, &abilities, *skill)
                     && training.0[*skill] < *points
                 {
@@ -865,6 +870,7 @@ pub(super) fn befalls_the_story(
             }
         }
     }
+    Ok(())
 }
 
 /// What befalls the level the party is in: a device run, switched or
@@ -1094,7 +1100,7 @@ pub(super) fn befalls_someone(
     (mut assets, deliveries): (ResMut<NpcAssets>, Query<(Entity, &Delivery)>),
     mut remarks: MessageWriter<PartyRemark>,
     mut commands: Commands,
-) {
+) -> Result {
     let of_kind = |kind: &u16, people: &Query<Person>| one_of_kind(*kind, people, &content);
     match &befalls.0 {
         PersonAct::EndTalk => {
@@ -1109,7 +1115,7 @@ pub(super) fn befalls_someone(
         }
         PersonAct::GoneUnmet(kind) => {
             if let Some((actor, _)) = of_kind(kind, &people)
-                && people.get(actor).is_ok_and(|person| person.npc.greeting_pending)
+                && people.get(actor)?.npc.greeting_pending
             {
                 leave(actor, &people, &mut commands);
             }
@@ -1212,7 +1218,7 @@ pub(super) fn befalls_someone(
         // theirs (retail `ReloadNpcScriptResources`).
         PersonAct::Renamed(kind) => {
             let renamed = of_kind(kind, &people).and_then(|(actor, _)| {
-                let id = people.get(actor).ok()?.id.0;
+                let id = people.get(actor).expect("one of a kind is a person").id.0;
                 Some((actor, id, alias_of(i32::from(*kind))?, assets.renamed.get(&id)?.clone()))
             });
             if let Some((actor, id, name, lines)) = renamed {
@@ -1276,7 +1282,8 @@ pub(super) fn befalls_someone(
                 }
             }
         }
-    }
+    };
+    Ok(())
 }
 
 /// A marked person's turn comes (retail `HandleMarkedNpcEvent`): what goes
@@ -1322,28 +1329,34 @@ pub(super) fn marked_leave(
 pub(super) fn marked_slip_away(
     marked: Query<Entity, With<Marked>>,
     people: Query<Person>,
-    bodies: Query<&Monster>,
+    bodies: Query<(&Monster, Has<Disabled>), Allow<Disabled>>,
     (places, obstacles, level): (Places, WorldObstacles, PlayedLevel),
     party: Single<Entity, With<PartyBody>>,
     conversations: Query<(), With<Conversation>>,
     readings: Readings,
     (story, factions, content): (Res<StoryFacts>, Res<Factions>, Res<Catalogs>),
     mut commands: Commands,
-) {
-    let Some(far) = level.view_distance() else { return };
+) -> Result {
+    let Some(far) = level.view_distance() else { return Ok(()) };
     if !conversations.is_empty() {
-        return;
+        return Ok(());
     }
     let eye = places.of(*party).eye;
     for actor in &marked {
-        let body = people.get(actor).ok().and_then(|person| person.body.map(|body| body.0));
-        let seen = body.and_then(|body| Some((body, bodies.get(body).ok()?))).is_some_and(
-            |(body, monster)| in_view((eye, far), monster, places.of(body).feet, &obstacles),
-        );
+        let body = people.get(actor)?.body.map(|body| body.0);
+        // A body in a level the party has left is out of its sight.
+        let seen = match body {
+            Some(body) => match bodies.get(body)? {
+                (_, true) => false,
+                (monster, false) => in_view((eye, far), monster, places.of(body).feet, &obstacles),
+            },
+            None => false,
+        };
         if body.is_some() && !seen {
             depart(actor, &people, (&readings, &story, &factions), &content, &mut commands);
         }
     }
+    Ok(())
 }
 
 /// A person as the story finds them.
@@ -1369,11 +1382,10 @@ pub(super) fn one_of_kind(
 
 /// Someone leaves where they stood, for good.
 fn leave(actor: Entity, people: &Query<Person>, commands: &mut Commands) {
-    if let Ok(person) = people.get(actor) {
-        commands.entity(actor).insert(Whereabouts::Gone);
-        if let Some(body) = person.body {
-            commands.entity(body.0).despawn();
-        }
+    let person = people.get(actor).expect("one who leaves is a person");
+    commands.entity(actor).insert(Whereabouts::Gone);
+    if let Some(body) = person.body {
+        commands.entity(body.0).despawn();
     }
 }
 
@@ -1410,7 +1422,7 @@ pub(super) static FACTS: LazyLock<FactTable> = LazyLock::new(|| {
 
 #[derive(SystemParam)]
 pub struct Readings<'w, 's> {
-    party: Single<'w, 's, (Entity, &'static PartyRoster)>,
+    party: Single<'w, 's, (Entity, &'static PartyRoster), With<Party>>,
     members: Query<
         'w,
         's,
@@ -1476,7 +1488,8 @@ impl Readings<'_, '_> {
         story: &StoryFacts,
         factions: &Factions,
     ) -> u8 {
-        let members = || self.party.1.iter().filter_map(|member| self.members.get(member).ok());
+        let members =
+            || self.party.1.iter().map(|member| self.members.get(member).expect("a member"));
         let so = |reading: &Reading| self.answer(reading, fact, story, factions) != 0;
         u8::from(match reading {
             Reading::Is(name) => {
@@ -1493,7 +1506,7 @@ impl Readings<'_, '_> {
             }),
             Reading::Friendly(faction) => factions.band(*faction as i32) == Band::Friendly,
             Reading::Joined(npc) => {
-                let is = |of: &CompanionOf| self.ids.get(of.0).is_ok_and(|id| id.0.0 == *npc);
+                let is = |of: &CompanionOf| self.ids.get(of.0).expect("a person").0.0 == *npc;
                 members().any(|(_, can_fight, of)| of.is_some_and(is) && can_fight)
             }
             Reading::Companions(count) => {
