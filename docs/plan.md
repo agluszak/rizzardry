@@ -199,7 +199,7 @@ member's place and spells still find the party through `PartyMember`, as
 the relationship it is.
 
 Left to do: **the rest of the lookup sweep.** About 80 `if let Ok(..) =
-q.get(..)` and 230 `.get(..).ok()` / `.is_ok_and` / `.map_or` remain, the
+q.get(..)` and 200 `.get(..).ok()` / `.is_ok_and` / `.map_or` remain, the
 same treatment as the `let … else` sweep (query always matches, `?`,
 explicit branch, or an observer on the entity). What the first files
 showed:
@@ -212,10 +212,15 @@ showed:
 - `Query<Fit>` failing means "not wearable", which is the rule's own answer
   (a slot refuses it); making that explicit is a design change to `Fit`,
   not a lookup fix.
-- `arm.rs` (27): a `Grip` names an item that may have gone since the grip
-  was last set, and whether every bearer has `Skills` and `Attributes` is
-  a question of what a monster is made with. Settle both before turning
-  its lookups into `expect`.
+- `arm.rs` is done: a grip is set just before the hand's facts are
+  written, so its weapon is there; a hand's bearer has a body, so its
+  figures; a set-aside companion is still their hands' bearer
+  (`Allow<Disabled>`).
+- **A model gap found on the way:** a companion out of the party is
+  `Disabled` alone, while their hands, what they wear and pack and the
+  spells on them stay in the world. A level sets aside its belongings
+  whole (`Belongings`); a companion should too, which also needs what is
+  made with them after the spawn (hands, starting gear) to follow.
 
 No test failed on these, but whether any test reaches them is unchecked;
 watch for them in play: a `?`/`expect` that panics where the old code

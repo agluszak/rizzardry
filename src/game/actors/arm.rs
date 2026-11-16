@@ -7,6 +7,8 @@
 //! The systems run over every hand each time bodies settle and write only
 //! what changed; a party has a dozen hands.
 
+use bevy::ecs::entity_disabling::Disabled;
+use bevy::ecs::query::Allow;
 use bevy::prelude::*;
 use enum_map::EnumMap;
 use enumset::EnumSet;
@@ -225,7 +227,9 @@ fn unarmed_dice(martial_arts: u32) -> Dice {
     Dice { base, count, sides }
 }
 
-/// A member has two hands.
+/// A member has two hands. They are their bearer's even while the bearer
+/// is set aside (a companion out of the party), so the rules of a hand read
+/// their bearer as it is, set aside or not.
 fn grow_hands(added: On<Add<Calling>>, mut commands: Commands) {
     for slot in [WeaponSlot::Primary, WeaponSlot::Secondary] {
         commands.spawn((ArmOf(added.entity), Hand(slot), Grip::default(), Tires));
@@ -253,12 +257,12 @@ fn grip(
         Option<&Missile>,
         Option<&Charges>,
     )>,
-) {
+) -> Result {
     for (&ArmOf(bearer), &Hand(slot), mut grip) in &mut hands {
         let get = |slot: WeaponSlot| {
-            held.worn(bearer, slot.equip()).and_then(|item| items.get(item).ok())
+            held.worn(bearer, slot.equip()).map(|item| items.get(item)).transpose()
         };
-        let (main, off) = (get(WeaponSlot::Primary), get(WeaponSlot::Secondary));
+        let (main, off) = (get(WeaponSlot::Primary)?, get(WeaponSlot::Secondary)?);
         // Close or ranged combat, or neither for what cannot strike.
         let combat = |weapon: Option<Option<&Weapon>>| match weapon {
             None => Some(false),
@@ -297,57 +301,66 @@ fn grip(
         };
         grip.set_if_neq(now);
     }
+    Ok(())
+}
+
+/// The weapon a hand grips, if any. A grip is set from what the hand holds
+/// just before the hand's facts are written, so its weapon is there.
+fn weapon_of<'a>(grip: Grip, weapons: &'a Query<&Weapon>) -> Result<Option<&'a Weapon>> {
+    Ok(grip.weapon().map(|item| weapons.get(item)).transpose()?)
 }
 
 /// The skill a hand fights with: its weapon's, Martial Arts otherwise.
-fn skill_of(grip: Grip, weapons: &Query<&Weapon>) -> Skill {
-    grip.weapon().and_then(|item| weapons.get(item).ok()).map_or(Skill::MartialArts, |w| w.skill)
+fn skill_of(weapon: Option<&Weapon>) -> Skill {
+    weapon.map_or(Skill::MartialArts, |w| w.skill)
 }
 
 /// Its blows are ranged combat, not close combat.
-fn ranged(grip: Grip, weapons: &Query<&Weapon>) -> bool {
-    grip.weapon().and_then(|item| weapons.get(item).ok()).is_some_and(|w| w.ranged)
+fn ranged(weapon: Option<&Weapon>) -> bool {
+    weapon.is_some_and(|w| w.ranged)
 }
 
-/// What a launcher shoots: the ammunition in the other hand.
+/// What a launcher shoots: the ammunition in the other hand, which the grip
+/// took as a missile.
 fn shot<'a>(
     grip: Grip,
     launchers: &Query<&Launcher>,
     missiles: &'a Query<&Missile>,
-) -> Option<&'a Missile> {
-    match grip {
+) -> Result<Option<&'a Missile>> {
+    Ok(match grip {
         Grip::Weapon { item, ammunition: Some(ammunition) } if launchers.contains(item) => {
-            missiles.get(ammunition).ok()
+            Some(missiles.get(ammunition)?)
         }
         _ => None,
-    }
+    })
 }
 
 /// A hand's reach: its weapon's, a fist's touch.
-fn reach(mut hands: Query<(&Grip, &mut Reaches)>, weapons: Query<&Weapon>) {
+fn reach(mut hands: Query<(&Grip, &mut Reaches)>, weapons: Query<&Weapon>) -> Result {
     for (&grip, mut reaches) in &mut hands {
-        let reach =
-            grip.weapon().and_then(|item| weapons.get(item).ok()).map_or(Reach::Touch, |w| w.reach);
+        let reach = weapon_of(grip, &weapons)?.map_or(Reach::Touch, |w| w.reach);
         reaches.set_if_neq(Reaches(reach));
     }
+    Ok(())
 }
 
 /// The ways a hand strikes: its weapon's, or a fist's punch, and a kick past
 /// Martial Arts 4.
 fn modes(
     mut hands: Query<(&ArmOf, &Grip, &mut Modes)>,
-    bearers: Query<&Skills>,
+    bearers: Query<&Skills, Allow<Disabled>>,
     weapons: Query<&Weapon>,
-) {
+) -> Result {
     for (&ArmOf(bearer), &grip, mut modes) in &mut hands {
-        let martial = bearers.get(bearer).map_or(0, |skills| skills[Skill::MartialArts]);
-        let now = match grip.weapon().and_then(|item| weapons.get(item).ok()) {
+        let martial = bearers.get(bearer)?[Skill::MartialArts];
+        let now = match weapon_of(grip, &weapons)? {
             Some(weapon) => weapon.modes,
             None if martial > 4 => AttackMode::Punch | AttackMode::Kick,
             None => EnumSet::only(AttackMode::Punch),
         };
         modes.set_if_neq(Modes(now));
     }
+    Ok(())
 }
 
 /// The dice of a hand: what a launcher shoots, a weapon's own, or a fist by
@@ -357,12 +370,13 @@ fn modes(
 #[allow(clippy::type_complexity)]
 fn rolls(
     mut hands: Query<(&ArmOf, &Hand, &Grip, &mut Rolls)>,
-    bearers: Query<&Skills>,
+    bearers: Query<&Skills, Allow<Disabled>>,
     held: Items,
     (weapons, launchers, missiles): (Query<&Weapon>, Query<&Launcher>, Query<&Missile>),
-) {
+    strikers: Query<(Option<&Weapon>, Option<&Missile>)>,
+) -> Result {
     for (&ArmOf(bearer), &Hand(slot), &grip, mut rolls) in &mut hands {
-        let martial = bearers.get(bearer).map_or(0, |skills| skills[Skill::MartialArts]);
+        let martial = bearers.get(bearer)?[Skill::MartialArts];
         let fist = |slot: WeaponSlot| {
             let mut dice = unarmed_dice(martial);
             if slot == WeaponSlot::Primary {
@@ -372,22 +386,25 @@ fn rolls(
         };
         let dice = match grip {
             Grip::Fist => fist(slot),
-            Grip::Weapon { item, .. } => shot(grip, &launchers, &missiles)
-                .map(|missile| missile.dice)
-                .or_else(|| weapons.get(item).ok().map(|weapon| weapon.dice))
-                .unwrap_or_default(),
+            Grip::Weapon { item, .. } => match shot(grip, &launchers, &missiles)? {
+                Some(missile) => missile.dice,
+                None => weapons.get(item)?.dice,
+            },
             Grip::Idle => Dice::default(),
         };
-        let off = held.worn(bearer, WeaponSlot::Secondary.equip());
-        let punch = off.map_or(fist(WeaponSlot::Secondary), |item| {
-            weapons
-                .get(item)
-                .map(|weapon| weapon.dice)
-                .or_else(|_| missiles.get(item).map(|missile| missile.dice))
-                .unwrap_or_default()
-        });
+        // What the off hand holds punches as its record gives: a weapon's
+        // dice, a missile's, none for anything else.
+        let punch = match held.worn(bearer, WeaponSlot::Secondary.equip()) {
+            None => fist(WeaponSlot::Secondary),
+            Some(item) => match strikers.get(item)? {
+                (Some(weapon), _) => weapon.dice,
+                (None, Some(missile)) => missile.dice,
+                (None, None) => Dice::default(),
+            },
+        };
         rolls.set_if_neq(Rolls { dice, punch, kick: fist(WeaponSlot::Primary) });
     }
+    Ok(())
 }
 
 /// What a hand's blows may do besides damage: the weapon's effects with its
@@ -396,17 +413,17 @@ fn rolls(
 #[allow(clippy::type_complexity)]
 fn effects(
     mut hands: Query<(&ArmOf, &Grip, &mut BlowEffects, &mut Slays)>,
-    bearers: Query<&Attributes>,
+    bearers: Query<&Attributes, Allow<Disabled>>,
     (weapons, launchers, missiles): (Query<&Weapon>, Query<&Launcher>, Query<&Missile>),
-) {
+) -> Result {
     for (&ArmOf(bearer), &grip, mut effects, mut slays) in &mut hands {
-        let weapon = grip.weapon().and_then(|item| weapons.get(item).ok());
-        let missile = shot(grip, &launchers, &missiles);
+        let weapon = weapon_of(grip, &weapons)?;
+        let missile = shot(grip, &launchers, &missiles)?;
         let now = match weapon {
             Some(weapon) => missile.map_or(weapon.effects, |m| weapon.effects.with(&m.effects)),
             None => {
                 let mut fist = AttackEffects::default();
-                let strength = bearers.get(bearer).map_or(0, |a| a[Attribute::Strength] as i32);
+                let strength = bearers.get(bearer)?[Attribute::Strength] as i32;
                 if strength > 49 {
                     fist.chances[AttackEffect::KnockOut] = ((strength - 50) / 5) as u32;
                 }
@@ -417,6 +434,7 @@ fn effects(
         let slain = [weapon.and_then(|w| w.slays), missile.and_then(|m| m.slays)];
         slays.set_if_neq(Slays(slain.into_iter().flatten().collect()));
     }
+    Ok(())
 }
 
 /// How a member fights with a hand, from the hand and the other one
@@ -434,22 +452,18 @@ pub struct Handling {
 fn handling(
     mut hands: Query<(&ArmOf, &Hand, &Grip, &mut Handling)>,
     grips: Query<(&Hand, &Grip)>,
-    bearers: Query<(&Skills, &Arms)>,
+    bearers: Query<(&Skills, &Arms), Allow<Disabled>>,
     weapons: Query<&Weapon>,
-) {
+) -> Result {
     for (&ArmOf(bearer), &Hand(slot), &grip, mut handling) in &mut hands {
-        let Ok((skills, arms)) = bearers.get(bearer) else { continue };
-        let other = arms
-            .entities()
-            .iter()
-            .filter_map(|&arm| grips.get(arm).ok())
-            .find(|(hand, _)| hand.0 == slot.other())
-            .map_or(Grip::Idle, |(_, &grip)| grip);
+        let (skills, arms) = bearers.get(bearer)?;
+        let other = other_hand(arms, slot, &grips)?;
         let dual = grip.weapon().is_some() && other.weapon().is_some();
-        let combat = if ranged(grip, &weapons) { Skill::RangedCombat } else { Skill::CloseCombat };
-        let mut score = ((skills[combat] + skills[skill_of(grip, &weapons)] * 2) * 2 / 3) as i32;
+        let weapon = weapon_of(grip, &weapons)?;
+        let combat = if ranged(weapon) { Skill::RangedCombat } else { Skill::CloseCombat };
+        let mut score = ((skills[combat] + skills[skill_of(weapon)] * 2) * 2 / 3) as i32;
         let mut divisor = 20;
-        if let Some(theirs) = other.weapon().and_then(|item| weapons.get(item).ok()) {
+        if let Some(theirs) = weapon_of(other, &weapons)? {
             score += skills[theirs.skill] as i32 >> 1;
             divisor = 25;
         }
@@ -462,6 +476,18 @@ fn handling(
             if dual { -10 * number - (100 - skills[Skill::DualWeapons] as i32) / 4 } else { 0 };
         handling.set_if_neq(Handling { skill: score * 10 / divisor, dual_penalty });
     }
+    Ok(())
+}
+
+/// What a member's other hand grips. A member has both hands.
+fn other_hand(arms: &Arms, slot: WeaponSlot, grips: &Query<(&Hand, &Grip)>) -> Result<Grip> {
+    for &arm in arms.entities() {
+        let (hand, &grip) = grips.get(arm)?;
+        if hand.0 == slot.other() {
+            return Ok(grip);
+        }
+    }
+    Err("a member has two hands".into())
 }
 
 /// How strength counts for a hand: not at all for guns and the like (none),
@@ -493,21 +519,24 @@ pub struct ToHit(pub i32);
 #[allow(clippy::type_complexity)]
 fn to_hit(
     mut hands: Query<(&ArmOf, &Hand, &Grip, &mut ToHit)>,
-    bearers: Query<(&Attributes, &Skills, &Calling, &crate::game::actors::Abilities, &Burden)>,
+    bearers: Query<
+        (&Attributes, &Skills, &Calling, &crate::game::actors::Abilities, &Burden),
+        Allow<Disabled>,
+    >,
     (weapons, missiles): (Query<&Weapon>, Query<&Missile>),
-) {
+) -> Result {
     for (&ArmOf(bearer), &Hand(slot), &grip, mut written) in &mut hands {
-        let Ok((a, skills, calling, abilities, burden)) = bearers.get(bearer) else { continue };
+        let (a, skills, calling, abilities, burden) = bearers.get(bearer)?;
         if !grip.strikes() {
             written.set_if_neq(ToHit(0));
             continue;
         }
-        let weapon = grip.weapon().and_then(|item| weapons.get(item).ok());
+        let weapon = weapon_of(grip, &weapons)?;
         let [strength, dexterity, senses] =
             [Attribute::Strength, Attribute::Dexterity, Attribute::Senses].map(|x| a[x] as i32);
         let mut to_hit = 0;
         if let Grip::Weapon { ammunition, .. } = grip {
-            let missile = ammunition.and_then(|item| missiles.get(item).ok());
+            let missile = ammunition.map(|item| missiles.get(item)).transpose()?;
             to_hit += weapon.map_or(0, |w| w.to_hit) + missile.map_or(0, |m| m.to_hit);
         }
         if let Some(divisor) = strength_divisor(weapon, slot, strength > 50) {
@@ -527,8 +556,8 @@ fn to_hit(
         if slot == WeaponSlot::Secondary {
             load = load * 3 / 2;
         }
-        to_hit += felt(skill_of(grip, &weapons) == Skill::ModernWeapon, load);
-        let ranged = ranged(grip, &weapons);
+        to_hit += felt(skill_of(weapon) == Skill::ModernWeapon, load);
+        let ranged = ranged(weapon);
         let can = |skill| skill_available(calling, abilities, skill);
         if ranged && can(Skill::EagleEye) {
             to_hit += skills[Skill::EagleEye] as i32 / 20 + 1;
@@ -538,6 +567,7 @@ fn to_hit(
         }
         written.set_if_neq(ToHit(to_hit));
     }
+    Ok(())
 }
 
 /// A hand's rating (retail `attack_rating`, with five times its to-hit):
@@ -545,10 +575,10 @@ fn to_hit(
 /// cannot attack.
 fn rating(
     mut hands: Query<(&ArmOf, &Grip, &Handling, &ToHit, &mut Rating)>,
-    bearers: Query<(&Attributes, &Calling)>,
-) {
+    bearers: Query<(&Attributes, &Calling), Allow<Disabled>>,
+) -> Result {
     for (&ArmOf(bearer), &grip, handling, to_hit, mut rating) in &mut hands {
-        let Ok((a, calling)) = bearers.get(bearer) else { continue };
+        let (a, calling) = bearers.get(bearer)?;
         if !grip.strikes() {
             rating.set_if_neq(Rating(0));
             continue;
@@ -562,25 +592,24 @@ fn rating(
             + 60;
         rating.set_if_neq(Rating(base + to_hit.0 * 5));
     }
+    Ok(())
 }
 
 /// The sheet's "To Damage (%)": a launcher's base, and strength; none when
 /// the hand cannot attack.
 fn damage_percent(
     mut hands: Query<(&ArmOf, &Hand, &Grip, &mut DamagePercent)>,
-    bearers: Query<&Attributes>,
-    (weapons, launchers): (Query<&Weapon>, Query<&Launcher>),
-) {
+    bearers: Query<&Attributes, Allow<Disabled>>,
+    (weapons, launchers): (Query<&Weapon>, Query<Option<&Launcher>>),
+) -> Result {
     for (&ArmOf(bearer), &Hand(slot), &grip, mut percent) in &mut hands {
-        let strength = bearers.get(bearer).map_or(0, |a| a[Attribute::Strength] as i32);
+        let strength = bearers.get(bearer)?[Attribute::Strength] as i32;
         let now = match grip {
             Grip::Idle => 0,
             _ => {
-                let weapon = grip.weapon().and_then(|item| weapons.get(item).ok());
-                let mut now = grip
-                    .weapon()
-                    .and_then(|item| launchers.get(item).ok())
-                    .map_or(0, |launcher| launcher.damage);
+                let weapon = weapon_of(grip, &weapons)?;
+                let launcher = grip.weapon().map(|item| launchers.get(item)).transpose()?;
+                let mut now = launcher.flatten().map_or(0, |launcher| launcher.damage);
                 if let Some(divisor) = strength_divisor(weapon, slot, strength > 50) {
                     if strength < 50 {
                         now -= (50 - strength) / divisor;
@@ -593,6 +622,7 @@ fn damage_percent(
         };
         percent.set_if_neq(DamagePercent(now));
     }
+    Ok(())
 }
 
 /// Attacks a round with a hand: one, a second past 50 and a third past 100
@@ -611,14 +641,14 @@ fn tempo(
         (&mut AttacksARound, &mut ArmInitiative, &mut Swings),
     )>,
     grips: Query<(&Hand, &Grip)>,
-    bearers: Query<(&Attributes, &Calling, &Burden, &Arms)>,
+    bearers: Query<(&Attributes, &Calling, &Burden, &Arms), Allow<Disabled>>,
     weapons: Query<&Weapon>,
-) {
+) -> Result {
     for (&ArmOf(bearer), &Hand(slot), &grip, handling, (mut attacks, mut initiative, mut swings)) in
         &mut hands
     {
-        let Ok((a, calling, burden, arms)) = bearers.get(bearer) else { continue };
-        let weapon = grip.weapon().and_then(|item| weapons.get(item).ok());
+        let (a, calling, burden, arms) = bearers.get(bearer)?;
+        let weapon = weapon_of(grip, &weapons)?;
         if !grip.strikes() {
             attacks.set_if_neq(AttacksARound(0));
             initiative.set_if_neq(ArmInitiative(0));
@@ -636,19 +666,14 @@ fn tempo(
         }));
         let own = weapon.map_or(handling.skill / 10, |w| w.initiative);
         initiative.set_if_neq(ArmInitiative(own));
-        let main_single = arms
-            .entities()
-            .iter()
-            .filter_map(|&arm| grips.get(arm).ok())
-            .find(|(hand, _)| hand.0 == WeaponSlot::Primary)
-            .and_then(|(_, grip)| grip.weapon())
-            .and_then(|item| weapons.get(item).ok())
-            .is_some_and(|w| w.single_swing);
+        let main = if slot == WeaponSlot::Primary { grip } else { other_hand(arms, slot, &grips)? };
+        let main_single = weapon_of(main, &weapons)?.is_some_and(|w| w.single_swing);
         // Retail reads the initiative its previous pass left, which is this.
         let score = (speed + own * 10 + shared) / 3;
         let most = if main_single { 1 } else { 1 + u32::from(score > 66) + u32::from(score > 99) };
         swings.set_if_neq(Swings { most, extra: weapon.map_or(0, |w| w.extra_swings) });
     }
+    Ok(())
 }
 
 /// The skill whose training adds a kill chance to a hand's blows (retail
@@ -657,13 +682,13 @@ fn tempo(
 /// a Ninja's throws.
 fn critical(
     hands: Query<(Entity, &ArmOf, &Grip, Option<&Critical>)>,
-    bearers: Query<(&Traits, &Skills)>,
+    bearers: Query<(&Traits, &Skills), Allow<Disabled>>,
     weapons: Query<&Weapon>,
     mut commands: Commands,
-) {
+) -> Result {
     for (hand, &ArmOf(bearer), &grip, had) in &hands {
-        let Ok((traits, skills)) = bearers.get(bearer) else { continue };
-        let weapon = grip.weapon().and_then(|item| weapons.get(item).ok());
+        let (traits, skills) = bearers.get(bearer)?;
+        let weapon = weapon_of(grip, &weapons)?;
         let skill = weapon.map_or(Skill::MartialArts, |w| w.skill);
         let sling = weapon.is_some_and(|w| w.sling);
         let critical = if !weapon.is_some_and(|w| w.ranged) {
@@ -685,6 +710,7 @@ fn critical(
             };
         }
     }
+    Ok(())
 }
 
 /// What a member's hand is, besides its numbers, as it changes hands or
@@ -695,7 +721,7 @@ fn critical(
 #[allow(clippy::type_complexity)]
 fn kind_of_hand(
     hands: Query<(Entity, &ArmOf, Ref<Grip>)>,
-    bearers: Query<Ref<Traits>>,
+    bearers: Query<Ref<Traits>, Allow<Disabled>>,
     (weapons, launchers, missiles, weights): (
         Query<&Weapon>,
         Query<&Launcher>,
@@ -703,20 +729,20 @@ fn kind_of_hand(
         Query<&Weight>,
     ),
     mut commands: Commands,
-) {
+) -> Result {
     for (hand, &ArmOf(bearer), grip) in &hands {
-        let Ok(traits) = bearers.get(bearer) else { continue };
+        let traits = bearers.get(bearer)?;
         if !grip.is_changed() && !traits.is_changed() {
             continue;
         }
         let grip = *grip;
         let mut hand = commands.entity(hand);
         hand.remove::<(Loaded, SureThrow, Heft, SoundClass, Modern, FatiguePierces, Sword, Ambushes)>();
-        let weapon = grip.weapon().and_then(|item| weapons.get(item).ok());
-        let skill = weapon.map_or(Skill::MartialArts, |w| w.skill);
-        let is_ranged = weapon.is_some_and(|w| w.ranged);
+        let weapon = weapon_of(grip, &weapons)?;
+        let skill = skill_of(weapon);
+        let is_ranged = ranged(weapon);
         let sling = weapon.is_some_and(|w| w.sling);
-        if let Some(missile) = shot(grip, &launchers, &missiles) {
+        if let Some(missile) = shot(grip, &launchers, &missiles)? {
             hand.insert(Loaded(missile.modes));
         }
         if traits.has(Trait::ThrownCriticals)
@@ -731,8 +757,8 @@ fn kind_of_hand(
             (true, true) => &[Skill::EagleEye, Skill::CriticalStrike],
             (true, false) => &[Skill::EagleEye],
         }));
-        if let Some(weight) = grip.weapon().and_then(|item| weights.get(item).ok()) {
-            hand.insert(Heft(weight.0));
+        if let Some(item) = grip.weapon() {
+            hand.insert(Heft(weights.get(item)?.0));
         }
         if let Some(sound) = weapon.map_or(Some(FIST_SOUND), |w| w.sound_class) {
             hand.insert(SoundClass(sound));
@@ -753,6 +779,7 @@ fn kind_of_hand(
             hand.insert(Ambushes);
         }
     }
+    Ok(())
 }
 
 /// The weapon each of an actor's hands strikes with, which its attacks are
@@ -800,49 +827,57 @@ impl Furthest {
 pub struct GuardReach(pub Option<Reach>);
 
 /// What an actor's hands wield follows their grips.
-fn wielding(mut bearers: Query<(&Arms, &mut Wielding)>, hands: Query<(&Hand, &Grip)>) {
+/// A monster's natural attacks grip nothing.
+fn wielding(
+    mut bearers: Query<(&Arms, &mut Wielding)>,
+    hands: Query<(&Hand, Option<&Grip>)>,
+) -> Result {
     for (arms, mut wielding) in &mut bearers {
         let mut now = EnumMap::default();
-        for (&Hand(slot), grip) in arms.entities().iter().filter_map(|&arm| hands.get(arm).ok()) {
-            now[slot] = grip.weapon();
+        for &arm in arms.entities() {
+            if let (&Hand(slot), Some(grip)) = hands.get(arm)? {
+                now[slot] = grip.weapon();
+            }
         }
         wielding.set_if_neq(Wielding(now));
     }
+    Ok(())
 }
 
 /// An actor's tempo follows its arms'.
 fn tempo_of_hands(
     mut bearers: Query<(&Arms, &mut Tempo)>,
     arms: Query<(&Hand, &AttacksARound, &ArmInitiative)>,
-) {
+) -> Result {
     for (own, mut tempo) in &mut bearers {
         let mut now = Tempo::default();
-        for (&Hand(slot), attacks, initiative) in
-            own.entities().iter().filter_map(|&arm| arms.get(arm).ok())
-        {
+        for &arm in own.entities() {
+            let (&Hand(slot), attacks, initiative) = arms.get(arm)?;
             now.attacks[slot] = now.attacks[slot].max(attacks.0);
             now.initiative[slot] = now.initiative[slot].max(initiative.0);
         }
         tempo.set_if_neq(now);
     }
+    Ok(())
 }
 
 /// How far an actor reaches, and guards from, follows its arms that strike.
 fn furthest(
     mut bearers: Query<(&Arms, &mut Furthest, &mut GuardReach)>,
     arms: Query<(&Reaches, &AttacksARound)>,
-) {
+) -> Result {
     for (own, mut furthest, mut guard) in &mut bearers {
-        let striking = || {
-            own.entities()
-                .iter()
-                .filter_map(|&arm| arms.get(arm).ok())
-                .filter(|(_, attacks)| attacks.0 > 0)
-                .map(|(reaches, _)| reaches.0)
-        };
-        furthest.set_if_neq(Furthest(striking().max()));
-        guard.set_if_neq(GuardReach(striking().next()));
+        let mut striking = Vec::new();
+        for &arm in own.entities() {
+            let (reaches, attacks) = arms.get(arm)?;
+            if attacks.0 > 0 {
+                striking.push(reaches.0);
+            }
+        }
+        furthest.set_if_neq(Furthest(striking.iter().copied().max()));
+        guard.set_if_neq(GuardReach(striking.first().copied()));
     }
+    Ok(())
 }
 
 pub(super) fn plugin(app: &mut App) {
