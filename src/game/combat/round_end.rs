@@ -17,7 +17,7 @@ use bevy::prelude::*;
 use super::monster;
 use super::monster::coming;
 use super::monster::sight::Sight;
-use super::turn::{Ordered, SpecialCooldown, Turn};
+use super::turn::{SpecialCooldown, Turn};
 use super::{
     Battle, CombatNews, Combatant, Combatants, PASSIVE_ROUNDS, Pause, ROUND_SECONDS, Round, Spoils,
 };
@@ -190,18 +190,16 @@ pub(super) fn rest_the_idle(
     mut bodies: Query<(
         (&mut Vitals, &crate::game::characters::Conditions),
         Option<&Turn>,
-        Option<&Ordered>,
         &Mending,
     )>,
     mut rng: ResMut<GameRng>,
 ) {
     let Ok(combatants) = fights.get(rests.fight) else { return };
     for &body in combatants.entities() {
-        let Ok(((mut vitals, conditions), turn, ordered, mending)) = bodies.get_mut(body) else {
+        let Ok(((mut vitals, conditions), turn, mending)) = bodies.get_mut(body) else {
             continue;
         };
         let resting = turn.is_some_and(|turn| turn.waited)
-            || ordered.is_some_and(Ordered::defends)
             || matches!(conditions.worst(), Some(Condition::Asleep | Condition::Unconscious));
         if vitals.is_dead() || !resting {
             continue;

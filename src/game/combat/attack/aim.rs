@@ -35,6 +35,20 @@ fn gets_past(attack: &Attack, struck: &FighterReadOnlyItem, setting: Setting) ->
     past
 }
 
+/// How far a blow may miss the one struck and be blocked rather than missed
+/// (retail `BlockedForSpecialReason`): by 10 for a monster vulnerable from
+/// behind; otherwise by five times its Shield part, unless it was caught
+/// unaware.
+pub fn block(attack: &Attack, struck: &FighterReadOnlyItem) -> i32 {
+    if struck.vulnerable_from_behind {
+        10
+    } else if attack.surprise.any() {
+        0
+    } else {
+        5 * struck.parts.0[ArmourPart::Shield]
+    }
+}
+
 /// A blind body's aim past 10 is lost; one who fights blind keeps a share of
 /// it by its level: `10 + (figure - 10) * (level * 2 + 60) / 100`, cut down,
 /// the level over 20 counting as 100.
@@ -286,8 +300,7 @@ pub fn penetration(
 ) -> i32 {
     let fatigue = if attack.arm.fatigue_pierces { me.fatigue() } else { 0 };
     let piercing = Attack { mode: by, ..*attack };
-    let there = struck.body.armour.at(place.0)
-        - struck.against.0[by]
+    let there = struck.body.armour.at(&struck.hit_places.places[place.0]) + struck.against.0[by]
         - 2 * gets_past(&piercing, struck, setting);
     me.scaled(
         attack.arm.rating + mode_penetration(by) - fatigue - 5 * there
@@ -512,7 +525,10 @@ mod tests {
     fn what_a_blow_gets_past_counts_twice_in_penetration() {
         let (mut world, pair) = pair();
         let arm = arm(80);
-        world.get_mut::<Armour>(pair.1).unwrap().at = vec![0, 0, 0, 4];
+        let place = HitPlace { part: None, chance: 25, cover: 0 };
+        let mut places = HitPlaces { places: vec![place; 4], trunk: PLACE };
+        places.places[PLACE].cover = 4;
+        world.entity_mut(pair.1).insert(places);
         assert_eq!(pierces(&mut world, pair, &swing(&arm)), 80 - 20);
         // Caught unaware it loses what its quickness (1) and its shield (2)
         // add, twice: 4 - 6 = -2: 80 + 10. A part that costs it is not lost.
@@ -532,6 +548,22 @@ mod tests {
         assert_eq!(pierces(&mut world, pair, &swing(&arm)), 100);
         let throw = Attack { mode: AttackMode::Throw, ..swing(&arm) };
         assert_eq!(pierces(&mut world, pair, &throw), 80 + 5 - 20);
+    }
+
+    #[test]
+    fn a_near_miss_is_blocked_by_five_times_the_shield_or_by_ten_for_a_monster_that_blocks() {
+        let (mut world, pair) = pair();
+        let arm = arm(80);
+        let unaware =
+            Attack { surprise: Surprise { unaware: true, natural: false }, ..swing(&arm) };
+        world.get_mut::<ArmourParts>(pair.1).unwrap().0[ArmourPart::Shield] = 3;
+        let blocks = |world: &mut World, attack: &Attack| {
+            duel(world, pair, |_, struck| block(attack, struck))
+        };
+        assert_eq!(blocks(&mut world, &swing(&arm)), 15);
+        assert_eq!(blocks(&mut world, &unaware), 0);
+        world.entity_mut(pair.1).insert(crate::game::actors::VulnerableFromBehind);
+        assert_eq!(blocks(&mut world, &unaware), 10);
     }
 
     #[test]

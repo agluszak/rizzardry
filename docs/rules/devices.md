@@ -119,7 +119,7 @@ and the device's name. A name several devices share is the last one's.
 - Outside Mount Gigas the flag is not seen to come down its pole, nor to be
   gone once taken; the crank's steps and what they give are there.
 - A trap's missile passes monsters by; in the original it strikes whatever
-  it meets. Guarding and a braced stance do not count against it.
+  it meets. Guarding does not count against it.
 - The crusher's hiss sounds once. Its door controls shut the open doors
   whichever way the controls stand; the original only when they are off.
 - Arnika's scanner does not hold the party still while it sweeps. (The
@@ -137,7 +137,7 @@ faces. If the party stands in its way with nothing solid between, it strikes
 one living member at random, where a blow lands on a member (head 15, body
 40, legs 30, hands 10, feet 5 in a hundred). A Missile Shield turns it aside
 at its own chance. Otherwise it gets through armour on a roll of 1 to 100 no
-more than `50 + the thrust's 10 + 5 x (10 - the armour there, less what it
+more than `50 + the thrust's 10 + 5 x (10 - the armour there and what it
 has against a thrust)`, and does the trap's dice: 2d6 for both of Marten's
 Bluff's. The arrow trap fires once; the spiked balls sixteen volleys two
 seconds apart, and their trigger stops them if used while they fly.

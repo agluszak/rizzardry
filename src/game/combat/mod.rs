@@ -332,6 +332,12 @@ pub enum CombatNews {
         place: usize,
         sound_class: Option<u8>,
     },
+    /// A blow that barely missed is blocked, by an arm of this sound class
+    /// (retail `BlockedForSpecialReason`).
+    Blocked {
+        victim: Entity,
+        sound_class: Option<u8>,
+    },
     /// A swing goes astray onto someone else (retail
     /// `AnnounceAccidentalStrike`).
     Fumble {

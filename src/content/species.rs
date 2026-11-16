@@ -263,6 +263,15 @@ pub struct MonsterAttributes {
     pub senses: u8,
 }
 
+/// One of a species' places where a hit can land.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SpeciesPlace {
+    /// How often a hit lands here, in a hundred.
+    pub chance: u8,
+    /// What guards it beyond its armour overall.
+    pub cover: i32,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Species {
     /// What it is ("Ironskin Crocodile"), once the party knows.
@@ -307,15 +316,15 @@ pub struct Species {
     pub attacks: Vec<MonsterAttack>,
     /// Where its hits land on a character (%).
     pub hits_on_party: EnumMap<BodyPart, u8>,
-    /// Higher is easier to hit.
-    pub evasion: i8,
-    /// Where hits land on it (%), by its own seven locations, whose names
-    /// depend on its build (Wing, Tail, Head, Body, Leg, Hand, Foot for
-    /// most).
-    pub hit_locations: [u8; 7],
-    /// Armour by location and by attack mode; negative is better.
-    pub armour_by_location: [i8; 7],
-    pub armour_by_mode: EnumMap<AttackMode, i8>,
+    /// Its armour overall; higher is better guarded.
+    pub armour: i32,
+    /// Its own seven places, whose names depend on its build (Wing, Tail,
+    /// Head, Body, Leg, Hand, Foot for most).
+    pub places: [SpeciesPlace; 7],
+    /// The place a hit lands on that the chances do not place.
+    pub trunk: usize,
+    /// What it has against each way of attacking; higher is better guarded.
+    pub against: EnumMap<AttackMode, i32>,
     pub experience: u32,
     /// The level the rules use.
     pub level: u8,

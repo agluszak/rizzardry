@@ -14,7 +14,10 @@ holds them; nothing else of the original's shape is kept.
 | `Attributes` | Strength, Intelligence, Piety, Vitality, Dexterity, Speed, Senses, each 1–125, spells counted | its figure's system |
 | `Level` | The level saves, resistance and special attacks weigh | its figure's system |
 | `Resistances` | Percent per realm; what it cannot suffer; its creature kind; how strongly it casts | its figure's system |
-| `Armour` | Armour overall and by place; what surprise strips; what bracing adds; damage cut; missile deflection | its figure's system |
+| `ArmourParts` | The parts of its armour, as the character screen lists them ([arms](arms.md), "Armour") | each part's own system |
+| `HitPlaces`, `Against` | Where a blow lands on it and what covers each place; what it has against each way of attacking | being made; what a member wears covers their places |
+| `Armour` | The parts summed: overall, against being pierced, and the portrait's average | its figure's system |
+| `Reduction`, `MissileShield` | The percent cut off every blow; the chance a shot is turned aside | its figure's system |
 | `Attacks` | What it strikes with; when it acts; how hard it presses; how it fares blind or from hiding | its figure's system |
 | `Vitals` | Health and stamina, each what is left and the most there can be; what ails it, each condition with how long it lasts | being hurt, tired, healed, rested, afflicted, cured, aged; the maxima follow their sources |
 | `Mending` | What it gains or loses a minute outright; whether its stamina comes back by the breath; what its traits make of recovery | its figure's system |
@@ -46,9 +49,9 @@ The sources:
 
 - `Abilities`, the seven attributes before anything is laid on them; `Traits`,
   what it is able to do; `Kind`; `Level`;
-- `Nature`, what it has of itself: natural armour overall, by place and by
-  mode, damage cut, resistances, initiative, mending, what it carries, how far
-  it strides; `NaturalArms`, what it strikes with holding nothing; `Frame`,
+- `Nature`, what it has of itself: damage cut, resistances, initiative,
+  mending, what it carries, how far it strides; its armour's `Race` part,
+  places and what it has against each mode are written with it; `NaturalArms`, what it strikes with holding nothing; `Frame`,
   the health and stamina it was made with;
 - for one who trained: `Calling` (professions and their levels), `Birth`
   (race and gender), `Training` (skill points), `Practice`, `Experience`;
@@ -72,11 +75,12 @@ in the formation, and what they can no longer wear, which goes to their pack
 or the pool (retail `UnequipUnusableItems`).
 
 Spells on the actor, and on the party for a member, are counted in
-`Modifiers`: on armour (Armorplate, Bless, Body of Stone, Armormelt), on
-rating (Bless, Enchanted Blade), on resistance (Magic Screen, Element Shield,
-Soul Shield), on missiles (Missile Shield), on attributes (Superman, Haste),
-on damage cut (Body of Stone). Armour by nature is 10 less the species
-record's value, so higher is always better guarded.
+`Modifiers`: on armour (Bless), on armour against being pierced
+(Armorplate, Body of Stone, Armormelt), on rating (Bless, Enchanted Blade),
+on resistance (Magic Screen, Element Shield, Soul Shield), on missiles
+(Missile Shield), on attributes (Superman, Haste), on damage cut (Body of
+Stone). A species' armour is decoded as its record is read, so that higher is
+always better guarded.
 
 When a maximum of health or stamina moves, for any reason (a level, a drain,
 a disease, an attribute), what is left moves by as much (retail
@@ -333,8 +337,9 @@ level and Chameleon) are likewise computed when asked, from the facts above.
 ## What is read as it stands
 
 - **fatigue**, from stamina spent: it takes from aim and from pressing past a
-  guard, and adds to a monster's armour;
-- **bracing**, from defending this round;
+  guard (what it does to armour is an armour part);
+- **defending**, from a member's order this round: it saves a blow's extra
+  dice and lets them notice who would catch them unaware;
 - **being on the move**, from walking or the party running this round;
 - **place**.
 
@@ -366,10 +371,6 @@ kind allows blind combat.
 Blind members without that trait, and Webbed, Asleep, Paralyzed or Unconscious
 members, give up their formation place while affected, as the dead and the
 missing do. They return to their
-remembered row if it has room. Their global armour is capped at −5 before
-local equipment armour is added. A member worse than Unconscious (dead or
-missing) loses race, speed, skill, spell, condition, load and defending armour
-contributions; worn armour remains.
-
-Stealth contributes its effective level divided by 10 to armour. An active
-Reflextion skill contributes its effective level divided by 20, plus one.
+remembered row if it has room. Their armour overall is no better than −5;
+what that and being dead or missing do to armour is in [arms](arms.md),
+"Armour".

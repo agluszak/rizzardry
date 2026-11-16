@@ -263,6 +263,15 @@ pub(super) fn strike(
             victim = stepping.guard;
         }
 
+        // A near miss is blocked: heard, where a miss is not.
+        if let Some((roll, false, _)) = reached
+            && !fumbled
+            && let Ok(struck) = fighters.as_readonly().get(victim)
+            && roll as i32 - chance.aim <= attack::block(&on, &struck)
+        {
+            news.write(CombatNews::Blocked { victim, sound_class: arm.sound_class });
+        }
+
         // Where it lands, whether it gets through armour, and what the blow does.
         if let Some((roll, true, through)) = reached {
             hits += u32::from(!fumbled);

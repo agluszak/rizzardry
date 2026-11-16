@@ -1,8 +1,8 @@
 # Actors, from scratch
 
-Written 2026-11-12; updated 2026-11-16. Armour is built (below, with what is
-left of it); nothing else here is. It replaces the approach of
-`docs/redesign.md`, which reshaped the existing code and was rejected.
+Written 2026-11-12; updated 2026-11-16. Armour is built (below); nothing else
+here is yet. It replaces an earlier plan that reshaped the existing code and
+was rejected (`docs/redesign.md`, deleted; see git history).
 
 ## Why this exists
 
@@ -42,109 +42,43 @@ there.
 
 ## Armour
 
-The rule is in [rules/arms.md](rules/arms.md), "Armour". Built in
-`src/game/actors/armour.rs` (commit `a3a7e96`): `ArmourParts`, `HitPlaces`,
-`Against`, `Armour`, `VulnerableFromBehind`, one small system per part,
-and one that sums them. The creator's draft is an actor, so its page reads
-`Armour` like any other.
+Done. The rule is in [rules/arms.md](rules/arms.md), "Armour"; the code in
+`src/game/actors/armour.rs`.
 
-### The simplest shape, to finish
-
-Components, as they should end up:
-
-```rust
-/// The parts, each written by what it comes from.
-pub struct ArmourParts(pub EnumMap<ArmourPart, i32>);
-
-/// The places of a body where a blow can land, set where the actor is made.
-pub struct HitPlaces {
-    pub places: Vec<HitPlace>,
-    /// Where a blow lands that the chances do not place. Decoded with the
-    /// body, never a literal in `game`.
-    pub trunk: usize,
-}
-
-pub struct HitPlace {
-    /// The part of a member's body it is: what is worn there covers it,
-    /// and a monster's own chances for the parts apply to it.
-    pub part: Option<BodyPart>,
-    pub chance: u32,
-    /// What covers it beyond the parts: a monster's from its record, a
-    /// member's rewritten by `worn` when what is worn changes.
-    pub cover: i32,
-}
-
-/// What it has against each way of attacking.
-pub struct Against(pub EnumMap<AttackMode, i32>);
-
-/// The parts summed.
-pub struct Armour {
-    /// Every part but vs Penetration, capped out of formation.
-    pub total: i32,
-    /// vs Penetration, where it counts (nothing for the dead and away).
-    pub pierced: i32,
-    /// For the portrait.
-    pub average: i32,
-}
-
-/// The record flag: -2 caught unaware, and blocks by 10.
-pub struct VulnerableFromBehind;
-```
-
-At a place is `total + pierced + cover`, added by the blow. No second list
-parallel to `HitPlaces` that can disagree with it in length.
-
-The blow's situation (unaware, praying, on the move) is one plain function of
-the blow and the target, counted once against the aim and twice at a place.
-It is not a part: it belongs to one blow, not to the actor.
-
-### Left to do
-
-1. **Drop `Armour::at`.** Store `pierced`; `penetration` and the devices'
-   shot read `total + pierced + place.cover`.
-2. **Decode monster armour where the species is read.** `armour::of_species`
-   now does `10 - evasion`, `evasion - armour_by_location` and `trunk: 3`
-   in `game`. The species content should carry armour (higher is better),
-   the cover of each place, against-by-mode and which place is the trunk.
-3. **`VulnerableFromBehind` with the rest of the species.** It is inserted
-   in `embody`, not in `made_of`, so a monster made only by `made_of`
-   (the combat tests) lacks it. Put it in `of_species`'s bundle.
-4. **Defensive action for everyone.** Today only an `Ordered` holding
-   `Defend` sets it. Protect counts too, and a monster that waits gets the
-   same +2.
-5. **Praying** (4 worse, while the party is not running) in the blow's
-   situation.
-6. **Blocking** (`BlockedForSpecialReason`): a blow that beats the armour by
-   no more than the block does nothing. Write the block where it is known:
-   five times the Shield part for a member, lost when caught unaware; 10 for
-   a monster vulnerable from behind, whatever the surprise. The block plays
-   the impact sound of the off hand's material (a monster's is material 2).
-7. **The armour panel** on the character screen lists `ArmourParts`
-   (Reflextion only when not zero).
-8. **Same-settle check.** `worn` reads the Defensive action part to scale
-   Shield skill. The shield test settles twice; find out whether a defend
-   order and its shield bonus land in the same settle, and make them if not.
+- `ArmourParts`: one small system per part, each reading what the part comes
+  from. Defensive action reads the round's `Turn` (a member's Defend order,
+  a monster's wait) and is cleared when the fight ends.
+- `HitPlaces` and `Against`: set where the actor is made, from the race's
+  table or the species, already decoded (`content::species::Species` carries
+  armour, places, trunk and against with higher better). What a member wears
+  rewrites the cover of their places.
+- `Armour` `{ total, pierced, average }`: one system sums the parts. At a
+  place is `Armour::at`, the total, pierced and the place's cover; no second
+  list beside `HitPlaces`.
+- What a blow gets past (unaware, on the move) is a plain function of the blow
+  and the target in `combat/attack/aim.rs`, counted once against the aim and
+  twice at a place; so is the block, heard as `CombatNews::Blocked`.
 
 ### Decided
 
-- **Race armour** is the race table's (only the Faerie has any: 2), which is
-  the trait's 2.
-- **"Protecting"** is the Protect order (`W8_ACTION_PROTECT`).
-- **On the move and in formation**: retail loses the 4 only when the target is
-  in formation, as built.
-- **A monster's spells, tiredness and waiting** are parts, counted once and
-  capped out of formation. Retail counts them twice at a place; we keep one
-  rule for every actor (rules/arms.md says so).
-- **Places keep their `cover`**, though a member's is rewritten when gear
-  changes: a place is what covers it.
+- A monster's spells, tiredness and waiting are parts like a member's,
+  counted once and capped out of formation; the original counts them twice
+  at a place. One rule for every actor.
+- Race armour is the race table's (only the Faerie has any), which is the
+  original's Faerie trait.
+- Fatigue's bands are the original's: under 50, 70, 85, 95 percent of stamina
+  spent, for members and monsters alike.
+- `VulnerableFromBehind` is inserted beside the species' bundle in `embody`:
+  Bevy has no optional component in a bundle.
 
-### Still open
+### Not here yet
 
-- **A monster striking a monster.** It lands by the target's own chances, as
-  built; not looked up in the original.
-- **What a monster's places are called** (by body type, six of them) for the
-  hit messages. Add a name to `HitPlace` when the messages need it.
-- **Which fatigue bands** the five penalties belong to, in our terms.
+- Protect and Pray orders for members, and with them their armour (+2 while
+  protecting, 4 worse while praying).
+- The armour panel of the character screen, listing `ArmourParts`
+  (Reflextion only when not zero).
+- What a monster's places are called (by its build, six of them), for the
+  blow-by-blow lines, which are not ported.
 
 ## Not designed yet
 

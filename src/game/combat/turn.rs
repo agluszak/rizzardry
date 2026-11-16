@@ -64,7 +64,8 @@ pub struct Turn {
     pub special: bool,
     /// Insanity turned it on its friends this round.
     pub berserk: bool,
-    /// It held back and rests.
+    /// It holds back on guard this round: a monster that waited, a member
+    /// ordered to defend. It rests at the round's end and is better guarded.
     pub waited: bool,
 }
 
@@ -319,7 +320,7 @@ pub fn accept_round(
             moved: false,
             special: false,
             berserk: false,
-            waited: false,
+            waited: action == Some(Action::Defend),
         };
         // An attacker opens with the slot with the most attacks, its arm's
         // initiative counting (retail `AssignCombatPhases`).

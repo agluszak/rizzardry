@@ -19,7 +19,7 @@ use super::{Attributes, Skills};
 use crate::content::characters::{Attribute, BodyPart, Race, Skill};
 use crate::content::items::AttackMode;
 use crate::game::characters::{Calling, Condition, Conditions, Vitals, skill_available};
-use crate::game::combat::Ordered;
+use crate::game::combat::Turn;
 use crate::game::inventory::EquipSlot;
 use crate::game::items::{Burden, Items};
 
@@ -77,26 +77,28 @@ pub struct HitPlaces {
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
 pub struct Against(pub EnumMap<AttackMode, i32>);
 
-/// One caught unaware is 2 worse guarded (retail monster flag 0x02).
+/// A monster caught unaware is 2 worse guarded, and it blocks what misses
+/// it by 10 or less (retail monster flag 0x02).
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct VulnerableFromBehind;
 
-/// How well an actor is guarded: the parts together, and at each of its
-/// places. Higher is better guarded, five off a blow for each point.
-#[derive(Component, Clone, Debug, Default, PartialEq)]
+/// How well an actor is guarded: the parts together. Higher is better
+/// guarded, five off a blow for each point.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
 pub struct Armour {
     /// Against being struck at all.
     pub total: i32,
-    /// Where struck: one for each of its [`HitPlaces`], in their order.
-    pub at: Vec<i32>,
+    /// Against being pierced where struck, besides the total.
+    pub pierced: i32,
     /// Over its places, each weighed by how often a blow lands there.
     pub average: i32,
 }
 
 impl Armour {
-    /// At a place; overall where it has no places of its own.
-    pub fn at(&self, place: usize) -> i32 {
-        self.at.get(place).copied().unwrap_or(self.total)
+    /// Where struck: the total, what it has against being pierced, and what
+    /// covers the place.
+    pub fn at(&self, place: &HitPlace) -> i32 {
+        self.total + self.pierced + place.cover
     }
 }
 
@@ -127,26 +129,17 @@ pub fn born(race: Race) -> impl Bundle {
     (parts, HitPlaces { places, trunk })
 }
 
-/// The armour one of a species is made with. Armour is 10 less the record's
-/// value, so that higher is always better guarded; each place is covered by
-/// what the record gives it beyond that (retail `GetTargetArmorClass`,
-/// `TargetArmorClassAtLocation`).
+/// The armour one of a species is made with: its own, its places and what
+/// it has against each way of attacking.
 pub fn of_species(kind: &crate::content::species::Species) -> impl Bundle {
     let mut parts = ArmourParts::default();
-    parts.0[ArmourPart::Race] = 10 - i32::from(kind.evasion);
-    let places = (0..kind.hit_locations.len())
-        .map(|place| HitPlace {
-            part: None,
-            chance: u32::from(kind.hit_locations[place]),
-            cover: i32::from(kind.evasion) - i32::from(kind.armour_by_location[place]),
-        })
+    parts.0[ArmourPart::Race] = kind.armour;
+    let places = kind
+        .places
+        .iter()
+        .map(|place| HitPlace { part: None, chance: u32::from(place.chance), cover: place.cover })
         .collect();
-    (
-        parts,
-        // Past its chances a blow lands on its body, the fourth of its places.
-        HitPlaces { places, trunk: 3 },
-        Against(EnumMap::from_fn(|mode| i32::from(kind.armour_by_mode[mode]))),
-    )
+    (parts, HitPlaces { places, trunk: kind.trunk }, Against(kind.against))
 }
 
 /// One who trained is guarded by their quickness: 1 from Speed 80 and 2
@@ -278,16 +271,18 @@ fn fatigue(mut actors: Query<(&Vitals, &Nature, &mut ArmourParts), Changed<Vital
     }
 }
 
-/// One ordered to defend is 2 better guarded for the round.
-fn ordered(event: On<Insert<Ordered>>, mut actors: Query<(&Ordered, &mut ArmourParts)>) {
-    if let Ok((ordered, mut parts)) = actors.get_mut(event.entity) {
-        let part = if ordered.defends() { 2 } else { 0 };
+/// One that holds back on guard this round (a member defending, a monster
+/// that waits) is 2 better guarded (retail `CalcArmorClasses`,
+/// `GetTargetArmorClassModifier`).
+fn braced(mut actors: Query<(&Turn, &mut ArmourParts), Changed<Turn>>) {
+    for (turn, mut parts) in &mut actors {
+        let part = if turn.waited { 2 } else { 0 };
         ArmourParts::set(&mut parts, ArmourPart::DefensiveAction, part);
     }
 }
 
-/// The order is over, and what it added with it.
-fn order_over(event: On<Remove<Ordered>>, mut actors: Query<&mut ArmourParts>) {
+/// The fight is over, and what holding back added with it.
+fn fight_over(event: On<Remove<Turn>>, mut actors: Query<&mut ArmourParts>) {
     if let Ok(mut parts) = actors.get_mut(event.entity) {
         ArmourParts::set(&mut parts, ArmourPart::DefensiveAction, 0);
     }
@@ -331,12 +326,11 @@ fn armour(
             .sum();
         let total = if conditions.unseats(traits.0) { sum.min(-5) } else { sum };
         let pierced = if about { parts.0[ArmourPart::VsPenetration] } else { 0 };
-        let at: Vec<i32> =
-            places.places.iter().map(|place| total + pierced + place.cover).collect();
+        let mut armour = Armour { total, pierced, average: 0 };
         let weighed: i32 =
-            places.places.iter().zip(&at).map(|(place, at)| place.chance as i32 * at).sum();
-        let average = if weighed < 0 { (weighed - 50) / 100 } else { (weighed + 50) / 100 };
-        written.set_if_neq(Armour { total, at, average });
+            places.places.iter().map(|place| place.chance as i32 * armour.at(place)).sum();
+        armour.average = if weighed < 0 { (weighed - 50) / 100 } else { (weighed + 50) / 100 };
+        written.set_if_neq(armour);
     }
 }
 
@@ -345,15 +339,14 @@ pub(super) fn plugin(app: &mut App) {
     // from are written.
     app.add_systems(
         super::Settle,
-        ((speed, skills, spells, conditions, load, fatigue), worn, armour)
+        ((speed, skills, spells, conditions, load, fatigue, braced), worn, armour)
             .chain()
             .in_set(super::Written)
             .after(super::figures::skills)
             .after(super::figures::maxima)
             .before(super::figures::attacks),
     )
-    .add_observer(ordered)
-    .add_observer(order_over);
+    .add_observer(fight_over);
 }
 
 #[cfg(test)]
@@ -363,7 +356,7 @@ mod tests {
     use crate::content::items::{EquipClass, ItemDefinition};
     use crate::game::actors::Settle;
     use crate::game::characters::{Character, Lasting};
-    use crate::game::combat::Action;
+    use crate::game::inventory::WeaponSlot;
     use crate::game::items::{Worn, make};
     use bevy::ecs::system::RunSystemOnce;
 
@@ -393,10 +386,7 @@ mod tests {
     fn settled(app: &mut App, member: Entity) -> (ArmourParts, Armour) {
         app.world_mut().run_schedule(Settle);
         let world = app.world();
-        (
-            world.get::<ArmourParts>(member).unwrap().clone(),
-            world.get::<Armour>(member).unwrap().clone(),
-        )
+        (world.get::<ArmourParts>(member).unwrap().clone(), *world.get::<Armour>(member).unwrap())
     }
 
     /// Retail `CalcArmorClasses`: a shield's worth and a 25th of the skill
@@ -410,13 +400,17 @@ mod tests {
             let world = app.world_mut();
             world.get_mut::<crate::game::characters::Training>(member).unwrap().0[Skill::Shield] =
                 points;
-            if defending {
-                world.entity_mut(member).insert(Ordered(Action::Defend));
-            } else {
-                world.entity_mut(member).remove::<Ordered>();
-            }
-            // The order is seen, then the shield made more of.
-            settled(app, member);
+            world.entity_mut(member).insert(Turn {
+                when: None,
+                attacks: EnumMap::default(),
+                due: WeaponSlot::Primary,
+                weapons: EnumMap::default(),
+                lightning: None,
+                moved: false,
+                special: false,
+                berserk: false,
+                waited: defending,
+            });
             let (parts, armour) = settled(app, member);
             (parts.0[ArmourPart::Shield], parts.0[ArmourPart::DefensiveAction], armour.total)
         };
@@ -439,18 +433,23 @@ mod tests {
         let (parts, armour) = settled(&mut app, member);
         assert_eq!(parts.0[ArmourPart::MagicItems], 1);
         let total = armour.total;
+        let at = |app: &App, armour: &Armour| -> Vec<i32> {
+            let places = app.world().get::<HitPlaces>(member).unwrap();
+            places.places.iter().map(|place| armour.at(place)).collect()
+        };
         // Head, body, legs, hands, feet.
-        assert_eq!(armour.at, [total + 5, total + 2, total + 2, total + 2, total + 2]);
+        assert_eq!(at(&app, &armour), [total + 5, total + 2, total + 2, total + 2, total + 2]);
         // 15 in a hundred land on the head: 3 x 15 = 45 of 100, under a half.
         assert_eq!(armour.average, total + 2);
 
         let asleep = (Condition::Asleep, Lasting::Rounds(3));
         app.world_mut().get_mut::<Conditions>(member).unwrap().afflict(asleep.0, asleep.1);
         let (_, armour) = settled(&mut app, member);
-        assert_eq!((armour.total, armour.at[0]), (-5, -5 + 5));
+        assert_eq!((armour.total, at(&app, &armour)[0]), (-5, -5 + 5));
 
         app.world_mut().get_mut::<Vitals>(member).unwrap().slay(None);
         let (_, armour) = settled(&mut app, member);
-        assert_eq!((armour.total, armour.at[0], armour.at[1]), (1, 4, 1));
+        let dead = at(&app, &armour);
+        assert_eq!((armour.total, dead[0], dead[1]), (1, 4, 1));
     }
 }

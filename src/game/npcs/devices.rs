@@ -330,7 +330,7 @@ pub(super) fn shoots(
         };
         let place = lands_at(rng.below(100), places, None);
         let mode = AttackMode::Thrust;
-        let there = armour.at(place.0) - against.0[mode];
+        let there = armour.at(&places.places[place.0]) + against.0[mode];
         let aside = rng.below(100) < shield.0;
         let through = (rng.below(100) as i32) < 50 + mode_penetration(mode) + 5 * (10 - there);
         if aside || !through {

@@ -56,6 +56,15 @@ pub fn play_combat_sounds(
                 };
                 table.impact(class, material)
             }
+            // A block rings on what the member holds in the off hand, or on
+            // its body (retail material 2), as a monster's always does.
+            CombatNews::Blocked { victim, sound_class: Some(class) } => {
+                let material = held
+                    .worn(victim, EquipSlot::Secondary)
+                    .and_then(|item| held.id(item))
+                    .map_or(2, |id| catalogs.items[id].material);
+                table.impact(class, material)
+            }
             _ => None,
         };
         if let Some(name) = sound {

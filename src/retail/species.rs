@@ -13,7 +13,7 @@ use enumset::EnumSet;
 use crate::content::items::{AttackEffects, ItemId};
 use crate::content::species::{
     AttackWord, Disposition, Drop, MonsterAttack, MonsterAttributes, MonsterCatalog, MonsterMagic,
-    SpecialAttack, SpecialAttackKind, Species, Temper, Treasure,
+    SpecialAttack, SpecialAttackKind, Species, SpeciesPlace, Temper, Treasure,
 };
 use crate::content::spells::SpellId;
 
@@ -100,10 +100,19 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
         swings_per_round: record[0xe6],
         attacks,
         hits_on_party: EnumMap::from_array(bytes(0x157, 5).try_into().unwrap()),
-        evasion: signed(0x15d),
-        hit_locations: bytes(0x15f, 7).try_into().unwrap(),
-        armour_by_location: std::array::from_fn(|i| signed(0x166 + i)),
-        armour_by_mode: EnumMap::from_array(std::array::from_fn(|i| signed(0x16d + i))),
+        // The record's armour classes are lower for better guarded: its
+        // armour is 10 less its evasion, a place's cover the evasion less the
+        // place's class, and what it has against a mode the class negated
+        // (retail `GetTargetArmorClass`, `TargetArmorClassAtLocation`).
+        armour: 10 - i32::from(signed(0x15d)),
+        places: std::array::from_fn(|i| SpeciesPlace {
+            chance: record[0x15f + i],
+            cover: i32::from(signed(0x15d)) - i32::from(signed(0x166 + i)),
+        }),
+        // Past its chances a hit lands on its fourth place, its body (retail
+        // `RollMonsterHitLocation`).
+        trunk: 3,
+        against: EnumMap::from_array(std::array::from_fn(|i| -i32::from(signed(0x16d + i)))),
         experience,
         level: record[0x24f],
         display_level: record[0x251],
@@ -217,7 +226,7 @@ mod tests {
         let slime = &species[1];
         assert_eq!(slime.attacks[0].score, 130);
         assert_eq!(slime.attacks[0].damage, Dice { base: 2, count: 1, sides: 6 });
-        assert_eq!(slime.evasion, 7);
+        assert_eq!(slime.armour, 3);
         let crocodile = &species[62];
         assert_eq!(crocodile.name, "Ironskin Crocodile");
         assert_eq!(crocodile.disposition, Disposition::HostileWithin(15.0));

@@ -300,17 +300,14 @@ For the swing, let:
 - **Mode's to-hit**: swing, bash, shoot 0; thrust, kick -10; berserk -30; throw -5;
   punch +5; lash +10. (retail `AttackModeMod`)
 - **Surprise**: +10 if the blow is unaware, +10 if it is natural. Both can hold.
-- **Target's armour against the aim**: the target's total armour, plus 2 (members;
-  the bracing figure) if the target is defending, plus the target's *guard*:
-  - fatigue/10 of the target, for a target whose fatigue tells on armour
-    (monsters; not members);
-  - minus, when the blow is a surprise, the armour its surprise strips
-    (for a monster, twice its vulnerability from behind; for a member, what Speed
-    and a shield give, and more if defending, see [arms](arms.md)), plus the
-    defending member's extra strip if defending;
-  - minus 4 if the target is on the move and the mode is not a throw, lash or
-    shot. The target is on the move if it is a monster that is walking this
-    round, or a member while the party is running.
+- **Target's armour against the aim**: the target's total armour
+  ([arms](arms.md), "Armour"; defending, tiredness and spells are parts of
+  it), less what the blow *gets past*:
+  - when the blow is a surprise, the target's Speed and Shield parts, each
+    only if positive, and 2 more for a monster vulnerable from behind;
+  - 4 if the target is on the move, in formation, and the mode is not a
+    throw, lash or shot. The target is on the move if it is a monster that is
+    walking this round, or a member while the party is running.
 - **Difference of agility**: `(attacker agility - target agility) / 10`.
 
 Then:
@@ -421,8 +418,8 @@ aim already made against the ward stays.
 The blow lands at a location of the victim, picked by one d100 against cumulative
 percentages:
 
-- On a **monster**: its species' chances for its seven locations; anything past the
-  total lands at location 3 (its body).
+- On a **monster**: its species' chances for its seven places, whoever strikes;
+  anything past the total lands on its fourth place (its body).
 - On a **member**: if the attacker is a monster, its species' chances for the five
   parts (head, body, legs, hands, feet); otherwise (a member struck by a member)
   15, 40, 30, 10, 5 percent for head, body, legs, hands, feet. Anything past the
@@ -457,11 +454,11 @@ penetration = scaled( mode's penetration
   throw +5; lash -10. (retail `AttackModeMod`)
 - **Fatigue** counts here for a member unless the weapon is a modern weapon (full
   amount, not halved); for a monster only for an attack that tires little.
-- **Victim's armour at the location**: its armour at that location, plus 2 if
-  defending, minus what the victim has against that mode (monsters only), plus
-  **twice** the target's guard as defined above (fatigue/10, minus the surprise
-  strip, minus 4 on the move). The surprise now is the attack's surprise as it is
-  after any interception or fumble.
+- **Victim's armour at the location**: its total, what it has against being
+  pierced, and what covers the place, plus what it has against that mode
+  (monsters only), less **twice** what the blow gets past as defined above.
+  The surprise now is the attack's surprise as it is after any interception
+  or fumble.
 - The difference of agility is with the actual victim.
 - Scaled for difficulty by the attacker's side. The blind rule is not applied.
 
@@ -718,7 +715,9 @@ lands: the sound the original's table (`HitSounds.txt`) gives for the
 arm's sound class against what is struck there is made of. A monster is
 struck in its species' own material; a member in the material of what is
 worn at the place struck (head, body, legs, hands, feet), or in material 0
-when nothing is. A class the table has no sound for takes the first class's;
+when nothing is. A close blow that misses by no more than the target's block
+([arms](arms.md)) is heard as blocked: the arm's class against what the
+member holds in the off hand, or material 2. A class the table has no sound for takes the first class's;
 one past the table, a plain hit (`GetMaterialImpactSound`). A monster's
 swing is not heard; a missile's hit uses its launcher's class, not the
 missile's own.
@@ -763,11 +762,10 @@ and after some scripted changes of condition.
 - **Catching unaware, noticing**: only a defending member notices; a monster does
   not (the original lets a waiting monster notice; see *Open questions*). A monster target is caught unaware only from its rear.
 - **Provocation**: only a member's attack provokes.
-- **Armour**: a monster's armour is "10 less the species value" by place with a
-  separate figure per mode and a table of hit locations, its guard rises with its
-  fatigue, and it strips by twice its vulnerability from behind; a member's armour
-  comes from Speed, race, load, shield and worn gear, bracing when defending, and
-  the surprise strip by Speed and shield. A monster is never braced.
+- **Armour**: the same parts and the same sums ([arms](arms.md)); a monster has
+  fewer parts and its own seven places and armour against each mode, and its
+  tiredness adds to its armour where a member's takes from it. A monster that
+  waits is braced as a defending member is.
 - **Fatigue**: a modern weapon (members) or an attack that tires little (monsters)
   halves fatigue in the aim; fatigue counts in the penetration for a member's
   non-modern weapons but for a monster only for the attacks that tire little.

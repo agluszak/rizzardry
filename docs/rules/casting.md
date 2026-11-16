@@ -757,13 +757,13 @@ practice even if it fizzles.
 - **Light, Detect Secrets, X-Ray, Chameleon, Shadow Hound, Magic Screen,
   Missile Shield, Armorplate, Enchanted Blade** and the others that only lay
   a spell on the party: each is an *Enchant* row (section 6) with what it
-  adds in [actors](actors.md): Armorplate armour `ceil(power/2)` boosted;
+  adds in [actors](actors.md): Armorplate armour against being pierced `ceil(power/2)` boosted;
   Enchanted Blade to-hit the same; Bless armour and to-hit `2` boosted;
-  Armormelt `-power` armour; Magic Screen `4*power + 7` resistance in every
+  Armormelt `-power` armour against being pierced; Magic Screen `4*power + 7` resistance in every
   realm; Element Shield `7*power` in Fire, Water, Air, Earth; Soul Shield
   `10*power` in Mental and Divine; Missile Shield `(power + 5) * 5` percent
   missile deflection; Superman `5*power` to every attribute; Haste `10*power`
-  Speed and `0.1*power` of stride; Body of Stone `power` armour and `8*power`
+  Speed and `0.1*power` of stride; Body of Stone `power` armour against being pierced and `8*power`
   percent damage cut, at most 100; Chameleon `power` against being seen. Light,
   Detect Secrets and X-Ray have no number in the game's rules: they change what
   the party sees. Shadow Hound lets the party see every monster in its line of

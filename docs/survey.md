@@ -66,6 +66,10 @@ their rule pages; this survey did not redo them. The level devices rest on
 - [devices](rules/devices.md) section 4: each level device that differs.
 - [attack](rules/attack.md) section 7: the quiet the party keeps during
   Al-Sedexus's capture.
+- [arms](rules/arms.md) "Armour": the character screen's armour panel
+  listing the parts; armour while protecting or praying; what an unblocked
+  miss sets off (a wounded member's cry, a monster's dodge); the names of a
+  monster's places for the blow-by-blow lines.
 
 ## Not here: the story
 

@@ -87,16 +87,17 @@ screen lists them.
 | Conditions | all | what conditions take |
 | Encumbrance | members | -1, -2 or -4 for a medium, heavy or extreme load |
 | Fatigue | all | a tenth of what tiredness takes from an aim; lost by a member, gained by a monster |
-| Defensive action | all | +2 for a member ordered to Defend or Protect, for a monster that waits |
+| Defensive action | all | +2 for a member ordered to Defend, for a monster that waits (the original also gives it for Protect, which a member cannot order here) |
 
 The guarding things worn are those in the two accessory places, as a cloak and
 in the two hands in use; the stored weapon set counts for nothing.
 
 - **Total**: every part but vs Penetration. One out of formation is guarded no
   better than -5.
+- **Pierced**: vs Penetration, counted only where a blow lands.
 - **Dead or worse than unconscious**: only Shield (without the skill) and
   Magic items count.
-- **At a place**: the total, plus vs Penetration, plus what covers the place.
+- **At a place**: the total, plus pierced, plus what covers the place.
 - **Average** (the portrait): the places weighed by how often a blow lands
   there, rounded to the nearest.
 
@@ -106,9 +107,10 @@ in the two hands in use; the stored weapon set counts for nothing.
   times in a hundred ([hit_places.ron](../../assets/tables/hit_places.ron)).
   What is worn on that part covers it. A monster striking a member lands by
   its own five chances instead (`attack_body_part_chances`).
-- A monster has seven, each with a chance and a cover from its record. Its
-  record gives armour per place; the cover is that place's armour less its
-  overall armour, so "total plus cover" is the one formula for both.
+- A monster has seven, each with a chance and a cover, decoded from its record
+  as the species is read: the cover is that place's armour less its overall
+  armour, so "total plus cover" is the one formula for both. A monster lands
+  on a monster by the target's own chances.
 - A blow the chances do not place lands on the trunk: a member's torso, a
   monster's fourth place.
 
@@ -120,17 +122,21 @@ blow. It counts once against the aim and twice at a place (retail adds
 
 - caught unaware (or struck by a natural attack): a member loses its Speed and
   Shield parts, each only if positive; a monster vulnerable from behind loses 2;
-- a member praying while the party is not running: 4 worse;
+- a member praying while the party is not running: 4 worse (there is no
+  Pray order here yet);
 - on the move (a member while the party runs, a monster advancing) and in
   formation: 4 worse, except against a throw or a shot.
 
 Against a mode, a place is also less what the target has against that mode
 (a monster's record; nothing for a member).
 
-**Blocked**: a blow that beats the armour by no more than the target's block
-does nothing. A member's block is five times the Shield part, none when caught
-unaware; a monster vulnerable from behind (the same record flag) blocks by 10,
-caught unaware or not. Others never block.
+**Blocked**: a close blow that misses by no more than the target's block is
+told and heard as blocked instead of missed; it does nothing either way. A
+member's block is five times the Shield part, none when caught unaware; a
+monster vulnerable from behind (the same record flag) blocks by 10, caught
+unaware or not. Others never block. (In the original an unblocked miss may
+also make a wounded member cry out and a facing monster dodge; neither is
+here.)
 
 ### Where retail differs and we do not follow
 
