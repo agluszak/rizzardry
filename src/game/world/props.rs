@@ -10,13 +10,25 @@ use super::navigation::links::DoorLink;
 use crate::content::level::{Animation, CollisionMesh, PropModel};
 
 /// A placed prop. Its parts are children carrying [`PropPart`]; what it is
-/// stays in its level's definition, and only its [`PropMotion`] changes.
+/// is read at spawn; playback reads [`PropAnimation`] and [`PropMotion`].
 #[derive(Component, Debug)]
 pub struct Prop {
     /// Its place among the level's props (`LevelDefinition::props`), which
     /// identifies it within the level.
     pub definition: usize,
 }
+
+/// Playback settings belong to the moving prop, not its level's asset.
+#[derive(Component, Debug)]
+pub struct PropAnimation {
+    pub last_frame: f32,
+    pub wraps: bool,
+    pub slots: Vec<u16>,
+    frames_per_second: f32,
+}
+
+#[derive(Component, Debug)]
+pub(super) struct MotionPath(Vec<Transform>);
 
 /// One rigid part of a placed prop.
 #[derive(Component, Debug)]
@@ -72,6 +84,12 @@ pub fn build_prop(
         Name::new(prop.name.clone()),
         Prop { definition: index },
         PropMotion::default(),
+        PropAnimation {
+            last_frame: prop.last_frame() as f32,
+            wraps: prop.wraps,
+            slots: prop.slots.clone(),
+            frames_per_second: prop.frames_per_second,
+        },
         Transform::default(),
     ));
     if let Some(doorway) = doorway {
@@ -81,6 +99,9 @@ pub fn build_prop(
         for ((part_index, part), collider) in prop.parts.iter().enumerate().zip(colliders) {
             let at = if part.keys.is_empty() { part.transform } else { pose(&part.keys, frame) };
             let mut part_entity = parts.spawn((PropPart { part: part_index }, at));
+            if !part.keys.is_empty() {
+                part_entity.insert(MotionPath(part.keys.clone()));
+            }
             let Some(collider) = collider else { continue };
             // Parts with a path can move (doors, lifts).
             let body = if part.keys.is_empty() { RigidBody::Static } else { RigidBody::Kinematic };
@@ -104,9 +125,9 @@ pub struct PropMotion {
 }
 
 impl PropMotion {
-    pub fn activate(mut motion: Mut<Self>, prop: &PropModel, animation: Animation) {
+    pub fn activate(mut motion: Mut<Self>, prop: &PropAnimation, animation: Animation) {
         let playing = motion.frame != motion.target;
-        let last = prop.last_frame() as f32;
+        let last = prop.last_frame;
         match animation {
             Animation::Toggle if playing => motion.target = motion.frame,
             Animation::Toggle | Animation::Start if !playing => {
@@ -141,29 +162,24 @@ pub fn pose(keys: &[Transform], frame: f32) -> Transform {
 
 /// Move props toward their target frame on the simulation step, carrying
 /// their parts (and the parts' colliders) along the authored paths.
-pub fn animate_props(
+pub(super) fn animate_props(
     time: Res<Time>,
-    definitions: super::level::OwnedDefinitions,
-    mut props: Query<(&Prop, &LevelOwned, &mut PropMotion, &Children)>,
-    mut parts: Query<(&PropPart, &mut Transform)>,
+    mut props: Query<(&PropAnimation, &mut PropMotion, &Children)>,
+    mut parts: Query<(&MotionPath, &mut Transform)>,
 ) {
-    for (prop, owner, mut motion, children) in &mut props {
+    for (animation, mut motion, children) in &mut props {
         if motion.frame == motion.target {
             continue;
         }
-        let Some(model) = prop.model(owner, &definitions) else { continue };
-        let step = model.frames_per_second * time.delta_secs();
+        let step = animation.frames_per_second * time.delta_secs();
         motion.frame = if motion.target > motion.frame {
             (motion.frame + step).min(motion.target)
         } else {
             (motion.frame - step).max(motion.target)
         };
         for child in children {
-            if let Ok((part, mut transform)) = parts.get_mut(*child)
-                && let Some(keys) = model.parts.get(part.part).map(|p| &p.keys)
-                && !keys.is_empty()
-            {
-                *transform = pose(keys, motion.frame);
+            if let Ok((path, mut transform)) = parts.get_mut(*child) {
+                *transform = pose(&path.0, motion.frame);
             }
         }
     }

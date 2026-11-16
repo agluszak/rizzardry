@@ -7,9 +7,9 @@ use bevy::prelude::Entity;
 
 use crate::content::characters::{Attribute, Realm};
 use crate::content::species::MonsterKind;
+use crate::game::actors::BodyItem;
 use crate::game::difficulty::Difficulty;
 use crate::game::hits::defences;
-use crate::game::hits::effects::BodyReadOnlyItem;
 use crate::game::magic::{Outcome, Strength};
 use crate::game::rng::{GameRng, weighted};
 
@@ -64,7 +64,7 @@ pub fn speak(
     (mindread, outcome): (bool, Outcome),
     strength: Strength,
     difficulty: Difficulty,
-    their: &BodyReadOnlyItem,
+    their: &BodyItem,
     (charmed, refusals): (u32, u8),
 ) -> Spoken {
     let mut spoken = Spoken { reply: Reply::Unnoticed, resisted: false, refusals };
@@ -120,7 +120,7 @@ pub enum Response {
 /// `MonsterResistsSpellEffect`): an undead one always resists; the rest save
 /// in the Mental realm, their level against the lure's strength, unscaled by
 /// difficulty.
-pub fn lure_response(rng: &mut GameRng, monster: &BodyReadOnlyItem, against: u32) -> Response {
+pub fn lure_response(rng: &mut GameRng, monster: &BodyItem, against: u32) -> Response {
     let resistance = monster.resistances.realms[Realm::Mental];
     let chance = defences::condition_chance(monster.level.0, resistance, against, 0);
     if monster.resistances.kind == Some(MonsterKind::Undead) || defences::save_roll(rng, chance) {

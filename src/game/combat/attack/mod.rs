@@ -18,8 +18,6 @@
 //! the way.
 
 mod aim;
-#[cfg(test)]
-mod arena;
 mod blow;
 mod choose;
 mod cost;
@@ -41,12 +39,12 @@ use super::approach::CombatMove;
 use super::turn::{Guards, Interceptions, Ordered, Spotted};
 use crate::content::items::{AttackMode, Dice};
 use crate::content::species::Reach;
-use crate::game::actors::Arm;
+use crate::game::actors::Body;
+use crate::game::actors::{Against, Arm, ArmourParts, HitPlaces, VulnerableFromBehind};
 use crate::game::characters::{Condition, Vitals};
 use crate::game::difficulty::Difficulty;
-use crate::game::hits::effects::Body;
 use crate::game::magic::Strength;
-use crate::game::npcs::NpcBody;
+use crate::game::npcs::Embodies;
 use crate::game::rng::GameRng;
 
 /// An actor in a fight, as a blow finds it: what every actor is, and what
@@ -55,12 +53,17 @@ use crate::game::rng::GameRng;
 #[query_data(mutable)]
 pub struct Fighter {
     pub body: Body,
+    /// The parts of its armour, some of which a blow gets past by name.
+    pub parts: &'static ArmourParts,
+    pub against: &'static Against,
+    pub hit_places: &'static HitPlaces,
+    pub vulnerable_from_behind: Has<VulnerableFromBehind>,
     /// What a member was ordered to do this round.
     pub ordered: Option<&'static Ordered>,
     /// It is walking this round.
     pub walking: Has<CombatMove>,
     /// An NPC's body, whom a member under orders never strikes.
-    pub npc: Has<NpcBody>,
+    pub npc: Has<Embodies>,
     pub guards: Option<&'static Guards>,
     pub interceptions: Option<&'static mut Interceptions>,
     pub spotted: Option<&'static mut Spotted>,
@@ -68,7 +71,7 @@ pub struct Fighter {
 
 impl FighterReadOnlyItem<'_, '_> {
     pub fn has(&self, condition: Condition) -> bool {
-        self.body.vitals.conditions.has(condition)
+        self.body.conditions.has(condition)
     }
 
     /// Aim and armour lost to how tired it is.
@@ -198,8 +201,8 @@ impl Surprise {
     }
 }
 
-/// Where a blow lands: one of a monster's seven locations, or a member's
-/// body part.
+/// Where a blow lands: one of the places of the body struck, by its order
+/// among them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Location(pub usize);
 

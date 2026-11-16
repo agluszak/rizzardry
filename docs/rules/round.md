@@ -20,7 +20,7 @@ A round runs from moment 1 to moment 100. Everything that will happen in it
 has a moment:
 
 - each actor's **first act**: the earlier the more initiative they have, with
-  a roll (members' and monsters' initiative come from refit; the moment from
+  a roll (members' and monsters' initiative is one of their figures; the moment from
   the original's roll on it);
 - the **party's move**, if the player chose one, at its own moment; members do
   not act before it;

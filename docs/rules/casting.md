@@ -147,6 +147,12 @@ the realm that is most short first (retail `RecalculateRealmSpellPoints`,
 maximum less what has been spent, so a drop in the maximum leaves a deficit
 that a later rise does not refill.
 
+The maximum is a figure of the actor's (`SpellPoints`), written by its own
+system as the spells learned, the level, Piety or the skills change; nothing
+works it out as it reads it. A spell learned carries its realm and cost,
+read from the spell as it is learned (`LearnedSpells`), so neither the
+figure nor whether a realm's skill is open looks the spell up again.
+
 **Auto power** is chosen for the aimed victim, never above what is affordable
 (retail `ChooseSpellPowerLevelForTarget`):
 
@@ -351,17 +357,16 @@ such, once; a quiet use is not told twice.
 
 ### The aim of a blind caster
 
-A blind caster's aim goes astray (retail `CheckSpellBackfire`): unless the
-spell is aimed at themselves, is of the Mental realm, is Rocket Blast, is a
-reflection or an auto recast, a Blind caster who does not have the Effective
-While Blind trait (a monster: is not a Monk) has a 20 percent chance that the
-aim is changed. A member with the trait escapes it with chance 50 scaled by
+A blind caster's aim goes astray (retail `CheckSpellBackfire`): once a
+spell has come off, unless it is aimed at the caster, is of the Mental realm,
+is Rocket Blast, is a reflection or an automatic recast, a Blind caster has a
+20 percent chance that the aim is changed. A member with the trait escapes it with chance 50 scaled by
 profession level, the rest of the time it is the same 20 percent. If it goes
 astray, a spell aimed at one body, a friend or a group takes a random other
 body in the fight (members and monsters alike, not the caster; for a group
 spell, that body's whole group or the party); a cone, a blast or a point
 spell goes to a random spot within the spell's reach of the caster. The
-player is told. The Rust code has no such rule (see *Open questions*).
+player is told.
 
 ## 5. Whom it reaches
 
@@ -377,7 +382,7 @@ then the monsters as they joined it.
 | --- | --- |
 | the caster | the caster |
 | a friend | the body aimed at, if it is the caster or a friend, and reached |
-| the party | every member of the party (the dead too: the rows decide) |
+| the party | every member of the party (the dead too: the rows decide); cast by a member, also the monsters on the party's side within the spell's radius plus 1 m of the party |
 | an enemy | the foe aimed at; or, aimed "ahead", the foe reached whose direction from the caster's eye is nearest to the way the caster faces, the nearer of two equal; a foe must be reached |
 | an enemy group | the foe aimed at, then every other of its group, reached or not (`PopulateSpellTargetMarkers`) |
 | a cone | every living body but the caster, reached, inside the cone toward the aimed foe |
@@ -758,13 +763,13 @@ practice even if it fizzles.
 - **Light, Detect Secrets, X-Ray, Chameleon, Shadow Hound, Magic Screen,
   Missile Shield, Armorplate, Enchanted Blade** and the others that only lay
   a spell on the party: each is an *Enchant* row (section 6) with what it
-  adds in [actors](actors.md): Armorplate armour `ceil(power/2)` boosted;
+  adds in [actors](actors.md): Armorplate armour against being pierced `ceil(power/2)` boosted;
   Enchanted Blade to-hit the same; Bless armour and to-hit `2` boosted;
-  Armormelt `-power` armour; Magic Screen `4*power + 7` resistance in every
+  Armormelt `-power` armour against being pierced; Magic Screen `4*power + 7` resistance in every
   realm; Element Shield `7*power` in Fire, Water, Air, Earth; Soul Shield
   `10*power` in Mental and Divine; Missile Shield `(power + 5) * 5` percent
   missile deflection; Superman `5*power` to every attribute; Haste `10*power`
-  Speed and `0.1*power` of stride; Body of Stone `power` armour and `8*power`
+  Speed and `0.1*power` of stride; Body of Stone `power` armour against being pierced and `8*power`
   percent damage cut, at most 100; Chameleon `power` against being seen. Light,
   Detect Secrets and X-Ray have no number in the game's rules: they change what
   the party sees. Shadow Hound lets the party see every monster in its line of
@@ -781,8 +786,13 @@ practice even if it fizzles.
 - **Sonic Boom and Alarm** also startle: monster groups within `30 m * power +
   50 m` of the spot take notice of the noise (retail `AlertMonsterGroupsToNoise`).
   The Rust code has no such rule (see *Open questions*).
-- **Spells with no row**: Rout, Dispel Undead, Death Curse and Booze are in the
-  original's spell list but have no row in the table; they cannot be cast.
+- **Rout** and **Alarm** frighten as Sonic Boom does; **Dispel Undead**
+  harms and one time in two tries to paralyze; **Rocket Blast** harms.
+- **Booze** does one of five things by a roll: nauseates 40, restores
+  stamina by its dice 40, puts to sleep 10, hexes 5, lays Superman 5 in a
+  hundred.
+- **Death Curse** has no row: it does nothing in the original either (its
+  effect is "not implemented" there).
 
 ## 9. Where member and monster differ
 
@@ -873,24 +883,22 @@ into the sections above.
 
 ### Missing
 
-20. **A blind caster's aim** (`CheckSpellBackfire`, `Magic.cpp:3528-3593`): described
-    in section 4; not in the Rust.
-22. **Set Portal refused** where the level forbids it, the party has no walkable
-    ground, or the level moved this update (`Magic.cpp:2157-2160`).
-23. **Party spells reach allied monsters.** A spell aimed at the party also lays on
-    monsters on the party's side within the spell's radius of the party
-    (`Magic.cpp:3668-3708`), and a monster may cast one. The Rust reaches the
-    members only and refuses monsters the party spells (`combat/monster_spells.rs`
-    `castable`).
-24. **Sonic Boom and Alarm alert monsters** to the noise
-    (`Magic Effects.cpp:3252` region, `AlertMonsterGroupsToNoise`). There is
-    nothing in the Rust for a monster to hear.
-25. **Monsters' choices of spell**: the original does not offer an enemy-group
-    spell at a *group of monsters* on the other side nor a cone or blast that
-    would hit a neutral monster (`SpellAreaHitsNeutralMonster`,
-    `MonsterAI.cpp:1793-1823, 1862-2043`); the Rust offers the party only, and
-    never vetoes (`combat/monster_spells.rs` `aims`).
-26. **Rout, Dispel Undead, Death Curse, Booze** have no row (section 8).
+20. *Done:* a blind caster's aim (section 4).
+22. *Done, in part:* Set Portal waits while the party is in the air or
+    standing on a prop. The original also refuses it in the update a level
+    moved (`LevelMovedThisUpdate`), which is not here.
+23. *Done:* a member's spell aimed at the party also reaches the monsters on
+    the party's side within the spell's radius of the party (plus the party's
+    own 1 m). A monster never casts one: the original's monster targets have
+    no case for it (`CollectMonsterSpellTargets`), so it finds no target.
+24. *Done:* Sonic Boom and Alarm are heard ([monsters](monsters.md),
+    `assets/tables/noises.ron`).
+25. *Done:* a monster offers enemy-group spells at the other side's monster
+    groups as well as the party, and casts no cone or blast whose area would
+    take in a monster standing with neither side, judged at a power it rolls
+    for the purpose (`SpellAreaHitsNeutralMonster`). Not judged for a spell
+    aimed at all enemies, which takes only enemies.
+26. *Done:* Booze (section 8).
 
 ### Unknown
 
@@ -968,9 +976,22 @@ as it arrives, says `Landed` once all of it has, and is gone. What follows a
 deed is whatever its maker put beside it, read by the maker's own observer of
 `Landed`: a drain's share, the spell that may burst or be turned back, the
 caster's practice, an auto recast. The code that lands a deed knows nothing
-of spells, casters or fights; a breath, a cloud's pulse and a trap are deeds
-too, each followed by its own maker. A cast is told as it is made, and what
-its deed did as it lands.
+of spells, casters or fights; a breath, a cloud's pulse, a trap and a blow
+are deeds too, each followed by its own maker. A cast is told as it is made,
+and what its deed did as it lands.
+
+**A deed lands as events.** On each victim it reaches, each row is weighed
+(`Lands`: whether it is for them, whether it waits on the row before, its
+roll, the defences) and what gets through is applied (`Applies`), by the
+observer of what the row changes: health, what ails the victim, its spell
+points, the spells laid on it, what heat takes of what it carries. Each reads
+only what it changes. One who was alive before a row and is not after may
+cheat death (`Settles`) before the next row is weighed. The party's own rows
+land once, with the first member reached.
+
+**Paying is an event.** A cast pays its points and stamina through `Pays`;
+an auto cast that fizzled is cast again (`Cast` with `again`), and goes on
+while stamina and points last.
 
 **What a spell does is its rows.** The code that applies an effect row never
 names a spell. Where one spell truly behaves alone, that is a kind of effect

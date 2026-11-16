@@ -624,6 +624,13 @@
             (kind: Cure(conditions: [Unconscious, Asleep])),
         ],
     ),
+    // As Sonic Boom frightens.
+    ROUT: (
+        effects: [
+            (kind: Afflict(condition: Afraid), roll: SpellRounds, save: 5, spell_realm: true),
+            (kind: Afflict(condition: Afraid), on: Monsters, roll: SpellRounds, save: 5, spell_realm: true, half: true, landed: true),
+        ],
+    ),
     BOILING_BLOOD_EXPLOSION: (
         effects: [
             (roll: SpellDice, spell_realm: true),
@@ -632,6 +639,13 @@
     RENEWAL: (
         effects: [
             (kind: Renew),
+        ],
+    ),
+    // As Sonic Boom frightens; it is heard as far (noises.ron).
+    ALARM: (
+        effects: [
+            (kind: Afflict(condition: Afraid), roll: SpellRounds, save: 5, spell_realm: true),
+            (kind: Afflict(condition: Afraid), on: Monsters, roll: SpellRounds, save: 5, spell_realm: true, half: true, landed: true),
         ],
     ),
     PHILOSOPHERS_BANE: (
@@ -655,6 +669,31 @@
         effects: [
             (kind: DrainPool, on: Party, roll: Fifty),
             (kind: Dispel, on: Party),
+        ],
+    ),
+    // It harms, and one time in two tries to paralyze.
+    DISPEL_UNDEAD: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
+            (kind: Afflict(condition: Paralyzed), roll: SpellRounds, chance: 50, save: 18, spell_realm: true),
+        ],
+    ),
+    // One of five on whoever drinks: nauseated, refreshed, asleep, hexed, or
+    // Superman laid on them.
+    BOOZE: (
+        effects: [
+            (kind: OneOf([
+                (weight: 40, kind: Afflict(condition: Nauseated), roll: SpellRounds),
+                (weight: 40, kind: Refresh, roll: SpellDice),
+                (weight: 10, kind: Afflict(condition: Asleep), roll: SpellRounds),
+                (weight: 5, kind: Afflict(condition: Hexed), roll: SpellRounds),
+                (weight: 5, kind: Enchant(SUPERMAN), roll: SpellRounds),
+            ])),
+        ],
+    ),
+    ROCKET_BLAST: (
+        effects: [
+            (roll: SpellDice, spell_realm: true),
         ],
     ),
 }

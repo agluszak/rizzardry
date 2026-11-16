@@ -64,7 +64,7 @@ pub fn chosen(asked: u32, affordable: u32, class: PowerChoice) -> u32 {
 pub fn auto(
     spell: &SpellDefinition,
     (restores, outlasts): (Option<Restores>, &[Condition]),
-    victim: Option<(&Vitals, bool)>,
+    victim: Option<(&Vitals, &crate::game::characters::Conditions, bool)>,
     affordable: u32,
     failure: [u32; MAX_POWER as usize],
     identify: Option<(u8, u32)>,
@@ -72,7 +72,7 @@ pub fn auto(
     if let Some((difficulty, boost)) = identify {
         return identifying(boost, difficulty).min(affordable);
     }
-    let Some((victim, member)) = victim else { return 1 };
+    let Some((victim, conditions, member)) = victim else { return 1 };
     let failure = |power: u32| failure[power as usize - 1];
     let power = if outlasts.is_empty() {
         let Some(restores) = restores else { return 1 };
@@ -102,7 +102,7 @@ pub fn auto(
         }
     } else {
         let mut turns = None;
-        for &(condition, lasting) in victim.conditions.iter() {
+        for &(condition, lasting) in conditions.iter() {
             if outlasts.contains(&condition) {
                 match lasting {
                     // Nothing outlasts it: the least power.
@@ -254,18 +254,14 @@ mod tests {
     fn auto(asked: &Auto) -> u32 {
         let spell = SpellDefinition { cost: 3, dice: asked.dice, ..Default::default() };
         let victim = asked.victim.map(|victim| {
-            let vitals = Vitals {
-                health: victim.health,
-                stamina: victim.stamina,
-                conditions: victim.conditions.clone(),
-                ..Default::default()
-            };
-            (vitals, victim.member)
+            let mut vitals = Vitals::default();
+            (vitals.health, vitals.stamina) = (victim.health, victim.stamina);
+            (vitals, victim.conditions, victim.member)
         });
         super::auto(
             &spell,
             (asked.restores, asked.outlasts),
-            victim.as_ref().map(|(vitals, member)| (vitals, *member)),
+            victim.as_ref().map(|(vitals, conditions, member)| (vitals, *conditions, *member)),
             asked.affordable,
             asked.failure,
             asked.identify,
@@ -373,8 +369,7 @@ mod tests {
     /// 21 for powers 1 to 7. Power 5 is cheapest.
     #[test]
     fn a_cure_takes_the_cheapest_power_to_outlast_the_poison() {
-        let mut poisoned = Conditions::default();
-        poisoned.inflict(Condition::Poisoned, Lasting::Rounds(20));
+        let poisoned = Conditions::from([(Condition::Poisoned, Lasting::Rounds(20))]);
         let v = victim(true, (10, 10), (10, 10), &poisoned);
         assert_eq!(auto(&curing(v, &[Condition::Poisoned], 7, [0; 7])), 5);
         // Held to what the points pay for: 4 costs 24 of 60, 30, 27, 24.

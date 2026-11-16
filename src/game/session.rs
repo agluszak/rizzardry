@@ -23,12 +23,12 @@ pub fn begin_adventure(world: &mut World, drafts: &[CharacterDraft]) -> Result<(
     if !(1..=6).contains(&drafts.len()) {
         return Err("Create between one and six adventurers.");
     }
+    let spells = &world.resource::<crate::game::data::Catalogs>().spells;
     let characters = drafts
         .iter()
         .map(|draft| {
-            draft
-                .finish()
-                .map(|character| (character, crate::game::magic::LearnedSpells(draft.spells())))
+            let learned = crate::game::magic::LearnedSpells::of(draft.spells(), spells);
+            draft.finish().map(|character| (character, learned))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let destination = world.resource::<NewGameDestination>();

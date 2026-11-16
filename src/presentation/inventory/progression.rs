@@ -398,13 +398,13 @@ fn refresh(
         let value = match *caption {
             Caption::Header => format!(
                 "{} - level {} {} (profession level {})",
-                c.name,
-                c.level(),
+                c.identity.name,
+                c.calling.level(),
                 name(
-                    crate::content::ui::PROFESSION_NAMES + c.profession as usize,
-                    format!("{:?}", c.profession)
+                    crate::content::ui::PROFESSION_NAMES + c.calling.profession as usize,
+                    format!("{:?}", c.calling.profession)
                 ),
-                c.profession_levels[c.profession]
+                c.calling.levels[c.calling.profession]
             ),
             Caption::Remaining => format!(
                 "Remaining: {} attributes, {} skills, {} spell picks",
@@ -414,13 +414,13 @@ fn refresh(
             ),
             Caption::Message => editor.message.clone(),
             Caption::Attribute(a) => {
-                format!("{a:?}: {} (+{})", c.attributes[a], draft.allocated_attribute(a))
+                format!("{a:?}: {} (+{})", c.abilities.0[a], draft.allocated_attribute(a))
             }
             Caption::Skill(s) => {
                 format!(
                     "{}: {} (+{})",
                     name(crate::content::ui::SKILL_NAMES + s as usize, format!("{s:?}")),
-                    c.skill_points[s],
+                    c.training.0[s],
                     draft.allocated_skill(s)
                 )
             }

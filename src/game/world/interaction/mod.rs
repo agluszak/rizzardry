@@ -27,11 +27,11 @@ use super::triggers::DoorState;
 use crate::content::characters::{Attribute, Skill};
 use crate::content::level::{Lock, TRAP_TYPES};
 use crate::content::spells::Working;
-use crate::game::characters::{Character, Practise, Vitals};
+use crate::game::actors::{Attributes, Body, BodyItem};
+use crate::game::characters::{Calling, Practise, Trained, Vitals};
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
-use crate::game::hits::effects::{Body, BodyItem};
 use crate::game::magic::Outcome;
 use crate::game::magic::casting::{MagicNews, Worked};
 use crate::game::magic::reach::Marked;
@@ -88,8 +88,10 @@ const FORCE_STRENGTH: u32 = 50;
 
 /// The lock or trap still standing on a device; removed once it is picked,
 /// forced or disarmed. Its authored kind and grade stay in the definition.
-#[derive(Component, Clone, Debug, Default, PartialEq)]
+#[derive(Component, Clone, Debug, PartialEq)]
 pub struct Guarded {
+    /// The lock or trap, as the level authored it.
+    pub lock: Lock,
     /// A trap's type, authored or rolled from its grade when first faced
     /// (retail `SelectTrapType`), and then kept.
     pub trap: Option<u8>,
@@ -101,12 +103,11 @@ pub struct Guarded {
 
 impl Guarded {
     pub fn new(lock: Lock) -> Self {
-        match lock {
-            Lock::Trap { kind, .. } => Guarded { trap: kind, ..default() },
-            Lock::Pickable { difficulty } => {
-                Guarded { practice_left: difficulty.clamp(2, 8) * 3, ..default() }
-            }
-        }
+        let (trap, practice_left) = match lock {
+            Lock::Trap { kind, .. } => (kind, 0),
+            Lock::Pickable { difficulty } => (None, difficulty.clamp(2, 8) * 3),
+        };
+        Guarded { lock, trap, faced_at: None, practice_left }
     }
 }
 
@@ -135,11 +136,6 @@ pub fn current(world: &World) -> Option<(Entity, Entity)> {
     let mut attempts =
         world.try_query_filtered::<(Entity, &AttemptOn), With<DeviceInteraction>>()?;
     attempts.iter(world).next().map(|(attempt, on)| (attempt, on.0))
-}
-
-/// Start an attempt on a device.
-pub(crate) fn begin(world: &mut World, device: Entity, work: Work) -> Entity {
-    world.spawn((DeviceInteraction { work }, AttemptOn(device))).id()
 }
 
 #[derive(Debug)]
@@ -263,12 +259,11 @@ pub enum Unable {
     UnsupportedTrap,
 }
 
-/// A member's Locks & Traps level, if they can use it now (retail
-/// `GetPartySlotLocksTrapsLevel`).
-pub fn lock_skill(character: &Character, vitals: &Vitals) -> Option<u32> {
-    let level = character.skill(Skill::LocksAndTraps);
-    (vitals.can_act() && (character.skill_available(Skill::LocksAndTraps) || level > 0))
-        .then_some(level)
+/// The Locks & Traps level of a member who can act, if they have the skill
+/// to use (retail `GetPartySlotLocksTrapsLevel`).
+pub fn lock_skill(character: Trained, skills: &crate::game::actors::Skills) -> Option<u32> {
+    let level = skills[Skill::LocksAndTraps];
+    (character.can_use(Skill::LocksAndTraps) || level > 0).then_some(level)
 }
 
 /// A member's chance in 100 to inspect a trap, or to disarm one of its
@@ -278,52 +273,60 @@ pub fn trap_chance(skill: Option<u32>, difficulty: u8, setting: Difficulty) -> i
     (skill * 3 / 2 + (11 - setting as i32) * 10).clamp(0, 99)
 }
 
-/// A member's chance in 100 to force a lock with this many tumblers, if
-/// they may try (retail `W8LockInteraction::AttemptForce`).
+/// The chance in 100 of a member who can act to force a lock with this many
+/// tumblers, if they have the stamina and strength to try (retail `W8LockInteraction::AttemptForce`).
 pub fn force_chance(
     strength: u32,
     vitals: &Vitals,
     tumblers: usize,
     setting: Difficulty,
 ) -> Option<u32> {
-    if !vitals.can_act() || vitals.stamina.current < FORCE_STAMINA || strength <= FORCE_STRENGTH {
+    if vitals.stamina.current < FORCE_STAMINA || strength <= FORCE_STRENGTH {
         return None;
     }
     let divisor = (setting as usize + tumblers - 1).clamp(2, 8);
     Some((strength - FORCE_STRENGTH) >> (divisor - 2))
 }
 
+/// A device's lock or trap stops its use.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Confront {
+    #[event_target]
+    pub device: Entity,
+}
+
 /// A device's lock or trap stops its use: start working on it (retail
-/// `OpenLockInteraction`, `OpenTrapInteraction`). Facing a trap rolls its
-/// type the first time.
-pub(crate) fn confront(world: &mut World, device: Entity, lock: Lock) {
-    if current(world).is_some() {
+/// `OpenLockInteraction`, `OpenTrapInteraction`), unless something is being
+/// worked on already, or in a fight. Facing a trap rolls its type the first
+/// time.
+fn confront(
+    confront: On<Confront>,
+    mut guarded: Query<&mut Guarded>,
+    attempts: Query<(), With<DeviceInteraction>>,
+    battle: Query<(), With<Battle>>,
+    clock: Res<GameClock>,
+    mut rng: ResMut<GameRng>,
+    mut news: MessageWriter<LockNews>,
+    mut commands: Commands,
+) {
+    let Ok(mut guarded) = guarded.get_mut(confront.device) else { return };
+    if !attempts.is_empty() {
         return;
     }
-    if world.query_filtered::<Entity, With<Battle>>().iter(world).next().is_some() {
-        world.write_message(LockNews::NotInCombat);
+    if !battle.is_empty() {
+        news.write(LockNews::NotInCombat);
         return;
     }
-    let work = match lock {
+    let work = match guarded.lock {
         Lock::Pickable { difficulty } => {
-            world.write_message(LockNews::Locked);
+            news.write(LockNews::Locked);
             Work::Picking(Picking::new(difficulty))
         }
         Lock::Trap { difficulty, .. } => {
-            let now = world.resource::<GameClock>().ms;
-            let mut guarded = world.get_mut::<Guarded>(device).unwrap();
-            let remark = guarded.faced_at.is_none_or(|at| now - at > REMARK_AGAIN_MS);
-            guarded.faced_at = Some(now);
-            let trap = match guarded.trap {
-                Some(trap) => trap,
-                None => {
-                    let trap = world
-                        .resource_scope(|_, mut rng: Mut<GameRng>| roll_trap(difficulty, &mut rng));
-                    world.get_mut::<Guarded>(device).unwrap().trap = Some(trap);
-                    trap
-                }
-            };
-            world.write_message(LockNews::Trapped { remark });
+            let remark = guarded.faced_at.is_none_or(|at| clock.ms - at > REMARK_AGAIN_MS);
+            guarded.faced_at = Some(clock.ms);
+            let trap = *guarded.trap.get_or_insert_with(|| roll_trap(difficulty, &mut rng));
+            news.write(LockNews::Trapped { remark });
             Work::Disarming(Disarming {
                 difficulty,
                 trap,
@@ -333,7 +336,7 @@ pub(crate) fn confront(world: &mut World, device: Entity, lock: Lock) {
             })
         }
     };
-    begin(world, device, work);
+    commands.spawn((DeviceInteraction { work }, AttemptOn(confront.device)));
 }
 
 /// Retail `SelectTrapType`: draw types until one's grade lies within four
@@ -365,7 +368,7 @@ impl Busy<'_, '_> {
 
 /// A member's Locks & Traps level if they can use it now.
 fn skill(body: &BodyItem) -> Option<u32> {
-    lock_skill(body.character.as_deref()?, &body.vitals)
+    lock_skill(body.trained().filter(|_| body.can_act)?, body.skills)
 }
 
 /// A member raises a tumbler of the lock being picked.
@@ -467,7 +470,7 @@ fn pick(
     pick: On<Pick>,
     mut attempts: Query<(&mut DeviceInteraction, &AttemptOn)>,
     mut guards: Query<&mut Guarded>,
-    mut bodies: Query<Body>,
+    bodies: Query<Body>,
     busy: Busy,
     setting: Res<Difficulty>,
     mut rng: ResMut<GameRng>,
@@ -477,7 +480,7 @@ fn pick(
     let Pick { attempt, actor, tumbler } = *pick;
     let Ok((mut interaction, &AttemptOn(device))) = attempts.get_mut(attempt) else { return };
     let Work::Picking(picking) = &mut interaction.work else { return };
-    let Some(skill) = bodies.get_mut(actor).ok().filter(|_| !busy.busy()).and_then(|b| skill(&b))
+    let Some(skill) = bodies.get(actor).ok().filter(|_| !busy.busy()).and_then(|b| skill(&b))
     else {
         return;
     };
@@ -522,7 +525,7 @@ fn pick(
 fn force(
     force: On<Force>,
     mut attempts: Query<&mut DeviceInteraction>,
-    mut bodies: Query<Body>,
+    mut members: Query<(&mut Vitals, &Attributes, Has<crate::game::actors::CanAct>)>,
     busy: Busy,
     setting: Res<Difficulty>,
     mut rng: ResMut<GameRng>,
@@ -532,14 +535,14 @@ fn force(
     let Force { attempt, actor: member } = *force;
     let Ok(mut interaction) = attempts.get_mut(attempt) else { return };
     let Work::Picking(picking) = &interaction.work else { return };
-    let Ok(mut body) = bodies.get_mut(member) else { return };
-    let strength = body.attributes[Attribute::Strength];
-    let Some(chance) = force_chance(strength, &body.vitals, picking.tumblers.len(), *setting)
-        .filter(|_| !busy.busy())
+    let Ok((mut vitals, a, can_act)) = members.get_mut(member) else { return };
+    let Some(chance) =
+        force_chance(a[Attribute::Strength], &vitals, picking.tumblers.len(), *setting)
+            .filter(|_| can_act && !busy.busy())
     else {
         return;
     };
-    body.vitals.tire(FORCE_STAMINA);
+    vitals.tire(FORCE_STAMINA);
     // The panel redraws from the attempt: what its members can do changed.
     interaction.set_changed();
     if rng.below(100) < chance {
@@ -556,7 +559,7 @@ fn inspect(
     inspect: On<Inspect>,
     mut attempts: Query<(&mut DeviceInteraction, &AttemptOn)>,
     guards: Query<(), With<Guarded>>,
-    mut bodies: Query<Body>,
+    bodies: Query<Body>,
     busy: Busy,
     (content, setting): (Res<Catalogs>, Res<Difficulty>),
     mut rng: ResMut<GameRng>,
@@ -569,7 +572,7 @@ fn inspect(
     if !ready(trap, guards.contains(device), &content, &mut news) || busy.busy() {
         return;
     }
-    let Some(skill) = bodies.get_mut(actor).ok().and_then(|body| skill(&body)) else { return };
+    let Some(skill) = bodies.get(actor).ok().and_then(|body| skill(&body)) else { return };
     let chance = trap.inspection_chance(Some(skill), *setting);
     if rng.below(100) >= chance {
         commands.trigger(Sprung { attempt, by: Some(actor) });
@@ -598,7 +601,7 @@ fn disarm(
     disarm: On<Disarm>,
     mut attempts: Query<(&mut DeviceInteraction, &AttemptOn)>,
     guards: Query<(), With<Guarded>>,
-    mut bodies: Query<Body>,
+    bodies: Query<Body>,
     busy: Busy,
     (content, setting): (Res<Catalogs>, Res<Difficulty>),
     mut rng: ResMut<GameRng>,
@@ -611,7 +614,7 @@ fn disarm(
     if !ready(trap, guards.contains(device), &content, &mut news) || busy.busy() {
         return;
     }
-    let Some(skill) = bodies.get_mut(actor).ok().and_then(|body| skill(&body)) else { return };
+    let Some(skill) = bodies.get(actor).ok().and_then(|body| skill(&body)) else { return };
     if component >= COMPONENTS || trap.disarmed[component] {
         return;
     }
@@ -651,7 +654,7 @@ fn spring(
 fn release_pins(
     release: On<ReleasePins>,
     mut attempts: Query<&mut DeviceInteraction>,
-    members: Query<(), With<Character>>,
+    members: Query<(), With<Calling>>,
     busy: Busy,
 ) {
     let Ok(mut interaction) = attempts.get_mut(release.attempt) else { return };
@@ -763,7 +766,6 @@ fn overcome(
     overcome: On<Overcome>,
     attempts: Query<&AttemptOn>,
     mut doors: Query<&mut DoorState>,
-    mut activations: MessageWriter<super::ActivateDevice>,
     mut commands: Commands,
 ) {
     let Ok(&AttemptOn(device)) = attempts.get(overcome.attempt) else { return };
@@ -772,7 +774,7 @@ fn overcome(
     if let Ok(mut door) = doors.get_mut(device) {
         door.locked = false;
     }
-    activations.write(super::ActivateDevice { device, player: false });
+    commands.trigger(super::triggers::Activate { device, by: super::triggers::By::Level });
 }
 
 /// The device attempt magic may be aimed at now: the one under way, unless
@@ -808,7 +810,8 @@ pub(crate) fn end_attempts(
 }
 
 pub(crate) fn plugin(app: &mut App) {
-    app.add_observer(pick)
+    app.add_observer(confront)
+        .add_observer(pick)
         .add_observer(force)
         .add_observer(inspect)
         .add_observer(disarm)
@@ -825,6 +828,8 @@ pub(crate) fn plugin(app: &mut App) {
 mod tests {
     use super::*;
     use crate::content::characters::{Gender, Profession, Race};
+    use crate::game::characters::Character;
+    use crate::game::world::triggers::{Activate, By};
 
     /// A lock of two tumblers, picked by one skilled enough never to drop a
     /// pin: the first leaves it locked, the second opens it, and the device
@@ -838,16 +843,20 @@ mod tests {
             .init_resource::<Catalogs>()
             .add_message::<LockNews>()
             .add_message::<MagicNews>()
-            .add_message::<crate::game::world::ActivateDevice>()
+            .init_resource::<Ran>()
+            .add_observer(|run: On<Activate>, mut ran: ResMut<Ran>| ran.0.push(*run.event()))
             .add_plugins((plugin, crate::game::actors::plugin));
         let world = app.world_mut();
         let mut thief = Character::new("Thief", Race::Human, Gender::Male, Profession::Rogue);
-        thief.skill_points[Skill::LocksAndTraps] = 100;
+        thief.training.0[Skill::LocksAndTraps] = 100;
         let member = world.spawn((Vitals::new(&thief), thief)).id();
         crate::game::party::roster::test_party(world, &[member]);
+        world.run_schedule(crate::game::actors::Settle);
         let lock = Lock::Pickable { difficulty: 2 };
         let door = world.spawn(Guarded::new(lock)).id();
-        let attempt = begin(world, door, Work::Picking(Picking::new(2)));
+        let attempt = world
+            .spawn((DeviceInteraction { work: Work::Picking(Picking::new(2)) }, AttemptOn(door)))
+            .id();
         world.flush();
         world.trigger(Pick { attempt, actor: member, tumbler: 0 });
         world.flush();
@@ -856,8 +865,10 @@ mod tests {
         world.flush();
         assert!(world.get::<Guarded>(door).is_none());
         assert!(world.get_entity(attempt).is_err(), "the attempt is over");
-        let ran: Vec<_> =
-            world.resource_mut::<Messages<crate::game::world::ActivateDevice>>().drain().collect();
-        assert!(matches!(ran.as_slice(), [run] if run.device == door && !run.player));
+        let ran = &world.resource::<Ran>().0;
+        assert!(matches!(ran.as_slice(), [run] if run.device == door && run.by == By::Level));
     }
+
+    #[derive(Resource, Default)]
+    struct Ran(Vec<Activate>);
 }

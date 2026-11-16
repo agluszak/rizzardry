@@ -6,7 +6,7 @@ use crate::{
         npcs::NpcDefinition,
     },
     game::{
-        characters::{Character, Vitals},
+        characters::Calling,
         data::Catalogs,
         inventory::PartyInventory,
         items::{Charges, Give, Items, Known, Lose, Place, Put, make, split},
@@ -198,12 +198,9 @@ fn replenish(
 pub fn trade_quantity(d: &ItemDefinition, units: u32) -> u32 {
     if d.class == EquipClass::Ammunition { units } else { 1 }
 }
-pub fn communication<'a>(members: impl Iterator<Item = (&'a Character, &'a Vitals)>) -> u32 {
-    members
-        .filter(|(_, v)| v.can_act())
-        .map(|(c, _)| c.skill(crate::content::characters::Skill::Communication))
-        .max()
-        .unwrap_or(0)
+/// The best Communication among those who can act.
+pub fn communication<'a>(able: impl Iterator<Item = &'a crate::game::actors::Skills>) -> u32 {
+    able.map(|skills| skills[crate::content::characters::Skill::Communication]).max().unwrap_or(0)
 }
 fn price(
     d: &NpcDefinition,
@@ -250,7 +247,7 @@ fn quantity(d: &ItemDefinition, asked: u32, available: u32) -> Result<(), TradeE
 pub struct Pricing<'w, 's> {
     stocks: Query<'w, 's, (&'static ActorId, &'static MerchantStock)>,
     roster: Single<'w, 's, &'static PartyRoster>,
-    members: Query<'w, 's, (&'static Character, &'static Vitals)>,
+    members: Query<'w, 's, &'static crate::game::actors::Skills, With<crate::game::actors::CanAct>>,
     held: Items<'w, 's>,
     content: Res<'w, Catalogs>,
 }
@@ -390,16 +387,12 @@ fn maintain(
     clock: Res<GameClock>,
     story: Res<super::story::StoryFacts>,
     party: Query<&PartyRoster>,
-    members: Query<&Character>,
+    members: Query<&Calling>,
     mut rng: ResMut<GameRng>,
     mut commands: Commands,
 ) {
     let average = crate::game::party::average_level(
-        party
-            .iter()
-            .flat_map(|p| p.iter())
-            .filter_map(|m| members.get(m).ok())
-            .map(Character::level),
+        party.iter().flat_map(|p| p.iter()).filter_map(|m| members.get(m).ok()).map(Calling::level),
     );
     let items = &content.items;
     {

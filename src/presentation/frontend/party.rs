@@ -381,9 +381,9 @@ fn summary_lines(profile: &Character, strings: &GameStrings) -> [String; 13] {
     use crate::content::characters::Attribute::*;
     let a = &crate::game::actors::Attributes::of_sheet(profile);
     [
-        profile.name.clone(),
-        profession_line(strings, profile.profession),
-        kind_line(strings, profile.gender, profile.race),
+        profile.identity.name.clone(),
+        profession_line(strings, profile.calling.profession),
+        kind_line(strings, profile.birth.gender, profile.birth.race),
         format!("Str: {}", a[Strength]),
         format!("Int: {}", a[Intelligence]),
         format!("Pie: {}", a[Piety]),
@@ -391,9 +391,9 @@ fn summary_lines(profile: &Character, strings: &GameStrings) -> [String; 13] {
         format!("Dex: {}", a[Dexterity]),
         format!("Spd: {}", a[Speed]),
         format!("Sen: {}", a[Senses]),
-        format!("HP: {}", profile.max_hp(a)),
-        format!("Stam: {}", profile.max_stamina(a)),
-        format!("Carry: {}", profile.capacity(a) / 10),
+        format!("HP: {}", profile.max_hp()),
+        format!("Stam: {}", profile.max_stamina()),
+        format!("Carry: {}", profile.capacity() / 10),
     ]
 }
 

@@ -3,14 +3,13 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
-use crate::game::characters::Character;
 use crate::game::world::identify::{GroupMember, MonsterGroup};
 use crate::game::world::population::Monster;
 
 /// Used by screen notices and headless logging; it requires no UI or renderer.
 #[derive(SystemParam)]
 pub struct ActorNames<'w, 's> {
-    characters: Query<'w, 's, &'static Character>,
+    characters: Query<'w, 's, crate::game::characters::PaperReadOnly>,
     monsters: Query<'w, 's, (&'static Monster, Option<&'static GroupMember>)>,
     groups: Query<'w, 's, &'static MonsterGroup>,
     content: If<Res<'w, crate::game::data::Catalogs>>,
@@ -19,7 +18,7 @@ pub struct ActorNames<'w, 's> {
 impl ActorNames<'_, '_> {
     pub fn name(&self, actor: Entity) -> Option<String> {
         if let Ok(profile) = self.characters.get(actor) {
-            return Some(profile.name.clone());
+            return Some(profile.identity.name.clone());
         }
         let (monster, membership) = self.monsters.get(actor).ok()?;
         let catalog = &self.content.species;

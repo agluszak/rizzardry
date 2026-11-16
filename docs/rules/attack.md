@@ -300,17 +300,14 @@ For the swing, let:
 - **Mode's to-hit**: swing, bash, shoot 0; thrust, kick -10; berserk -30; throw -5;
   punch +5; lash +10. (retail `AttackModeMod`)
 - **Surprise**: +10 if the blow is unaware, +10 if it is natural. Both can hold.
-- **Target's armour against the aim**: the target's total armour, plus 2 (members;
-  the bracing figure) if the target is defending, plus the target's *guard*:
-  - fatigue/10 of the target, for a target whose fatigue tells on armour
-    (monsters; not members);
-  - minus, when the blow is a surprise, the armour its surprise strips
-    (for a monster, twice its vulnerability from behind; for a member, what Speed
-    and a shield give, and more if defending, see [arms](arms.md)), plus the
-    defending member's extra strip if defending;
-  - minus 4 if the target is on the move and the mode is not a throw, lash or
-    shot. The target is on the move if it is a monster that is walking this
-    round, or a member while the party is running.
+- **Target's armour against the aim**: the target's total armour
+  ([arms](arms.md), "Armour"; defending, tiredness and spells are parts of
+  it), less what the blow *gets past*:
+  - when the blow is a surprise, the target's Speed and Shield parts, each
+    only if positive, and 2 more for a monster vulnerable from behind;
+  - 4 if the target is on the move, in formation, and the mode is not a
+    throw, lash or shot. The target is on the move if it is a monster that is
+    walking this round, or a member while the party is running.
 - **Difference of agility**: `(attacker agility - target agility) / 10`.
 
 Then:
@@ -421,8 +418,8 @@ aim already made against the ward stays.
 The blow lands at a location of the victim, picked by one d100 against cumulative
 percentages:
 
-- On a **monster**: its species' chances for its seven locations; anything past the
-  total lands at location 3 (its body).
+- On a **monster**: its species' chances for its seven places, whoever strikes;
+  anything past the total lands on its fourth place (its body).
 - On a **member**: if the attacker is a monster, its species' chances for the five
   parts (head, body, legs, hands, feet); otherwise (a member struck by a member)
   15, 40, 30, 10, 5 percent for head, body, legs, hands, feet. Anything past the
@@ -457,11 +454,11 @@ penetration = scaled( mode's penetration
   throw +5; lash -10. (retail `AttackModeMod`)
 - **Fatigue** counts here for a member unless the weapon is a modern weapon (full
   amount, not halved); for a monster only for an attack that tires little.
-- **Victim's armour at the location**: its armour at that location, plus 2 if
-  defending, minus what the victim has against that mode (monsters only), plus
-  **twice** the target's guard as defined above (fatigue/10, minus the surprise
-  strip, minus 4 on the move). The surprise now is the attack's surprise as it is
-  after any interception or fumble.
+- **Victim's armour at the location**: its total, what it has against being
+  pierced, and what covers the place, plus what it has against that mode
+  (monsters only), less **twice** what the blow gets past as defined above.
+  The surprise now is the attack's surprise as it is after any interception
+  or fumble.
 - The difference of agility is with the actual victim.
 - Scaled for difficulty by the attacker's side. The blind rule is not applied.
 
@@ -544,6 +541,7 @@ A blow that did more than 0 damage lands as a **hit** on its victim:
 | Knock Out | Unconscious | Earth | 22 | rounds | all |
 | Blind | Blind | Fire | 12 | rounds | all |
 | Frighten | Afraid | Mental | 5 | rounds | all |
+| Swallow | Missing until the swallower dies ([actors](actors.md), *Swallowed*); a monster dies outright | Divine | 22; 24 for a monster | without end | only from a monster's blow |
 | Possess | Turncoat | Divine | 14 | rounds | members, and only from a monster's blow |
 | Drain Health | a member's maximum health drained | Earth | 0 | `c d2 + 1` | members |
 | Drain Stamina | stamina lost | Water | 0 | `(2c)d5 + 3c + 1` | all |
@@ -708,6 +706,44 @@ greater initiative, and the main hand on a tie. (retail `AssignCombatPhases`)
 An order is accepted when the round begins (see [round](round.md)); a member who
 no longer holds a weapon they were accepted with loses that attack.
 
+### How a blow sounds
+
+A member's weapon is heard as an attack begins: the swing sound of its sound
+class, or a fist's (class 9) when the hand is empty (retail
+`MakePCAttackSound`). Each blow that gets through armour is heard where it
+lands: the sound the original's table (`HitSounds.txt`) gives for the
+arm's sound class against what is struck there is made of. A monster is
+struck in its species' own material; a member in the material of what is
+worn at the place struck (head, body, legs, hands, feet), or in material 0
+when nothing is. A close blow that misses by no more than the target's block
+([arms](arms.md)) is heard as blocked: the arm's class against what the
+member holds in the off hand, or material 2. A class the table has no sound for takes the first class's;
+one past the table, a plain hit (`GetMaterialImpactSound`). A monster's
+swing is not heard; a missile's hit uses its launcher's class, not the
+missile's own.
+
+### What the party says in a fight
+
+A member still standing and awake, wounded below half their health, cries
+out a moment and a half later; below a fifth, says they are going down
+(retail `QueueDamageReactionEvents`). When a member dies another, at random
+among those who can speak, reacts three seconds later: to a man's death, a
+woman's, or, if the dead was one of the first two in the order, by an
+event of its own and from past those two (`QueuePartyDeathReaction`). As a
+round begins after members fell in the last, the last one standing speaks,
+or someone does if more than one fell (`QueueLastSurvivorEvent`,
+`QueueTurnReactionEvent`). Presentation's own random numbers choose who
+speaks. A member speaks as a condition becomes their worst (each condition
+its own line, or one of a few; another member speaks for one gone
+missing) and as one lifts: raised, back, fully recovered, or better while
+something remains (`QueueConditionChangeReaction`,
+`QueueConditionClearedReaction`). After any wound one of three remarks
+follows, unless the same is already waiting for that member; one that
+comes while someone is speaking is dropped. Wounds taken while the party
+camps are not remarked on (retail's `fSurprisePossible`, set as camping
+begins). Not here: the quiet the original keeps during Al-Sedexus's capture
+and after some scripted changes of condition.
+
 ## 8. Where member and monster differ
 
 - **Arm figures**: a member's from their sheet and gear (section 4); a monster's from
@@ -726,11 +762,10 @@ no longer holds a weapon they were accepted with loses that attack.
 - **Catching unaware, noticing**: only a defending member notices; a monster does
   not (the original lets a waiting monster notice; see *Open questions*). A monster target is caught unaware only from its rear.
 - **Provocation**: only a member's attack provokes.
-- **Armour**: a monster's armour is "10 less the species value" by place with a
-  separate figure per mode and a table of hit locations, its guard rises with its
-  fatigue, and it strips by twice its vulnerability from behind; a member's armour
-  comes from Speed, race, load, shield and worn gear, bracing when defending, and
-  the surprise strip by Speed and shield. A monster is never braced.
+- **Armour**: the same parts and the same sums ([arms](arms.md)); a monster has
+  fewer parts and its own seven places and armour against each mode, and its
+  tiredness adds to its armour where a member's takes from it. A monster that
+  waits is braced as a defending member is.
 - **Fatigue**: a modern weapon (members) or an attack that tires little (monsters)
   halves fatigue in the aim; fatigue counts in the penetration for a member's
   non-modern weapons but for a monster only for the attacks that tire little.
@@ -805,22 +840,23 @@ components and the rule that reads them.
 | what a swing costs (6) | the attack, the attacker | the stamina |
 | the next attack's moment (7) | attacks left with each hand, each hand's initiative, the moment now | which hand and when, or none |
 
-A rule is tried on fighters made of the components it reads, with the
-expected value worked out from the page, not from running the code.
-
-**The attack itself is one piece that only arranges.** The observer of
-`Strike` reads what the rules need about the attacker, the target and those
-around them, calls the rules in the order of this page, and makes happen what
-they decide: the blow lands at once, since the next swing and what is told
-of the attack depend on what it did; what was shot is spent (`Spend`), skills are practised (`Practise`), a group is provoked
-(`Provocation`), the player is told (`CombatNews`). It holds no rule of its
+**The attack is a chain that only arranges.** The observer of `Strike`
+chooses, catches unaware and announces; each swing is then a `Swing` of its
+own, which calls the rules in the order of this page and makes happen what
+they decide: a blow that gets through lands as a deed on its victim, and so
+does Razor Cloak's answer; a swing's cost and a guard's step are `Tires`;
+what was shot is spent (`Spend`), skills are practised (`Practise`), a group
+is provoked (`Provocation`), the player is told (`CombatNews`). Bevy lands
+each deed before the next swing is begun, so the next swing, and what is told
+of the attack, see what the blow did. What the swings came to is kept on the
+attacker (`Attacking`) until the attack ends. None of it holds a rule of its
 own: no arithmetic, no constant.
 
 **What is read of an actor is one view.** The attacker and the target are read
 through the same view of an actor (health and what ails it, attributes, level,
 `Attacks`, `Armour`, side, place), whichever of member and monster they are.
 The places section 8 lists where the two differ are differences in what
-refit wrote, never a branch in a rule here.
+its figures hold, never a branch in a rule here.
 
 **What goes.** `open`, `swing`, `intercept`, `catch_unaware`, `land_blow`,
 `riposte`, `next_attack` as functions that take the world's queries and a

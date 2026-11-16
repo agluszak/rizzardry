@@ -26,7 +26,6 @@ use crate::content::characters::{Realm, Skill};
 use crate::content::spells::{MAX_POWER, PowerChoice, SpellCatalog, SpellDefinition, Targeting};
 use crate::content::ui::SpriteSheet;
 use crate::game::characters::Condition;
-use crate::game::characters::{Character, Vitals};
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
@@ -575,27 +574,33 @@ fn glyph(targeting: Targeting) -> char {
 #[allow(clippy::too_many_arguments)]
 fn offers<'a>(
     view: &MagicView,
-    (member, character): (Entity, &Character),
+    (member, character, attributes, skills): (
+        Entity,
+        crate::game::characters::Trained,
+        &crate::game::actors::Attributes,
+        &crate::game::actors::Skills,
+    ),
     (party, held): (Entity, &Items),
     learned: &LearnedSpells,
     points: &SpellPoints,
-    maximum: &enum_map::EnumMap<Realm, u32>,
     spells: &'a SpellCatalog,
     content: &'a Catalogs,
     context: UseContext,
-    silenced: bool,
+    conditions: &crate::game::characters::Conditions,
 ) -> Vec<Offer<'a>> {
+    let silenced = conditions.has(Condition::Silenced);
     if view.items {
         let sources: Vec<_> = if view.pool {
             held.pool(party)
                 .iter()
                 .filter_map(|&item| {
-                    let spell = usable_item(character, item, held, content, false)?;
+                    let spell =
+                        usable_item((character, attributes, skills), item, held, content, false)?;
                     Some((item, spell))
                 })
                 .collect()
         } else {
-            usable_items(member, character, held, content)
+            usable_items(member, (character, attributes, skills), held, content)
         };
         return sources
             .into_iter()
@@ -629,22 +634,18 @@ fn offers<'a>(
     }
     let Some(realm) = view.realm else { return Vec::new() };
     let mut offers: Vec<_> = learned
-        .0
-        .iter()
-        .map(|&id| &spells[id])
+        .ids()
+        .map(|id| &spells[id])
         .filter(|s| s.realm == Some(realm))
         .map(|s| {
-            let affordable = affordable(points, s, maximum);
-            let silenced = silenced && silence_stops(s, character.skill(Skill::Alchemy) > 0);
+            let affordable = affordable(points, s);
+            let silenced = silenced && silence_stops(s, skills[Skill::Alchemy] > 0);
             Offer {
                 source: Source::Spell { spell: s.id, power: 1 },
                 spell: s,
                 label: format!("{} {}", glyph(s.targeting), s.name),
                 cost: s.cost.to_string(),
-                available: affordable > 0
-                    && resolvable(s, content)
-                    && usable_now(s, context)
-                    && !silenced,
+                available: affordable > 0 && resolvable(s) && usable_now(s, context) && !silenced,
                 silenced,
             }
         })
@@ -658,13 +659,9 @@ fn offers<'a>(
 }
 
 /// The most the points pay for of a spell: its realm's points over its cost.
-fn affordable(
-    points: &SpellPoints,
-    spell: &SpellDefinition,
-    maximum: &enum_map::EnumMap<Realm, u32>,
-) -> u32 {
+fn affordable(points: &SpellPoints, spell: &SpellDefinition) -> u32 {
     spell.realm.map_or(0, |realm| {
-        crate::game::magic::power::affordable(points.available(realm, maximum), spell.cost)
+        crate::game::magic::power::affordable(points.available(realm), spell.cost)
     })
 }
 
@@ -686,7 +683,7 @@ pub(super) fn follow_caster(
     mut commands: Commands,
     mut views: Query<(Entity, &mut MagicView, Option<&CastsAt>, Option<&ConversationTarget>)>,
     (selected, roster): (Res<super::SelectedMember>, Single<&PartyRoster>),
-    vitals: Query<&Vitals>,
+    able: Query<(), With<crate::game::actors::CanAct>>,
     (battle, camp, interaction, conversations): (
         Option<Single<&Battle>>,
         Option<Res<crate::game::camp::Camp>>,
@@ -715,7 +712,7 @@ pub(super) fn follow_caster(
             member: None,
         };
     }
-    let unable = attempt.is_some() && !vitals.get(view.caster).unwrap().can_act();
+    let unable = attempt.is_some() && !able.contains(view.caster);
     let context = context(
         attempt,
         conversation_target.map(|r| r.0),
@@ -736,7 +733,12 @@ pub(super) fn draw_magic_view(
     mut commands: Commands,
     mut views: Query<(&mut MagicView, &MagicScroll, Option<&CastsAt>, Option<&ConversationTarget>)>,
     sliders: Query<(&SliderValue, &SliderRange)>,
-    members: Query<(&Character, &Vitals, &Attributes)>,
+    members: Query<(
+        crate::game::characters::PaperReadOnly,
+        &crate::game::characters::Conditions,
+        &Attributes,
+        &crate::game::actors::Skills,
+    )>,
     casters: Query<(&LearnedSpells, &SpellPoints)>,
     (battle, camp, interaction, (party, held)): (
         Option<Single<&Battle>>,
@@ -786,14 +788,14 @@ pub(super) fn draw_magic_view(
     ) else {
         return;
     };
-    let (character, vitals, attributes) = members.get(view.caster).unwrap();
+    let (paper, conditions, attributes, skills) = members.get(view.caster).unwrap();
+    let character = paper.trained();
     let (learned, points) = casters.get(view.caster).unwrap();
-    let mana_maximum = character.max_points(attributes, learned, spells);
     // Realms: their points, the chosen one latched; the first with points
     // chosen when none is.
     if !view.items {
         if view.realm.is_none() {
-            view.realm = EnumSet::<Realm>::all().iter().find(|&r| mana_maximum[r] > 0);
+            view.realm = EnumSet::<Realm>::all().iter().find(|&r| points.most(r) > 0);
         }
         for (button, selected, entity) in &parts.p0() {
             let wanted = view.realm == Some(button.0);
@@ -806,7 +808,7 @@ pub(super) fn draw_magic_view(
             crate::presentation::retail_controls::set_enabled(
                 &mut commands,
                 entity,
-                mana_maximum[button.0] > 0,
+                points.most(button.0) > 0,
                 false,
             );
         }
@@ -823,25 +825,23 @@ pub(super) fn draw_magic_view(
             }
         }
         for (realm, mut label) in &mut parts.p1() {
-            let current = points.current(realm.0, &mana_maximum);
-            let value = format!("{current}/{}", mana_maximum[realm.0]);
+            let current = points.current(realm.0);
+            let value = format!("{current}/{}", points.most(realm.0));
             if label.value != value {
                 label.value = value;
             }
         }
     }
-    let silenced = vitals.conditions.has(Condition::Silenced);
     let offers = offers(
         &view,
-        (view.caster, character),
+        (view.caster, character, attributes, skills),
         (*party, &held),
         learned,
         points,
-        &mana_maximum,
         spells,
         &content,
         context,
-        silenced,
+        conditions,
     );
     let Ok((scroll_value, scroll_range)) = sliders.get(scroll.0) else { return };
     let maximum = offers.len().max(ROWS) - ROWS;
@@ -896,7 +896,7 @@ pub(super) fn draw_magic_view(
     // Pips: as many lit as the chosen power, rated by failure chance;
     // auto pips only where retail offers them.
     if !view.items {
-        let affordable = spell.map_or(0, |s| affordable(points, s, &mana_maximum));
+        let affordable = spell.map_or(0, |s| affordable(points, s));
         for (pip, hovered, mut picture, mut visibility) in &mut parts.p5() {
             let index = pip.0 as usize;
             let shown = match (pip.0, spell.map(|s| s.power)) {
@@ -913,6 +913,7 @@ pub(super) fn draw_magic_view(
                     } else {
                         rating(learned_chance(
                             character,
+                            skills,
                             spell,
                             pip.0 + 1,
                             Pace { difficulty: Difficulty::Normal, moment: 0 },
@@ -984,7 +985,7 @@ pub(super) fn commit_magic_choice(
     content: If<Res<Catalogs>>,
     (conversations, speakers, monsters, party): (
         Query<crate::game::npcs::conversation::DialogueReadOnly>,
-        Query<&crate::game::npcs::NpcBody>,
+        Query<&crate::game::npcs::Embodies>,
         Query<
             (Entity, &crate::game::characters::Vitals, crate::game::world::ActorPose),
             With<crate::game::world::population::Monster>,
@@ -1082,7 +1083,12 @@ fn choose_row(
     click: On<Activate>,
     rows: Query<&Row>,
     mut views: Query<(&mut MagicView, Option<&CastsAt>, Option<&ConversationTarget>)>,
-    members: Query<(&Character, &Vitals, &Attributes)>,
+    members: Query<(
+        crate::game::characters::PaperReadOnly,
+        &crate::game::characters::Conditions,
+        &Attributes,
+        &crate::game::actors::Skills,
+    )>,
     casters: Query<(&LearnedSpells, &SpellPoints)>,
     battle: Option<Single<&Battle>>,
     (camp, interaction, (party, held)): (
@@ -1099,17 +1105,15 @@ fn choose_row(
         return;
     };
     let spells = &content.spells;
-    let (character, vitals, attributes) = members.get(view.caster).unwrap();
+    let (paper, conditions, attributes, skills) = members.get(view.caster).unwrap();
+    let character = paper.trained();
     let (learned, points) = casters.get(view.caster).unwrap();
-    let silenced = vitals.conditions.has(Condition::Silenced);
-    let mana_maximum = character.max_points(attributes, learned, spells);
     let offers = offers(
         &view,
-        (view.caster, character),
+        (view.caster, character, attributes, skills),
         (*party, &held),
         learned,
         points,
-        &mana_maximum,
         spells,
         &content,
         match context(
@@ -1123,7 +1127,7 @@ fn choose_row(
             Some(c) => c,
             None => return,
         },
-        silenced,
+        conditions,
     );
     // The offer the row showed, as it stands now. Unavailable rows only
     // explain themselves in retail; here they do nothing.

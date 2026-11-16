@@ -4,6 +4,7 @@
 //! time. Instances share immutable morph meshes and own their playback weights;
 //! lighting and texture animation live on their materials.
 
+use crate::game::world::bidden::{Cycle, Played};
 use std::time::Duration;
 
 use super::surfaces::ActorLight;
@@ -68,7 +69,7 @@ pub fn request_monster_visuals(
 #[derive(Component, Debug)]
 pub struct MonsterPlayback {
     /// The cycle shown, and how long it has played.
-    playing: Option<(&'static str, Stopwatch)>,
+    playing: Option<(String, Stopwatch)>,
 }
 
 /// The lighting of one actor's built model, independent of its playback: a
@@ -169,11 +170,13 @@ fn wanted_cycle(
 }
 
 /// Show each actor's wanted cycle at its current frame. A different cycle
-/// restarts playback; the same one continues it.
+/// restarts playback; the same one continues it. A cycle the game asked for
+/// plays once, and the game is told when it has been played out.
 pub fn animate_monsters(
+    mut commands: Commands,
     time: Res<Time<Virtual>>,
     mut actors: Query<(
-        (&Monster, &crate::game::characters::Vitals),
+        (Entity, &Monster, &crate::game::characters::Vitals, Option<&Cycle>),
         &MonsterVisual,
         &mut MonsterPlayback,
         Option<&LinearVelocity>,
@@ -183,11 +186,18 @@ pub fn animate_monsters(
     roots: Query<&Children, With<ModelRoot>>,
     mut cycles: Query<(&ModelCycle, &mut MorphWeights, &mut Visibility)>,
 ) {
-    for ((monster, vitals), visual, mut playback, velocity, children) in &mut actors {
+    for ((actor, monster, vitals, asked), visual, mut playback, velocity, children) in &mut actors {
         let Some(model) = models.get(&visual.0) else { continue };
-        let wanted = wanted_cycle(vitals, velocity);
-        let once = wanted == DIE;
-        let current = playback.playing.as_ref().is_some_and(|(playing, _)| *playing == wanted);
+        // What the game asked for, unless the actor has died or its model
+        // has no such cycle, which is over as soon as asked.
+        let asked = asked.filter(|_| !vitals.is_dead()).map(|cycle| cycle.0.as_str());
+        if asked.is_some_and(|asked| !model.cycles.contains_key(asked)) {
+            commands.trigger(Played { body: actor });
+        }
+        let asked = asked.filter(|asked| model.cycles.contains_key(*asked));
+        let wanted = asked.unwrap_or_else(|| wanted_cycle(vitals, velocity));
+        let once = wanted == DIE || asked.is_some();
+        let current = playback.playing.as_ref().is_some_and(|(playing, _)| playing == wanted);
         let name = if model.cycles.contains_key(wanted) { wanted } else { "IDLE" };
         let Some(cycle) = model.cycles.get(name) else { continue };
         // The previous tick already applied a completed one-shot's final pose.
@@ -198,6 +208,9 @@ pub fn animate_monsters(
                 played.elapsed_secs() * cycle.frames_per_second >= cycle.frame_count as f32 - 1.0
             })
         {
+            if asked.is_some() {
+                commands.trigger(Played { body: actor });
+            }
             continue;
         }
         if !current {
@@ -206,7 +219,7 @@ pub fn animate_monsters(
             if playback.playing.is_none() {
                 played.set_elapsed(Duration::from_secs_f32(first_phase(monster)));
             }
-            playback.playing = Some((wanted, played));
+            playback.playing = Some((wanted.to_owned(), played));
         }
         let Some((_, played)) = &mut playback.playing else { continue };
         let frames = cycle.frame_count as f32;

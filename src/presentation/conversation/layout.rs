@@ -251,11 +251,9 @@ fn build_menu(world: &mut World, canvas: Entity, root: Entity) {
                     state.set_mode(Mode::Give);
                 });
             }
+            3 => act_on(world, e, root, |conversation| Attack { conversation }),
             4 => open_trade(world, e, root),
-            5 => leave_on(world, e, root),
-            _ => {
-                world.entity_mut(e).insert((InteractionDisabled, TabIndex(-1)));
-            }
+            _ => leave_on(world, e, root),
         }
     }
 }
@@ -302,6 +300,7 @@ fn build_actions(world: &mut World, group: Entity, root: Entity, trade: bool) {
             (false, 3) => {
                 act_on(world, e, root, |conversation| Invite { conversation });
             }
+            (false, 4) => act_on(world, e, root, |conversation| Attack { conversation }),
             (false, 5) => leave_on(world, e, root),
             (true, 4..=5) => {
                 let pool = i == 4;
@@ -615,7 +614,9 @@ fn build_topics(world: &mut World, group: Entity, root: Entity) {
                 });
             }
             _ => {
-                world.entity_mut(e).insert((InteractionDisabled, TabIndex(-1)));
+                world.entity_mut(e).observe(move |_: On<Activate>, mut commands: Commands| {
+                    commands.entity(input).insert(SubmitTopic::Where);
+                });
             }
         }
     }

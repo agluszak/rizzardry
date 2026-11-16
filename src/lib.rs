@@ -1,6 +1,7 @@
 pub mod app;
 pub mod bytes;
 pub mod content;
+#[cfg(feature = "dev")]
 pub mod dev;
 pub mod game;
 #[cfg(test)]

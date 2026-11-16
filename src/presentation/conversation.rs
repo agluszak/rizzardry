@@ -216,6 +216,8 @@ pub(crate) struct TopicInput;
 #[derive(Component)]
 enum SubmitTopic {
     Ask,
+    /// Ask where what was typed is.
+    Where,
     Edit(NotebookEdit),
 }
 #[derive(Component)]
@@ -632,8 +634,9 @@ fn sync_choices(
                 (string(0x7df, "Pay"), Answer::Price(true)),
                 (string(0x7e0, "Decline"), Answer::Price(false)),
             ],
-            // Retail's confirmation dialog for giving all the party's gold.
-            Some(Asked::GiveAll { .. }) => {
+            // Retail's confirmation dialogs for giving all the party's gold
+            // and for turning on the person.
+            Some(Asked::GiveAll { .. } | Asked::Attack) => {
                 vec![("OK".into(), Answer::Price(true)), ("Cancel".into(), Answer::Price(false))]
             }
             _ => vec![],
@@ -691,6 +694,8 @@ fn sync_choices(
                         string(0x7e5, "Price: %d gold").replace("%d", &gold.to_string())
                     } else if matches!(asked, Some(Asked::GiveAll { .. })) {
                         string(0x7d6, "Give all your gold?")
+                    } else if matches!(asked, Some(Asked::Attack)) {
+                        string(0x798, "Attack NPC?")
                     } else {
                         string(0x7e4, "Choose a response")
                     };
@@ -940,6 +945,9 @@ fn submit_topic(
             let session = views.session();
             let text = text.value().to_string();
             match *submit {
+                SubmitTopic::Where => {
+                    commands.trigger(Ask { conversation: session, text, where_is: true });
+                }
                 SubmitTopic::Ask => {
                     // A typed answer to a question, or a topic.
                     if let Ok(Asked::Options { typed: true, .. }) = questions.get(session) {
@@ -949,7 +957,7 @@ fn submit_topic(
                             reply,
                         });
                     } else {
-                        commands.trigger(Ask { conversation: session, text });
+                        commands.trigger(Ask { conversation: session, text, where_is: false });
                     }
                 }
                 SubmitTopic::Edit(edit) => {

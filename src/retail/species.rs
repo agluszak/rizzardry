@@ -13,7 +13,7 @@ use enumset::EnumSet;
 use crate::content::items::{AttackEffects, ItemId};
 use crate::content::species::{
     AttackWord, Disposition, Drop, MonsterAttack, MonsterAttributes, MonsterCatalog, MonsterMagic,
-    SpecialAttack, SpecialAttackKind, Species, Temper, Treasure,
+    SpecialAttack, SpecialAttackKind, Species, SpeciesPlace, Temper, Treasure,
 };
 use crate::content::spells::SpellId;
 
@@ -53,6 +53,7 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
                     chances: EnumMap::from_array(std::array::from_fn(|i| attack[5 + i] as u32)),
                     strength: attack[0x1b] as u32,
                 },
+                sound_class: u8::try_from(attack[0x1c] as i8).ok().filter(|&class| class < 28),
             })
         })
         .collect::<Result<_, DecodeError>>()?;
@@ -84,15 +85,34 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
         },
         hit_points: dice_at(record, 0xd6)?,
         stamina: dice_at(record, 0xda)?,
+        health_regeneration: signed(0x17c),
+        stamina_regeneration: signed(0xce),
+        notable: record[0x268] != 0,
+        // Retail `RecordFactionOffense`: record 0x146 costs forty, an NPC's
+        // body twenty.
+        offence: match (i16_at(record, 0x187)?, record[0xd0] & 1 != 0) {
+            (0x146, _) => Some(40),
+            (_, true) => Some(20),
+            _ => None,
+        },
         initiative: record[0xe4],
         attacks_per_round: record[0xe5],
         swings_per_round: record[0xe6],
         attacks,
         hits_on_party: EnumMap::from_array(bytes(0x157, 5).try_into().unwrap()),
-        evasion: signed(0x15d),
-        hit_locations: bytes(0x15f, 7).try_into().unwrap(),
-        armour_by_location: std::array::from_fn(|i| signed(0x166 + i)),
-        armour_by_mode: EnumMap::from_array(std::array::from_fn(|i| signed(0x16d + i))),
+        // The record's armour classes are lower for better guarded: its
+        // armour is 10 less its evasion, a place's cover the evasion less the
+        // place's class, and what it has against a mode the class negated
+        // (retail `GetTargetArmorClass`, `TargetArmorClassAtLocation`).
+        armour: 10 - i32::from(signed(0x15d)),
+        places: std::array::from_fn(|i| SpeciesPlace {
+            chance: record[0x15f + i],
+            cover: i32::from(signed(0x15d)) - i32::from(signed(0x166 + i)),
+        }),
+        // Past its chances a hit lands on its fourth place, its body (retail
+        // `RollMonsterHitLocation`).
+        trunk: 3,
+        against: EnumMap::from_array(std::array::from_fn(|i| -i32::from(signed(0x16d + i)))),
         experience,
         level: record[0x24f],
         display_level: record[0x251],
@@ -123,6 +143,7 @@ fn species(record: &[u8]) -> Result<Species, DecodeError> {
             _ => Disposition::Hostile,
         },
         faction: i32_at(record, 0x25f)?,
+        material: u8::try_from(i32_at(record, 0x263)?).ok().filter(|&m| m < 12).unwrap_or(0),
         combat_move_range: f32_at(record, 0x1ba)?.max(0.0),
         pronouns: record[0xcc].min(3),
         group_size: dice_at(record, 0xc1)?,
@@ -198,11 +219,14 @@ mod tests {
         let species =
             read_species(&files.read("data/databases/monsters.dbs").unwrap().unwrap()).unwrap();
         assert_eq!(species.len(), 595);
+        // Steelhide gets four stamina back a minute, and is a kill to speak of.
+        let steelhide = species.iter().find(|kind| kind.name == "Steelhide").unwrap();
+        assert_eq!((steelhide.stamina_regeneration, steelhide.notable), (4, true));
         // The Slime lashes for 2+1d6 at score 130.
         let slime = &species[1];
         assert_eq!(slime.attacks[0].score, 130);
         assert_eq!(slime.attacks[0].damage, Dice { base: 2, count: 1, sides: 6 });
-        assert_eq!(slime.evasion, 7);
+        assert_eq!(slime.armour, 3);
         let crocodile = &species[62];
         assert_eq!(crocodile.name, "Ironskin Crocodile");
         assert_eq!(crocodile.disposition, Disposition::HostileWithin(15.0));

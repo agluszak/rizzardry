@@ -232,7 +232,7 @@ impl Skill {
 }
 
 /// Where a blow lands on a character (strings 0x429..0x431).
-#[derive(Debug, Enum, EnumSetType)]
+#[derive(Debug, Enum, EnumSetType, Deserialize)]
 pub enum BodyPart {
     Head,
     Body,
@@ -312,7 +312,7 @@ impl RaceRow {
 }
 
 /// What a race adds to a realm's resistance.
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum Resist {
     Flat(i32),
     /// A d-th of vitality.

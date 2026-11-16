@@ -11,7 +11,7 @@ use bevy::ui_widgets::Activate;
 use super::{MainScreenArt, Panel, ScreenLayout, SelectedMember, layer};
 use crate::content::ui::SpriteSheet;
 use crate::game::camp::CampRequest;
-use crate::game::characters::{Character, Vitals};
+use crate::game::characters::Vitals;
 use crate::game::combat::{Battle, CombatSettings, Round};
 use crate::game::inventory::EquipSlot;
 use crate::game::items::Items;
@@ -278,7 +278,11 @@ pub fn draw_caption(
     held: Items,
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
-    members: Query<(Entity, &Character, &Vitals)>,
+    members: Query<(
+        Entity,
+        crate::game::characters::PaperReadOnly,
+        (&Vitals, &crate::game::characters::Conditions),
+    )>,
     content: If<Res<crate::game::data::Catalogs>>,
     battle: Option<Single<&Round, With<Battle>>>,
     orders: Query<&Order>,
@@ -292,8 +296,10 @@ pub fn draw_caption(
         Some((member, profile, vitals)) => {
             let first = format!(
                 "{} - {}",
-                profile.name,
-                strings.get(crate::content::ui::PROFESSION_NAMES + profile.profession as usize)
+                profile.identity.name,
+                strings.get(
+                    crate::content::ui::PROFESSION_NAMES + profile.calling.profession as usize
+                )
             );
             let mut second = if battle.is_some() {
                 match selected
@@ -330,7 +336,7 @@ pub fn draw_caption(
                     },
                 }
             } else {
-                crate::presentation::screen_art::condition_icon(vitals)
+                crate::presentation::screen_art::condition_icon(vitals.0, vitals.1)
                     .map(|mut c| {
                         c[..1].make_ascii_uppercase();
                         c

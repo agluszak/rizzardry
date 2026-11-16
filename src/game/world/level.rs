@@ -8,7 +8,6 @@
 
 use avian3d::prelude::*;
 use bevy::ecs::entity_disabling::Disabled;
-use bevy::ecs::relationship::RelationshipTarget;
 use bevy::prelude::*;
 use bevy_landmass::NavMesh3d;
 
@@ -17,7 +16,6 @@ use bevy::ecs::system::SystemParam;
 
 use super::navigation::bake::SIZE_CLASSES;
 use super::population::MonsterBodies;
-use super::scripts::LevelScript;
 use super::triggers::spawn_devices;
 use super::{navigation, population};
 use crate::content::items::LootTables;
@@ -47,7 +45,6 @@ pub struct Level {
     pub definition: Handle<LevelDefinition>,
     /// One navmesh per walker size class (`navigation::bake::SIZE_CLASSES`).
     pub navmeshes: Vec<Handle<NavMesh3d>>,
-    pub script: LevelScript,
     /// The messages its triggers show.
     pub messages: Option<Handle<TextTable>>,
 }
@@ -62,8 +59,6 @@ impl Level {
             navmeshes: (0..SIZE_CLASSES.len())
                 .map(|class| assets.load(navmesh_path(path, class)))
                 .collect(),
-            script: info
-                .map_or_else(LevelScript::default, |info| LevelScript::for_location(info.location)),
             messages: info
                 .map(|info| assets.load(crate::content::paths::level_messages(info.folder))),
         }
@@ -75,13 +70,7 @@ impl Level {
 #[cfg(test)]
 impl Level {
     pub fn test(definition: Handle<LevelDefinition>) -> Self {
-        Level {
-            path: "test".into(),
-            definition,
-            navmeshes: vec![],
-            script: default(),
-            messages: None,
-        }
+        Level { path: "test".into(), definition, navmeshes: vec![], messages: None }
     }
 }
 
@@ -215,49 +204,42 @@ pub struct Woke {
     pub away_ms: u64,
 }
 
-/// What belongs to a level: its root; whatever it owns; whatever hangs under
-/// any of these in the hierarchy; and whatever any of these hold (what is
-/// stowed in a container or bag, what a body wears or packs, the spells laid
-/// on it). It sees what is set aside too.
+/// What belongs to a level: whatever would be despawned with it. That is
+/// its root, whatever it owns, and whatever any of these hold that goes
+/// with its holder (the children of a prop, what a container stows, what a
+/// body wears or packs, the spells laid on it), set aside or not.
 #[derive(SystemParam)]
-pub struct Belongings<'w, 's> {
-    holds: Query<
-        'w,
-        's,
-        (
-            Option<&'static LevelEntities>,
-            Option<&'static Children>,
-            Option<&'static crate::game::items::Stows>,
-            Option<&'static crate::game::items::Wears>,
-            Option<&'static crate::game::items::Pack>,
-            Option<&'static crate::game::actors::spells::Spells>,
-        ),
-        Allow<Disabled>,
-    >,
+pub struct Belongings<'w> {
+    world: &'w World,
 }
 
-impl Belongings<'_, '_> {
+impl Belongings<'_> {
     /// Everything that belongs to the level at `root`, the root first.
     pub fn of(&self, root: Entity) -> Vec<Entity> {
-        fn held<T: RelationshipTarget>(targets: Option<&T>) -> impl Iterator<Item = Entity> + '_ {
-            targets.into_iter().flat_map(|targets| targets.iter())
-        }
+        use bevy::ecs::relationship::RelationshipAccessor;
         let mut found = vec![root];
         let mut next = 0;
         while let Some(&entity) = found.get(next) {
             next += 1;
-            let Ok((owned, children, stowed, worn, packed, laid)) = self.holds.get(entity) else {
-                continue;
-            };
-            let more = held(owned)
-                .chain(held(children))
-                .chain(held(stowed))
-                .chain(held(worn))
-                .chain(held(packed))
-                .chain(held(laid));
-            for entity in more {
-                if !found.contains(&entity) {
-                    found.push(entity);
+            let Ok(holder) = self.world.get_entity(entity) else { continue };
+            for component in holder.archetype().iter_components() {
+                let accessor = self
+                    .world
+                    .components()
+                    .get_info(component)
+                    .and_then(|info| info.relationship_accessor().copied());
+                let Some(RelationshipAccessor::RelationshipTarget {
+                    iter, linked_spawn: true, ..
+                }) = accessor
+                else {
+                    continue;
+                };
+                let held = holder.get_by_id(component).expect("in its archetype");
+                // SAFETY: `held` is the component the accessor was registered for.
+                for entity in unsafe { iter(held) } {
+                    if !found.contains(&entity) {
+                        found.push(entity);
+                    }
                 }
             }
         }
@@ -448,12 +430,11 @@ fn build_world(
     root: Entity,
     geometry: &LevelDefinition,
     collision: Collision,
-    script: super::scripts::LevelScript,
     tables: &LootTables,
 ) {
     let props: Vec<_> =
         geometry.props.iter().map(|_| commands.spawn(LevelOwned(root)).id()).collect();
-    spawn_devices(commands, root, geometry, &props, script, tables);
+    spawn_devices(commands, root, geometry, &props, tables);
     commands.entity(root).insert((
         RigidBody::Static,
         collision.level,
@@ -544,7 +525,7 @@ pub fn activate_level(
         let geometry = geometry.get(&level.definition).expect("prepared");
         // Built once, now that nothing else is awaited.
         let collision = prepare_collision(geometry);
-        build_world(&mut commands, root, geometry, collision, level.script, &catalogs.loot);
+        build_world(&mut commands, root, geometry, collision, &catalogs.loot);
         let navigation = navigation::install(&mut commands, root, level, geometry);
         population::populate(
             &mut commands,

@@ -6,9 +6,9 @@ use bevy::prelude::Entity;
 
 use super::sight::Sight;
 use crate::content::characters::Attribute;
+use crate::game::actors::BodyItem;
 use crate::game::actors::{Arm, reaches};
 use crate::game::characters::Condition;
-use crate::game::hits::effects::BodyReadOnlyItem;
 use crate::game::party::formation::Formation;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::Stance;
@@ -34,6 +34,8 @@ pub enum Interrupt {
     Turncoat,
     /// Fear sent it running.
     Panics,
+    /// A lure holds it: it walks toward the lure.
+    Lured,
 }
 
 impl Interrupt {
@@ -48,6 +50,7 @@ impl Interrupt {
             Interrupt::Freed => 7,
             Interrupt::Berserk => 8,
             Interrupt::Turncoat => 9,
+            Interrupt::Lured => 11,
             Interrupt::Panics => 12,
         }
     }
@@ -64,13 +67,15 @@ pub struct Plans {
     pub turned_on_friends: bool,
     /// What it was about to do is aimed at its foes.
     pub against_foes: bool,
+    /// A lure holds it.
+    pub lured: bool,
 }
 
 /// Whether one of an actor's arms reaches a friend among `combatants`: a
 /// living body on its side.
 pub fn friend_in_reach(
     sight: &Sight,
-    own: &BodyReadOnlyItem,
+    own: &BodyItem,
     combatants: &[Entity],
     formation: &Formation,
 ) -> bool {
@@ -99,14 +104,15 @@ pub fn friend_in_reach(
 ///   turns on them instead; otherwise one of three fits.
 /// - Afraid: frozen a quarter of the time, unless it is running already; one
 ///   that decides for itself then runs for its life two times in five.
+/// - A lure holds it: it walks toward the lure instead.
 /// - Turncoat: an action against its new foes stands, and is told.
 pub fn interrupt(
     rng: &mut GameRng,
-    own: &BodyReadOnlyItem,
+    own: &BodyItem,
     plans: Plans,
     friend_in_reach: bool,
 ) -> Option<Interrupt> {
-    let has = |condition| own.vitals.conditions.has(condition);
+    let has = |condition| own.conditions.has(condition);
     if has(Condition::Nauseated) && rng.below(100) < 25 {
         return Some(Interrupt::Nauseated);
     }
@@ -128,6 +134,9 @@ pub fn interrupt(
     }
     if plans.runs && has(Condition::Afraid) && rng.below(100) < 40 {
         return Some(Interrupt::Panics);
+    }
+    if plans.lured {
+        return Some(Interrupt::Lured);
     }
     (has(Condition::Turncoat) && plans.against_foes).then_some(Interrupt::Turncoat)
 }

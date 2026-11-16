@@ -2,10 +2,9 @@
 //! section 4, "The special attack").
 
 use super::close::{closes_in, reaches_party};
-use super::sight::MindItem;
-use crate::content::species::Reach;
+use crate::content::species::{Reach, SpecialAttack, Temper};
+use crate::game::actors::BodyItem;
 use crate::game::characters::Condition;
-use crate::game::hits::effects::BodyReadOnlyItem;
 use crate::game::hits::specials::special;
 use crate::game::magic::reach::Aim;
 use crate::game::rng::GameRng;
@@ -20,8 +19,8 @@ pub struct Made {
 }
 
 /// Whether its special attack summons.
-pub fn summons(mind: &MindItem) -> bool {
-    mind.special.0.kind.is_some_and(|kind| special(kind).summons.is_some())
+pub fn summons(attack: &SpecialAttack) -> bool {
+    attack.kind.is_some_and(|kind| special(kind).summons.is_some())
 }
 
 /// Whether a monster's special attack is ready, the party `gap` metres off:
@@ -30,22 +29,22 @@ pub fn summons(mind: &MindItem) -> bool {
 /// of `aims`; a summoning needs a fight under way, the party within long
 /// reach, and a summoner not friendly to it.
 pub fn ready(
-    own: &BodyReadOnlyItem,
-    mind: &MindItem,
+    own: &BodyItem,
+    (special_attack, cooldown): (&SpecialAttack, u8),
     gap: f32,
     fighting: bool,
     aims: &[Aim],
 ) -> bool {
-    let Some(kind) = mind.special.0.kind else { return false };
+    let Some(kind) = special_attack.kind else { return false };
     let stamina = own.vitals.stamina;
-    let silenced = own.vitals.conditions.has(Condition::Silenced) && special(kind).silenced;
-    let placed = if summons(mind) {
+    let silenced = own.conditions.has(Condition::Silenced) && special(kind).silenced;
+    let placed = if summons(special_attack) {
         fighting && gap <= Reach::Long.metres() && own.stance() != Stance::Friendly
     } else {
         !aims.is_empty()
     };
-    mind.special.0.chance != 0
-        && mind.cooldown.is_none_or(|cooldown| cooldown.0 == 0)
+    special_attack.chance != 0
+        && cooldown == 0
         && stamina.current >= stamina.max / 10
         && !silenced
         && placed
@@ -56,17 +55,18 @@ pub fn ready(
 /// sure when none does, at one of the aims, for a tenth of its stamina.
 pub fn makes(
     rng: &mut GameRng,
-    own: &BodyReadOnlyItem,
-    mind: &MindItem,
+    own: &BodyItem,
+    (temper, special_attack, cooldown): (&Temper, &SpecialAttack, u8),
     gap: f32,
     fighting: bool,
     aims: &[Aim],
 ) -> Option<Made> {
-    if closes_in(own, mind, gap) || !ready(own, mind, gap, fighting, aims) {
+    let readiness = (special_attack, cooldown);
+    if closes_in(own, temper, gap) || !ready(own, readiness, gap, fighting, aims) {
         return None;
     }
-    let aim = (!summons(mind)).then(|| aims[rng.below(aims.len() as u32) as usize]);
+    let aim = (!summons(special_attack)).then(|| aims[rng.below(aims.len() as u32) as usize]);
     let chance =
-        if reaches_party(own.attacks, gap) { u32::from(mind.special.0.chance) } else { 100 };
+        if reaches_party(own.attacks, gap) { u32::from(special_attack.chance) } else { 100 };
     (rng.below(100) < chance).then_some(Made { aim, cost: own.vitals.stamina.max / 10 })
 }

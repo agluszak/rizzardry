@@ -68,6 +68,7 @@ impl Plugin for FrontendPlugin {
                 Update,
                 (
                     refresh,
+                    creator_stats::embody_draft,
                     creator_stats::refresh,
                     creator_skills::refresh,
                     creator_spells::refresh,

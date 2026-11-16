@@ -1,0 +1,60 @@
+#![enable(implicit_some)]
+// What a person answers when asked after someone or somewhere (retail
+// `HandleNpcDialogueInput`, `FindNpcNameOrPlaceQuote`).
+//
+//   joins        a topic that begins with one of these asks the person to join
+//   asks_where   a topic that begins with one of these asks where the rest is
+//   talks_about  a topic that begins with this is about the rest
+//   people       who can be asked after: the bit of the speaker's record that
+//                says they know of them, and the quote they answer with
+//   regions      the regions that can be asked after, by the names they go by
+//   directions   the quote for each region asked after (rows, in the order of
+//                `regions` from 1) from each region the party may be in
+//                (columns, by the level's region number); none where the
+//                original has none
+(
+    joins: ["join", "recruit"],
+    asks_where: ["where is ", "where are ", "where's "],
+    talks_about: "talk about ",
+    people: [
+        ("Phoozang", 0x4000, 116), ("Cosmic Lords", 0x8000, 116), ("Yamir", 0x10000, 111),
+        ("Z'Ant", 0x20000, 109), ("Vi Domina", 0x40000, 106), ("Al-Sedexus", 0x80000, 113),
+        ("Astral Dominae", 0x1, 106), ("Destinae Dominus", 0x2, 112), ("Chaos Moliri", 0x4, 106),
+        ("Helm of Serinity", 0x8, 107), ("Mook", 0x10, 106), ("Umpani", 0x20, 111),
+        ("T'Rang", 0x40, 109), ("Trang", 0x40, 109), ("Higardi", 0x80, 106),
+        ("Trynnie", 0x100, 107), ("Rapax", 0x200, 114), ("Rynjin", 0x400, 114),
+        ("Rattkin", 0x800, 107), ("Dark Savant", 0x1000, 106), ("Marten", 0x2000, 112),
+    ],
+    regions: [
+        (1, ["Monastery", "the Monastery"]),
+        (2, ["Arnika"]),
+        (3, ["Trynton"]),
+        (4, ["Swamp", "the swamp"]),
+        (5, ["Marten's Bluff"]),
+        (6, ["Mine Tunnels"]),
+        (7, ["Sea Caves"]),
+        (8, ["Bayjin"]),
+        (9, ["Rapax Castle"]),
+        (10, ["Rapax Rift"]),
+        (11, ["Mt. Gigas", "Mt Gigas", "Gigas"]),
+        (12, ["Ascension Peak"]),
+        (13, ["Rapax Away Camp"]),
+        (14, ["Cosmic Circle"]),
+    ],
+    directions: [
+        [None, 117, 210, 210, 210, 210, 210, 213, 210, 211, 211, 211, 211, 213, 210, None, 210, 213],
+        [None, 211, 117, 210, 210, 210, 210, 213, 210, 213, 213, 211, 211, 213, 210, None, 210, 213],
+        [None, 211, 211, 117, 213, 213, 213, 213, 213, 213, 213, 211, 211, 213, 213, None, 212, 213],
+        [None, 211, 212, 212, 117, 210, 213, 213, 211, 211, 211, 211, 211, 213, 211, None, 212, 211],
+        [None, 211, 212, 212, 211, 117, 211, 213, 211, 211, 211, 211, 211, 213, 211, None, 212, 211],
+        [None, 211, 212, 212, 212, 212, 117, 213, 212, 211, 211, 211, 211, 213, 212, None, 212, 211],
+        [None, 213, 212, 212, 212, 212, 212, 117, 212, 211, 211, 211, 211, 213, 212, None, 212, 211],
+        [None, 211, 212, 212, 210, 210, 210, 213, 117, 211, 211, 212, 212, 213, 210, None, 212, 213],
+        [None, 212, 212, 210, 210, 210, 210, 210, 212, 117, 210, 212, 212, 210, 210, None, 212, 211],
+        [None, 212, 212, 210, 210, 210, 210, 210, 210, 211, 117, 212, 212, 210, 210, None, 212, 211],
+        [None, 210, 210, 210, 210, 210, 210, 210, 210, 213, 213, 117, 213, 210, 210, None, 210, 210],
+        [None, 212, 210, 210, 210, 210, 210, 210, 210, 213, 213, 212, 117, 210, 210, None, 212, 212],
+        [None, None, None, None, None, None, None, None, None, None, 211, 211, 211, 117, None, None, 212, 211],
+        [None, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 212, 212],
+    ],
+)

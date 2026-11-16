@@ -50,7 +50,7 @@ pub fn steer_moves(
     party: Query<(Entity, &Position), With<PartyBody>>,
     mut walkers: Query<(
         Entity,
-        (&Monster, &Vitals, &Attacks),
+        (&Monster, &Vitals, &Attacks, Has<crate::game::actors::CanFight>),
         ActorPose,
         &Walker,
         &mut AgentTarget3d,
@@ -60,7 +60,9 @@ pub fn steer_moves(
 ) {
     let Ok((party, party_at)) = party.single() else { return };
     let party_eye = PartyBody::eye(party_at);
-    for (entity, (monster, vitals, arms), at, walker, mut target, movement) in &mut walkers {
+    for (entity, (monster, vitals, arms, can_fight), at, walker, mut target, movement) in
+        &mut walkers
+    {
         let (needs_move, heading) = match movement.goal {
             MoveGoal::Retreat(point) => (true, AgentTarget3d::Point(point)),
             MoveGoal::Party => {
@@ -91,7 +93,7 @@ pub fn steer_moves(
                 (needed, AgentTarget3d::Entity(entity))
             }
         };
-        let continues = vitals.can_fight() && movement.moved < movement.budget && needs_move;
+        let continues = can_fight && movement.moved < movement.budget && needs_move;
         let heading = if !continues {
             commands.entity(entity).remove::<CombatMove>();
             AgentTarget3d::None

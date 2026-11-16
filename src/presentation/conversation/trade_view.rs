@@ -36,7 +36,11 @@ pub(super) fn sync_trade_rows(
     sessions: Query<&Conversation>,
     stocks: Query<&MerchantStock>,
     parties: Query<(Entity, &PartyRoster), With<crate::game::party::roster::Party>>,
-    members: Query<&crate::game::characters::Character>,
+    members: Query<(
+        crate::game::characters::PaperReadOnly,
+        &crate::game::actors::Attributes,
+        &crate::game::actors::Skills,
+    )>,
     held: crate::game::items::Items,
     selection: Res<SelectedMember>,
     widgets: TradeWidgets,
@@ -65,10 +69,15 @@ pub(super) fn sync_trade_rows(
         let allows = |d: &crate::content::items::ItemDefinition| {
             state.item_group.is_none_or(|group| group == ItemGroup::of(d.class))
                 && state.usability.is_none_or(|party_wide| {
+                    let users = crate::game::items::users(d);
+                    let admitted = |e| {
+                        let (character, attributes, skills) = members.get(e).unwrap();
+                        users.admit((character.calling, character.birth), attributes, skills)
+                    };
                     if party_wide {
-                        roster.iter().any(|e| members.get(e).unwrap().can_use(d))
+                        roster.iter().any(admitted)
                     } else {
-                        member.is_some_and(|e| members.get(e).unwrap().can_use(d))
+                        member.is_some_and(admitted)
                     }
                 })
         };

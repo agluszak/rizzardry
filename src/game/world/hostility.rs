@@ -10,9 +10,9 @@ use bevy::prelude::*;
 
 use super::identify::{GroupMember, GroupMembers, MonsterGroup};
 use crate::content::species::{Disposition, Species};
-use crate::game::characters::{Condition, Vitals};
+use crate::game::actors::time::Elapsed;
+use crate::game::characters::{Condition, Conditions, Vitals};
 use crate::game::factions::{Band, Factions, PARTY, UNALIGNED};
-use crate::game::party::recovery::Elapsed;
 use crate::game::time::GameClock;
 
 /// How someone stands toward the party (retail `W8Disposition`).
@@ -57,8 +57,8 @@ impl Side {
     /// The side it is on now: its own, turned about while it is Turncoat.
     /// The dead have no conditions, so they keep the side they died on
     /// ([`Side::die`]).
-    pub fn now(&self, vitals: &Vitals) -> Stance {
-        if vitals.conditions.has(Condition::Turncoat) { self.0.turned() } else { self.0 }
+    pub fn now(&self, conditions: &Conditions) -> Stance {
+        if conditions.has(Condition::Turncoat) { self.0.turned() } else { self.0 }
     }
 
     /// The side its group or kind gives it, whatever has turned it.
@@ -68,8 +68,8 @@ impl Side {
 
     /// Dying fixes the side it was on as it died, since death lifts what
     /// had turned it.
-    pub fn die(&mut self, vitals: &Vitals) {
-        self.0 = self.now(vitals);
+    pub fn die(&mut self, conditions: &Conditions) {
+        self.0 = self.now(conditions);
     }
 }
 
@@ -87,9 +87,9 @@ pub enum Loyalty {
 
 impl Loyalty {
     /// The band it keeps to now: one under Turncoat has broken with its own.
-    pub fn now(self, vitals: &Vitals) -> Self {
+    pub fn now(self, conditions: &Conditions) -> Self {
         match self {
-            Loyalty::Faction(_) if vitals.conditions.has(Condition::Turncoat) => Loyalty::None,
+            Loyalty::Faction(_) if conditions.has(Condition::Turncoat) => Loyalty::None,
             loyalty => loyalty,
         }
     }
@@ -112,6 +112,9 @@ pub struct Allegiance {
     /// Intelligence squared, in game minutes (retail
     /// `RefreshMonsterGroupHostility`).
     pub grudge: u64,
+    /// What its death costs its killers with its faction, where that is not
+    /// by how often they have offended.
+    pub offence: Option<i32>,
 }
 
 impl Allegiance {
@@ -122,6 +125,7 @@ impl Allegiance {
             disposition: species.disposition,
             npc: species.npc.is_some(),
             grudge: intelligence * intelligence * crate::game::time::MINUTE_MS,
+            offence: species.offence,
         }
     }
 
@@ -290,15 +294,17 @@ fn forget(
     _: On<Elapsed>,
     groups: Query<(Entity, &MonsterGroup, &GroupMembers)>,
     monsters: Query<(&Allegiance, Has<crate::game::combat::Combatant>)>,
+    leaders: Query<&Allegiance, With<super::identify::Leads>>,
     (factions, clock): (Res<Factions>, Res<GameClock>),
     mut commands: Commands,
 ) {
     for (group, kept, members) in &groups {
         let Some(set) = kept.set else { continue };
-        let members = || members.iter().filter_map(|member| monsters.get(member).ok());
-        let fighting = members().any(|(_, fighting)| fighting);
-        let forgets =
-            members().next().is_none_or(|(leader, _)| leader.forgets(set.at, clock.ms, &factions));
+        let fighting = monsters.iter_many(members.iter()).matched().any(|(_, fighting)| fighting);
+        let forgets = leaders
+            .iter_many(members.iter())
+            .matched()
+            .any(|leader| leader.forgets(set.at, clock.ms, &factions));
         if !fighting && forgets {
             commands.trigger(Stand { group, stance: None });
         }
@@ -341,12 +347,12 @@ pub struct Provoked;
 /// nobody.
 pub fn take_offence(
     offence: On<Provocation>,
-    monsters: Query<(&Side, &Vitals, &GroupMember)>,
+    monsters: Query<(&Side, &Vitals, &Conditions, &GroupMember)>,
     mut commands: Commands,
 ) {
-    let Ok((side, vitals, member)) = monsters.get(offence.monster) else { return };
+    let Ok((side, vitals, conditions, member)) = monsters.get(offence.monster) else { return };
     commands.entity(member.0).insert(Provoked);
-    if vitals.is_dead() || vitals.conditions.has(Condition::Turncoat) {
+    if vitals.is_dead() || conditions.has(Condition::Turncoat) {
         return;
     }
     if side.own() != Stance::Hostile {
@@ -354,10 +360,39 @@ pub fn take_offence(
     }
 }
 
+/// A death counts against the dead one's faction when a member of the
+/// party or a monster friendly to it ran its health out; one summoned
+/// counts for nothing (retail `RecordMonsterKill`).
+pub fn answer_for(
+    died: On<Add<crate::game::characters::Dead>>,
+    dead: Query<
+        (&crate::game::characters::Dead, &Allegiance),
+        Without<crate::game::magic::pointcasts::SummonedBy>,
+    >,
+    killers: Query<(&Side, Has<crate::game::party::roster::PartyMember>)>,
+    (mut factions, clock): (ResMut<Factions>, Res<GameClock>),
+    mut news: MessageWriter<crate::game::factions::FactionNews>,
+) {
+    let Ok((&crate::game::characters::Dead { by: Some(killer) }, allegiance)) =
+        dead.get(died.entity)
+    else {
+        return;
+    };
+    let answers =
+        killers.get(killer).is_ok_and(|(side, member)| member || side.own() == Stance::Friendly);
+    if answers {
+        news.write_batch(factions.record_offence(allegiance.faction, allegiance.offence, clock.ms));
+    }
+}
+
 pub fn plugin(app: &mut App) {
     app.add_observer(stand)
+        .add_observer(answer_for)
         .add_observer(take_offence)
         .add_observer(forget)
+        .add_observer(super::identify::first_leads)
+        .add_observer(super::identify::succeed_the_dead)
+        .add_observer(super::identify::succeed_the_gone)
         .add_observer(made)
         .add_observer(grouped)
         .add_observer(joined)
@@ -430,7 +465,7 @@ mod tests {
         assert!(crab.forgets(1_000, 1_001 + hold, &factions));
         let mook = allegiance(Disposition::Neutral, crate::game::factions::MOOK, 10);
         assert!(!mook.forgets(1_000, 2_000, &factions));
-        assert!(factions.record_offence(crate::game::factions::MOOK, false, 1_500).is_some());
+        assert!(factions.record_offence(crate::game::factions::MOOK, None, 1_500).is_some());
         assert!(mook.forgets(1_000, 2_000, &factions), "the Mook band fell after it was set");
     }
 }

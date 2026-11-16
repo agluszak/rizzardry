@@ -856,6 +856,15 @@ impl AssetLoader for PvlDefinitionLoader {
                 .map(|(name, at)| Spot {
                     name: name.clone(),
                     position: retail_position(at.position),
+                    // Retail turns its forward (+z) about the spot's axis
+                    // by its angle (`FireTrapLauncher`).
+                    aim: {
+                        let axis = Vec3::from(at.axis).try_normalize();
+                        let turn = axis
+                            .map_or(Quat::IDENTITY, |axis| Quat::from_axis_angle(axis, at.angle));
+                        let forward = (turn * Vec3::Z).to_array();
+                        Dir3::new(super::space::retail_direction(forward)).unwrap_or(Dir3::NEG_Z)
+                    },
                 })
                 .collect(),
             triggers,

@@ -8,6 +8,7 @@ mod bitmap_font;
 pub mod credits;
 pub mod encounters;
 pub mod files;
+pub mod hit_sounds;
 pub mod item_model_loader;
 pub mod items;
 pub mod keyframes;
@@ -141,6 +142,8 @@ impl Plugin for RetailPresentationPlugin {
             .init_asset_loader::<item_model_loader::ItmLoader>()
             .init_asset::<crate::content::music::Playlist>()
             .init_asset_loader::<playlist::PlaylistLoader>()
+            .init_asset::<crate::content::hit_sounds::HitSounds>()
+            .init_asset_loader::<hit_sounds::HitSoundsLoader>()
             .init_asset::<texture_loader::RetailTexture>()
             .init_asset_loader::<texture_loader::RetailTextureLoader>();
     }

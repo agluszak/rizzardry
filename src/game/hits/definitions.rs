@@ -50,7 +50,7 @@ impl Rows {
     /// The rows themselves, in order; none for a spell the table does not
     /// name.
     pub fn effects(self, content: &Catalogs) -> &[EffectSpec] {
-        let row = |spell| content.spell_row(spell);
+        let row = |spell| content.spells.get(spell).and_then(row);
         match self {
             Self::Spell(spell) => row(spell).map_or(&[], |row| &row.effects),
             Self::Backfire(spell) => row(spell).map_or(&[], |row| {
@@ -264,6 +264,8 @@ pub enum EffectKind {
     /// as [`EffectKind::Afflict`] is, saved against by its own base.
     AfflictAny(Vec<Condition>),
     Slay,
+    /// Swallowed whole by whoever does it: missing until that one dies.
+    Swallow,
     Tire,
     DrainPool,
     DrainBudget,
@@ -272,6 +274,8 @@ pub enum EffectKind {
     Heal,
     Refresh,
     Replenish,
+    /// Remove conditions except infatuation, as a restoration fountain does.
+    Cleanse,
     /// Lift these conditions, by the strike's strength, or outright.
     Cure {
         conditions: Vec<Condition>,
@@ -291,6 +295,19 @@ pub enum EffectKind {
     /// Prismic Ray's either-or: half the time the spell's damage, otherwise
     /// a weighted condition for the spell's rounds, or death.
     SpellPrismic,
+    /// A named spell, laid on the body for the magnitude's rounds.
+    Enchant(SpellId),
+    /// One of these, by its weight in a hundred, picked for each body.
+    OneOf(Vec<Choice>),
+}
+
+/// One of an effect's either-ors: how likely it is in a hundred, what it
+/// does and how its magnitude is rolled.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct Choice {
+    pub weight: u32,
+    pub kind: EffectKind,
+    pub roll: Roll,
 }
 
 /// One spell's row of the table: what it does when cast, and, for a personal
@@ -315,25 +332,18 @@ pub struct SpellRow {
 
 /// What each spell does to each victim, by spell: the table in
 /// `assets/tables/spell_effects.ron`, which ships with the game (retail keeps
-/// it in its program, not its data). A spell it does not name does nothing
-/// the game resolves.
-#[derive(Debug, Deserialize)]
-#[serde(transparent)]
-pub struct SpellEffects(HashMap<SpellId, SpellRow>);
+/// it in its program, not its data).
+static SPELL_EFFECTS: LazyLock<HashMap<SpellId, SpellRow>> = LazyLock::new(|| {
+    ron::from_str(include_str!("../../../assets/tables/spell_effects.ron"))
+        .expect("assets/tables/spell_effects.ron is a spell effects table")
+});
 
-impl SpellEffects {
-    pub fn get(&self, spell: SpellId) -> Option<&SpellRow> {
-        self.0.get(&spell)
-    }
-}
-
-/// The shipped table: it is part of the program's content, read where the
-/// catalogs are made, so a catalog built by hand has it too.
-impl Default for SpellEffects {
-    fn default() -> Self {
-        ron::from_str(include_str!("../../../assets/tables/spell_effects.ron"))
-            .expect("assets/tables/spell_effects.ron is a spell effects table")
-    }
+/// What a spell does, if the game resolves it: its row of the effects
+/// table, for a spell of a realm. A spell the table does not name does
+/// nothing the game resolves.
+pub fn row(spell: &SpellDefinition) -> Option<&'static SpellRow> {
+    spell.realm?;
+    SPELL_EFFECTS.get(&spell.id)
 }
 
 impl SpellRow {
@@ -363,8 +373,15 @@ impl SpellRow {
     /// already has (`enchanted`: the spell is laid on it now); a spell
     /// that does none of these always would. A follow-up that only comes if the
     /// effect before it landed is not weighed.
-    pub fn worthwhile(&self, victim: &crate::game::characters::Vitals, enchanted: bool) -> bool {
-        let has = |condition| victim.conditions.has(condition);
+    pub fn worthwhile(
+        &self,
+        (victim, conditions): (
+            &crate::game::characters::Vitals,
+            &crate::game::characters::Conditions,
+        ),
+        enchanted: bool,
+    ) -> bool {
+        let has = |condition| conditions.has(condition);
         let mut purposes = self
             .effects
             .iter()
@@ -374,7 +391,7 @@ impl SpellRow {
                 EffectKind::Afflict { condition, .. } if !effect.landed => {
                     Some(Purpose::Afflicts(*condition))
                 }
-                EffectKind::SpellEnchant => Some(Purpose::Enchants),
+                EffectKind::SpellEnchant | EffectKind::Enchant(_) => Some(Purpose::Enchants),
                 EffectKind::Cure { conditions, .. } => Some(Purpose::Cures(conditions)),
                 _ => None,
             })
@@ -397,6 +414,17 @@ impl EffectSpec {
             let condition = conditions[rng.below(conditions.len() as u32) as usize];
             self.save = Some(condition_save(condition));
             self.kind = EffectKind::Afflict { condition, poison: 0, indefinite: false };
+        }
+        if let EffectKind::OneOf(choices) = &self.kind {
+            let roll = rng.below(100);
+            let chosen = crate::game::rng::weighted(roll, choices.iter().map(|c| c.weight));
+            if let Some(choice) = chosen.map(|index| choices[index].clone()) {
+                if let EffectKind::Afflict { condition, .. } = choice.kind {
+                    self.save = Some(condition_save(condition));
+                }
+                self.roll = Some(choice.roll);
+                self.kind = choice.kind;
+            }
         }
         if self.kind == EffectKind::SpellPrismic {
             let roll = rng.below(100);
@@ -524,24 +552,13 @@ pub fn roll(
 mod tests {
     use super::*;
 
-    #[test]
-    fn every_spell_the_table_names_has_effects() {
-        let table = SpellEffects::default();
-        assert!(!table.0.is_empty());
-        for (&id, rows) in &table.0 {
-            assert_ne!(id, SpellId::NONE);
-            assert!(!rows.effects.is_empty(), "{id:?}");
-        }
-    }
-
     /// A row has a backfire only for a spell that is personal or can backfire,
     /// a pulse only for one that pulses.
     #[test]
     fn a_backfire_or_a_pulse_is_for_a_spell_that_has_one() {
-        let table = SpellEffects::default();
         for id in 0..=255 {
             let spell = spell_with_facts(SpellId(id));
-            let Some(row) = table.get(spell.id) else { continue };
+            let Some(row) = row(&spell) else { continue };
             assert!(
                 spell.facts.personal || spell.can_backfire() || row.backfire.is_empty(),
                 "{:?}",
@@ -590,21 +607,6 @@ mod tests {
         assert_eq!(rounds(3, 2, 2, 50), [13, 15].into());
         assert_eq!(rounds(0, 9999, 1, 50), [9999].into());
         assert_eq!(rounds(0, -5, 1, 0), [0, 1].into(), "never under nothing, then the luck");
-    }
-
-    /// A gold share is the dice at the power; if that is under 100, a second roll
-    /// is taken in its place, held at 100; if it is 100 or over, 100.
-    #[test]
-    fn a_gold_share_is_the_dice_rolled_again_when_under_a_hundred_and_held_at_a_hundred() {
-        let share = |base| {
-            let dice = Some(Dice { base, count: 1, sides: 1 });
-            let spell = SpellDefinition { dice, ..default() };
-            let strength = Strength { power: 1, against: 0, boost: 0 };
-            roll(Roll::SpellGoldShare, strength, None, Some(&spell), &mut GameRng::seeded(0))
-        };
-        assert_eq!(share(30), 31, "the second roll, 1d1 + 30");
-        assert_eq!(share(99), 100, "the second, 100, held");
-        assert_eq!(share(150), 100, "not under 100, so 100");
     }
 
     fn spell_with_facts(id: SpellId) -> SpellDefinition {

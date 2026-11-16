@@ -1,9 +1,8 @@
 //! A monster's conduct at its moment in a fight (`docs/rules/monsters.md`
 //! section 4): run, withdraw, hold back, or fight on.
 
-use super::sight::MindItem;
-use crate::content::species::Reach;
-use crate::game::hits::effects::BodyReadOnlyItem;
+use crate::content::species::{Reach, Temper};
+use crate::game::actors::BodyItem;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::{Loyalty, Stance};
 
@@ -38,15 +37,21 @@ pub struct Conducted {
 /// ends the running; else its kind's own chance, a craven kind without one
 /// always running. One that does not run withdraws if it is neutral (or
 /// holds, if its kind keeps hidden) and fights otherwise.
-pub fn conduct(rng: &mut GameRng, own: &BodyReadOnlyItem, mind: &MindItem, gap: f32) -> Conducted {
-    let (temper, stance) = (mind.temper.0, own.stance());
+pub fn conduct(
+    rng: &mut GameRng,
+    own: &BodyItem,
+    temper: &Temper,
+    (npc, fleeing): (bool, bool),
+    gap: f32,
+) -> Conducted {
+    let stance = own.stance();
     if *own.loyalty == Loyalty::Bystander {
-        return Conducted { conduct: Conduct::Hold, fleeing: mind.fleeing };
+        return Conducted { conduct: Conduct::Hold, fleeing };
     }
     let hurt = share(own.vitals.health.current, own.vitals.health.max) <= 33;
-    let (chance, going_on) = if mind.npc && stance != Stance::Hostile && hurt {
-        (100, mind.fleeing)
-    } else if mind.fleeing {
+    let (chance, going_on) = if npc && stance != Stance::Hostile && hurt {
+        (100, fleeing)
+    } else if fleeing {
         if gap > Reach::Short.metres() { (100, true) } else { (0, false) }
     } else if temper.flee_chance == 0 && temper.craven {
         (100, false)

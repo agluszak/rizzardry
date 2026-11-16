@@ -11,8 +11,8 @@ pub struct Preferences {
     pub volume: u8,
     pub invert_mouse_y: bool,
     pub fullscreen: bool,
-    pub view_tracking: crate::presentation::party_view::ViewTracking,
-    pub view_turning: crate::presentation::party_view::ViewTurning,
+    pub view_tracking: ViewTracking,
+    pub view_turning: ViewTurning,
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -25,6 +25,25 @@ impl Default for Preferences {
         }
     }
 }
+/// Whom the view turns to in a fight (retail `camera_rotation_mode`; new
+/// games track every target, `Gameplay Init.cpp`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ViewTracking {
+    Off,
+    /// Only a monster going for the selected member.
+    SelectedMember,
+    #[default]
+    AllTargets,
+}
+
+/// How the view turns (retail `camera_rotation_style`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ViewTurning {
+    #[default]
+    Smooth,
+    Snap,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SavedSettings {

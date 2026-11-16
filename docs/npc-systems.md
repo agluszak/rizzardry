@@ -121,15 +121,18 @@ Placement failure and scripted forced departure require explicit outcomes.
   are created when a campaign destination and catalogs are available, using the proposed
   starting party's level. Monster-bound records are created for placed instances. The
   registry remembers their placement association; that association is not a definition ID.
-* A physical monster belongs to its level. `NpcBody` relates it to its actor without
-  making actor lifetime own body lifetime. Departure records a snapshot and destroys
-  the level's entities. Arrival consumes the dormant snapshot into a fresh body. There
-  is no disabled physics entity and no retained live snapshot alongside an active body.
-* An unrecruited character is a `StoredCharacter` value, not an active `Character`
-  component. Joining moves that profile into the character systems and establishes
-  `PartyMember`; dismissing moves it back and creates a fresh monster with transferred
-  conditions. Membership owns formation updates. Death and resurrection remain part
-  of character condition handling; fallen NPC members retire outside combat.
+* A person is three things at most. The person itself holds `ActorId`, social
+  state, stock and `Whereabouts` (as placed, posted to a spot of a level, gone,
+  killed). A monster standing in a level `Embodies` the person; the body belongs to
+  its level and the person does not own its lifetime. One who can join has a
+  companion self, a full character that is `CompanionOf` the person and is
+  `Disabled` while it has no seat, so that no rule of time, load or the party
+  sees it.
+* Joining enables the companion, seats it and takes the body away, leaving what
+  ailed the body with the companion; leaving disables it again and makes a fresh
+  body with those conditions. Membership owns formation updates. Death and
+  resurrection remain part of character condition handling; fallen companions
+  retire outside combat.
 * Current physical bodies, party membership and level trigger bindings are distinct
   interaction endpoints. Trigger speakers are bound by the source name in the level
   definition and do not require a physical body.

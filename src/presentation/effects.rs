@@ -35,9 +35,6 @@ pub fn play_trigger_effects(
             TriggerEffect::FountainUsed { at } => {
                 Some(("retail://data/sound/misc/fountain_magic.wav".to_owned(), 1.0, *at))
             }
-            TriggerEffect::BellRang(number) => {
-                Some((format!("retail://data/sound/ambients/mon2bell{number}.wav"), 1.0, None))
-            }
             TriggerEffect::Gold(_) => {
                 Some(("retail://data/sound/misc/chaching.wav".to_owned(), 1.0, None))
             }
@@ -74,6 +71,49 @@ pub fn play_trigger_effects(
 }
 
 /// The sounds of working on a lock or a trap (decomp `MainGameScreen.cpp`).
+/// How dark the story has made the screen, and the pane that darkens it.
+#[derive(Resource, Debug, Default)]
+pub struct ScreenDim {
+    darkness: f32,
+    pane: Option<Entity>,
+}
+
+/// Dim the screen to black, or bring it back, as the story asks, and say
+/// when it is done.
+pub fn fade_screen(
+    mut commands: Commands,
+    time: Res<Time<Real>>,
+    fades: Query<(Entity, &crate::game::npcs::story::Fading)>,
+    mut dim: ResMut<ScreenDim>,
+    mut panes: Query<&mut BackgroundColor>,
+) {
+    let Some((fade, fading)) = fades.iter().next() else { return };
+    let pane = *dim.pane.get_or_insert_with(|| {
+        commands
+            .spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                BackgroundColor(Color::NONE),
+                GlobalZIndex(i32::MAX - 1),
+                Pickable::IGNORE,
+            ))
+            .id()
+    });
+    let step = time.delta_secs() / fading.seconds.max(0.001);
+    dim.darkness =
+        if fading.dark { (dim.darkness + step).min(1.0) } else { (dim.darkness - step).max(0.0) };
+    if let Ok(mut colour) = panes.get_mut(pane) {
+        colour.0 = Color::BLACK.with_alpha(dim.darkness);
+    }
+    if dim.darkness == if fading.dark { 1.0 } else { 0.0 } {
+        commands.trigger(crate::game::npcs::story::Faded { fade });
+    }
+}
+
 pub fn play_lock_sounds(
     mut commands: Commands,
     assets: Res<AssetServer>,

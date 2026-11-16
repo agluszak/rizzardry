@@ -40,7 +40,7 @@ pub fn aim_camera(
         &crate::game::npcs::conversation::Conversation,
         Without<crate::game::npcs::conversation::Closing>,
     >,
-    npc_bodies: Query<&crate::game::npcs::NpcBodies>,
+    people: crate::game::npcs::People,
     actors: Query<
         (
             crate::game::world::ActorPose,
@@ -56,8 +56,8 @@ pub fn aim_camera(
         let rotation = conversations
             .single()
             .ok()
-            .and_then(|c| npc_bodies.get(c.actor).ok())
-            .and_then(|bodies| bodies.iter().find_map(|body| actors.get(body).ok()))
+            .and_then(|c| people.body(c.actor))
+            .and_then(|body| actors.get(body).ok())
             .map_or(ordinary, |(target, monster, walker)| {
                 let direction = monster
                     .eye(crate::game::world::navigation::feet(target.translation(), walker))
@@ -72,25 +72,6 @@ pub fn aim_camera(
             camera.rotation = rotation;
         }
     }
-}
-
-/// Whom the view turns to in a fight (retail `camera_rotation_mode`; new
-/// games track every target, `Gameplay Init.cpp`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum ViewTracking {
-    Off,
-    /// Only a monster going for the selected member.
-    SelectedMember,
-    #[default]
-    AllTargets,
-}
-
-/// How the view turns (retail `camera_rotation_style`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum ViewTurning {
-    #[default]
-    Smooth,
-    Snap,
 }
 
 /// When a fight begins, turn the party to the nearest monster in it, as the
@@ -115,7 +96,7 @@ pub fn track_fights(
         let crate::game::combat::CombatNews::Began { nearest: Some(nearest) } = *notice else {
             continue;
         };
-        if preferences.view_tracking != ViewTracking::AllTargets {
+        if preferences.view_tracking != crate::settings::ViewTracking::AllTargets {
             continue;
         }
         let (Ok(at), Ok((pose, monster, walker))) = (party.single(), monsters.get(nearest)) else {
@@ -128,7 +109,7 @@ pub fn track_fights(
                 crate::game::party::body::yaw_toward(toward),
                 toward.y.atan2(toward.xz().length()),
             ),
-            smooth: preferences.view_turning == ViewTurning::Smooth,
+            smooth: preferences.view_turning == crate::settings::ViewTurning::Smooth,
         });
     }
 }

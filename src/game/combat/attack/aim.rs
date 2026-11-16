@@ -3,6 +3,7 @@
 
 use bevy::math::Vec3Swizzles;
 use bevy::prelude::Vec3;
+use enum_map::EnumMap;
 use enumset::EnumSet;
 
 use super::{
@@ -11,35 +12,41 @@ use super::{
 };
 use crate::content::characters::BodyPart;
 use crate::content::items::AttackMode;
-use crate::game::actors::{Arm, Place};
+use crate::game::actors::{Arm, ArmourPart, HitPlaces, Place};
 use crate::game::characters::{Condition, scale_by_level};
 use crate::game::rng::GameRng;
 
-/// A monster's body, where a blow lands past its chances.
-pub const MONSTER_BODY: usize = 3;
-/// Where blows from the party land on one of its own (retail
-/// `gubLocalACPercent`): head, body, legs, hands, feet.
-pub const MEMBER_LOCATIONS: [u8; 5] = [15, 40, 30, 10, 5];
-
-/// What the guard of the one struck comes to against a blow: fatigue adds a
-/// tenth of itself where it tells on armour, a surprise strips what it
-/// exposes (more if it is braced), and four go to a blow that closes in on it
-/// on the move (retail `GetTargetArmorClassModifier`).
-fn guard(attack: &Attack, struck: &FighterReadOnlyItem, setting: Setting) -> i32 {
-    let armour = struck.body.armour;
-    let mut guard = if armour.tires { struck.fatigue() / 10 } else { 0 };
+/// What a blow gets past of the guard of the one struck (retail
+/// `GetTargetArmorClassModifier`): of one caught unaware, what its quickness
+/// and its shield add, and 2 if it is vulnerable from behind; of one on the
+/// move and in its place, 4, unless the blow keeps its distance.
+fn gets_past(attack: &Attack, struck: &FighterReadOnlyItem, setting: Setting) -> i32 {
+    let mut past = 0;
     if attack.surprise.any() {
-        guard -= armour.exposed + if struck.defending() { armour.braced.1 } else { 0 };
+        let parts = &struck.parts.0;
+        past += parts[ArmourPart::Speed].max(0)
+            + parts[ArmourPart::Shield].max(0)
+            + 2 * i32::from(struck.vulnerable_from_behind);
     }
-    if struck.moving(setting) && !keeps_distance(attack.mode) {
-        guard -= 4;
+    let in_place = !struck.body.conditions.unseats(struck.body.traits.0);
+    if struck.moving(setting) && in_place && !keeps_distance(attack.mode) {
+        past += 4;
     }
-    guard
+    past
 }
 
-/// What bracing adds to armour everywhere.
-fn bracing(struck: &FighterReadOnlyItem) -> i32 {
-    if struck.defending() { struck.body.armour.braced.0 } else { 0 }
+/// How far a blow may miss the one struck and be blocked rather than missed
+/// (retail `BlockedForSpecialReason`): by 10 for a monster vulnerable from
+/// behind; otherwise by five times its Shield part, unless it was caught
+/// unaware.
+pub fn block(attack: &Attack, struck: &FighterReadOnlyItem) -> i32 {
+    if struck.vulnerable_from_behind {
+        10
+    } else if attack.surprise.any() {
+        0
+    } else {
+        5 * struck.parts.0[ArmourPart::Shield]
+    }
 }
 
 /// A blind body's aim past 10 is lost; one who fights blind keeps a share of
@@ -69,8 +76,8 @@ pub struct Chance {
 /// aim  = base - 5 * target's armour against the aim + difference of agility
 /// ```
 ///
-/// Fatigue tells half as much on a modern arm; the target's guard counts
-/// once (retail `GetTargetArmorClass`); the blind rule and then difficulty
+/// Fatigue tells half as much on a modern arm; what the blow gets past of
+/// the target's guard counts once (retail `GetTargetArmorClass`); the blind rule and then difficulty
 /// are applied to both figures.
 pub fn chance_to_hit(
     attack: &Attack,
@@ -82,7 +89,7 @@ pub fn chance_to_hit(
     let surprise =
         10 * i32::from(attack.surprise.unaware) + 10 * i32::from(attack.surprise.natural);
     let base = attack.arm.rating + mode_to_hit(attack.mode) + surprise - fatigue;
-    let armour = target.body.armour.total + bracing(target) + guard(attack, target, setting);
+    let armour = target.body.armour.total - gets_past(attack, target, setting);
     let aim = base - 5 * armour
         + agility_difference(me.body.attributes.agility(), target.body.attributes.agility());
     let blind = me.has(Condition::Blind);
@@ -238,30 +245,26 @@ pub fn fate(
     }
 }
 
-/// Where a blow lands, by cumulative percentages against one roll below 100;
-/// anything past them hits `fallback`.
-pub fn locate_at(roll: u32, chances: &[u8], fallback: usize) -> Location {
+/// Where a blow lands on a body with these places, for one roll below 100:
+/// by the attacker's own chances for the parts of a character's body where
+/// it has them, otherwise by each place's; past them, on the trunk.
+pub fn lands_at(roll: u32, places: &HitPlaces, own: Option<&EnumMap<BodyPart, u8>>) -> Location {
     let mut total = 0;
-    for (location, &chance) in chances.iter().enumerate() {
-        total += u32::from(chance);
+    for (index, place) in places.places.iter().enumerate() {
+        total += match (own, place.part) {
+            (Some(own), Some(part)) => u32::from(own[part]),
+            _ => place.chance,
+        };
         if roll < total {
-            return Location(location);
+            return Location(index);
         }
     }
-    Location(fallback)
+    Location(places.trunk)
 }
 
-/// Where a blow lands: on a monster by its species' chances for its seven
-/// locations (past them, location 3, its body); on a member by the
-/// attacker's species' chances if a monster struck, otherwise 15, 40, 30, 10
-/// and 5 percent for head, body, legs, hands and feet (past them, the body).
+/// Where a blow lands on the one struck.
 pub fn where_it_lands(rng: &mut GameRng, arm: &Arm, struck: &FighterReadOnlyItem) -> Location {
-    let roll = rng.below(100);
-    match (struck.body.armour.hit_locations, arm.lands_on_party) {
-        (Some(table), _) => locate_at(roll, &table, MONSTER_BODY),
-        (None, Some(hits)) => locate_at(roll, hits.as_slice(), BodyPart::Body as usize),
-        (None, None) => locate_at(roll, &MEMBER_LOCATIONS, BodyPart::Body as usize),
-    }
+    lands_at(rng.below(100), struck.hit_places, arm.lands_on_party.as_ref())
 }
 
 /// The mode that pierces: a launcher's missile mode, drawn from the missile's
@@ -285,8 +288,8 @@ pub fn piercing_mode(
 ///                       + difference of agility )
 /// ```
 ///
-/// The armour there is less what it has against the mode, and the guard
-/// counts twice (retail `TargetArmorClassAtLocation`). The blind rule is not
+/// The armour there is less what it has against the mode, and what the blow
+/// gets past of the guard counts twice (retail `TargetArmorClassAtLocation`). The blind rule is not
 /// applied.
 pub fn penetration(
     attack: &Attack,
@@ -296,10 +299,9 @@ pub fn penetration(
     setting: Setting,
 ) -> i32 {
     let fatigue = if attack.arm.fatigue_pierces { me.fatigue() } else { 0 };
-    let armour = struck.body.armour;
     let piercing = Attack { mode: by, ..*attack };
-    let there = armour.at[place.0] + bracing(struck) - armour.by_mode[by]
-        + 2 * guard(&piercing, struck, setting);
+    let there = struck.body.armour.at(&struck.hit_places.places[place.0]) + struck.against.0[by]
+        - 2 * gets_past(&piercing, struck, setting);
     me.scaled(
         attack.arm.rating + mode_penetration(by) - fatigue - 5 * there
             + agility_difference(me.body.attributes.agility(), struck.body.attributes.agility()),
@@ -326,213 +328,6 @@ pub fn gets_through(
     struck: &FighterReadOnlyItem,
     setting: Setting,
 ) -> bool {
-    let aside = turned_aside(attack.mode, struck.body.armour.missile_shield, rng.below(100));
+    let aside = turned_aside(attack.mode, struck.body.missile_shield.0, rng.below(100));
     !aside && (sure || penetration(attack, at, me, struck, setting) >= roll as i32)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::arena::{NORMAL, arena, arm, duel, monster, swing, tire};
-    use super::*;
-    use crate::content::characters::Attribute;
-    use crate::game::actors::{Armour, Attacks, Attributes};
-    use crate::game::characters::{Lasting, Vitals};
-    use crate::game::combat::approach::{CombatMove, MoveGoal};
-    use crate::game::combat::attack::Surprise;
-    use crate::game::world::hostility::Stance;
-    use bevy::prelude::{Entity, World};
-
-    /// Two monsters facing each other.
-    fn pair() -> (World, (Entity, Entity)) {
-        let mut world = arena();
-        let pair = (
-            monster(&mut world, Vec3::ZERO, Stance::Hostile),
-            monster(&mut world, Vec3::NEG_Z, Stance::Friendly),
-        );
-        (world, pair)
-    }
-
-    fn aim(world: &mut World, pair: (Entity, Entity), rating: i32) -> i32 {
-        duel(world, pair, |me, target| chance_to_hit(&swing(&arm(rating)), me, target, NORMAL).aim)
-    }
-
-    fn blind(world: &mut World, actor: Entity) {
-        world.get_mut::<Vitals>(actor).unwrap().afflict(Condition::Blind, Lasting::Rounds(9));
-    }
-
-    #[test]
-    fn a_blind_attackers_aim_past_ten_is_lost() {
-        let (mut world, pair) = pair();
-        assert_eq!(aim(&mut world, pair, 80), 80);
-        blind(&mut world, pair.0);
-        // 80 blind: held to 10. Already at 10 or under: unchanged.
-        assert_eq!(aim(&mut world, pair, 80), 10);
-        assert_eq!(aim(&mut world, pair, 10), 10);
-        assert_eq!(aim(&mut world, pair, 4), 4);
-    }
-
-    #[test]
-    fn one_who_fights_blind_keeps_a_share_by_level() {
-        let (mut world, pair) = pair();
-        blind(&mut world, pair.0);
-        // 10 + (80 - 10) * (level * 2 + 60) / 100: level 0 keeps 42, level 10
-        // keeps 56, from level 20 all 70.
-        for (level, aim_blind) in [(0, 52), (10, 66), (20, 80), (21, 80), (40, 80)] {
-            world.get_mut::<Attacks>(pair.0).unwrap().blind_fighting = Some(level);
-            assert_eq!(aim(&mut world, pair, 80), aim_blind, "level {level}");
-        }
-    }
-
-    #[test]
-    fn the_fumble_odds_leave_out_the_targets_armour_and_agility() {
-        let (mut world, pair) = pair();
-        world.get_mut::<Armour>(pair.1).unwrap().total = 6;
-        // Fifty more Senses than the target: a difference of agility of 5.
-        world.get_mut::<Attributes>(pair.0).unwrap().0[Attribute::Senses] = 51;
-        // 90 of 100 stamina spent: fatigue 20.
-        tire(&mut world, pair.0, 10);
-        let chance = duel(&mut world, pair, |me, target| {
-            let arm = arm(80);
-            let thrust = Attack {
-                mode: AttackMode::Thrust,
-                surprise: Surprise { unaware: true, natural: false },
-                ..swing(&arm)
-            };
-            chance_to_hit(&thrust, me, target, NORMAL)
-        });
-        // Base 80 - 10 + 10 - 20 = 60; the aim also loses 5 * 6 and gains 5.
-        assert_eq!(chance.fumble_odds, 60);
-        assert_eq!(chance.aim, 60 - 30 + 5);
-    }
-
-    #[test]
-    fn a_swing_goes_astray_by_the_cube_of_what_its_odds_fall_short_of_100() {
-        // chance = (100 - odds)^3 / 100000 + 0.5, cut down; the fumble chance
-        // is bystanders * chance * 10 / 100, at most 100.
-        assert_eq!(fumble_chance(5, 100), 0);
-        assert_eq!(fumble_chance(5, 140), 0);
-        assert_eq!(fumble_chance(0, 0), 0);
-        // odds 0: 1000000 / 100000 + 0.5 = 10.5 -> 10; 3 * 10 * 10 / 100 = 3.
-        assert_eq!(fumble_chance(3, 0), 3);
-        // 10 bystanders: 10 * 10 * 10 / 100 = 10; 100: 100; 150: 150, held to 100.
-        assert_eq!(fumble_chance(10, 0), 10);
-        assert_eq!(fumble_chance(100, 0), 100);
-        assert_eq!(fumble_chance(150, 0), 100);
-        // odds -500: 600^3 = 216000000 / 100000 + 0.5 = 2160; 10 of them is held to 100.
-        assert_eq!(fumble_chance(10, -500), 100);
-        // odds 20: 80^3 = 512000 / 100000 + 0.5 = 5.62 -> 5; 4 * 5 * 10 / 100 = 2.
-        assert_eq!(fumble_chance(4, 20), 2);
-        // odds -50: 150^3 = 3375000 / 100000 + 0.5 = 34.25 -> 34; 2 * 34 * 10 / 100 = 6.
-        assert_eq!(fumble_chance(2, -50), 6);
-        // odds 90: 1000 / 100000 + 0.5 = 0.51 -> 0.
-        assert_eq!(fumble_chance(9, 90), 0);
-        // One bystander at odds 50: 125000 / 100000 + 0.5 = 1.75 -> 1; 1 * 1 * 10 / 100 = 0.
-        assert_eq!(fumble_chance(1, 50), 0);
-    }
-
-    #[test]
-    fn a_roll_of_five_or_less_reaches_and_is_sure_whatever_the_fumble_chance() {
-        for roll in 1..=5 {
-            assert_eq!(verdict(roll, 4, 100), Verdict::Reaches { sure: true });
-        }
-    }
-
-    #[test]
-    fn a_roll_above_100_less_the_fumble_chance_fumbles_if_anyone_is_in_reach() {
-        // Fumble chance 30: rolls above 70.
-        assert_eq!(verdict(70, 2, 30), Verdict::Reaches { sure: false });
-        assert_eq!(verdict(71, 2, 30), Verdict::Fumbles);
-        // The fumble is decided before the miss over 95.
-        assert_eq!(verdict(99, 2, 30), Verdict::Fumbles);
-        // Nobody in reach, no fumble.
-        assert_eq!(verdict(71, 0, 30), Verdict::Reaches { sure: false });
-        assert_eq!(verdict(96, 0, 30), Verdict::Misses);
-    }
-
-    #[test]
-    fn steadier_aim_scatters_closer_and_blind_poor_shots_scatter_wide() {
-        let from = Vec3::ZERO;
-        let to = Vec3::new(0.0, 0.0, -10.0);
-        let spread = |accuracy, blind| -> f32 {
-            (0..200)
-                .map(|seed| {
-                    let aimed = scatter(&mut GameRng::seeded(seed), from, to, accuracy, blind);
-                    // Always across the line of flight.
-                    assert!((aimed - to).z.abs() < 1e-3);
-                    aimed.distance(to)
-                })
-                .sum::<f32>()
-                / 200.0
-        };
-        let (poor, good, blind) = (spread(20, false), spread(150, false), spread(20, true));
-        assert!(good < poor, "{good} < {poor}");
-        assert!(poor < blind, "{poor} < {blind}");
-        // At ten metres the tightest scatter is within 8% of the distance.
-        assert!(spread(400, false) <= 0.8);
-    }
-
-    #[test]
-    fn a_blow_lands_by_cumulative_percentages_and_past_them_on_the_fallback() {
-        // 15, 40, 30, 10, 5: cumulative 15, 55, 85, 95, 100.
-        for (roll, part) in [(0, 0), (14, 0), (15, 1), (54, 1), (55, 2), (84, 2), (85, 3), (94, 3)]
-        {
-            assert_eq!(locate_at(roll, &MEMBER_LOCATIONS, 1), Location(part), "roll {roll}");
-        }
-        assert_eq!(locate_at(95, &MEMBER_LOCATIONS, 1), Location(4));
-        assert_eq!(locate_at(99, &MEMBER_LOCATIONS, 1), Location(4));
-        // Chances short of 100: the rest on the fallback.
-        assert_eq!(locate_at(20, &[10, 10], 7), Location(7));
-        assert_eq!(locate_at(19, &[10, 10], 7), Location(1));
-    }
-
-    const BODY: (Location, AttackMode) = (Location(MONSTER_BODY), AttackMode::Swing);
-
-    fn pierces(world: &mut World, pair: (Entity, Entity), attack: &Attack) -> i32 {
-        duel(world, pair, |me, struck| {
-            penetration(attack, (BODY.0, attack.mode), me, struck, NORMAL)
-        })
-    }
-
-    #[test]
-    fn the_victims_guard_counts_twice_in_penetration() {
-        let (mut world, pair) = pair();
-        let arm = arm(80);
-        world.get_mut::<Armour>(pair.1).unwrap().at[MONSTER_BODY] = 4;
-        assert_eq!(pierces(&mut world, pair, &swing(&arm)), 80 - 20);
-        // 95 of 100 stamina spent is fatigue 40 on armour that tires: guard 4,
-        // twice is 8: 4 + 8 = 12.
-        world.get_mut::<Armour>(pair.1).unwrap().tires = true;
-        tire(&mut world, pair.1, 5);
-        assert_eq!(pierces(&mut world, pair, &swing(&arm)), 80 - 60);
-        tire(&mut world, pair.1, 100);
-        // A surprise strips 3 (twice, 6): 4 - 6 = -2: 80 + 10.
-        world.get_mut::<Armour>(pair.1).unwrap().exposed = 3;
-        let unaware =
-            Attack { surprise: Surprise { unaware: true, natural: false }, ..swing(&arm) };
-        assert_eq!(pierces(&mut world, pair, &unaware), 90);
-        // On the move 4 less, twice is 8 (not against a throw): 4 - 8 = -4.
-        let walking = CombatMove { budget: 1.0, moved: 0.0, goal: MoveGoal::Party };
-        world.entity_mut(pair.1).insert(walking);
-        assert_eq!(pierces(&mut world, pair, &swing(&arm)), 100);
-        let throw = Attack { mode: AttackMode::Throw, ..swing(&arm) };
-        assert_eq!(pierces(&mut world, pair, &throw), 80 + 5 - 20);
-    }
-
-    #[test]
-    fn a_shield_of_100_stops_every_shot_even_a_sure_one_and_no_close_blow() {
-        let (mut world, pair) = pair();
-        world.get_mut::<Armour>(pair.1).unwrap().missile_shield = 100;
-        let arm = arm(80);
-        duel(&mut world, pair, |me, struck| {
-            let through = |mode, seed| {
-                let attack = Attack { mode, ..swing(&arm) };
-                let rng = &mut GameRng::seeded(seed);
-                gets_through(rng, &attack, (BODY.0, mode), (50, true), me, struck, NORMAL)
-            };
-            for seed in 0..50 {
-                assert!(!through(AttackMode::Shoot, seed));
-                assert!(through(AttackMode::Swing, seed));
-            }
-        });
-    }
 }

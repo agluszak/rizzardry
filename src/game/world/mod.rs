@@ -4,18 +4,20 @@ pub mod bidden;
 pub mod containers;
 pub mod damage;
 pub mod encounters;
+mod fountains;
 pub mod hostility;
 pub mod identify;
 pub mod interaction;
 pub mod items;
 pub mod level;
 pub mod navigation;
+pub mod noise;
 pub mod obstacles;
 pub mod particles;
 pub mod perception;
 pub mod population;
 pub mod props;
-pub mod scripts;
+pub mod pursuit;
 pub mod search;
 pub mod triggers;
 
@@ -84,16 +86,18 @@ impl Plugin for WorldPlugin {
             .init_resource::<search::Search>()
             .add_message::<triggers::TriggerEffect>()
             .add_message::<interaction::LockNews>()
-            .add_message::<ActivateDevice>()
             .add_message::<items::TakeItem>()
             .add_message::<items::DropHeld>()
             .add_message::<population::Birth>()
             .add_message::<particles::EmissionSpent>()
             .add_message::<crate::game::automap::CommitNote>()
-            .add_plugins(interaction::plugin)
+            .add_plugins((interaction::plugin, encounters::plugin, triggers::plugin))
+            .add_observer(fountains::drink)
             .add_observer(interaction::end_attempts)
-            .add_observer(damage::monster_died)
+            .add_observer(damage::halt)
+            .add_observer(damage::leave_loot)
             .add_observer(damage::clear_the_fallen)
+            .add_observer(containers::open)
             .add_observer(containers::emptied)
             .add_observer(containers::bag_emptied)
             // Resolve travel intent early; activation owns the later level swap.
@@ -103,33 +107,22 @@ impl Plugin for WorldPlugin {
             .add_observer(level::set_aside)
             .add_observer(level::wake)
             .add_observer(encounters::age_encounters)
+            .add_observer(encounters::retire)
             .add_observer(search::suspend_search)
             .add_observer(search::resume_search)
             .add_systems(
                 Update,
                 (
                     level::activate_level.in_set(GameplaySet::LevelActivation),
-                    (
-                        activate_devices,
-                        items::take_items,
-                        items::drop_held,
-                        crate::game::automap::commit_notes,
-                    )
+                    (items::take_items, items::drop_held, crate::game::automap::commit_notes)
                         .chain()
                         .after(GameplaySet::Bodies)
                         .before(GameplaySet::Combat),
                     particles::switch_off_spent.before(GameplaySet::LevelActivation),
                     population::give_birth.run_if(level::level_active).before(GameplaySet::Combat),
+                    population::come.run_if(level::level_active).before(GameplaySet::Combat),
                     search::toggle_search.run_if(level::level_active).after(level::activate_level),
                 ),
-            )
-            // Encounters come over ground physics has placed.
-            .add_systems(
-                FixedPostUpdate,
-                (encounters::write_off_wiped_out, encounters::run_encounters)
-                    .chain()
-                    .after(avian3d::prelude::PhysicsSystems::Writeback)
-                    .run_if(level::level_active),
             )
             .add_systems(
                 FixedPreUpdate,
@@ -139,30 +132,25 @@ impl Plugin for WorldPlugin {
             )
             // Sweeps follow gameplay time, however many steps a frame runs.
             .add_systems(FixedUpdate, search::search_pulse.run_if(level::level_active))
-            .add_message::<bidden::ScriptShow>()
             .add_observer(bidden::begin)
             .add_observer(bidden::jump)
+            .add_observer(bidden::played)
+            .add_observer(noise::hear)
+            .add_observer(noise::spells_are_heard)
+            .add_observer(noise::fights_are_heard)
             .add_systems(
                 FixedUpdate,
-                (bidden::run, bidden::face_party).chain().run_if(level::level_active),
+                (
+                    bidden::run,
+                    bidden::face_party,
+                    bidden::look_about,
+                    noise::footsteps,
+                    pursuit::charge,
+                    noise::investigate,
+                    bidden::keep_orders,
+                )
+                    .chain()
+                    .run_if(level::level_active),
             );
-    }
-}
-
-/// The player uses a device, its reach checked when the request executes.
-#[derive(Message, Clone, Copy, Debug, PartialEq)]
-pub struct ActivateDevice {
-    pub device: Entity,
-    /// The player uses it, within reach; otherwise it runs whatever the
-    /// party's reach, as when its lock or trap is overcome.
-    pub player: bool,
-}
-
-/// Run the devices the player uses, in order: the trigger interpreter
-/// needs the whole world.
-pub fn activate_devices(world: &mut World) {
-    let requests: Vec<_> = world.resource_mut::<Messages<ActivateDevice>>().drain().collect();
-    for ActivateDevice { device, player } in requests {
-        triggers::activate(world, device, player);
     }
 }

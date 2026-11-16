@@ -12,7 +12,7 @@ pub(crate) fn plugin(app: &mut App) {
 }
 
 /// Where an item is worn, in retail's slot order.
-#[derive(Debug, Hash, Enum, EnumSetType)]
+#[derive(Debug, Hash, Enum, EnumSetType, serde::Deserialize)]
 pub enum EquipSlot {
     Head,
     Misc1,

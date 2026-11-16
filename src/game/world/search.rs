@@ -7,7 +7,8 @@ use crate::game::world::obstacles::WorldObstacles;
 use bevy::prelude::*;
 
 use crate::content::characters::{Attribute, Skill, Trait};
-use crate::game::characters::{Character, Vitals};
+use crate::game::actors::Traits;
+use crate::game::characters::Identity;
 use crate::game::combat::Battle;
 use avian3d::prelude::Position;
 
@@ -119,15 +120,16 @@ pub fn toggle_search(
 /// most 100. Without search mode only rangers search; while running, those
 /// without Scouting score nothing.
 pub fn search_score(
-    member: &Character,
+    member: &Traits,
+    skills: &crate::game::actors::Skills,
     attributes: &crate::game::actors::Attributes,
     search_mode: bool,
     running: bool,
 ) -> u32 {
-    if !member.has_trait(Trait::Search) && !search_mode {
+    if !member.has(Trait::Search) && !search_mode {
         return 0;
     }
-    let level = member.skill(Skill::Scouting);
+    let level = skills[Skill::Scouting];
     let base = if running { level / 4 } else { level / 2 };
     if base == 0 && !(search_mode && !running) {
         return 0;
@@ -160,7 +162,10 @@ pub fn search_pulse(
     movement: Single<&PartyMovement>,
     party: Query<(&Position, &PartyBody)>,
     roster: Single<&PartyRoster>,
-    members: Query<(&Character, &Vitals, &crate::game::actors::Attributes)>,
+    members: Query<
+        ((&Traits, &Identity), &crate::game::actors::Attributes, &crate::game::actors::Skills),
+        With<crate::game::actors::CanAct>,
+    >,
     hidden: Query<(Entity, &Transform), (With<Lying>, With<Hidden>)>,
     items: Items,
     obstacles: WorldObstacles,
@@ -177,11 +182,9 @@ pub fn search_pulse(
     let Ok((position, body)) = party.single() else { return };
     let (from, forward) = (PartyBody::eye(position), body.forward());
     let running = movement.running;
-    let mut best: Option<(u32, &Character)> = None;
-    for (member, _, attributes) in
-        members.iter_many(roster.iter()).matched().filter(|(_, v, _)| v.can_act())
-    {
-        let score = search_score(member, attributes, search.on(battle.is_some()), running);
+    let mut best: Option<(u32, &Identity)> = None;
+    for ((traits, member), attributes, skills) in members.iter_many(roster.iter()).matched() {
+        let score = search_score(traits, skills, attributes, search.on(battle.is_some()), running);
         if score > best.map_or(0, |b| b.0) {
             best = Some((score, member));
         }

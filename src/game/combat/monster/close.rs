@@ -5,11 +5,10 @@
 
 use bevy::prelude::Vec3;
 
-use super::sight::MindItem;
-use crate::content::species::Reach;
+use crate::content::species::{Reach, Temper};
 use crate::game::actors::Attacks;
+use crate::game::actors::BodyItem;
 use crate::game::characters::Condition;
-use crate::game::hits::effects::BodyReadOnlyItem;
 
 /// Metres per unit of a species' `combat_move_range` (retail `SetUpMonsterTurn`).
 pub const METRES_PER_MOVE_RANGE: f32 = 20.0;
@@ -25,15 +24,15 @@ pub fn reaches_party(attacks: &Attacks, gap: f32) -> bool {
 /// Whether it would close in to strike rather than consider a special attack
 /// or a spell: its kind prefers blows, it has some, and none reaches the
 /// party.
-pub fn closes_in(own: &BodyReadOnlyItem, mind: &MindItem, gap: f32) -> bool {
-    !mind.temper.0.prefers_range && !own.attacks.arms.is_empty() && !reaches_party(own.attacks, gap)
+pub fn closes_in(own: &BodyItem, temper: &Temper, gap: f32) -> bool {
+    !temper.prefers_range && !own.attacks.arms.is_empty() && !reaches_party(own.attacks, gap)
 }
 
 /// Whether it can strike nobody and withdraws instead (retail
 /// `UpdateMonsterAI`'s `RETURN_TO_START`): it has no arm, or it is blind,
 /// does not fight blind, and has nobody in reach.
-pub fn cannot_strike(own: &BodyReadOnlyItem, gap: f32) -> bool {
-    let blind = own.vitals.conditions.has(Condition::Blind) && own.attacks.blind_fighting.is_none();
+pub fn cannot_strike(own: &BodyItem, gap: f32) -> bool {
+    let blind = own.conditions.has(Condition::Blind) && own.attacks.blind_fighting.is_none();
     own.attacks.arms.is_empty() || (blind && !reaches_party(own.attacks, gap))
 }
 
@@ -77,9 +76,9 @@ pub struct MoveBudget {
 
 impl MoveBudget {
     /// What a monster may move now: it charges when hurt.
-    pub fn of(own: &BodyReadOnlyItem) -> Self {
+    pub fn of(own: &BodyItem) -> Self {
         let charge = charges(own.vitals.health.current, own.vitals.health.max);
-        let slowed = own.vitals.conditions.has(Condition::Slowed);
+        let slowed = own.conditions.has(Condition::Slowed);
         MoveBudget { metres: metres(own.attacks, slowed, charge), charge }
     }
 }

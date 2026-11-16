@@ -326,6 +326,12 @@ pub struct ItemDefinition {
     pub slays: Option<super::species::MonsterKind>,
     /// Swings it adds to each attack.
     pub extra_swings: i32,
+    /// What it is made of, for the sound of a blow on it (a column of the
+    /// hit-sound table, 0 to 11).
+    pub material: u8,
+    /// How it sounds swung and striking (a row of the hit-sound table), if
+    /// at all.
+    pub sound_class: Option<u8>,
     /// Thrown, it is not used up.
     pub never_depletes: bool,
     pub damage_bonus: i32,
