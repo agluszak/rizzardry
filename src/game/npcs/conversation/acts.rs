@@ -27,7 +27,7 @@ use crate::game::npcs::recruit::{JoinRefusal, Recruiter};
 use crate::game::npcs::story::StoryFacts;
 use crate::game::npcs::trade::{self, TradeError, TradeSource};
 use crate::game::party::body::PartyBody;
-use crate::game::party::roster::PartyRoster;
+use crate::game::party::roster::{Party, PartyRoster};
 use crate::game::time::GameClock;
 use crate::game::world::facing;
 
@@ -302,7 +302,7 @@ pub(super) fn begin(
     (actors, scripts, voices): (NpcActors, Scripts, Voices),
     npcs: Query<&Npc>,
     factions: Res<Factions>,
-    party: Single<(Entity, &Position)>,
+    party: Single<(Entity, &Position), With<Party>>,
     held: Items,
     mut commands: Commands,
 ) {

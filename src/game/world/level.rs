@@ -475,7 +475,7 @@ pub struct SharedData<'w> {
 pub fn activate_level(
     mut commands: Commands,
     mut destinations: Query<(Entity, &mut Destination)>,
-    played: Query<Entity, With<InPlay>>,
+    played: Option<Single<Entity, With<InPlay>>>,
     built: Query<(Entity, &Level, Has<SetAside>), Allow<Disabled>>,
     parties: Query<Entity, With<Party>>,
     geometry: Res<Assets<LevelDefinition>>,
@@ -515,8 +515,9 @@ pub fn activate_level(
         // A resource stays on its entity until the entity stops being the
         // resource's: removing `IsResource` takes `InPlay` with it and frees
         // it for the level entered.
-        for left in played.iter().filter(|&left| known.is_none_or(|(level, ..)| level != left)) {
-            commands.entity(left).remove::<IsResource>().insert(SetAside { at_ms: clock.ms });
+        if let Some(left) = played.as_deref().filter(|&&left| known.is_none_or(|(l, ..)| l != left))
+        {
+            commands.entity(*left).remove::<IsResource>().insert(SetAside { at_ms: clock.ms });
         }
         if let Some((level, definition, asleep)) = known.map(|(e, l, a)| (e, &l.definition, a)) {
             if asleep {

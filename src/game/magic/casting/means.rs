@@ -30,8 +30,7 @@ use crate::game::npcs::conversation::{Conversation, DialogueReadOnly};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::interaction::{AttemptOn, DeviceInteraction, Guarded, Work};
-use crate::game::world::level::InPlay;
-use crate::game::world::level::{Level, LevelOwned};
+use crate::game::world::level::{InPlay, LevelOwned};
 use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::population::Monster;
 use crate::game::world::triggers::LevelState;
@@ -70,7 +69,7 @@ pub struct Marks<'w, 's> {
     conversation: Option<Single<'w, 's, &'static Conversation>>,
     people: People<'w, 's>,
     monsters: Query<'w, 's, &'static LevelOwned, With<Monster>>,
-    levels: Query<'w, 's, (), With<Level>>,
+    played: Query<'w, 's, (), With<InPlay>>,
     portals: Query<'w, 's, &'static Portal>,
     elementals: Query<'w, 's, &'static Elementals>,
 }
@@ -312,7 +311,7 @@ impl Marks<'_, '_> {
                 // The living body of the one talked with, in the level played.
                 let speaker = self.conversation.as_ref().and_then(|conversation| {
                     self.people.body(conversation.actor).filter(|&body| {
-                        self.monsters.get(body).is_ok_and(|level| self.levels.contains(level.0))
+                        self.monsters.get(body).is_ok_and(|level| self.played.contains(level.0))
                             && alive(body)
                     })
                 });

@@ -16,8 +16,8 @@ pub struct NewGameDestination {
 /// Nothing joins until the level commits ([`Entry::NewGame`]), so a failed
 /// load leaves the drafts to retry and no half-started campaign.
 pub fn begin_adventure(world: &mut World, drafts: &[CharacterDraft]) -> Result<(), &'static str> {
-    let mut begun = world.query_filtered::<(), Or<(With<Party>, With<Destination>)>>();
-    if begun.iter(world).next().is_some() {
+    let mut entering = world.query_filtered::<(), With<Destination>>();
+    if world.contains_resource::<Party>() || entering.iter(world).next().is_some() {
         return Err("A campaign has already begun.");
     }
     if !(1..=6).contains(&drafts.len()) {

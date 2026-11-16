@@ -6,6 +6,7 @@ use bevy::prelude::*;
 use crate::content::items::{ItemCatalog, ItemDefinition, ItemId, QuantityKind};
 use crate::content::level::ItemPlacement;
 use crate::game::items::{Bag, Give, Hidden, Items, Lying, Place, Put, Throw, make, roll_amount};
+use crate::game::party::roster::Party;
 use crate::game::rng::GameRng;
 
 /// Lay an item at a point of a level, unseen if it is hidden.
@@ -96,7 +97,7 @@ pub struct DropHeld {
 pub fn take_items(
     mut requests: MessageReader<TakeItem>,
     freedom: crate::game::freedom::Freedom,
-    party: Single<(Entity, &avian3d::prelude::Position)>,
+    party: Single<(Entity, &avian3d::prelude::Position), With<Party>>,
     held: Items,
     lying: Query<(super::ActorPose, Has<Bag>), (With<Lying>, Without<Hidden>)>,
     mut commands: Commands,
@@ -138,7 +139,7 @@ pub fn take_items(
 pub fn drop_held(
     mut requests: MessageReader<DropHeld>,
     freedom: crate::game::freedom::Freedom,
-    party: Single<(Entity, &avian3d::prelude::Position)>,
+    party: Single<(Entity, &avian3d::prelude::Position), With<Party>>,
     held: Items,
     obstacles: super::obstacles::WorldObstacles,
     mut commands: Commands,

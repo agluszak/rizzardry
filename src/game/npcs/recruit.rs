@@ -107,10 +107,10 @@ pub fn install(app: &mut App) {
 pub struct Recruiter<'w, 's> {
     persons: Query<'w, 's, (&'static ActorId, &'static Whereabouts), With<Npc>>,
     people: People<'w, 's>,
-    party: Single<'w, 's, (Entity, &'static PartyRoster)>,
+    party: Single<'w, 's, (Entity, &'static PartyRoster), With<Party>>,
     members: Query<'w, 's, (&'static Calling, Has<CanFight>, Has<CompanionOf>)>,
     bodies: Query<'w, 's, &'static Conditions, With<Monster>>,
-    level: Single<'w, 's, &'static Level>,
+    level: Single<'w, 's, &'static Level, With<InPlay>>,
     content: Res<'w, Catalogs>,
     story: Res<'w, super::story::StoryFacts>,
     commands: Commands<'w, 's>,
@@ -165,12 +165,15 @@ impl Recruiter<'_, '_> {
 #[allow(clippy::type_complexity)]
 pub fn dismiss(
     In((person, stands)): In<(Entity, bool)>,
-    party: Single<(&PartyRoster, &Position, &PartyBody)>,
+    party: Single<(&PartyRoster, &Position, &PartyBody), With<Party>>,
     persons: Query<(&ActorId, Option<&Shape>), With<Npc>>,
     people: People,
     companions: Query<(&Vitals, &Conditions)>,
     (held, cursed): (Items, Query<&Cursed>),
-    level: Single<(Entity, &LevelNavigation, &crate::game::world::population::MonsterBodies)>,
+    level: Single<
+        (Entity, &LevelNavigation, &crate::game::world::population::MonsterBodies),
+        With<InPlay>,
+    >,
     body_assets: Res<Assets<crate::content::monster::MonsterBody>>,
     content: Res<Catalogs>,
     mut rng: ResMut<GameRng>,

@@ -216,7 +216,7 @@ pub fn update_radar(
     (search, battle, levels): (
         Option<Res<crate::game::world::search::Search>>,
         Option<Res<crate::game::combat::Battle>>,
-        Query<(), With<crate::game::world::level::Level>>,
+        Query<(), With<crate::game::world::level::InPlay>>,
     ),
 ) {
     let (position, body, effects, roster) = *party;

@@ -187,7 +187,7 @@ pub(super) fn carry_on(
     (mut npcs, groups, aliases): (Query<&mut Npc>, Query<&GroupMember>, Query<&Alias>),
     (mut story, mut factions): (ResMut<StoryFacts>, ResMut<Factions>),
     (clock, camp): (Res<GameClock>, Option<Res<Camp>>),
-    occupied: Query<(), Or<(With<Destination>, With<Battle>)>>,
+    (entering, battle): (Query<(), With<Destination>>, Option<Res<Battle>>),
     mut rng: ResMut<GameRng>,
     mut alternate: Local<bool>,
     (mut remarks, mut speech, mut news): (
@@ -201,7 +201,11 @@ pub(super) fn carry_on(
     let mut talk = talks.get_mut(conversation)?;
     let closing = talk.closing;
     // The person must still be there to talk with, and the party free to.
-    if !occupied.is_empty() || camp.is_some() || !actors.available(talk.conversation.actor) {
+    if !entering.is_empty()
+        || battle.is_some()
+        || camp.is_some()
+        || !actors.available(talk.conversation.actor)
+    {
         commands.entity(conversation).despawn();
         return Ok(());
     }

@@ -153,15 +153,13 @@ pub fn search_score(
 pub fn search_pulse(
     time: Res<Time>,
     mut search: ResMut<Search>,
-    (the_party, laid): (
-        Single<Entity, With<crate::game::party::roster::Party>>,
-        crate::game::actors::Laid,
-    ),
+    party: Single<
+        (Entity, &Position, &PartyBody, &PartyMovement, &PartyRoster),
+        With<crate::game::party::roster::Party>,
+    >,
+    laid: crate::game::actors::Laid,
     mut rng: ResMut<crate::game::rng::GameRng>,
     battle: Option<Res<Battle>>,
-    movement: Single<&PartyMovement>,
-    party: Query<(&Position, &PartyBody)>,
-    roster: Single<&PartyRoster>,
     members: Query<
         ((&Traits, &Identity), &crate::game::actors::Attributes, &crate::game::actors::Skills),
         With<crate::game::actors::CanAct>,
@@ -179,7 +177,7 @@ pub fn search_pulse(
     if battle.is_some() {
         return;
     }
-    let Ok((position, body)) = party.single() else { return };
+    let (the_party, position, body, movement, roster) = *party;
     let (from, forward) = (PartyBody::eye(position), body.forward());
     let running = movement.running;
     let mut best: Option<(u32, &Identity)> = None;
@@ -188,7 +186,7 @@ pub fn search_pulse(
         if score > best.map_or(0, |b| b.0) {
             best = Some((score, member));
         }
-        if laid.bonus(*the_party).reveals && !(best.is_some() && rng.below(2) == 0) {
+        if laid.bonus(the_party).reveals && !(best.is_some() && rng.below(2) == 0) {
             best = Some((100, member));
         }
     }

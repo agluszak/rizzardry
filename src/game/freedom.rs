@@ -10,12 +10,12 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::game::camp::Camp;
-use crate::game::world::level::{Destination, Level, TravelQuestion};
+use crate::game::world::level::{Destination, InPlay, TravelQuestion};
 
 /// What decides whether the party is free to act.
 #[derive(SystemParam)]
 pub struct Freedom<'w, 's> {
-    levels: Query<'w, 's, (), With<Level>>,
+    played: Option<Res<'w, InPlay>>,
     entering: Query<'w, 's, (), With<Destination>>,
     camp: Option<Res<'w, Camp>>,
     conversations: Query<
@@ -48,7 +48,7 @@ impl Freedom<'_, '_> {
     /// Free but perhaps camping: what utility magic needs (a camp does not
     /// stop a portal).
     pub fn unoccupied(&self) -> bool {
-        !self.levels.is_empty()
+        self.played.is_some()
             && self.undisturbed()
             && self.flights.is_empty()
             && self.interaction.is_empty()

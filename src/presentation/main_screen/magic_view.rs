@@ -978,16 +978,18 @@ pub(super) fn draw_magic_view(
 pub(super) fn commit_magic_choice(
     mut commands: Commands,
     view: Single<(Entity, &mut MagicView, Option<&CastsAt>, Option<&ConversationTarget>)>,
-    (the_party, held): (Single<Entity, With<PartyRoster>>, Items),
+    (party, held): (
+        Single<(Entity, &avian3d::prelude::Position, &PartyBody), With<PartyRoster>>,
+        Items,
+    ),
     content: If<Res<Catalogs>>,
-    (conversations, speakers, monsters, party): (
+    (conversations, speakers, monsters): (
         Query<crate::game::npcs::conversation::DialogueReadOnly>,
         Query<&crate::game::npcs::Embodies>,
         Query<
             (Entity, &crate::game::characters::Vitals, crate::game::world::ActorPose),
             With<crate::game::world::population::Monster>,
         >,
-        Query<(&avian3d::prelude::Position, &PartyBody)>,
     ),
     mut requests: MessageWriter<MagicRequest>,
 ) -> Result {
@@ -1024,11 +1026,11 @@ pub(super) fn commit_magic_choice(
             Targeting::Point => {
                 // On the ground ahead of the party, as far as the spell
                 // reaches (ten metres at most).
-                let Ok((position, body)) = party.single() else { return Ok(()) };
+                let (_, position, body) = *party;
                 let feet = PartyBody::feet(position);
                 Aim::Point(feet + body.forward() * spell.reach.metres().min(10.0))
             }
-            Targeting::Item => match held.held(*the_party) {
+            Targeting::Item => match held.held(party.0) {
                 Some(item) => Aim::Item(item),
                 None => return Ok(()),
             },

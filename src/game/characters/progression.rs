@@ -357,18 +357,18 @@ pub struct Progression<'w, 's> {
         's,
         (),
         Or<(
-            With<crate::game::combat::Battle>,
             With<crate::game::world::level::Destination>,
             With<crate::game::npcs::conversation::Conversation>,
             With<crate::game::world::level::TravelQuestion>,
         )>,
     >,
+    battle: Option<Res<'w, crate::game::combat::Battle>>,
     content: If<Res<'w, crate::game::data::Catalogs>>,
     commands: Commands<'w, 's>,
 }
 impl Progression<'_, '_> {
     pub fn eligibility(&self, member: Entity) -> Result<(), &'static str> {
-        if !self.blocked.is_empty() {
+        if self.battle.is_some() || !self.blocked.is_empty() {
             return Err("Finish the current encounter or journey first.");
         }
         if !self.roster.as_deref().is_some_and(|roster| roster.contains(&member)) {

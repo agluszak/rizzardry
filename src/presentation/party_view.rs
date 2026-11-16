@@ -81,7 +81,7 @@ pub fn aim_camera(
 pub fn track_fights(
     mut news: MessageReader<crate::game::combat::CombatNews>,
     preferences: Res<crate::settings::Preferences>,
-    party: Query<&avian3d::prelude::Position, With<PartyBody>>,
+    party: Single<&avian3d::prelude::Position, With<PartyBody>>,
     monsters: Query<
         (
             crate::game::world::ActorPose,
@@ -99,11 +99,9 @@ pub fn track_fights(
         if preferences.view_tracking != crate::settings::ViewTracking::AllTargets {
             continue;
         }
-        let (Ok(at), Ok((pose, monster, walker))) = (party.single(), monsters.get(nearest)) else {
-            continue;
-        };
+        let Ok((pose, monster, walker)) = monsters.get(nearest) else { continue };
         let aim = monster.eye(crate::game::world::navigation::feet(pose.translation(), walker));
-        let toward = aim - PartyBody::eye(at);
+        let toward = aim - PartyBody::eye(*party);
         turns.write(TurnParty {
             to: Vec2::new(
                 crate::game::party::body::yaw_toward(toward),

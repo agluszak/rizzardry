@@ -286,11 +286,11 @@ pub fn enter_automap(
     mut commands: Commands,
     art: Res<AutomapArt>,
     mut images: ResMut<Assets<Image>>,
-    party: Query<&Transform, With<PartyBody>>,
+    party: Option<Single<&Transform, With<PartyBody>>>,
     played: PlayedLevel,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (Ok(party), Some(level)) = (party.single(), played.entity()) else {
+    let (Some(party), Some(level)) = (party, played.entity()) else {
         next.set(Screen::World);
         return;
     };
@@ -473,7 +473,7 @@ fn press_button(
     click: On<Activate>,
     buttons: Query<&SheetButton>,
     levels: PlayedLevel,
-    party: Query<&Transform, With<PartyBody>>,
+    party: Option<Single<&Transform, With<PartyBody>>>,
     mut automap: Single<&mut Automap>,
     mut next: ResMut<NextState<Screen>>,
 ) {
@@ -498,7 +498,7 @@ fn press_button(
             automap.centre_on(point);
         }
         ButtonAction::CentreParty => {
-            if let Ok(party) = party.single() {
+            if let Some(party) = party {
                 automap.centre_on(party.translation.xz());
             }
         }

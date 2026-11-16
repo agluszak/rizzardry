@@ -20,7 +20,7 @@ use crate::game::characters::{
 use crate::game::combat::Combatant;
 use crate::game::hits::Damaged;
 use crate::game::magic::SpellPoints;
-use crate::game::party::roster::{PartyMember, PartyRoster};
+use crate::game::party::roster::{Party, PartyMember, PartyRoster};
 use crate::game::rng::GameRng;
 use crate::game::time::Ticks;
 use crate::game::world::level::{LevelOwned, Woke};
@@ -169,7 +169,7 @@ const TENDED: f32 = 1.5;
 /// Disease leaves a quarter of a body's recovery.
 const DISEASED: f32 = 0.25;
 
-/// A party is tended exactly while one of it is up to tending it.
+/// The party is tended exactly while one of it is up to tending it.
 #[allow(clippy::type_complexity)]
 pub(super) fn tend(
     changed: Query<
@@ -180,21 +180,20 @@ pub(super) fn tend(
         ),
     >,
     mut left: RemovedComponents<PartyMember>,
-    parties: Query<(Entity, &PartyRoster, Has<Tended>)>,
+    party: Single<(Entity, &PartyRoster, Has<Tended>), With<Party>>,
     members: Query<(&Traits, &Conditions, &Vitals)>,
     mut commands: Commands,
 ) {
     if changed.is_empty() && left.read().count() == 0 {
         return;
     }
-    for (party, roster, tended) in &parties {
-        let tends = roster.iter().any(|member| {
-            members.get(member).is_ok_and(|(traits, conditions, vitals)| {
-                traits.has(Trait::CampRecovery) && conditions.is_empty() && !vitals.is_dead()
-            })
-        });
-        super::fitness::mark::<Tended>(&mut commands.entity(party), tended, tends);
-    }
+    let (party, roster, tended) = *party;
+    let tends = roster.iter().any(|member| {
+        members.get(member).is_ok_and(|(traits, conditions, vitals)| {
+            traits.has(Trait::CampRecovery) && conditions.is_empty() && !vitals.is_dead()
+        })
+    });
+    super::fitness::mark::<Tended>(&mut commands.entity(party), tended, tends);
 }
 
 /// A stretch of time to go through: its ticks, the party's pace, and, for
@@ -524,7 +523,7 @@ mod tests {
     #[test]
     fn a_member_recovers_by_the_partys_pace() {
         let mut world = world();
-        let party = world.spawn(PartyRoster::default()).id();
+        let party = world.spawn(Party).id();
         let member = |world: &mut World, profession| {
             let sheet = Character::new("M", Race::Human, Gender::Male, profession);
             let body = (Vitals::full(100, 100), Mending { breathes: true, ..default() });

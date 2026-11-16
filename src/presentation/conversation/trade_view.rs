@@ -35,7 +35,7 @@ pub(super) fn sync_trade_rows(
     content: If<Res<crate::game::data::Catalogs>>,
     sessions: Query<&Conversation>,
     stocks: Query<&MerchantStock>,
-    parties: Query<(Entity, &PartyRoster), With<crate::game::party::roster::Party>>,
+    party: Single<(Entity, &PartyRoster), With<crate::game::party::roster::Party>>,
     members: Query<(
         crate::game::characters::PaperReadOnly,
         &crate::game::actors::Attributes,
@@ -57,7 +57,7 @@ pub(super) fn sync_trade_rows(
         mut gifts,
     } = widgets;
     let items = &content.items;
-    let Ok((party, roster)) = parties.single() else { return };
+    let (party, roster) = *party;
     for (list, children) in &lists {
         let session = views.session();
         let (state, c) = (views.state(), sessions.get(session).unwrap());

@@ -4,7 +4,7 @@ use crate::{
     game::{
         characters::Calling,
         data::Catalogs,
-        party::roster::PartyRoster,
+        party::roster::{Party, PartyRoster},
         rng::GameRng,
         time::GameClock,
         world::{
@@ -22,7 +22,7 @@ pub(super) fn initialize(
     mut commands: Commands,
     mut rng: ResMut<GameRng>,
     clock: Res<GameClock>,
-    party: Query<&PartyRoster>,
+    party: Option<Single<&PartyRoster, With<Party>>>,
     characters: Query<&Calling>,
     destination: Single<&Destination>,
 ) {
@@ -35,8 +35,8 @@ pub(super) fn initialize(
         ),
         Entry::Travel => crate::game::party::average_level(
             party
+                .expect("a party travels")
                 .iter()
-                .flat_map(|r| r.iter())
                 .filter_map(|e| characters.get(e).ok())
                 .map(Calling::level),
         ),
@@ -79,7 +79,7 @@ pub struct NpcPopulation<'w, 's> {
     people: People<'w, 's>,
     assets: ResMut<'w, NpcAssets>,
     scripts: Res<'w, Assets<DialogueScript>>,
-    roster: Query<'w, 's, &'static PartyRoster>,
+    roster: Option<Single<'w, 's, &'static PartyRoster, With<Party>>>,
     characters: Query<'w, 's, &'static Calling>,
     clock: Res<'w, GameClock>,
 }
