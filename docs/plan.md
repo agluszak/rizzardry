@@ -195,6 +195,11 @@ for this one:
   is despawned. Moving or ending one removes `IsResource`, which takes the
   resource with it (`activate_level` for `InPlay`, `Battle`'s hook); nothing
   despawns a resource's entity directly.
+- Nothing that can end an entity starts from `Add` (or `Insert`) of a
+  bundle holding a relationship: Bevy adds to the relationship's list by a
+  deferred command, so a chain that despawns the entity first leaves a dead
+  entry. Whoever makes it triggers the sequence after spawning it
+  (`Acts`).
 - "Only while X" / "never while X" is a run condition on the registration
   (`resource_exists::<Battle>`, `not(...)`), or `If<Res<X>>` when the system
   reads X; `Option<Res<X>>` only where both cases do something.
@@ -304,12 +309,13 @@ Open:
   `combat/other_set.rs`): the player's (W, Shift+W), a Turncoat member's and
   the fight's own, one rule. Insanity and a Turncoat member ask the
   strike's own search whether they can strike someone; a member turned or
-  berserk looks only among fellow members. Not tested yet. Not ported:
-  retail's refusal while it is the member's own moment under way (`0x1f7`).
-  Unchecked against retail: the fight's own swap takes up attacks anew
-  (retail calls `RefreshAfterItemRecordChange`, not
-  `PrepareCharacterAttacks`); a swap re-arms a released curse through
-  `Put` (retail `SwapItemInstances`).
+  berserk looks only among fellow members. Settled against retail: a
+  cursed weapon in use blocks the swap until its curse is released, and
+  moving it re-arms the curse (`PC Item.cpp:1293`, `:2149`, `:2788`); only
+  the Turncoat swap takes up attacks anew, the fight's own strikes with
+  those taken up, and either loses the rest of the round's moments
+  (`alternate_hand`); a member mid-attack is refused (`0x1f7`). Not tested
+  yet.
 - A lead on the despawn failure, by reading: `charging` inserts `Charges`
   in the settle that kills a monster from full health; or `by_temper`'s
   `.observe` on a short-lived monster.

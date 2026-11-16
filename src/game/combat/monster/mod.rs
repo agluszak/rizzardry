@@ -125,11 +125,12 @@ fn conducted(
         commands.trigger(special::WeighsSpecial { deliberation });
         return Ok(());
     }
-    if conduct == Conduct::Hold {
-        commands.spawn((ActionOf(monster), Holds));
+    let action = if conduct == Conduct::Hold {
+        commands.spawn((ActionOf(monster), Holds)).id()
     } else {
-        commands.spawn((ActionOf(monster), Retreats { conduct, quiet: false }));
-    }
+        commands.spawn((ActionOf(monster), Retreats { conduct, quiet: false })).id()
+    };
+    commands.trigger(super::action::Acts { action });
     commands.entity(deliberation).despawn();
     Ok(())
 }

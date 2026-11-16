@@ -777,7 +777,7 @@ the actor's kind is made: one with an order follows it (a breath order
 checked by its own observer against `CanBreathe` and the cone), one with a
 temper deliberates. Either way it ends in `Decided`.
 
-**An action is an entity**, made by whoever decided (`ActionOf` the actor).
+**An action is an entity**, made by whoever decided (`ActionOf` the actor, a plain component: it lasts only the moment), who then triggers `Acts` at it.
 What it is is which component it has: `Strikes`, `Retreats`, `Holds`,
 `Protects`, `Breathes`, `Casts`; one aimed at foes is also `AtFoes`,
 written by its maker (a cast's from its spell's definition). Each kind's

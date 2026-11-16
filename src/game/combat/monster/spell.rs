@@ -14,7 +14,7 @@ use super::{ClosesIn, PartyGap};
 use crate::content::spells::{MAX_POWER, SpellDefinition};
 use crate::game::actors::Level;
 use crate::game::actors::arm::Furthest;
-use crate::game::combat::action::{ActionOf, AtFoes, Casts};
+use crate::game::combat::action::{ActionOf, Acts, AtFoes, Casts};
 use crate::game::data::Catalogs;
 use crate::game::magic::casting::{MagicChoice, Source};
 use crate::game::magic::reach::Aim;
@@ -117,6 +117,8 @@ fn pick(
     if content.spells[spell].aimed_at_enemies() {
         action.insert(AtFoes);
     }
+    let action = action.id();
+    commands.trigger(Acts { action });
     commands.entity(deliberation).despawn();
     Ok(())
 }

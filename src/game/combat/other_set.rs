@@ -35,7 +35,7 @@ pub struct SwappedForFight;
 /// A member strikes: at their friends when berserk, else at their foes; one
 /// turned or berserk only among their fellow members. Set on every member
 /// as they are made.
-pub(crate) fn member_strikes(
+pub fn member_strikes(
     strike: On<super::swings::Strike>,
     mut commands: Commands,
     members: Query<(Has<Berserk>, &Conditions, Has<super::turn::AttacksLeft>)>,
@@ -135,12 +135,21 @@ fn nobody(
     Ok(())
 }
 
-/// Once a member's arms follow the set swapped to, they take up their
-/// attacks anew (retail `PrepareCharacterAttacks`) and strike again.
-pub(super) fn strike_with_other_set(waiting: Query<(Entity, &OtherSet)>, mut commands: Commands) {
-    for (member, &OtherSet(fights)) in &waiting {
+/// Once a member's arms follow the set swapped to, they strike again. One
+/// Turncoat holds takes up their attacks anew with it (retail
+/// `PrepareCharacterAttacks`, `Combat.cpp:2224`); the fight's own swap
+/// strikes with the attacks taken up (retail only recomputes the hands,
+/// `RefreshAfterItemRecordChange`). Either way the weapons changed, so a
+/// later moment of the round is lost (retail `alternate_hand`, `:2156`).
+pub fn strike_with_other_set(
+    waiting: Query<(Entity, &OtherSet, &Conditions)>,
+    mut commands: Commands,
+) {
+    for (member, &OtherSet(fights), conditions) in &waiting {
         commands.entity(member).remove::<OtherSet>().insert(WithOtherSet);
-        commands.trigger(TakesUpAttacks { actor: member });
+        if conditions.has(Condition::Turncoat) {
+            commands.trigger(TakesUpAttacks { actor: member });
+        }
         commands.trigger(super::swings::Strike { actor: member, fights });
     }
 }

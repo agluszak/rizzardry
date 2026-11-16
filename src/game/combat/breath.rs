@@ -11,7 +11,7 @@ use crate::game::characters::Vitals;
 pub struct CanBreathe;
 
 /// Having a breath to take follows the race, the breath laid and stamina.
-pub(crate) fn ready(
+pub fn ready(
     members: Query<(Entity, &Traits, &Modifiers, &Vitals, Has<CanBreathe>)>,
     mut commands: Commands,
 ) {

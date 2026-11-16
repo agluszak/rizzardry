@@ -9,7 +9,7 @@
 use bevy::prelude::*;
 use enum_map::EnumMap;
 
-use super::action::{ActionOf, Breathes, Casts, Fights, Strikes};
+use super::action::{ActionOf, Acts, Breathes, Casts, Fights, Strikes};
 use super::attack::phase;
 use super::{ACTION_SECONDS, Battle, Combatant, PartyMove, Pause, Round};
 use crate::content::characters::Trait;
@@ -396,7 +396,9 @@ fn follow_order(
     let actor = decides.actor;
     match members.get(actor)?.0 {
         Action::Attack { berserk } => {
-            commands.spawn((ActionOf(actor), Strikes(Fights { waits: false, berserk })));
+            let action =
+                commands.spawn((ActionOf(actor), Strikes(Fights { waits: false, berserk }))).id();
+            commands.trigger(Acts { action });
         }
         Action::Magic(choice) => {
             let at_foes = choice
@@ -407,6 +409,8 @@ fn follow_order(
             if at_foes {
                 action.insert(super::action::AtFoes);
             }
+            let action = action.id();
+            commands.trigger(Acts { action });
         }
         Action::Breathe(target) => commands.trigger(BreathOrdered { actor, target }),
         Action::Defend => unreachable!("one defending takes no moment"),
@@ -453,17 +457,20 @@ fn breathe_as_ordered(
         commands.trigger(Done { actor });
         return Ok(());
     }
-    commands.spawn((
-        ActionOf(actor),
-        Breathes {
-            special: None,
-            summons: None,
-            strength: crate::game::hits::specials::strength(level.0 as u8, vitals.stamina),
-            toward: places.of(target).feet,
-            cost: vitals.stamina.max / 5,
-            cooldown: 0,
-        },
-    ));
+    let action = commands
+        .spawn((
+            ActionOf(actor),
+            Breathes {
+                special: None,
+                summons: None,
+                strength: crate::game::hits::specials::strength(level.0 as u8, vitals.stamina),
+                toward: places.of(target).feet,
+                cost: vitals.stamina.max / 5,
+                cooldown: 0,
+            },
+        ))
+        .id();
+    commands.trigger(Acts { action });
     Ok(())
 }
 
@@ -479,7 +486,10 @@ fn decide_for_itself(
     let spent = left
         .is_some_and(|left| left.left[WeaponSlot::Primary] != tempo.attacks[WeaponSlot::Primary]);
     if spent || moved {
-        commands.spawn((ActionOf(monster), Strikes(Fights { waits: false, berserk: false })));
+        let action = commands
+            .spawn((ActionOf(monster), Strikes(Fights { waits: false, berserk: false })))
+            .id();
+        commands.trigger(Acts { action });
     } else {
         commands.trigger(super::monster::Deliberates { monster });
     }

@@ -1,0 +1,6 @@
+# Nightly for the faster builds in .cargo/config.toml (shared generics, the
+# parallel front end). Pinned so every machine and CI build alike.
+[toolchain]
+channel = "nightly-2026-11-14"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

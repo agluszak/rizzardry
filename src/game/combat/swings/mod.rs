@@ -202,7 +202,7 @@ pub struct Answered(pub attack::Dealt);
 
 /// A monster strikes: at its friends when berserk, else at its foes; with
 /// nobody to strike, it closes in. Set on every monster as it is made.
-pub(crate) fn monster_strikes(
+pub fn monster_strikes(
     strike: On<Strike>,
     mut commands: Commands,
     monsters: Query<(Has<Berserk>, Has<AttacksLeft>)>,
@@ -240,9 +240,9 @@ pub struct Way {
 
 /// An attack being chosen looks for whom it could strike.
 #[derive(EntityEvent, Clone, Copy, Debug)]
-pub(crate) struct Seeks {
+pub struct Seeks {
     #[event_target]
-    pub(crate) attack: Entity,
+    pub attack: Entity,
 }
 
 /// An attack being chosen looks for the ways it could strike them.
@@ -254,9 +254,9 @@ struct FindsWays {
 
 /// An attack being chosen found ways to strike, with the hand they are in.
 #[derive(EntityEvent, Clone, Debug)]
-pub(crate) struct Found {
+pub struct Found {
     #[event_target]
-    pub(crate) attack: Entity,
+    pub attack: Entity,
     slot: WeaponSlot,
     ways: Vec<Way>,
 }
@@ -265,10 +265,10 @@ pub(crate) struct Found {
 /// missed someone it could otherwise have struck. What follows is set by
 /// its maker.
 #[derive(EntityEvent, Clone, Copy, Debug)]
-pub(crate) struct Nobody {
+pub struct Nobody {
     #[event_target]
-    pub(crate) attack: Entity,
-    pub(crate) evaded: bool,
+    pub attack: Entity,
+    pub evaded: bool,
 }
 
 /// An attack is made, at whom and how, and opens.
@@ -365,12 +365,7 @@ fn moving(member: bool, walking: bool, round: &Round) -> bool {
 /// 2), looking for those who stand so toward it; attacking holds the fight
 /// for the action's pause. Its maker sets what follows finding nobody, and
 /// then has it seek ([`Seeks`]).
-pub(crate) fn begin(
-    commands: &mut Commands,
-    actor: Entity,
-    fights: Fights,
-    looks_for: Stance,
-) -> Entity {
+pub fn begin(commands: &mut Commands, actor: Entity, fights: Fights, looks_for: Stance) -> Entity {
     commands.trigger(Shown { actor });
     commands.spawn((AttackBy(actor), Choosing(fights), LooksFor(looks_for))).id()
 }
@@ -573,7 +568,7 @@ fn pick(
 /// moment now, at most 100 (retail `SetUpMonsterTurn`). Anything else
 /// stands.
 #[allow(clippy::type_complexity)]
-pub(crate) fn close_in(
+pub fn close_in(
     nobody: On<Nobody>,
     mut commands: Commands,
     attacks: Query<(&AttackBy, &Sought)>,

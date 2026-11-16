@@ -17,7 +17,7 @@ use crate::game::party::roster::{Party, PartyRoster};
 pub struct WeaponsHeld;
 
 /// Whether a curse holds a weapon in use follows what is worn there.
-pub(crate) fn held(
+pub fn held(
     members: Query<(Entity, &Vitals, Has<WeaponsHeld>), With<Calling>>,
     items: Items,
     curses: Query<&Cursed>,
@@ -148,21 +148,24 @@ pub struct SwapAllWeapons;
 
 /// The player's swap (retail `BindCharacterItems`, `BindEveryPartyItem`,
 /// `PC Item.cpp:4175`, `:2578`): in a fight only while a round is played or
-/// the party moves, else refused (string `0x1f6`). A member's swap says how
-/// it went; everyone's swaps each quietly and says it once (`0x1ed`). What
-/// the fight's own swap left in use is the player's choice from then on.
+/// the party moves, else refused (string `0x1f6`); and not by a member in
+/// the middle of an attack (`0x1f7`). A member's swap says how it went;
+/// everyone's swaps each quietly and says it once (`0x1ed`). What the
+/// fight's own swap left in use is the player's choice from then on.
+#[allow(clippy::too_many_arguments)]
 fn swap_as_asked(
     mut one: MessageReader<SwapWeapons>,
     mut all: MessageReader<SwapAllWeapons>,
     fight: Option<Single<(&crate::game::combat::Round, &crate::game::combat::PartyMove)>>,
     roster: Single<&PartyRoster, With<Party>>,
+    members: Query<(&Identity, Has<crate::game::combat::swings::Attacking>)>,
     mut news: MessageWriter<ItemNews>,
     mut commands: Commands,
-) {
+) -> Result {
     let asked: Vec<Entity> = one.read().map(|&SwapWeapons(member)| member).collect();
     let everyone = all.read().count() > 0;
     if asked.is_empty() && !everyone {
-        return;
+        return Ok(());
     }
     let between_rounds = fight.is_some_and(|fight| {
         let (round, party_move) = *fight;
@@ -170,24 +173,31 @@ fn swap_as_asked(
     });
     if between_rounds {
         news.write(ItemNews::SwapsBlocked);
-        return;
+        return Ok(());
     }
-    let swap = |member: Entity, told: bool, commands: &mut Commands| {
+    let mut swap = |member: Entity, told: bool| -> Result {
+        let (identity, attacking) = members.get(member)?;
+        if attacking {
+            news.write(ItemNews::SwapWhileAttacking { member: identity.name.clone() });
+            return Ok(());
+        }
         commands.entity(member).remove::<crate::game::combat::other_set::SwappedForFight>();
         commands.trigger(SwapsWeaponSets { member, told });
+        Ok(())
     };
     for member in asked.into_iter().filter(|member| roster.contains(member)) {
-        swap(member, true, &mut commands);
+        swap(member, true)?;
     }
     if everyone {
         for member in roster.iter() {
-            swap(member, false, &mut commands);
+            swap(member, false)?;
         }
         news.write(ItemNews::AllSwapped);
     }
+    Ok(())
 }
 
-pub(crate) fn plugin(app: &mut App) {
+pub fn plugin(app: &mut App) {
     app.add_message::<SwapWeapons>()
         .add_message::<SwapAllWeapons>()
         .add_observer(swap)

@@ -25,9 +25,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      # The toolchain rust-toolchain.toml pins, with its components.
+      - run: rustup toolchain install
       - uses: rui314/setup-mold@v1
       - uses: taiki-e/install-action@v2
         with:

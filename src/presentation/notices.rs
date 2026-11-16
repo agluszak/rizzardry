@@ -628,6 +628,7 @@ fn post_items(mut items: MessageReader<ItemNews>, strings: GameStrings, mut noti
             }
             ItemNews::SwapsBlocked => string(0x1f6),
             ItemNews::AllSwapped => string(0x1ed),
+            ItemNews::SwapWhileAttacking { member } => string(0x1f7).replace("%s", member),
             // Retail's notices of a swap, run on from the member's name.
             ItemNews::WeaponSets { member, what } => {
                 use crate::game::inventory::weapon_sets::SwapNews;

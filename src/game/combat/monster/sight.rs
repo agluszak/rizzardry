@@ -27,7 +27,7 @@ const REINFORCEMENT_SLACK: f32 = 1.15;
 pub struct PartyHides(pub Hidden);
 
 /// How hard the party is to make out follows its members and Chameleon.
-pub(crate) fn hiding(
+pub fn hiding(
     party: Single<(Entity, &PartyRoster, &PartyHides), With<Party>>,
     members: Query<(&Level, Has<CanFight>)>,
     laid: Laid,
@@ -122,7 +122,7 @@ fn mark<M: Component + Default>(commands: &mut Commands, body: Entity, (now, was
 
 /// What each living monster makes out of the party, and whether the party
 /// has it in view, follow where they stand.
-pub(crate) fn look(
+pub fn look(
     monsters: Query<(Entity, &Vitals, Has<MakesOutParty>, Has<InPartyView>), With<Monster>>,
     eyesight: Eyesight,
     mut commands: Commands,
@@ -139,7 +139,7 @@ pub(crate) fn look(
 /// Whether each monster stands with the fight follows where it and the
 /// hostiles fighting stand.
 #[allow(clippy::type_complexity)]
-pub(crate) fn reinforce(
+pub fn reinforce(
     monsters: Query<(Entity, &Temper, Has<InPartyView>, Has<Reinforces>), With<Monster>>,
     fighting: Query<
         (Entity, &Vitals, &Side),

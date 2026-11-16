@@ -13,7 +13,7 @@ use crate::content::characters::Attribute;
 use crate::game::actors::arm::{Furthest, GuardReach};
 use crate::game::actors::{Attributes, BlindFighting, CanGuard, Level};
 use crate::game::characters::{Condition, Conditions, Vitals};
-use crate::game::combat::action::{ActionOf, Fights, Protects, Retreats, Strikes};
+use crate::game::combat::action::{ActionOf, Acts, Fights, Protects, Retreats, Strikes};
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::Stance;
 use crate::game::world::population::Temper;
@@ -46,12 +46,15 @@ pub(super) fn strike_or_guard(
         monsters.get(monster)?;
     let blind = conditions.has(Condition::Blind) && !fights_blind;
     if reach.0.is_none() || (blind && !reach.reaches(gap)) {
-        commands.spawn((ActionOf(monster), Retreats { conduct: Conduct::Withdraw, quiet: false }));
+        let withdraws = Retreats { conduct: Conduct::Withdraw, quiet: false };
+        let action = commands.spawn((ActionOf(monster), withdraws)).id();
+        commands.trigger(Acts { action });
         return Ok(());
     }
     let strikes = |waits| (ActionOf(monster), Strikes(Fights { waits, berserk: false }));
     if !reach.reaches(gap) {
-        commands.spawn(strikes(false));
+        let action = commands.spawn(strikes(false)).id();
+        commands.trigger(Acts { action });
         return Ok(());
     }
     let temper = &temper.0;
@@ -73,11 +76,12 @@ pub(super) fn strike_or_guard(
             .collect(),
         _ => Vec::new(),
     };
-    if wards.is_empty() {
-        commands.spawn(strikes(temper.wary && rng.below(100) < intelligence));
+    let action = if wards.is_empty() {
+        commands.spawn(strikes(temper.wary && rng.below(100) < intelligence)).id()
     } else {
         let ward = wards[rng.below(wards.len() as u32) as usize];
-        commands.spawn((ActionOf(monster), Protects(ward)));
-    }
+        commands.spawn((ActionOf(monster), Protects(ward))).id()
+    };
+    commands.trigger(Acts { action });
     Ok(())
 }

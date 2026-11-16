@@ -30,7 +30,7 @@ pub struct Move {
 pub struct Charges;
 
 /// How far it moves follows its stride, Haste and being slowed.
-pub(crate) fn moves(
+pub fn moves(
     actors: Query<(Entity, &Nature, &Modifiers, &Conditions, Option<&Move>)>,
     mut commands: Commands,
 ) {
@@ -63,7 +63,7 @@ pub(crate) fn moves(
 }
 
 /// Charging follows its health.
-pub(crate) fn charging(actors: Query<(Entity, &Vitals, Has<Charges>)>, mut commands: Commands) {
+pub fn charging(actors: Query<(Entity, &Vitals, Has<Charges>)>, mut commands: Commands) {
     for (actor, vitals, was) in &actors {
         let now = vitals.health.current * 100 <= vitals.health.max * 95;
         if now && !was {

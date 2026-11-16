@@ -13,7 +13,7 @@ mod orders;
 pub mod other_set;
 mod round_end;
 pub mod summon;
-mod swings;
+pub mod swings;
 pub mod turn;
 
 #[cfg(test)]
@@ -226,7 +226,7 @@ pub struct Round {
     /// and not begun, past 100 once no moment is left.
     moment: u32,
     /// How the party moves this round.
-    pub(crate) pace: Option<PartyPace>,
+    pub pace: Option<PartyPace>,
     /// Someone has attacked this round.
     attacked: bool,
     /// Those who leave the fight as the round ends.
@@ -677,7 +677,7 @@ fn join_party(
 
 /// Targets in combat use participation order. Outside combat the party still
 /// exists, and spells may target it without creating a battle.
-pub(crate) fn participants<'a>(
+pub fn participants<'a>(
     roster: &'a PartyRoster,
     combatants: &'a [Entity],
 ) -> impl Iterator<Item = Entity> + 'a {

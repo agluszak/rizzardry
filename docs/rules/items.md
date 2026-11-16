@@ -83,8 +83,10 @@ asked.
 - **swap weapon sets**: a member's two weapon sets trade places (retail
   `SwapWeaponSetSlots`, `PC Item.cpp:4101`). One with nothing in either set
   has nothing to swap (string `0x1eb`); a cursed weapon in use holds the
-  whole swap while its wearer lives, and the party learns of the curse
-  (`0x1ee`). A weapon in use that pairs with the stored off hand while the
+  whole swap while its wearer lives, until its curse is released, and the
+  party learns of the curse (`0x1ee`; retail `CanUnequipSlotItem`,
+  `PC Item.cpp:1293`). Moving a weapon re-arms a released curse
+  (`:2788`). A weapon in use that pairs with the stored off hand while the
   stored main hand is empty stays, and likewise the off hand with the
   stored main hand, so the set in use still holds together. Swapped, it
   says so (`0x1ec`).
@@ -94,13 +96,18 @@ asked.
 The player swaps a member's sets with W, everyone's with Shift+W (retail
 `mgskeyboard.ini` 318, 319; everyone's is told once, `0x1ed`). In a fight
 only while a round is played or the party moves; between rounds it is
-refused (`0x1f6`).
+refused (`0x1f6`), and so is a member in the middle of an attack
+(`0x1f7`). Swapped in a fight, a member's weapons are not the ones they
+accepted the round with, so the rest of their moments that round are lost
+(retail `alternate_hand`, `Combat.cpp:2156`).
 
 A member whose strike finds nobody tries the other set when Turncoat holds
 them, or when the fight's own swap is on (the option "swap weapons when
 needed", retail `autoswap_weapons`, on in a new game): if they have weapons
 to swap and no curse holds one in use, the sets swap, and once their arms
-follow they take up their attacks anew and strike. Finding someone, the
+follow they strike again: one Turncoat holds with their attacks taken up
+anew (retail `PrepareCharacterAttacks`), the fight's own swap with those
+already taken up. Finding someone, the
 fight's swap says so (`0x26d`) and the stored set stays in use until the
 fight ends, when it swaps back for each living member; finding nobody again,
 the sets swap back at once.

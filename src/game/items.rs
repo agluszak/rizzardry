@@ -1518,6 +1518,10 @@ pub enum ItemNews {
     SwapsBlocked,
     /// Every member swapped weapon sets (`0x1ed`).
     AllSwapped,
+    /// A member in the middle of an attack does not swap (`0x1f7`).
+    SwapWhileAttacking {
+        member: String,
+    },
     /// What came of swapping a member's weapon sets.
     WeaponSets {
         member: String,

@@ -10,7 +10,7 @@ use super::{ClosesIn, PartyGap};
 use crate::content::species::{Reach, SpecialAttack};
 use crate::game::actors::arm::Furthest;
 use crate::game::characters::{Condition, Conditions, Vitals};
-use crate::game::combat::action::{ActionOf, Breathes};
+use crate::game::combat::action::{ActionOf, Acts, Breathes};
 use crate::game::combat::turn::SpecialCooldown;
 use crate::game::hits::specials::special;
 use crate::game::magic::reach::Aim;
@@ -187,17 +187,20 @@ fn make(
         return Ok(());
     };
     let kind = attack.kind.expect("one that is ready has an attack");
-    commands.spawn((
-        ActionOf(monster),
-        Breathes {
-            special: Some(kind),
-            summons: special(kind).summons,
-            strength: crate::game::hits::specials::strength(level.0 as u8, vitals.stamina),
-            toward: places.of(toward).feet,
-            cost: vitals.stamina.max / 10,
-            cooldown: attack.cooldown,
-        },
-    ));
+    let action = commands
+        .spawn((
+            ActionOf(monster),
+            Breathes {
+                special: Some(kind),
+                summons: special(kind).summons,
+                strength: crate::game::hits::specials::strength(level.0 as u8, vitals.stamina),
+                toward: places.of(toward).feet,
+                cost: vitals.stamina.max / 10,
+                cooldown: attack.cooldown,
+            },
+        ))
+        .id();
+    commands.trigger(Acts { action });
     commands.entity(deliberation).despawn();
     Ok(())
 }

@@ -44,15 +44,18 @@ use crate::game::world::navigation::Walker;
 use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::population::Temper;
 
-/// An action, of the actor taking it.
+/// An action, of the actor taking it. It lasts no longer than the moment
+/// it is made in.
 #[derive(Component, Clone, Copy, Debug)]
-#[relationship(relationship_target = Acting)]
 pub struct ActionOf(pub Entity);
 
-/// The action an actor is taking, gone with it.
-#[derive(Component, Debug)]
-#[relationship_target(relationship = ActionOf, linked_spawn)]
-pub struct Acting(Vec<Entity>);
+/// An action is made: its actor's ailments weigh it, then it is done. Its
+/// maker triggers it once the action is spawned.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Acts {
+    #[event_target]
+    pub action: Entity,
+}
 
 /// It is aimed at the actor's foes: a strike, a breath, a cast of a spell
 /// against enemies.
@@ -185,13 +188,6 @@ impl Interrupt {
 // The steps of weighing an action against its actor's ailments, in
 // retail's order, and what comes of them.
 
-/// Nausea weighs it.
-#[derive(EntityEvent, Clone, Copy, Debug)]
-pub struct WeighsNausea {
-    #[event_target]
-    pub action: Entity,
-}
-
 /// A web weighs it.
 #[derive(EntityEvent, Clone, Copy, Debug)]
 pub struct WeighsWeb {
@@ -291,14 +287,9 @@ pub struct Interrupted {
     pub interrupt: Interrupt,
 }
 
-/// An action made is weighed against its actor's ailments.
-fn weigh(made: On<Add<ActionOf>>, mut commands: Commands) {
-    commands.trigger(WeighsNausea { action: made.entity });
-}
-
 /// Nauseated: 25 percent, it loses the action.
 fn nausea(
-    weighs: On<WeighsNausea>,
+    weighs: On<Acts>,
     mut commands: Commands,
     actions: Query<&ActionOf>,
     actors: Query<&Conditions>,
@@ -838,8 +829,7 @@ pub(super) fn defend_instead(
 }
 
 pub(super) fn plugin(app: &mut App) {
-    app.add_observer(weigh)
-        .add_observer(nausea)
+    app.add_observer(nausea)
         .add_observer(web)
         .add_observer(blindness)
         .add_observer(insanity)
