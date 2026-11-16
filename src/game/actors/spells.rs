@@ -181,15 +181,20 @@ pub struct Laid<'w, 's> {
 impl Laid<'_, '_> {
     fn on(&self, bearer: Entity) -> impl Iterator<Item = (&Enchantment, &Bonus)> {
         let laid = self.bearers.get(bearer).into_iter().flat_map(|spells| spells.0.iter());
-        laid.filter_map(|&spell| self.spells.get(spell).ok()).map(|(laid, bonus, _)| (laid, bonus))
+        laid.map(|&spell| {
+            let (laid, bonus, _) = self.spells.get(spell).expect("a spell laid");
+            (laid, bonus)
+        })
     }
 
     /// Every spell on a bearer with the turns it has left, for whoever
     /// lists them.
     pub fn listed(&self, bearer: Entity) -> impl Iterator<Item = (Enchantment, Option<u32>)> + '_ {
         let laid = self.bearers.get(bearer).into_iter().flat_map(|spells| spells.0.iter());
-        laid.filter_map(|&spell| self.spells.get(spell).ok())
-            .map(|(laid, _, turns)| (*laid, turns.map(|turns| turns.0)))
+        laid.map(|&spell| {
+            let (laid, _, turns) = self.spells.get(spell).expect("a spell laid");
+            (*laid, turns.map(|turns| turns.0))
+        })
     }
 
     pub fn get(&self, bearer: Entity, spell: SpellId) -> Option<Enchantment> {
@@ -220,8 +225,8 @@ pub struct Laying<'w, 's> {
         's,
         (&'static mut Enchantment, Option<&'static mut Turns>, Option<&'static mut Absorbs>),
     >,
-    answers: Query<'w, 's, &'static Answers>,
-    pulses: Query<'w, 's, &'static Pulses>,
+    answers: Query<'w, 's, Option<&'static Answers>, With<Enchantment>>,
+    pulses: Query<'w, 's, Option<&'static Pulses>, With<Enchantment>>,
     combat_only: Query<'w, 's, (), With<CombatOnly>>,
 }
 
@@ -229,7 +234,10 @@ impl Laying<'_, '_> {
     /// The spell on a bearer that answers in this way.
     fn answering(&self, bearer: Entity, how: fn(&Answers) -> bool) -> Option<Entity> {
         let laid = self.bearers.get(bearer).ok()?;
-        laid.0.iter().copied().find(|&entity| self.answers.get(entity).is_ok_and(how))
+        laid.0
+            .iter()
+            .copied()
+            .find(|&entity| self.answers.get(entity).expect("a spell laid").is_some_and(how))
     }
 
     fn find(&self, bearer: Entity, spell: SpellId) -> Option<Entity> {
@@ -237,11 +245,11 @@ impl Laying<'_, '_> {
         laid.0
             .iter()
             .copied()
-            .find(|&entity| self.spells.get(entity).is_ok_and(|(laid, ..)| laid.spell == spell))
+            .find(|&entity| self.spells.get(entity).expect("a spell laid").0.spell == spell)
     }
 
     pub fn get(&self, bearer: Entity, spell: SpellId) -> Option<Enchantment> {
-        self.find(bearer, spell).and_then(|entity| Some(*self.spells.get(entity).ok()?.0))
+        self.find(bearer, spell).map(|entity| *self.spells.get(entity).expect("a spell laid").0)
     }
 
     /// Lay a spell on a bearer for `turns`, in place of the same spell
@@ -254,7 +262,7 @@ impl Laying<'_, '_> {
         let facts = &definition.facts;
         let weaker = facts.personal
             && old.is_some_and(|old| {
-                self.spells.get(old).is_ok_and(|(old, ..)| laid.power < old.power)
+                laid.power < self.spells.get(old).expect("a spell laid").0.power
             });
         if turns == 0 || weaker {
             return false;
@@ -338,8 +346,8 @@ impl Laying<'_, '_> {
     pub fn purify(&mut self, bearer: Entity, strength: u32) {
         let laid: Vec<Entity> = self.bearers.get(bearer).map_or(vec![], |laid| laid.0.clone());
         for entity in laid {
-            let Ok(cloud) = self.pulses.get(entity) else { continue };
-            if cloud.pulse.on == Pulsing::Bearer {
+            let cloud = self.pulses.get(entity).expect("a spell laid");
+            if let Some(cloud) = cloud.filter(|cloud| cloud.pulse.on == Pulsing::Bearer) {
                 let by = strength.max(cloud.level) - cloud.level;
                 self.shorten(entity, by);
             }
@@ -362,10 +370,11 @@ impl Laying<'_, '_> {
     /// it).
     pub fn absorb(&mut self, bearer: Entity, amount: u32) -> u32 {
         let absorbing = self.bearers.get(bearer).ok().and_then(|laid| {
-            laid.0.iter().copied().find(|&e| self.spells.get(e).is_ok_and(|s| s.2.is_some()))
+            laid.0.iter().copied().find(|&e| self.spells.get(e).expect("a spell laid").2.is_some())
         });
         let Some(entity) = absorbing else { return amount };
-        let Ok((.., Some(mut angel))) = self.spells.get_mut(entity) else { return amount };
+        let (.., angel) = self.spells.get_mut(entity).expect("a spell laid");
+        let mut angel = angel.expect("it absorbs");
         if amount <= angel.0 {
             angel.0 -= amount;
             return 0;
@@ -380,7 +389,8 @@ impl Laying<'_, '_> {
     /// one: what it was as it answered.
     pub fn answer_blow(&mut self, bearer: Entity) -> Option<(Enchantment, Dice)> {
         let entity = self.answering(bearer, |answers| answers.blows.is_some())?;
-        let dice = self.answers.get(entity).ok()?.blows?;
+        let answers = self.answers.get(entity).expect("a spell laid").expect("it answers");
+        let dice = answers.blows.expect("it answers blows");
         Some((self.spend_point(entity)?, dice))
     }
 
@@ -388,7 +398,7 @@ impl Laying<'_, '_> {
     /// an Eye), if it bears one.
     pub fn turns_back(&self, bearer: Entity) -> Option<u32> {
         let entity = self.answering(bearer, |answers| answers.spells)?;
-        self.spells.get(entity).ok().map(|(laid, ..)| laid.power)
+        Some(self.spells.get(entity).expect("a spell laid").0.power)
     }
 
     /// That spell turns one back: what it was as it answered.
@@ -399,7 +409,7 @@ impl Laying<'_, '_> {
 
     /// A spell that answers loses a point of power and lifts at none.
     fn spend_point(&mut self, entity: Entity) -> Option<Enchantment> {
-        let mut laid = self.spells.get_mut(entity).ok()?.0;
+        let mut laid = self.spells.get_mut(entity).expect("a spell laid").0;
         let before = *laid;
         if before.power == 0 {
             return None;
@@ -443,15 +453,20 @@ impl Turns {
 pub(crate) fn age_the_woken(
     woke: On<crate::game::world::level::Woke>,
     mut spells: Query<(Entity, &mut Turns, &LaidOn)>,
-    owners: Query<&crate::game::world::level::LevelOwned>,
+    owners: Query<
+        Option<&crate::game::world::level::LevelOwned>,
+        bevy::ecs::query::Allow<bevy::ecs::entity_disabling::Disabled>,
+    >,
     mut commands: Commands,
-) {
+) -> Result {
     let ticks = (woke.away_ms / crate::game::time::AGING_TICK_MS) as u32;
     for (spell, mut turns, &LaidOn(bearer)) in &mut spells {
-        if owners.get(bearer).is_ok_and(|owner| owner.0 == woke.level) {
+        // The party's own are not the level's.
+        if owners.get(bearer)?.is_some_and(|owner| owner.0 == woke.level) {
             turns.wear(spell, ticks, &mut commands);
         }
     }
+    Ok(())
 }
 
 /// What lasts only a fight is lifted when it ends.
