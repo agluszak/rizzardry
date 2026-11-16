@@ -10,7 +10,7 @@ use crate::game::data::Catalogs;
 use crate::game::items::{
     Charges, Give, Item, ItemNews, Items, Kind, Known, Weight, make, roll_amount, shape,
 };
-use crate::game::party::roster::PartyRoster;
+use crate::game::party::roster::{Party, PartyRoster};
 use crate::game::rng::GameRng;
 
 pub(crate) fn plugin(app: &mut App) {
@@ -26,7 +26,6 @@ pub(crate) fn plugin(app: &mut App) {
 /// told.
 #[derive(Event, Clone, Copy, Debug)]
 pub struct Advanced {
-    pub party: Entity,
     pub member: Entity,
 }
 
@@ -35,15 +34,15 @@ fn advance(
     items: Items,
     kinds: Query<&Kind>,
     characters: Query<(&Calling, &Birth, &Identity)>,
-    rosters: Query<&PartyRoster>,
+    party: Single<(Entity, &PartyRoster), With<Party>>,
     content: Res<Catalogs>,
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<ItemNews>,
     mut commands: Commands,
 ) -> Result {
-    let Advanced { party, member } = *event;
+    let Advanced { member } = *event;
     let (calling, birth, identity) = characters.get(member)?;
-    let roster = rosters.get(party)?;
+    let (party, roster) = *party;
     // Asked of the calling itself: the level was only just gained.
     if !traits_of(birth.race, calling).contains(Trait::MergeGadgets) {
         return Ok(());
@@ -65,13 +64,7 @@ fn advance(
         }
         let given = make(&mut commands, definition, roll_amount(definition, &mut rng, false), true);
         commands.entity(given).insert(Known { identified: true, spell: false, curse: true });
-        commands.trigger(Give {
-            item: given,
-            to: Some(member),
-            party,
-            pool_first: false,
-            told: true,
-        });
+        commands.trigger(Give { item: given, to: Some(member), pool_first: false, told: true });
         news.write(told(0));
         return Ok(());
     }

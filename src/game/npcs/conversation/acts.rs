@@ -550,7 +550,7 @@ pub(super) fn offer(
     }
     // What may be given: what could be sold, or what the party's hand holds,
     // which is how the original gives anything.
-    let in_hand = matches!(held.place(source), Some(crate::game::items::Place::Hand { .. }));
+    let in_hand = matches!(held.place(source), Some(crate::game::items::Place::Hand));
     let offerable = in_hand || trade::for_sale(source, &voices.roster, &held).is_ok();
     let offered = offerable.then(|| held.id(source)).flatten();
     let Some(id) = offered else {

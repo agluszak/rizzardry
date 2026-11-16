@@ -411,17 +411,13 @@ fn a_talk_begun_with_an_item_answers_it_instead_of_greeting() {
     use crate::content::items::{ItemCatalog, ItemDefinition, ItemId};
     use bevy::ecs::system::RunSystemOnce;
     let mut scene = scene(friend());
-    let party = scene.party;
     let world = scene.world();
     let definition = ItemDefinition { id: ItemId(0), name: "Ball".into(), ..default() };
     world.resource_mut::<Catalogs>().items = ItemCatalog(vec![definition.clone()]);
     world
         .run_system_once(move |mut commands: Commands| {
             let item = crate::game::items::make(&mut commands, &definition, 1, true);
-            commands.trigger(crate::game::items::Put {
-                item,
-                at: crate::game::items::Place::Hand { party },
-            });
+            commands.trigger(crate::game::items::Put { item, at: crate::game::items::Place::Hand });
         })
         .unwrap();
     world.flush();

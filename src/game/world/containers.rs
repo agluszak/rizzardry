@@ -89,7 +89,7 @@ pub(crate) fn open(
     match inside[..] {
         [] => commands.trigger(lid),
         [item] => {
-            commands.trigger(Put { item, at: Place::Hand { party } });
+            commands.trigger(Put { item, at: Place::Hand });
             commands.trigger(lid);
         }
         _ => {
@@ -128,7 +128,6 @@ pub(crate) fn take(
     take: On<Take>,
     mut commands: Commands,
     attempts: Query<(&DeviceInteraction, &AttemptOn)>,
-    party: Single<Entity, With<PartyRoster>>,
     held: Items,
     able: Query<(), (With<Calling>, With<crate::game::actors::CanAct>)>,
     (entering, battle): (
@@ -136,7 +135,6 @@ pub(crate) fn take(
         Option<Res<crate::game::combat::Battle>>,
     ),
 ) -> Result {
-    let party = *party;
     let (interaction, &AttemptOn(device)) = attempts.get(take.attempt)?;
     // Only an attempt at looting takes anything.
     let DeviceInteraction { work: Work::Looting } = interaction else { return Ok(()) };
@@ -161,7 +159,6 @@ pub(crate) fn take(
         commands.trigger(Give {
             item: taking,
             to: receiver,
-            party,
             pool_first: receiver.is_none(),
             told: true,
         });

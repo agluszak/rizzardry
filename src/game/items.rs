@@ -23,9 +23,9 @@ use crate::game::characters::{Birth, Calling, Identity, Practise, Training, Vita
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
 use crate::game::inventory::EquipSlot;
-use crate::game::party::roster::{PartyMember, PartyRoster};
+use crate::game::party::roster::{Party, PartyMember, PartyRoster};
 use crate::game::rng::GameRng;
-use crate::game::world::level::LevelOwned;
+use crate::game::world::level::{InPlay, LevelOwned};
 
 /// How many things a member's pack holds.
 pub const PACK_SLOTS: usize = 8;
@@ -72,8 +72,8 @@ impl Users {
 #[allow(clippy::type_complexity)]
 fn shed_unusable(
     members: Query<
-        (Entity, (&Calling, &Birth, &Identity), &Attributes, &Skills, &PartyMember),
-        Or<(Changed<Attributes>, Changed<Skills>)>,
+        (Entity, (&Calling, &Birth, &Identity), &Attributes, &Skills),
+        (With<PartyMember>, Or<(Changed<Attributes>, Changed<Skills>)>),
     >,
     items: Items,
     worn: Query<&Wearable>,
@@ -81,7 +81,7 @@ fn shed_unusable(
     mut news: MessageWriter<ItemNews>,
     mut commands: Commands,
 ) {
-    for (member, (calling, birth, identity), attributes, skills, &PartyMember(party)) in &members {
+    for (member, (calling, birth, identity), attributes, skills) in &members {
         for slot in EnumSet::<EquipSlot>::all() {
             let Some(item) = items.worn(member, slot) else { continue };
             let Ok(wear) = worn.get(item) else { continue };
@@ -96,13 +96,7 @@ fn shed_unusable(
                     lacks: wear.users.lack(attributes, skills),
                 });
             }
-            commands.trigger(Give {
-                item,
-                to: Some(member),
-                party,
-                pool_first: false,
-                told: false,
-            });
+            commands.trigger(Give { item, to: Some(member), pool_first: false, told: false });
         }
     }
 }
@@ -360,14 +354,12 @@ pub enum Place {
         member: Entity,
         slot: usize,
     },
-    /// In a party's pool, at a row counted from its top.
+    /// In the party's pool, at a row counted from its top.
     Pool {
-        party: Entity,
         row: usize,
     },
-    Hand {
-        party: Entity,
-    },
+    /// In the party's hand.
+    Hand,
     Container(Entity),
     /// Lying in a level at a point.
     Ground {
@@ -708,11 +700,10 @@ impl Items<'_, '_> {
             return Some(Place::Pack { member: by, slot });
         }
         let Ok(&Pooled(party)) = self.pooled.get(item) else {
-            let &InHand(party) = self.in_hand.get(item).ok()?;
-            return Some(Place::Hand { party });
+            return self.in_hand.contains(item).then_some(Place::Hand);
         };
         let row = self.pool(party).iter().position(|&row| row == item)?;
-        Some(Place::Pool { party, row })
+        Some(Place::Pool { row })
     }
 
     /// Whom an item is worn or packed by.
@@ -995,7 +986,12 @@ pub struct Put {
     pub at: Place,
 }
 
-fn put(event: On<Put>, mut curses: Query<&mut Cursed>, mut commands: Commands) {
+fn put(
+    event: On<Put>,
+    mut curses: Query<&mut Cursed>,
+    parties: Query<Entity, With<Party>>,
+    mut commands: Commands,
+) -> Result {
     let item = event.item;
     commands.entity(item).remove::<(
         Worn,
@@ -1019,11 +1015,11 @@ fn put(event: On<Put>, mut curses: Query<&mut Cursed>, mut commands: Commands) {
         Place::Pack { member, slot } => {
             commands.entity(item).insert(Packed { by: member, slot });
         }
-        Place::Pool { party, row } => {
-            commands.entity(party).insert_related::<Pooled>(row, &[item]);
+        Place::Pool { row } => {
+            commands.entity(parties.single()?).insert_related::<Pooled>(row, &[item]);
         }
-        Place::Hand { party } => {
-            commands.entity(item).insert(InHand(party));
+        Place::Hand => {
+            commands.entity(item).insert(InHand(parties.single()?));
         }
         Place::Container(container) => {
             commands.entity(item).insert(Stowed(container));
@@ -1036,6 +1032,7 @@ fn put(event: On<Put>, mut curses: Query<&mut Cursed>, mut commands: Commands) {
             ));
         }
     }
+    Ok(())
 }
 
 /// A part of a stack, taken as an item of its own: `amount` of it, with the
@@ -1149,7 +1146,6 @@ pub struct Give {
     #[event_target]
     pub item: Entity,
     pub to: Option<Entity>,
-    pub party: Entity,
     pub pool_first: bool,
     /// Whether the party is told who took it, or that nobody could.
     pub told: bool,
@@ -1178,6 +1174,7 @@ fn join(
 
 fn give(
     event: On<Give>,
+    party: Single<Entity, With<Party>>,
     items: Items,
     shown: Query<(&Item, &Known)>,
     names: Query<&Identity>,
@@ -1185,7 +1182,8 @@ fn give(
     mut news: MessageWriter<ItemNews>,
     mut commands: Commands,
 ) -> Result {
-    let Give { item, to, party, pool_first, told } = *event;
+    let Give { item, to, pool_first, told } = *event;
+    let party = *party;
     let (&Item(id), known) = shown.get(item)?;
     let mut left = items.units(item) as u16;
     let mut taker = None;
@@ -1246,7 +1244,7 @@ fn take_into_pool(
     let rows = items.pool(party);
     let mut took = join(items, commands, item, rows.iter().copied(), left);
     if *left > 0 && rows.len() < POOL_LIMIT {
-        commands.trigger(Put { item, at: Place::Pool { party, row: 0 } });
+        commands.trigger(Put { item, at: Place::Pool { row: 0 } });
         (*left, took) = (0, true);
     }
     took
@@ -1258,10 +1256,7 @@ fn take_into_pool(
 /// use and what the other hand rules out, and a cursed thing worn in use
 /// refuses to leave.
 #[derive(Event, Clone, Copy, Debug)]
-pub struct Swap {
-    pub party: Entity,
-    pub at: Place,
-}
+pub struct Swap(pub Place);
 
 /// A swap that was refused, and why.
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
@@ -1269,6 +1264,7 @@ pub struct Refused(pub Refusal);
 
 fn swap(
     event: On<Swap>,
+    party: Single<Entity, With<Party>>,
     items: Items,
     fit: Query<Fit>,
     things: Query<(&Kind, Option<&Cursed>, Has<Charges>, Option<&LoadedBy>)>,
@@ -1276,15 +1272,15 @@ fn swap(
     mut refused: MessageWriter<Refused>,
     mut commands: Commands,
 ) {
-    let Swap { party, at } = *event;
+    let (Swap(at), party) = (*event, *party);
     let held = items.held(party);
     let outcome = match at {
-        Place::Pool { row, .. } => {
+        Place::Pool { row } => {
             let rows = items.pool(party);
             match (held, rows.get(row).copied()) {
                 (None, None) => Err(Refusal::Nothing),
                 (None, Some(there)) => {
-                    commands.trigger(Put { item: there, at: Place::Hand { party } });
+                    commands.trigger(Put { item: there, at: Place::Hand });
                     Ok(())
                 }
                 (Some(held), there) if there.is_some_and(|gun| loads(&things, gun, held)) => {
@@ -1300,7 +1296,7 @@ fn swap(
                     join(&items, &mut commands, held, there.into_iter().chain(others), &mut left);
                     if left > 0 && rows.len() < POOL_LIMIT {
                         let row = row.min(rows.len());
-                        commands.trigger(Put { item: held, at: Place::Pool { party, row } });
+                        commands.trigger(Put { item: held, at: Place::Pool { row } });
                         left = 0;
                     }
                     if left < before { Ok(()) } else { Err(Refusal::NoRoom) }
@@ -1310,7 +1306,7 @@ fn swap(
         Place::Slot { member, .. } | Place::Pack { member, .. } => {
             carry(member, party, at, held, &items, &fit, &things, &members, &mut commands)
         }
-        Place::Hand { .. } | Place::Container(_) | Place::Ground { .. } => Err(Refusal::Nothing),
+        Place::Hand | Place::Container(_) | Place::Ground { .. } => Err(Refusal::Nothing),
     };
     if let Err(refusal) = outcome {
         refused.write(Refused(refusal));
@@ -1381,7 +1377,7 @@ fn carry(
         held_fast(there, slot, commands)?;
     }
     let Some(held) = held else {
-        commands.trigger(Put { item: there.unwrap(), at: Place::Hand { party } });
+        commands.trigger(Put { item: there.unwrap(), at: Place::Hand });
         return Ok(());
     };
     if let Some(gun) = there.filter(|&gun| loads(things, gun, held)) {
@@ -1424,13 +1420,12 @@ fn carry(
         }
         commands.trigger(Put { item: held, at });
         if let Some(there) = there {
-            commands.trigger(Put { item: there, at: Place::Hand { party } });
+            commands.trigger(Put { item: there, at: Place::Hand });
         }
         if let Some((_, leaving)) = displaced {
             commands.trigger(Give {
                 item: leaving,
                 to: Some(member),
-                party,
                 pool_first: false,
                 told: false,
             });
@@ -1439,7 +1434,7 @@ fn carry(
     }
     commands.trigger(Put { item: held, at });
     if let Some(there) = there {
-        commands.trigger(Put { item: there, at: Place::Hand { party } });
+        commands.trigger(Put { item: there, at: Place::Hand });
     }
     Ok(())
 }
@@ -1449,49 +1444,48 @@ fn carry(
 /// tried first.
 #[derive(Event, Clone, Copy, Debug)]
 pub struct Pass {
-    pub party: Entity,
     pub to: Entity,
 }
 
 fn pass(
     event: On<Pass>,
+    party: Single<Entity, With<Party>>,
     items: Items,
     able: Query<(), (With<PartyMember>, With<crate::game::actors::CanAct>)>,
     members: Query<(), With<PartyMember>>,
     battle: Option<Res<Battle>>,
     mut commands: Commands,
 ) {
-    let Pass { party, to } = *event;
-    let (Some(item), true) = (items.held(party), members.contains(to)) else { return };
+    let Pass { to } = *event;
+    let (Some(item), true) = (items.held(*party), members.contains(to)) else { return };
     let eligible = able.contains(to);
     let pool_first = !eligible || battle.is_some();
-    commands.trigger(Give { item, to: eligible.then_some(to), party, pool_first, told: true });
+    commands.trigger(Give { item, to: eligible.then_some(to), pool_first, told: true });
 }
 
-/// The party throws what it has in hand, and it comes to rest at a point of a
-/// level. A crucial item is never thrown away: it stays in hand, and the
-/// party is told.
+/// The party throws what it has in hand, and it comes to rest at a point of
+/// the level in play. A crucial item is never thrown away: it stays in hand,
+/// and the party is told.
 #[derive(Event, Clone, Copy, Debug)]
 pub struct Throw {
-    pub party: Entity,
-    pub level: Entity,
     pub at: Vec3,
 }
 
 fn throw(
     event: On<Throw>,
+    party: Single<Entity, With<Party>>,
+    level: Single<Entity, With<InPlay>>,
     items: Items,
     crucial: Query<(), With<Crucial>>,
     mut news: MessageWriter<ItemNews>,
     mut commands: Commands,
 ) {
-    let Throw { party, level, at } = *event;
-    let Some(item) = items.held(party) else { return };
+    let Some(item) = items.held(*party) else { return };
     if crucial.contains(item) {
         news.write(ItemNews::CannotDrop);
         return;
     }
-    commands.trigger(Put { item, at: Place::Ground { level, at } });
+    commands.trigger(Put { item, at: Place::Ground { level: *level, at: event.at } });
 }
 
 /// What the party is told of items coming to it and being put together.
@@ -1568,7 +1562,6 @@ pub fn made_from(catalog: &ItemCatalog, a: ItemId, b: ItemId) -> Option<(&ItemDe
 /// takes the row's place in the pool.
 #[derive(Event, Clone, Copy, Debug)]
 pub struct Merge {
-    pub party: Entity,
     pub member: Entity,
     pub onto: Entity,
 }
@@ -1576,6 +1569,7 @@ pub struct Merge {
 #[allow(clippy::too_many_arguments)]
 fn merge(
     event: On<Merge>,
+    party: Single<Entity, With<Party>>,
     items: Items,
     fit: Query<Fit>,
     characters: Query<
@@ -1588,9 +1582,9 @@ fn merge(
     mut refused: MessageWriter<Refused>,
     mut commands: Commands,
 ) {
-    let Merge { party, member, onto } = *event;
+    let Merge { member, onto } = *event;
     let (Some(held), Ok((character, identity, attributes, skills, _))) =
-        (items.held(party), characters.get(member))
+        (items.held(*party), characters.get(member))
     else {
         refused.write(Refused(Refusal::Nothing));
         return;
@@ -1663,7 +1657,7 @@ fn merge(
         roll_amount(product, &mut rng, false)
     };
     let made = make(&mut commands, product, amount, false);
-    let at = if into_hand { Place::Hand { party } } else { place };
+    let at = if into_hand { Place::Hand } else { place };
     commands.trigger(Put { item: made, at });
     news.write(ItemNews::Merged);
 }
@@ -1676,18 +1670,16 @@ fn merge(
 pub struct Identify {
     #[event_target]
     pub item: Entity,
-    pub party: Entity,
 }
 
 fn identify(
     event: On<Identify>,
     shown: Query<(&Known, Option<&Obscure>)>,
-    rosters: Query<&PartyRoster>,
+    roster: Single<&PartyRoster, With<Party>>,
     members: Query<(&Skills, Has<crate::game::actors::Lucid>)>,
     mut commands: Commands,
 ) -> Result {
     let (&known, obscure) = shown.get(event.item)?;
-    let roster = rosters.get(event.party)?;
     // What is not obscure was never unknown.
     let Some(&Obscure(difficulty)) = obscure else { return Ok(()) };
     if known.identified {
@@ -2016,14 +2008,14 @@ mod tests {
     #[test]
     fn an_item_is_in_one_place() {
         let mut world = world();
-        let (member, party) = (world.spawn_empty().id(), world.spawn_empty().id());
+        let (member, party) = (world.spawn_empty().id(), world.spawn(Party).id());
         let (sword, shield) = (arrows(&mut world, 1, true), arrows(&mut world, 1, false));
         world.trigger(Put { item: sword, at: Place::Pack { member, slot: 3 } });
-        world.trigger(Put { item: shield, at: Place::Pool { party, row: 0 } });
+        world.trigger(Put { item: shield, at: Place::Pool { row: 0 } });
         world.flush();
         world.trigger(Put { item: sword, at: Place::Slot { member, slot: EquipSlot::Primary } });
         world.flush();
-        world.trigger(Put { item: sword, at: Place::Pool { party, row: 0 } });
+        world.trigger(Put { item: sword, at: Place::Pool { row: 0 } });
         world.flush();
         let seen = world
             .run_system_once(move |items: Items| {
@@ -2122,8 +2114,8 @@ mod tests {
         world.run_system_once(move |items: Items| items.held(party)).unwrap()
     }
 
-    fn hold(world: &mut World, party: Entity, item: Entity) {
-        world.trigger(Put { item, at: Place::Hand { party } });
+    fn hold(world: &mut World, item: Entity) {
+        world.trigger(Put { item, at: Place::Hand });
         world.flush();
     }
 
@@ -2137,16 +2129,10 @@ mod tests {
     fn what_is_given_joins_alike_then_takes_a_free_slot() {
         let (mut world, member, party) = party();
         let quiver = new(&mut world, ARROWS, 90);
-        world.trigger(Give {
-            item: quiver,
-            to: Some(member),
-            party,
-            pool_first: false,
-            told: true,
-        });
+        world.trigger(Give { item: quiver, to: Some(member), pool_first: false, told: true });
         world.flush();
         let more = new(&mut world, ARROWS, 30);
-        world.trigger(Give { item: more, to: Some(member), party, pool_first: false, told: true });
+        world.trigger(Give { item: more, to: Some(member), pool_first: false, told: true });
         world.flush();
         let pack = world.run_system_once(move |items: Items| items.pack(member)).unwrap();
         assert_eq!(pack[..2], [Some(quiver), Some(more)]);
@@ -2155,17 +2141,11 @@ mod tests {
         // A full pack sends the next thing to the pool.
         for _ in 2..PACK_SLOTS {
             let bow = new(&mut world, BOW, 1);
-            world.trigger(Give {
-                item: bow,
-                to: Some(member),
-                party,
-                pool_first: false,
-                told: true,
-            });
+            world.trigger(Give { item: bow, to: Some(member), pool_first: false, told: true });
             world.flush();
         }
         let extra = new(&mut world, BOW, 1);
-        world.trigger(Give { item: extra, to: Some(member), party, pool_first: false, told: true });
+        world.trigger(Give { item: extra, to: Some(member), pool_first: false, told: true });
         world.flush();
         let pool = world.run_system_once(move |items: Items| items.pool(party).to_vec()).unwrap();
         assert_eq!(pool, [extra]);
@@ -2186,7 +2166,7 @@ mod tests {
         use EquipSlot::*;
         let (mut world, member, party) = party();
         let click = |world: &mut World, slot| {
-            world.trigger(Swap { party, at: Place::Slot { member, slot } });
+            world.trigger(Swap(Place::Slot { member, slot }));
             world.flush();
         };
         let worn = |world: &mut World, slot| {
@@ -2198,18 +2178,18 @@ mod tests {
             new(&mut world, ARROWS, 20),
             new(&mut world, RING, 1),
         );
-        hold(&mut world, party, shield);
+        hold(&mut world, shield);
         click(&mut world, Torso);
         assert_eq!(refusals(&mut world), [Refusal::DoesNotFit], "a shield is not armour");
         click(&mut world, Secondary);
         assert_eq!((worn(&mut world, Secondary), held(&mut world, party)), (Some(shield), None));
         // The bow takes the main hand; the shield cannot stay beside it.
-        hold(&mut world, party, bow);
+        hold(&mut world, bow);
         click(&mut world, Primary);
         assert_eq!((worn(&mut world, Primary), worn(&mut world, Secondary)), (Some(bow), None));
         let pack = world.run_system_once(move |items: Items| items.pack(member)).unwrap();
         assert_eq!(pack[0], Some(shield));
-        hold(&mut world, party, arrows);
+        hold(&mut world, arrows);
         click(&mut world, Secondary);
         assert_eq!(worn(&mut world, Secondary), Some(arrows));
         // A click on an empty hand's slot takes what is there.
@@ -2217,7 +2197,7 @@ mod tests {
         assert_eq!(held(&mut world, party), Some(arrows));
         click(&mut world, Secondary);
         // The ring goes on, and holds.
-        hold(&mut world, party, ring);
+        hold(&mut world, ring);
         click(&mut world, Misc1);
         click(&mut world, Misc1);
         assert_eq!(refusals(&mut world), [Refusal::Cursed]);
@@ -2231,9 +2211,9 @@ mod tests {
         let (mut world, member, party) = party();
         world.entity_mut(member).remove::<PartyMember>();
         let sword = new(&mut world, BOW, 1);
-        hold(&mut world, party, sword);
-        world.trigger(Swap { party, at: Place::Pack { member, slot: 0 } });
-        world.trigger(Pass { party, to: member });
+        hold(&mut world, sword);
+        world.trigger(Swap(Place::Pack { member, slot: 0 }));
+        world.trigger(Pass { to: member });
         world.flush();
         assert_eq!(refusals(&mut world), [Refusal::Nothing]);
         assert_eq!(held(&mut world, party), Some(sword));
@@ -2245,15 +2225,15 @@ mod tests {
     fn the_hand_is_passed_to_a_member_who_can_act_else_the_pool() {
         let (mut world, member, party) = party();
         let bow = new(&mut world, BOW, 1);
-        hold(&mut world, party, bow);
-        world.trigger(Pass { party, to: member });
+        hold(&mut world, bow);
+        world.trigger(Pass { to: member });
         world.flush();
         let pack = world.run_system_once(move |items: Items| items.pack(member)).unwrap();
         assert_eq!(pack[0], Some(bow));
         let shield = new(&mut world, SHIELD, 1);
-        hold(&mut world, party, shield);
+        hold(&mut world, shield);
         world.entity_mut(member).remove::<crate::game::actors::CanAct>();
-        world.trigger(Pass { party, to: member });
+        world.trigger(Pass { to: member });
         world.flush();
         let pool = world.run_system_once(move |items: Items| items.pool(party).to_vec()).unwrap();
         assert_eq!(pool, [shield]);
@@ -2305,20 +2285,17 @@ mod tests {
         world.flush();
         world.run_system_once(weigh).unwrap();
         assert_eq!(world.get::<Burden>(member).unwrap().weight, 200);
-        world.trigger(Put {
-            item: quiver,
-            at: Place::Hand { party: world.get::<PartyMember>(member).unwrap().0 },
-        });
+        world.trigger(Put { item: quiver, at: Place::Hand });
         world.flush();
         world.run_system_once(weigh).unwrap();
         assert_eq!(world.get::<Burden>(member).unwrap().weight, 0);
     }
 
     /// Fill every row of the party's pool, so that it takes nothing more.
-    fn fill_pool(world: &mut World, party: Entity) {
+    fn fill_pool(world: &mut World) {
         for _ in 0..POOL_LIMIT {
             let bow = new(world, BOW, 1);
-            world.trigger(Put { item: bow, at: Place::Pool { party, row: 0 } });
+            world.trigger(Put { item: bow, at: Place::Pool { row: 0 } });
         }
         world.flush();
     }
@@ -2347,12 +2324,12 @@ mod tests {
     /// the rest still lies where it was; what does not fit anywhere is told.
     #[test]
     fn a_stack_on_the_ground_is_taken_as_far_as_it_fits() {
-        let (mut world, member, party) = party();
+        let (mut world, member, _) = party();
         let quiver = full_pack(&mut world, member, 90);
-        fill_pool(&mut world, party);
+        fill_pool(&mut world);
         let lying = new(&mut world, ARROWS, 30);
         let level = lay_down(&mut world, lying);
-        world.trigger(Give { item: lying, to: Some(member), party, pool_first: false, told: true });
+        world.trigger(Give { item: lying, to: Some(member), pool_first: false, told: true });
         world.flush();
         assert_eq!(world.get::<Count>(quiver).unwrap().of, 100);
         assert_eq!(world.get::<Count>(lying).unwrap().of, 20, "the rest is left");
@@ -2370,7 +2347,7 @@ mod tests {
         // With nothing to take it into, all of it stays.
         let more = new(&mut world, BOW, 1);
         lay_down(&mut world, more);
-        world.trigger(Give { item: more, to: Some(member), party, pool_first: false, told: true });
+        world.trigger(Give { item: more, to: Some(member), pool_first: false, told: true });
         world.flush();
         assert!(world.get::<Lying>(more).is_some());
     }
@@ -2388,7 +2365,7 @@ mod tests {
         world.flush();
         assert_eq!(world.run_system_once(move |items: Items| items.stowed(bag).len()).unwrap(), 2);
         for item in [bow, quiver] {
-            world.trigger(Give { item, to: None, party, pool_first: true, told: true });
+            world.trigger(Give { item, to: None, pool_first: true, told: true });
         }
         world.flush();
         assert!(world.get_entity(bag).is_err());
@@ -2403,7 +2380,7 @@ mod tests {
     fn items_are_taken_from_a_container() {
         use crate::game::world::containers::{Container, Recipient, Take, take};
         use crate::game::world::interaction::{AttemptOn, DeviceInteraction, Work};
-        let (mut world, member, party) = party();
+        let (mut world, member, _) = party();
         world.add_observer(take);
         let chest = world.spawn(Container { table: None, gold: 0 }).id();
         let attempt =
@@ -2433,7 +2410,7 @@ mod tests {
             let spare = new(&mut world, BOW, 1);
             world.trigger(Put { item: spare, at: Place::Pack { member, slot } });
         }
-        fill_pool(&mut world, party);
+        fill_pool(&mut world);
         take(&mut world, vec![(arrows, 5)]);
         assert_eq!(world.get::<Count>(part).unwrap().of, 100);
         assert_eq!(world.get::<Count>(arrows).unwrap().of, 1 + 2, "what did not fit rejoined");
@@ -2443,8 +2420,8 @@ mod tests {
         assert_eq!(inside(&mut world), [arrows, bow]);
         // When the last of it is taken the look is over.
         assert!(world.get_entity(attempt).is_ok());
-        world.trigger(Put { item: arrows, at: Place::Hand { party } });
-        world.trigger(Put { item: bow, at: Place::Pool { party, row: 0 } });
+        world.trigger(Put { item: arrows, at: Place::Hand });
+        world.trigger(Put { item: bow, at: Place::Pool { row: 0 } });
         world.flush();
         assert!(world.get_entity(attempt).is_err());
     }
@@ -2454,21 +2431,21 @@ mod tests {
     #[test]
     fn a_held_item_is_thrown_but_not_a_crucial_one() {
         let (mut world, _, party) = party();
-        let level = world.spawn_empty().id();
+        let level = world.spawn(InPlay).id();
         let at = Vec3::new(4.0, 0.25, -2.0);
         let (ring, bow) = (new(&mut world, RING, 1), new(&mut world, BOW, 1));
         world.entity_mut(ring).insert(Crucial);
-        hold(&mut world, party, ring);
-        world.trigger(Throw { party, level, at });
+        hold(&mut world, ring);
+        world.trigger(Throw { at });
         world.flush();
         assert_eq!(held(&mut world, party), Some(ring));
         assert!(world.get::<Lying>(ring).is_none());
         let told: Vec<_> = world.resource_mut::<Messages<ItemNews>>().drain().collect();
         assert_eq!(told, [ItemNews::CannotDrop]);
-        world.trigger(Put { item: ring, at: Place::Pool { party, row: 0 } });
+        world.trigger(Put { item: ring, at: Place::Pool { row: 0 } });
         world.flush();
-        hold(&mut world, party, bow);
-        world.trigger(Throw { party, level, at });
+        hold(&mut world, bow);
+        world.trigger(Throw { at });
         world.flush();
         assert_eq!(held(&mut world, party), None);
         assert!(world.get::<Lying>(bow).is_some());

@@ -127,7 +127,7 @@ fn press_item_action(
     *action = if *action == pressed {
         ItemAction::None
     } else if let Some(item) = held.held(*party).filter(|_| pressed == ItemAction::Identify) {
-        commands.trigger(Identify { item, party: *party });
+        commands.trigger(Identify { item });
         ItemAction::None
     } else {
         pressed
@@ -362,14 +362,13 @@ fn enter_inventory(
 struct CloseReview<'w, 's> {
     commands: Commands<'w, 's>,
     view: Single<'w, 's, &'static InventoryScreen>,
-    party: Single<'w, 's, Entity, With<PartyRoster>>,
     next: ResMut<'w, NextState<Screen>>,
 }
 impl CloseReview<'_, '_> {
     /// Closing puts away what is in hand: to the reviewed member, else the
     /// pool.
     fn finish(&mut self) {
-        self.commands.trigger(Pass { party: *self.party, to: self.view.member });
+        self.commands.trigger(Pass { to: self.view.member });
         self.next.set(Screen::World);
     }
 }
@@ -411,11 +410,11 @@ enum Cell {
 
 impl Cell {
     /// The place the cell stands for: the pool scrolled to `pool_start`.
-    fn place(self, member: Entity, party: Entity, pool_start: usize) -> Place {
+    fn place(self, member: Entity, pool_start: usize) -> Place {
         match self {
             Self::Slot(slot) => Place::Slot { member, slot },
             Self::Pack(slot) => Place::Pack { member, slot },
-            Self::Pool(index) => Place::Pool { party, row: pool_start + index },
+            Self::Pool(index) => Place::Pool { row: pool_start + index },
         }
     }
 
@@ -427,10 +426,10 @@ impl Cell {
         party: Entity,
         pool_start: usize,
     ) -> Option<Entity> {
-        match self.place(member, party, pool_start) {
+        match self.place(member, pool_start) {
             Place::Slot { slot, .. } => held.worn(member, slot),
             Place::Pack { slot, .. } => held.pack(member)[slot],
-            Place::Pool { row, .. } => held.pool(party).get(row).copied(),
+            Place::Pool { row } => held.pool(party).get(row).copied(),
             _ => None,
         }
     }
@@ -1138,7 +1137,7 @@ fn click_cell(
     match *action {
         ItemAction::Identify => {
             if let Some(item) = target {
-                commands.trigger(Identify { item, party });
+                commands.trigger(Identify { item });
             }
             *action = ItemAction::None;
             return Ok(());
@@ -1147,14 +1146,14 @@ fn click_cell(
         // merge says so ([`ItemNews::Merged`], see [`disarm_merge`]).
         ItemAction::Merge if held.held(party).is_some() => {
             match target {
-                Some(onto) => commands.trigger(Merge { party, member, onto }),
+                Some(onto) => commands.trigger(Merge { member, onto }),
                 None => *action = ItemAction::None,
             }
             return Ok(());
         }
         _ => {}
     }
-    commands.trigger(Swap { party, at: cell.cell.place(member, party, pool_start) });
+    commands.trigger(Swap(cell.cell.place(member, pool_start)));
     Ok(())
 }
 

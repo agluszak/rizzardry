@@ -293,7 +293,7 @@ pub(super) fn befalls_at_a_device(
             let definition = &content.items[ItemId(*item)];
             let amount = roll_amount(definition, &mut rng, true);
             let item = make(&mut commands, definition, amount, true);
-            commands.trigger(Put { item, at: Place::Hand { party } });
+            commands.trigger(Put { item, at: Place::Hand });
         }
     }
 }

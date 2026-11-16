@@ -14,7 +14,7 @@ use crate::{
         magic::{LearnedSpells, SpellPoints},
         party::{
             body::PartyBody,
-            roster::{PartyMember, PartyRoster},
+            roster::{Party, PartyMember, PartyRoster},
         },
         rng::GameRng,
         world::{
@@ -165,7 +165,7 @@ impl Recruiter<'_, '_> {
 #[allow(clippy::type_complexity)]
 pub fn dismiss(
     In((person, stands)): In<(Entity, bool)>,
-    party: Single<(Entity, &PartyRoster, &Position, &PartyBody)>,
+    party: Single<(&PartyRoster, &Position, &PartyBody)>,
     persons: Query<(&ActorId, Option<&Shape>), With<Npc>>,
     people: People,
     companions: Query<(&Vitals, &Conditions)>,
@@ -177,7 +177,7 @@ pub fn dismiss(
     mut configs: ResMut<Assets<WalkerMotionConfig>>,
     mut commands: Commands,
 ) -> bool {
-    let (party, roster, at, facing) = *party;
+    let (roster, at, facing) = *party;
     let Some(companion) = people.companion(person).filter(|member| roster.contains(member)) else {
         return false;
     };
@@ -212,7 +212,7 @@ pub fn dismiss(
             returned.push(item);
         }
     }
-    return_to_pool(party, &returned, (root, PartyBody::feet(at)), &mut commands);
+    return_to_pool(&returned, (root, PartyBody::feet(at)), &mut commands);
     // Their seat is given up, and their companion self is set aside.
     commands.entity(companion).remove::<PartyMember>().insert(Disabled);
     if stands && !v.is_dead() {
@@ -245,16 +245,11 @@ pub fn dismiss(
 
 /// What someone leaving gives back to the party's pool: it lies where the
 /// party stands, and is taken from there as far as the pool has room.
-fn return_to_pool(
-    party: Entity,
-    returned: &[Entity],
-    (level, feet): (Entity, Vec3),
-    commands: &mut Commands,
-) {
+fn return_to_pool(returned: &[Entity], (level, feet): (Entity, Vec3), commands: &mut Commands) {
     let at = feet + Vec3::Y * crate::game::world::items::CLEARANCE;
     for &item in returned {
         commands.trigger(Put { item, at: Place::Ground { level, at } });
-        commands.trigger(Give { item, to: None, party, pool_first: true, told: false });
+        commands.trigger(Give { item, to: None, pool_first: true, told: false });
     }
 }
 /// The original removes fallen companions outside combat. Until then
@@ -262,17 +257,17 @@ fn return_to_pool(
 /// left behind dead is dead for good.
 fn retire_fallen(
     fallen: Query<(Entity, &CompanionOf), (With<PartyMember>, With<Dead>)>,
-    party: Single<(Entity, &Position)>,
+    party: Single<&Position, With<Party>>,
     held: Items,
     level: Single<Entity, With<InPlay>>,
     mut commands: Commands,
 ) {
-    let (party, at) = *party;
+    let at = *party;
     for (companion, &CompanionOf(person)) in &fallen {
         // Everything they carried returns to the party; they keep their
         // seat no longer.
         let returned: Vec<_> = held.carried(companion).collect();
-        return_to_pool(party, &returned, (*level, PartyBody::feet(at)), &mut commands);
+        return_to_pool(&returned, (*level, PartyBody::feet(at)), &mut commands);
         commands.entity(companion).remove::<PartyMember>().insert(Disabled);
         commands.entity(person).insert(Whereabouts::Killed);
     }
@@ -291,7 +286,6 @@ mod tests {
     use crate::game::characters::{Condition, Gender, Lasting, Profession};
     use crate::game::items::{Burden, Packed, Worn};
     use crate::game::party::body::PartyBody;
-    use crate::game::party::roster::Party;
     use crate::game::time::Ticks;
     use crate::game::world::population::{MonsterBodies, ScaledBody};
     use bevy::ecs::system::RunSystemOnce;
@@ -512,7 +506,7 @@ mod tests {
     #[test]
     fn a_companion_without_a_seat_is_out_of_the_world() {
         let mut scene = scene();
-        let (companion, veteran, party) = (scene.companion, scene.veteran, scene.party);
+        let (companion, veteran) = (scene.companion, scene.veteran);
         let world = scene.app.world_mut();
         for who in [companion, veteran] {
             world.get_mut::<Vitals>(who).unwrap().health.current = 1;
@@ -535,7 +529,7 @@ mod tests {
                 make(&mut commands, &content.items[SWORD], 1, true)
             })
             .unwrap();
-        world.trigger(Put { item: heavy, at: Place::Pool { party, row: 0 } });
+        world.trigger(Put { item: heavy, at: Place::Pool { row: 0 } });
         world.run_schedule(crate::game::actors::Settle);
         assert!(world.get::<Burden>(veteran).unwrap().weight > 0, "the seated one carries it");
         assert_eq!(*world.get::<Burden>(companion).unwrap(), Burden::default());

@@ -342,7 +342,6 @@ impl Settlement<'_, '_> {
                     self.commands.trigger(Give {
                         item: bought,
                         to: None,
-                        party: *party,
                         pool_first: true,
                         told: false,
                     });

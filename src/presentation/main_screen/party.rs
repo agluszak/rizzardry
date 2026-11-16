@@ -601,7 +601,7 @@ fn press(
         return Ok(());
     }
     if held.held(*party).is_some() {
-        commands.trigger(crate::game::items::Pass { party: *party, to: member });
+        commands.trigger(crate::game::items::Pass { to: member });
         button.review_armed = false;
         return Ok(());
     }
@@ -668,7 +668,7 @@ fn release_right(
         // Retail's right-release give always offers the party pool first
         // (`force_to_party`); this uses the left click's pool rule.
         if held.held(*party).is_some() {
-            commands.trigger(crate::game::items::Pass { party: *party, to: member });
+            commands.trigger(crate::game::items::Pass { to: member });
             return Ok(());
         }
     }

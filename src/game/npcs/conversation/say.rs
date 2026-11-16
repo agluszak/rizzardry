@@ -510,12 +510,12 @@ pub(super) fn deliver(
             let d = &content.items[*id];
             let item = make(&mut commands, d, roll_amount(d, &mut rng, true), true);
             let rests = if d.crucial && held.held(*party).is_none() {
-                Place::Hand { party: *party }
+                Place::Hand
             } else {
                 Place::Ground { level: *level, at: PartyBody::feet(at) + Vec3::Y * CLEARANCE }
             };
             commands.trigger(Put { item, at: rests });
-            commands.trigger(Give { item, to: None, party: *party, pool_first: true, told: false });
+            commands.trigger(Give { item, to: None, pool_first: true, told: false });
             Some(QuestReward::Item { name: d.name.clone() })
         }
         Gift::Take(id) => {
