@@ -198,12 +198,17 @@ none became a run condition; no tuple patterns on bools are left. A
 member's place and spells still find the party through `PartyMember`, as
 the relationship it is.
 
-Left to do: **the rest of the lookup sweep.** About 80 `if let Ok(..) =
-q.get(..)` and 200 `.get(..).ok()` / `.is_ok_and` / `.map_or` remain, the
+Left to do: **the rest of the lookup sweep.** About 65 `if let Ok(..) =
+q.get(..)` and 175 `.get(..).ok()` / `.is_ok_and` / `.map_or` remain, the
 same treatment as the `let … else` sweep (query always matches, `?`,
 explicit branch, or an observer on the entity). What the first files
 showed:
 
+- Done: `items`, `arm`, `actors/spells`, `modifiers`, `story`, `turn`,
+  `access`, `devices`, the device states in `triggers`, and roster-member
+  lookups across `npcs`. Most of what is left reads a fact a thing may lack
+  (a door, a motion, a lure, an owner gone) or is presentation; turning
+  those into `Option` in the query is form, not behaviour, and low value.
 - Lookups along a relationship always hold (`Wears` → `Worn`, `Pack` →
   `Packed`) and are `expect`.
 - `Items`' accessors (`worn`, `place`, `pool`, `id`, …) answer "if any" for

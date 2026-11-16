@@ -502,9 +502,8 @@ pub(super) fn deliver(
         }
         Gift::Experience(amount) => {
             for member in roster.iter() {
-                if let Ok((mut experience, _, vitals)) = characters.get_mut(member)
-                    && !vitals.is_dead()
-                {
+                let (mut experience, _, vitals) = characters.get_mut(member).expect("a member");
+                if !vitals.is_dead() {
                     experience.earned += u64::from(*amount);
                 }
             }
@@ -532,8 +531,7 @@ pub(super) fn deliver(
                 commands.trigger(Lose { item, amount: 1 });
                 QuestReward::Taken {
                     member: member
-                        .and_then(|member| characters.get(member).ok())
-                        .map(|(_, identity, _)| identity.name.clone()),
+                        .map(|member| characters.get(member).expect("a member").1.name.clone()),
                 }
             })
         }

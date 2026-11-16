@@ -161,7 +161,7 @@ impl Voices<'_, '_> {
         trade::communication(
             self.roster
                 .iter()
-                .filter_map(|m| self.members.get(m).ok())
+                .map(|m| self.members.get(m).expect("a member"))
                 .filter(|(_, _, can_act, _)| *can_act)
                 .map(|(_, skills, ..)| skills),
         )

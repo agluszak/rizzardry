@@ -98,9 +98,8 @@ pub(super) fn picked(
     for name in &table.clears {
         set(name, 0);
     }
-    let others = roster
-        .iter()
-        .any(|other| members.get(other).is_ok_and(|(c, ..)| c.gender != Gender::Female));
+    let others =
+        roster.iter().any(|other| members.get(other).expect("a member").0.gender != Gender::Female);
     if character.gender == Gender::Female && others {
         set(&table.woman, 1);
         remarks.write(PartyRemark { event: REFUSED, after: 0.0, speaker: Some(member) });
@@ -359,24 +358,23 @@ pub(super) fn befalls_the_party(
             }
         }
         PartyAct::ChosenRemarks(event) => {
-            let chosen = roster.iter().find(|&m| members.get(m).is_ok_and(|(.., chosen)| chosen));
+            let chosen = roster.iter().find(|&m| members.get(m).expect("a member").2);
             if let Some(speaker) = chosen {
                 remarks.write(PartyRemark { event: *event, after: 0.0, speaker: Some(speaker) });
             }
         }
         PartyAct::Returns => {
             for member in roster.iter() {
-                if let Ok((_, (_, mut conditions), _)) = members.get_mut(member) {
-                    conditions.lift(Condition::Missing);
-                }
+                let (_, (_, mut conditions), _) = members.get_mut(member).expect("a member");
+                conditions.lift(Condition::Missing);
             }
         }
         // One of those wanted least, at random (retail
         // `MartensBluff2IdolGasVictim`), is missing from then on.
         PartyAct::Takes { spares, wanted } => {
             let score = |member: Entity| {
-                let profession = members.get(member).map(|(character, ..)| character.profession);
-                let named = wanted.iter().find(|(wanted, _)| Ok(*wanted) == profession);
+                let profession = members.get(member).expect("a member").0.profession;
+                let named = wanted.iter().find(|(wanted, _)| *wanted == profession);
                 named.map_or(1, |(_, score)| *score)
             };
             let open: Vec<Entity> = roster.iter().skip(*spares).collect();
@@ -385,9 +383,8 @@ pub(super) fn befalls_the_party(
                 open.iter().copied().filter(|&member| Some(score(member)) == least).collect();
             if !least.is_empty() {
                 let taken = least[rng.below(least.len() as u32) as usize];
-                if let Ok((_, (_, mut conditions), _)) = members.get_mut(taken) {
-                    conditions.afflict(Condition::Missing, Lasting::Indefinite);
-                }
+                let (_, (_, mut conditions), _) = members.get_mut(taken).expect("a member");
+                conditions.afflict(Condition::Missing, Lasting::Indefinite);
             }
         }
         PartyAct::Every(seconds, reading, rows) => {
@@ -402,21 +399,20 @@ pub(super) fn befalls_the_party(
         PartyAct::AfflictOne(condition, rounds, spread) => {
             let living: Vec<Entity> = roster
                 .iter()
-                .filter(|&m| members.get(m).is_ok_and(|(_, (vitals, _), _)| !vitals.is_dead()))
+                .filter(|&m| !members.get(m).expect("a member").1.0.is_dead())
                 .collect();
             if !living.is_empty() {
                 let one = living[rng.below(living.len() as u32) as usize];
                 let lasts = Lasting::Rounds(*rounds + rng.below(*spread));
-                if let Ok((_, (_, mut conditions), _)) = members.get_mut(one) {
-                    conditions.afflict(*condition, lasts);
-                }
+                let (_, (_, mut conditions), _) = members.get_mut(one).expect("a member");
+                conditions.afflict(*condition, lasts);
             }
         }
         // Every living member's spell points, in full (retail
         // `RestorePartySpellPoints` with nothing held back).
         PartyAct::RestoreMagic => {
             for member in roster.iter() {
-                let alive = members.get(member).is_ok_and(|(_, (vitals, _), _)| !vitals.is_dead());
+                let alive = !members.get(member).expect("a member").1.0.is_dead();
                 if alive && let Ok(mut points) = points.get_mut(member) {
                     points.restore_evenly(u32::MAX);
                 }

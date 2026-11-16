@@ -37,7 +37,7 @@ pub(super) fn initialize(
             party
                 .expect("a party travels")
                 .iter()
-                .filter_map(|e| characters.get(e).ok())
+                .map(|e| characters.get(e).expect("a member"))
                 .map(Calling::level),
         ),
     };
@@ -95,7 +95,7 @@ impl NpcPopulation<'_, '_> {
             self.roster
                 .iter()
                 .flat_map(|r| r.iter())
-                .filter_map(|e| self.characters.get(e).ok())
+                .map(|e| self.characters.get(e).expect("a member"))
                 .map(Calling::level),
         )
     }

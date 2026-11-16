@@ -247,7 +247,8 @@ fn quantity(d: &ItemDefinition, asked: u32, available: u32) -> Result<(), TradeE
 pub struct Pricing<'w, 's> {
     stocks: Query<'w, 's, (&'static ActorId, &'static MerchantStock)>,
     roster: Single<'w, 's, &'static PartyRoster>,
-    members: Query<'w, 's, &'static crate::game::actors::Skills, With<crate::game::actors::CanAct>>,
+    members:
+        Query<'w, 's, (&'static crate::game::actors::Skills, Has<crate::game::actors::CanAct>)>,
     held: Items<'w, 's>,
     content: Res<'w, Catalogs>,
 }
@@ -260,7 +261,9 @@ impl Pricing<'_, '_> {
     ) -> Result<Quote, TradeError> {
         let (id, _) = self.stocks.get(merchant).map_err(|_| TradeError::Unavailable)?;
         let roster = *self.roster;
-        let skill = communication(roster.iter().filter_map(|m| self.members.get(m).ok()));
+        let members = roster.iter().map(|m| self.members.get(m).expect("a member"));
+        let skill =
+            communication(members.filter(|(_, can_act)| *can_act).map(|(skills, _)| skills));
         let d = &self.content.npcs[id.0];
         let gold = match source {
             TradeSource::Stock(of) => {
@@ -391,7 +394,7 @@ fn maintain(
     mut commands: Commands,
 ) -> Result {
     let average = crate::game::party::average_level(
-        roster.iter().filter_map(|m| members.get(m).ok()).map(Calling::level),
+        roster.iter().map(|m| members.get(m).expect("a member")).map(Calling::level),
     );
     let items = &content.items;
     {

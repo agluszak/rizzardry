@@ -128,7 +128,7 @@ impl Recruiter<'_, '_> {
         if *whereabouts == Whereabouts::Killed || roster.contains(&companion) {
             return Err(JoinRefusal::Declines);
         }
-        let occupied = roster.iter().filter(|&e| members.get(e).is_ok_and(|r| r.2)).count();
+        let occupied = roster.iter().filter(|&e| members.get(e).expect("a member").2).count();
         if occupied >= 2 {
             return Err(JoinRefusal::NoRoom);
         }
@@ -136,7 +136,7 @@ impl Recruiter<'_, '_> {
         let region = crate::content::levels::LevelInfo::for_path(&level.path).map_or(0, |l| l.band);
         let (sum, count) = roster
             .iter()
-            .filter_map(|e| members.get(e).ok())
+            .map(|e| members.get(e).expect("a member"))
             .filter(|(_, can_fight, _)| *can_fight)
             .fold((0u32, 0u32), |(sum, count), (c, _, _)| (sum + u32::from(c.level()), count + 1));
         let waiting = d.joins_when.is_some_and(|(fact, set)| {
