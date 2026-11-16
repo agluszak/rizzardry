@@ -632,8 +632,7 @@ pub struct Items<'w, 's> {
 impl Items<'_, '_> {
     /// What a member wears in a slot.
     pub fn worn(&self, member: Entity, slot: EquipSlot) -> Option<Entity> {
-        let wears = self.wears.get(member).ok()?;
-        wears.iter().find(|&item| self.worn.get(item).is_ok_and(|worn| worn.slot == slot))
+        self.wearing(member).find(|&(worn, _)| worn == slot).map(|(_, item)| item)
     }
 
     /// What protects, worn in a slot, and whether it is a shield.
@@ -644,7 +643,7 @@ impl Items<'_, '_> {
     /// Everything a member wears, with its slot.
     pub fn wearing(&self, member: Entity) -> impl Iterator<Item = (EquipSlot, Entity)> + '_ {
         let wears = self.wears.get(member).into_iter().flat_map(Wears::iter);
-        wears.filter_map(|item| Some((self.worn.get(item).ok()?.slot, item)))
+        wears.map(|item| (self.worn.get(item).expect("what is worn is Worn").slot, item))
     }
 
     /// What a member wears in the slots in use (the stored weapon set is
@@ -657,9 +656,7 @@ impl Items<'_, '_> {
     pub fn pack(&self, member: Entity) -> [Option<Entity>; PACK_SLOTS] {
         let mut slots = [None; PACK_SLOTS];
         for item in self.packs.get(member).into_iter().flat_map(Pack::iter) {
-            if let Ok(packed) = self.packed.get(item) {
-                slots[packed.slot] = Some(item);
-            }
+            slots[self.packed.get(item).expect("what is packed is Packed").slot] = Some(item);
         }
         slots
     }
@@ -988,7 +985,7 @@ pub struct Put {
 
 fn put(
     event: On<Put>,
-    mut curses: Query<&mut Cursed>,
+    mut curses: Query<Option<&mut Cursed>, With<Item>>,
     parties: Query<Entity, With<Party>>,
     mut commands: Commands,
 ) -> Result {
@@ -1007,7 +1004,7 @@ fn put(
     match event.at {
         Place::Slot { member, slot } => {
             // A curse takes hold anew each time it is put on.
-            if let Ok(mut curse) = curses.get_mut(item) {
+            if let Some(mut curse) = curses.get_mut(item)? {
                 curse.released = false;
             }
             commands.entity(item).insert(Worn { by: member, slot });
@@ -1203,10 +1200,8 @@ fn give(
     }
     let name = content.items[id].known_name(known.identified).to_owned();
     if let Some(member) = taker {
-        news.write(ItemNews::Takes {
-            member: member.and_then(|member| names.get(member).ok()).map(|c| c.name.clone()),
-            item: name,
-        });
+        let member = member.map(|member| names.get(member)).transpose()?;
+        news.write(ItemNews::Takes { member: member.map(|c| c.name.clone()), item: name });
     }
     // What nobody had room for stays where it was, and the party is told.
     if left > 0 {

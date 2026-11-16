@@ -191,29 +191,31 @@ What this slice settled, as rules for the rest:
 - A refactor redesigns its readers too; "readers stay as they are" is not a
   rule.
 
-Left to do:
+Done in this slice: the party is out of the item events and `Place`;
+readers loop over or `single()` the party no more and say `With<InPlay>`
+for the level in play; every `Option<Res<Battle>>` acts in both cases, so
+none became a run condition; no tuple patterns on bools are left. A
+member's place and spells still find the party through `PartyMember`, as
+the relationship it is.
 
-1. **No party in events or places.** Drop `party` from `Give`, `Swap`,
-   `Pass`, `Throw`, `Merge`, `Identify` and `Advanced` (39 senders) and from
-   `Place::Hand`/`Place::Pool` (32 sites); their observers read
-   `Single<Entity, With<Party>>`. `Throw`'s `level` is the level in play.
-   `Items` keeps taking the holder: a member holds as the party does.
-2. **Readers of the new resources.** Queries that loop over or `single()`
-   the party (`actors/time.rs` `parties`, `actors/place.rs`,
-   `actors/modifiers.rs`, `inventory/omnigun.rs`, `npcs/population.rs`,
-   `npcs/trade.rs`, presentation's `Query<…, With<PartyBody>>`) become
-   `Single`; non-`Single` readers of `With<Level>` that mean the level in play
-   become `With<InPlay>`. Review each remaining `Option<Res<Battle>>`
-   (`request_camp`, `pass`, `accept_magic`, `overhear`, `awaited`,
-   `write_off_wiped_out`, `confront`, `answer_travel_questions`, `travel`,
-   `toggle_search`, `search_pulse`, the bank's `press`, `choose_row`): most
-   act in both cases, but check.
-3. **The rest of the lookup sweep.** About 80 `if let Ok(..) = q.get(..)` and
-   250 `.get(..).ok()` / `.is_ok_and` / `.map_or` remain; the same treatment
-   as the `let … else` sweep (query always matches, `?`, explicit branch, or
-   an observer on the entity).
-4. **Tuple patterns on bools** that predate this slice: `slot.rs:115`,
-   `special.rs:91`.
+Left to do: **the rest of the lookup sweep.** About 80 `if let Ok(..) =
+q.get(..)` and 230 `.get(..).ok()` / `.is_ok_and` / `.map_or` remain, the
+same treatment as the `let … else` sweep (query always matches, `?`,
+explicit branch, or an observer on the entity). What the first files
+showed:
+
+- Lookups along a relationship always hold (`Wears` → `Worn`, `Pack` →
+  `Packed`) and are `expect`.
+- `Items`' accessors (`worn`, `place`, `pool`, `id`, …) answer "if any" for
+  what callers may hold across frames (a selection, a grip); they stay
+  `Option`.
+- `Query<Fit>` failing means "not wearable", which is the rule's own answer
+  (a slot refuses it); making that explicit is a design change to `Fit`,
+  not a lookup fix.
+- `arm.rs` (27): a `Grip` names an item that may have gone since the grip
+  was last set, and whether every bearer has `Skills` and `Attributes` is
+  a question of what a monster is made with. Settle both before turning
+  its lookups into `expect`.
 
 No test failed on these, but whether any test reaches them is unchecked;
 watch for them in play: a `?`/`expect` that panics where the old code
