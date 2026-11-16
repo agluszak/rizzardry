@@ -94,7 +94,7 @@ pub fn resume_search(
 pub fn toggle_search(
     mut requests: MessageReader<ToggleSearch>,
     freedom: crate::game::freedom::Freedom,
-    battle: Option<Single<&Battle>>,
+    battle: Option<Res<Battle>>,
     mut search: ResMut<Search>,
     mut news: MessageWriter<SearchNews>,
 ) {
@@ -158,7 +158,7 @@ pub fn search_pulse(
         crate::game::actors::Laid,
     ),
     mut rng: ResMut<crate::game::rng::GameRng>,
-    battle: Option<Single<&Battle>>,
+    battle: Option<Res<Battle>>,
     movement: Single<&PartyMovement>,
     party: Query<(&Position, &PartyBody)>,
     roster: Single<&PartyRoster>,
@@ -184,7 +184,7 @@ pub fn search_pulse(
     let running = movement.running;
     let mut best: Option<(u32, &Identity)> = None;
     for ((traits, member), attributes, skills) in members.iter_many(roster.iter()).matched() {
-        let score = search_score(traits, skills, attributes, search.on(battle.is_some()), running);
+        let score = search_score(traits, skills, attributes, search.requested, running);
         if score > best.map_or(0, |b| b.0) {
             best = Some((score, member));
         }

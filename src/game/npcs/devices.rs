@@ -36,6 +36,7 @@ use crate::game::party::damage_member;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::encounters::EncounterGenerator;
+use crate::game::world::level::InPlay;
 use crate::game::world::level::{Level, LevelOwned, LevelReady, SetAside};
 use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::population::Monster;
@@ -83,7 +84,7 @@ static GATES: LazyLock<HashMap<String, LevelRows>> = LazyLock::new(|| {
 /// every case of the level's that holds sets off what it names.
 pub(super) fn enter(
     mut ready: MessageReader<LevelReady>,
-    level: Single<&Level, Without<SetAside>>,
+    level: Single<&Level, With<InPlay>>,
     readings: Readings,
     (story, factions): (Res<StoryFacts>, Res<Factions>),
     mut commands: Commands,
@@ -181,7 +182,7 @@ pub(super) fn befalls_at_a_device(
     befalls: On<Befell<DeviceAct>>,
     party: Single<(Entity, &PartyRoster)>,
     mut members: Query<(&mut Experience, &Vitals)>,
-    mut played: Option<Single<(&Level, &Unborn, &mut MonsterBodies)>>,
+    mut played: Option<Single<(&Level, &Unborn, &mut MonsterBodies), With<InPlay>>>,
     mut generators: Query<(&Name, &mut EncounterGenerator, &LevelOwned)>,
     (definitions, server): (Res<Assets<LevelDefinition>>, Res<AssetServer>),
     held: Items,
@@ -309,7 +310,7 @@ const MISSILE_REACH: f32 = 30.0;
 /// Shield turns it aside.
 pub(super) fn shoots(
     befalls: On<Befell<Shooting>>,
-    level: Single<&Level, Without<SetAside>>,
+    level: Single<&Level, With<InPlay>>,
     definitions: Res<Assets<LevelDefinition>>,
     party: Single<(&Position, &PartyRoster)>,
     mut members: Query<(&mut Vitals, &Armour, &HitPlaces, &Against, &MissileShield)>,

@@ -133,14 +133,14 @@ pub(crate) fn take(
     able: Query<(), (With<Calling>, With<crate::game::actors::CanAct>)>,
     (entering, battle): (
         Query<(), With<super::level::Destination>>,
-        Query<(), With<crate::game::combat::Battle>>,
+        Option<Res<crate::game::combat::Battle>>,
     ),
 ) -> Result {
     let party = *party;
     let (interaction, &AttemptOn(device)) = attempts.get(take.attempt)?;
     // Only an attempt at looting takes anything.
     let DeviceInteraction { work: Work::Looting } = interaction else { return Ok(()) };
-    if !entering.is_empty() || !battle.is_empty() {
+    if !entering.is_empty() || battle.is_some() {
         return Ok(());
     }
     let receiver = match take.to {

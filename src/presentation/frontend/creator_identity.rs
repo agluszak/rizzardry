@@ -308,14 +308,13 @@ pub(super) fn refresh(
 
 /// The description comes from the same personality, gender and voice quote file as retail.
 pub(super) fn refresh_quote(
-    session: Option<Single<Ref<Creation>>>,
-    source: Option<Single<&mut QuoteSource>>,
+    session: Single<Ref<Creation>>,
+    mut source: Single<&mut QuoteSource>,
     assets: Res<AssetServer>,
     tables: Res<Assets<TextTable>>,
     fonts: Res<Assets<SpriteSheet>>,
     mut lines: Query<(&QuoteLine, &mut BitmapText)>,
 ) {
-    let (Some(session), Some(mut source)) = (session, source) else { return };
     let Some(draft) = session.mode.draft() else { return };
     let key = (draft.gender(), draft.personality, draft.voice);
     if source.key != Some(key) {

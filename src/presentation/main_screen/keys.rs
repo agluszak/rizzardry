@@ -172,7 +172,7 @@ fn spawn_main_screen_keys(mut commands: Commands) {
         on(|_: On<Start<JournalKey>>, mut open: MessageWriter<crate::presentation::journal::OpenJournal>| {open.write(crate::presentation::journal::OpenJournal);})
         on(|_: On<Start<OptionsKey>>, mut open: MessageWriter<crate::presentation::options::OpenOptions>| {open.write(crate::presentation::options::OpenOptions);})
         on(select_member)
-        on(|_: On<Start<BeginRound>>, battle: Option<Single<&Battle>>, mut round: MessageWriter<StartRound>| {
+        on(|_: On<Start<BeginRound>>, battle: Option<Res<Battle>>, mut round: MessageWriter<StartRound>| {
             if battle.is_some() {
                 round.write(StartRound);
             }
@@ -253,7 +253,7 @@ fn breathe(
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
     party: Single<(&avian3d::prelude::Position, &PartyBody)>,
-    combatants: Option<Single<&crate::game::combat::Combatants>>,
+    combatants: Single<&crate::game::combat::Combatants>,
     monsters: Query<(
         Entity,
         (&crate::game::world::population::Monster, &crate::game::characters::Vitals),
@@ -262,7 +262,7 @@ fn breathe(
     content: If<Res<crate::game::data::Catalogs>>,
     mut orders: MessageWriter<crate::game::combat::GiveOrder>,
 ) {
-    let (Some(member), Some(combatants)) = (selected.member(&roster), combatants) else {
+    let Some(member) = selected.member(&roster) else {
         return;
     };
     let (position, body) = *party;

@@ -685,7 +685,7 @@ pub(super) fn follow_caster(
     (selected, roster): (Res<super::SelectedMember>, Single<&PartyRoster>),
     able: Query<(), With<crate::game::actors::CanAct>>,
     (battle, camp, interaction, conversations): (
-        Option<Single<&Battle>>,
+        Option<Res<Battle>>,
         Option<Res<crate::game::camp::Camp>>,
         Query<&crate::game::world::interaction::DeviceInteraction>,
         Query<crate::game::npcs::conversation::DialogueReadOnly>,
@@ -739,7 +739,7 @@ pub(super) fn draw_magic_view(
     )>,
     casters: Query<(&LearnedSpells, &SpellPoints)>,
     (battle, camp, interaction, (party, held)): (
-        Option<Single<&Battle>>,
+        Option<Res<Battle>>,
         Option<Res<crate::game::camp::Camp>>,
         Query<&crate::game::world::interaction::DeviceInteraction>,
         (Single<Entity, With<PartyRoster>>, Items),
@@ -1084,7 +1084,7 @@ fn choose_row(
         &crate::game::actors::Skills,
     )>,
     casters: Query<(&LearnedSpells, &SpellPoints)>,
-    battle: Option<Single<&Battle>>,
+    battle: Option<Res<Battle>>,
     (camp, interaction, (party, held)): (
         Option<Res<crate::game::camp::Camp>>,
         Query<&crate::game::world::interaction::DeviceInteraction>,

@@ -126,14 +126,13 @@ pub struct AppliedEnvironment(AssetId<LevelGeometry>, u8);
 /// with the phase's sky light.
 pub fn apply_environment(
     clock: Res<GameClock>,
-    level: Option<Single<Ref<LevelAppearance>>>,
+    level: Single<Ref<LevelAppearance>>,
     geometry: Res<Assets<LevelGeometry>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut clear: ResMut<ClearColor>,
     camera: Single<(Entity, &mut Projection, Option<&AppliedEnvironment>), With<PartyCamera>>,
     mut commands: Commands,
 ) {
-    let Some(level) = level else { return };
     let Some(level_geometry) = geometry.get(&level.0) else { return };
     let (camera, mut projection, applied) = camera.into_inner();
     let phase = clock.phase();

@@ -73,7 +73,8 @@ pub(super) fn open_info(
     if click.button != PointerButton::Secondary || !existing.is_empty() {
         return Ok(());
     }
-    let (target, (profile, skills)) = (targets.get(click.entity)?, profiles.get(screen.member)?);
+    let target = targets.get(click.entity)?;
+    let (profile, skills) = profiles.get(screen.member)?;
     let (Some(font), Some(strings)) = (sheets.get(&art.font), strings.table()) else {
         return Ok(());
     };
@@ -244,11 +245,10 @@ fn text(
     );
 }
 pub(super) fn update_scroll(
-    dialog: Option<Single<&InfoDialog>>,
-    slider: Option<Single<&SliderValue, With<InfoScroll>>>,
+    dialog: Single<&InfoDialog>,
+    value: Single<&SliderValue, With<InfoScroll>>,
     mut lines: Query<&mut Node, With<Lines>>,
 ) {
-    let (Some(dialog), Some(value)) = (dialog, slider) else { return };
     for mut node in &mut lines {
         let top = px(-value.0 * dialog.line_height);
         if node.top != top {
@@ -276,7 +276,7 @@ pub(super) fn initialize_focus(
     button: Option<Single<Entity, Added<CloseButton>>>,
     mut focus: Option<ResMut<InputFocus>>,
 ) {
-    if let (Some(button), Some(focus)) = (button.map(|button| *button), focus.as_mut()) {
+    if let (Some(button), Some(focus)) = (button.map(Single::into_inner), focus.as_mut()) {
         focus.set(button, FocusCause::Navigated);
     }
 }

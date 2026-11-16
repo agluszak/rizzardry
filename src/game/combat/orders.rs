@@ -28,7 +28,6 @@ pub struct GiveOrder {
 /// Orders are given to the party's members during a fight.
 pub(super) fn give_orders(
     mut requests: MessageReader<GiveOrder>,
-    battle: Option<Single<&Battle>>,
     roster: Single<&crate::game::party::roster::PartyRoster>,
     mut orders: Query<
         (&mut crate::game::party::Order, &crate::game::actors::Traits, &Vitals),
@@ -39,8 +38,7 @@ pub(super) fn give_orders(
     use crate::content::characters::Trait;
     use crate::game::party::Order;
     for &GiveOrder { member, order } in requests.read() {
-        if battle.is_some()
-            && roster.contains(&member)
+        if roster.contains(&member)
             && let Ok((mut current, character, vitals)) = orders.get_mut(member)
             // Only those with the trait go berserk.
             && (order != Order::Berserk || character.has(Trait::Berserk))
@@ -115,8 +113,8 @@ pub(super) fn control_combat(
 /// Count the ground the party covers while it moves in a fight, and end the
 /// move when it is spent.
 pub fn track_party_move(
-    fight: Option<Single<(&Round, &mut PartyMove), With<Battle>>>,
-    party: Single<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>,
+    fight: Single<(&Round, &mut PartyMove), With<Battle>>,
+    position: Single<&avian3d::prelude::Position, With<crate::game::party::body::PartyBody>>,
     mut rng: ResMut<GameRng>,
     roster: Single<&PartyRoster>,
     mut movers: Query<
@@ -126,8 +124,7 @@ pub fn track_party_move(
     mut turns: Query<&mut Turn>,
     mut news: MessageWriter<CombatNews>,
 ) {
-    let Some((round, mut party_move)) = fight.map(Single::into_inner) else { return };
-    let position = *party;
+    let (round, mut party_move) = fight.into_inner();
     let spent = {
         let PartyMove::Moving { budget, moved, last, .. } = &mut *party_move else {
             return;

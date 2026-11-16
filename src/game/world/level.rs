@@ -65,14 +65,20 @@ impl Level {
     }
 }
 
-/// A level as if already activated, without navmeshes or messages. Not a
-/// `Default`: a `Level` exists only once [`activate_level`] says so.
+/// A level as if already activated and in play, without navmeshes or
+/// messages. Not a `Default`: a `Level` exists only once [`activate_level`]
+/// says so.
 #[cfg(test)]
 impl Level {
-    pub fn test(definition: Handle<LevelDefinition>) -> Self {
-        Level { path: "test".into(), definition, navmeshes: vec![], messages: None }
+    pub fn test(definition: Handle<LevelDefinition>) -> impl Bundle {
+        (Level { path: "test".into(), definition, navmeshes: vec![], messages: None }, InPlay)
     }
 }
+
+/// The level the party is in: a resource, so only one level is ever played,
+/// on its root. Entering a level moves it there from the level left.
+#[derive(Resource, Debug, Default)]
+pub struct InPlay;
 
 /// Belongs to a level for its lifetime: its local monsters, items, groups,
 /// props, devices and navigation. This, not the transform hierarchy, is what
@@ -127,7 +133,7 @@ pub fn answer_travel_questions(
     mut commands: Commands,
     mut answers: MessageReader<TravelAnswer>,
     questions: Query<(Entity, &TravelQuestion)>,
-    battle: Option<Single<&Battle>>,
+    battle: Option<Res<Battle>>,
     mut travel: MessageWriter<Travel>,
 ) {
     let answers: Vec<_> = answers.read().copied().collect();
@@ -158,7 +164,7 @@ pub fn travel(
     entering: Query<(), With<Destination>>,
     questions: Query<Entity, With<TravelQuestion>>,
     assets: Res<AssetServer>,
-    battle: Option<Single<&Battle>>,
+    battle: Option<Res<Battle>>,
     camp: Option<Res<crate::game::camp::Camp>>,
     mut movement: Query<&mut crate::game::party::body::PartyMovement>,
 ) {
@@ -323,7 +329,7 @@ impl OwnedDefinitions<'_, '_> {
 /// The level being played, and its geometry.
 #[derive(SystemParam)]
 pub struct PlayedLevel<'w, 's> {
-    played: Option<Single<'w, 's, (Entity, &'static Level)>>,
+    played: Option<Single<'w, 's, (Entity, &'static Level), With<InPlay>>>,
     levels: Query<'w, 's, &'static Level>,
     definitions: Res<'w, Assets<LevelDefinition>>,
 }
@@ -349,11 +355,8 @@ impl PlayedLevel<'_, '_> {
 
 /// Run condition: a level is being played, not suspended by an entry in
 /// preparation.
-pub fn level_active(
-    levels: Query<(), With<Level>>,
-    entering: Query<(), With<Destination>>,
-) -> bool {
-    !levels.is_empty() && entering.is_empty()
+pub fn level_active(played: Option<Res<InPlay>>, entering: Query<(), With<Destination>>) -> bool {
+    played.is_some() && entering.is_empty()
 }
 
 /// Physics stands still while an entry is prepared, like the rest of
@@ -471,7 +474,7 @@ pub struct SharedData<'w> {
 pub fn activate_level(
     mut commands: Commands,
     mut destinations: Query<(Entity, &mut Destination)>,
-    played: Query<Entity, With<Level>>,
+    played: Query<Entity, With<InPlay>>,
     built: Query<(Entity, &Level, Has<SetAside>), Allow<Disabled>>,
     parties: Query<Entity, With<Party>>,
     geometry: Res<Assets<LevelDefinition>>,
@@ -509,11 +512,11 @@ pub fn activate_level(
             }
         };
         for left in played.iter().filter(|&left| known.is_none_or(|(level, ..)| level != left)) {
-            commands.entity(left).insert(SetAside { at_ms: clock.ms });
+            commands.entity(left).remove::<InPlay>().insert(SetAside { at_ms: clock.ms });
         }
         if let Some((level, definition, asleep)) = known.map(|(e, l, a)| (e, &l.definition, a)) {
             if asleep {
-                commands.entity(level).remove::<SetAside>();
+                commands.entity(level).remove::<SetAside>().insert(InPlay);
             }
             let geometry = geometry.get(definition).expect("a built level keeps its definition");
             placement.place(&mut commands, party, geometry, &destination.start);
@@ -542,7 +545,12 @@ pub fn activate_level(
         navigation::add_party_characters(&mut commands, root, party, &navigation);
         info!("{} is active", level.path);
         let bodies = destination.bodies.take().unwrap();
-        commands.entity(root).remove::<Destination>().insert((level.clone(), navigation, bodies));
+        commands.entity(root).remove::<Destination>().insert((
+            level.clone(),
+            navigation,
+            bodies,
+            InPlay,
+        ));
         ready.write(LevelReady);
         break;
     }

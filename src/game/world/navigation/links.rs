@@ -93,7 +93,6 @@ pub fn sync_door_links(
     links: Query<(), With<AnimationLink3d>>,
     navigation: Single<&LevelNavigation>,
 ) {
-    let navigation = *navigation;
     for (entity, animation, motion, door, children) in &doors {
         let last = animation.last_frame;
         let open = last > 0.0 && motion.frame >= last * 0.5;

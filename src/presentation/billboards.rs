@@ -20,7 +20,6 @@ pub fn face_camera(
     parents: Query<&Transform, (Without<FaceCamera>, Without<PartyCamera>)>,
     mut sprites: Query<(&ChildOf, &mut Transform), (With<FaceCamera>, Without<PartyCamera>)>,
 ) {
-    let camera = *camera;
     for (parent, mut sprite) in &mut sprites {
         let Ok(parent) = parents.get(parent.parent()) else { continue };
         let rotation = parent.rotation.inverse() * camera.rotation;

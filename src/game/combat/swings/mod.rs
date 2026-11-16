@@ -916,7 +916,7 @@ fn block(
     swings: Query<(&SwingOf, &Fate, &Aim, Option<&Strikes>)>,
     attacks: Query<(&AttackWith, &Caught)>,
     blocks: Query<&Block>,
-    sounds: Query<&SoundClass>,
+    sounds: Query<Option<&SoundClass>>,
     mut news: MessageWriter<CombatNews>,
 ) -> Result {
     let (&SwingOf(attack), &fate, aim, strikes) = swings.get(landing.swing)?;
@@ -927,7 +927,7 @@ fn block(
     let block = blocks.get(victim)?;
     let within = if caught.0.any() { block.unaware } else { block.aware };
     if roll as i32 - aim.aim <= within {
-        let sound_class = sounds.get(with.arm).ok().map(|sound| sound.0);
+        let sound_class = sounds.get(with.arm)?.map(|sound| sound.0);
         news.write(CombatNews::Blocked { victim, sound_class });
     }
     Ok(())
@@ -1044,7 +1044,7 @@ fn struck(
     mut commands: Commands,
     swings: Query<(&SwingOf, Option<&Strikes>, Option<&Through>)>,
     attacks: Query<&AttackWith>,
-    sounds: Query<&SoundClass>,
+    sounds: Query<Option<&SoundClass>>,
     trained: Query<(&Calling, &Abilities)>,
     mut news: MessageWriter<CombatNews>,
 ) -> Result {
@@ -1053,7 +1053,7 @@ fn struck(
         return Ok(());
     };
     let with = attacks.get(attack)?;
-    let sound_class = sounds.get(with.arm).ok().map(|sound| sound.0);
+    let sound_class = sounds.get(with.arm)?.map(|sound| sound.0);
     news.write(CombatNews::Struck { victim, place, sound_class });
     practise(victim, Skill::IronSkin, &trained, &mut commands);
     Ok(())
@@ -1093,7 +1093,11 @@ fn blow(
     use crate::content::items::AttackEffect;
     let swing = hitting.swing;
     let (&SwingOf(attack), fate, strikes, through) = swings.get(swing)?;
-    let (Some(&Strikes(victim)), true) = (strikes, through) else { return Ok(()) };
+    // Only a swing that got through is a blow.
+    if !through {
+        return Ok(());
+    }
+    let &Strikes(victim) = strikes.expect("a swing that got through strikes someone");
     let astray = matches!(fate, Fate::Astray { .. });
     let (&AttackBy(actor), with, caught) = attacks.get(attack)?;
     let (rolls, percent, effects, slays, critical, by_monster) = arms.get(with.arm)?;
@@ -1241,7 +1245,8 @@ fn tire(
     let (&AttackBy(actor), with, fury) = attacks.get(attack)?;
     let (heft, tires) = arms.get(with.arm)?;
     let (conditions, own, burden) = attackers.get(actor)?;
-    let (Some(burden), true) = (burden, tires) else { return Ok(()) };
+    // An arm that tires nobody, or one who carries no load, costs nothing.
+    let Some(burden) = burden.filter(|_| tires) else { return Ok(()) };
     let (below, add) = attack::stamina_draw(with.mode, heft.map(|heft| heft.0));
     let cost = (rng.below(below) + add)
         * if fury { 2 } else { 1 }

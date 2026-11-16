@@ -474,10 +474,10 @@ fn press_button(
     buttons: Query<&SheetButton>,
     levels: PlayedLevel,
     party: Query<&Transform, With<PartyBody>>,
-    automap: Option<Single<&mut Automap>>,
+    mut automap: Single<&mut Automap>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (Some(mut automap), Ok(button)) = (automap, buttons.get(click.entity)) else { return };
+    let Ok(button) = buttons.get(click.entity) else { return };
     let layers = levels.of(automap.level).map(|g| g.map_layers.len());
     if !action_enabled(button.action, &automap, layers) {
         return;
@@ -535,13 +535,13 @@ pub fn paint_buttons(
 /// Pin, erase, or (with no tool) pick a note to retype.
 fn click_map(
     click: On<PointerClick>,
-    map: Option<Single<&mut Automap>>,
+    mut map: Single<&mut Automap>,
     levels: Query<&MapNotes>,
     mut commits: MessageWriter<CommitNote>,
     mut commands: Commands,
     editors: Query<Entity, With<note_input::NoteInput>>,
 ) -> Result {
-    let (Some(mut map), Some(hit)) = (map, click.hit.position) else { return Ok(()) };
+    let Some(hit) = click.hit.position else { return Ok(()) };
     for editor in &editors {
         commands.entity(editor).despawn();
     }
@@ -597,13 +597,12 @@ fn click_map(
 pub fn draw_notes(
     mut commands: Commands,
     layer: Single<(Entity, Ref<NotesLayer>)>,
-    automap: Option<Single<Ref<Automap>>>,
+    map: Single<Ref<Automap>>,
     notes: Query<Ref<MapNotes>>,
     art: Res<AutomapArt>,
     mut views: Query<(Entity, &NoteView, &mut Node, &mut Visibility, &Children)>,
     mut labels: Query<(&mut BitmapText, &mut Visibility), Without<NoteView>>,
 ) -> Result {
-    let Some(map) = automap else { return Ok(()) };
     let (layer, built) = layer.into_inner();
     let notes = notes.get(map.level)?;
     // The layer may be built after its art arrives, with the map unchanged.

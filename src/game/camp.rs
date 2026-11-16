@@ -64,14 +64,23 @@ impl Plugin for CampPlugin {
             .add_message::<LeaveCamp>()
             .add_systems(
                 Update,
-                (request_camp, force_camp, leave_camp)
+                (
+                    request_camp,
+                    force_camp
+                        .run_if(not(resource_exists::<Battle>))
+                        .run_if(not(resource_exists::<Camp>)),
+                    leave_camp,
+                )
                     .chain()
                     .after(crate::game::GameplaySet::Combat)
                     .run_if(level_active),
             )
             .add_systems(
                 FixedPostUpdate,
-                advance_camp.after(crate::game::time::pass_time).run_if(level_active),
+                advance_camp
+                    .after(crate::game::time::pass_time)
+                    .run_if(level_active)
+                    .run_if(not(resource_exists::<Battle>)),
             )
             .add_observer(broken_up);
     }
@@ -94,16 +103,11 @@ fn broken_up(
 pub(crate) fn advance_camp(
     mut commands: Commands,
     clock: Res<GameClock>,
-    camp: Option<Res<Camp>>,
-    battle: Option<Single<&Battle>>,
+    camp: If<Res<Camp>>,
     roster: Single<&PartyRoster>,
     able: Query<(), With<crate::game::actors::CanAct>>,
     mut news: MessageWriter<CampNews>,
 ) {
-    let Some(camp) = camp else { return };
-    if battle.is_some() {
-        return;
-    }
     let anyone_able = roster.iter().any(|member| able.contains(member));
     if let Some(outcome) = camp.outcome(clock.ms, anyone_able) {
         news.write(outcome);
@@ -120,7 +124,7 @@ pub fn request_camp(
     clock: Res<GameClock>,
     freedom: crate::game::freedom::Freedom,
     mut button: MessageReader<CampRequest>,
-    battle: Option<Single<&Battle>>,
+    battle: Option<Res<Battle>>,
     party: Option<Single<&LinearVelocity, With<PartyBody>>>,
     mut news: MessageWriter<CampNews>,
 ) {
@@ -143,15 +147,10 @@ pub fn request_camp(
 /// When the living can no longer act, the party must camp.
 pub fn force_camp(
     mut commands: Commands,
-    camp: Option<Res<Camp>>,
-    battle: Option<Single<&Battle>>,
     roster: Single<&PartyRoster>,
     members: Query<(&Vitals, Has<crate::game::actors::CanAct>)>,
     mut news: MessageWriter<CampNews>,
 ) {
-    if camp.is_some() || battle.is_some() {
-        return;
-    }
     let members = || roster.iter().map(|m| members.get(m).unwrap());
     if members().all(|(vitals, _)| vitals.is_dead()) || members().any(|(_, can_act)| can_act) {
         return;

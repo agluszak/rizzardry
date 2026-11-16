@@ -172,7 +172,7 @@ fn close(next: &mut NextState<Screen>, menu: Option<&mut NextState<super::fronte
 fn activate(
     event: On<Activate>,
     choices: Query<&Choice>,
-    mut view: Option<Single<&mut OptionsView>>,
+    mut view: Single<&mut OptionsView>,
     file: Res<SettingsFile>,
     mut preferences: ResMut<Preferences>,
     mut difficulty: ResMut<Difficulty>,
@@ -181,7 +181,6 @@ fn activate(
     mut menu: Option<ResMut<NextState<super::frontend::MenuPage>>>,
 ) -> Result {
     let choice = choices.get(event.entity)?;
-    let Some(view) = view.as_mut() else { return Ok(()) };
     match choice {
         Choice::Difficulty => {
             view.draft.difficulty = match view.draft.difficulty {

@@ -20,6 +20,7 @@ use crate::game::items::Items;
 use crate::game::magic::SpellPoints;
 use crate::game::party::roster::{PartyMember, PartyRoster};
 use crate::game::rng::GameRng;
+use crate::game::world::level::InPlay;
 use crate::game::world::level::Level;
 
 /// The party is to pick one of its own: the screen lets the player, and
@@ -128,15 +129,11 @@ pub(super) fn pine(
         (Entity, &Birth, &mut crate::game::characters::Conditions),
         (With<Pining>, With<PartyMember>),
     >,
-    battles: Query<(), With<Battle>>,
     (people, content): (Query<Person>, Res<Catalogs>),
-    level: Single<&Level>,
+    level: Single<&Level, With<InPlay>>,
     mut remarks: MessageWriter<PartyRemark>,
     mut commands: Commands,
 ) {
-    if !battles.is_empty() {
-        return;
-    }
     let table = &FACTS.chosen;
     let spared =
         matches!(story::one_of_kind(table.spared_by, &people, &content), Some((_, Some(_))));
@@ -220,13 +217,13 @@ pub(super) fn parted(
 
 pub(super) fn awaited(
     mut waits: Query<(Entity, &mut Awaited)>,
-    battles: Query<(), With<Battle>>,
+    battle: Option<Res<Battle>>,
     readings: Readings,
     (story, factions): (Res<StoryFacts>, Res<Factions>),
     mut commands: Commands,
 ) {
     for (wait, mut awaited) in &mut waits {
-        if !battles.is_empty() {
+        if battle.is_some() {
             awaited.fought = true;
         } else if awaited.fought && readings.answer(&awaited.reading, None, &story, &factions) != 0
         {

@@ -29,7 +29,6 @@ pub(super) fn initialize(
     if peopled.is_some() {
         return;
     }
-    let destination = *destination;
     let average = match &destination.entry {
         Entry::NewGame(profiles) => crate::game::party::average_level(
             profiles.iter().map(|(character, _)| character.calling.level()),

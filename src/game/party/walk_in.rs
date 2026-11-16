@@ -6,6 +6,7 @@ use bevy::prelude::*;
 
 use super::body::PartyBody;
 use crate::content::level::{Arrival, LevelDefinition};
+use crate::game::world::level::InPlay;
 use crate::game::world::level::{Level, Travel, ask_travel};
 use crate::game::world::props::pose;
 use crate::game::world::triggers::{LevelState, PartyMove, PendingPartyMove};
@@ -25,7 +26,7 @@ pub struct PathFlight {
 pub fn move_party(
     mut commands: Commands,
     party: Single<(Entity, &mut PartyBody, &mut Position, &mut Transform, Has<PathFlight>)>,
-    levels: Single<(Entity, &Level, &mut LevelState, &PendingPartyMove)>,
+    levels: Single<(Entity, &Level, &mut LevelState, &PendingPartyMove), With<InPlay>>,
     geometry: Res<Assets<LevelDefinition>>,
     mut travel: MessageWriter<Travel>,
 ) {

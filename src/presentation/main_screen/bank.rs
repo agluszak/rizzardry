@@ -208,7 +208,7 @@ fn press(
     roster: Single<&PartyRoster>,
     selected: Res<SelectedMember>,
     mut controls: MessageWriter<crate::game::combat::CombatControl>,
-    battle: Option<Single<&Battle>>,
+    battle: Option<Res<Battle>>,
     mut commands: Commands,
     views: Query<Entity, With<super::magic_view::MagicView>>,
     magic_art: Res<super::magic_view::MagicViewArt>,

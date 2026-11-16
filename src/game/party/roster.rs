@@ -13,8 +13,9 @@ use crate::game::rng::GameRng;
 
 /// The party: who adventures together, how they stand and what they share.
 /// A campaign creates it when it enters its first level, where it also gets
-/// its body ([`super::body::PartyBody`]).
-#[derive(Component, Debug, Default)]
+/// its body ([`super::body::PartyBody`]). A resource, so there is never more
+/// than one, on the entity its members and what it holds are related to.
+#[derive(Resource, Debug, Default)]
 #[require(
     PartyRoster,
     super::formation::Formation,

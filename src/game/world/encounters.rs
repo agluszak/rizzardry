@@ -8,7 +8,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use super::identify::{EscortOf, Escorts, GroupMembers, MonsterGroup};
-use super::level::{Level, LevelOwned};
+use super::level::LevelOwned;
 use super::navigation::{LevelNavigation, Walker, WalkerMotionConfig, feet};
 use super::obstacles::WorldObstacles;
 use super::population::{self, Monster, MonsterBodies, Unborn};
@@ -21,6 +21,7 @@ use crate::game::difficulty::Difficulty;
 use crate::game::party::body::PartyBody;
 use crate::game::rng::GameRng;
 use crate::game::time::{DAY_MS, GameClock};
+use crate::game::world::level::InPlay;
 
 /// Past ten hours away the encounters about are rolled afresh rather than
 /// aged (retail `W8_ENCOUNTER_STALE_SECONDS`).
@@ -314,15 +315,17 @@ pub struct Encounter {
 }
 
 pub(crate) fn plugin(app: &mut App) {
-    app.add_observer(admit_and_retire).add_observer(spawn_encounter).add_systems(
-        FixedPostUpdate,
-        (write_off_wiped_out, poll_generators)
-            .chain()
-            .after(avian3d::prelude::PhysicsSystems::Writeback)
-            .after(crate::game::time::pass_time)
-            .run_if(super::level::level_active)
-            .run_if(resource_exists::<crate::game::data::Catalogs>),
-    );
+    app.add_observer(admit_and_retire.run_if(not(resource_exists::<crate::game::combat::Battle>)))
+        .add_observer(spawn_encounter)
+        .add_systems(
+            FixedPostUpdate,
+            (write_off_wiped_out, poll_generators)
+                .chain()
+                .after(avian3d::prelude::PhysicsSystems::Writeback)
+                .after(crate::game::time::pass_time)
+                .run_if(super::level::level_active)
+                .run_if(resource_exists::<crate::game::data::Catalogs>),
+        );
 }
 
 #[derive(Event)]
@@ -372,7 +375,7 @@ pub fn retire(
 /// whether or not it called anything up.
 fn poll_generators(
     mut commands: Commands,
-    budgets: Single<(Entity, &mut EncounterBudget, Option<&Arrival>), With<Level>>,
+    budgets: Single<(Entity, &mut EncounterBudget, Option<&Arrival>), With<InPlay>>,
     mut generators: Query<(Entity, &mut EncounterGenerator, &LevelOwned)>,
     mut encounters: Query<(Entity, &mut Encounter, &LevelOwned)>,
     _party: Single<(), With<PartyBody>>,
@@ -481,8 +484,7 @@ fn admit_and_retire(
     mut commands: Commands,
     generators: Query<(&EncounterGenerator, &Transform, &LevelOwned)>,
     budgets: Query<&EncounterBudget>,
-    party: Single<&Position, With<PartyBody>>,
-    battle: Query<(), With<crate::game::combat::Battle>>,
+    position: Single<&Position, With<PartyBody>>,
     talking: Query<(), With<crate::game::npcs::conversation::Conversation>>,
     population: Population,
     obstacles: WorldObstacles,
@@ -490,11 +492,10 @@ fn admit_and_retire(
 ) -> Result {
     let (generator, at, owner) = generators.get(attempt.generator)?;
     let budget = budgets.get(owner.0)?;
-    let party = *party;
-    if !battle.is_empty() || !talking.is_empty() || !generator.enabled {
+    if !talking.is_empty() || !generator.enabled {
         return Ok(());
     }
-    let eye = PartyBody::eye(party);
+    let eye = PartyBody::eye(*position);
     if !attempt.forced
         && (!(NEAREST..=FARTHEST).contains(&eye.distance(at.translation))
             || obstacles.clear(eye, at.translation + Vec3::Y * STEP_HEIGHT))
@@ -512,7 +513,7 @@ fn admit_and_retire(
                 let (_, _, pose, walker, _) = population.monsters.get(m).ok()?;
                 Some(feet(pose.translation(), walker))
             });
-            if at.is_none_or(|at| at.distance(PartyBody::feet(party)) > RETIRED_BEYOND) {
+            if at.is_none_or(|at| at.distance(PartyBody::feet(*position)) > RETIRED_BEYOND) {
                 commands.trigger(Retire { group: entity });
             }
         }
@@ -628,10 +629,10 @@ fn spawn_encounter(
 /// budget one (retail `UnregisterActiveEncounterGroup`).
 pub fn write_off_wiped_out(
     mut commands: Commands,
-    levels: Single<(Entity, &mut EncounterBudget), With<Level>>,
+    levels: Single<(Entity, &mut EncounterBudget), With<InPlay>>,
     groups: Query<(Entity, &LevelOwned, Option<&GroupMembers>), With<Encounter>>,
     monsters: Query<&crate::game::characters::Vitals, With<Monster>>,
-    battle: Option<Single<(), With<crate::game::combat::Battle>>>,
+    battle: Option<Res<crate::game::combat::Battle>>,
 ) {
     let (root, mut budget) = levels.into_inner();
     for (entity, owner, members) in &groups {

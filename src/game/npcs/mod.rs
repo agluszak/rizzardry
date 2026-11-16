@@ -217,7 +217,7 @@ impl Plugin for NpcPlugin {
             .add_systems(
                 FixedUpdate,
                 (
-                    scenes::pine,
+                    scenes::pine.run_if(not(resource_exists::<crate::game::combat::Battle>)),
                     scenes::awaited,
                     scenes::recur,
                     scenes::parted,

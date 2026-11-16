@@ -491,7 +491,7 @@ pub(super) fn embody_draft(
 }
 
 pub(super) fn refresh(
-    session: Option<Single<Ref<Creation>>>,
+    session: Single<Ref<Creation>>,
     actor: Option<
         Single<
             (
@@ -503,7 +503,7 @@ pub(super) fn refresh(
             With<DraftActor>,
         >,
     >,
-    art: Option<Single<Ref<StatsAssets>>>,
+    art: Single<Ref<StatsAssets>>,
     strings: crate::presentation::screen_art::GameStrings,
     content: If<Res<crate::game::data::Catalogs>>,
     sheets: Res<Assets<SpriteSheet>>,
@@ -514,7 +514,6 @@ pub(super) fn refresh(
     added: Query<(), Or<(Added<Value>, Added<Icon>, Added<StatsControl>, Added<ChoiceMenu>)>>,
     mut commands: Commands,
 ) {
-    let (Some(session), Some(art)) = (session, art) else { return };
     // The page shows the draft: redraw it only when the draft, the words
     // or the art change, or when the page gains parts.
     if !session.is_changed()

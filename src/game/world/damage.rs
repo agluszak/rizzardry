@@ -96,8 +96,14 @@ pub fn leave_loot(
     mut rng: ResMut<GameRng>,
 ) -> Result {
     let target = death.entity;
-    // A member leaves nothing, nor does one summoned.
-    let Some(((monster, at, walker, owner), false)) = monsters.get(target)? else { return Ok(()) };
+    // A member leaves nothing.
+    let Some(((monster, at, walker, owner), summoned)) = monsters.get(target)? else {
+        return Ok(());
+    };
+    // Nor does one summoned.
+    if summoned {
+        return Ok(());
+    }
     let (catalog, tables) = (&content.items, &content.loot);
     let rng = &mut *rng;
     let npc = bodies.get(target).ok().and_then(|body| npcs.get(body.0).ok());

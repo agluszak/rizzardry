@@ -43,12 +43,12 @@ pub struct EndingVeil;
 pub fn show_ending(
     mut commands: Commands,
     time: Res<Time<Real>>,
-    ended: Option<Res<Ended>>,
+    If(ended): If<Res<Ended>>,
     (assets, strings): (Res<AssetServer>, GameStrings),
     mut screens: Query<(Entity, &mut EndingScreen)>,
     mut veils: Query<&mut BackgroundColor, With<EndingVeil>>,
 ) {
-    let Some(Ended(ending)) = ended.as_deref().copied() else { return };
+    let Ended(ending) = *ended;
     let at_once = ending == Ending::Savant;
     // The bomb's ending fades through white.
     let veil = if ending == Ending::Blowout { Color::WHITE } else { Color::BLACK };

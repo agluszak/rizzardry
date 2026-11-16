@@ -11,6 +11,7 @@ use bevy::prelude::*;
 use crate::content::levels::LevelInfo;
 use crate::content::music::Playlist;
 use crate::game::camp::Camp;
+use crate::game::world::level::InPlay;
 use crate::game::world::level::Level;
 use crate::presentation::PresentationRng;
 use rand::Rng;
@@ -45,7 +46,7 @@ pub fn play_music(
     mut commands: Commands,
     time: Res<Time>,
     assets: Res<AssetServer>,
-    level: Single<&Level>,
+    level: Single<&Level, With<InPlay>>,
     (camp, ended): (Option<Res<Camp>>, Option<Res<Ended>>),
     playlists: Res<Assets<Playlist>>,
     master: Option<Res<bevy::audio::GlobalVolume>>,

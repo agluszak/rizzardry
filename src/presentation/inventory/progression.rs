@@ -292,7 +292,7 @@ fn cancel(
     mut focus: ResMut<InputFocus>,
     offer: Option<Single<Entity, With<Open>>>,
 ) {
-    if let Some(button) = offer.map(|offer| *offer) {
+    if let Some(button) = offer.map(Single::into_inner) {
         focus.set(button, bevy::input_focus::FocusCause::Navigated);
     }
     commands.entity(event.context).despawn();
@@ -327,7 +327,7 @@ fn press(
                 editor.page = Page::Attributes;
                 return Ok(());
             }
-            if let Some(button) = offer.map(|offer| *offer) {
+            if let Some(button) = offer.map(Single::into_inner) {
                 focus.set(button, bevy::input_focus::FocusCause::Navigated);
             }
             commands.entity(id).despawn();

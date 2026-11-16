@@ -11,6 +11,7 @@ use crate::content::characters::Skill;
 use crate::content::monster::MonsterBody;
 use crate::content::spells::Working;
 use crate::game::data::Catalogs;
+use crate::game::world::level::InPlay;
 use crate::game::{
     actors::Body,
     characters::Condition,
@@ -73,7 +74,10 @@ pub(crate) fn cast(
     worked: On<Worked>,
     mut commands: Commands,
     bodies: Query<Body>,
-    level: Single<(Entity, &Level, &LevelState, &Unborn, &MonsterBodies, &LevelNavigation)>,
+    level: Single<
+        (Entity, &Level, &LevelState, &Unborn, &MonsterBodies, &LevelNavigation),
+        With<InPlay>,
+    >,
     battle: Option<Single<Entity, With<Battle>>>,
     lures: Query<Entity, With<Lure>>,
     monsters: Query<(

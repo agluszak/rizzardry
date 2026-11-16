@@ -13,7 +13,7 @@ use crate::game::rng::GameRng;
 use crate::game::time::GameClock;
 use crate::game::world::hostility::{self, SetStance, Stance};
 use crate::game::world::identify::MonsterGroup;
-use crate::game::world::level::{Level, PlayedLevel};
+use crate::game::world::level::{InPlay, PlayedLevel};
 use crate::game::world::navigation::{LevelNavigation, Walker, WalkerMotionConfig, feet};
 use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::population::{self, Monster, MonsterBodies, Unborn};
@@ -42,12 +42,12 @@ const NEAR_PARTY: [f32; 3] = [0.0, 3.0, 6.0];
 pub fn summon(
     summon: On<Summon>,
     mut commands: Commands,
-    battle: Option<Single<Entity, With<Battle>>>,
+    battle: Single<Entity, With<Battle>>,
     party: Single<(&Position, &PartyBody)>,
     monsters: Query<(&Monster, ActorPose, Option<&Walker>, &Vitals)>,
     groups: Query<&MonsterGroup>,
     sides: Query<&hostility::Standing>,
-    levels: Single<(Entity, &LevelNavigation, &mut Unborn, &MonsterBodies), With<Level>>,
+    levels: Single<(Entity, &LevelNavigation, &mut Unborn, &MonsterBodies), With<InPlay>>,
     level: PlayedLevel,
     obstacles: WorldObstacles,
     definitions: Res<Assets<MonsterBody>>,
@@ -57,7 +57,7 @@ pub fn summon(
     content: If<Res<crate::game::data::Catalogs>>,
     mut news: MessageWriter<CombatNews>,
 ) {
-    let (Some(battle), Some(far)) = (battle, level.view_distance()) else { return };
+    let Some(far) = level.view_distance() else { return };
     let species = &content.species;
     let (party_at, party_body) = *party;
     let (root, navigation, mut unborn, bodies) = levels.into_inner();

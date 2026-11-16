@@ -117,14 +117,14 @@ struct ItemActionButton(ItemAction);
 fn press_item_action(
     click: On<Activate>,
     buttons: Query<&ItemActionButton>,
-    screen: Option<Single<&mut ItemAction, With<InventoryScreen>>>,
+    action: Single<&mut ItemAction, With<InventoryScreen>>,
     party: Single<Entity, With<PartyRoster>>,
     held: Items,
     mut commands: Commands,
 ) -> Result {
     let &ItemActionButton(pressed) = buttons.get(click.entity)?;
-    let Some(mut action) = screen else { return Ok(()) };
-    **action = if **action == pressed {
+    let mut action = action.into_inner();
+    *action = if *action == pressed {
         ItemAction::None
     } else if let Some(item) = held.held(*party).filter(|_| pressed == ItemAction::Identify) {
         commands.trigger(Identify { item, party: *party });
@@ -1106,10 +1106,10 @@ fn draw_cells(
 fn click_cell(
     click: On<Activate>,
     cells: Query<&ItemCell>,
-    screen: Option<Single<(&InventoryScreen, &mut ItemAction)>>,
+    screen: Single<(&InventoryScreen, &mut ItemAction)>,
     party: Single<Entity, With<PartyRoster>>,
     held: Items,
-    selected: Option<Single<&bevy::ui_widgets::SelectedTab, With<review::PageTabs>>>,
+    selected: Single<&bevy::ui_widgets::SelectedTab, With<review::PageTabs>>,
     tabs: Query<&review::PageButton>,
     pool_scroll: Option<Single<&bevy::ui_widgets::SliderValue, With<pool_scroll::PoolScroll>>>,
     conversations: Query<
@@ -1125,7 +1125,6 @@ fn click_cell(
         return Ok(());
     }
     let cell = cells.get(click.entity)?;
-    let (Some(screen), Some(selected)) = (screen, selected) else { return Ok(()) };
     if selected.0.and_then(|entity| tabs.get(entity).ok()).map(|tab| tab.0)
         != Some(review::Page::Items)
     {

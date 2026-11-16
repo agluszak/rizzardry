@@ -215,12 +215,11 @@ pub fn update_radar(
     sides: Query<&crate::game::world::hostility::Side>,
     (search, battle, levels): (
         Option<Res<crate::game::world::search::Search>>,
-        Query<(), With<crate::game::combat::Battle>>,
+        Option<Res<crate::game::combat::Battle>>,
         Query<(), With<crate::game::world::level::Level>>,
     ),
 ) {
     let (position, body, effects, roster) = *party;
-    let layer = *layer;
     for mut rim in &mut rims {
         // North stays put while the view turns.
         let rotation = Rot2::radians(body.yaw);
@@ -252,7 +251,7 @@ pub fn update_radar(
                 absolute(at, Vec2::splat(2.0)),
                 BackgroundColor(colour),
                 Pickable::IGNORE,
-                ChildOf(layer),
+                ChildOf(*layer),
             ));
         }
     };
@@ -260,7 +259,7 @@ pub fn update_radar(
         eye,
         forward: body.forward(),
         far,
-        searching: search.as_ref().is_some_and(|s| s.on(!battle.is_empty())),
+        searching: search.as_ref().is_some_and(|s| s.on(battle.is_some())),
     };
     let shadow_hound = laid.has(effects, crate::content::spells::SpellId::SHADOW_HOUND);
     for (entity, monster, (level, camouflage), at, walker, in_combat, owner) in &monsters {

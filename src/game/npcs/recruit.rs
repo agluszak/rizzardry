@@ -2,6 +2,7 @@
 //! party, a character like any other: their companion self, made with them
 //! and set aside until they take a seat.
 use super::{ActorId, CompanionOf, Embodies, Npc, People, Shape, Whereabouts};
+use crate::game::world::level::InPlay;
 use crate::{
     content::{items::ItemId, npcs::NpcCharacter},
     game::{
@@ -96,7 +97,10 @@ pub enum JoinRefusal {
     Declines,
 }
 pub fn install(app: &mut App) {
-    app.add_systems(Update, retire_fallen);
+    app.add_systems(
+        Update,
+        retire_fallen.run_if(not(resource_exists::<crate::game::combat::Battle>)),
+    );
 }
 /// Who may join the party, and their joining it.
 #[derive(SystemParam)]
@@ -257,16 +261,12 @@ fn return_to_pool(
 /// resurrection can clear the death mark as it does any member's. One
 /// left behind dead is dead for good.
 fn retire_fallen(
-    battles: Query<(), With<crate::game::combat::Battle>>,
     fallen: Query<(Entity, &CompanionOf), (With<PartyMember>, With<Dead>)>,
     party: Single<(Entity, &Position)>,
     held: Items,
-    level: Single<Entity, With<Level>>,
+    level: Single<Entity, With<InPlay>>,
     mut commands: Commands,
 ) {
-    if !battles.is_empty() {
-        return;
-    }
     let (party, at) = *party;
     for (companion, &CompanionOf(person)) in &fallen {
         // Everything they carried returns to the party; they keep their
@@ -381,14 +381,7 @@ mod tests {
             .add_message::<crate::game::hits::Damaged>();
         let world = app.world_mut();
         let party = world.spawn((Party, Position(Vec3::ZERO), PartyBody::default())).id();
-        world
-            .spawn(Level {
-                path: String::new(),
-                definition: default(),
-                navmeshes: vec![],
-                messages: None,
-            })
-            .insert(MonsterBodies([(0, body)].into()));
+        world.spawn(Level::test(default())).insert(MonsterBodies([(0, body)].into()));
         let sheet = Character::new("Vi", Race::Human, Gender::Female, Profession::Fighter);
         let vitals = Vitals::new(&sheet);
         let veteran = world.spawn((sheet, vitals, PartyMember(party))).id();

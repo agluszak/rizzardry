@@ -303,7 +303,7 @@ fn confront(
     confront: On<Confront>,
     mut guarded: Query<&mut Guarded>,
     attempts: Query<(), With<DeviceInteraction>>,
-    battle: Query<(), With<Battle>>,
+    battle: Option<Res<Battle>>,
     clock: Res<GameClock>,
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<LockNews>,
@@ -313,7 +313,7 @@ fn confront(
     if !attempts.is_empty() {
         return Ok(());
     }
-    if !battle.is_empty() {
+    if battle.is_some() {
         news.write(LockNews::NotInCombat);
         return Ok(());
     }
@@ -358,12 +358,12 @@ fn roll_trap(difficulty: u8, rng: &mut GameRng) -> u8 {
 #[derive(SystemParam)]
 struct Busy<'w, 's> {
     entering: Query<'w, 's, (), With<super::level::Destination>>,
-    battle: Query<'w, 's, (), With<Battle>>,
+    battle: Option<Res<'w, Battle>>,
 }
 
 impl Busy<'_, '_> {
     fn busy(&self) -> bool {
-        !self.entering.is_empty() || !self.battle.is_empty()
+        !self.entering.is_empty() || self.battle.is_some()
     }
 }
 

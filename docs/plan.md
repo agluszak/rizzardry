@@ -156,6 +156,69 @@ of `Catalogs`; `QueryData`/`SystemParam` in `game` (43 at the start).
    `integration/level_lifecycle.rs` move onto the game's plugins; tests of
    removed types are deleted, not rebuilt.
 
+## In progress: singletons, events and lookups
+
+Taken over mid-slice. The tree compiles and clippy is clean; **no test has
+been run since `8709303`** — run the unit suite, then the retail tests
+(`RIZZARDRY_RETAIL=../wizardry-prepared cargo nextest run --run-ignored
+only`), before going further.
+
+What this slice settled, as rules for the rest:
+
+- A sequence is events, not components added: the one that starts it queues
+  its moments in order; observers of one event are independent of one
+  another (swings, the monster's deliberation).
+- An observer that hears events meant for others is attached to the entity
+  it is about instead: by the spawn site (`.observe` before the deed is
+  inserted, since a deed lands as it is made) or by an `on_add` hook on the
+  marker (`Magical`, `Leech`, UI rows). Its lookups are then `?`.
+- A lookup that must hold is `?` (observers and systems return `Result`) or
+  `expect`; what may be missing is `Option`/`Has` in the query and an
+  explicit branch, never a query that fails to filter.
+- `Single` and `Option<Single>` skip silently on none *and* on several, so an
+  invariant singleton is a `Resource` on its entity (Bevy 0.20 resources are
+  components): `Battle`, `Party`, `PartyCamera`, and `InPlay` on the played
+  level's root (moved by `activate_level`). A fight ends by
+  `remove_resource::<Battle>()`; `Battle`'s `on_remove` hook takes its
+  entity with it.
+- "Only while X" / "never while X" is a run condition on the registration
+  (`resource_exists::<Battle>`, `not(...)`), or `If<Res<X>>` when the system
+  reads X; `Option<Res<X>>` only where both cases do something.
+- A refactor redesigns its readers too; "readers stay as they are" is not a
+  rule.
+
+Left to do:
+
+1. **No party in events or places.** Drop `party` from `Give`, `Swap`,
+   `Pass`, `Throw`, `Merge`, `Identify` and `Advanced` (39 senders) and from
+   `Place::Hand`/`Place::Pool` (32 sites); their observers read
+   `Single<Entity, With<Party>>`. `Throw`'s `level` is the level in play.
+   `Items` keeps taking the holder: a member holds as the party does.
+2. **Readers of the new resources.** Queries that loop over or `single()`
+   the party (`actors/time.rs` `parties`, `actors/place.rs`,
+   `actors/modifiers.rs`, `inventory/omnigun.rs`, `npcs/population.rs`,
+   `npcs/trade.rs`, presentation's `Query<…, With<PartyBody>>`) become
+   `Single`; non-`Single` readers of `With<Level>` that mean the level in play
+   become `With<InPlay>`. Review each remaining `Option<Res<Battle>>`
+   (`request_camp`, `pass`, `accept_magic`, `overhear`, `awaited`,
+   `write_off_wiped_out`, `confront`, `answer_travel_questions`, `travel`,
+   `toggle_search`, `search_pulse`, the bank's `press`, `choose_row`): most
+   act in both cases, but check.
+3. **The rest of the lookup sweep.** About 80 `if let Ok(..) = q.get(..)` and
+   250 `.get(..).ok()` / `.is_ok_and` / `.map_or` remain; the same treatment
+   as the `let … else` sweep (query always matches, `?`, explicit branch, or
+   an observer on the entity).
+4. **Tuple patterns on bools** that predate this slice: `slot.rs:115`,
+   `special.rs:91`.
+
+Risks to look for when the tests run: a `?`/`expect` that panics where the
+old code returned quietly (`take_up`/`act` for a monster without arms,
+`rest_the_idle` for a combatant without `Mending`, hostility's `made` for an
+`Allegiance` without `Loyalty`); a `Res<Battle>` beside a query over `Battle`
+data, which Bevy rejects at startup (B0002), not at compile time; a test
+that spawns two fights or parties in one world, of which the second is now
+dropped with a warning.
+
 ## Done, and not to be looked for again
 
 - Effects land as events, one observer for each thing a row changes; blows

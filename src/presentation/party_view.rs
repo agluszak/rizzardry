@@ -6,8 +6,9 @@ use crate::content::UNITS_PER_METRE;
 use crate::content::level::DEFAULT_VIEW_DISTANCE;
 use crate::game::party::body::{EYE_ABOVE_CENTRE, PartyBody, TurnParty};
 
-/// The first-person camera on the party's body.
-#[derive(Component, Debug)]
+/// The first-person camera on the party's body: a resource, so there is
+/// never more than one, on the camera's entity.
+#[derive(Resource, Debug)]
 pub struct PartyCamera;
 
 /// Put the camera on the party's body when it appears.

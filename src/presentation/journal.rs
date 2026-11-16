@@ -201,11 +201,10 @@ fn enter(mut commands: Commands, assets: Res<AssetServer>, mut focus: ResMut<Inp
 fn activate(
     event: On<Activate>,
     choices: Query<&Choice>,
-    mut view: Option<Single<&mut Journal>>,
+    mut view: Single<&mut Journal>,
     mut next: ResMut<NextState<Screen>>,
 ) -> Result {
     let choice = choices.get(event.entity)?;
-    let Some(view) = view.as_mut() else { return Ok(()) };
     match choice {
         Choice::Previous => view.pages_back += 1,
         Choice::Next => view.pages_back -= view.pages_back.min(1),
@@ -222,7 +221,7 @@ fn activate(
 /// the fact and string tables it reads.
 #[allow(clippy::too_many_arguments)]
 fn refresh(
-    mut view: Option<Single<&mut Journal>>,
+    mut view: Single<&mut Journal>,
     (facts, difficulty, factions): (
         Res<StoryFacts>,
         Res<Difficulty>,
@@ -240,7 +239,6 @@ fn refresh(
     mut commands: Commands,
     buttons: Query<(Entity, &Choice, Has<bevy::ui::InteractionDisabled>)>,
 ) {
-    let Some(view) = view.as_mut() else { return };
     let changed = view.is_changed()
         || facts.is_changed()
         || difficulty.is_changed()

@@ -13,6 +13,7 @@ use crate::content::species::MonsterCatalog;
 use crate::game::data::Catalogs;
 use crate::game::rng::GameRng;
 use crate::game::world::items::place_item;
+use crate::game::world::level::InPlay;
 
 /// A monster in the level: which one (its level-unique location id), what
 /// it is and its body. Its health, stamina, conditions and spells are its
@@ -548,7 +549,10 @@ pub struct Coming {
 pub fn come(
     mut commands: Commands,
     coming: Query<(Entity, &Coming)>,
-    level: Single<(Entity, &super::level::Level, &LevelNavigation, &mut MonsterBodies, &Unborn)>,
+    level: Single<
+        (Entity, &super::level::Level, &LevelNavigation, &mut MonsterBodies, &Unborn),
+        With<InPlay>,
+    >,
     (monsters, groups): (Query<&Monster>, Query<&MonsterGroup>),
     definitions: Res<Assets<crate::content::level::LevelDefinition>>,
     (bodies, server): (Res<Assets<MonsterBody>>, Res<AssetServer>),

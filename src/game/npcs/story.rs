@@ -30,7 +30,7 @@ use crate::game::world::facing;
 use crate::game::world::hostility::Provocation;
 use crate::game::world::hostility::{Stance, Stand};
 use crate::game::world::identify::GroupMember;
-use crate::game::world::level::{Level, PlayedLevel, SetAside};
+use crate::game::world::level::{InPlay, Level, PlayedLevel, SetAside};
 use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::particles::Emitter;
 use crate::game::world::perception::in_view;
@@ -795,7 +795,7 @@ pub(super) fn befalls_the_story(
         ),
         Without<crate::game::characters::Dead>,
     >,
-    (roster, played): (Single<&PartyRoster>, Option<Single<&Level>>),
+    (roster, played): (Single<&PartyRoster>, Option<Single<&Level, With<InPlay>>>),
     (content, clock): (Res<Catalogs>, Res<GameClock>),
     (mut news, mut told, mut remarks): (
         MessageWriter<FactionNews>,
@@ -1380,7 +1380,7 @@ fn leave(actor: Entity, people: &Query<Person>, commands: &mut Commands) {
 /// The named spots of the level the party is in.
 #[derive(SystemParam)]
 pub(super) struct Spots<'w, 's> {
-    played: Option<Single<'w, 's, (Entity, &'static Level)>>,
+    played: Option<Single<'w, 's, (Entity, &'static Level), With<InPlay>>>,
     definitions: Res<'w, Assets<LevelDefinition>>,
 }
 

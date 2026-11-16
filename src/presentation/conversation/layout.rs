@@ -456,7 +456,8 @@ fn build_offer(world: &mut World, group: Entity, root: Entity, canvas: Entity) {
               gold: Query<&EditableText, With<GiftGold>>,
               mut commands: Commands|
               -> Result {
-            let (mut state, view) = (states.get_mut(root)?, roots.get(root)?);
+            let mut state = states.get_mut(root)?;
+            let view = roots.get(root)?;
             let amount = gold.get(gift_gold).map_or(0, gift_amount);
             match state.selection {
                 Some(Selection::Priced(quote)) => {

@@ -420,7 +420,7 @@ pub struct MagicRequest {
 pub fn accept_magic(
     mut requests: MessageReader<MagicRequest>,
     mut commands: Commands,
-    battle: Option<Single<&Battle>>,
+    battle: Option<Res<Battle>>,
     mut orders: Query<&mut crate::game::party::Order>,
     held: Items,
     content: Res<Catalogs>,

@@ -3,6 +3,7 @@ use super::Outcome;
 use super::casting::{MagicNews, Worked};
 use crate::content::spells::Working;
 use crate::game::party::body::{PartyBody, PartyMovement, PartyStart};
+use crate::game::world::level::InPlay;
 use crate::game::world::level::{Destination, Entry, Level};
 use crate::game::world::triggers::LevelState;
 use avian3d::prelude::{LinearVelocity, Position};
@@ -35,7 +36,7 @@ pub(crate) fn cast(
         Option<&mut LinearVelocity>,
         &mut PartyMovement,
     )>,
-    mut level: Single<(&Level, &mut LevelState)>,
+    mut level: Single<(&Level, &mut LevelState), With<InPlay>>,
     assets: Res<AssetServer>,
     mut news: MessageWriter<MagicNews>,
 ) -> Result {

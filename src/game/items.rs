@@ -77,11 +77,10 @@ fn shed_unusable(
     >,
     items: Items,
     worn: Query<&Wearable>,
-    content: Option<Res<Catalogs>>,
+    content: If<Res<Catalogs>>,
     mut news: MessageWriter<ItemNews>,
     mut commands: Commands,
 ) {
-    let Some(content) = content else { return };
     for (member, (calling, birth, identity), attributes, skills, &PartyMember(party)) in &members {
         for slot in EnumSet::<EquipSlot>::all() {
             let Some(item) = items.worn(member, slot) else { continue };
@@ -979,7 +978,8 @@ pub struct Rejoin {
 }
 
 fn rejoin(event: On<Rejoin>, stowed: Query<Option<&Stowed>>, mut commands: Commands) -> Result {
-    let (part, whole) = (stowed.get(event.part)?, stowed.get(event.whole)?);
+    let part = stowed.get(event.part)?;
+    let whole = stowed.get(event.whole)?;
     if part.is_some() && part == whole {
         commands.trigger(Stack { onto: event.whole, from: event.part });
     }
@@ -1458,13 +1458,13 @@ fn pass(
     items: Items,
     able: Query<(), (With<PartyMember>, With<crate::game::actors::CanAct>)>,
     members: Query<(), With<PartyMember>>,
-    battles: Query<(), With<Battle>>,
+    battle: Option<Res<Battle>>,
     mut commands: Commands,
 ) {
     let Pass { party, to } = *event;
     let (Some(item), true) = (items.held(party), members.contains(to)) else { return };
     let eligible = able.contains(to);
-    let pool_first = !eligible || !battles.is_empty();
+    let pool_first = !eligible || battle.is_some();
     commands.trigger(Give { item, to: eligible.then_some(to), party, pool_first, told: true });
 }
 
@@ -1759,7 +1759,8 @@ fn outfit(
     let (character, training, attributes, skills) = characters.get(member)?;
     // What cannot be worn is not put on.
     let Some(coming) = fit.get(item)? else { return Ok(()) };
-    let worn = |slot| items.worn(member, slot).and_then(|worn| fit.get(worn).ok().flatten());
+    let worn =
+        |slot| items.worn(member, slot).and_then(|worn| fit.get(worn).expect("an item worn"));
     let slot = creation_slot(&coming, &worn, training).filter(|slot| {
         coming.wear.users.admit(character, attributes, skills)
             && fits(coming.wear, |slot| worn(slot).map(|worn| worn.wear), &[]).contains(slot)
@@ -1842,36 +1843,31 @@ pub struct Burden {
 /// (retail `RedistributePartyEncumbrance`), from what they carry now. Not in
 /// a fight, which keeps the loads it began with until it ends.
 pub(crate) fn weigh(
-    parties: Query<(Entity, &PartyRoster)>,
+    party: Single<(Entity, &PartyRoster)>,
     items: Items,
     mut members: Query<(Entity, &Nature, &Vitals, &Attributes, &mut Burden)>,
-    battles: Query<(), With<Battle>>,
 ) {
-    if !battles.is_empty() {
-        return;
-    }
-    for (party, roster) in &parties {
-        let own: Vec<_> = members
-            .iter_many(roster.iter())
-            .matched()
-            .map(|(member, nature, vitals, attributes, _)| {
-                let weight = items.carried(member).map(|item| items.weight(item)).sum::<u32>();
-                let capacity = crate::game::characters::capacity(attributes, nature.carry_factor);
-                (weight, (!vitals.is_dead()).then_some(capacity))
-            })
-            .collect();
-        let pool = items.pool(party).iter().map(|&item| items.weight(item)).sum();
-        let eligible: Vec<_> =
-            own.iter().map(|&(weight, capacity)| capacity.map(|c| (weight, c))).collect();
-        let shares = pool_shares(pool, &eligible);
-        let members = members.iter_many_unique_mut(roster.iter()).matched();
-        for ((_, nature, _, attributes, mut burden), (&(own, _), share)) in
-            members.zip(own.iter().zip(shares))
-        {
-            let weight = own + share;
-            let load = crate::game::characters::load(attributes, nature.carry_factor, weight);
-            burden.set_if_neq(Burden { weight, load });
-        }
+    let (party, roster) = *party;
+    let own: Vec<_> = members
+        .iter_many(roster.iter())
+        .matched()
+        .map(|(member, nature, vitals, attributes, _)| {
+            let weight = items.carried(member).map(|item| items.weight(item)).sum::<u32>();
+            let capacity = crate::game::characters::capacity(attributes, nature.carry_factor);
+            (weight, (!vitals.is_dead()).then_some(capacity))
+        })
+        .collect();
+    let pool = items.pool(party).iter().map(|&item| items.weight(item)).sum();
+    let eligible: Vec<_> =
+        own.iter().map(|&(weight, capacity)| capacity.map(|c| (weight, c))).collect();
+    let shares = pool_shares(pool, &eligible);
+    let members = members.iter_many_unique_mut(roster.iter()).matched();
+    for ((_, nature, _, attributes, mut burden), (&(own, _), share)) in
+        members.zip(own.iter().zip(shares))
+    {
+        let weight = own + share;
+        let load = crate::game::characters::load(attributes, nature.carry_factor, weight);
+        burden.set_if_neq(Burden { weight, load });
     }
 }
 

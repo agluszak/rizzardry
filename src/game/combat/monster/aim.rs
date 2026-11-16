@@ -184,7 +184,8 @@ fn stand(
     let view = made.entity;
     let (&ViewOf(parent), &Viewed(body)) = views.get(view)?;
     let &Considers(monster) = considering.get(parent)?;
-    let (mine, theirs) = (standings.get(monster)?, standings.get(body)?);
+    let mine = standings.get(monster)?;
+    let theirs = standings.get(body)?;
     let stance =
         if body == monster { Stance::Friendly } else { hostility::between(*mine, *theirs) };
     commands.entity(view).insert(Toward(stance));

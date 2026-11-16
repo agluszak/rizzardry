@@ -414,7 +414,7 @@ pub fn end_round(
     round.playing = false;
     round.moment = 0;
     if std::mem::take(&mut round.over) {
-        commands.entity(ended.fight).despawn();
+        commands.remove_resource::<Battle>();
     }
     Ok(())
 }

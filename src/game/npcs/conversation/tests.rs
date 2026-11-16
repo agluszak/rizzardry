@@ -92,14 +92,7 @@ fn scene(definition: NpcDefinition) -> Scene {
     let world = app.world_mut();
     let party = world.spawn((Party, Position(Vec3::ZERO), PartyBody::default())).id();
     world.get_mut::<PartyInventory>(party).unwrap().gold = 500;
-    let level = world
-        .spawn(Level {
-            path: String::new(),
-            definition: default(),
-            navmeshes: vec![],
-            messages: None,
-        })
-        .id();
+    let level = world.spawn(Level::test(default())).id();
     let sheet = Character::new("Vi", Race::Human, Gender::Female, Profession::Fighter);
     let vitals = Vitals::new(&sheet);
     let speaker = world.spawn((sheet, vitals, PartyMember(party))).id();

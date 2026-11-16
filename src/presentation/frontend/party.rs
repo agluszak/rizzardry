@@ -265,14 +265,15 @@ fn spawn_row_parts(
 /// and written once. Only its position changes.
 pub(super) fn sync_views(
     mut commands: Commands,
-    session: Option<Single<&Creation>>,
+    session: Single<&Creation>,
     page: Single<Entity, With<AssemblyPage>>,
     mut views: Query<(Entity, &CandidateView, &mut Node)>,
     assets: Res<AssetServer>,
     strings: GameStrings,
 ) {
-    let (Some(session), Some(_)) = (session, strings.table()) else { return };
-    let page = *page;
+    if strings.table().is_none() {
+        return;
+    }
     for (entity, view, _) in &views {
         if candidate(&session, view.id).is_none()
             || (view.joined && !session.party.contains(&view.id))
@@ -316,7 +317,7 @@ pub(super) fn sync_views(
                     Action::SelectCandidate(Some(id)),
                     absolute(at, if joined { Vec2::new(90., 71.) } else { Vec2::new(158., 40.) }),
                     Pickable::default(),
-                    ChildOf(page),
+                    ChildOf(*page),
                 ))
                 .id();
             if joined {

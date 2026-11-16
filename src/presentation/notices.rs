@@ -418,16 +418,16 @@ fn faction_line(news: &FactionNews, string: &impl Fn(usize) -> String) -> String
 /// Where a notice goes: the text log's general channel, or its combat
 /// channel during a fight.
 #[derive(bevy::ecs::system::SystemParam)]
-pub struct Notices<'w, 's> {
+pub struct Notices<'w> {
     log: ResMut<'w, TextLog>,
     art: Res<'w, NoticeArt>,
     sheets: Res<'w, Assets<SpriteSheet>>,
-    battles: Query<'w, 's, (), With<crate::game::combat::Battle>>,
+    battle: Option<Res<'w, crate::game::combat::Battle>>,
 }
 
-impl Notices<'_, '_> {
+impl Notices<'_> {
     fn post(&mut self, text: &str) {
-        self.post_to(usize::from(!self.battles.is_empty()), text);
+        self.post_to(usize::from(self.battle.is_some()), text);
     }
 
     fn post_to(&mut self, channel: usize, text: &str) {

@@ -52,7 +52,7 @@ impl Plugin for CombatPlugin {
         ))
         .add_observer(credit_death)
         .add_observer(count_kill)
-        .add_observer(settle_defeat)
+        .add_observer(settle_defeat.run_if(resource_exists::<Battle>))
         .add_observer(turn::defend_instead)
         .add_observer(round_end::end_the_round)
         .add_observer(round_end::leave_fight)
@@ -87,13 +87,13 @@ impl Plugin for CombatPlugin {
         .add_systems(
             Update,
             (
-                give_orders,
+                give_orders.run_if(resource_exists::<Battle>),
                 // alerts and turning, then who comes in, then the opening,
-                engage::alert_factions.run_if(any_with_component::<Battle>),
+                engage::alert_factions.run_if(resource_exists::<Battle>),
                 engage::turn_by_radius,
                 engage::come_in_provoked,
-                engage::look_to_open.run_if(not(any_with_component::<Battle>)),
-                engage::join.run_if(any_with_component::<Battle>),
+                engage::look_to_open.run_if(not(resource_exists::<Battle>)),
+                engage::join.run_if(resource_exists::<Battle>),
                 engage::tell,
                 engage::open_battle,
                 control_combat,
@@ -119,7 +119,7 @@ impl Plugin for CombatPlugin {
                 // the next moment. When none is left the round ends.
                 (stop_party_move, begin_round, next_moment)
                     .chain()
-                    .run_if(any_with_component::<Battle>),
+                    .run_if(resource_exists::<Battle>),
             )
                 .chain()
                 .in_set(GameplaySet::Combat)
@@ -200,10 +200,13 @@ impl Combatants {
     }
 }
 
-/// The party's fight, on an entity owned by its level. Exists only while
-/// there is one.
-#[derive(Component, Debug, Default)]
+/// The party's fight: a resource, so there is never more than one, on the
+/// entity of the fight, owned by its level, which combatants are related to.
+/// Exists only while there is one. A fight ends by removing the resource,
+/// and its entity goes with it, and with that every combatant's place in it.
+#[derive(Resource, Debug, Default)]
 #[require(Transform, Round, Spoils, PartyMove, Pause)]
+#[component(on_remove = over)]
 pub struct Battle {
     pub round: u32,
     /// Accepted encounter history, consumed when the opening round is initialized.
@@ -427,16 +430,25 @@ pub enum CombatNews {
     PartyStops,
 }
 
+/// A fight that is over goes, as the resource it was: its round and spoils
+/// with it, and its combatants are in it no longer.
+fn over(mut world: bevy::ecs::world::DeferredWorld, context: bevy::ecs::lifecycle::HookContext) {
+    world
+        .commands()
+        .entity(context.entity)
+        .try_remove::<bevy::ecs::resource::IsResource>()
+        .try_despawn();
+}
+
 /// A party that has fallen has lost the fight it was in: its combatants
 /// leave the fight and stop closing in; they remain.
 pub fn settle_defeat(
     _: On<crate::game::party::PartyFell>,
     mut commands: Commands,
-    battle: Single<Entity, With<Battle>>,
     mut news: MessageWriter<CombatNews>,
 ) {
     news.write(CombatNews::Lost);
-    commands.entity(*battle).despawn();
+    commands.remove_resource::<Battle>();
 }
 
 /// A death in the fight: a hostile body's with a worth is a kill worth it

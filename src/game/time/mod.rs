@@ -94,7 +94,8 @@ impl Plugin for TimePlugin {
             pass_time
                 .after(crate::game::party::walk_in::move_party)
                 .after(avian3d::prelude::PhysicsSystems::Writeback)
-                .run_if(level_active),
+                .run_if(level_active)
+                .run_if(not(resource_exists::<crate::game::combat::Battle>)),
         );
     }
 }
@@ -108,7 +109,6 @@ pub(crate) fn pass_time(
     time: Res<Time>,
     camp: Option<Res<Camp>>,
     search: Res<crate::game::world::search::Search>,
-    battle: Option<Single<&crate::game::combat::Battle>>,
     party: Single<(Entity, &Position, &PartyBody, &LinearVelocity)>,
     laid: crate::game::actors::Laid,
     mut recognition: GroupRecognition,
@@ -116,9 +116,6 @@ pub(crate) fn pass_time(
     mut rng: ResMut<GameRng>,
     mut commands: Commands,
 ) {
-    if battle.is_some() {
-        return;
-    }
     let (party, position, body, velocity) = *party;
     let rate = if camp.is_some() { CAMPING_RATE } else { EXPLORATION_RATE };
     let ticks = clock.advance_real(time.delta(), rate);

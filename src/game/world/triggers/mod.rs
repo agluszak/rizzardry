@@ -36,6 +36,7 @@ use crate::game::npcs::devices::Gate;
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
+use crate::game::world::level::InPlay;
 
 /// How many links deep a device may run others before the original gives
 /// up (retail's recursion guard).
@@ -702,7 +703,7 @@ fn fired(
 /// Carry out the story's bidding on the level the party is in.
 fn bid(
     bid: On<Bid>,
-    levels: Single<(&DeviceNames, &mut LevelState), With<Level>>,
+    levels: Single<(&DeviceNames, &mut LevelState), With<InPlay>>,
     mut states: Query<&mut TriggerState>,
     mut doors: Query<&mut DoorState>,
     mut commands: Commands,

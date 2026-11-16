@@ -92,7 +92,6 @@ pub fn play_ambient_sounds(
     master: Option<Res<bevy::audio::GlobalVolume>>,
     mut rng: ResMut<PresentationRng>,
 ) {
-    let listener = *listener;
     let ear = listener.translation();
     for (entity, mut emitter, at, owner, playing, sink, settings) in &mut emitters {
         let Ok((appearance, state)) = levels.get(owner.parent()) else { continue };

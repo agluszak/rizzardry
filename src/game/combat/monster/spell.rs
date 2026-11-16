@@ -50,12 +50,13 @@ pub(super) fn weigh_spells(
     weighs: On<WeighsSpells>,
     mut commands: Commands,
     deliberations: Query<(&Considers, &ClosesIn)>,
-    casters: Query<(&CastChance, &Slots)>,
+    casters: Query<Option<(&CastChance, &Slots)>>,
     castable: Query<(), (With<Castable>, Without<Breath>)>,
 ) -> Result {
     let deliberation = weighs.deliberation;
     let (&Considers(monster), &ClosesIn(closes)) = deliberations.get(deliberation)?;
-    let caster = casters.get(monster).ok().filter(|(chance, _)| !closes && chance.0 != 0);
+    // One with no spells, one that never casts, or one closing in casts none.
+    let caster = casters.get(monster)?.filter(|(chance, _)| !closes && chance.0 != 0);
     let Some((_, slots)) = caster else {
         commands.trigger(CastsNothing { deliberation });
         return Ok(());

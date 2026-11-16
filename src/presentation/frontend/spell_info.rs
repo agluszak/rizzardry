@@ -388,7 +388,6 @@ pub(super) fn scroll(
     sheets: Res<Assets<SpriteSheet>>,
     info: Single<&SpellInfo>,
 ) -> Result {
-    let (dialog, info) = (*dialog, *info);
     let value = sliders.get(dialog.0)?;
     let Some(font) = sheets.get(&info.font) else { return Ok(()) };
     let height = font.line_height();

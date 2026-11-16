@@ -35,7 +35,8 @@ use crate::game::world::identify::GroupMember;
 /// What a member says on leaving someone (retail's character event 504).
 const PARTING_REMARK: u16 = 504;
 use crate::game::world::items::CLEARANCE;
-use crate::game::world::level::{Destination, Level};
+use crate::game::world::level::Destination;
+use crate::game::world::level::InPlay;
 
 /// One thing still to come in a conversation.
 #[derive(Clone, Debug)]
@@ -482,7 +483,7 @@ pub(super) fn deliver(
     mut characters: Query<(&mut Experience, &Identity, &Vitals)>,
     held: Items,
     content: If<Res<Catalogs>>,
-    level: Single<Entity, With<Level>>,
+    level: Single<Entity, With<InPlay>>,
     mut rng: ResMut<GameRng>,
     mut commands: Commands,
 ) {

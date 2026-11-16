@@ -297,7 +297,8 @@ fn raised(
     raised: On<Remove<crate::game::characters::Dead>>,
     mut bodies: Query<(&mut Side, Has<crate::game::party::roster::PartyMember>)>,
 ) -> Result {
-    if let (mut side, true) = bodies.get_mut(raised.entity)? {
+    let (mut side, member) = bodies.get_mut(raised.entity)?;
+    if member {
         *side = Side::FRIENDLY;
     }
     Ok(())
@@ -428,8 +429,12 @@ pub fn answer_for(
     mut news: MessageWriter<crate::game::factions::FactionNews>,
 ) -> Result {
     let (&crate::game::characters::Dead { by }, allegiance, summoned) = dead.get(died.entity)?;
-    // Only a death someone brought counts, of one owing a faction, not summoned.
-    let (Some(killer), Some(allegiance), false) = (by, allegiance, summoned) else { return Ok(()) };
+    // A summoned one's death counts for nothing.
+    if summoned {
+        return Ok(());
+    }
+    // Only a death someone brought counts, of one owing a faction.
+    let (Some(killer), Some(allegiance)) = (by, allegiance) else { return Ok(()) };
     let answers =
         killers.get(killer).is_ok_and(|(side, member)| member || side.own() == Stance::Friendly);
     if answers {

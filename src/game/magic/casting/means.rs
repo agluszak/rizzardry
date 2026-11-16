@@ -30,6 +30,7 @@ use crate::game::npcs::conversation::{Conversation, DialogueReadOnly};
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::interaction::{AttemptOn, DeviceInteraction, Guarded, Work};
+use crate::game::world::level::InPlay;
 use crate::game::world::level::{Level, LevelOwned};
 use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::population::Monster;
@@ -50,7 +51,7 @@ pub struct Circumstances<'w, 's> {
     camp: Option<Res<'w, Camp>>,
     attempt: Option<Single<'w, 's, &'static DeviceInteraction>>,
     conversation: Option<Single<'w, 's, DialogueReadOnly>>,
-    state: Option<Single<'w, 's, &'static LevelState, With<Level>>>,
+    state: Option<Single<'w, 's, &'static LevelState, With<InPlay>>>,
     footing: Option<
         Single<'w, 's, &'static bevy_tnua::TnuaController<crate::game::party::body::PartyMotion>>,
     >,

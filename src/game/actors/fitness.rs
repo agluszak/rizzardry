@@ -62,7 +62,7 @@ pub(super) fn plugin(app: &mut App) {
             come_round,
             notice_the_fallen,
             notice_the_raised,
-            crate::game::items::weigh,
+            crate::game::items::weigh.run_if(not(resource_exists::<crate::game::combat::Battle>)),
             crate::game::world::hostility::follow_side,
             figures::follow_calling,
             (figures::attributes, figures::agility),

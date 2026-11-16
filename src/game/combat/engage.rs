@@ -377,7 +377,7 @@ pub(super) fn open_battle(
     mut rng: ResMut<GameRng>,
 ) {
     let Some(Engaged(joined)) = engaged.read().last() else { return };
-    if let Some(battle) = battle.map(|battle| *battle) {
+    if let Some(battle) = battle.map(Single::into_inner) {
         for &monster in joined {
             commands.entity(monster).insert(Combatant(battle));
         }

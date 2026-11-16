@@ -300,10 +300,9 @@ pub fn give_focus_back(
     remove: On<Remove<RestoreFocus>>,
     views: Query<&RestoreFocus>,
     exists: Query<()>,
-    mut focus: Option<ResMut<InputFocus>>,
+    mut focus: If<ResMut<InputFocus>>,
 ) -> Result {
     let RestoreFocus(previous) = views.get(remove.entity)?;
-    let Some(focus) = focus.as_mut() else { return Ok(()) };
     match previous.filter(|&entity| exists.contains(entity)) {
         Some(entity) => focus.set(entity, bevy::input_focus::FocusCause::Navigated),
         None => focus.clear(),

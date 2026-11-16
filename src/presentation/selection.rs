@@ -5,7 +5,7 @@ use super::morph_picking::MorphRayCast;
 use super::party_view::PartyCamera;
 use crate::game::items::{Items, Lying};
 use crate::game::world::items::{DropHeld, TakeItem};
-use crate::game::world::level::Level;
+use crate::game::world::level::InPlay;
 use crate::game::world::population::Monster;
 use crate::game::world::props::Prop;
 use crate::game::world::triggers::{Activate, By, Device};
@@ -38,7 +38,7 @@ pub fn select_world_target(
     sky: Query<(), With<RenderLayers>>,
     parents: Query<&ChildOf>,
     owners: Query<(), Or<(With<Prop>, With<Lying>, With<Monster>)>>,
-    level: Option<Single<Entity, With<Level>>>,
+    level: Option<Single<Entity, With<InPlay>>>,
     (hovers, ui): (Option<Res<HoverMap>>, Query<(), With<Node>>),
     mut selection: ResMut<WorldSelection>,
 ) {
@@ -59,7 +59,7 @@ pub fn select_world_target(
     }
     let Ok((camera, transform)) = camera.single() else { return };
     let Some(ray) = ray_under_pointer(&pointers, camera, transform) else { return };
-    selection.level = level.map(|level| *level);
+    selection.level = level.map(Single::into_inner);
     selection.ray = Some(ray);
     selection.hit =
         drawn_under_ray(ray, &mut meshes, &sky, &mut morphs).and_then(|(hit, distance)| {

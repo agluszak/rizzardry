@@ -298,7 +298,7 @@ impl<'a> Regard<'a> {
 pub(super) fn begin(
     begin: On<Begin>,
     freedom: Freedom,
-    (conversations, battles): (Query<(), With<Conversation>>, Query<(), With<Battle>>),
+    (conversations, battle): (Query<(), With<Conversation>>, Option<Res<Battle>>),
     (actors, scripts, voices): (NpcActors, Scripts, Voices),
     npcs: Query<&Npc>,
     factions: Res<Factions>,
@@ -309,7 +309,7 @@ pub(super) fn begin(
     let actor = begin.actor;
     if !conversations.is_empty()
         || !freedom.free()
-        || !battles.is_empty()
+        || battle.is_some()
         || (held.held(party.0).is_some() && !begin.with_held)
         || !actors.available(actor)
         || scripts.get(actor).is_none()
@@ -370,11 +370,11 @@ pub(super) fn overhear(
     heard: On<Overheard>,
     conversations: Query<(), With<Conversation>>,
     (actors, scripts): (NpcActors, Scripts),
-    battles: Query<(), With<Battle>>,
+    battle: Option<Res<Battle>>,
     mut commands: Commands,
 ) {
     if !conversations.is_empty()
-        || !battles.is_empty()
+        || battle.is_some()
         || !actors.available(heard.actor)
         || scripts.get(heard.actor).is_none()
     {

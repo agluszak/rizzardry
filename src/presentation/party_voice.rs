@@ -3,16 +3,14 @@ use super::{
     PresentationRng,
     voice::{Speech, pc_voice_path, pc_voice_stem},
 };
+use crate::game::world::level::InPlay;
 use crate::{
     content::{npcs::DialogueScript, ui::TextTable},
     game::{
         characters::{Condition, Gender, Vitals},
         npcs::NpcAssets,
         party::roster::PartyRoster,
-        world::{
-            interaction::LockNews,
-            level::{Destination, Level},
-        },
+        world::{interaction::LockNews, level::Destination},
     },
 };
 use bevy::ecs::system::SystemParam;
@@ -107,7 +105,7 @@ pub(super) fn queue_device_remarks(
     mut commands: Commands,
     mut news: MessageReader<LockNews>,
     speakers: Speakers,
-    level: Single<Entity, With<Level>>,
+    level: Single<Entity, With<InPlay>>,
     mut rng: ResMut<PresentationRng>,
 ) {
     for news in news.read() {
@@ -150,7 +148,7 @@ pub(super) fn queue_dialogue_remarks(
     mut commands: Commands,
     mut remarks: MessageReader<crate::game::npcs::conversation::PartyRemark>,
     speakers: Speakers,
-    level: Single<Entity, With<Level>>,
+    level: Single<Entity, With<InPlay>>,
     mut selected: ResMut<super::main_screen::SelectedMember>,
     mut rng: ResMut<PresentationRng>,
 ) {
@@ -239,7 +237,7 @@ pub(super) fn react_to_feats(
     mut commands: Commands,
     mut news: MessageReader<crate::game::combat::CombatNews>,
     speakers: Speakers,
-    level: Single<Entity, With<Level>>,
+    level: Single<Entity, With<InPlay>>,
 ) {
     for news in news.read() {
         let crate::game::combat::CombatNews::Feat { member } = news else { continue };
@@ -267,7 +265,7 @@ pub(super) fn react_to_wounds(
         &Vitals,
         &crate::game::characters::Conditions,
     )>,
-    level: Single<Entity, With<Level>>,
+    level: Single<Entity, With<InPlay>>,
     mut fallen: ResMut<Fallen>,
     waiting: Query<&PendingRemark>,
     camp: Option<Res<crate::game::camp::Camp>>,
@@ -332,7 +330,7 @@ pub(super) fn react_to_losses(
     _: On<crate::game::combat::RoundBegan>,
     mut commands: Commands,
     speakers: Speakers,
-    level: Single<Entity, With<Level>>,
+    level: Single<Entity, With<InPlay>>,
     mut fallen: ResMut<Fallen>,
     mut rng: ResMut<PresentationRng>,
 ) {
@@ -397,7 +395,7 @@ pub(super) fn react_to_conditions(
     >,
     speakers: Speakers,
     order: Single<&PartyRoster>,
-    level: Single<Entity, With<Level>>,
+    level: Single<Entity, With<InPlay>>,
     mut known: Local<Afflictions>,
     mut rng: ResMut<PresentationRng>,
 ) {

@@ -7,7 +7,8 @@ use bevy::prelude::*;
 use super::{Activate, By, HurtParty, LevelState};
 use crate::content::items::Dice;
 use crate::game::party::body::PartyBody;
-use crate::game::world::level::{Level, LevelOwned};
+use crate::game::world::level::InPlay;
+use crate::game::world::level::LevelOwned;
 
 /// A device's place: the party's eye entering it, between the near and far
 /// distances from its centre, sets it going. The level authors an order,
@@ -47,7 +48,7 @@ impl ActiveDamageZone {
 pub(crate) fn walk(
     time: Res<Time>,
     party: Single<&Position, With<PartyBody>>,
-    mut level: Single<(Entity, &mut LevelState), With<Level>>,
+    mut level: Single<(Entity, &mut LevelState), With<InPlay>>,
     mut places: Query<(Entity, &WalkVolume, &LevelOwned, Option<&mut ActiveDamageZone>)>,
     mut commands: Commands,
 ) {

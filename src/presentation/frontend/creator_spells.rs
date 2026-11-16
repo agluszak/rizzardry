@@ -175,14 +175,17 @@ fn select_spell(
     mut session: Single<&mut Creation>,
 ) -> Result {
     let (choice, disabled) = choices.get(event.entity)?;
-    let (false, Some(draft)) = (disabled, session.mode.draft_mut()) else { return Ok(()) };
+    if disabled {
+        return Ok(());
+    }
+    let Some(draft) = session.mode.draft_mut() else { return Ok(()) };
     draft.toggle_spell(&content.spells, choice.0);
     Ok(())
 }
 
 pub(super) fn refresh(
-    session: Option<Single<Ref<Creation>>>,
-    art: Option<Single<Ref<SpellArt>>>,
+    session: Single<Ref<Creation>>,
+    art: Single<Ref<SpellArt>>,
     content: If<Res<Catalogs>>,
     mut rows: Query<(
         Entity,
@@ -198,7 +201,6 @@ pub(super) fn refresh(
     actor: Option<Single<Ref<SpellPoints>, With<creator_stats::DraftActor>>>,
     mut commands: Commands,
 ) {
-    let (Some(session), Some(art)) = (session, art) else { return };
     let points = actor.as_deref().map(|points| &**points);
     let figures_changed = actor.as_ref().is_some_and(|points| points.is_changed());
     if !session.is_changed()
