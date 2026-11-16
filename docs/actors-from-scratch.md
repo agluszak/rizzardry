@@ -87,3 +87,9 @@ mending, damage reduction, missile shield; what a calling writes as sources;
 drafts as entities; casting and combat without sheet fields on `Body` and
 `Means`. Each is to go through the same steps: the rule in words from the
 original, then components, then systems.
+
+Two things the armour left for the next figure (see [plan.md](plan.md),
+"Still in the way"): `Body` and `Fighter` still gather every figure, armour's
+included, and should shrink to what each rule reads as figures are rebuilt;
+and armour learns of gear through `Modifiers` being marked changed, which
+mending also relies on, where both should notice what is worn themselves.
