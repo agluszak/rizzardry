@@ -485,16 +485,20 @@ a member's at `:2176`, a monster's at `:2429`), the first that applies:
 | Nauseated | 25 percent: it loses the action |
 | Webbed | it breaks free with chance `Strength / 3` percent (the web is lifted; the action is lost anyway); else the web holds it and it loses the action |
 | Blind | 20 percent, unless it fights blind (a member's trait, a Monk monster): it loses the action |
-| Insane | 80 percent: if one of its arms reaches a living friend and it is not berserk yet, 40 percent it **turns on its friends** (below); else it loses the action in one of three fits (below(3)) |
+| Insane | 80 percent: if it is not berserk yet, 40 percent it **turns on its friends** if it can strike one (below); else it loses the action in one of three fits (below(3)) |
 | Afraid | 25 percent, unless the action is a run (a member running with the party, a monster running for its life): it loses the action |
 | Afraid, a monster | then 40 percent: it **runs for its life** and is fleeing from now on |
 | Lured | a lure holds it: it walks toward the lure instead |
-| Turncoat | a monster's action against its new foes stands. A member who can strike nobody swaps weapon sets, and if that lets them strike, says so (string `0x23d`) and attacks; otherwise the action is lost |
+| Turncoat | a monster's action against its new foes stands, and is told. A member's action, whatever it was, becomes a strike at their fellow members: told (9) when it finds one; when it finds none they try their other weapon set (*items*, the weapon sets), saying so (string `0x23d`) when it lets them strike; failing that the action is lost (10) |
 
-"An arm reaches a friend" is retail's attack check in its friendly band
-(`RateMonsterBestAttack(…, true)`, `MonsterAttackReachesAnyone`,
-`CanPartySlotAttackAnyTarget(…, true)`, `Combat Range.cpp:77`, `:533`): a
-living friend within an arm's reach, nothing more (no Stealth roll).
+"It can strike one" is the strike's own search (retail's attack check,
+`RateMonsterBestAttack`, `MonsterAttackReachesAnyone`,
+`CanPartySlotAttackAnyTarget`, `Combat Range.cpp:77`, `:533`): a monster
+looks among everyone in the fight, and needs to see them and a clear line
+for the arm (`MonsterAttackReachesMonster`); a member turned or berserk
+looks only among their fellow members (no monster scan). Insanity makes
+that strike at friends: finding one it is berserk and strikes; finding
+none it is a fit.
 
 Each is told by its notice (retail `g_condition_interrupt_notices`,
 strings `0x3a0` to `0x3ab`, by the numbers of `Interrupt`): Turncoat and
@@ -783,25 +787,33 @@ each one event and one observer reading only its own sources:
 
 | Step | Reads | Takes it as |
 | --- | --- | --- |
-| nausea | `Conditions` | `Nauseated` |
-| web | `Conditions`, `Attributes` | `BrokeFree` or `HeldByWeb` |
-| blindness | `Conditions`, `BlindFighting` | `BlindedOut` |
-| insanity | `Conditions`, `Berserk`, `Furthest`; friends' `Standing`, `Vitals`, places | `TurnsOnFriends`, or `Fit` |
-| fear | `Conditions`; the action a run | `Frozen` |
-| panic | `Conditions`; a monster | `Panics` |
-| lure | `LureInfluence` | `Lured` |
-| Turncoat | `Conditions`, `AtFoes`; a member's reach | `TurncoatStands`, `Disarmed`, or `Lost` |
+| nausea | `Conditions` | lost, told |
+| web | `Conditions`, `Attributes` | broken free (the web lifted) or held; lost, told |
+| blindness | `Conditions`, `BlindFighting` | lost, told |
+| insanity | `Conditions`, `Berserk` | a strike at friends (`TurnsOnFriends`), or a fit: lost, told |
+| fear | `Conditions`; the action a run | lost, told |
+| panic | `Conditions`; a monster (`Temper`) | a quiet flight, `Fleeing` |
+| lure | `LureInfluence` | a walk to the lure, told |
+| Turncoat | `Conditions`, `AtFoes`; a member | a monster's stands, told; a member's becomes a strike |
 
-A step either takes the action, by triggering the event of what took it,
-or passes it on; past the last it is `Unhindered`. Each of those events is
-its own observer: it is told (but panic); a break-out lifts the web; panic
-makes the monster `Fleeing` and runs it quietly; a lure walks it at half its
-stride; turning on friends marks it `Berserk` and strikes. When an actor
-already `Berserk` loses an action, it strikes at friends instead (an
-observer of the losing events, reading `Berserk`). Insanity's question is
-the strike's own reach rule (`reaches`), asked of the living friends. A
-taken or berserk action does not provoke. The action is gone when the
-moment ends.
+A step either takes the action or passes it on; past the last it is
+`Unhindered`. What took it is told by `Interrupted` (its notice's number);
+a lost one is `Loses`, which ends the moment, but a monster `Berserk` this
+round strikes at friends instead. A taken action does not provoke.
+
+**Whether one can strike someone is the strike's own search.** An attack
+being chosen carries whom it looks for (`LooksFor`) and, for a member
+turned or berserk, that it looks only among their fellow members
+(`AmongFellows`), set by whoever makes it; what follows `Found` or `Nobody`
+is set on the attack by its maker. A monster's strike closes in when it
+finds nobody; a member's tries their other weapon set
+([items](items.md), the weapon sets). Insanity's strike at friends marks
+the actor `Berserk` and is told when it finds one, and is a fit when it
+finds none. A Turncoat member's strike is told as Turncoat when it finds
+someone, and as unable to strike (10) when neither set finds anyone. One
+striking without having taken up attacks this round (ordered to cast)
+takes them up first. Each kind's strike is set where the kind is made, as
+its deciding is.
 
 **A moment ends by two facts**: `Done`, nothing left to it this round, and
 `Shown`, it did something the player watches, holding the fight for the

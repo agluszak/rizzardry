@@ -200,6 +200,27 @@ pub struct Blew(pub attack::Dealt);
 #[derive(Component, Clone, Debug)]
 pub struct Answered(pub attack::Dealt);
 
+/// A monster strikes: at its friends when berserk, else at its foes; with
+/// nobody to strike, it closes in. Set on every monster as it is made.
+pub(crate) fn monster_strikes(
+    strike: On<Strike>,
+    mut commands: Commands,
+    monsters: Query<(Has<Berserk>, Has<AttacksLeft>)>,
+) -> Result {
+    let Strike { actor, fights } = *strike;
+    let (berserk, has_attacks) = monsters.get(actor)?;
+    // One that took up no attacks this round takes them up now (retail
+    // `PrepareCharacterAttacks` before an attack its ailments forced).
+    if !has_attacks {
+        commands.trigger(super::turn::TakesUpAttacks { actor });
+    }
+    let looks_for = if berserk { Stance::Friendly } else { Stance::Hostile };
+    let attack = begin(&mut commands, actor, fights, looks_for);
+    commands.entity(attack).observe(close_in);
+    commands.trigger(Seeks { attack });
+    Ok(())
+}
+
 /// An attack being chosen, by an actor that fights as its turn says.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Choosing(pub Fights);
@@ -219,9 +240,9 @@ pub struct Way {
 
 /// An attack being chosen looks for whom it could strike.
 #[derive(EntityEvent, Clone, Copy, Debug)]
-struct Seeks {
+pub(crate) struct Seeks {
     #[event_target]
-    attack: Entity,
+    pub(crate) attack: Entity,
 }
 
 /// An attack being chosen looks for the ways it could strike them.
@@ -233,18 +254,21 @@ struct FindsWays {
 
 /// An attack being chosen found ways to strike, with the hand they are in.
 #[derive(EntityEvent, Clone, Debug)]
-struct Found {
+pub(crate) struct Found {
     #[event_target]
-    attack: Entity,
+    pub(crate) attack: Entity,
     slot: WeaponSlot,
     ways: Vec<Way>,
 }
 
-/// An attack being chosen found nobody to strike.
+/// An attack being chosen found nobody to strike; `evaded` when its eye
+/// missed someone it could otherwise have struck. What follows is set by
+/// its maker.
 #[derive(EntityEvent, Clone, Copy, Debug)]
-struct Nobody {
+pub(crate) struct Nobody {
     #[event_target]
-    attack: Entity,
+    pub(crate) attack: Entity,
+    pub(crate) evaded: bool,
 }
 
 /// An attack is made, at whom and how, and opens.
@@ -337,33 +361,53 @@ fn moving(member: bool, walking: bool, round: &Round) -> bool {
     if member { round.pace == Some(super::PartyPace::Run) } else { walking }
 }
 
-/// An actor that fights chooses whom to strike and how, or what it does
-/// instead (section 2). Attacking holds the fight for the action's pause.
-pub(super) fn strike(strike: On<Strike>, mut commands: Commands) {
-    commands.trigger(Shown { actor: strike.actor });
-    let attack = commands.spawn((AttackBy(strike.actor), Choosing(strike.fights))).id();
-    commands.trigger(Seeks { attack });
+/// An actor that fights begins choosing whom to strike and how (section
+/// 2), looking for those who stand so toward it; attacking holds the fight
+/// for the action's pause. Its maker sets what follows finding nobody, and
+/// then has it seek ([`Seeks`]).
+pub(crate) fn begin(
+    commands: &mut Commands,
+    actor: Entity,
+    fights: Fights,
+    looks_for: Stance,
+) -> Entity {
+    commands.trigger(Shown { actor });
+    commands.spawn((AttackBy(actor), Choosing(fights), LooksFor(looks_for))).id()
 }
 
-/// Whom it looks for among the living combatants: foes, or friends when
-/// insanity has turned it on its own this round. Anyone not under orders
-/// misses a party member with chance `Stealth * 75 / 100` percent.
+/// Whom an attack being chosen looks for: those who stand so toward its
+/// maker.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct LooksFor(pub Stance);
+
+/// It looks only among its maker's fellow members: a member turned or
+/// berserk strikes only at the party (retail `PickReachableSlotByDisposition`,
+/// `CanPartySlotAttackAnyTarget` with no monster scan).
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct AmongFellows;
+
+/// Whom it looks for among the living combatants, or its maker's fellow
+/// members. Anyone not under orders misses a party member with chance
+/// `Stealth * 75 / 100` percent.
 fn seek(
     seeks: On<Seeks>,
     mut commands: Commands,
-    attacks: Query<&AttackBy>,
-    actors: Query<(Has<Berserk>, &Standing, Has<Ordered>)>,
+    attacks: Query<(&AttackBy, &LooksFor, Has<AmongFellows>)>,
+    actors: Query<(&Standing, Has<Ordered>)>,
     candidates: Query<(&Vitals, &Standing, &Skills)>,
     fight: Single<Option<&Combatants>, With<Battle>>,
     roster: Single<&PartyRoster>,
     mut rng: ResMut<GameRng>,
 ) -> Result {
     let attack = seeks.attack;
-    let &AttackBy(actor) = attacks.get(attack)?;
-    let (berserk, standing, ordered) = actors.get(actor)?;
-    let seeks = if berserk { Stance::Friendly } else { Stance::Hostile };
+    let (&AttackBy(actor), &LooksFor(seeks), fellows) = attacks.get(attack)?;
+    let (standing, ordered) = actors.get(actor)?;
+    let among: Vec<Entity> = match fellows {
+        true => roster.iter().collect(),
+        false => fight.map_or(vec![], |fight| fight.entities().to_vec()),
+    };
     let mut sought = Vec::new();
-    for &other in fight.map_or(&[][..], Combatants::entities).iter().filter(|&&o| o != actor) {
+    for other in among.into_iter().filter(|&o| o != actor) {
         let (their, theirs, skills) = candidates.get(other)?;
         if their.is_dead() || hostility::between(*standing, *theirs) != seeks {
             continue;
@@ -387,7 +431,7 @@ fn find_ways(
     finds: On<FindsWays>,
     mut commands: Commands,
     attacks: Query<(&AttackBy, &Sought)>,
-    actors: Query<(&AttacksLeft, &Arms, Has<Ordered>)>,
+    actors: Query<(Option<&AttacksLeft>, &Arms, Has<Ordered>)>,
     arms: Query<(&Hand, &Reaches, &Modes)>,
     npcs: Query<(), With<Embodies>>,
     trained: Query<(&Calling, &Abilities)>,
@@ -399,6 +443,12 @@ fn find_ways(
     let attack = finds.attack;
     let (&AttackBy(actor), Sought(sought)) = attacks.get(attack)?;
     let (left, held, ordered) = actors.get(actor)?;
+    // One that took up no attacks (it has no arm that strikes) has nobody
+    // to strike.
+    let Some(left) = left else {
+        commands.trigger(Nobody { attack, evaded: false });
+        return Ok(());
+    };
     let at = places.of(actor);
     let mut evaded = Vec::new();
     let mut found = None;
@@ -434,12 +484,13 @@ fn find_ways(
             break;
         }
     }
+    let missed = !evaded.is_empty();
     for member in evaded.into_iter().filter(|_| rng.below(2) == 0) {
         practise(member, Skill::Stealth, &trained, &mut commands);
     }
     match found {
         Some((slot, ways)) => commands.trigger(Found { attack, slot, ways }),
-        None => commands.trigger(Nobody { attack }),
+        None => commands.trigger(Nobody { attack, evaded: missed }),
     }
     Ok(())
 }
@@ -522,7 +573,7 @@ fn pick(
 /// moment now, at most 100 (retail `SetUpMonsterTurn`). Anything else
 /// stands.
 #[allow(clippy::type_complexity)]
-fn close_in(
+pub(crate) fn close_in(
     nobody: On<Nobody>,
     mut commands: Commands,
     attacks: Query<(&AttackBy, &Sought)>,
@@ -590,12 +641,13 @@ fn count_attack(_: On<Opens>, mut fight: Single<&mut Round, With<Battle>>) {
 fn provoke(
     opens: On<Opens>,
     mut commands: Commands,
-    attacks: Query<(&AttackBy, &AttackAt)>,
-    attackers: Query<(&Conditions, Has<Ordered>, Has<Berserk>)>,
+    attacks: Query<(&AttackBy, &AttackAt, &LooksFor)>,
+    attackers: Query<(&Conditions, Has<Ordered>)>,
 ) -> Result {
-    let (&AttackBy(actor), &AttackAt(target)) = attacks.get(opens.attack)?;
-    let (ailing, ordered, berserk) = attackers.get(actor)?;
-    if ordered && !berserk && !ailing.has(Condition::Turncoat) {
+    let (&AttackBy(actor), &AttackAt(target), &LooksFor(stance)) = attacks.get(opens.attack)?;
+    let (ailing, ordered) = attackers.get(actor)?;
+    // An attack at friends is a berserk one.
+    if ordered && stance == Stance::Hostile && !ailing.has(Condition::Turncoat) {
         commands.trigger(Provocation { monster: target });
     }
     Ok(())
@@ -1348,11 +1400,9 @@ fn next(
 }
 
 pub(super) fn plugin(app: &mut App) {
-    app.add_observer(strike)
-        .add_observer(seek)
+    app.add_observer(seek)
         .add_observer(find_ways)
         .add_observer(pick)
-        .add_observer(close_in)
         .add_observer(count_attack)
         .add_observer(provoke)
         .add_observer(catch)

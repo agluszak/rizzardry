@@ -5,10 +5,19 @@ use super::*;
 use crate::game::characters::Condition;
 
 /// Retail's combat settings (`ResetGameplaySettings`): phased by default,
-/// each round started by the player.
-#[derive(Resource, Debug, Default)]
+/// each round started by the player; a member who finds nobody to strike
+/// tries their other weapon set (`autoswap_weapons`, on in a new game,
+/// `Gameplay Init.cpp:521`).
+#[derive(Resource, Debug)]
 pub struct CombatSettings {
     pub continuous: bool,
+    pub autoswap_weapons: bool,
+}
+
+impl Default for CombatSettings {
+    fn default() -> Self {
+        Self { continuous: false, autoswap_weapons: true }
+    }
 }
 
 /// How the party moves in a fight (retail Walk and Run party actions).

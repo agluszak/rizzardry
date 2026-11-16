@@ -1513,6 +1513,16 @@ pub enum ItemNews {
         item: String,
         lacks: Option<Lack>,
     },
+    /// In a fight, the weapon sets swap only while a round is played or the
+    /// party moves (retail string `0x1f6`).
+    SwapsBlocked,
+    /// Every member swapped weapon sets (`0x1ed`).
+    AllSwapped,
+    /// What came of swapping a member's weapon sets.
+    WeaponSets {
+        member: String,
+        what: crate::game::inventory::weapon_sets::SwapNews,
+    },
     /// A Gadgeteer was given their omnigun (tier 0) or it reached a tier
     /// (1 to 11 above the first).
     Omnigun {

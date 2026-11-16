@@ -23,8 +23,8 @@ use super::{Battle, CombatNews, Combatants, Round, summon};
 use crate::content::characters::Attribute;
 use crate::content::species::SpecialAttackKind;
 use crate::content::spells::SpellId;
-use crate::game::actors::arm::{Furthest, Tempo};
-use crate::game::actors::{Attributes, BlindFighting, Nature, Places, reaches};
+use crate::game::actors::arm::Tempo;
+use crate::game::actors::{Attributes, BlindFighting, Nature, Places};
 use crate::game::characters::{Condition, Conditions, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::hits::definitions::Rows;
@@ -37,10 +37,9 @@ use crate::game::magic::may::Refusal;
 use crate::game::magic::pointcasts::{Lure, LureInfluence};
 use crate::game::magic::reach::in_cone;
 use crate::game::magic::workings::Response;
-use crate::game::party::formation::Formation;
-use crate::game::party::roster::Party;
+use crate::game::party::roster::{Party, PartyMember};
 use crate::game::rng::GameRng;
-use crate::game::world::hostility::{self, Stance, Standing};
+use crate::game::world::hostility::Stance;
 use crate::game::world::navigation::Walker;
 use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::population::Temper;
@@ -159,6 +158,8 @@ pub enum Interrupt {
     Berserk,
     /// Turncoat holds it; its action against its new foes stands.
     Turncoat,
+    /// Turncoat holds a member who can strike nobody: the action is lost.
+    CannotStrike,
     /// A lure holds it: it walks toward the lure.
     Lured,
 }
@@ -175,6 +176,7 @@ impl Interrupt {
             Interrupt::Freed => 7,
             Interrupt::Berserk => 8,
             Interrupt::Turncoat => 9,
+            Interrupt::CannotStrike => 10,
             Interrupt::Lured => 11,
         }
     }
@@ -359,46 +361,24 @@ fn blindness(
     Ok(())
 }
 
-/// Insane: 80 percent. If one of its arms reaches a living friend in the
-/// fight (retail's attack check in its friendly band, `Combat
-/// Range.cpp:533`) and it is not berserk yet, 40 percent it turns on its
-/// friends; otherwise it loses the action in one of three fits.
-#[allow(clippy::type_complexity)]
+/// Insane: 80 percent. If it is not berserk yet, 40 percent it turns on its
+/// friends if it can strike one ([`turn_on_friends`]); otherwise it loses
+/// the action in one of three fits.
 fn insanity(
     weighs: On<WeighsInsanity>,
     mut commands: Commands,
     actions: Query<&ActionOf>,
-    actors: Query<(&Conditions, Has<Berserk>, &Furthest, &Standing)>,
-    others: Query<(&Vitals, &Standing)>,
-    fight: Single<Option<&Combatants>, With<Battle>>,
-    places: Places,
-    formation: Single<&Formation>,
+    actors: Query<(&Conditions, Has<Berserk>)>,
     mut rng: ResMut<GameRng>,
 ) -> Result {
     let action = weighs.action;
     let &ActionOf(actor) = actions.get(action)?;
-    let (conditions, berserk, furthest, &standing) = actors.get(actor)?;
+    let (conditions, berserk) = actors.get(actor)?;
     if !conditions.has(Condition::Insane) || rng.below(100) >= 80 {
         commands.trigger(WeighsFear { action });
         return Ok(());
     }
-    let mut friend_in_reach = false;
-    if let Some(reach) = furthest.0 {
-        let at = places.of(actor);
-        for &other in fight.map_or(&[][..], Combatants::entities) {
-            let (vitals, &theirs) = others.get(other)?;
-            if other != actor
-                && !vitals.is_dead()
-                && hostility::between(standing, theirs) == Stance::Friendly
-                && reaches(&formation, (actor, &at), (other, &places.of(other)), reach)
-            {
-                friend_in_reach = true;
-                break;
-            }
-        }
-    }
-    if friend_in_reach && !berserk && rng.below(100) < 40 {
-        commands.trigger(Interrupted { action, interrupt: Interrupt::Berserk });
+    if !berserk && rng.below(100) < 40 {
         commands.trigger(TurnsOnFriends { action });
     } else {
         let fit = rng.below(3) as u8;
@@ -468,19 +448,30 @@ fn lure(
     Ok(())
 }
 
-/// Turncoat: an action against its new foes stands, and is told.
+/// Turncoat: a monster's action against its new foes stands, and is told.
+/// A member's action, whatever it was, becomes a strike at their fellow
+/// members (retail `Combat.cpp:2207`), told by what it finds
+/// ([`super::other_set`]).
 fn turncoat(
     weighs: On<WeighsTurncoat>,
     mut commands: Commands,
     actions: Query<(&ActionOf, Has<AtFoes>)>,
-    actors: Query<&Conditions>,
+    actors: Query<(&Conditions, Has<PartyMember>)>,
 ) -> Result {
     let action = weighs.action;
     let (&ActionOf(actor), at_foes) = actions.get(action)?;
-    if at_foes && actors.get(actor)?.has(Condition::Turncoat) {
-        commands.trigger(Interrupted { action, interrupt: Interrupt::Turncoat });
+    let (conditions, member) = actors.get(actor)?;
+    if !conditions.has(Condition::Turncoat) {
+        commands.trigger(Unhindered { action });
+    } else if member {
+        commands.trigger(Strike { actor, fights: Fights { waits: false, berserk: false } });
+        commands.entity(action).despawn();
+    } else {
+        if at_foes {
+            commands.trigger(Interrupted { action, interrupt: Interrupt::Turncoat });
+        }
+        commands.trigger(Unhindered { action });
     }
-    commands.trigger(Unhindered { action });
     Ok(())
 }
 
@@ -495,17 +486,20 @@ fn tell(
     Ok(())
 }
 
-/// A lost action ends the moment, and the pause after it; one berserk this
-/// round strikes at its friends instead (retail `Combat.cpp:2461`).
+/// A lost action ends the moment, and the pause after it; a monster
+/// berserk this round strikes at its friends instead (retail
+/// `Combat.cpp:2461`, in the monster's turn only).
 fn lose(
     loses: On<Loses>,
     mut commands: Commands,
     actions: Query<&ActionOf>,
-    actors: Query<Has<Berserk>>,
+    actors: Query<(Has<Berserk>, Has<Temper>)>,
 ) -> Result {
     let action = loses.action;
     let &ActionOf(actor) = actions.get(action)?;
-    if actors.get(actor)? {
+    // Only a monster's (retail's member has no such turn).
+    let (berserk, monster) = actors.get(actor)?;
+    if berserk && monster {
         commands.trigger(Strike { actor, fights: Fights { waits: false, berserk: false } });
     } else {
         commands.trigger(Done { actor });
@@ -526,18 +520,72 @@ fn break_free(
     Ok(())
 }
 
-/// Insanity turns it on its friends for the rest of the round, and it
-/// strikes.
+/// Insanity would turn it on its friends: it looks for a friend to strike,
+/// its fellow members only for a member (retail's check in its friendly
+/// band, `Combat Range.cpp:77`, `:533`). Finding one, it is berserk for the
+/// rest of the round, told, and strikes; finding nobody it loses the action
+/// in a fit, or, its eye missing one it could have struck, berserk all the
+/// same with nobody to strike.
+#[allow(clippy::type_complexity)]
 fn turn_on_friends(
     turns: On<TurnsOnFriends>,
     mut commands: Commands,
     actions: Query<&ActionOf>,
+    actors: Query<(Has<PartyMember>, Has<super::turn::AttacksLeft>)>,
 ) -> Result {
     let action = turns.action;
     let &ActionOf(actor) = actions.get(action)?;
-    commands.entity(actor).insert(Berserk);
-    commands.trigger(Strike { actor, fights: Fights { waits: false, berserk: false } });
+    let (member, has_attacks) = actors.get(actor)?;
+    // One that took up no attacks takes them up now (retail
+    // `PrepareCharacterAttacks`, `Combat.cpp:2224`).
+    if !has_attacks {
+        commands.trigger(super::turn::TakesUpAttacks { actor });
+    }
+    let fights = Fights { waits: false, berserk: false };
+    let attack = super::swings::begin(&mut commands, actor, fights, Stance::Friendly);
+    let mut made = commands.entity(attack);
+    if member {
+        made.insert(super::swings::AmongFellows);
+    }
+    made.observe(turned_berserk).observe(fit_instead);
+    commands.trigger(super::swings::Seeks { attack });
     commands.entity(action).despawn();
+    Ok(())
+}
+
+/// It found a friend to strike: berserk for the rest of the round, and told.
+fn turned_berserk(
+    found: On<super::swings::Found>,
+    mut commands: Commands,
+    attacks: Query<&super::swings::AttackBy>,
+    mut news: MessageWriter<CombatNews>,
+) -> Result {
+    let &super::swings::AttackBy(actor) = attacks.get(found.attack)?;
+    commands.entity(actor).insert(Berserk);
+    news.write(CombatNews::Interrupted { actor, interrupt: Interrupt::Berserk });
+    Ok(())
+}
+
+/// It found no friend to strike: a fit takes the action, or berserk with
+/// nobody to strike when its eye missed one.
+fn fit_instead(
+    nobody: On<super::swings::Nobody>,
+    mut commands: Commands,
+    attacks: Query<&super::swings::AttackBy>,
+    mut news: MessageWriter<CombatNews>,
+    mut rng: ResMut<GameRng>,
+) -> Result {
+    let attack = nobody.attack;
+    let &super::swings::AttackBy(actor) = attacks.get(attack)?;
+    commands.entity(attack).despawn();
+    let interrupt = if nobody.evaded {
+        commands.entity(actor).insert(Berserk);
+        Interrupt::Berserk
+    } else {
+        Interrupt::Insane { fit: rng.below(3) as u8 }
+    };
+    news.write(CombatNews::Interrupted { actor, interrupt });
+    commands.trigger(Done { actor });
     Ok(())
 }
 

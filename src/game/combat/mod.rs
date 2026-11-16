@@ -10,6 +10,7 @@ pub mod effort;
 mod engage;
 pub mod monster;
 mod orders;
+pub mod other_set;
 mod round_end;
 pub mod summon;
 mod swings;
@@ -49,6 +50,7 @@ impl Plugin for CombatPlugin {
             swings::plugin,
             turn::plugin,
             action::plugin,
+            other_set::plugin,
             monster::plugin,
             engage::plugin,
         ))
@@ -126,7 +128,11 @@ impl Plugin for CombatPlugin {
         // only then is a closing round judged.
         .add_systems(
             FixedUpdate,
-            round_end::close_round
+            (
+                other_set::strike_with_other_set.run_if(resource_exists::<Battle>),
+                round_end::close_round,
+            )
+                .chain()
                 .after(crate::game::actors::settle)
                 .run_if(crate::game::world::level::level_active),
         )
@@ -599,6 +605,7 @@ fn next_moment(
     turns: Query<&turn::NextMoment>,
     in_flight: Query<(), With<crate::game::hits::Deed>>,
     moving: Query<(), With<approach::CombatMove>>,
+    swapping: Query<(), With<other_set::OtherSet>>,
     mut news: MessageWriter<CombatNews>,
 ) {
     let Some((fight, mut round, mut party_move, pause, combatants)) = fight.map(Single::into_inner)
@@ -610,6 +617,7 @@ fn next_moment(
         || !pause.0.is_finished()
         || !in_flight.is_empty()
         || !moving.is_empty()
+        || !swapping.is_empty()
         || matches!(*party_move, PartyMove::Moving { .. })
     {
         return;

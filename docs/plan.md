@@ -218,9 +218,9 @@ Retail `GetConditionInterrupt` (`Combat.cpp:2940`) and its callers
   each reading its own sources; what took the action is an event of its
   own (`Nauseated`, `BrokeFree`, …), each with its observer. `Plans`,
   `interrupt`, `Interrupt` as a value carried around (it stays only as the
-  notice's number) and `friend_in_reach` go: insanity asks the strike's own
-  reach rule of living friends, which is all retail asks (no Stealth, no
-  clear line: `Combat Range.cpp:533`).
+  notice's number) and `friend_in_reach` go: insanity makes the strike at
+  friends itself, whose search is retail's check (a monster needs sight and
+  a clear line, `Combat Range.cpp:533`; a member looks among fellows).
 - **Fixed against retail on the way:** a berserk actor whose later action
   an ailment takes strikes friends instead of losing it (`:2461`); a
   Turncoat action is told (`0x3a9`); a taken or berserk action does not
@@ -300,10 +300,19 @@ Open:
 - **A command on a despawned entity** in the retail scenario
   `the_party_fights_rests_and_finds_the_dead_still_dead`, not yet traced
   (rerun with `--features bevy/debug` to name it).
-- **The Turncoat member's weapon-set swap** (retail `SwapWeaponSetSlots`,
-  `PC Item.cpp:4101`) needs the swap as a feature of its own, and a way to
-  ask whether the stored set's weapons reach a foe before arms are written
-  from it.
+- The weapon-set swap is done (`inventory/weapon_sets.rs`,
+  `combat/other_set.rs`): the player's (W, Shift+W), a Turncoat member's and
+  the fight's own, one rule. Insanity and a Turncoat member ask the
+  strike's own search whether they can strike someone; a member turned or
+  berserk looks only among fellow members. Not tested yet. Not ported:
+  retail's refusal while it is the member's own moment under way (`0x1f7`).
+  Unchecked against retail: the fight's own swap takes up attacks anew
+  (retail calls `RefreshAfterItemRecordChange`, not
+  `PrepareCharacterAttacks`); a swap re-arms a released curse through
+  `Put` (retail `SwapItemInstances`).
+- A lead on the despawn failure, by reading: `charging` inserts `Charges`
+  in the settle that kills a monster from full health; or `by_temper`'s
+  `.observe` on a short-lived monster.
 - **`engage::Fighters`** is the old `fighters_of` moved into an accessor;
   it goes with `Body` in step 3.
 

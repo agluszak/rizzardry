@@ -50,6 +50,14 @@ pub struct SavedSettings {
     pub preferences: Preferences,
     pub difficulty: Difficulty,
     pub continuous: bool,
+    /// A member who finds nobody to strike tries their other weapon set
+    /// (retail `autoswap_weapons`, on in a new game).
+    #[serde(default = "on")]
+    pub autoswap_weapons: bool,
+}
+
+fn on() -> bool {
+    true
 }
 #[derive(Resource)]
 pub struct SettingsFile(pub PathBuf);
@@ -99,11 +107,13 @@ pub fn initialize(app: &mut App, file: SettingsFile, continuous: bool) {
         preferences: Preferences::default(),
         difficulty: Difficulty::default(),
         continuous: false,
+        autoswap_weapons: true,
     });
     app.insert_resource(file)
         .insert_resource(saved.preferences)
         .insert_resource(saved.difficulty)
         .insert_resource(crate::game::combat::CombatSettings {
             continuous: continuous || saved.continuous,
+            autoswap_weapons: saved.autoswap_weapons,
         });
 }

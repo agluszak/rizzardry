@@ -165,6 +165,8 @@ type RoundsFacts = (
 /// with it.
 pub fn clear_fight(left: On<Remove<Combatant>>, mut commands: Commands) {
     commands.entity(left.entity).try_remove::<RoundsFacts>().try_remove::<(
+        super::other_set::OtherSet,
+        super::other_set::WithOtherSet,
         Ordered,
         Spotted,
         Fleeing,
@@ -191,9 +193,9 @@ pub struct TakesUp {
 
 /// A combatant takes up its attacks for the round.
 #[derive(EntityEvent, Clone, Copy, Debug)]
-struct TakesUpAttacks {
+pub(super) struct TakesUpAttacks {
     #[event_target]
-    actor: Entity,
+    pub(super) actor: Entity,
 }
 
 /// The party's move is placed for the round.
@@ -512,11 +514,19 @@ fn shown(_: On<Shown>, mut pause: Single<&mut Pause, With<Battle>>) {
 /// set where the kind is made: a member by their order, a monster by its
 /// temper.
 fn by_order(added: On<Add<Order>>, mut commands: Commands) {
-    commands.entity(added.entity).observe(member_takes_up).observe(follow_order);
+    commands
+        .entity(added.entity)
+        .observe(member_takes_up)
+        .observe(follow_order)
+        .observe(super::other_set::member_strikes);
 }
 
 fn by_temper(added: On<Add<Temper>>, mut commands: Commands) {
-    commands.entity(added.entity).observe(monster_takes_up).observe(decide_for_itself);
+    commands
+        .entity(added.entity)
+        .observe(monster_takes_up)
+        .observe(decide_for_itself)
+        .observe(super::swings::monster_strikes);
 }
 
 pub(super) fn plugin(app: &mut App) {

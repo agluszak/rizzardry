@@ -22,6 +22,7 @@ struct OptionsView {
 enum Choice {
     Difficulty,
     Combat,
+    AutoSwap,
     VolumeDown,
     VolumeUp,
     Invert,
@@ -108,6 +109,7 @@ fn enter(
             preferences: preferences.clone(),
             difficulty: *difficulty,
             continuous: combat.continuous,
+            autoswap_weapons: combat.autoswap_weapons,
         },
         error: String::new(),
     };
@@ -139,6 +141,7 @@ fn enter(
     for (i, (label, choice)) in [
         ("Difficulty", Choice::Difficulty),
         ("Combat mode", Choice::Combat),
+        ("Swap weapons when needed", Choice::AutoSwap),
         ("Decrease volume", Choice::VolumeDown),
         ("Increase volume", Choice::VolumeUp),
         ("Invert mouse Y", Choice::Invert),
@@ -190,6 +193,7 @@ fn activate(
             }
         }
         Choice::Combat => view.draft.continuous = !view.draft.continuous,
+        Choice::AutoSwap => view.draft.autoswap_weapons = !view.draft.autoswap_weapons,
         Choice::VolumeDown => {
             view.draft.preferences.volume -= view.draft.preferences.volume.min(10)
         }
@@ -208,6 +212,7 @@ fn activate(
                 *preferences = view.draft.preferences.clone();
                 *difficulty = view.draft.difficulty;
                 combat.continuous = view.draft.continuous;
+                combat.autoswap_weapons = view.draft.autoswap_weapons;
                 close(&mut next, menu.as_deref_mut());
             }
             Err(error) => {
@@ -244,9 +249,10 @@ fn refresh(view: Single<Ref<OptionsView>>, mut status: Query<&mut BitmapText, Wi
             continue;
         }
         let value = format!(
-            "Options\nDifficulty: {:?}    Combat: {}    Volume: {}%\nInvert mouse Y: {}    Fullscreen: {}\n{}",
+            "Options\nDifficulty: {:?}    Combat: {}    Swap weapons: {}    Volume: {}%\nInvert mouse Y: {}    Fullscreen: {}\n{}",
             view.draft.difficulty,
             if view.draft.continuous { "Continuous" } else { "Phased" },
+            if view.draft.autoswap_weapons { "On" } else { "Off" },
             view.draft.preferences.volume,
             if view.draft.preferences.invert_mouse_y { "On" } else { "Off" },
             if view.draft.preferences.fullscreen { "On" } else { "Off" },

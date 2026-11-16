@@ -1,7 +1,8 @@
 //! The main screen's keys, from retail's `mgskeyboard.ini`: Backspace
 //! cycles the layout (Shift+Backspace backwards), 1-6 select a member,
 //! Enter starts a combat round, backslash switches continuous combat, A and
-//! D set the selected member to attack or defend, and PgUp, PgDn, Home, End
+//! D set the selected member to attack or defend, W swaps the selected
+//! member's weapon sets (Shift+W everyone's), and PgUp, PgDn, Home, End
 //! and Del scroll the text box a page, to its top or its end, or empty it.
 //! They act only while no other screen is up and no widget owns focus.
 //! F6 enters the HUD; Tab navigates its controls and Escape returns to the world.
@@ -63,6 +64,16 @@ struct SetOrder;
 #[derive(InputAction)]
 #[action_output(bool)]
 struct Breathe;
+
+/// Swap the selected member's weapon sets.
+#[derive(InputAction)]
+#[action_output(bool)]
+struct SwapWeapons;
+
+/// Swap every member's weapon sets.
+#[derive(InputAction)]
+#[action_output(bool)]
+struct SwapAllWeapons;
 
 #[derive(Component, Clone, Default)]
 struct OrderKey(Order);
@@ -126,6 +137,7 @@ fn spawn_main_screen_keys(mut commands: Commands) {
     })
     .collect();
     let shift_backspace = Binding::Keyboard { key: KeyCode::Backspace, mod_keys: ModKeys::SHIFT };
+    let shift_w = Binding::Keyboard { key: KeyCode::KeyW, mod_keys: ModKeys::SHIFT };
     commands.spawn_scene(bsn! {
         MainScreenKeys
         Actions<MainScreenKeys> [
@@ -157,6 +169,11 @@ fn spawn_main_screen_keys(mut commands: Commands) {
             Action::<SetOrder>::new() OrderKey({Order::Berserk}) Bindings [ Binding(KeyCode::KeyB) ]
             -- Action::<Breathe>::new() Bindings [ Binding(KeyCode::KeyE) ]
             --
+            Action::<SwapAllWeapons>::new()
+            ActionSettings { consume_input: true }
+            Bindings [ shift_w ]
+            -- Action::<SwapWeapons>::new() Bindings [ Binding(KeyCode::KeyW) ]
+            --
             {text_box}
         ]
         on(|_: On<Start<CycleLayout>>, mut layout: ResMut<ScreenLayout>| layout.cycle(false))
@@ -182,6 +199,16 @@ fn spawn_main_screen_keys(mut commands: Commands) {
         })
         on(set_order)
         on(breathe)
+        on(|_: On<Start<SwapWeapons>>, selected: Res<SelectedMember>, roster: Single<&PartyRoster>,
+            mut swaps: MessageWriter<crate::game::inventory::weapon_sets::SwapWeapons>| {
+            if let Some(member) = selected.member(&roster) {
+                swaps.write(crate::game::inventory::weapon_sets::SwapWeapons(member));
+            }
+        })
+        on(|_: On<Start<SwapAllWeapons>>,
+            mut swaps: MessageWriter<crate::game::inventory::weapon_sets::SwapAllWeapons>| {
+            swaps.write(crate::game::inventory::weapon_sets::SwapAllWeapons);
+        })
         on(text_box_key)
     });
 }

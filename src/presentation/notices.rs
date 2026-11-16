@@ -626,6 +626,21 @@ fn post_items(mut items: MessageReader<ItemNews>, strings: GameStrings, mut noti
                 let separator = if text.starts_with(['\'', ':']) { "" } else { " " };
                 format!("{member}{separator}{text}")
             }
+            ItemNews::SwapsBlocked => string(0x1f6),
+            ItemNews::AllSwapped => string(0x1ed),
+            // Retail's notices of a swap, run on from the member's name.
+            ItemNews::WeaponSets { member, what } => {
+                use crate::game::inventory::weapon_sets::SwapNews;
+                let text = string(match what {
+                    SwapNews::NothingToSwap => 0x1eb,
+                    SwapNews::Swapped => 0x1ec,
+                    SwapNews::Held => 0x1ee,
+                    SwapNews::SwappedToStrike => 0x23d,
+                    SwapNews::SwappedToFind => 0x26d,
+                });
+                let separator = if text.starts_with(['\'', ':']) { "" } else { " " };
+                format!("{member}{separator}{text}")
+            }
             ItemNews::Omnigun { member, gender, tier } => {
                 let pronouns = if *tier == 0 { GIFT_PRONOUNS } else { POSSESSIVES };
                 let pronoun = string(pronouns + *gender as usize);
