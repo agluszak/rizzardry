@@ -27,9 +27,8 @@ use crate::game::actors::spells::{LaidOn, Pulses};
 use crate::game::actors::time::{Elapsed, Mending, Pace};
 use crate::game::characters::Condition;
 use crate::game::characters::Vitals;
-use crate::game::hits::effects::Strike;
 use crate::game::hits::{Deed, Landed};
-use crate::game::magic::aim::{Against, Origin, Radius, Spot, Take, Takes, Took, Victims};
+use crate::game::magic::aim::{Against, Area, Reaching};
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
@@ -264,6 +263,7 @@ pub(super) fn pulse_clouds(
     pulsing: Query<(&LaidOn, &Pulses)>,
     vitals: Query<&Vitals>,
     party: Single<(Entity, &Position, &PartyRoster)>,
+    reaching: Reaching,
 ) -> Result {
     let (party, position, roster) = *party;
     let combatants = fights.get(pulse.fight)?.map_or(&[][..], Combatants::entities);
@@ -279,18 +279,12 @@ pub(super) fn pulse_clouds(
             let centre = PartyBody::centre(PartyBody::eye(position));
             let reach =
                 crate::game::party::body::RADIUS + crate::content::species::Reach::Short.metres();
-            let aim = commands
-                .spawn((
-                    PulseStrike(strike.clone()),
-                    Spot(centre),
-                    Origin(centre),
-                    Radius(reach),
-                    Against::Opponents(Stance::Friendly),
-                    Takes::Blast,
-                ))
-                .observe(pulse_around_party)
-                .id();
-            commands.trigger(Take { aim });
+            let area = Area::Blast { spot: centre, origin: centre, radius: reach };
+            let taken = reaching.takes(area, None, Against::Opponents(Stance::Friendly));
+            commands
+                .spawn(crate::game::magic::landed::Magical)
+                .observe(count_pulse)
+                .insert(Deed::at(strike.clone(), taken));
             continue;
         }
         let victims: Vec<Entity> = if bearer == party {
@@ -304,27 +298,6 @@ pub(super) fn pulse_clouds(
             .observe(count_pulse)
             .insert(Deed::at(strike.clone(), victims));
     }
-    Ok(())
-}
-
-/// What a pulse around the party strikes, carried by its aim until it has
-/// taken in whom it strikes.
-#[derive(Component, Clone, Debug)]
-struct PulseStrike(Strike);
-
-/// A pulse around the party has taken in the monsters close around it: it
-/// strikes them, and its aim is done.
-fn pulse_around_party(
-    took: On<Took>,
-    aims: Query<(&PulseStrike, &Victims)>,
-    mut commands: Commands,
-) -> Result {
-    let (PulseStrike(strike), Victims(victims)) = aims.get(took.aim)?;
-    commands
-        .spawn(crate::game::magic::landed::Magical)
-        .observe(count_pulse)
-        .insert(Deed::at(strike.clone(), victims.iter().copied()));
-    commands.entity(took.aim).despawn();
     Ok(())
 }
 

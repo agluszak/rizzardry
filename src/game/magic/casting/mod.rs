@@ -1,19 +1,17 @@
-//! Casting a learned spell, using an item's spell, or a monster's own spell
-//! (`docs/rules/casting.md`, "How this is built"). An accepted cast
-//! ([`Cast`]) becomes an entity (`CastBy` its caster) carrying the spell and
-//! what it is cast with; it goes through the page's steps as events, each
-//! heard by the observer of what that step reads: whether it may be cast
-//! ([`means`]), whom it reaches ([`aiming`]), its power, the roll, what it
-//! costs, and its release as a deed that lands ([`crate::game::hits`]) or as
-//! a utility spell's own work ([`Worked`]). It is gone once released or
-//! refused.
+//! Casting a learned spell, using an item's spell, or a monster's slot
+//! (`docs/rules/casting.md`, "How this is built"). A spell that ends in a
+//! deed is cast in one moment by one observer ([`deed::cast`]). A utility
+//! spell is an entity of its caster's (`CastBy`) while its working finds what
+//! it is cast at ([`Allowed`], [`marked`]); then [`work`] settles its
+//! power, rolls and pays for it, and its working does what it is for
+//! ([`Worked`]).
 //!
 //! Choosing never spends anything. A refused cast spends nothing; one that is
 //! rolled pays even when it fizzles or backfires. Its deed keeps its own copy
 //! of the spell and victims, so using the last potion still heals, and a
 //! missile in flight still lands after its caster falls.
 
-mod aiming;
+mod deed;
 mod means;
 use bevy::prelude::*;
 
@@ -100,7 +98,6 @@ pub struct Practice {
 pub struct Recast {
     pub caster: Entity,
     pub choice: MagicChoice,
-    pub victims: Vec<Entity>,
     /// It goes on while a victim is short of stamina rather than of health.
     pub watches_stamina: bool,
 }
@@ -186,133 +183,38 @@ fn works(made: &mut EntityCommands, working: Working) {
     };
 }
 
-/// The caster of a cast under way.
+/// The caster of a utility spell under way.
 #[derive(Component, Clone, Copy, Debug)]
 #[relationship(relationship_target = Casting)]
 pub struct CastBy(pub Entity);
 
-/// The casts an actor has under way; they go with it.
+/// The utility spells an actor has under way; they go with it.
 #[derive(Component, Debug, Default)]
 #[relationship_target(relationship = CastBy, linked_spawn)]
 pub struct Casting(Vec<Entity>);
 
-/// The spell cast, as content defines it; its hook sets the steps that
-/// follow from what the spell is.
+/// The spell cast, as content defines it.
 #[derive(Component, Clone, Debug)]
-#[component(on_add = spelled)]
 pub struct CastSpell(pub SpellDefinition);
-
-/// In a fight, a potion or food is taken by its user: it is at them.
-#[derive(Component, Clone, Copy, Debug, Default)]
-pub struct TakenByUser;
 
 /// What the caster chose: what it is cast with and what it is aimed at.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Chosen(pub MagicChoice);
 
-/// An auto cast that fizzled, going again: it provokes nobody anew and does
-/// not go astray.
-#[derive(Component, Clone, Copy, Debug, Default)]
-pub struct Again;
-
-/// The power it goes off at.
-#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Power(pub u32);
-
-/// How likely the roll to cast fails, in percent, and whether a failure
-/// passes without notice.
-#[derive(Component, Clone, Copy, Debug)]
-pub struct Failure {
-    pub chance: u32,
-    pub quiet: bool,
-}
-
-/// How likely a blind caster's aim holds anyway, in percent.
-#[derive(Component, Clone, Copy, Debug, Default)]
-pub struct SeesBlind(pub u32);
-
-/// The aim the cast lands by.
-#[derive(Component, Clone, Copy, Debug)]
-pub struct LandsBy(pub Entity);
-
-/// How the roll to cast came out.
-#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Came(pub Outcome);
-
 /// What a utility spell is aimed at.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Mark(pub Marked);
 
-/// A member's spell at the party also reaches the monsters on the party's
-/// side about it.
-#[derive(Component, Clone, Copy, Debug, Default)]
-pub struct Widens;
-
-/// A member's spell against enemies provokes whom it reaches
-/// ([`aiming::provoke`], set by its hook).
-#[derive(Component, Clone, Copy, Debug, Default)]
-#[component(on_add = provokes)]
-pub struct Provokes;
-
-fn provokes(
-    mut world: bevy::ecs::world::DeferredWorld,
-    context: bevy::ecs::lifecycle::HookContext,
-) {
-    world.commands().entity(context.entity).observe(aiming::provoke);
-}
-
-/// Ask whether it may be cast.
-#[derive(EntityEvent, Clone, Copy, Debug)]
-pub struct Ask {
-    #[event_target]
-    pub cast: Entity,
-}
-
-/// It may be cast: aim it.
+/// A utility spell may be cast: its working finds what it is cast at.
 #[derive(EntityEvent, Clone, Copy, Debug)]
 pub struct Allowed {
     #[event_target]
     pub cast: Entity,
 }
 
-/// It has its aim: settle its power.
+/// A utility spell has what it is cast at: it goes off ([`work`]).
 #[derive(EntityEvent, Clone, Copy, Debug)]
 pub struct Aimed {
-    #[event_target]
-    pub cast: Entity,
-}
-
-/// It has its power: spread it over whom an area takes.
-#[derive(EntityEvent, Clone, Copy, Debug)]
-pub struct Spread {
-    #[event_target]
-    pub cast: Entity,
-}
-
-/// Roll it.
-#[derive(EntityEvent, Clone, Copy, Debug)]
-pub struct Roll {
-    #[event_target]
-    pub cast: Entity,
-}
-
-/// It has been rolled: what follows the roll.
-#[derive(EntityEvent, Clone, Copy, Debug)]
-pub struct Rolled {
-    #[event_target]
-    pub cast: Entity,
-}
-
-/// Whom it falls on is settled: pay for it.
-#[derive(EntityEvent, Clone, Copy, Debug)]
-pub struct Pay {
-    #[event_target]
-    pub cast: Entity,
-}
-
-/// It is paid for: let it go.
-#[derive(EntityEvent, Clone, Copy, Debug)]
-pub struct Release {
     #[event_target]
     pub cast: Entity,
 }
@@ -323,115 +225,85 @@ fn refuse_cast(commands: &mut Commands, (cast, caster): (Entity, Entity), refusa
     commands.entity(cast).despawn();
 }
 
-/// An accepted cast becomes an entity of its caster, with the spell read
-/// from content and what it is cast with, and is asked whether it may be
-/// made. An auto cast that fizzled goes again only while the caster's
-/// stamina and points last. In a fight a potion or food is taken by its
-/// user. What the spell is then decides the rest of its steps
-/// ([`CastSpell`]'s hook).
-#[allow(clippy::type_complexity)]
+/// A utility spell asked for, if it may be cast (section 2), becomes an
+/// entity of its caster's, with the spell and what the caster chose, and
+/// its working's observers; its working finds what it is cast at.
 fn begin(
     cast: On<Cast>,
-    pools: Query<(&crate::game::characters::Vitals, &super::SpellPoints)>,
-    castables: Query<(
-        &super::castable::CastableSpell,
-        Has<super::castable::Learned>,
-        Option<&crate::game::combat::monster::slot::SlotOf>,
-    )>,
-    monsters: Query<(&crate::game::world::population::SpellBudget, &crate::game::actors::Level)>,
-    held: crate::game::items::Items,
-    context: Single<&super::may::UseContext, With<crate::game::party::roster::PartyRoster>>,
+    spells: Query<&super::castable::CastableSpell>,
+    means: means::Means,
     mut commands: Commands,
 ) {
-    let Cast { caster, choice, again } = *cast;
-    let Ok((super::castable::CastableSpell(spell), learned, slot)) = castables.get(choice.castable)
-    else {
-        commands.trigger(Refused { caster, refusal: Refusal::NoItem });
-        return;
-    };
-    if again
-        && !pools
-            .get(caster)
-            .is_ok_and(|(vitals, pool)| goes_again((vitals.stamina.current, pool), spell))
-    {
+    let Cast { caster, choice, .. } = *cast;
+    let Ok(super::castable::CastableSpell(spell)) = spells.get(choice.castable) else { return };
+    let Some(working) = spell.facts.working else { return };
+    if let Some(refusal) = means.refusal(caster, choice, spell) {
+        commands.trigger(Refused { caster, refusal });
         return;
     }
-    let mut made = commands.spawn((CastBy(caster), Chosen(choice)));
-    // Only members cast learned spells and use items: theirs widen at the
-    // party and provoke whom they are against.
-    let by_member = slot.is_none();
-    match (learned, slot) {
-        (true, _) => {
-            made.insert((
-                means::LearnedSpell { castable: choice.castable, asked: choice.power },
-                Widens,
-            ));
-        }
-        (false, Some(_)) => {
-            let (budget, level) = monsters.get(caster).map_or((0, 0), |(b, l)| (b.0, l.0 as u8));
-            made.insert(means::Innate { power: choice.power, budget, level });
-        }
-        (false, None) => {
-            made.insert((means::FromItem(choice.castable), Widens));
-        }
-    }
-    if by_member && spell.aimed_at_enemies() && !again {
-        made.insert(Provokes);
-    }
-    if again {
-        made.insert(Again);
-    }
-    use crate::content::items::UseType;
-    let by_user = **context == super::may::UseContext::Combat
-        && held
-            .casts(choice.castable)
-            .is_some_and(|casts| matches!(casts.by, UseType::Potion | UseType::Food));
-    if by_user {
-        made.insert(TakenByUser);
-    }
-    // Last, so that its hook sees what it is cast with and by whom.
-    made.insert(CastSpell(spell.clone()));
+    let mut made = commands.spawn((CastBy(caster), Chosen(choice), CastSpell(spell.clone())));
+    works(&mut made, working);
     let cast = made.id();
-    commands.trigger(Ask { cast });
+    commands.trigger(Allowed { cast });
 }
 
-/// What a cast's spell is sets its remaining steps: a utility spell's
-/// working, its mark and its work; a deed's kind of target (at the caster
-/// when taken by its user), whose hook sets its aim, spread, stray, fall
-/// and release, and the steps every deed has.
-fn spelled(mut world: bevy::ecs::world::DeferredWorld, context: bevy::ecs::lifecycle::HookContext) {
-    let cast = context.entity;
-    let Some(CastSpell(spell)) = world.get::<CastSpell>(cast) else { return };
-    let (working, targeting) = (spell.facts.working, spell.targeting);
-    let by_user = world.get::<TakenByUser>(cast).is_some();
-    let mut commands = world.commands();
-    let mut made = commands.entity(cast);
-    if let Some(working) = working {
-        works(&mut made, working);
-        made.observe(aiming::spread_nothing)
-            .observe(aiming::rolled_work)
-            .observe(aiming::release_work);
-        return;
-    }
-    use crate::content::spells::Targeting;
-    match targeting {
-        _ if by_user => made.insert(aiming::AtCaster),
-        Targeting::Caster => made.insert(aiming::AtCaster),
-        Targeting::Ally => made.insert(aiming::AtFriend),
-        Targeting::Party => made.insert(aiming::AtParty),
-        Targeting::Enemy => made.insert(aiming::AtFoe),
-        Targeting::EnemyGroup => made.insert(aiming::AtFoeGroup),
-        Targeting::Cone => made.insert(aiming::AtCone),
-        Targeting::Radius => made.insert(aiming::AtBlast),
-        Targeting::AllEnemies => made.insert(aiming::AtAllFoes),
-        Targeting::Point | Targeting::Item | Targeting::LockOrTrap => {
-            made.observe(aiming::unaimable)
+/// A utility spell that has what it is cast at goes off (sections 3, 4 and
+/// 7): its power, the roll, whatever came of it paid for and practised;
+/// then its working does what it is for, whatever the roll.
+fn work(
+    aimed: On<Aimed>,
+    casts: Query<(&CastBy, &CastSpell, &Chosen, &Mark)>,
+    means: means::Means,
+    held: crate::game::items::Items,
+    content: Res<crate::game::data::Catalogs>,
+    mut rng: ResMut<crate::game::rng::GameRng>,
+    mut commands: Commands,
+) -> Result {
+    let cast = aimed.cast;
+    let (&CastBy(caster), CastSpell(spell), &Chosen(choice), &Mark(marked)) = casts.get(cast)?;
+    let powered = match means.power(caster, choice, spell, &mut rng) {
+        Ok(powered) => powered,
+        Err(means::PlayedBadly { stamina, trains }) => {
+            commands.trigger(Pays { caster, points: None, stamina });
+            if let Some(skill) = trains {
+                commands.trigger(crate::game::characters::Practise {
+                    member: caster,
+                    skill,
+                    usage: 1,
+                });
+            }
+            refuse_cast(&mut commands, (cast, caster), Refusal::PlayedBadly);
+            return Ok(());
         }
     };
-    made.observe(aiming::go_astray).observe(aiming::fizzled).observe(aiming::release);
+    let power = powered.power;
+    let came =
+        super::roll::outcome(&mut rng, powered.failure, powered.quiet, false, spell.can_backfire());
+    let stamina = means.toll(caster, choice, spell, power, &mut rng);
+    let learned = means.learned(choice.castable);
+    let points = spell.realm.filter(|_| learned).map(|realm| (realm, spell.cost * power));
+    commands.trigger(Pays { caster, points, stamina });
+    for (skill, usage) in means.practice(caster, choice, spell, power) {
+        commands.trigger(crate::game::characters::Practise { member: caster, skill, usage });
+    }
+    let item = means.item(choice.castable).map(|_| choice.castable);
+    let name = item.and_then(|item| held.id(item)).map(|id| content.items[id].name.clone());
+    let report =
+        Report { caster, spell: spell.id, power, item: name, outcome: came, effects: vec![] };
+    commands.trigger(Worked { cast, caster, report, strength: powered.strength, marked });
+    if let Some(item) = item {
+        commands.trigger(crate::game::items::Spend { item, amount: 1 });
+    }
+    commands.entity(cast).despawn();
+    Ok(())
 }
 
 pub fn plugin(app: &mut App) {
-    app.add_observer(begin).add_observer(pay).add_observer(refuse);
-    aiming::plugin(app);
+    app.add_observer(begin)
+        .add_observer(deed::cast)
+        .add_observer(work)
+        .add_observer(super::landed::practise)
+        .add_observer(super::landed::recast)
+        .add_observer(pay)
+        .add_observer(refuse);
 }

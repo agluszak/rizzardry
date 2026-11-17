@@ -203,7 +203,7 @@ pub enum PowerChoice {
 }
 
 /// Whom a spell is cast at (record 0x137).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, enum_map::Enum, Deserialize)]
 pub enum Targeting {
     #[default]
     Caster,
@@ -219,7 +219,94 @@ pub enum Targeting {
     LockOrTrap,
 }
 
+/// How a kind of target is aimed: a row of `assets/tables/targeting.ron`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub struct Aiming {
+    pub takes: Takes,
+    pub spreads: Spreads,
+    pub strays: Strays,
+    pub falls: Falls,
+    pub from: ComesFrom,
+    pub returns: Returns,
+}
+
+/// Whom a first aim takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub enum Takes {
+    Caster,
+    Friend,
+    Party,
+    Foe,
+    Reached,
+    Unaimed,
+}
+
+/// What a cast's power spreads it over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub enum Spreads {
+    Nothing,
+    Group,
+    Cone,
+    Blast,
+    Widen,
+}
+
+/// Where a blind caster's spell goes astray.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub enum Strays {
+    Nowhere,
+    AtOne,
+    AtGroup,
+    Cone,
+    Blast,
+}
+
+/// What a backfire falls on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub enum Falls {
+    Caster,
+    Group,
+    Blast,
+    Fellows,
+}
+
+/// Whom a backfire comes from, and where a cast is let go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub enum ComesFrom {
+    Caster,
+    Aimed,
+    Leader,
+    /// The spot it went off toward.
+    Spot,
+    /// The spot it went off at, which its missiles fly to.
+    SpotToSpot,
+}
+
+/// What a spell turned back comes back as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub enum Returns {
+    Owner,
+    Group,
+    Blast,
+    Cone,
+    Reached,
+    NoOne,
+}
+
+static AIMINGS: std::sync::LazyLock<enum_map::EnumMap<Targeting, Aiming>> =
+    std::sync::LazyLock::new(|| {
+        let mut rows: HashMap<Targeting, Aiming> =
+            ron::from_str(include_str!("../../assets/tables/targeting.ron"))
+                .expect("assets/tables/targeting.ron is a table of kinds of target");
+        enum_map::EnumMap::from_fn(|kind| rows.remove(&kind).expect("a row for every kind"))
+    });
+
 impl Targeting {
+    /// How it is aimed, from the table the game ships.
+    pub fn aiming(self) -> &'static Aiming {
+        &AIMINGS[self]
+    }
+
     /// Aimed at enemies: an enemy, a group, an area or all of them.
     fn at_enemies(self) -> bool {
         matches!(

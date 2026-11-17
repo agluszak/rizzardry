@@ -440,7 +440,8 @@ fn teach(world: &mut World, member: Entity, skill: u32, spells: &[SpellId]) {
 fn slot(world: &mut World, monster: Entity, id: SpellId) -> Entity {
     let spell = world.resource::<Catalogs>().spells[id].clone();
     let castable = crate::game::magic::castable::CastableSpell(spell);
-    world.spawn((crate::game::combat::monster::slot::SlotOf(monster), castable)).id()
+    use crate::game::combat::monster::slot::{Castable, SlotOf};
+    world.spawn((SlotOf(monster), castable, Castable)).id()
 }
 
 /// A cast, resolved in one pass; what it reported.
@@ -532,7 +533,9 @@ fn silence_stops_all_but_alchemy_in_the_hands_of_an_alchemist() {
 fn a_pooled_item_cannot_be_used_in_a_fight() {
     let (mut app, party, member) = app();
     let world = app.world_mut();
-    let item = world.spawn(crate::game::items::Pooled(party)).id();
+    let heal = world.resource::<Catalogs>().spells[SpellId::HEAL_WOUNDS].clone();
+    let castable = crate::game::magic::castable::CastableSpell(heal);
+    let item = world.spawn((crate::game::items::Pooled(party), castable)).id();
     let choice = MagicChoice { castable: item, power: 1, aim: Aim::Body(member) };
     world.spawn(Battle::default());
     refresh(world);

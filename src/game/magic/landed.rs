@@ -7,12 +7,12 @@
 
 use bevy::prelude::*;
 
-use super::aim::{Against, At, Origin, Radius, Reach, Spot, Take, Takes, Took, Victims};
+use super::aim::{Against, Area, Reaching};
 use super::casting::{MagicNews, Practice, Recast};
 use super::reach::{self, Aim, flight};
 use super::{MagicRequest, SpellPoints};
-use crate::content::spells::{SpellDefinition, SpellId, Targeting};
-use crate::game::actors::{CanFight, CasterLevels, Laying, Places};
+use crate::content::spells::{Returns, SpellDefinition, SpellId};
+use crate::game::actors::{CanFight, CasterLevels, Laying};
 use crate::game::characters::{Practise, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::hits::definitions::{Leeches, Rows};
@@ -20,7 +20,6 @@ use crate::game::hits::effects::Strike;
 use crate::game::hits::{Deed, Effect, Landed};
 use crate::game::party::roster::PartyRoster;
 use crate::game::world::hostility::Standing;
-use crate::game::world::identify::{GroupMember, GroupMembers, Leads};
 use crate::game::world::population::{SpellBudget, Untargetable};
 
 /// A deed of magic: what it did is told once all of it has landed
@@ -41,13 +40,7 @@ fn follows_spell(
     mut world: bevy::ecs::world::DeferredWorld,
     context: bevy::ecs::lifecycle::HookContext,
 ) {
-    world
-        .commands()
-        .entity(context.entity)
-        .observe(burst)
-        .observe(turn_back)
-        .observe(comes_back_from)
-        .observe(turned_aim);
+    world.commands().entity(context.entity).observe(follow_spell);
 }
 
 fn drains_back(
@@ -181,14 +174,13 @@ fn tell(landed: On<Landed>, mut news: MessageWriter<MagicNews>) {
 /// A cast's caster practises once its deed has landed, if it affected
 /// anyone (retail `SpellAffectedTarget`) or a missile was on its way: set on
 /// the deed beside its [`Practice`].
-pub fn practise(landed: On<Landed>, deeds: Query<&Practice>, mut commands: Commands) -> Result {
-    let practice = deeds.get(landed.deed)?;
+pub fn practise(landed: On<Landed>, deeds: Query<&Practice>, mut commands: Commands) {
+    let Ok(practice) = deeds.get(landed.deed) else { return };
     if practice.sure || landed.affected() {
         for &(skill, usage) in &practice.skills {
             commands.trigger(Practise { member: practice.caster, skill, usage });
         }
     }
-    Ok(())
 }
 
 /// An auto recast goes on once its deed has landed, while a living victim
@@ -196,14 +188,16 @@ pub fn practise(landed: On<Landed>, deeds: Query<&Practice>, mut commands: Comma
 /// points last: set on the deed beside its [`Recast`].
 pub fn recast(
     landed: On<Landed>,
-    deeds: Query<&Recast>,
+    deeds: Query<(&Recast, &Spell)>,
     vitals: Query<&Vitals>,
     casters: Query<(&Vitals, &SpellPoints)>,
     learned: Query<&super::castable::CastableSpell>,
     mut requests: MessageWriter<MagicRequest>,
-) -> Result {
-    let recast = deeds.get(landed.deed)?;
-    let super::castable::CastableSpell(spell) = learned.get(recast.choice.castable)?;
+) {
+    let Ok((recast, deed)) = deeds.get(landed.deed) else { return };
+    let Ok(super::castable::CastableSpell(spell)) = learned.get(recast.choice.castable) else {
+        return;
+    };
     let short = |victim: &Entity| {
         vitals.get(*victim).is_ok_and(|vitals| {
             let pool = match recast.watches_stamina {
@@ -216,302 +210,141 @@ pub fn recast(
     let goes_again = casters.get(recast.caster).is_ok_and(|(vitals, pool)| {
         super::casting::goes_again((vitals.stamina.current, pool), spell)
     });
-    if recast.victims.iter().any(short) && goes_again {
+    if deed.victims.iter().any(short) && goes_again {
         requests.write(MagicRequest { caster: recast.caster, choice: recast.choice });
     }
-    Ok(())
 }
 
-/// What a burst strikes, carried by its aim until it has taken in whom.
-#[derive(Component, Clone, Debug)]
-struct Burst(Strike);
-
-/// A spell turned back, carried by its aim until it has taken in whom: who
-/// paid the charge, its strike, the spell it is now, and whether it flies.
-#[derive(Component, Clone, Debug)]
-struct TurnedBack {
-    charged: Entity,
-    strike: Strike,
-    spell: Spell,
-    flies: bool,
-}
-
-/// Once a spell has landed, each of its victims that died bursts where it
-/// fell, if the spell's row says it does (Boiling Blood): at the cast's
-/// power, from the spell's owner, a blast at the fallen's feet against
-/// whoever opposes the owner's side (the owner's own side if the spell
-/// backfired, anyone if it has no owner), as strong as its owner. Then it may
-/// be turned back ([`MayTurnBack`]).
+/// Once a spell has landed, its fallen burst ([`bursts`]), then the
+/// strongest Eye for an Eye among its living victims may turn it back
+/// ([`turned_back`]): one moment, in that order.
 #[allow(clippy::type_complexity)]
-fn burst(
+fn follow_spell(
     landed: On<Landed>,
     deeds: Query<(&Spell, &Deed)>,
     vitals: Query<(&Vitals, Has<Untargetable>)>,
-    (standings, levels): (Query<&Standing>, Query<&CasterLevels>),
-    places: Places,
-    content: Res<Catalogs>,
-    mut commands: Commands,
-) -> Result {
-    let deed = landed.deed;
-    let (cast, made) = deeds.get(deed)?;
-    let strength = made.strike.strength;
-    let explosion = content
-        .spells
-        .get(cast.id)
-        .and_then(crate::game::hits::definitions::row)
-        .and_then(|row| row.bursts_into)
-        .and_then(|into| content.spells.get(into))
-        .filter(|explosion| crate::game::hits::definitions::row(explosion).is_some());
-    if let Some(explosion) = explosion {
-        let side = cast.owner.and_then(|owner| standings.get(owner).ok()).map(|s| s.stance);
-        let against = match side {
-            Some(side) if cast.backfired => Against::Opponents(side).reversed(),
-            Some(side) => Against::Opponents(side),
-            None => Against::Everyone,
-        };
-        let radius = Radius(reach::blast_radius(explosion, strength.power));
-        let figure = caster_level(cast.owner, explosion, &levels);
-        let strength = super::power::strength(figure, strength.power, strength.boost, explosion);
-        let strike = Strike::new(Rows::Spell(explosion.id), strength, cast.owner, &content);
-        let fallen = cast.victims.iter().filter(|&&victim| {
-            vitals.get(victim).is_ok_and(|(vitals, never)| !never && vitals.is_dead())
-        });
-        for &victim in fallen {
-            let at = places.of(victim).feet;
-            let blast = (Takes::Blast, Spot(at), Origin(at), radius, against);
-            let aim = commands.spawn((blast, Burst(strike.clone()))).observe(burst_taken).id();
-            commands.trigger(Take { aim });
-        }
-    }
-    commands.trigger(MayTurnBack { deed });
-    Ok(())
-}
-
-/// The caster level whoever a spell comes from casts it at; none for no one.
-fn caster_level(
-    owner: Option<Entity>,
-    spell: &SpellDefinition,
-    levels: &Query<&CasterLevels>,
-) -> i32 {
-    owner.and_then(|owner| levels.get(owner).ok()).map_or(0, |owned| owned.caster_level(spell))
-}
-
-/// A spell's bursts are set off: it may now be turned back.
-#[derive(EntityEvent, Clone, Copy, Debug)]
-pub struct MayTurnBack {
-    #[event_target]
-    pub deed: Entity,
-}
-
-/// An Eye for an Eye turns a spell back: who paid the charge, and the power
-/// it comes back at.
-#[derive(EntityEvent, Clone, Copy, Debug)]
-pub struct TurnedBy {
-    #[event_target]
-    pub deed: Entity,
-    pub charged: Entity,
-    pub power: u32,
-}
-
-/// Whom a spell turned back comes from (whose level it is as strong as) and
-/// where from.
-#[derive(EntityEvent, Clone, Copy, Debug)]
-pub struct ComesBack {
-    #[event_target]
-    pub deed: Entity,
-    pub charged: Entity,
-    pub power: u32,
-    pub source: Option<Entity>,
-    pub from: Vec3,
-}
-
-/// A spell aimed at enemies (not a backfire, and not one turned back
-/// already) is turned back by the strongest Eye for an Eye among its living
-/// victims, members first in the order the cast took them, then monsters,
-/// the first of equals, who pays a charge (retail `FinishSpellEffectTargets`),
-/// at the lesser of the cast's power and the eye's.
-fn turn_back(
-    may: On<MayTurnBack>,
-    deeds: Query<(&Spell, &Deed)>,
-    vitals: Query<(&Vitals, Has<Untargetable>)>,
-    roster: Single<&PartyRoster>,
+    (standings, levels, fighters): (
+        Query<&Standing>,
+        Query<&CasterLevels>,
+        Query<(), With<CanFight>>,
+    ),
+    reaching: Reaching,
     mut laying: Laying,
     content: Res<Catalogs>,
+    mut news: MessageWriter<MagicNews>,
     mut commands: Commands,
 ) -> Result {
-    let deed = may.deed;
-    let (cast, made) = deeds.get(deed)?;
+    let (cast, made) = deeds.get(landed.deed)?;
     let spell = &content.spells[cast.id];
-    if crate::game::hits::definitions::row(spell).is_none()
-        || !spell.aimed_at_enemies()
-        || cast.backfired
-        || cast.reflected
-    {
+    let side = |body: Option<Entity>| body.and_then(|b| standings.get(b).ok()).map(|s| s.stance);
+    let figure = |body: Option<Entity>, spell: &SpellDefinition| {
+        body.and_then(|b| levels.get(b).ok()).map_or(0, |l| l.caster_level(spell))
+    };
+    let alive = |body: Entity| vitals.get(body).is_ok_and(|(v, never)| !never && !v.is_dead());
+    let fallen = |body: Entity| vitals.get(body).is_ok_and(|(v, never)| !never && v.is_dead());
+    let strength = made.strike.strength;
+    if let Some(burst) = bursts(spell, &content) {
+        let radius = reach::blast_radius(burst, strength.power);
+        let against = Against::opposing(side(cast.owner), cast.backfired);
+        let figure = figure(cast.owner, burst);
+        let strength = super::power::strength(figure, strength.power, strength.boost, burst);
+        let strike = Strike::new(Rows::Spell(burst.id), strength, cast.owner, &content);
+        for &victim in cast.victims.iter().filter(|&&victim| fallen(victim)) {
+            let at = reaching.place(victim).feet;
+            let area = Area::Blast { spot: at, origin: at, radius };
+            let taken = reaching.takes(area, None, against);
+            commands.spawn((Deed::at(strike.clone(), taken), Magical));
+        }
+    }
+    let turnable = crate::game::hits::definitions::row(spell).is_some()
+        && spell.aimed_at_enemies()
+        && !cast.backfired
+        && !cast.reflected;
+    if !turnable {
         return Ok(());
     }
-    let living =
-        |body: Entity| vitals.get(body).is_ok_and(|(vitals, never)| !never && !vitals.is_dead());
     let mut order = cast.victims.clone();
-    order.sort_by_key(|victim| !roster.contains(victim));
-    let Some((charged, eye_power)) = order
+    order.sort_by_key(|victim| !reaching.party().any(|member| member == *victim));
+    let Some((charged, eye)) = order
         .into_iter()
-        .filter(|&victim| living(victim))
+        .filter(|&victim| alive(victim))
         .filter_map(|victim| Some((victim, laying.turns_back(victim)?)))
         .reduce(|best, eye| if eye.1 > best.1 { eye } else { best })
     else {
         return Ok(());
     };
     laying.turn_back(charged);
-    let power = made.strike.strength.power.min(eye_power);
-    commands.trigger(TurnedBy { deed, charged, power });
-    Ok(())
-}
-
-/// Whom and where from a spell turned back comes: a blast or a cone from
-/// where it went off, an all-enemies spell from where it set out, as its
-/// owner; a group spell from the leader of the group aimed at (`Leads`); a
-/// spell at a body from that body; anything else from the first member able
-/// to fight, at the party's eye.
-#[allow(clippy::type_complexity)]
-fn comes_back_from(
-    turned: On<TurnedBy>,
-    deeds: Query<&Spell>,
-    bodies: Query<(), With<Vitals>>,
-    fighters: Query<(), With<CanFight>>,
-    grouping: (Query<&GroupMember>, Query<&GroupMembers>, Query<(), With<Leads>>),
-    roster: Single<&PartyRoster>,
-    places: Places,
-    content: Res<Catalogs>,
-    mut commands: Commands,
-) -> Result {
-    let TurnedBy { deed, charged, power } = *turned;
-    let cast = deeds.get(deed)?;
-    let eye = roster.first().map_or(cast.from, |&member| places.of(member).eye);
-    let eye_of = |actor: Entity| if bodies.contains(actor) { places.of(actor).eye } else { eye };
-    // The leader of a body's monster group, or the body itself.
-    let leader = |body: Entity| {
-        grouping
-            .0
-            .get(body)
-            .and_then(|member| grouping.1.get(member.0))
-            .ok()
-            .and_then(|members| members.iter().find(|&mate| grouping.2.contains(mate)))
-            .unwrap_or(body)
+    let power = strength.power.min(eye);
+    news.write(MagicNews::Landed { effects: vec![Effect::Reflected { victim: charged }] });
+    let first = reaching.party().find(|&member| fighters.contains(member)).unwrap_or(cast.caster);
+    let party_eye = reaching.party().next().map_or(cast.from, |m| reaching.place(m).eye);
+    let eye_of = |body: Entity| match vitals.contains(body) {
+        true => reaching.place(body).eye,
+        false => party_eye,
     };
-    let (source, from) = match (content.spells[cast.id].targeting, cast.aim) {
-        (Targeting::Radius | Targeting::Cone, Aim::Point(at)) => (cast.owner, at),
-        (Targeting::Radius | Targeting::Cone | Targeting::AllEnemies, _) => (cast.owner, cast.from),
-        (Targeting::EnemyGroup, Aim::Body(entity)) => {
-            let leader = leader(entity);
-            (Some(leader), eye_of(leader))
-        }
-        (_, Aim::Body(entity)) => (Some(entity), eye_of(entity)),
-        _ => {
-            let first =
-                roster.iter().find(|&member| fighters.contains(member)).unwrap_or(cast.caster);
-            (Some(first), eye)
-        }
+    // Whom it comes from, and where from.
+    let from_body = |lead: Entity| (Some(lead), eye_of(lead));
+    let from_area = match cast.aim {
+        Aim::Point(spot) => (cast.owner, spot),
+        _ => (cast.owner, cast.from),
     };
-    commands.trigger(ComesBack { deed, charged, power, source, from });
-    Ok(())
-}
-
-/// A spell turned back falls on its owner's side: an aimed spell on its
-/// owner, a group spell on the owner's group, a blast on whoever of that
-/// side stands within its radius of the owner, a cone on whoever is in it
-/// from where it comes back toward where it went off, an all-enemies spell
-/// on whoever is within its reach of where it set out. It is a deed of its
-/// own, as strong as its new source, flying back if the spell is a missile.
-#[allow(clippy::type_complexity)]
-fn turned_aim(
-    comes: On<ComesBack>,
-    deeds: Query<(&Spell, &Deed)>,
-    standings: Query<&Standing>,
-    (bodies, levels): (Query<(), With<Vitals>>, Query<&CasterLevels>),
-    roster: Single<&PartyRoster>,
-    places: Places,
-    content: Res<Catalogs>,
-    mut commands: Commands,
-) -> Result {
-    let ComesBack { deed, charged, power, source, from } = *comes;
-    let (cast, made) = deeds.get(deed)?;
-    let spell = &content.spells[cast.id];
+    let returns = spell.targeting.aiming().returns;
+    let (source, from) = match (returns, cast.aim) {
+        (Returns::Blast | Returns::Cone, _) => from_area,
+        (Returns::Reached, _) => (cast.owner, cast.from),
+        (Returns::Group, Aim::Body(aimed)) => from_body(reaching.leader(aimed)),
+        (_, Aim::Body(aimed)) => from_body(aimed),
+        _ => (Some(first), party_eye),
+    };
+    // Whom it falls on: its owner's own side.
+    let against = Against::opposing(side(cast.owner), true);
     let owner = cast.owner;
-    let against = match owner.and_then(|owner| standings.get(owner).ok()) {
-        Some(standing) => Against::Opponents(standing.stance).reversed(),
-        None => Against::Everyone,
-    };
-    let at_owner = At(owner.map_or(Aim::Point(cast.from), Aim::Body));
-    let mut aim = match spell.targeting {
-        Targeting::EnemyGroup => commands.spawn((Takes::Group, at_owner)),
-        Targeting::Radius => {
-            let party = roster.first().map_or(cast.from, |&member| places.of(member).feet);
+    let at_owner = owner.map_or(Aim::Point(cast.from), Aim::Body);
+    let area = match returns {
+        Returns::Owner => Some(Area::One(at_owner)),
+        Returns::Group => owner.map(Area::Group),
+        Returns::Blast => {
+            let party = reaching.party().next().map_or(cast.from, |m| reaching.place(m).feet);
             let centre = owner
-                .filter(|&owner| bodies.contains(owner))
-                .map_or(party, |owner| places.of(owner).feet);
-            let radius = Radius(reach::blast_radius(spell, power));
-            commands.spawn((Takes::Blast, Spot(centre), Origin(cast.from), radius, against))
+                .filter(|&owner| vitals.contains(owner))
+                .map_or(party, |owner| reaching.place(owner).feet);
+            let radius = reach::blast_radius(spell, power);
+            Some(Area::Blast { spot: centre, origin: cast.from, radius })
         }
-        Targeting::Cone => {
-            let reach = Reach(spell.reach.metres());
-            commands.spawn((Takes::Cone, Origin(from), Spot(cast.from), reach, against))
+        Returns::Cone => {
+            Some(Area::Cone { origin: from, spot: cast.from, reach: spell.reach.metres() })
         }
-        Targeting::AllEnemies => {
-            let radius = Radius(spell.reach.metres());
-            commands.spawn((Takes::Blast, Spot(cast.from), Origin(cast.from), radius, against))
+        Returns::Reached => {
+            let radius = spell.reach.metres();
+            Some(Area::Blast { spot: cast.from, origin: cast.from, radius })
         }
-        Targeting::Enemy => commands.spawn((Takes::One, at_owner)),
-        // Nobody else.
-        _ => commands.spawn((Takes::One, At(Aim::Point(cast.from)))),
+        Returns::NoOne => None,
     };
-    let boost = made.strike.strength.boost;
-    let strength =
-        super::power::strength(caster_level(source, spell, &levels), power, boost, spell);
-    let turned = TurnedBack {
-        charged,
-        strike: Strike::new(Rows::Spell(spell.id), strength, Some(charged), &content),
-        spell: Spell {
-            id: spell.id,
-            caster: cast.caster,
-            backfired: false,
-            reflected: true,
-            owner: source,
-            from,
-            aim: at_owner.0,
-            victims: Vec::new(),
-        },
-        flies: spell.missile.is_some(),
-    };
-    let aim = aim.insert(turned).observe(turned_back).id();
-    commands.trigger(Take { aim });
-    Ok(())
-}
-
-/// A burst has taken in whom it strikes: it is a deed of its own.
-fn burst_taken(took: On<Took>, aims: Query<(&Burst, &Victims)>, mut commands: Commands) -> Result {
-    let (Burst(strike), Victims(victims)) = aims.get(took.aim)?;
-    commands.spawn((Deed::at(strike.clone(), victims.iter().copied()), Magical));
-    commands.entity(took.aim).despawn();
-    Ok(())
-}
-
-/// A spell turned back has taken in whom it strikes: the turning back is
-/// told, and it is a deed of its own, flying back to each if it is a missile.
-fn turned_back(
-    took: On<Took>,
-    aims: Query<(&TurnedBack, &Victims)>,
-    places: Places,
-    mut news: MessageWriter<MagicNews>,
-    mut commands: Commands,
-) -> Result {
-    let (turned, Victims(victims)) = aims.get(took.aim)?;
-    news.write(MagicNews::Landed { effects: vec![Effect::Reflected { victim: turned.charged }] });
-    let from = turned.spell.from;
-    let flights = victims
+    let victims = area.map_or_else(Vec::new, |area| reaching.takes(area, None, against));
+    let strength = super::power::strength(figure(source, spell), power, strength.boost, spell);
+    let strike = Strike::new(Rows::Spell(spell.id), strength, Some(charged), &content);
+    let flies = spell.missile.is_some();
+    let flights: Vec<(Entity, Option<f32>)> = victims
         .iter()
-        .map(|&victim| (victim, turned.flies.then(|| flight(from, places.of(victim).eye))));
-    let spell = Spell { victims: victims.clone(), ..turned.spell.clone() };
-    commands.spawn((spell, Deed::flying(turned.strike.clone(), flights)));
-    commands.entity(took.aim).despawn();
+        .map(|&victim| (victim, flies.then(|| flight(from, reaching.place(victim).eye))))
+        .collect();
+    let back = Spell {
+        id: spell.id,
+        caster: cast.caster,
+        backfired: false,
+        reflected: true,
+        owner: source,
+        from,
+        aim: at_owner,
+        victims,
+    };
+    commands.spawn((back, Deed::flying(strike, flights)));
     Ok(())
+}
+
+/// What a spell's fallen burst into, if its row says they do: Boiling
+/// Blood's explosion.
+fn bursts<'a>(spell: &SpellDefinition, content: &'a Catalogs) -> Option<&'a SpellDefinition> {
+    let into = crate::game::hits::definitions::row(spell)?.bursts_into?;
+    content.spells.get(into).filter(|burst| crate::game::hits::definitions::row(burst).is_some())
 }

@@ -991,166 +991,74 @@ into the sections above.
 
 ## How this is built
 
-### The rebuild under way (approved 2026-11-17)
-
-The table and the paragraphs after this section describe the code that is
-being replaced. That code splits a cast into a chain of events and attaches
-the observer of each step to each cast by a hook. Here is what replaces it.
-
-**What one may cast with is an entity: a castable.** It is one of these:
-- a member's learned spell, an entity of theirs;
-- an item's spell, which is the item;
-- a monster's slot.
-
-On each, a castable carries the spell's record, read from content as it is
-made. It also carries these figures, written in `Settle` by one system each
-when its inputs change:
-- whether it may be cast now, or why not;
-- the most power it can be cast at;
-- how likely it fails at each power, before the round's pace;
-- the figure its strength grows from, and its boost;
-- how likely a blind caster's aim holds anyway.
-
-The magic menu, the monster's weighing of its slots and the cast all read
-these figures. None of them works them out again. A member's version and a
-monster's version of a rule differ only in what is written onto the
-castable.
-
-**A cast is one moment, so it is one observer.** `Cast { castable, power,
-aim }` is heard by one observer. It reads the castable's figures and works
-out, in order:
-- whether it is refused;
-- whom it takes;
-- its power, and the area that power spreads over;
-- the roll: whether it went astray or backfired;
-- what it pays.
-
-Nothing is attached per cast, and no step triggers the next. What differs by
-kind of target or by means is data on the castable. It is not code in the
-arms of a `match`.
-
-**A spell in the air is one entity.** A cast that comes off or backfires is
-spawned as a spell in the air, from the moment it is let go until all of it
-has landed. It carries:
-- its strike;
-- its victims;
-- whom it came from and where from;
-- what may follow it: bursts, being turned back, a drain's share, the
-  caster's practice, a recast.
-
-A burst or a reflection is a new spell in the air, made the same way. A
-refused or fizzled cast never becomes one.
-
 The sections above are the rules. This says how the code is to be shaped
 around them; where the code differs from it, the code is wrong.
 
-**A cast is an entity** (`CastBy` its caster, `magic/casting`), made by
-`Cast` with the spell's definition read from content as it is made
-(`CastSpell`), what the caster chose (`Chosen`), and what it is cast with:
-`LearnedSpell { asked }`, `FromItem(item)` or `Innate { power, budget, level }`.
-It is gone when it is released or refused. Each step is one event on the
-cast, heard by the observer of what that step reads; the next is triggered
-by the one before:
+**What one casts with is a castable** (`magic/castable.rs`). This is an entity
+carrying the spell's record (`CastableSpell`), read from content when the
+entity is made. It is one of three things:
+- a member's learned spell (`Learned`, `CastableOf` its caster);
+- an item that casts, whose `CastableSpell` is set as its use is made;
+- a monster's slot (`SlotOf`).
 
-| Event | Heard by | What it settles |
-| --- | --- | --- |
-| `Ask` | the means' own (`may_learned`, `may_item`, `may_innate`, set by the means' hook) | refused (section 2, its order kept), or `Allowed` |
-| `Allowed` | for a deed, its kind's first aim (`aim_at_caster`, `aim_at_friend`, `aim_at_party`, `aim_at_foe`, `aim_at_all_foes`); for a utility spell, its working's mark | the first aim, or the utility spell's `Mark` |
-| `Aimed` | the means' own (`power_*`) | `Power`, `Strength`, `Failure`, `SeesBlind`; an instrument played too badly pays, trains and is refused here |
-| `Spread` | its kind's (`spread_over_group`, `spread_over_cone`, `spread_over_blast`, `widen` at the party; the rest and a utility spell, `spread_nothing`) | the area its power spreads over: a group, a cone, a blast, the party's allies |
-| `Roll` | `roll` | `Came`: cast, fizzled or backfired; Fire under water quenched; then `Rolled`, and `CameOff`, `Backfired` or `Fizzled` |
-| `Rolled` | a member's spell against enemies, `provoke` (set by `Provokes`); a utility spell, its payment | those it reaches provoked, whatever the roll |
-| `CameOff` | a deed's `go_astray` | whether a blind caster's aim strays (`Strays`), or it is paid for as aimed |
-| `Strays` | its kind's (`stray_at_one`, `stray_at_group`, `stray_cone`, `stray_blast`; at the caster, the party or every foe, `stray_nowhere`) | the aim it lands by (`LandsBy`) gone astray, and the caster told; or paid for as aimed |
-| `Backfired` | its kind's (`fall_on_caster`, `fall_on_group`, `fall_blast`, `fall_on_fellows`) | the aim it lands by, turned on the caster's side |
-| `Fizzled` | a deed's `fizzled` | paid for |
-| `Pay` | the means' own (`pay_*`) | `Pays`, `Spend` |
-| `Release` | for a deed, `release`; for a utility spell, `release_work` | the report told; `Spent` for a fizzle (an auto cast goes again), or `Lets`; or `Worked`, heard by the working's observer and the means' practice |
-| `Lets` | its kind's (`from_caster`, `from_aimed`, `from_leader`, `from_spot`, `from_spot_to_spot`) | whom it comes from and from where, what it was aimed at, and the spot its missiles fly to: `LetGo` |
-| `LetGo` | `let_go` | the deed made, and `Released` for what its means puts beside it (practice, an auto recast) |
+A learned spell's figures are written in `Settle`, one system each:
+- `Barred`: what stops it now;
+- `MostPower`;
+- `FailsAt`: the chance at each power, before the round's pace;
+- `StrengthFigure` and `Boost`;
+- `SeesBlind`.
 
-Which of these observers a cast has is set by what it is: a learned
-spell, an item and a monster's own each set their `may`, `power` and `pay`
-(and a member's practice, an auto cast going again) by the means
-component's hook. `begin` makes the cast with what it is cast with, marks
-a potion or food used in a fight `TakenByUser`, and inserts the spell
-(`CastSpell`) last; `CastSpell`'s hook then sets the rest: a utility
-spell's working, its mark and work (`Worked` is heard on the cast, by its
-working's observer alone), or a deed's kind of target and the steps every
-deed has. A deed's kind of target is a component of the cast: `AtCaster`,
-`AtFriend`, `AtParty`, `AtFoe`, `AtFoeGroup`, `AtCone`, `AtBlast` or
-`AtAllFoes`, from the spell's targeting, `AtCaster` when taken by its
-user.
-Its hook sets the observers of the steps where kinds differ (its first
-aim, spread, stray, fall and whom it comes from once let go); what is the
-same for all kinds is one observer. A spell at a spot, an item or a lock
-with no working of its own has no kind and is refused as unsupported once
-allowed. A member's cast (learned or item) is made `Widens` and, aimed at
-enemies and not an auto cast going again, `Provokes`.
+An actor's `Repertoire` is the count of spells it knows in each realm, and
+its dearest. Spell points and usable skills follow it. The magic menu reads
+these figures. A cast names its castable: `MagicChoice { castable, power,
+aim }`.
 
-**Where the party is, as magic sees it, is a figure** on the party
-(`magic/occasion`), settled with the bodies: `UseContext` (a fight; a lock
-being picked or looted, or a trap disarmed; talking with someone; camped;
-exploring, the first that holds), and the markers `Occupied`, `SpokenTo`
-and `Unsteady`. The cast and the spell view both read it.
+**What it is cast with answers through `Means`** (`casting/means.rs`). This
+accessor says three things:
+- whether it may be cast now (section 2);
+- its power, strength, failure chance and blind aim (section 3);
+- what it tires its caster by and trains (section 7).
 
-**Whom a cast reaches is an aim** (`magic/aim`). A cast's aim is an entity
-(`AimOf` the cast, `At` what it was aimed at), and whom it takes in is its
-`Victims`, in the order of the fight, filled by one observer for each kind
-of target (`Takes`) (the caster, one body, a friend, the party, the foe aimed at or ahead, a
-body's group, every body reached, a cone, a blast), set by `Takes`' hook;
-whom it is against is data on it (`Against`: the foes of whose it is, its
-fellows, the opponents of a side, everyone). What the taker reads is on the aim,
-written by whoever made it: whose it is, where it goes off from, its reach,
-its radius once the power is known, and whom it is against. So a burst, a
-reflection and a cloud's pulse are aims too, with no caster. A utility
-spell's mark (a lock, an item, the one spoken with, a spot in sight) is an
-aim kind of its own. A blind caster's aim gone astray, and a backfire, are
-new aims; whom they take in follows. An aim is made by one observer and
-read by the next step, never by its maker: its takers run after it is made.
-A blast's aim is made with its spot, and takes in once its power has given
-it a radius.
+A learned spell reads its figures. An item reads the item and its user, and
+its user decides whether it may be set off. A monster's slot reads the
+monster's budget and level.
 
-A monster weighing its slots *proposes* aims (from what it sees, section 5
-of [monsters](monsters.md)); whom each would take in is the same taker's.
-Retail judges a monster's area, group and all-enemies aims on the cast's own
-victims at the power it would choose (`MonsterSpellTargetOK` on a place,
-`MonsterAI.cpp:1395-1427`; `SpellAreaHitsNeutralMonster` likewise,
-`MonsterAI.cpp:1793-1815`, both calling `PopulateSpellTargetMarkers`). Until
-*Unknown* 29 (which side a monster's blast and cone take) is settled, the
-monster's area aims keep taking in every living body, which is what lets a
-neutral spoil them; only the geometry is shared.
+**A spell that ends in a deed is cast in one moment, by one observer**
+(`casting/deed.rs`). It goes in the page's order:
+1. refused, and nothing is spent;
+2. its first aim;
+3. its power;
+4. the area its power spreads it over;
+5. the provocation;
+6. the roll;
+7. a blind caster's aim gone astray, or a backfire;
+8. the payment;
+9. its release as a deed.
 
-**Who may be taken is what the bodies are.** Magic takes the party's
-members and the monsters, living, but never a monster magic never targets
-(`Untargetable`); a companion out of the party is set aside and is no one.
-They are taken in the original's order, read where it is needed: the
-members by seat, then the monsters as they were placed (their location),
-the order in which retail walks its monster list (`CollectMonstersWithinRadius`,
-`Targeting.cpp:1321`; `CollectConeMonsterTargets`, `Targeting.cpp:3126`;
-`PickBackfireTarget`, `Magic.cpp:3415`). Nothing gathers the field, and no
-component copies a seat or a location.
+No observer is attached to it, and no step triggers the next. How its kind of
+target is aimed is a row of `assets/tables/targeting.ron`:
+- whom its first aim takes;
+- what its power spreads it over;
+- where it strays;
+- what a backfire falls on;
+- whom a backfire comes from;
+- what Eye for an Eye turns it back as.
 
-- A member's blast, cone and all-enemies spell take any monster in reach,
-  in the fight or not (retail walks every active monster). Whether a spell
-  aimed at enemies can be cast outside a fight at all is the spell's
-  usable-when (section 2); where it can, *Defect* 19 is the rule.
-- A spell gone astray takes another member, or a living monster in the
-  fight (`Combatant`), never the caster (`PickBackfireTarget`).
-- A group spell turned back, and one reflected, come from the group's
-  leader (`Leads`; `RedirectBackfiredSpellTarget`, `Magic.cpp:3279-3284`),
-  not the first of it to join the fight.
-- Eye for an Eye is the strongest among the victims, members first in the
-  order the cast took them, then monsters, the first of equals
-  (`FinishSpellEffectTargets`, `Magic Effects.cpp:2772`).
+**Whom an area takes in is answered by `Reaching`** (`magic/aim.rs`), as it
+is asked. An area is a value (`Area`): the caster, one body, a friend
+reached, the party, a group, every body reached, a cone or a blast. It is
+taken in against a side (`Against`). The cast, the bursts, a reflection and
+a cloud's pulse all ask it, and nothing is spawned to ask. Monster
+deliberation proposes aims of its own (section 5 of [monsters](monsters.md)).
 
-**What a cast is cast with says how it pays and how strong it is.** A
-learned spell pays points from its realm, an item a use, a monster's own
-nothing; each is an observer of the paying step set by the means'
-component. The strength, the failure chance and the power likewise.
-
-`Field`, `Aiming`, `Means`, `Circumstances`, `Marks`, `Body` and
-`engage::Fighters` are gone: nothing hands a rule the world or an actor whole.
+**A utility spell is still an entity while its working finds what it is cast
+at.** Its mark is the working's own rule, in the working's domain: a lock, an
+item, the one spoken with, a spot. So `begin` asks `Means` whether it may be
+cast, then makes the cast entity (`CastBy`) and lets the working's observer
+look (`Allowed`, then `marked`). After that, `work` settles its power,
+rolls, pays and trains, and the working does what it is for (`Worked`). This
+is the one other path; folding it into the deed observer needs the marks
+expressed as data.
 
 **A deed is a thing.** What a cast does to others is an entity (`Deed`): the
 rows it follows, its strength, and whom it has yet to reach. It lands on each
