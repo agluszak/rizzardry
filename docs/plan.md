@@ -156,22 +156,16 @@ of `Catalogs`; `QueryData`/`SystemParam` in `game` (43 at the start).
    `integration/level_lifecycle.rs` move onto the game's plugins; tests of
    removed types are deleted, not rebuilt.
 
-## In progress: a moment in a fight, from decision to deed
+## In progress: step 3, a cast is an entity
 
-The turn is still a procedure: `take_turn` mixes four things, `act` copies
-components into `Plans` and calls `interrupt` and `friend_in_reach`, the
-moment is ended by hand (`turn.end()` 13 times, the pause set 7), and
-`Sight` hands every combat rule the world whole (41 calls of its getters).
-This slice makes a moment events and entities from end to end, then goes on
-to step 3. The model for parts 1 and 2 is written into
-[rules/monsters.md](rules/monsters.md) ("How this is built") before any code.
+The last slice (a moment in a fight, from decision to deed; weapon sets;
+setting aside) is done and pushed (`516e8e1`): unit suite 175/175, retail
+30/30. What it built is under "Done" below and in the rule pages' "How this
+is built". Step 3 is next; its model is written in
+[rules/casting.md](rules/casting.md) ("How this is built") and **waits for
+the user's approval before any code**.
 
-Counted before and after: `Sight` and its getters' callers, `Plans`,
-`interrupt`, `friend_in_reach`, `breath::available`, `closes_in`,
-`turn.end()` and pause sites, `Field` uses.
-
-Rules settled by the last slice (singletons, events and lookups), which hold
-for this one:
+Rules settled so far, which hold for what comes next:
 
 - A sequence is events, not components added: the one that starts it queues
   its moments in order; observers of one event are independent of one
@@ -205,147 +199,68 @@ for this one:
   reads X; `Option<Res<X>>` only where both cases do something.
 - A refactor redesigns its readers too; "readers stay as they are" is not a
   rule.
+- An action, an attack and a deliberation are made by whoever decides, who
+  then triggers their sequence (`Acts`, `Seeks`, `Begun`); what follows an
+  outcome (`Found`, `Nobody`) is attached to the entity by its maker. What
+  differs by kind (member or monster) is an observer attached where the kind
+  is made (`Order`'s and `Temper`'s observers in `combat::turn`), never a
+  branch on an optional component.
+- Being set aside is a state of a thing: a level left, or a companion out of
+  the party, is only its root `Disabled`; each relationship whose held
+  things go with their holder says so where it is declared
+  (`world::aside::follows`). A new relationship does not follow unless it
+  says so. Momentary and presentation relationships never do.
+- Retail is read before a rule is written or corrected, and the claim cited
+  (file and line). Twice this slice a rule written from memory was wrong
+  (berserk's persistence, insanity's reach check).
 
+### Next, in order
 
-### 1. An action is an entity, and its ailments are facts of it
+1. **Check `slot::fill`.** It despawns a spell slot from an observer of
+   `Add<Casts>`. If `SlotOf` is spawned in the same bundle, the monster's
+   `Slots` keeps a dead entry (the bug `Acting` had), and `look_to_open`'s
+   `let Ok(..) else { continue }` hides it. Make the maker decide, or check
+   before spawning.
+2. **Step 3** once the user approves the model in `rules/casting.md`: a cast
+   is an entity whose facts are added in the page's order; what it is cast
+   with is a component (`Learned`, `FromItem`, `Innate`) whose hook sets the
+   rules that differ by it; whom it reaches is the monster's aim entities
+   and their takes-in, one observer per kind of target, so "who may be
+   taken" is one rule; `TakeOrder` is a figure. `Field`, `Aiming`, `Means`,
+   `Circumstances`, `Marks`, `Body` and `engage::Fighters` (the old
+   `fighters_of` moved into an accessor) go.
+3. Steps 5 to 7 as above.
 
-Retail `GetConditionInterrupt` (`Combat.cpp:2940`) and its callers
-(`:2176` a member's, `:2429` a monster's); the model is in
-[rules/monsters.md](rules/monsters.md), section 8 and "How this is built".
+### Open questions
 
-- `Decided` gives way to an **action** entity made by whoever decided
-  (`ActionOf`); what it is is which component it has (`Strikes`,
-  `Retreats`, `Holds`, `Protects`, `Breathes`, `Casts`), and `AtFoes` is
-  written by its maker. `Decision`, `Fights`, `Retreats` as a struct and
-  `act`'s `match` go; each kind's doer is attached by its component's hook
-  and hears `Unhindered`.
-- Its ailments are one event and one observer each, in retail's order,
-  each reading its own sources; what took the action is an event of its
-  own (`Nauseated`, `BrokeFree`, …), each with its observer. `Plans`,
-  `interrupt`, `Interrupt` as a value carried around (it stays only as the
-  notice's number) and `friend_in_reach` go: insanity makes the strike at
-  friends itself, whose search is retail's check (a monster needs sight and
-  a clear line, `Combat Range.cpp:533`; a member looks among fellows).
-- **Fixed against retail on the way:** a berserk actor whose later action
-  an ailment takes strikes friends instead of losing it (`:2461`); a
-  Turncoat action is told (`0x3a9`); a taken or berserk action does not
-  provoke (`:2238`, `:2479`); fear's exception is the action being a run,
-  not `Fleeing`.
-- **New, and needing what is not here:** a Turncoat member who can strike
-  nobody swaps weapon sets (retail `SwapWeaponSetSlots`). There is no
-  weapon-set swap in the game yet; it is made as an event over the two
-  sets' slots, and this rule uses it.
-- To find out: what a member's `W8_ACTION_RUN` (fear's exception) is here.
+- What a member's `W8_ACTION_RUN` (fear's exception, `Combat.cpp:2965`) is
+  in this game; today only a monster's flight counts as a run.
+- Whether disabling a level takes it out of physics and navigation, or
+  their own handles must be removed and restored too
+  ([rules/levels.md](rules/levels.md)).
 
-### 2. A moment ends by events
+### Left, low value
 
-Today `turn.end()` is written 13 times and the pause 7. They are two facts
-that do not always go together: a strike holds the fight for its pause
-with attacks left (`swings/mod.rs:342`), while holding back, a lost turn,
-a refused breath, the party's move costing a member its moment
-(`orders.rs:190`), waiting instead of striking (`swings/mod.rs:502`) and
-standing for want of a goal (`:546`, `:570`) end the turn without one. So
-the proposal is two events, `Done` and `Shown`, each one observer; one
-event with a field would be a flag read by one observer. **Asked of the
-user** before coding, since their outline said one event.
-
-### 3. The rest of the turn
-
-- **`Turn` splits** into one component per fact (`NextMoment`,
-  `AttacksLeft`, `AcceptedWith`, `Lightning`) and a marker per thing the
-  round did (`Moved`, `MadeSpecial`, `Waited`, `Berserk`), cleared as the
-  next round is taken up. `take_up`'s branch on an optional
-  `(&Order, &Traits, &Calling)` becomes an observer set where `Order` is
-  made.
-- **`take_turn` is a chain** (`Moment` → `Goes` → `Decides`), each one
-  observer, because observers of one event cannot stop one another. The
-  path for an actor with neither order nor temper goes: every monster gets
-  its `Temper` where it is made (`population.rs:364`).
-- **A breath to take is a figure**, `CanBreathe` (a marker like
-  `SpecialReady`), written by one system from `Traits`, `Modifiers` (the
-  breath laid, already summed) and `Vitals`. `breath::available` goes.
-- **`Sight` goes**, each reader keeping its meaning: `side()` is
-  `Side::own`; `toward()` is `hostility::between` on two `Standing`s, with
-  the dead not counted and oneself a friend, written out where read; the
-  gap is `Places`. How well the party hides (its lowest able level, and
-  Chameleon) is a figure on the party, so seeing the party reads `Eyes`,
-  places and that figure. `look`, `reinforce`, engage, pursuit, noise,
-  round end, the deliberation and the aims read their own queries.
-- **Moving in a fight is figures**, one fact each: how far it walks now
-  (stride with haste or slowing) and how far at a charge, written by one
-  system from `Nature`, `Modifiers` and `Conditions`; `Charges` (hurt to 95
-  percent) by another from `Vitals`. Closing in reads both; a retreat never
-  charges; the lure reads `Nature`'s stride, halved and unhasted.
-  `closes_in`, `metres`, `MoveBudget` and `charges` go; `withdraws_to`,
-  `arrived` and `needs_approach` stay arithmetic on numbers.
-
-### Where it stands
-
-Done, compiling and clippy clean; the unit suite passed before the last
-two changes (`Sight`'s readers, the move figures), and has not been run
-since:
-
-- Parts 1 and 2: the action entity and its kinds (`combat/action.rs`), the
-  ailments as ordered steps, each interruption its own observer, `Done` and
-  `Shown`; `Plans`, `interrupt`, `friend_in_reach`, `act`, `Decision` and
-  `Decided` are gone. The retail fixes above are in, but the Turncoat
-  member's weapon-set swap.
-- Part 3: `Turn` split into its facts and the round's markers; taking up a
-  turn and deciding at a moment by observers set where `Order` and
-  `Temper` are made; `CanBreathe`; `Sight` gone (who sees whom is
-  `Eyesight`, the party's hiding the `PartyHides` figure); `Move` and
-  `Charges` figures; ending the party's move is an event
-  (`PartyMoveEnds`).
-- Tests that built a turn from its components were deleted (seven in
-  `combat/tests.rs`, the defending one in `armour.rs`, the arithmetic of
-  `close.rs`).
-
-Open:
-
-- **A command on a despawned entity** in the retail scenario
-  `the_party_fights_rests_and_finds_the_dead_still_dead`, not yet traced
-  (rerun with `--features bevy/debug` to name it).
-- The weapon-set swap is done (`inventory/weapon_sets.rs`,
-  `combat/other_set.rs`): the player's (W, Shift+W), a Turncoat member's and
-  the fight's own, one rule. Insanity and a Turncoat member ask the
-  strike's own search whether they can strike someone; a member turned or
-  berserk looks only among fellow members. Settled against retail: a
-  cursed weapon in use blocks the swap until its curse is released, and
-  moving it re-arms the curse (`PC Item.cpp:1293`, `:2149`, `:2788`); only
-  the Turncoat swap takes up attacks anew, the fight's own strikes with
-  those taken up, and either loses the rest of the round's moments
-  (`alternate_hand`); a member mid-attack is refused (`0x1f7`). Not tested
-  yet.
-- A lead on the despawn failure, by reading: `charging` inserts `Charges`
-  in the settle that kills a monster from full health; or `by_temper`'s
-  `.observe` on a short-lived monster.
-- **`engage::Fighters`** is the old `fighters_of` moved into an accessor;
-  it goes with `Body` in step 3.
-
-### 4. Then step 3, and steps 5 to 7
-
-Step 3 (a cast is an entity, `Field` and `Body` go) reuses the monster's
-slot, aim and takes-in model: a member's cast takes in whom it reaches as a
-monster's aim does, so who may be taken is one rule. Its model goes into
-[rules/casting.md](rules/casting.md) first. Steps 5 to 7 as above.
-
-### Left from the last slice
-
-- The lookup sweep's remainder (about 65 `if let Ok`, 175 `.ok()`-style)
-  is optional facts and presentation: form, not behaviour, left.
-- Being set aside follows the standing relationships, each declaring it
-  where it is (`world::aside::follows`); `Belongings`, its type-erased walk
-  over every `linked_spawn` relationship and its `unsafe` are gone. A
-  companion out of the party is set aside whole by the same rule.
+- The lookup sweep's remainder (about 65 `if let Ok`, 175 `.ok()`-style):
+  optional facts and presentation, form rather than behaviour.
 - Watch in play for a `?`/`expect` that panics where the old code returned
-  quietly: `take_up`/`act` for a monster without arms, `rest_the_idle` for
-  a combatant without `Mending`, hostility's `made` for an `Allegiance`
+  quietly: `take_up` for a monster without arms, `rest_the_idle` for a
+  combatant without `Mending`, hostility's `made` for an `Allegiance`
   without `Loyalty`.
 
 ### How the work goes
 
-The model for 1 and 2 in `rules/monsters.md` first, shown before coding.
-Clippy while working; the unit and retail suites once, before a commit.
+- A model goes into its rule page first and is shown to the user before
+  coding.
+- "Consult Fable" means the advisor tool. Consult it before a design and
+  whenever a change is only moving code from one place to another.
+- Clippy while working; the unit and retail suites once, before a commit;
+  say in the commit what ran. Never build with `--features bevy/debug`
+  (it rebuilds Bevy); probe with temporary `eprintln!` instead.
+- Keep what `cargo fmt` produces. No `pub(crate)`: an item is `pub` or
+  private.
+- Tests state rules by outcome; a test that builds an entity from its
+  internal components is deleted, not patched.
 
 ## Done, and not to be looked for again
 
@@ -360,6 +275,21 @@ Clippy while working; the unit and retail suites once, before a commit.
   actor is made; death, cheated or not, is settled in one place (`fall`).
 - Devices, encounters, items, levels, tables, conversation and the story are
   their rule pages' "How this is built".
+- A moment in a fight is events and entities
+  ([rules/monsters.md](rules/monsters.md), section 8 and "How this is
+  built"): an action entity whose kind is its component, weighed by its
+  actor's ailments in retail's order; `Done` and `Shown` end a moment;
+  `Turn` is its facts and the round's markers; `Sight` is gone for
+  `Eyesight` and the `PartyHides` figure; moving, charging and a member's
+  breath are figures. `Plans`, `interrupt`, `friend_in_reach`, `act`,
+  `Decision` and `Decided` are gone.
+- Weapon sets swap by one rule ([rules/items.md](rules/items.md)): the
+  player's (W, Shift+W), a Turncoat member's and the fight's own (the
+  "swap weapons when needed" option), with retail's curses, notices and
+  lost moments.
+- Setting aside follows declared relationships
+  ([rules/levels.md](rules/levels.md)); `Belongings` and its `unsafe` are
+  gone.
 
 Checked and **not** a problem: modules reading another domain's state;
 retail files as assets beside compiled-in tables; `Items` as the "what is
