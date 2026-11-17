@@ -422,7 +422,7 @@ mod tests {
     use crate::content::characters::{Gender, Profession};
     use crate::content::items::{EquipClass, ItemDefinition};
     use crate::game::actors::Settle;
-    use crate::game::characters::{Character, Lasting};
+    use crate::game::characters::Lasting;
     use crate::game::items::{Worn, make};
     use bevy::ecs::system::RunSystemOnce;
 
@@ -430,9 +430,10 @@ mod tests {
     fn mage() -> (App, Entity) {
         let mut app = App::new();
         app.add_plugins(crate::game::actors::plugin).init_resource::<crate::game::rng::GameRng>();
-        let character = Character::new("A", Race::Human, Gender::Male, Profession::Mage);
-        let vitals = Vitals::new(&character);
-        let member = app.world_mut().spawn((born(Race::Human), character, vitals)).id();
+        let mage = crate::game::characters::born("A", Race::Human, Gender::Male, Profession::Mage);
+        let member = app.world_mut().spawn(mage).id();
+        // Seated, so that dying happens to them.
+        crate::game::party::roster::test_party(app.world_mut(), &[member]);
         (app, member)
     }
 

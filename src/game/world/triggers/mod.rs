@@ -28,7 +28,7 @@ use crate::content::items::{Dice, ItemId};
 use crate::content::level::{
     Animation, Arrival, StateChange, TriggerAction, TriggerSound, TriggerUse, VariableName,
 };
-use crate::game::characters::{Calling, Vitals};
+use crate::game::characters::Vitals;
 use crate::game::hits::Damaged;
 use crate::game::items::Items;
 use crate::game::npcs::NpcSpeaker;
@@ -757,7 +757,7 @@ fn bid(
 fn hurt_party(
     hurt: On<HurtParty>,
     roster: Single<&PartyRoster>,
-    mut members: Query<&mut Vitals, With<Calling>>,
+    mut members: Query<&mut Vitals, With<crate::game::party::roster::PartyMember>>,
     mut rng: ResMut<GameRng>,
     mut laying: crate::game::actors::Laying,
     mut damage: MessageWriter<Damaged>,

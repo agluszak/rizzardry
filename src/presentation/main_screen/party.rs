@@ -4,7 +4,6 @@
 //! splats over the portraits. Clicking a slot selects the member, gives
 //! them the held item, or (double click) opens their review screen.
 
-use crate::presentation::character_view::{CharacterView, CharacterViewItem};
 use std::time::Duration;
 
 use bevy::picking::events::{PointerClick, PointerOut, PointerPress, PointerRelease};
@@ -150,7 +149,7 @@ pub fn build_party_parts(
     art: Res<MainScreenArt>,
     assets: Res<AssetServer>,
     slots: PortraitSlots,
-    members: Query<(), (With<crate::game::characters::Calling>, With<Vitals>)>,
+    members: Query<(), With<crate::game::party::roster::PartyMember>>,
     views: Query<(Entity, &PartyMemberView, &ChildOf)>,
     roots: Query<
         (Entity, Option<&PartySlot>, Option<&SlotPortrait>, Has<PartyWidgetsBuilt>),
@@ -298,7 +297,13 @@ pub fn draw_party(
     selected: Res<SelectedMember>,
     assets: Res<AssetServer>,
     slots: PortraitSlots,
-    members: Query<CharacterView>,
+    members: Query<(
+        Entity,
+        (&crate::game::characters::Identity, &crate::game::characters::Birth),
+        &Vitals,
+        &crate::game::characters::Conditions,
+        &crate::game::actors::Armour,
+    )>,
     held: crate::game::items::Items,
     content: If<Res<crate::game::data::Catalogs>>,
     mut parts: Query<(
@@ -322,9 +327,7 @@ pub fn draw_party(
         let mut value = None;
         let mut hand_x = None;
         let image = |path: &str, frame| (crate::content::paths::retail(path), frame);
-        if let Some(view) = actor {
-            let armour = view.armour;
-            let CharacterViewItem { entity, profile, vitals, conditions, .. } = view;
+        if let Some((entity, (identity, birth), vitals, conditions, armour)) = actor {
             let dead = vitals.is_dead();
             let worn =
                 |slot| held.worn(entity, slot).and_then(|i| held.id(i)).map(|id| &catalog[id]);
@@ -332,11 +335,7 @@ pub fn draw_party(
             let condition = condition_icon(vitals, conditions);
             match part.kind {
                 Part::Portrait => {
-                    let name = if dead {
-                        &skull(profile.birth.race)[1..]
-                    } else {
-                        &profile.identity.portrait
-                    };
+                    let name = if dead { &skull(birth.race)[1..] } else { &identity.portrait };
                     source = Some((
                         crate::content::paths::portrait(
                             crate::content::paths::PortraitSize::Medium,
@@ -395,7 +394,7 @@ pub fn draw_party(
                         None => image(
                             &format!(
                                 "data/main interface/{}.sti",
-                                crate::presentation::screen_art::empty_hands(profile.birth.race)
+                                crate::presentation::screen_art::empty_hands(birth.race)
                                     [usize::from(off)]
                             ),
                             0,
@@ -410,7 +409,7 @@ pub fn draw_party(
                     shown = !dead;
                     value = Some(armour.average.to_string());
                 }
-                Part::Name => value = Some(profile.identity.name.clone()),
+                Part::Name => value = Some(identity.name.clone()),
                 Part::HitPoints => {
                     shown = !dead;
                     value = Some(vitals.health.current.to_string());
@@ -494,7 +493,7 @@ pub fn draw_party(
                 && slot % 2 == 1
                 && member
                     .and_then(|e| members.get(e).ok())
-                    .is_some_and(|view| view.vitals.is_dead());
+                    .is_some_and(|(_, _, vitals, ..)| vitals.is_dead());
             if image.flip_x != flip {
                 image.flip_x = flip;
             }
@@ -506,7 +505,7 @@ pub fn draw_party(
 pub fn place_party_buttons(
     slots: PortraitSlots,
     layout: Res<ScreenLayout>,
-    members: Query<(), (With<crate::game::characters::Calling>, With<Vitals>)>,
+    members: Query<(), With<crate::game::party::roster::PartyMember>>,
     mut buttons: Query<(&SlotButton, &mut Node)>,
     mut empty: Query<(&EmptySlot, &mut Visibility)>,
 ) {

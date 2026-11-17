@@ -2045,7 +2045,7 @@ mod tests {
     }
 
     use crate::content::items::ItemCatalog;
-    use crate::game::characters::{Character, Vitals};
+    use crate::game::characters::born;
 
     const ARROWS: ItemId = ItemId(0);
     const BOW: ItemId = ItemId(1);
@@ -2102,15 +2102,10 @@ mod tests {
         ] {
             world.spawn(observer);
         }
-        let sheet = Character::new(
-            "Vi",
-            crate::content::characters::Race::Human,
-            Gender::Female,
-            Profession::Ranger,
-        );
-        let vitals = Vitals::new(&sheet);
+        let sheet =
+            born("Vi", crate::content::characters::Race::Human, Gender::Female, Profession::Ranger);
         let party = world.spawn(crate::game::party::roster::Party).id();
-        let member = world.spawn((sheet, vitals, PartyMember(party))).id();
+        let member = world.spawn((sheet, PartyMember(party))).id();
         (world, member, party)
     }
 

@@ -7,7 +7,7 @@
 use bevy::prelude::*;
 
 use super::EquipSlot;
-use crate::game::characters::{Calling, Identity, Vitals};
+use crate::game::characters::{Identity, Vitals};
 use crate::game::items::{Cursed, Fit, ItemNews, Items, Known, Place, Put, hold_together};
 use crate::game::party::roster::{Party, PartyRoster};
 
@@ -18,7 +18,10 @@ pub struct WeaponsHeld;
 
 /// Whether a curse holds a weapon in use follows what is worn there.
 pub fn held(
-    members: Query<(Entity, &Vitals, Has<WeaponsHeld>), With<Calling>>,
+    members: Query<
+        (Entity, &Vitals, Has<WeaponsHeld>),
+        With<crate::game::party::roster::PartyMember>,
+    >,
     items: Items,
     curses: Query<&Cursed>,
     mut commands: Commands,

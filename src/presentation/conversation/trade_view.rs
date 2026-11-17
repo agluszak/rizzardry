@@ -37,7 +37,7 @@ pub(super) fn sync_trade_rows(
     stocks: Query<&MerchantStock>,
     party: Single<(Entity, &PartyRoster), With<crate::game::party::roster::Party>>,
     members: Query<(
-        crate::game::characters::PaperReadOnly,
+        (&crate::game::characters::Calling, &crate::game::characters::Birth),
         &crate::game::actors::Attributes,
         &crate::game::actors::Skills,
     )>,
@@ -71,8 +71,8 @@ pub(super) fn sync_trade_rows(
                 && state.usability.is_none_or(|party_wide| {
                     let users = crate::game::items::users(d);
                     let admitted = |e| {
-                        let (character, attributes, skills) = members.get(e).unwrap();
-                        users.admit((character.calling, character.birth), attributes, skills)
+                        let (sheet, attributes, skills) = members.get(e).unwrap();
+                        users.admit(sheet, attributes, skills)
                     };
                     if party_wide {
                         roster.iter().any(admitted)

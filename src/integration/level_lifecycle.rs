@@ -8,7 +8,7 @@ use crate::content::items::ItemCatalog;
 use crate::content::level::{CollisionMesh, LevelDefinition, MonsterPlacement};
 use crate::content::monster::MonsterBody;
 use crate::content::species::{MonsterCatalog, Species};
-use crate::game::characters::{Character, Gender, Profession, Race};
+use crate::game::characters::{Gender, Profession, Race};
 use crate::game::data::Catalogs;
 use crate::game::party::body::{PartyBody, PartyMotionConfig};
 use crate::game::party::roster::Party;
@@ -40,6 +40,7 @@ fn app() -> App {
         .add_observer(crate::game::world::damage::halt)
         .add_observer(crate::game::world::damage::leave_loot)
         .add_observer(crate::game::characters::fall)
+        .add_plugins(crate::game::characters::draft::plugin)
         .init_resource::<crate::game::factions::Factions>()
         .add_message::<crate::game::factions::FactionNews>()
         .add_message::<crate::game::hits::Damaged>()
@@ -127,6 +128,20 @@ fn test_level(app: &mut App, collision: CollisionMesh) -> Level {
     }
 }
 
+/// A Human Fighter to found a new game's party.
+fn new_member(world: &mut World) -> Entity {
+    let recruit = crate::game::party::roster::Recruit {
+        name: "A".into(),
+        race: Race::Human,
+        gender: Gender::Male,
+        profession: Profession::Fighter,
+        portrait: "hummf".into(),
+    };
+    let draft = recruit.draft(&mut world.commands());
+    world.flush();
+    draft
+}
+
 /// The test level, to be entered: a new game's first, or by travel once
 /// there is a party.
 fn spawn_level(app: &mut App, collision: CollisionMesh) -> Entity {
@@ -135,10 +150,7 @@ fn spawn_level(app: &mut App, collision: CollisionMesh) -> Entity {
     let entry = if world.query::<&Party>().iter(world).next().is_some() {
         Entry::Travel
     } else {
-        Entry::NewGame(vec![(
-            Character::new("A", Race::Human, Gender::Male, Profession::Fighter),
-            default(),
-        )])
+        Entry::NewGame(vec![new_member(world)])
     };
     world.spawn(Destination::new(level, default(), entry)).id()
 }
@@ -745,10 +757,7 @@ fn an_unborn_group_waits_until_born_and_is_born_once() {
             script: None,
         });
     }
-    let new_game = Entry::NewGame(vec![(
-        Character::new("A", Race::Human, Gender::Male, Profession::Fighter),
-        default(),
-    )]);
+    let new_game = Entry::NewGame(vec![new_member(app.world_mut())]);
     let root = app.world_mut().spawn(Destination::new(level, default(), new_game)).id();
     app.update();
     assert!(is_played(&app, root));

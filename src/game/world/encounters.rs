@@ -16,7 +16,8 @@ use super::{ActorPose, STEP_HEIGHT};
 use crate::content::items::Dice;
 use crate::content::level::{EncounterLimits, EncounterTable, EncounterTime, Encounters};
 use crate::content::monster::MonsterBody;
-use crate::content::species::{MonsterCatalog, Species};
+use crate::content::species::Species;
+use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::party::body::PartyBody;
 use crate::game::rng::GameRng;
@@ -256,7 +257,7 @@ fn spawn_group(
     root: Entity,
     (id, count): (u32, u32),
     (at, toward): (Vec3, Vec3),
-    species: &MonsterCatalog,
+    content: &Catalogs,
     bodies: (&MonsterBodies, &Assets<MonsterBody>),
     navigation: &LevelNavigation,
     configs: &mut Assets<WalkerMotionConfig>,
@@ -267,7 +268,7 @@ fn spawn_group(
     script: Option<&str>,
     rng: &mut GameRng,
 ) -> Option<Entity> {
-    let kind = &species[id];
+    let kind = &content.species[id];
     let definition = bodies.0.get(id, bodies.1).expect("bodies load with the level");
     let (location, authored) = *next;
     let mut members = population::roll_group(*next, (id, count), (kind, definition), rng);
@@ -299,7 +300,7 @@ fn spawn_group(
             root,
             members,
             (authored, None),
-            species,
+            content,
             (navigation, configs),
         )
         .0,
@@ -596,7 +597,7 @@ fn spawn_encounter(
             owner.0,
             (id, count),
             (at.translation, PartyBody::feet(party_at)),
-            species,
+            &content,
             (bodies, &definitions),
             navigation,
             &mut configs,

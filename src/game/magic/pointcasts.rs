@@ -4,22 +4,25 @@
 //! for and rolled as any other ([`super::casting`]); the arithmetic of what it
 //! then does is [`super::workings`].
 use super::Outcome;
-use super::casting::{MagicNews, Worked};
+use super::casting::{Allowed, CastBy, CastSpell, Chosen, MagicNews, Worked, marked};
+use super::may::Refusal;
+use super::reach::Aim;
 use super::reach::Marked;
 use super::workings::{self, Response};
-use crate::content::characters::Skill;
+use crate::content::characters::{Realm, Skill};
 use crate::content::monster::MonsterBody;
-use crate::content::spells::Working;
+use crate::content::species::MonsterKind;
+use crate::game::characters::Vitals;
 use crate::game::data::Catalogs;
 use crate::game::world::level::InPlay;
 use crate::game::{
-    actors::Body,
-    characters::Condition,
+    actors::{CanFight, Resistances, Skills},
+    characters::{Calling, Condition, Conditions},
     combat::{Battle, Combatant},
     rng::GameRng,
     time::{AGING_TICK_MS, GameClock},
     world::{
-        hostility::{SetStance, Stance},
+        hostility::{SetStance, Stance, Standing},
         identify::{GroupMember, GroupMembers, MonsterGroup},
         level::{Level, LevelOwned},
         navigation::{LevelNavigation, WalkerMotionConfig},
@@ -66,139 +69,272 @@ fn release_lured(
     }
 }
 
-/// A point cast (retail's Hypnotic Lure and Summon Elemental), once it is paid
-/// for and rolled as any other ([`super::casting`]), its spot settled before:
-/// whatever the roll short of a fizzle, something comes of it.
-#[allow(clippy::type_complexity)]
-pub(crate) fn cast(
+/// Where a point spell may be cast: a spot within the spell's reach and an
+/// eye's height of the caster's eye that the caster sees.
+fn spot(aim: Aim, eye: Vec3, reach: f32, obstacles: &WorldObstacles) -> Result<Marked, Refusal> {
+    match aim {
+        Aim::Point(at)
+            if eye.distance(at) <= reach + crate::content::EYE_HEIGHT
+                && obstacles.clear(eye, at) =>
+        {
+            Ok(Marked::Spot(at))
+        }
+        _ => Err(Refusal::NoTarget),
+    }
+}
+
+/// Hypnotic Lure is cast at a spot the caster sees.
+pub fn mark_lure(
+    allowed: On<Allowed>,
+    casts: Query<(&CastBy, &CastSpell, &Chosen)>,
+    places: crate::game::actors::Places,
+    obstacles: WorldObstacles,
+    mut commands: Commands,
+) -> Result {
+    let (&CastBy(caster), CastSpell(spell), &Chosen(choice)) = casts.get(allowed.cast)?;
+    let at = spot(choice.aim, places.of(caster).eye, spell.reach.metres(), &obstacles);
+    marked(&mut commands, (allowed.cast, caster), at);
+    Ok(())
+}
+
+/// Summon Elemental is cast at a spot the caster sees, while no elemental the
+/// caster summoned still stands.
+pub fn mark_summon(
+    allowed: On<Allowed>,
+    casts: Query<(&CastBy, &CastSpell, &Chosen)>,
+    elementals: Query<&Elementals>,
+    alive: Query<&Vitals>,
+    places: crate::game::actors::Places,
+    obstacles: WorldObstacles,
+    mut commands: Commands,
+) -> Result {
+    let (&CastBy(caster), CastSpell(spell), &Chosen(choice)) = casts.get(allowed.cast)?;
+    let standing = elementals.get(caster).is_ok_and(|summoned| {
+        summoned.iter().any(|elemental| alive.get(elemental).is_ok_and(|v| !v.is_dead()))
+    });
+    let at = match standing {
+        true => Err(Refusal::NoTarget),
+        false => spot(choice.aim, places.of(caster).eye, spell.reach.metres(), &obstacles),
+    };
+    marked(&mut commands, (allowed.cast, caster), at);
+    Ok(())
+}
+
+/// A Hypnotic Lure, once paid for and rolled, short of a fizzle, stands at
+/// its spot for the turns the spell lasts, and calls ([`Calls`]).
+pub fn lure(
     worked: On<Worked>,
     mut commands: Commands,
-    bodies: Query<Body>,
-    level: Single<
-        (Entity, &Level, &LevelState, &Unborn, &MonsterBodies, &LevelNavigation),
-        With<InPlay>,
-    >,
-    battle: Option<Single<Entity, With<Battle>>>,
-    lures: Query<Entity, With<Lure>>,
+    level: Single<Entity, With<InPlay>>,
+    spells: Res<Catalogs>,
+    clock: Res<GameClock>,
+    mut rng: ResMut<GameRng>,
+    mut news: MessageWriter<MagicNews>,
+) {
+    let Worked { report, strength, marked, .. } = worked.event().clone();
+    let Marked::Spot(at) = marked else { return };
+    let (outcome, spell) = (report.outcome, &spells.spells[report.spell]);
+    news.write(MagicNews::Done(report));
+    if outcome == Outcome::Fizzled {
+        return;
+    }
+    let turns = crate::game::hits::definitions::duration(
+        &mut rng,
+        spell.duration_base,
+        spell.duration_per_power,
+        strength,
+    );
+    let lure = commands
+        .spawn((
+            Lure { expires: workings::lure_ends(clock.ms, turns, AGING_TICK_MS) },
+            Transform::from_translation(at),
+            LevelOwned(*level),
+        ))
+        .observe(calls)
+        .observe(tempted)
+        .id();
+    commands.trigger(Calls { lure, against: strength.against });
+}
+
+/// A lure calls the monsters of its level, at the strength of its cast.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Calls {
+    #[event_target]
+    pub lure: Entity,
+    pub against: u32,
+}
+
+/// A monster is tempted by a lure, at the strength of its cast.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Tempted {
+    #[event_target]
+    pub lure: Entity,
+    pub monster: Entity,
+    pub against: u32,
+}
+
+/// A lure takes the place of any before it, and puts to the test, in the
+/// order of their places in the level, each hostile monster not resisting a
+/// lure already, able to fight and not blind, within the far clip of its
+/// spot on every axis, with a clear line to it.
+#[allow(clippy::type_complexity)]
+fn calls(
+    calls: On<Calls>,
+    lures: Query<(&Transform, &LevelOwned), With<Lure>>,
+    others: Query<Entity, With<Lure>>,
+    minds: Query<(&Standing, Has<CanFight>, &Conditions)>,
+    level: Single<&Level, With<InPlay>>,
     monsters: Query<(
         Entity,
         &Monster,
         &LevelOwned,
         crate::game::world::ActorPose,
-        Option<&GroupMember>,
         Option<&LureInfluence>,
     )>,
-    groups: Query<(&MonsterGroup, &LevelOwned, &GroupMembers)>,
     obstacles: WorldObstacles,
-    mut laying: crate::game::actors::Laying,
-    (spells, body_assets, level_assets, mut configs): (
-        Res<Catalogs>,
-        Res<Assets<MonsterBody>>,
-        Res<Assets<crate::content::level::LevelDefinition>>,
-        ResMut<Assets<WalkerMotionConfig>>,
-    ),
-    clock: Res<GameClock>,
+    level_assets: Res<Assets<crate::content::level::LevelDefinition>>,
+    mut commands: Commands,
+) -> Result {
+    let Calls { lure, against } = *calls;
+    let (spot, &LevelOwned(root)) = lures.get(lure)?;
+    let at = spot.translation;
+    let far =
+        level_assets.get(&level.definition).ok_or("the level played is loaded")?.view_distance();
+    let mut order: Vec<_> = monsters
+        .iter()
+        .filter(|(_, _, owner, ..)| owner.0 == root)
+        .map(|(entity, monster, ..)| (monster.location, entity))
+        .collect();
+    order.sort_unstable();
+    // Who resists a lure already is judged before those before this one go.
+    let mut tested = Vec::new();
+    for (_, monster) in order {
+        let (_, kind, _, pose, influence) = monsters.get(monster)?;
+        let (standing, can_fight, conditions) = minds.get(monster)?;
+        let here = pose.translation();
+        let put_to_test = standing.stance == Stance::Hostile
+            && !influence.is_some_and(|held| held.response == Response::Resisted)
+            && can_fight
+            && !conditions.has(Condition::Blind)
+            && (here - at).abs().max_element() <= far
+            && obstacles.clear(kind.eye(here), at);
+        if put_to_test {
+            tested.push(monster);
+        }
+    }
+    for old in others.iter().filter(|&old| old != lure) {
+        commands.entity(old).despawn();
+    }
+    for monster in tested {
+        commands.trigger(Tempted { lure, monster, against });
+    }
+    Ok(())
+}
+
+/// A monster tempted resists or is held (an undead one always resists);
+/// outside a fight its whole group follows its choice (retail
+/// `ApplyMonsterControlToNearbyMonsters`).
+fn tempted(
+    tempted: On<Tempted>,
+    minds: Query<(&crate::game::actors::Level, &Resistances, Option<&crate::game::actors::Kind>)>,
+    members: Query<Option<&GroupMember>>,
+    groups: Query<&GroupMembers>,
+    battle: Option<Res<Battle>>,
+    mut rng: ResMut<GameRng>,
+    mut commands: Commands,
+) -> Result {
+    let Tempted { lure, monster, against } = *tempted;
+    let (level, resistances, kind) = minds.get(monster)?;
+    let response = workings::lure_response(
+        &mut rng,
+        (level.0, resistances.realms[Realm::Mental]),
+        kind.is_some_and(|kind| kind.0 == MonsterKind::Undead),
+        against,
+    );
+    let group = members.get(monster)?.and_then(|group| groups.get(group.0).ok());
+    let held = match group {
+        Some(group) if battle.is_none() => group.iter().collect(),
+        _ => vec![monster],
+    };
+    for monster in held {
+        commands.entity(monster).insert(LureInfluence { lure, response });
+    }
+    Ok(())
+}
+
+/// Summon Elemental, once paid for and rolled, short of a fizzle: an
+/// elemental answers the summoner at the spot ([`Answers`]), its element
+/// weighted by the summoner's realm skills (none of fire under water), its
+/// tier by the power, friendly unless the summoning backfired.
+pub fn summon(
+    worked: On<Worked>,
+    mut commands: Commands,
+    realm_skills: Query<&Skills, With<Calling>>,
+    level: Single<&LevelState, With<InPlay>>,
     mut rng: ResMut<GameRng>,
     mut news: MessageWriter<MagicNews>,
 ) {
-    let Worked { caster, working, report, strength, marked } = worked.event().clone();
-    if !matches!(working, Working::Lure | Working::Summon) {
-        return;
-    }
+    let Worked { caster, report, strength, marked, .. } = worked.event().clone();
     let Marked::Spot(at) = marked else { return };
-    let (root, played, state, unborn, level_bodies, navigation) = *level;
-    let battle = battle.map(|battle| *battle);
-    let (outcome, id) = (report.outcome, report.spell);
-    let spell = &spells.spells[id];
-    let now = clock.ms;
+    let outcome = report.outcome;
     news.write(MagicNews::Done(report));
     if outcome == Outcome::Fizzled {
         return;
     }
-    let fighting_now = battle.is_some();
-    let Some(battle) = battle.filter(|_| working == Working::Summon) else {
-        // A Hypnotic Lure stands at `at` in place of any before it. Each
-        // hostile monster able to see it, within the far clip, may resist (an
-        // undead one always does); one that does not qualify is passed over;
-        // outside a fight its whole group follows its choice (retail
-        // `ApplyMonsterControlToNearbyMonsters`).
-        for old in &lures {
-            commands.entity(old).despawn();
-        }
-        let turns = crate::game::hits::definitions::duration(
-            &mut rng,
-            spell.duration_base,
-            spell.duration_per_power,
-            strength,
-        );
-        let lure = commands
-            .spawn((
-                Lure { expires: workings::lure_ends(now, turns, AGING_TICK_MS) },
-                Transform::from_translation(at),
-                LevelOwned(root),
-            ))
-            .id();
-        let far = level_assets.get(&played.definition).unwrap().view_distance();
-        let mut order: Vec<_> = monsters
-            .iter()
-            .filter(|(_, _, owner, ..)| owner.0 == root)
-            .map(|(entity, monster, ..)| (monster.location, entity))
-            .collect();
-        order.sort_unstable();
-        for (_, entity) in order {
-            let (_, monster, _, pose, group, influence) = monsters.get(entity).unwrap();
-            let Ok(body) = bodies.get(entity) else { continue };
-            let group = group.and_then(|group| groups.get(group.0).ok());
-            let here = pose.translation();
-            // A lure puts to the test a hostile monster not resisting it
-            // already, able to fight and not blind, within the far clip of
-            // the spot on every axis, with a clear line to it (retail
-            // `ApplyMonsterControlToNearbyMonsters`).
-            let tested = body.standing.stance == Stance::Hostile
-                && !influence.is_some_and(|held| held.response == Response::Resisted)
-                && body.can_fight
-                && !body.conditions.has(Condition::Blind)
-                && (here - at).abs().max_element() <= far
-                && obstacles.clear(monster.eye(here), at);
-            if !tested {
-                continue;
-            }
-            let response = workings::lure_response(&mut rng, &body, strength.against);
-            let affected = match group {
-                Some((.., members)) if !fighting_now => members.iter().collect(),
-                _ => vec![entity],
-            };
-            for entity in affected {
-                commands.entity(entity).insert(LureInfluence { lure, response });
-            }
-        }
-        return;
-    };
-    // An elemental answers the summoner: its element weighted by the
-    // summoner's realm skills (none of fire under water), its tier by the
-    // power, friendly unless the summoning backfired. It joins the fight and
-    // lasts no longer; Power Cast may add its element's buff.
-    let skills = bodies.get(caster).ok().and_then(|body| {
-        body.calling.map(|_| {
-            [Skill::FireMagic, Skill::WaterMagic, Skill::AirMagic, Skill::EarthMagic]
-                .map(|skill| body.skills[skill])
-        })
+    let skills = realm_skills.get(caster).ok().map(|skills| {
+        [Skill::FireMagic, Skill::WaterMagic, Skill::AirMagic, Skill::EarthMagic]
+            .map(|skill| skills[skill])
     });
-    let summoned = workings::summon(&mut rng, skills, state.camera_sway, outcome, strength);
-    let locations = monsters
-        .iter()
-        .filter(|(_, _, owner, ..)| owner.0 == root)
-        .map(|(_, monster, ..)| monster.location);
+    let summoned = workings::summon(&mut rng, skills, level.camera_sway, outcome, strength);
+    commands.trigger(Answers { caster, at, summoned, strength });
+}
+
+/// An elemental answers a summoner, at a spot, by the strength of the cast.
+#[derive(EntityEvent, Clone, Copy, Debug)]
+pub struct Answers {
+    #[event_target]
+    pub caster: Entity,
+    pub at: Vec3,
+    pub summoned: workings::Summoned,
+    pub strength: super::Strength,
+}
+
+/// The elemental that answers is made at the spot as a group of one of the
+/// level's, joins the fight and lasts no longer than it; Power Cast may lay
+/// its element's buff on it, by the same rules of slot and duration as the
+/// spell itself.
+#[allow(clippy::type_complexity)]
+pub fn answer(
+    answers: On<Answers>,
+    mut commands: Commands,
+    level: Single<(Entity, &Unborn, &MonsterBodies, &LevelNavigation), With<InPlay>>,
+    battle: Single<Entity, With<Battle>>,
+    monsters: Query<(&Monster, &LevelOwned)>,
+    groups: Query<(&MonsterGroup, &LevelOwned)>,
+    mut laying: crate::game::actors::Laying,
+    (spells, body_assets, mut configs): (
+        Res<Catalogs>,
+        Res<Assets<MonsterBody>>,
+        ResMut<Assets<WalkerMotionConfig>>,
+    ),
+    clock: Res<GameClock>,
+    mut rng: ResMut<GameRng>,
+) {
+    let Answers { caster, at, summoned, strength } = *answers;
+    let (root, unborn, level_bodies, navigation) = *level;
+    let battle = *battle;
+    let locations =
+        monsters.iter().filter(|(_, owner)| owner.0 == root).map(|(monster, _)| monster.location);
     let authored =
-        groups.iter().filter(|(_, owner, _)| owner.0 == root).map(|(group, ..)| group.authored);
+        groups.iter().filter(|(_, owner)| owner.0 == root).map(|(group, _)| group.authored);
     let ids = population::next_ids(locations, authored, unborn);
     let kind = &spells.species[summoned.species];
     let body = level_bodies.get(summoned.species, &body_assets).unwrap();
     let mut members = population::roll_group(ids, (summoned.species, 1), (kind, body), &mut rng);
     members[0].feet = at;
     let stance = if summoned.backfired { Stance::Hostile } else { Stance::Friendly };
-    // Power Cast may add the element's associated buff, by the same slot and
-    // duration rules as the spell itself.
+    // The buff's duration is drawn before the elemental is made, as the
+    // original draws it.
     let element = workings::element(summoned.element);
     let buff = summoned
         .buffed
@@ -227,8 +363,8 @@ pub(crate) fn cast(
         &mut commands,
         root,
         members,
-        (ids.1, Some(SetStance { stance, at: now })),
-        &spells.species,
+        (ids.1, Some(SetStance { stance, at: clock.ms })),
+        &spells,
         (navigation, &mut configs),
     );
     // The summoning lasts no longer than the fight.
@@ -241,11 +377,7 @@ pub(crate) fn cast(
 }
 
 /// Lures last their turns, then go, and with them their hold.
-pub(crate) fn expire_lures(
-    mut commands: Commands,
-    lures: Query<(Entity, &Lure)>,
-    clock: Res<GameClock>,
-) {
+pub fn expire_lures(mut commands: Commands, lures: Query<(Entity, &Lure)>, clock: Res<GameClock>) {
     for (entity, lure) in &lures {
         if lure.expires <= clock.ms {
             commands.entity(entity).despawn();
@@ -255,7 +387,7 @@ pub(crate) fn expire_lures(
 
 /// A controlled monster outside the fight that can see walks to its lure
 /// while it is more than five metres off, and faces it.
-pub(crate) fn follow_lures(
+pub fn follow_lures(
     lures: Query<&Transform, With<Lure>>,
     mut followers: Query<
         (

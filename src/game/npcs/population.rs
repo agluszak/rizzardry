@@ -30,8 +30,8 @@ pub(super) fn initialize(
         return;
     }
     let average = match &destination.entry {
-        Entry::NewGame(profiles) => crate::game::party::average_level(
-            profiles.iter().map(|(character, _)| character.calling.level()),
+        Entry::NewGame(drafts) => crate::game::party::average_level(
+            characters.iter_many(drafts).matched().map(Calling::level),
         ),
         Entry::Travel => crate::game::party::average_level(
             party
@@ -260,7 +260,7 @@ pub(super) fn station(
             &mut body,
             root,
             (feet, 0.0, scaled),
-            (None, kind),
+            (None, kind, &content.spells),
             (navigation, &mut configs),
         );
         if greets {

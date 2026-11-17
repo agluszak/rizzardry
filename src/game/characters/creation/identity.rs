@@ -2,7 +2,6 @@
 //! portrait, personality and voice from the recipe, and the player then
 //! steps through the portraits a group at a time.
 
-use super::CharacterDraft;
 use crate::content::characters::{Personality, Voice};
 
 pub const PORTRAITS: &[&str] = &[
@@ -62,23 +61,28 @@ const GROUPS: [&[usize]; 12] = [
     &[56, 57],
 ];
 
-/// Retail derives the initial portrait, personality and voice from the recipe.
-pub fn initialize(draft: &mut CharacterDraft) {
+/// The portrait, personality and voice a race, gender and profession give a
+/// new character (retail `DeriveCharacterPersonality`, `CalcCharacterTableValue`).
+pub fn defaults(
+    race: crate::content::characters::Race,
+    gender: crate::content::characters::Gender,
+    profession: crate::content::characters::Profession,
+) -> (&'static str, Personality, Voice) {
     use crate::content::characters::{Gender, Profession, Race};
-    let portraits = DEFAULT_PORTRAITS[draft.gender() as usize][draft.race() as usize];
-    draft.portrait = PORTRAITS[portraits[draft.profession() as usize]].into();
-    let class = if draft.gender() == Gender::Male
+    let portraits = DEFAULT_PORTRAITS[gender as usize][race as usize];
+    let portrait = PORTRAITS[portraits[profession as usize]];
+    let class = if gender == Gender::Male
         && matches!(
-            draft.profession(),
+            profession,
             Profession::Fighter | Profession::Lord | Profession::Ranger | Profession::Rogue
         ) {
-        match draft.race() {
+        match race {
             Race::Dwarf => 16,
             Race::Lizardman => 15,
-            _ => draft.profession() as usize,
+            _ => profession as usize,
         }
     } else {
-        draft.profession() as usize
+        profession as usize
     };
     let table = [
         (0, 2),
@@ -116,9 +120,8 @@ pub fn initialize(draft: &mut CharacterDraft) {
         (2, 2),
         (2, 2),
     ];
-    let (personality, voice) = table[class * 2 + draft.gender() as usize];
-    draft.personality = Personality::ALL[personality];
-    draft.voice = if voice == 1 { Voice::First } else { Voice::Second };
+    let (personality, voice) = table[class * 2 + gender as usize];
+    (portrait, Personality::ALL[personality], if voice == 1 { Voice::First } else { Voice::Second })
 }
 fn position(current: &str) -> (usize, usize) {
     let index = PORTRAITS.iter().position(|&p| p == current).unwrap_or(0);

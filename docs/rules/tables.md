@@ -38,7 +38,7 @@ to behave.
 
 | Table | Rows | Replaces |
 | --- | --- | --- |
-| professions | attribute and skill gains, hit points, stamina, spell books, traits | `profession_row`, the trait lists in `Character::traits` |
+| professions | attribute and skill gains, hit points, stamina, spell books, traits | `profession_row`, the trait lists in `characters::traits_of` |
 | races | starting attributes, resistances, traits | `race_attributes`, race tests in resistance and armour |
 | spell effects | per spell: each effect, whom it lands on, its roll, save and resistance | `define_spell` |
 | special attacks | per kind: each effect as a row like a spell's, whether a silence stops it, what it summons | the special-attack `match`, and the code that spelled out its five effect words |

@@ -21,7 +21,7 @@ use crate::content::levels::LevelInfo;
 use crate::content::spells::{SpellId, Targeting};
 use crate::game::actors::Laying;
 use crate::game::actors::{Against, Armour, HitPlaces, MissileShield};
-use crate::game::characters::{Calling, Experience, Vitals};
+use crate::game::characters::{Experience, Vitals};
 use crate::game::combat::attack::{lands_at, mode_penetration};
 use crate::game::data::Catalogs;
 use crate::game::factions::Factions;
@@ -33,6 +33,7 @@ use crate::game::items::{Items, Lose, Place, Put, make, roll_amount};
 use crate::game::magic::landed::Magical;
 use crate::game::magic::power;
 use crate::game::party::damage_member;
+use crate::game::party::roster::PartyMember;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::world::encounters::EncounterGenerator;
@@ -389,8 +390,11 @@ pub(super) fn crush(
     mut crushing: Query<(Entity, &mut Crushing)>,
     names: Single<&DeviceNames, Without<SetAside>>,
     (parts, bounds, motions): (Query<&Children>, Query<&ColliderAabb>, Query<&PropMotion>),
-    mut monsters: Query<(Entity, &Monster, &mut Position, &mut Vitals), Without<Calling>>,
-    (roster, mut members): (Single<&PartyRoster>, Query<(&mut Experience, &Vitals), With<Calling>>),
+    mut monsters: Query<(Entity, &Monster, &mut Position, &mut Vitals), Without<PartyMember>>,
+    (roster, mut members): (
+        Single<&PartyRoster>,
+        Query<(&mut Experience, &Vitals), With<PartyMember>>,
+    ),
     mut rng: ResMut<GameRng>,
     mut commands: Commands,
 ) {

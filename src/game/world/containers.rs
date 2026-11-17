@@ -129,7 +129,10 @@ pub(crate) fn take(
     mut commands: Commands,
     attempts: Query<(&DeviceInteraction, &AttemptOn)>,
     held: Items,
-    able: Query<(), (With<Calling>, With<crate::game::actors::CanAct>)>,
+    able: Query<
+        (),
+        (With<crate::game::party::roster::PartyMember>, With<crate::game::actors::CanAct>),
+    >,
     (entering, battle): (
         Query<(), With<super::level::Destination>>,
         Option<Res<crate::game::combat::Battle>>,

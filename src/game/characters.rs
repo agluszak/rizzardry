@@ -2,13 +2,14 @@
 //! The tables come from the original executable.
 
 pub mod creation;
+pub mod draft;
 pub mod progression;
 pub mod resistance;
 
 use bevy::prelude::*;
 use enum_map::EnumMap;
 
-use crate::content::characters::{Attribute, Realm, Skill, Trait};
+use crate::content::characters::{Attribute, Skill, Trait};
 pub use crate::content::characters::{Gender, Profession, Race};
 use crate::game::actors::{Abilities, Attributes};
 use crate::game::rng::GameRng;
@@ -427,8 +428,7 @@ pub struct Birth {
     crate::game::items::Pack,
     crate::game::items::Burden,
     crate::game::magic::LearnedSpells,
-    crate::game::magic::SpellPoints,
-    crate::game::party::Order
+    crate::game::magic::SpellPoints
 )]
 pub struct Calling {
     pub profession: Profession,
@@ -538,192 +538,24 @@ pub struct MonsterKnowledge {
     pub seen: std::collections::HashMap<u32, u32>,
 }
 
-/// A character on paper: what creation and advancement work on, and what
-/// one is made with. Spawned, each field is a component of its own.
-#[derive(Bundle, Clone, Debug, PartialEq)]
-pub struct Character {
-    pub identity: Identity,
-    pub birth: Birth,
-    pub calling: Calling,
-    pub abilities: Abilities,
-    pub training: Training,
-    pub practice: Practice,
-    pub experience: Experience,
-    pub picks: progression::SpellPicks,
-}
-
-impl Character {
-    /// A minimal valid level 1 character (retail's NPC recipe): each
-    /// attribute at the race's base or the profession's minimum, whichever
-    /// is higher; the profession's skills seeded from their base levels.
-    /// Only the eleven playable races have bases.
-    pub fn new(name: &str, race: Race, gender: Gender, profession: Profession) -> Self {
-        let minimums = &profession.row().minimums;
-        let base = race.row().attributes.unwrap_or(EnumMap::from_fn(|_| 45));
-        let mut character = Character {
-            identity: Identity { name: name.to_owned(), full_name: name.to_owned(), ..default() },
-            birth: Birth { race, gender },
-            calling: Calling::begun(profession),
-            abilities: Abilities(EnumMap::from_fn(|a| base[a].max(minimums[a]))),
-            training: default(),
-            practice: default(),
-            experience: default(),
-            picks: default(),
-        };
-        character.seed_starting_skills();
-        character
-    }
-
-    /// Seed from the final starting attributes, shared by recipes and drafts.
-    fn seed_starting_skills(&mut self) {
-        let row = self.calling.profession.row();
-        self.training = default();
-        let share = 60 / (1 + row.skills.len() as u32);
-        for &skill in row.skills.iter().chain(std::iter::once(&row.bonus_skill)) {
-            self.training.0[skill] = skill_base(&self.abilities, skill) * share / 100;
-        }
-    }
-
-    /// The most health they have on paper, with nothing worn, laid on them
-    /// or ailing them.
-    pub fn max_hp(&self) -> u32 {
-        self.calling.health(self.abilities.0[Attribute::Vitality])
-    }
-
-    /// The most stamina they have on paper.
-    pub fn max_stamina(&self) -> u32 {
-        trained_stamina(u32::from(self.calling.level()), &Attributes(self.abilities.0))
-    }
-
-    /// What they can carry on paper, in tenths of a pound.
-    pub fn capacity(&self) -> u32 {
-        capacity(&Attributes(self.abilities.0), self.birth.race.row().carry_factor)
-    }
-
-    /// What race and the profession followed now let them do.
-    pub fn traits(&self) -> EnumSet<Trait> {
-        traits_of(self.birth.race, &self.calling)
-    }
-}
-
-/// A character's components, as the paper they were made from: to take a
-/// copy of for a draft, and to write a finished draft back.
-#[derive(bevy::ecs::query::QueryData)]
-#[query_data(mutable)]
-pub struct Paper {
-    pub identity: &'static mut Identity,
-    pub birth: &'static Birth,
-    pub calling: &'static mut Calling,
-    pub abilities: &'static mut Abilities,
-    pub training: &'static mut Training,
-    pub practice: &'static mut Practice,
-    pub experience: &'static mut Experience,
-    pub picks: &'static mut progression::SpellPicks,
-}
-
-impl PaperReadOnlyItem<'_, '_> {
-    /// As the formulas of training read them.
-    pub fn trained(&self) -> Trained<'_> {
-        Trained {
-            calling: self.calling,
-            abilities: self.abilities,
-            training: self.training,
-            birth: self.birth,
-            traits: traits_of(self.birth.race, self.calling),
-        }
-    }
-
-    pub fn copy(&self) -> Character {
-        Character {
-            identity: self.identity.clone(),
-            birth: *self.birth,
-            calling: self.calling.clone(),
-            abilities: *self.abilities,
-            training: self.training.clone(),
-            practice: self.practice.clone(),
-            experience: *self.experience,
-            picks: self.picks.clone(),
-        }
-    }
-}
-
-impl PaperItem<'_, '_> {
-    pub fn copy(&self) -> Character {
-        Character {
-            identity: self.identity.clone(),
-            birth: *self.birth,
-            calling: self.calling.clone(),
-            abilities: *self.abilities,
-            training: self.training.clone(),
-            practice: self.practice.clone(),
-            experience: *self.experience,
-            picks: self.picks.clone(),
-        }
-    }
-
-    /// Each part that differs is written; what is the same is left alone.
-    pub fn write(&mut self, next: Character) {
-        self.identity.set_if_neq(next.identity);
-        self.calling.set_if_neq(next.calling);
-        self.abilities.set_if_neq(next.abilities);
-        self.training.set_if_neq(next.training);
-        self.practice.set_if_neq(next.practice);
-        self.experience.set_if_neq(next.experience);
-        self.picks.set_if_neq(next.picks);
-    }
-}
-
-/// One who trained, as the formulas of training read them: borrowed from a
-/// character on paper or from an actor's components alike.
-#[derive(Clone, Copy, Debug)]
-pub struct Trained<'a> {
-    pub calling: &'a Calling,
-    pub abilities: &'a Abilities,
-    pub training: &'a Training,
-    pub birth: &'a Birth,
-    pub traits: EnumSet<Trait>,
-}
-
-/// The components of one who trained, for a query to borrow as [`Trained`].
-#[derive(bevy::ecs::query::QueryData)]
-pub struct Schooling {
-    calling: &'static Calling,
-    abilities: &'static Abilities,
-    training: &'static Training,
-    birth: &'static Birth,
-    traits: &'static crate::game::actors::Traits,
-}
-
-impl SchoolingItem<'_, '_> {
-    pub fn view(&self) -> Trained<'_> {
-        Trained {
-            calling: self.calling,
-            abilities: self.abilities,
-            training: self.training,
-            birth: self.birth,
-            traits: self.traits.0,
-        }
-    }
-}
-
-impl Trained<'_> {
-    /// Whether they may use a skill ([`skill_available`]).
-    pub fn can_use(&self, skill: Skill) -> bool {
-        skill_available(self.calling, self.abilities, skill)
-    }
-}
-
-impl Character {
-    /// As the formulas of training read them.
-    pub fn trained(&self) -> Trained<'_> {
-        Trained {
-            calling: &self.calling,
-            abilities: &self.abilities,
-            training: &self.training,
-            birth: &self.birth,
-            traits: self.traits(),
-        }
-    }
+/// A character as the original's recipe makes one at level 1 (retail's NPC
+/// recipe): each attribute at the race's base or the profession's minimum,
+/// whichever is higher (45 for a race with none of its own); the
+/// profession's skills seeded from their base levels; born whole.
+pub fn born(name: &str, race: Race, gender: Gender, profession: Profession) -> impl Bundle {
+    let minimums = &profession.row().minimums;
+    let base = race.row().attributes.unwrap_or(EnumMap::from_fn(|_| 45));
+    let abilities = Abilities(EnumMap::from_fn(|a| base[a].max(minimums[a])));
+    let identity = Identity { name: name.to_owned(), full_name: name.to_owned(), ..default() };
+    let calling = Calling::begun(profession);
+    let vitals = Vitals::born(&calling, &abilities);
+    (
+        (identity, Birth { race, gender }, calling),
+        (draft::seeded(profession, &abilities), abilities),
+        vitals,
+        crate::game::actors::Nature::of_race(race),
+        crate::game::actors::armour::born(race),
+    )
 }
 
 /// Abilities conferred by a race and the profession followed now.
@@ -732,7 +564,7 @@ pub fn traits_of(race: Race, calling: &Calling) -> EnumSet<Trait> {
 }
 
 /// The average of a skill's governing attributes' bases.
-fn skill_base(abilities: &Abilities, skill: Skill) -> u32 {
+pub fn skill_base(abilities: &Abilities, skill: Skill) -> u32 {
     let (a, b) = governing(skill);
     (abilities.0[a] + abilities.0[b]) / 2
 }
@@ -882,6 +714,7 @@ impl Pool {
     crate::game::actors::Unaware,
     crate::game::actors::Block,
     crate::game::actors::Resistances,
+    crate::game::actors::Immune,
     crate::game::actors::ArmourParts,
     crate::game::actors::HitPlaces,
     crate::game::actors::Against,
@@ -890,6 +723,12 @@ impl Pool {
     crate::game::actors::MissileShield,
     crate::game::actors::Initiative,
     crate::game::actors::TrainedInitiative,
+    crate::game::actors::Frame,
+    crate::game::actors::UsableSkills,
+    crate::game::actors::TrainedMaxima,
+    crate::game::actors::TrainedResistance,
+    crate::game::actors::TrainedReduction,
+    crate::game::actors::CasterLevels,
     crate::game::actors::Backstab,
     crate::game::actors::Mending
 )]
@@ -906,14 +745,17 @@ pub struct Vitals {
 }
 
 impl Vitals {
-    /// A character as they are on paper, rested and well.
-    pub fn new(sheet: &Character) -> Self {
-        Self::full(sheet.max_hp(), sheet.max_stamina())
-    }
-
     /// Full health and stamina at these maxima.
     pub fn full(health: u32, stamina: u32) -> Self {
         Self { health: Pool::full(health), stamina: Pool::full(stamina), ..default() }
+    }
+
+    /// Whole, at the most one who trained has by their calling and
+    /// abilities, with nothing worn, laid on them or ailing them.
+    pub fn born(calling: &Calling, abilities: &Abilities) -> Self {
+        let attributes = Attributes(abilities.0);
+        let stamina = trained_stamina(u32::from(calling.level()), &attributes);
+        Self::full(calling.health(abilities.0[Attribute::Vitality]), stamina)
     }
 
     pub fn is_dead(&self) -> bool {
@@ -1334,8 +1176,31 @@ mod tests {
     use crate::content::items::EquipClass;
     use crate::game::actors::{Drained, Skills, Traits};
 
-    fn fighter() -> Character {
-        Character::new("Ragnar", Race::Human, Gender::Male, Profession::Fighter)
+    /// What one born so is made of: their calling, abilities, training and
+    /// practice, as spawned.
+    fn made(
+        race: Race,
+        gender: Gender,
+        profession: Profession,
+    ) -> (Calling, Abilities, Training, Practice) {
+        let mut world = World::new();
+        let body = world.spawn(born("A", race, gender, profession)).id();
+        let mut body = world.entity_mut(body);
+        let calling = body.take::<Calling>().unwrap();
+        (calling, body.take().unwrap(), body.take().unwrap(), body.take().unwrap())
+    }
+
+    fn fighter() -> (Calling, Abilities, Training, Practice) {
+        made(Race::Human, Gender::Male, Profession::Fighter)
+    }
+
+    /// One born so, their figures settled.
+    fn settled(profession: Profession) -> (App, Entity) {
+        let mut app = App::new();
+        app.add_plugins(crate::game::actors::plugin).init_resource::<GameRng>();
+        let body = app.world_mut().spawn(born("A", Race::Human, Gender::Male, profession)).id();
+        crate::game::actors::settle(app.world_mut());
+        (app, body)
     }
 
     /// Practice counts towards a point every eighth success, only in skills
@@ -1344,85 +1209,89 @@ mod tests {
     #[test]
     fn practice_raises_a_point_every_eight_successes() {
         let mut rng = crate::game::rng::GameRng::seeded(4);
-        let practise = |sheet: &mut Character, rng: &mut GameRng| {
+        let practise = |sheet: &mut (Calling, Abilities, Training, Practice), rng: &mut GameRng| {
             practise_skill(
-                (&sheet.calling, &sheet.abilities),
-                (&mut sheet.training, &mut sheet.practice),
+                (&sheet.0, &sheet.1),
+                (&mut sheet.2, &mut sheet.3),
                 Skill::FireMagic,
                 400,
                 rng,
             )
         };
-        let mut mage = Character::new("Mage", Race::Human, Gender::Male, Profession::Mage);
-        let before = mage.training.0[Skill::FireMagic];
+        let mut mage = made(Race::Human, Gender::Male, Profession::Mage);
+        let before = mage.2.0[Skill::FireMagic];
         assert!(practise(&mut mage, &mut rng));
-        assert!(mage.training.0[Skill::FireMagic] > before);
+        assert!(mage.2.0[Skill::FireMagic] > before);
         assert!(!practise(&mut fighter(), &mut rng), "no books, no realm practice");
-        mage.training.0[Skill::FireMagic] = 100;
+        mage.2.0[Skill::FireMagic] = 100;
         assert!(!practise(&mut mage, &mut rng));
-        assert_eq!(mage.training.0[Skill::FireMagic], 100);
+        assert_eq!(mage.2.0[Skill::FireMagic], 100);
     }
 
     #[test]
     fn a_human_fighter_has_the_worked_example_numbers() {
-        let fighter = fighter();
-        assert_eq!(fighter.abilities.0, EnumMap::from_array([55, 45, 45, 50, 50, 45, 45]));
-        assert_eq!((fighter.max_hp(), fighter.max_stamina(), fighter.capacity()), (18, 105, 1920));
-        let a = Attributes::of_sheet(&fighter);
-        let initiative = |load| {
-            crate::game::actors::figures::trained_initiative(
-                (1, &fighter.training),
-                &a,
-                &Skills::of_sheet(&fighter),
-                load,
-            )
-        };
+        let (app, fighter) = settled(Profession::Fighter);
+        let world = app.world();
+        let get = |_: ()| world.entity(fighter);
+        let (calling, training) =
+            (get(()).get::<Calling>().unwrap(), get(()).get::<Training>().unwrap());
+        let a = get(()).get::<Attributes>().unwrap();
+        let skills = get(()).get::<Skills>().unwrap();
+        let vitals = get(()).get::<Vitals>().unwrap();
+        assert_eq!(
+            get(()).get::<Abilities>().unwrap().0,
+            EnumMap::from_array([55, 45, 45, 50, 50, 45, 45])
+        );
+        let carry = Race::Human.row().carry_factor;
+        assert_eq!((vitals.health.max, vitals.stamina.max, capacity(a, carry)), (18, 105, 1920));
+        let initiative =
+            |load| crate::game::actors::figures::trained_initiative((1, training), a, skills, load);
         assert_eq!((initiative(Load::None), initiative(Load::Heavy)), (9, 5));
-        assert_eq!(load(&a, 12, 959), Load::None);
-        assert_eq!(load(&a, 12, 960), Load::Light);
-        assert_eq!(load(&a, 12, 1939), Load::Heavy, "integer percent: still 100");
-        assert_eq!(load(&a, 12, 1940), Load::Extreme);
-        assert_eq!(fighter.calling.experience_goal(&fighter.experience), 1000);
+        assert_eq!(load(a, 12, 959), Load::None);
+        assert_eq!(load(a, 12, 960), Load::Light);
+        assert_eq!(load(a, 12, 1939), Load::Heavy, "integer percent: still 100");
+        assert_eq!(load(a, 12, 1940), Load::Extreme);
+        assert_eq!(calling.experience_goal(&Experience::default()), 1000);
         // Profession and bonus skills are seeded; others are not.
-        let close_combat = fighter.training.0[Skill::CloseCombat];
-        assert!(Skills::of_sheet(&fighter)[Skill::CloseCombat] > close_combat);
-        assert!(fighter.training.0[Skill::Sword] > 0);
-        assert_eq!(fighter.training.0[Skill::LocksAndTraps], 0);
+        assert!(skills[Skill::CloseCombat] > training.0[Skill::CloseCombat]);
+        assert!(training.0[Skill::Sword] > 0);
+        assert_eq!(training.0[Skill::LocksAndTraps], 0);
     }
 
     /// Hybrids cast from their fifth level, so their book skills open then;
     /// expert skills open with an attribute at a hundred.
     #[test]
     fn skill_availability_follows_profession_levels_and_attribute_mastery() {
-        let mut fighter = fighter();
-        assert!(fighter.trained().can_use(Skill::Sword));
-        assert!(!fighter.trained().can_use(Skill::Music));
-        assert!(!fighter.trained().can_use(Skill::PowerStrike));
-        fighter.abilities.0[Strength] = 100;
-        assert!(fighter.trained().can_use(Skill::PowerStrike));
-        let mut samurai = Character::new("S", Race::Human, Gender::Male, Profession::Samurai);
-        assert!(!samurai.trained().can_use(Skill::Wizardry));
-        samurai.calling.levels[Profession::Samurai] = 5;
-        assert!(samurai.trained().can_use(Skill::Wizardry));
-        assert!(!samurai.trained().can_use(Skill::FireMagic));
+        let (calling, mut abilities, ..) = fighter();
+        assert!(skill_available(&calling, &abilities, Skill::Sword));
+        assert!(!skill_available(&calling, &abilities, Skill::Music));
+        assert!(!skill_available(&calling, &abilities, Skill::PowerStrike));
+        abilities.0[Strength] = 100;
+        assert!(skill_available(&calling, &abilities, Skill::PowerStrike));
+        let (mut samurai, abilities, ..) = made(Race::Human, Gender::Male, Profession::Samurai);
+        assert!(!skill_available(&samurai, &abilities, Skill::Wizardry));
+        samurai.levels[Profession::Samurai] = 5;
+        assert!(skill_available(&samurai, &abilities, Skill::Wizardry));
+        assert!(!skill_available(&samurai, &abilities, Skill::FireMagic));
     }
 
     #[test]
     fn experience_goals_double_then_grow_by_a_fifth() {
-        let mut mage = Character::new("Mira", Race::Elf, Gender::Female, Profession::Mage);
-        mage.calling.levels[Profession::Mage] = 3;
-        mage.experience.last_goal = 2400;
-        assert_eq!(mage.calling.experience_goal(&mage.experience), 1200 + 1200 + 2400);
-        mage.calling.levels[Profession::Mage] = 11;
-        mage.experience.last_goal = 1200 * (1 + 511);
+        let (mut mage, ..) = made(Race::Elf, Gender::Female, Profession::Mage);
+        mage.levels[Profession::Mage] = 3;
+        let mut experience = Experience { last_goal: 2400, ..default() };
+        assert_eq!(mage.experience_goal(&experience), 1200 + 1200 + 2400);
+        mage.levels[Profession::Mage] = 11;
+        experience.last_goal = 1200 * (1 + 511);
         // Level 1 is one weight; levels 2 to 10 add 1, 2, ..., 256 weights.
         let at_ten = 1200 * (1 + 511);
-        assert_eq!(mage.calling.experience_goal(&mage.experience), at_ten + 256 * 1200 * 12 / 10);
+        assert_eq!(mage.experience_goal(&experience), at_ten + 256 * 1200 * 12 / 10);
     }
 
     #[test]
     fn items_check_profession_race_gender_and_minimums() {
-        let fighter = fighter();
+        let (app, fighter) = settled(Profession::Fighter);
+        let fighter = app.world().entity(fighter);
         let mut bow = crate::content::items::ItemDefinition {
             name: "Strong Bow".into(),
             class: EquipClass::RangedWeapon,
@@ -1435,9 +1304,9 @@ mod tests {
         bow.attribute_minimums[Strength] = 85;
         let can_use = |bow: &crate::content::items::ItemDefinition| {
             crate::game::items::users(bow).admit(
-                (&fighter.calling, &fighter.birth),
-                &Attributes::of_sheet(&fighter),
-                &Skills::of_sheet(&fighter),
+                (fighter.get::<Calling>().unwrap(), fighter.get::<Birth>().unwrap()),
+                fighter.get::<Attributes>().unwrap(),
+                fighter.get::<Skills>().unwrap(),
             )
         };
         assert!(!can_use(&bow), "too weak");
@@ -1456,9 +1325,10 @@ mod tests {
     /// seven rounds or more out cold, or out cold for good, they die.
     #[test]
     fn a_valkyrie_cheats_death_unless_long_out_cold() {
-        let valkyrie =
-            Character::new("Brunhild", Race::Human, Gender::Female, Profession::Valkyrie);
-        let (traits, maximum) = (Traits(valkyrie.traits()), valkyrie.max_hp());
+        let (calling, abilities, ..) = made(Race::Human, Gender::Female, Profession::Valkyrie);
+        let traits = Traits(traits_of(Race::Human, &calling));
+        let valkyrie = || Vitals::born(&calling, &abilities);
+        let maximum = valkyrie().health.max;
         let mut rng = crate::game::rng::GameRng::seeded(9);
         // A blow just past their health, and death settled: cheated, or not.
         let mut struck = |vitals: &mut Vitals, conditions: &mut Conditions, first| {
@@ -1468,32 +1338,34 @@ mod tests {
         };
         // Not the first time in a fight: a roll of the health they had, at
         // least one, and a stint out cold (level one scales five to three).
-        let (mut member, mut ailing) = (Vitals::new(&valkyrie), Conditions::default());
+        let (mut member, mut ailing) = (valkyrie(), Conditions::default());
         member.health.current = 4;
         assert!(struck(&mut member, &mut ailing, false));
         assert!((1..=4).contains(&member.health.current), "{}", member.health.current);
         assert_eq!(ailing.lasting(Condition::Unconscious), Some(Lasting::Rounds(4)));
         // The first time in a fight, half their maximum or more.
-        let (mut member, mut ailing) = (Vitals::new(&valkyrie), Conditions::default());
+        let (mut member, mut ailing) = (valkyrie(), Conditions::default());
         assert!(struck(&mut member, &mut ailing, true));
         let hp = member.health.current;
         assert!(hp >= maximum / 2 && hp <= maximum, "{hp}");
         // Long out cold, or out cold for good, they die; so does anyone
         // without the trait.
         for lasting in [Lasting::Rounds(7), Lasting::Indefinite] {
-            let mut member = Vitals::new(&valkyrie);
+            let mut member = valkyrie();
             let mut ailing = Conditions::from([(Condition::Unconscious, lasting)]);
             assert!(!struck(&mut member, &mut ailing, true));
             assert!(member.is_dead());
         }
-        let (mut member, mut ailing) = (Vitals::new(&fighter()), Conditions::default());
+        let (calling, abilities, ..) = fighter();
+        let (mut member, mut ailing) = (Vitals::born(&calling, &abilities), Conditions::default());
         member.hurt(1000, None);
         assert!(!member.cheats_death(&mut ailing, (&Traits::default(), 1), true, &mut rng));
     }
 
     #[test]
     fn damage_tires_and_kills_and_the_dead_take_and_gain_nothing() {
-        let mut fighter = Vitals::new(&fighter());
+        let (calling, abilities, ..) = fighter();
+        let mut fighter = Vitals::born(&calling, &abilities);
         assert_eq!(fighter.hurt(6, None), 6);
         assert_eq!((fighter.health.current, fighter.stamina.current), (12, 101));
         assert_eq!(fighter.hurt(100, None), 12);
@@ -1505,7 +1377,8 @@ mod tests {
 
     #[test]
     fn rest_recovers_stamina_quickly_and_health_slowly() {
-        let (mut fighter, mut parts) = (Vitals::new(&fighter()), Recovering::default());
+        let (calling, abilities, ..) = fighter();
+        let (mut fighter, mut parts) = (Vitals::born(&calling, &abilities), Recovering::default());
         fighter.health.current = 1;
         fighter.stamina.current = 0;
         // (0.9 x 105 + 20) / 240 x 0.5 is about 0.24 a tick: 10 after 42.

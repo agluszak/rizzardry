@@ -143,7 +143,6 @@ pub fn plugin(app: &mut App) {
         .add_observer(closing)
         .add_observer(conducted)
         .add_observer(guard::strike_or_guard)
-        .add_observer(slot::fill)
         .add_plugins((special::plugin, spell::plugin, aim::plugin))
         .add_systems(
             crate::game::actors::Settle,

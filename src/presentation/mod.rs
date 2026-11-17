@@ -4,7 +4,6 @@ pub mod ambience;
 pub mod automap;
 pub mod billboards;
 pub mod camp;
-pub mod character_view;
 pub mod combat_sounds;
 pub mod controls;
 pub mod conversation;

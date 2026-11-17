@@ -29,9 +29,13 @@ pub struct Move {
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct Charges;
 
-/// How far it moves follows its stride, Haste and being slowed.
+/// How far a walker moves follows its stride, Haste and being slowed.
+#[allow(clippy::type_complexity)]
 pub fn moves(
-    actors: Query<(Entity, &Nature, &Modifiers, &Conditions, Option<&Move>)>,
+    actors: Query<
+        (Entity, &Nature, &Modifiers, &Conditions, Option<&Move>),
+        With<crate::game::world::navigation::Walker>,
+    >,
     mut commands: Commands,
 ) {
     for (actor, nature, modifiers, conditions, was) in &actors {

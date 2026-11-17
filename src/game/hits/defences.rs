@@ -160,6 +160,7 @@ pub fn defend(
     strength: Strength,
     difficulty: Difficulty,
     (dead, level, stance, resistances): (bool, u32, Stance, &Resistances),
+    (immune, death_immune): (&[Condition], bool),
 ) -> Defended {
     use EffectKind as K;
     let mut magnitude = if row.half { rolled / 2 } else { rolled };
@@ -175,8 +176,8 @@ pub fn defend(
         _ => None,
     };
     let mut resisted = match affliction {
-        Some(condition) => resistances.immune.contains(&condition),
-        None => matches!(row.kind, K::Slay) && resistances.death_immune,
+        Some(condition) => immune.contains(&condition),
+        None => matches!(row.kind, K::Slay) && death_immune,
     };
     let mut saved = false;
     if !resisted && let (Some(save), Some(realm)) = (row.save, realm) {
@@ -235,7 +236,7 @@ mod tests {
         row: &EffectSpec,
         rolled: u32,
         strength: Strength,
-        (dead, resistances): (bool, &Resistances),
+        (dead, resistances, immune): (bool, &Resistances, (&[Condition], bool)),
         seed: u64,
     ) -> Defended {
         let victim = (dead, 10, Stance::Hostile, resistances);
@@ -246,6 +247,7 @@ mod tests {
             strength,
             Difficulty::Normal,
             victim,
+            immune,
         )
     }
 
@@ -254,11 +256,18 @@ mod tests {
         let none = Resistances::default();
         for kind in [EffectKind::Harm, EffectKind::Heal, EffectKind::Slay, poison()] {
             let harm = row(kind.clone());
-            assert_eq!(defended(&harm, 5, WEAK, (true, &none), 0), Defended::Missed, "{kind:?}");
+            assert_eq!(
+                defended(&harm, 5, WEAK, (true, &none, (&[], false)), 0),
+                Defended::Missed,
+                "{kind:?}"
+            );
         }
         for kind in [EffectKind::Raise, EffectKind::Cure { conditions: vec![], outright: false }] {
             let raise = row(kind);
-            assert_eq!(defended(&raise, 5, WEAK, (true, &none), 0), Defended::Through(5));
+            assert_eq!(
+                defended(&raise, 5, WEAK, (true, &none, (&[], false)), 0),
+                Defended::Through(5)
+            );
         }
     }
 
@@ -266,22 +275,26 @@ mod tests {
     /// "saved"), and so is a death it cannot suffer.
     #[test]
     fn immunity_resists_before_any_save() {
-        let immune = Resistances { immune: &[Condition::Poisoned], ..Default::default() };
+        let none = Resistances::default();
+        let immune = [Condition::Poisoned];
         let saving = EffectSpec { save: Some(0), resist: Some(Realm::Water), ..row(poison()) };
         for seed in 0..50 {
             assert_eq!(
-                defended(&saving, 5, WEAK, (false, &immune), seed),
+                defended(&saving, 5, WEAK, (false, &none, (&immune, false)), seed),
                 Defended::Resisted { saved: false }
             );
         }
-        let deathless = Resistances { death_immune: true, ..Default::default() };
+        let deathless = Resistances::default();
         let slay = row(EffectKind::Slay);
         assert_eq!(
-            defended(&slay, 5, WEAK, (false, &deathless), 0),
+            defended(&slay, 5, WEAK, (false, &deathless, (&[], true)), 0),
             Defended::Resisted { saved: false }
         );
         let mortal = Resistances::default();
-        assert_eq!(defended(&slay, 5, WEAK, (false, &mortal), 0), Defended::Through(5));
+        assert_eq!(
+            defended(&slay, 5, WEAK, (false, &mortal, (&[], false)), 0),
+            Defended::Through(5)
+        );
     }
 
     /// A row with a roll in a realm, not saved against, has its magnitude cut by
@@ -297,7 +310,7 @@ mod tests {
         let harm = EffectSpec { resist: Some(Realm::Fire), ..row(EffectKind::Harm) };
         let strength = Strength { power: 3, against: 10, boost: 0 };
         let against = |harm: &EffectSpec, rolled, resistance: &Resistances, seed| {
-            defended(harm, rolled, strength, (false, resistance), seed)
+            defended(harm, rolled, strength, (false, resistance, (&[], false)), seed)
         };
         assert_eq!(against(&harm, 100, &at(1000), 0), Defended::Resisted { saved: false });
         assert_eq!(against(&harm, 100, &at(0), 0), Defended::Through(100));
@@ -319,13 +332,19 @@ mod tests {
         let warded = Resistances { wards: vec![Condition::Poisoned], ..Default::default() };
         let allows = EffectSpec { save: Some(6), ..row(poison()) };
         assert_eq!(
-            defended(&allows, 5, WEAK, (false, &warded), 0),
+            defended(&allows, 5, WEAK, (false, &warded, (&[], false)), 0),
             Defended::Resisted { saved: false }
         );
         let disallows = row(poison());
-        assert_eq!(defended(&disallows, 5, WEAK, (false, &warded), 0), Defended::Through(5));
+        assert_eq!(
+            defended(&disallows, 5, WEAK, (false, &warded, (&[], false)), 0),
+            Defended::Through(5)
+        );
         let unwarded = Resistances::default();
-        assert_eq!(defended(&allows, 5, WEAK, (false, &unwarded), 0), Defended::Through(5));
+        assert_eq!(
+            defended(&allows, 5, WEAK, (false, &unwarded, (&[], false)), 0),
+            Defended::Through(5)
+        );
     }
 
     fn rounds(left: u32) -> Conditions {

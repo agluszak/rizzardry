@@ -896,8 +896,9 @@ mod tests {
     use super::*;
     use crate::content::characters::{Gender, Profession, Race};
     use crate::content::items::{EquipClass, ItemDefinition, ItemId, ItemKind};
+    use crate::game::actors::Abilities;
     use crate::game::actors::Settle;
-    use crate::game::characters::{Character, Vitals};
+    use crate::game::characters::{Calling, Training, born};
     use crate::game::inventory::EquipSlot;
     use crate::game::items::{Worn, make};
     use bevy::ecs::system::RunSystemOnce;
@@ -932,16 +933,13 @@ mod tests {
     fn member(
         profession: Profession,
         worn: &[(EquipSlot, &ItemDefinition)],
-        train: impl FnOnce(&mut Character),
+        train: impl FnOnce(&mut Training),
     ) -> (App, [Entity; 2]) {
         let mut app = App::new();
         app.add_plugins(crate::game::actors::plugin).init_resource::<crate::game::rng::GameRng>();
-        let mut character = Character::new("A", Race::Human, Gender::Male, profession);
-        train(&mut character);
-        let vitals = Vitals::new(&character);
         let world = app.world_mut();
-        let member =
-            world.spawn((crate::game::actors::armour::born(Race::Human), character, vitals)).id();
+        let member = world.spawn(born("A", Race::Human, Gender::Male, profession)).id();
+        train(&mut world.get_mut::<Training>(member).unwrap());
         for &(slot, definition) in worn {
             let definition = definition.clone();
             let item = world
@@ -992,7 +990,7 @@ mod tests {
     fn two_weapons_each_attack_with_their_dual_wielding_penalty() {
         let sword = weapon(0, EquipClass::ShortWeapon, Skill::Sword);
         let dagger = weapon(2, EquipClass::ShortWeapon, Skill::Dagger);
-        let train = |c: &mut Character| c.training.0[Skill::DualWeapons] = 40;
+        let train = |training: &mut Training| training.0[Skill::DualWeapons] = 40;
         let fighter = Profession::Fighter;
         let (app, [_, off]) = member(fighter, &[(EquipSlot::Primary, &sword)], train);
         assert_eq!(get::<Grip>(&app, off), Grip::Idle);
@@ -1031,8 +1029,10 @@ mod tests {
         assert_eq!(get::<Loaded>(&app, main).0, arrows.attack_modes);
         assert_eq!(get::<Rolls>(&app, main).dice, arrows.damage);
         assert_eq!(get::<BlowEffects>(&app, main).0.chances[AttackEffect::Poison], 10);
-        let strength = Character::new("A", Race::Human, Gender::Male, ranger).abilities.0
-            [Attribute::Strength] as i32;
+        let mut app = app;
+        let world = app.world_mut();
+        let abilities = world.query_filtered::<&Abilities, With<Calling>>().single(world).unwrap();
+        let strength = abilities.0[Attribute::Strength] as i32;
         let from_strength = match strength {
             ..50 => -(50 - strength),
             50 => 0,

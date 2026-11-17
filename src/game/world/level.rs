@@ -26,10 +26,8 @@ use crate::content::monster::MonsterBody;
 use crate::content::navmesh::navmesh_path;
 use crate::content::ui::TextTable;
 use crate::game::automap::MapNotes;
-use crate::game::characters::Character;
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
-use crate::game::magic::LearnedSpells;
 use crate::game::party::body::{PartyPlacement, PartyStart};
 use crate::game::party::roster::Party;
 use crate::game::rng::GameRng;
@@ -270,7 +268,8 @@ impl Destination {
 pub enum Entry {
     /// A new campaign: the accepted party, which joins only when the level
     /// commits, so a failed first load leaves no campaign behind.
-    NewGame(Vec<(Character, LearnedSpells)>),
+    /// The drafts of the characters made, who join the party.
+    NewGame(Vec<Entity>),
     /// The party travels on from the level it is in.
     Travel,
 }
@@ -470,9 +469,7 @@ pub fn activate_level(
         let catalogs = shared.catalogs.as_deref().expect("prepared");
         let party = match std::mem::replace(&mut destination.entry, Entry::Travel) {
             Entry::Travel => parties.single().expect("a party travels"),
-            Entry::NewGame(characters) => {
-                found_party(&mut commands, characters, catalogs, &mut rng)
-            }
+            Entry::NewGame(drafts) => found_party(&mut commands, drafts),
         };
         // A resource stays on its entity until the entity stops being the
         // resource's: removing `IsResource` takes `InPlay` with it and frees
@@ -561,15 +558,10 @@ fn prepare(
 }
 
 /// A new campaign's party, its members joining complete and in order.
-fn found_party(
-    commands: &mut Commands,
-    characters: Vec<(Character, LearnedSpells)>,
-    content: &crate::game::data::Catalogs,
-    rng: &mut GameRng,
-) -> Entity {
+fn found_party(commands: &mut Commands, drafts: Vec<Entity>) -> Entity {
     let party = commands.spawn((Name::new("Party"), Party)).id();
-    for member in characters {
-        crate::game::party::roster::recruit_character(commands, party, member, content, rng);
+    for draft in drafts {
+        commands.trigger(crate::game::characters::draft::Join { draft, party });
     }
     party
 }

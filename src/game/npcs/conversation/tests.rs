@@ -11,7 +11,7 @@ use crate::content::npcs::{
     DialogueOp, DialogueScript, FactCatalog, FactDefinition, FactId, Gift, JournalVisibility,
     NpcCatalog, NpcDefinition, NpcId, Quote, Response,
 };
-use crate::game::characters::{Character, Vitals};
+use crate::game::characters::born;
 use crate::game::data::Catalogs;
 use crate::game::inventory::PartyInventory;
 use crate::game::npcs::{ActorId, Npc, NpcAssets, NpcSpeaker};
@@ -93,9 +93,8 @@ fn scene(definition: NpcDefinition) -> Scene {
     let party = world.spawn((Party, Position(Vec3::ZERO), PartyBody::default())).id();
     world.get_mut::<PartyInventory>(party).unwrap().gold = 500;
     let level = world.spawn(Level::test(default())).id();
-    let sheet = Character::new("Vi", Race::Human, Gender::Female, Profession::Fighter);
-    let vitals = Vitals::new(&sheet);
-    let speaker = world.spawn((sheet, vitals, PartyMember(party))).id();
+    let sheet = born("Vi", Race::Human, Gender::Female, Profession::Fighter);
+    let speaker = world.spawn((sheet, PartyMember(party))).id();
     let npc = Npc::from_definition(&world.resource::<Catalogs>().npcs.0[0]);
     let person = world.spawn((ActorId(NpcId(0)), npc)).id();
     world.spawn((NpcSpeaker(person), crate::game::world::level::LevelOwned(level)));

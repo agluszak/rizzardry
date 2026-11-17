@@ -119,27 +119,27 @@ pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer)
 
 pub(super) fn refresh(
     session: Single<Ref<Creation>>,
+    drafts: Query<(Ref<crate::game::characters::Training>, Ref<crate::game::actors::UsableSkills>)>,
     mut rows: Query<(&SkillRow, &mut Node, &mut Visibility)>,
     added: Query<(), Added<SkillRow>>,
 ) {
-    if !session.is_changed() && added.is_empty() {
+    let Some(draft) = session.mode.draft() else { return };
+    let (training, usable) = drafts.get(draft).expect("the draft edited is a character");
+    if !session.is_changed() && !training.is_changed() && !usable.is_changed() && added.is_empty() {
         return;
     }
-    let Some(draft) = session.mode.draft() else { return };
-    let profile = draft.preview();
+    // A skill shows when it may be used or has points.
+    let shown = |skill| usable.0.contains(skill) || training.0[skill] > 0;
     for (row, mut node, mut visibility) in &mut rows {
-        let shown = draft.skill_available(row.0) || profile.training.0[row.0] > 0;
-        visibility.set_if_neq(visible_if(shown));
-        crate::presentation::screen_art::display_if(&mut node, shown);
-        if shown {
+        let shown_here = shown(row.0);
+        visibility.set_if_neq(visible_if(shown_here));
+        crate::presentation::screen_art::display_if(&mut node, shown_here);
+        if shown_here {
             let group = category(row.0);
             let index = EnumSet::<Skill>::all()
                 .iter()
                 .take(row.0 as usize)
-                .filter(|&skill| {
-                    category(skill) == group
-                        && (draft.skill_available(skill) || profile.training.0[skill] > 0)
-                })
+                .filter(|&skill| category(skill) == group && shown(skill))
                 .count();
             let (x, y) =
                 [(444., 53.), (444., 248.), (229., 53.), (229., 178.), (444., 331.)][group];

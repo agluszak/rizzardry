@@ -371,7 +371,14 @@ mod tests {
         world.add_observer(succeed_the_dead);
         let group = world.spawn(MonsterGroup::default()).id();
         let member = |world: &mut World, level| {
-            world.spawn((Vitals::full(10, 10), Level(level), GroupMember(group))).id()
+            world
+                .spawn((
+                    Vitals::full(10, 10),
+                    crate::game::actors::Frame { health: 10, stamina: 10 },
+                    Level(level),
+                    GroupMember(group),
+                ))
+                .id()
         };
         let first = member(&mut world, 3);
         world.entity_mut(first).insert(Script("patrol.msf".into()));

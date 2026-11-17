@@ -1,10 +1,18 @@
-//! Retained frontend screens. Drafts belong to the creation root, never the campaign.
+//! Retained frontend screens. Each character being made is a draft entity
+//! (`game::characters::draft`); the creation root holds which they are, and
+//! they outlive it into the campaign they begin.
 use super::screen_art::{BitmapText, Picture, absolute, spawn_picture};
 use crate::content::characters::{Attribute, Gender, Profession, Race, Skill};
 use crate::content::ui::SpriteSheet;
-use crate::game::characters::creation::{
-    CharacterDraft, PARTY_LIMIT, PLAYABLE_RACES, admit, default_gender, identity,
+use crate::game::actors::{Abilities, UsableSkills};
+use crate::game::characters::creation::{PARTY_LIMIT, PLAYABLE_RACES, default_gender, identity};
+use crate::game::characters::draft::{
+    Allot, Allotment, Allotted, Conceive, Forced, Introduce, MadeIn, Newborn, Pick, Picked, Points,
+    budget, may_raise_attribute, may_raise_skill, newborn_bundle, picks_left, unready,
 };
+use crate::game::characters::progression::SpellPicks;
+use crate::game::characters::{Birth, Calling, Identity, Training};
+use crate::game::data::Catalogs;
 use crate::game::session::begin_adventure;
 use crate::presentation::screen::Screen;
 use crate::presentation::screen_art::visible_if;
@@ -67,7 +75,6 @@ impl Plugin for FrontendPlugin {
                 Update,
                 (
                     refresh,
-                    creator_stats::embody_draft,
                     creator_stats::refresh,
                     creator_skills::refresh,
                     creator_spells::refresh,
@@ -156,19 +163,20 @@ enum Page {
     Skills,
     Review,
 }
+/// Party creation: the characters made (draft entities), those chosen for
+/// the party in order, the one selected, and the one being made.
 #[derive(Component)]
 struct Creation {
-    candidates: Vec<(u32, CharacterDraft)>,
-    party: Vec<u32>,
-    selected: Option<u32>,
-    next_id: u32,
+    candidates: Vec<Entity>,
+    party: Vec<Entity>,
+    selected: Option<Entity>,
     mode: CreationMode,
     choices: CreatorChoices,
     message: String,
 }
 enum CreationMode {
     Party,
-    Editing { draft: Box<CharacterDraft>, step: EditStep },
+    Editing { draft: Entity, step: EditStep },
 }
 #[derive(Clone, Copy)]
 enum EditStep {
@@ -178,20 +186,8 @@ enum EditStep {
     Review,
 }
 impl CreationMode {
-    fn draft(&self) -> Option<&CharacterDraft> {
+    fn draft(&self) -> Option<Entity> {
         match self {
-            Self::Party => None,
-            Self::Editing { draft, .. } => Some(draft),
-        }
-    }
-    fn draft_mut(&mut self) -> Option<&mut CharacterDraft> {
-        match self {
-            Self::Party => None,
-            Self::Editing { draft, .. } => Some(draft),
-        }
-    }
-    fn take_draft(&mut self) -> Option<CharacterDraft> {
-        match std::mem::replace(self, Self::Party) {
             Self::Party => None,
             Self::Editing { draft, .. } => Some(*draft),
         }
@@ -252,7 +248,7 @@ enum Action {
     Quit,
     Menu,
     Add,
-    SelectCandidate(Option<u32>),
+    SelectCandidate(Option<Entity>),
     ToggleCandidate,
     DeleteCandidate,
     Page(Page),
@@ -499,7 +495,6 @@ fn creation(mut commands: Commands, assets: Res<AssetServer>) {
         candidates: Vec::new(),
         party: Vec::new(),
         selected: None,
-        next_id: 0,
         mode: CreationMode::Party,
         choices: CreatorChoices::default(),
         message: String::new(),
@@ -537,6 +532,13 @@ fn activate(
         Or<(With<NameInput>, With<NicknameInput>)>,
     >,
     dialogs: Query<(), With<confirmation::ConfirmDialog>>,
+    drafts: Query<(
+        (&Points, &Forced, &Allotted),
+        (&Abilities, &Training, &UsableSkills),
+        (&Birth, &Calling, &SpellPicks, &Picked),
+        &Identity,
+    )>,
+    content: If<Res<Catalogs>>,
 ) -> Result {
     if !dialogs.is_empty() {
         return Ok(());
@@ -576,6 +578,7 @@ fn activate(
             return Ok(());
         }
         Action::Menu => {
+            // The characters made go with the session (`MadeIn`).
             next.set(Session::MainMenu);
             return Ok(());
         }
@@ -586,87 +589,85 @@ fn activate(
     if !matches!(action, Action::ToggleChoice(_)) {
         session.choices.open = None;
     }
+    let editing = session.mode.draft();
+    let sheet = editing.and_then(|draft| drafts.get(draft).ok());
     match *action {
-        Action::Add if session.candidates.len() < 6 => {
-            session.mode =
-                CreationMode::Editing { draft: Box::default(), step: EditStep::Identity };
+        Action::Add if session.candidates.len() < PARTY_LIMIT => {
+            let draft = commands.spawn((newborn_bundle(""), Newborn, MadeIn(session_entity))).id();
+            commands.trigger(Conceive {
+                draft,
+                race: Race::Human,
+                gender: Gender::Male,
+                profession: Profession::Fighter,
+            });
+            session.mode = CreationMode::Editing { draft, step: EditStep::Identity };
             session.choices = CreatorChoices::default();
-            session.mode.set_page(Page::Identity);
+            for (_, mut name, _) in &mut names {
+                name.clear();
+            }
         }
-        Action::SelectCandidate(Some(id)) => {
-            if session.candidates.iter().any(|(candidate, _)| *candidate == id) {
-                session.selected = Some(id);
+        Action::SelectCandidate(Some(candidate)) => {
+            if session.candidates.contains(&candidate) {
+                session.selected = Some(candidate);
             }
         }
         Action::ToggleCandidate => {
-            if let Some(id) = session.selected {
-                if let Some(index) = session.party.iter().position(|member| *member == id) {
+            if let Some(candidate) = session.selected {
+                if let Some(index) = session.party.iter().position(|&member| member == candidate) {
                     session.party.remove(index);
                 } else if session.party.len() < PARTY_LIMIT {
-                    session.party.push(id);
+                    session.party.push(candidate);
                 }
             }
         }
         Action::DeleteCandidate => {
-            if let Some((id, draft)) = session
-                .selected
-                .and_then(|id| session.candidates.iter().find(|(candidate, _)| *candidate == id))
+            if let Some(candidate) = session.selected
+                && let Ok((.., identity)) = drafts.get(candidate)
             {
-                confirmation::open(&mut commands, &assets, *id, draft.display_name(), &mut focus);
+                confirmation::open(&mut commands, &assets, candidate, &identity.name, &mut focus);
             }
         }
         Action::Cancel => {
+            if let Some(draft) = editing {
+                commands.entity(draft).despawn();
+            }
             session.mode = CreationMode::Party;
-            session.mode.set_page(Page::Party);
         }
         Action::ToggleChoice(choice) => {
             session.choices.open =
                 if session.choices.open == Some(choice) { None } else { Some(choice) };
         }
         Action::Page(Page::Skills) if session.mode.page() == Page::Identity => {
-            if session.choices.complete()
-                && session.mode.draft().is_some_and(|draft| {
-                    !EnumSet::<Attribute>::all()
-                        .iter()
-                        .any(|attribute| draft.can_adjust_attribute(attribute, true))
-                })
+            if let Some((spent, (abilities, ..), (_, calling, granted, picked), _)) = sheet
+                && session.choices.complete()
+                && attributes_done(spent, abilities)
             {
-                let page = if session.mode.draft().unwrap().spell_points_total() > 0 {
-                    Page::Magic
-                } else {
-                    Page::Skills
-                };
-                session.mode.set_page(page);
+                let (_, total) = spell_picks(calling, granted, picked, &content);
+                session.mode.set_page(if total > 0 { Page::Magic } else { Page::Skills });
             }
         }
         Action::Page(Page::Skills) if session.mode.page() == Page::Magic => {
-            if session
-                .mode
-                .draft()
-                .is_some_and(|draft| draft.spell_remaining() < draft.spell_points_total())
-            {
-                if session.mode.draft().is_some_and(|draft| draft.spell_remaining() > 0) {
+            if let Some((_, _, (_, calling, granted, picked), _)) = sheet {
+                let (left, total) = spell_picks(calling, granted, picked, &content);
+                if left > 0 && left < total {
                     confirmation::confirm_remaining_spells(&mut commands, &assets, &mut focus);
-                } else {
+                } else if left < total {
                     session.mode.set_page(Page::Skills);
                 }
             }
         }
         Action::Page(Page::Identity) if session.mode.page() == Page::Skills => {
-            let page = if session.mode.draft().is_some_and(|draft| draft.spell_points_total() > 0) {
-                Page::Magic
-            } else {
-                Page::Identity
-            };
-            session.mode.set_page(page);
+            let magic = sheet.is_some_and(|(_, _, (_, calling, granted, picked), _)| {
+                spell_picks(calling, granted, picked, &content).1 > 0
+            });
+            session.mode.set_page(if magic { Page::Magic } else { Page::Identity });
         }
         Action::Page(Page::Review) if session.mode.page() == Page::Skills => {
-            if session.mode.draft().is_some_and(|draft| {
-                !EnumSet::<Skill>::all().iter().any(|skill| draft.can_adjust_skill(skill, true))
-            }) {
+            if let Some(((points, _, allotted), (_, training, usable), _, identity)) = sheet
+                && skills_done((points, allotted), (training, usable))
+            {
                 session.mode.set_page(Page::Review);
-                let nickname =
-                    session.mode.draft().is_some_and(|draft| !draft.name.trim().is_empty());
+                let nickname = !identity.full_name.trim().is_empty();
                 if let Some(entity) = names.iter_mut().find_map(|(entity, _, is_nickname)| {
                     (nickname == is_nickname).then_some(entity)
                 }) {
@@ -681,40 +682,45 @@ fn activate(
             }
         }
         Action::Begin => {
-            let drafts: Option<Vec<_>> = session
-                .party
-                .iter()
-                .map(|id| {
-                    session
-                        .candidates
-                        .iter()
-                        .find(|(candidate, _)| candidate == id)
-                        .map(|(_, draft)| draft.clone())
-                })
-                .collect();
-            let Some(drafts) = drafts else {
-                session.message = "A party member is no longer available.".into();
-                return Ok(());
-            };
+            let party = session.party.clone();
             commands.queue(move |world: &mut World| {
-                if let Err(message) = begin_adventure(world, &drafts)
-                    && let Some(mut session) = world.get_mut::<Creation>(session_entity)
-                {
-                    session.message = message.into();
+                if let Err(message) = begin_adventure(world, &party) {
+                    let mut sessions = world.query::<&mut Creation>();
+                    if let Ok(mut session) = sessions.single_mut(world) {
+                        session.message = message.into();
+                    }
                 }
             });
         }
         action => {
+            let (
+                Some(draft),
+                Some((spent, (abilities, training, usable), (birth, calling, _, picked), identity)),
+            ) = (editing, sheet)
+            else {
+                return Ok(());
+            };
+            let (points, forced, allotted) = spent;
             let choices = session.choices;
-            let Some(draft) = session.mode.draft_mut() else { return Ok(()) };
+            let (race, gender, profession) = (birth.race, birth.gender, calling.profession);
+            let conceive = |race, gender, profession| {
+                budget(race, gender, profession).map(|_| Conceive {
+                    draft,
+                    race,
+                    gender,
+                    profession,
+                })
+            };
             let result = match action {
                 Action::ResetSpells => {
-                    draft.reset_spells();
+                    for &spell in &picked.0 {
+                        commands.trigger(Pick { draft, spell });
+                    }
                     Ok(())
                 }
                 Action::Race(direction) => {
                     let i = if choices.race {
-                        PLAYABLE_RACES.iter().position(|&r| r == draft.race()).unwrap() as i32
+                        PLAYABLE_RACES.iter().position(|&r| r == race).unwrap() as i32
                     } else if direction > 0 {
                         -1
                     } else {
@@ -724,32 +730,28 @@ fn activate(
                         .map(|offset| {
                             PLAYABLE_RACES[(i + direction * offset).rem_euclid(11) as usize]
                         })
-                        .find(|&r| {
-                            CharacterDraft::budget(r, draft.gender(), draft.profession()).is_ok()
-                        })
+                        .find(|&r| budget(r, gender, profession).is_ok())
                         .unwrap();
-                    draft.choose(choice, draft.gender(), draft.profession())
+                    conceive(choice, gender, profession).map(|c| commands.trigger(c))
                 }
                 Action::Gender(direction) => {
                     let gender = if !choices.gender {
-                        if draft.profession().row().only_gender == Some(Gender::Female)
-                            || direction < 0
-                        {
+                        if profession.row().only_gender == Some(Gender::Female) || direction < 0 {
                             Gender::Female
                         } else {
                             Gender::Male
                         }
-                    } else if draft.gender() == Gender::Male {
+                    } else if gender == Gender::Male {
                         Gender::Female
                     } else {
                         Gender::Male
                     };
-                    draft.choose(draft.race(), gender, draft.profession())
+                    conceive(race, gender, profession).map(|c| commands.trigger(c))
                 }
                 Action::Profession(direction) => {
                     let professions: Vec<_> = EnumSet::<Profession>::all().iter().collect();
                     let i = if choices.profession {
-                        draft.profession() as i32
+                        profession as i32
                     } else if direction > 0 {
                         -1
                     } else {
@@ -759,47 +761,75 @@ fn activate(
                     let choice = (1..=15)
                         .map(|offset| professions[(i + direction * offset).rem_euclid(15) as usize])
                         .find(|&p| {
-                            let gender = default_gender(p, draft.gender(), choices.gender);
-                            CharacterDraft::budget(draft.race(), gender, p).is_ok()
+                            budget(race, default_gender(p, gender, choices.gender), p).is_ok()
                         })
                         .unwrap();
-                    let gender = default_gender(choice, draft.gender(), choices.gender);
-                    draft.choose(draft.race(), gender, choice)
+                    let gender = default_gender(choice, gender, choices.gender);
+                    conceive(race, gender, choice).map(|c| commands.trigger(c))
                 }
-                Action::ChooseProfession(profession) => {
-                    let gender = default_gender(profession, draft.gender(), choices.gender);
-                    draft.choose(draft.race(), gender, profession)
+                Action::ChooseProfession(choice) => {
+                    let gender = default_gender(choice, gender, choices.gender);
+                    conceive(race, gender, choice).map(|c| commands.trigger(c))
                 }
-                Action::ChooseRace(race) => draft.choose(race, draft.gender(), draft.profession()),
-                Action::ChooseGender(gender) => {
-                    draft.choose(draft.race(), gender, draft.profession())
+                Action::ChooseRace(choice) => {
+                    conceive(choice, gender, profession).map(|c| commands.trigger(c))
+                }
+                Action::ChooseGender(choice) => {
+                    conceive(race, choice, profession).map(|c| commands.trigger(c))
                 }
                 Action::Portrait(direction) => {
-                    draft.portrait = identity::next_portrait(&draft.portrait, direction).into();
+                    let portrait = identity::next_portrait(&identity.portrait, direction);
+                    let identity = Identity { portrait: portrait.into(), ..identity.clone() };
+                    commands.trigger(Introduce { draft, identity });
                     Ok(())
                 }
                 Action::PortraitGroup(direction) => {
-                    draft.portrait =
-                        identity::next_portrait_group(&draft.portrait, direction).into();
+                    let portrait = identity::next_portrait_group(&identity.portrait, direction);
+                    let identity = Identity { portrait: portrait.into(), ..identity.clone() };
+                    commands.trigger(Introduce { draft, identity });
                     Ok(())
                 }
-                Action::Attribute(a, increase) => {
-                    if draft.adjust_attribute(a, increase) {
+                Action::Attribute(a, up) => {
+                    let may = if up {
+                        may_raise_attribute((points, forced, allotted), abilities, a)
+                    } else {
+                        allotted.attributes[a] > 0
+                    };
+                    if may {
+                        commands.trigger(Allot { draft, what: Allotment::Attribute(a), up });
                         Ok(())
                     } else {
                         Err("Attribute minimum, allocation limit or point budget reached.")
                     }
                 }
                 Action::ResetAttributes => {
-                    draft.reset_attributes();
+                    for (a, &put) in &allotted.attributes {
+                        for _ in 0..put {
+                            commands.trigger(Allot {
+                                draft,
+                                what: Allotment::Attribute(a),
+                                up: false,
+                            });
+                        }
+                    }
                     Ok(())
                 }
                 Action::ResetSkills => {
-                    draft.reset_skills();
+                    for (s, &put) in &allotted.skills {
+                        for _ in 0..put {
+                            commands.trigger(Allot { draft, what: Allotment::Skill(s), up: false });
+                        }
+                    }
                     Ok(())
                 }
-                Action::Skill(s, increase) => {
-                    if draft.adjust_skill(s, increase) {
+                Action::Skill(s, up) => {
+                    let may = if up {
+                        may_raise_skill((points, allotted), (training, usable), s)
+                    } else {
+                        allotted.skills[s] > 0
+                    };
+                    if may {
+                        commands.trigger(Allot { draft, what: Allotment::Skill(s), up });
                         Ok(())
                     } else {
                         Err("Skills allow five allocated points each, within a pool of fifteen.")
@@ -831,22 +861,39 @@ fn activate(
             }
         }
     }
-    if matches!(*action, Action::Add)
-        && let Some(draft) = session.mode.draft()
-    {
-        for (_, mut name, nickname) in &mut names {
-            name.clear();
-            name.queue_edit(bevy::text::TextEdit::Insert(
-                (if nickname { &draft.nickname } else { &draft.name }).as_str().into(),
-            ));
-        }
-    }
     Ok(())
 }
 
+/// The picks a new character may spend, as (left, granted).
+fn spell_picks(
+    calling: &Calling,
+    granted: &SpellPicks,
+    picked: &Picked,
+    content: &Catalogs,
+) -> (usize, usize) {
+    let left = picks_left(granted, calling, &picked.0, content).map_or(0, |p| p.available(calling));
+    (left, granted.available(calling))
+}
+
+/// No attribute may take another point.
+fn attributes_done(spent: (&Points, &Forced, &Allotted), abilities: &Abilities) -> bool {
+    !EnumSet::<Attribute>::all().iter().any(|a| may_raise_attribute(spent, abilities, a))
+}
+
+/// No skill may take another point.
+fn skills_done(spent: (&Points, &Allotted), sheet: (&Training, &UsableSkills)) -> bool {
+    !EnumSet::<Skill>::all().iter().any(|s| may_raise_skill(spent, sheet, s))
+}
+
+#[allow(clippy::type_complexity)]
 fn commit_creation(
     mut sessions: Query<(Entity, &mut Creation), With<FinishPending>>,
     inputs: Query<(&EditableText, Has<NicknameInput>), Or<(With<NameInput>, With<NicknameInput>)>>,
+    drafts: Query<(
+        &Identity,
+        (&Points, &Forced, &Allotted),
+        (&Abilities, &Training, &UsableSkills),
+    )>,
     mut commands: Commands,
 ) {
     for (entity, mut session) in &mut sessions {
@@ -855,49 +902,57 @@ fn commit_creation(
         }) {
             continue;
         }
-        if session.mode.page() != Page::Review || !session.choices.complete() {
-            commands.entity(entity).remove::<FinishPending>();
-            continue;
-        }
-        let Some(draft) = session.mode.draft_mut() else {
-            commands.entity(entity).remove::<FinishPending>();
-            continue;
-        };
-        for (input, nickname) in &inputs {
-            if nickname {
-                draft.nickname = input.value().to_string();
-            } else {
-                draft.name = input.value().to_string();
-            }
-        }
-        let draft = session.mode.draft().unwrap();
-        match admit(draft, session.candidates.iter().map(|(_, candidate)| candidate)) {
-            Err(message) => session.message = message.into(),
-            Ok(()) => {
-                let draft = session.mode.take_draft().unwrap();
-                let id = session.next_id;
-                session.next_id += 1;
-                session.candidates.push((id, draft));
-                session.selected = Some(id);
-                session.mode.set_page(Page::Party);
-            }
-        }
         commands.entity(entity).remove::<FinishPending>();
+        if session.mode.page() != Page::Review || !session.choices.complete() {
+            continue;
+        }
+        let Some(draft) = session.mode.draft() else { continue };
+        let (identity, spent, sheet) = drafts.get(draft).expect("the draft edited is a character");
+        let mut identity = identity.clone();
+        for (input, nickname) in &inputs {
+            let value = input.value().to_string();
+            if nickname {
+                identity.name = value;
+            } else {
+                identity.full_name = value;
+            }
+        }
+        // The nickname is told apart from every other character made.
+        let others = session.candidates.iter().filter_map(|&other| drafts.get(other).ok());
+        let taken = crate::game::characters::draft::nickname_taken(
+            &identity.name,
+            others.map(|(theirs, ..)| theirs),
+        );
+        match unready(&identity, spent, sheet) {
+            Some(why) => session.message = why.into(),
+            None if taken => {
+                session.message = "A character with that nickname already exists.".into();
+            }
+            None => {
+                commands.trigger(Introduce { draft, identity });
+                session.candidates.push(draft);
+                session.selected = Some(draft);
+                session.mode = CreationMode::Party;
+            }
+        }
     }
 }
 
 fn update_name(
     event: On<TextEditChange>,
     names: Query<(&EditableText, Has<NicknameInput>), Or<(With<NameInput>, With<NicknameInput>)>>,
-    mut session: Single<&mut Creation>,
+    session: Single<&Creation>,
+    drafts: Query<&Identity>,
+    mut commands: Commands,
 ) -> Result {
     let (name, nickname) = names.get(event.event_target())?;
-    if let Some(draft) = session.mode.draft_mut() {
-        let value = name.value().to_string();
-        let field = if nickname { &mut draft.nickname } else { &mut draft.name };
-        if *field != value {
-            *field = value;
-        }
+    let Some(draft) = session.mode.draft() else { return Ok(()) };
+    let mut identity = drafts.get(draft)?.clone();
+    let value = name.value().to_string();
+    let field = if nickname { &mut identity.name } else { &mut identity.full_name };
+    if *field != value {
+        *field = value;
+        commands.trigger(Introduce { draft, identity });
     }
     Ok(())
 }

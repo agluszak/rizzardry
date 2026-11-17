@@ -7,7 +7,7 @@ use crate::{
     content::{items::ItemId, npcs::NpcCharacter},
     game::{
         actors::{CanFight, Nature},
-        characters::{Calling, Character, Conditions, Dead, Vitals},
+        characters::{Calling, Conditions, Dead, Vitals},
         data::Catalogs,
         inventory::EquipSlot,
         items::{Cursed, Give, Items, Place, Put, make, roll_amount},
@@ -42,34 +42,43 @@ pub fn companion(
     content: &Catalogs,
     rng: &mut GameRng,
 ) {
-    let mut c = Character::new(&t.name, t.race, t.gender, t.profession);
-    c.abilities.0 = t.attributes;
-    c.training.0 = t.skills;
-    c.calling = Calling::begun(t.profession);
-    while c.calling.level() < t.level {
-        c.experience.last_goal = c.calling.experience_goal(&c.experience);
-        c.calling.levels[t.profession] += 1;
+    // At the level authored, each level's goal passed and earned.
+    let mut calling = Calling::begun(t.profession);
+    let mut experience = crate::game::characters::Experience::default();
+    while calling.level() < t.level {
+        experience.last_goal = calling.experience_goal(&experience);
+        calling.levels[t.profession] += 1;
     }
-    c.experience.earned = c.experience.last_goal;
-    c.identity.portrait = crate::game::characters::creation::identity::PORTRAITS
-        .get(t.portrait)
-        .copied()
-        .unwrap_or_default()
-        .into();
-    let skills = crate::game::actors::Skills::of_sheet(&c);
+    experience.earned = experience.last_goal;
+    let portrait = crate::game::characters::creation::identity::PORTRAITS.get(t.portrait);
+    let identity = crate::game::characters::Identity {
+        name: t.name.clone(),
+        full_name: t.name.clone(),
+        portrait: portrait.copied().unwrap_or_default().into(),
+        ..default()
+    };
+    let training = crate::game::characters::Training(t.skills);
+    let calm = crate::game::characters::Conditions::default();
+    let skills = crate::game::actors::Skills::affected(&training, &calling, &calm);
+    let traits = crate::game::characters::traits_of(t.race, &calling);
+    // Disabled until they join, so their figures are not written yet: the
+    // caster levels are worked out here as the figure would.
+    let levels = crate::game::actors::CasterLevels::of(&calling);
     let learnable = t.spells.iter().copied().filter(|&s| {
-        crate::game::magic::can_learn((c.trained(), &c.training), &skills, &content.spells[s])
+        let spell = &content.spells[s];
+        let caster = (levels.followed, levels.caster_level(spell));
+        crate::game::magic::can_learn((&calling, traits, &training), &skills, caster, spell)
     });
     let spells = LearnedSpells::of(learnable, &content.spells);
-    let vitals = Vitals::new(&c);
     let member = commands
         .spawn((
-            Name::new(c.identity.name.clone()),
+            Name::new(t.name.clone()),
             CompanionOf(person),
             Nature::of_race(t.race),
             crate::game::actors::armour::born(t.race),
-            c,
-            vitals,
+            (identity, crate::game::characters::Birth { race: t.race, gender: t.gender }),
+            Vitals::born(&calling, &crate::game::actors::Abilities(t.attributes)),
+            (calling, crate::game::actors::Abilities(t.attributes), training, experience),
             spells,
             SpellPoints::default(),
             Disabled,
@@ -239,7 +248,7 @@ pub fn dismiss(
             &mut body,
             root,
             (feet, kept.yaw, kept.monster.body),
-            (None, kind),
+            (None, kind, &content.spells),
             (navigation, &mut configs),
         );
     }
@@ -379,9 +388,9 @@ mod tests {
         let world = app.world_mut();
         let party = world.spawn((Party, Position(Vec3::ZERO), PartyBody::default())).id();
         world.spawn(Level::test(default())).insert(MonsterBodies([(0, body)].into()));
-        let sheet = Character::new("Vi", Race::Human, Gender::Female, Profession::Fighter);
-        let vitals = Vitals::new(&sheet);
-        let veteran = world.spawn((sheet, vitals, PartyMember(party))).id();
+        let sheet =
+            crate::game::characters::born("Vi", Race::Human, Gender::Female, Profession::Fighter);
+        let veteran = world.spawn((sheet, PartyMember(party))).id();
         let record = world
             .run_system_once(
                 |mut commands: Commands, content: Res<Catalogs>, mut rng: ResMut<GameRng>| {
@@ -457,6 +466,7 @@ mod tests {
                     body: ScaledBody::new(&MonsterBody::default(), 0),
                 },
                 Vitals::full(10, 10),
+                crate::game::actors::Frame { health: 10, stamina: 10 },
                 ailing,
             ))
             .id();
@@ -469,6 +479,34 @@ mod tests {
         assert_eq!(carried(world, scene.companion), before, "the same things in the same places");
         let roster: Vec<_> = world.get::<PartyRoster>(scene.party).unwrap().iter().collect();
         assert_eq!(roster, [scene.veteran, scene.companion]);
+    }
+
+    /// A companion made long before they join, set aside all the while, has
+    /// their figures once they join: their caster levels, trained maxima and
+    /// usable skills are written, their most health follows, and they come
+    /// whole.
+    #[test]
+    fn a_companion_joining_has_their_figures() {
+        use crate::game::actors::{CasterLevels, Settle, TrainedMaxima, UsableSkills};
+        let mut scene = scene();
+        for _ in 0..3 {
+            scene.app.world_mut().run_schedule(Settle);
+            scene.app.update();
+        }
+        assert_eq!(join_with(&mut scene), Ok(()));
+        let world = scene.app.world_mut();
+        world.run_schedule(Settle);
+        let companion = scene.companion;
+        let calling = world.get::<Calling>(companion).unwrap().clone();
+        assert_eq!(world.get::<CasterLevels>(companion), Some(&CasterLevels::of(&calling)));
+        let trained = *world.get::<TrainedMaxima>(companion).unwrap();
+        assert!(trained.health > 0 && trained.stamina > 0, "{trained:?}");
+        let usable = world.get::<UsableSkills>(companion).unwrap();
+        assert!(!usable.0.is_empty(), "a Fighter may use their skills");
+        let vitals = world.get::<Vitals>(companion).unwrap();
+        let frame = world.get::<crate::game::actors::Frame>(companion).unwrap();
+        assert_eq!(vitals.health.max, frame.health + trained.health);
+        assert_eq!(vitals.health.current, vitals.health.max, "whole");
     }
 
     /// Leaving takes the seat and nothing else: they keep what they want

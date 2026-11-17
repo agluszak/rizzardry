@@ -59,9 +59,21 @@ pub struct Eyesight<'w, 's> {
     places: Places<'w, 's>,
     obstacles: WorldObstacles<'w, 's>,
     level: PlayedLevel<'w, 's>,
+    members: Query<'w, 's, (), With<crate::game::party::roster::PartyMember>>,
+    making_out: Query<'w, 's, (), With<MakesOutParty>>,
 }
 
 impl Eyesight<'_, '_> {
+    /// Whether a monster makes out a body (`docs/rules/monsters.md` section
+    /// 5): a member if its eyes make out the party (`MakesOutParty`), a
+    /// monster if its eyes make it out, itself always.
+    pub fn makes_out(&self, monster: Entity, body: Entity) -> bool {
+        match self.members.contains(body) {
+            true => self.making_out.contains(monster),
+            false => body == monster || self.sees(monster, body),
+        }
+    }
+
     /// How far the level lets one see: its far clip.
     pub fn far(&self) -> f32 {
         self.level.view_distance().unwrap_or(0.0)

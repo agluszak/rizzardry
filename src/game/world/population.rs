@@ -10,6 +10,7 @@ use super::identify::{GroupMember, MonsterGroup};
 use crate::content::level::LevelDefinition;
 use crate::content::monster::MonsterBody;
 use crate::content::species::MonsterCatalog;
+use crate::content::spells::SpellCatalog;
 use crate::game::data::Catalogs;
 use crate::game::rng::GameRng;
 use crate::game::world::items::place_item;
@@ -253,14 +254,14 @@ pub struct CastChance(pub u8);
 /// what that lets it do, its natural guard, resistances and mending, and
 /// what it strikes with. Written once, as the monster is made.
 pub(crate) fn made_of(kind: &crate::content::species::Species) -> impl Bundle {
-    use crate::content::characters::{Attribute, Resist, Trait};
+    use crate::content::characters::{Attribute, Resist};
     use crate::content::species::{MonsterKind, Reach};
     use crate::game::actors::arm::{
         Ambushes, ArmInitiative, ArmOf, Arms, AttacksARound, BlowEffects, DamagePercent,
         FatiguePierces, Hand, LandsOnParty, Modern, Modes, Rating, Reaches, Rolls, Slays,
         SoundClass, Swings, Word,
     };
-    use crate::game::actors::{Abilities, Kind, Level, Nature, Traits};
+    use crate::game::actors::{Abilities, Kind, Level, Nature};
     use crate::game::inventory::WeaponSlot;
     use bevy::ecs::relationship::RelatedSpawner;
     use bevy::ecs::spawn::{SpawnRelated, SpawnWith};
@@ -274,11 +275,6 @@ pub(crate) fn made_of(kind: &crate::content::species::Species) -> impl Bundle {
             Attribute::Piety | Attribute::Vitality => 1,
         })
     }));
-    // What its kind lets it do is the trait a character has it by.
-    let mut traits = enumset::EnumSet::new();
-    if kind.kind == MonsterKind::Monk {
-        traits |= Trait::EffectiveWhileBlind;
-    }
     let nature = Nature {
         fatigue_guards: true,
         reduction: i32::from(kind.damage_reduction),
@@ -293,6 +289,7 @@ pub(crate) fn made_of(kind: &crate::content::species::Species) -> impl Bundle {
         stride: Some(
             kind.combat_move_range * crate::game::combat::monster::close::METRES_PER_MOVE_RANGE,
         ),
+        breathes: false,
     };
     // What it strikes with: each of its species' attacks an arm, all in its
     // main hand.
@@ -325,8 +322,15 @@ pub(crate) fn made_of(kind: &crate::content::species::Species) -> impl Bundle {
     (
         abilities,
         (Level(u32::from(kind.level)), crate::game::actors::Mastery(kind.level)),
-        Traits(traits),
+        // Its natural strikes roll extra dice by its level
+        // (`RollBackstabExtraDice`).
+        crate::game::actors::Backstab(
+            crate::game::characters::scale_by_level(kind.level, 100.0) as i32
+        ),
+        // It casts from every book at its own level.
+        crate::game::actors::CasterLevels { followed: i32::from(kind.level), held: Vec::new() },
         Kind(kind.kind),
+        crate::game::actors::Immune(crate::game::hits::defences::immune(kind.kind)),
         nature,
         crate::game::actors::armour::of_species(kind),
         arms,
@@ -339,7 +343,7 @@ pub(crate) fn embody(
     entity: &mut EntityCommands,
     root: Entity,
     (feet, yaw, body): (Vec3, f32, ScaledBody),
-    (group, kind): (Option<Entity>, &crate::content::species::Species),
+    (group, kind, spells): (Option<Entity>, &crate::content::species::Species, &SpellCatalog),
     (navigation, configs): (&LevelNavigation, &mut Assets<WalkerMotionConfig>),
 ) {
     let ScaledBody { radius, speed, .. } = body;
@@ -356,6 +360,10 @@ pub(crate) fn embody(
     if kind.vulnerable_from_behind {
         entity.insert(crate::game::actors::VulnerableFromBehind);
     }
+    // A Monk is not hindered by blindness (`Combat.cpp:3008`, `MonsterAI.cpp:857`).
+    if kind.kind == crate::content::species::MonsterKind::Monk {
+        entity.insert(crate::game::actors::ActsThoughBlind);
+    }
     entity.insert((
         allegiance,
         Worth(kind.experience),
@@ -364,7 +372,7 @@ pub(crate) fn embody(
         Temper(kind.temper),
         Special(kind.special),
         CastChance(kind.magic.chance),
-        crate::game::combat::monster::slot::of_kind(kind),
+        crate::game::combat::monster::slot::of_kind(kind, spells),
     ));
     if matches!(
         kind.kind,
@@ -440,14 +448,14 @@ pub fn spawn_group(
     root: Entity,
     members: Vec<Newborn>,
     (authored, set): (i32, Option<super::hostility::SetStance>),
-    species: &MonsterCatalog,
+    content: &Catalogs,
     (navigation, configs): (&LevelNavigation, &mut Assets<WalkerMotionConfig>),
 ) -> (Entity, Vec<Entity>) {
     let group =
         commands.spawn((MonsterGroup { authored, set, ..default() }, LevelOwned(root))).id();
     let members = members
         .into_iter()
-        .map(|kept| spawn_member(commands, root, kept, group, species, (navigation, configs)))
+        .map(|kept| spawn_member(commands, root, kept, group, content, (navigation, configs)))
         .collect();
     (group, members)
 }
@@ -459,11 +467,11 @@ fn spawn_member(
     root: Entity,
     kept: Newborn,
     group: Entity,
-    species: &MonsterCatalog,
+    content: &Catalogs,
     (navigation, configs): (&LevelNavigation, &mut Assets<WalkerMotionConfig>),
 ) -> Entity {
-    let name = actor_name(species, (kept.monster.species, kept.monster.location));
-    let (body, kind) = (kept.monster.body, &species[kept.monster.species]);
+    let name = actor_name(&content.species, (kept.monster.species, kept.monster.location));
+    let (body, kind) = (kept.monster.body, &content.species[kept.monster.species]);
     let bidden = kept.bidden();
     let mut entity = commands.spawn((
         Name::new(name),
@@ -477,7 +485,7 @@ fn spawn_member(
         &mut entity,
         root,
         (kept.feet, kept.yaw, body),
-        (Some(group), kind),
+        (Some(group), kind, &content.spells),
         (navigation, configs),
     );
     if let Some(bidden) = bidden {
@@ -597,7 +605,7 @@ pub fn come(
             root,
             members,
             (ids.1, Some(set)),
-            &content.species,
+            &content,
             (navigation, &mut configs),
         );
         commands.entity(request).despawn();
@@ -624,7 +632,6 @@ pub fn give_birth(
         births.clear();
         return;
     };
-    let species = &content.species;
     for &Birth(authored) in births.read() {
         let (born, waiting): (Vec<_>, Vec<_>) =
             std::mem::take(&mut unborn.0).into_iter().partition(|k| k.group == Some(authored));
@@ -640,7 +647,7 @@ pub fn give_birth(
                 commands.spawn((MonsterGroup { authored, ..default() }, LevelOwned(root))).id()
             });
         for kept in born {
-            spawn_member(&mut commands, root, kept, group, species, (navigation, &mut configs));
+            spawn_member(&mut commands, root, kept, group, &content, (navigation, &mut configs));
         }
     }
 }
@@ -728,7 +735,7 @@ pub fn populate(
             &mut commands.entity(actor),
             root,
             (feet, yaw, body),
-            (group, &species[id]),
+            (group, &species[id], &catalogs.spells),
             (navigation, configs),
         );
         if let Some(bidden) = bidden {

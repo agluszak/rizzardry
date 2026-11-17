@@ -160,7 +160,7 @@ pub fn summon(
         root,
         members,
         (authored, set),
-        species,
+        &content,
         (navigation, &mut configs),
     );
     for member in joined {

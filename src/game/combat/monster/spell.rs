@@ -8,7 +8,7 @@
 
 use bevy::prelude::*;
 
-use super::aim::{AimsMade, At, BySlot, Considers, Spoiled, Weigh, Worth};
+use super::aim::{BySlot, Considers, Proposals, Spoiled, Weigh, Worth};
 use super::slot::{Breath, Castable, SlotOf, Slots, Weight};
 use super::{ClosesIn, PartyGap};
 use crate::content::spells::{MAX_POWER, SpellDefinition};
@@ -16,6 +16,7 @@ use crate::game::actors::Level;
 use crate::game::actors::arm::Furthest;
 use crate::game::combat::action::{ActionOf, Acts, AtFoes, Casts};
 use crate::game::data::Catalogs;
+use crate::game::magic::aim::At;
 use crate::game::magic::casting::{MagicChoice, Source};
 use crate::game::magic::reach::Aim;
 use crate::game::magic::roll::spell_failure;
@@ -77,7 +78,7 @@ pub(super) fn weigh_spells(
 fn pick(
     picks: On<PicksSpell>,
     mut commands: Commands,
-    deliberations: Query<(&Considers, &PartyGap, Option<&AimsMade>)>,
+    deliberations: Query<(&Considers, &PartyGap, Option<&Proposals>)>,
     aims: Query<(&BySlot, &At), (With<Worth>, Without<Spoiled>)>,
     slots: Query<(&super::slot::Casts, &Weight), (With<SlotOf>, Without<Breath>)>,
     casters: Query<(&CastChance, &Furthest, &Level, &SpellBudget)>,

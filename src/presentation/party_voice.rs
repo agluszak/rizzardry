@@ -62,8 +62,15 @@ impl Voice {
 #[derive(SystemParam)]
 pub(super) struct Speakers<'w, 's> {
     roster: Single<'w, 's, &'static PartyRoster>,
-    members:
-        Query<'w, 's, (crate::game::characters::PaperReadOnly, Has<crate::game::actors::CanFight>)>,
+    members: Query<
+        'w,
+        's,
+        (
+            &'static crate::game::characters::Identity,
+            &'static crate::game::characters::Birth,
+            Has<crate::game::actors::CanFight>,
+        ),
+    >,
     people: crate::game::npcs::People<'w, 's>,
     catalogs: Res<'w, crate::game::data::Catalogs>,
     scripts: Res<'w, NpcAssets>,
@@ -74,14 +81,19 @@ impl Speakers<'_, '_> {
             .iter()
             .filter(|&actor| excluded != Some(actor))
             .filter_map(|actor| {
-                let (character, can_fight) = self.members.get(actor).ok()?;
-                can_fight.then(|| (actor, self.voice(&character, self.people.id(actor))))
+                let (identity, birth, can_fight) = self.members.get(actor).ok()?;
+                let sheet = (birth.gender, identity.personality, identity.voice);
+                can_fight.then(|| (actor, self.voice(sheet, self.people.id(actor))))
             })
             .collect()
     }
     fn voice(
         &self,
-        character: &crate::game::characters::PaperReadOnlyItem,
+        (gender, personality, voice): (
+            crate::content::characters::Gender,
+            crate::content::characters::Personality,
+            crate::content::characters::Voice,
+        ),
         npc: Option<crate::content::npcs::NpcId>,
     ) -> Voice {
         match npc {
@@ -89,14 +101,9 @@ impl Speakers<'_, '_> {
                 stem: self.catalogs.npcs[id].party_voice_stem(),
                 script: self.scripts.scripts[&id].clone(),
             },
-            None => Voice::Character {
-                stem: pc_voice_stem(
-                    character.birth.gender,
-                    character.identity.personality,
-                    character.identity.voice,
-                ),
-                quotes: None,
-            },
+            None => {
+                Voice::Character { stem: pc_voice_stem(gender, personality, voice), quotes: None }
+            }
         }
     }
 }
@@ -261,7 +268,7 @@ pub(super) fn react_to_wounds(
     speakers: Speakers,
     order: Single<&PartyRoster>,
     members: Query<(
-        crate::game::characters::PaperReadOnly,
+        &crate::game::characters::Birth,
         &Vitals,
         &crate::game::characters::Conditions,
     )>,
@@ -273,13 +280,14 @@ pub(super) fn react_to_wounds(
 ) {
     for hurt in damaged.read() {
         let Some(seat) = order.get_index_of(&hurt.body) else { continue };
-        let Ok((character, vitals, conditions)) = members.get(hurt.body) else { continue };
+        let (birth, vitals, conditions) =
+            members.get(hurt.body).expect("one seated in the party is a member");
         if hurt.died {
             fallen.0 += 1;
             let first_two = seat < 2;
             let event = if first_two {
                 MOURNS[2]
-            } else if character.birth.gender == Gender::Male {
+            } else if birth.gender == Gender::Male {
                 MOURNS[0]
             } else {
                 MOURNS[1]
@@ -391,18 +399,17 @@ pub(super) fn react_to_conditions(
     mut commands: Commands,
     members: Query<
         (Entity, &Vitals, &crate::game::characters::Conditions),
-        Or<(Changed<Vitals>, Changed<crate::game::characters::Conditions>)>,
+        (
+            Or<(Changed<Vitals>, Changed<crate::game::characters::Conditions>)>,
+            With<crate::game::party::roster::PartyMember>,
+        ),
     >,
     speakers: Speakers,
-    order: Single<&PartyRoster>,
     level: Single<Entity, With<InPlay>>,
     mut known: Local<Afflictions>,
     mut rng: ResMut<PresentationRng>,
 ) {
     for (member, vitals, conditions) in &members {
-        if !order.contains(&member) {
-            continue;
-        }
         let now: Vec<Condition> = conditions.iter().map(|&(c, _)| c).collect();
         let alive = !vitals.is_dead();
         let Some((before, was_alive)) = known.0.insert(member, (now.clone(), alive)) else {
@@ -549,14 +556,18 @@ pub(super) fn play_device_remarks(
 mod tests {
     use super::*;
     use crate::content::npcs::{NpcCatalog, NpcDefinition, NpcId};
-    use crate::game::characters::Character;
     use crate::game::characters::{Gender, Profession, Race};
     use bevy::ecs::system::RunSystemOnce;
 
     fn member(world: &mut World, name: &str) -> Entity {
-        let character = Character::new(name, Race::Human, Gender::Male, Profession::Fighter);
-        let vitals = Vitals::new(&character);
-        world.spawn((character, vitals)).id()
+        world
+            .spawn(crate::game::characters::born(
+                name,
+                Race::Human,
+                Gender::Male,
+                Profession::Fighter,
+            ))
+            .id()
     }
 
     /// Retail `PickRandomPartySpeaker` picks over every party place, the

@@ -24,7 +24,7 @@ use crate::content::characters::Attribute;
 use crate::content::species::SpecialAttackKind;
 use crate::content::spells::SpellId;
 use crate::game::actors::arm::Tempo;
-use crate::game::actors::{Attributes, BlindFighting, Nature, Places};
+use crate::game::actors::{ActsThoughBlind, Attributes, Nature, Places};
 use crate::game::characters::{Condition, Conditions, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::hits::definitions::Rows;
@@ -332,12 +332,13 @@ fn web(
     Ok(())
 }
 
-/// Blind, and not one who fights blind: 20 percent, it loses the action.
+/// Blind, and not unhindered by it: 20 percent, it loses the action
+/// (retail `Combat.cpp:3002`).
 fn blindness(
     weighs: On<WeighsBlindness>,
     mut commands: Commands,
     actions: Query<&ActionOf>,
-    actors: Query<(&Conditions, Has<BlindFighting>)>,
+    actors: Query<(&Conditions, Has<ActsThoughBlind>)>,
     mut rng: ResMut<GameRng>,
 ) -> Result {
     let action = weighs.action;

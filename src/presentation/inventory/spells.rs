@@ -78,13 +78,29 @@ pub(super) fn build(commands: &mut Commands, root: Entity, art: &InventoryArt) {
 
 pub(super) fn refresh(
     screen: Single<&InventoryScreen>,
-    characters: Query<crate::presentation::character_view::CharacterView>,
+    characters: Query<(
+        &crate::game::actors::Nature,
+        &crate::game::actors::TrainedResistance,
+        &crate::game::actors::Attributes,
+        &crate::game::actors::Resistances,
+    )>,
     held: crate::game::items::Items,
     mut values: Query<(&Value, &mut BitmapText)>,
     mut segments: Query<(&Segment, &mut PictureCrop, &mut Picture)>,
 ) {
-    let view = characters.get(screen.member).unwrap();
-    let scores = view.resistances(&held);
+    // The resistances as they stand, beside what the sheet alone gives.
+    let (nature, trained, attributes, resistances) = characters.get(screen.member).unwrap();
+    let sheet = crate::game::characters::resistance::resistances(
+        &nature.resistance,
+        &trained.0,
+        attributes[crate::content::characters::Attribute::Vitality],
+        |slot| held.protection(screen.member, slot),
+    );
+    let scores =
+        enum_map::EnumMap::from_fn(|realm| crate::game::characters::resistance::Resistance {
+            base: sheet[realm].base,
+            total: resistances.realms[realm],
+        });
     for (value, mut text) in &mut values {
         let desired = scores[value.0].total.to_string();
         if text.value != desired {

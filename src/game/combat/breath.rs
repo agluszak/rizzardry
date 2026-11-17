@@ -12,7 +12,13 @@ pub struct CanBreathe;
 
 /// Having a breath to take follows the race, the breath laid and stamina.
 pub fn ready(
-    members: Query<(Entity, &Traits, &Modifiers, &Vitals, Has<CanBreathe>)>,
+    members: Query<
+        (Entity, &Traits, &Modifiers, &Vitals, Has<CanBreathe>),
+        Or<(
+            With<crate::game::party::roster::PartyMember>,
+            With<crate::game::world::population::Monster>,
+        )>,
+    >,
     mut commands: Commands,
 ) {
     for (member, traits, modifiers, vitals, was) in &members {

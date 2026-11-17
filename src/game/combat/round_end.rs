@@ -20,7 +20,6 @@ use super::{
     Battle, CombatNews, Combatant, Combatants, PASSIVE_ROUNDS, Pause, ROUND_SECONDS, Round, Spoils,
 };
 use crate::content::spells::Pulsing;
-use crate::game::actors::Body;
 use crate::game::actors::Laid;
 use crate::game::actors::Places;
 use crate::game::actors::spells::Aged;
@@ -28,15 +27,15 @@ use crate::game::actors::spells::{LaidOn, Pulses};
 use crate::game::actors::time::{Elapsed, Mending, Pace};
 use crate::game::characters::Condition;
 use crate::game::characters::Vitals;
-use crate::game::hits::reach::{Field, Recipients};
+use crate::game::hits::effects::Strike;
 use crate::game::hits::{Deed, Landed};
+use crate::game::magic::aim::{Against, Origin, Radius, Spot, Take, Takes, Took, Victims};
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster::PartyRoster;
 use crate::game::rng::GameRng;
 use crate::game::time::{AGING_TICK_MS, GameClock};
 use crate::game::world::hostility::Stance;
-use crate::game::world::identify::{GroupMember, GroupMembers, GroupRecognition};
-use crate::game::world::obstacles::WorldObstacles;
+use crate::game::world::identify::{GroupMembers, GroupRecognition};
 use bevy::ecs::relationship::RelationshipTarget;
 
 /// The timeline is empty and nothing is in the air or walking: the round
@@ -139,22 +138,19 @@ pub(super) fn leave_fight(
     leave: On<GroupsLeave>,
     mut fights: Query<(Option<&Combatants>, &mut Round)>,
     groups: Query<&GroupMembers>,
-    members: Query<(), With<crate::game::party::roster::PartyMember>>,
+    grouped: Query<&crate::game::world::identify::GroupMember>,
     making_out: Query<(), With<super::monster::sight::MakesOutParty>>,
     reinforcing: Query<(), With<super::monster::sight::Reinforces>>,
     bodies: Query<(
         &Vitals,
         &crate::game::world::hostility::Side,
         &crate::game::world::hostility::Standing,
-        Option<&crate::game::world::identify::GroupMember>,
     )>,
     eyesight: super::monster::sight::Eyesight,
 ) -> Result {
     let (combatants, mut round) = fights.get_mut(leave.fight)?;
     let combatants = combatants.map_or(&[][..], Combatants::entities);
     let body = |actor: Entity| bodies.get(actor).expect("a combatant has a body");
-    // A member is of no group.
-    let group_of = |actor: Entity| body(actor).3.map(|group| group.0);
     let alive = |actor: Entity| !body(actor).0.is_dead();
     // A living foe, by how they stand; the dead are nobody's foe.
     let foe_of = |m: Entity, other: Entity| {
@@ -163,16 +159,12 @@ pub(super) fn leave_fight(
             && crate::game::world::hostility::between(*body(m).2, *body(other).2) == Stance::Hostile
     };
     let sees_foe = |m: Entity| {
-        combatants.iter().any(|&other| {
-            foe_of(m, other)
-                && match members.contains(other) {
-                    true => making_out.contains(m),
-                    false => eyesight.sees(m, other),
-                }
-        })
+        combatants.iter().any(|&other| foe_of(m, other) && eyesight.makes_out(m, other))
     };
+    // The groups fighting, as their members joined; a member is of none.
     let mut fought: Vec<Entity> = Vec::new();
-    for group in combatants.iter().filter_map(|&c| group_of(c)) {
+    for &crate::game::world::identify::GroupMember(group) in grouped.iter_many(combatants).matched()
+    {
         if !fought.contains(&group) {
             fought.push(group);
         }
@@ -203,7 +195,9 @@ pub(super) fn leave_fight(
     round.leaving = combatants
         .iter()
         .copied()
-        .filter(|&combatant| !engaged || group_of(combatant).is_some_and(|g| going.contains(&g)))
+        .filter(|&combatant| {
+            !engaged || grouped.get(combatant).is_ok_and(|group| going.contains(&group.0))
+        })
         .collect();
     Ok(())
 }
@@ -260,32 +254,20 @@ pub(super) fn cool_specials(
 /// Each pulsing spell laid pulses on whoever it hangs over (retail
 /// `AdvanceTimedEffects`; a spell's last turn still pulses): one on the
 /// party on its living members, one on a monster on it, and Ring of Fire
-/// on the monsters close around the party, sampled anew each pulse. A pulse
-/// is a deed with no caster. A character without a seat is not among those
-/// close around the party.
+/// on the monsters close around the party, sampled anew each pulse: a
+/// blast at the party's centre, against those who oppose it. A pulse is a
+/// deed with no caster.
 pub(super) fn pulse_clouds(
     pulse: On<CloudsPulse>,
     mut commands: Commands,
     fights: Query<Option<&Combatants>>,
     pulsing: Query<(&LaidOn, &Pulses)>,
-    bodies: Query<Body>,
-    grouping: (Query<&'static GroupMember>, Query<&'static GroupMembers>),
-    places: Places,
+    vitals: Query<&Vitals>,
     party: Single<(Entity, &Position, &PartyRoster)>,
-    obstacles: WorldObstacles,
 ) -> Result {
     let (party, position, roster) = *party;
     let combatants = fights.get(pulse.fight)?.map_or(&[][..], Combatants::entities);
-    let alive = |body: Entity| bodies.get(body).is_ok_and(|body| !body.vitals.is_dead());
-    let field = Field {
-        bodies: &bodies,
-        places: &places,
-        obstacles: &obstacles,
-        roster,
-        combatants,
-        memberships: &grouping.0,
-        groups: &grouping.1,
-    };
+    let alive = |body: Entity| vitals.get(body).is_ok_and(|vitals| !vitals.is_dead());
     // The party's first, then each monster's, in the order clouds pulse.
     let mut order: Vec<_> = pulsing.iter().collect();
     order.sort_by_key(|(on, pulses)| (on.0 != party, pulses.pulse.order));
@@ -293,13 +275,25 @@ pub(super) fn pulse_clouds(
         if strike.effects.is_empty() {
             continue;
         }
-        let around = pulse.on == Pulsing::AroundParty;
-        let victims: Vec<Entity> = if around {
+        if pulse.on == Pulsing::AroundParty {
             let centre = PartyBody::centre(PartyBody::eye(position));
             let reach =
                 crate::game::party::body::RADIUS + crate::content::species::Reach::Short.metres();
-            field.within(centre, centre, reach, Recipients::Opponents(Stance::Friendly))
-        } else if bearer == party {
+            let aim = commands
+                .spawn((
+                    PulseStrike(strike.clone()),
+                    Spot(centre),
+                    Origin(centre),
+                    Radius(reach),
+                    Against::Opponents(Stance::Friendly),
+                    Takes::Blast,
+                ))
+                .observe(pulse_around_party)
+                .id();
+            commands.trigger(Take { aim });
+            continue;
+        }
+        let victims: Vec<Entity> = if bearer == party {
             roster.iter().filter(|&member| alive(member)).collect()
         } else {
             combatants.iter().copied().filter(|&m| m == bearer && alive(m)).collect()
@@ -310,6 +304,27 @@ pub(super) fn pulse_clouds(
             .observe(count_pulse)
             .insert(Deed::at(strike.clone(), victims));
     }
+    Ok(())
+}
+
+/// What a pulse around the party strikes, carried by its aim until it has
+/// taken in whom it strikes.
+#[derive(Component, Clone, Debug)]
+struct PulseStrike(Strike);
+
+/// A pulse around the party has taken in the monsters close around it: it
+/// strikes them, and its aim is done.
+fn pulse_around_party(
+    took: On<Took>,
+    aims: Query<(&PulseStrike, &Victims)>,
+    mut commands: Commands,
+) -> Result {
+    let (PulseStrike(strike), Victims(victims)) = aims.get(took.aim)?;
+    commands
+        .spawn(crate::game::magic::landed::Magical)
+        .observe(count_pulse)
+        .insert(Deed::at(strike.clone(), victims.iter().copied()));
+    commands.entity(took.aim).despawn();
     Ok(())
 }
 

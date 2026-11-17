@@ -70,14 +70,50 @@ monster's choices are observers (step 4,
    `integration/level_lifecycle.rs` move onto the game's plugins; tests of
    removed types are deleted, not rebuilt.
 
-## In progress: step 3, a cast is an entity
+## Done on this branch, not yet committed (2026-11-17)
 
-The last slice (a moment in a fight, from decision to deed; weapon sets;
-setting aside) is done and pushed (`516e8e1`): unit suite 175/175, retail
-30/30. What it built is under "Done" below and in the rule pages' "How this
-is built". Step 3 is next; its model is written in
-[rules/casting.md](rules/casting.md) ("How this is built") and **waits for
-the user's approval before any code**.
+**Step 3, a cast is an entity.** A cast goes through its steps as events,
+aims are entities (`magic/aim`), the party's occasion is a figure
+(`magic/occasion`), each utility spell's working is its own mark and work,
+and what follows a landed spell is one observer each. `Body`, `Field`,
+`Aiming`, `Means`, `Circumstances`, `Marks`, `may::may`,
+`engage::Fighters`, `settle` and `owners_strength` are gone. What the
+player sees differently: [rules/casting.md](rules/casting.md), "Changed by
+the rebuild".
+
+**Step 5, drafts are entities.** Making a character and gaining a level
+are one machine over draft actors (`characters/draft.rs`,
+[rules/characters.md](rules/characters.md)); what training adds is a figure
+on every actor; caster level is one figure (`CasterLevels`, retail's
+`GetTotalCasterLevel`); `Resistances` keeps only realms and wards
+(`Immune` and `Nature.death_immune` are their own sources). `Character`,
+`Paper`, `Trained`, `Schooling`, `CharacterDraft`, `Advancement`,
+`Evaluation`, `Progression`, the creator's `DraftActor`, `of_sheet`,
+`Vitals::new` and `total_caster_level` are gone; time, fitness and falling
+ask for a body in play (`Placed`). The model was built on the user's
+standing goal without a separate approval of the page.
+
+Visible changes of step 5: a blind monster Monk keeps its action but its
+aim is held to 10 and its Senses are not eased (Combat Attack.cpp:2747); a
+spell from one who held several professions is as strong as the followed
+profession plus each other sharing any of its books (retail
+`GetTotalCasterLevel`); a negative caster level (one following a
+profession that cannot cast, or not yet) gives no strength at all, where
+before it counted as nothing (`GetSpellDifficulty`, Magic.cpp:95), while
+the failure chance reads the same figure unclamped, as retail's does
+(Magic.cpp:1580); while talking only Charm and Mindread are cast;
+attribute debt is paid out of a level's points, the largest first
+(`PayDownAttributeDebt`).
+
+Counts after: `Body` 0, `Field` 0, `Trained`/`Schooling`/`Character` 0,
+readers of `Catalogs` 43, `QueryData`/`SystemParam` in `game` 33.
+
+The kind of target is a component on the cast (`AtCaster` … `AtAllFoes`)
+whose hook sets its first aim, spread, stray, fall and release.
+
+What follows a landed spell (bursts, then Eye for an Eye: who turns it back, whence it comes back, its aim) is a chain of events on the deed; a lure calls, tempts and is answered monster by monster; a summoning answers, then is made.
+The creator and the level-up screen are compile-checked and their game side
+tested, but not driven in a running game.
 
 Rules settled so far, which hold for what comes next:
 
@@ -130,15 +166,8 @@ Rules settled so far, which hold for what comes next:
 
 ### Next, in order
 
-1. **Check `slot::fill`.** It despawns a spell slot from an observer of
-   `Add<Casts>`. If `SlotOf` is spawned in the same bundle, the monster's
-   `Slots` keeps a dead entry (the bug `Acting` had), and `look_to_open`'s
-   `let Ok(..) else { continue }` hides it. Make the maker decide, or check
-   before spawning.
-2. **Step 3** once the user approves its model in `rules/casting.md`;
-   `engage::Fighters` (the old `fighters_of` moved into an accessor) goes
-   with `Body`.
-3. Steps 5 to 7 as above.
+1. Commit steps 3 and 5 once the user has looked at them.
+2. Steps 6 and 7 as above.
 
 ### Open questions
 
@@ -203,7 +232,15 @@ Rules settled so far, which hold for what comes next:
   ([rules/levels.md](rules/levels.md)); `Belongings` and its `unsafe` are
   gone.
 
-Checked and **not** a problem: modules reading another domain's state;
+Checked and **not** a problem (2026-11-17, against the seven checks): the
+fight systems `engage::join`, `engage::open_battle` and
+`round_end::leave_fight` are each one rule of [rules/monsters.md](rules/monsters.md)
+over groups, reading markers (`MakesOutParty`, `InPartyView`, `Reinforces`)
+and queries of what they are about; `open_battle` stays whole, both its
+branches acting on the same `Engaged` message. Their fighters are the
+monsters `Present` and not an NPC's body (`Without<Embodies>`), in the
+query; whether a monster makes out a body is one rule, `Eyesight::makes_out`.
+Also checked: modules reading another domain's state;
 retail files as assets beside compiled-in tables; `Items` as the "what is
 held" accessor and `npcs::story::Readings` as the one reader of the story's
 facts; a level reading its own definition; `#[cfg(test)]` helpers beside

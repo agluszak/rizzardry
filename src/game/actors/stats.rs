@@ -9,11 +9,9 @@ use super::Place;
 use super::sources::{Abilities, Traits};
 use super::spells::Bonus;
 use crate::content::characters::{Attribute, Realm, Skill};
-use crate::content::species::{MonsterKind, Reach};
+use crate::content::species::Reach;
 use crate::content::spells::Spellbook;
-use crate::game::characters::{
-    Calling, Character, Condition, Conditions, Training, scale_by_level,
-};
+use crate::game::characters::{Calling, Condition, Conditions, Training, scale_by_level};
 use crate::game::party::formation::Formation;
 
 /// An actor's attributes as they stand now, spells counted, each 1 to 125.
@@ -51,11 +49,7 @@ impl Skills {
     /// From the points trained, a quarter more (at least one) for the
     /// profession's bonus skill, and what conditions take off, held to
     /// 0-125.
-    pub(super) fn affected(
-        training: &Training,
-        calling: &Calling,
-        conditions: &Conditions,
-    ) -> Self {
+    pub fn affected(training: &Training, calling: &Calling, conditions: &Conditions) -> Self {
         let ailing: i32 = conditions.modifiers().map(|row| row.skills).sum();
         Self(EnumMap::from_fn(|skill| {
             let points = training.0[skill] as i32;
@@ -64,31 +58,26 @@ impl Skills {
             (points + bonus + ailing).clamp(0, 125) as u32
         }))
     }
-
-    /// A character's, on paper: before they are anyone's actor.
-    pub fn of_sheet(character: &Character) -> Self {
-        Self::affected(&character.training, &character.calling, &Conditions::default())
-    }
 }
 
 impl Attributes {
     /// From base values, with what the spells on the actor add (Superman to
     /// each, Haste to Speed) and what its conditions take off, held to
     /// 1-125 once all are counted (retail `ResetCharacterAttributes`). One
-    /// who trained, with the trait that eases a condition, gets some of it
-    /// back, scaled by their mastery.
+    /// with the trait that eases a condition gets some of it back, scaled by
+    /// their mastery.
     pub(super) fn affected(
         base: &Abilities,
         spells: &Bonus,
         conditions: &Conditions,
-        eases: Option<(&Traits, u8)>,
+        (traits, mastery): (&Traits, u8),
     ) -> Self {
         let mut ailing = EnumMap::<Attribute, i32>::default();
         for row in conditions.modifiers() {
             for &(attribute, change) in &row.attributes {
                 ailing[attribute] += change;
             }
-            if let (Some(eased), Some((traits, mastery))) = (&row.eased_by, eases)
+            if let Some(eased) = &row.eased_by
                 && traits.has(eased.ability)
             {
                 ailing[eased.attribute] += scale_by_level(mastery, eased.back) as i32;
@@ -98,12 +87,6 @@ impl Attributes {
             (base.0[a] as i32 + spells.attributes[a] as i32 + ailing[a]).clamp(1, 125) as u32
         }))
     }
-
-    /// A character's, on paper: before they are anyone's actor.
-    pub fn of_sheet(character: &Character) -> Self {
-        Self(character.abilities.0)
-    }
-
     /// These with a point of one lost for good, as disease takes it.
     pub fn weakened(&self, attribute: Attribute) -> Self {
         let mut less = *self;
@@ -176,29 +159,16 @@ pub struct Mastery(pub u8);
 pub struct Resistances {
     /// Percent resistance in each realm.
     pub realms: EnumMap<Realm, i32>,
-    /// The conditions it cannot suffer at all (retail
-    /// `g_condition_immunities`, by creature kind).
-    pub immune: &'static [Condition],
     /// The conditions it shrugs off whenever a save against them is allowed
     /// (a member's traits: an Android's, the Fearless, a Psionic's mind).
     pub wards: Vec<Condition>,
-    /// It cannot be slain outright.
-    pub death_immune: bool,
-    /// Its creature kind (undead, demon, plant, …), which holy and slaying
-    /// things single out; a member has none.
-    pub kind: Option<MonsterKind>,
-    /// How strongly it casts from each book, which a spell turned back on
-    /// it or from it grows from.
-    pub caster: EnumMap<Spellbook, u32>,
 }
 
-impl Resistances {
-    /// What a spell's strength from the actor grows from: its highest level
-    /// among the spell's books.
-    pub fn caster_level(&self, spell: &crate::content::spells::SpellDefinition) -> u32 {
-        spell.books.iter().map(|book| self.caster[book]).max().unwrap_or(0)
-    }
-}
+/// The conditions an actor cannot suffer at all (retail
+/// `g_condition_immunities`, by creature kind): a monster's, written as it
+/// is made; none for a member.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Immune(pub &'static [Condition]);
 
 /// The percent cut off the damage of blows at it.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -207,6 +177,70 @@ pub struct Reduction(pub i32);
 /// The percent chance what is shot or thrown at it is turned aside.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MissileShield(pub u32);
+
+/// What training adds to an actor's resistance in each realm (retail
+/// `RecalculateCharacterResistances`); nothing for one who never trained.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TrainedResistance(pub EnumMap<Realm, i32>);
+
+/// The percent training takes off every blow at an actor (retail
+/// `RecalculateCharacterState`); nothing for one who never trained.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TrainedReduction(pub i32);
+
+/// What training adds to an actor's most health and stamina; nothing for one
+/// who never trained.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TrainedMaxima {
+    pub health: u32,
+    pub stamina: u32,
+}
+
+/// The skills an actor may use: a member's by their profession and
+/// attributes; none for one who never trained.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UsableSkills(pub enumset::EnumSet<Skill>);
+
+/// How strongly an actor casts, which the strength of a spell from it grows
+/// from: the caster level of the profession it follows now (a monster's own
+/// level), and that of each other profession it has held, with the books it
+/// shares.
+#[derive(Component, Clone, Debug, Default, PartialEq, Eq)]
+pub struct CasterLevels {
+    pub followed: i32,
+    pub held: Vec<(enumset::EnumSet<Spellbook>, i32)>,
+}
+
+impl CasterLevels {
+    /// One who trained: the caster level of the profession followed now
+    /// (retail `GetProfessionCasterLevel`; -1 if it cannot cast), and that
+    /// of each other profession held, with its books, only what is above
+    /// nothing counting (retail `GetTotalCasterLevel`).
+    pub fn of(calling: &Calling) -> Self {
+        use crate::game::magic::caster_level;
+        let held = calling
+            .levels
+            .iter()
+            .filter(|&(profession, &levels)| levels != 0 && profession != calling.profession)
+            .map(|(profession, _)| {
+                (profession.row().books, caster_level(calling, profession).max(0))
+            })
+            .collect();
+        CasterLevels { followed: caster_level(calling, calling.profession), held }
+    }
+
+    /// A spell's caster level (retail `GetTotalCasterLevel` with
+    /// `include_all`, `Magic.cpp:963`, as every rule asks it: the failure
+    /// chance, `Magic.cpp:1542`, `:1580`, and the strength, `:2854`): the
+    /// level of the profession followed now, even under 1, and that of every
+    /// other held profession sharing one of its books whose level is above
+    /// nothing. Not clamped: one following a profession that cannot cast
+    /// counts its -1.
+    pub fn caster_level(&self, spell: &crate::content::spells::SpellDefinition) -> i32 {
+        let shared = self.held.iter().filter(|(books, _)| !(*books & spell.books).is_empty());
+        self.followed + shared.map(|(_, level)| level).sum::<i32>()
+    }
+}
 
 /// When an actor acts in a round, before its weapon's own initiative: its
 /// nature's, and what its training adds.
@@ -218,11 +252,20 @@ pub struct Initiative(pub i32);
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TrainedInitiative(pub i32);
 
-/// It fights blind (a member with the trait, a Monk among monsters): its aim
-/// past 10 scales by this level instead of being held to 10, and its action
-/// is not lost to blindness.
+/// It fights blind, a member with the trait: its aim past 10 scales by this
+/// level, their level in the profession, instead of being held to 10 (retail
+/// `Combat Attack.cpp:2442`). A monster's blind aim is always held to 10
+/// (`Combat Attack.cpp:2747`).
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlindFighting(pub u8);
+
+/// Blindness does not hinder it: it does not lose its action to it, sees
+/// where it would strike and guards as if it saw. A member who fights blind
+/// (`Combat.cpp:3004`), and a monster Monk, whose action and choices
+/// ignore its blindness (`Combat.cpp:3008`, `Combat.cpp:2486`,
+/// `MonsterAI.cpp:857`, `MonsterAI.cpp:918`).
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ActsThoughBlind;
 
 /// Its blows knock out more often, by this level: a member with the trait's,
 /// in their profession.

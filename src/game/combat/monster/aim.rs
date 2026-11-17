@@ -8,6 +8,7 @@ use super::sight::MakesOutParty;
 use super::slot::{Area, CastAt, Casts, Range, Works};
 use crate::game::characters::{Conditions, Vitals};
 use crate::game::data::Catalogs;
+use crate::game::magic::aim::At;
 use crate::game::magic::reach::{Aim, blast_radius, in_cone};
 use crate::game::party::roster::PartyMember;
 use crate::game::world::hostility::{self, Side, Stance, Standing};
@@ -55,15 +56,16 @@ pub struct Seen;
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Toward(pub Stance);
 
-/// One way a slot could be cast, in the consideration it was made for.
+/// One way a slot could be cast, proposed by the consideration it was made
+/// for.
 #[derive(Component, Clone, Copy, Debug)]
-#[relationship(relationship_target = AimsMade)]
-pub struct AimOf(pub Entity);
+#[relationship(relationship_target = Proposals)]
+pub struct ProposedBy(pub Entity);
 
-/// The aims a consideration made.
+/// The aims a consideration proposes; they go with it.
 #[derive(Component, Debug, Default)]
-#[relationship_target(relationship = AimOf, linked_spawn)]
-pub struct AimsMade(Vec<Entity>);
+#[relationship_target(relationship = ProposedBy, linked_spawn)]
+pub struct Proposals(Vec<Entity>);
 
 /// The slot an aim is of.
 #[derive(Component, Clone, Copy, Debug)]
@@ -74,10 +76,6 @@ pub struct BySlot(pub Entity);
 #[derive(Component, Debug, Default)]
 #[relationship_target(relationship = BySlot, linked_spawn)]
 pub struct SlotAims(Vec<Entity>);
-
-/// Where the aim is cast.
-#[derive(Component, Clone, Copy, Debug)]
-pub struct At(pub Aim);
 
 /// A body an aim would take in.
 #[derive(Component, Clone, Copy, Debug)]
@@ -143,7 +141,7 @@ fn make(
     at: Aim,
     bodies: impl Iterator<Item = Entity>,
 ) {
-    let aim = commands.spawn((AimOf(considering), BySlot(slot), At(at))).id();
+    let aim = commands.spawn((ProposedBy(considering), BySlot(slot), At(at))).id();
     for body in bodies {
         commands.spawn((TakenIn(aim), Taken(body)));
     }
@@ -156,18 +154,12 @@ fn see(
     mut commands: Commands,
     views: Query<(&ViewOf, &Viewed)>,
     considering: Query<&Considers>,
-    members: Query<(), With<PartyMember>>,
-    making_out: Query<(), With<MakesOutParty>>,
     eyesight: super::sight::Eyesight,
 ) -> Result {
     let view = made.entity;
     let (&ViewOf(parent), &Viewed(body)) = views.get(view)?;
     let &Considers(monster) = considering.get(parent)?;
-    let seen = match members.contains(body) {
-        true => making_out.contains(monster),
-        false => body == monster || eyesight.sees(monster, body),
-    };
-    if seen {
+    if eyesight.makes_out(monster, body) {
         commands.entity(view).insert(Seen);
     }
     Ok(())
@@ -391,13 +383,13 @@ fn judge(
 fn spoil(
     made: On<Made>,
     mut commands: Commands,
-    aims: Query<(&AimOf, &BySlot, Option<&TakesIn>)>,
+    aims: Query<(&ProposedBy, &BySlot, Option<&TakesIn>)>,
     against_enemies: Query<(), With<super::slot::AtEnemies>>,
     considering: Query<&Considers>,
     taken: Query<&Taken>,
     neutrals: Query<(&Side, &Vitals), With<Monster>>,
 ) -> Result {
-    let (&AimOf(parent), &BySlot(slot), takes) = aims.get(made.aim)?;
+    let (&ProposedBy(parent), &BySlot(slot), takes) = aims.get(made.aim)?;
     if !against_enemies.contains(slot) {
         return Ok(());
     }

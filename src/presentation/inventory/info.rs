@@ -57,10 +57,12 @@ const DETAILS: [usize; 41] = [
 
 pub(super) fn open_info(
     click: On<PointerClick>,
-    learned: Query<&crate::game::magic::LearnedSpells>,
     targets: Query<&InfoTarget>,
     screen: Single<&InventoryScreen>,
-    profiles: Query<(crate::game::characters::PaperReadOnly, &crate::game::actors::Skills)>,
+    profiles: Query<(
+        (&crate::game::characters::Calling, &crate::game::actors::UsableSkills),
+        &crate::game::actors::Skills,
+    )>,
     roster: Single<&PartyRoster>,
     existing: Query<(), With<InfoDialog>>,
     art: Res<InventoryArt>,
@@ -74,11 +76,10 @@ pub(super) fn open_info(
         return Ok(());
     }
     let target = targets.get(click.entity)?;
-    let (profile, skills) = profiles.get(screen.member)?;
+    let ((calling, usable), skills) = profiles.get(screen.member)?;
     let (Some(font), Some(strings)) = (sheets.get(&art.font), strings.table()) else {
         return Ok(());
     };
-    let learned = learned.get(screen.member).unwrap();
     let string = |id| strings.get(id).unwrap_or("");
     let (title_id, detail_id) = match target.subject {
         Subject::Skill(skill) => {
@@ -115,12 +116,8 @@ pub(super) fn open_info(
         }
         for (show, id, palette) in [
             (best, 0x157, &art.yellow),
-            (
-                !crate::game::magic::skill_available(profile.trained(), learned, skill),
-                0x158,
-                &art.gray,
-            ),
-            (profile.calling.profession.row().bonus_skill == skill, 0x159, &art.blue),
+            (!usable.0.contains(skill), 0x158, &art.gray),
+            (calling.profession.row().bonus_skill == skill, 0x159, &art.blue),
         ] {
             if show {
                 entries.push((String::new(), None));

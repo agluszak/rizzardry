@@ -829,6 +829,43 @@ from the original. **Missing**: the original has a rule the Rust lacks.
 `src/wiz8/local_code/` unless another directory is named; Rust lines are in
 `src/game/`.
 
+### Changed by the rebuild (2026-11-17)
+
+What the player sees differently since the cast became an entity, each as
+the original has it:
+
+- **Victims are taken in the original's order**: the members by seat, then
+  the monsters as placed, not as they joined the fight.
+- **A member's blast, group or cone spell outside a fight** takes the
+  hostile monsters it reaches. The spells aimed at enemies that may be cast
+  outside one are Sonic Boom and Rocket Blast (a blast) and the thrown
+  weapons' group spells (121 to 128); before, they were refused for want of
+  a foe. *Defect* 19's fallback (any monster, when none is hostile) is still
+  not done.
+- **A friend outside the fight** may be aimed at.
+- **A blind caster's spell gone astray** goes where it strays: at a body
+  picked at random (members, then the monsters in the fight as placed;
+  `PickBackfireTarget`) whoever it is, and a cone or blast at the spot it
+  scatters to. Before, one at a body not of the right side, and every cone
+  and blast, quietly stayed as aimed.
+- **A group spell turned back** comes from the group's leader.
+- **The cone** takes off both bodies' radii and rounds down (retail
+  `TargetInRangeAndArcs`), and measures from where it goes off to the
+  body's centre; a cone reflected back is the same cone.
+- **While talking with someone** only Charm and Mindread may be cast; the
+  dialogue casts them under the camp flag (`RequestNpcSpellService3`,
+  `RequestNpcSpellService41`), and both are usable while camped.
+- **Boiling Blood's bursts land one after another**: a body an earlier
+  explosion killed is not taken in by a later one. Retail takes every
+  explosion's victims before any lands (`FinishSpellEffect`,
+  `Magic.cpp:796-826`); a dead body takes nothing more either way.
+- **Eye for an Eye** is told on its own, after the cast's own lines; with
+  bursts, after theirs. A reflection alone does not count as the cast
+  affecting anyone for practice (`SpellAffectedTarget`, `Magic.cpp:2668`).
+- **Open**: what may be cast while looting a container a lock guarded. The
+  game counts it as work at the lock (only Knock-Knock); the decomp does not
+  say.
+
 ### Defects
 
 Each entry here was checked against the decompilation a second time; those
@@ -880,6 +917,15 @@ into the sections above.
     `foes_reached`). It needs a monster that is not a foe to be aimable
     outside a fight, and a blast and an all-enemies spell with a recipients
     rule that takes monsters only, not the party.
+35. **A negative caster level's strength.** Checked (`Magic.cpp:95`, `:2854`):
+    the original passes the caster's total caster level, which is negative for
+    one following a profession that cannot cast (or not yet), into
+    `GetSpellDifficulty`'s unsigned figure. It wraps, and the sum overflows
+    past the largest int: for -1 and -2 that reads as negative and is held at
+    0, but for -3 and -4 a power-1 cast of a spell of cost and level at most 1
+    lands on the largest int, a strength near two billion. The game gives a
+    negative caster level no strength at all, the original's result for -1
+    and -2 (`magic/power.rs` `strength`).
 
 ### Missing
 
@@ -920,9 +966,8 @@ into the sections above.
     played; the Rust takes foes for a normal blast. Taken here as the listing's
     artefact. A cone's range is a fixed 25 m in the original (`GetGroundTargetRange`,
     `Combat Range.cpp:1040`); the Rust uses the spell's reach.
-30. **Order of victims.** The original takes party slots then monsters in the
-    order they were placed; the Rust, in the order they joined the fight
-    (`hits/reach.rs`). Only visible where order matters.
+30. *Settled:* the order of victims is retail's, members by seat then
+    monsters as placed ("How this is built").
 31. **Spell points and their recovery** (section 3) are taken from the Rust's
     comments naming `RecalculateRealmSpellPoints` and aging; the formulas were not
     re-read in the original. The ordinary item fatigue (`below(2) + 1`, doubled
@@ -949,41 +994,105 @@ into the sections above.
 The sections above are the rules. This says how the code is to be shaped
 around them; where the code differs from it, the code is wrong.
 
-**A cast is an entity** (`CastBy` its caster), made by `Cast` with the
-spell's definition read from content as it is made, what it is cast with,
-and what was aimed at. It is gone when it is released or refused. Each fact
-of it is added by its own observer, in the order of this page, each reading
-only what that fact comes from; each step is one event, and the next is
-triggered by the one before:
+**A cast is an entity** (`CastBy` its caster, `magic/casting`), made by
+`Cast` with the spell's definition read from content as it is made
+(`CastSpell`), what the caster chose (`Chosen`), and what it is cast with:
+`LearnedSpell { asked }`, `FromItem(item)` or `Innate { power, budget, level }`.
+It is gone when it is released or refused. Each step is one event on the
+cast, heard by the observer of what that step reads; the next is triggered
+by the one before:
 
-| Step | Fact | Reads |
+| Event | Heard by | What it settles |
 | --- | --- | --- |
-| what it is cast with | `Learned { power }`, `FromItem(item)` or `Innate { power, budget, level }`, one of them; the rules that differ by it are observers set by that component's hook | the choice |
-| whether it may be cast (section 2) | refused, or on | the caster's `CanAct`, `Lucid`, `Conditions`, its learned spells and points, the item's `Casts` and users, the fight's moment, the place |
-| whom it reaches (section 5) | an aim (`AimOf` the cast) and whom it takes in | below |
-| its power (section 3) | `Power` | the means; a learned spell's points; an instrument's player |
-| the roll (section 4) | `Came`: cast, fizzled or backfired | the means' failure chance, the pace, being under water |
-| a blind caster's aim gone astray | a new aim in place of the old | `Conditions`, the trait, the spell's realm |
-| what a backfire turns on | a new aim, at the caster's side | the spell's kind of target |
-| what it costs and trains | `Pays`, `Spend`, `Practise` | the means, the spell, the power |
-| its release | a deed with what follows it beside it; a utility spell's `Worked`; a fizzle's report and an auto cast again | |
+| `Ask` | the means' own (`may_learned`, `may_item`, `may_innate`, set by the means' hook) | refused (section 2, its order kept), or `Allowed` |
+| `Allowed` | for a deed, its kind's first aim (`aim_at_caster`, `aim_at_friend`, `aim_at_party`, `aim_at_foe`, `aim_at_all_foes`); for a utility spell, its working's mark | the first aim, or the utility spell's `Mark` |
+| `Aimed` | the means' own (`power_*`) | `Power`, `Strength`, `Failure`, `SeesBlind`; an instrument played too badly pays, trains and is refused here |
+| `Spread` | its kind's (`spread_over_group`, `spread_over_cone`, `spread_over_blast`, `widen` at the party; the rest and a utility spell, `spread_nothing`) | the area its power spreads over: a group, a cone, a blast, the party's allies |
+| `Roll` | `roll` | `Came`: cast, fizzled or backfired; Fire under water quenched; then `Rolled`, and `CameOff`, `Backfired` or `Fizzled` |
+| `Rolled` | a member's spell against enemies, `provoke` (set by `Provokes`); a utility spell, its payment | those it reaches provoked, whatever the roll |
+| `CameOff` | a deed's `go_astray` | whether a blind caster's aim strays (`Strays`), or it is paid for as aimed |
+| `Strays` | its kind's (`stray_at_one`, `stray_at_group`, `stray_cone`, `stray_blast`; at the caster, the party or every foe, `stray_nowhere`) | the aim it lands by (`LandsBy`) gone astray, and the caster told; or paid for as aimed |
+| `Backfired` | its kind's (`fall_on_caster`, `fall_on_group`, `fall_blast`, `fall_on_fellows`) | the aim it lands by, turned on the caster's side |
+| `Fizzled` | a deed's `fizzled` | paid for |
+| `Pay` | the means' own (`pay_*`) | `Pays`, `Spend` |
+| `Release` | for a deed, `release`; for a utility spell, `release_work` | the report told; `Spent` for a fizzle (an auto cast goes again), or `Lets`; or `Worked`, heard by the working's observer and the means' practice |
+| `Lets` | its kind's (`from_caster`, `from_aimed`, `from_leader`, `from_spot`, `from_spot_to_spot`) | whom it comes from and from where, what it was aimed at, and the spot its missiles fly to: `LetGo` |
+| `LetGo` | `let_go` | the deed made, and `Released` for what its means puts beside it (practice, an auto recast) |
 
-**Whom a cast reaches is the monster's aim.** A cast's aim is an aim
-entity as a monster's slot makes one (`AimOf`, `At`), and what it takes in
-are the same `TakenIn` entities, filled by the same observer of its kind
-of target (one body, a friend, the party, a foe, a foe's group, every foe,
-a cone, a blast's spot, ahead), set by the aim's own component's hook. A
-utility spell's mark (a lock, an item, the one spoken with, a spot in
-sight) is an aim kind of its own. So "who a spell takes in" is one rule for
-a monster weighing a slot and for any cast going off. A blind caster's
-aim gone astray, and a backfire, are new aims; whom they take in follows.
+Which of these observers a cast has is set by what it is: a learned
+spell, an item and a monster's own each set their `may`, `power` and `pay`
+(and a member's practice, an auto cast going again) by the means
+component's hook. `begin` makes the cast with what it is cast with, marks
+a potion or food used in a fight `TakenByUser`, and inserts the spell
+(`CastSpell`) last; `CastSpell`'s hook then sets the rest: a utility
+spell's working, its mark and work (`Worked` is heard on the cast, by its
+working's observer alone), or a deed's kind of target and the steps every
+deed has. A deed's kind of target is a component of the cast: `AtCaster`,
+`AtFriend`, `AtParty`, `AtFoe`, `AtFoeGroup`, `AtCone`, `AtBlast` or
+`AtAllFoes`, from the spell's targeting, `AtCaster` when taken by its
+user.
+Its hook sets the observers of the steps where kinds differ (its first
+aim, spread, stray, fall and whom it comes from once let go); what is the
+same for all kinds is one observer. A spell at a spot, an item or a lock
+with no working of its own has no kind and is refused as unsupported once
+allowed. A member's cast (learned or item) is made `Widens` and, aimed at
+enemies and not an auto cast going again, `Provokes`.
 
-**Who may be taken is a figure.** Each body magic may take carries
-`TakeOrder`, its place in the fight's order (the party by seat, the
-combatants as they joined, then the rest of their monster groups), written
-by one system as the fight and the party change; one magic never targets
-has none. A blast, a cone and every aim take in by it, in its order;
-nothing gathers the field.
+**Where the party is, as magic sees it, is a figure** on the party
+(`magic/occasion`), settled with the bodies: `UseContext` (a fight; a lock
+being picked or looted, or a trap disarmed; talking with someone; camped;
+exploring, the first that holds), and the markers `Occupied`, `SpokenTo`
+and `Unsteady`. The cast and the spell view both read it.
+
+**Whom a cast reaches is an aim** (`magic/aim`). A cast's aim is an entity
+(`AimOf` the cast, `At` what it was aimed at), and whom it takes in is its
+`Victims`, in the order of the fight, filled by one observer for each kind
+of target (`Takes`) (the caster, one body, a friend, the party, the foe aimed at or ahead, a
+body's group, every body reached, a cone, a blast), set by `Takes`' hook;
+whom it is against is data on it (`Against`: the foes of whose it is, its
+fellows, the opponents of a side, everyone). What the taker reads is on the aim,
+written by whoever made it: whose it is, where it goes off from, its reach,
+its radius once the power is known, and whom it is against. So a burst, a
+reflection and a cloud's pulse are aims too, with no caster. A utility
+spell's mark (a lock, an item, the one spoken with, a spot in sight) is an
+aim kind of its own. A blind caster's aim gone astray, and a backfire, are
+new aims; whom they take in follows. An aim is made by one observer and
+read by the next step, never by its maker: its takers run after it is made.
+A blast's aim is made with its spot, and takes in once its power has given
+it a radius.
+
+A monster weighing its slots *proposes* aims (from what it sees, section 5
+of [monsters](monsters.md)); whom each would take in is the same taker's.
+Retail judges a monster's area, group and all-enemies aims on the cast's own
+victims at the power it would choose (`MonsterSpellTargetOK` on a place,
+`MonsterAI.cpp:1395-1427`; `SpellAreaHitsNeutralMonster` likewise,
+`MonsterAI.cpp:1793-1815`, both calling `PopulateSpellTargetMarkers`). Until
+*Unknown* 29 (which side a monster's blast and cone take) is settled, the
+monster's area aims keep taking in every living body, which is what lets a
+neutral spoil them; only the geometry is shared.
+
+**Who may be taken is what the bodies are.** Magic takes the party's
+members and the monsters, living, but never a monster magic never targets
+(`Untargetable`); a companion out of the party is set aside and is no one.
+They are taken in the original's order, read where it is needed: the
+members by seat, then the monsters as they were placed (their location),
+the order in which retail walks its monster list (`CollectMonstersWithinRadius`,
+`Targeting.cpp:1321`; `CollectConeMonsterTargets`, `Targeting.cpp:3126`;
+`PickBackfireTarget`, `Magic.cpp:3415`). Nothing gathers the field, and no
+component copies a seat or a location.
+
+- A member's blast, cone and all-enemies spell take any monster in reach,
+  in the fight or not (retail walks every active monster). Whether a spell
+  aimed at enemies can be cast outside a fight at all is the spell's
+  usable-when (section 2); where it can, *Defect* 19 is the rule.
+- A spell gone astray takes another member, or a living monster in the
+  fight (`Combatant`), never the caster (`PickBackfireTarget`).
+- A group spell turned back, and one reflected, come from the group's
+  leader (`Leads`; `RedirectBackfiredSpellTarget`, `Magic.cpp:3279-3284`),
+  not the first of it to join the fight.
+- Eye for an Eye is the strongest among the victims, members first in the
+  order the cast took them, then monsters, the first of equals
+  (`FinishSpellEffectTargets`, `Magic Effects.cpp:2772`).
 
 **What a cast is cast with says how it pays and how strong it is.** A
 learned spell pays points from its realm, an item a use, a monster's own
@@ -991,7 +1100,7 @@ nothing; each is an observer of the paying step set by the means'
 component. The strength, the failure chance and the power likewise.
 
 `Field`, `Aiming`, `Means`, `Circumstances`, `Marks`, `Body` and
-`engage::Fighters` go: nothing hands a rule the world or an actor whole.
+`engage::Fighters` are gone: nothing hands a rule the world or an actor whole.
 
 **A deed is a thing.** What a cast does to others is an entity (`Deed`): the
 rows it follows, its strength, and whom it has yet to reach. It lands on each

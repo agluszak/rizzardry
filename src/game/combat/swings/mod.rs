@@ -37,7 +37,7 @@ use crate::game::actors::arm::{
 use crate::game::actors::{
     Abilities, Against, Agility, AimBonus, Armour, Attributes, Backstab, BlindFighting, Blinded,
     Block, CanFight, CanGuard, Fatigue, HitPlaces, KnockOut, Laying, Level, MissileShield,
-    Modifiers, Places, Pressing, Reduction, Resistances, Skills, Unaware, Unseated, reaches,
+    Modifiers, Places, Pressing, Reduction, Skills, Unaware, Unseated, reaches,
 };
 use crate::game::characters::{Calling, Condition, Conditions, Practise, Vitals, skill_available};
 use crate::game::data::Catalogs;
@@ -1124,14 +1124,8 @@ fn blow(
     attacks: Query<(&AttackBy, &AttackWith, &Caught)>,
     arms: Query<(&Rolls, &DamagePercent, &BlowEffects, &Slays, Option<&Critical>, Has<Word>)>,
     attackers: Query<(&Backstab, Option<&KnockOut>, &Level)>,
-    victims: Query<(
-        &Reduction,
-        &Vitals,
-        &Resistances,
-        Option<&Ordered>,
-        Has<PartyMember>,
-        Has<CombatMove>,
-    )>,
+    victims: Query<(&Reduction, &Vitals, Option<&Ordered>, Has<PartyMember>, Has<CombatMove>)>,
+    kinds: Query<&crate::game::actors::Kind>,
     round: Single<&Round, With<Battle>>,
     content: Res<Catalogs>,
     mut rng: ResMut<GameRng>,
@@ -1148,7 +1142,7 @@ fn blow(
     let (&AttackBy(actor), with, caught) = attacks.get(attack)?;
     let (rolls, percent, effects, slays, critical, by_monster) = arms.get(with.arm)?;
     let (backstab, knock_out, level) = attackers.get(actor)?;
-    let (reduction, vitals, resistances, orders, member, walking) = victims.get(victim)?;
+    let (reduction, vitals, orders, member, walking) = victims.get(victim)?;
 
     let close = !attack::keeps_distance(with.mode);
     let surprise = caught.0;
@@ -1163,7 +1157,7 @@ fn blow(
     if count > 1 && orders.is_some_and(Ordered::defends) && !surprise.unaware {
         count -= 1;
     }
-    if let Some(kind) = resistances.kind {
+    if let Ok(&crate::game::actors::Kind(kind)) = kinds.get(victim) {
         count += slays.0.iter().filter(|&&slain| slain == kind).count() as u32;
     }
     let rolled = attack::roll_dice(&mut rng, rolls.of(with.mode), count);

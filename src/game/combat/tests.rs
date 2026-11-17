@@ -9,7 +9,6 @@ use crate::content::species::{
 };
 use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId};
 use crate::game::actors::{Enchantment, Laid, Laying};
-use crate::game::characters::Character;
 use crate::game::characters::{Gender, Profession, Race};
 use crate::game::data::Catalogs;
 use crate::game::hits;
@@ -76,14 +75,10 @@ fn app() -> (App, Entity, Entity) {
         ..default()
     });
     let world = app.world_mut();
-    let profile = Character::new("Priest", Race::Human, Gender::Male, Profession::Priest);
-    let member = world
-        .spawn((
-            Vitals::new(&profile),
-            profile,
-            LearnedSpells::of([SpellId::HEAL_WOUNDS], &world.resource::<Catalogs>().spells),
-        ))
-        .id();
+    let learned = LearnedSpells::of([SpellId::HEAL_WOUNDS], &world.resource::<Catalogs>().spells);
+    let profile =
+        crate::game::characters::born("Priest", Race::Human, Gender::Male, Profession::Priest);
+    let member = world.spawn(profile).insert(learned).id();
     let party = roster::test_party(world, &[member]);
     world.entity_mut(party).insert((PartyBody::default(), Position::default()));
     let definition =
@@ -100,7 +95,7 @@ fn monster(world: &mut World, battle: Entity, distance: f32) -> Entity {
 
 fn monster_in(world: &mut World, battle: Entity, distance: f32, group: Entity) -> Entity {
     let made = crate::game::world::population::made_of(&world.resource::<Catalogs>().species.0[0]);
-    world
+    let monster = world
         .spawn((
             made,
             Monster {
@@ -109,6 +104,7 @@ fn monster_in(world: &mut World, battle: Entity, distance: f32, group: Entity) -
                 body: ScaledBody { scale: 1.0, radius: 0.5, eye_height: 1.0, speed: 1.0 },
             },
             Vitals::full(20, 100),
+            crate::game::actors::Frame { health: 20, stamina: 100 },
             Transform::from_xyz(0.0, 0.0, distance),
             Side::new(Stance::Hostile),
             Loyalty::None,
@@ -117,7 +113,12 @@ fn monster_in(world: &mut World, battle: Entity, distance: f32, group: Entity) -
             GroupMember(group),
             Worth(120),
         ))
-        .id()
+        .id();
+    // An actor of the level being played, as every monster is.
+    if let Ok(level) = world.query_filtered::<Entity, With<Level>>().single(world) {
+        world.entity_mut(monster).insert(crate::game::world::level::LevelOwned(level));
+    }
+    monster
 }
 
 /// Lay a spell of power one on a bearer, for `turns`, absorbing `absorbs`.
@@ -274,14 +275,15 @@ fn a_members_blast_provokes_its_foe_pays_its_points_and_flies_to_it() {
     refresh(world);
     let points = magic::test_points(world, member, Realm::Fire);
     assert!(points >= 1);
-    let mut papers = world.query::<crate::game::characters::PaperReadOnly>();
-    let paper = papers.get(world, member).unwrap();
+    let calling = world.get::<crate::game::characters::Calling>(member).unwrap();
+    let training = world.get::<crate::game::characters::Training>(member).unwrap();
     let spell = &world.resource::<Catalogs>().spells[SpellId::ENERGY_BLAST];
     let pace = Pace { difficulty: crate::game::difficulty::Difficulty::Normal, moment: 0 };
     assert_eq!(
         learned_chance(
-            paper.trained(),
+            (calling, training),
             world.get::<crate::game::actors::Skills>(member).unwrap(),
+            world.get::<crate::game::actors::CasterLevels>(member).unwrap().caster_level(spell),
             spell,
             1,
             pace,
@@ -383,7 +385,12 @@ fn outside_a_fight_time_passing_ages_conditions_spells_and_a_set_stance() {
     world.entity_mut(party).insert(avian3d::prelude::LinearVelocity::default());
     *world.resource_mut::<GameClock>() = GameClock::at(10 * crate::game::time::DAY_MS);
     let group = world.spawn(MonsterGroup::default()).id();
-    world.spawn((Vitals::full(20, 100), Allegiance::of(&Species::default()), GroupMember(group)));
+    world.spawn((
+        Vitals::full(20, 100),
+        crate::game::actors::Frame { health: 20, stamina: 100 },
+        Allegiance::of(&Species::default()),
+        GroupMember(group),
+    ));
     world.trigger(Stand { group, stance: Some(Stance::Hostile) });
     world.flush();
     assert!(world.get::<MonsterGroup>(group).unwrap().set.is_some());
@@ -535,10 +542,11 @@ fn a_pooled_item_cannot_be_used_in_a_fight() {
     let choice =
         (SpellId::HEAL_WOUNDS, MagicChoice { source: Source::Item(item), aim: Aim::Body(member) });
     world.spawn(Battle::default());
+    refresh(world);
     let news = cast_in(world, member, choice);
     assert!(matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::CannotUse, .. }]));
     world.remove_resource::<Battle>();
-    world.flush();
+    refresh(world);
     let news = cast_in(world, member, choice);
     assert!(!matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::CannotUse, .. }]));
 }
@@ -711,20 +719,23 @@ fn what_ails_a_member_is_in_their_figures_and_their_seat_as_it_comes_and_goes() 
 /// A monster that casts, with its spells in its slots and a budget, of a
 /// kind that neither runs nor breathes.
 fn caster(world: &mut World, monster: Entity, spells: &[SpellId]) {
-    use crate::game::combat::monster::slot::{Casts, SlotOf, Weight};
     use crate::game::world::population::{CastChance, Special, SpellBudget, Temper};
+    let mut kind = Species::default();
+    for (slot, &spell) in kind.magic.spells.iter_mut().zip(spells) {
+        let mut catalog = std::mem::take(&mut world.resource_mut::<Catalogs>().spells.0);
+        catalog[spell.0 as usize].monsters_cast = true;
+        world.resource_mut::<Catalogs>().spells = SpellCatalog::new(catalog);
+        *slot = Some(spell);
+    }
+    let slots =
+        crate::game::combat::monster::slot::of_kind(&kind, &world.resource::<Catalogs>().spells);
     world.entity_mut(monster).insert((
         Temper(default()),
         Special(default()),
         CastChance(100),
         SpellBudget(100),
+        slots,
     ));
-    for &spell in spells {
-        let mut catalog = std::mem::take(&mut world.resource_mut::<Catalogs>().spells.0);
-        catalog[spell.0 as usize].monsters_cast = true;
-        world.resource_mut::<Catalogs>().spells = SpellCatalog::new(catalog);
-        world.spawn((SlotOf(monster), Casts(spell), Weight(5)));
-    }
 }
 
 /// A group out of a fight, whose only way to reach the party is a spell,
@@ -769,4 +780,180 @@ fn a_group_whose_spell_reaches_the_party_opens_a_fight() {
     world.despawn(idle);
     let blaster = standing_still(world, &[SpellId::ENERGY_BLAST]);
     assert!(engaged(world).contains(&blaster), "its spell reaches the party");
+}
+
+/// Boiling Blood: a foe it kills bursts where it fell (its row's
+/// `bursts_into`), and the burst harms another foe standing within its
+/// radius of the fallen's feet.
+#[test]
+fn a_foe_boiling_blood_kills_bursts_and_harms_the_foe_beside_it() {
+    use crate::content::spells::Targeting;
+    let (mut app, _, member) = app();
+    let world = app.world_mut();
+    let kills = Dice { base: 100, count: 0, sides: 1 };
+    spell_for(world, SpellId::BOILING_BLOOD, Targeting::Enemy, 1, kills);
+    spell_for(
+        world,
+        SpellId::BOILING_BLOOD_EXPLOSION,
+        Targeting::Radius,
+        1,
+        Dice { base: 5, count: 0, sides: 1 },
+    );
+    world.resource_mut::<Catalogs>().spells.0[SpellId::BOILING_BLOOD_EXPLOSION.0 as usize].radius =
+        3.0;
+    teach(world, member, 100, &[SpellId::BOILING_BLOOD]);
+    let fight = world.spawn(Battle::default()).id();
+    let boiled = monster(world, fight, 3.0);
+    let beside = monster(world, fight, 4.0);
+    let far = monster(world, fight, 30.0);
+    refresh(world);
+    cast_in(world, member, spell_choice(SpellId::BOILING_BLOOD, 1, Aim::Body(boiled)));
+    assert!(world.get::<Vitals>(boiled).unwrap().is_dead());
+    assert_eq!(world.get::<Vitals>(beside).unwrap().health.current, 15, "the burst");
+    assert_eq!(world.get::<Vitals>(far).unwrap().health.current, 20, "out of its radius");
+}
+
+/// Eye for an Eye: a monster's spell at a member who has it laid comes back
+/// on the monster, the charge is spent (power one, so it lifts), and the
+/// news says it was reflected.
+#[test]
+fn eye_for_an_eye_turns_a_monsters_spell_back_on_it() {
+    use crate::content::spells::Targeting;
+    use crate::game::hits::Effect;
+    let (mut app, _, member) = app();
+    let world = app.world_mut();
+    spell_for(
+        world,
+        SpellId::ENERGY_BLAST,
+        Targeting::Enemy,
+        1,
+        Dice { base: 5, count: 0, sides: 1 },
+    );
+    let fight = world.spawn(Battle::default()).id();
+    let caster = monster(world, fight, 3.0);
+    refresh(world);
+    lay(world, member, SpellId::EYE_FOR_AN_EYE, 10, 0);
+    assert!(is_laid(world, member, SpellId::EYE_FOR_AN_EYE));
+    let source = Source::Innate { spell: SpellId::ENERGY_BLAST, power: 1, budget: 100, level: 5 };
+    let choice = (SpellId::ENERGY_BLAST, MagicChoice { source, aim: Aim::Body(member) });
+    let news = cast_in(world, caster, choice);
+    assert_eq!(world.get::<Vitals>(caster).unwrap().health.current, 15, "it came back");
+    assert!(!is_laid(world, member, SpellId::EYE_FOR_AN_EYE), "its one charge is spent");
+    let reflected = news.iter().any(|news| {
+        matches!(news, MagicNews::Landed { effects }
+            if effects.contains(&Effect::Reflected { victim: member }))
+    });
+    assert!(reflected, "{news:?}");
+}
+
+/// The priest knows a first-level Divine spell cast at a spot, and casts it
+/// surely.
+fn knows_spot_spell(world: &mut World, member: Entity, id: SpellId) {
+    use crate::content::characters::Skill;
+    use crate::content::spells::{Reach, Spellbook, Targeting, Usable};
+    let mut catalogs = world.resource_mut::<Catalogs>();
+    // Kept as the catalogue made it, with what it is for.
+    let spell = &mut catalogs.spells.0[id.0 as usize];
+    (spell.level, spell.cost, spell.books) = (1, 1, Spellbook::Divinity.into());
+    (spell.targeting, spell.reach, spell.usable) = (Targeting::Point, Reach::Long, Usable::Always);
+    spell.duration_base = 10;
+    let mut training = world.get_mut::<crate::game::characters::Training>(member).unwrap();
+    training.0[Skill::Divinity] = 100;
+    training.0[Skill::DivineMagic] = 100;
+    let learned = LearnedSpells::of([id], &world.resource::<Catalogs>().spells);
+    world.entity_mut(member).insert((learned, magic::SpellPoints::default()));
+}
+
+/// Cast a spell of the member's at a spot, at power 1.
+fn cast_at_spot(world: &mut World, member: Entity, spell: SpellId, at: Vec3) -> Vec<MagicNews> {
+    let choice = MagicChoice { source: Source::Spell { spell, power: 1 }, aim: Aim::Point(at) };
+    world.trigger(Cast { caster: member, spell, choice, again: false });
+    world.flush();
+    world.resource_mut::<Messages<MagicNews>>().drain().collect()
+}
+
+/// Hypnotic Lure, cast at a spot a hostile monster sees within the far clip:
+/// the monster, failing its save, is held by the lure, and outside a fight so
+/// is its group, even one of it too far off to be tested itself.
+#[test]
+fn a_lure_holds_a_monster_failing_its_save_and_outside_a_fight_its_group() {
+    use crate::game::magic::pointcasts::{Lure, LureInfluence};
+    use crate::game::magic::workings::Response;
+    let (mut app, _, member) = app();
+    let world = app.world_mut();
+    // A seed under which the monster's 5% save fails.
+    world.insert_resource(GameRng::seeded(1));
+    knows_spot_spell(world, member, SpellId::HYPNOTIC_LURE);
+    let nobody = world.spawn_empty().id();
+    let group = world.spawn(MonsterGroup::default()).id();
+    let tested = monster_in(world, nobody, 4.0, group);
+    // Past the far clip of 150 metres.
+    let follower = monster_in(world, nobody, 400.0, group);
+    for monster in [tested, follower] {
+        world.entity_mut(monster).remove::<Combatant>();
+    }
+    refresh(world);
+    let news = cast_at_spot(world, member, SpellId::HYPNOTIC_LURE, Vec3::new(0.0, 0.0, 2.0));
+    assert!(
+        matches!(news.as_slice(), [MagicNews::Done(report)] if report.outcome == magic::Outcome::Cast),
+        "{news:?}"
+    );
+    let lure = world.query_filtered::<Entity, With<Lure>>().single(world).unwrap();
+    for monster in [tested, follower] {
+        let held = world.get::<LureInfluence>(monster).map(|held| (held.lure, held.response));
+        assert_eq!(held, Some((lure, Response::Controlled)), "{monster}");
+    }
+}
+
+/// Summon Elemental, in a fight, at a spot in sight: an elemental of the
+/// summoner's side joins the fight as theirs; a second summoning while it
+/// stands is refused.
+#[test]
+fn an_elemental_answers_in_a_fight_and_a_second_is_refused_while_it_stands() {
+    use crate::game::magic::pointcasts::SummonedBy;
+    use crate::game::world::hostility::Standing;
+    use crate::game::world::population::{MonsterBodies, Unborn};
+    let (mut app, _, member) = app();
+    let world = app.world_mut();
+    knows_spot_spell(world, member, SpellId::SUMMON_ELEMENTAL);
+    // The elementals of the first tier, of every element, have their kinds
+    // and bodies, so that whichever answers can be made.
+    let body = world
+        .resource_mut::<Assets<MonsterBody>>()
+        .add(MonsterBody { movement_rate: 0.0, ..default() });
+    let elementals = magic::workings::ELEMENTALS;
+    world.resource_mut::<Catalogs>().species.0.resize(*elementals.end() as usize + 1, default());
+    let bodies = MonsterBodies(elementals.map(|species| (species, body.clone())).collect());
+    let level = world.query_filtered::<Entity, With<Level>>().single(world).unwrap();
+    world.entity_mut(level).insert((
+        bodies,
+        Unborn::default(),
+        crate::game::world::triggers::LevelState::default(),
+        crate::game::world::navigation::LevelNavigation::default(),
+    ));
+    let fight = world.spawn(Battle::default()).id();
+    play(world, fight, 1);
+    refresh(world);
+    // The party's occasion follows the fight.
+    world.run_system_cached(crate::game::magic::occasion::follow).unwrap();
+    world.flush();
+    let at = Vec3::new(0.0, 0.0, 3.0);
+    let news = cast_at_spot(world, member, SpellId::SUMMON_ELEMENTAL, at);
+    assert!(
+        matches!(news.as_slice(), [MagicNews::Done(report)] if report.outcome == magic::Outcome::Cast),
+        "{news:?}"
+    );
+    refresh(world);
+    let mut summoned = world.query::<(Entity, &SummonedBy, &Combatant, &Standing)>();
+    let answered: Vec<_> = summoned
+        .iter(world)
+        .map(|(elemental, by, fighting, standing)| (elemental, by.0, fighting.0, standing.stance))
+        .collect();
+    let [(_, by, fighting, stance)] = answered.as_slice() else { panic!("{answered:?}") };
+    assert_eq!((*by, *fighting, *stance), (member, fight, Stance::Friendly));
+    let news = cast_at_spot(world, member, SpellId::SUMMON_ELEMENTAL, at);
+    assert!(
+        matches!(news.as_slice(), [MagicNews::Refused { refusal: Refusal::NoTarget, .. }]),
+        "{news:?}"
+    );
 }

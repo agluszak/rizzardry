@@ -723,7 +723,7 @@ the next:
 | its conduct (`Conducts`), and `Fleeing` on the monster | `Standing`, `Vitals`, `Temper`, `Fleeing`, being an NPC; the gap | with whether it closes in (`ClosesIn`, from `Temper`, `Furthest` and the gap): a retreat, or `WeighsSpecial` |
 | its special attack | `SpecialReady`, `Special`, `Standing`; for a breath, its slot's aims worth making; `Furthest`, `Vitals`, `Level` | the attack made, or `WeighsSpells` |
 | its spells: the slots weighed, then the one cast | `CastChance`, `Slots` that are `Castable`; their aims worth casting and not spoiled; `Furthest`, `Level`, `SpellBudget` | the spell cast, or `CastsNothing` |
-| withdrawing, guarding, holding back or striking | `Conditions`, `BlindFighting`, `Furthest`, `GuardReach`, `Temper`, `Attributes`, `CanGuard`, `Level`; fellows' `Standing`, `Vitals`, `Level` | |
+| withdrawing, guarding, holding back or striking | `Conditions`, `ActsThoughBlind`, `Furthest`, `GuardReach`, `Temper`, `Attributes`, `CanGuard`, `Level`; fellows' `Standing`, `Vitals`, `Level` | |
 
 What it decided is said as `Decided`, and the deliberation is gone with
 what it weighed. A slot is watched by the observer of its kind of aim (at
@@ -789,7 +789,7 @@ each one event and one observer reading only its own sources:
 | --- | --- | --- |
 | nausea | `Conditions` | lost, told |
 | web | `Conditions`, `Attributes` | broken free (the web lifted) or held; lost, told |
-| blindness | `Conditions`, `BlindFighting` | lost, told |
+| blindness | `Conditions`, `ActsThoughBlind` | lost, told |
 | insanity | `Conditions`, `Berserk` | a strike at friends (`TurnsOnFriends`), or a fit: lost, told |
 | fear | `Conditions`; the action a run | lost, told |
 | panic | `Conditions`; a monster (`Temper`) | a quiet flight, `Fleeing` |

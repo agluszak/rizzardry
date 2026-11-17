@@ -7,10 +7,9 @@ use bevy::ecs::spawn::{SpawnRelated, SpawnWith};
 use bevy::prelude::*;
 
 use crate::content::species::Species;
-use crate::content::spells::{SpellId, Spellbook, Targeting};
+use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId, Spellbook, Targeting};
 use crate::game::actors::KeepsAlchemy;
 use crate::game::characters::{Condition, Conditions};
-use crate::game::data::Catalogs;
 use crate::game::hits::definitions::SpellRow;
 
 /// How the ten slots weigh in the choice (retail `g_spell_cast_weights`).
@@ -77,47 +76,43 @@ pub struct Alchemy;
 pub struct Castable;
 
 /// A kind's slots: each spell of its ten slots, by the slot's weight, and its
-/// breath if its special attack is one.
-pub fn of_kind(kind: &Species) -> impl Bundle {
-    let spells = kind.magic.spells;
+/// breath if its special attack is one. What each spell is to the monster is
+/// read here, as the slot is made.
+pub fn of_kind(kind: &Species, spells: &SpellCatalog) -> impl Bundle {
     let breathes = kind.special.kind.is_some() && !super::special::summons(&kind.special);
+    let breath = breathes.then(|| spells.get(SpellId::SPECIAL_ATTACK_CONE)).flatten();
+    let made: Vec<(SpellDefinition, u32, bool)> = (kind.magic.spells.into_iter().zip(SLOT_WEIGHTS))
+        .filter_map(|(spell, weight)| Some((spells.get(spell?)?.clone(), weight, false)))
+        .chain(breath.map(|spell| (spell.clone(), 0, true)))
+        .collect();
     Slots::spawn(SpawnWith(move |slots: &mut RelatedSpawner<SlotOf>| {
-        for (spell, weight) in spells.into_iter().zip(SLOT_WEIGHTS) {
-            if let Some(spell) = spell {
-                slots.spawn((Casts(spell), Weight(weight)));
-            }
-        }
-        if breathes {
-            slots.spawn((Casts(SpellId::SPECIAL_ATTACK_CONE), Weight(0), Breath));
+        for (spell, weight, breath) in &made {
+            fill(slots, spell, *weight, *breath);
         }
     }))
 }
 
-/// A slot's spell, as it is made, gives it its reach, what it does, and how
-/// its aims are made: the observer of its kind of aim watches it, at one
-/// body (cast at itself, friends or foes), a group, a cone or a blast, or
-/// ahead. A spell a monster cannot cast at
-/// all (retail `IsSpellUsableByMonster`: monsters may not cast it, the game
-/// does not resolve it, or it is aimed at the party, a point, an item or a
-/// lock) leaves no slot.
-pub(super) fn fill(
-    made: On<Add<Casts>>,
-    mut commands: Commands,
-    slots: Query<(&Casts, Has<Breath>)>,
-    content: Res<Catalogs>,
-) -> Result {
-    let slot = made.entity;
-    let (&Casts(id), breath) = slots.get(slot)?;
-    let Some(spell) = content.spells.get(id) else { return Ok(()) };
-    let row = crate::game::hits::definitions::row(spell);
-    let mut slot = commands.entity(slot);
-    if !breath {
-        let Some(row) = row.filter(|_| spell.monsters_cast) else {
-            slot.despawn();
-            return Ok(());
-        };
-        slot.insert(Works(row));
+/// A slot of `spell`: its reach, what it does, and how its aims are made,
+/// the observer of its kind of aim watching it, at one body (cast at itself,
+/// friends or foes), a group, a cone or a blast, or ahead. A spell a monster
+/// cannot cast at all (retail `IsSpellUsableByMonster`: monsters may not
+/// cast it, the game does not resolve it, or it is aimed at the party, a
+/// point, an item or a lock) leaves no slot.
+fn fill(slots: &mut RelatedSpawner<SlotOf>, spell: &SpellDefinition, weight: u32, breath: bool) {
+    let works = crate::game::hits::definitions::row(spell).filter(|_| spell.monsters_cast);
+    let unaimed = matches!(
+        spell.targeting,
+        Targeting::Party | Targeting::Point | Targeting::Item | Targeting::LockOrTrap
+    );
+    if unaimed || (!breath && works.is_none()) {
+        return;
     }
+    let mut slot = slots.spawn((Casts(spell.id), Weight(weight), Range(spell.reach.metres())));
+    match (breath, works) {
+        (true, _) => slot.insert(Breath),
+        (false, Some(row)) => slot.insert(Works(row)),
+        (false, None) => &mut slot,
+    };
     use super::aim;
     match spell.targeting {
         Targeting::Caster => slot.insert(CastAt::Itself).observe(aim::at_bodies),
@@ -127,19 +122,14 @@ pub(super) fn fill(
         Targeting::Cone => slot.insert(Area::Cone).observe(aim::at_areas),
         Targeting::Radius => slot.insert(Area::Blast).observe(aim::at_areas),
         Targeting::AllEnemies => slot.observe(aim::ahead),
-        Targeting::Party | Targeting::Point | Targeting::Item | Targeting::LockOrTrap => {
-            slot.despawn();
-            return Ok(());
-        }
+        Targeting::Party | Targeting::Point | Targeting::Item | Targeting::LockOrTrap => &mut slot,
     };
-    slot.insert(Range(spell.reach.metres()));
     if spell.aimed_at_enemies() {
         slot.insert(AtEnemies);
     }
     if spell.books.contains(Spellbook::Alchemy) {
         slot.insert(Alchemy);
     }
-    Ok(())
 }
 
 /// A slot may be cast while no silence stops it: a silence stops all but

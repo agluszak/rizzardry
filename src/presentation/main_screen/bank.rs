@@ -280,7 +280,7 @@ pub fn draw_caption(
     roster: Single<&PartyRoster>,
     members: Query<(
         Entity,
-        crate::game::characters::PaperReadOnly,
+        (&crate::game::characters::Identity, &crate::game::characters::Calling),
         (&Vitals, &crate::game::characters::Conditions),
     )>,
     content: If<Res<crate::game::data::Catalogs>>,
@@ -293,13 +293,11 @@ pub fn draw_caption(
     let catalog = &content.items;
     let (first, second) = match selected.member(&roster).map(|m| members.get(m).unwrap()) {
         None => (String::new(), String::new()),
-        Some((member, profile, vitals)) => {
+        Some((member, (identity, calling), vitals)) => {
             let first = format!(
                 "{} - {}",
-                profile.identity.name,
-                strings.get(
-                    crate::content::ui::PROFESSION_NAMES + profile.calling.profession as usize
-                )
+                identity.name,
+                strings.get(crate::content::ui::PROFESSION_NAMES + calling.profession as usize)
             );
             let mut second = if battle.is_some() {
                 match selected

@@ -57,6 +57,10 @@ pub struct Nature {
     pub keen_sight: u32,
     /// How far it may walk in one combat move, in metres.
     pub stride: Option<f32>,
+    /// Its stamina comes back by the breath, every 1.4 seconds, as a
+    /// character's does (retail `UpdatePartyStamina`); a monster's comes
+    /// back by the minute.
+    pub breathes: bool,
 }
 
 impl Nature {
@@ -79,6 +83,7 @@ impl Default for Nature {
             carry_factor: 12,
             keen_sight: 0,
             stride: None,
+            breathes: true,
         }
     }
 }

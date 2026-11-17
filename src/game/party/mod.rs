@@ -196,13 +196,13 @@ mod tests {
             ),
             ..default()
         });
-        let sheet = crate::game::characters::Character::new(
+        let sheet = crate::game::characters::born(
             "F",
             crate::game::characters::Race::Human,
             crate::game::characters::Gender::Male,
             crate::game::characters::Profession::Fighter,
         );
-        let first = world.spawn((Vitals::full(10, 20), sheet)).id();
+        let first = world.spawn(sheet).insert(Vitals::full(10, 20)).id();
         roster::test_party(&mut world, &[first]);
         use crate::game::actors::{Enchantment, Laying};
         use bevy::ecs::system::RunSystemOnce;

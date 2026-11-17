@@ -4,7 +4,6 @@
 pub mod arm;
 pub mod armour;
 
-mod body;
 pub mod figures;
 pub mod fitness;
 pub mod modifiers;
@@ -18,7 +17,6 @@ pub use armour::{
     Against, Armour, ArmourPart, ArmourParts, Block, HitPlace, HitPlaces, Unaware, Unseated,
     VulnerableFromBehind,
 };
-pub use body::{Body, BodyItem};
 pub use fitness::{CanAct, CanFight, CanGuard, Lucid, Settle, Written, settle};
 pub use modifiers::Modifiers;
 pub use place::{Eyes, Hidden, Place, Places};
@@ -44,6 +42,7 @@ pub fn plugin(app: &mut App) {
     .add_message::<crate::game::characters::Improved>()
     .add_observer(crate::game::characters::practise)
     .add_observer(crate::game::characters::fall)
+    .add_plugins(crate::game::characters::draft::plugin)
     .add_observer(crate::game::party::fall)
     .add_observer(spells::lift_from_the_dead)
     .add_observer(spells::end_fight);

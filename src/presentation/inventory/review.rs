@@ -7,9 +7,7 @@ use crate::content::ui::SpriteSheet;
 use crate::game::data::Catalogs;
 use crate::game::inventory::EquipSlot;
 use crate::game::items::{Cursed, Items};
-use crate::game::magic::LearnedSpells;
 use crate::game::party::roster::PartyRoster;
-use crate::presentation::character_view::{CharacterView, CharacterViewItem};
 use crate::presentation::retail_controls::ControlSkin;
 use crate::presentation::retail_controls::FocusRing;
 use crate::presentation::screen_art::spawn_picture as picture;
@@ -495,9 +493,14 @@ pub(super) fn refresh(
         Query<&Cursed>,
     ),
     bearers: Query<(&crate::game::actors::arm::Arms, &crate::game::actors::Initiative)>,
-    learned_spells: Query<&LearnedSpells>,
     screen: Single<&InventoryScreen>,
-    characters: Query<CharacterView>,
+    characters: Query<(
+        (&crate::game::characters::Calling, &crate::game::actors::UsableSkills),
+        &crate::game::characters::Vitals,
+        &crate::game::characters::Conditions,
+        &crate::game::actors::Attributes,
+        &crate::game::actors::Skills,
+    )>,
     roster: Option<Single<&PartyRoster>>,
     profiles: Query<&crate::game::actors::Skills>,
     tallies: Query<&crate::game::characters::Tally>,
@@ -510,18 +513,10 @@ pub(super) fn refresh(
     mut fields: Query<(&Field, &mut BitmapText)>,
     mut info_background: Query<&mut Picture, With<InfoBackground>>,
 ) -> Result {
-    let view = characters.get(screen.member).unwrap();
+    let member = screen.member;
+    let ((calling, usable), vitals, ailing, attributes, skills) = characters.get(member).unwrap();
 
     let tally = tallies.get(screen.member).copied().unwrap_or_default();
-    let CharacterViewItem {
-        entity: member,
-        profile,
-        vitals,
-        conditions: ailing,
-        attributes,
-        skills,
-        ..
-    } = view;
     // The sheet shows the primary weapon slot's numbers.
     let primary = crate::game::inventory::WeaponSlot::Primary;
     let (arms, attacks) = bearers.get(member)?;
@@ -542,7 +537,6 @@ pub(super) fn refresh(
         .and_then(|item| held.known(item))
         .is_some_and(|known| !known.identified);
     let table = strings.table();
-    let learned = learned_spells.get(screen.member).unwrap();
     let spell_catalog = &content.spells;
     let string = |id| table.and_then(|table| table.get(id)).unwrap_or("");
     let mut effects = Vec::new();
@@ -658,7 +652,7 @@ pub(super) fn refresh(
                 Some(art.green.clone())
             }
             Field::SkillName(skill) => {
-                let active = crate::game::magic::skill_available(profile.trained(), learned, skill);
+                let active = usable.0.contains(skill);
                 let level = skills[skill];
                 let best = level > 0
                     && roster.as_ref().is_some_and(|roster| {
@@ -696,7 +690,7 @@ pub(super) fn refresh(
                     "{} {}",
                     string(
                         crate::content::ui::SKILL_NAMES
-                            + profile.calling.profession.row().bonus_skill as usize
+                            + calling.profession.row().bonus_skill as usize
                     ),
                     string(0x8c5)
                 )
@@ -757,9 +751,12 @@ pub(super) fn refresh(
 }
 
 pub(super) fn layout_skills(
-    learned: Query<&LearnedSpells>,
     screen: Single<&InventoryScreen>,
-    characters: Query<(crate::game::characters::PaperReadOnly, &crate::game::actors::Skills)>,
+    characters: Query<(
+        (&crate::game::characters::Training, &crate::game::actors::Abilities),
+        &crate::game::actors::UsableSkills,
+        &crate::game::actors::Skills,
+    )>,
     mut rows: Query<
         (Entity, &SkillRow, &mut Node, &mut Visibility),
         (Without<Bar>, Without<CategoryIcon>),
@@ -768,8 +765,7 @@ pub(super) fn layout_skills(
     mut backdrop: Query<&mut Picture, With<ExpertBackdrop>>,
     mut icons: Query<(&CategoryIcon, &mut Visibility), Without<SkillRow>>,
 ) {
-    let (profile, skills) = characters.get(screen.member).unwrap();
-    let learned = learned.get(screen.member).unwrap();
+    let ((training, abilities), usable, skills) = characters.get(screen.member).unwrap();
     let mut ordered: Vec<_> =
         rows.iter().map(|(entity, row, _, _)| (row.0 as usize, entity)).collect();
     ordered.sort_unstable_by_key(|(skill, _)| *skill);
@@ -778,9 +774,7 @@ pub(super) fn layout_skills(
     for (_, entity) in ordered {
         let Ok((_, row, mut node, mut visibility)) = rows.get_mut(entity) else { continue };
         let category = skill_category(row.0);
-        let shown = crate::game::magic::skill_available(profile.trained(), learned, row.0)
-            || profile.training.0[row.0] > 0
-            || skills[row.0] > 0;
+        let shown = usable.0.contains(row.0) || training.0[row.0] > 0 || skills[row.0] > 0;
         crate::presentation::screen_art::display_if(&mut node, shown);
         visibility.set_if_neq(visible_if(shown));
         if shown {
@@ -808,10 +802,10 @@ pub(super) fn layout_skills(
     }
     for (bar, mut crop) in &mut bars {
         let (start, end) = match *bar {
-            Bar::Attribute(attribute) => (0.0, profile.abilities.0[attribute].min(125) as f32),
-            Bar::SkillBase(skill) => (0.0, profile.training.0[skill].min(skills[skill]) as f32),
+            Bar::Attribute(attribute) => (0.0, abilities.0[attribute].min(125) as f32),
+            Bar::SkillBase(skill) => (0.0, training.0[skill].min(skills[skill]) as f32),
             Bar::SkillBonus(skill) => {
-                (profile.training.0[skill].min(skills[skill]) as f32, skills[skill] as f32)
+                (training.0[skill].min(skills[skill]) as f32, skills[skill] as f32)
             }
         };
         crop.set_if_neq(PictureCrop::horizontal(start, end));

@@ -780,15 +780,13 @@ fn draw_header_hands(
     screen: Single<&InventoryScreen>,
     assets: Res<AssetServer>,
     content: If<Res<Catalogs>>,
-    members: Query<crate::presentation::character_view::CharacterView>,
+    members: Query<(&crate::game::characters::Birth, &crate::game::actors::Armour)>,
     held: Items,
     art: Res<InventoryArt>,
     mut parts: Query<(&HeaderHand, &mut Visibility, Option<&mut Picture>, Option<&mut BitmapText>)>,
 ) {
     let catalog = &content.items;
-    let view = members.get(screen.member).unwrap();
-    let armour = view.armour;
-    let profile = view.profile;
+    let (birth, armour) = members.get(screen.member).unwrap();
     let worn = |slot| held.worn(screen.member, slot);
     let two_handed = worn(EquipSlot::Primary)
         .and_then(|item| held.id(item))
@@ -817,7 +815,7 @@ fn draw_header_hands(
                     (
                         format!(
                             "data/main interface/{}.sti",
-                            empty_hands(profile.birth.race)[usize::from(off)]
+                            empty_hands(birth.race)[usize::from(off)]
                         ),
                         0,
                         133.0,
@@ -871,7 +869,7 @@ fn sync_member_portraits(
     mut commands: Commands,
     root: Single<Entity, With<MemberSelector>>,
     roster: Single<&PartyRoster>,
-    members: Query<(crate::game::characters::PaperReadOnly, &Vitals)>,
+    members: Query<(&crate::game::characters::Identity, &crate::game::characters::Birth, &Vitals)>,
     mut buttons: Query<(Entity, &InventoryMemberButton, &mut Picture)>,
     mut empty: Query<(&EmptyMemberSlot, &mut Visibility)>,
     art: Res<InventoryArt>,
@@ -887,11 +885,11 @@ fn sync_member_portraits(
         }
     }
     for (slot, member) in roster.iter().enumerate() {
-        let (profile, vitals) = members.get(member).unwrap();
+        let (identity, birth, vitals) = members.get(member).unwrap();
         let name = if vitals.is_dead() {
-            &super::screen_art::skull(profile.birth.race)[1..]
+            &super::screen_art::skull(birth.race)[1..]
         } else {
-            &profile.identity.portrait
+            &identity.portrait
         };
         let path =
             crate::content::paths::portrait(crate::content::paths::PortraitSize::Small, name);
@@ -924,20 +922,27 @@ fn sync_member_portraits(
 fn draw_header(
     screen: Single<&InventoryScreen>,
     assets: Res<AssetServer>,
-    members: Query<(crate::game::characters::PaperReadOnly, &Vitals)>,
+    members: Query<(
+        (
+            &crate::game::characters::Identity,
+            &crate::game::characters::Birth,
+            &crate::game::characters::Calling,
+        ),
+        &Vitals,
+    )>,
     strings: GameStrings,
     mut displays: Query<(&HeaderDisplay, Option<&mut Picture>, Option<&mut BitmapText>)>,
 ) {
-    let (profile, vitals) = members.get(screen.member).unwrap();
+    let ((identity, birth, calling), vitals) = members.get(screen.member).unwrap();
     for (display, picture, label) in &mut displays {
         let mut source = None;
         let mut value = None;
         match display.0 {
             HeaderPart::Portrait => {
                 let name = if vitals.is_dead() {
-                    &super::screen_art::skull(profile.birth.race)[1..]
+                    &super::screen_art::skull(birth.race)[1..]
                 } else {
-                    &profile.identity.portrait
+                    &identity.portrait
                 };
                 source = Some(crate::content::paths::portrait(
                     crate::content::paths::PortraitSize::Medium,
@@ -947,31 +952,27 @@ fn draw_header(
             HeaderPart::Statue => {
                 source = Some(crate::content::paths::sheet(&format!(
                     "review/{}",
-                    statue(profile.birth.race, profile.birth.gender)
+                    statue(birth.race, birth.gender)
                 )));
             }
-            HeaderPart::Name => value = Some(profile.identity.name.clone()),
+            HeaderPart::Name => value = Some(identity.name.clone()),
             HeaderPart::Race => {
-                let gender = if profile.birth.gender == Gender::Male { 0x2d1 } else { 0x2d2 };
+                let gender = if birth.gender == Gender::Male { 0x2d1 } else { 0x2d2 };
                 let gender = strings.get(gender);
-                let race =
-                    strings.get(crate::content::ui::RACE_NAMES + profile.birth.race as usize);
+                let race = strings.get(crate::content::ui::RACE_NAMES + birth.race as usize);
                 value = Some(format!("{gender} {race}").trim().to_owned());
             }
             HeaderPart::Profession => {
                 value = Some(
                     strings
-                        .get(
-                            crate::content::ui::PROFESSION_NAMES
-                                + profile.calling.profession as usize,
-                        )
+                        .get(crate::content::ui::PROFESSION_NAMES + calling.profession as usize)
                         .to_owned(),
                 );
             }
             HeaderPart::Level => {
-                let title = strings.get(profession_title(profile.calling));
+                let title = strings.get(profession_title(calling));
                 let level = strings.get(0x91a);
-                value = Some(format!("{level} {} ({title})", profile.calling.level()));
+                value = Some(format!("{level} {} ({title})", calling.level()));
             }
         }
         if let Some(mut picture) = picture
@@ -1020,7 +1021,7 @@ fn draw_cells(
     assets: Res<AssetServer>,
     content: If<Res<Catalogs>>,
     members: Query<(
-        crate::game::characters::PaperReadOnly,
+        (&crate::game::characters::Calling, &crate::game::characters::Birth),
         &crate::game::actors::Attributes,
         &crate::game::actors::Skills,
     )>,
@@ -1036,7 +1037,7 @@ fn draw_cells(
     )>,
 ) {
     let catalog = &content.items;
-    let (profile, attributes, skills) = members.get(screen.member).unwrap();
+    let (users, attributes, skills) = members.get(screen.member).unwrap();
     let pool_start = pool_scroll.as_ref().map_or(0, |value| value.0 as usize * 2);
     for (cell, children) in &cells {
         let item = cell.cell.item(&held, screen.member, *party, pool_start);
@@ -1050,11 +1051,7 @@ fn draw_cells(
                 CellPart::Count => count.is_some(),
                 CellPart::Unusable => {
                     grid && definition.is_some_and(|(_, d)| {
-                        !crate::game::items::users(d).admit(
-                            (profile.calling, profile.birth),
-                            attributes,
-                            skills,
-                        )
+                        !crate::game::items::users(d).admit(users, attributes, skills)
                     })
                 }
                 CellPart::Unidentified => definition

@@ -3,7 +3,7 @@
 
 use bevy::prelude::*;
 
-use super::aim::{AimsMade, At, BySlot, Considers, Spoiled, Weigh, Worth};
+use super::aim::{BySlot, Considers, Proposals, Spoiled, Weigh, Worth};
 use super::slot::{Breath, Slots};
 use super::spell::WeighsSpells;
 use super::{ClosesIn, PartyGap};
@@ -13,6 +13,7 @@ use crate::game::characters::{Condition, Conditions, Vitals};
 use crate::game::combat::action::{ActionOf, Acts, Breathes};
 use crate::game::combat::turn::SpecialCooldown;
 use crate::game::hits::specials::special;
+use crate::game::magic::aim::At;
 use crate::game::magic::reach::Aim;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::{Stance, Standing};
@@ -120,7 +121,7 @@ struct ConeWeighed {
 fn aim_breath(
     breathes: On<ConeWeighed>,
     mut commands: Commands,
-    made: Query<&AimsMade>,
+    made: Query<&Proposals>,
     aims: Query<(&BySlot, &At), (With<Worth>, Without<Spoiled>)>,
     breaths: Query<(), With<Breath>>,
     mut rng: ResMut<GameRng>,

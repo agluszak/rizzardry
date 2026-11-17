@@ -14,11 +14,13 @@
 //! asks the rules in the order of the page and makes happen what they decide;
 //! a utility spell then does its own thing, one observer to a kind.
 
+pub mod aim;
 pub mod casting;
 pub mod cost;
 pub(crate) mod dialogue;
 pub mod landed;
 pub mod may;
+pub mod occasion;
 pub(crate) mod pointcasts;
 pub mod portals;
 pub mod power;
@@ -38,7 +40,7 @@ use crate::content::characters::Trait;
 use crate::content::characters::{Realm, Skill};
 use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId, Spellbook, min_caster_level};
 use crate::game::GameplaySet;
-use crate::game::characters::{Calling, Profession, Trained, Training};
+use crate::game::characters::{Calling, Profession, Training};
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
 use crate::game::items::Items;
@@ -91,20 +93,25 @@ impl LearnedSpells {
 }
 
 /// Skill eligibility combines profile rules with the actual learned spell set.
-pub fn skill_available(c: Trained, learned: &LearnedSpells, skill: Skill) -> bool {
+pub fn skill_available(
+    (calling, abilities, traits): (&Calling, &crate::game::actors::Abilities, EnumSet<Trait>),
+    learned: &LearnedSpells,
+    skill: Skill,
+) -> bool {
+    let can_use = |skill| crate::game::characters::skill_available(calling, abilities, skill);
     if skill as usize >= Skill::Wizardry as usize
         && (skill as usize) < Skill::PowerStrike as usize
-        && c.traits.contains(Trait::CannotLearn)
+        && traits.contains(Trait::CannotLearn)
     {
         return false;
     }
     if let Some(realm) = skill.realm() {
-        if !c.calling.profession.row().books.iter().any(|book| c.can_use(book_skill(book))) {
+        if !calling.profession.row().books.iter().any(|book| can_use(book_skill(book))) {
             return false;
         }
         return learned.in_realm(realm).next().is_some();
     }
-    c.can_use(skill)
+    can_use(skill)
 }
 
 /// An actor's spell points, realm by realm: the most each can hold, a
@@ -251,22 +258,6 @@ fn profession_caster_level(profession: Profession, levels: u8) -> i32 {
     profession.row().caster_offset.map_or(-1, |offset| i32::from(levels) + offset)
 }
 
-/// Retail `GetTotalCasterLevel` over `books`: the current profession's caster
-/// level plus every other held profession sharing a book.
-pub fn total_caster_level(calling: &Calling, books: EnumSet<Spellbook>) -> i32 {
-    let character = calling;
-    let mut total = caster_level(character, character.profession);
-    for (profession, &levels) in &character.levels {
-        if levels != 0
-            && profession != character.profession
-            && !(profession.row().books & books).is_empty()
-        {
-            total += caster_level(character, profession).max(0);
-        }
-    }
-    total
-}
-
 pub(crate) fn book_skill(book: Spellbook) -> Skill {
     match book {
         Spellbook::Wizardry => Skill::Wizardry,
@@ -299,24 +290,22 @@ pub(crate) fn best_book(
 
 /// Whether the character may learn a spell now (retail `CanLearnSpell`): it is
 /// in one of their books and its level is within both their caster level and
-/// their realm and book training.
+/// their realm and book training. `(followed, caster)` are their caster
+/// levels: of the profession followed now, and in all for the spell's books
+/// ([`crate::game::actors::CasterLevels`]).
 pub fn can_learn(
-    (c, training): (Trained, &Training),
+    (character, traits, training): (&Calling, EnumSet<Trait>, &Training),
     skills: &crate::game::actors::Skills,
+    (followed, caster): (i32, i32),
     spell: &SpellDefinition,
 ) -> bool {
-    let character = c.calling;
     let books = character.profession.row().books;
     if spell.id.0 == 0 || spell.id.0 >= SpellId::LEARNABLE || (spell.books & books).is_empty() {
         return false;
     }
-    if c.traits.contains(Trait::CannotLearn)
-        || caster_level(character, character.profession) <= 0
-        || spell.realm.is_none()
-    {
+    if traits.contains(Trait::CannotLearn) || followed <= 0 || spell.realm.is_none() {
         return false;
     }
-    let caster = total_caster_level(character, spell.books);
     let by_level = (1..=7).filter(|&l| min_caster_level(l) <= caster).max().unwrap_or(0);
     let realm_points = spell.realm.map_or(0, |r| training.0[r.skill()]);
     let book = [Spellbook::Wizardry, Spellbook::Divinity, Spellbook::Alchemy, Spellbook::Psionics]
@@ -385,15 +374,10 @@ pub struct MagicPlugin;
 
 impl Plugin for MagicPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<MagicRequest>()
+        app.add_plugins((occasion::plugin, casting::plugin))
+            .add_message::<MagicRequest>()
             .add_message::<casting::MagicNews>()
-            .add_observer(casting::cast)
-            .add_observer(casting::pay)
-            .add_observer(casting::refuse)
-            .add_observer(utilities::identify)
-            .add_observer(dialogue::cast)
-            .add_observer(portals::cast)
-            .add_observer(pointcasts::cast)
+            .add_observer(pointcasts::answer)
             .add_systems(
                 Update,
                 (accept_magic, pointcasts::expire_lures, pointcasts::follow_lures)
@@ -461,8 +445,7 @@ pub(crate) mod tests {
     use crate::content::items::ItemCatalog;
     use crate::content::species::MonsterCatalog;
     use crate::content::spells::{PowerChoice, Reach, Targeting, Usable};
-    use crate::game::characters::Character;
-    use crate::game::characters::{Gender, Race};
+    use crate::game::characters::{Gender, Race, Training, born};
 
     /// Magic as the game has it.
     fn app() -> App {
@@ -551,10 +534,9 @@ pub(crate) mod tests {
             spells,
             ..default()
         });
-        let profile = Character::new("Drinker", Race::Human, Gender::Male, Profession::Fighter);
-        let mut vitals = Vitals::new(&profile);
-        vitals.health.current = 1;
-        let member = world.spawn((profile, vitals)).id();
+        let member =
+            world.spawn(born("Drinker", Race::Human, Gender::Male, Profession::Fighter)).id();
+        world.get_mut::<Vitals>(member).unwrap().health.current = 1;
         let made = |world: &mut World, id: ItemId, amount: u16, at: Place| {
             let item = world
                 .run_system_once(
@@ -614,7 +596,8 @@ pub(crate) mod tests {
     /// A utility spell is cast like any other up to the point where it lands: it
     /// is paid for in points and stamina (cost 2 at power 1 is 2 points, and a
     /// level 1 spell at power 1 tires by 1 + 1 = 2), and then does its own
-    /// thing: Identify Item reveals what the party holds.
+    /// thing: Identify Item reveals what the party holds; Set Portal saves
+    /// where the party stands on its caster.
     #[test]
     fn a_utility_spell_is_paid_for_like_any_cast_and_then_does_its_own_thing() {
         use crate::content::items::{ItemDefinition, ItemId, LootTables, QuantityKind};
@@ -643,6 +626,15 @@ pub(crate) mod tests {
             targeting: Targeting::Item,
             ..default()
         };
+        definitions[usize::from(SpellId::SET_PORTAL.0)] = SpellDefinition {
+            id: SpellId::SET_PORTAL,
+            realm: Some(Realm::Divine),
+            level: 1,
+            cost: 2,
+            books: Spellbook::Divinity.into(),
+            targeting: Targeting::Caster,
+            ..default()
+        };
         world.insert_resource(crate::game::data::Catalogs {
             items: ItemCatalog(vec![scroll]),
             loot: LootTables::default(),
@@ -650,20 +642,17 @@ pub(crate) mod tests {
             spells: SpellCatalog::new(definitions),
             ..default()
         });
-        let mut priest = Character::new("Seer", Race::Human, Gender::Male, Profession::Priest);
-        priest.training.0[Skill::Divinity] = 100;
-        priest.training.0[Skill::DivineMagic] = 100;
+        let learned = LearnedSpells::of(
+            [SpellId::IDENTIFY_ITEM, SpellId::SET_PORTAL],
+            &world.resource::<crate::game::data::Catalogs>().spells,
+        );
         let member = world
-            .spawn((
-                Vitals::new(&priest),
-                priest,
-                LearnedSpells::of(
-                    [SpellId::IDENTIFY_ITEM],
-                    &world.resource::<crate::game::data::Catalogs>().spells,
-                ),
-                SpellPoints::default(),
-            ))
+            .spawn(born("Seer", Race::Human, Gender::Male, Profession::Priest))
+            .insert((learned, SpellPoints::default()))
             .id();
+        let mut training = world.get_mut::<Training>(member).unwrap();
+        training.0[Skill::Divinity] = 100;
+        training.0[Skill::DivineMagic] = 100;
         let item = world
             .run_system_once(|mut commands: Commands, content: Res<crate::game::data::Catalogs>| {
                 make(&mut commands, &content.items[ItemId(0)], 1, false)
@@ -714,42 +703,64 @@ pub(crate) mod tests {
             "{news:?}"
         );
         assert_eq!(test_points(world, member, Realm::Divine), after);
+        // Set Portal is cast at nothing, and its caster carries the portal.
+        assert!(world.get::<portals::Portal>(member).is_none());
+        let source = Source::Spell { spell: SpellId::SET_PORTAL, power: 1 };
+        world.write_message(MagicRequest {
+            caster: member,
+            choice: MagicChoice { source, aim: Aim::Body(member) },
+        });
+        app.update();
+        let world = app.world_mut();
+        let news: Vec<_> = world.resource_mut::<Messages<MagicNews>>().drain().collect();
+        assert!(
+            matches!(news.as_slice(), [MagicNews::Done(report)] if report.outcome == Outcome::Cast),
+            "{news:?}"
+        );
+        assert!(world.get::<portals::Portal>(member).is_some());
     }
 
     #[test]
     fn a_priest_picks_two_first_level_divine_spells_and_gains_their_points() {
-        let priest = Character::new("Cleric", Race::Human, Gender::Male, Profession::Priest);
-        let fighter = Character::new("Brute", Race::Human, Gender::Male, Profession::Fighter);
+        use crate::game::actors::{Attributes, Skills, Traits};
+        use crate::game::characters::Calling;
+        let mut app = App::new();
+        app.add_plugins(crate::game::actors::plugin).init_resource::<GameRng>();
+        let world = app.world_mut();
+        let priest =
+            world.spawn(born("Cleric", Race::Human, Gender::Male, Profession::Priest)).id();
+        let fighter =
+            world.spawn(born("Brute", Race::Human, Gender::Male, Profession::Fighter)).id();
+        world.run_schedule(crate::game::actors::Settle);
+        let world = app.world();
+        let calling = |body| world.get::<Calling>(body).unwrap();
+        let learns = |body, spell: &SpellDefinition| {
+            let (traits, training) =
+                (world.get::<Traits>(body).unwrap(), world.get::<Training>(body).unwrap());
+            let levels = world.get::<crate::game::actors::CasterLevels>(body).unwrap();
+            can_learn(
+                (calling(body), traits.0, training),
+                world.get::<Skills>(body).unwrap(),
+                (levels.followed, levels.caster_level(spell)),
+                spell,
+            )
+        };
         let heal = heal_wounds();
         assert_eq!(
-            (starting_picks(priest.calling.profession), starting_picks(fighter.calling.profession)),
+            (
+                starting_picks(calling(priest).profession),
+                starting_picks(calling(fighter).profession)
+            ),
             (2, 0)
         );
-        assert!(
-            can_learn(
-                (priest.trained(), &priest.training),
-                &crate::game::actors::Skills::of_sheet(&priest),
-                &heal
-            ) && !can_learn(
-                (fighter.trained(), &fighter.training),
-                &crate::game::actors::Skills::of_sheet(&fighter),
-                &heal
-            )
-        );
+        assert!(learns(priest, &heal) && !learns(fighter, &heal));
         let higher = SpellDefinition { level: 2, ..heal_wounds() };
-        assert!(
-            !can_learn(
-                (priest.trained(), &priest.training),
-                &crate::game::actors::Skills::of_sheet(&priest),
-                &higher
-            ),
-            "level 1 casters learn level 1 spells only"
-        );
+        assert!(!learns(priest, &higher), "level 1 casters learn level 1 spells only");
         let mut learned = LearnedSpells::default();
         learned.learn(&heal_wounds());
-        let skills = crate::game::actors::Skills::of_sheet(&priest);
-        let piety = crate::game::actors::Attributes::of_sheet(&priest)
-            [crate::content::characters::Attribute::Piety];
+        let skills = world.get::<Skills>(priest).unwrap();
+        let piety =
+            world.get::<Attributes>(priest).unwrap()[crate::content::characters::Attribute::Piety];
         let points = max_points(1, piety, |skill| skills[skill], &learned);
         assert!(points[Realm::Divine] >= 3, "never under the dearest learned spell");
         assert_eq!(points[Realm::Fire], 0, "no spell, no points");
@@ -839,9 +850,9 @@ pub(crate) mod tests {
                 spells,
                 ..default()
             });
-            let mut user = Character::new("User", Race::Human, Gender::Male, Profession::Priest);
-            user.training.0[Skill::ThrowingAndSling] = 100;
-            let user = world.spawn((Vitals::new(&user), user)).id();
+            let user =
+                world.spawn(born("User", Race::Human, Gender::Male, Profession::Priest)).id();
+            world.get_mut::<Training>(user).unwrap().0[Skill::ThrowingAndSling] = 100;
             let stack_id = world
                 .run_system_once(
                     |mut commands: Commands, content: Res<crate::game::data::Catalogs>| {
@@ -852,26 +863,21 @@ pub(crate) mod tests {
             world.flush();
             world.trigger(Put { item: stack_id, at: Place::Pack { member: user, slot: 0 } });
             world.flush();
-            let ally = Character::new("Ally", Race::Human, Gender::Male, Profession::Priest);
-            let mut vitals = Vitals::new(&ally);
-            vitals.health.current = 1;
-            vitals.stamina.current = 1;
             let mut ailing = crate::game::characters::Conditions::default();
             ailing.afflict(Condition::Asleep, Lasting::Rounds(8));
             ailing.afflict(Condition::Unconscious, Lasting::Rounds(8));
             ailing.poison(Lasting::Rounds(20), 10);
+            let learned = LearnedSpells::of(
+                [SpellId::HEAL_WOUNDS],
+                &world.resource::<crate::game::data::Catalogs>().spells,
+            );
             let ally = world
-                .spawn((
-                    ally,
-                    vitals,
-                    ailing,
-                    LearnedSpells::of(
-                        [SpellId::HEAL_WOUNDS],
-                        &world.resource::<crate::game::data::Catalogs>().spells,
-                    ),
-                    SpellPoints::default(),
-                ))
+                .spawn(born("Ally", Race::Human, Gender::Male, Profession::Priest))
+                .insert((ailing, learned, SpellPoints::default()))
                 .id();
+            let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
+            vitals.health.current = 1;
+            vitals.stamina.current = 1;
             test_set_points(world, ally, Realm::Divine, 0);
             crate::game::party::roster::test_party(world, &[user, ally]);
             world.spawn(crate::game::world::level::Level::test(default()));

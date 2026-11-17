@@ -10,7 +10,7 @@
 //! and join the fight or open one ([`open_battle`]). NPC bodies keep to
 //! their roles.
 
-use super::monster::aim::{self, AimsMade, Considers, Spoiled, Weigh, Worth};
+use super::monster::aim::{self, Considers, Proposals, Spoiled, Weigh, Worth};
 use super::monster::slot::{AtEnemies, Breath, Castable, Slots};
 use super::monster::special::SpecialReady;
 use super::*;
@@ -18,7 +18,9 @@ use crate::game::world::navigation::walking_distance;
 use crate::game::world::population::CastChance;
 
 use super::monster::sight::{ENGAGEMENT_RANGE, Eyesight, InPartyView, MakesOutParty, Reinforces};
+use crate::game::actors::fitness::Present;
 use crate::game::actors::{Level, Places};
+use crate::game::npcs::Embodies;
 use crate::game::party::body::PartyBody;
 use crate::game::party::roster::Party;
 use crate::game::world::hostility::{Allegiance, Stand};
@@ -26,7 +28,6 @@ use crate::game::world::identify::Leads;
 use crate::game::world::obstacles::WorldObstacles;
 use crate::game::world::population::Camouflage;
 use avian3d::prelude::Position;
-use bevy::ecs::system::SystemParam;
 
 /// Monsters coming into the fight, in placement order.
 #[derive(Message)]
@@ -70,47 +71,16 @@ pub(super) fn alert_factions(
     }
 }
 
-/// The fighters of a group outside the fight: its members alive, not an
-/// NPC's body, and neither fighting nor coming in already, in its order;
-/// and the side the group's first is on.
-#[derive(SystemParam)]
-pub(super) struct Fighters<'w, 's> {
-    monsters: Query<
-        'w,
-        's,
-        (&'static Vitals, &'static Allegiance, &'static Side, Has<Combatant>, Has<ComingIn>),
-    >,
-}
-
-impl Fighters<'_, '_> {
-    fn of(&self, members: &GroupMembers) -> Vec<Entity> {
-        members
-            .iter()
-            .filter(|&m| {
-                let (vitals, allegiance, _, fighting, coming) =
-                    self.monsters.get(m).expect("a group's member is a monster");
-                !vitals.is_dead() && !allegiance.npc && !fighting && !coming
-            })
-            .collect()
-    }
-
-    /// The side a monster's group or kind has it on, its own turning aside.
-    fn side(&self, monster: Entity) -> Stance {
-        self.monsters.get(monster).expect("a fighter is a monster").2.own()
-    }
-
-    fn allegiance(&self, monster: Entity) -> &Allegiance {
-        self.monsters.get(monster).expect("a fighter is a monster").1
-    }
-}
-
 /// A group not hostile whose kind has a hostility radius turns hostile when
 /// one of its fighters makes out the party and the nearest is within the
 /// radius.
 #[allow(clippy::type_complexity)]
 pub(super) fn turn_by_radius(
     groups: Query<(Entity, &GroupMembers, &LevelOwned), With<MonsterGroup>>,
-    fighters: Fighters,
+    monsters: Query<
+        (Entity, &Allegiance, &Side),
+        (With<Present>, Without<Embodies>, Without<Combatant>, Without<ComingIn>),
+    >,
     making_out: Query<(), With<MakesOutParty>>,
     party: Single<Entity, With<Party>>,
     places: Places,
@@ -119,12 +89,15 @@ pub(super) fn turn_by_radius(
 ) {
     let Some(root) = level.entity() else { return };
     for (group, members, owner) in &groups {
-        let fighting = fighters.of(members);
-        let Some(&first) = fighting.first().filter(|_| owner.0 == root) else { continue };
-        let Some(radius) = fighters.allegiance(first).hostility_radius() else { continue };
-        let nearest = fighting.iter().map(|&m| places.gap(m, *party)).fold(f32::INFINITY, f32::min);
-        let sees = fighting.iter().any(|&m| making_out.contains(m));
-        if fighters.side(first) != Stance::Hostile && sees && nearest <= radius {
+        let fighting: Vec<_> = monsters.iter_many(members.iter()).matched().collect();
+        let Some(&(_, allegiance, side)) = fighting.first().filter(|_| owner.0 == root) else {
+            continue;
+        };
+        let Some(radius) = allegiance.hostility_radius() else { continue };
+        let nearest =
+            fighting.iter().map(|&(m, ..)| places.gap(m, *party)).fold(f32::INFINITY, f32::min);
+        let sees = fighting.iter().any(|&(m, ..)| making_out.contains(m));
+        if side.own() != Stance::Hostile && sees && nearest <= radius {
             commands.trigger(Stand { group, stance: Some(Stance::Hostile) });
         }
     }
@@ -134,13 +107,16 @@ pub(super) fn turn_by_radius(
 #[allow(clippy::type_complexity)]
 pub(super) fn come_in_provoked(
     groups: Query<(Entity, &GroupMembers), (With<MonsterGroup>, With<hostility::Provoked>)>,
-    fighters: Fighters,
+    monsters: Query<
+        (Entity, &Allegiance, &Side),
+        (With<Present>, Without<Embodies>, Without<Combatant>, Without<ComingIn>),
+    >,
     mut commands: Commands,
 ) {
     for (group, members) in &groups {
         commands.entity(group).remove::<hostility::Provoked>();
-        for fighter in fighters.of(members) {
-            if fighters.side(fighter) == Stance::Hostile {
+        for (fighter, _, side) in monsters.iter_many(members.iter()).matched() {
+            if side.own() == Stance::Hostile {
                 commands.entity(fighter).insert(ComingIn);
             }
         }
@@ -171,7 +147,10 @@ struct Looked {
 #[allow(clippy::type_complexity)]
 pub(super) fn look_to_open(
     groups: Query<(Entity, &GroupMembers, &LevelOwned), With<MonsterGroup>>,
-    fighters: Fighters,
+    monsters: Query<
+        (Entity, &Allegiance, &Side),
+        (With<Present>, Without<Embodies>, Without<Combatant>, Without<ComingIn>),
+    >,
     making_out: Query<(), With<MakesOutParty>>,
     casters: Query<(&CastChance, &Slots, Has<SpecialReady>)>,
     slots: Query<(Has<AtEnemies>, Has<Castable>, Has<Breath>)>,
@@ -189,12 +168,12 @@ pub(super) fn look_to_open(
         return;
     }
     for (group, members, owner) in &groups {
-        let fighting = fighters.of(members);
-        let hostile = fighting.first().is_some_and(|&m| fighters.side(m) == Stance::Hostile);
-        if owner.0 != root || !hostile || !fighting.iter().any(|&m| making_out.contains(m)) {
+        let fighting: Vec<_> = monsters.iter_many(members.iter()).matched().collect();
+        let hostile = fighting.first().is_some_and(|(.., side)| side.own() == Stance::Hostile);
+        if owner.0 != root || !hostile || !fighting.iter().any(|&(m, ..)| making_out.contains(m)) {
             continue;
         }
-        for &fighter in &fighting {
+        for &(fighter, ..) in &fighting {
             let look = commands.spawn((Considers(fighter), LookFor(group))).id();
             aim::view(&mut commands, look, std::iter::once(fighter).chain(living.iter().copied()));
             let Ok((chance, owned, ready)) = casters.get(fighter) else { continue };
@@ -221,7 +200,7 @@ pub(super) fn look_to_open(
 fn open_if_able(
     looked: On<Looked>,
     groups: Query<Option<&Looks>>,
-    looks: Query<(&Considers, Option<&AimsMade>)>,
+    looks: Query<(&Considers, Option<&Proposals>)>,
     fighters: Query<(
         &Monster,
         &crate::game::actors::arm::Furthest,
@@ -234,7 +213,7 @@ fn open_if_able(
 ) -> Result {
     // A group none of whose fighters looked has nothing to weigh.
     let Some(taken) = groups.get(looked.group)? else { return Ok(()) };
-    let can_act = |(&Considers(fighter), made): (&Considers, Option<&AimsMade>)| {
+    let can_act = |(&Considers(fighter), made): (&Considers, Option<&Proposals>)| {
         let (monster, reach, fit) = fighters.get(fighter).expect("a fighter is a monster");
         let close = reach.0.is_some_and(|r| r <= crate::content::species::Reach::Short);
         let aimed = made.is_some_and(|aims| aims.iter().any(|aim| good.contains(aim)));
@@ -262,7 +241,10 @@ fn open_if_able(
 #[allow(clippy::type_complexity)]
 pub(super) fn join(
     groups: Query<(&GroupMembers, &LevelOwned), With<MonsterGroup>>,
-    fighters: Fighters,
+    monsters: Query<
+        (Entity, &Allegiance, &Side),
+        (With<Present>, Without<Embodies>, Without<Combatant>, Without<ComingIn>),
+    >,
     leading: Query<(), With<Leads>>,
     bodies: Query<(&Monster, &crate::game::actors::Nature, &crate::game::actors::arm::Furthest)>,
     making_out: Query<(), With<MakesOutParty>>,
@@ -300,9 +282,10 @@ pub(super) fn join(
             && places.gap(m, *party) <= crate::content::species::Reach::Extreme.metres()
     };
     for (members, owner) in &groups {
-        let fighting = fighters.of(members);
-        let Some(&first) = fighting.first().filter(|_| owner.0 == root) else { continue };
-        let enters = match fighters.side(first) {
+        let fighters: Vec<_> = monsters.iter_many(members.iter()).matched().collect();
+        let Some(&(.., side)) = fighters.first().filter(|_| owner.0 == root) else { continue };
+        let fighting: Vec<Entity> = fighters.iter().map(|&(m, ..)| m).collect();
+        let enters = match side.own() {
             Stance::Hostile => {
                 let makes_out = fighting.iter().any(|&m| making_out.contains(m));
                 (makes_out && leader_in_reach(&fighting))

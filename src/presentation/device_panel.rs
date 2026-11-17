@@ -379,7 +379,11 @@ fn draw_device_panel(
     selected: Res<SelectedMember>,
     roster: Single<&PartyRoster>,
     members: Query<(
-        crate::game::characters::PaperReadOnly,
+        (
+            &crate::game::characters::Identity,
+            &crate::game::characters::Calling,
+            &crate::game::actors::Abilities,
+        ),
         &Vitals,
         &crate::game::actors::Attributes,
         &crate::game::actors::Skills,
@@ -396,9 +400,13 @@ fn draw_device_panel(
     let member = selected.member(&roster).map(|m| (m, members.get(m).unwrap()));
     // What the selected member can do, they can do only while they can act.
     let able = member.as_ref().filter(|(m, _)| able.contains(*m));
-    let name = member.as_ref().map_or(String::new(), |(_, (c, ..))| c.identity.name.clone());
-    let skill =
-        able.and_then(|(_, (c, _, _, skills))| interaction::lock_skill(c.trained(), skills));
+    let name =
+        member.as_ref().map_or(String::new(), |(_, ((identity, ..), ..))| identity.name.clone());
+    let skill = able.and_then(|(_, ((_, calling, abilities), _, _, skills))| {
+        use crate::content::characters::Skill::LocksAndTraps;
+        let may_use = crate::game::characters::skill_available(calling, abilities, LocksAndTraps);
+        interaction::lock_skill(may_use, skills[LocksAndTraps])
+    });
     let trap_name = |trap: usize| {
         let name = strings.get(crate::content::ui::TRAP_NAMES + trap);
         if name.is_empty() { "Trap" } else { name }.to_owned()

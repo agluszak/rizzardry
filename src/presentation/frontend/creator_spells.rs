@@ -171,15 +171,15 @@ pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer)
 fn select_spell(
     event: On<Activate>,
     choices: Query<(&SpellOption, Has<InteractionDisabled>)>,
-    content: If<Res<Catalogs>>,
-    mut session: Single<&mut Creation>,
+    session: Single<&Creation>,
+    mut commands: Commands,
 ) -> Result {
     let (choice, disabled) = choices.get(event.entity)?;
     if disabled {
         return Ok(());
     }
-    let Some(draft) = session.mode.draft_mut() else { return Ok(()) };
-    draft.toggle_spell(&content.spells, choice.0);
+    let Some(draft) = session.mode.draft() else { return Ok(()) };
+    commands.trigger(crate::game::characters::draft::Pick { draft, spell: choice.0 });
     Ok(())
 }
 
@@ -198,11 +198,23 @@ pub(super) fn refresh(
     mut labels: Query<(&mut BitmapText, Option<&RealmValue>, Option<&SpellText>)>,
     mut headers: Query<(&RealmHeader, &mut Visibility), Without<SpellOption>>,
     added: Query<(), Or<(Added<SpellOption>, Added<RealmValue>, Added<RealmHeader>)>>,
-    actor: Option<Single<Ref<SpellPoints>, With<creator_stats::DraftActor>>>,
+    drafts: Query<(
+        Ref<SpellPoints>,
+        Ref<crate::game::characters::Training>,
+        Ref<crate::game::characters::Calling>,
+        Ref<crate::game::characters::progression::SpellPicks>,
+        Ref<crate::game::magic::LearnedSpells>,
+    )>,
     mut commands: Commands,
 ) {
-    let points = actor.as_deref().map(|points| &**points);
-    let figures_changed = actor.as_ref().is_some_and(|points| points.is_changed());
+    let Some(draft) = session.mode.draft() else { return };
+    let (points, training, calling, granted, learned) =
+        drafts.get(draft).expect("the draft edited is a character");
+    let figures_changed = points.is_changed()
+        || training.is_changed()
+        || calling.is_changed()
+        || granted.is_changed()
+        || learned.is_changed();
     if !session.is_changed()
         && !art.is_changed()
         && !content.is_changed()
@@ -211,17 +223,15 @@ pub(super) fn refresh(
     {
         return;
     }
-    let Some(draft) = session.mode.draft() else { return };
     let catalog = &content.spells;
-    let profile = draft.preview();
     for (mut label, role, _) in &mut labels {
         let Some(role) = role else { continue };
         let skill = role.0.skill();
         let value = if role.1 {
-            let most = points.map_or(0, |points| points.most(role.0));
+            let most = points.most(role.0);
             format!("{most}/{most}")
         } else {
-            profile.training.0[skill].to_string()
+            training.0[skill].to_string()
         };
         if label.value != value {
             label.value = value;
@@ -235,7 +245,9 @@ pub(super) fn refresh(
         let Ok((_, _, mut node, mut visibility, children, disabled)) = rows.get_mut(entity) else {
             continue;
         };
-        if !draft.can_learn_spell(catalog, id) {
+        if !catalog.get(id).is_some_and(|spell| {
+            crate::game::characters::draft::may_pick_first(&calling, &granted, spell)
+        }) {
             visibility.set_if_neq(Visibility::Hidden);
             continue;
         }
@@ -263,7 +275,7 @@ pub(super) fn refresh(
                 if label.value != value {
                     label.value = value;
                 }
-                let palette = draft.knows_spell(id).then(|| art.selected.clone());
+                let palette = learned.knows(id).then(|| art.selected.clone());
                 if label.palette != palette {
                     label.palette = palette;
                 }

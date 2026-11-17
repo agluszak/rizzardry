@@ -95,13 +95,27 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(GameRng::default());
         world.add_observer(tire);
-        let monster = world.spawn((Vitals::full(10, 100), Labours)).id();
-        let sick = world.spawn((Vitals::full(10, 100), Labours)).id();
+        let monster = world
+            .spawn((
+                Vitals::full(10, 100),
+                crate::game::actors::Frame { health: 10, stamina: 100 },
+                Labours,
+            ))
+            .id();
+        let sick = world
+            .spawn((
+                Vitals::full(10, 100),
+                crate::game::actors::Frame { health: 10, stamina: 100 },
+                Labours,
+            ))
+            .id();
         world
             .get_mut::<Conditions>(sick)
             .unwrap()
             .afflict(Condition::Diseased, crate::game::characters::Lasting::Indefinite);
-        let member = world.spawn(Vitals::full(10, 100)).id();
+        let member = world
+            .spawn((Vitals::full(10, 100), crate::game::actors::Frame { health: 10, stamina: 100 }))
+            .id();
         for actor in [monster, sick, member] {
             world.trigger(Exerted { actor, effort: Effort::Attack });
         }

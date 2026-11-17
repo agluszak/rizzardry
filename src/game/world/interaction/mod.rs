@@ -27,13 +27,15 @@ use super::triggers::DoorState;
 use crate::content::characters::{Attribute, Skill};
 use crate::content::level::{Lock, TRAP_TYPES};
 use crate::content::spells::Working;
-use crate::game::actors::{Attributes, Body, BodyItem};
-use crate::game::characters::{Calling, Practise, Trained, Vitals};
+use crate::game::actors::{Abilities, Attributes, CanAct, Skills};
+use crate::game::characters::{Calling, Practise, Vitals, skill_available};
 use crate::game::combat::Battle;
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::magic::Outcome;
-use crate::game::magic::casting::{MagicNews, Worked};
+use crate::game::magic::casting::{Allowed, CastBy, CastSpell, Chosen, MagicNews, Worked, marked};
+use crate::game::magic::may::Refusal;
+use crate::game::magic::reach::Aim;
 use crate::game::magic::reach::Marked;
 use crate::game::magic::workings;
 use crate::game::rng::GameRng;
@@ -260,10 +262,10 @@ pub enum Unable {
 }
 
 /// The Locks & Traps level of a member who can act, if they have the skill
-/// to use (retail `GetPartySlotLocksTrapsLevel`).
-pub fn lock_skill(character: Trained, skills: &crate::game::actors::Skills) -> Option<u32> {
-    let level = skills[Skill::LocksAndTraps];
-    (character.can_use(Skill::LocksAndTraps) || level > 0).then_some(level)
+/// to use: one whose calling opens it to them, or who has a level in it
+/// (retail `GetPartySlotLocksTrapsLevel`).
+pub fn lock_skill(may_use: bool, level: u32) -> Option<u32> {
+    (may_use || level > 0).then_some(level)
 }
 
 /// A member's chance in 100 to inspect a trap, or to disarm one of its
@@ -367,11 +369,6 @@ impl Busy<'_, '_> {
     }
 }
 
-/// A member's Locks & Traps level if they can use it now.
-fn skill(body: &BodyItem) -> Option<u32> {
-    lock_skill(body.trained().filter(|_| body.can_act)?, body.skills)
-}
-
 /// A member raises a tumbler of the lock being picked.
 #[derive(EntityEvent, Clone, Copy, Debug)]
 pub struct Pick {
@@ -471,7 +468,7 @@ fn pick(
     pick: On<Pick>,
     mut attempts: Query<(&mut DeviceInteraction, &AttemptOn)>,
     mut guards: Query<&mut Guarded>,
-    bodies: Query<Body>,
+    members: Query<(&Calling, &Abilities, &Skills, Has<CanAct>)>,
     busy: Busy,
     setting: Res<Difficulty>,
     mut rng: ResMut<GameRng>,
@@ -481,7 +478,13 @@ fn pick(
     let Pick { attempt, actor, tumbler } = *pick;
     let (mut interaction, &AttemptOn(device)) = attempts.get_mut(attempt)?;
     let Work::Picking(picking) = &mut interaction.work else { return Ok(()) };
-    let Some(skill) = bodies.get(actor).ok().filter(|_| !busy.busy()).and_then(|b| skill(&b))
+    let (calling, abilities, skills, can_act) = members.get(actor)?;
+    // One who cannot act does nothing.
+    if !can_act {
+        return Ok(());
+    }
+    let may_use = skill_available(calling, abilities, Skill::LocksAndTraps);
+    let Some(skill) = lock_skill(may_use, skills[Skill::LocksAndTraps]).filter(|_| !busy.busy())
     else {
         return Ok(());
     };
@@ -527,7 +530,7 @@ fn pick(
 fn force(
     force: On<Force>,
     mut attempts: Query<&mut DeviceInteraction>,
-    mut members: Query<(&mut Vitals, &Attributes, Has<crate::game::actors::CanAct>)>,
+    mut members: Query<(&mut Vitals, &Attributes, Has<CanAct>)>,
     busy: Busy,
     setting: Res<Difficulty>,
     mut rng: ResMut<GameRng>,
@@ -562,7 +565,7 @@ fn inspect(
     inspect: On<Inspect>,
     mut attempts: Query<(&mut DeviceInteraction, &AttemptOn)>,
     guards: Query<(), With<Guarded>>,
-    bodies: Query<Body>,
+    members: Query<(&Calling, &Abilities, &Skills, Has<CanAct>)>,
     busy: Busy,
     (content, setting): (Res<Catalogs>, Res<Difficulty>),
     mut rng: ResMut<GameRng>,
@@ -575,7 +578,13 @@ fn inspect(
     if !ready(trap, guards.contains(device), &content, &mut news) || busy.busy() {
         return Ok(());
     }
-    let Some(skill) = bodies.get(actor).ok().and_then(|body| skill(&body)) else { return Ok(()) };
+    let (calling, abilities, skills, can_act) = members.get(actor)?;
+    // One who cannot act does nothing.
+    if !can_act {
+        return Ok(());
+    }
+    let may_use = skill_available(calling, abilities, Skill::LocksAndTraps);
+    let Some(skill) = lock_skill(may_use, skills[Skill::LocksAndTraps]) else { return Ok(()) };
     let chance = trap.inspection_chance(Some(skill), *setting);
     if rng.below(100) >= chance {
         commands.trigger(Sprung { attempt, by: Some(actor) });
@@ -605,7 +614,7 @@ fn disarm(
     disarm: On<Disarm>,
     mut attempts: Query<(&mut DeviceInteraction, &AttemptOn)>,
     guards: Query<(), With<Guarded>>,
-    bodies: Query<Body>,
+    members: Query<(&Calling, &Abilities, &Skills, Has<CanAct>)>,
     busy: Busy,
     (content, setting): (Res<Catalogs>, Res<Difficulty>),
     mut rng: ResMut<GameRng>,
@@ -618,7 +627,13 @@ fn disarm(
     if !ready(trap, guards.contains(device), &content, &mut news) || busy.busy() {
         return Ok(());
     }
-    let Some(skill) = bodies.get(actor).ok().and_then(|body| skill(&body)) else { return Ok(()) };
+    let (calling, abilities, skills, can_act) = members.get(actor)?;
+    // One who cannot act does nothing.
+    if !can_act {
+        return Ok(());
+    }
+    let may_use = skill_available(calling, abilities, Skill::LocksAndTraps);
+    let Some(skill) = lock_skill(may_use, skills[Skill::LocksAndTraps]) else { return Ok(()) };
     if component >= COMPONENTS || trap.disarmed[component] {
         return Ok(());
     }
@@ -660,7 +675,7 @@ fn spring(
 fn release_pins(
     release: On<ReleasePins>,
     mut attempts: Query<&mut DeviceInteraction>,
-    members: Query<(), With<Calling>>,
+    members: Query<(), With<crate::game::party::roster::PartyMember>>,
     busy: Busy,
 ) -> Result {
     let mut interaction = attempts.get_mut(release.attempt)?;
@@ -681,20 +696,51 @@ fn leave(leave: On<Leave>, mut commands: Commands) {
     commands.entity(leave.attempt).try_despawn();
 }
 
+/// Knock-Knock and Divine Trap are cast at the attempt under way, on a
+/// device still guarded: a lock being picked, or a trap the game resolves.
+pub fn mark(
+    allowed: On<Allowed>,
+    casts: Query<(&CastBy, &Chosen)>,
+    attempts: Query<(&DeviceInteraction, &AttemptOn)>,
+    guarded: Query<(), With<Guarded>>,
+    content: Res<Catalogs>,
+    mut commands: Commands,
+) -> Result {
+    let (&CastBy(caster), &Chosen(choice)) = casts.get(allowed.cast)?;
+    let at = match choice.aim {
+        Aim::Device(on) => attempts.get(on).ok().filter(|(_, on)| guarded.contains(on.0)).map_or(
+            Err(Refusal::NoTarget),
+            |(attempt, _)| match &attempt.work {
+                Work::Picking(_) => Ok(Marked::Attempt(on)),
+                Work::Disarming(trap) => crate::game::magic::traps::validate(trap.trap, &content)
+                    .map(|()| Marked::Attempt(on))
+                    .map_err(|_| Refusal::Unsupported),
+                Work::Looting => Err(Refusal::NoTarget),
+            },
+        ),
+        _ => Err(Refusal::NoTarget),
+    };
+    marked(&mut commands, (allowed.cast, caster), at);
+    Ok(())
+}
+
 /// A cast aimed at the attempt under way, paid for and rolled as any other,
 /// does what it is for: Knock-Knock reaches a few tumblers at random and
 /// seals each it moves, or drops them on a backfire (the reaching is
 /// [`workings::knock`]); Divine Trap helps those who look the trap over; any
 /// other disarms the trap or sets it off on its caster. A fizzle does
 /// nothing.
-fn cast_at(
+pub fn cast_at(
     worked: On<Worked>,
+    casts: Query<&CastSpell>,
     mut attempts: Query<&mut DeviceInteraction>,
     mut rng: ResMut<GameRng>,
     (mut news, mut told): (MessageWriter<LockNews>, MessageWriter<MagicNews>),
     mut commands: Commands,
 ) -> Result {
-    let Worked { caster, working, report, strength, marked } = worked.event();
+    let Worked { cast, caster, report, strength, marked } = worked.event();
+    let CastSpell(spell) = casts.get(*cast)?;
+    let divine = spell.facts.working == Some(Working::DivineTrap);
     let Marked::Attempt(attempt) = *marked else { return Ok(()) };
     let (outcome, level) = (report.outcome, workings::level(*strength));
     told.write(MagicNews::Done(report.clone()));
@@ -703,7 +749,7 @@ fn cast_at(
         return Ok(());
     }
     match &mut interaction.work {
-        Work::Disarming(trap) if *working == Working::DivineTrap => trap.divine_power = level,
+        Work::Disarming(trap) if divine => trap.divine_power = level,
         Work::Picking(picking) => {
             let mut dropped = false;
             for reached in workings::knock(&mut rng, picking.tumblers.len(), level) {
@@ -810,7 +856,7 @@ pub fn magic_attempt(world: &World, requested: Option<Entity>) -> Result<Option<
 
 /// Travel and fights end the attempt under way (its device's own end takes
 /// the attempt with it through [`DeviceAttempt`]).
-pub(crate) fn end_attempts(
+pub fn end_attempts(
     _: On<Add<(super::level::Destination, Battle)>>,
     attempts: Query<Entity, With<DeviceInteraction>>,
     mut commands: Commands,
@@ -820,7 +866,7 @@ pub(crate) fn end_attempts(
     }
 }
 
-pub(crate) fn plugin(app: &mut App) {
+pub fn plugin(app: &mut App) {
     app.add_observer(confront)
         .add_observer(pick)
         .add_observer(force)
@@ -829,7 +875,6 @@ pub(crate) fn plugin(app: &mut App) {
         .add_observer(spring)
         .add_observer(release_pins)
         .add_observer(leave)
-        .add_observer(cast_at)
         .add_observer(sprung)
         .add_observer(overcome)
         .add_observer(super::containers::take);
@@ -839,7 +884,6 @@ pub(crate) fn plugin(app: &mut App) {
 mod tests {
     use super::*;
     use crate::content::characters::{Gender, Profession, Race};
-    use crate::game::characters::Character;
     use crate::game::world::triggers::{Activate, By};
 
     /// A lock of two tumblers, picked by one skilled enough never to drop a
@@ -858,9 +902,11 @@ mod tests {
             .add_observer(|run: On<Activate>, mut ran: ResMut<Ran>| ran.0.push(*run.event()))
             .add_plugins((plugin, crate::game::actors::plugin));
         let world = app.world_mut();
-        let mut thief = Character::new("Thief", Race::Human, Gender::Male, Profession::Rogue);
-        thief.training.0[Skill::LocksAndTraps] = 100;
-        let member = world.spawn((Vitals::new(&thief), thief)).id();
+        let thief =
+            crate::game::characters::born("Thief", Race::Human, Gender::Male, Profession::Rogue);
+        let member = world.spawn(thief).id();
+        world.get_mut::<crate::game::characters::Training>(member).unwrap().0
+            [Skill::LocksAndTraps] = 100;
         crate::game::party::roster::test_party(world, &[member]);
         world.run_schedule(crate::game::actors::Settle);
         let lock = Lock::Pickable { difficulty: 2 };

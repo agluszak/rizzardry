@@ -244,12 +244,13 @@ fn owe(woke: On<Woke>, mut commands: Commands) {
 }
 
 /// Those time passes for: the living who are with us (or swallowed, which
-/// is not being away), and no sheet without a seat in the party.
+/// is not being away), and somewhere in the game: a member of the party or
+/// an actor of a level.
 #[derive(bevy::ecs::query::QueryFilter)]
 pub(crate) struct InTime {
     alive: Without<Dead>,
     here: Or<(With<Present>, With<Swallowed>)>,
-    seated: Or<(With<PartyMember>, Without<Calling>)>,
+    placed: super::fitness::Placed,
 }
 
 /// How an actor spends a span.
@@ -456,8 +457,7 @@ pub(crate) fn plugin(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::characters::Character;
-    use crate::game::characters::{Gender, Profession, Race};
+    use crate::game::characters::{Gender, Profession, Race, born};
 
     /// A world where time can pass over actors.
     fn world() -> World {
@@ -493,11 +493,33 @@ mod tests {
     #[test]
     fn a_monster_mends_out_of_a_fight_and_is_poisoned_in_one() {
         let mut world = world();
-        let resting = world.spawn(Vitals::full(100, 100)).id();
+        let level = LevelOwned(world.spawn_empty().id());
+        let resting = world
+            .spawn((
+                Vitals::full(100, 100),
+                crate::game::actors::Frame { health: 100, stamina: 100 },
+                level,
+            ))
+            .id();
         let fight = world.spawn_empty().id();
-        let fighting = world.spawn((Vitals::full(100, 100), Combatant(fight))).id();
+        let fighting = world
+            .spawn((
+                Vitals::full(100, 100),
+                crate::game::actors::Frame { health: 100, stamina: 100 },
+                Combatant(fight),
+                level,
+            ))
+            .id();
         let troll = Mending { health: 3, ..default() };
-        let regenerating = world.spawn((Vitals::full(100, 100), troll, Combatant(fight))).id();
+        let regenerating = world
+            .spawn((
+                Vitals::full(100, 100),
+                crate::game::actors::Frame { health: 100, stamina: 100 },
+                troll,
+                Combatant(fight),
+                level,
+            ))
+            .id();
         for body in [resting, fighting, regenerating] {
             hurt(&mut world, body);
         }
@@ -525,9 +547,9 @@ mod tests {
         let mut world = world();
         let party = world.spawn(Party).id();
         let member = |world: &mut World, profession| {
-            let sheet = Character::new("M", Race::Human, Gender::Male, profession);
             let body = (Vitals::full(100, 100), Mending { breathes: true, ..default() });
-            world.spawn((sheet, body, PartyMember(party))).id()
+            let sheet = born("M", Race::Human, Gender::Male, profession);
+            world.spawn(sheet).insert((body, PartyMember(party))).id()
         };
         let fighter = member(&mut world, Profession::Fighter);
         let rest = |world: &mut World, pace| {
@@ -556,18 +578,20 @@ mod tests {
     fn what_is_worn_mends_or_wastes_and_a_fighter_rests_in_a_fight() {
         let mut world = world();
         let party = world.spawn_empty().id();
-        let sheet = Character::new("M", Race::Human, Gender::Male, Profession::Fighter);
+        let sheet = || born("M", Race::Human, Gender::Male, Profession::Fighter);
         let ring = Mending { health: 2, stamina: -1, breathes: true, ..default() };
-        let wearer = world.spawn((sheet.clone(), Vitals::full(100, 100), ring, PartyMember(party)));
-        let wearer = wearer.id();
+        let wearer =
+            world.spawn(sheet()).insert((Vitals::full(100, 100), ring, PartyMember(party))).id();
         hurt(&mut world, wearer);
         world.get_mut::<Vitals>(wearer).unwrap().stamina.current = 100;
         let ticks = Ticks { stamina: 20, aging: 5 };
         pass_time(&mut world, Elapsed { ticks, pace: Pace::Running });
         assert_eq!(left(&world, wearer), (11, 75));
         let tireless = Mending { breathes: true, tireless: Some(3.3), ..default() };
-        let fighter = world.spawn((sheet, Vitals::full(100, 100), tireless, PartyMember(party)));
-        let fighter = fighter.id();
+        let fighter = world
+            .spawn(sheet())
+            .insert((Vitals::full(100, 100), tireless, PartyMember(party)))
+            .id();
         hurt(&mut world, fighter);
         let round = Ticks { stamina: 85, aging: 1 };
         pass_time(&mut world, Elapsed { ticks: round, pace: Pace::Fighting });
@@ -584,16 +608,22 @@ mod tests {
         let mut world = world();
         let party = world.spawn_empty().id();
         let missing = |world: &mut World| {
-            let sheet = Character::new("M", Race::Human, Gender::Male, Profession::Fighter);
             let body = (Vitals::full(100, 100), Mending { breathes: true, ..default() });
-            let member = world.spawn((sheet, body, PartyMember(party))).id();
+            let sheet = born("M", Race::Human, Gender::Male, Profession::Fighter);
+            let member = world.spawn(sheet).insert((body, PartyMember(party))).id();
             let mut conditions = world.get_mut::<Conditions>(member).unwrap();
             conditions.afflict(Condition::Missing, Lasting::Indefinite);
             conditions.poison(Lasting::Indefinite, 3);
             world.entity_mut(member).remove::<Present>();
             member
         };
-        let worm = world.spawn((Vitals::full(50, 50), Level(8))).id();
+        let worm = world
+            .spawn((
+                Vitals::full(50, 50),
+                crate::game::actors::Frame { health: 50, stamina: 50 },
+                Level(8),
+            ))
+            .id();
         let elsewhere = world.spawn_empty().id();
         let (taken, eaten, lost) = (missing(&mut world), missing(&mut world), missing(&mut world));
         world.entity_mut(eaten).insert(Swallowed(worm));

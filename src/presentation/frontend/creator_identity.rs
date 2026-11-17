@@ -6,6 +6,7 @@ use super::{
 use crate::content::characters::{Personality, Voice};
 use crate::content::ui::SpriteSheet;
 use crate::content::ui::TextTable;
+use crate::game::characters::{Birth, Identity};
 use crate::presentation::retail_controls::{ControlSkin, FocusHighlight};
 use crate::presentation::screen_art::{BitmapText, Picture, spawn_picture};
 use bevy::audio::{AudioPlayer, PlaybackSettings};
@@ -48,9 +49,9 @@ fn input(commands: &mut Commands, parent: Entity, font: Handle<Font>, y: f32, ni
         TabIndex(0),
         EditableText {
             max_characters: Some(if nickname {
-                crate::game::characters::creation::NICKNAME_LIMIT
+                crate::game::characters::draft::NICKNAME_LIMIT
             } else {
-                crate::game::characters::creation::NAME_LIMIT
+                crate::game::characters::draft::NAME_LIMIT
             }),
             allow_newlines: false,
             ..EditableText::new("")
@@ -135,14 +136,18 @@ fn choice_group(commands: &mut Commands, root: Entity, assets: &AssetServer, per
 fn select(
     event: On<ValueChange<Entity>>,
     choices: Query<&Choice>,
-    mut session: Single<&mut Creation>,
+    session: Single<&Creation>,
+    drafts: Query<&Identity>,
+    mut commands: Commands,
 ) -> Result {
     let choice = choices.get(event.value)?;
-    let Some(draft) = session.mode.draft_mut() else { return Ok(()) };
+    let Some(draft) = session.mode.draft() else { return Ok(()) };
+    let mut identity = drafts.get(draft)?.clone();
     match choice {
-        Choice::Personality(value) => draft.personality = *value,
-        Choice::Voice(value) => draft.voice = *value,
+        Choice::Personality(value) => identity.personality = *value,
+        Choice::Voice(value) => identity.voice = *value,
     }
+    commands.trigger(crate::game::characters::draft::Introduce { draft, identity });
     Ok(())
 }
 
@@ -252,6 +257,7 @@ pub(super) fn build(commands: &mut Commands, root: Entity, assets: &AssetServer)
 
 pub(super) fn refresh(
     session: Single<Ref<Creation>>,
+    drafts: Query<&Identity>,
     assets: Res<AssetServer>,
     mut inputs: Query<(Entity, &mut BackgroundColor), Or<(With<NameInput>, With<NicknameInput>)>>,
     focus: Res<InputFocus>,
@@ -260,7 +266,9 @@ pub(super) fn refresh(
     mut portraits: Query<&mut Picture, With<Portrait>>,
     mut commands: Commands,
 ) {
-    let Some(draft) = session.mode.draft() else { return };
+    let Some(identity) = session.mode.draft().and_then(|draft| drafts.get(draft).ok()) else {
+        return;
+    };
     for (entity, mut background) in &mut inputs {
         background.set_if_neq(BackgroundColor(if focus.get() == Some(entity) {
             Color::srgb_u8(25, 41, 96)
@@ -270,8 +278,8 @@ pub(super) fn refresh(
     }
     for (entity, choice, hover, pressed, checked, children) in &choices {
         let selected = match choice {
-            Choice::Personality(p) => *p == draft.personality,
-            Choice::Voice(v) => *v == draft.voice,
+            Choice::Personality(p) => *p == identity.personality,
+            Choice::Voice(v) => *v == identity.voice,
         };
         if selected != checked {
             if selected {
@@ -301,7 +309,7 @@ pub(super) fn refresh(
         crate::presentation::screen_art::show_sheet(
             &mut picture,
             &assets,
-            portrait(PortraitSize::Large, &draft.portrait),
+            portrait(PortraitSize::Large, &identity.portrait),
         );
     }
 }
@@ -309,14 +317,18 @@ pub(super) fn refresh(
 /// The description comes from the same personality, gender and voice quote file as retail.
 pub(super) fn refresh_quote(
     session: Single<Ref<Creation>>,
+    drafts: Query<(&Identity, &Birth)>,
     mut source: Single<&mut QuoteSource>,
     assets: Res<AssetServer>,
     tables: Res<Assets<TextTable>>,
     fonts: Res<Assets<SpriteSheet>>,
     mut lines: Query<(&QuoteLine, &mut BitmapText)>,
 ) {
-    let Some(draft) = session.mode.draft() else { return };
-    let key = (draft.gender(), draft.personality, draft.voice);
+    let Some((identity, birth)) = session.mode.draft().and_then(|draft| drafts.get(draft).ok())
+    else {
+        return;
+    };
+    let key = (birth.gender, identity.personality, identity.voice);
     if source.key != Some(key) {
         let stem = crate::presentation::voice::pc_voice_stem(key.0, key.1, key.2);
         source.table = assets.load(format!("retail://data/quotes/pcs/{stem}.msg"));
@@ -352,6 +364,7 @@ fn open_summary(
     mut commands: Commands,
     assets: Res<AssetServer>,
     session: Single<&Creation>,
+    drafts: Query<(&Identity, &Birth)>,
     page: Single<Entity, With<QuoteSource>>,
     existing: Query<(), With<Summary>>,
     mut focus: ResMut<InputFocus>,
@@ -359,9 +372,15 @@ fn open_summary(
     if !existing.is_empty() {
         return;
     }
-    let Some(draft) = session.mode.draft() else { return };
-    let stem =
-        crate::presentation::voice::pc_voice_stem(draft.gender(), draft.personality, draft.voice);
+    let Some((identity, birth)) = session.mode.draft().and_then(|draft| drafts.get(draft).ok())
+    else {
+        return;
+    };
+    let stem = crate::presentation::voice::pc_voice_stem(
+        birth.gender,
+        identity.personality,
+        identity.voice,
+    );
     let dialog = commands
         .spawn((
             crate::presentation::retail_controls::RestoreFocus(focus.get()),
@@ -401,7 +420,7 @@ fn open_summary(
         panel,
         assets.load(crate::content::paths::portrait(
             crate::content::paths::PortraitSize::Medium,
-            &draft.portrait,
+            &identity.portrait,
         )),
         0,
         Vec2::new(11., 11.),

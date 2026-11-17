@@ -10,15 +10,16 @@ use enum_map::EnumMap;
 use enumset::EnumSet;
 
 use super::modifiers::Modifiers;
-use super::sources::{Abilities, Drained, Frame, Kind, Nature, Traits};
+use super::sources::{Abilities, Drained, Frame, Nature, Traits};
 use super::time::Mending;
 use super::{
-    Agility, Attributes, Fatigue, Level, Mastery, MissileShield, Reduction, Resistances, Skills,
+    Agility, Attributes, CasterLevels, Fatigue, Level, Mastery, MissileShield, Reduction,
+    Resistances, Skills, TrainedMaxima, TrainedReduction, TrainedResistance, UsableSkills,
 };
 use crate::content::characters::{Attribute, Realm, Skill, Trait};
 use crate::game::characters::{
-    Birth, Calling, Condition, Conditions, Schooling, Trained, Training, Vitals, scale_by_level,
-    trained_stamina, traits_of,
+    Birth, Calling, Condition, Conditions, Training, Vitals, scale_by_level, trained_stamina,
+    traits_of,
 };
 use crate::game::items::Redressed;
 use crate::game::items::{Burden, Items};
@@ -40,7 +41,7 @@ pub(super) fn follow_calling(
 #[allow(clippy::type_complexity)]
 pub(super) fn attributes(
     mut actors: Query<
-        (&Abilities, &Modifiers, &Conditions, &Traits, &Mastery, Has<Calling>, &mut Attributes),
+        (&Abilities, &Modifiers, &Conditions, &Traits, &Mastery, &mut Attributes),
         Or<(
             Changed<Abilities>,
             Changed<Modifiers>,
@@ -50,11 +51,15 @@ pub(super) fn attributes(
         )>,
     >,
 ) {
-    for (base, modifiers, conditions, traits, mastery, trained, mut written) in &mut actors {
-        // Only one who trained makes anything of a trait that eases a
-        // condition.
-        let eases = trained.then_some((traits, mastery.0));
-        written.set_if_neq(Attributes::affected(base, &modifiers.laid, conditions, eases));
+    for (base, modifiers, conditions, traits, mastery, mut written) in &mut actors {
+        // Only a member has a trait that eases a condition; a monster's
+        // conditions are never eased (`Gameplay Mods.cpp:417`).
+        written.set_if_neq(Attributes::affected(
+            base,
+            &modifiers.laid,
+            conditions,
+            (traits, mastery.0),
+        ));
     }
 }
 
@@ -67,6 +72,25 @@ pub(super) fn skills(
 ) {
     for (training, calling, conditions, mut written) in &mut trained {
         written.set_if_neq(Skills::affected(training, calling, conditions));
+    }
+}
+
+/// The skills one who trained may use (retail `IsCharacterSkillAvailable`)
+/// follow their calling, abilities, traits and the spells they know.
+#[allow(clippy::type_complexity)]
+pub(super) fn usable_skills(
+    mut trained: Query<
+        (&Calling, &Abilities, &Traits, &LearnedSpells, &mut UsableSkills),
+        Or<(Changed<Calling>, Changed<Abilities>, Changed<Traits>, Changed<LearnedSpells>)>,
+    >,
+) {
+    for (calling, abilities, traits, learned, mut written) in &mut trained {
+        let trained = (calling, abilities, traits.0);
+        let usable = EnumSet::all()
+            .iter()
+            .filter(|&skill| crate::game::magic::skill_available(trained, learned, skill))
+            .collect();
+        written.set_if_neq(UsableSkills(usable));
     }
 }
 
@@ -91,7 +115,7 @@ pub(super) fn fatigue(mut actors: Query<(&Vitals, &mut Fatigue), Changed<Vitals>
 #[allow(clippy::type_complexity)]
 pub(super) fn eyes(
     mut actors: Query<(
-        (&Conditions, Has<super::CanFight>, Has<super::BlindFighting>),
+        (&Conditions, Has<super::CanFight>, Has<super::ActsThoughBlind>),
         (&Attributes, &Nature),
         &mut super::Eyes,
     )>,
@@ -181,29 +205,35 @@ pub(super) fn spell_points(
     }
 }
 
-/// The most health and stamina: what the actor was born with and what its
-/// training gives at its Vitality, less what is drained; health never under
-/// one. What is left follows ([`Vitals::set_most`]).
-#[allow(clippy::type_complexity)]
-pub(super) fn maxima(
-    mut actors: Query<
-        (&mut Vitals, Option<&Frame>, Option<&Calling>, &Level, &Attributes, &Drained),
-        (
-            Or<(With<Frame>, With<Calling>)>,
-            Or<(
-                Changed<Frame>,
-                Changed<Calling>,
-                Changed<Level>,
-                Changed<Attributes>,
-                Changed<Drained>,
-            )>,
-        ),
+/// What training gives one who trained to their most health and stamina:
+/// their calling's health at their Vitality, and stamina by their level and
+/// Strength, Piety and Vitality.
+pub(super) fn trained_maxima(
+    mut trained: Query<
+        (&Calling, &Level, &Attributes, &mut TrainedMaxima),
+        Or<(Changed<Calling>, Changed<Level>, Changed<Attributes>)>,
     >,
 ) {
-    for (mut vitals, frame, calling, level, a, drained) in &mut actors {
-        let frame = frame.copied().unwrap_or_default();
-        let health = frame.health + calling.map_or(0, |c| c.health(a[Attribute::Vitality]));
-        let stamina = frame.stamina + calling.map_or(0, |_| trained_stamina(level.0, a));
+    for (calling, level, a, mut written) in &mut trained {
+        written.set_if_neq(TrainedMaxima {
+            health: calling.health(a[Attribute::Vitality]),
+            stamina: trained_stamina(level.0, a),
+        });
+    }
+}
+
+/// The most health and stamina: what the actor was born with and what its
+/// training gives, less what is drained; health never under one. What is
+/// left follows ([`Vitals::set_most`]).
+pub(super) fn maxima(
+    mut actors: Query<
+        (&mut Vitals, &Frame, &TrainedMaxima, &Drained),
+        Or<(Changed<Frame>, Changed<TrainedMaxima>, Changed<Drained>)>,
+    >,
+) {
+    for (mut vitals, frame, trained, drained) in &mut actors {
+        let health = frame.health + trained.health;
+        let stamina = frame.stamina + trained.stamina;
         let health = health.max(drained.health + 1) - drained.health;
         let stamina = stamina.max(drained.stamina) - drained.stamina;
         if (vitals.health.max, vitals.stamina.max) != (health, stamina) {
@@ -212,13 +242,47 @@ pub(super) fn maxima(
     }
 }
 
+/// What training adds to the resistance of one who trained, in each realm.
+#[allow(clippy::type_complexity)]
+pub(super) fn trained_resistance(
+    mut trained: Query<
+        (&Calling, &UsableSkills, &Attributes, &Skills, &mut TrainedResistance),
+        Or<(Changed<Calling>, Changed<UsableSkills>, Changed<Attributes>, Changed<Skills>)>,
+    >,
+) {
+    for (calling, usable, a, skills, mut written) in &mut trained {
+        let iron_will = usable.0.contains(Skill::IronWill).then(|| skills[Skill::IronWill]);
+        let own = calling.profession.row().resistance;
+        let keen = (a[Attribute::Intelligence], a[Attribute::Piety]);
+        let resistance = EnumMap::from_fn(|realm: Realm| {
+            crate::game::characters::resistance::trained(
+                realm,
+                skills[realm.skill()],
+                iron_will,
+                own,
+                keen,
+            )
+        });
+        written.set_if_neq(TrainedResistance(resistance));
+    }
+}
+
+/// How strongly one who trained casts: the caster level of the profession
+/// followed now, and that of each other profession held, with its books
+/// (retail `GetTotalCasterLevel`; only what is above nothing counts).
+pub(super) fn caster_levels(mut trained: Query<(&Calling, &mut CasterLevels), Changed<Calling>>) {
+    for (calling, mut written) in &mut trained {
+        written.set_if_neq(CasterLevels::of(calling));
+    }
+}
+
 #[allow(clippy::type_complexity)]
 pub(super) fn resistances(
     mut actors: Query<(
         Entity,
-        (&Nature, Option<&Kind>, &Traits, &Level),
-        Option<Schooling>,
-        (&Attributes, &Skills, &Modifiers),
+        (&Nature, &Traits),
+        &TrainedResistance,
+        (&Attributes, &Modifiers),
         &mut Resistances,
     )>,
     changed: Query<
@@ -226,27 +290,22 @@ pub(super) fn resistances(
         Or<(
             Changed<Nature>,
             Changed<Traits>,
-            Changed<Level>,
-            Changed<Calling>,
+            Changed<TrainedResistance>,
             Changed<Attributes>,
-            Changed<Skills>,
             Changed<Modifiers>,
         )>,
     >,
     (items, mut redressed): (Items, Redressed),
 ) {
     let dressed = redressed.wearers();
-    for (entity, (nature, kind, traits, level), trained, (a, skills, modifiers), mut written) in
-        &mut actors
-    {
+    for (entity, (nature, traits), trained, (a, modifiers), mut written) in &mut actors {
         if !changed.contains(entity) && !dressed.contains(&entity) {
             continue;
         }
-        let trained = trained.as_ref().map(|schooling| schooling.view());
         let own = crate::game::characters::resistance::resistances(
-            (nature, trained),
-            a,
-            skills,
+            &nature.resistance,
+            &trained.0,
+            a[Attribute::Vitality],
             |slot| items.protection(entity, slot),
         );
         let mut wards = Vec::new();
@@ -264,15 +323,7 @@ pub(super) fn resistances(
             realms: EnumMap::from_fn(|realm| {
                 (own[realm].total + modifiers.laid.resistance[realm]).min(100)
             }),
-            immune: kind.map_or(&[], |kind| crate::game::hits::defences::immune(kind.0)),
             wards,
-            death_immune: nature.death_immune,
-            kind: kind.map(|kind| kind.0),
-            caster: EnumMap::from_fn(|book| match trained {
-                Some(c) => crate::game::magic::total_caster_level(c.calling, EnumSet::only(book))
-                    .max(0) as u32,
-                None => level.0,
-            }),
         });
     }
 }
@@ -283,45 +334,63 @@ pub(super) fn resistances(
 #[allow(clippy::type_complexity)]
 pub(super) fn reduction(
     mut actors: Query<
-        (
-            &Nature,
-            &Modifiers,
-            Option<Schooling>,
-            (&Attributes, &Skills),
-            (&mut Reduction, &mut MissileShield),
-        ),
-        Or<(
-            Changed<Nature>,
-            Changed<Traits>,
-            Changed<Modifiers>,
-            Changed<Calling>,
-            Changed<Attributes>,
-            Changed<Skills>,
-        )>,
+        (&Nature, &Modifiers, &TrainedReduction, (&mut Reduction, &mut MissileShield)),
+        Or<(Changed<Nature>, Changed<Modifiers>, Changed<TrainedReduction>)>,
     >,
 ) {
-    for (nature, modifiers, trained, (a, skills), (mut reduction, mut shield)) in &mut actors {
-        let trained =
-            trained.as_ref().map_or(0, |schooling| trained_reduction(schooling.view(), a, skills));
+    for (nature, modifiers, trained, (mut reduction, mut shield)) in &mut actors {
         reduction.set_if_neq(Reduction(
-            (nature.reduction + trained + modifiers.laid.reduction).min(100),
+            (nature.reduction + trained.0 + modifiers.laid.reduction).min(100),
         ));
         shield.set_if_neq(MissileShield(modifiers.laid.missiles));
     }
 }
 
-/// Percent training takes off every blow: a Dwarf's toughness, a Monk's
-/// training and Iron Skin (retail `RecalculateCharacterState`).
-pub fn trained_reduction(c: Trained, a: &Attributes, skills: &Skills) -> i32 {
+/// What training takes off every blow at one who trained.
+#[allow(clippy::type_complexity)]
+pub(super) fn trained_reduction_of(
+    mut trained: Query<
+        (&Calling, &Traits, &UsableSkills, (&Attributes, &Skills), &mut TrainedReduction),
+        Or<(
+            Changed<Calling>,
+            Changed<Traits>,
+            Changed<UsableSkills>,
+            Changed<Attributes>,
+            Changed<Skills>,
+        )>,
+    >,
+) {
+    for (calling, traits, usable, (a, skills), mut written) in &mut trained {
+        let iron_skin = usable.0.contains(Skill::IronSkin).then(|| skills[Skill::IronSkin]);
+        let now = trained_reduction(
+            traits.0,
+            calling.scale(15.0) as i32,
+            iron_skin,
+            a[Attribute::Vitality],
+        );
+        written.set_if_neq(TrainedReduction(now));
+    }
+}
+
+/// Percent training takes off every blow (retail `RecalculateCharacterState`):
+/// a Dwarf's toughness, a tenth of Vitality; a Monk's training, at its scale
+/// of 15 by their level in the profession (`monk`); and Iron Skin, a quarter
+/// of the skill and five, if it may be used.
+pub fn trained_reduction(
+    traits: EnumSet<Trait>,
+    monk: i32,
+    iron_skin: Option<u32>,
+    vitality: u32,
+) -> i32 {
     let mut reduction = 0;
-    if c.traits.contains(Trait::DwarfDamageResistance) {
-        reduction += a[Attribute::Vitality] as i32 / 10;
+    if traits.contains(Trait::DwarfDamageResistance) {
+        reduction += vitality as i32 / 10;
     }
-    if c.traits.contains(Trait::MonkDamageResistance) {
-        reduction += c.calling.scale(15.0) as i32;
+    if traits.contains(Trait::MonkDamageResistance) {
+        reduction += monk;
     }
-    if c.can_use(Skill::IronSkin) {
-        reduction += (skills[Skill::IronSkin] >> 2) as i32 + 5;
+    if let Some(skill) = iron_skin {
+        reduction += (skill >> 2) as i32 + 5;
     }
     reduction
 }
@@ -388,8 +457,9 @@ pub(super) fn initiative(
     }
 }
 
-/// Fighting blind and knocking out follow the traits, at the actor's
-/// mastery; the backstab follows its mastery.
+/// For one who trained, fighting blind (which leaves them unhindered by
+/// blindness) and knocking out follow the traits, at their mastery; the
+/// backstab follows their mastery. A monster's are written as it is made.
 #[allow(clippy::type_complexity)]
 pub(super) fn trait_arms(
     actors: Query<
@@ -398,7 +468,7 @@ pub(super) fn trait_arms(
             (&Traits, &Mastery),
             (Option<&super::BlindFighting>, Option<&super::KnockOut>, &super::Backstab),
         ),
-        Or<(Changed<Traits>, Changed<Mastery>)>,
+        (With<Calling>, Or<(Changed<Traits>, Changed<Mastery>)>),
     >,
     mut commands: Commands,
 ) {
@@ -409,8 +479,8 @@ pub(super) fn trait_arms(
             traits.has(Trait::EffectiveWhileBlind).then_some(super::BlindFighting(level));
         if fights_blind != blind.copied() {
             match fights_blind {
-                Some(fights) => actor.insert(fights),
-                None => actor.remove::<super::BlindFighting>(),
+                Some(fights) => actor.insert((fights, super::ActsThoughBlind)),
+                None => actor.remove::<(super::BlindFighting, super::ActsThoughBlind)>(),
             };
         }
         let knocks = traits.has(Trait::Knockout).then_some(super::KnockOut(level));
@@ -429,12 +499,12 @@ pub(super) fn trait_arms(
 
 #[allow(clippy::type_complexity)]
 pub(super) fn mending(
-    mut actors: Query<(Entity, &Nature, &Traits, &Mastery, Has<Calling>, &mut Mending)>,
-    changed: Query<(), Or<(Changed<Nature>, Changed<Traits>, Changed<Mastery>, Changed<Calling>)>>,
+    mut actors: Query<(Entity, &Nature, &Traits, &Mastery, &mut Mending)>,
+    changed: Query<(), Or<(Changed<Nature>, Changed<Traits>, Changed<Mastery>)>>,
     (items, mut redressed): (Items, Redressed),
 ) {
     let dressed = redressed.wearers();
-    for (entity, nature, traits, mastery, trained, mut written) in &mut actors {
+    for (entity, nature, traits, mastery, mut written) in &mut actors {
         if !changed.contains(entity) && !dressed.contains(&entity) {
             continue;
         }
@@ -459,8 +529,7 @@ pub(super) fn mending(
             health: nature.mending.0 + worn[0],
             stamina: nature.mending.1 + worn[1],
             magic: worn[2],
-            // One who trained gets their wind back by the breath.
-            breathes: trained,
+            breathes: nature.breathes,
             hale: scaled(Trait::HealthRegeneration, 16.67),
             tireless: scaled(Trait::StaminaRegeneration, 3.3),
             magic_rate,

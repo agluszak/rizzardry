@@ -18,7 +18,9 @@ use crate::content::characters::{Attribute, Skill};
 use crate::content::items::EquipClass;
 use crate::content::spells::{SpellDefinition, SpellId};
 use crate::game::actors::spells::{Enchantment, Laying};
-use crate::game::actors::{Attributes, Drained, Level, Resistances, Swallowed};
+use crate::game::actors::{
+    Attributes, Drained, Immune, Kind, Level, Nature, Resistances, Swallowed,
+};
 use crate::game::characters::{Calling, Condition, Conditions, Lasting, Practise, Vitals};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
@@ -98,7 +100,14 @@ pub(super) struct LandsOnParty {
 pub(super) fn lands(
     lands: On<Lands>,
     mut deeds: Query<&mut Deed>,
-    victims: Query<(&Vitals, &Level, &Standing, &Resistances, Has<PartyMember>)>,
+    victims: Query<(
+        &Vitals,
+        &Level,
+        &Standing,
+        (&Resistances, &Immune, &Nature),
+        Has<PartyMember>,
+    )>,
+    kinds: Query<&Kind>,
     trained: Query<(), With<Calling>>,
     difficulty: Res<Difficulty>,
     mut rng: ResMut<GameRng>,
@@ -110,9 +119,10 @@ pub(super) fn lands(
         deed.outcome = None;
     }
     let Some(spec) = deed.rows.get(row).cloned() else { return Ok(()) };
-    let (vitals, level, standing, resistances, member) = victims.get(victim)?;
+    let (vitals, level, standing, (resistances, immune, nature), member) = victims.get(victim)?;
     let next = Lands { row: row + 1, ..*lands };
-    if !applied::is_for(&spec, member, resistances.kind) {
+    let kind = kinds.get(victim).ok().map(|kind| kind.0);
+    if !applied::is_for(&spec, member, kind) {
         commands.trigger(next);
         return Ok(());
     }
@@ -135,6 +145,7 @@ pub(super) fn lands(
         strike.strength,
         *difficulty,
         (!alive, level.0, standing.stance, resistances),
+        (immune.0, nature.death_immune),
     );
     match defended {
         defences::Defended::Through(magnitude) => {

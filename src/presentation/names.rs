@@ -9,7 +9,7 @@ use crate::game::world::population::Monster;
 /// Used by screen notices and headless logging; it requires no UI or renderer.
 #[derive(SystemParam)]
 pub struct ActorNames<'w, 's> {
-    characters: Query<'w, 's, crate::game::characters::PaperReadOnly>,
+    characters: Query<'w, 's, &'static crate::game::characters::Identity>,
     monsters: Query<'w, 's, (&'static Monster, Option<&'static GroupMember>)>,
     groups: Query<'w, 's, &'static MonsterGroup>,
     content: If<Res<'w, crate::game::data::Catalogs>>,
@@ -17,8 +17,8 @@ pub struct ActorNames<'w, 's> {
 
 impl ActorNames<'_, '_> {
     pub fn name(&self, actor: Entity) -> Option<String> {
-        if let Ok(profile) = self.characters.get(actor) {
-            return Some(profile.identity.name.clone());
+        if let Ok(identity) = self.characters.get(actor) {
+            return Some(identity.name.clone());
         }
         let (monster, membership) = self.monsters.get(actor).ok()?;
         let catalog = &self.content.species;

@@ -11,7 +11,7 @@ use super::conduct::Conduct;
 use super::spell::CastsNothing;
 use crate::content::characters::Attribute;
 use crate::game::actors::arm::{Furthest, GuardReach};
-use crate::game::actors::{Attributes, BlindFighting, CanGuard, Level};
+use crate::game::actors::{ActsThoughBlind, Attributes, CanGuard, Level};
 use crate::game::characters::{Condition, Conditions, Vitals};
 use crate::game::combat::action::{ActionOf, Acts, Fights, Protects, Retreats, Strikes};
 use crate::game::rng::GameRng;
@@ -33,7 +33,7 @@ pub(super) fn strike_or_guard(
     views: Query<(&Viewed, &Toward)>,
     monsters: Query<(
         (&Temper, &Attributes, &Conditions, &Level),
-        (&Furthest, &GuardReach, Has<BlindFighting>, Has<CanGuard>),
+        (&Furthest, &GuardReach, Has<ActsThoughBlind>, Has<CanGuard>),
     )>,
     fellows: Query<(&Vitals, &Level)>,
     places: crate::game::actors::Places,

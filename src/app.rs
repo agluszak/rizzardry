@@ -232,13 +232,11 @@ pub fn build(options: &Options) -> Result<App, String> {
     // file's members. Interactive play commits from the creation flow.
     if quick_start {
         app.add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
-            let characters: Vec<_> = party.iter().map(Recruit::character).collect();
+            let drafts = party.iter().map(|recruit| recruit.draft(&mut commands)).collect();
             let first = Destination::new(
                 Level::load(&level, &assets),
                 start.clone(),
-                crate::game::world::level::Entry::NewGame(
-                    characters.into_iter().map(|c| (c, default())).collect(),
-                ),
+                crate::game::world::level::Entry::NewGame(drafts),
             );
             commands.spawn((Name::new(level.clone()), first));
         });
