@@ -135,7 +135,9 @@ fn conducted(
     Ok(())
 }
 
-pub(super) fn plugin(app: &mut App) {
+pub fn plugin(app: &mut App) {
+    // A monster's spell slots are set aside with it.
+    crate::game::world::aside::follows::<slot::SlotOf>(app);
     app.add_observer(deliberate)
         .add_observer(conduct::conduct)
         .add_observer(closing)

@@ -1945,7 +1945,12 @@ fn leave_with(left: On<Remove<PartyMember>>, items: Items, mut commands: Command
     }
 }
 
-pub(crate) fn plugin(app: &mut App) {
+pub fn plugin(app: &mut App) {
+    // What a body wears and packs, and what a container stows, is set aside
+    // with it.
+    crate::game::world::aside::follows::<Worn>(app);
+    crate::game::world::aside::follows::<Packed>(app);
+    crate::game::world::aside::follows::<Stowed>(app);
     app.add_systems(Update, (disown, own).chain().in_set(crate::game::GameplaySet::Bodies))
         .add_systems(crate::game::actors::Settle, shed_unusable.after(crate::game::actors::Written))
         .add_observer(leave_with)

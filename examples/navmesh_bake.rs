@@ -1,7 +1,7 @@
 //! Bake retail levels' navmeshes outside the game and report the results:
 //! repairs, and how connected the walkable area is.
 //!
-//! cargo run --example navmesh_bake -- --retail <dir> [level.pvl] [--climb 0.5]
+//! cargo run --features tools --example navmesh_bake -- --retail <dir> [level.pvl] [--climb 0.5]
 
 use std::collections::HashMap;
 use std::time::Instant;

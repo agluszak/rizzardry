@@ -1,5 +1,6 @@
 //! The active level and its local objects.
 
+pub mod aside;
 pub mod bidden;
 pub mod containers;
 pub mod damage;
@@ -76,6 +77,7 @@ pub struct WorldPlugin;
 
 impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
+        level::setting_aside(app);
         app.add_plugins(navigation::NavigationPlugin)
             .add_message::<level::LevelReady>()
             .add_message::<level::Travel>()
@@ -104,8 +106,6 @@ impl Plugin for WorldPlugin {
             .add_systems(PreUpdate, (level::answer_travel_questions, level::travel).chain())
             .add_observer(level::suspend_physics_for_entry)
             .add_observer(level::resume_physics_after_entry)
-            .add_observer(level::set_aside)
-            .add_observer(level::wake)
             .add_observer(encounters::age_encounters)
             .add_observer(encounters::retire)
             .add_observer(search::suspend_search)

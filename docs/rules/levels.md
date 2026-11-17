@@ -21,8 +21,15 @@ its group was made to stand on; a door keeps how far it had swung; an item
 keeps what the party knows of it.
 
 Setting aside is Bevy's own: an entity that is `Disabled` is skipped by every
-query that does not ask for it. A level left is its entities disabled; a
-level woken is that removed.
+query that does not ask for it. A level left is its root disabled; a level
+woken is that removed. What a holder has shares its state: each relationship
+whose held things go with their holder says so where it is declared
+(`world::aside::follows`): what a level owns and its props' parts, a body's
+arms, spell slots and the spells laid on it, what it wears and packs, what a
+container stows. A thing that comes to a holder set aside is set aside with
+it. A companion out of the party is set aside the same way, on their own.
+Momentary relationships (an attack and its swings, a deliberation and its
+views) and presentation's do not follow; they never outlive a moment.
 
 ## What time does to a level that was away
 

@@ -2,6 +2,10 @@
 # sccache cannot cache incremental builds or Bevy's dylib and has caused
 # trouble; build without it here, whatever the user's own config says.
 rustc-wrapper = ""
+# One build of this crate held about 6 GB with eight jobs generating code at
+# once, more than a laptop running other work had to spare; four keep a
+# build within reach.
+jobs = 4
 
 [target.x86_64-unknown-linux-gnu]
 rustflags = [

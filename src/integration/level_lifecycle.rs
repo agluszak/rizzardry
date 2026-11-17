@@ -15,8 +15,7 @@ use crate::game::party::roster::Party;
 use crate::game::rng::GameRng;
 use crate::game::world::hostility::Stance;
 use crate::game::world::level::{
-    Destination, Entry, Level, LevelOwned, LevelReady, SetAside, Travel, activate_level, set_aside,
-    travel, wake,
+    Destination, Entry, Level, LevelOwned, LevelReady, SetAside, Travel, activate_level, travel,
 };
 use crate::game::world::population::{Monster, MonsterBodies};
 use crate::game::world::triggers::PendingPartyMove;
@@ -33,8 +32,6 @@ fn app() -> App {
         .init_asset::<crate::content::ui::TextTable>()
         .init_resource::<Assets<PartyMotionConfig>>()
         .init_resource::<Assets<crate::game::world::navigation::WalkerMotionConfig>>()
-        .add_observer(set_aside)
-        .add_observer(wake)
         .add_observer(crate::game::world::encounters::age_encounters)
         .add_plugins(crate::game::actors::time::plugin)
         .add_observer(crate::game::actors::spells::age_the_woken)
@@ -51,6 +48,7 @@ fn app() -> App {
         .add_message::<Travel>()
         .add_systems(PreUpdate, travel)
         .add_systems(Update, activate_level.in_set(crate::game::GameplaySet::LevelActivation));
+    crate::game::world::level::setting_aside(&mut app);
     app.finish();
     app.cleanup();
     app
@@ -867,11 +865,10 @@ mod set_aside_in_the_libraries {
             Landmass3dPlugin::default(),
         ))
         .init_resource::<crate::game::time::GameClock>()
-        .add_observer(crate::game::world::level::set_aside)
-        .add_observer(crate::game::world::level::wake)
         .insert_resource(TimeUpdateStrategy::ManualDuration(
             std::time::Duration::from_secs_f64(1.0 / 64.0),
         ));
+        crate::game::world::level::setting_aside(&mut app);
         app.finish();
         app.cleanup();
         app

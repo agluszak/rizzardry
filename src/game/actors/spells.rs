@@ -453,10 +453,7 @@ impl Turns {
 pub(crate) fn age_the_woken(
     woke: On<crate::game::world::level::Woke>,
     mut spells: Query<(Entity, &mut Turns, &LaidOn)>,
-    owners: Query<
-        Option<&crate::game::world::level::LevelOwned>,
-        bevy::ecs::query::Allow<bevy::ecs::entity_disabling::Disabled>,
-    >,
+    owners: Query<Option<&crate::game::world::level::LevelOwned>>,
     mut commands: Commands,
 ) -> Result {
     let ticks = (woke.away_ms / crate::game::time::AGING_TICK_MS) as u32;

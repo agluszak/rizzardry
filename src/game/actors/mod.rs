@@ -29,7 +29,9 @@ pub use time::{Mending, Swallowed};
 
 use bevy::prelude::*;
 
-pub(crate) fn plugin(app: &mut App) {
+pub fn plugin(app: &mut App) {
+    // The spells laid on a body are set aside with it.
+    crate::game::world::aside::follows::<spells::LaidOn>(app);
     app.add_plugins((
         fitness::plugin,
         time::plugin,

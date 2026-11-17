@@ -333,9 +333,10 @@ monster's aim does, so who may be taken is one rule. Its model goes into
 
 - The lookup sweep's remainder (about 65 `if let Ok`, 175 `.ok()`-style)
   is optional facts and presentation: form, not behaviour, left.
-- **A companion out of the party** is `Disabled` alone, while their hands,
-  gear and spells stay in the world; they should be set aside whole, as a
-  level's belongings are.
+- Being set aside follows the standing relationships, each declaring it
+  where it is (`world::aside::follows`); `Belongings`, its type-erased walk
+  over every `linked_spawn` relationship and its `unsafe` are gone. A
+  companion out of the party is set aside whole by the same rule.
 - Watch in play for a `?`/`expect` that panics where the old code returned
   quietly: `take_up`/`act` for a monster without arms, `rest_the_idle` for
   a combatant without `Mending`, hostility's `made` for an `Allegiance`

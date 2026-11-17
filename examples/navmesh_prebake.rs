@@ -1,7 +1,7 @@
 //! Bake and cache every retail level's navmeshes ahead of play, as the game
 //! would on entering each level, so no first entry waits for a bake:
 //!
-//! cargo run --release --example navmesh_prebake -- --retail <dir>
+//! cargo run --release --features tools --example navmesh_prebake -- --retail <dir>
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 

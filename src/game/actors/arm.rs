@@ -7,8 +7,6 @@
 //! The systems run over every hand each time bodies settle and write only
 //! what changed; a party has a dozen hands.
 
-use bevy::ecs::entity_disabling::Disabled;
-use bevy::ecs::query::Allow;
 use bevy::prelude::*;
 use enum_map::EnumMap;
 use enumset::EnumSet;
@@ -227,9 +225,7 @@ fn unarmed_dice(martial_arts: u32) -> Dice {
     Dice { base, count, sides }
 }
 
-/// A member has two hands. They are their bearer's even while the bearer
-/// is set aside (a companion out of the party), so the rules of a hand read
-/// their bearer as it is, set aside or not.
+/// A member has two hands.
 fn grow_hands(added: On<Add<Calling>>, mut commands: Commands) {
     for slot in [WeaponSlot::Primary, WeaponSlot::Secondary] {
         commands.spawn((ArmOf(added.entity), Hand(slot), Grip::default(), Tires));
@@ -348,7 +344,7 @@ fn reach(mut hands: Query<(&Grip, &mut Reaches)>, weapons: Query<&Weapon>) -> Re
 /// Martial Arts 4.
 fn modes(
     mut hands: Query<(&ArmOf, &Grip, &mut Modes)>,
-    bearers: Query<&Skills, Allow<Disabled>>,
+    bearers: Query<&Skills>,
     weapons: Query<&Weapon>,
 ) -> Result {
     for (&ArmOf(bearer), &grip, mut modes) in &mut hands {
@@ -370,7 +366,7 @@ fn modes(
 #[allow(clippy::type_complexity)]
 fn rolls(
     mut hands: Query<(&ArmOf, &Hand, &Grip, &mut Rolls)>,
-    bearers: Query<&Skills, Allow<Disabled>>,
+    bearers: Query<&Skills>,
     held: Items,
     (weapons, launchers, missiles): (Query<&Weapon>, Query<&Launcher>, Query<&Missile>),
     strikers: Query<(Option<&Weapon>, Option<&Missile>)>,
@@ -413,7 +409,7 @@ fn rolls(
 #[allow(clippy::type_complexity)]
 fn effects(
     mut hands: Query<(&ArmOf, &Grip, &mut BlowEffects, &mut Slays)>,
-    bearers: Query<&Attributes, Allow<Disabled>>,
+    bearers: Query<&Attributes>,
     (weapons, launchers, missiles): (Query<&Weapon>, Query<&Launcher>, Query<&Missile>),
 ) -> Result {
     for (&ArmOf(bearer), &grip, mut effects, mut slays) in &mut hands {
@@ -452,7 +448,7 @@ pub struct Handling {
 fn handling(
     mut hands: Query<(&ArmOf, &Hand, &Grip, &mut Handling)>,
     grips: Query<(&Hand, &Grip)>,
-    bearers: Query<(&Skills, &Arms), Allow<Disabled>>,
+    bearers: Query<(&Skills, &Arms)>,
     weapons: Query<&Weapon>,
 ) -> Result {
     for (&ArmOf(bearer), &Hand(slot), &grip, mut handling) in &mut hands {
@@ -519,10 +515,7 @@ pub struct ToHit(pub i32);
 #[allow(clippy::type_complexity)]
 fn to_hit(
     mut hands: Query<(&ArmOf, &Hand, &Grip, &mut ToHit)>,
-    bearers: Query<
-        (&Attributes, &Skills, &Calling, &crate::game::actors::Abilities, &Burden),
-        Allow<Disabled>,
-    >,
+    bearers: Query<(&Attributes, &Skills, &Calling, &crate::game::actors::Abilities, &Burden)>,
     (weapons, missiles): (Query<&Weapon>, Query<&Missile>),
 ) -> Result {
     for (&ArmOf(bearer), &Hand(slot), &grip, mut written) in &mut hands {
@@ -575,7 +568,7 @@ fn to_hit(
 /// cannot attack.
 fn rating(
     mut hands: Query<(&ArmOf, &Grip, &Handling, &ToHit, &mut Rating)>,
-    bearers: Query<(&Attributes, &Calling), Allow<Disabled>>,
+    bearers: Query<(&Attributes, &Calling)>,
 ) -> Result {
     for (&ArmOf(bearer), &grip, handling, to_hit, mut rating) in &mut hands {
         let (a, calling) = bearers.get(bearer)?;
@@ -599,7 +592,7 @@ fn rating(
 /// the hand cannot attack.
 fn damage_percent(
     mut hands: Query<(&ArmOf, &Hand, &Grip, &mut DamagePercent)>,
-    bearers: Query<&Attributes, Allow<Disabled>>,
+    bearers: Query<&Attributes>,
     (weapons, launchers): (Query<&Weapon>, Query<Option<&Launcher>>),
 ) -> Result {
     for (&ArmOf(bearer), &Hand(slot), &grip, mut percent) in &mut hands {
@@ -641,7 +634,7 @@ fn tempo(
         (&mut AttacksARound, &mut ArmInitiative, &mut Swings),
     )>,
     grips: Query<(&Hand, &Grip)>,
-    bearers: Query<(&Attributes, &Calling, &Burden, &Arms), Allow<Disabled>>,
+    bearers: Query<(&Attributes, &Calling, &Burden, &Arms)>,
     weapons: Query<&Weapon>,
 ) -> Result {
     for (&ArmOf(bearer), &Hand(slot), &grip, handling, (mut attacks, mut initiative, mut swings)) in
@@ -682,7 +675,7 @@ fn tempo(
 /// a Ninja's throws.
 fn critical(
     hands: Query<(Entity, &ArmOf, &Grip, Option<&Critical>)>,
-    bearers: Query<(&Traits, &Skills), Allow<Disabled>>,
+    bearers: Query<(&Traits, &Skills)>,
     weapons: Query<&Weapon>,
     mut commands: Commands,
 ) -> Result {
@@ -721,7 +714,7 @@ fn critical(
 #[allow(clippy::type_complexity)]
 fn kind_of_hand(
     hands: Query<(Entity, &ArmOf, Ref<Grip>)>,
-    bearers: Query<Ref<Traits>, Allow<Disabled>>,
+    bearers: Query<Ref<Traits>>,
     (weapons, launchers, missiles, weights): (
         Query<&Weapon>,
         Query<&Launcher>,
@@ -880,7 +873,9 @@ fn furthest(
     Ok(())
 }
 
-pub(super) fn plugin(app: &mut App) {
+pub fn plugin(app: &mut App) {
+    // A body's arms are set aside with it.
+    crate::game::world::aside::follows::<ArmOf>(app);
     app.add_observer(grow_hands).add_systems(
         super::Settle,
         (

@@ -192,8 +192,8 @@ pub fn travel(
     ));
 }
 
-/// On a level root: the party has left it. It and everything that belongs to
-/// it ([`belonging`]) are [`Disabled`] until the party returns, so no query
+/// On a level root: the party has left it. It and everything it has
+/// ([`super::aside`]) are [`Disabled`] until the party returns, so no query
 /// sees them, and nothing in them runs, ages or is drawn.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct SetAside {
@@ -211,70 +211,32 @@ pub struct Woke {
     pub away_ms: u64,
 }
 
-/// What belongs to a level: whatever would be despawned with it. That is
-/// its root, whatever it owns, and whatever any of these hold that goes
-/// with its holder (the children of a prop, what a container stows, what a
-/// body wears or packs, the spells laid on it), set aside or not.
-#[derive(SystemParam)]
-pub struct Belongings<'w> {
-    world: &'w World,
+/// Setting levels aside: the root is disabled and woken, and what a level
+/// owns and its props' parts go with it.
+pub fn setting_aside(app: &mut App) {
+    super::aside::follows::<LevelOwned>(app);
+    super::aside::follows::<ChildOf>(app);
+    app.add_observer(set_aside).add_observer(wake);
 }
 
-impl Belongings<'_> {
-    /// Everything that belongs to the level at `root`, the root first.
-    pub fn of(&self, root: Entity) -> Vec<Entity> {
-        use bevy::ecs::relationship::RelationshipAccessor;
-        let mut found = vec![root];
-        let mut next = 0;
-        while let Some(&entity) = found.get(next) {
-            next += 1;
-            let Ok(holder) = self.world.get_entity(entity) else { continue };
-            for component in holder.archetype().iter_components() {
-                let accessor = self
-                    .world
-                    .components()
-                    .get_info(component)
-                    .and_then(|info| info.relationship_accessor().copied());
-                let Some(RelationshipAccessor::RelationshipTarget {
-                    iter, linked_spawn: true, ..
-                }) = accessor
-                else {
-                    continue;
-                };
-                let held = holder.get_by_id(component).expect("in its archetype");
-                // SAFETY: `held` is the component the accessor was registered for.
-                for entity in unsafe { iter(held) } {
-                    if !found.contains(&entity) {
-                        found.push(entity);
-                    }
-                }
-            }
-        }
-        found
-    }
+/// The party leaves a level: it is set aside, and all it has with it
+/// ([`super::aside`]).
+fn set_aside(add: On<Add<SetAside>>, mut commands: Commands) {
+    commands.entity(add.entity).insert(Disabled);
 }
 
-/// The party leaves a level: all that belongs to it is set aside.
-pub fn set_aside(add: On<Add<SetAside>>, belongings: Belongings, mut commands: Commands) {
-    for entity in belongings.of(add.entity) {
-        commands.entity(entity).insert(Disabled);
-    }
-}
-
-/// The party returns to a level set aside: all that belongs to it is back,
-/// and it is told how long it was away.
-pub fn wake(
+/// The party returns to a level set aside: it and all it has are back, and
+/// it is told how long it was away.
+fn wake(
     remove: On<Remove<SetAside>>,
     aside: Query<&SetAside, Allow<Disabled>>,
-    belongings: Belongings,
     clock: Res<GameClock>,
     mut commands: Commands,
-) {
-    let away_ms = clock.ms - aside.get(remove.entity).expect("it is woken").at_ms;
-    for entity in belongings.of(remove.entity) {
-        commands.entity(entity).try_remove::<Disabled>();
-    }
+) -> Result {
+    let away_ms = clock.ms - aside.get(remove.entity)?.at_ms;
+    commands.entity(remove.entity).remove::<Disabled>();
     commands.trigger(Woke { level: remove.entity, away_ms });
+    Ok(())
 }
 
 /// An accepted level entry being prepared (retail's please-wait load). While
