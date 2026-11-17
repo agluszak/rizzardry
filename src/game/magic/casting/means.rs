@@ -11,7 +11,7 @@ use bevy::prelude::*;
 use super::aiming::{Released, Spent};
 use super::{
     Aimed, Allowed, Ask, CastBy, CastSpell, Chosen, Failure, Pay, Pays, Power, Practice, Recast,
-    Release, SeesBlind, Source, Spread, Worked, refuse_cast,
+    Release, SeesBlind, Spread, Worked, refuse_cast,
 };
 use crate::content::characters::{Skill, Trait};
 use crate::content::items::UseType;
@@ -25,11 +25,12 @@ use crate::game::combat::{Battle, Round};
 use crate::game::data::Catalogs;
 use crate::game::difficulty::Difficulty;
 use crate::game::items::{Burden, Casts, Items, Spend};
+use crate::game::magic::castable::{Barred, Boost, FailsAt, Learned, StrengthFigure};
 use crate::game::magic::may::{self, Refusal, UseContext};
 use crate::game::magic::occasion::{Occupied, SpokenTo, Unsteady};
 use crate::game::magic::reach::Aim;
 use crate::game::magic::roll::{self, Pace};
-use crate::game::magic::{LearnedSpells, SpellPoints, cost, power};
+use crate::game::magic::{SpellPoints, cost, power};
 use crate::game::party::roster::{PartyMember, PartyRoster};
 use crate::game::rng::GameRng;
 
@@ -38,6 +39,7 @@ use crate::game::rng::GameRng;
 #[derive(Component, Clone, Copy, Debug)]
 #[component(on_add = cast_from_learning)]
 pub struct LearnedSpell {
+    pub castable: Entity,
     pub asked: u32,
 }
 
@@ -89,11 +91,6 @@ fn cast_innately(mut world: DeferredWorld, context: HookContext) {
         .observe(pay_innate);
 }
 
-/// The highest power of a spell the points pay for now.
-pub fn affordable(pool: &SpellPoints, spell: &SpellDefinition) -> u32 {
-    spell.realm.map_or(0, |realm| power::affordable(pool.available(realm), spell.cost))
-}
-
 /// Whether an auto cast's caster can go again: stamina past the spell's
 /// level and points for it at power 1.
 pub fn goes_again((stamina, pool): (u32, &SpellPoints), spell: &SpellDefinition) -> bool {
@@ -116,50 +113,25 @@ fn sees_blind(traits: &Traits, calling: &Calling) -> SeesBlind {
     }
 }
 
-/// A learned spell may be cast (section 2, in its order): by a member able
-/// to fight, not silenced but for Alchemy kept, asked at some power, known,
-/// with points for power 1, a spell the game resolves, at a moment it suits.
-#[allow(clippy::type_complexity)]
+/// A learned spell may be cast while nothing bars it
+/// ([`crate::game::magic::castable::Barred`]), asked at some power, and
+/// "repeat until whole" only outside a fight.
 fn may_learned(
     ask: On<Ask>,
     casts: Query<(&CastBy, &CastSpell, &LearnedSpell)>,
-    casters: Query<(
-        Has<CanFight>,
-        Has<PartyMember>,
-        &Conditions,
-        &LearnedSpells,
-        &SpellPoints,
-        Has<KeepsAlchemy>,
-    )>,
-    party: Single<(&UseContext, Has<Occupied>, Has<SpokenTo>, Has<Unsteady>), With<PartyRoster>>,
-    camp: Option<Res<Camp>>,
+    castables: Query<Option<&Barred>, With<Learned>>,
+    party: Single<&UseContext, With<PartyRoster>>,
     mut commands: Commands,
 ) -> Result {
-    let (&CastBy(caster), CastSpell(spell), &LearnedSpell { asked }) = casts.get(ask.cast)?;
-    let (&context, occupied, spoken_to, unsteady) = *party;
-    let suits = |repeats| {
-        may::suits(spell, context, occupied, camp.is_some(), spoken_to, unsteady, repeats)
-    };
-    let refusal = match casters.get(caster) {
-        Ok((true, true, conditions, learned, points, keeps)) => {
-            let repeats = asked == power::AUTO && spell.power == PowerChoice::ChosenOrRepeat;
-            if conditions.has(Condition::Silenced) && may::silence_stops(spell, keeps) {
-                Some(Refusal::Silenced)
-            } else if asked == 0 {
-                Some(Refusal::CannotUse)
-            } else if !learned.knows(spell.id) {
-                Some(Refusal::NotLearned)
-            } else if affordable(points, spell) == 0 {
-                Some(Refusal::NoSpellPoints)
-            } else if !resolvable(spell) {
-                Some(Refusal::Unsupported)
-            } else if !suits(repeats) {
-                Some(Refusal::WrongTime)
-            } else {
-                None
-            }
-        }
-        _ => Some(Refusal::CannotAct),
+    let (&CastBy(caster), CastSpell(spell), &LearnedSpell { castable, asked }) =
+        casts.get(ask.cast)?;
+    let repeats = asked == power::AUTO && spell.power == PowerChoice::ChosenOrRepeat;
+    let refusal = match castables.get(castable) {
+        Err(_) => Some(Refusal::NotLearned),
+        Ok(Some(&Barred(refusal))) => Some(refusal),
+        Ok(None) if asked == 0 => Some(Refusal::CannotUse),
+        Ok(None) if repeats && **party == UseContext::Combat => Some(Refusal::WrongTime),
+        Ok(None) => None,
     };
     match refusal {
         Some(refusal) => refuse_cast(&mut commands, (ask.cast, caster), refusal),
@@ -274,32 +246,30 @@ fn may_innate(
 
 /// A learned spell's power: the power asked for as far as the points reach,
 /// or, left to the caster, worked out for the one aimed at; its strength
-/// grows from the caster's total caster level, boosted by Power Cast; it
-/// fails by the caster's skill and level.
+/// grows from its figure, boosted by Power Cast; it fails as its castable
+/// says, raised late in the round and by what the spell adds cast on
+/// oneself.
 #[allow(clippy::type_complexity)]
 fn power_learned(
     aimed: On<Aimed>,
     mut commands: Commands,
     casts: Query<(&CastBy, &CastSpell, &LearnedSpell, &Chosen)>,
-    casters: Query<(
-        (&Calling, &Training, &Traits, &UsableSkills),
-        (&Skills, &crate::game::actors::CasterLevels),
-        &SpellPoints,
-    )>,
+    castables: Query<(&FailsAt, &StrengthFigure, &Boost, &crate::game::magic::castable::SeesBlind)>,
     victims: Query<(&Vitals, &Conditions, Has<PartyMember>)>,
+    pools: Query<&SpellPoints>,
     held: Items,
     round: Option<Single<&Round, With<Battle>>>,
     difficulty: Res<Difficulty>,
 ) -> Result {
     let cast = aimed.cast;
-    let (&CastBy(caster), CastSpell(spell), &LearnedSpell { asked }, &Chosen(choice)) =
+    let (&CastBy(caster), CastSpell(spell), &LearnedSpell { castable, asked }, &Chosen(choice)) =
         casts.get(cast)?;
-    let ((calling, training, traits, usable), (skills, levels), points) = casters.get(caster)?;
-    let trained = (calling, training);
+    let (fails, &StrengthFigure(figure), &Boost(boost), &sees) = castables.get(castable)?;
+    // What the points pay for now: an auto cast going again has just paid.
+    let points = pools.get(caster)?;
+    let affordable =
+        spell.realm.map_or(0, |realm| power::affordable(points.available(realm), spell.cost));
     let pace = pace(round.as_deref().copied(), *difficulty);
-    let caster_level = levels.caster_level(spell);
-    let boost = power::boost(skills[Skill::PowerCast], usable.0.contains(Skill::PowerCast));
-    let affordable = affordable(points, spell);
     let power = match asked {
         power::AUTO => {
             let identify = match (spell.facts.working, choice.aim) {
@@ -310,9 +280,7 @@ fn power_learned(
             };
             let victim = choice.aim.body().and_then(|aimed| victims.get(aimed).ok());
             let row = crate::game::hits::definitions::row(spell);
-            let failure = std::array::from_fn(|power| {
-                roll::learned(trained, skills, caster_level, spell, power as u32 + 1, pace, false)
-            });
+            let failure = std::array::from_fn(|power| roll::paced(fails.0[power], pace));
             power::auto(
                 spell,
                 (row.and_then(|row| row.restores), row.map_or(&[], |row| &row.outlasts)),
@@ -324,15 +292,15 @@ fn power_learned(
         }
         asked => power::chosen(asked, affordable, spell.power),
     };
-    let on_oneself = choice.aim.body() == Some(caster);
+    let harder = match choice.aim.body() == Some(caster) {
+        true => spell.facts.harder_on_oneself,
+        false => 0,
+    };
     commands.entity(cast).insert((
         Power(power),
-        power::strength(caster_level, power, boost, spell),
-        Failure {
-            chance: roll::learned(trained, skills, caster_level, spell, power, pace, on_oneself),
-            quiet: false,
-        },
-        sees_blind(traits, calling),
+        power::strength(figure, power, boost, spell),
+        Failure { chance: roll::paced(fails.at(power), pace) + harder, quiet: false },
+        super::SeesBlind(sees.0),
     ));
     commands.trigger(Spread { cast });
     Ok(())
@@ -535,10 +503,7 @@ fn trained_by_work(
     held: Items,
 ) -> Result {
     let (CastSpell(spell), &Power(power), &Chosen(choice)) = casts.get(worked.cast)?;
-    let used = match choice.source {
-        Source::Item(item) => held.casts(item).map(|casts| casts.by),
-        _ => None,
-    };
+    let used = held.casts(choice.castable).map(|casts| casts.by);
     let caster = worked.caster;
     let (calling, training, usable) = casters.get(caster)?;
     let trained = (calling, training, usable.0.contains(Skill::PowerCast));
@@ -557,7 +522,7 @@ fn recast(
     casts: Query<(&CastBy, &CastSpell, &LearnedSpell, &Chosen)>,
     deeds: Query<&crate::game::magic::landed::Spell>,
 ) -> Result {
-    let (&CastBy(caster), CastSpell(spell), &LearnedSpell { asked }, &Chosen(choice)) =
+    let (&CastBy(caster), CastSpell(spell), &LearnedSpell { asked, .. }, &Chosen(choice)) =
         casts.get(released.cast)?;
     if asked != power::AUTO || spell.power != PowerChoice::ChosenOrRepeat {
         return Ok(());
@@ -576,12 +541,11 @@ fn recast(
 fn again(
     spent: On<Spent>,
     mut commands: Commands,
-    casts: Query<(&CastBy, &CastSpell, &LearnedSpell, &Chosen)>,
+    casts: Query<(&CastBy, &LearnedSpell, &Chosen)>,
 ) -> Result {
-    let (&CastBy(caster), CastSpell(spell), &LearnedSpell { asked }, &Chosen(choice)) =
-        casts.get(spent.cast)?;
+    let (&CastBy(caster), &LearnedSpell { asked, .. }, &Chosen(choice)) = casts.get(spent.cast)?;
     if asked == power::AUTO {
-        commands.trigger(super::Cast { caster, spell: spell.id, choice, again: true });
+        commands.trigger(super::Cast { caster, choice, again: true });
     }
     Ok(())
 }

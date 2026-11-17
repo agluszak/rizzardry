@@ -991,6 +991,56 @@ into the sections above.
 
 ## How this is built
 
+### The rebuild under way (approved 2026-11-17)
+
+The table and the paragraphs after this section describe the code that is
+being replaced. That code splits a cast into a chain of events and attaches
+the observer of each step to each cast by a hook. Here is what replaces it.
+
+**What one may cast with is an entity: a castable.** It is one of these:
+- a member's learned spell, an entity of theirs;
+- an item's spell, which is the item;
+- a monster's slot.
+
+On each, a castable carries the spell's record, read from content as it is
+made. It also carries these figures, written in `Settle` by one system each
+when its inputs change:
+- whether it may be cast now, or why not;
+- the most power it can be cast at;
+- how likely it fails at each power, before the round's pace;
+- the figure its strength grows from, and its boost;
+- how likely a blind caster's aim holds anyway.
+
+The magic menu, the monster's weighing of its slots and the cast all read
+these figures. None of them works them out again. A member's version and a
+monster's version of a rule differ only in what is written onto the
+castable.
+
+**A cast is one moment, so it is one observer.** `Cast { castable, power,
+aim }` is heard by one observer. It reads the castable's figures and works
+out, in order:
+- whether it is refused;
+- whom it takes;
+- its power, and the area that power spreads over;
+- the roll: whether it went astray or backfired;
+- what it pays.
+
+Nothing is attached per cast, and no step triggers the next. What differs by
+kind of target or by means is data on the castable. It is not code in the
+arms of a `match`.
+
+**A spell in the air is one entity.** A cast that comes off or backfires is
+spawned as a spell in the air, from the moment it is let go until all of it
+has landed. It carries:
+- its strike;
+- its victims;
+- whom it came from and where from;
+- what may follow it: bursts, being turned back, a drain's share, the
+  caster's practice, a recast.
+
+A burst or a reflection is a new spell in the air, made the same way. A
+refused or fizzled cast never becomes one.
+
 The sections above are the rules. This says how the code is to be shaped
 around them; where the code differs from it, the code is wrong.
 

@@ -203,8 +203,9 @@ pub(super) fn refresh(
         Ref<crate::game::characters::Training>,
         Ref<crate::game::characters::Calling>,
         Ref<crate::game::characters::progression::SpellPicks>,
-        Ref<crate::game::magic::LearnedSpells>,
+        Option<Ref<crate::game::magic::castable::Castables>>,
     )>,
+    known_spells: Query<&crate::game::magic::castable::CastableSpell>,
     mut commands: Commands,
 ) {
     let Some(draft) = session.mode.draft() else { return };
@@ -214,7 +215,7 @@ pub(super) fn refresh(
         || training.is_changed()
         || calling.is_changed()
         || granted.is_changed()
-        || learned.is_changed();
+        || learned.as_ref().is_none_or(|learned| learned.is_changed());
     if !session.is_changed()
         && !art.is_changed()
         && !content.is_changed()
@@ -275,7 +276,11 @@ pub(super) fn refresh(
                 if label.value != value {
                     label.value = value;
                 }
-                let palette = learned.knows(id).then(|| art.selected.clone());
+                let palette = known_spells
+                    .iter_many(learned.iter().flat_map(|learned| learned.iter()))
+                    .flatten()
+                    .any(|s| s.0.id == id)
+                    .then(|| art.selected.clone());
                 if label.palette != palette {
                     label.palette = palette;
                 }

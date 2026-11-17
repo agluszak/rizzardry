@@ -11,7 +11,7 @@ use crate::{
         data::Catalogs,
         inventory::EquipSlot,
         items::{Cursed, Give, Items, Place, Put, make, roll_amount},
-        magic::{LearnedSpells, SpellPoints},
+        magic::SpellPoints,
         party::{
             body::PartyBody,
             roster::{Party, PartyMember, PartyRoster},
@@ -64,12 +64,16 @@ pub fn companion(
     // Disabled until they join, so their figures are not written yet: the
     // caster levels are worked out here as the figure would.
     let levels = crate::game::actors::CasterLevels::of(&calling);
-    let learnable = t.spells.iter().copied().filter(|&s| {
-        let spell = &content.spells[s];
-        let caster = (levels.followed, levels.caster_level(spell));
-        crate::game::magic::can_learn((&calling, traits, &training), &skills, caster, spell)
-    });
-    let spells = LearnedSpells::of(learnable, &content.spells);
+    let learnable: Vec<crate::content::spells::SpellId> = t
+        .spells
+        .iter()
+        .copied()
+        .filter(|&s| {
+            let spell = &content.spells[s];
+            let caster = (levels.followed, levels.caster_level(spell));
+            crate::game::magic::can_learn((&calling, traits, &training), &skills, caster, spell)
+        })
+        .collect();
     let member = commands
         .spawn((
             Name::new(t.name.clone()),
@@ -79,11 +83,14 @@ pub fn companion(
             (identity, crate::game::characters::Birth { race: t.race, gender: t.gender }),
             Vitals::born(&calling, &crate::game::actors::Abilities(t.attributes)),
             (calling, crate::game::actors::Abilities(t.attributes), training, experience),
-            spells,
             SpellPoints::default(),
             Disabled,
         ))
         .id();
+    for spell in learnable {
+        let learned = crate::game::magic::castable::learned(&content.spells[spell]);
+        commands.spawn((crate::game::magic::castable::CastableOf(member), learned));
+    }
     let mut made = |item: &ItemId, at: Place, rng: &mut GameRng| {
         let definition = &content.items[*item];
         let item = make(commands, definition, roll_amount(definition, rng, true), true);

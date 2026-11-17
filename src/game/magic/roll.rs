@@ -64,8 +64,8 @@ pub fn paced(chance: u32, on: Pace) -> u32 {
 /// The failure chance of a learned spell at `power` (retail
 /// `GetSpellFailureChance`): what the caster's skill, the book once and the
 /// realm four times, falls short by; `spell level` more for each caster level
-/// they lack for it at this power; raised for an action late in the round;
-/// and what the spell adds when cast on oneself. `caster_level` is the
+/// they lack for it at this power. A cast raises it for an action late in
+/// the round ([`paced`]) and by what the spell adds cast on oneself. `caster_level` is the
 /// caster's for the spell ([`crate::game::actors::CasterLevels::caster_level`]),
 /// unclamped as retail's is (`Magic.cpp:1580`): one following a profession
 /// that cannot cast falls a level further short.
@@ -75,8 +75,6 @@ pub fn learned(
     caster_level: i32,
     spell: &SpellDefinition,
     power: u32,
-    pace: Pace,
-    on_oneself: bool,
 ) -> u32 {
     let book = skills[best_book((calling, training), spell)];
     let realm = spell.realm.map_or(0, |realm| skills[realm.skill()]);
@@ -85,8 +83,7 @@ pub fn learned(
     if short > 0 {
         chance += spell.level * short as u32;
     }
-    let harder = if on_oneself { spell.facts.harder_on_oneself } else { 0 };
-    paced(chance, pace) + harder
+    chance
 }
 
 /// The failure chance of an item's spell at `power`, and whether the use is

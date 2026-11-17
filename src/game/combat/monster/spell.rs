@@ -12,12 +12,11 @@ use super::aim::{BySlot, Considers, Proposals, Spoiled, Weigh, Worth};
 use super::slot::{Breath, Castable, SlotOf, Slots, Weight};
 use super::{ClosesIn, PartyGap};
 use crate::content::spells::{MAX_POWER, SpellDefinition};
-use crate::game::actors::Level;
 use crate::game::actors::arm::Furthest;
 use crate::game::combat::action::{ActionOf, Acts, AtFoes, Casts};
 use crate::game::data::Catalogs;
 use crate::game::magic::aim::At;
-use crate::game::magic::casting::{MagicChoice, Source};
+use crate::game::magic::casting::MagicChoice;
 use crate::game::magic::reach::Aim;
 use crate::game::magic::roll::spell_failure;
 use crate::game::rng::{GameRng, weighted};
@@ -81,13 +80,13 @@ fn pick(
     deliberations: Query<(&Considers, &PartyGap, Option<&Proposals>)>,
     aims: Query<(&BySlot, &At), (With<Worth>, Without<Spoiled>)>,
     slots: Query<(&super::slot::Casts, &Weight), (With<SlotOf>, Without<Breath>)>,
-    casters: Query<(&CastChance, &Furthest, &Level, &SpellBudget)>,
+    casters: Query<(&CastChance, &Furthest, &SpellBudget)>,
     content: Res<Catalogs>,
     mut rng: ResMut<GameRng>,
 ) -> Result {
     let deliberation = picks.deliberation;
     let (&Considers(monster), &PartyGap(gap), made) = deliberations.get(deliberation)?;
-    let (chance, reach, level, &SpellBudget(budget)) = casters.get(monster)?;
+    let (chance, reach, &SpellBudget(budget)) = casters.get(monster)?;
     // Each slot with a good aim, in the order its aims were made, which is
     // the order of the slots.
     let mut usable: Vec<(Entity, Vec<Aim>)> = Vec::new();
@@ -113,8 +112,8 @@ fn pick(
     let (&super::slot::Casts(spell), _) = slots.get(slot)?;
     let aim = aims[rng.below(aims.len() as u32) as usize];
     let power = power(&mut rng, budget, &content.spells[spell]);
-    let source = Source::Innate { spell, power, budget, level: level.0 as u8 };
-    let mut action = commands.spawn((ActionOf(monster), Casts(MagicChoice { source, aim })));
+    let choice = MagicChoice { castable: slot, power, aim };
+    let mut action = commands.spawn((ActionOf(monster), Casts(choice)));
     if content.spells[spell].aimed_at_enemies() {
         action.insert(AtFoes);
     }

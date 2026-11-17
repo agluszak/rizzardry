@@ -390,8 +390,7 @@ fn follow_order(
     decides: On<Decides>,
     mut commands: Commands,
     members: Query<&Ordered>,
-    held: crate::game::items::Items,
-    content: Res<Catalogs>,
+    spells: Query<&crate::game::magic::castable::CastableSpell>,
 ) -> Result {
     let actor = decides.actor;
     match members.get(actor)?.0 {
@@ -401,10 +400,7 @@ fn follow_order(
             commands.trigger(Acts { action });
         }
         Action::Magic(choice) => {
-            let at_foes = choice
-                .source
-                .spell_id(&held)
-                .is_some_and(|spell| content.spells[spell].aimed_at_enemies());
+            let at_foes = spells.get(choice.castable).is_ok_and(|spell| spell.0.aimed_at_enemies());
             let mut action = commands.spawn((ActionOf(actor), Casts(choice)));
             if at_foes {
                 action.insert(super::action::AtFoes);

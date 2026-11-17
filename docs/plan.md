@@ -245,3 +245,32 @@ retail files as assets beside compiled-in tables; `Items` as the "what is
 held" accessor and `npcs::story::Readings` as the one reader of the story's
 facts; a level reading its own definition; `#[cfg(test)]` helpers beside
 their code; large files as such.
+
+## Hand-off: castables (2026-11-18, uncommitted)
+
+The approved model is in [rules/casting.md](rules/casting.md) under "The rebuild under way". Work so far:
+
+1. **Learned spells are castables (verified: unit 182/182, retail 30/30).**
+   - `LearnedSpells` is gone. Each learned spell is an entity: `CastableOf(caster)`, `Learned` and `CastableSpell`.
+   - Its figures are written in `Settle` (`magic/castable.rs`): `Barred`, `MostPower`, `FailsAt`, `StrengthFigure`, `Boost` and `SeesBlind`.
+   - The actor's `Repertoire` is the per-realm summary that spell points and usable skills follow.
+   - The draft's picks become castables through `draft::picks_known`.
+   - The magic menu reads the figures.
+2. **The cast's choice names its castable (compiles and is clippy-clean; tests not run).**
+   - `MagicChoice { castable, power, aim }` replaces the `Source` enum.
+   - A monster's slot carries `CastableSpell` (set in `slot::fill`). An item gets it from `castable::item_casts`, an observer of `Insert<items::Casts>`.
+   - `casting::begin` still picks the means from the castable's components (`Learned`, `SlotOf` or neither) and builds the old `LearnedSpell`/`FromItem`/`Innate`.
+   - The combat tests make a monster slot with `tests::slot`. Two monster tests now take the budget and level from the monster itself, so check their numbers first.
+
+**Next:**
+1. Run the unit and retail suites, and fix what step 2 broke.
+2. Give items and slots their own figure systems in `castable.rs`. Then `means.rs` reads figures for all three means.
+3. Rewrite the cast as one observer, with the spell in the air as one entity (the user chose this). Delete the step events, the hooks that attach per-entity observers, and `aim`'s `Take`/`Took`.
+4. Measure against the baseline at `72d2376`: 127 `.observe(` calls, 9 tuple parameters, 17 `&Query` parameters.
+
+**Known compromises:**
+- `castable::barred` runs every frame, without change filters.
+- `roll::learned` still takes a tuple of component references.
+- Learned power is still worked out from live points in `power_learned`, because an auto cast going again has just paid.
+
+A rejected attempt (`ComesBack*`/`Takes*` markers) is saved as a patch in the old session's scratchpad. Do not revive it.

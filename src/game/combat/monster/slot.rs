@@ -107,7 +107,12 @@ fn fill(slots: &mut RelatedSpawner<SlotOf>, spell: &SpellDefinition, weight: u32
     if unaimed || (!breath && works.is_none()) {
         return;
     }
-    let mut slot = slots.spawn((Casts(spell.id), Weight(weight), Range(spell.reach.metres())));
+    let mut slot = slots.spawn((
+        Casts(spell.id),
+        crate::game::magic::castable::CastableSpell(spell.clone()),
+        Weight(weight),
+        Range(spell.reach.metres()),
+    ));
     match (breath, works) {
         (true, _) => slot.insert(Breath),
         (false, Some(row)) => slot.insert(Works(row)),

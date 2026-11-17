@@ -3,7 +3,7 @@
 //! as any other ([`super::casting`]); these are what it is cast at and what it
 //! then does.
 
-use super::casting::{Allowed, CastBy, Chosen, MagicNews, Source, Worked, marked};
+use super::casting::{Allowed, CastBy, Chosen, MagicNews, Worked, marked};
 use super::may::Refusal;
 use super::reach::Aim;
 use super::{Outcome, power, reach::Marked};
@@ -32,7 +32,7 @@ pub fn mark(
         });
         let whole =
             held.known(item).is_some_and(|known| known.identified && known.spell && known.curse);
-        ours && held.known(item).is_some() && choice.source != Source::Item(item) && !whole
+        ours && held.known(item).is_some() && choice.castable != item && !whole
     });
     marked(&mut commands, (allowed.cast, caster), fit.map(Marked::Item).ok_or(Refusal::NoTarget));
     Ok(())

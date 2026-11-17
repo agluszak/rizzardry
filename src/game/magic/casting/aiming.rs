@@ -761,10 +761,7 @@ fn report(
     held: &Items,
     content: &Catalogs,
 ) -> Report {
-    let item = match choice.source {
-        super::Source::Item(item) => held.id(item).map(|id| content.items[id].name.clone()),
-        _ => None,
-    };
+    let item = held.id(choice.castable).map(|id| content.items[id].name.clone());
     Report { caster, spell: spell.id, power, item, outcome: came, effects: Vec::new() }
 }
 

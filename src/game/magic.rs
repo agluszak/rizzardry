@@ -15,6 +15,7 @@
 //! a utility spell then does its own thing, one observer to a kind.
 
 pub mod aim;
+pub mod castable;
 pub mod casting;
 pub mod cost;
 pub(crate) mod dialogue;
@@ -30,72 +31,22 @@ pub(crate) mod traps;
 pub(crate) mod utilities;
 pub mod workings;
 
-use std::collections::BTreeMap;
-
 use bevy::prelude::*;
 use enum_map::EnumMap;
 use enumset::EnumSet;
 
 use crate::content::characters::Trait;
 use crate::content::characters::{Realm, Skill};
-use crate::content::spells::{SpellCatalog, SpellDefinition, SpellId, Spellbook, min_caster_level};
+use crate::content::spells::{SpellDefinition, SpellId, Spellbook, min_caster_level};
 use crate::game::GameplaySet;
 use crate::game::characters::{Calling, Profession, Training};
 use crate::game::combat::Battle;
-use crate::game::data::Catalogs;
-use crate::game::items::Items;
 use crate::game::rng::GameRng;
-
-/// The spells an actor has learned, each with what it is to the learner,
-/// read from the spell as it is learned. Creation picks the first ones.
-#[derive(Component, Clone, Debug, Default, PartialEq, Eq)]
-pub struct LearnedSpells(BTreeMap<SpellId, Learned>);
-
-/// A spell learned: its realm, and what it costs at power 1.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Learned {
-    pub realm: Option<Realm>,
-    pub cost: u32,
-}
-
-impl LearnedSpells {
-    /// These spells, learned.
-    pub fn of(ids: impl IntoIterator<Item = SpellId>, spells: &SpellCatalog) -> Self {
-        let mut learned = Self::default();
-        for id in ids {
-            learned.learn(&spells[id]);
-        }
-        learned
-    }
-
-    pub fn learn(&mut self, spell: &SpellDefinition) {
-        self.0.insert(spell.id, Learned { realm: spell.realm, cost: spell.cost });
-    }
-
-    pub fn knows(&self, id: SpellId) -> bool {
-        self.0.contains_key(&id)
-    }
-
-    pub fn ids(&self) -> impl Iterator<Item = SpellId> + '_ {
-        self.0.keys().copied()
-    }
-
-    /// Those of a realm.
-    pub fn in_realm(&self, realm: Realm) -> impl Iterator<Item = &Learned> + Clone + '_ {
-        self.0.values().filter(move |learned| learned.realm == Some(realm))
-    }
-
-    /// What either has learned.
-    pub fn with(mut self, other: &Self) -> Self {
-        self.0.extend(other.0.iter().map(|(&id, &learned)| (id, learned)));
-        self
-    }
-}
 
 /// Skill eligibility combines profile rules with the actual learned spell set.
 pub fn skill_available(
     (calling, abilities, traits): (&Calling, &crate::game::actors::Abilities, EnumSet<Trait>),
-    learned: &LearnedSpells,
+    known: &castable::Repertoire,
     skill: Skill,
 ) -> bool {
     let can_use = |skill| crate::game::characters::skill_available(calling, abilities, skill);
@@ -109,7 +60,7 @@ pub fn skill_available(
         if !calling.profession.row().books.iter().any(|book| can_use(book_skill(book))) {
             return false;
         }
-        return learned.in_realm(realm).next().is_some();
+        return known.0[realm].count > 0;
     }
     can_use(skill)
 }
@@ -332,7 +283,7 @@ pub fn max_points(
     level: u32,
     piety: u32,
     skill: impl Fn(Skill) -> u32,
-    learned: &LearnedSpells,
+    known: &castable::Repertoire,
 ) -> EnumMap<Realm, u32> {
     let mut books = [Skill::Wizardry, Skill::Divinity, Skill::Alchemy, Skill::Psionics].map(&skill);
     books.sort_unstable_by(|a, b| b.cmp(a));
@@ -340,8 +291,7 @@ pub fn max_points(
         (books[0] as f32 + (books[1] / 2) as f32 + (books[2] / 4) as f32 + (books[3] / 8) as f32)
             .min(125.0);
     EnumMap::from_fn(|realm| {
-        let known = learned.in_realm(realm);
-        let (count, dearest) = known.fold((0, 0), |(n, most), s| (n + 1, s.cost.max(most)));
+        let castable::Known { count, dearest } = known.0[realm];
         if count == 0 {
             return 0;
         }
@@ -374,10 +324,12 @@ pub struct MagicPlugin;
 
 impl Plugin for MagicPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((occasion::plugin, casting::plugin))
+        app.add_plugins((occasion::plugin, castable::plugin, casting::plugin))
             .add_message::<MagicRequest>()
             .add_message::<casting::MagicNews>()
             .add_observer(pointcasts::answer)
+            .add_observer(pointcasts::calls)
+            .add_observer(pointcasts::tempted)
             .add_systems(
                 Update,
                 (accept_magic, pointcasts::expire_lures, pointcasts::follow_lures)
@@ -406,20 +358,19 @@ pub fn accept_magic(
     mut commands: Commands,
     battle: Option<Res<Battle>>,
     mut orders: Query<&mut crate::game::party::Order>,
-    held: Items,
-    content: Res<Catalogs>,
+    spells: Query<&castable::CastableSpell>,
 ) {
     for &MagicRequest { caster, choice } in requests.read() {
-        let Some(spell) = choice.source.spell_id(&held) else {
+        let Ok(castable::CastableSpell(spell)) = spells.get(choice.castable) else {
             commands.trigger(casting::Refused { caster, refusal: may::Refusal::NoItem });
             continue;
         };
-        let working = content.spells[spell].facts.working;
+        let working = spell.facts.working;
         let at_once = battle.is_none()
             || working.is_some_and(|working| !working.at_a_spot())
             || matches!(choice.aim, reach::Aim::Device(_));
         if at_once {
-            commands.trigger(casting::Cast { caster, spell, choice, again: false });
+            commands.trigger(casting::Cast { caster, choice, again: false });
         } else {
             orders.get_mut(caster).unwrap().set_if_neq(crate::game::party::Order::Magic(choice));
         }
@@ -444,6 +395,7 @@ pub(crate) mod tests {
     use crate::content::items::Dice;
     use crate::content::items::ItemCatalog;
     use crate::content::species::MonsterCatalog;
+    use crate::content::spells::SpellCatalog;
     use crate::content::spells::{PowerChoice, Reach, Targeting, Usable};
     use crate::game::characters::{Gender, Race, Training, born};
 
@@ -494,7 +446,7 @@ pub(crate) mod tests {
         use crate::game::inventory::EquipSlot;
         use crate::game::items::{Charges, Count, Place, Put, make};
         use bevy::ecs::system::RunSystemOnce;
-        use casting::{MagicChoice, MagicNews, Source};
+        use casting::{MagicChoice, MagicNews};
         use may::Refusal;
         use reach::Aim;
         let mut app = app();
@@ -559,8 +511,8 @@ pub(crate) mod tests {
             avian3d::prelude::Position::default(),
         ));
         let mut news = Vec::new();
-        let mut request = |app: &mut App, source| {
-            let choice = MagicChoice { source, aim: Aim::Body(member) };
+        let mut request = |app: &mut App, castable| {
+            let choice = MagicChoice { castable, power: 1, aim: Aim::Body(member) };
             app.world_mut().write_message(MagicRequest { caster: member, choice });
             app.update();
             let told: Vec<_> =
@@ -571,24 +523,24 @@ pub(crate) mod tests {
         };
         let hp = |app: &App| app.world().get::<Vitals>(member).unwrap().health.current;
         let doses = |app: &App| app.world().get::<Count>(potion_id).map(|count| count.of);
-        assert!(matches!(request(&mut app, Source::Item(potion_id)), Some(MagicNews::Done(_))));
+        assert!(matches!(request(&mut app, potion_id), Some(MagicNews::Done(_))));
         assert_eq!(doses(&app), Some(1));
         let before = hp(&app);
         assert!(before > 1, "4d4 heals at power 1");
         // Hurt again, and drink the last one: it is gone, and it heals.
         app.world_mut().get_mut::<Vitals>(member).unwrap().health.current = 1;
-        assert!(matches!(request(&mut app, Source::Item(potion_id)), Some(MagicNews::Done(_))));
+        assert!(matches!(request(&mut app, potion_id), Some(MagicNews::Done(_))));
         assert_eq!(doses(&app), None, "the last dose is used up");
         assert!(hp(&app) > 1, "the effect outlives the potion");
         assert!(matches!(
-            request(&mut app, Source::Item(potion_id)),
+            request(&mut app, potion_id),
             Some(MagicNews::Refused { refusal: Refusal::NoItem, .. })
         ));
         // A charged item keeps its body when emptied, and refuses then.
-        assert!(matches!(request(&mut app, Source::Item(wand_id)), Some(MagicNews::Done(_))));
+        assert!(matches!(request(&mut app, wand_id), Some(MagicNews::Done(_))));
         assert_eq!(app.world().get::<Charges>(wand_id).unwrap().left, 0);
         assert!(matches!(
-            request(&mut app, Source::Item(wand_id)),
+            request(&mut app, wand_id),
             Some(MagicNews::Refused { refusal: Refusal::NoCharges, .. })
         ));
     }
@@ -604,7 +556,7 @@ pub(crate) mod tests {
         use crate::game::characters::Vitals;
         use crate::game::items::{Known, Place, Put, make};
         use bevy::ecs::system::RunSystemOnce;
-        use casting::{MagicChoice, MagicNews, Source};
+        use casting::{MagicChoice, MagicNews};
         use reach::Aim;
         let mut app = app();
         let scroll = ItemDefinition {
@@ -642,14 +594,11 @@ pub(crate) mod tests {
             spells: SpellCatalog::new(definitions),
             ..default()
         });
-        let learned = LearnedSpells::of(
-            [SpellId::IDENTIFY_ITEM, SpellId::SET_PORTAL],
-            &world.resource::<crate::game::data::Catalogs>().spells,
-        );
         let member = world
             .spawn(born("Seer", Race::Human, Gender::Male, Profession::Priest))
-            .insert((learned, SpellPoints::default()))
+            .insert(SpellPoints::default())
             .id();
+        castable::test_learn(world, member, &[SpellId::IDENTIFY_ITEM, SpellId::SET_PORTAL]);
         let mut training = world.get_mut::<Training>(member).unwrap();
         training.0[Skill::Divinity] = 100;
         training.0[Skill::DivineMagic] = 100;
@@ -671,10 +620,10 @@ pub(crate) mod tests {
         let before = test_points(world, member, Realm::Divine);
         let stamina = world.get::<Vitals>(member).unwrap().stamina.current;
         assert!(!world.get::<Known>(item).unwrap().identified);
-        let source = Source::Spell { spell: SpellId::IDENTIFY_ITEM, power: 1 };
+        let castable = castable::test_castable(world, member, SpellId::IDENTIFY_ITEM);
         world.write_message(MagicRequest {
             caster: member,
-            choice: MagicChoice { source, aim: Aim::Item(item) },
+            choice: MagicChoice { castable, power: 1, aim: Aim::Item(item) },
         });
         app.update();
         let world = app.world_mut();
@@ -693,7 +642,7 @@ pub(crate) mod tests {
         let after = test_points(world, member, Realm::Divine);
         world.write_message(MagicRequest {
             caster: member,
-            choice: MagicChoice { source, aim: Aim::Item(item) },
+            choice: MagicChoice { castable, power: 1, aim: Aim::Item(item) },
         });
         app.update();
         let world = app.world_mut();
@@ -705,10 +654,10 @@ pub(crate) mod tests {
         assert_eq!(test_points(world, member, Realm::Divine), after);
         // Set Portal is cast at nothing, and its caster carries the portal.
         assert!(world.get::<portals::Portal>(member).is_none());
-        let source = Source::Spell { spell: SpellId::SET_PORTAL, power: 1 };
+        let castable = castable::test_castable(world, member, SpellId::SET_PORTAL);
         world.write_message(MagicRequest {
             caster: member,
-            choice: MagicChoice { source, aim: Aim::Body(member) },
+            choice: MagicChoice { castable, power: 1, aim: Aim::Body(member) },
         });
         app.update();
         let world = app.world_mut();
@@ -756,8 +705,8 @@ pub(crate) mod tests {
         assert!(learns(priest, &heal) && !learns(fighter, &heal));
         let higher = SpellDefinition { level: 2, ..heal_wounds() };
         assert!(!learns(priest, &higher), "level 1 casters learn level 1 spells only");
-        let mut learned = LearnedSpells::default();
-        learned.learn(&heal_wounds());
+        let mut learned = castable::Repertoire::default();
+        learned.0[Realm::Divine] = castable::Known { count: 1, dearest: heal_wounds().cost };
         let skills = world.get::<Skills>(priest).unwrap();
         let piety =
             world.get::<Attributes>(priest).unwrap()[crate::content::characters::Attribute::Piety];
@@ -798,7 +747,7 @@ pub(crate) mod tests {
         use crate::game::characters::{Condition, Lasting, Vitals};
         use crate::game::items::{Count, Place, Put, make};
         use bevy::ecs::system::RunSystemOnce;
-        use casting::{MagicChoice, MagicNews, Source};
+        use casting::{MagicChoice, MagicNews};
         use reach::Aim;
 
         for id in [
@@ -867,14 +816,11 @@ pub(crate) mod tests {
             ailing.afflict(Condition::Asleep, Lasting::Rounds(8));
             ailing.afflict(Condition::Unconscious, Lasting::Rounds(8));
             ailing.poison(Lasting::Rounds(20), 10);
-            let learned = LearnedSpells::of(
-                [SpellId::HEAL_WOUNDS],
-                &world.resource::<crate::game::data::Catalogs>().spells,
-            );
             let ally = world
                 .spawn(born("Ally", Race::Human, Gender::Male, Profession::Priest))
-                .insert((ailing, learned, SpellPoints::default()))
+                .insert((ailing, SpellPoints::default()))
                 .id();
+            castable::test_learn(world, ally, &[SpellId::HEAL_WOUNDS]);
             let mut vitals = world.get_mut::<Vitals>(ally).unwrap();
             vitals.health.current = 1;
             vitals.stamina.current = 1;
@@ -890,7 +836,7 @@ pub(crate) mod tests {
                 world.get::<crate::game::characters::Conditions>(user).unwrap().clone();
             world.write_message(MagicRequest {
                 caster: user,
-                choice: MagicChoice { source: Source::Item(stack_id), aim: Aim::Body(ally) },
+                choice: MagicChoice { castable: stack_id, power: 1, aim: Aim::Body(ally) },
             });
             app.update();
             let world = app.world_mut();

@@ -21,42 +21,19 @@ pub use self::means::{goes_again, resolvable, usable_item, usable_items};
 pub use super::aim::reaches;
 use super::may::Refusal;
 use super::reach::{Aim, Marked};
-pub use super::roll::learned as learned_chance;
 use super::{Outcome, Strength};
 use crate::content::spells::{SpellDefinition, SpellId, Working};
-use crate::game::data::Catalogs;
 use crate::game::hits::Effect;
 
-/// What pays for a cast.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Source {
-    /// A learned spell at the chosen power, or [`power::AUTO`]; it is
-    /// clamped to what the caster can afford when it runs.
-    Spell { spell: SpellId, power: u32 },
-    /// An item the actor carries or the party's pool holds, identified, not
-    /// reserved.
-    Item(Entity),
-    /// A monster's own casting, which costs no points or uses but tires it:
-    /// its spell budget stands in for a caster's skill, its level sets the
-    /// strength.
-    Innate { spell: SpellId, power: u32, budget: u32, level: u8 },
-}
-
-impl Source {
-    /// Resolve an item source by its stable stack identity. This is routing,
-    /// not acceptance: the cast revalidates eligibility and payment.
-    pub fn spell_id(self, held: &crate::game::items::Items) -> Option<SpellId> {
-        match self {
-            Self::Spell { spell, .. } | Self::Innate { spell, .. } => Some(spell),
-            Self::Item(item) => held.casts(item).map(|casts| casts.spell),
-        }
-    }
-}
-
-/// An accepted magic action: the source and the aim, nothing resolved yet.
+/// An accepted magic action: what it is cast with (a castable: a learned
+/// spell, an item, a monster's slot), the power asked for, and the aim,
+/// nothing resolved yet. A learned spell's power is asked for, or
+/// [`power::AUTO`], and clamped to what the caster can afford when it runs;
+/// an item casts at its own; a monster's slot at the power it chose.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MagicChoice {
-    pub source: Source,
+    pub castable: Entity,
+    pub power: u32,
     pub aim: Aim,
 }
 
@@ -134,7 +111,6 @@ pub struct Recast {
 pub struct Cast {
     #[event_target]
     pub caster: Entity,
-    pub spell: SpellId,
     pub choice: MagicChoice,
     /// An auto cast that fizzled, going again.
     pub again: bool,
@@ -353,16 +329,26 @@ fn refuse_cast(commands: &mut Commands, (cast, caster): (Entity, Entity), refusa
 /// stamina and points last. In a fight a potion or food is taken by its
 /// user. What the spell is then decides the rest of its steps
 /// ([`CastSpell`]'s hook).
+#[allow(clippy::type_complexity)]
 fn begin(
     cast: On<Cast>,
     pools: Query<(&crate::game::characters::Vitals, &super::SpellPoints)>,
+    castables: Query<(
+        &super::castable::CastableSpell,
+        Has<super::castable::Learned>,
+        Option<&crate::game::combat::monster::slot::SlotOf>,
+    )>,
+    monsters: Query<(&crate::game::world::population::SpellBudget, &crate::game::actors::Level)>,
     held: crate::game::items::Items,
     context: Single<&super::may::UseContext, With<crate::game::party::roster::PartyRoster>>,
-    content: Res<Catalogs>,
     mut commands: Commands,
 ) {
-    let Cast { caster, spell: id, choice, again } = *cast;
-    let spell = &content.spells[id];
+    let Cast { caster, choice, again } = *cast;
+    let Ok((super::castable::CastableSpell(spell), learned, slot)) = castables.get(choice.castable)
+    else {
+        commands.trigger(Refused { caster, refusal: Refusal::NoItem });
+        return;
+    };
     if again
         && !pools
             .get(caster)
@@ -373,30 +359,33 @@ fn begin(
     let mut made = commands.spawn((CastBy(caster), Chosen(choice)));
     // Only members cast learned spells and use items: theirs widen at the
     // party and provoke whom they are against.
-    match choice.source {
-        Source::Spell { power, .. } => made.insert((means::LearnedSpell { asked: power }, Widens)),
-        Source::Item(item) => made.insert((means::FromItem(item), Widens)),
-        Source::Innate { power, budget, level, .. } => {
-            made.insert(means::Innate { power, budget, level })
+    let by_member = slot.is_none();
+    match (learned, slot) {
+        (true, _) => {
+            made.insert((
+                means::LearnedSpell { castable: choice.castable, asked: choice.power },
+                Widens,
+            ));
         }
-    };
-    let by_member = !matches!(choice.source, Source::Innate { .. });
+        (false, Some(_)) => {
+            let (budget, level) = monsters.get(caster).map_or((0, 0), |(b, l)| (b.0, l.0 as u8));
+            made.insert(means::Innate { power: choice.power, budget, level });
+        }
+        (false, None) => {
+            made.insert((means::FromItem(choice.castable), Widens));
+        }
+    }
     if by_member && spell.aimed_at_enemies() && !again {
         made.insert(Provokes);
     }
     if again {
         made.insert(Again);
     }
-    let by_user = match choice.source {
-        Source::Item(item) => {
-            use crate::content::items::UseType;
-            **context == super::may::UseContext::Combat
-                && held
-                    .casts(item)
-                    .is_some_and(|casts| matches!(casts.by, UseType::Potion | UseType::Food))
-        }
-        _ => false,
-    };
+    use crate::content::items::UseType;
+    let by_user = **context == super::may::UseContext::Combat
+        && held
+            .casts(choice.castable)
+            .is_some_and(|casts| matches!(casts.by, UseType::Potion | UseType::Food));
     if by_user {
         made.insert(TakenByUser);
     }

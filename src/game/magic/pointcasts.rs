@@ -40,9 +40,13 @@ pub struct SummonedBy(pub Entity);
 #[derive(Component)]
 #[relationship_target(relationship = SummonedBy)]
 pub struct Elementals(Vec<Entity>);
+/// A Hypnotic Lure standing at its spot until it expires, calling the
+/// monsters of its level as it is set ([`calls`]) at the strength of its
+/// cast.
 #[derive(Component)]
 pub struct Lure {
     expires: u64,
+    against: u32,
 }
 /// A lured monster's hold. Losing it, however the lure goes, frees a
 /// monster outside the fight to walk where it would.
@@ -121,7 +125,7 @@ pub fn mark_summon(
 }
 
 /// A Hypnotic Lure, once paid for and rolled, short of a fizzle, stands at
-/// its spot for the turns the spell lasts, and calls ([`Calls`]).
+/// its spot for the turns the spell lasts.
 pub fn lure(
     worked: On<Worked>,
     mut commands: Commands,
@@ -144,43 +148,31 @@ pub fn lure(
         spell.duration_per_power,
         strength,
     );
-    let lure = commands
-        .spawn((
-            Lure { expires: workings::lure_ends(clock.ms, turns, AGING_TICK_MS) },
-            Transform::from_translation(at),
-            LevelOwned(*level),
-        ))
-        .observe(calls)
-        .observe(tempted)
-        .id();
-    commands.trigger(Calls { lure, against: strength.against });
-}
-
-/// A lure calls the monsters of its level, at the strength of its cast.
-#[derive(EntityEvent, Clone, Copy, Debug)]
-pub struct Calls {
-    #[event_target]
-    pub lure: Entity,
-    pub against: u32,
+    let expires = workings::lure_ends(clock.ms, turns, AGING_TICK_MS);
+    commands.spawn((
+        Lure { expires, against: strength.against },
+        Transform::from_translation(at),
+        LevelOwned(*level),
+    ));
 }
 
 /// A monster is tempted by a lure, at the strength of its cast.
 #[derive(EntityEvent, Clone, Copy, Debug)]
 pub struct Tempted {
     #[event_target]
-    pub lure: Entity,
     pub monster: Entity,
+    pub lure: Entity,
     pub against: u32,
 }
 
-/// A lure takes the place of any before it, and puts to the test, in the
+/// A lure set takes the place of any before it, and puts to the test, in the
 /// order of their places in the level, each hostile monster not resisting a
 /// lure already, able to fight and not blind, within the far clip of its
 /// spot on every axis, with a clear line to it.
 #[allow(clippy::type_complexity)]
-fn calls(
-    calls: On<Calls>,
-    lures: Query<(&Transform, &LevelOwned), With<Lure>>,
+pub fn calls(
+    set: On<Add<Lure>>,
+    lures: Query<(&Lure, &Transform, &LevelOwned)>,
     others: Query<Entity, With<Lure>>,
     minds: Query<(&Standing, Has<CanFight>, &Conditions)>,
     level: Single<&Level, With<InPlay>>,
@@ -195,8 +187,8 @@ fn calls(
     level_assets: Res<Assets<crate::content::level::LevelDefinition>>,
     mut commands: Commands,
 ) -> Result {
-    let Calls { lure, against } = *calls;
-    let (spot, &LevelOwned(root)) = lures.get(lure)?;
+    let lure = set.entity;
+    let (&Lure { against, .. }, spot, &LevelOwned(root)) = lures.get(lure)?;
     let at = spot.translation;
     let far =
         level_assets.get(&level.definition).ok_or("the level played is loaded")?.view_distance();
@@ -226,7 +218,7 @@ fn calls(
         commands.entity(old).despawn();
     }
     for monster in tested {
-        commands.trigger(Tempted { lure, monster, against });
+        commands.trigger(Tempted { monster, lure, against });
     }
     Ok(())
 }
@@ -234,7 +226,7 @@ fn calls(
 /// A monster tempted resists or is held (an undead one always resists);
 /// outside a fight its whole group follows its choice (retail
 /// `ApplyMonsterControlToNearbyMonsters`).
-fn tempted(
+pub fn tempted(
     tempted: On<Tempted>,
     minds: Query<(&crate::game::actors::Level, &Resistances, Option<&crate::game::actors::Kind>)>,
     members: Query<Option<&GroupMember>>,
@@ -243,7 +235,7 @@ fn tempted(
     mut rng: ResMut<GameRng>,
     mut commands: Commands,
 ) -> Result {
-    let Tempted { lure, monster, against } = *tempted;
+    let Tempted { monster, lure, against } = *tempted;
     let (level, resistances, kind) = minds.get(monster)?;
     let response = workings::lure_response(
         &mut rng,

@@ -30,10 +30,8 @@ use crate::game::data::Catalogs;
 use crate::game::hits::definitions::Rows;
 use crate::game::hits::{Deed, Landed, effects};
 use crate::game::inventory::WeaponSlot;
-use crate::game::items::Items;
 use crate::game::magic::Strength;
 use crate::game::magic::casting::{Cast, MagicChoice, Refused, reaches as spell_reaches};
-use crate::game::magic::may::Refusal;
 use crate::game::magic::pointcasts::{Lure, LureInfluence};
 use crate::game::magic::reach::in_cone;
 use crate::game::magic::workings::Response;
@@ -802,15 +800,11 @@ fn cast(
     unhindered: On<Unhindered>,
     mut commands: Commands,
     actions: Query<(&ActionOf, &Casts)>,
-    held: Items,
 ) -> Result {
     let (&ActionOf(actor), &Casts(choice)) = actions.get(unhindered.action)?;
     commands.trigger(Done { actor });
     commands.trigger(Shown { actor });
-    match choice.source.spell_id(&held) {
-        Some(spell) => commands.trigger(Cast { caster: actor, spell, choice, again: false }),
-        None => commands.trigger(Refused { caster: actor, refusal: Refusal::NoItem }),
-    }
+    commands.trigger(Cast { caster: actor, choice, again: false });
     Ok(())
 }
 

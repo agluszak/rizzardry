@@ -8,7 +8,7 @@
 use bevy::prelude::*;
 
 use super::aim::{Against, At, Origin, Radius, Reach, Spot, Take, Takes, Took, Victims};
-use super::casting::{MagicNews, Practice, Recast, Source};
+use super::casting::{MagicNews, Practice, Recast};
 use super::reach::{self, Aim, flight};
 use super::{MagicRequest, SpellPoints};
 use crate::content::spells::{SpellDefinition, SpellId, Targeting};
@@ -199,11 +199,11 @@ pub fn recast(
     deeds: Query<&Recast>,
     vitals: Query<&Vitals>,
     casters: Query<(&Vitals, &SpellPoints)>,
-    content: Res<Catalogs>,
+    learned: Query<&super::castable::CastableSpell>,
     mut requests: MessageWriter<MagicRequest>,
 ) -> Result {
     let recast = deeds.get(landed.deed)?;
-    let Source::Spell { spell, .. } = recast.choice.source else { return Ok(()) };
+    let super::castable::CastableSpell(spell) = learned.get(recast.choice.castable)?;
     let short = |victim: &Entity| {
         vitals.get(*victim).is_ok_and(|vitals| {
             let pool = match recast.watches_stamina {
@@ -214,7 +214,7 @@ pub fn recast(
         })
     };
     let goes_again = casters.get(recast.caster).is_ok_and(|(vitals, pool)| {
-        super::casting::goes_again((vitals.stamina.current, pool), &content.spells[spell])
+        super::casting::goes_again((vitals.stamina.current, pool), spell)
     });
     if recast.victims.iter().any(short) && goes_again {
         requests.write(MagicRequest { caster: recast.caster, choice: recast.choice });

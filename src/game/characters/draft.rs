@@ -14,7 +14,8 @@ use crate::content::characters::{Attribute, Skill};
 use crate::content::spells::SpellId;
 use crate::game::actors::{Abilities, Skills, UsableSkills};
 use crate::game::data::Catalogs;
-use crate::game::magic::{self, LearnedSpells};
+use crate::game::magic;
+use crate::game::magic::castable::{CastableOf, CastableSpell, Castables, Learned, learned};
 
 /// One being made, or what a member is to become: no one yet, and taken in
 /// by nothing of play.
@@ -261,6 +262,7 @@ fn advance(
         )>,
     >,
     battle: Option<Res<crate::game::combat::Battle>>,
+    known: (Query<&Castables>, Query<&CastableSpell, With<Learned>>),
     mut commands: Commands,
 ) -> Result {
     let member = advance.member;
@@ -281,7 +283,6 @@ fn advance(
                 Training,
                 SpellPicks,
                 Experience,
-                LearnedSpells,
                 Vitals,
             )>();
         })
@@ -291,6 +292,13 @@ fn advance(
         .observe(pick_learning)
         .observe(accept)
         .id();
+    // What they know, the draft knows.
+    let (owned, spells) = known;
+    for CastableSpell(spell) in
+        spells.iter_many(owned.get(member).into_iter().flat_map(|o| o.iter())).flatten()
+    {
+        commands.spawn((CastableOf(draft), learned(spell)));
+    }
     commands.trigger(Follow { draft, profession });
     Ok(())
 }
@@ -307,14 +315,14 @@ fn follow(
     follow: On<Follow>,
     drafts: Query<&Becomes>,
     members: Query<
-        (&Birth, &Calling, &Abilities, &Training, &SpellPicks, &Experience, &LearnedSpells),
+        (&Birth, &Calling, &Abilities, &Training, &SpellPicks, &Experience),
         Without<Becomes>,
     >,
     mut commands: Commands,
 ) -> Result {
     let Follow { draft, profession } = *follow;
     let &Becomes(member) = drafts.get(draft)?;
-    let (birth, was, abilities, training, picks, experience, known) = members.get(member)?;
+    let (birth, was, abilities, training, picks, experience) = members.get(member)?;
     if !may_follow(profession, (birth, abilities, was)) {
         return Ok(());
     }
@@ -355,7 +363,6 @@ fn follow(
         abilities,
         training,
         picks,
-        known.clone(),
         points,
         forced,
         Allotted::default(),
@@ -431,26 +438,25 @@ pub fn before_this_level(training: &Training, allotted: &Allotted) -> Training {
     before
 }
 
-/// Whether one gaining a level may learn a spell: one they do not know, that
+/// Whether one gaining a level may learn a spell they do not know: one
 /// their caster level and their realm and book skills reach, as they were
 /// before this level's skill points (`training`; retail
 /// `CountRemainingSpellPoints` takes the draft's own off) with the best
 /// book skill as it stands (`standing`), and the draft's caster levels for
 /// it (`caster`: the followed profession's, and in all for the spell's books).
 pub fn may_learn(
-    known: &LearnedSpells,
     (calling, traits, training): (&Calling, EnumSet<crate::content::characters::Trait>, &Training),
     standing: &Skills,
     caster: (i32, i32),
     spell: &crate::content::spells::SpellDefinition,
 ) -> bool {
-    !known.knows(spell.id) && magic::can_learn((calling, traits, training), standing, caster, spell)
+    magic::can_learn((calling, traits, training), standing, caster, spell)
 }
 
 /// A member gaining a level picks a spell they do not know that they may
 /// learn now, judged by what they were before this level's skill points
 /// (retail `CountRemainingSpellPoints`), while picks are left; one picked is
-/// given back. What they know follows.
+/// given back. What they know follows ([`picks_known`]).
 #[allow(clippy::type_complexity)]
 fn pick_learning(
     pick: On<Pick>,
@@ -462,42 +468,59 @@ fn pick_learning(
         &Allotted,
         &SpellPicks,
         &mut Picked,
-        &mut LearnedSpells,
     )>,
-    members: Query<(&LearnedSpells, &Skills), Without<Becomes>>,
+    members: Query<(Option<&Castables>, &Skills), Without<Becomes>>,
+    known: Query<&CastableSpell, With<Learned>>,
     content: Res<Catalogs>,
 ) -> Result {
-    let (
-        &Becomes(member),
-        calling,
-        (traits, levels),
-        training,
-        allotted,
-        granted,
-        mut picked,
-        mut learned,
-    ) = drafts.get_mut(pick.draft)?;
-    let (known, standing) = members.get(member)?;
+    let (&Becomes(member), calling, (traits, levels), training, allotted, granted, mut picked) =
+        drafts.get_mut(pick.draft)?;
+    let (owned, standing) = members.get(member)?;
     let id = pick_key(pick.spell);
     if let Some(at) = picked.0.iter().position(|&spell| spell == id) {
         picked.0.remove(at);
-    } else {
-        let before = before_this_level(training, allotted);
-        let learnable = content.spells.get(id).is_some_and(|spell| {
+        return Ok(());
+    }
+    let owned = owned.into_iter().flat_map(|owned| owned.iter());
+    let knows = known.iter_many(owned).flatten().any(|spell| spell.0.id == id);
+    let before = before_this_level(training, allotted);
+    let learnable = !knows
+        && content.spells.get(id).is_some_and(|spell| {
             let caster = (levels.followed, levels.caster_level(spell));
-            may_learn(known, (calling, traits.0, &before), standing, caster, spell)
+            may_learn((calling, traits.0, &before), standing, caster, spell)
         });
-        let mut more = picked.0.clone();
-        more.push(id);
-        if !learnable || picks_left(granted, calling, &more, &content).is_none() {
-            return Ok(());
-        }
+    let mut more = picked.0.clone();
+    more.push(id);
+    if learnable && picks_left(granted, calling, &more, &content).is_some() {
         picked.0 = more;
     }
-    let portal = picked.0.contains(&SpellId::SET_PORTAL).then_some(SpellId::RETURN_TO_PORTAL);
-    let picks = LearnedSpells::of(picked.0.iter().copied().chain(portal), &content.spells);
-    *learned = known.clone().with(&picks);
     Ok(())
+}
+
+/// A spell picked on a draft is known to it while it is picked: Set Portal
+/// brings Return to Portal with it.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct PickedSpell;
+
+/// What a draft knows follows what is picked on it.
+pub fn picks_known(
+    drafts: Query<(Entity, &Picked, Option<&Castables>), Changed<Picked>>,
+    picks: Query<(), With<PickedSpell>>,
+    content: If<Res<Catalogs>>,
+    mut commands: Commands,
+) {
+    for (draft, picked, owned) in &drafts {
+        for castable in owned.into_iter().flat_map(|owned| owned.iter()) {
+            if picks.contains(castable) {
+                commands.entity(castable).despawn();
+            }
+        }
+        let portal = picked.0.contains(&SpellId::SET_PORTAL).then_some(SpellId::RETURN_TO_PORTAL);
+        for id in picked.0.iter().copied().chain(portal) {
+            let spell = &content.spells[id];
+            commands.spawn((CastableOf(draft), learned(spell), PickedSpell));
+        }
+    }
 }
 
 /// A level-up draft is accepted.
@@ -537,17 +560,12 @@ fn accept(
     drafts: Query<(
         &Becomes,
         (&Points, &Forced, &Allotted, &UsableSkills),
-        (&Calling, &Experience, &Abilities, &Training, &SpellPicks, &Picked, &LearnedSpells),
+        (&Calling, &Experience, &Abilities, &Training, &SpellPicks, &Picked),
+        Option<&Castables>,
     )>,
+    picked_spells: Query<(), With<PickedSpell>>,
     mut members: Query<
-        (
-            &mut Calling,
-            &mut Experience,
-            &mut Abilities,
-            &mut Training,
-            &mut SpellPicks,
-            &mut LearnedSpells,
-        ),
+        (&mut Calling, &mut Experience, &mut Abilities, &mut Training, &mut SpellPicks),
         (Without<Drafted>, Without<Becomes>),
     >,
     content: Res<Catalogs>,
@@ -556,20 +574,24 @@ fn accept(
     let (
         &Becomes(member),
         (points, forced, allotted, usable),
-        (calling, experience, abilities, training, granted, picked, learned),
+        (calling, experience, abilities, training, granted, picked),
+        owned,
     ) = drafts.get(accept.draft)?;
     if unfinished((points, forced, allotted), (abilities, training, usable)).is_some() {
         return Ok(());
     }
     let Some(picks) = picks_left(granted, calling, &picked.0, &content) else { return Ok(()) };
-    let (mut was, mut gained, mut base, mut trained, mut left, mut known) =
-        members.get_mut(member)?;
+    let (mut was, mut gained, mut base, mut trained, mut left) = members.get_mut(member)?;
     was.set_if_neq(calling.clone());
     gained.set_if_neq(*experience);
     base.set_if_neq(*abilities);
     trained.set_if_neq(training.clone());
     left.set_if_neq(picks);
-    known.set_if_neq(learned.clone());
+    // What was picked, the member knows.
+    let owned = owned.into_iter().flat_map(|owned| owned.iter());
+    for castable in owned.filter(|&castable| picked_spells.contains(castable)) {
+        commands.entity(castable).remove::<PickedSpell>().insert(CastableOf(member));
+    }
     commands.trigger(crate::game::inventory::omnigun::Advanced { member });
     commands.entity(accept.draft).despawn();
     Ok(())
@@ -586,7 +608,7 @@ fn let_go_stale(
             Ref<Calling>,
             Ref<Abilities>,
             Ref<Training>,
-            Ref<LearnedSpells>,
+            Option<Ref<Castables>>,
             Ref<Experience>,
             Ref<SpellPicks>,
         ),
@@ -604,11 +626,15 @@ fn let_go_stale(
             calling.last_changed(),
             abilities.last_changed(),
             training.last_changed(),
-            learned.last_changed(),
             experience.last_changed(),
             picks.last_changed(),
         ];
-        if changed.iter().any(|tick| tick.is_newer_than(made.added(), ticks.this_run())) {
+        let learned = learned.map(|learned| learned.last_changed());
+        if changed
+            .iter()
+            .chain(learned.iter())
+            .any(|tick| tick.is_newer_than(made.added(), ticks.this_run()))
+        {
             commands.entity(draft).despawn();
         }
     }
@@ -712,7 +738,6 @@ fn conceive(
         seeded(profession, &abilities),
         abilities,
         picks,
-        LearnedSpells::default(),
         Points { attributes: points, skills: 15 },
         Forced::default(),
         Allotted::default(),
@@ -752,10 +777,10 @@ pub fn reseed(
 #[allow(clippy::type_complexity)]
 fn pick_first(
     pick: On<Pick>,
-    mut drafts: Query<(&Calling, &SpellPicks, &mut Picked, &mut LearnedSpells)>,
+    mut drafts: Query<(&Calling, &SpellPicks, &mut Picked)>,
     content: Res<Catalogs>,
 ) -> Result {
-    let (calling, granted, mut picked, mut learned) = drafts.get_mut(pick.draft)?;
+    let (calling, granted, mut picked) = drafts.get_mut(pick.draft)?;
     let id = pick.spell;
     if let Some(at) = picked.0.iter().position(|&spell| spell == id) {
         picked.0.remove(at);
@@ -778,7 +803,6 @@ fn pick_first(
         }
         picked.0 = more;
     }
-    *learned = LearnedSpells::of(picked.0.iter().copied(), &content.spells);
     Ok(())
 }
 
@@ -863,7 +887,7 @@ pub struct Join {
 fn join(
     join: On<Join>,
     drafts: Query<
-        (&Identity, &super::Birth, &Calling, &Training, &SpellPicks, &Picked),
+        (&Identity, &super::Birth, &Calling, &Training, &SpellPicks, &Picked, Option<&Castables>),
         With<Drafted>,
     >,
     content: Res<Catalogs>,
@@ -871,7 +895,11 @@ fn join(
     mut commands: Commands,
 ) -> Result {
     let Join { draft, party } = *join;
-    let (identity, birth, calling, training, granted, picked) = drafts.get(draft)?;
+    let (identity, birth, calling, training, granted, picked, owned) = drafts.get(draft)?;
+    // What they picked, they know.
+    for castable in owned.into_iter().flat_map(|owned| owned.iter()) {
+        commands.entity(castable).remove::<PickedSpell>();
+    }
     let picks = picks_left(granted, calling, &picked.0, &content)
         .ok_or("a joined character's picks hold")?;
     let skills = Skills::affected(training, calling, &super::Conditions::default());
@@ -904,6 +932,13 @@ mod tests {
     use crate::content::characters::{Gender, Race};
     use crate::content::spells::{SpellCatalog, SpellDefinition, Spellbook};
     use crate::game::characters::born;
+
+    /// Whether an actor knows a spell: has learned it as a castable.
+    fn knows(world: &mut World, actor: Entity, id: SpellId) -> bool {
+        let owned: Vec<Entity> =
+            world.get::<Castables>(actor).map_or(vec![], |c| c.iter().collect());
+        owned.into_iter().any(|c| world.get::<CastableSpell>(c).is_some_and(|s| s.0.id == id))
+    }
 
     /// Three first-level Divinity spells, as the game's catalogue has them.
     fn divine_firsts() -> Catalogs {
@@ -982,7 +1017,7 @@ mod tests {
         )>();
         let (identity, spent, sheet) = ready.get(world, draft).unwrap();
         assert_eq!(unready(identity, spent, sheet), None);
-        assert!(world.get::<LearnedSpells>(draft).unwrap().knows(SpellId(16)));
+        assert!(knows(world, draft, SpellId(16)));
     }
 
     /// A Priest whose experience has reached the goal gains a level: the
@@ -998,6 +1033,7 @@ mod tests {
             .insert_resource(divine_firsts());
         let world = app.world_mut();
         let member = world.spawn(born("A", Race::Human, Gender::Male, Profession::Priest)).id();
+        crate::game::magic::castable::test_learn(world, member, &[SpellId(16)]);
         crate::game::party::roster::test_party(world, &[member]);
         let goal = world.get::<Calling>(member).unwrap().experience_goal(&Experience::default());
         world.get_mut::<Experience>(member).unwrap().earned = goal;
@@ -1047,6 +1083,7 @@ mod tests {
         assert_eq!(world.get::<Calling>(member).unwrap().level(), 2);
         let strength = world.get::<Abilities>(member).unwrap().0[Attribute::Strength];
         assert_eq!(strength, strength_before + 3);
-        assert!(world.get::<LearnedSpells>(member).unwrap().knows(SpellId(6)), "the spell picked");
+        assert!(knows(world, member, SpellId(6)), "the spell picked");
+        assert!(knows(world, member, SpellId(16)), "and the spell known before");
     }
 }

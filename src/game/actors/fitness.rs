@@ -74,7 +74,12 @@ pub(super) fn plugin(app: &mut App) {
             notice_the_raised,
             crate::game::items::weigh.run_if(not(resource_exists::<crate::game::combat::Battle>)),
             crate::game::world::hostility::follow_side,
-            (figures::follow_calling, figures::caster_levels),
+            (
+                figures::follow_calling,
+                figures::caster_levels,
+                crate::game::characters::draft::picks_known,
+            ),
+            crate::game::magic::castable::repertoire,
             (figures::attributes, figures::agility, figures::usable_skills),
             (crate::game::characters::draft::reseed, crate::game::characters::draft::give_back),
             (figures::skills, figures::keeps_alchemy).chain(),

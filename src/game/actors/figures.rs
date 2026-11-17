@@ -23,7 +23,8 @@ use crate::game::characters::{
 };
 use crate::game::items::Redressed;
 use crate::game::items::{Burden, Items};
-use crate::game::magic::{LearnedSpells, SpellPoints, max_points};
+use crate::game::magic::castable::Repertoire;
+use crate::game::magic::{SpellPoints, max_points};
 
 /// One who trained has the traits of their race and the profession they
 /// follow now, the level of all their professions together, and the level
@@ -80,8 +81,8 @@ pub(super) fn skills(
 #[allow(clippy::type_complexity)]
 pub(super) fn usable_skills(
     mut trained: Query<
-        (&Calling, &Abilities, &Traits, &LearnedSpells, &mut UsableSkills),
-        Or<(Changed<Calling>, Changed<Abilities>, Changed<Traits>, Changed<LearnedSpells>)>,
+        (&Calling, &Abilities, &Traits, &Repertoire, &mut UsableSkills),
+        Or<(Changed<Calling>, Changed<Abilities>, Changed<Traits>, Changed<Repertoire>)>,
     >,
 ) {
     for (calling, abilities, traits, learned, mut written) in &mut trained {
@@ -193,8 +194,8 @@ pub(super) fn keeps_alchemy(
 #[allow(clippy::type_complexity)]
 pub(super) fn spell_points(
     mut casters: Query<
-        (&LearnedSpells, &Level, &Attributes, &Skills, &mut SpellPoints),
-        Or<(Changed<LearnedSpells>, Changed<Level>, Changed<Attributes>, Changed<Skills>)>,
+        (&Repertoire, &Level, &Attributes, &Skills, &mut SpellPoints),
+        Or<(Changed<Repertoire>, Changed<Level>, Changed<Attributes>, Changed<Skills>)>,
     >,
 ) {
     for (learned, level, a, skills, mut points) in &mut casters {

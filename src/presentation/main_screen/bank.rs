@@ -286,10 +286,10 @@ pub fn draw_caption(
     content: If<Res<crate::game::data::Catalogs>>,
     battle: Option<Single<&Round, With<Battle>>>,
     orders: Query<&Order>,
+    learned: Query<&crate::game::magic::castable::CastableSpell>,
     mut captions: Query<(&CaptionLine, &mut BitmapText)>,
     strings: crate::presentation::screen_art::GameStrings,
 ) {
-    let spells = &content.spells;
     let catalog = &content.items;
     let (first, second) = match selected.member(&roster).map(|m| members.get(m).unwrap()) {
         None => (String::new(), String::new()),
@@ -315,17 +315,15 @@ pub fn draw_caption(
                         let verb = if order == Order::Berserk { "Berserk" } else { "Attack" };
                         format!("{verb} - {weapon}")
                     }
-                    Order::Magic(choice) => match choice.source {
-                        crate::game::magic::casting::Source::Spell { spell, power }
-                        | crate::game::magic::casting::Source::Innate { spell, power, .. } => {
-                            format!("Cast {} ({power})", spells[spell].name)
+                    Order::Magic(choice) => match held.id(choice.castable) {
+                        None => {
+                            let castable = learned.get(choice.castable);
+                            let name = castable.map_or("", |spell| spell.0.name.as_str());
+                            format!("Cast {name} ({})", choice.power)
                         }
-                        crate::game::magic::casting::Source::Item(item) => {
-                            let name = held
-                                .id(item)
-                                .map(|id| &catalog[id])
-                                .map_or("", |d| d.name.as_str());
-                            if held.pooled(item) {
+                        Some(id) => {
+                            let name = catalog[id].name.as_str();
+                            if held.pooled(choice.castable) {
                                 format!("Use {name} from party pool")
                             } else {
                                 format!("Use {name}")

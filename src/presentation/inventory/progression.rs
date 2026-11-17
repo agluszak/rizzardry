@@ -13,7 +13,7 @@ use crate::game::characters::draft::{
 use crate::game::characters::progression::SpellPicks;
 use crate::game::characters::{Birth, Calling, Experience, Identity, Training, Vitals};
 use crate::game::data::Catalogs;
-use crate::game::magic::LearnedSpells;
+use crate::game::magic::castable::{CastableSpell, Castables, Learned};
 use crate::game::party::roster::PartyMember;
 use crate::presentation::retail_controls::{ControlSkin, FocusRing, set_enabled};
 use crate::presentation::screen_art::{BitmapText, Picture, absolute};
@@ -471,10 +471,11 @@ fn refresh(
         &Becomes,
         (Ref<Points>, Ref<Forced>, Ref<Allotted>, Ref<Picked>),
         (Ref<Calling>, Ref<Abilities>, Ref<Training>, Ref<UsableSkills>),
-        (Ref<SpellPicks>, Ref<LearnedSpells>, &Traits, &Identity),
+        (Ref<SpellPicks>, Option<Ref<Castables>>, &Traits, &Identity),
         Ref<crate::game::actors::CasterLevels>,
     )>,
-    members: Query<(&LearnedSpells, &Skills)>,
+    members: Query<(Option<&Castables>, &Skills)>,
+    known_spells: Query<&CastableSpell, With<Learned>>,
     content: If<Res<Catalogs>>,
     strings: crate::presentation::screen_art::GameStrings,
     mut captions: Query<(&Caption, &mut BitmapText)>,
@@ -499,7 +500,7 @@ fn refresh(
         || training.is_changed()
         || usable.is_changed()
         || granted.is_changed()
-        || learned.is_changed()
+        || learned.as_ref().is_none_or(|learned| learned.is_changed())
         || levels.is_changed();
     let changed = draft_changed
         || editor.is_changed()
@@ -509,7 +510,12 @@ fn refresh(
     if !changed {
         return;
     }
-    let (known, standing) = members.get(editor.member).expect("the one edited is a member");
+    let (owned, standing) = members.get(editor.member).expect("the one edited is a member");
+    let ids = |owned: Option<&Castables>| -> Vec<crate::content::spells::SpellId> {
+        let owned = owned.into_iter().flat_map(|owned| owned.iter());
+        known_spells.iter_many(owned).flatten().map(|spell| spell.0.id).collect()
+    };
+    let (known, learned) = (ids(owned), ids(learned.as_deref()));
     let spells = &content.spells;
     let picks =
         picks_left(&granted, &calling, &picked.0, &content).map_or(0, |p| p.available(&calling));
@@ -548,7 +554,7 @@ fn refresh(
                 allotted.skills[s]
             ),
             Caption::Spell(s) => {
-                if learned.knows(s) && !known.knows(s) {
+                if learned.contains(&s) && !known.contains(&s) {
                     "  Selected".into()
                 } else {
                     String::new()
@@ -575,11 +581,12 @@ fn refresh(
             }
             Action::Skill(s, false) => allotted.skills[s] > 0,
             Action::Spell(s) => {
-                (learned.knows(s) && !known.knows(s))
+                (learned.contains(&s) && !known.contains(&s))
                     || (picks > 0
                         && spells.get(s).is_some_and(|spell| {
                             let caster = (levels.followed, levels.caster_level(spell));
-                            may_learn(known, (&calling, traits.0, &before), standing, caster, spell)
+                            !known.contains(&s)
+                                && may_learn((&calling, traits.0, &before), standing, caster, spell)
                         }))
             }
             _ => true,
